@@ -96,3 +96,43 @@ wait-event handshake, not timing guesses. Injected rollback triggers exist only
 in owned test databases. Final read-only fixture diagnostics wait for concurrent
 packages to settle; the helper rechecks resource identity and drops only its own
 generated databases. Parent lifecycle and independent verification remain separate.
+
+## R02a participant snapshot list
+
+`Store.List(ctx, identity, Query)` extends the original creation-only unit above
+with domain/store pagination. HTTP routes, DTOs, UI and realtime remain absent.
+Identity must still come from authentication, never from a consulted inventory
+location. Warehouse may read its physical-participant requests despite being
+forbidden to create them.
+
+| Query field | Default when omitted/zero | Accepted values |
+| --- | --- | --- |
+| `Page` (`int64`) | 1 | 1–1,000,000 |
+| `PageSize` (`int`) | 25 | 10, 25, 50 |
+| `Status` (`string`) | `pending` | Exactly `pending` |
+
+Negative values, arbitrary page sizes, future statuses and invalid/unassigned
+identities are rejected. No actor override, date, role or counterparty filter is
+supported. Nil context, receiver or pool returns sanitized `ErrUnavailable` and
+an exact zero page before any SQL; cancellation/deadline semantics are preserved.
+
+`Page` contains complete canonical `Records`, participant-private `Total int64`,
+normalized `Page` and `PageSize`. Empty databases, uninvolved accounts and pages
+beyond the last row return a nonnil empty records slice. An out-of-range page
+retains only that actor's scoped total, not a global count or a 404-style response.
+Totals count requests, never summed battery quantities; future HTTP DTOs must
+encode totals, IDs and quantities losslessly.
+
+Both COUNT and descending-ID pagination apply physical-origin/destination
+membership before status/pagination. COUNT, IDs and existing canonical record
+loading share one read-only REPEATABLE READ transaction, with a 10-second deadline
+and bounded rollback. No balance mutation, reservation or row/advisory lock is
+added. Per-record loading is intentionally bounded to at most 50 requests, each
+already bounded to 190 items. Snapshots are internally consistent; separate page
+calls can naturally observe newer commits and do not promise a frozen browsing
+session or expose a private revision/cursor.
+
+Focused checks are `TestR02ListDependencies` (pure) and `TestR02ListPostgres`
+(admitted fixture required). A test-only pgx tracer pauses after COUNT while a
+separate connection commits a writer, proving IDs and loaded records stay in the
+original snapshot. This adds no production hook or fixture-schema substitution.
