@@ -29,6 +29,26 @@ backups remain out of scope; no pixel-perfect claim is made.
 - `lossless-json` 4.3.1 is intentional: default parse produces `LosslessNumber`; raw `toString()` tokens become bounded nonnegative int64 bigint quantities and canonical positive decimal capacity text. Only checked bounded IDs/pages/counts become Number. Server availability is displayed, not recomputed. Zero availability is `Sin disponible`, with no low-stock threshold.
 - Search is literal brand/model text, bounded to 128 UTF-8 bytes. Empty filters are omitted; brand and L/R filters combine with search. Page sizes are 10/25/50.
 
+## R04b2a source-stock invalidation seam
+
+`useInventory` exposes stable `subscribeSourceInventoryInvalidation(listener): unsubscribe`
+with empty, void-only signals on authorized `inventory` and `resync` events.
+It is independent of private `subscribeTransferInvalidation`: `transfers` never
+signals source stock. Existing viewer refresh and private transfer routing remain intact.
+Each controller owns both subscriber sets and one EventSource; registration performs
+no source GET, metadata GET or fetch. `SourceInventoryController` is a separate
+structural consumer type; existing `TransferController` objects need no new method.
+Listeners bind to the authority epoch, not the consulted inventory location or a
+physical source ID. All three assigned account locations may receive inventory signals.
+Delivery checks current readiness, epoch and membership per callback, isolates thrown
+errors without logging, and clears owned subscribers on unmount. Unready registration
+is accepted like the transfer channel, but consumers must re-subscribe for each ready
+authority epoch and unsubscribe on cleanup; consult `getTransferAuthority()` before reads.
+Future source consumers own explicit manual opening and passive background reads,
+latest epoch/source/sequence and abort guards. This seam loads no catalog and implements
+no creation UI; cross-page stock is not atomic and server creation remains final authority.
+R04 screens and R05 browser verification remain pending.
+
 ## R03 frontend invalidation adapter
 
 `useRealtime({ enabled, epoch, resync, inventory, transfers?, error })` owns one

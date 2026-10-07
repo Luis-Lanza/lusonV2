@@ -574,3 +574,122 @@ describe('R04 controller transfer seams', () => {
     vi.useRealTimers();
   });
 });
+
+// R04b2a adds an authority-bound signal, not a source catalog reader.
+describe('R04b2a source-stock bridge', () => {
+  it.each([1, 2, 3])('routes distinct channels for assigned location %s without reading physical source stock', async assigned => {
+    const actor = { ...session, identity: { ...identity, account_id: assigned, location: metadata.locations[assigned - 1] } };
+    const mock = setup(actor); const { result } = renderHook(() => useInventory()); await hookInventory(result);
+    const subscribe = result.current.subscribeSourceInventoryInvalidation;
+    const source = vi.fn(); const privateSignal = vi.fn();
+    const before = mock.mock.calls.length;
+    const detachSource = subscribe(source); const detachPrivate = result.current.subscribeTransferInvalidation(privateSignal);
+    expect(mock.mock.calls).toHaveLength(before); expect(AppSource.instances).toHaveLength(1);
+    const epoch = result.current.authorityEpoch;
+    const consulted = assigned === 3 ? 1 : 3;
+    act(() => result.current.change({ location: consulted })); await hookInventory(result);
+    expect(result.current.subscribeSourceInventoryInvalidation).toBe(subscribe);
+    expect(result.current.authorityEpoch).toBe(epoch);
+    expect(result.current.getTransferAuthority().session).toEqual(actor);
+    const stream = AppSource.instances[0]; const stockBefore = stockCalls(mock).length;
+    act(() => stream.emit('inventory'));
+    expect(source).toHaveBeenCalledExactlyOnceWith(); expect(privateSignal).not.toHaveBeenCalled();
+    await waitFor(() => expect(stockCalls(mock)).toHaveLength(stockBefore + 1)); await hookInventory(result);
+    const metaBefore = mock.mock.calls.filter(([url]) => String(url).endsWith('/metadata')).length;
+    act(() => stream.emit('resync'));
+    expect(source).toHaveBeenCalledTimes(2); expect(privateSignal).toHaveBeenCalledExactlyOnceWith();
+    await waitFor(() => expect(stockCalls(mock)).toHaveLength(stockBefore + 2)); await hookInventory(result);
+    expect(mock.mock.calls.filter(([url]) => String(url).endsWith('/metadata'))).toHaveLength(metaBefore + 1);
+    const settled = mock.mock.calls.length;
+    act(() => { stream.emit('transfers'); stream.emit('inventory', '{"source_id":2}'); });
+    expect(source).toHaveBeenCalledTimes(2); expect(privateSignal).toHaveBeenCalledTimes(2);
+    expect(mock.mock.calls).toHaveLength(settled);
+    for (const [url, init] of mock.mock.calls.slice(before)) {
+      expect(String(url).includes(`location_id=${assigned}`)).toBe(false);
+      if (String(url).startsWith('/api/inventory?') && new Headers(init?.headers).has('X-Luson-Passive')) {
+        expect(new Headers(init?.headers).get('X-Luson-Passive')).toBe('1');
+      }
+    }
+    detachSource(); act(() => stream.emit('resync'));
+    expect(source).toHaveBeenCalledTimes(2); expect(privateSignal).toHaveBeenCalledTimes(3);
+    detachPrivate();
+  });
+  it('checks membership per listener and keeps independent unsubscriptions and throwing callbacks isolated', async () => {
+    setup(session); const { result } = renderHook(() => useInventory()); await hookInventory(result);
+    const log = vi.spyOn(console, 'error'); const warn = vi.spyOn(console, 'warn');
+    let detachLater = () => {};
+    const first = vi.fn(() => { detachLater(); throw new Error('private subscriber error'); });
+    const later = vi.fn(); const survivor = vi.fn(); const privateSignal = vi.fn();
+    const detachFirst = result.current.subscribeSourceInventoryInvalidation(first);
+    detachLater = result.current.subscribeSourceInventoryInvalidation(later);
+    result.current.subscribeSourceInventoryInvalidation(survivor);
+    const detachPrivate = result.current.subscribeTransferInvalidation(privateSignal);
+    act(() => AppSource.instances[0].emit('resync'));
+    expect(first).toHaveBeenCalledOnce(); expect(later).not.toHaveBeenCalled();
+    expect(survivor).toHaveBeenCalledExactlyOnceWith(); expect(privateSignal).toHaveBeenCalledOnce();
+    detachPrivate(); detachFirst(); act(() => AppSource.instances[0].emit('resync'));
+    expect(survivor).toHaveBeenCalledTimes(2); expect(privateSignal).toHaveBeenCalledOnce();
+    expect(log).not.toHaveBeenCalled(); expect(warn).not.toHaveBeenCalled(); log.mockRestore(); warn.mockRestore();
+  });
+  it.each(['account', 'assignment', 'csrf', 'anonymous'])('rejects old registrations after %s validation and delivers only to the new ready epoch', async change => {
+    let next: unknown = session;
+    setup(session, url => url === '/api/auth/validate' ? Promise.resolve(response(next)) : undefined);
+    const { result } = renderHook(() => useInventory()); await hookInventory(result);
+    const old = vi.fn(); result.current.subscribeSourceInventoryInvalidation(old);
+    const epoch = result.current.authorityEpoch;
+    next = change === 'anonymous' ? { authenticated: false } : {
+      ...session, csrf_token: change === 'csrf' ? 'd'.repeat(43) : csrf,
+      identity: { ...identity, account_id: change === 'account' ? 2 : 1,
+        location: change === 'assignment' ? metadata.locations[1] : identity.location },
+    };
+    await act(async () => { await result.current.settleUnauthorized(epoch); });
+    await waitFor(() => expect(result.current.getTransferAuthority().ready).toBe(true));
+    expect(result.current.authorityEpoch).toBeGreaterThan(epoch);
+    const fresh = vi.fn(); result.current.subscribeSourceInventoryInvalidation(fresh);
+    act(() => { AppSource.instances.at(-1)!.emit('inventory'); AppSource.instances.at(-1)!.emit('resync'); });
+    expect(old).not.toHaveBeenCalled(); expect(fresh).toHaveBeenCalledTimes(2);
+  });
+  it('masks authority synchronously when an earlier listener starts logout and restores only new-epoch registrations after failure', async () => {
+    const pending = deferred<Response>();
+    setup(session, url => url.endsWith('/logout') ? pending.promise : undefined);
+    const { result } = renderHook(() => useInventory()); await hookInventory(result);
+    const later = vi.fn(); const privateSignal = vi.fn(); let logout!: Promise<void>;
+    result.current.subscribeSourceInventoryInvalidation(() => {
+      logout = result.current.logout(); expect(result.current.getTransferAuthority().ready).toBe(false);
+    });
+    result.current.subscribeSourceInventoryInvalidation(later);
+    result.current.subscribeTransferInvalidation(privateSignal);
+    act(() => AppSource.instances[0].emit('inventory'));
+    expect(later).not.toHaveBeenCalled(); expect(privateSignal).not.toHaveBeenCalled();
+    await act(async () => { pending.resolve(response({}, 503)); await logout; });
+    await hookInventory(result); expect(result.current.getTransferAuthority().ready).toBe(true);
+    const fresh = vi.fn(); result.current.subscribeSourceInventoryInvalidation(fresh);
+    act(() => AppSource.instances.at(-1)!.emit('resync'));
+    expect(later).not.toHaveBeenCalled(); expect(privateSignal).not.toHaveBeenCalled(); expect(fresh).toHaveBeenCalledOnce();
+  });
+  it('accepts unready registration without leaking authority and requires re-subscription at a ready epoch', async () => {
+    setup(); const { result } = renderHook(() => useInventory());
+    const old = vi.fn(); result.current.subscribeSourceInventoryInvalidation(old);
+    await waitFor(() => expect(result.current.authBusy).toBe(false));
+    expect(result.current.getTransferAuthority().ready).toBe(false); expect(AppSource.instances).toHaveLength(0);
+    await act(async () => result.current.login('component-user', 'component-password')); await hookInventory(result);
+    const fresh = vi.fn(); result.current.subscribeSourceInventoryInvalidation(fresh);
+    act(() => AppSource.instances[0].emit('inventory'));
+    expect(old).not.toHaveBeenCalled(); expect(fresh).toHaveBeenCalledOnce();
+  });
+  it('owns subscriber sets per controller and leaves unmounted registrations inert on a fresh mount', async () => {
+    setup(session);
+    const a = renderHook(() => useInventory()); const b = renderHook(() => useInventory());
+    await hookInventory(a.result); await hookInventory(b.result);
+    const first = vi.fn(); const second = vi.fn();
+    a.result.current.subscribeSourceInventoryInvalidation(first); b.result.current.subscribeSourceInventoryInvalidation(second);
+    expect(AppSource.instances).toHaveLength(2);
+    act(() => AppSource.instances[0].emit('inventory'));
+    expect(first).toHaveBeenCalledOnce(); expect(second).not.toHaveBeenCalled();
+    a.unmount(); expect(AppSource.instances[0].close).toHaveBeenCalled();
+    const c = renderHook(() => useInventory()); await hookInventory(c.result);
+    const fresh = vi.fn(); c.result.current.subscribeSourceInventoryInvalidation(fresh);
+    act(() => { AppSource.instances[0].emit('resync'); AppSource.instances[1].emit('inventory'); AppSource.instances[2].emit('inventory'); });
+    expect(first).toHaveBeenCalledOnce(); expect(second).toHaveBeenCalledOnce(); expect(fresh).toHaveBeenCalledOnce();
+  });
+});

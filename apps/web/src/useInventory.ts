@@ -42,6 +42,12 @@ export interface TransferController {
   settleUnauthorized: (expectedEpoch: number) => Promise<Recovery>;
 }
 
+export interface SourceInventoryController {
+  authorityEpoch: number;
+  getTransferAuthority: () => TransferAuthority;
+  subscribeSourceInventoryInvalidation: (listener: () => void) => () => void;
+}
+
 export function useInventory() {
   const [session, setSession] = useState<Session | null>(null);
   const [metadata, setMetadata] = useState<Metadata | null>(null);
@@ -65,6 +71,7 @@ export function useInventory() {
   const authorityState = useRef({ session, authBusy });
   authorityState.current = { session, authBusy };
   const transferListeners = useRef(new Set<{ epoch: number; listener: () => void }>());
+  const sourceInventoryListeners = useRef(new Set<{ epoch: number; listener: () => void }>());
   const neutralProbe = useRef<{ epoch: number; promise: Promise<Recovery>; cancel: () => void } | null>(null);
   const unauthorizedCooldown = useRef({ epoch: -1, until: 0 });
   const validateLatest = useRef<(signal: AbortSignal) => Promise<Recovery>>(async () => 'unavailable');
@@ -77,6 +84,11 @@ export function useInventory() {
     const entry = { epoch: authGeneration.current, listener };
     transferListeners.current.add(entry);
     return () => { transferListeners.current.delete(entry); };
+  }, []);
+  const subscribeSourceInventoryInvalidation = useCallback((listener: () => void) => {
+    const entry = { epoch: authGeneration.current, listener };
+    sourceInventoryListeners.current.add(entry);
+    return () => { sourceInventoryListeners.current.delete(entry); };
   }, []);
   const settleUnauthorized = useCallback(async (expectedEpoch: number): Promise<Recovery> => {
     const authority = getTransferAuthority();
@@ -96,6 +108,16 @@ export function useInventory() {
     for (const entry of [...transferListeners.current]) {
       if (entry.epoch !== epoch || !transferListeners.current.has(entry) || !current(epoch) || mutation.current) continue;
       // A failed subscriber must not interrupt other readers or inventory resync.
+      try { entry.listener(); } catch { /* No subscriber payload or error is logged. */ }
+    }
+  }
+
+  function notifySourceInventory(epoch: number) {
+    for (const entry of [...sourceInventoryListeners.current]) {
+      const authority = getTransferAuthority();
+      if (!authority.ready || authority.epoch !== epoch) return;
+      if (entry.epoch !== epoch || !sourceInventoryListeners.current.has(entry) || !current(epoch) || mutation.current) continue;
+      // Signals have no data; subscriber failures must not disrupt other readers.
       try { entry.listener(); } catch { /* No subscriber payload or error is logged. */ }
     }
   }
@@ -224,14 +246,16 @@ export function useInventory() {
   validateLatest.current = validate;
   const realtimeEpoch = authGeneration.current;
   const stopRealtime = useRealtime({ enabled: !!session?.authenticated && !authBusy, epoch: realtimeEpoch,
-    resync: () => { invalidate(true); notifyTransfers(realtimeEpoch); },
-    inventory: () => invalidate(false), transfers: () => notifyTransfers(realtimeEpoch), error: validate });
+    resync: () => { invalidate(true); notifyTransfers(realtimeEpoch); notifySourceInventory(realtimeEpoch); },
+    inventory: () => { invalidate(false); notifySourceInventory(realtimeEpoch); },
+    transfers: () => notifyTransfers(realtimeEpoch), error: validate });
 
   useEffect(() => {
     mounted.current = true; void restore();
     return () => {
       mounted.current = false; stopRealtime(); authGeneration.current++; cancelReads(); csrf.current = '';
-      transferListeners.current.clear(); neutralProbe.current?.cancel(); neutralProbe.current = null;
+      transferListeners.current.clear(); sourceInventoryListeners.current.clear();
+      neutralProbe.current?.cancel(); neutralProbe.current = null;
       const gate = bootstrap.current;
       if (gate) { gate.uncertain = true; gate.cancelTimeout(); gate.controller.abort(); }
     };
@@ -346,5 +370,5 @@ export function useInventory() {
   }
   return { session, metadata, data, query, loading, authBusy, formError, resultsError: resultsError || realtimeError, focusLogin,
     login, logout, change, retrySession: () => restore(), retryInventory: () => change({}, true),
-    authorityEpoch: authGeneration.current, getTransferAuthority, subscribeTransferInvalidation, settleUnauthorized };
+    authorityEpoch: authGeneration.current, getTransferAuthority, subscribeTransferInvalidation, subscribeSourceInventoryInvalidation, settleUnauthorized };
 }
