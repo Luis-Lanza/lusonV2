@@ -335,6 +335,27 @@ npm --prefix apps/web run test -- src/TransferCreation.test.tsx src/App.test.tsx
 
 The title filter excludes historical cases; it is not a full-suite skip claim.
 
+## R04b2c1 live-memory recovery foundation (not wired to App)
+
+`createTransferRecovery()` creates an instance-private archive, not a singleton.
+A future App must instantiate it once above conditional auth/creation views;
+real App unmount, reload or tab close destroys it. No persistent recovery exists.
+Every read uses the latest controller authority: ready verified branch, exact
+`account_id` and assigned `location.id`. Same owner after fresh login reads a
+snapshot tagged with the current epoch, never the old session or CSRF token.
+Capture requires an already reviewed canonical attempt and current owned cart.
+Only frozen retry payload, physical direction and selected variant/catalog IDs,
+brand, model, exact `capacity_ah`, polarity and quantity strings are retained.
+No stocks, full catalog, credentials, sessions, cookies, logs or global reader.
+Two owner slots coexist; exhaustion is generic and never evicts unresolved work.
+Opaque entry handles and fresh per-begin flight tokens fence stale callbacks.
+Manual begin changes ready/unknown to inFlight; unknown preserves exact key/body.
+New-owner-epoch reads turn an old pending flight unknown, never automatically POST.
+Confirmed current-epoch success clears only its live flight; explicit owner discard
+refuses inFlight and requires uncertainty acknowledgement for unknown entries.
+Retry performs no availability lookup. App/review/send wiring and R05 browser
+acceptance remain future work; this independently tested leaf is not recovery UX.
+
 ## Worker checks
 
 From repository root:
