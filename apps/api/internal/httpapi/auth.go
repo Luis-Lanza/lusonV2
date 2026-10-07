@@ -9,6 +9,7 @@ import (
 	"luson/api/internal/auth"
 	"luson/api/internal/config"
 	"luson/api/internal/inventory"
+	"luson/api/internal/realtime"
 	"luson/api/internal/transfers"
 	"mime"
 	"net"
@@ -34,7 +35,7 @@ func New(service *auth.Service, cfg config.Auth, stores ...*inventory.Store) htt
 	}
 	return compose(service, cfg, store, nil)
 }
-func compose(service *auth.Service, cfg config.Auth, store *inventory.Store, requests *transfers.Store) http.Handler {
+func compose(service *auth.Service, cfg config.Auth, store *inventory.Store, requests *transfers.Store, brokers ...*realtime.Broker) http.Handler {
 	api := &API{service, cfg}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/auth/session", api.session)
@@ -44,10 +45,20 @@ func compose(service *auth.Service, cfg config.Auth, store *inventory.Store, req
 	if requests != nil {
 		api.registerTransfers(mux, requests)
 	}
+	var broker *realtime.Broker
+	if len(brokers) > 0 {
+		broker = brokers[0]
+	}
+	if broker != nil {
+		api.registerEvents(mux, broker)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if requests != nil && !transferPath(w, r) {
+			return
+		}
+		if broker != nil && !eventsPath(w, r) {
 			return
 		}
 		mux.ServeHTTP(w, r)
@@ -115,13 +126,18 @@ func (a *API) session(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "GET") {
 		return
 	}
+	passive, valid := passiveMode(r)
+	if !valid {
+		failure(w, 400, "invalid_request")
+		return
+	}
 	token, unambiguous := readCookie(r, sessionCookie)
 	if !unambiguous {
 		failure(w, 400, "invalid_request")
 		return
 	}
 	if token != "" {
-		session, err := a.service.Current(r.Context(), token)
+		session, err := a.lookupSession(r, token, passive)
 		if err == nil {
 			respond(w, 200, map[string]any{"authenticated": true, "identity": session.Identity, "csrf_token": auth.CSRF(token), "expires_at": session.ExpiresAt})
 			return

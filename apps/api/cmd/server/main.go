@@ -12,6 +12,7 @@ import (
 	"luson/api/internal/config"
 	"luson/api/internal/httpapi"
 	"luson/api/internal/inventory"
+	"luson/api/internal/realtime"
 	"luson/api/internal/transfers"
 	"luson/api/internal/webui"
 	"net"
@@ -22,7 +23,7 @@ import (
 	"time"
 )
 
-func run() error {
+func run() (result error) {
 	if len(os.Args) != 1 {
 		return errors.New("arguments are not accepted")
 	}
@@ -40,6 +41,8 @@ func run() error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx, cancelLifetime := context.WithCancel(ctx)
+	defer cancelLifetime()
 	startup, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	pool, err := pgxpool.New(startup, cfg.DatabaseURL)
@@ -54,7 +57,47 @@ func run() error {
 	if err != nil {
 		return errors.New("authentication initialization failed")
 	}
-	api, err := httpapi.NewWithTransfers(service, httpCfg, inventory.New(pool), transfers.New(pool))
+	broker, err := realtime.New(pool)
+	if err != nil {
+		return errors.New("realtime initialization failed")
+	}
+	started := make(chan error, 1)
+	startJoined := false
+	var server *http.Server
+	// Installed before startup: cancellation/joins precede pool.Close on every
+	// error and termination path. No startup deadline owns the broker lifetime.
+	defer func() {
+		cancelLifetime()
+		shutdown, finish := context.WithTimeout(context.Background(), 6*time.Second)
+		defer finish()
+		if broker.Shutdown(shutdown) != nil {
+			result = errors.New("realtime shutdown failed")
+		}
+		if !startJoined {
+			select {
+			case <-started:
+			case <-shutdown.Done():
+				result = errors.New("realtime startup join failed")
+			}
+		}
+		if server != nil && server.Shutdown(shutdown) != nil {
+			result = errors.New("HTTP shutdown failed")
+		}
+	}()
+	go func() { started <- broker.Start(ctx) }()
+	ready, finishReady := context.WithTimeout(ctx, 10*time.Second)
+	select {
+	case err = <-started:
+		startJoined = true
+		finishReady()
+		if err != nil {
+			return errors.New("realtime startup failed")
+		}
+	case <-ready.Done():
+		finishReady()
+		return errors.New("realtime startup unavailable")
+	}
+	api, err := httpapi.NewWithRealtime(service, httpCfg, inventory.New(pool), transfers.New(pool), broker)
 	if err != nil {
 		return errors.New("API initialization failed")
 	}
@@ -62,7 +105,7 @@ func run() error {
 	if err != nil {
 		return errors.New("invalid public asset directory")
 	}
-	server := &http.Server{Addr: httpCfg.Listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 8192, TLSConfig: tlsCfg}
+	server = &http.Server{Addr: httpCfg.Listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 8192, TLSConfig: tlsCfg}
 	listener, err := net.Listen("tcp", httpCfg.Listen)
 	if err != nil {
 		return errors.New("listener unavailable")

@@ -13,6 +13,11 @@ import (
 
 // Keep legacy middleware plaintext behavior out of this JSON contract.
 func (a *API) inventoryIdentity(w http.ResponseWriter, r *http.Request) (auth.Identity, bool) {
+	passive, valid := passiveMode(r)
+	if !valid {
+		failure(w, 400, "invalid_request")
+		return auth.Identity{}, false
+	}
 	token, unique := readCookie(r, sessionCookie)
 	if !unique {
 		failure(w, 400, "invalid_request")
@@ -22,7 +27,7 @@ func (a *API) inventoryIdentity(w http.ResponseWriter, r *http.Request) (auth.Id
 		failure(w, 401, "unauthenticated")
 		return auth.Identity{}, false
 	}
-	session, err := a.service.Current(r.Context(), token)
+	session, err := a.lookupSession(r, token, passive)
 	if err != nil {
 		if errors.Is(err, auth.ErrSession) {
 			failure(w, 401, "unauthenticated")

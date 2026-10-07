@@ -1,10 +1,11 @@
-# Backend foundations for private current-state invalidation
+# Private invalidation foundations and guarded HTTP streaming
 
-Migration004, `realtime.Broker` and `auth.Service.Peek` provide commit-only
-invalidation and non-renewing authorization primitives. This unit does not
-register HTTP/SSE routes, passive headers, server lifecycle wiring or frontend
-handlers. Go SPA/API and PostgreSQL remain the only deployed services; these
-checks do not claim deployed streaming, browser synchronization or completed UI.
+Migration004, `realtime.Broker` and `auth.Service.Peek` provide the R03a commit-only
+invalidation and non-renewing authorization primitives. R03b adds opt-in HTTP
+streaming, passive GET selection and server lifetime wiring, described below.
+Go SPA/API and PostgreSQL remain the only deployed services. These source and
+httptest/owned-PG checks do not claim deployment, browser synchronization,
+frontend adapters or completed transfer UI.
 
 ## Interfaces and lifecycle
 
@@ -24,8 +25,8 @@ alone connects, begins/commits LISTEN, reads revisions, waits for notifications
 and closes the connection. Every successful new subscription starts with a
 generic `resync`; its consumer must fetch complete authorized current snapshots.
 Close subscriptions when consumers leave. Cancel/Shutdown and join the broker
-**before** closing the application pool or dropping a test database. The future
-server integration owns this ordering; current startup remains unchanged.
+**before** closing the application pool or dropping a test database. R03b server
+integration owns this ordering without changing ordinary transport settings.
 
 ## Commit, readiness and recovery
 
@@ -96,8 +97,8 @@ revoked tokens return ErrSession; unavailable dependencies/driver failures are
 sanitized and cancellation/deadlines remain recognizable. Literal nil service,
 context, pool and zero service are safe. Existing touching Current/login/logout
 semantics remain unchanged. Peek does not promise atomic authorization against
-logout racing a later operation. Future passive HTTP GETs and SSE must use Peek;
-that adapter and ongoing stream expiry enforcement belong to R03b.
+logout racing a later operation. R03b passive HTTP GETs and SSE use Peek and
+apply bounded stream expiry enforcement as described below.
 
 Focused tests are `TestR03PeekPostgres`, `TestR03BrokerContract` and
 `TestR03BrokerPostgres`. Actual admitted private PostgreSQL tests prove committed
@@ -109,3 +110,83 @@ cryptographic own database through a guarded SQL predicate. Inventory mutation
 cases are explicit test-only changes with separate expected snapshots; Pending
 cases compare complete stock snapshots. Guarded helper cleanup and a read-only
 settled catalog audit remain required; parent independent verification follows.
+
+## R03b opt-in HTTP and passive reads
+
+`httpapi.NewWithRealtime(service, cfg, inventoryStore, transferStore, broker)`
+returns `(http.Handler, error)`. It reuses the checked transfer constructor's
+required dependencies/configuration validation and rejects nil broker. An
+opaque unready/zero broker never grants readiness: Subscribe fails 503.
+Legacy `New` and `NewWithTransfers` still leave `/api/events` absent 404.
+No store, migration or authentication-service behavior is changed by this unit.
+
+Only GET recognizes optional `X-Luson-Passive: 1`. Absence selects ordinary
+Current; exactly one value 1 selects Peek; empty, duplicate, comma-list or any
+other value returns 400 even for anonymous restoration. This applies to session
+restoration, inventory/metadata and transfer list/detail via the shared identity
+helper. Passive restoration preserves anonymous/prelogin cookie and CSRF
+semantics; authenticated expires_at retains its absolute meaning. POST creation,
+login and logout ignore this selector and retain Current/Origin/CSRF policy.
+A passive header never supplies actor authority or bypasses mutation guards.
+
+## R03b event transport
+
+GET exact `/api/events` requires a unique live session cookie and always uses
+Peek, irrespective of the optional selector (malformed selector is rejected 400).
+Origin may be absent; if present it must be exactly one configured same-origin
+value. FetchSite may be absent; otherwise exactly one same-origin value is
+required. No CORS or forwarded trust is introduced. No query is admitted,
+including an empty query marker. Encoded aliases are 400 and unsafe dot,
+double-slash/trailing paths are 404 before ServeMux cleaning. Other methods return
+405 with exact `Allow: GET`, without implicit HEAD. Existing static/transfer
+path guards retain their own behavior.
+
+Only the authenticated assigned location may Subscribe, not a queried inventory
+location. Initial absent/expired/revoked sessions return 401, ambiguous cookies
+400, backend/readiness/capability failure 503. After 200, authorization or transport
+failure ends the stream: no impossible late JSON 401/503 is appended. Reconnect
+must reauthenticate; a later passive restoration can clear dead session state.
+Last-Event-ID is ignored (single value bounded to 128 bytes), never a replay
+cursor or authority. New subscription resync precedes the client's future fresh
+snapshot fetch; actual frontend integration belongs to R03c.
+
+Responses are `text/event-stream`, `Cache-Control: no-store, no-transform`, and
+nosniff. Frames have only `event: resync|inventory|transfers` and `data: {}`;
+heartbeats are generic comments. No IDs, revisions, other audiences, counts,
+records, credentials or session deadlines are emitted. There is no manual
+Connection/Transfer-Encoding header or additional service. Broker closure,
+overflow and request cancellation unsubscribe and end the stream for refetch.
+
+Capability preflight walks at most 32 Unwrap layers for flush/write-deadline
+support without prematurely flushing. Unsupported transport fails closed before
+event bytes. ResponseController clears inherited write deadline while waiting,
+sets a 750 ms deadline before every write/flush, and clears it after successful
+flush. An empty preparation flush probes transport under a deadline before any
+kind/data; runtime errors stop rather than claim a status that cannot be changed.
+
+Peek is bounded to 750 ms before every event, heartbeat and preparation flush.
+The next check is at most 1 s away, or earlier at effective idle/absolute expiry.
+A scheduled check/query/write therefore has a nominal worst-case 2.5 s budget,
+within the required 5 s detection bound (subject to process scheduling). Database
+query stalls and slow writes cannot retain an indefinitely live claim. This
+is bounded validation, not atomic SELECT-to-socket authorization against a
+concurrent logout. Ordinary server WriteTimeout remains 15 s; only the event route
+clears/rebounds its deadline. Explicit ordinary GETs continue sliding idle TTL.
+
+## R03b server ownership and verification
+
+Main initializes the broker before handler/listener serving. Start receives the
+root lifetime context, never the short startup context. A separate 10 s startup
+wait cancels and joins on failure. Cancellation/shutdown happens before pool
+close and before final HTTP shutdown waits; startup results are joined and
+shutdown errors are sanitized. Ordinary TLS/static/Read/Idle/WriteTimeout and
+listener configuration remain unchanged. No operator server is launched by tests.
+
+`TestR03RealtimeConstructor`, `TestR03Events` and `TestR03PassiveReads` cover
+compatibility, strict passive selection, complete session timestamps, actual
+HTTP→committed-PG→SSE privacy/replay/rollback, transport failure/slow writer,
+revocation/expiry/query stalls, guarded listener recovery and joined shutdown.
+One named real-network test deliberately runs beyond 16 s with global 15 s write
+timeout. It is a duration smoke, not an arbitrary sleep-based queue/race proof.
+All Pending checks compare 570-row stock snapshots. Parent independent review
+and fixture audit remain separate; no browser, live UI or deployment is claimed.
