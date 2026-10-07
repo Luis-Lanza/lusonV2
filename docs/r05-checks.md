@@ -118,9 +118,23 @@ canonical Source paths; volume mounts retain actual Name, not Docker's host path
 Mounts require Type/Source/Destination/RW (+Name for volume); other kinds refuse.
 PortBindings require numeric TCP targets and string numeric HostPort1–65535; empty
 or wildcard HostIp is preserved so active admission rejects it, never rewritten.
-`Config.User` is preserved exactly, **including empty**. The official default empty
-PostgreSQL user fails the frozen numeric DB-user guard; no process UID is invented.
-A real-image/user decision belongs to a future parent unit, not this normalizer.
+`Config.User` is preserved exactly, **including empty**. R05a2b1 permits an explicitly
+present DB manifest `user: ''` (Docker's configured default) or the prior positive
+numeric `uid:gid` string. Active observation must exactly match that declaration;
+empty observed/numeric declared and numeric observed/empty declared both refuse.
+Missing, null, non-string, whitespace and named users refuse. The app still requires
+its exact positive manifest UID:GID and readonly root; empty app users never admit.
+
+This is configuration/ownership binding, not evidence of the running PostgreSQL
+PID's effective UID or a genuine engine/image observation. Source Compose declares
+`postgres:17.9-bookworm` without a DB user override and uses `POSTGRES_PASSWORD_FILE`;
+no numeric UID, wrapper image or secret-permission change is inferred. Tests exercise
+synthetic metadata only. Real image identity, effective PG UID and collection
+provenance remain unverified. The adapter currently rejects environment config keys,
+including Compose's public file-secret environment declarations: faithful config
+projection/digest design remains a separate collector gap, not silently fixed here.
+Lifecycle/partial-topology policy, TLS, browser privacy and R04/R05 runtime acceptance
+remain separately admitted work; all other active ownership guards are unchanged.
 
 `labelPolicy` explicitly supplies `scopeKey,runKey,reservedOwnerKeys`; the two
 mapping keys must be distinct and listed as reserved. Raw ownership values must

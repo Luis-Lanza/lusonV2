@@ -77,6 +77,33 @@ test('R05a2a empty official-default User is preserved and active admission refus
   assert.equal(s.containers[1].user, '');
   assert.throws(() => admit(f.manifest, s, 'active'), refusal);
 });
+for (const phase of ['prepare', 'active']) test('R05a2b1 explicit DB default normalizes and admits '+phase, async () => {
+  const f = fixture(phase); f.manifest.services.db.user = '';
+  if (phase === 'active') f.raw.containers[1].Config.User = '';
+  const s = normalize(f);
+  assert.equal(admit(f.manifest, s, phase), true);
+  if (phase === 'active') assert.equal(s.containers[1].user, '');
+  const driver = createR05Driver({ manifest: f.manifest, labelPolicy,
+    collectRaw: async c => ({ ...copy(f.raw), request: c.request }), dispatchRaw: async () => {} });
+  assert.equal((await driver.inspect()).sequence, 1);
+});
+for (const [name, user] of Object.entries({ missing: undefined, undefined: undefined, null: null, number: 999,
+  whitespace: ' ', username: 'postgres', numeric: '999:999' })) {
+  test('R05a2b1 declared DB default rejects observed '+name, () => {
+    const f = fixture(); f.manifest.services.db.user = ''; f.raw.containers[1].Config.User = user;
+    if (name === 'missing') delete f.raw.containers[1].Config.User;
+    assert.throws(() => admit(f.manifest, normalize(f), 'active'), refusal);
+  });
+}
+test('R05a2b1 numeric DB declaration rejects observed default', () => {
+  const f = fixture(); f.raw.containers[1].Config.User = '';
+  assert.throws(() => admit(f.manifest, normalize(f), 'active'), refusal);
+});
+test('R05a2b1 DB default cannot admit empty app observation', () => {
+  const f = fixture(); f.manifest.services.db.user = ''; f.raw.containers[1].Config.User = '';
+  f.raw.containers[0].Config.User = '';
+  assert.throws(() => admit(f.manifest, normalize(f), 'active'), refusal);
+});
 const malformed = {
   truncatedNetwork: f => f.raw.network.Id = 'abcd',
   unprefixedImage: f => f.raw.containers[0].Image = h(5),
@@ -178,6 +205,24 @@ for (const [name, mutate] of Object.entries(drift)) {
     mutate(f);
     await assert.rejects(() => driver.sql({ text: 'SELECT $1', values: [18] }), refusal);
     assert.equal(effects, 1); assert.equal(collections, 2);
+  });
+}
+for (const [name, mutate] of Object.entries({ ...drift,
+  dbImage: f => f.raw.containers[1].Image = 'sha256:'+h(10),
+  dbComposeHash: f => f.raw.containers[1].Config.Labels['com.docker.compose.config-hash'] = h(10),
+  dbOwnerLabel: f => f.raw.containers[1].Config.Labels[labelPolicy.runKey] = 'foreign',
+  dbProject: f => f.raw.containers[1].Config.Labels['com.docker.compose.project'] = 'foreign',
+})) {
+  test('R05a2b1 DB default retains per-SQL drift guard '+name, async () => {
+    const f = fixture(); f.manifest.services.db.user = ''; f.raw.containers[1].Config.User = '';
+    let effects = 0;
+    const driver = createR05Driver({ manifest: f.manifest, labelPolicy,
+      collectRaw: async c => ({ ...copy(f.raw), request: c.request }), dispatchRaw: async () => effects++ });
+    await driver.sql({ text: 'SELECT $1', values: [17] });
+    if (name === 'emptyDBUser') f.raw.containers[1].Config.User = '999:999';
+    else mutate(f);
+    await assert.rejects(() => driver.sql({ text: 'SELECT $1', values: [18] }), refusal);
+    assert.equal(effects, 1);
   });
 }
 test('R05a2a full volume identity canonicalizes keys but retains all metadata', () => {

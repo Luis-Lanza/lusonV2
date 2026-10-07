@@ -36,6 +36,27 @@ test('R05a1 valid active binding and canonical digest', () => {
   assert.equal(admit(manifest, snapshot, 'active'), true);
   assert.equal(digest({ b: 2, a: 1 }), digest({ a: 1, b: 2 }));
 });
+for (const phase of ['prepare', 'active']) {
+  test('R05a2b1 explicit DB default admits '+phase, () => {
+    const f = fixture(phase); f.manifest.services.db.user = '';
+    if (phase === 'active') f.snapshot.containers[1].user = '';
+    assert.equal(admit(f.manifest, f.snapshot, phase), true);
+  });
+  for (const [name, user] of Object.entries({ missing: undefined, undefined: undefined, null: null, number: 999,
+    object: { toString: () => '999:999' }, whitespace: ' ', username: 'postgres', root: '0:0' })) {
+    test('R05a2b1 invalid DB declaration '+name+' refuses '+phase, () => {
+      const f = fixture(phase); f.manifest.services.db.user = user;
+      if (name === 'missing') delete f.manifest.services.db.user;
+      if (phase === 'active') f.snapshot.containers[1].user = user;
+      assert.throws(() => admit(f.manifest, f.snapshot, phase), /R05 admission refused/);
+    });
+  }
+  test('R05a2b1 empty app declaration refuses '+phase, () => {
+    const f = fixture(phase); f.manifest.services.db.user = ''; f.manifest.services.app.user = '';
+    if (phase === 'active') { f.snapshot.containers[1].user = ''; f.snapshot.containers[0].user = ''; }
+    assert.throws(() => admit(f.manifest, f.snapshot, phase), /R05 admission refused/);
+  });
+}
 const mutations = {
   scope: f => f.manifest.labels.scope = 'R01',
   phase: f => delete f.manifest.phase,
@@ -77,6 +98,11 @@ for (const [name, mutate] of Object.entries(mutations)) test('R05a1 rejects '+na
     dispatch: async () => { effects++; } });
   await assert.rejects(() => owned.sql({ text: 'SELECT $1', values: ['dummy'] }), /R05 admission refused/);
   assert.equal(effects, 0);
+});
+for (const [name, mutate] of Object.entries(mutations)) test('R05a2b1 DB default retains guard '+name, () => {
+  const f = fixture(); f.manifest.services.db.user = ''; f.snapshot.containers[1].user = '';
+  mutate(f);
+  assert.throws(() => admit(f.manifest, f.snapshot, 'active'), /R05 admission refused/);
 });
 test('R05a1 prepare cannot adopt existing resources or authorize SQL', async () => {
   const f = fixture('prepare');

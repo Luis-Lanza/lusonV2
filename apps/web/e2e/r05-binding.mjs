@@ -39,7 +39,8 @@ function validate(manifest, snapshot, phase) {
     keys(spec, 'id image compose_hash user readonly ports mounts');
     check(hex(spec.image) && hex(spec.compose_hash) && Array.isArray(spec.ports) && Array.isArray(spec.mounts));
     check(service === 'app' ? spec.user === m.uid+':'+m.uid && spec.readonly === true
-      : /^[1-9][0-9]*:[1-9][0-9]*$/.test(spec.user) && spec.readonly === false);
+      : typeof spec.user === 'string' && (spec.user === '' || /^[1-9][0-9]*:[1-9][0-9]*$/.test(spec.user))
+        && spec.readonly === false);
     if (service === 'app') {
       check(spec.ports.length === 1); keys(spec.ports[0], 'host published target');
       check(spec.ports[0].host === '127.0.0.1' && spec.ports[0].target === 8443
