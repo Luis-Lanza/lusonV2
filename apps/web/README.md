@@ -142,10 +142,65 @@ npm --prefix apps/web run test -- src/transferModel.test.ts src/transferAPI.test
 npm --prefix apps/web run test -- src/transferModel.test.ts src/transferAPI.test.ts -t 'R04'
 ```
 
-Hooks/epoch guards, the existing single-stream callback integration, cart/review
-and Pending screens are later R04 units. R04 is not complete; real independent
+At R04a1, hooks/epoch guards and single-stream callback integration were later
+units; R04a2 below supplies these opt-in seams, not UI integration. Cart/review
+and Pending screens remain later R04 work. R04 is not complete; real independent
 browser transport and layout verification remain R05. No new UI copy or controls
-are introduced by this pure adapter unit.
+are introduced by either adapter unit.
+
+## R04a2 opt-in participant hook
+
+`useTransfers({ controller, api?, listEnabled?, detailEnabled? })` uses the current
+`useInventory()` controller. Both views default disabled, with no hidden private
+count reads. It exposes `query`, `page`, `listBusy/listError`, `selectedID`,
+`detail`, `detailBusy/detailError`, `changeQuery(patch)`, `selectDetail(id|null)`,
+`retryList()` and `retryDetail()`. Query fields remain only page/page_size/pending;
+IDs remain strings and quantities/counts bigint. Foreign/missing detail404 is the
+same sanitized `not_found`; malformed or foreign snapshots expose no metrics.
+
+Controller seams are `authorityEpoch`, `getTransferAuthority()`,
+`subscribeTransferInvalidation(listener)` (returns detach) and
+`settleUnauthorized(expectedEpoch)`. The epoch is ephemeral local cancellation
+state, not a server revision/token. The getter checks readiness synchronously,
+including logout attempts and changed authority before React effects settle.
+Protected hook getters mask obsolete epoch/disabled data; generation/abort guards
+also reject late data/errors from transports that ignore cancellation. Genuine
+identity/CSRF changes reset query and selection; a failed logout retaining the
+same authority preserves them while loading a fresh snapshot. Drafts stay caller-
+owned: ordinary invalidations never mutate them, and future UI must clear them
+on authority changes. Inventory consultation never reassigns transfer authority.
+
+The controller owns the sole EventSource. Instance-local listeners receive
+`resync` and `transfers`, not inventory-only events; subscriber exceptions are
+isolated without logging payloads. Stable registration creates no extra source
+or React callback-store loop. Each enabled list/detail lane captures query, epoch
+and passive/manual mode. Initial/reactivation and push reads are passive; explicit
+page/size/selection/retries are ordinary GETs. Bursts during reads mark one dirty
+follow-up; a push racing a queued manual read cannot reclassify its headers.
+Obsolete jobs are aborted and cannot carry dirty flags into newer selections.
+
+`submit(input)` exposes `submitBusy/submitError` and a checked creation/replay
+result, never an optimistic row. Only assigned branches may submit, with current
+memory CSRF; attempts are cloned/frozen and never regenerated or automatically
+retried. Network/abort uncertainty remains typed so the caller can retain the
+same key/payload. Obsolete creation results cannot publish success. Stock409,
+retry409 and CSRF403 do not log out the actor. Current401 uses shared, five-second
+bounded neutral validation with current-epoch coalescing/cooldown. Healthy or
+unavailable validation does not bootstrap; confirmed anonymity uses the existing
+separate serialized bootstrap. Cancellation cannot undo browser Set-Cookie;
+R03 cross-tab/cookie-writing uncertainty limits remain unchanged.
+
+Tests inject fetch and a controllable single EventSource around both hooks; no
+PG, actual browser transport, UI geometry or deployment is claimed. Prior full-
+suite results of 107, 145 and 224 tests remain historical. R04 stays open for UI;
+R05 actual independent-browser verification remains pending. Focused checks:
+
+```sh
+npm --prefix apps/web run test -- src/useTransfers.test.ts src/App.test.tsx src/useRealtime.test.ts
+npm --prefix apps/web run test -- src/useTransfers.test.ts src/App.test.tsx src/useRealtime.test.ts -t 'R04'
+```
+
+The R04 title filter excludes historical/R03 titles; it is not full-suite skipping.
 
 ## Worker checks
 

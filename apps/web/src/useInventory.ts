@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { initialQuery, parseInventory, parseMetadata, parseSession, queryURL, validSearch } from './model';
 import type { Inventory, Metadata, Query, Session } from './model';
 import { useRealtime } from './useRealtime';
@@ -34,6 +34,13 @@ async function request(path: string, init: RequestInit = {}, expected = 200, pas
 type Job = { sequence: number; reason: 'initial' | 'manual' | 'event'; full: boolean };
 type Read = { auth: number; generation: number; dirty: boolean; full: boolean };
 type Bootstrap = { settled: Promise<void>; controller: AbortController; uncertain: boolean; cancelTimeout: () => void };
+export interface TransferAuthority { epoch: number; ready: boolean; session: Session | null }
+export interface TransferController {
+  authorityEpoch: number;
+  getTransferAuthority: () => TransferAuthority;
+  subscribeTransferInvalidation: (listener: () => void) => () => void;
+  settleUnauthorized: (expectedEpoch: number) => Promise<Recovery>;
+}
 
 export function useInventory() {
   const [session, setSession] = useState<Session | null>(null);
@@ -55,6 +62,43 @@ export function useInventory() {
   const mounted = useRef(true);
   const bootstrap = useRef<Bootstrap | null>(null);
   const mutation = useRef(false);
+  const authorityState = useRef({ session, authBusy });
+  authorityState.current = { session, authBusy };
+  const transferListeners = useRef(new Set<{ epoch: number; listener: () => void }>());
+  const neutralProbe = useRef<{ epoch: number; promise: Promise<Recovery>; cancel: () => void } | null>(null);
+  const unauthorizedCooldown = useRef({ epoch: -1, until: 0 });
+  const validateLatest = useRef<(signal: AbortSignal) => Promise<Recovery>>(async () => 'unavailable');
+  const getTransferAuthority = useCallback((): TransferAuthority => ({
+    epoch: authGeneration.current, session: authorityState.current.session,
+    ready: mounted.current && !mutation.current && !authorityState.current.authBusy
+      && !!authorityState.current.session?.authenticated,
+  }), []);
+  const subscribeTransferInvalidation = useCallback((listener: () => void) => {
+    const entry = { epoch: authGeneration.current, listener };
+    transferListeners.current.add(entry);
+    return () => { transferListeners.current.delete(entry); };
+  }, []);
+  const settleUnauthorized = useCallback(async (expectedEpoch: number): Promise<Recovery> => {
+    const authority = getTransferAuthority();
+    if (!authority.ready || authority.epoch !== expectedEpoch) return 'anonymous';
+    if (neutralProbe.current?.epoch === expectedEpoch) {
+      unauthorizedCooldown.current = { epoch: expectedEpoch, until: Date.now() + 5000 };
+      return neutralProbe.current.promise;
+    }
+    const cooldown = unauthorizedCooldown.current;
+    if (cooldown.epoch === expectedEpoch && Date.now() < cooldown.until) return 'unavailable';
+    unauthorizedCooldown.current = { epoch: expectedEpoch, until: Date.now() + 5000 };
+    return validateLatest.current(new AbortController().signal);
+  }, [getTransferAuthority]);
+  function notifyTransfers(epoch: number) {
+    const authority = getTransferAuthority();
+    if (!authority.ready || authority.epoch !== epoch) return;
+    for (const entry of [...transferListeners.current]) {
+      if (entry.epoch !== epoch || !transferListeners.current.has(entry) || !current(epoch) || mutation.current) continue;
+      // A failed subscriber must not interrupt other readers or inventory resync.
+      try { entry.listener(); } catch { /* No subscriber payload or error is logged. */ }
+    }
+  }
 
   function cancelReads() {
     readGeneration.current++; inFlight.current = null;
@@ -62,14 +106,15 @@ export function useInventory() {
     active.current.clear();
   }
   function clearProtected() {
+    neutralProbe.current?.cancel(); neutralProbe.current = null;
     cancelReads(); setMetadata(null); setData(null); setResultsError(''); setRealtimeError(''); setLoading(false);
-    csrf.current = ''; setSession(null);
+    csrf.current = ''; authorityState.current.session = null; setSession(null);
   }
   function current(auth: number, read?: number) {
     return mounted.current && authGeneration.current === auth && (read === undefined || readGeneration.current === read);
   }
   function initial(next: Session) {
-    csrf.current = next.csrf_token; setSession(next);
+    csrf.current = next.csrf_token; authorityState.current.session = next; setSession(next);
     if (next.authenticated) {
       setQuery(initialQuery(next.identity.location.id));
       setJob(previous => ({ sequence: previous.sequence + 1, reason: 'initial', full: true }));
@@ -128,7 +173,7 @@ export function useInventory() {
       pending.dirty = true; pending.full ||= full;
     } else setJob(previous => ({ sequence: previous.sequence + 1, reason: 'event', full: previous.reason === 'event' ? previous.full || full : full }));
   }
-  async function validate(signal: AbortSignal): Promise<Recovery> {
+  async function validateCurrent(signal: AbortSignal): Promise<Recovery> {
     const auth = authGeneration.current;
     if (!session?.authenticated || mutation.current) return 'anonymous';
     setRealtimeError('Se interrumpió la conexión. Podés volver a consultar.');
@@ -160,13 +205,33 @@ export function useInventory() {
       return 'unavailable';
     }
   }
-  const stopRealtime = useRealtime({ enabled: !!session?.authenticated && !authBusy, epoch: authGeneration.current,
-    resync: () => invalidate(true), inventory: () => invalidate(false), error: validate });
+  async function validate(signal: AbortSignal): Promise<Recovery> {
+    const epoch = authGeneration.current;
+    if (signal.aborted || !getTransferAuthority().ready) return 'anonymous';
+    if (neutralProbe.current?.epoch === epoch) return neutralProbe.current.promise;
+    neutralProbe.current?.cancel();
+    const controller = new AbortController();
+    let finish!: (value: Recovery) => void;
+    const bounded = new Promise<Recovery>(resolve => { finish = resolve; });
+    const timer = setTimeout(() => { controller.abort(); finish('unavailable'); }, 5000);
+    const promise = Promise.race([validateCurrent(controller.signal), bounded]).finally(() => {
+      clearTimeout(timer);
+      if (neutralProbe.current?.promise === promise) neutralProbe.current = null;
+    });
+    neutralProbe.current = { epoch, promise, cancel: () => { clearTimeout(timer); controller.abort(); finish('anonymous'); } };
+    return promise;
+  }
+  validateLatest.current = validate;
+  const realtimeEpoch = authGeneration.current;
+  const stopRealtime = useRealtime({ enabled: !!session?.authenticated && !authBusy, epoch: realtimeEpoch,
+    resync: () => { invalidate(true); notifyTransfers(realtimeEpoch); },
+    inventory: () => invalidate(false), transfers: () => notifyTransfers(realtimeEpoch), error: validate });
 
   useEffect(() => {
     mounted.current = true; void restore();
     return () => {
       mounted.current = false; stopRealtime(); authGeneration.current++; cancelReads(); csrf.current = '';
+      transferListeners.current.clear(); neutralProbe.current?.cancel(); neutralProbe.current = null;
       const gate = bootstrap.current;
       if (gate) { gate.uncertain = true; gate.cancelTimeout(); gate.controller.abort(); }
     };
@@ -245,7 +310,7 @@ export function useInventory() {
   }
   async function login(username: string, password: string) {
     if (authBusy || mutation.current || !csrf.current) return;
-    mutation.current = true; stopRealtime();
+    mutation.current = true; stopRealtime(); neutralProbe.current?.cancel(); neutralProbe.current = null;
     const auth = ++authGeneration.current;
     cancelReads(); setAuthBusy(true); setFormError('');
     try {
@@ -265,7 +330,7 @@ export function useInventory() {
   }
   async function logout() {
     if (authBusy || mutation.current || !session?.authenticated) return;
-    mutation.current = true; stopRealtime();
+    mutation.current = true; stopRealtime(); neutralProbe.current?.cancel(); neutralProbe.current = null;
     const auth = ++authGeneration.current;
     cancelReads(); setLoading(false); setAuthBusy(true); setResultsError('');
     setJob(previous => ({ sequence: previous.sequence + 1, reason: 'event', full: false }));
@@ -280,5 +345,6 @@ export function useInventory() {
     } finally { mutation.current = false; if (current(auth)) setAuthBusy(false); }
   }
   return { session, metadata, data, query, loading, authBusy, formError, resultsError: resultsError || realtimeError, focusLogin,
-    login, logout, change, retrySession: () => restore(), retryInventory: () => change({}, true) };
+    login, logout, change, retrySession: () => restore(), retryInventory: () => change({}, true),
+    authorityEpoch: authGeneration.current, getTransferAuthority, subscribeTransferInvalidation, settleUnauthorized };
 }

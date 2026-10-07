@@ -523,3 +523,54 @@ describe('inventory interaction and stale guards', () => {
     expect(container.querySelectorAll('.product-card')).toHaveLength(0);
   });
 });
+
+describe('R04 controller transfer seams', () => {
+  it('forwards resync and transfers with isolated listeners and owned cleanup', async () => {
+    setup(session); const { result } = renderHook(() => useInventory()); await hookInventory(result);
+    const first = vi.fn(() => { throw new Error('Subscriber failure'); }); const second = vi.fn();
+    const detachFirst = result.current.subscribeTransferInvalidation(first);
+    const detachSecond = result.current.subscribeTransferInvalidation(second);
+    act(() => AppSource.instances[0].emit('inventory')); expect(second).not.toHaveBeenCalled();
+    act(() => { AppSource.instances[0].emit('resync'); AppSource.instances[0].emit('transfers'); });
+    expect(first).toHaveBeenCalledTimes(2); expect(second).toHaveBeenCalledTimes(2);
+    expect(AppSource.instances).toHaveLength(1); expect(result.current.query.location).toBe(1);
+    detachFirst(); detachSecond(); act(() => AppSource.instances[0].emit('transfers'));
+    expect(second).toHaveBeenCalledTimes(2);
+  });
+  it('shares a bounded neutral probe and refuses an obsolete epoch', async () => {
+    const probe = deferred<Response>();
+    const mock = setup(session, url => url === '/api/auth/validate' ? probe.promise : undefined);
+    const { result } = renderHook(() => useInventory()); await hookInventory(result);
+    const epoch = result.current.authorityEpoch;
+    let a!: Promise<unknown>; let b!: Promise<unknown>;
+    act(() => { a = result.current.settleUnauthorized(epoch); b = result.current.settleUnauthorized(epoch); });
+    await act(async () => { probe.resolve(response(session)); await Promise.all([a, b]); });
+    expect(mock.mock.calls.filter(([url]) => url === '/api/auth/validate')).toHaveLength(1);
+    const before = mock.mock.calls.length;
+    await expect(result.current.settleUnauthorized(epoch - 1)).resolves.toBe('anonymous');
+    expect(mock.mock.calls).toHaveLength(before);
+  });
+  it('shares an existing realtime probe and cools down subsequent transfer401 settlement', async () => {
+    const probe = deferred<Response>(); const mock = setup(session, url => url === '/api/auth/validate' ? probe.promise : undefined);
+    const { result } = renderHook(() => useInventory()); await hookInventory(result);
+    let joined!: Promise<unknown>;
+    act(() => { AppSource.instances[0].emit('error'); joined = result.current.settleUnauthorized(result.current.authorityEpoch); });
+    await act(async () => { probe.resolve(response(session)); await joined; });
+    await expect(result.current.settleUnauthorized(result.current.authorityEpoch)).resolves.toBe('unavailable');
+    expect(mock.mock.calls.filter(([url]) => url === '/api/auth/validate')).toHaveLength(1);
+  });
+  it('bounds shared validation to five seconds even if the transport ignores abort', async () => {
+    const probe = deferred<Response>();
+    const mock = setup(session, url => url === '/api/auth/validate' ? probe.promise : undefined);
+    const { result } = renderHook(() => useInventory()); await hookInventory(result);
+    vi.useFakeTimers(); let pending!: Promise<unknown>;
+    act(() => { pending = result.current.settleUnauthorized(result.current.authorityEpoch); });
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    await expect(pending).resolves.toBe('unavailable');
+    const signal = mock.mock.calls.find(([url]) => url === '/api/auth/validate')![1]?.signal;
+    expect(signal?.aborted).toBe(true); expect(result.current.session?.authenticated).toBe(true);
+    await act(async () => probe.resolve(response({ authenticated: false })));
+    expect(result.current.session?.authenticated).toBe(true);
+    vi.useRealTimers();
+  });
+});

@@ -179,8 +179,28 @@ focused79/twofiles; R04filter79/no exclusions; full224/sevenfiles/zero fail-skip
 ActualGoDTOtransfers.go282–329/catalogdecimal23–45 compatibility, canonicalint64 strings/bigintunboundedaggregates/AhUTCprecision/role-directions/privatepagination,
 frozenimmutableattempts/securecallerRNG, capturedpassiveheaders/manualnone/POSTmemoryCSRFnoOrigin-passive/200201validated/sanitizeduncertainty/crossrealmAbort/noautoPOSTretry
 independently observed. Source107106sameREADME45add0del/new4total527/head6382437/indexempty/diffclean/poststatussame/historiesTaskexempt.
-HistoricalRED/interimcorrectionswriter-only; no runtime/PGresourceaudit/lint/browser/layout/deployment/fullfeature claims. All agents settled; parent localR04a1commit next before
-hooks; R04/R05 open. Five allowed paths: new apps/web/src/transferModel.ts/transferModel.test.ts/transferAPI.ts/transferAPI.test.ts; existing apps/web/README.md only.
+HistoricalRED/interimcorrectionswriter-only; no runtime/PGresourceaudit/lint/browser/layout/deployment/fullfeature claims. Parent local R04a1 commit completed adccc2954ca378dd37f764e7fc49edf028eef323 (feat: add lossless private transfer frontend contracts),
+exactly five unit paths plus Task, six files, 761 additions/4 deletions, 112 tracked. Source behavior/tests/docs authored572lines; parent mechanical history wrapping contributes commit additions.
+Preflight HEAD6382437/indexempty/hash107106sameREADMEexception/new4 and post-tree6/sourceclean/indexempty/oldhistoriesexcluded/no push confirmed.
+R04a1 COMPLETE; R04/R05 remain OPEN. R04a2 writer muycfcpq-3p-wm75 completed726additions/12deletions after actualadccc29 contract commit.
+New useTransfers199/test343(30cases); existing inventory350total75add9del/AppTests51addfourseamtests/README58add3del only.
+Writer-reported compiling RED78collected21behaviorfail/57title-excluded private reads/forwarding/neutralsettlement (not syntax/import); additional joined-probe RED2requests vs1 fixedcooldown.
+Batchedquery-detailoverwrite/R03probeabortregression/mockoptionalinit typecheck corrected beforefinalGREEN.
+Five exact self-checks exit0: focused91/threefiles; R04filter34pass57historicalexcluded/oneunmatchedfile; full258/eightfiles/zero fail-skip; typecheck; build34modules/ignored assets.
+AuthorityEpoch/getTransferAuthority/subscribeTransferInvalidation cleanup/settleUnauthorized(expectedEpoch) share current authority and one existing EventSource;
+immutable passive/manual lanes, dirtyfollowups, synchronous old-private-data mask, changedidentityCSRF resets, sameauthorityfailedlogout preservesqueryselection, and guardedcurrentCSRF submit/noautoretry oroptimisticrecord.
+Source111108same3exceptions/new2/headadccc29indexempty/oldhistoriesTaskexempt; modelAPI/backend/App/domain/styles/configdeps frozen/no UI/runtime/data/Git writes.
+Parent actual ASSESS unassessableHIGH/rddoff/untrackeddeclaration error, no workaround; independent verifier muyd6t95-3q-2b3u finished PASS, no P1/P2 or recommended fixes.
+Five exact commands exit0: focused91/threefiles; R04filter34pass57title-excluded/oneunmatchedfile; full258/eightfiles/zero fail-skip; typecheck/build34modules.
+GREEN30newhook+4seamtests independently observed; stub/cooldown RED and interim corrections remain writer-reported only.
+Synchronous authority getter/epoch subscriptions mask mutation readiness and old private data, isolate callback exceptions, and forward one existing EventSource.
+Current401 joins bounded neutralvalidate with cooldown; immutable lane reasons/epoch-key guards/dirtypassive followups preserve queuedmanual headers;
+functional query/detail merge, canonical selectedIDs, privatezero-count404 and currentbranch immutable-CSRF submit/obsolete-success uncertainabort/noautoretry were verified.
+Source111108same3exceptions/new2,726add12del/oldAppTestsbyteprefix preserved/HEADadccc29indexempty/diffclean/poststatussame/allfrozen modelAPI/backend/App/styles/config assets unchanged.
+No runtime/resources/manual data/write/lint/browsercookieMIME/actualtransport/layout/deployment/wholefeature acceptance claims. All agents settled; parent local R04a2commit next. Scope admitted before sourcewrites with five paths: new apps/web/src/useTransfers.ts/useTransfers.test.ts;
+existing apps/web/src/useInventory.ts (instance-local callbacks/authority epoch/unauthorized settlement seam only), apps/web/src/App.test.tsx (seam regressions), apps/web/README.md.
+No new EventSource, globals, UI/cart/screens, model/API/backend/config/dependency changes. Background reads passive and coalesced; authority changes immediately mask/clear old private data;
+ordinary invalidation preserves query/drafts. Each unit requires compiling behavioral RED, five npm checks, independent verification and parent local commit. Five allowed paths: new apps/web/src/transferModel.ts/transferModel.test.ts/transferAPI.ts/transferAPI.test.ts; existing apps/web/README.md only.
 Protected107source pre-r04a1-source-baseline.json expects106identical/one READMEexception/new4; no hooks/UI/App/domain/style/backend/deps changes. Separate exact five npm
 checks/test-first lossless numeric-string DTO/private query/direction guidance/crypto retrykey/caller-immutable request payload and sanitized status contracts before independent
 verification/parent commit. R04a2 hook wiring follows that verified commit, then cart/source foundation/screens and participant Pending views. No runtime/browser acceptance here.
