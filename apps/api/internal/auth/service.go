@@ -198,6 +198,43 @@ func (s *Service) Current(ctx context.Context, token string) (Session, error) {
 	return session, err
 }
 
+// ErrUnavailable hides connection/driver details from passive callers.
+var ErrUnavailable = errors.New("authentication unavailable")
+
+// Peek validates without renewing idle authority. ExpiresAt retains its absolute
+// meaning; the separate deadline is the earlier idle/absolute expiration. This
+// statement does not promise atomic authorization with a later concurrent logout.
+func (s *Service) Peek(ctx context.Context, token string) (Session, time.Time, error) {
+	if s == nil || ctx == nil || s.pool == nil || s.now == nil {
+		return Session{}, time.Time{}, ErrUnavailable
+	}
+	if !validToken(token) {
+		return Session{}, time.Time{}, ErrSession
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var session Session
+	var deadline time.Time
+	err := s.pool.QueryRow(ctx, `SELECT a.location_id,a.username,l.id,l.name,
+ s.absolute_deadline,LEAST(s.idle_deadline,s.absolute_deadline)
+ FROM auth_sessions s JOIN auth_accounts a ON a.location_id=s.account_id
+ JOIN locations l ON l.id=a.location_id
+ WHERE s.token_hash=$1 AND s.revoked_at IS NULL
+ AND s.absolute_deadline>$2 AND s.idle_deadline>$2`, tokenHash(token), s.now().UTC()).Scan(
+		&session.Identity.AccountID, &session.Identity.Username, &session.Identity.Location.ID,
+		&session.Identity.Location.Name, &session.ExpiresAt, &deadline)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Session{}, time.Time{}, ErrSession
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return Session{}, time.Time{}, ctx.Err()
+		}
+		return Session{}, time.Time{}, ErrUnavailable
+	}
+	return session, deadline, nil
+}
+
 func (s *Service) Logout(ctx context.Context, token string) error {
 	if !validToken(token) {
 		return nil
