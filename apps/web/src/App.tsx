@@ -5,6 +5,7 @@ import { groupItems } from './model';
 import type { Item } from './model';
 import { useInventory } from './useInventory';
 import TransferCreation from './TransferCreation';
+import { createTransferRecovery } from './transferRecovery';
 
 type Controller = ReturnType<typeof useInventory>;
 function Login({ state }: { state: Controller }) {
@@ -77,7 +78,7 @@ function Navigation({ mobile = false }: { mobile?: boolean }) {
     <button type="button" disabled><Icon name="transfer" /><span>Transferencias</span></button>
   </nav>;
 }
-function InventoryView({ state }: { state: Controller }) {
+function InventoryView({ state, recovery }: { state: Controller; recovery: ReturnType<typeof createTransferRecovery> }) {
   if (!state.session?.authenticated) return null;
   const { identity } = state.session;
   const { metadata, query, data } = state;
@@ -93,12 +94,18 @@ function InventoryView({ state }: { state: Controller }) {
   }, []);
   const mobile = warehouse && narrow;
   const selected = metadata?.locations.find(l => l.id === query.location);
+  const recoverable = recovery.getCurrent(state.getTransferAuthority);
   return <div className={'app-shell' + (warehouse ? ' warehouse' : '')}>
     <aside className="sidebar" hidden={mobile}><div><Brand /><Navigation /></div><div className="sidebar-footer"><div className="identity"><strong>{identity.username}</strong><small className="assigned-location">{identity.location.name}</small></div><button className="logout" type="button" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" />Cerrar sesión</button></div></aside>
     <header className="app-header" hidden={mobile}><strong>Luson Inventario</strong><span><Icon name="warehouse" />Ubicación asignada: <b>{identity.location.name}</b></span></header>
     <header className="mobile-header" hidden={!mobile}><div><Brand /><button type="button" aria-label="Cerrar sesión" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" /></button></div><div className="mobile-identity"><span><Icon name="warehouse" />{identity.location.name}</span><span>{identity.username}</span></div></header>
     <main id="inventario" className="inventory-main">
-      {creation && !warehouse && metadata ? <TransferCreation controller={state} metadata={metadata} onBack={() => setCreation(false)} /> : <>
+      {creation && !warehouse && metadata ? <TransferCreation controller={state} metadata={metadata} recovery={recovery} onBack={() => setCreation(false)} /> : <>
+      {recoverable && <section className="creation-recovery" aria-label="Recuperación de solicitud"><p>{recoverable.phase === 'ready' ? 'Tenés una revisión preparada, todavía no enviada.' : 'Tenés un intento pendiente de confirmación.'}</p>
+        <button type="button" disabled={!metadata || recoverable.phase === 'inFlight'} onClick={() => {
+          if (recovery.getCurrent(state.getTransferAuthority)) setCreation(true);
+        }}>{recoverable.phase === 'ready' ? 'Retomar revisión' : 'Retomar misma solicitud'}</button>
+        <p>Recargar o cerrar la pestaña pierde esta recuperación en memoria.</p></section>}
       <section className="inventory-heading">
         <div className="title-row"><div><h1>Inventario</h1><p>Consulta de existencias y disponibilidad en almacén y red de sucursales.</p></div><button className="primary transfer-cta" type="button" disabled={warehouse || state.authBusy || !metadata} onClick={() => {
           const authority = state.getTransferAuthority();
@@ -126,6 +133,8 @@ function InventoryView({ state }: { state: Controller }) {
   </div>;
 }
 export default function App() {
+  // Above every authentication return: independent A/B slots survive child unmounts.
+  const [recovery] = useState(createTransferRecovery);
   const state = useInventory();
-  return state.session?.authenticated ? <InventoryView state={state} /> : <Login state={state} />;
+  return state.session?.authenticated ? <InventoryView state={state} recovery={recovery} /> : <Login state={state} />;
 }

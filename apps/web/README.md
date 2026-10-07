@@ -289,7 +289,7 @@ npm --prefix apps/web run test -- src/transferCart.test.ts src/sourceInventory.t
 npm --prefix apps/web run test -- src/transferCart.test.ts src/sourceInventory.test.ts -t 'R04'
 ```
 
-## R04b2b branch creation workspace (review/send not implemented)
+## R04b2b branch creation workspace
 
 `TransferCreation` reuses the existing authenticated shell; only assigned branches
 can open it, irrespective of the consulted stock location. Back preserves the
@@ -320,11 +320,9 @@ with lines require an accessible explicit discard dialog, including cancel/focus
 restoration. No cart or Pending request reserves or moves inventory; cross-page
 quantities are not atomic and server POST will remain final authority.
 
-**Revisar solicitud is disabled**, with an explicit next-stage explanation. This
-unit does not call reviewCart, generate retry keys, POST, assign references, show
-success, submit via useTransfers or implement participant list/detail views.
-R04b2c review/send and R04c views remain pending, as does independent R05 acceptance.
-Component tests and App integration mocks establish deterministic behavior only.
+The original workspace did not send requests. R04b2c2 now adds explicit review
+and manual submission below. Participant list/detail views and independent R05
+acceptance remain pending. Component and App mocks are deterministic checks only.
 
 Focused checks from repository root:
 
@@ -335,10 +333,10 @@ npm --prefix apps/web run test -- src/TransferCreation.test.tsx src/App.test.tsx
 
 The title filter excludes historical cases; it is not a full-suite skip claim.
 
-## R04b2c1 live-memory recovery foundation (not wired to App)
+## R04b2c1 live-memory recovery foundation
 
 `createTransferRecovery()` creates an instance-private archive, not a singleton.
-A future App must instantiate it once above conditional auth/creation views;
+App now instantiates it once above conditional auth/creation views;
 real App unmount, reload or tab close destroys it. No persistent recovery exists.
 Every read uses the latest controller authority: ready verified branch, exact
 `account_id` and assigned `location.id`. Same owner after fresh login reads a
@@ -353,8 +351,8 @@ Manual begin changes ready/unknown to inFlight; unknown preserves exact key/body
 New-owner-epoch reads turn an old pending flight unknown, never automatically POST.
 Confirmed current-epoch success clears only its live flight; explicit owner discard
 refuses inFlight and requires uncertainty acknowledgement for unknown entries.
-Retry performs no availability lookup. App/review/send wiring and R05 browser
-acceptance remain future work; this independently tested leaf is not recovery UX.
+Retry performs no availability lookup. R04b2c2 wires this leaf to App/review;
+R05 browser acceptance remains pending.
 
 ## R04b2c-hydration pure cart restoration (not recovery UI)
 
@@ -371,7 +369,40 @@ actual fresh availability or null supplies invalid guidance, never a clamp.
 Refresh/no-op review preserves the attempt; material edits clear it and only explicit
 new review generates a key. Prepare a valid restored cart **before** acknowledged
 unknown-entry discard; without a catalog, retain the archive and allow exact retry.
-No App lifetime wiring, discard, POST, session recovery or browser proof is added.
+The hydration unit itself adds no lifecycle or browser proof.
+
+## R04b2c2 explicit review, manual submit and App lifetime
+
+`TransferCreation` accepts `controller`, `metadata`, `onBack`, optional `loader`
+and optional `recovery` (isolated leaf default only). Actual App always supplies
+its root-owned factory; A/B slots survive login/logout/auth-dependent unmounts.
+Only latest ready exact account/branch sees its banner, frozen review or result.
+Fresh same-owner epochs recover the cached route and exact attempt, not old auth.
+No session, CSRF, stock catalog or credentials enter the archive or storage.
+
+Explicit review securely freezes the canonical key/payload and descriptors.
+Closing/reopening and advisory refresh preserve it; actual material edits invalidate
+it. RNG failure sanitizes and blocks sending. Review is an accessible titled modal
+with Escape, focus cycling and return focus; CSS follows the selected modal
+structure, not measured pixel/font/browser proof. All three branch flows create
+Pending with counterparty approval, without reservations or stock movement.
+
+Only manual send begins a fresh opaque flight under a synchronous ref lock.
+Existing useTransfers reads stay disabled; POST uses current CSRF. Actual parsed
+201/200 results publish reference, string ID and exact UTC creation text only after
+matching current-owner/epoch confirmation. No optimistic IDs, automatic retry,
+private counts, polling, additional EventSource or future action endpoints exist.
+Failures keep the same attempt and sanitized code-specific guidance;403 is not
+logout,401 uses existing neutral settlement and retry_conflict never rotates a key.
+
+Sending blocks edits/source/back/close. Unknown edits require a real caution action;
+restoration with a current complete catalog happens before acknowledged archive
+discard. All quantities and missing/insufficient markers survive. Failed source
+loading defers editing, but direct same-key manual retry remains available. Returning
+to inventory can retain the attempt and query; reload/tab close destroys recovery.
+Unit transport mocks exercise framing/status and lifecycle, not real browser cookie
+ordering, deployed MIME, fonts/geometry, SSE, two services or PG stock invariance.
+R04 participant views and R05 remain pending; no overall feature closure is claimed.
 
 ## Worker checks
 

@@ -752,3 +752,89 @@ describe('R04b2b App workspace entry', () => {
     expect(stockCalls(mock)).toHaveLength(0);
   });
 });
+
+function r04b2c2App() {
+  const branch = (id: number, token: string) => ({ ...session, csrf_token: token,
+    identity: { account_id: id, username: `TEST-branch-${id}`, location: metadata.locations[id - 1] } });
+  let current: typeof session | typeof anonymous = branch(2, 'a'.repeat(43));
+  let next = branch(3, 'b'.repeat(43)); let failedSource = false; let stock = 8;
+  const posts: RequestInit[] = [];
+  const mock = setup(current, (url, init) => {
+    if (url.endsWith('/session')) return Promise.resolve(response(current));
+    if (url.endsWith('/validate')) return Promise.resolve(response(current.authenticated ? current : { authenticated: false }));
+    if (url.endsWith('/logout')) { current = anonymous; return Promise.resolve(new Response(null, { status: 204 })); }
+    if (url.endsWith('/login')) { current = next; return Promise.resolve(response(current)); }
+    if (url === '/api/transfers') {
+      posts.push(init);
+      if (posts.length === 1) return Promise.reject(new Error('lost TEST reply'));
+      return Promise.resolve(new Response(JSON.stringify({ id: '1001', reference: 'TR-1001', kind: 'request_stock', status: 'pending', created_at: '2028-01-01T00:00:00.123456789Z',
+        creator_location_id: 2, creator_location_name: 'Sucursal A', origin_location_id: 3, origin_location_name: 'Sucursal B', destination_location_id: 2,
+        destination_location_name: 'Sucursal A', approver_location_id: 3, approver_location_name: 'Sucursal B',
+        items: [{ variant_id: 1, brand: 'TOYO', model: 'Private selected', capacity_ah: '75.125', polarity: 'L', quantity: '1' }] }),
+      { status: 200, headers: { 'Content-Type': 'application/json; charset=utf-8' } }));
+    }
+    if (url.startsWith('/api/inventory?') && new URL(url, 'http://localhost').searchParams.get('page_size') === '50') {
+      if (failedSource) return Promise.reject(new Error('failed TEST source'));
+      const source = Number(new URL(url, 'http://localhost').searchParams.get('location_id'));
+      return Promise.resolve(new Response(JSON.stringify({ location: metadata.locations[source - 1], page: 1, page_size: 50, total_variants: 1,
+        items: [{ variant_id: 1, catalog_entry_id: 1, brand: 'TOYO', model: 'Private selected', capacity_ah: 75.125, polarity: 'L', existing: stock, reserved: 0, available: stock }] }),
+      { status: 200, headers: { 'Content-Type': 'application/json; charset=utf-8' } }));
+    }
+    return undefined;
+  });
+  return { mock, posts, loginAs: (id: number, token: string) => { next = branch(id, token); }, failSource: () => { failedSource = true; }, fallStock: () => { stock = 0; } };
+}
+async function r04b2c2OpenAndLose() {
+  fireEvent.click(screen.getByRole('button', { name: /Nueva transferencia/ }));
+  await screen.findByRole('button', { name: 'Añadir Private selected L' });
+  fireEvent.change(screen.getByLabelText('Tipo de transferencia'), { target: { value: 'requestOther' } });
+  await screen.findByRole('heading', { name: 'Disponibilidad en Sucursal B' });
+  await waitFor(() => expect(screen.queryByText('Actualizando catálogo completo…')).not.toBeInTheDocument());
+  fireEvent.click(screen.getByRole('button', { name: 'Añadir Private selected L' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Revisar solicitud' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' })); await screen.findByRole('alert');
+}
+
+describe('R04b2c2 root lifetime', () => {
+  it.each(['failed', 'fallen'])('retains A through logout/login B/private exclusion/login A with %s source and current CSRF', async source => {
+    const h = r04b2c2App(); render(<App />); await inventory(); await r04b2c2OpenAndLose();
+    const first = JSON.parse(String(h.posts[0].body));
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' })); await screen.findByLabelText('Usuario');
+    expect(screen.queryByText(/Private selected|pendiente de confirmación|Retomar/)).not.toBeInTheDocument();
+    await login();
+    expect(screen.queryByRole('region', { name: 'Recuperación de solicitud' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Private selected/)).not.toBeInTheDocument(); expect(h.posts).toHaveLength(1);
+    h.loginAs(2, 'f'.repeat(43));
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' })); await screen.findByLabelText('Usuario');
+    await login(); expect(await screen.findByRole('region', { name: 'Recuperación de solicitud' })).toHaveTextContent('pendiente de confirmación');
+    if (source === 'failed') h.failSource(); else h.fallStock();
+    fireEvent.click(screen.getByRole('button', { name: 'Retomar misma solicitud' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Retomar misma solicitud' }));
+    expect(screen.getByLabelText('Tipo de transferencia')).toHaveValue('requestOther');
+    expect(h.posts).toHaveLength(1); fireEvent.click(screen.getByRole('button', { name: 'Reintentar misma solicitud' }));
+    expect(await screen.findByText('TR-1001')).toBeVisible(); expect(h.posts).toHaveLength(2);
+    expect(JSON.parse(String(h.posts[1].body))).toEqual(first);
+    expect(new Headers(h.posts[1].headers).get('X-CSRF-Token')).toBe('f'.repeat(43));
+    expect(h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers'))).toHaveLength(2);
+    expect(AppSource.instances.filter(instance => instance.readyState !== 2)).toHaveLength(1);
+  });
+  it('returns to the consulted inventory query with an owner-only recovery banner and no private GETs', async () => {
+    const h = r04b2c2App(); render(<App />); await inventory();
+    fireEvent.click(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })); await inventory();
+    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'kept-query' } }); await inventory();
+    await r04b2c2OpenAndLose(); fireEvent.click(screen.getByRole('button', { name: 'Cerrar revisión' }));
+    fireEvent.click(screen.getByRole('button', { name: '← Volver al inventario' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Volver conservando el intento' })); await inventory();
+    expect(screen.getByLabelText('Buscar marca o modelo')).toHaveValue('kept-query');
+    expect(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('region', { name: 'Recuperación de solicitud' })).toHaveTextContent('Recargar o cerrar');
+    expect(h.posts).toHaveLength(1); expect(h.mock.mock.calls.filter(([url, init]) => String(url).startsWith('/api/transfers') && init?.method !== 'POST')).toHaveLength(0);
+    expect(screen.getByRole('button', { name: 'Transferencias' })).toBeDisabled();
+  });
+  it('does not persist recovery across actual App unmount and new mount', async () => {
+    const h = r04b2c2App(); const view = render(<App />); await inventory(); await r04b2c2OpenAndLose();
+    view.unmount(); render(<App />); await inventory();
+    expect(screen.queryByRole('region', { name: 'Recuperación de solicitud' })).not.toBeInTheDocument();
+    expect(h.posts).toHaveLength(1);
+  });
+});

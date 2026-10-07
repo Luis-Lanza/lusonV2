@@ -4,6 +4,8 @@ import TransferCreation from './TransferCreation';
 import type { Item, Metadata } from './model';
 import { loadSourceInventory, SourceInventoryError, type SourceCatalog } from './sourceInventory';
 import type { TransferAuthority } from './useInventory';
+import { createTransferRecovery } from './transferRecovery';
+import { addCartItem, createTransferCart, reviewCart } from './transferCart';
 
 const metadata: Metadata = { locations: [{ id: 1, name: 'Almacén' }, { id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }], brands: ['TOYO', 'CAR'] };
 function authority(assigned = 2, epoch = 1, account = assigned): TransferAuthority {
@@ -37,14 +39,14 @@ const add = () => screen.getByRole('button', { name: 'Añadir Modelo 1 L' });
 const flow = (value: string) => fireEvent.change(screen.getByLabelText('Tipo de transferencia'), { target: { value } });
 
 describe('R04b2b workspace', () => {
-  it('opens the physical warehouse catalog with honest unavailable review and no stock mutations', async () => {
+  it('opens the physical warehouse catalog with explicit real review and no stock mutations', async () => {
     const h = harness(); const original = catalog(); const loader = vi.fn<typeof loadSourceInventory>(async () => original);
     render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
     expect(await screen.findByRole('heading', { name: 'Disponibilidad en Almacén' })).toBeVisible();
     await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
     fireEvent.click(add());
-    expect(screen.getByRole('button', { name: 'Revisar solicitud' })).toBeDisabled();
-    expect(screen.getByText('La revisión y el envío se habilitarán en la próxima etapa.')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Revisar solicitud' })).toBeEnabled();
+    expect(screen.getByText(/El envío es manual desde la revisión/)).toBeVisible();
     expect(loader.mock.calls[0][0]).toBe(1);
     expect(original.rows[0].reserved).toBe(0n);
     expect(original.rows[0].available).toBe(9223372036854775807n);
@@ -235,5 +237,263 @@ describe('R04b2b workspace', () => {
     expect(screen.getByLabelText('Cantidad seleccionada Modelo 1')).toHaveValue('1');
     h.emit(); view.unmount(); expect(h.listeners.size).toBe(0); expect(h.detach).toHaveBeenCalledTimes(2);
     expect(loader.mock.calls.at(-1)![1]?.signal?.aborted).toBe(true);
+  });
+});
+
+// These assertions deliberately run against the previous workspace before wiring review.
+describe('R04b2c2 explicit review', () => {
+  it.each(['requestWarehouse', 'requestOther', 'sendWarehouse'])('opens a real Pending review for %s without sending', async selected => {
+    const h = harness(); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
+    const fetcher = vi.spyOn(globalThis, 'fetch');
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
+    if (selected !== 'requestWarehouse') {
+      flow(selected); await waitFor(() => expect(loader).toHaveBeenCalledTimes(2));
+      await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
+    }
+    fireEvent.click(add()); fireEvent.click(screen.getByRole('button', { name: 'Revisar solicitud' }));
+    const dialog = screen.getByRole('dialog', { name: 'Revisar solicitud' });
+    expect(within(dialog).getByText('75.125 Ah')).toBeVisible();
+    expect(within(dialog).getByText(/no reserva ni mueve stock/)).toBeVisible();
+    expect(within(dialog).getByRole('button', { name: 'Enviar solicitud' })).toBeEnabled();
+    expect(fetcher).not.toHaveBeenCalled(); fetcher.mockRestore();
+  });
+});
+
+function reply(value: unknown, status = 201, mime = 'application/json; charset=utf-8') {
+  return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': mime } });
+}
+function recordDTO(id = '1001') {
+  return { id, reference: `TR-${id}`, kind: 'request_stock', status: 'pending', created_at: '2028-02-29T12:34:56.123456789Z',
+    creator_location_id: 2, creator_location_name: 'Sucursal A', origin_location_id: 1, origin_location_name: 'Almacén',
+    destination_location_id: 2, destination_location_name: 'Sucursal A', approver_location_id: 1, approver_location_name: 'Almacén',
+    items: [{ variant_id: 1, brand: 'TOYO', model: 'Modelo 1', capacity_ah: '75.125', polarity: 'L', quantity: '1' }] };
+}
+function archived(h: ReturnType<typeof harness>, selected: 'requestWarehouse' | 'requestOther' | 'sendWarehouse' = 'requestWarehouse', quantity = '1') {
+  const recovery = createTransferRecovery();
+  const a = h.controller.getTransferAuthority();
+  const source = selected === 'sendWarehouse' ? 2 : selected === 'requestOther' ? 3 : 1;
+  const cart = reviewCart(addCartItem(createTransferCart(a, selected, catalog(source)), a, 1, quantity), a, 'private_attempt_key_1234');
+  const handle = recovery.capture(h.controller.getTransferAuthority, cart);
+  const token = recovery.begin(h.controller.getTransferAuthority, handle); recovery.markUnknown(token);
+  return recovery;
+}
+async function selectAndReview() {
+  await screen.findByRole('button', { name: 'Añadir Modelo 1 L' }); fireEvent.click(add());
+  fireEvent.click(screen.getByRole('button', { name: 'Revisar solicitud' }));
+  return screen.getByRole('dialog', { name: 'Revisar solicitud' });
+}
+
+describe('R04b2c2 manual lifecycle', () => {
+  it.each([201, 200])('shows only actual parsed %s reference, string ID and exact UTC then returns to inventory', async status => {
+    const h = harness(); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source)); const back = vi.fn();
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply(recordDTO(), status));
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={back} />);
+    await selectAndReview(); fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' }));
+    expect(await screen.findByRole('heading', { name: 'TR-1001' })).toBeVisible();
+    expect(screen.getByText('ID: 1001')).toBeVisible(); expect(screen.getByText(recordDTO().created_at)).toBeVisible();
+    expect(screen.getByText(status === 200 ? 'El servidor devolvió la solicitud original.' : 'El servidor creó la solicitud.')).toBeVisible();
+    expect(screen.getByRole('button', { name: /Ver detalle/ })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' })); expect(back).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const init = fetcher.mock.calls[0][1]!;
+    expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('c'.repeat(43));
+    expect(init.method).toBe('POST'); expect(init.credentials).toBe('same-origin'); fetcher.mockRestore();
+  });
+  it('locks synchronously against double clicks and all destructive exits while the flight is pending', async () => {
+    const h = harness(); const recovery = createTransferRecovery(); const job = deferred<Response>(); const back = vi.fn();
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(() => job.promise);
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={back} />);
+    const dialog = await selectAndReview(); const send = screen.getByRole('button', { name: 'Enviar solicitud' });
+    act(() => { fireEvent.click(send); fireEvent.click(send); });
+    expect(fetcher).toHaveBeenCalledTimes(1); expect(recovery.getCurrent(h.controller.getTransferAuthority)?.phase).toBe('inFlight');
+    for (const name of ['Cerrar revisión', 'Volver a editar', '← Volver al inventario', 'Quitar Modelo 1', 'Aumentar Modelo 1']) expect(screen.getByRole('button', { name })).toBeDisabled();
+    expect(screen.getByLabelText('Tipo de transferencia')).toBeDisabled(); expect(screen.getByLabelText('Cantidad seleccionada Modelo 1')).toBeDisabled();
+    fireEvent.keyDown(dialog, { key: 'Escape' }); expect(dialog).toBeVisible(); expect(back).not.toHaveBeenCalled();
+    await act(async () => job.resolve(reply(recordDTO())));
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)).toBeNull(); fetcher.mockRestore();
+  });
+  it.each([
+    [403, 'forbidden', 'No tenés permiso'], [401, 'unauthenticated', 'validarse nuevamente'],
+    [503, 'service_unavailable', 'servicio no está disponible'], [409, 'insufficient_stock', 'rechazó la creación por stock insuficiente'],
+    [409, 'retry_conflict', 'clave corresponde a otro contenido'],
+  ] as const)('preserves exact attempt and sanitizes %s/%s without fake success', async (status, code, message) => {
+    const h = harness(); const recovery = createTransferRecovery();
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply({ error: code }, status));
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={vi.fn()} />);
+    await selectAndReview(); const before = recovery.getCurrent(h.controller.getTransferAuthority)!.attempt;
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(message);
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)?.attempt).toEqual(before);
+    expect(screen.queryByRole('region', { name: 'Resultado confirmado' })).not.toBeInTheDocument();
+    expect(h.controller.settleUnauthorized).toHaveBeenCalledTimes(status === 401 ? 1 : 0);
+    expect(screen.getByRole('button', { name: 'Reintentar misma solicitud' })).toBeEnabled(); fetcher.mockRestore();
+  });
+  it.each(['network', 'malformed', 'mime'])('fails closed on %s and retains the exact key for a manual retry', async failure => {
+    const h = harness(); const recovery = createTransferRecovery(); const fetcher = vi.spyOn(globalThis, 'fetch');
+    if (failure === 'network') fetcher.mockRejectedValue(new Error('secret response message'));
+    else fetcher.mockResolvedValue(failure === 'mime' ? reply(recordDTO(), 201, 'text/html') : reply({ code: 'fake' }));
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={vi.fn()} />);
+    await selectAndReview(); fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' })); await screen.findByRole('alert');
+    const before = JSON.parse(String(fetcher.mock.calls[0][1]?.body));
+    expect(screen.queryByText(/secret response message/)).not.toBeInTheDocument(); expect(screen.queryByText(/fake/)).not.toBeInTheDocument();
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)?.attempt.retry_key).toBe(before.retry_key);
+    fetcher.mockResolvedValue(reply(recordDTO(), 200)); fireEvent.click(screen.getByRole('button', { name: 'Reintentar misma solicitud' }));
+    await screen.findByRole('heading', { name: 'TR-1001' }); expect(JSON.parse(String(fetcher.mock.calls[1][1]?.body))).toEqual(before); fetcher.mockRestore();
+  });
+  it('fails closed when secure randomness is unavailable without POST or archive', async () => {
+    const h = harness(); const recovery = createTransferRecovery(); const rng = vi.spyOn(crypto, 'getRandomValues').mockImplementation(() => { throw new Error('private RNG details'); });
+    const fetcher = vi.spyOn(globalThis, 'fetch');
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={vi.fn()} />);
+    await screen.findByRole('button', { name: 'Añadir Modelo 1 L' }); fireEvent.click(add()); fireEvent.click(screen.getByRole('button', { name: 'Revisar solicitud' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('revisión segura'); expect(screen.queryByText(/private RNG/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); expect(fetcher).not.toHaveBeenCalled(); expect(recovery.getCurrent(h.controller.getTransferAuthority)).toBeNull(); rng.mockRestore(); fetcher.mockRestore();
+  });
+  it('retains the key across close, reopen and advisory refresh; material edits mint only on next review', async () => {
+    const h = harness(); const recovery = createTransferRecovery(); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
+    const rng = vi.spyOn(crypto, 'getRandomValues');
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={loader} onBack={vi.fn()} />);
+    await selectAndReview(); const key = recovery.getCurrent(h.controller.getTransferAuthority)!.attempt.retry_key;
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' }); expect(screen.getByRole('button', { name: 'Revisar solicitud' })).toHaveFocus();
+    h.emit(); await waitFor(() => expect(loader).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByRole('button', { name: 'Retomar revisión' })); expect(recovery.getCurrent(h.controller.getTransferAuthority)!.attempt.retry_key).toBe(key);
+    expect(rng).toHaveBeenCalledTimes(1); fireEvent.click(screen.getByRole('button', { name: 'Volver a editar' }));
+    fireEvent.change(screen.getByLabelText('Cantidad seleccionada Modelo 1'), { target: { value: '1' } }); expect(recovery.getCurrent(h.controller.getTransferAuthority)!.attempt.retry_key).toBe(key);
+    fireEvent.click(screen.getByRole('button', { name: 'Aumentar Modelo 1' })); expect(recovery.getCurrent(h.controller.getTransferAuthority)).toBeNull(); expect(rng).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar solicitud' })); expect(recovery.getCurrent(h.controller.getTransferAuthority)!.attempt.retry_key).not.toBe(key); expect(rng).toHaveBeenCalledTimes(2); rng.mockRestore();
+  });
+  it.each(['fallen', 'missing', 'failed'])('retries archived canonical payload with fresh CSRF despite %s source', async guidance => {
+    const h = harness(); const recovery = archived(h, 'requestOther', '9007199254740993'); const a = authority(2, 8);
+    if (a.session?.authenticated) a.session.csrf_token = 'fresh_current_csrf'; h.set(a);
+    const loader = vi.fn<typeof loadSourceInventory>(async source => { if (guidance === 'failed') throw new Error('private source'); return catalog(source, guidance === 'missing' ? 0 : 1, 0n); });
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply({ ...recordDTO(), origin_location_id: 3, origin_location_name: 'Sucursal B', approver_location_id: 3, approver_location_name: 'Sucursal B' }, 200));
+    const rng = vi.spyOn(crypto, 'getRandomValues');
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={loader} onBack={vi.fn()} />);
+    const resume = await screen.findByRole('button', { name: 'Retomar misma solicitud' }); fireEvent.click(resume);
+    expect(screen.getByLabelText('Tipo de transferencia')).toHaveValue('requestOther');
+    expect(within(screen.getByRole('dialog')).getByText('9007199254740993')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar misma solicitud' })); await screen.findByRole('heading', { name: 'TR-1001' });
+    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual({ kind: 'request_stock', counterparty_location_id: 3, retry_key: 'private_attempt_key_1234', items: [{ variant_id: 1, quantity: '9007199254740993' }] });
+    expect(new Headers(fetcher.mock.calls[0][1]?.headers).get('X-CSRF-Token')).toBe('fresh_current_csrf'); expect(rng).not.toHaveBeenCalled(); rng.mockRestore(); fetcher.mockRestore();
+  });
+  it.each(['fallen', 'missing', 'failed'])('prepares all archived quantities before warned edit/discard with %s guidance', async guidance => {
+    const h = harness(); const recovery = archived(h, 'requestWarehouse', '9007199254740993');
+    const loader = vi.fn<typeof loadSourceInventory>(async source => { if (guidance === 'failed') throw new Error('source failed'); return catalog(source, guidance === 'missing' ? 0 : 1, 1n); });
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={loader} onBack={vi.fn()} />);
+    await screen.findByRole('button', { name: 'Editar selección conservada' });
+    await waitFor(() => expect(screen.queryByText('Actualizando catálogo completo…')).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Editar selección conservada' }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('puede haberse creado');
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)?.phase).toBe('unknown');
+    fireEvent.click(screen.getByRole('button', { name: 'Entiendo el riesgo, habilitar edición' }));
+    if (guidance === 'failed') {
+      expect(recovery.getCurrent(h.controller.getTransferAuthority)?.phase).toBe('unknown'); expect(screen.getByRole('dialog')).toHaveTextContent('catálogo completo actual');
+      fireEvent.click(screen.getByRole('button', { name: 'Conservar selección' })); fireEvent.click(screen.getByRole('button', { name: 'Retomar misma solicitud' }));
+      expect(screen.getByRole('button', { name: 'Reintentar misma solicitud' })).toBeEnabled();
+    } else {
+      expect(recovery.getCurrent(h.controller.getTransferAuthority)).toBeNull(); expect(screen.getByLabelText('Cantidad seleccionada Modelo 1')).toHaveValue('9007199254740993');
+      expect(screen.getByRole('alert')).toHaveTextContent('No se ajustó automáticamente');
+      expect(screen.getByText(guidance === 'missing' ? 'Disponible: Variante ausente' : 'Disponible: 1')).toBeVisible();
+      fireEvent.click(screen.getByRole('button', { name: 'Quitar Modelo 1' })); expect(screen.queryByLabelText('Cantidad seleccionada Modelo 1')).not.toBeInTheDocument();
+    }
+  });
+  it('warns on unknown back and keeps the canonical attempt instead of silently discarding', async () => {
+    const h = harness(); const recovery = archived(h); const back = vi.fn();
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={back} />);
+    await screen.findByRole('button', { name: 'Retomar misma solicitud' }); fireEvent.click(screen.getByRole('button', { name: '← Volver al inventario' }));
+    expect(back).not.toHaveBeenCalled(); expect(screen.getByRole('dialog')).toHaveTextContent('no al recargar o cerrar');
+    fireEvent.click(screen.getByRole('button', { name: 'Volver conservando el intento' })); expect(back).toHaveBeenCalledOnce();
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)?.attempt.retry_key).toBe('private_attempt_key_1234');
+  });
+  it('cannot let an old success or rejection clear a replacement or release its new flight', async () => {
+    const h = harness(); const recovery = createTransferRecovery(); const first = deferred<Response>(); const second = deferred<Response>();
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise);
+    const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source)); const props = { controller: h.controller, metadata, recovery, loader, onBack: vi.fn() };
+    const view = render(<TransferCreation {...props} />); await selectAndReview(); fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' }));
+    h.set(authority(2, 9)); view.rerender(<TransferCreation {...props} />);
+    await screen.findByRole('button', { name: 'Retomar misma solicitud' }); fireEvent.click(screen.getByRole('button', { name: 'Retomar misma solicitud' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar misma solicitud' })); expect(fetcher).toHaveBeenCalledTimes(2);
+    await act(async () => first.resolve(reply(recordDTO('1002'))));
+    expect(screen.queryByText('TR-1002')).not.toBeInTheDocument(); expect(recovery.getCurrent(h.controller.getTransferAuthority)?.phase).toBe('inFlight');
+    expect(screen.getByRole('button', { name: 'Cerrar revisión' })).toBeDisabled();
+    await act(async () => second.resolve(reply(recordDTO(), 200))); expect(await screen.findByText('TR-1001')).toBeVisible(); fetcher.mockRestore();
+  });
+  it.each(['success', 'failure'])('ignores late old %s after a warned material replacement and newer flight', async settlement => {
+    const h = harness(); const recovery = createTransferRecovery();
+    const old = deferred<Response>(); const fresh = deferred<Response>();
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => old.promise).mockImplementationOnce(() => fresh.promise);
+    const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
+    const props = { controller: h.controller, metadata, recovery, loader, onBack: vi.fn() };
+    const view = render(<TransferCreation {...props} />);
+    await selectAndReview(); fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' }));
+    const original = JSON.parse(String(fetcher.mock.calls[0][1]?.body));
+    h.set(authority(2, 10)); view.rerender(<TransferCreation {...props} />);
+    await screen.findByRole('button', { name: 'Editar selección conservada' });
+    await waitFor(() => expect(screen.queryByText('Actualizando catálogo completo…')).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Editar selección conservada' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Entiendo el riesgo, habilitar edición' }));
+    expect(screen.getByLabelText('Cantidad seleccionada Modelo 1')).toHaveValue('1');
+    fireEvent.click(screen.getByRole('button', { name: 'Aumentar Modelo 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar solicitud' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' }));
+    const replacement = recovery.getCurrent(h.controller.getTransferAuthority)!;
+    expect(replacement.attempt.retry_key).not.toBe(original.retry_key);
+    expect(replacement.attempt.items[0].quantity).toBe('2');
+    await act(async () => {
+      if (settlement === 'success') old.resolve(reply(recordDTO('1002')));
+      else old.reject(new Error('old private transport details'));
+    });
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)?.handle).toBe(replacement.handle);
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)?.phase).toBe('inFlight');
+    expect(screen.getByRole('button', { name: 'Cerrar revisión' })).toBeDisabled();
+    expect(screen.queryByText(/TR-1002|old private transport details/)).not.toBeInTheDocument();
+    await act(async () => fresh.resolve(reply({ ...recordDTO(), items: [{ ...recordDTO().items[0], quantity: '2' }] })));
+    expect(await screen.findByText('TR-1001')).toBeVisible(); fetcher.mockRestore();
+  });
+  it.each(['unready', 'account', 'epoch'])('rejects saved send handler against latest %s without waiting for effects', async changed => {
+    const h = harness(); const recovery = createTransferRecovery(); const fetcher = vi.spyOn(globalThis, 'fetch');
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={vi.fn()} />);
+    await selectAndReview();
+    const send = screen.getByRole('button', { name: 'Enviar solicitud' });
+    h.set(changed === 'unready' ? { ...authority(), ready: false } : changed === 'account' ? authority(2, 1, 99) : authority(2, 2));
+    fireEvent.click(send); expect(fetcher).not.toHaveBeenCalled(); fetcher.mockRestore();
+  });
+  it('preserves both owner slots without a foreign banner or payload while switching A/B/A/B', async () => {
+    const h = harness(); const recovery = createTransferRecovery(); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
+    const props = { controller: h.controller, metadata, recovery, loader, onBack: vi.fn() };
+    const view = render(<TransferCreation {...props} />); await selectAndReview();
+    const attemptA = recovery.getCurrent(h.controller.getTransferAuthority)!.attempt;
+    h.set(authority(3, 2)); view.rerender(<TransferCreation {...props} />);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retomar revisión' })).not.toBeInTheDocument();
+    await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
+    flow('sendWarehouse'); await waitFor(() => expect(loader.mock.calls.at(-1)![0]).toBe(3));
+    await screen.findByRole('button', { name: 'Añadir Modelo 1 L' }); fireEvent.click(add());
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar solicitud' }));
+    const attemptB = recovery.getCurrent(h.controller.getTransferAuthority)!.attempt;
+    expect(attemptB.kind).toBe('send_to_warehouse'); expect(attemptB.retry_key).not.toBe(attemptA.retry_key);
+    h.set(authority(2, 3)); view.rerender(<TransferCreation {...props} />);
+    await screen.findByRole('button', { name: 'Retomar revisión' });
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)?.attempt).toEqual(attemptA);
+    expect(screen.getByLabelText('Tipo de transferencia')).toHaveValue('requestWarehouse');
+    h.set(authority(3, 4)); view.rerender(<TransferCreation {...props} />);
+    await screen.findByRole('button', { name: 'Retomar revisión' });
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)?.attempt).toEqual(attemptB);
+    expect(screen.getByLabelText('Tipo de transferencia')).toHaveValue('sendWarehouse');
+  });
+  it('requires caution before unknown source change and leaves the archive intact on cancellation', async () => {
+    const h = harness(); const recovery = archived(h); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={loader} onBack={vi.fn()} />);
+    await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
+    const before = recovery.getCurrent(h.controller.getTransferAuthority)!;
+    flow('requestOther'); expect(screen.getByRole('dialog')).toHaveTextContent('generar otra solicitud');
+    fireEvent.click(screen.getByRole('button', { name: 'Conservar selección' }));
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)?.handle).toBe(before.handle);
+    expect(screen.getByLabelText('Tipo de transferencia')).toHaveValue('requestWarehouse');
+    expect(loader).toHaveBeenCalledTimes(1);
+    flow('requestOther'); fireEvent.click(screen.getByRole('button', { name: 'Entiendo el riesgo, habilitar edición' }));
+    await waitFor(() => expect(loader).toHaveBeenCalledTimes(2));
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)).toBeNull();
+    expect(screen.getByLabelText('Tipo de transferencia')).toHaveValue('requestOther');
   });
 });

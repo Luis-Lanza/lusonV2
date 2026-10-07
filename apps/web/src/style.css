@@ -220,3 +220,29 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .transfer-creation .creation-grid { grid-template-columns: minmax(0, 1fr); }
   .transfer-creation .creation-filters { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Explicit review only. Approved modal structure, not pixel/browser evidence. */
+.transfer-creation .creation-workspace { border: 0; padding: 0; margin: 0; min-width: 0; display: grid; gap: 16px; }
+.creation-recovery { padding: 16px; margin-bottom: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--tint); }
+.creation-recovery p { font-size: 12px; line-height: 1.6; }
+.creation-recovery button { margin: 8px 8px 8px 0; }
+.review-backdrop { position: fixed; inset: 0; z-index: 60; padding: 24px; display: flex; align-items: center; justify-content: center; background: #24212473; }
+.transfer-review { display: flex; flex-direction: column; width: 720px; max-width: 100%; max-height: 90vh; background: white; border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 20px 50px #24212433; overflow: hidden; }
+.transfer-review > header { padding: 24px; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.transfer-review > header h2 { font-size: 20px; font-weight: 600; margin: 0; }
+.transfer-review > header button { font-size: 20px; padding: 4px 12px; }
+.transfer-review .review-body { padding: 24px; overflow-y: auto; display: grid; gap: 20px; }
+.transfer-review .review-route { display: flex; align-items: center; gap: 12px; }
+.transfer-review .review-route > div { display: flex; flex-direction: column; padding: 8px 12px; background: var(--page); border: 1px solid var(--border); border-radius: 6px; }
+.transfer-review .review-route > div:last-child { background: var(--tint); color: var(--wine); }
+.transfer-review .review-route span { font-size: 11px; text-transform: uppercase; }
+.transfer-review .review-table { border: 1px solid var(--border); border-radius: 8px; overflow-x: auto; }
+.transfer-review .review-table td, .transfer-review .review-table th { padding: 12px 16px; }
+.transfer-review .review-table td:first-child { white-space: normal; }
+.transfer-review .review-table small { display: block; color: var(--muted); }
+.transfer-review .review-table td:nth-child(2) { text-align: center; }
+.transfer-review .review-table td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.transfer-review .review-table tfoot { background: var(--page); font-weight: 700; color: var(--wine); }
+.transfer-review .review-notice, .transfer-review .review-result { background: var(--tint); padding: 16px; border: 1px solid var(--border); border-radius: 8px; }
+.transfer-review .review-memory { font-size: 11px; }
+.transfer-review > footer { padding: 20px 24px; border-top: 1px solid var(--border); background: var(--page); display: flex; justify-content: flex-end; gap: 12px; }

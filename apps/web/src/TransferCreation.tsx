@@ -2,7 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import type { Metadata } from './model';
 import { validSearch } from './model';
 import { filterSourceInventory, loadSourceInventory, SourceInventoryError } from './sourceInventory';
-import { addCartItem, cartStatus, createTransferCart, refreshCart, removeCartItem, setCartQuantity } from './transferCart';
+import { addCartItem, cartStatus, createTransferCart, refreshCart, removeCartItem, setCartQuantity, reviewCart, restoreTransferCart } from './transferCart';
+import { createTransferRecovery, type RecoveryFlight, type RecoverySnapshot } from './transferRecovery';
+import { TransferAPIError, type TransferCreateResult } from './transferAPI';
+import type { TransferCreateInput } from './transferModel';
+import TransferReview from './TransferReview';
 import type { TransferCart } from './transferCart';
 import { transferDirection } from './transferModel';
 import type { TransferFlow } from './transferModel';
@@ -13,6 +17,7 @@ export interface TransferCreationProps {
   metadata: Metadata;
   onBack: () => void;
   loader?: typeof loadSourceInventory;
+  recovery?: ReturnType<typeof createTransferRecovery>;
 }
 function owner(authority: TransferAuthority): string | null {
   const session = authority.session;
@@ -22,12 +27,19 @@ function owner(authority: TransferAuthority): string | null {
 type Flight = { sequence: number; abort: AbortController; dirty: boolean };
 type Held = { owner: string; flow: TransferFlow; cart: TransferCart };
 
-export default function TransferCreation({ controller, metadata, onBack, loader = loadSourceInventory }: TransferCreationProps) {
+export default function TransferCreation({ controller, metadata, onBack, loader = loadSourceInventory, recovery: injectedRecovery }: TransferCreationProps) {
+  const [isolatedRecovery] = useState(createTransferRecovery);
+  const recovery = injectedRecovery ?? isolatedRecovery;
+  const cachedFlow = () => {
+    const snapshot = recovery.getCurrent(controller.getTransferAuthority);
+    return snapshot ? snapshot.attempt.kind === 'send_to_warehouse' ? 'sendWarehouse'
+      : snapshot.attempt.counterparty_location_id === 1 ? 'requestWarehouse' : 'requestOther' : 'requestWarehouse';
+  };
   // Fence every raw private read before effects: readiness is not a saved permission.
   const authority = controller.getTransferAuthority();
   const key = owner(authority);
   const allowed = authority.ready && key !== null;
-  const [flow, setFlow] = useState<TransferFlow>('requestWarehouse');
+  const [flow, setFlow] = useState<TransferFlow>(cachedFlow);
   const flowRef = useRef(flow);
   const [held, setHeld] = useState<Held | null>(null);
   const heldRef = useRef(held);
@@ -39,7 +51,13 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
   const [quantities, setQuantities] = useState<Record<number, string>>({});
   const [filter, setFilter] = useState({ search: '', brand: '', polarity: '' as '' | 'L' | 'R' });
   const [page, setPage] = useState(1);
-  const [pending, setPending] = useState<TransferFlow | 'back' | null>(null);
+  const [pending, setPending] = useState<TransferFlow | 'back' | 'edit' | 'discard' | null>(null);
+  const [review, setReview] = useState<{ owner: string; snapshot: RecoverySnapshot } | null>(null);
+  const [outcome, setOutcome] = useState<{ owner: string; result: TransferCreateResult } | null>(null);
+  const [sendError, setSendError] = useState<{ owner: string; text: string } | null>(null);
+  const [sending, setSending] = useState(false);
+  const sendLock = useRef<{ owner: string; token: RecoveryFlight } | null>(null);
+  const reviewTrigger = useRef<HTMLElement | null>(null);
   const trigger = useRef<HTMLElement | null>(null);
   const cancel = useRef<HTMLButtonElement>(null);
   const picker = useRef<HTMLSelectElement>(null);
@@ -78,8 +96,10 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
       if (!valid()) return;
       const latest = controller.getTransferAuthority();
       const previous = heldRef.current;
+      const snapshot = recovery.getCurrent(controller.getTransferAuthority);
       const cart = previous?.owner === key && previous.flow === selectedFlow
-        ? refreshCart(previous.cart, latest, catalog) : createTransferCart(latest, selectedFlow, catalog);
+        ? refreshCart(previous.cart, latest, catalog) : snapshot
+          ? restoreTransferCart(latest, catalog, snapshot) : createTransferCart(latest, selectedFlow, catalog);
       const next = { owner: key!, flow: selectedFlow, cart };
       heldRef.current = next; fresh.current = true;
       setHeld(next); setStale(false);
@@ -103,7 +123,10 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
     if (!allowed) return;
     if (draftOwner.current !== key) {
       draftOwner.current = key;
-      heldRef.current = null; setHeld(null); flowRef.current = 'requestWarehouse'; setFlow('requestWarehouse');
+      heldRef.current = null; setHeld(null);
+      const nextFlow = cachedFlow(); flowRef.current = nextFlow; setFlow(nextFlow);
+      // Old promises retain their opaque token, but cannot unlock a newer owner's job.
+      sendLock.current = null; setSending(false); setReview(null); setOutcome(null); setSendError(null);
       setQuantities({}); setFilter({ search: '', brand: '', polarity: '' }); setPage(1);
     }
     setPending(null); setQuantityError('');
@@ -115,11 +138,15 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
     });
     return () => { detach(); abortRead(); activeKey.current = null; };
   }, [allowed, key, controller.getTransferAuthority, controller.subscribeSourceInventoryInvalidation, loader]);
-  useEffect(() => { if (pending) cancel.current?.focus(); }, [pending]);
+  useEffect(() => { if (pending) cancel.current?.focus(); else trigger.current?.focus(); }, [pending]);
 
   // Do not even inspect held.cart, error strings or row inputs outside this fence.
   if (!allowed) return <section className="transfer-creation"><p role="status">La creación requiere una sesión activa de sucursal.</p></section>;
   if (activeKey.current !== key || (held !== null && held.owner !== key)) return <section className="transfer-creation"><p role="status">Preparando catálogo de la sesión activa…</p></section>;
+  const snapshot = recovery.getCurrent(controller.getTransferAuthority);
+  const inFlight = snapshot?.phase === 'inFlight' || (sending && sendLock.current?.owner === key);
+  const visibleReview = review?.owner === key && review.snapshot.epoch === authority.epoch ? review : null;
+  const visibleOutcome = outcome?.owner === key ? outcome.result : null;
   const visible = fresh.current && held?.owner === key && held.flow === flow;
   const cart = visible ? held.cart : null;
   const assigned = authority.session?.authenticated ? authority.session.identity.location.id : 2;
@@ -135,16 +162,21 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
 
   function guardedCart() {
     const latest = current();
-    if (!latest || !fresh.current) return null;
+    if (!latest || !fresh.current || recovery.getCurrent(controller.getTransferAuthority)?.phase === 'inFlight') return null;
     const previous = heldRef.current;
     if (!previous || previous.owner !== key || previous.flow !== flowRef.current) return null;
     return { latest, previous };
   }
   function editCart(operation: (cart: TransferCart, latest: TransferAuthority) => TransferCart) {
     const checked = guardedCart();
-    if (!checked) return false;
+    if (!checked || sendLock.current?.owner === key) return false;
+    const archived = recovery.getCurrent(controller.getTransferAuthority);
+    if (archived?.phase === 'unknown') { requestCaution('edit'); return false; }
     try {
-      const next = { ...checked.previous, cart: operation(checked.previous.cart, checked.latest) };
+      const edited = operation(checked.previous.cart, checked.latest);
+      if (archived && edited.attempt !== checked.previous.cart.attempt
+        && !recovery.discardCurrent(controller.getTransferAuthority, archived.handle, false)) return false;
+      const next = { ...checked.previous, cart: edited };
       heldRef.current = next; setHeld(next); setQuantityError(''); return true;
     } catch { setQuantityError('Ingresá una cantidad entera positiva, sin ceros iniciales y dentro del disponible (máximo int64).'); return false; }
   }
@@ -154,8 +186,9 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
     else document.getElementById('creation-retry')?.focus();
   }
   function changeFlow(next: TransferFlow | 'back') {
-    if (!current()) return;
+    if (!current() || inFlight || sendLock.current?.owner === key) return;
     if (next === flowRef.current) return;
+    if (recovery.getCurrent(controller.getTransferAuthority)) { requestCaution(next); return; }
     const previous = heldRef.current;
     if (previous?.owner === key && previous.cart.lines.length) {
       trigger.current = next === 'back' ? document.getElementById('creation-back') : picker.current;
@@ -172,7 +205,87 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
     setFilter({ search: '', brand: '', polarity: '' }); setPage(1);
     read.current('manual'); picker.current?.focus();
   }
-  function closeDialog() { if (!current()) return; setPending(null); trigger.current?.focus(); }
+  function closeDialog() { if (!current() || inFlight) return; setPending(null); trigger.current?.focus(); }
+  function requestCaution(action: TransferFlow | 'back' | 'edit' | 'discard') {
+    if (!current() || sendLock.current?.owner === key) return;
+    trigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setReview(null); setPending(action);
+  }
+  function acknowledge() {
+    const latest = current(); const archived = recovery.getCurrent(controller.getTransferAuthority);
+    if (!latest || !pending || inFlight) return;
+    if (pending === 'back' && archived) { setPending(null); onBack(); return; }
+    if (archived) {
+      const selected = heldRef.current;
+      // Preparation must succeed before user-authorized discard, even for source changes.
+      if (!fresh.current || !selected || selected.owner !== key) {
+        setQuantityError('La edición requiere un catálogo completo actual. Se conserva la solicitud; podés reintentarla sin catálogo.'); return;
+      }
+      try {
+        const restored = restoreTransferCart(latest, selected.cart.catalog, archived);
+        if (!recovery.discardCurrent(controller.getTransferAuthority, archived.handle, true)) return;
+        const next = { ...selected, cart: restored }; heldRef.current = next; setHeld(next);
+      } catch { setQuantityError('No se pudo preparar la selección. Se conserva la solicitud para reintentar.'); return; }
+    }
+    const action = pending; setPending(null); setQuantityError('');
+    if (action === 'edit' || action === 'discard') { trigger.current?.focus(); return; }
+    applyFlow(action);
+  }
+  function openReview(sourceTrigger?: HTMLElement) {
+    if (!current() || inFlight || sendLock.current?.owner === key) return;
+    try {
+      let archived = recovery.getCurrent(controller.getTransferAuthority);
+      if (!archived) {
+        const checked = guardedCart(); if (!checked) return;
+        const reviewed = reviewCart(checked.previous.cart, checked.latest);
+        recovery.capture(controller.getTransferAuthority, reviewed);
+        const next = { ...checked.previous, cart: reviewed }; heldRef.current = next; setHeld(next);
+        archived = recovery.getCurrent(controller.getTransferAuthority);
+      }
+      if (!archived) return;
+      reviewTrigger.current = sourceTrigger ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+      setOutcome(null); setSendError(null); setReview({ owner: key!, snapshot: archived });
+    } catch { setQuantityError('No se pudo preparar una revisión segura. No se envió ninguna solicitud.'); }
+  }
+  function closeReview() {
+    if (!current() || sendLock.current?.owner === key || recovery.getCurrent(controller.getTransferAuthority)?.phase === 'inFlight') return;
+    if (outcome?.owner === key) { onBack(); return; }
+    setReview(null);
+  }
+  async function send(submit: (input: TransferCreateInput) => Promise<TransferCreateResult>) {
+    if (!current() || sendLock.current?.owner === key) return;
+    const archived = recovery.getCurrent(controller.getTransferAuthority);
+    if (!archived || archived.phase === 'inFlight') return;
+    let token: RecoveryFlight;
+    try { token = recovery.begin(controller.getTransferAuthority, archived.handle); } catch { return; }
+    const job = { owner: key!, token }; sendLock.current = job; setSending(true); setSendError(null);
+    setReview({ owner: key!, snapshot: recovery.getCurrent(controller.getTransferAuthority)! });
+    try {
+      const result = await submit(archived.attempt);
+      if (!current() || sendLock.current !== job || !recovery.confirmSuccess(controller.getTransferAuthority, token)) {
+        recovery.markUnknown(token); return;
+      }
+      // Publish only actual parsed 201/200 data after exact-flight confirmation.
+      setOutcome({ owner: key!, result }); setReview({ owner: key!, snapshot: archived });
+      heldRef.current = null; setHeld(null); fresh.current = false;
+    } catch (failure: unknown) {
+      recovery.markUnknown(token);
+      if (!current() || sendLock.current !== job) return;
+      const code = failure instanceof TransferAPIError ? failure.code : 'invalid_response';
+      const messages: Partial<Record<typeof code, string>> = {
+        insufficient_stock: 'El servidor rechazó la creación por stock insuficiente. No confirmó una solicitud creada. Revisá la selección o reintentá la misma solicitud.',
+        retry_conflict: 'La clave corresponde a otro contenido. No se reemplazó la solicitud. Conservá este intento y consultá al responsable.',
+        forbidden: 'No tenés permiso para enviar esta solicitud. Se conserva el intento.',
+        unauthenticated: 'La sesión debe validarse nuevamente. Se conserva el intento.',
+        service_unavailable: 'El servicio no está disponible. Se conserva el intento para reintentar manualmente.',
+      };
+      setSendError({ owner: key!, text: messages[code] ?? 'No pudimos confirmar el resultado. Conservamos la misma solicitud para reintentar manualmente.' });
+      const retained = recovery.getCurrent(controller.getTransferAuthority);
+      if (retained) setReview({ owner: key!, snapshot: retained });
+    } finally {
+      if (sendLock.current === job) { sendLock.current = null; if (current()) setSending(false); }
+    }
+  }
   function changeFilter(next: typeof filter) {
     if (!current()) return;
     if (!validSearch(next.search) || !validSearch(next.brand)) return;
@@ -180,9 +293,14 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
   }
   return <section className="transfer-creation" aria-labelledby="creation-title">
     <p className="creation-breadcrumb">Inventario / Transferencias / {title}</p>
-    <button id="creation-back" type="button" className="creation-back" onClick={() => changeFlow('back')}>← Volver al inventario</button>
+    <button id="creation-back" type="button" disabled={inFlight} className="creation-back" onClick={() => changeFlow('back')}>← Volver al inventario</button>
     <h1 id="creation-title">{title}</h1>
     <p>Prepará una solicitud con el stock de su origen físico. La consulta de inventario no cambia tu ubicación asignada.</p>
+    {snapshot && !visibleReview && <div className="creation-recovery" role="status"><p>{snapshot.phase === 'ready' ? 'Tenés una revisión preparada, todavía no enviada.' : 'Tenés un intento pendiente de confirmación.'}</p>
+      <button type="button" disabled={inFlight} onClick={event => openReview(event.currentTarget)}>{snapshot.phase === 'ready' ? 'Retomar revisión' : 'Retomar misma solicitud'}</button>
+      <button type="button" disabled={inFlight} onClick={() => requestCaution('edit')}>Editar selección conservada</button>
+      <p>Recargar o cerrar la pestaña pierde esta memoria.</p></div>}
+    <fieldset className="creation-workspace" disabled={inFlight || !!visibleReview || !!pending}>
     <label className="creation-flow">Tipo de transferencia<select ref={picker} value={flow} onChange={e => {
       if (!current()) return;
       const value = e.target.value;
@@ -245,10 +363,17 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
           }}>Quitar</button>
         </article>)}
         {quantityError && <p className="message" role="alert">{quantityError}</p>}
-        <p>Este borrador no reserva ni mueve existencias.</p><button type="button" className="primary" disabled>Revisar solicitud</button>
-        <p>La revisión y el envío se habilitarán en la próxima etapa.</p>
+        <p>Este borrador no reserva ni mueve existencias.</p><button type="button" className="primary" disabled={!snapshot && !status?.ready} onClick={event => openReview(event.currentTarget)}>Revisar solicitud</button>
+        <p>El envío es manual desde la revisión. Recargar o cerrar la pestaña pierde la recuperación en memoria.</p>
       </aside>
     </div>
+    </fieldset>
+    {visibleReview && <TransferReview controller={controller} metadata={metadata} ownerTag={key!} snapshot={visibleReview.snapshot}
+      busy={inFlight} error={sendError?.owner === key ? sendError.text : ''} result={visibleOutcome} returnFocus={reviewTrigger.current}
+      onClose={closeReview} onEdit={() => {
+        const archived = recovery.getCurrent(controller.getTransferAuthority);
+        if (archived?.phase === 'unknown') requestCaution('edit'); else closeReview();
+      }} onBack={() => { if (current() && !inFlight) onBack(); }} onSend={submit => { void send(submit); }} />}
     {pending && <div className="creation-dialog-backdrop"><section role="dialog" aria-modal="true" aria-labelledby="discard-title" className="creation-dialog" onKeyDown={e => {
       if (e.key === 'Escape') { e.preventDefault(); closeDialog(); }
       if (e.key === 'Tab') {
@@ -256,8 +381,11 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
         if (e.shiftKey && document.activeElement === buttons[0]) { e.preventDefault(); buttons[1]?.focus(); }
         else if (!e.shiftKey && document.activeElement === buttons[1]) { e.preventDefault(); buttons[0]?.focus(); }
       }
-    }}><h2 id="discard-title">¿Descartar la selección?</h2><p>Se eliminarán las líneas para cambiar de origen o volver al inventario.</p>
-      <button ref={cancel} type="button" onClick={closeDialog}>Conservar selección</button><button type="button" onClick={() => { if (current() && pending) applyFlow(pending); }}>Descartar selección</button>
+    }}><h2 id="discard-title">{snapshot ? 'Antes de cambiar la solicitud' : '¿Descartar la selección?'}</h2>
+      <p>{snapshot ? snapshot.phase === 'unknown' ? 'La solicitud puede haberse creado. Cambiarla puede generar otra solicitud; reintentá primero la misma para comprobarlo.' : 'Se conserva la revisión hasta que confirmes el cambio.' : 'Se eliminarán las líneas para cambiar de origen o volver al inventario.'}</p>
+      {snapshot && <p>{pending === 'back' ? 'Al volver se conserva el intento en esta App, no al recargar o cerrar la pestaña.' : 'Primero se restaurarán todas las cantidades con el catálogo actual; no se ajustarán automáticamente. Un cambio real requerirá una nueva revisión.'}</p>}
+      {quantityError && <p role="alert">{quantityError}</p>}
+      <button ref={cancel} type="button" onClick={closeDialog}>Conservar selección</button><button type="button" onClick={acknowledge}>{snapshot ? pending === 'back' ? 'Volver conservando el intento' : 'Entiendo el riesgo, habilitar edición' : 'Descartar selección'}</button>
     </section></div>}
   </section>;
 }
