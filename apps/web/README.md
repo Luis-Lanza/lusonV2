@@ -202,6 +202,73 @@ npm --prefix apps/web run test -- src/useTransfers.test.ts src/App.test.tsx src/
 
 The R04 title filter excludes historical/R03 titles; it is not full-suite skipping.
 
+## R04b1 pure source catalog and cart foundation
+
+`loadSourceInventory(physicalSource, { signal?, reason? }?, fetch?)` reads a complete
+unfiltered catalog through the existing inventory path, pages50, at most four
+pages/190 rows. Default/manual GETs are ordinary activity; explicit
+`reason: 'passive'` captures exactly one `X-Luson-Passive: 1` per page. Source, signal and
+reason are captured before awaiting. Cookies remain same-origin, cache no-store;
+no auth probe, POST, metadata fetch, global revision or inventory mutation exists.
+`SourceInventoryError` exposes sanitized code/status only, including current401,
+cancellation, unavailable transport and malformed success; no private body leaks.
+
+The unchanged lossless inventory decoder preserves numeric bigint wire tokens
+and exact decimal Ah text. Its sealed catalog bounds are entry1–95/variant1–190,
+separate from the190-row cap (INT32 storage is not a wider catalog contract).
+Each response must match requested source/page/size, stable source descriptor and
+count, exact page length and unique increasing IDs across pages. Any failure or
+abort discards the whole read, never publishing partial rows. Consistent zero
+counts are accepted without demo fill. Returned location/rows/items are copied
+and frozen. `filterSourceInventory(catalog, { search?, brand?, polarity? })` filters
+all rows locally: literal lowercased brand/model substring, exact brand and L/R;
+no capacity/quantity matching, unsupported wire filters or pagination truncation.
+
+This is **complete catalog membership, not atomic cross-page stock quantities**.
+Each page has its own server snapshot; legitimate intervening stock changes are
+accepted. The future controller retains the last full snapshot, captures authority
+and generation, cancels obsolete reads and refetches on push/recovery. This helper
+has no global browser cursor or listener. Server POST atomically checks all items
+at physical origin. Pending/cart items neither reserve nor move stock.
+
+`createTransferCart(getTransferAuthority(), flow, sourceCatalog)` binds a branch,
+account and ephemeral epoch to the committed three-flow direction helper. It
+stores no CSRF/session cookie. Warehouse is refused; consulted inventory never
+sets actor/source. Source must match direction. `addCartItem` deliberately
+increments an existing unique line; `setCartQuantity` accepts canonical positive
+int64 string/bigint only. Both check actual catalog membership and advisory source
+availability. `removeCartItem`/`clearTransferCart` are explicit, immutable actions;
+flow/source changes require a new empty cart and future UI discard confirmation.
+Every operation takes current authority; `cartStatus` returns neutral
+`{ usable: false, ready: false, total: 0n, invalid: [] }` with a frozen empty array
+on mismatch, before accessing private lines. Current-authority status retains
+actual invalid IDs, readiness and an unbounded bigint total. Future UI must also
+clear/mask direct obsolete cart views before rendering, not trust a saved actor.
+
+`refreshCart` preserves flow, quantities and missing selected variants (null
+availability); reduced guidance marks invalid IDs without silently losing drafts.
+`reviewCart` creates a sorted/frozen canonical attempt only on explicit valid new
+review, using secure RNG or a fresh caller key for each material revision.
+Payload contains only kind, counterparty,
+retry_key and quantity-string items. Material edits invalidate the attempt; no-op
+edits/back-to-review and guidance-only refresh preserve its exact key/payload.
+Existing uncertain attempts can be retried despite changed availability: the
+server checks replay before stock. `cartStatus.ready` is new-draft guidance, NOT a
+retry gate. A409 remains editable; no automatic retry/network call exists here.
+
+Tests use injected raw numeric responses and pure controller authority, not
+accounts, PG or browser resources. The prior258-test full suite and worker-only
+66-focused/324-full results are historical, not independent approval. The status
+privacy correction adds seven regression cases; post-fix worker checks pass73
+focused/331 full tests, typecheck and build. Browser verification is not claimed.
+R04 remains open for creation/cart/review and private views; R05 actual browser
+transport/layout is still pending. Focused checks from repository root:
+
+```sh
+npm --prefix apps/web run test -- src/transferCart.test.ts src/sourceInventory.test.ts
+npm --prefix apps/web run test -- src/transferCart.test.ts src/sourceInventory.test.ts -t 'R04'
+```
+
 ## Worker checks
 
 From repository root:
