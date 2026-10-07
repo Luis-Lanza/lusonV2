@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { initialQuery, parseInventory, parseMetadata, parseSession, queryURL, validSearch } from './model';
 import type { Inventory, Metadata, Query, Session } from './model';
+import { useRealtime } from './useRealtime';
+import type { Recovery } from './useRealtime';
 
 class HTTPError extends Error {
   constructor(public status: number) { super('HTTP request failed'); }
@@ -18,145 +20,265 @@ export function errorMessage(error: unknown): string {
   return error instanceof Error && error.message.startsWith('Respuesta inválida')
     ? error.message : 'No se pudo conectar con el servidor. Intentá de nuevo.';
 }
-async function request(path: string, init: RequestInit = {}, expected = 200): Promise<Response> {
-  const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', ...init });
+async function request(path: string, init: RequestInit = {}, expected = 200, passive = false): Promise<Response> {
+  // Selectors are additive: never erase Content-Type or memory CSRF headers.
+  const headers = passive ? new Headers(init.headers) : init.headers;
+  if (passive) (headers as Headers).set('X-Luson-Passive', '1');
+  const response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', ...init, ...(headers ? { headers } : {}) });
   if (response.status !== expected) {
     if (response.status >= 200 && response.status < 300) throw new Error('Respuesta inválida del servidor.');
     throw new HTTPError(response.status);
   }
   return response;
 }
+type Job = { sequence: number; reason: 'initial' | 'manual' | 'event'; full: boolean };
+type Read = { auth: number; generation: number; dirty: boolean; full: boolean };
+type Bootstrap = { settled: Promise<void>; controller: AbortController; uncertain: boolean; cancelTimeout: () => void };
 
 export function useInventory() {
   const [session, setSession] = useState<Session | null>(null);
   const [metadata, setMetadata] = useState<Metadata | null>(null);
   const [data, setData] = useState<Inventory | null>(null);
   const [query, setQuery] = useState<Query>(initialQuery(1));
+  const [job, setJob] = useState<Job>({ sequence: 0, reason: 'initial', full: true });
   const [loading, setLoading] = useState(false);
   const [authBusy, setAuthBusy] = useState(true);
   const [formError, setFormError] = useState('');
   const [resultsError, setResultsError] = useState('');
+  const [realtimeError, setRealtimeError] = useState('');
   const [focusLogin, setFocusLogin] = useState(0);
   const authGeneration = useRef(0);
   const readGeneration = useRef(0);
   const active = useRef(new Set<AbortController>());
+  const inFlight = useRef<Read | null>(null);
   const csrf = useRef('');
   const mounted = useRef(true);
+  const bootstrap = useRef<Bootstrap | null>(null);
+  const mutation = useRef(false);
 
   function cancelReads() {
-    readGeneration.current++;
+    readGeneration.current++; inFlight.current = null;
     for (const controller of active.current) controller.abort();
     active.current.clear();
   }
   function clearProtected() {
-    cancelReads(); setMetadata(null); setData(null); setResultsError(''); setLoading(false);
+    cancelReads(); setMetadata(null); setData(null); setResultsError(''); setRealtimeError(''); setLoading(false);
     csrf.current = ''; setSession(null);
   }
   function current(auth: number, read?: number) {
     return mounted.current && authGeneration.current === auth && (read === undefined || readGeneration.current === read);
   }
-  async function restore(anonymousOnly = false, message = '') {
+  function initial(next: Session) {
+    csrf.current = next.csrf_token; setSession(next);
+    if (next.authenticated) {
+      setQuery(initialQuery(next.identity.location.id));
+      setJob(previous => ({ sequence: previous.sequence + 1, reason: 'initial', full: true }));
+    }
+  }
+  async function restore(anonymousOnly = false, message = '', reconcile = false) {
+    // Session GET can write cookies. Do not overlap it with another bootstrap,
+    // or mistake abort/generation guards for rollback of browser cookie headers.
+    const previous = bootstrap.current;
+    if (previous) {
+      await previous.settled;
+      // Concurrent restoration attempts share the existing result, not a queue
+      // of subsequent cookie writers. An uncertain result cannot be retried here.
+      return;
+    }
+    if (!mounted.current) return;
+    stopRealtime();
     const auth = ++authGeneration.current;
     clearProtected(); setAuthBusy(true); setFormError(message);
     if (anonymousOnly) setFocusLogin(n => n + 1);
-    const controller = new AbortController(); active.current.add(controller);
+    const controller = new AbortController();
+    let settle!: () => void;
+    const gate: Bootstrap = { settled: new Promise(resolve => { settle = resolve; }), controller, uncertain: false, cancelTimeout: () => {} };
+    bootstrap.current = gate;
+    let timedOut!: () => void;
+    const timeout = new Promise<never>((_, reject) => {
+      timedOut = () => { gate.uncertain = true; controller.abort(); reject(new Error('Bootstrap timeout')); };
+    });
+    const timer = setTimeout(timedOut, 10000);
+    gate.cancelTimeout = () => clearTimeout(timer);
     try {
-      const next = parseSession(await (await request('/api/auth/session', { signal: controller.signal })).text());
+      const next = await Promise.race([
+        request('/api/auth/session', { signal: controller.signal }, 200, true).then(async response => parseSession(await response.text())), timeout,
+      ]);
       if (!current(auth)) return;
-      if (anonymousOnly && next.authenticated) throw new Error('Respuesta inválida del servidor.');
-      csrf.current = next.csrf_token;
-      setSession(next);
-      if (next.authenticated) setQuery(initialQuery(next.identity.location.id));
+      if (anonymousOnly && next.authenticated && !reconcile) throw new Error('Respuesta inválida del servidor.');
+      initial(next);
     } catch (error) {
+      if (controller.signal.aborted) gate.uncertain = true;
       if (current(auth)) setFormError(errorMessage(error));
     } finally {
-      active.current.delete(controller);
+      clearTimeout(timer); settle();
+      // Uncertain cookie-writing aborts remain a fail-closed mutation barrier.
+      if (!gate.uncertain && bootstrap.current === gate) bootstrap.current = null;
       if (current(auth)) setAuthBusy(false);
     }
   }
   function expire() {
-    // No protected content survives an expiry, even if the refresh fails.
+    stopRealtime();
     void restore(true, 'La sesión venció. Iniciá sesión nuevamente.');
   }
+  function invalidate(full: boolean) {
+    if (!session?.authenticated || authBusy || mutation.current) return;
+    const pending = inFlight.current;
+    if (pending && current(pending.auth, pending.generation)) {
+      pending.dirty = true; pending.full ||= full;
+    } else setJob(previous => ({ sequence: previous.sequence + 1, reason: 'event', full: previous.reason === 'event' ? previous.full || full : full }));
+  }
+  async function validate(signal: AbortSignal): Promise<Recovery> {
+    const auth = authGeneration.current;
+    if (!session?.authenticated || mutation.current) return 'anonymous';
+    setRealtimeError('Se interrumpió la conexión. Podés volver a consultar.');
+    try {
+      const raw = await (await request('/api/auth/validate', { signal }, 200, true)).text();
+      if (!current(auth) || signal.aborted || mutation.current) return 'anonymous';
+      // Anonymous validate deliberately has no CSRF: only the distinct bootstrap
+      // endpoint may establish the anonymous mutation token.
+      let anonymous: boolean;
+      try {
+        const value: unknown = JSON.parse(raw);
+        anonymous = value !== null && typeof value === 'object' && !Array.isArray(value)
+          && Object.keys(value).length === 1 && (value as { authenticated?: unknown }).authenticated === false;
+      } catch { throw new Error('Respuesta inválida del servidor.'); }
+      if (anonymous) { stopRealtime(); void restore(true, '', true); return 'anonymous'; }
+      const next = parseSession(raw);
+      if (!next.authenticated) throw new Error('Respuesta inválida del servidor.');
+      const before = session.identity; const after = next.identity;
+      const same = before.account_id === after.account_id && before.username === after.username
+        && before.location.id === after.location.id && before.location.name === after.location.name
+        && session.csrf_token === next.csrf_token;
+      if (!same) {
+        stopRealtime(); authGeneration.current++; clearProtected(); initial(next);
+      }
+      // A healthy probe leaves the Session object, query, snapshot and CSRF alone.
+      return 'authorized';
+    } catch (error) {
+      if (current(auth) && !signal.aborted) setRealtimeError(errorMessage(error));
+      return 'unavailable';
+    }
+  }
+  const stopRealtime = useRealtime({ enabled: !!session?.authenticated && !authBusy, epoch: authGeneration.current,
+    resync: () => invalidate(true), inventory: () => invalidate(false), error: validate });
+
   useEffect(() => {
-    mounted.current = true;
-    void restore();
-    return () => { mounted.current = false; authGeneration.current++; cancelReads(); csrf.current = ''; };
+    mounted.current = true; void restore();
+    return () => {
+      mounted.current = false; stopRealtime(); authGeneration.current++; cancelReads(); csrf.current = '';
+      const gate = bootstrap.current;
+      if (gate) { gate.uncertain = true; gate.cancelTimeout(); gate.controller.abort(); }
+    };
     // Session restoration is a mount operation, never a login POST.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (!session?.authenticated || authBusy) return;
+    const deadline = Date.parse(session.expires_at);
+    let timer: ReturnType<typeof setTimeout>;
+    function schedule() {
+      const remaining = deadline - Date.now();
+      timer = setTimeout(remaining > 2147483647 ? schedule : expire, Math.max(0, Math.min(remaining, 2147483647)));
+    }
+    schedule();
+    return () => clearTimeout(timer);
+    // Absolute expiry never renews through passive probes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, authBusy]);
+
+  useEffect(() => {
+    if (!session?.authenticated || authBusy) return;
     const auth = authGeneration.current;
     const read = ++readGeneration.current;
+    const pending: Read = { auth, generation: read, dirty: false, full: false };
+    inFlight.current = pending;
     const controller = new AbortController(); active.current.add(controller);
-    setData(null); setLoading(true); setResultsError('');
+    const passive = job.reason !== 'manual';
+    if (!passive) setData(null);
+    setLoading(true); setResultsError('');
     if (!validSearch(query.search)) {
       setResultsError('La búsqueda admite hasta 128 bytes UTF-8, sin caracteres inválidos.');
-      setLoading(false); active.current.delete(controller); return;
+      setLoading(false); active.current.delete(controller); inFlight.current = null; return;
     }
     void (async () => {
       try {
-        const meta = metadata ?? parseMetadata(await (await request('/api/inventory/metadata', { signal: controller.signal })).text());
+        const meta = !metadata || job.full
+          ? parseMetadata(await (await request('/api/inventory/metadata', { signal: controller.signal }, 200, passive)).text()) : metadata;
         if (!current(auth, read)) return;
-        if (!metadata) setMetadata(meta);
-        const next = parseInventory(await (await request(queryURL(query), { signal: controller.signal })).text());
+        setMetadata(meta);
+        const next = parseInventory(await (await request(queryURL(query), { signal: controller.signal }, 200, passive)).text());
         if (!current(auth, read)) return;
         if (next.location.id !== query.location || next.page !== query.page || next.page_size !== query.size) throw new Error('Respuesta inválida del servidor.');
-        setData(next);
+        if (!pending.dirty) {
+          setData(next);
+          if (job.reason === 'event') setRealtimeError('');
+        }
       } catch (error) {
         if (!current(auth, read)) return;
         if (error instanceof HTTPError && error.status === 401) expire();
         else setResultsError(errorMessage(error));
       } finally {
         active.current.delete(controller);
-        if (current(auth, read)) setLoading(false);
+        if (current(auth, read)) {
+          inFlight.current = null; setLoading(false);
+          if (pending.dirty) setJob(previous => ({ sequence: previous.sequence + 1, reason: 'event', full: pending.full }));
+        }
       }
     })();
-    return () => { controller.abort(); active.current.delete(controller); if (readGeneration.current === read) readGeneration.current++; };
-    // metadata is fetched as part of the same generation, not another request trigger.
+    return () => { controller.abort(); active.current.delete(controller); if (inFlight.current === pending) inFlight.current = null; if (readGeneration.current === read) readGeneration.current++; };
+    // Each job captures its query, reason and epoch; callbacks never alter headers
+    // of an in-flight request. Metadata is not a separate effect dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session, query]);
+  }, [session, query, job, authBusy]);
 
   function change(patch: Partial<Query>, paging = false) {
     cancelReads(); setData(null); setResultsError('');
+    setJob(previous => ({ sequence: previous.sequence + 1, reason: 'manual', full: false }));
     setQuery(previous => ({ ...previous, ...patch, page: paging ? patch.page ?? previous.page : 1 }));
   }
+  async function mutationBarrier(): Promise<boolean> {
+    const gate = bootstrap.current;
+    if (gate) { await gate.settled; if (gate.uncertain) return false; }
+    return mounted.current && !!csrf.current;
+  }
   async function login(username: string, password: string) {
-    if (authBusy || !csrf.current) return;
-    const token = csrf.current;
+    if (authBusy || mutation.current || !csrf.current) return;
+    mutation.current = true; stopRealtime();
     const auth = ++authGeneration.current;
     cancelReads(); setAuthBusy(true); setFormError('');
     try {
+      if (!await mutationBarrier() || !current(auth)) return;
       const next = parseSession(await (await request('/api/auth/login', {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': token },
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf.current },
         body: JSON.stringify({ username, password }),
       })).text());
       if (!current(auth)) return;
       if (!next.authenticated) throw new Error('Respuesta inválida del servidor.');
-      csrf.current = next.csrf_token; setMetadata(null); setData(null);
-      setQuery(initialQuery(next.identity.location.id)); setSession(next);
+      setMetadata(null); setData(null); initial(next);
     } catch (error) {
       if (!current(auth)) return;
-      if (error instanceof HTTPError && error.status === 401) {
-        await restore(true, errorMessage(error));
-      } else setFormError(errorMessage(error));
-    } finally { if (current(auth)) setAuthBusy(false); }
+      if (error instanceof HTTPError && error.status === 401) await restore(true, errorMessage(error));
+      else setFormError(errorMessage(error));
+    } finally { mutation.current = false; if (current(auth)) setAuthBusy(false); }
   }
   async function logout() {
-    if (authBusy || !session?.authenticated) return;
+    if (authBusy || mutation.current || !session?.authenticated) return;
+    mutation.current = true; stopRealtime();
     const auth = ++authGeneration.current;
     cancelReads(); setLoading(false); setAuthBusy(true); setResultsError('');
+    setJob(previous => ({ sequence: previous.sequence + 1, reason: 'event', full: false }));
     try {
+      if (!await mutationBarrier() || !current(auth)) return;
       await request('/api/auth/logout', { method: 'POST', headers: { 'X-CSRF-Token': csrf.current } }, 204);
       if (current(auth)) await restore(true);
     } catch (error) {
       if (!current(auth)) return;
       if (error instanceof HTTPError && error.status === 401) expire();
       else setResultsError(errorMessage(error));
-    } finally { if (current(auth)) setAuthBusy(false); }
+    } finally { mutation.current = false; if (current(auth)) setAuthBusy(false); }
   }
-  return { session, metadata, data, query, loading, authBusy, formError, resultsError, focusLogin,
+  return { session, metadata, data, query, loading, authBusy, formError, resultsError: resultsError || realtimeError, focusLogin,
     login, logout, change, retrySession: () => restore(), retryInventory: () => change({}, true) };
 }

@@ -29,6 +29,79 @@ backups remain out of scope; no pixel-perfect claim is made.
 - `lossless-json` 4.3.1 is intentional: default parse produces `LosslessNumber`; raw `toString()` tokens become bounded nonnegative int64 bigint quantities and canonical positive decimal capacity text. Only checked bounded IDs/pages/counts become Number. Server availability is displayed, not recomputed. Zero availability is `Sin disponible`, with no low-stock threshold.
 - Search is literal brand/model text, bounded to 128 UTF-8 bytes. Empty filters are omitted; brand and L/R filters combine with search. Page sizes are 10/25/50.
 
+## R03 frontend invalidation adapter
+
+`useRealtime({ enabled, epoch, resync, inventory, transfers?, error })` owns one
+same-origin `EventSource('/api/events')` for authenticated, non-busy authority.
+It returns an immediate stop function for mutation attempts. Latest callbacks
+are held in refs; filter/search/location/page changes never replace the source.
+Epoch, active-instance and disposed guards reject obsolete stream callbacks.
+Only the three named events with bounded JSON empty-object payloads are accepted.
+`transfers` is a typed callback seam for future participant readers, not a stock
+refresh, transfer fetch, counter, cart or operative transfer screen.
+
+`open` is not snapshot readiness. A subscription's `resync` requests fresh metadata
+and inventory, including after recovery; initial data is provisional. Inventory
+invalidations preserve consultation, filters, page/size, assigned actor, keyboard
+focus and exact bigint quantities. The current read records dirty invalidations
+and requests one follow-up after settlement; events during that follow-up can
+mark it dirty again. This bounded queue neither discards in-flight invalidations
+nor aborts/refetches on every burst. Manual query changes still abort obsolete
+reads, and auth/read generations protect against stale successes and 401s.
+
+Bootstrap and initial/event snapshots carry exactly one `X-Luson-Passive: 1`.
+Explicit filters, pagination, size and manual inventory retry remain ordinary
+GETs. The selector is merged with existing headers rather than replacing them.
+Login/logout keep their original JSON/CSRF headers and never select passive mode.
+All paths remain relative, cookies same-origin, cache no-store and CSRF memory-only.
+
+An error coalesces into a five-second cookie-neutral `/api/auth/validate` probe,
+not destructive `/api/auth/session` restoration. Settled native error bursts also
+use a 1–30 second probe cooldown without a separate timer; resync resets it and
+terminal CLOSED bypasses it so fatal failures cannot strand the source. Healthy same identity **and**
+same CSRF preserve the Session object, query and snapshot. Changed identity or
+CSRF invalidates old readers/source/protected state before assigned-authority
+reconciliation. Anonymous validation clears protected state first, then a separate
+passive bootstrap obtains anonymous CSRF (or reconciles an external-tab login).
+Unavailable, network or malformed validation retains known state and announces
+an error; it does not pretend the user logged out.
+
+WHATWG EventSource keeps native retries while CONNECTING. A terminal CLOSED
+source or constructor fault uses one exponential-backoff timer (1–30 seconds),
+a fresh neutral validation and one new connection attempt. A new resync, not an
+open event or healthy probe, refreshes snapshots. There is no snapshot polling or
+permanent auth-poll fallback; unavailable validation permits a bounded transport
+attempt, not actor renewal. Unsupported browsers keep manual consultation and
+the existing Spanish error/retry surface. Cleanup cancels probes, retry/timeout
+and expiry timers, sources and obsolete readers. Absolute expiry clears authority;
+failed logout may reopen still-known authority, subject to server revalidation.
+
+Cookie-writing bootstraps have a shared explicit settlement promise. Concurrent
+restores coalesce; mutations stop realtime and invalidate generations before
+awaiting this barrier and before any POST. A timed-out/aborted bootstrap is
+uncertain and remains a fail-closed mutation/restore barrier for that mount;
+a late mock response cannot make it safe. Reload/new bootstrap is needed after
+that uncertainty. Abort and generation guards **cannot undo Set-Cookie headers**.
+Neutral validation avoids automatic cookie-writing probes, but does not provide
+global ordering against other tabs or other cookie-writing responses.
+
+`R03 realtime lifecycle` and `R03 passive invalidation` use controllable EventSource,
+deferred fetches and scoped fake timers. They prove client adapter behavior only,
+not actual browser HTTP/MIME failure classification, cookie ordering, deployed SSE
+or multi-account delivery. R05 real independent-browser verification remains
+pending. The 107-test verifier result above is historical, not an R03 test count.
+No App component, layout, domain parser, dependencies or transfer controls change.
+
+Focused checks from repository root:
+
+```sh
+npm --prefix apps/web run test -- src/useRealtime.test.ts src/App.test.tsx
+npm --prefix apps/web run test -- src/useRealtime.test.ts src/App.test.tsx -t 'R03'
+```
+
+The title filter excludes unmatched historical tests; it is not a full-suite skip
+claim. Run the unfiltered package suite, typecheck and build below as well.
+
 ## Worker checks
 
 From repository root:
