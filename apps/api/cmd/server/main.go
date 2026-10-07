@@ -12,6 +12,7 @@ import (
 	"luson/api/internal/config"
 	"luson/api/internal/httpapi"
 	"luson/api/internal/inventory"
+	"luson/api/internal/transfers"
 	"luson/api/internal/webui"
 	"net"
 	"net/http"
@@ -53,7 +54,11 @@ func run() error {
 	if err != nil {
 		return errors.New("authentication initialization failed")
 	}
-	handler, err := webui.New(os.Getenv("LUSON_WEB_DIR"), httpapi.New(service, httpCfg, inventory.New(pool)))
+	api, err := httpapi.NewWithTransfers(service, httpCfg, inventory.New(pool), transfers.New(pool))
+	if err != nil {
+		return errors.New("API initialization failed")
+	}
+	handler, err := webui.New(os.Getenv("LUSON_WEB_DIR"), api)
 	if err != nil {
 		return errors.New("invalid public asset directory")
 	}

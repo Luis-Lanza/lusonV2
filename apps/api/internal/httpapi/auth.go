@@ -9,6 +9,7 @@ import (
 	"luson/api/internal/auth"
 	"luson/api/internal/config"
 	"luson/api/internal/inventory"
+	"luson/api/internal/transfers"
 	"mime"
 	"net"
 	"net/http"
@@ -27,19 +28,28 @@ type API struct {
 
 // An optional store adds inventory without changing existing auth callers.
 func New(service *auth.Service, cfg config.Auth, stores ...*inventory.Store) http.Handler {
+	var store *inventory.Store
+	if len(stores) > 0 {
+		store = stores[0]
+	}
+	return compose(service, cfg, store, nil)
+}
+func compose(service *auth.Service, cfg config.Auth, store *inventory.Store, requests *transfers.Store) http.Handler {
 	api := &API{service, cfg}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/auth/session", api.session)
 	mux.HandleFunc("/api/auth/login", api.login)
 	mux.HandleFunc("/api/auth/logout", api.logout)
-	var store *inventory.Store
-	if len(stores) > 0 {
-		store = stores[0]
-	}
 	api.registerInventory(mux, store)
+	if requests != nil {
+		api.registerTransfers(mux, requests)
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if requests != nil && !transferPath(w, r) {
+			return
+		}
 		mux.ServeHTTP(w, r)
 	})
 }

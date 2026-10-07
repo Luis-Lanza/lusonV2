@@ -1,0 +1,415 @@
+package httpapi
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+	"math"
+	"mime"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"luson/api/internal/auth"
+	"luson/api/internal/config"
+	"luson/api/internal/inventory"
+	"luson/api/internal/transfers"
+)
+
+// NewWithTransfers explicitly opts in; legacy New never registers transfers.
+// Dependencies must be initialized. Pool availability remains a store concern.
+func NewWithTransfers(service *auth.Service, cfg config.Auth, stock *inventory.Store, requests *transfers.Store) (http.Handler, error) {
+	if service == nil || stock == nil || requests == nil {
+		return nil, transfers.ErrUnavailable
+	}
+	parsed, err := config.ParseAuth(config.LocalTrial, cfg.Origin, cfg.Listen, cfg.TLSCert, cfg.TLSKey)
+	if err != nil || parsed != cfg {
+		return nil, transfers.ErrUnavailable
+	}
+	return compose(service, cfg, stock, requests), nil
+}
+
+// Prevent ServeMux cleaning/redirects and encoded aliases on these new routes,
+// without changing historical auth/inventory routing or outer webui guards.
+func transferPath(w http.ResponseWriter, r *http.Request) bool {
+	p := r.URL.Path
+	if p != "/api/transfers" && !strings.HasPrefix(p, "/api/transfers/") {
+		return true
+	}
+	unsafe := strings.Contains(p, "//") || strings.ContainsAny(p, "\\\x00")
+	for _, part := range strings.Split(p, "/") {
+		if part == "." || part == ".." {
+			unsafe = true
+		}
+	}
+	if unsafe {
+		failure(w, 404, "not_found")
+		return false
+	}
+	if r.URL.EscapedPath() != p {
+		failure(w, 400, "invalid_request")
+		return false
+	}
+	return true
+}
+func transferFailure(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, transfers.ErrInvalid):
+		failure(w, 400, "invalid_request")
+	case errors.Is(err, transfers.ErrForbidden):
+		failure(w, 403, "forbidden")
+	case errors.Is(err, transfers.ErrNotFound):
+		failure(w, 404, "not_found")
+	case errors.Is(err, transfers.ErrInsufficientStock):
+		failure(w, 409, "insufficient_stock")
+	case errors.Is(err, transfers.ErrRetryConflict):
+		failure(w, 409, "retry_conflict")
+	default:
+		failure(w, 503, "service_unavailable")
+	}
+}
+func canonicalTransferInteger(value string, max int64) (int64, error) {
+	if len(value) == 0 || len(value) > 19 || value[0] < '1' || value[0] > '9' {
+		return 0, transfers.ErrInvalid
+	}
+	for _, c := range value {
+		if c < '0' || c > '9' {
+			return 0, transfers.ErrInvalid
+		}
+	}
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || n > max {
+		return 0, transfers.ErrInvalid
+	}
+	return n, nil
+}
+func transferNumber(d *json.Decoder, max int64) (int64, error) {
+	token, err := d.Token()
+	if err != nil {
+		return 0, transfers.ErrInvalid
+	}
+	number, ok := token.(json.Number)
+	if !ok {
+		return 0, transfers.ErrInvalid
+	}
+	return canonicalTransferInteger(string(number), max)
+}
+func transferString(d *json.Decoder) (string, error) {
+	token, err := d.Token()
+	if err != nil {
+		return "", transfers.ErrInvalid
+	}
+	value, ok := token.(string)
+	if !ok {
+		return "", transfers.ErrInvalid
+	}
+	return value, nil
+}
+func transferDelimiter(d *json.Decoder, want json.Delim) bool {
+	token, err := d.Token()
+	return err == nil && token == want
+}
+func transferItems(d *json.Decoder) ([]transfers.Line, error) {
+	if !transferDelimiter(d, '[') {
+		return nil, transfers.ErrInvalid
+	}
+	items := make([]transfers.Line, 0)
+	for d.More() {
+		if len(items) >= 190 || !transferDelimiter(d, '{') {
+			return nil, transfers.ErrInvalid
+		}
+		var line transfers.Line
+		seen := map[string]bool{}
+		for d.More() {
+			key, err := transferString(d)
+			if err != nil || seen[key] {
+				return nil, transfers.ErrInvalid
+			}
+			seen[key] = true
+			switch key {
+			case "variant_id":
+				line.VariantID, err = transferNumber(d, math.MaxInt32)
+			case "quantity":
+				var value string
+				value, err = transferString(d)
+				if err == nil {
+					line.Quantity, err = canonicalTransferInteger(value, math.MaxInt64)
+				}
+			default:
+				return nil, transfers.ErrInvalid
+			}
+			if err != nil {
+				return nil, transfers.ErrInvalid
+			}
+		}
+		if len(seen) != 2 || !transferDelimiter(d, '}') {
+			return nil, transfers.ErrInvalid
+		}
+		items = append(items, line)
+	}
+	if len(items) == 0 || !transferDelimiter(d, ']') {
+		return nil, transfers.ErrInvalid
+	}
+	return items, nil
+}
+
+var transferRetryKey = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
+
+// Decode tokens rather than structs: exact names, presence, types and duplicate
+// keys (including escaped-equivalent keys) are checked at every object level.
+func decodeTransfer(r *http.Request) (transfers.CreateInput, error) {
+	var in transfers.CreateInput
+	if r == nil || r.Body == nil || len(r.Header.Values("Content-Type")) != 1 {
+		return in, transfers.ErrInvalid
+	}
+	contentType := r.Header.Get("Content-Type")
+	media, params, err := mime.ParseMediaType(contentType)
+	// MIME parsing collapses identical duplicate parameters and permits a
+	// trailing separator; neither is an unambiguous admitted framing.
+	if err != nil || media != "application/json" || len(params) > 1 || strings.Count(contentType, ";") != len(params) {
+		return in, transfers.ErrInvalid
+	}
+	for key, value := range params {
+		if key != "charset" || !strings.EqualFold(value, "utf-8") {
+			return in, transfers.ErrInvalid
+		}
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, (64<<10)+1))
+	if err != nil || len(body) > 64<<10 || !utf8.Valid(body) {
+		return in, transfers.ErrInvalid
+	}
+	d := json.NewDecoder(bytes.NewReader(body))
+	d.UseNumber()
+	if !transferDelimiter(d, '{') {
+		return in, transfers.ErrInvalid
+	}
+	seen := map[string]bool{}
+	for d.More() {
+		key, err := transferString(d)
+		if err != nil || seen[key] {
+			return transfers.CreateInput{}, transfers.ErrInvalid
+		}
+		seen[key] = true
+		switch key {
+		case "kind":
+			var value string
+			value, err = transferString(d)
+			in.Kind = transfers.Kind(value)
+		case "counterparty_location_id":
+			var value int64
+			value, err = transferNumber(d, 3)
+			in.CounterpartyID = int(value)
+		case "retry_key":
+			in.RetryKey, err = transferString(d)
+		case "items":
+			in.Items, err = transferItems(d)
+		default:
+			return transfers.CreateInput{}, transfers.ErrInvalid
+		}
+		if err != nil {
+			return transfers.CreateInput{}, transfers.ErrInvalid
+		}
+	}
+	if len(seen) != 4 || !transferDelimiter(d, '}') {
+		return transfers.CreateInput{}, transfers.ErrInvalid
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return transfers.CreateInput{}, transfers.ErrInvalid
+	}
+	if (in.Kind != transfers.RequestStock && in.Kind != transfers.SendToWarehouse) || !transferRetryKey.MatchString(in.RetryKey) {
+		return transfers.CreateInput{}, transfers.ErrInvalid
+	}
+	variants := map[int64]bool{}
+	for _, line := range in.Items {
+		if variants[line.VariantID] {
+			return transfers.CreateInput{}, transfers.ErrInvalid
+		}
+		variants[line.VariantID] = true
+	}
+	// Direction/availability are validated by Create with the authenticated actor,
+	// never an identity synthesized from JSON or a consulted inventory location.
+	return in, nil
+}
+
+// Allowed fields are ASCII and need no URL escaping. Reject encoding aliases,
+// empty components and duplicates instead of silently accepting ParseQuery's
+// partial map or empty fields. Parameter order is otherwise irrelevant.
+func transferQuery(raw string) (transfers.Query, error) {
+	q := transfers.Query{Page: 1, PageSize: 25, Status: "pending"}
+	if raw == "" {
+		return q, nil
+	}
+	if len(raw) > 4096 {
+		return transfers.Query{}, transfers.ErrInvalid
+	}
+	seen := map[string]bool{}
+	for _, part := range strings.Split(raw, "&") {
+		key, value, ok := strings.Cut(part, "=")
+		if !ok || value == "" || seen[key] {
+			return transfers.Query{}, transfers.ErrInvalid
+		}
+		seen[key] = true
+		var n int64
+		var err error
+		switch key {
+		case "page":
+			n, err = canonicalTransferInteger(value, 1_000_000)
+			q.Page = n
+		case "page_size":
+			n, err = canonicalTransferInteger(value, 50)
+			q.PageSize = int(n)
+			if n != 10 && n != 25 && n != 50 {
+				err = transfers.ErrInvalid
+			}
+		case "status":
+			if value != "pending" {
+				err = transfers.ErrInvalid
+			}
+		default:
+			return transfers.Query{}, transfers.ErrInvalid
+		}
+		if err != nil {
+			return transfers.Query{}, transfers.ErrInvalid
+		}
+	}
+	return q, nil
+}
+
+type transferItemDTO struct {
+	VariantID  int64  `json:"variant_id"`
+	Brand      string `json:"brand"`
+	Model      string `json:"model"`
+	CapacityAH string `json:"capacity_ah"`
+	Polarity   string `json:"polarity"`
+	Quantity   string `json:"quantity"`
+}
+type transferDTO struct {
+	ID                      string            `json:"id"`
+	Reference               string            `json:"reference"`
+	CreatorLocationID       int               `json:"creator_location_id"`
+	CreatorLocationName     string            `json:"creator_location_name"`
+	Kind                    transfers.Kind    `json:"kind"`
+	OriginLocationID        int               `json:"origin_location_id"`
+	OriginLocationName      string            `json:"origin_location_name"`
+	DestinationLocationID   int               `json:"destination_location_id"`
+	DestinationLocationName string            `json:"destination_location_name"`
+	ApproverLocationID      int               `json:"approver_location_id"`
+	ApproverLocationName    string            `json:"approver_location_name"`
+	Status                  string            `json:"status"`
+	CreatedAt               string            `json:"created_at"`
+	Items                   []transferItemDTO `json:"items"`
+}
+
+func transferRecord(r transfers.Request) transferDTO {
+	items := make([]transferItemDTO, 0, len(r.Items))
+	for _, item := range r.Items {
+		items = append(items, transferItemDTO{item.VariantID, item.Brand, item.Model, string(item.Capacity), item.Polarity, strconv.FormatInt(item.Quantity, 10)})
+	}
+	return transferDTO{strconv.FormatInt(r.ID, 10), r.Reference, r.Creator.ID, r.Creator.Name, r.Kind, r.Origin.ID, r.Origin.Name, r.Destination.ID, r.Destination.Name, r.Approver.ID, r.Approver.Name, r.Status, r.CreatedAt.UTC().Format(time.RFC3339Nano), items}
+}
+
+type transferPageDTO struct {
+	Page       int64         `json:"page"`
+	PageSize   int           `json:"page_size"`
+	Status     string        `json:"status"`
+	TotalCount string        `json:"total_count"`
+	Records    []transferDTO `json:"records"`
+}
+
+func transferPage(page transfers.Page) transferPageDTO {
+	records := make([]transferDTO, 0, len(page.Records))
+	for _, record := range page.Records {
+		records = append(records, transferRecord(record))
+	}
+	return transferPageDTO{page.Page, page.PageSize, "pending", strconv.FormatInt(page.Total, 10), records}
+}
+
+func (a *API) registerTransfers(mux *http.ServeMux, store *transfers.Store) {
+	mux.HandleFunc("/api/transfers", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			w.Header().Set("Allow", "GET, POST")
+			failure(w, 405, "method_not_allowed")
+			return
+		}
+		actor, ok := a.inventoryIdentity(w, r)
+		if !ok {
+			return
+		}
+		if r.Method == http.MethodPost {
+			site := r.Header.Values("Sec-Fetch-Site")
+			if len(site) > 1 || (len(site) == 1 && site[0] != "same-origin") {
+				failure(w, 403, "forbidden")
+				return
+			}
+			if !a.GuardMutation(w, r) {
+				return
+			}
+			if r.URL.RawQuery != "" || r.URL.ForceQuery {
+				failure(w, 400, "invalid_request")
+				return
+			}
+			in, err := decodeTransfer(r)
+			if err != nil {
+				transferFailure(w, err)
+				return
+			}
+			result, err := store.Create(r.Context(), actor, in)
+			if err != nil {
+				transferFailure(w, err)
+				return
+			}
+			status := 201
+			if result.Replayed {
+				status = 200
+			}
+			w.Header().Set("Location", "/api/transfers/"+strconv.FormatInt(result.Request.ID, 10))
+			respond(w, status, transferRecord(result.Request))
+			return
+		}
+		q, err := transferQuery(r.URL.RawQuery)
+		if err != nil {
+			transferFailure(w, err)
+			return
+		}
+		page, err := store.List(r.Context(), actor, q)
+		if err != nil {
+			transferFailure(w, err)
+			return
+		}
+		respond(w, 200, transferPage(page))
+	})
+	mux.HandleFunc("/api/transfers/{id}", func(w http.ResponseWriter, r *http.Request) {
+		value := r.PathValue("id")
+		// Textual operation names are unknown routes, not lifecycle capabilities.
+		if !strings.ContainsAny(value, "0123456789") {
+			failure(w, 404, "not_found")
+			return
+		}
+		if !method(w, r, http.MethodGet) {
+			return
+		}
+		actor, ok := a.inventoryIdentity(w, r)
+		if !ok {
+			return
+		}
+		if r.URL.RawQuery != "" || r.URL.ForceQuery {
+			failure(w, 400, "invalid_request")
+			return
+		}
+		id, err := canonicalTransferInteger(value, math.MaxInt64)
+		if err != nil {
+			transferFailure(w, err)
+			return
+		}
+		record, err := store.Get(r.Context(), actor, id)
+		if err != nil {
+			transferFailure(w, err)
+			return
+		}
+		respond(w, 200, transferRecord(record))
+	})
+}
