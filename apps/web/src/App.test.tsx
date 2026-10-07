@@ -693,3 +693,62 @@ describe('R04b2a source-stock bridge', () => {
     expect(first).toHaveBeenCalledOnce(); expect(second).toHaveBeenCalledOnce(); expect(fresh).toHaveBeenCalledOnce();
   });
 });
+
+describe('R04b2b App workspace entry', () => {
+  it.each([2, 3])('opens for branch %s independent of consulted stock and returns with the same query', async assigned => {
+    const branch = { ...session, identity: { ...identity, account_id: assigned, location: metadata.locations[assigned - 1] } };
+    const sourceCalls: { url: string; init: RequestInit }[] = [];
+    const mock = setup(branch, (url, init) => {
+      if (!url.startsWith('/api/inventory?')) return undefined;
+      const params = new URL(url, 'http://localhost').searchParams;
+      if (params.get('page_size') !== '50') {
+        if (params.get('page') === '1') return undefined;
+        const location = metadata.locations[Number(params.get('location_id')) - 1];
+        return Promise.resolve(response(pageJSON(undefined, Number(params.get('page'))).replace('"location":{"id":1,"name":"Almacén"}', '"location":' + JSON.stringify(location))));
+      }
+      sourceCalls.push({ url, init });
+      const page = Number(params.get('page')); const source = Number(params.get('location_id'));
+      const items = Array.from({ length: Math.min(50, 190 - (page - 1) * 50) }, (_, index) => {
+        const variant = (page - 1) * 50 + index + 1;
+        return { variant_id: variant, catalog_entry_id: Math.ceil(variant / 2), brand: 'TOYO', model: `Batería ${variant}`,
+          capacity_ah: 75.125, polarity: variant % 2 ? 'L' : 'R', existing: 10, reserved: 0, available: 10 };
+      });
+      return Promise.resolve(new Response(JSON.stringify({ location: metadata.locations[source - 1], page, page_size: 50, total_variants: 190, items }),
+        { status: 200, headers: { 'Content-Type': 'application/json; charset=utf-8' } }));
+    });
+    render(<App />); await inventory();
+    fireEvent.click(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })); await inventory();
+    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'TOYO' } }); await inventory();
+    fireEvent.change(screen.getByLabelText('Marca'), { target: { value: 'TOYO' } }); await inventory();
+    fireEvent.change(screen.getByLabelText('Polaridad'), { target: { value: 'L' } }); await inventory();
+    fireEvent.click(screen.getByRole('button', { name: 'Página siguiente' })); await inventory();
+    const query = stockCalls(mock).at(-1)![0];
+    const cta = screen.getByRole('button', { name: /Nueva transferencia/ }); expect(cta).toBeEnabled(); fireEvent.click(cta);
+    await screen.findByRole('button', { name: 'Añadir Batería 1 L' });
+    expect(sourceCalls).toHaveLength(4);
+    expect(sourceCalls.map(call => new URL(call.url, 'http://localhost').searchParams.get('page'))).toEqual(['1', '2', '3', '4']);
+    for (const call of sourceCalls) {
+      expect(new URL(call.url, 'http://localhost').searchParams.get('location_id')).toBe('1');
+      expect(new Headers(call.init.headers).has('X-Luson-Passive')).toBe(false);
+    }
+    expect(screen.getByRole('button', { name: 'Transferencias' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: /Volver al inventario/ })); await inventory();
+    expect(screen.getByLabelText('Buscar marca o modelo')).toHaveValue('TOYO');
+    expect(screen.getByLabelText('Marca')).toHaveValue('TOYO'); expect(screen.getByLabelText('Polaridad')).toHaveValue('L');
+    expect(stockCalls(mock).filter(([url]) => String(url) === String(query))).toHaveLength(1);
+    expect(mock.mock.calls.some(([url, init]) => String(url).startsWith('/api/transfers') || init?.method === 'POST')).toBe(false);
+    expect(AppSource.instances).toHaveLength(1);
+  });
+  it('keeps warehouse creation disabled when consulting a branch on desktop', async () => {
+    const mock = setup(session); render(<App />); await inventory();
+    fireEvent.click(screen.getByRole('button', { name: /Sucursal A/ })); await inventory();
+    const before = mock.mock.calls.length;
+    const cta = screen.getByRole('button', { name: /Nueva transferencia/ }); expect(cta).toBeDisabled(); fireEvent.click(cta);
+    expect(mock.mock.calls).toHaveLength(before); expect(screen.queryByLabelText('Tipo de transferencia')).not.toBeInTheDocument();
+  });
+  it('has no anonymous creation entry or private source request', async () => {
+    const mock = setup(); render(<App />); await screen.findByLabelText('Usuario');
+    expect(screen.queryByRole('button', { name: /Nueva transferencia/ })).not.toBeInTheDocument();
+    expect(stockCalls(mock)).toHaveLength(0);
+  });
+});

@@ -4,6 +4,7 @@ import { Brand, Icon } from './icons';
 import { groupItems } from './model';
 import type { Item } from './model';
 import { useInventory } from './useInventory';
+import TransferCreation from './TransferCreation';
 
 type Controller = ReturnType<typeof useInventory>;
 function Login({ state }: { state: Controller }) {
@@ -81,6 +82,7 @@ function InventoryView({ state }: { state: Controller }) {
   const { identity } = state.session;
   const { metadata, query, data } = state;
   const warehouse = identity.location.id === 1;
+  const [creation, setCreation] = useState(false);
   const [narrow, setNarrow] = useState(() => window.matchMedia?.('(max-width: 767px)').matches ?? false);
   useEffect(() => {
     const media = window.matchMedia?.('(max-width: 767px)');
@@ -96,8 +98,12 @@ function InventoryView({ state }: { state: Controller }) {
     <header className="app-header" hidden={mobile}><strong>Luson Inventario</strong><span><Icon name="warehouse" />Ubicación asignada: <b>{identity.location.name}</b></span></header>
     <header className="mobile-header" hidden={!mobile}><div><Brand /><button type="button" aria-label="Cerrar sesión" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" /></button></div><div className="mobile-identity"><span><Icon name="warehouse" />{identity.location.name}</span><span>{identity.username}</span></div></header>
     <main id="inventario" className="inventory-main">
+      {creation && !warehouse && metadata ? <TransferCreation controller={state} metadata={metadata} onBack={() => setCreation(false)} /> : <>
       <section className="inventory-heading">
-        <div className="title-row"><div><h1>Inventario</h1><p>Consulta de existencias y disponibilidad en almacén y red de sucursales.</p></div><button className="primary transfer-cta" type="button" disabled><Icon name={warehouse ? 'transfer' : 'plus'} /><span className="desktop-cta">Nueva transferencia</span><span className="mobile-cta">Crear envío</span></button></div>
+        <div className="title-row"><div><h1>Inventario</h1><p>Consulta de existencias y disponibilidad en almacén y red de sucursales.</p></div><button className="primary transfer-cta" type="button" disabled={warehouse || state.authBusy || !metadata} onClick={() => {
+          const authority = state.getTransferAuthority();
+          if (authority.ready && authority.session?.authenticated && [2, 3].includes(authority.session.identity.location.id)) setCreation(true);
+        }}><Icon name={warehouse ? 'transfer' : 'plus'} /><span className="desktop-cta">Nueva transferencia</span><span className="mobile-cta">Crear envío</span></button></div>
         <div className="location-tabs" hidden={mobile} role="group" aria-label="Vista de stock"><span>Vista de stock:</span>{metadata?.locations.map(l => <button type="button" key={l.id} aria-pressed={query.location === l.id} disabled={state.authBusy} onClick={() => state.change({ location: l.id })}>{l.name}<small>{l.id === identity.location.id ? 'Mi ubicación · Consulta' : 'Solo consulta'}</small></button>)}</div>
       </section>
       <section className="mobile-location" hidden={!mobile}>
@@ -114,6 +120,7 @@ function InventoryView({ state }: { state: Controller }) {
         {data && data.items.length > 0 && <>{!mobile && <div className="table-scroll"><table><caption className="sr-only">Inventario de {data.location.name}</caption><thead><tr>{['Marca', 'Modelo', 'Capacidad (Ah)', 'Polaridad', 'Existencias', 'Reservadas', 'Disponibles'].map(h => <th key={h} scope="col">{h}</th>)}</tr></thead><tbody>{data.items.map(item => <tr key={item.variant_id} data-variant-id={item.variant_id}><td>{item.brand}</td><td>{item.model}</td><td>{item.capacity_ah} Ah</td><td><span className="polarity">{item.polarity}</span></td><td>{item.existing.toString()}</td><td>{item.reserved.toString()}</td><td><Available item={item} /></td></tr>)}</tbody></table></div>}{mobile && <Cards items={data.items} />}</>}
         <Pager state={state} />
       </section>
+      </>}
     </main>
     {mobile && <Navigation mobile />}
   </div>;

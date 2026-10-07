@@ -25,7 +25,7 @@ backups remain out of scope; no pixel-perfect claim is made.
 - All production requests use relative `/api` paths and same-origin browser cookies. There are no demo accounts, frontend inventory fixtures, storage tokens or external font/CDN requests.
 - Session restoration is a GET. Login is an explicit form-submit POST with exactly `username` and `password`, JSON content type and memory-only CSRF. The browser supplies Origin. Password input clears on submission. Logout is successful only on 204, followed by anonymous CSRF restoration.
 - A current 401 clears protected identity, metadata and rows before refreshing the session and focusing login. Request/auth generations reject obsolete successes and errors, including transports that ignore AbortSignal. Filter changes cancel pending reads and reset page atomically without moving keyboard focus.
-- Metadata supplies all locations and brands. Consultation never changes account assignment. Warehouse assignment ID1 uses page-local catalog cards below 768 CSS pixels; branch accounts keep the desktop table. Pagination counts variants, not cards. Transfer navigation and CTAs are native disabled controls without handlers.
+- Metadata supplies all locations and brands. Consultation never changes account assignment. Warehouse assignment ID1 uses page-local catalog cards below 768 CSS pixels; branch accounts keep the desktop table. Pagination counts variants, not cards. Transfer navigation and warehouse creation CTAs remain native disabled controls. Assigned branches may open the source/catalog/cart workspace described below.
 - `lossless-json` 4.3.1 is intentional: default parse produces `LosslessNumber`; raw `toString()` tokens become bounded nonnegative int64 bigint quantities and canonical positive decimal capacity text. Only checked bounded IDs/pages/counts become Number. Server availability is displayed, not recomputed. Zero availability is `Sin disponible`, with no low-stock threshold.
 - Search is literal brand/model text, bounded to 128 UTF-8 bytes. Empty filters are omitted; brand and L/R filters combine with search. Page sizes are 10/25/50.
 
@@ -288,6 +288,52 @@ transport/layout is still pending. Focused checks from repository root:
 npm --prefix apps/web run test -- src/transferCart.test.ts src/sourceInventory.test.ts
 npm --prefix apps/web run test -- src/transferCart.test.ts src/sourceInventory.test.ts -t 'R04'
 ```
+
+## R04b2b branch creation workspace (review/send not implemented)
+
+`TransferCreation` reuses the existing authenticated shell; only assigned branches
+can open it, irrespective of the consulted stock location. Back preserves the
+inventory query. Warehouse mobile/desktop creation and private Transferencias
+navigation remain disabled. The three physical routes are warehouse→actor,
+other branch→actor and actor→warehouse; approval belongs to the counterparty.
+The selected creation resources inform breadcrumb, route notice, five-column
+catalog and side cart structure; there are no mockup people, counts or records.
+Geometry, fonts and real keyboard/browser acceptance remain R05, not unit proof.
+
+Opening and explicit retries read the complete source catalog with ordinary GETs;
+stock/resync signals use passive GETs, one active flight and one dirty follow-up.
+Manual supersession preserves queued work without changing captured request reason.
+Epoch/account/assignment/source/sequence checks reject obsolete successes and401s,
+even if a transport ignores abort. A synchronous latest-authority fence masks raw
+rows, cart, quantities and errors before effects. Readiness suspension cancels reads
+and detaches listeners; same-authority recovery retains selections but requires a
+fresh full catalog before showing them. Current401 joins cookie-neutral settlement.
+No additional EventSource, polling, viewer-query changes or source helper changes.
+
+Search/brand/polarity filters apply locally to all190 possible variants; display
+pagination uses25 rows. Quantities are canonical positive int64 text/bigint, with
+unbounded bigint aggregate totals. Zero cart quantity explicitly removes a line.
+Advisory refresh preserves selected quantities and missing/reduced-stock invalid
+markers, never clamps or drops them. Background failure visibly retains stale full
+guidance; initial failure shows sanitized retry without partial rows. Source changes
+with lines require an accessible explicit discard dialog, including cancel/focus
+restoration. No cart or Pending request reserves or moves inventory; cross-page
+quantities are not atomic and server POST will remain final authority.
+
+**Revisar solicitud is disabled**, with an explicit next-stage explanation. This
+unit does not call reviewCart, generate retry keys, POST, assign references, show
+success, submit via useTransfers or implement participant list/detail views.
+R04b2c review/send and R04c views remain pending, as does independent R05 acceptance.
+Component tests and App integration mocks establish deterministic behavior only.
+
+Focused checks from repository root:
+
+```sh
+npm --prefix apps/web run test -- src/TransferCreation.test.tsx src/App.test.tsx
+npm --prefix apps/web run test -- src/TransferCreation.test.tsx src/App.test.tsx -t 'R04b2b'
+```
+
+The title filter excludes historical cases; it is not a full-suite skip claim.
 
 ## Worker checks
 

@@ -177,3 +177,46 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .bottom-nav a { color: var(--wine); font-weight: 700; position: relative; }
   .bottom-nav a::after { content: ''; position: absolute; bottom: 0; width: 48px; height: 2px; background: var(--wine); }
 }
+
+/* Creation workspace only: branch desktop shell and existing inventory stay intact. */
+.transfer-creation { display: flex; flex-direction: column; gap: 16px; max-width: 1400px; width: 100%; margin: 0 auto; }
+.transfer-creation p { font-size: 12px; line-height: 1.6; color: var(--muted); }
+.transfer-creation h2 { font-size: 16px; font-weight: 700; }
+.transfer-creation h3 { font-size: 13px; font-weight: 600; margin: 0; }
+.transfer-creation .creation-breadcrumb { font-size: 11px; color: var(--wine); }
+.transfer-creation .creation-back { align-self: flex-start; border: 0; background: transparent; color: var(--wine); padding: 0; }
+.transfer-creation label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 12px; }
+.transfer-creation .creation-flow { max-width: 360px; }
+.transfer-creation .creation-route { display: flex; gap: 16px; align-items: center; padding: 16px; background: white; border: 1px solid var(--border); border-radius: 8px; flex-wrap: wrap; }
+.transfer-creation .creation-route > div { display: flex; flex-direction: column; padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--page); }
+.transfer-creation .creation-route > div:last-of-type { background: var(--tint); color: var(--wine); }
+.transfer-creation .creation-route span { text-transform: uppercase; font-size: 10px; color: var(--muted); }
+.transfer-creation .creation-route p { margin-left: auto; padding: 8px; background: var(--page); border-radius: 4px; }
+.transfer-creation .creation-grid { display: grid; grid-template-columns: minmax(0, 1fr) 350px; gap: 20px; align-items: start; }
+.transfer-creation .creation-catalog, .transfer-creation .creation-cart { background: white; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.transfer-creation .creation-catalog > header { padding: 16px; border-bottom: 1px solid var(--border); }
+.transfer-creation .creation-filters { display: grid; grid-template-columns: 5fr 4fr 3fr; gap: 10px; margin-top: 14px; }
+.transfer-creation .creation-filters input, .transfer-creation .creation-filters select { width: 100%; }
+.transfer-creation .creation-table { overflow-x: auto; }
+.transfer-creation th, .transfer-creation td { padding: 10px 12px; }
+.transfer-creation td:first-child { white-space: normal; min-width: 160px; }
+.transfer-creation td small { display: block; color: var(--muted); }
+.transfer-creation td:nth-child(2), .transfer-creation th:nth-child(2) { text-align: center; }
+.transfer-creation td:nth-child(3), .transfer-creation th:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; }
+.transfer-creation td input { width: 120px; font-variant-numeric: tabular-nums; }
+.transfer-creation .creation-pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px; background: var(--page); font-size: 11px; }
+.transfer-creation .creation-pager > span:first-child { margin-right: auto; }
+.transfer-creation .creation-retry { margin: 8px 16px; font-size: 12px; }
+.transfer-creation .creation-cart { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.transfer-creation .creation-cart article { border: 1px solid var(--border); border-radius: 6px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.transfer-creation .creation-stepper { display: flex; gap: 6px; }
+.transfer-creation .creation-stepper input { width: 100%; font-variant-numeric: tabular-nums; }
+.transfer-creation .creation-cart .message, .transfer-creation .message { color: var(--wine); }
+.transfer-creation .creation-dialog-backdrop { position: fixed; inset: 0; z-index: 50; background: #24212466; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.transfer-creation .creation-dialog { background: white; width: 480px; max-width: 100%; padding: 24px; border-radius: 8px; border: 1px solid var(--border); }
+.transfer-creation .creation-dialog p { margin: 16px 0; }
+.transfer-creation .creation-dialog button { margin-right: 8px; }
+@media (max-width: 1150px) {
+  .transfer-creation .creation-grid { grid-template-columns: minmax(0, 1fr); }
+  .transfer-creation .creation-filters { grid-template-columns: minmax(0, 1fr); }
+}
