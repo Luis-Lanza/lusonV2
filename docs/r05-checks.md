@@ -59,6 +59,85 @@ parent-called plan, **not human maintenance permission**. A future cleanup drive
 must re-inspect before each individual effect, stop at drift, and never translate
 this into down/prune/force/all or foreign/manual/R01 resource removal.
 
+## R05a2a injected raw-evidence adapter (source only)
+
+`r05-driver.mjs` adds no Docker client, filesystem reader, shell, discovery,
+provisioning or browser runner. Tests use inline synthetic Docker-shaped records;
+passing them proves neither genuine engine observations nor R04/R05 acceptance.
+
+### Public API
+
+- `normalizeR05Evidence({manifest,raw,labelPolicy,sequence})` returns an independent
+  normalized snapshot. It validates the raw protocol, not the complete manifest
+  binding; call `admit` separately. It never invents missing fields or identities.
+- `volumeFingerprint(rawVolume)` SHA256-hashes the canonical **complete** identity
+  record `{Name,Driver,CreatedAt,Options,Scope,Labels}`. Sorted object keys do not
+  affect identity; array order does. All actual volume labels participate, including
+  allowlisted Compose metadata. A name-only hash or fake native volume ID is invalid.
+- `createR05Driver({manifest,labelPolicy,collectRaw,dispatchRaw})` clones bindings
+  and exposes `inspect()`, `createPlan()`, `sql({text,values})`. There are no defaults.
+  `cleanupPlan()` and `cleanup()` always refuse; create/build/start/remove/dispatch
+  are not exposed. Prepare plans authorize **no effects**. Partial, stopped or removed
+  active topologies require a separately admitted parent lifecycle policy.
+
+`collectRaw` receives frozen `{operation:'inspect',phase,request}`. Return a new
+complete observation with the same positive `request`. A replayed request refuses.
+The driver assigns its instance-local positive `sequence` only after collection,
+normalization and full admission; failed observations consume requests, not sequences.
+This is causal bookkeeping, not wall-clock freshness or cryptographic attestation:
+a malicious collector can echo a new request on old data. Parent must supply trusted
+current observation provenance and independently grant real transport authority.
+
+Every individual `sql` serializes a fresh collection and full active guard before
+calling `dispatchRaw({operation:'sql',id:<exact bound DB ID>,stdin:{text,values}})`.
+No argv, ENV, shell or arbitrary operation transport exists. Dispatch results are
+not returned; underlying errors become only `R05 admission refused.`. Disable all
+payload logging/tracing in a future transport. Boolean flags and code objects are
+not human consent. No credentials, SQL values or raw diagnostics are persisted here.
+
+### Raw collector protocol
+
+The envelope has exactly `request,root,files,sources,config,existing_names,network,
+volume,project_ids,volume_users,containers`. File/root metadata uses the binding
+schema only (never contents); source SHA256 and complete canonical secret-free
+Compose `config` must come from current source bytes and filesystem metadata via
+future trusted collection. Config object keys sort recursively; arrays retain order.
+Its digest is separate from each service's Compose config-hash. Config environment
+or secret-content fields are unsupported, not silently redacted for digest matching.
+
+Docker records are explicit secret-free **projections**, not unfiltered inspect JSON:
+container `{Id,Name,Image,Config:{User,Labels},HostConfig:{ReadonlyRootfs,PortBindings},
+Mounts,NetworkSettings:{Networks},State:{Status,Running}}`; each network attachment
+contains exactly `NetworkID`. Network is `{Id,Name,Labels,Internal,Driver,Containers}`,
+where member full-ID keys map to `{Name}`; volume is the full identity record above.
+Unexpected fields (including Config.Env) refuse; a future collector must project
+only admitted metadata while retaining every identity label, attachment and binding.
+All IDs are full64hex; images require `sha256:` before stripping. Container names
+lose exactly one leading slash, never basename normalization. Bind mounts retain
+canonical Source paths; volume mounts retain actual Name, not Docker's host path.
+Mounts require Type/Source/Destination/RW (+Name for volume); other kinds refuse.
+PortBindings require numeric TCP targets and string numeric HostPort1–65535; empty
+or wildcard HostIp is preserved so active admission rejects it, never rewritten.
+`Config.User` is preserved exactly, **including empty**. The official default empty
+PostgreSQL user fails the frozen numeric DB-user guard; no process UID is invented.
+A real-image/user decision belongs to a future parent unit, not this normalizer.
+
+`labelPolicy` explicitly supplies `scopeKey,runKey,reservedOwnerKeys`; the two
+mapping keys must be distinct and listed as reserved. Raw ownership values must
+match manifest scope/run, with Compose project/service/config-hash independently
+bound. No guessed keys or retired L05 adoption. All unknown labels and conflicting
+reserved keys refuse. The fixed Compose metadata allowlist is in `r05-driver.mjs`;
+it includes version, project paths, container-number, oneoff, image, depends_on,
+network, volume and replace, not arbitrary `com.docker.compose.*` keys.
+
+`project_ids` and `volume_users` enumerate **all states**, including foreign exited,
+stopped and created containers; never filter to running. Active inspected services
+must both be running. Extra network attachments, users or project IDs fail full
+admission. Prepare has null resources, empty containers/users/project IDs and all
+manifest IDs null; `existing_names` still reports conflicting proposed names.
+Incomplete observations cannot claim absence. Current metadata alone cannot prove
+symlink ancestors or opened-handle provenance; those remain collector obligations.
+
 ## ACCOUNT IPC consumer contract
 
 Create an exclusive private0700 directory for **one bridge instance**. Supply
