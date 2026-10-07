@@ -1,0 +1,680 @@
+{
+  "source_sha256": "b48e97ce1abf24304951831cc07498098391a12c3587cda6448fa7aea8faeacf",
+  "sheet": "baae de datos",
+  "nonempty_triplets": 101,
+  "excluded_headers": [
+    ["B22", "C22", "D22"],
+    ["F22", "G22", "H22"],
+    ["J22", "K22", "L22"],
+    ["N22", "O22", "P22"],
+    ["B31", "C31", "D31"],
+    ["F31", "G31", "H31"]
+  ],
+  "entries": [
+    {
+      "id": 1,
+      "brand": "CAR",
+      "model": "NS40ZL",
+      "capacity_ah": 35,
+      "cells": ["B5", "C5", "D5"]
+    },
+    {
+      "id": 2,
+      "brand": "TOYO",
+      "model": "NS40ZL",
+      "capacity_ah": 35,
+      "cells": ["F5", "G5", "H5"]
+    },
+    {
+      "id": 3,
+      "brand": "HYBRID",
+      "model": "NS40ZL",
+      "capacity_ah": 35,
+      "cells": ["J5", "K5", "L5"]
+    },
+    {
+      "id": 4,
+      "brand": "VOLTA",
+      "model": "NS40ZL",
+      "capacity_ah": 35,
+      "cells": ["N5", "O5", "P5"]
+    },
+    {
+      "id": 5,
+      "brand": "CAR",
+      "model": "N120",
+      "capacity_ah": 120,
+      "cells": ["B6", "C6", "D6"]
+    },
+    {
+      "id": 6,
+      "brand": "TOYO",
+      "model": "NS60L",
+      "capacity_ah": 45,
+      "cells": ["F6", "G6", "H6"]
+    },
+    {
+      "id": 7,
+      "brand": "HYBRID",
+      "model": "NS60L",
+      "capacity_ah": 45,
+      "cells": ["J6", "K6", "L6"]
+    },
+    {
+      "id": 8,
+      "brand": "VOLTA",
+      "model": "NS60L",
+      "capacity_ah": 45,
+      "cells": ["N6", "O6", "P6"]
+    },
+    {
+      "id": 9,
+      "brand": "CAR",
+      "model": "BTN150",
+      "capacity_ah": 150,
+      "cells": ["B7", "C7", "D7"]
+    },
+    {
+      "id": 10,
+      "brand": "TOYO",
+      "model": "BT45L",
+      "capacity_ah": 45,
+      "cells": ["F7", "G7", "H7"]
+    },
+    {
+      "id": 11,
+      "brand": "HYBRID",
+      "model": "BT54L",
+      "capacity_ah": 54,
+      "cells": ["J7", "K7", "L7"]
+    },
+    {
+      "id": 12,
+      "brand": "VOLTA",
+      "model": "BT45L",
+      "capacity_ah": 45,
+      "cells": ["N7", "O7", "P7"]
+    },
+    {
+      "id": 13,
+      "brand": "CAR",
+      "model": "N150",
+      "capacity_ah": 150,
+      "cells": ["B8", "C8", "D8"]
+    },
+    {
+      "id": 14,
+      "brand": "TOYO",
+      "model": "BT54L",
+      "capacity_ah": 54,
+      "cells": ["F8", "G8", "H8"]
+    },
+    {
+      "id": 15,
+      "brand": "HYBRID",
+      "model": "N50ZL",
+      "capacity_ah": 60,
+      "cells": ["J8", "K8", "L8"]
+    },
+    {
+      "id": 16,
+      "brand": "VOLTA",
+      "model": "BT54L",
+      "capacity_ah": 54,
+      "cells": ["N8", "O8", "P8"]
+    },
+    {
+      "id": 17,
+      "brand": "CAR",
+      "model": "NS60L",
+      "capacity_ah": 45,
+      "cells": ["B9", "C9", "D9"]
+    },
+    {
+      "id": 18,
+      "brand": "TOYO",
+      "model": "N50ZL",
+      "capacity_ah": 60,
+      "cells": ["F9", "G9", "H9"]
+    },
+    {
+      "id": 19,
+      "brand": "HYBRID",
+      "model": "NS70L",
+      "capacity_ah": 65,
+      "cells": ["J9", "K9", "L9"]
+    },
+    {
+      "id": 20,
+      "brand": "VOLTA",
+      "model": "N50ZL",
+      "capacity_ah": 60,
+      "cells": ["N9", "O9", "P9"]
+    },
+    {
+      "id": 21,
+      "brand": "CAR",
+      "model": "BT54L",
+      "capacity_ah": 54,
+      "cells": ["B10", "C10", "D10"]
+    },
+    {
+      "id": 22,
+      "brand": "TOYO",
+      "model": "NS70L",
+      "capacity_ah": 65,
+      "cells": ["F10", "G10", "H10"]
+    },
+    {
+      "id": 23,
+      "brand": "HYBRID",
+      "model": "BT70L",
+      "capacity_ah": 70,
+      "cells": ["J10", "K10", "L10"]
+    },
+    {
+      "id": 24,
+      "brand": "VOLTA",
+      "model": "NS70L",
+      "capacity_ah": 65,
+      "cells": ["N10", "O10", "P10"]
+    },
+    {
+      "id": 25,
+      "brand": "CAR",
+      "model": "N50ZL",
+      "capacity_ah": 60,
+      "cells": ["B11", "C11", "D11"]
+    },
+    {
+      "id": 26,
+      "brand": "TOYO",
+      "model": "BT70L",
+      "capacity_ah": 70,
+      "cells": ["F11", "G11", "H11"]
+    },
+    {
+      "id": 27,
+      "brand": "HYBRID",
+      "model": "N70",
+      "capacity_ah": 70,
+      "cells": ["J11", "K11", "L11"]
+    },
+    {
+      "id": 28,
+      "brand": "VOLTA",
+      "model": "BT70L",
+      "capacity_ah": 70,
+      "cells": ["N11", "O11", "P11"]
+    },
+    {
+      "id": 29,
+      "brand": "CAR",
+      "model": "NS70L",
+      "capacity_ah": 65,
+      "cells": ["B12", "C12", "D12"]
+    },
+    {
+      "id": 30,
+      "brand": "TOYO",
+      "model": "N70",
+      "capacity_ah": 70,
+      "cells": ["F12", "G12", "H12"]
+    },
+    {
+      "id": 31,
+      "brand": "HYBRID",
+      "model": "80D31R",
+      "capacity_ah": 80,
+      "cells": ["J12", "K12", "L12"]
+    },
+    {
+      "id": 32,
+      "brand": "VOLTA",
+      "model": "N70",
+      "capacity_ah": 70,
+      "cells": ["N12", "O12", "P12"]
+    },
+    {
+      "id": 33,
+      "brand": "CAR",
+      "model": "BT70L",
+      "capacity_ah": 70,
+      "cells": ["B13", "C13", "D13"]
+    },
+    {
+      "id": 34,
+      "brand": "TOYO",
+      "model": "90D31R",
+      "capacity_ah": 90,
+      "cells": ["F13", "G13", "H13"]
+    },
+    {
+      "id": 35,
+      "brand": "HYBRID",
+      "model": "N100",
+      "capacity_ah": 100,
+      "cells": ["J13", "K13", "L13"]
+    },
+    {
+      "id": 36,
+      "brand": "VOLTA",
+      "model": "N100",
+      "capacity_ah": 100,
+      "cells": ["N13", "O13", "P13"]
+    },
+    {
+      "id": 37,
+      "brand": "CAR",
+      "model": "N70",
+      "capacity_ah": 70,
+      "cells": ["B14", "C14", "D14"]
+    },
+    {
+      "id": 38,
+      "brand": "TOYO",
+      "model": "N100",
+      "capacity_ah": 100,
+      "cells": ["F14", "G14", "H14"]
+    },
+    {
+      "id": 39,
+      "brand": "HYBRID",
+      "model": "N120",
+      "capacity_ah": 120,
+      "cells": ["J14", "K14", "L14"]
+    },
+    {
+      "id": 40,
+      "brand": "VOLTA",
+      "model": "N120",
+      "capacity_ah": 120,
+      "cells": ["N14", "O14", "P14"]
+    },
+    {
+      "id": 41,
+      "brand": "CAR",
+      "model": "80D31L",
+      "capacity_ah": 80,
+      "cells": ["B15", "C15", "D15"]
+    },
+    {
+      "id": 42,
+      "brand": "TOYO",
+      "model": "N120",
+      "capacity_ah": 120,
+      "cells": ["F15", "G15", "H15"]
+    },
+    {
+      "id": 43,
+      "brand": "HYBRID",
+      "model": "N150",
+      "capacity_ah": 150,
+      "cells": ["J15", "K15", "L15"]
+    },
+    {
+      "id": 44,
+      "brand": "VOLTA",
+      "model": "BTN150",
+      "capacity_ah": 150,
+      "cells": ["N15", "O15", "P15"]
+    },
+    {
+      "id": 45,
+      "brand": "CAR",
+      "model": "N100",
+      "capacity_ah": 100,
+      "cells": ["B16", "C16", "D16"]
+    },
+    {
+      "id": 46,
+      "brand": "TOYO",
+      "model": "BTN150",
+      "capacity_ah": 150,
+      "cells": ["F16", "G16", "H16"]
+    },
+    {
+      "id": 47,
+      "brand": "VOLTA",
+      "model": "N150",
+      "capacity_ah": 150,
+      "cells": ["N16", "O16", "P16"]
+    },
+    {
+      "id": 48,
+      "brand": "TOYO",
+      "model": "N150",
+      "capacity_ah": 150,
+      "cells": ["F17", "G17", "H17"]
+    },
+    {
+      "id": 49,
+      "brand": "VOLTA",
+      "model": "N220",
+      "capacity_ah": 220,
+      "cells": ["N17", "O17", "P17"]
+    },
+    {
+      "id": 50,
+      "brand": "TOYO",
+      "model": "N220",
+      "capacity_ah": 220,
+      "cells": ["F18", "G18", "H18"]
+    },
+    {
+      "id": 51,
+      "brand": "TOYO",
+      "model": "N100solar",
+      "capacity_ah": 100,
+      "cells": ["F19", "G19", "H19"]
+    },
+    {
+      "id": 52,
+      "brand": "FM_POWER",
+      "model": "N70",
+      "capacity_ah": 70,
+      "cells": ["B23", "C23", "D23"]
+    },
+    {
+      "id": 53,
+      "brand": "GS",
+      "model": "NS60L",
+      "capacity_ah": 45,
+      "cells": ["F23", "G23", "H23"]
+    },
+    {
+      "id": 54,
+      "brand": "GTX",
+      "model": "50B24MF",
+      "capacity_ah": 50,
+      "cells": ["J23", "K23", "L23"]
+    },
+    {
+      "id": 55,
+      "brand": "KMF",
+      "model": "NS60L",
+      "capacity_ah": 50,
+      "cells": ["N23", "O23", "P23"]
+    },
+    {
+      "id": 56,
+      "brand": "FM_POWER",
+      "model": "80D31L",
+      "capacity_ah": 80,
+      "cells": ["B24", "C24", "D24"]
+    },
+    {
+      "id": 57,
+      "brand": "GS",
+      "model": "N50ZL",
+      "capacity_ah": 60,
+      "cells": ["F24", "G24", "H24"]
+    },
+    {
+      "id": 58,
+      "brand": "GTX",
+      "model": "DIN60MF",
+      "capacity_ah": 60,
+      "cells": ["J24", "K24", "L24"]
+    },
+    {
+      "id": 59,
+      "brand": "KMF",
+      "model": "BT45L",
+      "capacity_ah": 45,
+      "cells": ["N24", "O24", "P24"]
+    },
+    {
+      "id": 60,
+      "brand": "FM_POWER",
+      "model": "NS60L",
+      "capacity_ah": 45,
+      "cells": ["B25", "C25", "D25"]
+    },
+    {
+      "id": 61,
+      "brand": "GS",
+      "model": "NS70L",
+      "capacity_ah": 65,
+      "cells": ["F25", "G25", "H25"]
+    },
+    {
+      "id": 62,
+      "brand": "GTX",
+      "model": "55D26MF",
+      "capacity_ah": 60,
+      "cells": ["J25", "K25", "L25"]
+    },
+    {
+      "id": 63,
+      "brand": "KMF",
+      "model": "N70P",
+      "capacity_ah": 70,
+      "cells": ["N25", "O25", "P25"]
+    },
+    {
+      "id": 64,
+      "brand": "FM_POWER",
+      "model": "BT54L",
+      "capacity_ah": 54,
+      "cells": ["B26", "C26", "D26"]
+    },
+    {
+      "id": 65,
+      "brand": "GS",
+      "model": "N70",
+      "capacity_ah": 70,
+      "cells": ["F26", "G26", "H26"]
+    },
+    {
+      "id": 66,
+      "brand": "GTX",
+      "model": "80D26MF",
+      "capacity_ah": 70,
+      "cells": ["J26", "K26", "L26"]
+    },
+    {
+      "id": 67,
+      "brand": "KMF",
+      "model": "B60PL",
+      "capacity_ah": 60,
+      "cells": ["N26", "O26", "P26"]
+    },
+    {
+      "id": 68,
+      "brand": "FM_POWER",
+      "model": "N50ZL",
+      "capacity_ah": 60,
+      "cells": ["B27", "C27", "D27"]
+    },
+    {
+      "id": 69,
+      "brand": "GS",
+      "model": "N80",
+      "capacity_ah": 80,
+      "cells": ["F27", "G27", "H27"]
+    },
+    {
+      "id": 70,
+      "brand": "GTX",
+      "model": "65D31MF",
+      "capacity_ah": 70,
+      "cells": ["J27", "K27", "L27"]
+    },
+    {
+      "id": 71,
+      "brand": "KMF",
+      "model": "B70PL",
+      "capacity_ah": 70,
+      "cells": ["N27", "O27", "P27"]
+    },
+    {
+      "id": 72,
+      "brand": "FM_POWER",
+      "model": "NS70L",
+      "capacity_ah": 65,
+      "cells": ["B28", "C28", "D28"]
+    },
+    {
+      "id": 73,
+      "brand": "GS",
+      "model": "N70Z",
+      "capacity_ah": 75,
+      "cells": ["F28", "G28", "H28"]
+    },
+    {
+      "id": 74,
+      "brand": "GTX",
+      "model": "95D31MF",
+      "capacity_ah": 80,
+      "cells": ["J28", "K28", "L28"]
+    },
+    {
+      "id": 75,
+      "brand": "KMF",
+      "model": "N220PL",
+      "capacity_ah": 220,
+      "cells": ["N28", "O28", "P28"]
+    },
+    {
+      "id": 76,
+      "brand": "KMF",
+      "model": "solarN115",
+      "capacity_ah": 115,
+      "cells": ["N29", "O29", "P29"]
+    },
+    {
+      "id": 77,
+      "brand": "TOYO_FREE",
+      "model": "TL_H110",
+      "capacity_ah": 110,
+      "cells": ["B32", "C32", "D32"]
+    },
+    {
+      "id": 78,
+      "brand": "TOYO_MOTO",
+      "model": "12N7_3B GEL",
+      "capacity_ah": 7,
+      "cells": ["F32", "G32", "H32"]
+    },
+    {
+      "id": 79,
+      "brand": "TOYO_FREE",
+      "model": "TL_S40PL",
+      "capacity_ah": 40,
+      "cells": ["B33", "C33", "D33"]
+    },
+    {
+      "id": 80,
+      "brand": "TOYO_MOTO",
+      "model": "12N7_3B",
+      "capacity_ah": 7,
+      "cells": ["F33", "G33", "H33"]
+    },
+    {
+      "id": 81,
+      "brand": "TOYO_FREE",
+      "model": "TL_S50PL",
+      "capacity_ah": 50,
+      "cells": ["B34", "C34", "D34"]
+    },
+    {
+      "id": 82,
+      "brand": "TOYO_MOTO",
+      "model": "12N5_3B",
+      "capacity_ah": 5,
+      "cells": ["F34", "G34", "H34"]
+    },
+    {
+      "id": 83,
+      "brand": "TOYO_FREE",
+      "model": "TL_N60PL",
+      "capacity_ah": 60,
+      "cells": ["B35", "C35", "D35"]
+    },
+    {
+      "id": 84,
+      "brand": "TOYO_MOTO",
+      "model": "12N6,5_3B",
+      "capacity_ah": 6.5,
+      "cells": ["F35", "G35", "H35"]
+    },
+    {
+      "id": 85,
+      "brand": "TOYO_FREE",
+      "model": "TL_B60PL",
+      "capacity_ah": 60,
+      "cells": ["B36", "C36", "D36"]
+    },
+    {
+      "id": 86,
+      "brand": "TOYO_MOTO",
+      "model": "12N9_3B GEL",
+      "capacity_ah": 9,
+      "cells": ["F36", "G36", "H36"]
+    },
+    {
+      "id": 87,
+      "brand": "TOYO_FREE",
+      "model": "TL_N70PL",
+      "capacity_ah": 70,
+      "cells": ["B37", "C37", "D37"]
+    },
+    {
+      "id": 88,
+      "brand": "TOYO_MOTO",
+      "model": "12N7_3A",
+      "capacity_ah": 7,
+      "cells": ["F37", "G37", "H37"]
+    },
+    {
+      "id": 89,
+      "brand": "TOYO_FREE",
+      "model": "TL_B70PL",
+      "capacity_ah": 70,
+      "cells": ["B38", "C38", "D38"]
+    },
+    {
+      "id": 90,
+      "brand": "TOYO_MOTO",
+      "model": "YTX4L_BS",
+      "capacity_ah": 4,
+      "cells": ["F38", "G38", "H38"]
+    },
+    {
+      "id": 91,
+      "brand": "TOYO_FREE",
+      "model": "TL_B75PL",
+      "capacity_ah": 75,
+      "cells": ["B39", "C39", "D39"]
+    },
+    {
+      "id": 92,
+      "brand": "ULTRON_MOTO",
+      "model": "YB6,5_BS",
+      "capacity_ah": 6.5,
+      "cells": ["F39", "G39", "H39"]
+    },
+    {
+      "id": 93,
+      "brand": "TOYO_FREE",
+      "model": "TL_N95PL",
+      "capacity_ah": 95,
+      "cells": ["B40", "C40", "D40"]
+    },
+    {
+      "id": 94,
+      "brand": "TOYO_FREE",
+      "model": "TL_N150PL",
+      "capacity_ah": 150,
+      "cells": ["B41", "C41", "D41"]
+    },
+    {
+      "id": 95,
+      "brand": "TOYO_FREE",
+      "model": "TL_N220PL",
+      "capacity_ah": 220,
+      "cells": ["B42", "C42", "D42"]
+    }
+  ]
+}

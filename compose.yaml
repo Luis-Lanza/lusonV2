@@ -1,0 +1,56 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: luson-local:latest
+    user: "${LUSON_APP_UID:-1000}:${LUSON_APP_GID:-1000}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      LUSON_APP_UID: "${LUSON_APP_UID:-1000}"
+      LUSON_APP_GID: "${LUSON_APP_GID:-1000}"
+      LUSON_PROFILE: "${LUSON_PROFILE:?Explicit production or local-trial profile required}"
+      LUSON_DATABASE_URL_FILE: /run/secrets/database_url
+      LUSON_ORIGIN: "${LUSON_ORIGIN:?Explicit HTTPS origin required}"
+      LUSON_LISTEN: 0.0.0.0:8443
+      LUSON_TLS_CERT: /run/secrets/tls_cert
+      LUSON_TLS_KEY: /run/secrets/tls_key
+      LUSON_WEB_DIR: /srv/web
+    ports:
+      - "127.0.0.1:${LUSON_HTTPS_PORT:?Explicit loopback HTTPS port required}:8443"
+    secrets: [database_url, tls_cert, tls_key]
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [luson]
+  db:
+    image: postgres:17.9-bookworm
+    environment:
+      POSTGRES_USER: luson
+      POSTGRES_DB: luson
+      POSTGRES_PASSWORD_FILE: /run/secrets/database_password
+    secrets: [database_password]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U luson -d luson"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    networks: [luson]
+secrets:
+  database_password:
+    file: "${LUSON_DB_PASSWORD_FILE:?External private password file required}"
+  database_url:
+    file: "${LUSON_DATABASE_URL_FILE:?External private URL file required}"
+  tls_cert:
+    file: "${LUSON_TLS_CERT_FILE:?External TLS certificate file required}"
+  tls_key:
+    file: "${LUSON_TLS_KEY_FILE:?External TLS key file required}"
+volumes:
+  pgdata:
+networks:
+  luson:

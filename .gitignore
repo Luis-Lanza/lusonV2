@@ -1,0 +1,29 @@
+# Generated build and tool output
+.cache/
+go-build/
+node_modules/
+dist/
+.codegraph/
+.atl/
+__pycache__/
+*.pyc
+playwright-report/
+test-results/
+
+# Local evidence, backups and private runtime material
+/odd/evidence/
+backups/
+.env
+.env.*
+!.env.example
+!.env.*.example
+secrets/
+private-runtime/
+logs/
+*.log
+*.key
+*.pem
+
+# External source workbooks (derived source catalog remains versionable)
+*.xlsx
+*.xls
