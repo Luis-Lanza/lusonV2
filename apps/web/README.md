@@ -102,6 +102,51 @@ npm --prefix apps/web run test -- src/useRealtime.test.ts src/App.test.tsx -t 'R
 The title filter excludes unmatched historical tests; it is not a full-suite skip
 claim. Run the unfiltered package suite, typecheck and build below as well.
 
+## R04a1 pure transfer contracts (not UI integration)
+
+`transferModel.ts` decodes the API's flat Pending DTOs with ordinary JSON parsing:
+IDs remain canonical positive int64 strings; quantities and private total counts
+become bigint directly from strings. Numeric wire quantities/IDs/counts are
+rejected. Each line is bounded to int64, but aggregate quantities are not.
+Catalog capacities retain canonical exact decimal text (six whole/fractional
+digits); UTC timestamp text retains nanosecond precision. Parsers reject unknown
+fields, unsupported routes/status/kinds, duplicate variants, invalid references,
+nullable arrays and inconsistent page counts/order. Trusted Go response DTOs
+have unique keys; these parsers do not independently detect duplicate JSON keys.
+
+`transferDirection(assignedLocation, flow)` provides branch-assignment guidance
+for warehouse requests, other-branch requests and warehouse sends. Consultation
+is not identity. Warehouse creation is refused; server cookies alone determine
+actor authority. `canonicalTransferInput(input)` clones, sorts and freezes a
+1–190-line attempt with string quantities and its caller-owned retry key.
+`newTransferRetryKey(crypto?)` uses secure randomness only, on explicit new-attempt
+calls. Never regenerate the key or mutate the payload when retrying a lost reply.
+
+`createTransferAPI(fetch?)` exposes `list(query?, { signal?, passive? }?)`,
+`detail(id, options?)` and `create(input, memoryCSRF, signal?)`. Reads admit only
+page/page_size/pending status and capture passive mode per request; manual reads
+are ordinary GETs. Relative paths, same-origin cookies and no-store are mandatory.
+POST sends JSON/CSRF headers without passive mode or a manually supplied Origin.
+Creation verifies a public record and distinguishes 201 creation from 200 replay.
+Typed errors expose only status/known codes, never raw payloads or transport
+messages; network/abort and malformed creation replies mark uncertain creation.
+No automatic POST retry, session recovery, storage, stock calls or EventSource
+exists here. Server-side foreign/missing detail failures remain identical 404s.
+
+R04 model/API tests use authentic flat DTOs and injected fetch/crypto, not PG or
+browser resources. The prior R03 full-suite result was 145 passing tests; it and
+the 107-test history above are not new R04 run claims. Focused checks:
+
+```sh
+npm --prefix apps/web run test -- src/transferModel.test.ts src/transferAPI.test.ts
+npm --prefix apps/web run test -- src/transferModel.test.ts src/transferAPI.test.ts -t 'R04'
+```
+
+Hooks/epoch guards, the existing single-stream callback integration, cart/review
+and Pending screens are later R04 units. R04 is not complete; real independent
+browser transport and layout verification remain R05. No new UI copy or controls
+are introduced by this pure adapter unit.
+
 ## Worker checks
 
 From repository root:
