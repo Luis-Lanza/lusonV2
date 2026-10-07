@@ -18,6 +18,7 @@ export interface TransferReviewProps {
   onClose: () => void;
   onEdit: () => void;
   onBack: () => void;
+  onDetail?: (id: string) => void;
   onSend: (submit: (attempt: TransferCreateInput) => Promise<TransferCreateResult>) => void;
 }
 
@@ -80,7 +81,11 @@ export default function TransferReview(props: TransferReviewProps) {
       {blocked && <p role="status">Enviando solicitud… No cambies la selección mientras se resuelve.</p>}
       <p className="review-memory">La recuperación se conserva solamente mientras esta App está abierta. Recargar o cerrar la pestaña pierde esta memoria.</p>
     </div>
-    <footer>{result ? <><button type="button" disabled>Ver detalle (próxima etapa)</button><button type="button" className="primary" onClick={props.onBack}>Volver al inventario</button></>
+    <footer>{result ? <><button type="button" disabled={!props.onDetail || blocked} onClick={() => {
+        const now = props.controller.getTransferAuthority(); const s = now.session;
+        if (!props.busy && now.ready && s?.authenticated && props.ownerTag === `${now.epoch}/${s.identity.account_id}/${s.identity.location.id}`
+          && props.snapshot.epoch === now.epoch && props.result) props.onDetail?.(props.result.record.id);
+      }}>{props.onDetail ? 'Ver detalle' : 'Ver detalle (próxima etapa)'}</button><button type="button" className="primary" onClick={props.onBack}>Volver al inventario</button></>
       : <><button type="button" disabled={blocked} onClick={props.onEdit}>Volver a editar</button>
         <button type="button" className="primary" disabled={blocked} onClick={() => props.onSend(transfers.submit)}>{snapshot.phase === 'unknown' ? 'Reintentar misma solicitud' : 'Enviar solicitud'}</button></>}</footer>
   </section></div>;

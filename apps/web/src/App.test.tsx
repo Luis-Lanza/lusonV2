@@ -451,7 +451,7 @@ describe('inventory interaction and stale guards', () => {
     });
     expect(screen.getByText('Almacén', { selector: '.assigned-location' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Sucursal B/ })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByRole('button', { name: 'Transferencias' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Transferencias' })).toBeEnabled();
     expect(screen.getByRole('button', { name: /Nueva transferencia/ })).toBeDisabled();
   });
   it.each(['success', 'error'])('ignores obsolete %s even when transport ignores AbortSignal', async kind => {
@@ -510,7 +510,7 @@ describe('inventory interaction and stale guards', () => {
     expect(container.querySelector('.warehouse')).toBeInTheDocument();
     expect(screen.queryByText('Sin stock')).not.toBeInTheDocument();
     expect(screen.getByText('6', { selector: '.variant-bottom span:first-child b' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Transferencias' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Transferencias' })).toBeEnabled();
     expect(screen.getByRole('button', { name: /Crear envío/ })).toBeDisabled();
     // CSS chooses the visible renderer at 768px; real geometry is verifier-owned.
     expect(container.querySelectorAll('.product-card')).toHaveLength(1);
@@ -829,12 +829,156 @@ describe('R04b2c2 root lifetime', () => {
     expect(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('region', { name: 'Recuperación de solicitud' })).toHaveTextContent('Recargar o cerrar');
     expect(h.posts).toHaveLength(1); expect(h.mock.mock.calls.filter(([url, init]) => String(url).startsWith('/api/transfers') && init?.method !== 'POST')).toHaveLength(0);
-    expect(screen.getByRole('button', { name: 'Transferencias' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Transferencias' })).toBeEnabled();
   });
   it('does not persist recovery across actual App unmount and new mount', async () => {
     const h = r04b2c2App(); const view = render(<App />); await inventory(); await r04b2c2OpenAndLose();
     view.unmount(); render(<App />); await inventory();
     expect(screen.queryByRole('region', { name: 'Recuperación de solicitud' })).not.toBeInTheDocument();
     expect(h.posts).toHaveLength(1);
+  });
+});
+
+describe('R04c Pending navigation', () => {
+  it('opens participant Pending without inventing a loading count', async () => {
+    const pending = deferred<Response>();
+    setup(session, url => url.startsWith('/api/transfers?') ? pending.promise : undefined);
+    render(<App />); await inventory();
+    fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
+    expect(await screen.findByRole('heading', { name: 'Transferencias pendientes' })).toBeVisible();
+    expect(screen.queryByText('0 solicitudes pendientes')).not.toBeInTheDocument();
+    pending.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] }), { headers: { 'Content-Type': 'application/json' } }));
+    expect(await screen.findByText('0 solicitudes pendientes')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' })); await inventory();
+  });
+  it('keeps the unknown root attempt through Pending and inventory, then retries the exact key and quantities manually', async () => {
+    const h = r04b2c2App(); const previous = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init: RequestInit = {}) => String(input).startsWith('/api/transfers?')
+      ? Promise.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] }), { headers: { 'Content-Type': 'application/json' } })) : previous(input, init)));
+    render(<App />); await inventory(); await r04b2c2OpenAndLose();
+    const attempt = JSON.parse(String(h.posts[0].body));
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar revisión' }));
+    expect(screen.getByRole('button', { name: 'Transferencias' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '← Volver al inventario' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Volver conservando el intento' })); await inventory();
+    fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
+    await screen.findByText('0 solicitudes pendientes'); expect(h.posts).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' })); await inventory();
+    expect(screen.getByRole('region', { name: 'Recuperación de solicitud' })).toHaveTextContent('pendiente de confirmación');
+    fireEvent.click(screen.getByRole('button', { name: 'Retomar misma solicitud' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Retomar misma solicitud' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar misma solicitud' })); await screen.findByText('TR-1001');
+    expect(h.posts).toHaveLength(2); expect(JSON.parse(String(h.posts[1].body))).toEqual(attempt);
+  });
+});
+
+function r04cRecord() {
+  return { id: '9007199254740993', reference: 'TR-9007199254740993', kind: 'request_stock', status: 'pending', created_at: '2028-01-01T00:00:00.123456789Z',
+    creator_location_id: 2, creator_location_name: 'Sucursal A', origin_location_id: 1, origin_location_name: 'Almacén', destination_location_id: 2,
+    destination_location_name: 'Sucursal A', approver_location_id: 1, approver_location_name: 'Almacén',
+    items: [{ variant_id: 1, brand: 'TOYO', model: 'Real response', capacity_ah: '75.125', polarity: 'L', quantity: '1' }] };
+}
+function r04cApp(status: number, stalled?: ReturnType<typeof deferred<Response>>) {
+  const actor = { ...session, identity: { ...identity, account_id: 2, location: metadata.locations[1] } };
+  const posts: RequestInit[] = [];
+  const mock = setup(actor, (url, init) => {
+    if (url === '/api/transfers') { posts.push(init); return stalled?.promise ?? Promise.resolve(new Response(JSON.stringify(r04cRecord()), { status, headers: { 'Content-Type': 'application/json' } })); }
+    if (url.startsWith('/api/transfers/')) return Promise.resolve(new Response(JSON.stringify(r04cRecord()), { headers: { 'Content-Type': 'application/json' } }));
+    if (url.startsWith('/api/transfers?')) {
+      const q = new URL(url, 'http://localhost').searchParams;
+      return Promise.resolve(new Response(JSON.stringify({ page: Number(q.get('page')), page_size: Number(q.get('page_size')), status: 'pending', total_count: '1', records: [r04cRecord()] }), { headers: { 'Content-Type': 'application/json' } }));
+    }
+    if (url.startsWith('/api/inventory?') && new URL(url, 'http://localhost').searchParams.get('page_size') === '50') {
+      const source = Number(new URL(url, 'http://localhost').searchParams.get('location_id'));
+      return Promise.resolve(new Response(JSON.stringify({ location: metadata.locations[source - 1], page: 1, page_size: 50, total_variants: 1,
+        items: [{ variant_id: 1, catalog_entry_id: 1, brand: 'TOYO', model: 'Real response', capacity_ah: 75.125, polarity: 'L', existing: 8, reserved: 0, available: 8 }] }), { headers: { 'Content-Type': 'application/json' } }));
+    }
+    return undefined;
+  });
+  return { mock, posts };
+}
+async function r04cSend() {
+  fireEvent.click(screen.getByRole('button', { name: /Nueva transferencia/ }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Añadir Real response L' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Revisar solicitud' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' }));
+}
+describe('R04c guarded success navigation', () => {
+  it('does not request a selected A detail under B after actual logout/login, even when the old reply arrives late', async () => {
+    const h = r04b2c2App(); const previous = globalThis.fetch; const late = deferred<Response>(); let assigned = 2;
+    const records = () => assigned === 2 ? [r04cRecord()] : [{ ...r04cRecord(), id: '9007199254740994', reference: 'TR-9007199254740994',
+      creator_location_id: 3, creator_location_name: 'Sucursal B', destination_location_id: 3, destination_location_name: 'Sucursal B' }];
+    const fetch = vi.fn((input: RequestInfo | URL, init: RequestInit = {}) => {
+      const url = String(input);
+      if (url.endsWith('/login')) assigned = 3;
+      if (url.startsWith('/api/transfers?')) return Promise.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, status: 'pending', total_count: '1', records: records() }), { headers: { 'Content-Type': 'application/json' } }));
+      if (url.startsWith('/api/transfers/')) return late.promise;
+      return previous(input, init);
+    }); vi.stubGlobal('fetch', fetch);
+    render(<App />); await inventory(); fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver detalle TR-9007199254740993' }));
+    await waitFor(() => expect(fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers/'))).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' })); await screen.findByLabelText('Usuario'); await login();
+    expect(screen.queryByRole('heading', { name: 'Detalle de solicitud' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
+    await screen.findByRole('button', { name: 'Ver detalle TR-9007199254740994' });
+    await act(async () => { late.resolve(new Response(JSON.stringify(r04cRecord()), { headers: { 'Content-Type': 'application/json' } })); });
+    expect(document.body).not.toHaveTextContent('TR-9007199254740993');
+    expect(fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers/'))).toHaveLength(1); expect(h.posts).toHaveLength(0);
+  });
+  it.each([1, 2])('uses assigned role %s at narrow viewport independently of the consulted warehouse', async assigned => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
+    const actor = { ...session, identity: { ...identity, account_id: assigned, location: metadata.locations[assigned - 1] } };
+    setup(actor, url => url.startsWith('/api/transfers?') ? Promise.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, status: 'pending', total_count: '1', records: [r04cRecord()] }), { headers: { 'Content-Type': 'application/json' } })) : undefined);
+    render(<App />); if (assigned === 1) await screen.findByText('9007199254740993'); else await inventory();
+    if (assigned === 2) { fireEvent.click(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })); await inventory(); }
+    fireEvent.click(screen.getByRole('button', { name: 'Transferencias' })); await screen.findByText('1 solicitudes pendientes');
+    expect(document.querySelector('.app-shell')?.classList.contains('warehouse')).toBe(assigned === 1);
+    expect(document.querySelector('.pending-cards') !== null).toBe(assigned === 1);
+    expect(screen.queryByRole('navigation', { name: 'Navegación móvil' }) !== null).toBe(assigned === 1);
+    expect(screen.getByRole('table', { name: 'Solicitudes pendientes participantes' })).toBeInTheDocument();
+  });
+  it.each([201, 200])('opens only the validated %s record ID and returns to the unchanged inventory query', async status => {
+    const h = r04cApp(status); render(<App />); await inventory();
+    fireEvent.click(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })); await inventory();
+    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'kept-r04c' } }); await inventory();
+    fireEvent.change(screen.getByLabelText('Marca', { exact: true }), { target: { value: 'TOYO' } }); await inventory();
+    fireEvent.change(screen.getByLabelText('Polaridad', { exact: true }), { target: { value: 'L' } }); await inventory();
+    fireEvent.change(screen.getByLabelText('Filas por página'), { target: { value: '10' } }); await inventory();
+    await r04cSend(); await screen.findByRole('heading', { name: 'Solicitud Pending confirmada' });
+    expect(h.mock.mock.calls.filter(([url, init]) => String(url).startsWith('/api/transfers') && init?.method !== 'POST')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Ver detalle' }));
+    await screen.findByRole('heading', { name: 'TR-9007199254740993' });
+    const reads = h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers/'));
+    expect(reads).toHaveLength(1); expect(reads[0][0]).toBe('/api/transfers/9007199254740993');
+    expect(new Headers(reads[0][1]?.headers).has('X-Luson-Passive')).toBe(false);
+    expect(h.posts).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' })); await inventory();
+    expect(screen.getByLabelText('Buscar marca o modelo')).toHaveValue('kept-r04c');
+    expect(screen.getByLabelText('Marca', { exact: true })).toHaveValue('TOYO'); expect(screen.getByLabelText('Polaridad', { exact: true })).toHaveValue('L');
+    expect(screen.getByLabelText('Filas por página')).toHaveValue('10');
+    expect(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })).toHaveAttribute('aria-pressed', 'true'); expect(h.posts).toHaveLength(1);
+  });
+  it('blocks sidebar inventory and Pending exit during POST and keeps one POST', async () => {
+    const pending = deferred<Response>(); const h = r04cApp(201, pending); render(<App />); await inventory(); await r04cSend();
+    await screen.findByText('Enviando solicitud… No cambies la selección mientras se resuelve.');
+    expect(screen.getByRole('button', { name: 'Transferencias' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Transferencias' })); fireEvent.click(screen.getByRole('link', { name: 'Inventario' }));
+    expect(screen.queryByRole('heading', { name: 'Transferencias pendientes' })).not.toBeInTheDocument();
+    pending.resolve(new Response(JSON.stringify(r04cRecord()), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    await screen.findByRole('button', { name: 'Ver detalle' }); expect(h.posts).toHaveLength(1);
+  });
+  it('keeps one existing EventSource and refreshes both detail and list on transfers/resync', async () => {
+    const h = r04cApp(201); render(<App />); await inventory(); fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver detalle TR-9007199254740993' })); await screen.findByRole('heading', { name: 'TR-9007199254740993' });
+    for (const kind of ['transfers', 'resync']) {
+      const listBefore = h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers?')).length;
+      const detailBefore = h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers/')).length;
+      act(() => { AppSource.instances[0].emit(kind); });
+      await waitFor(() => expect(h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers/'))).toHaveLength(detailBefore + 1));
+      expect(h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers?'))).toHaveLength(listBefore + 1);
+    }
+    expect(AppSource.instances.filter(s => s.readyState !== 2)).toHaveLength(1); expect(h.posts).toHaveLength(0);
+    for (const [, init] of h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers')).slice(-2)) expect(new Headers(init?.headers).get('X-Luson-Passive')).toBe('1');
   });
 });

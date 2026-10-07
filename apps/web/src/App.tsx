@@ -5,6 +5,7 @@ import { groupItems } from './model';
 import type { Item } from './model';
 import { useInventory } from './useInventory';
 import TransferCreation from './TransferCreation';
+import TransferPending, { transferViewOwner } from './TransferPending';
 import { createTransferRecovery } from './transferRecovery';
 
 type Controller = ReturnType<typeof useInventory>;
@@ -72,10 +73,12 @@ function Pager({ state }: { state: Controller }) {
     </div>
   </footer>;
 }
-function Navigation({ mobile = false }: { mobile?: boolean }) {
+function Navigation({ mobile = false, pending, disabled, onInventory, onPending }: {
+  mobile?: boolean; pending: boolean; disabled: boolean; onInventory: () => void; onPending: () => void;
+}) {
   return <nav className={mobile ? 'bottom-nav' : 'side-nav'} aria-label={mobile ? 'Navegación móvil' : 'Navegación principal'}>
-    <a href="#inventario" aria-current="page"><Icon name="inventory" /><span>Inventario</span></a>
-    <button type="button" disabled><Icon name="transfer" /><span>Transferencias</span></button>
+    <a href="#inventario" aria-current={!pending ? 'page' : undefined} aria-disabled={disabled} onClick={event => { event.preventDefault(); if (!disabled) onInventory(); }}><Icon name="inventory" /><span>Inventario</span></a>
+    <button type="button" disabled={disabled} aria-current={pending ? 'page' : undefined} onClick={onPending}><Icon name="transfer" /><span>Transferencias</span></button>
   </nav>;
 }
 function InventoryView({ state, recovery }: { state: Controller; recovery: ReturnType<typeof createTransferRecovery> }) {
@@ -83,7 +86,23 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
   const { identity } = state.session;
   const { metadata, query, data } = state;
   const warehouse = identity.location.id === 1;
-  const [creation, setCreation] = useState(false);
+  const [creationRequested, setCreation] = useState(false);
+  const ownerTag = transferViewOwner(state.getTransferAuthority());
+  const [creationOwner, setCreationOwner] = useState<string | null>(null);
+  const creation = creationRequested && creationOwner === ownerTag && ownerTag !== null;
+  const [pane, setPane] = useState<{ ownerTag: string; initialDetail?: { ownerTag: string; id: string } } | null>(null);
+  const pending = ownerTag !== null && pane?.ownerTag === ownerTag;
+  function navigate(toPending: boolean) {
+    const latest = transferViewOwner(state.getTransferAuthority());
+    if (!latest || latest !== ownerTag || creation || recovery.getCurrent(state.getTransferAuthority)?.phase === 'inFlight') return;
+    setPane(toPending ? { ownerTag: latest } : null);
+  }
+  function openCreatedDetail(id: string, expectedOwner: string) {
+    const latest = transferViewOwner(state.getTransferAuthority());
+    if (!latest || latest !== expectedOwner || latest !== ownerTag || recovery.getCurrent(state.getTransferAuthority)?.phase === 'inFlight') return;
+    setCreation(false);
+    setPane({ ownerTag: latest, initialDetail: { ownerTag: latest, id } });
+  }
   const [narrow, setNarrow] = useState(() => window.matchMedia?.('(max-width: 767px)').matches ?? false);
   useEffect(() => {
     const media = window.matchMedia?.('(max-width: 767px)');
@@ -95,21 +114,26 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
   const mobile = warehouse && narrow;
   const selected = metadata?.locations.find(l => l.id === query.location);
   const recoverable = recovery.getCurrent(state.getTransferAuthority);
+  const navDisabled = !ownerTag || creation || recoverable?.phase === 'inFlight';
+  const navigation = { pending, disabled: navDisabled, onInventory: () => navigate(false), onPending: () => navigate(true) };
   return <div className={'app-shell' + (warehouse ? ' warehouse' : '')}>
-    <aside className="sidebar" hidden={mobile}><div><Brand /><Navigation /></div><div className="sidebar-footer"><div className="identity"><strong>{identity.username}</strong><small className="assigned-location">{identity.location.name}</small></div><button className="logout" type="button" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" />Cerrar sesión</button></div></aside>
+    <aside className="sidebar" hidden={mobile}><div><Brand /><Navigation {...navigation} /></div><div className="sidebar-footer"><div className="identity"><strong>{identity.username}</strong><small className="assigned-location">{identity.location.name}</small></div><button className="logout" type="button" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" />Cerrar sesión</button></div></aside>
     <header className="app-header" hidden={mobile}><strong>Luson Inventario</strong><span><Icon name="warehouse" />Ubicación asignada: <b>{identity.location.name}</b></span></header>
     <header className="mobile-header" hidden={!mobile}><div><Brand /><button type="button" aria-label="Cerrar sesión" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" /></button></div><div className="mobile-identity"><span><Icon name="warehouse" />{identity.location.name}</span><span>{identity.username}</span></div></header>
     <main id="inventario" className="inventory-main">
-      {creation && !warehouse && metadata ? <TransferCreation controller={state} metadata={metadata} recovery={recovery} onBack={() => setCreation(false)} /> : <>
+      {pending && pane ? <TransferPending key={pane.ownerTag} controller={state} ownerTag={pane.ownerTag} initialDetail={pane.initialDetail} onInventory={() => navigate(false)} />
+        : creation && !warehouse && metadata ? <TransferCreation controller={state} metadata={metadata} recovery={recovery} onBack={() => setCreation(false)} onDetail={openCreatedDetail} /> : <>
       {recoverable && <section className="creation-recovery" aria-label="Recuperación de solicitud"><p>{recoverable.phase === 'ready' ? 'Tenés una revisión preparada, todavía no enviada.' : 'Tenés un intento pendiente de confirmación.'}</p>
         <button type="button" disabled={!metadata || recoverable.phase === 'inFlight'} onClick={() => {
-          if (recovery.getCurrent(state.getTransferAuthority)) setCreation(true);
+          const latest = transferViewOwner(state.getTransferAuthority());
+          if (latest && recovery.getCurrent(state.getTransferAuthority)) { setCreationOwner(latest); setCreation(true); }
         }}>{recoverable.phase === 'ready' ? 'Retomar revisión' : 'Retomar misma solicitud'}</button>
         <p>Recargar o cerrar la pestaña pierde esta recuperación en memoria.</p></section>}
       <section className="inventory-heading">
         <div className="title-row"><div><h1>Inventario</h1><p>Consulta de existencias y disponibilidad en almacén y red de sucursales.</p></div><button className="primary transfer-cta" type="button" disabled={warehouse || state.authBusy || !metadata} onClick={() => {
           const authority = state.getTransferAuthority();
-          if (authority.ready && authority.session?.authenticated && [2, 3].includes(authority.session.identity.location.id)) setCreation(true);
+          const latest = transferViewOwner(authority);
+          if (latest && authority.session?.authenticated && [2, 3].includes(authority.session.identity.location.id)) { setCreationOwner(latest); setCreation(true); }
         }}><Icon name={warehouse ? 'transfer' : 'plus'} /><span className="desktop-cta">Nueva transferencia</span><span className="mobile-cta">Crear envío</span></button></div>
         <div className="location-tabs" hidden={mobile} role="group" aria-label="Vista de stock"><span>Vista de stock:</span>{metadata?.locations.map(l => <button type="button" key={l.id} aria-pressed={query.location === l.id} disabled={state.authBusy} onClick={() => state.change({ location: l.id })}>{l.name}<small>{l.id === identity.location.id ? 'Mi ubicación · Consulta' : 'Solo consulta'}</small></button>)}</div>
       </section>
@@ -129,7 +153,7 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
       </section>
       </>}
     </main>
-    {mobile && <Navigation mobile />}
+    {mobile && <Navigation mobile {...navigation} />}
   </div>;
 }
 export default function App() {

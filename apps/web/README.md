@@ -374,7 +374,8 @@ The hydration unit itself adds no lifecycle or browser proof.
 ## R04b2c2 explicit review, manual submit and App lifetime
 
 `TransferCreation` accepts `controller`, `metadata`, `onBack`, optional `loader`
-and optional `recovery` (isolated leaf default only). Actual App always supplies
+and optional `recovery` (isolated leaf default only), plus optional guarded
+`onDetail(id, ownerTag)` for a supported host. Actual App always supplies
 its root-owned factory; A/B slots survive login/logout/auth-dependent unmounts.
 Only latest ready exact account/branch sees its banner, frozen review or result.
 Fresh same-owner epochs recover the cached route and exact attempt, not old auth.
@@ -391,7 +392,7 @@ Only manual send begins a fresh opaque flight under a synchronous ref lock.
 Existing useTransfers reads stay disabled; POST uses current CSRF. Actual parsed
 201/200 results publish reference, string ID and exact UTC creation text only after
 matching current-owner/epoch confirmation. No optimistic IDs, automatic retry,
-private counts, polling, additional EventSource or future action endpoints exist.
+private reads from creation/review, polling, additional EventSource or future action endpoints exist.
 Failures keep the same attempt and sanitized code-specific guidance;403 is not
 logout,401 uses existing neutral settlement and retry_conflict never rotates a key.
 
@@ -402,7 +403,49 @@ loading defers editing, but direct same-key manual retry remains available. Retu
 to inventory can retain the attempt and query; reload/tab close destroys recovery.
 Unit transport mocks exercise framing/status and lifecycle, not real browser cookie
 ordering, deployed MIME, fonts/geometry, SSE, two services or PG stock invariance.
-R04 participant views and R05 remain pending; no overall feature closure is claimed.
+R04 and R05 remain open; no overall feature closure is claimed.
+
+## R04c participant Pending list and detail
+
+The shared `TransferPending` takes `controller`, minimal current `ownerTag`, optional
+`initialDetail: { ownerTag, id }`, and `onInventory`. The internal tag contains only
+epoch/account/assigned location; it is not an auth credential. Latest readiness and
+owner checks precede DTO/error/ID/total reads and human handlers. Actual App routes
+only in memory, with no URL IDs or storage. Authority changes mask obsolete routes;
+an initial detail belonging to another owner is not read or requested.
+
+Only the visible Pending pane enables the existing list lane; only a selected detail
+enables its detail lane. Manual open/page/size/retry uses the hook's human methods;
+transfer invalidation and resync passively refresh both enabled lanes through the one
+existing EventSource. Hook abort/dirty-flight follow-up semantics remain unchanged.
+Sizes are 10/25/50; size changes reset page one. Human page entry is bounded 1–1000000.
+Next-page bounds compare exact bigint count with bigint page × size, never Number(count).
+The header reports only validated participant `total_count`, not page length or role
+aggregates. Loading/error/unready states do not invent zero; only an actual zero DTO
+shows the empty state. Private and unknown 404s share a generic unavailable message,
+without echoing the requested ID or an unvalidated reference.
+
+Rows show real references, physical route, Pending, exact unit sums and static
+required location. Detail preserves Ah/UTC strings, L/R labels, bigint quantities,
+creator location and approver location. It reports no employee/history/stock metrics
+and exposes no approval/rejection/cancellation/dispatch/reservation actions. Warehouse
+cards follow the existing 390px shell; branches keep the desktop table regardless
+of viewport or consulted inventory location. Geometry/font fidelity is not measured.
+
+Sidebar/bottom navigation cannot leave active creation drafts or in-flight POSTs:
+use the existing warned back action. Unknown attempts survive non-destructive Pending
+navigation in the root archive. Back preserves the inventory controller query and
+Pending detail-back preserves its page/size. Parsed 201/200 success can call optional
+Review → Creation → App detail navigation only after latest owner/epoch checks;
+standalone hosts without that callback retain the disabled future CTA. No extra POST
+or private GET occurs until actual navigation.
+
+RTL transport mocks verify these UI contracts, not deployed browser cookie ordering,
+MIME delivery or real multi-account SSE. R05 still must observe natural cookie/current
+actor/response-count authority binding in isolated owned contexts; no universal browser
+privacy conclusion follows from mocked getters or participant fixtures. API/hooks and
+backend authority protocols are unchanged by this UI unit. Two-service PG stock
+invariance, real desktop/mobile layout and complete feature acceptance remain pending.
 
 ## Worker checks
 

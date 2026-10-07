@@ -16,6 +16,7 @@ export interface TransferCreationProps {
   controller: TransferController & SourceInventoryController;
   metadata: Metadata;
   onBack: () => void;
+  onDetail?: (id: string, ownerTag: string) => void;
   loader?: typeof loadSourceInventory;
   recovery?: ReturnType<typeof createTransferRecovery>;
 }
@@ -27,7 +28,7 @@ function owner(authority: TransferAuthority): string | null {
 type Flight = { sequence: number; abort: AbortController; dirty: boolean };
 type Held = { owner: string; flow: TransferFlow; cart: TransferCart };
 
-export default function TransferCreation({ controller, metadata, onBack, loader = loadSourceInventory, recovery: injectedRecovery }: TransferCreationProps) {
+export default function TransferCreation({ controller, metadata, onBack, loader = loadSourceInventory, recovery: injectedRecovery, onDetail }: TransferCreationProps) {
   const [isolatedRecovery] = useState(createTransferRecovery);
   const recovery = injectedRecovery ?? isolatedRecovery;
   const cachedFlow = () => {
@@ -373,7 +374,10 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
       onClose={closeReview} onEdit={() => {
         const archived = recovery.getCurrent(controller.getTransferAuthority);
         if (archived?.phase === 'unknown') requestCaution('edit'); else closeReview();
-      }} onBack={() => { if (current() && !inFlight) onBack(); }} onSend={submit => { void send(submit); }} />}
+      }} onBack={() => { if (current() && !inFlight) onBack(); }} onSend={submit => { void send(submit); }}
+      onDetail={onDetail ? id => {
+        if (current() && !inFlight && outcome?.owner === key && outcome.result.record.id === id) onDetail(id, key!);
+      } : undefined} />}
     {pending && <div className="creation-dialog-backdrop"><section role="dialog" aria-modal="true" aria-labelledby="discard-title" className="creation-dialog" onKeyDown={e => {
       if (e.key === 'Escape') { e.preventDefault(); closeDialog(); }
       if (e.key === 'Tab') {
