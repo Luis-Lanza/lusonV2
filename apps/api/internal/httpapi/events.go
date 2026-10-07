@@ -56,19 +56,62 @@ func (a *API) lookupSession(r *http.Request, token string, passive bool) (auth.S
 // auth/inventory and the existing transfer guard retain their own behavior.
 func eventsPath(w http.ResponseWriter, r *http.Request) bool {
 	clean := path.Clean(r.URL.Path)
-	if r.URL.Path != "/api/events" && !strings.HasPrefix(r.URL.Path, "/api/events/") && clean != "/api/events" && !strings.HasPrefix(clean, "/api/events/") {
+	for _, route := range []string{"/api/events", "/api/auth/validate"} {
+		if r.URL.Path != route && !strings.HasPrefix(r.URL.Path, route+"/") && clean != route && !strings.HasPrefix(clean, route+"/") {
+			continue
+		}
+		if r.URL.Path != route {
+			failure(w, 404, "not_found")
+			return false
+		}
+		if r.URL.EscapedPath() != r.URL.Path {
+			failure(w, 400, "invalid_request")
+			return false
+		}
 		return true
-	}
-	if r.URL.Path != "/api/events" {
-		failure(w, 404, "not_found")
-		return false
-	}
-	if r.URL.EscapedPath() != r.URL.Path {
-		failure(w, 400, "invalid_request")
-		return false
 	}
 	return true
 }
+
+// validateSession is cookie-neutral on every branch. Automatic probes must not
+// call the cookie-writing session bootstrap or select touching Current.
+func (a *API) validateSession(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, http.MethodGet) {
+		return
+	}
+	if _, valid := passiveMode(r); !valid {
+		failure(w, 400, "invalid_request")
+		return
+	}
+	if r.URL.RawQuery != "" || r.URL.ForceQuery {
+		failure(w, 400, "invalid_request")
+		return
+	}
+	if !optionalSameOrigin(r, "Origin", a.cfg.Origin) || !optionalSameOrigin(r, "Sec-Fetch-Site", "same-origin") {
+		failure(w, 403, "forbidden")
+		return
+	}
+	token, unique := readCookie(r, sessionCookie)
+	if !unique {
+		failure(w, 400, "invalid_request")
+		return
+	}
+	if token == "" {
+		respond(w, 200, map[string]bool{"authenticated": false})
+		return
+	}
+	session, _, err := a.eventSession(r, token)
+	if errors.Is(err, auth.ErrSession) {
+		respond(w, 200, map[string]bool{"authenticated": false})
+		return
+	}
+	if err != nil {
+		failure(w, 503, "service_unavailable")
+		return
+	}
+	respond(w, 200, map[string]any{"authenticated": true, "identity": session.Identity, "csrf_token": auth.CSRF(token), "expires_at": session.ExpiresAt})
+}
+
 func optionalSameOrigin(r *http.Request, name, want string) bool {
 	values := r.Header.Values(name)
 	return len(values) == 0 || (len(values) == 1 && values[0] == want)
@@ -129,6 +172,7 @@ func streamWrite(w http.ResponseWriter, rc *http.ResponseController, frame strin
 	return streamFlush(rc)
 }
 func (a *API) registerEvents(mux *http.ServeMux, broker *realtime.Broker) {
+	mux.HandleFunc("/api/auth/validate", a.validateSession)
 	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {
 		if !method(w, r, http.MethodGet) {
 			return

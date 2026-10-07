@@ -190,3 +190,23 @@ One named real-network test deliberately runs beyond 16 s with global 15 s write
 timeout. It is a duration smoke, not an arbitrary sleep-based queue/race proof.
 All Pending checks compare 570-row stock snapshots. Parent independent review
 and fixture audit remain separate; no browser, live UI or deployment is claimed.
+
+## Cookie-neutral automatic validation (R03b2)
+
+Realtime composition alone registers GET exact `/api/auth/validate`. It always
+uses bounded Peek, even without a passive header, and never emits Set-Cookie on
+any outcome. Optional passive value 1 remains strict; GET-only/query/path/cookie/
+Origin/FetchSite guards mirror SSE. Authenticated 200 returns only authenticated,
+identity, csrf_token and absolute expires_at. Missing/invalid/expired/revoked
+cookies return 200 `{"authenticated":false}` only; no bootstrap CSRF is invented.
+Guard errors remain 400/403/405 and availability/cancellation errors 503. Prelogin
+cookies are ignored as authority and remain untouched. Legacy factories keep 404.
+
+Automatic error probes must use validate, not cookie-writing `/api/auth/session`.
+Genuine anonymous state bootstraps separately, with cookie-writing settlement
+serialized before login/logout. Same identity with different CSRF means new
+authority and must reconcile protected state, not preserve a healthy old view.
+Generation checks/AbortController cannot undo already-applied Set-Cookie headers.
+This avoids automatic cookie-writing probe races, not global cross-tab ordering
+or uncertain-abort effects. Tests demonstrate response-header neutrality, not a
+browser reproduction or acceptance. Existing bootstrap/SSE semantics are intact.
