@@ -2,11 +2,6 @@ package bootstrap_test
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
-	"fmt"
-	"os/exec"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,69 +10,14 @@ import (
 	"luson/api/internal/bootstrap"
 	"luson/api/internal/config"
 	"luson/api/internal/db"
+	"luson/api/internal/testpg"
 )
 
-// These tests require Docker and always run real PostgreSQL; no skip path.
+// These tests require the admitted parent-owned PostgreSQL fixture; no skip path.
 func TestPostgres(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	random := make([]byte, 16)
-	if _, err := rand.Read(random); err != nil {
-		t.Fatal(err)
-	}
-	token := hex.EncodeToString(random)
-	name := "luson-l01-test-" + token[:12]
-	password := token
-	command := exec.CommandContext(ctx, "docker", "run", "--rm", "-d", "--name", name, "--network", "bridge", "--publish", "127.0.0.1::5432", "--tmpfs", "/var/lib/postgresql/data", "-e", "POSTGRES_PASSWORD="+password, "-e", "POSTGRES_DB=l01_test", "postgres:17.9")
-	if err := command.Run(); err != nil {
-		t.Fatalf("start isolated PostgreSQL container: %v", err)
-	}
-	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := exec.CommandContext(cleanupCtx, "docker", "stop", "--time", "5", name).Run(); err != nil {
-			t.Errorf("cleanup owned container %s: %v", name, err)
-		}
-	}()
-	output, err := exec.CommandContext(ctx, "docker", "port", name, "5432/tcp").Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	address := strings.TrimSpace(string(output))
-	if !strings.HasPrefix(address, "127.0.0.1:") {
-		t.Fatal("unexpected container binding")
-	}
-	baseURL := fmt.Sprintf("postgres://postgres:%s@%s/l01_test?sslmode=disable", password, address)
-	admin, err := pgxpool.New(ctx, baseURL)
-	if err != nil {
-		t.Fatal("test pool configuration failed")
-	}
-	defer admin.Close()
-	ready := false
-	for i := 0; i < 100; i++ {
-		if admin.Ping(ctx) == nil {
-			ready = true
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if !ready {
-		t.Fatal("isolated PostgreSQL did not become ready")
-	}
-	fresh := func(t *testing.T) *pgxpool.Pool {
-		t.Helper()
-		database := fmt.Sprintf("test_%d", time.Now().UnixNano())
-		if _, err := admin.Exec(ctx, "CREATE DATABASE "+database); err != nil {
-			t.Fatal(err)
-		}
-		url := strings.Replace(baseURL, "/l01_test?", "/"+database+"?", 1)
-		pool, err := pgxpool.New(ctx, url)
-		if err != nil {
-			t.Fatal("test database pool failed")
-		}
-		t.Cleanup(pool.Close)
-		return pool
-	}
+	fresh := testpg.Open
 	initialize := func(t *testing.T, p *pgxpool.Pool) {
 		t.Helper()
 		if err := db.Apply(ctx, p); err != nil {

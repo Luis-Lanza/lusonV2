@@ -133,57 +133,57 @@ mutations must also apply the origin/CSRF guard; middleware alone is not CSRF.
 
 ## Authentication checks
 
-All authentication/inventory PostgreSQL tests require BOTH an explicit
-`LUSON_TEST_NETWORK` and `LUSON_TEST_NETWORK_MANIFEST`. The active descriptor's
-schema, name, full ID and four exact ownership labels must match a fresh Docker
-inspection before each fixture. Relative descriptor paths resolve from the
-canonical repository root, not the Go package directory. Missing, inactive or
-mismatched descriptors fail; there is no bridge fallback or skip. The historical
-L02 network is retired. Active fixtures are fresh `luson-l03-test-*`
-PostgreSQL17.9 containers with generated test credentials, localhost random ports
-and tmpfs data, and stop only their exact owned containers. The parent owns
-network creation and empty exact-ID cleanup; a file alone grants no lifecycle
-permission.
+All PostgreSQL tests require **one nonsecret environment pointer**:
+`LUSON_TEST_PG_MANIFEST`, an absolute path to a fresh parent-owned
+`luson.test-pg/v1` manifest. Missing, inactive or mismatched admission fails
+before SQL; there is no skip, historical binding, default-bridge fallback,
+host PostgreSQL installation or credential DSN environment provider.
 
-Historical L03 commands below are evidence only: their binding is retired.
-Do not execute them without a new parent-provisioned contract/helper mapping:
+The parent prepares and owns the isolated PostgreSQL17.9 fixture: an internal
+private Docker network, no published host ports, and temporary private data.
+The manifest and its private DSN file must be regular, nonsymlink, UID1000,
+mode0600 files. Do not print their contents or copy credentials into commands,
+environment variables or logs. Read-only Docker inspection verifies full
+container/network/image identities, exact ownership labels, IPAM, private
+address and bind metadata before database creation and cleanup.
 
-```sh
-cd apps/api
-LUSON_TEST_NETWORK=luson-l03-test-isolated-468f4adf5962 LUSON_TEST_NETWORK_MANIFEST=odd/evidence/login-inventory/l03-test-network.json go test ./... -count=1
-LUSON_TEST_NETWORK=luson-l03-test-isolated-468f4adf5962 LUSON_TEST_NETWORK_MANIFEST=odd/evidence/login-inventory/l03-test-network.json go test -race ./... -count=1
-go vet ./...
-```
+`internal/testpg.Open(t)` creates only a cryptographically named **empty
+database**, with a bounded pool; callers initialize their own schema/accounts.
+The old `internal/auth/testpg` import path delegates to the same helper.
+Cleanup closes the pool, rechecks admission and drops only its recorded database
+with the matching owner and catalog identity. Tests never create, stop or remove
+Docker resources or drop the admin database. Parent fixture lifecycle remains
+separate; a manifest does not grant Docker lifecycle permission.
 
-This binding is temporary, not a reusable default. L03 commands and actual
-results: `odd/evidence/login-inventory/l03-inventory-checks.md`.
-
-The original L01 integration test still uses its independently authorized bridge
-exception; no new auth coverage was added there. Observed command/RED/GREEN
-records: `odd/evidence/login-inventory/l02-auth-checks.md`.
+Historical L02–L05 commands and retired bindings are evidence only, not runnable
+defaults. Earlier records remain in
+`odd/evidence/login-inventory/l02-auth-checks.md` and
+`odd/evidence/login-inventory/l03-inventory-checks.md`.
 
 ## Run the foundation checks
 
-Requirements: Go 1.27, Python 3 for source comparison, and a running Docker daemon.
-From the repository root:
+Requirements: Go 1.27, Python 3 for source comparison, a running Docker daemon,
+and the freshly admitted parent-owned fixture described above. Set
+`LUSON_TEST_PG_MANIFEST` to its absolute manifest path (not a DSN) in the test
+shell before running PostgreSQL checks. From the repository root:
 
 ```sh
 python3 apps/api/fixtures/normalize.py '/tmp/marca modelo amperaje.xlsx'
 cd apps/api
-go test ./internal/catalog ./internal/config ./internal/bootstrap ./internal/db ./cmd/migrate -count=1
-go test -race ./internal/catalog ./internal/config ./internal/bootstrap ./internal/db ./cmd/migrate -count=1
-go vet ./internal/catalog ./internal/config ./internal/bootstrap ./internal/db ./cmd/migrate
+# Fixture-independent admission checks:
+go test ./internal/testpg -run '^TestR01AdmissionPure$' -count=1
+go test ./internal/auth/testpg -count=1
+# Requires LUSON_TEST_PG_MANIFEST from the parent-owned fixture:
+go test ./internal/testpg ./internal/bootstrap -run '^(TestR01AdmissionPostgres|TestPostgres|TestAccountsAtomic|TestAccountsPartialRefusal)$' -count=1
+go vet ./...
 ```
 
-The PostgreSQL integration test **always runs**, without a skip path. It uses
-`postgres:17.9`, a fresh `luson-l01-test-<random>` container, generated test-only
-password, fresh test databases, container-only bridge networking, and a random
-host port bound only to `127.0.0.1`. PostgreSQL data is held in a tmpfs at
-`/var/lib/postgresql/data` (the PostgreSQL 17 path). No user database, named
-volume, or operational credentials are used. Deferred cleanup stops only that
-exact container; Docker's `--rm` removes it. There is no prune or volume-removal
-command. A forcibly killed test process may leave its own container running;
-inspect the exact test container and stop only it.
+The foundation integration test **always runs**, without a skip path, through
+that same admission boundary. Its schema/seed, replay, rollback, checksum,
+unknown-table and eight-concurrent-initializer assertions remain unchanged.
+There is no independent default-bridge container setup. If a process is forcibly
+killed, its generated database can remain; the parent must inspect and handle
+that exact owned database rather than using wildcard drops or Docker cleanup.
 
 ## Initialize or check a privately configured database
 
