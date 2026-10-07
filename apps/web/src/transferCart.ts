@@ -3,7 +3,12 @@ import type { TransferAuthority } from './useInventory';
 import type { SourceCatalog } from './sourceInventory';
 import { canonicalTransferInput, newTransferRetryKey, transferDirection, type TransferCreateInput, type TransferDirection, type TransferFlow } from './transferModel';
 
-export interface CartLine { readonly item: Readonly<Item>; readonly quantity: bigint; readonly available: bigint | null }
+export type CartDescriptor = Readonly<Pick<Item, 'variant_id' | 'catalog_entry_id' | 'brand' | 'model' | 'capacity_ah' | 'polarity'>>;
+export interface CartRestoration {
+  readonly epoch: number; readonly attempt: TransferCreateInput; readonly direction: Readonly<TransferDirection>;
+  readonly items: readonly (CartDescriptor & { readonly quantity: string })[];
+}
+export interface CartLine { readonly item: CartDescriptor; readonly quantity: bigint; readonly available: bigint | null }
 export interface TransferCart {
   readonly epoch: number; readonly accountID: number; readonly assigned: 2 | 3;
   readonly direction: Readonly<TransferDirection>; readonly catalog: SourceCatalog;
@@ -53,6 +58,41 @@ export function createTransferCart(authority: TransferAuthority, flow: TransferF
   const current = actor(authority);
   const direction = Object.freeze(transferDirection(current.assigned, flow));
   return Object.freeze({ ...current, direction, catalog: copyCatalog(catalog, direction.origin_location_id), lines: Object.freeze([]), attempt: null });
+}
+// Caller MUST obtain snapshot through recovery.getCurrent(latestAuthorityGetter).
+// Snapshot has no account credential: epoch/route checks do not authorize archive access.
+export function restoreTransferCart(authority: TransferAuthority, catalog: SourceCatalog, snapshot: CartRestoration): TransferCart {
+  try {
+    const current = actor(authority);
+    if (!Number.isInteger(current.accountID) || current.accountID < 1 || current.accountID > 2147483647
+      || snapshot.epoch !== current.epoch) return invalid();
+    const attempt = canonicalTransferInput(snapshot.attempt);
+    const flow = attempt.kind === 'send_to_warehouse' ? 'sendWarehouse'
+      : attempt.counterparty_location_id === 1 ? 'requestWarehouse' : 'requestOther';
+    const direction = Object.freeze(transferDirection(current.assigned, flow));
+    if (attempt.counterparty_location_id !== direction.counterparty_location_id
+      || Object.keys(direction).some(k => direction[k as keyof TransferDirection] !== snapshot.direction[k as keyof TransferDirection])) return invalid();
+    const copied = copyCatalog(catalog, direction.origin_location_id);
+    if (!Array.isArray(snapshot.items) || snapshot.items.length !== attempt.items.length) return invalid();
+    const seen = new Set<number>();
+    const lines = snapshot.items.map(selected => {
+      const { variant_id, catalog_entry_id, brand, model, capacity_ah, polarity } = selected;
+      const validText = (s: string) => typeof s === 'string' && !!s && !s.includes('\0') && s.isWellFormed();
+      if (!Number.isInteger(variant_id) || variant_id < 1 || variant_id > 190 || seen.has(variant_id)
+        || !Number.isInteger(catalog_entry_id) || catalog_entry_id < 1 || catalog_entry_id > 95
+        || !validText(brand) || !validText(model) || typeof capacity_ah !== 'string'
+        || !/^(0|[1-9][0-9]{0,5})(\.[0-9]{0,5}[1-9])?$/.test(capacity_ah) || capacity_ah === '0'
+        || (polarity !== 'L' && polarity !== 'R')) return invalid();
+      seen.add(variant_id);
+      const requested = attempt.items.find(line => line.variant_id === variant_id);
+      if (!requested || typeof selected.quantity !== 'string' || selected.quantity !== requested.quantity) return invalid();
+      const item = Object.freeze({ variant_id, catalog_entry_id, brand, model, capacity_ah, polarity });
+      const row = copied.rows.find(v => v.variant_id === variant_id);
+      if (row && Object.keys(item).some(k => item[k as keyof CartDescriptor] !== row[k as keyof CartDescriptor])) return invalid();
+      return Object.freeze({ item, quantity: quantity(selected.quantity), available: row?.available ?? null });
+    });
+    return Object.freeze({ ...current, direction, catalog: copied, lines: Object.freeze(lines), attempt });
+  } catch { return invalid(); }
 }
 export function cartStatus(cart: TransferCart, authority: TransferAuthority): { usable: boolean; ready: boolean; total: bigint; invalid: readonly number[] } {
   const current = usable(cart, authority);

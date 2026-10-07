@@ -356,6 +356,23 @@ refuses inFlight and requires uncertainty acknowledgement for unknown entries.
 Retry performs no availability lookup. App/review/send wiring and R05 browser
 acceptance remain future work; this independently tested leaf is not recovery UX.
 
+## R04b2c-hydration pure cart restoration (not recovery UI)
+
+`restoreTransferCart(currentAuthority, validatedSourceCatalog, snapshot)` accepts
+`CartRestoration`; the existing `RecoverySnapshot` is structurally compatible.
+The caller **must** obtain it through `recovery.getCurrent(latestAuthorityGetter)`
+for exact account/branch authorization. A snapshot has no account credential:
+this helper cannot distinguish arbitrary same-branch foreign-account snapshots.
+Ready branch/current epoch checks precede private payload reads. Routes, canonical
+attempt membership/quantities and sealed descriptors must agree with current source.
+Copies are frozen; selected descriptors contain no stock or credential references.
+Every quantity and retry key survives, including insufficient or missing variants;
+actual fresh availability or null supplies invalid guidance, never a clamp.
+Refresh/no-op review preserves the attempt; material edits clear it and only explicit
+new review generates a key. Prepare a valid restored cart **before** acknowledged
+unknown-entry discard; without a catalog, retain the archive and allow exact retry.
+No App lifetime wiring, discard, POST, session recovery or browser proof is added.
+
 ## Worker checks
 
 From repository root:

@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { TransferAuthority } from './useInventory';
 import type { SourceCatalog } from './sourceInventory';
 import { newTransferRetryKey, type TransferFlow } from './transferModel';
-import { addCartItem, cartStatus, clearTransferCart, createTransferCart, refreshCart, removeCartItem, reviewCart, setCartQuantity } from './transferCart';
+import { createTransferRecovery } from './transferRecovery';
+import { addCartItem, restoreTransferCart, cartStatus, clearTransferCart, createTransferCart, refreshCart, removeCartItem, reviewCart, setCartQuantity } from './transferCart';
 
 const max = 9223372036854775807n;
 const key = 'private_retry_key_1234';
@@ -17,6 +18,104 @@ function catalog(source = 1, count = 2, available = max): SourceCatalog {
   })) };
 }
 const cart = () => createTransferCart(authority(), 'requestWarehouse', catalog());
+
+describe('R04b2c-hydration', () => {
+  function snapshot() {
+    const recovery = createTransferRecovery();
+    const reviewed = reviewCart(addCartItem(addCartItem(cart(), authority(), 1, max), authority(), 2, max), authority(), key);
+    recovery.capture(() => authority(), reviewed);
+    return recovery.getCurrent(() => authority(2, 8))!;
+  }
+  it('restores factory-authorized same-owner fresh epoch with lossless immutable minimal data', () => {
+    const input = snapshot();
+    const source = catalog(1, 1, 2n);
+    const state = restoreTransferCart(authority(2, 8), source, input);
+    expect(state).toMatchObject({ epoch: 8, accountID: 2, assigned: 2, attempt: input.attempt });
+    expect(state.attempt).not.toBe(input.attempt);
+    expect(state.lines.map(v => [v.quantity, v.available])).toEqual([[max, 2n], [max, null]]);
+    expect(cartStatus(state, authority(2, 8))).toEqual({ usable: true, ready: false, total: max * 2n, invalid: [1, 2] });
+    expect(Object.keys(state.lines[0].item).sort()).toEqual(['brand', 'capacity_ah', 'catalog_entry_id', 'model', 'polarity', 'variant_id']);
+    expect(state.lines[1].item.capacity_ah).toBe('6.000001');
+    for (const value of [state, state.direction, state.catalog, state.catalog.location, state.catalog.rows, state.catalog.rows[0],
+      state.lines, state.lines[0], state.lines[0].item, state.attempt, state.attempt!.items, state.attempt!.items[0]]) expect(Object.isFrozen(value)).toBe(true);
+    expect(state.catalog).not.toBe(source);
+  });
+  it('copies mutable input without retaining stock or credential extras', () => {
+    const original = snapshot();
+    const items = original.items.map(v => ({ ...v, existing: max, csrf_token: 'not-retained' }));
+    const attempt = { ...original.attempt, items: original.attempt.items.map(v => ({ ...v })) };
+    const direction = { ...original.direction };
+    const row = { ...catalog().rows[0] };
+    const location = { id: 1, name: 'Physical source' };
+    const state = restoreTransferCart(authority(2, 8), { location, rows: [row] }, { ...original, items, attempt, direction });
+    items[0].brand = 'Changed'; attempt.items[0].quantity = '1'; direction.origin_location_id = 3;
+    row.available = 0n; location.id = 3;
+    expect(state.lines[0].item.brand).toBe('TOYO');
+    expect(state.lines[0].item).not.toHaveProperty('csrf_token');
+    expect(state.lines[0].item).not.toHaveProperty('existing');
+    expect(state.lines[0].available).toBe(max);
+    expect(state.attempt!.items[0].quantity).toBe(max.toString());
+    expect(state.direction.origin_location_id).toBe(1);
+    expect(state.catalog.location.id).toBe(1);
+  });
+  it.each(['stale', 'unready', 'anonymous', 'warehouse'] as const)('guards %s before private payload getters', mode => {
+    const current = mode === 'warehouse' ? authority(1, 8) : authority(2, 8);
+    if (mode === 'unready') current.ready = false;
+    if (mode === 'anonymous') current.session = { authenticated: false, csrf_token: 'blocked' };
+    const payload = vi.fn((): never => { throw new Error('private payload'); });
+    const input = { epoch: mode === 'stale' ? 7 : 8, get attempt(): never { return payload(); },
+      get direction(): never { return payload(); }, get items(): never { return payload(); } };
+    expect(() => restoreTransferCart(current, catalog(), input)).toThrow('Invalid transfer cart');
+    expect(payload).not.toHaveBeenCalled();
+  });
+  it.each(['direction', 'counterparty', 'source', 'count', 'duplicate', 'membership', 'quantity', 'float', 'variant', 'entry', 'brand', 'model', 'capacity', 'polarity', 'catalog-descriptor'])(
+    'rejects %s mismatch with sanitized errors', mode => {
+      const original = snapshot();
+      const input = { ...original, direction: { ...original.direction }, attempt: { ...original.attempt }, items: original.items.map(v => ({ ...v })) };
+      let source = catalog();
+      if (mode === 'direction') input.direction.approver_location_id = 3;
+      if (mode === 'counterparty') input.attempt.counterparty_location_id = 2;
+      if (mode === 'source') source = catalog(3);
+      if (mode === 'count') input.items.pop();
+      if (mode === 'duplicate') input.items[1] = { ...input.items[0] };
+      if (mode === 'membership') input.items[0].variant_id = 3;
+      if (mode === 'quantity') input.items[0].quantity = '1';
+      if (mode === 'float') input.items[0].quantity = '1.5';
+      if (mode === 'variant') input.items[0].variant_id = 191;
+      if (mode === 'entry') input.items[0].catalog_entry_id = 96;
+      if (mode === 'brand') input.items[0].brand = '';
+      if (mode === 'model') input.items[0].model = '\0';
+      if (mode === 'capacity') input.items[0].capacity_ah = '6.0';
+      // @ts-expect-error deliberately invalid polarity
+      if (mode === 'polarity') input.items[0].polarity = 'X';
+      if (mode === 'catalog-descriptor') input.items[0].model = 'Different';
+      expect(() => restoreTransferCart(authority(2, 8), source, input)).toThrow(/^Invalid transfer cart$/);
+    });
+  it.each([2, 3])('restores every physical route from assigned branch%s, not consulted stock', assigned => {
+    for (const flow of ['requestWarehouse', 'requestOther', 'sendWarehouse'] as const) {
+      const current = authority(assigned, 8);
+      const source = catalog(flow === 'sendWarehouse' ? assigned : flow === 'requestOther' ? (assigned === 2 ? 3 : 2) : 1);
+      const reviewed = reviewCart(addCartItem(createTransferCart(current, flow, source), current, 1, '2'), current, key);
+      const recovery = createTransferRecovery(); recovery.capture(() => current, reviewed);
+      expect(restoreTransferCart(current, source, recovery.getCurrent(() => current)!).direction).toEqual(reviewed.direction);
+    }
+  });
+  it('preserves retries on guidance/no-op refresh and requires explicit edits then new review for RNG', () => {
+    const current = authority(2, 8);
+    const state = restoreTransferCart(current, catalog(1, 0), snapshot());
+    const rng = vi.fn(() => newTransferRetryKey({ getRandomValues: array => array }));
+    expect(setCartQuantity(state, current, 1, max)).toBe(state);
+    expect(reviewCart(state, current, rng)).toBe(state);
+    const refreshed = refreshCart(state, current, catalog());
+    expect(refreshed.attempt).toBe(state.attempt);
+    expect(rng).not.toHaveBeenCalled();
+    const edited = setCartQuantity(refreshed, current, 1, '2');
+    expect(edited.attempt).toBeNull();
+    expect(reviewCart(edited, current, rng).attempt!.retry_key).toBe('0'.repeat(32));
+    expect(rng).toHaveBeenCalledTimes(1);
+    expect(() => removeCartItem(state, authority(2, 9), 1)).toThrow();
+  });
+});
 
 describe('R04 transfer cart', () => {
   it.each([2, 3])('binds branch%s three flows to fixed physical source and approver', assigned => {
