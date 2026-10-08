@@ -617,6 +617,39 @@ Disable DEBUG, console payloads, call logs, HAR, tracing, video and storageState
 in every future consumer; never serialize ACCOUNT records into context.json.
 Administrative file-secret policy is separate from ACCOUNT memory-only policy.
 
+## R05a2e1 injected filesystem metadata reader
+
+`createR05FilesystemMetadataReader({project,root,uid,manifest,dsn,sources,fs})`
+exports only `read(request)` and count-only `status()`. Reference approvals are
+canonical path strings; sources are ordered `{path,sha256}` public snapshots.
+All files must be distinct direct root children. No default filesystem provider,
+copying, generic path reader or configuration/resource selector is supplied.
+
+`read` accepts the collector's exact metadata selector, project, ordered paths,
+source_paths and `{mode,attempt,sequence,request}` frame (active or lifecycle).
+Replies echo that frame with frozen `{root,files,sources,handles}` metadata.
+SHA256 appears in both source files and sources. References are never read/hashed.
+Ancestors include slash; pathname and opened stats agree before/after and repeat.
+Full permission/special bits are retained; native-width device/inode values must
+be exactly positive safe integers, including when provided as BigInt.
+
+Trusted `fs` owns functions `lstat/open/stat/read/close`. Stat results are own-data
+`{device,inode,uid,mode,type,symlink}` records. A native provider must project full
+07777 permission bits without dropping special bits. Open receives fixed readonly,
+nofollow, nonblock, directory and bigint intent; `read(token,{offset,length})`
+returns raw bytes from that same opaque handle, maximum65536 bytes per chunk and
+1MiB per public source, checked before copying/hashing. Source handles restat.
+Close fulfillment must mean actually closed; rejection means UNKNOWN, not closed.
+All acquired opaque handles receive one close attempt, even after earlier errors.
+Unknown closures retain private references permanently, quarantine future reads
+and expose only busy/quarantined/count; there is no retry/disposal authority.
+
+Human3437 selected exclusive controlled LOCAL fixtures: these observational
+checks are **not atomic defense against malicious same-Linux-UID processes**.
+OWN synthetic native tests do not authenticate an engine or authorize effects.
+DSN/manifest/TLS key/account-secret contents remain outside this public reader.
+Native Label gap remains UNADMITTED; R04/R05 deployed acceptance remains pending.
+
 ## Next separately admitted steps
 
 - R05a2: real evidence normalization/effect driver, source-derived four migration
