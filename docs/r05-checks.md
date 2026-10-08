@@ -650,6 +650,31 @@ OWN synthetic native tests do not authenticate an engine or authorize effects.
 DSN/manifest/TLS key/account-secret contents remain outside this public reader.
 Native Label gap remains UNADMITTED; R04/R05 deployed acceptance remains pending.
 
+## R05a2e2a pure native stat projection
+
+`projectR05NativeStat(raw)` selects only own data descriptors `dev/ino/uid/mode`
+from a Node BigIntStats-shaped object. Stats prototypes and unrelated timestamps
+are allowed; no getters, caller methods, constructor or unrelated fields are read.
+Proxies (including revoked proxies), arrays and non-object inputs are refused.
+Selected fields must be primitive BigInts: device/inode are 1..MAX_SAFE_INTEGER,
+UID is 0..MAX_SAFE_INTEGER. There is no numeric/string/boxed coercion.
+
+Full native mode is validated within 0..0177777 before type extraction or masking.
+Only regular files and directories are accepted; symlink/FIFO/device/socket and
+unknown/missing types refuse. Permissions retain all 07777 bits, including setuid,
+setgid and sticky. The detached frozen JSON row is exactly
+`{device,inode,uid,mode,type,symlink:false}`; errors have constant public wording.
+
+This is selected-data consistency, **not native origin authentication**. Root UID,
+root0700/file0600 and ancestor policy remain solely in the existing metadata reader.
+Synthetic integration exercises its real projected DTOs, slash ancestor identity,
+SHA in both files/sources and fake closes before publication; it proves no real FD
+closure. Pure projection needs no new physical filesystem functional checks.
+No native client/provider I/O, path opening, engine/frame authority or partial
+selected-filesystem wrapper is supplied. Open flags and native-handle lifecycle
+remain a separately admitted future unit; controlled-local same-UID limits and the
+UNADMITTED native Label gap are unchanged.
+
 ## Next separately admitted steps
 
 - R05a2: real evidence normalization/effect driver, source-derived four migration
