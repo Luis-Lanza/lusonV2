@@ -474,6 +474,56 @@ original/projected config and independent service-hash algorithms, image/cache/P
 UID, trusted TLS/browser privacy/manual-fixture preservation and actual R04/R05
 acceptance remain future obligations. Historical lifecycle TDD caveat is unchanged.
 
+## R05a2d2 composed owned-process capability
+
+`apps/web/e2e/r05-selected-process.mjs` exports
+`createR05SelectedProcessReader({project,volumeName,images,binary,cwd,env,spawn,
+clock?})`. Its only result is the frozen selected reader's `{read}` interface.
+Execution is private; vectors/templates/selector policy remain in the unchanged
+public selected reader. No default spawn/client, arbitrary argv API or selector
+spawn-options override exists. Injected spawn must synchronously return a fresh
+OWN Node-compatible ChildProcess, or throw before returning any handle.
+
+Binary/cwd are explicit canonical absolute path pins, **not binary authentication**.
+Env is independently cloned: only LANG/LC_ALL=C and optional canonical public
+HOME/DOCKER_CONFIG/DOCKER_HOST=unix://path references are allowed. These three refs
+must appear together or not at all. No process.env, account HOME, loader variables,
+NODE_OPTIONS or implicit cwd inheritance is supplied. Parent must separately trust
+binary/client configuration, public config directories and endpoint identity; none
+is authenticated or inspected here. Spawn options are exactly shell:false,
+detached:false, stdio:[ignore,pipe,pipe], explicit cwd and env.
+
+### Settlement, deadlines and owned cancellation
+
+Default clock is local monotonic performance.now with Node timers. Optional own-data
+clock supplies trusted now/setTimeout/clearTimeout callbacks for deterministic
+checks, not engine timestamps. Existing 5000ms budget includes spawn time; event
+checks reject late success even when alarm delivery is delayed. Stdout32768 applies
+to **raw bytes before copying/retaining chunks**; buffers are copied to prevent alias
+mutation, then strictly UTF8-decoded. First stderr byte is discarded and fails.
+Timeout, overflow, stream/child errors, nonzero/signal exits and clock failures are
+irreversible; failures stop alarms and discard all subsequent output.
+
+Only child `close` AND both pipe close observations (or absent spawn-failure stdio)
+settle execution. Exit/error alone cannot release reader busy. At most one default
+SIGTERM attempt uses the returned handle's kill(), never ambient PID/group APIs;
+observed exit/close or non-null exitCode/signalCode prohibit signalling a draining
+process. Killfalse/throw/error is not termination proof: unresolved execution stays
+pending/quarantined, with settlement listeners retained and no repeated alarm,
+escalation, grace timer or invented cleanup deadline. Eventual proven closure
+rejects once and releases busy. No unref/disown hides pending handles.
+
+These follow Node's documented [exit/close/error and kill semantics](https://nodejs.org/docs/latest-v24.x/api/child_process.html),
+including PID-reuse risk after exit. Trusted spawn/handle semantics remain an
+external capability boundary. Tests cover synthetic event-ordering/quarantine and
+four controlled OWN local Node programs: selected JSON success, multibyte overflow,
+first-byte stderr and real approximately5000ms timeout-to-close. All real helpers
+are individually returned handles with proven closed streams; fake never-close
+cases do not claim disposal. These are process-bound proofs, **not Docker CLI,
+engine identity, resource ownership or R04/R05 acceptance**. Native volume metadata,
+fingerprint and the existing downstream unadmitted Label gap remain unchanged.
+Historical lifecycle-before-RED caveat remains; new TDD evidence is writer-only.
+
 ## R05a2c1 source-only public config codec
 
 `apps/web/e2e/r05-config-projection.mjs` exports `projectR05PublicConfig(original)`
