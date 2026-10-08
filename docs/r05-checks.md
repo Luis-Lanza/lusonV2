@@ -420,6 +420,60 @@ trusted TLS/browser privacy, fixture preservation and actual R04/R05 acceptance
 remain separately scoped and unproved. Historical lifecycle test-first caveat
 remains unchanged; collector RED/GREEN evidence is writer-only.
 
+## R05a2d1 selected volume/image reader (source-only)
+
+`apps/web/e2e/r05-selected-metadata.mjs` exports
+`createR05SelectedMetadataReader({project,volumeName,images:{app,db},execute})`.
+It returns only `read(selector)`, compatible with the collector's volume/image
+selectors and `{frame,value}` replies. All other selector kinds refuse; composing
+filesystem/config/census/container/network readers remains future work. Nothing
+here creates a default executable/client, reads environment/files, spawns processes
+or grants ownership/effects. Parent approves immutable project/name/full image IDs
+and supplies the trusted execution capability; approval data is not human consent.
+
+### Fixed selected projections
+
+| Selector | Internally fixed argv | Selected JSON fields |
+|---|---|---|
+| volume | volume inspect --format VOLUME -- approvedName | Name,Driver,CreatedAt,Options,Scope,Labels |
+| image | image inspect --format IMAGE -- sha256:approvedID | Id,ConfiguredUser from native Config.User |
+
+VOLUME/IMAGE are internal Go-format templates applying `json` to each selected
+native field, **not** `json .` full inspection followed by redaction. Exact literal
+vectors/templates are regression-tested. No caller args/format/executable/shell/
+host/context override is accepted. These templates are conceptual SOURCE contracts:
+actual Docker version/CLI compatibility and authentic engine provenance are still
+**unobserved**, not proven by fake execution. Returned native Name/Id must match the
+approved target; image role/full ID/project and exact selector/frame keys must match.
+Empty ConfiguredUser is preserved and proves no PostgreSQL process effective UID.
+
+### Execution and decoding bounds
+
+The sole capability call is exactly `{argv,timeout_ms:5000,max_stdout_bytes:32768,
+max_stderr_bytes:0}`, recursively frozen. It must return only `{exitCode,stdout}`,
+with exitCode0 and one selected JSON object. The **parent capability must enforce**
+process deadlines, output bounds before buffering, stderr rejection, cancellation,
+trusted engine identity and settlement only after execution/cancellation ends.
+The adapter has no timeout race: unresolved execution retains its instance busy
+and concurrent reuse refuses. It cannot make an untrusted/hanging executor enforce
+the deadline; separate reader instances need parent-level execution coordination.
+Fake tests verify the bound request and pending serialization, not real enforcement.
+
+Adapter validation separately checks stdout bytes before parsing and bounds public
+objects to depth16/nodes1024/properties128/string4096/aggregate key-string bytes32768.
+Arrays, getters/proxies, hidden/symbol keys, custom prototypes, cycles, unknown or
+forbidden top-level output fields, unsupported native metadata and nonzero exits
+refuse. Outputs/frames are cloned/frozen; raw executor errors/stdout/stderr never
+become diagnostics, only `R05 selected metadata refused.`. Do not log payloads.
+
+Full native volume Labels/Options and fingerprint meaning remain untouched. This
+reader performs no label-policy or ledger admission; the existing exact-Labels
+compatibility gap remains **unadmitted/refused downstream**, never filtered away.
+Complete all-state census, opened filesystem/SOURCE SHA versus metadata-only DSN,
+original/projected config and independent service-hash algorithms, image/cache/PG
+UID, trusted TLS/browser privacy/manual-fixture preservation and actual R04/R05
+acceptance remain future obligations. Historical lifecycle TDD caveat is unchanged.
+
 ## R05a2c1 source-only public config codec
 
 `apps/web/e2e/r05-config-projection.mjs` exports `projectR05PublicConfig(original)`
