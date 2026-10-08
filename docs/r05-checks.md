@@ -675,6 +675,49 @@ selected-filesystem wrapper is supplied. Open flags and native-handle lifecycle
 remain a separately admitted future unit; controlled-local same-UID limits and the
 UNADMITTED native Label gap are unchanged.
 
+## R05a2e2b selected native filesystem wrapper
+
+`createR05SelectedFilesystemReader({approval,native})` returns frozen `{read,status}`
+only. Approval uses the metadata reader's project/root/uid/manifest/dsn/sources
+shape. That frozen reader remains the sole constructor, selector, frame, owner,
+root0700/file0600 and complete-slash-ancestor policy. The pure native projector
+handles BigIntStats width/type/full07777 consistency, not origin authentication.
+
+Native supplies own-data nonproxy functions `lstatBigInt(path)`,
+`openReadonly(path,flags)`, `fstatBigInt(handle)`,
+`readInto(handle,buffer,offset,length,position)` and `closeHandle(handle)`.
+Results may be direct values or native Promises, not accessor-bearing thenables.
+Mandatory flags are explicit O_RDONLY=0 and distinct nonzero single-bit
+O_NOFOLLOW/O_NONBLOCK/O_DIRECTORY; absent platform flags refuse, never fall back.
+Directory flags include all four; regular file flags omit only O_DIRECTORY.
+These selected functions and flag semantics are external trusted SDK contracts.
+
+Actual acquisitions are captured before shape/stat validation. Private fresh
+opaque tokens never expose native handles; duplicates do not grant another close.
+Malformed numeric/null/proxy acquisitions retain UNKNOWN safety candidates without
+unsafe close calls. Known own malformed arrays receive one external close attempt.
+Every acquired usable handle receives one close attempt, including error paths.
+Only undefined close fulfillment confirms disposal after pending operations;
+rejection or another fulfillment value retains actual native references permanently.
+Quarantine refuses future reads; immutable status exposes only busy/quarantined/owned.
+No public retry, path-opening capability or debug API exists.
+
+Only approved public-source handles read bytes; directories and manifest/DSN
+references never read/hash. Explicit same-FD positions advance by validated
+bytesRead; results require the exact supplied buffer and own-data integer counts.
+Node null-prototype read-result records are supported. Positive native reads prove
+EOF; no zero-length probe or fabricated boundary EOF is used. Supported sources
+are **less than1MiB**; exactly1MiB refuses. Cumulative requested/allocation bytes
+are bounded to1MiB+65536 per source before allocation/I/O; pathological partial
+progress may exhaust this budget and refuse. Chunks remain at most65536 bytes.
+Same-FD restat, post-read pathname identity and pins in both lists remain enforced.
+
+OWN public synthetic native fixtures verify real flags, ancestry, same-FD pins,
+symlink/permission drift refusals, zero reference reads and confirmed closures.
+This is controlled-local observation, **not atomic malicious-same-UID defense**,
+engine authority, effect permission or deployed R04/R05 acceptance. Native Label
+compatibility remains UNADMITTED; unknown fake closures are retained, not disposed.
+
 ## Next separately admitted steps
 
 - R05a2: real evidence normalization/effect driver, source-derived four migration
