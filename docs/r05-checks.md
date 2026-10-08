@@ -718,6 +718,55 @@ This is controlled-local observation, **not atomic malicious-same-UID defense**,
 engine authority, effect permission or deployed R04/R05 acceptance. Native Label
 compatibility remains UNADMITTED; unknown fake closures are retained, not disposed.
 
+## R05a2f1 concrete selected Node bridge
+
+`createR05SelectedNodeReaders({approval,process})` returns frozen
+`{filesystem,metadata}` only. `filesystem` is the existing selected filesystem
+reader's bounded `{read,status}` API; `metadata` is the existing selected process
+reader's bounded volume/image `{read}` API. Construction performs no filesystem
+I/O or process launch. There is no collector, census or effect-dispatch connection.
+
+Approval keeps the existing project/root/uid/manifest/dsn/sources contract.
+Process requires exactly project, volumeName, images, binary, cwd and env; both
+projects must match. The frozen readers validate and detach nested input data.
+Own-data nonproxy records are checked before spreads; getters, hidden extras,
+caller providers, spawn/clock/debug hooks and ambient environment defaults refuse.
+No binary, working directory, UID, root or environment is guessed.
+
+The module privately captures imported Node promises `lstat/open`, native flags
+and `child_process.spawn`. Files use BigInt lstat and same-FileHandle stat/read,
+with the exact supplied buffer and explicit position. Close awaits that handle's
+native close and fulfills undefined. Required O_RDONLY=0, O_NOFOLLOW, O_NONBLOCK
+and O_DIRECTORY are validated by the unchanged wrapper, without fallback.
+That wrapper alone owns acquisitions, all-close settlement, permanent UNKNOWN
+retention, byte limits, quarantine and count-only status. Native SDK semantics
+are trusted contracts, not engine authentication or atomic same-UID protection.
+
+New tests exercise complete real PUBLIC repository TempDir frames/source pins,
+input detachment, permission/source drift and symlink refusal. Reference files
+and directories are metadata-only, without reference hashes in replies. Native
+acquisition/closure counts are **not observable through this bridge**; no hooks
+or counters were added. Cleanup depends on settled closure semantics, not an
+invented counter. New process tests launch **no children**: they cover inert
+construction, selector refusal and structural captured-spawn composition only.
+Successful native bridge process execution, Docker templates/daemon identity,
+collector wiring, native Label compatibility and real R04/R05 acceptance remain
+unproved. Existing underlying-reader native-child tests are not bridge end-to-end
+process evidence; synthetic UNKNOWN references remain retained, never disposed.
+
+The test-local shared fixture registers ownership immediately after mkdtemp and
+tracks only successfully created immediate children. Before every unlink/rmdir,
+it rechecks complete ancestor/root identities and exact remaining child metadata.
+Never-entered-read setup/constructor failures can clean their OWN fixture because
+construction is inert. Every read invalidates previous closure evidence before
+entry; once entered, unconfirmed/busy/UNKNOWN ownership retains the fixture.
+Settled-close semantics permit cleanup, but status zero is not an observed native
+FD counter or provenance claim. Original operation errors survive cleanup failure;
+retention diagnostics are separate. Wrong-volume and prefixed-image constructor
+regressions assert original refusal and actual root ENOENT; bare SHA is the control.
+The original partial handoff/residue failure remains history. Parent separately
+removed that old root under exact human approval; tests never adopt or recreate it.
+
 ## Next separately admitted steps
 
 - R05a2: real evidence normalization/effect driver, source-derived four migration
