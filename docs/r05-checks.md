@@ -244,12 +244,78 @@ Members/users must already be empty before network/volume removal.
 Sequence is monotonic logical protocol freshness, not engine attestation or a clock.
 Parent supplies authentic complete current observations; the module cannot prove
 absence from an incomplete collector or defend against malicious same-UID callers.
-Raw label/source mapping and faithful **full original** Compose config/environment
-projection (including public `*_FILE` declarations) remain future collector work.
-No silent stripping or full-config equivalence is claimed. Source checks prove no
+Raw label/source mapping and authentic **full original** Compose observations
+remain future collector work. The source-only opt-in codec below reverses admitted
+public data (including `*_FILE` references), not engine observations. No silent
+stripping or authentic full-config equivalence is claimed. Source checks prove no
 actual images/cache, PG process effective UID, TLS, browser privacy, migrations,
 physical stock, NSS/PTY/tool ownership, deployment or global R04/R05 acceptance.
 No manual stopped fixture, R01 resource, retired L05 identity or user data is used.
+
+## R05a2c1 source-only public config codec
+
+`apps/web/e2e/r05-config-projection.mjs` exports `projectR05PublicConfig(original)`
+and `restoreR05PublicConfig(projected)`. Review the round-trip test first. Neither
+function reads files, contacts Docker, authenticates provenance or permits effects.
+A future parent collector MUST validate this codec before freezing a manifest or
+binding effects; the frozen driver/binding/lifecycle only check supplied data.
+
+| Original segment path | Projected segment path |
+|---|---|
+| `services.<app/db>.environment` | `services.<app/db>.public_env_bindings` |
+| `services.<app/db>.secrets` | `services.<app/db>.public_secret_refs` |
+| `secrets` | `public_secret_declarations` |
+
+The embedded `projection_record` has exactly `schema,full_config_digest,renamed_paths`.
+Schema is `luson.r05.public-config/v1`; mappings are a fixed ordered array of
+`{original:[segments],projected:[segments]}`. Restore validates reconstructed public
+SOURCE data again, matches its canonical full SHA256, then requires exact canonical
+reprojection. Object key order is irrelevant; every array order is retained.
+Aliases, duplicate/missing/conflicting paths, unknown versions and tampering refuse.
+Projection of already projected data also refuses; inputs and outputs share no
+mutable objects. Errors are generic and never include config values.
+
+This bounded SOURCE-shaped fixture contract accepts only app/db, source service
+fields and `luson`/`pgdata` resources; it is not the complete Docker Compose DSL.
+Environment objects have exactly the compose.yaml vocabulary: app UID/GID positive
+uint32 strings, production/local-trial profile, credential-free HTTPS origin,
+`0.0.0.0:8443` listen, `/srv/web` assets, and the three declared `/run/secrets` paths;
+DB has public user/database identifiers and `/run/secrets/database_password`.
+These are local SOURCE fixture bounds, not permanent deployment policy. Environment
+arrays, arbitrary env/build args/commands, unknown carriers and inline credentials
+are unsupported. Other admitted fields and dependency semantics are preserved.
+Build is app-only, with canonical public path strings for `context,dockerfile`,
+not nested data. Healthcheck is DB-only: exactly the SOURCE two-element CMD-SHELL
+vector `pg_isready -U <public POSTGRES_USER> -d <public POSTGRES_DB>`. SOURCE uses no
+variable expansion; arbitrary programs, assignments, operators, newlines, variable
+references and extra argv refuse, including on restore with a recomputed full SHA.
+Durations are positive integral ms/s/m/h strings (six-digit amount, at most24h);
+retries are integers1–1000. Dependencies use `service_healthy` and optional boolean
+`required,restart`. These bounds apply to the local SOURCE fixture, not a generic DSL.
+Named declarations contain only canonical absolute `file` paths (optional public
+`name`); references are source names or `{source,target?}` with the declared target.
+No external providers, literal contents, duplicate refs or opaque extensions.
+TLS private-key **path metadata** is public here, never private-key contents.
+No referenced file is opened, hashed or persisted.
+
+Plain own JSON data is cloned before value access/canonicalization: no proxies,
+custom prototypes, accessors, hidden/symbol keys, dangerous keys, sparse arrays,
+cycles, nonfinite/non-JSON values or negative zero. Bounds are depth32, 16384 nodes,
+4096 entries/container, 8192 characters/string and 262144 UTF8 data/key bytes.
+Keys are printable ASCII, sorted canonically; arrays are never sorted.
+Both frozen guards use whole-key matching: `environment` fails, plural `secrets`
+does not. The explicit aliases implement this typed reversible contract, not a
+substring workaround. Unsupported forbidden locations are rejected, not encoded.
+
+`manifest.config_digest` already hashes the supplied `snapshot.config`; with this
+opt-in version it hashes projected config INCLUDING the record. The record's
+`full_config_digest` hashes the full reconstructed original public config. Old
+minimal synthetic fixture digests are not original Compose proof. Source-file SHA
+and each service's `compose_hash` label pin remain independent; observed Docker
+Compose label hashes versus canonical full SHA256 remain UNPROVEN. An attacker
+can rewrite data and digests together: this codec is integrity consistency, not
+engine/frame authentication. Collector/root/file identity, images/cache, PG UID,
+migrations, trust/browser privacy and real R04/R05 acceptance remain deferred.
 
 ## ACCOUNT IPC consumer contract
 
