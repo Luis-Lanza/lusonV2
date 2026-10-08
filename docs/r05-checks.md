@@ -152,6 +152,105 @@ manifest IDs null; `existing_names` still reports conflicting proposed names.
 Incomplete observations cannot claim absence. Current metadata alone cannot prove
 symlink ancestors or opened-handle provenance; those remain collector obligations.
 
+## R05a2b2 pure exact-identity lifecycle ledger
+
+`r05-lifecycle.mjs` adds **plans and receipt admission only**. No Docker/client,
+CLI, callbacks, SQL, filesystem reading, resource effects or maintenance permission
+exists. The running-only raw normalizer and full-active SQL driver remain frozen;
+their cleanup refusal is unchanged. Parent alone grants any future effect authority,
+settles checks, resolves ambiguous attempts and performs authorized local Git work.
+Native RDD is unused; passing these source tests is not delivery approval.
+
+### API and order
+
+`createR05Lifecycle({manifest,snapshot})` copies an immutable **prepare** declaration
+and admits complete empty-namespace evidence. It exposes four synchronous methods:
+
+| Method | Contract |
+|---|---|
+| `plan(operation,snapshot)` | Fresh pre-effect admission; one pending attempt; inert target plus opaque instance-local `token` |
+| `admitReceipt(token,{attempt,operation,result},snapshot)` | Latches valid matching response; commits owned state only after fresh complete post-effect admission |
+| `settle({checksSettled:true,outcome},snapshot)` | Explicit factual `passed`/`failed` parent outcome, never effect permission |
+| `status()` | Independent copy of phase, logical sequence, pending attempt and known IDs/volume fingerprint; no private file metadata |
+
+Normal order is EMPTY → NETWORK → VOLUME → DB_CREATED → DB_RUNNING → APP_CREATED
+→ FULL_ACTIVE → SETTLED → APP_STOPPED → DB_STOPPED → APP_REMOVED → DB_REMOVED
+→ VOLUME_ABSENT → NETWORK_ABSENT. Operations are `createNetwork`, `createVolume`,
+`createDB`, `startDB`, `createAPP`, `startAPP`, then (after settlement) `stopAPP`,
+`stopDB`, `removeAPP`, `removeDB`, `removeVolume`, `removeNetwork`. No arbitrary
+policy, flags, general dispatch or by-name adoption is exposed.
+
+A `failed` settled startup may clean just the captured partial subset: stop any
+created/running app, stop any created/running DB, remove app, remove DB, remove
+volume, remove network. No full running app is required. Empty failed startup is
+already NETWORK_ABSENT. Partial cleanup reports FAILED_CLEANUP until network absence.
+Unexpected spontaneous exits are drift, not automatically inferred transitions.
+A pending attempt prevents settlement and all other plans. Missing response,
+timeout, wrong identity or failed admission keeps the attempt and prior known IDs;
+there is no cancel/retry/adopt/recovery API. Only another complete receipt for that
+**same** attempt and **same latched identity** can finish admission. If completion cannot be proven, parent must
+retain the unresolved ledger for future explicit human resolution. No automatic
+namespace-absence retry is implemented. Removed identities remain recorded history;
+absence and presence are separate, and no identity clears before fresh absence.
+
+Pending `candidate` safety retention is the sole deliberate mutation on refused
+post-effect admission. A valid THIS-token/attempt/operation creation result latches
+its full ID or expected volume Name **before snapshot copying**. It cannot be
+substituted, poisoned or erased by later malformed/foreign/replayed receipts.
+`status().pending.candidate` returns independent safe data, not admitted ownership
+or cleanup permission. For volume, any structurally valid declaration-bound full
+metadata learned before failed proof also latches with its complete fingerprint;
+substituted metadata refuses. Invalid or foreign metadata does not latch, but the
+valid returned Name remains known. Same-candidate fresh proof may finish admission;
+owned identities, topology, phase and sequence remain atomic behind all guards.
+
+### Bounded synthetic metadata protocol
+
+Inputs are plain own-data-property objects and dense arrays (max128 entries), with
+max256 properties, depth32 and strings up to4096 characters. Accessors, symbols, inherited/custom prototypes,
+non-integer numbers and unknown schema fields refuse with a constant error. Never
+supply actual credentials, environment values, contents or private diagnostics.
+`config` rejects the driver's secret-key vocabulary, including environment keys.
+
+Snapshot fields are exactly `sequence,root,files,sources,config,existing_names,
+network,volume,project_ids,volume_users,containers`. Every stage reuses complete
+prepare declaration/root0700/file0600/UID/no-symlink/source/config binding validation,
+then separately admits the observed phase topology; it does **not** assert the
+real topology is empty or use a boolean root-valid shortcut. Conflict names must
+be empty. All-state project IDs, scoped containers and volume users must exactly
+match the known subset, including created/exited DB volume users. Unknown roles,
+foreign stopped users/members, shared attachments and any binding drift refuse.
+
+Network is `{id,name,labels,internal,driver,members,provenance}`; each container is
+its exact declared service specification with captured `id`, plus `service,name,
+project,labels,network_id,network_mode,state,provenance`. `state` is explicitly
+created/running/exited. The declared network ID/mode remains bound when stopped;
+actual network members are precisely running known containers. This is a narrow
+normalized model, **not an observed engine collector contract**: a collector must
+faithfully establish detached stopped/created membership or refuse this model.
+`provenance` binds `{root,sources:<ordered source paths>,config_digest}` on each
+resource. Network/container labels equal the declaration's normalized scope/run.
+
+Volume is `{metadata,users,provenance}`. Metadata has ALL `Name,Driver,CreatedAt,
+Options,Scope,Labels`; this narrow model requires local driver/scope, null options,
+and labels exactly scope/run plus project. Creation returns `{Name}` only; fresh
+inspection captures full metadata, whose canonical fingerprint binds all fields.
+Network/DB/app creation returns `{id:<full64hex>}`; it must match the immediate
+inspect of the planned name and every binding. Other receipts use `result:null`.
+Stop/remove targets use only captured full IDs; volume removal carries captured
+full metadata and fingerprint, not an invented native ID or destructive name lookup.
+Members/users must already be empty before network/volume removal.
+
+Sequence is monotonic logical protocol freshness, not engine attestation or a clock.
+Parent supplies authentic complete current observations; the module cannot prove
+absence from an incomplete collector or defend against malicious same-UID callers.
+Raw label/source mapping and faithful **full original** Compose config/environment
+projection (including public `*_FILE` declarations) remain future collector work.
+No silent stripping or full-config equivalence is claimed. Source checks prove no
+actual images/cache, PG process effective UID, TLS, browser privacy, migrations,
+physical stock, NSS/PTY/tool ownership, deployment or global R04/R05 acceptance.
+No manual stopped fixture, R01 resource, retired L05 identity or user data is used.
+
 ## ACCOUNT IPC consumer contract
 
 Create an exclusive private0700 directory for **one bridge instance**. Supply
