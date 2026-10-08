@@ -313,6 +313,113 @@ network-ID shape and must refuse, never manufacture an attachment. Synthetic tes
 prove neither authentic filesystem/engine observations nor PostgreSQL UID, images,
 TLS, browser privacy, fixture preservation or real R04/R05 acceptance.
 
+## R05a2c2b injected collector protocol (no real adapter)
+
+`apps/web/e2e/r05-collector.mjs` exports
+`createR05Collector({manifest,labelPolicy,transport})`. The only injected capability
+is an own-data `transport.read` function; there is no default client, filesystem
+reader, command string, dispatch, operation plan or effect permission. Static
+factory checks reuse the existing prepare declaration/policy validators using a
+validator projection, never claim synthetic filesystem or ownership evidence.
+
+### Collections and parent trust boundary
+
+- `collectRawActive({request,identities})` returns the exact frozen RawActive
+  envelope after running-only normalization and full phase admission. Identities
+  must equal the immutable manifest's captured IDs/fingerprint. Prepare can return
+  only absent resources. A complete active manifest must come from the parent's
+  independently fully admitted captured identities, **not pending safety frames**.
+- `collectLifecycle({sequence,identities,pending})` returns the exact frozen
+  lifecycle observation through the public pure normalizer, without ledger calls.
+  Created/exited/running state and actual NetworkMode/attachment are retained;
+  unavailable actual attachment refuses. Normalization is not ledger admission.
+- Identities are exactly `{network,db,app,volume}`: full64hex IDs or null, and
+  volume null or `{name,fingerprint}`. Retained ledger IDs are history, not presence:
+  fresh scoped census determines which resources are selected for inspection.
+
+The parent supplies authentic ledger context, known admitted identities and real
+creation responses. These objects cannot authenticate that claim against a
+malicious caller. Boolean `owned`, `rootValid` or `complete` flags are not accepted
+as evidence or human/maintenance authority. Collections serialize; overlapping
+calls refuse without interleaving reads. Successful sequence/request completion
+advances only after a whole consistent frame; failed calls can retry the same
+logical value. A separate attempt counter advances on reads for correlation.
+These values are not engine timestamps, atomic snapshots or authentication.
+
+### Exact read selectors and response DTOs
+
+Every request contains `kind,project,frame`, where frame is exactly
+`{mode,attempt,sequence,request}`. Modes are active/lifecycle. Every response is
+exactly `{frame,value}`, echoing the same frame. Requests and responses are safely
+cloned; selectors and returned frames are deeply frozen. Do not log payloads or
+underlying errors; all exposed failures are only `R05 collector refused.`.
+
+| Kind | Additional selector keys | Exact value contract |
+|---|---|---|
+| metadata | paths,source_paths | root,files,sources,handles |
+| public-config | sources | original,projected,service_hashes:{app,db} |
+| census | planned_names:{network,volume,db,app},volume_name | project_ids,volume_users,containers,network,volume,conflicts |
+| network | id | Existing selected raw network DTO |
+| volume | name | ALL native Name/Driver/CreatedAt/Options/Scope/Labels |
+| container | id,role,view | Existing raw container DTO; lifecycle view additionally requires observed HostConfig.NetworkMode |
+| image | id,role | Id with sha256 prefix,ConfiguredUser only; no Env/argv/history |
+
+Metadata paths are exactly manifest root/files; only declared public SOURCE paths
+request SHA evidence. Root/files/sources use the existing public metadata schema.
+DSN and manifest receive **metadata only**, never bytes or content hashes. Each
+handle is `{path,device,inode,opened:{device,inode},ancestors}`. Ancestors enumerate
+all canonical parent paths root-first, each `{path,device,inode,uid,mode,type,
+symlink}`; identities/opened handles must agree across records, with safe directory
+owners/modes and no symlinks. This is an adapter obligation expressed as injected
+public data, not proof that a genuine opened filesystem handle was observed.
+
+Census containers are `{id,role,name,state}` for all states. Network is null or
+`{id,name,members}`; volume null or `{name,fingerprint}`. Conflict names are explicit
+and must be empty. Unknown project IDs, foreign/shared volume users, foreign
+network members, wrong role/name/ID selections and conflicting names refuse
+**before any resource/image inspection**, without reading foreign contents.
+
+Read order is metadata → public-config → scoped census → permitted selected
+network/volume/container/image reads → repeat those resource/image reads → repeat
+metadata/config/census. Every binding must match. Images are queried only by each
+present role's declared exact image ID; configured image/container User must match
+that role, including explicitly declared empty DB User. This proves no PG process
+UID. No name adoption, unavailable-field defaults or inferred stopped attachment
+exists. Read agreement bounds isolation but cannot establish engine atomicity.
+
+### Config, pending safety and the native-volume gap
+
+Both `projectR05PublicConfig(original)` and `restoreR05PublicConfig(projected)` run
+on **every** config read. Supplied projection including its record must match,
+with full original digest in the record and the distinct complete projected digest
+matching the manifest. SOURCE SHA pins remain separate. Observed service hashes
+bind independently to declared Compose hashes; no Docker CLI label-hash algorithm
+or equality to the full original SHA is invented.
+
+Pending is null or exactly `{operation,attempt,base_sequence,context,expected_name,
+result}` for createNetwork/createVolume/createDB/createAPP. Context is exactly
+`{project,root,config_digest}`. Result is the parent's actual `{id}` response, or
+volume `{Name}`. Before safety inspection, base_sequence must identify this
+collector's prior complete absence frame with the same identities and expected
+role/name absent. The first matching response/context is latched; conflicting
+responses refuse. A pending name alone cannot adopt an existing volume or fixture.
+This latch never becomes owned identities, a ledger receipt or active SQL authority.
+
+Full native volume metadata/Labels/fingerprint remain unchanged. The known frozen
+ledger exact-Labels incompatibility above remains: a lifecycle frame may be safely
+collected yet **unadmitted**, and consumer receipt validation refuses volume
+ownership. Regression tests observe that refusal. Never strip Labels, rewrite the
+fingerprint or use successful normalization as an ownership/effect bypass.
+Descriptor-safe boundaries reject proxies, getters, hidden/symbol keys, sparse
+arrays, cycles/custom prototypes; limits are depth32, arrays128, properties256,
+strings4096, nodes16384 and aggregate key/string bytes262144.
+
+All tests use synthetic injected DTOs only. A genuine adapter, authentic ledger
+context/resource observations, effect authority, PG UID/images/cache/migrations,
+trusted TLS/browser privacy, fixture preservation and actual R04/R05 acceptance
+remain separately scoped and unproved. Historical lifecycle test-first caveat
+remains unchanged; collector RED/GREEN evidence is writer-only.
+
 ## R05a2c1 source-only public config codec
 
 `apps/web/e2e/r05-config-projection.mjs` exports `projectR05PublicConfig(original)`
