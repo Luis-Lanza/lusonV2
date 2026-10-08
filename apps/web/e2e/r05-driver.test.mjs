@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { digest, admit } from './r05-binding.mjs';
-import { normalizeR05Evidence, volumeFingerprint, createR05Driver } from './r05-driver.mjs';
+import { normalizeR05Evidence, normalizeR05LifecycleEvidence, volumeFingerprint, createR05Driver } from './r05-driver.mjs';
+import { createR05Lifecycle } from './r05-lifecycle.mjs';
 const h = n => n.toString(16).padStart(64, '0');
 const copy = x => structuredClone(x);
 const labelPolicy = { scopeKey: 'org.luson.r05.scope', runKey: 'org.luson.r05.run',
@@ -56,6 +57,133 @@ function fixture(phase = 'active') {
 }
 const normalize = f => normalizeR05Evidence({ ...f, labelPolicy, sequence: 1 });
 const refusal = e => e.message === 'R05 admission refused.';
+// These DTOs are synthetic, not proof of real created/exited engine attachments.
+function lifecycleFixture(states = { db: 'created' }) {
+  const f = fixture(); f.manifest = fixture('prepare').manifest;
+  f.raw.containers = f.raw.containers.filter(c => c.Config.Labels['com.docker.compose.service'] in states);
+  f.raw.network.Containers = {};
+  for (const c of f.raw.containers) {
+    const role = c.Config.Labels['com.docker.compose.service'];
+    c.HostConfig.NetworkMode = f.manifest.network.name;
+    c.State = { Status: states[role], Running: states[role] === 'running' };
+    if (c.State.Running) f.raw.network.Containers[c.Id] = { Name: c.Name.slice(1) };
+  }
+  f.raw.project_ids = f.raw.containers.map(c => c.Id);
+  f.raw.volume_users = 'db' in states ? [h(4)] : [];
+  return f;
+}
+const lifecycleNormalize = f => normalizeR05LifecycleEvidence({ ...f, labelPolicy, sequence: 1 });
+test('R05a2c2a preserves created and exited actual state, attachment and all-state volume users', () => {
+  for (const state of ['created', 'running', 'exited']) {
+    const f = lifecycleFixture({ db: state }); const s = lifecycleNormalize(f);
+    assert.equal(s.containers[0].state, state);
+    assert.equal(s.containers[0].network_mode, f.manifest.network.name);
+    assert.equal(s.containers[0].network_id, h(1));
+    assert.deepEqual(s.network.members, state === 'running' ? [h(4)] : []);
+    assert.deepEqual(s.volume_users, [h(4)]);
+    assert.deepEqual(s.volume.users, [h(4)]);
+    assert.deepEqual(s.containers[0].provenance, { root: f.manifest.root,
+      sources: f.manifest.sources.map(v => v.path), config_digest: f.manifest.config_digest });
+    assert.equal(Object.isFrozen(s), true);
+    assert.equal(Object.isFrozen(s.containers[0].mounts[0]), true);
+  }
+});
+test('R05a2c2a preserves complete native volume metadata and exposes ledger label incompatibility', () => {
+  const f = lifecycleFixture({}); const s = lifecycleNormalize(f);
+  assert.deepEqual(s.volume.metadata, f.raw.volume);
+  assert.equal(volumeFingerprint(s.volume.metadata), volumeFingerprint(f.raw.volume));
+  const empty = fixture('prepare'); const before = lifecycleNormalize(empty);
+  const ledger = createR05Lifecycle({ manifest: f.manifest, snapshot: before });
+  const p = ledger.plan('createNetwork', { ...before, sequence: 2 });
+  const network = { ...s, volume: null, sequence: 3 };
+  ledger.admitReceipt(p.token, { attempt: p.attempt, operation: p.operation, result: { id: h(1) } }, network);
+  const v = ledger.plan('createVolume', { ...network, sequence: 4 });
+  assert.throws(() => ledger.admitReceipt(v.token,
+    { attempt: v.attempt, operation: v.operation, result: { Name: f.raw.volume.Name } },
+    { ...s, sequence: 5 }), refusal);
+  assert.equal(ledger.status().identities.volume, null);
+  assert.deepEqual(f.raw.volume.Labels, s.volume.metadata.Labels);
+});
+test('R05a2c2a every native volume identity field remains fingerprint-significant', () => {
+  for (const [key, value] of Object.entries({ Name: 'changed-data', Driver: 'other',
+    CreatedAt: '2026-01-02T00:00:00Z', Options: { type: 'tmpfs' }, Scope: 'global',
+    Labels: { ...lifecycleFixture().raw.volume.Labels, 'com.docker.compose.version': 'changed' } })) {
+    const f = lifecycleFixture(); const original = volumeFingerprint(f.raw.volume);
+    f.raw.volume[key] = value;
+    const observed = lifecycleNormalize(f).volume.metadata;
+    assert.deepEqual(observed, f.raw.volume);
+    assert.notEqual(volumeFingerprint(observed), original);
+  }
+});
+test('R05a2c2a partial absent resources come from observation, not retained active IDs', () => {
+  const f = fixture('prepare'); const s = lifecycleNormalize(f);
+  assert.equal(s.network, null); assert.equal(s.volume, null);
+  assert.deepEqual(s.containers, []); assert.deepEqual(s.volume_users, []);
+  f.manifest.network.id = h(1);
+  assert.throws(() => lifecycleNormalize(f), refusal);
+});
+for (const [name, mutate] of Object.entries({
+  noAttachment: f => f.raw.containers[0].NetworkSettings.Networks = {},
+  missingNetworkID: f => delete f.raw.containers[0].NetworkSettings.Networks[f.manifest.network.name].NetworkID,
+  extraAttachment: f => f.raw.containers[0].NetworkSettings.Networks.other = { NetworkID: h(10) },
+  wrongAttachment: f => f.raw.containers[0].NetworkSettings.Networks[f.manifest.network.name].NetworkID = h(10),
+  missingNetwork: f => f.raw.network = null,
+  absentNetworkMode: f => delete f.raw.containers[0].HostConfig.NetworkMode,
+  wrongNetworkMode: f => f.raw.containers[0].HostConfig.NetworkMode = 'host',
+  contradictoryState: f => f.raw.containers[0].State.Running = true,
+  unsupportedState: f => f.raw.containers[0].State.Status = 'paused',
+  falseRunning: f => f.raw.containers[0].State = { Status: 'running', Running: false },
+  stoppedMember: f => f.raw.network.Containers[h(4)] = { Name: f.manifest.project+'-db-1' },
+  foreignMember: f => f.raw.network.Containers[h(10)] = { Name: 'foreign' },
+  unknownVolumeLabel: f => f.raw.volume.Labels.other = 'untrusted',
+  foreignProjectID: f => f.raw.project_ids.push(h(10)),
+  foreignExitedVolumeUser: f => f.raw.volume_users.push(h(10)),
+  duplicateContainerID: f => f.raw.containers.push(copy(f.raw.containers[0])),
+  missingRunningMember: f => f.raw.containers[0].State = { Status: 'running', Running: true },
+  noVolumeForDB: f => f.raw.volume = null,
+  stringBound: f => f.raw.config.extra = 'x'.repeat(4097),
+  arrayBound: f => f.raw.existing_names = Array(129).fill('name'),
+  privateConfig: f => f.raw.config.services.db.environment = {},
+  badSequence: f => f.sequence = 0,
+})) test('R05a2c2a unavailable or inconsistent '+name+' refuses generically', () => {
+  const f = lifecycleFixture(); mutate(f);
+  assert.throws(() => normalizeR05LifecycleEvidence({ labelPolicy, sequence: 1, ...f }), refusal);
+});
+test('R05a2c2a clones input aliases and freezes the entire returned frame', () => {
+  const f = lifecycleFixture(); const s = lifecycleNormalize(f);
+  f.raw.volume.Labels['com.docker.compose.volume'] = 'changed';
+  f.raw.containers[0].Mounts[0].Name = 'changed';
+  f.manifest.sources[0].path = '/changed';
+  assert.equal(s.volume.metadata.Labels['com.docker.compose.volume'], 'data');
+  assert.equal(s.containers[0].mounts[0].source, s.volume.metadata.Name);
+  assert.equal(s.containers[0].provenance.sources[0], '/private/r05-synthetic/compose');
+  assert.throws(() => s.volume.metadata.Labels.other = 'changed', TypeError);
+});
+for (const kind of ['getter', 'hidden', 'symbol', 'prototype', 'sparse', 'cycle', 'deep', 'proxy']) {
+  test('R05a2c2a descriptor-safe bounded inputs reject '+kind+' without getter calls', () => {
+    const f = lifecycleFixture(); let calls = 0;
+    if (kind === 'getter') Object.defineProperty(f.raw.root, 'uid', { enumerable: true,
+      get() { calls++; throw new Error('synthetic-private-sentinel'); } });
+    if (kind === 'hidden') Object.defineProperty(f.raw, 'hidden', { value: 1 });
+    if (kind === 'symbol') f.raw[Symbol('hidden')] = 1;
+    if (kind === 'prototype') Object.setPrototypeOf(f.raw, { inherited: 1 });
+    if (kind === 'sparse') f.raw.sources = Array(1);
+    if (kind === 'cycle') f.raw.config.loop = f.raw.config;
+    if (kind === 'deep') { let x = f.raw.config; for (let i = 0; i < 34; i++) x = x.deep = {}; }
+    if (kind === 'proxy') f.raw = new Proxy(f.raw, { ownKeys() { calls++; return []; } });
+    assert.throws(() => lifecycleNormalize(f), e => refusal(e) && !e.cause);
+    assert.equal(calls, 0);
+  });
+}
+test('R05a2c2a lifecycle projections never widen stopped active SQL admission', async () => {
+  const f = fixture(); f.raw.containers[1].State = { Status: 'exited', Running: false };
+  assert.throws(() => normalize(f), refusal);
+  let effects = 0;
+  const driver = createR05Driver({ manifest: f.manifest, labelPolicy,
+    collectRaw: async c => ({ ...copy(f.raw), request: c.request }), dispatchRaw: async () => effects++ });
+  await assert.rejects(() => driver.sql({ text: 'SELECT $1', values: [17] }), refusal);
+  assert.equal(effects, 0);
+});
 test('R05a2a rejects malformed full ID without inventing evidence', () => {
   const f = fixture(); f.raw.containers[0].Id = 'short';
   assert.throws(() => normalize(f), refusal);

@@ -1,5 +1,6 @@
 // R05a2a: injected evidence only; no resource client or lifecycle authority.
 import { isAbsolute, resolve } from 'node:path';
+import { types } from 'node:util';
 import { digest, admit, refused } from './r05-binding.mjs';
 import { R05OwnedCompose } from './r05-owned-compose.mjs';
 
@@ -104,7 +105,7 @@ function mounts(raw) {
       kind: m.Type, readonly: !m.RW };
   });
 }
-function container(raw, m, p) {
+function container(raw, m, p, lifecycle = false, networkID = m.network.id) {
   keys(raw, 'Id Name Image Config HostConfig Mounts NetworkSettings State');
   id(raw.Id); text(raw.Name); text(raw.Image);
   check(/^sha256:[a-f0-9]{64}$/.test(raw.Image));
@@ -115,21 +116,26 @@ function container(raw, m, p) {
   const service = raw.Config.Labels['com.docker.compose.service'];
   check(service === 'app' || service === 'db');
   id(raw.Config.Labels['com.docker.compose.config-hash']);
-  keys(raw.HostConfig, 'ReadonlyRootfs PortBindings'); boolean(raw.HostConfig.ReadonlyRootfs);
+  keys(raw.HostConfig, 'ReadonlyRootfs PortBindings'+(lifecycle ? ' NetworkMode' : ''));
+  boolean(raw.HostConfig.ReadonlyRootfs);
+  if (lifecycle) check(raw.HostConfig.NetworkMode === m.network.name);
   keys(raw.NetworkSettings, 'Networks'); object(raw.NetworkSettings.Networks);
   check(Object.keys(raw.NetworkSettings.Networks).length === 1
     && Object.keys(raw.NetworkSettings.Networks)[0] === m.network.name);
   const attachment = raw.NetworkSettings.Networks[m.network.name]; keys(attachment, 'NetworkID');
-  id(attachment.NetworkID); check(attachment.NetworkID === m.network.id);
+  id(attachment.NetworkID); check(attachment.NetworkID === networkID);
   keys(raw.State, 'Status Running');
-  check(raw.State.Status === 'running' && raw.State.Running === true);
+  if (lifecycle) check(['created', 'running', 'exited'].includes(raw.State.Status)
+    && raw.State.Running === (raw.State.Status === 'running'));
+  else check(raw.State.Status === 'running' && raw.State.Running === true);
   return { id: raw.Id, name: normalizedName, image: raw.Image.slice(7),
     compose_hash: raw.Config.Labels['com.docker.compose.config-hash'], user: raw.Config.User,
     readonly: raw.HostConfig.ReadonlyRootfs, ports: ports(raw.HostConfig.PortBindings),
     mounts: mounts(raw.Mounts), service, project: raw.Config.Labels['com.docker.compose.project'],
-    labels: owner, network_id: attachment.NetworkID };
+    labels: owner, network_id: attachment.NetworkID,
+    ...(lifecycle ? { state: raw.State.Status, network_mode: raw.HostConfig.NetworkMode } : {}) };
 }
-function normalize({ manifest: m, raw: r, labelPolicy: p, sequence }) {
+function envelope(r, p, sequence) {
   policy(p); integer(sequence); check(sequence > 0);
   keys(r, 'request root files sources config existing_names network volume project_ids volume_users containers');
   integer(r.request); check(r.request > 0);
@@ -140,19 +146,25 @@ function normalize({ manifest: m, raw: r, labelPolicy: p, sequence }) {
   json(r.config); array(r.existing_names); r.existing_names.forEach(name);
   check(new Set(r.existing_names).size === r.existing_names.length);
   ids(r.project_ids); ids(r.volume_users); array(r.containers);
+}
+function normalizeNetwork(raw, m, p) {
+  keys(raw, 'Id Name Labels Internal Driver Containers');
+  id(raw.Id); name(raw.Name); boolean(raw.Internal); text(raw.Driver);
+  object(raw.Containers);
+  const members = Object.keys(raw.Containers); ids(members);
+  for (const member of Object.values(raw.Containers)) { keys(member, 'Name'); name(member.Name); }
+  return { id: raw.Id, name: raw.Name, labels: labels(raw.Labels, m, p),
+    internal: raw.Internal, driver: raw.Driver, members };
+}
+function normalize({ manifest: m, raw: r, labelPolicy: p, sequence }) {
+  envelope(r, p, sequence);
   check(m.phase === 'prepare' || m.phase === 'active');
   let network = null; let volume = null; let containers = [];
   if (m.phase === 'prepare') {
     check(r.network === null && r.volume === null && r.containers.length === 0
       && r.project_ids.length === 0 && r.volume_users.length === 0);
   } else {
-    keys(r.network, 'Id Name Labels Internal Driver Containers');
-    id(r.network.Id); name(r.network.Name); boolean(r.network.Internal); text(r.network.Driver);
-    object(r.network.Containers);
-    const members = Object.keys(r.network.Containers); ids(members);
-    for (const member of Object.values(r.network.Containers)) { keys(member, 'Name'); name(member.Name); }
-    network = { id: r.network.Id, name: r.network.Name, labels: labels(r.network.Labels, m, p),
-      internal: r.network.Internal, driver: r.network.Driver, members };
+    network = normalizeNetwork(r.network, m, p);
     const volumeId = fingerprint(r.volume);
     volume = { id: volumeId, name: r.volume.Name, labels: labels(r.volume.Labels, m, p), users: r.volume_users };
     check(r.containers.length === 2);
@@ -164,6 +176,74 @@ function normalize({ manifest: m, raw: r, labelPolicy: p, sequence }) {
 // Normalization preserves observations, including Config.User === ''. Admission is separate.
 export function normalizeR05Evidence(input) {
   try { return normalize(structuredClone(input)); } catch { refused(); }
+}
+// R05a2c2a: safe own-data copy before field access or hashing. Unlike the legacy
+// entry points, this boundary rejects proxies/accessors and bounds total work.
+function lifecycleData(input) {
+  const active = new Set(); let nodes = 0; let bytes = 0;
+  function copy(value, depth = 0) {
+    check(depth <= 32 && ++nodes <= 16384);
+    if (value === null || typeof value === 'boolean') return value;
+    if (typeof value === 'string') {
+      bytes += Buffer.byteLength(value); check(value.length <= 4096 && bytes <= 262144); return value;
+    }
+    if (typeof value === 'number') { check(Number.isSafeInteger(value) && !Object.is(value, -0)); return value; }
+    check(value && typeof value === 'object' && !types.isProxy(value) && !active.has(value));
+    const array = Array.isArray(value);
+    check(Object.getPrototypeOf(value) === (array ? Array.prototype : Object.prototype));
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const names = Reflect.ownKeys(descriptors);
+    check(names.length <= 256 && names.every(name => typeof name === 'string'));
+    if (array) check(descriptors.length.value <= 128 && names.length === descriptors.length.value+1);
+    const result = array ? [] : {}; active.add(value);
+    for (const name of names) {
+      if (array && name === 'length') continue;
+      const d = descriptors[name]; bytes += name.length;
+      check(bytes <= 262144 && d.enumerable && 'value' in d
+        && /^[\x20-\x7e]{1,128}$/.test(name) && !['__proto__', 'constructor', 'prototype'].includes(name));
+      if (array) check(/^(0|[1-9][0-9]*)$/.test(name) && Number(name) < descriptors.length.value);
+      result[name] = copy(d.value, depth+1);
+    }
+    active.delete(value); return result;
+  }
+  return copy(input);
+}
+function freezeData(value) {
+  if (value && typeof value === 'object') { Object.values(value).forEach(freezeData); Object.freeze(value); }
+  return value;
+}
+function lifecycleObservation({ manifest: m, raw: r, labelPolicy: p, sequence }) {
+  envelope(r, p, sequence);
+  const provenance = { root: m.root, sources: m.sources.map(f => f.path), config_digest: m.config_digest };
+  // Reuse declaration and metadata binding only. This projection is NOT a claim
+  // that the actual namespace is empty or that observed resources are owned.
+  admit(m, { sequence, root: r.root, files: r.files, sources: r.sources, config: r.config,
+    existing_names: [], network: null, volume: null, project_ids: [], containers: [] }, 'prepare');
+  const network = r.network === null ? null : { ...normalizeNetwork(r.network, m, p), provenance };
+  check(r.containers.length === 0 || network !== null);
+  const containers = r.containers.map(c => ({ ...container(c, m, p, true, network.id), provenance }));
+  ids(containers.map(c => c.id));
+  const sameIDs = (a, b) => check(a.length === b.length && a.every(v => b.includes(v)));
+  sameIDs(r.project_ids, containers.map(c => c.id));
+  if (network) sameIDs(network.members, containers.filter(c => c.state === 'running').map(c => c.id));
+  sameIDs(r.volume_users, containers.filter(c => c.service === 'db').map(c => c.id));
+  let volume = null;
+  if (r.volume === null) check(r.volume_users.length === 0);
+  else {
+    fingerprint(r.volume); labels(r.volume.Labels, m, p);
+    // Preserve ALL native labels, even where the frozen ledger cannot admit them.
+    // No native ID, label rewrite, compatibility flag or permission is invented.
+    volume = { metadata: r.volume, users: r.volume_users, provenance };
+  }
+  return freezeData({ sequence, root: r.root, files: r.files, sources: r.sources, config: r.config,
+    existing_names: r.existing_names, network, volume, project_ids: r.project_ids,
+    volume_users: r.volume_users, containers });
+}
+export function normalizeR05LifecycleEvidence(input) {
+  try {
+    const data = lifecycleData(input); keys(data, 'manifest raw labelPolicy sequence');
+    return lifecycleObservation(data);
+  } catch { refused(); }
 }
 export function createR05Driver({ manifest, labelPolicy, collectRaw, dispatchRaw } = {}) {
   try {

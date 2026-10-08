@@ -252,6 +252,67 @@ actual images/cache, PG process effective UID, TLS, browser privacy, migrations,
 physical stock, NSS/PTY/tool ownership, deployment or global R04/R05 acceptance.
 No manual stopped fixture, R01 resource, retired L05 identity or user data is used.
 
+## R05a2c2a pure lifecycle observation normalization prerequisite
+
+`normalizeR05LifecycleEvidence({manifest,raw,labelPolicy,sequence})` in
+`apps/web/e2e/r05-driver.mjs` returns a deeply frozen independent lifecycle
+**observation**, not admitted ownership, a pending creation receipt or an effect
+permission. It does not call ledger methods, read resources or provide transport.
+The collector remains deferred. Existing running-only `normalizeR05Evidence`,
+`createR05Driver` and full-active SQL admission retain their contracts.
+
+### Input and output contract
+
+| Input | Required observation |
+|---|---|
+| Manifest | Complete prepare declaration with all resource IDs null; never retained history as presence |
+| Raw envelope | Same exact secret-free envelope as RawActive, including positive `request`; resources may be null and containers partial |
+| Container | Existing selected keys plus **observed** `HostConfig.NetworkMode`; explicit created/running/exited status and matching Running boolean |
+| Attachment | Exactly the declared network name with a full actual NetworkID matching the observed network; unavailable/detached attachment refuses |
+| Census | Project IDs exactly selected container IDs; network members exactly running selected IDs; volume users all selected DB states |
+| Volume | Original complete Name/Driver/CreatedAt/Options/Scope/Labels; no invented native ID or reduced-label fingerprint |
+
+The output is exactly the lifecycle snapshot schema documented above. Network and
+containers carry normalized labels and declaration-bound provenance. Containers
+retain actual state, actual attachment ID and observed declared network mode;
+volume carries **unaltered native metadata**, users and provenance. Root/files,
+ordered sources and supplied public config bind to the prepare declaration through
+existing `admit` metadata validation using an empty *validator projection*, not a
+claim that the actual namespace is empty. Conflicting names remain in the output
+for downstream refusal. Shared private envelope/network/container/label/mount/port
+validators avoid a second ownership policy. Normalization does not validate phase
+transitions, captured IDs or service pins as owned resources: the ledger must.
+
+Own-data cloning occurs before access or hashing: plain objects, dense arrays up
+to128 elements, max256 properties, depth32, strings4096, nodes16384 and aggregate
+string/key bytes262144. Proxies, accessors, hidden/symbol keys, custom prototypes,
+cycles and non-JSON values refuse without exposing input diagnostics. Output is
+recursively frozen; caller mutations cannot change retained observations. Logical
+request/sequence values are supplied data, not engine freshness authentication.
+
+### Known native-volume incompatibility remains fail-closed
+
+The driver label policy requires native Compose project labels and permits its
+fixed additional Compose labels. The frozen lifecycle ledger instead requires
+native volume Labels **exactly** `{scope,run_id,project}`. These contracts are not
+currently compatible. The new normalizer preserves the native evidence rather
+than claiming compatibility; the regression test supplies that frame to the
+ledger and observes receipt refusal with no volume ownership committed. Every
+native identity field remains fingerprint-significant. Do not strip labels,
+rewrite fingerprints or treat a normalized volume as an admitted one. Resolving
+this guard gap requires separately authorized changes and authentic observations.
+
+A future collector must validate original public config with project+restore on
+**every** collection, bind source hashes and independent service Compose hashes,
+collect complete scoped census before inspecting only permitted explicit IDs, and
+repeat root/source/config/identity/census bindings before returning a frame. It
+must supply actual THIS-attempt response/context for pending safety inspection;
+this API neither adopts pending candidates nor promotes them to active SQL.
+Detached created/exited observations cannot satisfy the current frozen lifecycle
+network-ID shape and must refuse, never manufacture an attachment. Synthetic tests
+prove neither authentic filesystem/engine observations nor PostgreSQL UID, images,
+TLS, browser privacy, fixture preservation or real R04/R05 acceptance.
+
 ## R05a2c1 source-only public config codec
 
 `apps/web/e2e/r05-config-projection.mjs` exports `projectR05PublicConfig(original)`
