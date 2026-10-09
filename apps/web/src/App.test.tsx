@@ -1,4 +1,4 @@
-import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
@@ -29,7 +29,7 @@ function setup(current: unknown = anonymous, override?: (url: string, init: Requ
     const url = String(input);
     const custom = override?.(url, init);
     if (custom) return custom;
-    if (url === '/api/transfers/counts') return Promise.resolve(response({ pending_total: '0', action_count: '0' }));
+    if (url === '/api/transfers/counts') return Promise.resolve(countResponse('0', '0'));
     if (url === '/api/auth/validate') return Promise.resolve(response((current as typeof session).authenticated ? current : { authenticated: false }));
     if (url.endsWith('/session')) return Promise.resolve(response(current));
     if (url.endsWith('/login')) { current = session; return Promise.resolve(response(session)); }
@@ -43,7 +43,7 @@ function setup(current: unknown = anonymous, override?: (url: string, init: Requ
   vi.stubGlobal('fetch', mock);
   return mock;
 }
-async function inventory() { await screen.findByRole('table'); await screen.findByText('9007199254740993'); }
+async function inventory() { await screen.findByRole('table'); await within(screen.getByRole('region', { name: 'Resultados de inventario' })).findByText('9007199254740993'); }
 async function login() {
   await screen.findByLabelText('Usuario');
   await waitFor(() => expect(screen.getByRole('button', { name: 'Iniciar sesión' })).toBeEnabled());
@@ -64,10 +64,173 @@ async function hookInventory(result: { current: ReturnType<typeof useInventory> 
   await waitFor(() => expect(result.current.data?.items[0].existing).toBe(9007199254740993n));
 }
 
+const countCalls = (mock: ReturnType<typeof setup>) => mock.mock.calls.filter(([url]) => url === '/api/transfers/counts');
+const transferResponse = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
+const countResponse = (action = '9007199254740993', total = '9007199254740994') => transferResponse({ pending_total: total, action_count: action });
+const shellCount = () => within(screen.getByRole('navigation')).getByRole('status');
+function passiveCounts(mock: ReturnType<typeof setup>) {
+  for (const [, init] of countCalls(mock)) {
+    expect(init?.method).toBe('GET'); expect(init?.body).toBeUndefined();
+    expect([...new Headers(init?.headers)]).toEqual([]);
+    expect(init?.credentials).toBe('same-origin'); expect(init?.cache).toBe('no-store');
+  }
+}
+
+describe('B4 assigned-participant shell badge', () => {
+  it.each([false, true])('shows exact shell counts independently of Pending rows and totals, mobile=%s', async mobile => {
+    vi.stubGlobal('matchMedia', () => ({ matches: mobile, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    let reads = 0;
+    const mock = setup(session, url => {
+      if (url === '/api/transfers/counts') return Promise.resolve(countResponse(++reads === 1 ? '9007199254740993' : '2'));
+      if (url.startsWith('/api/transfers?')) return Promise.resolve(transferResponse({ page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] }));
+      return undefined;
+    });
+    render(<App />);
+    await within(await screen.findByRole('region', { name: 'Resultados de inventario' })).findByText('9007199254740993');
+    fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
+    await screen.findByText('0 solicitudes pendientes');
+    await waitFor(() => expect(document.querySelector('.transfer-request-counters dd')).toHaveTextContent('9007199254740994'));
+    expect(shellCount()).toHaveTextContent('Solicitudes que requieren tu aprobación: 9007199254740993');
+    expect(document.querySelector('nav .transfer-action-badge')).toHaveTextContent('9007199254740993');
+    await waitFor(() => expect(countCalls(mock)).toHaveLength(2));
+    expect(document.querySelectorAll('.transfer-request-counters dd')[1]).toHaveTextContent('2');
+    fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' }));
+    await within(screen.getByRole('region', { name: 'Resultados de inventario' })).findByText('9007199254740993');
+    expect(shellCount()).toHaveTextContent('9007199254740993');
+    expect(screen.queryByLabelText(/Requieren acción/)).not.toBeInTheDocument();
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false); passiveCounts(mock);
+  });
+  it.each([1, 2, 3])('reads assigned location %s while consulting another inventory location', async assigned => {
+    const actor = { ...session, identity: { ...identity, account_id: assigned, location: metadata.locations[assigned - 1] } };
+    const mock = setup(actor, url => url === '/api/transfers/counts' ? Promise.resolve(countResponse()) : undefined);
+    render(<App />); await inventory();
+    await waitFor(() => expect(shellCount()).toHaveTextContent('9007199254740993'));
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(metadata.locations[assigned === 3 ? 0 : 2].name) })); await inventory();
+    expect(countCalls(mock)).toHaveLength(1); expect(shellCount()).toHaveTextContent('9007199254740993');
+    if (assigned === 1) expect(screen.getByRole('button', { name: /Nueva transferencia/ })).toBeDisabled();
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false); passiveCounts(mock);
+  });
+  it.each([false, true])('distinguishes loading from exact zero in the mobile=%s shell', async mobile => {
+    vi.stubGlobal('matchMedia', () => ({ matches: mobile, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    const held = deferred<Response>();
+    const mock = setup(session, url => url === '/api/transfers/counts' ? held.promise : undefined);
+    render(<App />);
+    await screen.findByRole('navigation', { name: mobile ? 'Navegación móvil' : 'Navegación principal' });
+    expect(shellCount()).toHaveTextContent('Consultando solicitudes que requieren tu aprobación…');
+    expect(document.querySelector('nav .transfer-action-badge')).not.toHaveTextContent('0');
+    expect(screen.getByRole('button', { name: 'Transferencias' })).toBeEnabled();
+    await act(async () => held.resolve(countResponse('0', '7')));
+    await waitFor(() => expect(shellCount()).toHaveTextContent('Solicitudes que requieren tu aprobación: 0'));
+    expect(document.querySelector('nav .transfer-action-badge')).toHaveTextContent(/^0$/);
+    expect(screen.getByRole('button', { name: mobile ? /Crear envío/ : /Nueva transferencia/ })).toBeDisabled(); passiveCounts(mock);
+  });
+  it.each(['403', '404', '503', 'network', 'malformed'])('keeps navigation usable with unavailable counts: %s', async kind => {
+    const mock = setup(session, url => {
+      if (url === '/api/transfers/counts') return kind === 'network' ? Promise.reject(new Error('offline'))
+        : Promise.resolve(kind === 'malformed' ? transferResponse({ pending_total: '1', action_count: '2' })
+          : transferResponse({ error: kind === '403' ? 'forbidden' : kind === '404' ? 'not_found' : 'service_unavailable' }, Number(kind)));
+      if (url.startsWith('/api/transfers?')) return Promise.resolve(transferResponse({ error: 'service_unavailable' }, 503));
+      return undefined;
+    });
+    render(<App />); await inventory();
+    await waitFor(() => expect(shellCount()).toHaveTextContent('Contador de aprobación no disponible.'));
+    expect(document.querySelector('nav .transfer-action-badge')).toHaveTextContent('—');
+    fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
+    await screen.findByText('No se pudieron consultar las solicitudes.');
+    expect(shellCount()).toHaveTextContent('Contador de aprobación no disponible.');
+    fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' })); await inventory();
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false); passiveCounts(mock);
+  });
+  it('does not replace good shell counts with an unavailable list snapshot', async () => {
+    const mock = setup(session, url => url === '/api/transfers/counts' ? Promise.resolve(countResponse())
+      : url.startsWith('/api/transfers?') ? Promise.resolve(transferResponse({ error: 'service_unavailable' }, 503)) : undefined);
+    render(<App />); await inventory(); await waitFor(() => expect(shellCount()).toHaveTextContent('9007199254740993'));
+    fireEvent.click(screen.getByRole('button', { name: 'Transferencias' })); await screen.findByText('No se pudieron consultar las solicitudes.');
+    expect(shellCount()).toHaveTextContent('9007199254740993'); expect(countCalls(mock)).toHaveLength(2);
+    expect(screen.getByRole('button', { name: 'Volver al inventario' })).toBeEnabled(); passiveCounts(mock);
+  });
+  it('removes the prior value on a failed refresh and recovers through resync', async () => {
+    let reads = 0;
+    const mock = setup(session, url => url === '/api/transfers/counts'
+      ? Promise.resolve(++reads === 2 ? transferResponse({ error: 'forbidden' }, 403) : countResponse(reads === 1 ? '6' : '0')) : undefined);
+    render(<App />); await inventory(); await waitFor(() => expect(shellCount()).toHaveTextContent('aprobación: 6'));
+    act(() => AppSource.instances[0].emit('transfers'));
+    await waitFor(() => expect(shellCount()).toHaveTextContent('Contador de aprobación no disponible.'));
+    expect(document.querySelector('nav .transfer-action-badge')).toHaveTextContent('—');
+    act(() => AppSource.instances[0].emit('resync'));
+    await waitFor(() => expect(shellCount()).toHaveTextContent('aprobación: 0')); expect(reads).toBe(3); passiveCounts(mock);
+  });
+  it('discards stale values and coalesces dirty refreshes within its lane without reading stock on transfers', async () => {
+    const held = deferred<Response>(); const latest = deferred<Response>(); let reads = 0;
+    const mock = setup(session, url => url === '/api/transfers/counts'
+      ? ++reads === 1 ? Promise.resolve(countResponse()) : reads === 2 ? held.promise : latest.promise : undefined);
+    render(<App />); await inventory();
+    await waitFor(() => expect(shellCount()).toHaveTextContent('9007199254740993'));
+    const stocks = stockCalls(mock).length;
+    act(() => AppSource.instances[0].emit('transfers'));
+    await waitFor(() => expect(reads).toBe(2));
+    expect(shellCount()).toHaveTextContent('Consultando'); expect(shellCount()).not.toHaveTextContent('9007199254740993');
+    act(() => { for (let i = 0; i < 20; i++) AppSource.instances[0].emit('transfers'); });
+    expect(reads).toBe(2);
+    await act(async () => held.resolve(countResponse('8')));
+    await waitFor(() => expect(reads).toBe(3));
+    expect(shellCount()).not.toHaveTextContent('8');
+    await act(async () => latest.resolve(countResponse('0')));
+    await waitFor(() => expect(shellCount()).toHaveTextContent('aprobación: 0'));
+    expect(stockCalls(mock)).toHaveLength(stocks); passiveCounts(mock);
+  });
+  it.each(['success', 'network', '401'])('ignores obsolete %s after logout and a new login', async kind => {
+    const held = deferred<Response>(); let reads = 0;
+    const mock = setup(session, url => url === '/api/transfers/counts'
+      ? ++reads === 1 ? Promise.resolve(countResponse()) : reads === 2 ? held.promise : Promise.resolve(countResponse('3')) : undefined);
+    render(<App />); await inventory(); await waitFor(() => expect(shellCount()).toHaveTextContent('9007199254740993'));
+    act(() => AppSource.instances[0].emit('transfers')); await waitFor(() => expect(reads).toBe(2));
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' })); await screen.findByLabelText('Usuario');
+    expect(screen.queryByRole('navigation')).not.toBeInTheDocument(); expect(reads).toBe(2);
+    await login(); await waitFor(() => expect(shellCount()).toHaveTextContent('aprobación: 3'));
+    expect(countCalls(mock)[1][1]?.signal?.aborted).toBe(true);
+    await act(async () => { if (kind === 'network') held.reject(new Error('old offline')); else held.resolve(kind === '401' ? transferResponse({ error: 'unauthenticated' }, 401) : countResponse('8')); });
+    expect(shellCount()).toHaveTextContent('aprobación: 3'); expect(screen.queryByLabelText('Usuario')).not.toBeInTheDocument();
+    expect(mock.mock.calls.filter(([url]) => String(url).endsWith('/logout'))).toHaveLength(1); passiveCounts(mock);
+  });
+  it.each(['identity', 'csrf'].flatMap(kind => ['success', 'network', '401'].map(reply => [kind, reply])))('fences %s changes against obsolete %s in the same shell', async (kind, reply) => {
+    const held = deferred<Response>(); let reads = 0;
+    const next = kind === 'csrf' ? { ...session, csrf_token: 'n'.repeat(43) }
+      : { ...session, identity: { ...identity, account_id: 2, location: metadata.locations[1] } };
+    const mock = setup(session, url => url === '/api/auth/validate' ? Promise.resolve(response(next))
+      : url === '/api/transfers/counts' ? ++reads === 1 ? held.promise : Promise.resolve(countResponse('4')) : undefined);
+    render(<App />); await inventory(); await waitFor(() => expect(reads).toBe(1));
+    act(() => AppSource.instances[0].emit('error'));
+    await waitFor(() => expect(shellCount()).toHaveTextContent('aprobación: 4'));
+    expect(countCalls(mock)[0][1]?.signal?.aborted).toBe(true);
+    await act(async () => {
+      if (reply === 'network') held.reject(new Error('old offline'));
+      else held.resolve(reply === '401' ? transferResponse({ error: 'unauthenticated' }, 401) : countResponse('8'));
+    });
+    expect(shellCount()).toHaveTextContent('aprobación: 4'); expect(screen.queryByLabelText('Usuario')).not.toBeInTheDocument();
+    expect(countCalls(mock)).toHaveLength(2); passiveCounts(mock);
+  });
+  it('clears private counts on current 401 and never reads counts while anonymous', async () => {
+    let reads = 0;
+    const mock = setup(session, url => url === '/api/transfers/counts'
+      ? Promise.resolve(++reads === 1 ? countResponse() : transferResponse({ error: 'unauthenticated' }, 401))
+      : url === '/api/auth/validate' && reads > 1 ? Promise.resolve(response({ authenticated: false }))
+      : url.endsWith('/session') && reads > 1 ? Promise.resolve(response(anonymous)) : undefined);
+    render(<App />); await inventory(); await waitFor(() => expect(shellCount()).toHaveTextContent('9007199254740993'));
+    act(() => AppSource.instances[0].emit('transfers')); await screen.findByLabelText('Usuario');
+    expect(screen.queryByRole('navigation')).not.toBeInTheDocument(); expect(reads).toBe(2);
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false); passiveCounts(mock);
+  });
+});
+
 describe('R03 passive invalidation', () => {
   it('makes bootstrap and initial snapshots passive while explicit filter requests remain ordinary', async () => {
     const mock = setup(session); render(<App />); await inventory();
-    for (const [, init] of mock.mock.calls) expect(new Headers(init?.headers).get('X-Luson-Passive')).toBe('1');
+    for (const [url, init] of mock.mock.calls) {
+      if (url === '/api/transfers/counts') continue;
+      expect(new Headers(init?.headers).get('X-Luson-Passive')).toBe('1');
+    }
+    passiveCounts(mock);
     fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'manual' } });
     await inventory();
     expect(new Headers(mock.mock.calls.at(-1)![1]?.headers).has('X-Luson-Passive')).toBe(false);
@@ -87,13 +250,20 @@ describe('R03 passive invalidation', () => {
   it('open does not refetch; resync reads full metadata and current snapshot; transfers do not read stock', async () => {
     const mock = setup(session); render(<App />); await inventory();
     const source = AppSource.instances[0]; const before = mock.mock.calls.length;
-    act(() => { source.emit('open'); source.emit('transfers'); source.emit('unknown'); source.emit('inventory', '{"record":1}'); });
+    act(() => { source.emit('open'); source.emit('unknown'); source.emit('inventory', '{"record":1}'); });
     expect(mock.mock.calls).toHaveLength(before);
+    act(() => source.emit('transfers'));
+    await waitFor(() => expect(countCalls(mock)).toHaveLength(2));
+    expect(stockCalls(mock)).toHaveLength(1);
     act(() => source.emit('resync'));
     await waitFor(() => expect(stockCalls(mock)).toHaveLength(2)); await inventory();
     expect(mock.mock.calls.filter(([url]) => String(url).endsWith('/metadata'))).toHaveLength(2);
-    for (const [, init] of mock.mock.calls.slice(before)) expect([...new Headers(init?.headers)]).toEqual([['x-luson-passive', '1']]);
-    expect(mock.mock.calls.some(([url]) => String(url).startsWith('/api/transfers'))).toBe(false);
+    for (const [url, init] of mock.mock.calls.slice(before)) {
+      if (url === '/api/transfers/counts') continue;
+      expect([...new Headers(init?.headers)]).toEqual([['x-luson-passive', '1']]);
+    }
+    await waitFor(() => expect(countCalls(mock)).toHaveLength(3)); passiveCounts(mock);
+    expect(mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers') && url !== '/api/transfers/counts')).toHaveLength(0);
   });
   it('refreshes lossless stock without losing filter, page, focus, consulted location or assigned actor', async () => {
     let changed = false;
@@ -752,7 +922,8 @@ describe('R04b2b App workspace entry', () => {
   it('has no anonymous creation entry or private source request', async () => {
     const mock = setup(); render(<App />); await screen.findByLabelText('Usuario');
     expect(screen.queryByRole('button', { name: /Nueva transferencia/ })).not.toBeInTheDocument();
-    expect(stockCalls(mock)).toHaveLength(0);
+    expect(stockCalls(mock)).toHaveLength(0); expect(countCalls(mock)).toHaveLength(0);
+    expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
   });
 });
 
@@ -821,7 +992,8 @@ describe('R04b2c2 root lifetime', () => {
     expect(await screen.findByText('TR-1001')).toBeVisible(); expect(h.posts).toHaveLength(2);
     expect(JSON.parse(String(h.posts[1].body))).toEqual(first);
     expect(new Headers(h.posts[1].headers).get('X-CSRF-Token')).toBe('f'.repeat(43));
-    expect(h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers'))).toHaveLength(2);
+    expect(h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers') && url !== '/api/transfers/counts')).toHaveLength(2);
+    passiveCounts(h.mock);
     expect(AppSource.instances.filter(instance => instance.readyState !== 2)).toHaveLength(1);
   });
   it('returns through Transfers to the consulted inventory query with an owner-only recovery banner', async () => {
@@ -890,7 +1062,7 @@ function r04cApp(status: number, stalled?: ReturnType<typeof deferred<Response>>
   const posts: RequestInit[] = [];
   const mock = setup(actor, (url, init) => {
     if (url === '/api/transfers') { posts.push(init); return stalled?.promise ?? Promise.resolve(new Response(JSON.stringify(r04cRecord()), { status, headers: { 'Content-Type': 'application/json' } })); }
-    if (url === '/api/transfers/counts') return Promise.resolve(response({ pending_total: '1', action_count: assigned === 1 ? '1' : '0' }));
+    if (url === '/api/transfers/counts') return Promise.resolve(countResponse(assigned === 1 ? '1' : '0', '1'));
     if (url.startsWith('/api/transfers/')) return Promise.resolve(new Response(JSON.stringify(r04cRecord()), { headers: { 'Content-Type': 'application/json' } }));
     if (url.startsWith('/api/transfers?')) {
       const q = new URL(url, 'http://localhost').searchParams;
@@ -1060,12 +1232,13 @@ describe('R04c guarded success navigation', () => {
     fireEvent.change(screen.getByLabelText('Polaridad', { exact: true }), { target: { value: 'L' } }); await inventory();
     fireEvent.change(screen.getByLabelText('Filas por página'), { target: { value: '10' } }); await inventory();
     await r04cSend(); await screen.findByRole('heading', { name: 'Solicitud Pending confirmada' });
-    expect(h.mock.mock.calls.filter(([url, init]) => String(url).startsWith('/api/transfers') && init?.method !== 'POST')).toHaveLength(0);
+    expect(h.mock.mock.calls.filter(([url, init]) => String(url).startsWith('/api/transfers') && url !== '/api/transfers/counts' && init?.method !== 'POST')).toHaveLength(0);
+    expect(countCalls(h.mock)).toHaveLength(1); passiveCounts(h.mock);
     fireEvent.click(screen.getByRole('button', { name: 'Ver detalle' }));
     await screen.findByRole('heading', { name: 'TR-9007199254740993' });
     const reads = h.mock.mock.calls.filter(([url]) => /^\/api\/transfers\/[1-9][0-9]*$/.test(String(url)));
     const counts = h.mock.mock.calls.filter(([url]) => url === '/api/transfers/counts');
-    expect(counts).toHaveLength(1);
+    expect(counts).toHaveLength(2); passiveCounts(h.mock);
     expect(counts[0][1]).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
     expect([...new Headers(counts[0][1]?.headers)]).toEqual([]);
     expect(counts[0][1]?.body).toBeUndefined();
@@ -1096,11 +1269,11 @@ describe('R04c guarded success navigation', () => {
       const countsBefore = h.mock.mock.calls.filter(([url]) => url === '/api/transfers/counts').length;
       act(() => { AppSource.instances[0].emit(kind); });
       await waitFor(() => expect(h.mock.mock.calls.filter(([url]) => url === '/api/transfers/9007199254740993')).toHaveLength(detailBefore + 1));
-      await waitFor(() => expect(h.mock.mock.calls.filter(([url]) => url === '/api/transfers/counts')).toHaveLength(countsBefore + 1));
+      await waitFor(() => expect(h.mock.mock.calls.filter(([url]) => url === '/api/transfers/counts')).toHaveLength(countsBefore + 2));
       expect(h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers?'))).toHaveLength(listBefore + 1);
     }
     expect(AppSource.instances.filter(s => s.readyState !== 2)).toHaveLength(1); expect(h.posts).toHaveLength(0);
-    for (const [url, init] of h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers')).slice(-3)) {
+    for (const [url, init] of h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers')).slice(-4)) {
       if (url === '/api/transfers/counts') {
         expect(init).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
         expect([...new Headers(init?.headers)]).toEqual([]);

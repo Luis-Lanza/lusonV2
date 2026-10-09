@@ -63,6 +63,14 @@ i { width: 8px; height: 8px; border-radius: 50%; background: var(--wine); displa
 .sidebar .brand strong { color: var(--wine); }
 .side-nav { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; }
 .side-nav a, .side-nav button { display: flex; justify-content: flex-start; align-items: center; padding: 8px 12px; font-size: 12px; gap: 8px; border: 0; border-radius: 0; text-decoration: none; }
+.transfer-action-badge { display: inline-flex; justify-content: center; align-items: center; min-width: 20px; padding: 2px 6px; border-radius: 999px; background: #BA1A1A; color: white; font-size: 11px; font-weight: 700; line-height: 16px; overflow-wrap: anywhere; }
+.transfer-action-badge.zero, .transfer-action-badge.unknown { background: var(--page); color: var(--muted); border: 1px solid var(--border); }
+.side-nav .transfer-action-badge { margin-left: auto; min-width: 20px; max-width: 100%; }
+.side-nav button:has(.transfer-action-badge) { flex-wrap: wrap; }
+.bottom-nav button:has(.transfer-action-badge) { display: grid; grid-template-columns: 20px minmax(0, auto); justify-content: center; gap: 2px 4px; padding: 4px 8px; }
+.bottom-nav button:has(.transfer-action-badge) > svg { grid-area: 1 / 1; }
+.bottom-nav button:has(.transfer-action-badge) > span:not(.transfer-action-badge) { grid-area: 2 / 1 / 3 / 3; }
+.bottom-nav .transfer-action-badge { grid-area: 1 / 2; max-width: 100%; font-size: 10px; line-height: 14px; }
 .side-nav a { background: var(--tint); color: var(--wine); border-left: 2px solid var(--wine); font-weight: 600; }
 .sidebar-footer { border-top: 1px solid var(--border); padding-top: 12px; }
 .identity { display: flex; flex-direction: column; padding: 8px; background: var(--page); border: 1px solid var(--border); font-size: 12px; overflow-wrap: anywhere; }

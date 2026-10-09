@@ -4,6 +4,7 @@ import { Brand, Icon } from './icons';
 import { groupItems } from './model';
 import type { Item } from './model';
 import { useInventory } from './useInventory';
+import { useTransfers } from './useTransfers';
 import TransferCreation from './TransferCreation';
 import TransferPending, { transferViewOwner } from './TransferPending';
 import { createTransferRecovery } from './transferRecovery';
@@ -73,12 +74,19 @@ function Pager({ state }: { state: Controller }) {
     </div>
   </footer>;
 }
-function Navigation({ mobile = false, transfers, disabled, onInventory, onPending }: {
-  mobile?: boolean; transfers: boolean; disabled: boolean; onInventory: () => void; onPending: () => void;
+function Navigation({ mobile = false, transfers, disabled, actionCount, countUnavailable, onInventory, onPending }: {
+  mobile?: boolean; transfers: boolean; disabled: boolean; actionCount: string | null; countUnavailable: boolean;
+  onInventory: () => void; onPending: () => void;
 }) {
+  const statusID = mobile ? 'mobile-transfer-count' : 'desktop-transfer-count';
+  const countStatus = actionCount !== null ? `Solicitudes que requieren tu aprobación: ${actionCount}`
+    : countUnavailable ? 'Contador de aprobación no disponible.' : 'Consultando solicitudes que requieren tu aprobación…';
   return <nav className={mobile ? 'bottom-nav' : 'side-nav'} aria-label={mobile ? 'Navegación móvil' : 'Navegación principal'}>
     <a href="#inventario" aria-current={!transfers ? 'page' : undefined} aria-disabled={disabled} onClick={event => { event.preventDefault(); if (!disabled) onInventory(); }}><Icon name="inventory" /><span>Inventario</span></a>
-    <button type="button" disabled={disabled} aria-current={transfers ? 'page' : undefined} onClick={onPending}><Icon name="transfer" /><span>Transferencias</span></button>
+    <button type="button" disabled={disabled} aria-current={transfers ? 'page' : undefined} aria-describedby={statusID} onClick={onPending}><Icon name="transfer" /><span>Transferencias</span>
+      <span className={'transfer-action-badge' + (actionCount === null ? ' unknown' : actionCount === '0' ? ' zero' : '')} aria-hidden="true">{actionCount ?? (countUnavailable ? '—' : '…')}</span>
+    </button>
+    <span id={statusID} className="sr-only" role="status">{countStatus}</span>
   </nav>;
 }
 function InventoryView({ state, recovery }: { state: Controller; recovery: ReturnType<typeof createTransferRecovery> }) {
@@ -88,6 +96,12 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
   const warehouse = identity.location.id === 1;
   const [creationRequested, setCreation] = useState(false);
   const ownerTag = transferViewOwner(state.getTransferAuthority());
+  // Independent from Pending's lane: overlapping reads and differing snapshots are intentional.
+  const shellTransfers = useTransfers({ controller: state, countsEnabled: ownerTag !== null });
+  const counts = shellTransfers.counts;
+  const countUnavailable = ownerTag !== null && !!shellTransfers.countsError;
+  const actionCount = ownerTag !== null && counts && !shellTransfers.countsBusy && !countUnavailable
+    ? counts.action_count.toString() : null;
   const [creationOwner, setCreationOwner] = useState<string | null>(null);
   const creation = creationRequested && creationOwner === ownerTag && ownerTag !== null;
   const [pane, setPane] = useState<{ ownerTag: string; initialDetail?: { ownerTag: string; id: string } } | null>(null);
@@ -132,7 +146,7 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
   const selected = metadata?.locations.find(l => l.id === query.location);
   const recoverable = recovery.getCurrent(state.getTransferAuthority);
   const navDisabled = !ownerTag || creation || recoverable?.phase === 'inFlight';
-  const navigation = { transfers, disabled: navDisabled, onInventory: () => navigate(false), onPending: () => navigate(true) };
+  const navigation = { transfers, disabled: navDisabled, actionCount, countUnavailable, onInventory: () => navigate(false), onPending: () => navigate(true) };
   return <div className={'app-shell' + (warehouse ? ' warehouse' : '')}>
     <aside className="sidebar" hidden={mobile}><div><Brand />{!mobile && <Navigation {...navigation} />}</div><div className="sidebar-footer"><div className="identity"><strong>{identity.username}</strong><small className="assigned-location">{identity.location.name}</small></div><button className="logout" type="button" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" />Cerrar sesión</button></div></aside>
     <header className="app-header" hidden={mobile}><strong>Luson {transfers ? 'Transferencias' : 'Inventario'}</strong><span><Icon name="warehouse" />Ubicación asignada: <b>{identity.location.name}</b></span></header>
