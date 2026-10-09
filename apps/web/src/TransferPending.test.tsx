@@ -63,6 +63,41 @@ async function loaded() { await screen.findByText('9007199254740993 solicitudes 
 async function detail() { fireEvent.click(screen.getByRole('button', { name: 'Ver detalle TR-9007199254740993' })); await screen.findByRole('heading', { name: 'TR-9007199254740993' }); }
 afterEach(() => { vi.unstubAllGlobals(); });
 
+describe('R05-U2 pending header action stack', () => {
+  it.each([2, 3])('groups branch %s creation before the live count separately from the title', async id => {
+    const f = fixture(id); if (id === 3) f.env.record = wire(2, 3);
+    f.env.count = '3';
+    render(<TransferPending controller={f.controller} ownerTag={f.ownerTag} onInventory={f.back} creationAvailable onCreate={vi.fn()} />);
+    const count = await screen.findByText('3 solicitudes pendientes');
+    const button = screen.getByRole('button', { name: 'Nueva transferencia' });
+    const title = screen.getByRole('heading', { name: 'Transferencias pendientes' });
+    const header = title.closest('header')!;
+    const actions = header.querySelector('.pending-heading-actions');
+    expect(actions).not.toBeNull();
+    expect(button.parentElement).toBe(actions);
+    expect(count.parentElement).toBe(actions);
+    expect(Array.from(actions!.children)).toEqual([button, count]);
+    expect(actions).not.toContainElement(title);
+    expect(title.parentElement?.parentElement).toBe(header);
+    expect(actions!.parentElement).toBe(header);
+    expect(count).toHaveAttribute('aria-live', 'polite');
+    await detail();
+    expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
+    expect(screen.getByText('3 solicitudes pendientes')).toHaveAttribute('aria-live', 'polite');
+  });
+  it('keeps warehouse count separate from the title without a creation action', async () => {
+    const f = fixture(1);
+    render(<TransferPending controller={f.controller} ownerTag={f.ownerTag} onInventory={f.back} creationAvailable onCreate={vi.fn()} />);
+    await loaded();
+    const title = screen.getByRole('heading', { name: 'Transferencias pendientes' });
+    const count = screen.getByText('9007199254740993 solicitudes pendientes');
+    expect(count.parentElement).toBe(title.closest('header'));
+    expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
+    await detail();
+    expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
+  });
+});
+
 describe('R05-U1 list creation entry', () => {
   it.each([1, 2, 3])('offers creation only on the assigned branch %s list, never detail', async id => {
     const f = fixture(id); if (id === 3) f.env.record = wire(2, 3);

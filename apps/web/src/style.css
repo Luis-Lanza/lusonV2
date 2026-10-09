@@ -254,6 +254,8 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .transfer-pending .creation-back { align-self: flex-start; color: var(--wine); }
 .pending-heading, .pending-record-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 24px; background: white; border: 1px solid var(--border); border-radius: 8px; }
 .pending-heading p { color: var(--muted); margin-top: 6px; }
+.pending-heading .pending-heading-actions { display: flex; flex-direction: column; align-items: flex-end; align-self: flex-start; gap: 6px; margin-left: auto; text-align: right; }
+.pending-heading .pending-heading-actions .pending-count { margin: 0; }
 .pending-count { font-weight: 600; font-variant-numeric: tabular-nums; }
 .pending-status { display: inline-block; padding: 6px 10px; background: var(--tint); color: var(--wine); border: 1px solid var(--border); border-radius: 6px; font-size: 12px; font-weight: 600; }
 .pending-table, .pending-items { background: white; border: 1px solid var(--border); border-radius: 8px; }

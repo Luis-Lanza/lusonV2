@@ -56,16 +56,19 @@ export default function TransferPending(props: TransferPendingProps) {
   const open = (row: TransferRecord) => { if (current()) transfers.selectDetail(row.id); };
   const back = () => { if (current()) transfers.selectDetail(null); };
   const inventory = () => { if (current()) props.onInventory(); };
+  const pendingCount = <p className="pending-count" aria-live="polite">{page ? `${page.total_count.toString()} solicitudes pendientes` : 'Consultando solicitudes pendientes…'}</p>;
   return <section className={'transfer-pending' + (warehouse ? ' pending-warehouse' : '')} aria-labelledby="pending-title">
     <button type="button" className="creation-back" onClick={inventory}>Volver al inventario</button>
     <header className="pending-heading"><div><h1 id="pending-title">{selected ? 'Detalle de solicitud' : 'Transferencias pendientes'}</h1>
       <p>Solicitudes Pending de tu ubicación asignada. La consulta de inventario no cambia los participantes.</p></div>
-      {!selected && !warehouse && <button type="button" className="primary transfer-cta" disabled={!props.creationAvailable || !props.onCreate} onClick={() => {
-        const latest = props.controller.getTransferAuthority();
-        if (current() && latest.session?.authenticated && [2, 3].includes(latest.session.identity.location.id)
-          && props.creationAvailable) props.onCreate?.();
-      }}>Nueva transferencia</button>}
-      <p className="pending-count" aria-live="polite">{page ? `${page.total_count.toString()} solicitudes pendientes` : 'Consultando solicitudes pendientes…'}</p>
+      {!selected && !warehouse ? <div className="pending-heading-actions">
+        <button type="button" className="primary transfer-cta" disabled={!props.creationAvailable || !props.onCreate} onClick={() => {
+          const latest = props.controller.getTransferAuthority();
+          if (current() && latest.session?.authenticated && [2, 3].includes(latest.session.identity.location.id)
+            && props.creationAvailable) props.onCreate?.();
+        }}>Nueva transferencia</button>
+        {pendingCount}
+      </div> : pendingCount}
     </header>
     {selected ? <>
       <button type="button" className="creation-back" onClick={back}>Volver a pendientes</button>
