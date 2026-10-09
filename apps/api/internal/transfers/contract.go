@@ -27,6 +27,7 @@ var (
 	ErrNotFound          = errors.New("transfer not found")
 	ErrInsufficientStock = errors.New("insufficient transfer stock")
 	ErrRetryConflict     = errors.New("transfer retry conflict")
+	ErrDecisionConflict  = errors.New("transfer decision conflict")
 	ErrUnavailable       = errors.New("transfer store unavailable")
 )
 

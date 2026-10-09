@@ -1,9 +1,10 @@
-# Immutable Pending requests without stock holds
+# Immutable transfer requests and whole-request approval
 
-`internal/transfers` creates durable, participant-private Pending requests in one
-PostgreSQL transaction. It does not reserve, dispatch, receive or change stock.
-There are no HTTP routes, UI screens, list pagination or realtime transport in
-this store unit; those require separate integration and authorization checks.
+`internal/transfers` creates durable, participant-private Pending requests and
+approves whole requests with atomic source reservations. Creation does not hold
+stock. Approval does not dispatch, receive or deduct physical stock. Domain
+approval has no HTTP mutation route, UI or realtime integration; those require
+separate integration and authorization checks.
 
 ## Trusted entry points
 
@@ -59,7 +60,7 @@ retry/fingerprint bounds, foreign keys and uniqueness. Deferred completeness
 requires 1–190 items. An internal `creation_xid` permits item insertion only within
 the header's creation transaction; later appends, updates, deletes and truncation
 are refused. Migration 005 adds the narrowly admitted schema transitions below,
-not an approval/rejection operation hidden in this store. Database owner access remains administrative authority,
+not an implicit approval/rejection during creation. Database owner access remains administrative authority,
 not a security boundary against an operator disabling protections.
 
 Public references use a global positive BIGINT `NO CYCLE` sequence: `TR-001`,
@@ -71,7 +72,8 @@ must serialize quantities and numeric identifiers losslessly, rather than
 assuming JavaScript number precision.
 
 Errors are stable `ErrForbidden`, `ErrInvalid`, `ErrNotFound`,
-`ErrInsufficientStock`, `ErrRetryConflict` and sanitized `ErrUnavailable` values.
+`ErrInsufficientStock`, `ErrRetryConflict`, `ErrDecisionConflict` and sanitized
+`ErrUnavailable` values.
 Cancellation/deadline errors retain their standard Go semantics. Driver/config,
 private credentials and raw SQL errors are not returned.
 
@@ -100,8 +102,8 @@ All protected header UPDATE, allocation INSERT and balance UPDATE/DELETE
 statements acquire the same transaction-owned reservation-integrity advisory
 lock (`pg_advisory_xact_lock(714025, 1)`) before row locking. These writes require
 READ COMMITTED so waiting writers can validate newly committed state. Other
-isolation levels remain available for reads. Future A02 approval transactions
-must acquire this lock **before** explicit request/balance locks. Arbitrary SQL
+isolation levels remain available for reads. A02 approval transactions
+acquire this lock **before** explicit request/balance locks. Arbitrary SQL
 that prelocks rows can deadlock and abort; universal deadlock-free success is not
 promised. The committed invariants, not the SQL actor's authenticated identity,
 are the database guarantee. Operators disabling guards are outside that boundary.
@@ -130,7 +132,7 @@ direction and every item. Replay lookup still precedes fresh stock checks and
 writes no header, reference, item, allocation or balance, even when present
 availability is insufficient. Changed carts still return `ErrRetryConflict`;
 foreign/missing detail still returns `ErrNotFound`. List records and counts remain
-Pending-only. No allocation DTO/query or decision mutation method is added.
+Pending-only. Outcome reads add no allocation DTO/query or decision mutation.
 
 Until A04 admits outcome DTOs, the HTTP adapter fences successful terminal Get
 and creation replay **before** Location or serialization, returning only the
@@ -143,6 +145,48 @@ metadata and exact immutable payloads, participant privacy, reordered replay
 under exhausted availability, mixed Pending-only lists and complete unchanged
 header/item/allocation/balance snapshots. Fixtures use real guarded transitions
 in a committed READ COMMITTED transaction with reservation advisory lock first.
+
+## A02 atomic whole-request approval
+
+`Store.Approve(ctx, identity, requestID)` returns the complete persisted `Request`
+after commit, not an approval key, replay flag or allocation DTO. Supply the
+server-authenticated identity. Account/assigned location must match; warehouse
+approval is legal even though warehouse creation remains forbidden. Participant
+membership is checked before the persisted approver, and authorization precedes
+terminal handling. Foreign/missing/nonpositive IDs return `ErrNotFound`;
+malformed identities and visible non-approvers return `ErrForbidden`. Authorized
+Rejected approval returns `ErrDecisionConflict`, distinct from creation's
+`ErrRetryConflict`. Nil context/store/pool returns `ErrUnavailable`; SQL/config
+errors stay private and cancellation/deadline errors retain Go semantics.
+
+Approval uses READ COMMITTED, a 10-second deadline and bounded background rollback.
+The reservation-integrity advisory lock is acquired first, then the participant
+header is locked. Authorized Approved retries reload the original complete
+outcome without any stock query, availability recheck or writes. Lost replies
+can be recovered through participant `Get` or the same authorized approval.
+
+For Pending, all immutable variants at the persisted physical origin are locked
+in ascending order. Result rows close before writes. Every item is validated
+first; a missing balance or any shortage returns `ErrInsufficientStock` without
+partial effects. Per-item quantity <= available proves reserved + quantity <=
+existing <= MaxInt64; quantities across variants are never summed. Each exact
+reserved increment and allocation insert must affect one row. Guards derive
+allocation origin and decision actor/time; the header update changes only status.
+Canonical reload and successful commit precede returning the result. Any failure
+returns a zero request and rolls back the whole transaction. Physical stock,
+destination/unrelated balances and pre-existing independent holds are preserved.
+
+`TestA02ApprovalDependencies`, `TestA02ApprovalStore` and
+`TestA02ApprovalConcurrency` cover refusals/full snapshots, all three flows,
+exhausted-stock retries, rejected conflicts, first/later/missing-item shortages,
+independent int64 boundaries and an observed midwrite rollback. Connection-local
+pgx tracer/channel stages and actual PostgreSQL lock waits exercise competing
+and same-request approvals, both approval/rejection orders, guarded stock/hold
+changes and both creation/approval orders. Creation can finish while approval
+waits on its balance locks; waiting creation revalidates committed availability.
+No production hooks or timing sleeps are used. Arbitrary SQL prelocking may
+still deadlock/abort. Existing Pending-only HTTP fences remain unchanged; human
+manual workflow/UI/realtime smoke and later integration units remain pending.
 
 ## Focused verification
 
