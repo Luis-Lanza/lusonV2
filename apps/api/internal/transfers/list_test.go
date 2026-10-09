@@ -54,7 +54,7 @@ func TestR02ListDependencies(t *testing.T) {
 		{"page_overflow", actor(2), transfers.Query{Page: math.MaxInt64}, transfers.ErrInvalid},
 		{"negative_size", actor(2), transfers.Query{PageSize: -1}, transfers.ErrInvalid},
 		{"arbitrary_size", actor(2), transfers.Query{PageSize: 11}, transfers.ErrInvalid},
-		{"future_status", actor(2), transfers.Query{Status: "approved"}, transfers.ErrInvalid},
+		{"unsupported_status", actor(2), transfers.Query{Status: "dispatched"}, transfers.ErrInvalid},
 		{"status_case", actor(2), transfers.Query{Status: "Pending"}, transfers.ErrInvalid},
 		{"status_space", actor(2), transfers.Query{Status: " pending"}, transfers.ErrInvalid},
 	} {

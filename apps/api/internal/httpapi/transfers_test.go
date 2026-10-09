@@ -196,7 +196,7 @@ func TestR02TransfersDecoder(t *testing.T) {
 		t.Fatal("nil request accepted")
 	}
 	t.Run("query_boundaries", func(t *testing.T) {
-		for _, raw := range []string{"", "page=1&page_size=10&status=pending", "status=pending&page_size=25&page=1000000", "page_size=50"} {
+		for _, raw := range []string{"", "page=1&page_size=10&status=pending", "status=pending&page_size=25&page=1000000", "page_size=50", "status=approved", "status=rejected"} {
 			if _, err := transferQuery(raw); err != nil {
 				t.Fatal("valid bounded query rejected")
 			}
@@ -209,7 +209,11 @@ func TestR02TransfersDecoder(t *testing.T) {
 	})
 	t.Run("lossless_large_count", func(t *testing.T) {
 		w := httptest.NewRecorder()
-		respond(w, 200, transferPage(transfers.Page{Page: 1, PageSize: 25, Total: math.MaxInt64}))
+		page, err := transferPage(transfers.Page{Page: 1, PageSize: 25, Status: "pending", Total: math.MaxInt64})
+		if err != nil {
+			t.Fatal("valid normalized page rejected")
+		}
+		respond(w, 200, page)
 		total, records := transferWirePage(t, w)
 		if total != math.MaxInt64 || len(records) != 0 {
 			t.Fatal("int64 total lost precision or records became null")
@@ -232,7 +236,7 @@ type transferErrorReader struct{}
 
 func (transferErrorReader) Read([]byte) (int, error) { return 0, errors.New("private reader error") }
 func invalidTransferQueries() []string {
-	return []string{"page=0", "page=01", "page=-1", "page=+1", "page=1.0", "page=1e0", "page=1000001", "page=9223372036854775808", "page=", "page", "page=1&page=1", "page_size=0", "page_size=11", "page_size=050", "page_size=50&page_size=50", "status=", "status=Pending", "status=approved", "status=pending&status=pending", "actor=2", "location_id=1", "csrf_token=ignored", "page=%31", "%70age=1", "page=%ZZ", "page=%FF", "page=1;status=pending", "page=1&&page_size=25", "&page=1", "page=1&", "page=1=1", "page=" + strings.Repeat("1", 4096)}
+	return []string{"page=0", "page=01", "page=-1", "page=+1", "page=1.0", "page=1e0", "page=1000001", "page=9223372036854775808", "page=", "page", "page=1&page=1", "page_size=0", "page_size=11", "page_size=050", "page_size=50&page_size=50", "status=", "status=Pending", "status=unsupported", "status=pending&status=pending", "actor=2", "location_id=1", "csrf_token=ignored", "page=%31", "%70age=1", "page=%ZZ", "page=%FF", "page=1;status=pending", "page=1&&page_size=25", "&page=1", "page=1&", "page=1=1", "page=" + strings.Repeat("1", 4096)}
 }
 
 type transferHTTPFixture struct {

@@ -266,9 +266,10 @@ func transferQuery(raw string) (transfers.Query, error) {
 				err = transfers.ErrInvalid
 			}
 		case "status":
-			if value != "pending" {
+			if value != "pending" && value != "approved" && value != "rejected" {
 				err = transfers.ErrInvalid
 			}
+			q.Status = value
 		default:
 			return transfers.Query{}, transfers.ErrInvalid
 		}
@@ -302,14 +303,53 @@ type transferDTO struct {
 	Status                  string            `json:"status"`
 	CreatedAt               string            `json:"created_at"`
 	Items                   []transferItemDTO `json:"items"`
+	DecisionLocationID      *int              `json:"decision_location_id,omitempty"`
+	DecidedAt               *string           `json:"decided_at,omitempty"`
 }
 
-func transferRecord(r transfers.Request) transferDTO {
+// Outcomes must be complete persisted results, never fabricated Pending or
+// partially exposed metadata. Pending keeps its exact original field set.
+func transferRecord(r transfers.Request) (transferDTO, error) {
+	var decidedAt *string
+	switch r.Status {
+	case "pending":
+		if r.DecisionLocationID != nil || r.DecidedAt != nil {
+			return transferDTO{}, transfers.ErrUnavailable
+		}
+	case "approved", "rejected":
+		if r.DecisionLocationID == nil || r.DecidedAt == nil ||
+			*r.DecisionLocationID < 1 || *r.DecisionLocationID > 3 ||
+			*r.DecisionLocationID != r.Approver.ID || r.DecidedAt.IsZero() ||
+			r.DecidedAt.Before(r.CreatedAt) {
+			return transferDTO{}, transfers.ErrUnavailable
+		}
+		stamp := r.DecidedAt.UTC().Format(time.RFC3339Nano)
+		decidedAt = &stamp
+	default:
+		return transferDTO{}, transfers.ErrUnavailable
+	}
 	items := make([]transferItemDTO, 0, len(r.Items))
 	for _, item := range r.Items {
 		items = append(items, transferItemDTO{item.VariantID, item.Brand, item.Model, string(item.Capacity), item.Polarity, strconv.FormatInt(item.Quantity, 10)})
 	}
-	return transferDTO{strconv.FormatInt(r.ID, 10), r.Reference, r.Creator.ID, r.Creator.Name, r.Kind, r.Origin.ID, r.Origin.Name, r.Destination.ID, r.Destination.Name, r.Approver.ID, r.Approver.Name, r.Status, r.CreatedAt.UTC().Format(time.RFC3339Nano), items}
+	return transferDTO{
+		ID:                      strconv.FormatInt(r.ID, 10),
+		Reference:               r.Reference,
+		CreatorLocationID:       r.Creator.ID,
+		CreatorLocationName:     r.Creator.Name,
+		Kind:                    r.Kind,
+		OriginLocationID:        r.Origin.ID,
+		OriginLocationName:      r.Origin.Name,
+		DestinationLocationID:   r.Destination.ID,
+		DestinationLocationName: r.Destination.Name,
+		ApproverLocationID:      r.Approver.ID,
+		ApproverLocationName:    r.Approver.Name,
+		Status:                  r.Status,
+		CreatedAt:               r.CreatedAt.UTC().Format(time.RFC3339Nano),
+		Items:                   items,
+		DecisionLocationID:      r.DecisionLocationID,
+		DecidedAt:               decidedAt,
+	}, nil
 }
 
 type transferPageDTO struct {
@@ -320,15 +360,55 @@ type transferPageDTO struct {
 	Records    []transferDTO `json:"records"`
 }
 
-func transferPage(page transfers.Page) transferPageDTO {
+func transferPage(page transfers.Page) (transferPageDTO, error) {
 	records := make([]transferDTO, 0, len(page.Records))
 	for _, record := range page.Records {
-		records = append(records, transferRecord(record))
+		dto, err := transferRecord(record)
+		if err != nil {
+			return transferPageDTO{}, err
+		}
+		records = append(records, dto)
 	}
-	return transferPageDTO{page.Page, page.PageSize, "pending", strconv.FormatInt(page.Total, 10), records}
+	return transferPageDTO{page.Page, page.PageSize, page.Status, strconv.FormatInt(page.Total, 10), records}, nil
+}
+
+// Counts intentionally has its own exact static route beside numeric detail.
+// Identity lookup uses the existing passive inventory read policy, not Current.
+func (a *API) transferCounts(store *transfers.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, http.MethodGet) {
+			return
+		}
+		if _, valid := passiveMode(r); !valid {
+			failure(w, 400, "invalid_request")
+			return
+		}
+		// Counts is inherently passive even when no selector is supplied.
+		// Clone rather than changing the caller's request/header ownership.
+		passive := r.Clone(r.Context())
+		passive.Header.Set(passiveHeader, "1")
+		actor, ok := a.inventoryIdentity(w, passive)
+		if !ok {
+			return
+		}
+		if r.URL.RawQuery != "" || r.URL.ForceQuery {
+			failure(w, 400, "invalid_request")
+			return
+		}
+		totals, err := store.Counts(r.Context(), actor)
+		if err != nil {
+			transferFailure(w, err)
+			return
+		}
+		respond(w, 200, struct {
+			PendingTotal string `json:"pending_total"`
+			ActionCount  string `json:"action_count"`
+		}{strconv.FormatInt(totals.PendingTotal, 10), strconv.FormatInt(totals.ActionCount, 10)})
+	}
 }
 
 func (a *API) registerTransfers(mux *http.ServeMux, store *transfers.Store) {
+	mux.HandleFunc("/api/transfers/counts", a.transferCounts(store))
 	mux.HandleFunc("/api/transfers", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {
 			w.Header().Set("Allow", "GET, POST")
@@ -362,10 +442,9 @@ func (a *API) registerTransfers(mux *http.ServeMux, store *transfers.Store) {
 				transferFailure(w, err)
 				return
 			}
-			// Outcome DTOs are not admitted until A04. Fence before Location
-			// or serialization; never disguise an original terminal replay.
-			if result.Request.Status != "pending" {
-				transferFailure(w, transfers.ErrUnavailable)
+			record, err := transferRecord(result.Request)
+			if err != nil {
+				transferFailure(w, err)
 				return
 			}
 			status := 201
@@ -373,7 +452,7 @@ func (a *API) registerTransfers(mux *http.ServeMux, store *transfers.Store) {
 				status = 200
 			}
 			w.Header().Set("Location", "/api/transfers/"+strconv.FormatInt(result.Request.ID, 10))
-			respond(w, status, transferRecord(result.Request))
+			respond(w, status, record)
 			return
 		}
 		q, err := transferQuery(r.URL.RawQuery)
@@ -386,7 +465,12 @@ func (a *API) registerTransfers(mux *http.ServeMux, store *transfers.Store) {
 			transferFailure(w, err)
 			return
 		}
-		respond(w, 200, transferPage(page))
+		dto, err := transferPage(page)
+		if err != nil {
+			transferFailure(w, err)
+			return
+		}
+		respond(w, 200, dto)
 	})
 	mux.HandleFunc("/api/transfers/{id}", func(w http.ResponseWriter, r *http.Request) {
 		value := r.PathValue("id")
@@ -416,10 +500,11 @@ func (a *API) registerTransfers(mux *http.ServeMux, store *transfers.Store) {
 			transferFailure(w, err)
 			return
 		}
-		if record.Status != "pending" {
-			transferFailure(w, transfers.ErrUnavailable)
+		dto, err := transferRecord(record)
+		if err != nil {
+			transferFailure(w, err)
 			return
 		}
-		respond(w, 200, transferRecord(record))
+		respond(w, 200, dto)
 	})
 }

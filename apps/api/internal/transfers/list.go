@@ -19,6 +19,7 @@ type Page struct {
 	Total    int64
 	Page     int64
 	PageSize int
+	Status   string
 }
 
 func normalizeQuery(q Query) (Query, error) {
@@ -31,7 +32,10 @@ func normalizeQuery(q Query) (Query, error) {
 	if q.Status == "" {
 		q.Status = "pending"
 	}
-	if q.Page < 1 || q.Page > 1_000_000 || (q.PageSize != 10 && q.PageSize != 25 && q.PageSize != 50) || q.Status != "pending" {
+	if q.Status != "pending" && q.Status != "approved" && q.Status != "rejected" {
+		return Query{}, ErrInvalid
+	}
+	if q.Page < 1 || q.Page > 1_000_000 || (q.PageSize != 10 && q.PageSize != 25 && q.PageSize != 50) {
 		return Query{}, ErrInvalid
 	}
 	return q, nil
@@ -63,7 +67,7 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q Query) (Page, e
 		defer done()
 		_ = tx.Rollback(cleanup)
 	}()
-	page := Page{Records: make([]Request, 0), Page: q.Page, PageSize: q.PageSize}
+	page := Page{Records: make([]Request, 0), Page: q.Page, PageSize: q.PageSize, Status: q.Status}
 	if tx.QueryRow(ctx, `SELECT count(*) FROM transfer_requests
   WHERE $1 IN (origin_location_id,destination_location_id) AND status=$2`, actor.AccountID, q.Status).Scan(&page.Total) != nil {
 		return Page{}, fail(ctx)
