@@ -228,7 +228,7 @@ describe('A05a truthful terminal detail', () => {
     expect(screen.getByRole('heading', { name: `Solicitud ${label}` })).toBeVisible();
     expect(screen.queryByText('Esta solicitud todavía no reserva ni mueve stock.')).not.toBeInTheDocument();
     expect(screen.queryByText(/La aprobación deberá revalidar/)).not.toBeInTheDocument();
-    expect(screen.getByText('2028-01-02T00:00:00.000000001Z')).toBeVisible();
+    expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('2028-01-02T00:00:00.000000001Z')).toBeVisible();
     for (const name of ['Aprobar', 'Rechazar', 'Confirmar aprobación']) expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
   });
 });
@@ -320,9 +320,16 @@ describe('R04c participant Pending', () => {
     const items = screen.getByRole('table', { name: 'Baterías solicitadas' });
     expect(items).toHaveTextContent('75.125 Ah'); expect(items).toHaveTextContent('Izquierda [L]'); expect(items).toHaveTextContent('Derecha [R]');
     expect(within(items).getAllByText('9223372036854775807')).toHaveLength(2);
-    expect(screen.getByText('2028-01-01T00:00:00.123456789Z')).toBeVisible();
+    expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('2028-01-01T00:00:00.123456789Z')).toBeVisible();
     expect(screen.getByLabelText('Resumen de solicitud')).toHaveTextContent('Ubicación creadoraSucursal A');
-    expect(screen.queryByText(/Historial|Empleado|Verificadas en origen/)).not.toBeInTheDocument();
+    const history = screen.getByRole('region', { name: 'Historial de la solicitud' });
+    expect(within(history).getAllByRole('listitem')).toHaveLength(1);
+    expect(history).toHaveTextContent('Solicitud creada');
+    expect(history).toHaveTextContent('Ubicación: Sucursal A');
+    expect(within(history).getByText('2028-01-01T00:00:00.123456789Z')).toBeVisible();
+    expect(history).not.toHaveTextContent(/aprobada|rechazada|reservad|despacho|recepción/i);
+    expect(screen.queryByRole('button', { name: /Aprobar|Rechazar/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Empleado|Verificadas en origen/)).not.toBeInTheDocument();
     expect(isPassive(calls(f, true)[0])).toBe(false);
     expect(calls(f, true)[0][1]).toMatchObject({ credentials: 'same-origin', cache: 'no-store', method: 'GET' });
   });

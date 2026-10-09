@@ -59,6 +59,73 @@ function fixture(origin = 1, destination = 2, assigned = 1, override?: (url: str
 async function loaded() { await waitFor(() => expect(screen.getByRole('button', { name: 'Actualizar stock de origen' })).toBeEnabled()); }
 afterEach(() => vi.unstubAllGlobals());
 
+describe('A06b persisted outcome and history', () => {
+  it.each(['pending', 'approved', 'rejected'])('renders only persisted %s events and request-owned whole quantities', async status => {
+    for (const [origin, destination] of [[1, 2], [1, 3], [2, 3], [3, 2], [2, 1], [3, 1]]) {
+      for (const assigned of [origin, destination]) {
+        const f = fixture(origin, destination, assigned);
+        const record = parseTransferRecord(JSON.stringify(wire(origin, destination, status)));
+        const view = render(f.element(record));
+        if (status === 'pending') await loaded();
+        const history = screen.getByRole('region', { name: 'Historial de la solicitud' });
+        const events = within(history).getAllByRole('listitem');
+        expect(events).toHaveLength(status === 'pending' ? 1 : 2);
+        expect(within(history).getAllByRole('list')).toHaveLength(1);
+        expect(events[0]).toHaveTextContent('Solicitud creada');
+        expect(events[0]).toHaveTextContent(`Ubicación: ${record.creator_location_name}`);
+        expect(events[0].querySelector('time')).toHaveTextContent(record.created_at);
+        expect(events[0].querySelector('time')).toHaveAttribute('datetime', record.created_at);
+        const metrics = screen.getByRole('region', { name: 'Cantidades de la solicitud' });
+        expect(within(metrics).getByLabelText('Baterías solicitadas')).toHaveTextContent(/^18446744073709551614$/);
+        if (record.status === 'pending') {
+          expect(within(metrics).queryByLabelText('Baterías reservadas en esta solicitud')).not.toBeInTheDocument();
+          expect(history).not.toHaveTextContent(/aprobada|rechazada|reservad/i);
+        } else {
+          expect(events[1]).toHaveTextContent(record.status === 'approved' ? 'Solicitud aprobada y stock reservado' : 'Solicitud rechazada');
+          expect(events[1]).toHaveTextContent(`Ubicación: ${names[record.decision_location_id - 1]}`);
+          expect(events[1].querySelector('time')).toHaveTextContent(record.decided_at);
+          expect(events[1].querySelector('time')).toHaveAttribute('datetime', record.decided_at);
+          expect(within(metrics).getByLabelText('Baterías reservadas en esta solicitud')).toHaveTextContent(
+            record.status === 'approved' ? /^18446744073709551614$/ : /^0$/);
+          expect(f.fetch).not.toHaveBeenCalled();
+        }
+        expect(history).not.toHaveTextContent(/test|Encargado|Empleado|motivo|despacho|recepción|cancel/i);
+        expect(document.body).not.toHaveTextContent(/Disponible actual|Disponible restante|Reserva total/);
+        expect(screen.queryByRole('button', { name: /Despachar|Recibir|Cancelar|Aprobar|Rechazar/ })).not.toBeInTheDocument();
+        expect(screen.getByRole('table')).toHaveTextContent('75.125 Ah');
+        view.unmount();
+      }
+    }
+  });
+  it('keeps unknown Pending stock separate from a persisted Rejected zero reservation', async () => {
+    const f = fixture(2, 1, 1, async () => catalog(2, 1, 0));
+    const view = render(f.element());
+    await loaded();
+    expect(screen.getByRole('table')).toHaveTextContent('Disponibilidad no disponible');
+    expect(screen.queryByLabelText('Baterías reservadas en esta solicitud')).not.toBeInTheDocument();
+    const rejected = parseTransferRecord(JSON.stringify(wire(2, 1, 'rejected')));
+    view.rerender(f.element(rejected));
+    expect(screen.getByLabelText('Baterías reservadas en esta solicitud')).toHaveTextContent(/^0$/);
+    expect(screen.getByRole('table')).not.toHaveTextContent('Disponible');
+    expect(screen.getByLabelText('Resumen de solicitud')).toHaveTextContent('No reserva ni mueve stock');
+    expect(f.fetch).toHaveBeenCalledOnce();
+  });
+  it.each(['location', 'generation', 'unready'])('removes persisted private history and metrics after %s authority changes', mode => {
+    const f = fixture(3, 2, 2);
+    const record = parseTransferRecord(JSON.stringify(wire(3, 2, 'approved')));
+    const view = render(f.element(record));
+    expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toBeVisible();
+    if (mode === 'unready') f.env.current.ready = false;
+    if (mode === 'generation') f.env.current.sessionGeneration = 2;
+    if (mode === 'location' && f.env.current.session?.authenticated) f.env.current.session.identity.location.id = 1;
+    view.rerender(f.element(record));
+    expect(screen.queryByRole('region', { name: 'Historial de la solicitud' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Cantidades de la solicitud' })).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/9007199254740993|2028-01|Immutable/);
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe('A06a immutable physical review', () => {
   it.each([[1, 2, 1], [1, 3, 3], [2, 3, 2], [3, 2, 3], [2, 1, 1], [3, 1, 3]])('reviews %s → %s for participant %s without a client actor substitution', async (origin, destination, assigned) => {
     const f = fixture(origin, destination, assigned);
@@ -73,7 +140,7 @@ describe('A06a immutable physical review', () => {
     expect(table).toHaveTextContent('Izquierda [L]');
     expect(table).toHaveTextContent('Derecha [R]');
     expect(document.body).not.toHaveTextContent('LIVE NOT ORIGINAL');
-    expect(screen.getByText('2028-01-01T00:00:00.123456789Z')).toBeVisible();
+    expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('2028-01-01T00:00:00.123456789Z')).toBeVisible();
     const summary = screen.getByLabelText('Resumen de solicitud');
     expect(summary).toHaveTextContent(`Ubicación creadora${names[(destination === 1 ? origin : destination) - 1]}`);
     expect(summary).toHaveTextContent(`Requiere aprobación de${names[(destination === 1 ? 1 : origin) - 1]}`);
@@ -93,8 +160,8 @@ describe('A06a immutable physical review', () => {
         const f = fixture(origin, destination, assigned);
         const view = render(f.element(parseTransferRecord(JSON.stringify(wire(origin, destination, status)))));
         expect(f.fetch).not.toHaveBeenCalled();
-        expect(screen.getByText('2028-01-02T00:00:00.000000001Z')).toBeVisible();
-        expect(screen.getByText('2028-01-01T00:00:00.123456789Z')).toBeVisible();
+        expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('2028-01-02T00:00:00.000000001Z')).toBeVisible();
+        expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('2028-01-01T00:00:00.123456789Z')).toBeVisible();
         expect(screen.queryByText('Esta solicitud todavía no reserva ni mueve stock.')).not.toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Actualizar stock de origen' })).not.toBeInTheDocument();
         expect(screen.getByLabelText('Resumen de solicitud')).toHaveTextContent(status === 'approved' ? `solicitud completa está reservada en ${names[origin - 1]}` : 'No reserva ni mueve stock');

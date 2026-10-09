@@ -136,9 +136,15 @@ export default function TransferDetail(props: TransferDetailProps) {
           {!terminal && <><p>Disponible en {record.origin_location_name} (orientativo)</p><Stock stock={stock} variant={item.variant_id} /></>}
         </article>)}
       </div>}
-    </div><aside className="transfer-detail-summary" aria-label="Resumen de solicitud">
+    </div><div className="transfer-detail-outcome"><aside className="transfer-detail-summary" aria-label="Resumen de solicitud">
       <h2>Solicitud {terminal ? transferStatusLabel(record) : 'Pending'}</h2>
-      <p>{transferQuantityTotal(record).toString()} baterías solicitadas</p>
+      <section aria-label="Cantidades de la solicitud" className={`transfer-outcome-metrics ${record.status}`}>
+        <dl><dt>Baterías solicitadas</dt>
+          <dd aria-label="Baterías solicitadas">{transferQuantityTotal(record).toString()}</dd></dl>
+        {terminal && <dl><dt>Baterías reservadas en esta solicitud</dt>
+          {/* Validated Approved records guarantee exact whole-request allocations, not global balances. */}
+          <dd aria-label="Baterías reservadas en esta solicitud">{record.status === 'approved' ? transferQuantityTotal(record).toString() : '0'}</dd></dl>}
+      </section>
       <dl><dt>Ubicación creadora</dt><dd>{record.creator_location_name}</dd>
         <dt>Requiere aprobación de</dt><dd>{record.approver_location_name}</dd>
         <dt>Creada (UTC)</dt><dd><time>{record.created_at}</time></dd></dl>
@@ -148,6 +154,21 @@ export default function TransferDetail(props: TransferDetailProps) {
           <p>Al aprobar se revalida y reserva la solicitud completa en {record.origin_location_name}. Si falta disponibilidad en alguna variante, no se reserva ninguna.</p>
           <p>Aprobar no mueve existencias ni aumenta el stock del destino.</p></div>}
       {props.actions?.(stock)}
-    </aside></div>
+    </aside>
+      <section className={`transfer-history ${record.status}`} aria-label="Historial de la solicitud">
+        <h2>Historial de la solicitud</h2>
+        <ol>
+          <li><h3>Solicitud creada</h3>
+            <p>Ubicación: {record.creator_location_name}</p>
+            <time dateTime={record.created_at}>{record.created_at}</time>
+          </li>
+          {terminal && <li><h3>{record.status === 'approved' ? 'Solicitud aprobada y stock reservado' : 'Solicitud rechazada'}</h3>
+            {/* The validated decision location is the persisted approver, never the current viewer. */}
+            <p>Ubicación: {record.approver_location_name}</p>
+            <time dateTime={record.decided_at}>{record.decided_at}</time>
+          </li>}
+        </ol>
+      </section>
+    </div></div>
   </div>;
 }
