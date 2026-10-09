@@ -1,10 +1,11 @@
-# Immutable transfer requests and whole-request approval
+# Immutable transfer requests and whole-request decisions
 
-`internal/transfers` creates durable, participant-private Pending requests and
-approves whole requests with atomic source reservations. Creation does not hold
-stock. Approval does not dispatch, receive or deduct physical stock. Domain
-approval has no HTTP mutation route, UI or realtime integration; those require
-separate integration and authorization checks.
+`internal/transfers` creates durable, participant-private Pending requests,
+approves whole requests with atomic source reservations and rejects whole requests
+without inventory changes. Creation does not hold stock. Neither decision
+dispatches, receives or deducts physical stock. Domain decisions have no HTTP
+mutation route, UI or realtime integration; those require separate integration
+and authorization checks.
 
 ## Trusted entry points
 
@@ -187,6 +188,46 @@ waits on its balance locks; waiting creation revalidates committed availability.
 No production hooks or timing sleeps are used. Arbitrary SQL prelocking may
 still deadlock/abort. Existing Pending-only HTTP fences remain unchanged; human
 manual workflow/UI/realtime smoke and later integration units remain pending.
+
+## A03 atomic whole-request rejection
+
+`Store.Reject(ctx, identity, requestID)` returns the complete persisted `Request`
+only after commit. Supply the actual authenticated identity, not a consulted
+inventory location. Dependency, identity and ID guards match approval in that
+order. Warehouse rejection is legal without enabling warehouse creation.
+Participant-scoped header lookup precedes persisted approver authorization;
+authorization precedes terminal handling. Visible non-approvers are forbidden
+for Pending, Rejected and Approved alike; outsiders/missing IDs are not-found.
+Authorized Approved rejection returns the existing `ErrDecisionConflict`.
+
+Rejection uses READ COMMITTED, a 10-second operation deadline and a 5-second
+background rollback bound. The integrity advisory lock is acquired **before**
+the participant header row lock, sharing approval's ordering. Pending rejection
+changes only status, verifies one affected row, canonically reloads and commits;
+database guards derive decision location/time. Every failure returns a zero
+request, preserving cancellation/deadline semantics and sanitizing SQL errors.
+
+Authorized Rejected retry commits without writes and returns the identical
+payload, reference and persisted outcome/time. Lost replies can be recovered
+through participant `Get`, same-action retry or reordered original creation
+replay. Neither Pending rejection nor Rejected retry issues application inventory
+queries or balance/allocation writes, even with exhausted availability or a
+missing balance. Deferred database guards remain enabled and may inspect stock
+integrity internally: this is not a promise of zero database stock inspection.
+No independent holds or request-owned reservations are released; rejection
+cannot replace an Approved outcome. There is no reason field or new retry key.
+
+`TestA03RejectionDependencies`, `TestA03RejectionStore` and
+`TestA03RejectionConcurrency` cover all flows, complete balance/allocation
+snapshots (including missing rows), immutable two-item outcomes, privacy and
+stock-query tracing. Fixture-only strengthening triggers prove update rollback
+and deferred commit failure after successful canonical reload. Actual concurrent
+Reject calls return one outcome; actual Approve/Reject races cover both winning
+orders with exact reservations or none. PID/channel and PostgreSQL wait-event
+handshakes cover cancellation/deadline at advisory and header locks without
+sleeps or production hooks. Existing Pending-only HTTP 503 compatibility remains
+unchanged. Public decisions, outcome DTOs, UI/realtime integration and human
+workflow smoke remain pending; source checks do not establish deployment.
 
 ## Focused verification
 
