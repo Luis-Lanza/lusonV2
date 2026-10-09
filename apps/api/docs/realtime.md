@@ -69,7 +69,7 @@ ascending C-collated key order before incrementing any row**. This also covers
 multi-header INSERT statements and opposite branch directions; it never locks
 origin first merely because origin appears first in a request. Arbitrary future
 multi-statement mixed workflows must preserve a transaction-wide lock hierarchy
-when they are introduced; this unit does not implement stock approval/movement.
+when they are introduced; the INSERT foundation itself does not move stock.
 
 Each participant counter increases for its committed headers. Transactional
 NOTIFY metadata contains only `transfers:<audience>`; it has no request ID,
@@ -85,6 +85,39 @@ is authorized; transfer invalidations reach only the indicated participants.
 Payload grammar is an exact whitelist, not permissive JSON. Broker events strip
 internal audience metadata before delivery. Authorization belongs to the caller;
 Subscribe is not an HTTP authentication boundary.
+
+## A04a committed transfer status invalidation
+
+Migration006 adds an AFTER UPDATE statement trigger alongside the unchanged
+INSERT trigger. OLD and NEW transition tables are matched by request ID; only
+`status IS DISTINCT FROM` changes contribute. The entire affected participant
+revision-row set is locked in ascending scope order before any increments,
+including multi-request statements. Each changed request increments each of its
+physical participants once; each distinct private audience is notified once per
+statement. The third location receives no transfer invalidation.
+
+Metadata remains exactly `transfers:<audience>` on `luson_realtime`, without
+request IDs, DTOs, outcomes or decision fields. The existing broker maps this to
+its generic private `transfers` event; consumers refetch authorized snapshots.
+No broker, HTTP route, outcome fence or browser contract is changed here.
+
+Actual Reject commits transfer invalidation only, with no inventory changes.
+Actual Approve also produces the existing reserved-balance inventory invalidation.
+Both revisions and notifications are transactional: staged outcomes are invisible
+outside the transaction, and explicit rollback or deferred commit failure leaves
+neither revisions nor published transfer/inventory notifications behind.
+Same-action terminal retries and opposite-action conflicts are silent. Empty
+UPDATE statements are silent too; lifecycle guards still reject row-level no-op
+status updates rather than allowing terminal mutation.
+
+Protected decisions acquire the reservation-integrity advisory lock before row
+locks. Approve already locks inventory revisions before its transfer revisions;
+other protected decisions serialize on that protocol. Transfer INSERT has no
+inventory effects and uses the same ascending participant revision order.
+Arbitrary SQL that prelocks rows can still deadlock or abort: this is not a
+universal deadlock-freedom guarantee. `TestA04TransferStatus*` exercises actual
+decisions, commit privacy, rollback, multirow deduplication and observed PG waits.
+These owned-PG checks do not replace pending human UI/realtime acceptance.
 
 ## Passive session authority and verification
 
