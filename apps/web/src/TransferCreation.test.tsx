@@ -285,7 +285,7 @@ async function selectAndReview() {
 }
 
 describe('R04b2c2 manual lifecycle', () => {
-  it.each([201, 200])('shows only actual parsed %s reference, string ID and exact UTC then returns to inventory', async status => {
+  it.each([201, 200])('shows only actual parsed %s reference, string ID and exact UTC then returns to Transfers', async status => {
     const h = harness(); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source)); const back = vi.fn();
     const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply(recordDTO(), status));
     render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={back} />);
@@ -294,7 +294,7 @@ describe('R04b2c2 manual lifecycle', () => {
     expect(screen.getByText('ID: 1001')).toBeVisible(); expect(screen.getByText(recordDTO().created_at)).toBeVisible();
     expect(screen.getByText(status === 200 ? 'El servidor devolvió la solicitud original.' : 'El servidor creó la solicitud.')).toBeVisible();
     expect(screen.getByRole('button', { name: /Ver detalle/ })).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' })); expect(back).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' })); expect(back).toHaveBeenCalledOnce();
     expect(fetcher).toHaveBeenCalledTimes(1);
     const init = fetcher.mock.calls[0][1]!;
     expect(new Headers(init.headers).get('X-CSRF-Token')).toBe('c'.repeat(43));
@@ -307,7 +307,7 @@ describe('R04b2c2 manual lifecycle', () => {
     const dialog = await selectAndReview(); const send = screen.getByRole('button', { name: 'Enviar solicitud' });
     act(() => { fireEvent.click(send); fireEvent.click(send); });
     expect(fetcher).toHaveBeenCalledTimes(1); expect(recovery.getCurrent(h.controller.getTransferAuthority)?.phase).toBe('inFlight');
-    for (const name of ['Cerrar revisión', 'Volver a editar', '← Volver al inventario', 'Quitar Modelo 1', 'Aumentar Modelo 1']) expect(screen.getByRole('button', { name })).toBeDisabled();
+    for (const name of ['Cerrar revisión', 'Volver a editar', '← Volver a transferencias', 'Quitar Modelo 1', 'Aumentar Modelo 1']) expect(screen.getByRole('button', { name })).toBeDisabled();
     expect(screen.getByLabelText('Tipo de transferencia')).toBeDisabled(); expect(screen.getByLabelText('Cantidad seleccionada Modelo 1')).toBeDisabled();
     fireEvent.keyDown(dialog, { key: 'Escape' }); expect(dialog).toBeVisible(); expect(back).not.toHaveBeenCalled();
     await act(async () => job.resolve(reply(recordDTO())));
@@ -400,7 +400,7 @@ describe('R04b2c2 manual lifecycle', () => {
   it('warns on unknown back and keeps the canonical attempt instead of silently discarding', async () => {
     const h = harness(); const recovery = archived(h); const back = vi.fn();
     render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={back} />);
-    await screen.findByRole('button', { name: 'Retomar misma solicitud' }); fireEvent.click(screen.getByRole('button', { name: '← Volver al inventario' }));
+    await screen.findByRole('button', { name: 'Retomar misma solicitud' }); fireEvent.click(screen.getByRole('button', { name: '← Volver a transferencias' }));
     expect(back).not.toHaveBeenCalled(); expect(screen.getByRole('dialog')).toHaveTextContent('no al recargar o cerrar');
     fireEvent.click(screen.getByRole('button', { name: 'Volver conservando el intento' })); expect(back).toHaveBeenCalledOnce();
     expect(recovery.getCurrent(h.controller.getTransferAuthority)?.attempt.retry_key).toBe('private_attempt_key_1234');

@@ -5,6 +5,7 @@ import { addCartItem, createTransferCart, reviewCart } from './transferCart';
 import { createTransferRecovery, type RecoverySnapshot } from './transferRecovery';
 import type { TransferAuthority } from './useInventory';
 import type { Metadata } from './model';
+import type { TransferRecord } from './transferModel';
 
 const metadata: Metadata = { locations: [{ id: 1, name: 'Almacén' }, { id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }], brands: ['TOYO'] };
 function setup(flow: 'requestWarehouse' | 'requestOther' | 'sendWarehouse' = 'requestWarehouse') {
@@ -22,6 +23,25 @@ function setup(flow: 'requestWarehouse' | 'requestOther' | 'sendWarehouse' = 're
     returnFocus: null, onBack: vi.fn(), onClose: vi.fn(), onEdit: vi.fn(), onSend: vi.fn() };
   return { props, set: (next: TransferAuthority) => { authority = next; }, get: () => authority };
 }
+
+describe('R05-U1 confirmed return guard', () => {
+  it.each(['current', 'epoch', 'unready', 'account', 'inFlight'])('guards the Transfers return against latest %s authority', mode => {
+    const h = setup();
+    const record: TransferRecord = { id: '1001', reference: 'TR-1001', kind: 'request_stock' as const, status: 'pending' as const,
+      created_at: '2028-01-01T00:00:00Z', creator_location_id: 2, creator_location_name: 'Sucursal A',
+      origin_location_id: 1, origin_location_name: 'Almacén', destination_location_id: 2, destination_location_name: 'Sucursal A',
+      approver_location_id: 1, approver_location_name: 'Almacén', items: [] };
+    render(<TransferReview {...h.props} result={{ record, replayed: false }} busy={mode === 'inFlight'} />);
+    const button = screen.getByRole('button', { name: 'Volver a transferencias' });
+    const a = h.get();
+    if (mode === 'epoch') h.set({ ...a, epoch: 5 });
+    else if (mode === 'unready') h.set({ ...a, ready: false });
+    else if (mode === 'account' && a.session?.authenticated) h.set({ ...a, session: { ...a.session, identity: { ...a.session.identity, account_id: 99 } } });
+    fireEvent.click(button);
+    if (mode === 'current') expect(h.props.onBack).toHaveBeenCalledOnce();
+    else expect(h.props.onBack).not.toHaveBeenCalled();
+  });
+});
 
 describe('R04b2c2 review dialog', () => {
   it.each(['requestWarehouse', 'requestOther', 'sendWarehouse'] as const)('shows exact physical route, approval and unbounded quantities for %s', flow => {

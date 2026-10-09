@@ -293,8 +293,8 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
     setFilter(next); setPage(1);
   }
   return <section className="transfer-creation" aria-labelledby="creation-title">
-    <p className="creation-breadcrumb">Inventario / Transferencias / {title}</p>
-    <button id="creation-back" type="button" disabled={inFlight} className="creation-back" onClick={() => changeFlow('back')}>← Volver al inventario</button>
+    <p className="creation-breadcrumb">Transferencias / {title}</p>
+    <button id="creation-back" type="button" disabled={inFlight} className="creation-back" onClick={() => changeFlow('back')}>← Volver a transferencias</button>
     <h1 id="creation-title">{title}</h1>
     <p>Prepará una solicitud con el stock de su origen físico. La consulta de inventario no cambia tu ubicación asignada.</p>
     {snapshot && !visibleReview && <div className="creation-recovery" role="status"><p>{snapshot.phase === 'ready' ? 'Tenés una revisión preparada, todavía no enviada.' : 'Tenés un intento pendiente de confirmación.'}</p>

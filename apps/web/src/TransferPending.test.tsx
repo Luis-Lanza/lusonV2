@@ -63,6 +63,32 @@ async function loaded() { await screen.findByText('9007199254740993 solicitudes 
 async function detail() { fireEvent.click(screen.getByRole('button', { name: 'Ver detalle TR-9007199254740993' })); await screen.findByRole('heading', { name: 'TR-9007199254740993' }); }
 afterEach(() => { vi.unstubAllGlobals(); });
 
+describe('R05-U1 list creation entry', () => {
+  it.each([1, 2, 3])('offers creation only on the assigned branch %s list, never detail', async id => {
+    const f = fixture(id); if (id === 3) f.env.record = wire(2, 3);
+    const create = vi.fn();
+    render(<TransferPending controller={f.controller} ownerTag={f.ownerTag} onInventory={f.back} creationAvailable onCreate={create} />);
+    await loaded();
+    if (id === 1) expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
+    else {
+      fireEvent.click(screen.getByRole('button', { name: 'Nueva transferencia' }));
+      expect(create).toHaveBeenCalledOnce();
+    }
+    await detail();
+    expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
+    expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+  });
+  it.each(['unready', 'epoch', 'warehouse', 'unavailable'])('blocks retained creation callbacks for %s', async mode => {
+    const f = fixture(); const create = vi.fn();
+    render(<TransferPending controller={f.controller} ownerTag={f.ownerTag} onInventory={f.back} creationAvailable={mode !== 'unavailable'} onCreate={create} />);
+    await loaded(); const button = screen.getByRole('button', { name: 'Nueva transferencia' });
+    if (mode === 'unready') f.env.current = { ...f.env.current, ready: false };
+    else if (mode === 'epoch') f.env.current = authority(2, 2);
+    else if (mode === 'warehouse') f.env.current = authority(1, 2);
+    fireEvent.click(button); expect(create).not.toHaveBeenCalled();
+  });
+});
+
 describe('R04c participant Pending', () => {
   it.each([1, 2, 3])('uses assigned participant %s, exact count and unbounded units, not page length', async id => {
     const f = fixture(id); if (id === 3) f.env.record = wire(2, 3);

@@ -73,12 +73,12 @@ function Pager({ state }: { state: Controller }) {
     </div>
   </footer>;
 }
-function Navigation({ mobile = false, pending, disabled, onInventory, onPending }: {
-  mobile?: boolean; pending: boolean; disabled: boolean; onInventory: () => void; onPending: () => void;
+function Navigation({ mobile = false, transfers, disabled, onInventory, onPending }: {
+  mobile?: boolean; transfers: boolean; disabled: boolean; onInventory: () => void; onPending: () => void;
 }) {
   return <nav className={mobile ? 'bottom-nav' : 'side-nav'} aria-label={mobile ? 'Navegación móvil' : 'Navegación principal'}>
-    <a href="#inventario" aria-current={!pending ? 'page' : undefined} aria-disabled={disabled} onClick={event => { event.preventDefault(); if (!disabled) onInventory(); }}><Icon name="inventory" /><span>Inventario</span></a>
-    <button type="button" disabled={disabled} aria-current={pending ? 'page' : undefined} onClick={onPending}><Icon name="transfer" /><span>Transferencias</span></button>
+    <a href="#inventario" aria-current={!transfers ? 'page' : undefined} aria-disabled={disabled} onClick={event => { event.preventDefault(); if (!disabled) onInventory(); }}><Icon name="inventory" /><span>Inventario</span></a>
+    <button type="button" disabled={disabled} aria-current={transfers ? 'page' : undefined} onClick={onPending}><Icon name="transfer" /><span>Transferencias</span></button>
   </nav>;
 }
 function InventoryView({ state, recovery }: { state: Controller; recovery: ReturnType<typeof createTransferRecovery> }) {
@@ -92,6 +92,23 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
   const creation = creationRequested && creationOwner === ownerTag && ownerTag !== null;
   const [pane, setPane] = useState<{ ownerTag: string; initialDetail?: { ownerTag: string; id: string } } | null>(null);
   const pending = ownerTag !== null && pane?.ownerTag === ownerTag;
+  const transfers = pending || creation;
+  const creationAvailable = !warehouse && !state.authBusy && !!metadata && !!ownerTag
+    && recovery.getCurrent(state.getTransferAuthority)?.phase !== 'inFlight';
+  function openCreation() {
+    const authority = state.getTransferAuthority();
+    const latest = transferViewOwner(authority);
+    if (!creationAvailable || creation || !latest || latest !== ownerTag || !authority.session?.authenticated
+      || ![2, 3].includes(authority.session.identity.location.id)
+      || recovery.getCurrent(state.getTransferAuthority)?.phase === 'inFlight') return;
+    setCreationOwner(latest); setCreation(true);
+  }
+  function returnToTransfers() {
+    const latest = transferViewOwner(state.getTransferAuthority());
+    if (!latest || latest !== ownerTag || latest !== creationOwner
+      || recovery.getCurrent(state.getTransferAuthority)?.phase === 'inFlight') return;
+    setCreation(false); setPane({ ownerTag: latest });
+  }
   function navigate(toPending: boolean) {
     const latest = transferViewOwner(state.getTransferAuthority());
     if (!latest || latest !== ownerTag || creation || recovery.getCurrent(state.getTransferAuthority)?.phase === 'inFlight') return;
@@ -115,26 +132,19 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
   const selected = metadata?.locations.find(l => l.id === query.location);
   const recoverable = recovery.getCurrent(state.getTransferAuthority);
   const navDisabled = !ownerTag || creation || recoverable?.phase === 'inFlight';
-  const navigation = { pending, disabled: navDisabled, onInventory: () => navigate(false), onPending: () => navigate(true) };
+  const navigation = { transfers, disabled: navDisabled, onInventory: () => navigate(false), onPending: () => navigate(true) };
   return <div className={'app-shell' + (warehouse ? ' warehouse' : '')}>
-    <aside className="sidebar" hidden={mobile}><div><Brand /><Navigation {...navigation} /></div><div className="sidebar-footer"><div className="identity"><strong>{identity.username}</strong><small className="assigned-location">{identity.location.name}</small></div><button className="logout" type="button" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" />Cerrar sesión</button></div></aside>
-    <header className="app-header" hidden={mobile}><strong>Luson Inventario</strong><span><Icon name="warehouse" />Ubicación asignada: <b>{identity.location.name}</b></span></header>
+    <aside className="sidebar" hidden={mobile}><div><Brand />{!mobile && <Navigation {...navigation} />}</div><div className="sidebar-footer"><div className="identity"><strong>{identity.username}</strong><small className="assigned-location">{identity.location.name}</small></div><button className="logout" type="button" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" />Cerrar sesión</button></div></aside>
+    <header className="app-header" hidden={mobile}><strong>Luson {transfers ? 'Transferencias' : 'Inventario'}</strong><span><Icon name="warehouse" />Ubicación asignada: <b>{identity.location.name}</b></span></header>
     <header className="mobile-header" hidden={!mobile}><div><Brand /><button type="button" aria-label="Cerrar sesión" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" /></button></div><div className="mobile-identity"><span><Icon name="warehouse" />{identity.location.name}</span><span>{identity.username}</span></div></header>
-    <main id="inventario" className="inventory-main">
-      {pending && pane ? <TransferPending key={pane.ownerTag} controller={state} ownerTag={pane.ownerTag} initialDetail={pane.initialDetail} onInventory={() => navigate(false)} />
-        : creation && !warehouse && metadata ? <TransferCreation controller={state} metadata={metadata} recovery={recovery} onBack={() => setCreation(false)} onDetail={openCreatedDetail} /> : <>
+    <main id={transfers ? 'transferencias' : 'inventario'} className="inventory-main">
+      {creation && !warehouse && metadata ? <TransferCreation controller={state} metadata={metadata} recovery={recovery} onBack={returnToTransfers} onDetail={openCreatedDetail} />
+        : pending && pane ? <TransferPending key={pane.ownerTag} controller={state} ownerTag={pane.ownerTag} initialDetail={pane.initialDetail} onInventory={() => navigate(false)} creationAvailable={creationAvailable} onCreate={openCreation} /> : <>
       {recoverable && <section className="creation-recovery" aria-label="Recuperación de solicitud"><p>{recoverable.phase === 'ready' ? 'Tenés una revisión preparada, todavía no enviada.' : 'Tenés un intento pendiente de confirmación.'}</p>
-        <button type="button" disabled={!metadata || recoverable.phase === 'inFlight'} onClick={() => {
-          const latest = transferViewOwner(state.getTransferAuthority());
-          if (latest && recovery.getCurrent(state.getTransferAuthority)) { setCreationOwner(latest); setCreation(true); }
-        }}>{recoverable.phase === 'ready' ? 'Retomar revisión' : 'Retomar misma solicitud'}</button>
+        <button type="button" disabled={!creationAvailable} onClick={openCreation}>{recoverable.phase === 'ready' ? 'Retomar revisión' : 'Retomar misma solicitud'}</button>
         <p>Recargar o cerrar la pestaña pierde esta recuperación en memoria.</p></section>}
       <section className="inventory-heading">
-        <div className="title-row"><div><h1>Inventario</h1><p>Consulta de existencias y disponibilidad en almacén y red de sucursales.</p></div><button className="primary transfer-cta" type="button" disabled={warehouse || state.authBusy || !metadata} onClick={() => {
-          const authority = state.getTransferAuthority();
-          const latest = transferViewOwner(authority);
-          if (latest && authority.session?.authenticated && [2, 3].includes(authority.session.identity.location.id)) { setCreationOwner(latest); setCreation(true); }
-        }}><Icon name={warehouse ? 'transfer' : 'plus'} /><span className="desktop-cta">Nueva transferencia</span><span className="mobile-cta">Crear envío</span></button></div>
+        <div className="title-row"><div><h1>Inventario</h1><p>Consulta de existencias y disponibilidad en almacén y red de sucursales.</p></div><button className="primary transfer-cta" type="button" disabled={!creationAvailable} onClick={openCreation}><Icon name={warehouse ? 'transfer' : 'plus'} /><span className="desktop-cta">Nueva transferencia</span><span className="mobile-cta">Crear envío</span></button></div>
         <div className="location-tabs" hidden={mobile} role="group" aria-label="Vista de stock"><span>Vista de stock:</span>{metadata?.locations.map(l => <button type="button" key={l.id} aria-pressed={query.location === l.id} disabled={state.authBusy} onClick={() => state.change({ location: l.id })}>{l.name}<small>{l.id === identity.location.id ? 'Mi ubicación · Consulta' : 'Solo consulta'}</small></button>)}</div>
       </section>
       <section className="mobile-location" hidden={!mobile}>

@@ -14,6 +14,8 @@ export interface TransferPendingProps {
   ownerTag: string;
   initialDetail?: { ownerTag: string; id: string };
   onInventory: () => void;
+  creationAvailable?: boolean;
+  onCreate?: () => void;
 }
 function kindLabel(record: TransferRecord) {
   if (record.kind === 'send_to_warehouse') return 'Propuesta de envío a Almacén';
@@ -58,6 +60,11 @@ export default function TransferPending(props: TransferPendingProps) {
     <button type="button" className="creation-back" onClick={inventory}>Volver al inventario</button>
     <header className="pending-heading"><div><h1 id="pending-title">{selected ? 'Detalle de solicitud' : 'Transferencias pendientes'}</h1>
       <p>Solicitudes Pending de tu ubicación asignada. La consulta de inventario no cambia los participantes.</p></div>
+      {!selected && !warehouse && <button type="button" className="primary transfer-cta" disabled={!props.creationAvailable || !props.onCreate} onClick={() => {
+        const latest = props.controller.getTransferAuthority();
+        if (current() && latest.session?.authenticated && [2, 3].includes(latest.session.identity.location.id)
+          && props.creationAvailable) props.onCreate?.();
+      }}>Nueva transferencia</button>}
       <p className="pending-count" aria-live="polite">{page ? `${page.total_count.toString()} solicitudes pendientes` : 'Consultando solicitudes pendientes…'}</p>
     </header>
     {selected ? <>
