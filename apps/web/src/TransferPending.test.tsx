@@ -6,7 +6,7 @@ import { parseTransferRecord, transferDirection } from './transferModel';
 import type { RecoverySnapshot } from './transferRecovery';
 import type { TransferAuthority } from './useInventory';
 import type { DetailController } from './TransferDetail';
-import { createTransferDecisionRecovery } from './transferDecisionRecovery';
+import { createTransferDecisionRecovery, decisionOwner } from './transferDecisionRecovery';
 
 const locations = ['Almacén', 'Sucursal A', 'Sucursal B'];
 function authority(id = 2, epoch = 1, token = 'a'.repeat(43)): TransferAuthority {
@@ -54,9 +54,9 @@ function fixture(id = 2, override?: (url: string, init: RequestInit) => Promise<
       const length = remaining <= 0n ? 0 : remaining > BigInt(size) ? size : Number(remaining);
       const records = Array.from({ length }, (_, index) => {
         const recordID = (BigInt(env.record.id) - BigInt(index)).toString();
-        return { ...env.record, id: recordID, reference: `TR-${recordID.padStart(3, '0')}` };
+        return wire(env.record.origin_location_id, env.record.destination_location_id, recordID, query.get('status') ?? 'pending');
       });
-      return Promise.resolve(reply({ page, page_size: size, status: 'pending', total_count: env.count, records }));
+      return Promise.resolve(reply({ page, page_size: size, status: query.get('status'), total_count: env.count, records }));
     }
     if (url.startsWith('/api/inventory?')) {
       const location = Number(new URL(url, 'http://localhost').searchParams.get('location_id'));
@@ -80,6 +80,205 @@ const isPassive = (call: [RequestInfo | URL, RequestInit?]) => new Headers(call[
 async function loaded() { await screen.findByText('9007199254740993 solicitudes pendientes'); }
 async function detail() { fireEvent.click(screen.getByRole('button', { name: 'Ver detalle TR-9007199254740993' })); await screen.findByRole('heading', { name: 'TR-9007199254740993' }); }
 afterEach(() => { vi.unstubAllGlobals(); });
+
+describe('A06b status-specific consultation', () => {
+  const selectStatus = (status: string) => fireEvent.change(screen.getByRole('combobox', { name: 'Estado de transferencia' }), { target: { value: status } });
+  const listReply = (status: string, records: unknown[] = [], count = '0', page = 1, size = 25) => reply({ status, page, page_size: size, total_count: count, records });
+
+  it.each(['approved', 'rejected'])('queries exact %s pages, resets status/size and retains the query on Back', async status => {
+    const f = fixture(); render(f.element()); await loaded();
+    const selector = screen.getByRole('combobox', { name: 'Estado de transferencia' });
+    expect(selector).toHaveValue('pending');
+    expect(within(selector).getAllByRole('option').map(option => option.getAttribute('value'))).toEqual(['pending', 'approved', 'rejected']);
+    fireEvent.click(screen.getByRole('button', { name: 'Siguiente pendientes' })); await loaded();
+    selectStatus(status);
+    await screen.findByText(`9007199254740993 solicitudes ${status === 'approved' ? 'aprobadas' : 'rechazadas'}`);
+    expect(calls(f).at(-1)![0]).toBe(`/api/transfers?page=1&page_size=25&status=${status}`);
+    expect(isPassive(calls(f).at(-1)!)).toBe(false);
+    fireEvent.change(screen.getByLabelText('Solicitudes por página'), { target: { value: '10' } });
+    await waitFor(() => expect(calls(f).at(-1)![0]).toBe(`/api/transfers?page=1&page_size=10&status=${status}`));
+    const plural = status === 'approved' ? 'aprobadas' : 'rechazadas';
+    await screen.findByText(`9007199254740993 solicitudes ${plural}`);
+    fireEvent.click(screen.getByRole('button', { name: `Siguiente ${plural}` }));
+    await screen.findByText(`9007199254740993 solicitudes ${plural}`);
+    f.env.record = wire(1, 2, f.env.record.id, status);
+    await detail();
+    expect(screen.queryByRole('combobox', { name: 'Estado de transferencia' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: `Volver a ${plural}` }));
+    expect(selector.isConnected).toBe(false);
+    expect(screen.getByLabelText('Estado de transferencia')).toHaveValue(status);
+    expect(screen.getByLabelText('Solicitudes por página')).toHaveValue('10');
+    expect(screen.getByText('Página 2')).toBeVisible();
+    expect(calls(f).at(-1)![0]).toBe(`/api/transfers?page=2&page_size=10&status=${status}`);
+    fireEvent.change(screen.getByLabelText('Solicitudes por página'), { target: { value: '50' } });
+    await waitFor(() => expect(calls(f).at(-1)![0]).toBe(`/api/transfers?page=1&page_size=50&status=${status}`));
+    selectStatus('pending'); await loaded();
+    expect(calls(f).at(-1)![0]).toBe('/api/transfers?page=1&page_size=50&status=pending');
+    expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+  });
+
+  it.each(['approved', 'rejected'])('distinguishes %s loading, errors and zero without stale Pending totals', async status => {
+    let flight = deferred();
+    const f = fixture(2, url => url.includes(`status=${status}`) ? flight.promise : undefined);
+    render(f.element()); await loaded(); selectStatus(status);
+    const plural = status === 'approved' ? 'aprobadas' : 'rechazadas';
+    expect(await screen.findByText(`Actualizando solicitudes ${plural}…`)).toBeVisible();
+    expect(screen.getByText(`Consultando solicitudes ${plural}…`)).toBeVisible();
+    expect(document.body).not.toHaveTextContent('9007199254740993 solicitudes pendientes');
+    expect(document.body).not.toHaveTextContent(`0 solicitudes ${plural}`);
+    await act(async () => flight.reject(new Error('PRIVATE old requester')));
+    expect(await screen.findByText(`No se pudieron consultar las solicitudes ${plural}.`)).toBeVisible();
+    expect(document.body).not.toHaveTextContent('PRIVATE');
+    flight = deferred();
+    fireEvent.click(screen.getByRole('button', { name: `Reintentar ${plural}` }));
+    await act(async () => flight.resolve(listReply(status)));
+    expect(await screen.findByText(`No hay solicitudes ${plural} para tu ubicación.`)).toBeVisible();
+    expect(screen.getByText(`0 solicitudes ${plural}`)).toBeVisible();
+    expect(screen.getByRole('button', { name: `Siguiente ${plural}` })).toBeDisabled();
+  });
+
+  it.each([[1, 2], [1, 3], [2, 3], [3, 2], [2, 1], [3, 1]])('keeps terminal %s → %s routes and persisted participants without pending work', async (origin, destination) => {
+    for (const status of ['approved', 'rejected']) {
+      const f = fixture(destination === 1 ? 1 : destination); f.env.record = wire(origin, destination); f.env.count = '1';
+      const view = render(f.element()); await screen.findByText('1 solicitudes pendientes'); selectStatus(status);
+      const plural = status === 'approved' ? 'aprobadas' : 'rechazadas';
+      await screen.findByText(`1 solicitudes ${plural}`);
+      const table = screen.getByRole('table', { name: `Solicitudes ${plural} participantes` });
+      expect(table).toHaveTextContent(locations[origin - 1]); expect(table).toHaveTextContent(locations[destination - 1]);
+      expect(table).toHaveTextContent('18446744073709551614');
+      expect(table).toHaveTextContent('Ubicación aprobadora');
+      expect(document.body).not.toHaveTextContent('Requiere aprobación de');
+      expect(document.body).not.toHaveTextContent('Solicitudes Pending');
+      expect(screen.queryByRole('button', { name: /^(Aprobar|Rechazar) / })).not.toBeInTheDocument();
+      if (destination === 1) {
+        const cards = document.querySelector('.pending-cards')!;
+        expect(cards).toHaveTextContent('75.125 Ah'); expect(cards).toHaveTextContent('9223372036854775807');
+        expect(cards).toHaveTextContent(`Ubicación creadora: ${locations[origin - 1]}`);
+        expect(cards).toHaveTextContent('Ubicación aprobadora: Almacén');
+      }
+      f.env.record = wire(origin, destination, f.env.record.id, status); await detail();
+      expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toHaveTextContent('2028-01-02T00:00:00.000000001Z');
+      expect(f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?'))).toHaveLength(0);
+      expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true); view.unmount();
+    }
+  });
+
+  it('uses only the selected participant total and coalesces status invalidations without changing an open detail', async () => {
+    let held: ReturnType<typeof deferred> | null = null;
+    const f = fixture(2, url => url.includes('status=approved') ? (held?.promise ?? Promise.resolve(listReply('approved', [wire(1, 2, '99', 'approved')], '1'))) : undefined);
+    render(f.element()); await loaded(); selectStatus('approved');
+    await screen.findByText('1 solicitudes aprobadas');
+    expect(screen.getByRole('button', { name: 'Siguiente aprobadas' })).toBeDisabled();
+    held = deferred(); const before = calls(f).length;
+    act(() => { for (const listener of f.listeners) listener(); });
+    await waitFor(() => expect(calls(f)).toHaveLength(before + 1));
+    act(() => { for (const listener of f.listeners) { listener(); listener(); } });
+    const flight = held; held = null;
+    await act(async () => flight.resolve(listReply('approved', [wire(1, 2, '98', 'approved')], '1')));
+    await waitFor(() => expect(calls(f)).toHaveLength(before + 2));
+    expect(screen.queryByRole('button', { name: 'Ver detalle TR-098' })).not.toBeInTheDocument();
+    expect(isPassive(calls(f).at(-1)!)).toBe(true);
+    f.env.record = wire(1, 2, '99', 'approved');
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver detalle TR-099' }));
+    await screen.findByRole('heading', { name: 'TR-099' });
+    act(() => { for (const listener of f.listeners) listener(); });
+    await waitFor(() => expect(calls(f, true)).toHaveLength(2));
+    expect(screen.getByRole('heading', { name: 'TR-099' })).toBeVisible();
+    expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toBeVisible();
+    expect(f.fetch.mock.calls.filter(([url]) => String(url).includes('/counts'))).toHaveLength(0);
+  });
+
+  it.each([401, 403, 404])('sanitizes current terminal list HTTP %s without exposing old requester rows', async status => {
+    const f = fixture(2, url => url.includes('status=rejected') ? Promise.resolve(reply({ error: status === 401 ? 'unauthenticated' : status === 403 ? 'forbidden' : 'not_found' }, status)) : undefined);
+    render(f.element()); await loaded(); selectStatus('rejected');
+    await screen.findByText('No se pudieron consultar las solicitudes rechazadas.');
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('TR-9007199254740993');
+    expect(document.body).not.toHaveTextContent('9223372036854775807');
+    if (status === 401) await waitFor(() => expect(f.controller.settleUnauthorized).toHaveBeenCalledExactlyOnceWith(1));
+    else expect(f.controller.settleUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it.each(['success', '401', 'failure'])('ignores late old-status %s even when abort is ignored', async outcome => {
+    const old = deferred();
+    const f = fixture(2, url => url.includes('status=approved') ? old.promise : undefined);
+    render(f.element()); await loaded(); selectStatus('approved');
+    await waitFor(() => expect(calls(f).at(-1)![0]).toContain('status=approved'));
+    selectStatus('rejected'); await screen.findByText('9007199254740993 solicitudes rechazadas');
+    await act(async () => {
+      if (outcome === 'failure') old.reject(new Error('PRIVATE obsolete status'));
+      else old.resolve(outcome === '401' ? reply({ error: 'unauthorized' }, 401) : listReply('approved', [wire(1, 2, '99', 'approved')], '1'));
+    });
+    expect(screen.getByLabelText('Estado de transferencia')).toHaveValue('rejected');
+    expect(screen.getByText('9007199254740993 solicitudes rechazadas')).toBeVisible();
+    expect(document.body).not.toHaveTextContent('TR-099'); expect(document.body).not.toHaveTextContent('PRIVATE');
+    expect(f.controller.settleUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it.each(['csrf', 'account', 'unready'])('blocks retained status events and old private replies after %s mutation', async mode => {
+    const old = deferred(); const f = fixture(2, url => url.includes('status=approved') ? old.promise : undefined);
+    const view = render(f.element()); await loaded(); selectStatus('approved');
+    const selector = screen.getByLabelText('Estado de transferencia'); const before = calls(f).length;
+    if (mode === 'unready') f.env.current.ready = false;
+    else if (f.env.current.session?.authenticated) {
+      if (mode === 'csrf') f.env.current.session.csrf_token = 'b'.repeat(43);
+      else f.env.current.session.identity.account_id = 3;
+    }
+    fireEvent.change(selector, { target: { value: 'rejected' } });
+    expect(calls(f)).toHaveLength(before); view.rerender(f.element());
+    await act(async () => old.resolve(listReply('approved', [wire(1, 2, '99', 'approved')], '1')));
+    expect(document.body).not.toHaveTextContent('TR-099'); expect(document.body).not.toHaveTextContent('75.125');
+    expect(f.controller.settleUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it.each(['approved', 'rejected'])('explicit original recovery after status selection reports actual %s without a replacement POST', async outcome => {
+    let recovering = false;
+    const f = fixture(1, (url, init) => {
+      if (init.method === 'POST') return Promise.reject(new Error('lost'));
+      if (recovering && url === '/api/transfers/9007199254740993') return Promise.resolve(reply(wire(1, 2, '9007199254740993', outcome)));
+      return undefined;
+    });
+    render(f.element({ ownerTag: f.ownerTag, id: f.env.record.id }));
+    await screen.findByRole('heading', { name: 'TR-9007199254740993' });
+    fireEvent.click(screen.getByRole('button', { name: 'Rechazar solicitud' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar rechazo' }));
+    await screen.findByRole('button', { name: 'Consultar resultado original' });
+    fireEvent.click(screen.getByRole('button', { name: 'Volver al detalle' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    selectStatus('approved'); await screen.findByText('9007199254740993 solicitudes aprobadas');
+    recovering = true; fireEvent.click(screen.getByRole('button', { name: 'Consultar resultado original' }));
+    await waitFor(() => expect(f.controller.confirmTransferDecision).toHaveBeenCalledExactlyOnceWith(expect.anything(), outcome));
+    const attempt = f.controller.decisionRecovery!.get(decisionOwner(f.env.current));
+    expect(attempt?.phase).toBe(outcome === 'approved' ? 'conflict' : 'confirmed');
+    expect(attempt?.result?.status).toBe(outcome);
+    expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST').map(([url]) => url)).toEqual(['/api/transfers/9007199254740993/reject']);
+  });
+
+  it.each(['approve', 'reject'])('preserves unknown original %s through status selection and remount without automatic POST', async action => {
+    let posts = 0;
+    const f = fixture(1, (_url, init) => init.method === 'POST' ? (++posts === 1 ? Promise.reject(new Error('lost'))
+      : Promise.resolve(reply(wire(1, 2, '9007199254740993', action === 'approve' ? 'approved' : 'rejected')))) : undefined);
+    let view = render(f.element({ ownerTag: f.ownerTag, id: f.env.record.id }));
+    await screen.findByRole('heading', { name: 'TR-9007199254740993' });
+    fireEvent.click(screen.getByRole('button', { name: action === 'approve' ? 'Aprobar solicitud' : 'Rechazar solicitud' }));
+    fireEvent.click(screen.getByRole('button', { name: action === 'approve' ? 'Confirmar aprobación' : 'Confirmar rechazo' }));
+    await screen.findByRole('button', { name: 'Consultar resultado original' });
+    const attempt = f.controller.decisionRecovery!.get(decisionOwner(f.env.current));
+    fireEvent.click(screen.getByRole('button', { name: 'Volver al detalle' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    selectStatus('approved'); await screen.findByText('9007199254740993 solicitudes aprobadas');
+    selectStatus('rejected'); await screen.findByText('9007199254740993 solicitudes rechazadas');
+    expect(f.controller.decisionRecovery!.get(decisionOwner(f.env.current))).toBe(attempt); expect(posts).toBe(1);
+    view.unmount(); view = render(f.element());
+    fireEvent.click(await screen.findByRole('button', { name: 'Consultar resultado original' }));
+    const retry = action === 'approve' ? 'Reintentar misma aprobación' : 'Reintentar mismo rechazo';
+    fireEvent.click(await screen.findByRole('button', { name: retry }));
+    await waitFor(() => expect(f.controller.confirmTransferDecision).toHaveBeenCalledOnce());
+    expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST').map(([url]) => url)).toEqual([
+      `/api/transfers/9007199254740993/${action}`, `/api/transfers/9007199254740993/${action}`,
+    ]); view.unmount();
+  });
+});
 
 describe('A06a decision entry', () => {
   it('opens approval confirmation only after an explicit approver click', async () => {
