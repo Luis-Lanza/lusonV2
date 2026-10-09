@@ -1,7 +1,9 @@
-import { useEffect, useRef } from 'react';
-import type { TransferAuthority, TransferController } from './useInventory';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { TransferAuthority } from './useInventory';
 import { useTransfers } from './useTransfers';
 import { transferQuantityTotal, type TransferRecord } from './transferModel';
+import TransferDetail, { detailAuthority, type DetailController, type StockAdvice } from './TransferDetail';
+import TransferDecision from './TransferDecision';
 
 // No session or CSRF retained in routing state. Epoch changes invalidate this tag.
 export function transferViewOwner(authority: TransferAuthority): string | null {
@@ -10,7 +12,7 @@ export function transferViewOwner(authority: TransferAuthority): string | null {
     ? `${authority.epoch}/${session.identity.account_id}/${session.identity.location.id}` : null;
 }
 export interface TransferPendingProps {
-  controller: TransferController;
+  controller: DetailController;
   ownerTag: string;
   initialDetail?: { ownerTag: string; id: string };
   onInventory: () => void;
@@ -25,20 +27,22 @@ function statusLabel(record: TransferRecord) {
   return record.status === 'pending' ? 'Pendiente de aprobación' : record.status === 'approved' ? 'Aprobada' : 'Rechazada';
 }
 function Status({ record }: { record: TransferRecord }) { return <span className="pending-status">{statusLabel(record)}</span>; }
-function Items({ record }: { record: TransferRecord }) {
-  return <table><caption className="sr-only">Baterías solicitadas</caption><thead><tr>
-    <th scope="col">Batería</th><th scope="col">Capacidad (Ah)</th><th scope="col">Polaridad</th><th scope="col">Cantidad solicitada</th>
-  </tr></thead><tbody>{record.items.map(item => <tr key={item.variant_id}>
-    <td>{item.brand} · {item.model}</td><td>{item.capacity_ah} Ah</td>
-    <td>{item.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</td><td>{item.quantity.toString()}</td>
-  </tr>)}</tbody></table>;
-}
 export default function TransferPending(props: TransferPendingProps) {
   const authority = props.controller.getTransferAuthority();
   const permitted = transferViewOwner(authority) === props.ownerTag;
   const transfers = useTransfers({ controller: props.controller, listEnabled: permitted, detailEnabled: permitted });
   const consumed = useRef(false);
-  const current = () => transferViewOwner(props.controller.getTransferAuthority()) === props.ownerTag;
+  const [masked, setMasked] = useState<{ fence: string; id: string } | null>(null);
+  const [stock, setStock] = useState<{ fence: string; id: string; advice: StockAdvice } | null>(null);
+  const receiveStock = useCallback((advice: StockAdvice, id: string) => {
+    if (transferViewOwner(props.controller.getTransferAuthority()) === props.ownerTag) {
+      setStock({ fence: detailAuthority(props.controller), id, advice });
+    }
+  }, [props.controller.getTransferAuthority, props.ownerTag]);
+  const [stockRefresh, setStockRefresh] = useState(0);
+  const fence = detailAuthority(props.controller);
+  const current = () => !!fence && detailAuthority(props.controller) === fence
+    && transferViewOwner(props.controller.getTransferAuthority()) === props.ownerTag;
   useEffect(() => {
     if (consumed.current || !current()) return;
     // Inspect even the routed ID only after checking the minimal owner metadata.
@@ -50,7 +54,10 @@ export default function TransferPending(props: TransferPendingProps) {
   if (!permitted) return <section className="transfer-pending"><p role="status">Verificando acceso a transferencias…</p></section>;
   const page = transfers.page;
   const selected = transfers.selectedID;
-  const record = transfers.detail;
+  const decision = transfers.decision;
+  // A confirmed POST/GET is immediately truthful even while the passive detail refresh is pending.
+  const privateUnavailable = masked?.fence === fence && masked.id === selected;
+  const record = privateUnavailable ? null : decision?.result?.id === selected ? decision.result : transfers.detail;
   const unavailable = transfers.detailError;
   const listError = transfers.listError;
   const warehouse = authority.session?.authenticated && authority.session.identity.location.id === 1;
@@ -76,23 +83,16 @@ export default function TransferPending(props: TransferPendingProps) {
     {selected ? <>
       <button type="button" className="creation-back" onClick={back}>Volver a pendientes</button>
       {transfers.detailBusy && <p role="status">Consultando solicitud…</p>}
-      {unavailable && <div role="alert" className="message"><p>{unavailable.code === 'not_found' ? 'La solicitud no está disponible.' : 'No se pudo consultar la solicitud.'}</p>
-        <button type="button" onClick={() => { if (current()) transfers.retryDetail(); }}>Reintentar detalle</button></div>}
-      {record && <>
-        <header className="pending-record-heading"><div><h2>{record.reference}</h2><p>{kindLabel(record)}</p></div><Status record={record} /></header>
-        <section className="creation-route" aria-label="Ruta física"><div><span>Origen</span><strong>{record.origin_location_name}</strong></div><b aria-hidden="true">→</b>
-          <div><span>Destino</span><strong>{record.destination_location_name}</strong></div></section>
-        <div className="pending-detail-grid"><div className="table-scroll pending-items"><Items record={record} /></div>
-          <aside className="pending-summary" aria-label="Resumen de solicitud"><h2>Solicitud {record.status === 'pending' ? 'Pending' : statusLabel(record)}</h2>
-            <p>{transferQuantityTotal(record).toString()} baterías solicitadas</p>
-            <dl><dt>Ubicación creadora</dt><dd>{record.creator_location_name}</dd>
-              <dt>Requiere aprobación de</dt><dd>{record.approver_location_name}</dd>
-              <dt>Creada (UTC)</dt><dd><time>{record.created_at}</time></dd></dl>
-            {record.status === 'pending' ? <><p>Esta solicitud todavía no reserva ni mueve stock.</p><p>La aprobación deberá revalidar y reservar la solicitud completa. La aprobación no está disponible en esta etapa.</p></>
-              : <p>Decidida (UTC): <time>{record.decided_at}</time></p>}
-          </aside></div>
-      </>}
+      {(unavailable || privateUnavailable) && <div role="alert" className="message"><p>{privateUnavailable || unavailable?.code === 'not_found' || unavailable?.status === 403 ? 'La solicitud no está disponible.' : 'No se pudo consultar la solicitud.'}</p>
+        <button type="button" onClick={() => { if (current()) { setMasked(null); transfers.retryDetail(); } }}>Reintentar detalle</button></div>}
+      <TransferDecision controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record}
+        stock={stock?.fence === fence && stock.id === record?.id ? stock.advice : { catalog: null, busy: false, unavailable: true }}
+        onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
+        onStockRefresh={() => { if (current()) setStockRefresh(value => value + 1); }}
+        renderDetail={actions => record && <TransferDetail controller={props.controller} ownerTag={props.ownerTag} record={record}
+          onStock={receiveStock} stockRefresh={stockRefresh} actions={() => actions} />} />
     </> : <>
+      <TransferDecision controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} />
       {transfers.listBusy && <p role="status">Actualizando solicitudes pendientes…</p>}
       {listError && <div role="alert" className="message"><p>No se pudieron consultar las solicitudes.</p>
         <button type="button" onClick={() => { if (current()) transfers.retryList(); }}>Reintentar pendientes</button></div>}

@@ -955,24 +955,47 @@ describe('R05-U1 creation section', () => {
   it.each([false, true])('preserves warehouse list/detail/inventory at mobile=%s without creation reads or POST', async mobile => {
     vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: mobile, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
     const h = r04cApp(201, undefined, 1); render(<App />);
+    const catalogReads = () => h.mock.mock.calls.filter(([input]) => {
+      const url = new URL(String(input), 'http://localhost');
+      return url.pathname === '/api/inventory' && url.searchParams.get('page_size') === '50';
+    });
     await screen.findByText('9007199254740993');
+    expect(catalogReads()).toHaveLength(0);
     const cta = screen.getByRole('button', { name: /Nueva transferencia|Crear envío/ });
     expect(cta).toBeDisabled(); fireEvent.click(cta);
+    expect(catalogReads()).toHaveLength(0);
+    expect(screen.queryByLabelText('Tipo de transferencia')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
     await screen.findByText('1 solicitudes pendientes');
     expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
     expect(screen.getByRole('main')).toHaveAttribute('id', 'transferencias');
     expect(document.querySelectorAll('nav [aria-current="page"]')).toHaveLength(1);
+    expect(catalogReads()).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: 'Ver detalle TR-9007199254740993' }));
     await screen.findByRole('heading', { name: 'TR-9007199254740993' });
     expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Actualizar stock de origen' })).toBeEnabled());
+    expect(catalogReads()).toHaveLength(1);
+    const [input, init] = catalogReads()[0];
+    const url = new URL(String(input), 'http://localhost');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      location_id: String(r04cRecord().origin_location_id), page: '1', page_size: '50',
+    });
+    expect(init).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+    const headers = new Headers(init?.headers);
+    expect(headers.get('X-Luson-Passive')).toBe('1');
+    expect(headers.has('X-CSRF-Token')).toBe(false);
+    expect(init?.body).toBeUndefined();
+    expect(screen.getAllByText('8 disponibles').length).toBeGreaterThan(0);
+    expect(screen.queryByLabelText('Tipo de transferencia')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
     await screen.findByRole('heading', { name: 'Transferencias pendientes' });
     fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' }));
     await screen.findByText('9007199254740993');
     expect(screen.getByRole('main')).toHaveAttribute('id', 'inventario');
     expect(h.posts).toHaveLength(0);
-    expect(h.mock.mock.calls.some(([url]) => String(url).includes('page_size=50'))).toBe(false);
+    expect(catalogReads()).toHaveLength(1);
+    expect(h.mock.mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true);
   });
   it.each(['inventory', 'pending'])('returns confirmed review to Transfers from %s', async entry => {
     const h = r04cApp(201); render(<App />); await inventory();

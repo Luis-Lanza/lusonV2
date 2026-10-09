@@ -4,16 +4,19 @@ import TransferPending, { transferViewOwner } from './TransferPending';
 import TransferReview from './TransferReview';
 import { parseTransferRecord, transferDirection } from './transferModel';
 import type { RecoverySnapshot } from './transferRecovery';
-import type { TransferAuthority, TransferController } from './useInventory';
+import type { TransferAuthority } from './useInventory';
+import type { DetailController } from './TransferDetail';
+import { createTransferDecisionRecovery } from './transferDecisionRecovery';
 
 const locations = ['Almacén', 'Sucursal A', 'Sucursal B'];
 function authority(id = 2, epoch = 1, token = 'a'.repeat(43)): TransferAuthority {
   return { epoch, ready: true, session: { authenticated: true, csrf_token: token,
     identity: { account_id: id, username: `test-${id}`, location: { id, name: locations[id - 1] } }, expires_at: '2030-01-01T00:00:00Z' } };
 }
-function wire(origin = 1, destination = 2, id = '9007199254740993') {
+function wire(origin = 1, destination = 2, id = '9007199254740993', status = 'pending') {
   const creator = destination === 1 ? origin : destination;
-  return { id, reference: `TR-${id.padStart(3, '0')}`, kind: destination === 1 ? 'send_to_warehouse' : 'request_stock', status: 'pending',
+  return { id, reference: `TR-${id.padStart(3, '0')}`, kind: destination === 1 ? 'send_to_warehouse' : 'request_stock', status,
+    ...(status === 'pending' ? {} : { decision_location_id: destination === 1 ? 1 : origin, decided_at: '2028-01-02T00:00:00.000000001Z' }),
     created_at: '2028-01-01T00:00:00.123456789Z', creator_location_id: creator, creator_location_name: locations[creator - 1],
     origin_location_id: origin, origin_location_name: locations[origin - 1], destination_location_id: destination, destination_location_name: locations[destination - 1],
     approver_location_id: destination === 1 ? 1 : origin, approver_location_name: locations[(destination === 1 ? 1 : origin) - 1],
@@ -29,11 +32,18 @@ function deferred() {
 function fixture(id = 2, override?: (url: string, init: RequestInit) => Promise<Response> | undefined) {
   const env = { current: authority(id), record: wire(), count: '9007199254740993' };
   const listeners = new Set<() => void>();
-  const controller: TransferController = {
+  const sourceListeners = new Set<() => void>();
+  const controller: DetailController = {
     get authorityEpoch() { return env.current.epoch; },
     getTransferAuthority: () => env.current,
     subscribeTransferInvalidation: callback => { listeners.add(callback); return () => { listeners.delete(callback); }; },
     settleUnauthorized: vi.fn(async () => 'unavailable' as const),
+    decisionRecovery: createTransferDecisionRecovery(),
+    subscribeSourceInventoryInvalidation: callback => { sourceListeners.add(callback); return () => { sourceListeners.delete(callback); }; },
+    confirmTransferDecision: vi.fn((_owner, status) => {
+      for (const listener of listeners) listener();
+      if (status === 'approved') for (const listener of sourceListeners) listener();
+    }),
   };
   const fetch = vi.fn((input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
     const url = String(input); const custom = override?.(url, init); if (custom) return custom;
@@ -48,6 +58,14 @@ function fixture(id = 2, override?: (url: string, init: RequestInit) => Promise<
       });
       return Promise.resolve(reply({ page, page_size: size, status: 'pending', total_count: env.count, records }));
     }
+    if (url.startsWith('/api/inventory?')) {
+      const location = Number(new URL(url, 'http://localhost').searchParams.get('location_id'));
+      return Promise.resolve(reply({ location: { id: location, name: locations[location - 1] }, page: 1, page_size: 50, total_variants: 0, items: [] }));
+    }
+    if (init.method === 'POST') {
+      env.record = wire(env.record.origin_location_id, env.record.destination_location_id, env.record.id, url.endsWith('/approve') ? 'approved' : 'rejected');
+      return Promise.resolve(reply(env.record));
+    }
     if (url === `/api/transfers/${env.record.id}`) return Promise.resolve(reply(env.record));
     throw new Error('Unexpected test route');
   });
@@ -55,13 +73,150 @@ function fixture(id = 2, override?: (url: string, init: RequestInit) => Promise<
   const back = vi.fn();
   const ownerTag = transferViewOwner(env.current)!;
   const element = (initialDetail?: { ownerTag: string; id: string }) => <TransferPending controller={controller} ownerTag={ownerTag} initialDetail={initialDetail} onInventory={back} />;
-  return { env, controller, listeners, fetch, back, ownerTag, element };
+  return { env, controller, listeners, sourceListeners, fetch, back, ownerTag, element };
 }
 const calls = (f: ReturnType<typeof fixture>, detail = false) => f.fetch.mock.calls.filter(([url]) => String(url).startsWith(detail ? '/api/transfers/' : '/api/transfers?'));
 const isPassive = (call: [RequestInfo | URL, RequestInit?]) => new Headers(call[1]?.headers).get('X-Luson-Passive') === '1';
 async function loaded() { await screen.findByText('9007199254740993 solicitudes pendientes'); }
 async function detail() { fireEvent.click(screen.getByRole('button', { name: 'Ver detalle TR-9007199254740993' })); await screen.findByRole('heading', { name: 'TR-9007199254740993' }); }
 afterEach(() => { vi.unstubAllGlobals(); });
+
+describe('A06a decision entry', () => {
+  it('opens approval confirmation only after an explicit approver click', async () => {
+    const f = fixture(1);
+    render(f.element({ ownerTag: f.ownerTag, id: f.env.record.id }));
+    await screen.findByRole('heading', { name: 'TR-9007199254740993' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Aprobar solicitud' }));
+    expect(screen.getByRole('dialog', { name: 'Confirmar aprobación' })).toBeVisible();
+    expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+  });
+});
+
+describe('A06a real list/detail decision bindings', () => {
+  it.each([[1, 2], [1, 3], [2, 3], [3, 2], [2, 1], [3, 1]])('keeps confirmed whole-request outcomes truthful for %s → %s while refresh is pending', async (origin, destination) => {
+    for (const action of ['approve', 'reject'] as const) {
+      let decided = false;
+      const held = deferred();
+      const f = fixture(destination === 1 ? 1 : origin, (url, init) => {
+        if (init.method === 'POST') {
+          decided = true;
+          return Promise.resolve(reply(wire(origin, destination, '9007199254740993', action === 'approve' ? 'approved' : 'rejected')));
+        }
+        if (decided && url === '/api/transfers/9007199254740993') return held.promise;
+        return undefined;
+      });
+      f.env.record = wire(origin, destination);
+      const view = render(f.element({ ownerTag: f.ownerTag, id: f.env.record.id }));
+      await screen.findByRole('heading', { name: 'TR-9007199254740993' });
+      const noun = destination === 1 ? 'envío' : 'solicitud';
+      fireEvent.click(screen.getByRole('button', { name: `${action === 'approve' ? 'Aprobar' : 'Rechazar'} ${noun}` }));
+      const modal = screen.getByRole('dialog');
+      expect(modal).toHaveTextContent('18446744073709551614');
+      fireEvent.click(within(modal).getByRole('button', { name: action === 'approve' ? 'Confirmar aprobación' : 'Confirmar rechazo' }));
+      await waitFor(() => expect(f.controller.confirmTransferDecision).toHaveBeenCalledOnce());
+      const summary = screen.getByLabelText('Resumen de solicitud');
+      expect(summary).toHaveTextContent(action === 'approve' ? `está reservada en ${locations[origin - 1]}` : 'completa fue rechazada');
+      expect(summary).toHaveTextContent('2028-01-02T00:00:00.000000001Z');
+      expect(screen.queryByText('Esta solicitud todavía no reserva ni mueve stock.')).not.toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'Solicitud Pending' })).not.toBeInTheDocument();
+      expect(screen.getByRole('table', { name: 'Baterías solicitadas' })).toHaveTextContent('9223372036854775807');
+      expect(screen.queryByRole('button', { name: `Aprobar ${noun}` })).not.toBeInTheDocument();
+      expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+      await act(async () => held.resolve(reply(wire(origin, destination, '9007199254740993', action === 'approve' ? 'approved' : 'rejected'))));
+      view.unmount();
+    }
+  });
+  it.each([[1, 2, 2], [1, 3, 3], [2, 3, 3], [3, 2, 2], [2, 1, 2], [3, 1, 3]])('does not render hidden-but-enabled decisions for requester %s → %s assigned %s', async (origin, destination, assigned) => {
+    const f = fixture(assigned);
+    f.env.record = wire(origin, destination);
+    render(f.element({ ownerTag: f.ownerTag, id: f.env.record.id }));
+    await screen.findByRole('heading', { name: 'TR-9007199254740993' });
+    expect(screen.queryByRole('button', { name: /^(Aprobar|Rechazar) / })).not.toBeInTheDocument();
+    expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+  });
+  it.each(['approve', 'reject'] as const)('keeps unknown %s reachable after Back and child remount; explicit retry uses the original ID/action', async action => {
+    let posts = 0;
+    const f = fixture(1, (url, init) => {
+      if (init.method === 'POST') {
+        posts++;
+        if (posts === 1) return Promise.reject(new Error('PRIVATE timeout unknown'));
+        return Promise.resolve(reply(wire(1, 2, '9007199254740993', action === 'approve' ? 'approved' : 'rejected')));
+      }
+      return undefined;
+    });
+    let view = render(f.element({ ownerTag: f.ownerTag, id: f.env.record.id }));
+    await screen.findByRole('heading', { name: 'TR-9007199254740993' });
+    fireEvent.click(screen.getByRole('button', { name: action === 'approve' ? 'Aprobar solicitud' : 'Rechazar solicitud' }));
+    fireEvent.click(screen.getByRole('button', { name: action === 'approve' ? 'Confirmar aprobación' : 'Confirmar rechazo' }));
+    await screen.findByRole('button', { name: 'Consultar resultado original' });
+    fireEvent.click(screen.getByRole('button', { name: 'Volver al detalle' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    expect(screen.getByLabelText('Recuperación de decisión')).toHaveTextContent('TR-9007199254740993');
+    expect(posts).toBe(1);
+    view.unmount();
+    view = render(f.element());
+    await screen.findByRole('button', { name: 'Consultar resultado original' });
+    expect(posts).toBe(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Consultar resultado original' }));
+    await screen.findByRole('button', { name: action === 'approve' ? 'Reintentar misma aprobación' : 'Reintentar mismo rechazo' });
+    expect(f.controller.confirmTransferDecision).not.toHaveBeenCalled();
+    expect(posts).toBe(1);
+    expect(document.body).not.toHaveTextContent('PRIVATE');
+    fireEvent.click(screen.getByRole('button', { name: action === 'approve' ? 'Reintentar misma aprobación' : 'Reintentar mismo rechazo' }));
+    await waitFor(() => expect(f.controller.confirmTransferDecision).toHaveBeenCalledOnce());
+    expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST').map(([url]) => url)).toEqual([`/api/transfers/9007199254740993/${action}`, `/api/transfers/9007199254740993/${action}`]);
+    view.unmount();
+  });
+  it.each([403, 404])('removes the complete private selected record after decision HTTP %s', async status => {
+    const f = fixture(1, (_url, init) => init.method === 'POST' ? Promise.resolve(reply({ error: status === 403 ? 'forbidden' : 'not_found' }, status)) : undefined);
+    render(f.element({ ownerTag: f.ownerTag, id: f.env.record.id }));
+    await screen.findByRole('heading', { name: 'TR-9007199254740993' });
+    fireEvent.click(screen.getByRole('button', { name: 'Aprobar solicitud' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar aprobación' }));
+    await screen.findByText('La solicitud no está disponible.');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Recuperación de decisión')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('TR-9007199254740993');
+    expect(document.body).not.toHaveTextContent('75.125');
+    expect(document.body).not.toHaveTextContent('9223372036854775807');
+  });
+  it('refreshes advisory origin stock passively after shortage without replacing the immutable request or automatically retrying', async () => {
+    const f = fixture(1, (_url, init) => init.method === 'POST' ? Promise.resolve(reply({ error: 'insufficient_stock' }, 409)) : undefined);
+    render(f.element({ ownerTag: f.ownerTag, id: f.env.record.id }));
+    await screen.findByRole('heading', { name: 'TR-9007199254740993' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Actualizar stock de origen' })).toBeEnabled());
+    const before = f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?')).length;
+    fireEvent.click(screen.getByRole('button', { name: 'Aprobar solicitud' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar aprobación' }));
+    await screen.findByRole('button', { name: 'Consultar resultado original' });
+    await waitFor(() => expect(f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?'))).toHaveLength(before + 1));
+    expect(screen.getByRole('table', { name: 'Baterías solicitadas' })).toHaveTextContent('18446744073709551614');
+    expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    expect(f.controller.confirmTransferDecision).not.toHaveBeenCalled();
+    for (const [url, init] of f.fetch.mock.calls) if (String(url).startsWith('/api/inventory?')) expect(new Headers(init?.headers).get('X-Luson-Passive')).toBe('1');
+  });
+  it('original recovery is not replaced when a different list record is selected', async () => {
+    const f = fixture(1, (_url, init) => init.method === 'POST' ? Promise.reject(new Error('lost')) : undefined);
+    render(f.element({ ownerTag: f.ownerTag, id: f.env.record.id }));
+    await screen.findByRole('heading', { name: 'TR-9007199254740993' });
+    fireEvent.click(screen.getByRole('button', { name: 'Aprobar solicitud' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar aprobación' }));
+    await screen.findByRole('button', { name: 'Consultar resultado original' });
+    fireEvent.click(screen.getByRole('button', { name: 'Volver al detalle' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    f.env.record = wire(1, 2, '9007199254740992');
+    act(() => { for (const listener of f.listeners) listener(); });
+    const row = await screen.findByRole('button', { name: 'Ver detalle TR-9007199254740992' });
+    fireEvent.click(row);
+    await screen.findByRole('heading', { name: 'TR-9007199254740992' });
+    expect(screen.getByRole('button', { name: 'Aprobar solicitud' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar misma aprobación' }));
+    await screen.findByRole('button', { name: 'Consultar resultado original' });
+    expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST').map(([url]) => url)).toEqual(['/api/transfers/9007199254740993/approve', '/api/transfers/9007199254740993/approve']);
+  });
+});
 
 describe('A05a truthful terminal detail', () => {
   it.each(['approved', 'rejected'] as const)('shows %s without Pending-only reservation claims', async status => {
@@ -154,7 +309,10 @@ describe('R04c participant Pending', () => {
   it.each([[1, 2, 'Solicitud a Almacén'], [2, 3, 'Solicitud entre sucursales'], [2, 1, 'Propuesta de envío a Almacén']])('labels physical route %s to %s honestly', async (origin, destination, label) => {
     const f = fixture(2); f.env.record = wire(Number(origin), Number(destination)); render(f.element()); await loaded();
     expect(screen.getByRole('table')).toHaveTextContent(String(label)); await detail();
-    expect(screen.getByRole('region', { name: 'Ruta física' })).toHaveTextContent(`Origen${locations[Number(origin) - 1]}→Destino${locations[Number(destination) - 1]}`);
+    const route = screen.getByRole('region', { name: 'Ruta física' });
+    expect(route.querySelector(':scope > div:first-child strong')).toHaveTextContent(locations[Number(origin) - 1]);
+    expect(route.querySelector(':scope > div:last-child strong')).toHaveTextContent(locations[Number(destination) - 1]);
+    expect(route.querySelector('b')).toHaveTextContent('→');
     expect(screen.getByLabelText('Resumen de solicitud')).toHaveTextContent('Esta solicitud todavía no reserva ni mueve stock.');
   });
   it('keeps exact Ah, nanosecond UTC, quantities and physical creator/approver in detail', async () => {
@@ -164,7 +322,7 @@ describe('R04c participant Pending', () => {
     expect(within(items).getAllByText('9223372036854775807')).toHaveLength(2);
     expect(screen.getByText('2028-01-01T00:00:00.123456789Z')).toBeVisible();
     expect(screen.getByLabelText('Resumen de solicitud')).toHaveTextContent('Ubicación creadoraSucursal A');
-    expect(screen.queryByText(/Existencias|Reservadas|Historial|Empleado/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Historial|Empleado|Verificadas en origen/)).not.toBeInTheDocument();
     expect(isPassive(calls(f, true)[0])).toBe(false);
     expect(calls(f, true)[0][1]).toMatchObject({ credentials: 'same-origin', cache: 'no-store', method: 'GET' });
   });
