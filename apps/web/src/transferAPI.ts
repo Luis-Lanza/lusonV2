@@ -2,9 +2,10 @@ import {
   canonicalTransferInput, parseTransferCounts, parseTransferPage, parseTransferRecord, transferDetailPath, transferListPath,
   type TransferCounts, type TransferCreateInput, type TransferPage, type TransferQuery, type TransferRecord,
 } from './transferModel';
-export type TransferErrorCode = 'invalid_request' | 'unauthenticated' | 'forbidden' | 'not_found' | 'method_not_allowed' | 'insufficient_stock' | 'retry_conflict' | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
+import { captureDecisionRecord, matchesDecisionRecord, requestedDecision, type TransferDecision } from './transferDecisionRecovery';
+export type TransferErrorCode = 'invalid_request' | 'unauthenticated' | 'forbidden' | 'not_found' | 'method_not_allowed' | 'insufficient_stock' | 'retry_conflict' | 'decision_conflict' | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
 export class TransferAPIError extends Error {
-  constructor(public readonly code: TransferErrorCode, public readonly status: number | null, public readonly uncertainCreation = false) { super(code); this.name = 'TransferAPIError'; }
+  constructor(public readonly code: TransferErrorCode, public readonly status: number | null, public readonly uncertainCreation = false, public readonly uncertainDecision = false) { super(code); this.name = 'TransferAPIError'; }
 }
 export interface TransferReadOptions { signal?: AbortSignal; passive?: boolean }
 export interface TransferCreateResult { record: TransferRecord; replayed: boolean }
@@ -21,8 +22,8 @@ function readInit(options: TransferReadOptions): RequestInit {
     headers: options.passive === true ? { 'X-Luson-Passive': '1' } : {} };
 }
 export function createTransferAPI(fetch: typeof globalThis.fetch = globalThis.fetch) {
-  async function request(path: string, init: RequestInit, statuses: readonly number[]) {
-    const creating = init.method === 'POST';
+  async function request(path: string, init: RequestInit, statuses: readonly number[], decision = false) {
+    const creating = init.method === 'POST' && !decision;
     let reply: Response;
     let body: string;
     try {
@@ -30,24 +31,40 @@ export function createTransferAPI(fetch: typeof globalThis.fetch = globalThis.fe
       body = await reply.text();
     } catch (error) {
       const aborted = init.signal?.aborted || (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError');
-      throw new TransferAPIError(aborted ? 'aborted' : 'network', null, creating);
+      throw new TransferAPIError(aborted ? 'aborted' : 'network', null, creating, decision);
     }
-    const malformed = () => new TransferAPIError('invalid_response', reply.status, creating);
+    const malformed = () => new TransferAPIError('invalid_response', reply.status, creating, decision);
     if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(reply.headers.get('Content-Type') ?? '')) throw malformed();
     if (!statuses.includes(reply.status)) {
       let value: unknown;
       try { value = JSON.parse(body); } catch { throw malformed(); }
       if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'error')) throw malformed();
       const code = (value as { error: unknown }).error;
-      if (typeof code !== 'string' || !serverCodes[reply.status]?.includes(code as TransferErrorCode)) throw malformed();
+      const admitted = reply.status === 409 && decision ? ['insufficient_stock', 'decision_conflict'] : serverCodes[reply.status];
+      if (typeof code !== 'string' || !admitted?.includes(code as TransferErrorCode)) throw malformed();
       throw new TransferAPIError(code as TransferErrorCode, reply.status);
     }
     return { body, status: reply.status };
   }
-  function checked<T>(parse: () => T, status: number, creating = false): T {
-    try { return parse(); } catch { throw new TransferAPIError('invalid_response', status, creating); }
+  function checked<T>(parse: () => T, status: number, creating = false, decision = false): T {
+    try { return parse(); } catch { throw new TransferAPIError('invalid_response', status, creating, decision); }
   }
   return {
+    async decide(original: TransferRecord, action: TransferDecision, csrf: string, signal?: AbortSignal): Promise<TransferRecord> {
+      const captured = local(() => {
+        if ((action !== 'approve' && action !== 'reject') || typeof csrf !== 'string' || !/^[A-Za-z0-9_-]+$/.test(csrf)) throw new Error();
+        return captureDecisionRecord(original);
+      });
+      const path = local(() => transferDetailPath(captured.id)) + '/' + action;
+      const reply = await request(path, { method: 'POST', credentials: 'same-origin', cache: 'no-store', signal,
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: '{}' }, [200], true);
+      return checked(() => {
+        const record = parseTransferRecord(reply.body);
+        if (record.status !== requestedDecision(action) || !matchesDecisionRecord(captured, record)
+          || record.decision_location_id !== captured.approver_location_id) throw new Error();
+        return record;
+      }, reply.status, false, true);
+    },
     async counts(options: Pick<TransferReadOptions, 'signal'> = {}): Promise<TransferCounts> {
       // This endpoint is intrinsically passive: no selector or caller headers.
       const reply = await request('/api/transfers/counts', {

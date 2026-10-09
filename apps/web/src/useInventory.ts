@@ -3,6 +3,8 @@ import { initialQuery, parseInventory, parseMetadata, parseSession, queryURL, va
 import type { Inventory, Metadata, Query, Session } from './model';
 import { useRealtime } from './useRealtime';
 import type { Recovery } from './useRealtime';
+import { createTransferDecisionRecovery, decisionOwner, type DecisionOwner, type TransferDecisionRecovery } from './transferDecisionRecovery';
+import type { TransferStatus } from './transferModel';
 
 class HTTPError extends Error {
   constructor(public status: number) { super('HTTP request failed'); }
@@ -34,12 +36,14 @@ async function request(path: string, init: RequestInit = {}, expected = 200, pas
 type Job = { sequence: number; reason: 'initial' | 'manual' | 'event'; full: boolean };
 type Read = { auth: number; generation: number; dirty: boolean; full: boolean };
 type Bootstrap = { settled: Promise<void>; controller: AbortController; uncertain: boolean; cancelTimeout: () => void };
-export interface TransferAuthority { epoch: number; ready: boolean; session: Session | null }
+export interface TransferAuthority { epoch: number; ready: boolean; session: Session | null; sessionGeneration?: number }
 export interface TransferController {
   authorityEpoch: number;
   getTransferAuthority: () => TransferAuthority;
   subscribeTransferInvalidation: (listener: () => void) => () => void;
   settleUnauthorized: (expectedEpoch: number) => Promise<Recovery>;
+  decisionRecovery?: TransferDecisionRecovery;
+  confirmTransferDecision?: (owner: DecisionOwner, status: TransferStatus) => void;
 }
 
 export interface SourceInventoryController {
@@ -49,6 +53,7 @@ export interface SourceInventoryController {
 }
 
 export function useInventory() {
+  const [decisionRecovery] = useState(createTransferDecisionRecovery);
   const [session, setSession] = useState<Session | null>(null);
   const [metadata, setMetadata] = useState<Metadata | null>(null);
   const [data, setData] = useState<Inventory | null>(null);
@@ -75,11 +80,19 @@ export function useInventory() {
   const neutralProbe = useRef<{ epoch: number; promise: Promise<Recovery>; cancel: () => void } | null>(null);
   const unauthorizedCooldown = useRef({ epoch: -1, until: 0 });
   const validateLatest = useRef<(signal: AbortSignal) => Promise<Recovery>>(async () => 'unavailable');
-  const getTransferAuthority = useCallback((): TransferAuthority => ({
-    epoch: authGeneration.current, session: authorityState.current.session,
-    ready: mounted.current && !mutation.current && !authorityState.current.authBusy
-      && !!authorityState.current.session?.authenticated,
-  }), []);
+  // Auth-only fingerprint detects even in-place changes before React renders.
+  // Recovery receives only the monotonic generation, never this credential tag.
+  const sessionFence = useRef({ fingerprint: '', generation: 0 });
+  const getTransferAuthority = useCallback((): TransferAuthority => {
+    const session = authorityState.current.session;
+    const fingerprint = session?.authenticated ? JSON.stringify([session.identity.account_id, session.identity.username,
+      session.identity.location.id, session.identity.location.name, session.expires_at, session.csrf_token]) : '';
+    if (sessionFence.current.fingerprint !== fingerprint) {
+      sessionFence.current = { fingerprint, generation: sessionFence.current.generation + 1 };
+    }
+    return { epoch: authGeneration.current, session, sessionGeneration: sessionFence.current.generation,
+      ready: mounted.current && !mutation.current && !authorityState.current.authBusy && !!session?.authenticated };
+  }, []);
   const subscribeTransferInvalidation = useCallback((listener: () => void) => {
     const entry = { epoch: authGeneration.current, listener };
     transferListeners.current.add(entry);
@@ -102,20 +115,26 @@ export function useInventory() {
     unauthorizedCooldown.current = { epoch: expectedEpoch, until: Date.now() + 5000 };
     return validateLatest.current(new AbortController().signal);
   }, [getTransferAuthority]);
-  function notifyTransfers(epoch: number) {
+  function decisionIsCurrent(owner: DecisionOwner) {
+    const now = decisionOwner(getTransferAuthority());
+    return !!now && now.account === owner.account && now.location === owner.location
+      && now.epoch === owner.epoch && now.generation === owner.generation;
+  }
+  function notifyTransfers(epoch: number, owner?: DecisionOwner) {
     const authority = getTransferAuthority();
     if (!authority.ready || authority.epoch !== epoch) return;
     for (const entry of [...transferListeners.current]) {
+      if (owner && !decisionIsCurrent(owner)) return;
       if (entry.epoch !== epoch || !transferListeners.current.has(entry) || !current(epoch) || mutation.current) continue;
       // A failed subscriber must not interrupt other readers or inventory resync.
       try { entry.listener(); } catch { /* No subscriber payload or error is logged. */ }
     }
   }
 
-  function notifySourceInventory(epoch: number) {
+  function notifySourceInventory(epoch: number, owner?: DecisionOwner) {
     for (const entry of [...sourceInventoryListeners.current]) {
       const authority = getTransferAuthority();
-      if (!authority.ready || authority.epoch !== epoch) return;
+      if (!authority.ready || authority.epoch !== epoch || (owner && !decisionIsCurrent(owner))) return;
       if (entry.epoch !== epoch || !sourceInventoryListeners.current.has(entry) || !current(epoch) || mutation.current) continue;
       // Signals have no data; subscriber failures must not disrupt other readers.
       try { entry.listener(); } catch { /* No subscriber payload or error is logged. */ }
@@ -244,6 +263,15 @@ export function useInventory() {
     return promise;
   }
   validateLatest.current = validate;
+  const decisionEffects = useRef<(owner: DecisionOwner, status: TransferStatus) => void>(() => {});
+  decisionEffects.current = (owner, status) => {
+    if (!decisionIsCurrent(owner) || status === 'pending') return;
+    notifyTransfers(owner.epoch, owner);
+    if (status === 'approved' && decisionIsCurrent(owner)) {
+      invalidate(false); notifySourceInventory(owner.epoch, owner);
+    }
+  };
+  const confirmTransferDecision = useCallback((owner: DecisionOwner, status: TransferStatus) => decisionEffects.current(owner, status), []);
   const realtimeEpoch = authGeneration.current;
   const stopRealtime = useRealtime({ enabled: !!session?.authenticated && !authBusy, epoch: realtimeEpoch,
     resync: () => { invalidate(true); notifyTransfers(realtimeEpoch); notifySourceInventory(realtimeEpoch); },
@@ -370,5 +398,6 @@ export function useInventory() {
   }
   return { session, metadata, data, query, loading, authBusy, formError, resultsError: resultsError || realtimeError, focusLogin,
     login, logout, change, retrySession: () => restore(), retryInventory: () => change({}, true),
+    decisionRecovery, confirmTransferDecision,
     authorityEpoch: authGeneration.current, getTransferAuthority, subscribeTransferInvalidation, subscribeSourceInventoryInvalidation, settleUnauthorized };
 }

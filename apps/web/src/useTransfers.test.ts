@@ -1,8 +1,11 @@
-import { act, renderHook, waitFor } from '@testing-library/react';
+import { createElement } from 'react';
+import { act, render, renderHook, screen, waitFor } from '@testing-library/react';
+import TransferCreation from './TransferCreation';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useInventory } from './useInventory';
 import { useTransfers } from './useTransfers';
 import { createTransferAPI } from './transferAPI';
+import { parseTransferRecord } from './transferModel';
 import type { TransferAuthority, TransferController } from './useInventory';
 import { pageJSON } from './test-fixtures';
 import type { TransferCreateInput } from './transferModel';
@@ -98,6 +101,361 @@ function boundedHarness(countsEnabled = true, actor = 2) {
   const emit = () => act(() => { for (const listener of listeners) listener(); });
   return { a, controller, listeners, jobs, fetch, hook, emit, api };
 }
+
+type DecisionHook = ReturnType<typeof useTransfers>;
+type InventoryHook = ReturnType<typeof useInventory>;
+function decisionFixture(actor = 1, original = wire(2, '1'), override?: Parameters<typeof fixture>[1], catalog = false) {
+  const f = fixture(session(actor), (url, init) => {
+    const custom = override?.(url, init); if (custom) return custom;
+    if (url === '/api/transfers/counts') return Promise.resolve(reply({ pending_total: '9', action_count: '2' }));
+    if (url.startsWith('/api/transfers?')) return Promise.resolve(reply({ page: 1, page_size: 25, status: 'pending', total_count: '1', records: [original] }));
+    if (url.startsWith('/api/transfers/')) return Promise.resolve(reply(original));
+    if (url.startsWith('/api/inventory?') && new URL(url, 'http://localhost').searchParams.get('page_size') === '50') {
+      return Promise.resolve(reply(pageJSON(undefined, 1, 1).replace('"page_size":10', '"page_size":50').replace('"name":"Almacén"', '"name":"Warehouse"')));
+    }
+    return undefined;
+  });
+  let controller!: InventoryHook;
+  const lanes: DecisionHook[] = [];
+  function Lane({ index, owner }: { index: number; owner: InventoryHook }) {
+    lanes[index] = useTransfers({ controller: owner, listEnabled: true, detailEnabled: true, countsEnabled: true });
+    return null;
+  }
+  function Parent({ childrenVisible }: { childrenVisible: boolean }) {
+    controller = useInventory();
+    return createElement('div', null,
+      childrenVisible ? [0, 1].map(index => createElement(Lane, { key: index, index, owner: controller })) : null,
+      catalog && controller.metadata ? createElement(TransferCreation, { controller, metadata: controller.metadata, onBack: () => {} }) : null);
+  }
+  const view = render(createElement(Parent, { childrenVisible: true }));
+  const ready = async () => {
+    await waitFor(() => expect(lanes[0].page?.total_count).toBe(1n));
+    await waitFor(() => expect(lanes[1].counts?.action_count).toBe(2n));
+    await waitFor(() => expect(controller.data).not.toBeNull());
+  };
+  return { ...f, lanes, view, ready, original: parseTransferRecord(JSON.stringify(original)),
+    get controller() { return controller; }, show: (visible: boolean) => view.rerender(createElement(Parent, { childrenVisible: visible })) };
+}
+const decisionOutcome = (original: ReturnType<typeof wire>, status: 'approved' | 'rejected') => ({ ...original, status,
+  decision_location_id: original.approver_location_id, decided_at: '2026-04-03T00:00:00.000000001Z' });
+const decisionPosts = (fetch: ReturnType<typeof fixture>['fetch']) => fetch.mock.calls.filter(([, init]) => init?.method === 'POST' && String(init?.body) === '{}');
+const inventoryCalls = (fetch: ReturnType<typeof fixture>['fetch']) => fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?'));
+
+describe('A05b real controller decisions', () => {
+  const otherBranch = { ...wire(2, '1'), origin_location_id: 3, origin_location_name: 'Branch B', approver_location_id: 3, approver_location_name: 'Branch B' };
+  const send = { ...wire(2, '1'), kind: 'send_to_warehouse', origin_location_id: 2, origin_location_name: 'Branch A', destination_location_id: 1, destination_location_name: 'Warehouse' };
+  it.each([wire(2, '1'), otherBranch, send].flatMap(original => (['approve', 'reject'] as const).map(action => ({ original, action }))))
+   ('uses assigned persisted approver for $original.kind/$original.origin_location_id/$action, not consulted inventory', async ({ original, action }) => {
+      const h = decisionFixture(original.approver_location_id, original, (_url, init) => init.method === 'POST'
+        ? Promise.resolve(reply(decisionOutcome(original, action === 'approve' ? 'approved' : 'rejected'))) : undefined);
+      await h.ready();
+      act(() => h.controller.change({ location: original.approver_location_id === 1 ? 3 : 1 }));
+      await waitFor(() => expect(h.controller.loading).toBe(false));
+      await act(async () => { await h.lanes[0].decide(h.original, action); });
+      expect(h.lanes[1].decision?.result).toMatchObject({ decision_location_id: original.approver_location_id });
+      expect(decisionPosts(h.fetch)).toHaveLength(1);
+      h.view.unmount();
+    });
+  it.each(['approve', 'reject'] as const)('SSE invalidations never replay an uncertain %s POST', async action => {
+    const h = decisionFixture(1, wire(2, '1'), (_url, init) => init.method === 'POST' ? Promise.reject(new Error('unknown')) : undefined);
+    await h.ready();
+    await act(async () => { await h.lanes[0].decide(h.original, action).catch(() => {}); });
+    for (const event of ['transfers', 'resync', 'inventory']) {
+      act(() => Source.instances[0].emit(event));
+      await waitFor(() => expect(h.lanes[0].listBusy).toBe(false));
+      expect(h.lanes[1].decision).toMatchObject({ phase: 'uncertain', action, result: null });
+      expect(decisionPosts(h.fetch)).toHaveLength(1);
+    }
+    h.view.unmount();
+  });
+  it.each(['approve', 'reject'] as const)('refuses a participant who is not the persisted approver on %s', async action => {
+    const h = decisionFixture(2); await h.ready();
+    await expect(h.lanes[0].decide(h.original, action)).rejects.toMatchObject({ code: 'forbidden', uncertainDecision: false });
+    expect(decisionPosts(h.fetch)).toHaveLength(0); expect(h.lanes[0].decision).toBeNull(); h.view.unmount();
+  });
+  it.each((['approve', 'reject'] as const).flatMap(action => (['post', 'get'] as const).flatMap(operation =>
+    (['account', 'location', 'csrf', 'username', 'expiry'] as const).flatMap(field =>
+      (['terminal', 'unauthenticated'] as const).map(completion => ({ action, operation, field, completion }))))))
+   ('fences retained callbacks and ignored-abort $operation $action on same-object $field change before render ($completion)', async ({ action, operation, field, completion }) => {
+      const original = wire(2, '1'); const delayed = deferred<Response>();
+      const h = decisionFixture(1, original, (url, init) => init.method === 'POST'
+        ? operation === 'post' ? delayed.promise : Promise.reject(new Error('unknown'))
+        : operation === 'get' && url === '/api/transfers/1' ? delayed.promise : undefined);
+      await h.ready();
+      if (operation === 'get') await act(async () => { await h.lanes[0].decide(h.original, action).catch(() => {}); });
+      const saved = h.lanes[0]; let pending!: Promise<unknown>;
+      act(() => { pending = (operation === 'post' ? saved.decide(h.original, action) : saved.recoverDecision()).catch(error => error); });
+      const session = h.controller.getTransferAuthority().session;
+      if (!session?.authenticated) throw new Error('fixture');
+      if (field === 'account') session.identity.account_id = 99;
+      if (field === 'location') session.identity.location = { id: 3, name: 'Branch B' };
+      if (field === 'csrf') session.csrf_token = 'rotated';
+      if (field === 'username') session.identity.username = 'replacement';
+      if (field === 'expiry') session.expires_at = '2040-01-01T00:00:00Z';
+      expect(saved.decision).toBeNull(); expect(saved.decisionError).toBeNull(); expect(saved.page).toBeNull();
+      const calls = h.fetch.mock.calls.length;
+      await expect(saved.retryDecision()).rejects.toMatchObject({ code: 'unauthenticated' });
+      await expect(saved.recoverDecision()).rejects.toMatchObject({ code: 'unauthenticated' });
+      await expect(saved.decide(h.original, action)).rejects.toMatchObject({ code: 'unauthenticated' });
+      expect(h.fetch.mock.calls).toHaveLength(calls);
+      await act(async () => { delayed.resolve(completion === 'unauthenticated' ? reply({ error: 'unauthenticated' }, 401) : reply(decisionOutcome(original, action === 'approve' ? 'approved' : 'rejected'))); await pending; });
+      await expect(pending).resolves.toMatchObject({ code: 'aborted', uncertainDecision: true });
+      expect(h.fetch.mock.calls.filter(([url]) => url === '/api/auth/validate')).toHaveLength(0);
+      expect(saved.decision).toBeNull(); h.view.unmount();
+    });
+  it.each(['approve', 'reject'] as const)('unmounted %s transport abort cannot settle a remounted controller recovery or overlap retry', async action => {
+    const original = wire(2, '1'); const delayed = deferred<Response>();
+    const h = decisionFixture(1, original, (_url, init) => init.method === 'POST' ? delayed.promise : undefined);
+    await h.ready(); let pending!: Promise<unknown>;
+    act(() => { pending = h.lanes[0].decide(h.original, action).catch(error => error); });
+    const post = decisionPosts(h.fetch)[0]; h.show(false);
+    expect(post[1]?.signal?.aborted).toBe(true);
+    h.show(true); await h.ready();
+    expect(h.lanes[1].decision?.phase).toBe('inFlight');
+    await expect(h.lanes[1].retryDecision()).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(h.lanes[1].recoverDecision()).rejects.toMatchObject({ code: 'invalid_request' });
+    await act(async () => { delayed.resolve(reply(decisionOutcome(original, action === 'approve' ? 'approved' : 'rejected'))); await pending; });
+    await expect(pending).resolves.toMatchObject({ code: 'aborted', uncertainDecision: true });
+    expect(h.lanes[1].decision?.phase).toBe('uncertain'); expect(h.lanes[1].decision?.result).toBeNull();
+    expect(decisionPosts(h.fetch)).toHaveLength(1); h.view.unmount();
+  });
+  it.each([[403, 'forbidden'], [404, 'not_found'], [409, 'insufficient_stock'], [503, 'service_unavailable']] as const)
+    ('decision POST %s/%s remains sanitized, does not log out, and cannot silently replace an attempt', async (status, code) => {
+      const h = decisionFixture(1, wire(2, '1'), (_url, init) => init.method === 'POST' ? Promise.resolve(reply({ error: code }, status)) : undefined);
+      await h.ready();
+      await act(async () => { await expect(h.lanes[0].decide(h.original, 'approve')).rejects.toMatchObject({ code, status, uncertainCreation: false }); });
+      expect(h.controller.session?.authenticated).toBe(true);
+      expect(h.fetch.mock.calls.filter(([url]) => url === '/api/auth/validate')).toHaveLength(0);
+      if (status === 403 || status === 404) {
+        expect(h.lanes[1].decision).toBeNull(); expect(h.lanes[0].decisionError).toBeNull();
+      } else {
+        expect(h.lanes[1].decision?.phase).toBe('uncertain'); expect(h.lanes[1].decisionError?.code).toBe(code);
+      }
+      await expect(h.lanes[1].decide({ ...h.original, id: '2', reference: 'TR-002' }, 'reject')).rejects.toMatchObject({ code: 'invalid_request' });
+      expect(decisionPosts(h.fetch)).toHaveLength(1); h.view.unmount();
+    });
+  it.each(['post', 'get'] as const)('logout barriers hide the original immediately and stale %s 401 cannot settle resumed same-account authority', async operation => {
+    const old = deferred<Response>(); const original = wire(2, '1');
+    const h = decisionFixture(1, original, (url, init) => {
+      if (url === '/api/auth/logout') return Promise.resolve(reply({ error: 'service_unavailable' }, 503));
+      if (init.method === 'POST' && url.endsWith('/approve')) return operation === 'post' ? old.promise : Promise.reject(new Error('unknown'));
+      return operation === 'get' && url === '/api/transfers/1' ? old.promise : undefined;
+    });
+    await h.ready();
+    if (operation === 'get') await act(async () => { await h.lanes[0].decide(h.original, 'approve').catch(() => {}); });
+    const saved = h.lanes[0]; let pending!: Promise<unknown>; let logout!: Promise<void>;
+    act(() => { pending = (operation === 'post' ? saved.decide(h.original, 'approve') : saved.recoverDecision()).catch(error => error); });
+    act(() => { logout = h.controller.logout(); expect(saved.decision).toBeNull(); });
+    await act(async () => { await logout; }); await h.ready();
+    await act(async () => { old.resolve(reply({ error: 'unauthenticated' }, 401)); await pending; });
+    await expect(pending).resolves.toMatchObject({ code: 'aborted', uncertainDecision: true });
+    await expect(saved.retryDecision()).rejects.toMatchObject({ code: 'unauthenticated' });
+    expect(h.lanes[1].decision).toBeNull(); expect(h.controller.session?.authenticated).toBe(true);
+    expect(h.fetch.mock.calls.filter(([url]) => url === '/api/auth/validate')).toHaveLength(0);
+    expect(decisionPosts(h.fetch)).toHaveLength(1); h.view.unmount();
+  });
+  it.each(['items', 'metadata', 'identity', 'action'] as const)('malformed/mismatched POST %s keeps the unknown immutable attempt and never invalidates', async failure => {
+    const original = wire(2, '1');
+    const patch = failure === 'items' ? { items: [{ ...original.items[0], quantity: '1' }] }
+      : failure === 'metadata' ? { decision_location_id: 2 } : failure === 'action' ? { status: 'rejected' } : { created_at: '2026-04-02T00:00:00.000000001Z' };
+    const h = decisionFixture(1, original, (_url, init) => init.method === 'POST' ? Promise.resolve(reply({ ...decisionOutcome(original, 'approved'), ...patch })) : undefined);
+    await h.ready(); const inventory = inventoryCalls(h.fetch).length; const lists = listCalls(h.fetch).length;
+    await act(async () => { await expect(h.lanes[0].decide(h.original, 'approve')).rejects.toMatchObject({ code: 'invalid_response', uncertainDecision: true }); });
+    expect(h.lanes[1].decision).toMatchObject({ phase: 'uncertain', original: { created_at: original.created_at }, result: null });
+    expect(inventoryCalls(h.fetch)).toHaveLength(inventory); expect(listCalls(h.fetch)).toHaveLength(lists);
+    await expect(h.lanes[1].decide(h.original, 'reject')).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(decisionPosts(h.fetch)).toHaveLength(1); h.view.unmount();
+  });
+  it.each(['post', 'get'] as const)('current %s 401 settles exact authority through neutral validation', async operation => {
+    const h = decisionFixture(1, wire(2, '1'), (url, init) => init.method === 'POST'
+      ? operation === 'post' ? Promise.resolve(reply({ error: 'unauthenticated' }, 401)) : Promise.reject(new Error('unknown'))
+      : operation === 'get' && url === '/api/transfers/1' ? Promise.resolve(reply({ error: 'unauthenticated' }, 401)) : undefined);
+    await h.ready();
+    if (operation === 'get') await act(async () => { await h.lanes[0].decide(h.original, 'approve').catch(() => {}); });
+    h.env.current = anonymous;
+    await act(async () => { await expect(operation === 'post' ? h.lanes[0].decide(h.original, 'approve') : h.lanes[0].recoverDecision()).rejects.toMatchObject({ code: 'unauthenticated', status: 401 }); });
+    await waitFor(() => expect(h.controller.session?.authenticated).toBe(false));
+    expect(h.lanes[0].decision).toBeNull(); expect(h.lanes[0].decisionError).toBeNull();
+    expect(h.fetch.mock.calls.filter(([url]) => url === '/api/auth/validate')).toHaveLength(1); h.view.unmount();
+  });
+  it.each([403, 404] as const)('private recovery %s masks original/error without logout, later authorized Pending preserves uncertainty', async status => {
+    let privateView = true;
+    const h = decisionFixture(1, wire(2, '1'), (url, init) => init.method === 'POST' ? Promise.reject(new Error('unknown'))
+      : url === '/api/transfers/1' && privateView ? Promise.resolve(reply({ error: status === 403 ? 'forbidden' : 'not_found' }, status)) : undefined);
+    await h.ready();
+    await act(async () => { await h.lanes[0].decide(h.original, 'reject').catch(() => {}); });
+    await act(async () => { await expect(h.lanes[1].recoverDecision()).rejects.toMatchObject({ status }); });
+    expect(h.lanes[0].decision).toBeNull(); expect(h.lanes[1].decisionError).toBeNull();
+    expect(h.controller.session?.authenticated).toBe(true);
+    expect(h.fetch.mock.calls.filter(([url]) => url === '/api/auth/validate')).toHaveLength(0);
+    await expect(h.lanes[0].retryDecision()).rejects.toMatchObject({ code: 'invalid_request' });
+    privateView = false;
+    await act(async () => { await h.lanes[0].recoverDecision(); });
+    expect(h.lanes[1].decision).toMatchObject({ phase: 'uncertain', result: null });
+    expect(decisionPosts(h.fetch)).toHaveLength(1); h.view.unmount();
+  });
+  it.each(['network', 'service', 'items', 'metadata', 'identity'] as const)('unknown or mismatched GET %s preserves original uncertainty without publishing or invalidating', async failure => {
+    const original = wire(2, '1');
+    const h = decisionFixture(1, original, (url, init) => {
+      if (init.method === 'POST') return Promise.reject(new Error('unknown'));
+      if (url !== '/api/transfers/1') return undefined;
+      if (failure === 'network') return Promise.reject(new Error('private transport'));
+      if (failure === 'service') return Promise.resolve(reply({ error: 'service_unavailable' }, 503));
+      const patch = failure === 'items' ? { items: [{ ...original.items[0], quantity: '1' }] }
+        : failure === 'metadata' ? { decision_location_id: 2 } : { id: '2', reference: 'TR-002' };
+      return Promise.resolve(reply({ ...decisionOutcome(original, 'approved'), ...patch }));
+    });
+    await h.ready();
+    await act(async () => { await h.lanes[0].decide(h.original, 'approve').catch(() => {}); });
+    const lists = listCalls(h.fetch).length; const inventory = inventoryCalls(h.fetch).length;
+    await act(async () => { await expect(h.lanes[1].recoverDecision()).rejects.toMatchObject({ code: failure === 'network' ? 'network' : failure === 'service' ? 'service_unavailable' : 'invalid_response' }); });
+    expect(h.lanes[0].decision).toMatchObject({ phase: 'uncertain', original: { id: '1' }, result: null });
+    expect(String(h.lanes[1].decisionError)).not.toContain('private');
+    expect(listCalls(h.fetch)).toHaveLength(lists); expect(inventoryCalls(h.fetch)).toHaveLength(inventory);
+    expect(decisionPosts(h.fetch)).toHaveLength(1); h.view.unmount();
+  });
+  it.each(['post', 'get'] as const)('a new owner replacement is neither unlocked nor cleared by stale $operation success (%s)', async operation => {
+    const original = wire(2, '1'); const old = deferred<Response>(); const newer = deferred<Response>(); let posts = 0; let recovering = false;
+    const h = decisionFixture(1, original, (url, init) => {
+      if (init.method === 'POST') return ++posts === 1 ? operation === 'post' ? old.promise : Promise.reject(new Error('unknown')) : newer.promise;
+      return recovering && url === '/api/transfers/1' ? old.promise : undefined;
+    });
+    await h.ready(); let pending!: Promise<unknown>; let replacement!: Promise<unknown>;
+    if (operation === 'get') { await act(async () => { await h.lanes[0].decide(h.original, 'approve').catch(() => {}); }); recovering = true; }
+    act(() => { pending = (operation === 'post' ? h.lanes[0].decide(h.original, 'approve') : h.lanes[0].recoverDecision()).catch(error => error); });
+    const saved = h.lanes[0];
+    h.env.current = { ...session(1), identity: { ...session(1).identity, account_id: 2 } };
+    act(() => Source.instances[0].emit('error'));
+    await waitFor(() => expect(h.controller.session).toMatchObject({ identity: { account_id: 2 } }));
+    expect(saved.decision).toBeNull();
+    recovering = false;
+    act(() => { replacement = h.lanes[1].decide(h.original, 'reject'); });
+    await act(async () => { old.resolve(reply(decisionOutcome(original, 'approved'))); await pending; });
+    expect(h.lanes[0].decision).toMatchObject({ phase: 'inFlight', action: 'reject', owner: { account: 2 } });
+    await expect(h.lanes[0].retryDecision()).rejects.toMatchObject({ code: 'invalid_request' });
+    await act(async () => { newer.resolve(reply(decisionOutcome(original, 'rejected'))); await replacement; });
+    expect(h.lanes[0].decision).toMatchObject({ phase: 'confirmed', result: { status: 'rejected' } }); h.view.unmount();
+  });
+  it.each((['approve', 'reject'] as const).flatMap(action => (['post', 'sameGet', 'oppositeGet'] as const).map(mode => ({ action, mode }))))
+   ('real creation catalog and inventory readers react only to actual approval from $action/$mode, with no SSE', async ({ action, mode }) => {
+      const original = otherBranch;
+      const status = (mode === 'oppositeGet' ? action === 'approve' ? 'rejected' : 'approved' : action === 'approve' ? 'approved' : 'rejected') as 'approved' | 'rejected';
+      let reading = false;
+      const h = decisionFixture(3, original, (url, init) => init.method === 'POST' ? mode === 'post'
+        ? Promise.resolve(reply(decisionOutcome(original, status))) : Promise.reject(new Error('unknown'))
+        : reading && url === '/api/transfers/1' ? Promise.resolve(reply(decisionOutcome(original, status))) : undefined, true);
+      await h.ready(); await screen.findByText(/^TOYO ·/);
+      const sourceCalls = () => inventoryCalls(h.fetch).filter(([url]) => new URL(String(url), 'http://localhost').searchParams.get('page_size') === '50');
+      expect(sourceCalls()).toHaveLength(1);
+      const inventory = inventoryCalls(h.fetch).length;
+      await act(async () => { await h.lanes[0].decide(h.original, action).catch(() => {}); });
+      if (mode !== 'post') { reading = true; await act(async () => { await h.lanes[1].recoverDecision(); }); }
+      await waitFor(() => expect(sourceCalls()).toHaveLength(status === 'approved' ? 2 : 1));
+      await waitFor(() => expect(inventoryCalls(h.fetch)).toHaveLength(inventory + (status === 'approved' ? 2 : 0)));
+      if (status === 'approved') expect(passive(sourceCalls()[1])).toBe('1');
+      expect(h.lanes[0].decision?.result?.status).toBe(status);
+      expect(Source.instances).toHaveLength(1); expect(decisionPosts(h.fetch)).toHaveLength(1); h.view.unmount();
+    });
+  it('repeated confirmed retries coalesce dirty list/detail/count/inventory/catalog reads without assuming atomic snapshots', async () => {
+    let delay = false;
+    const waiting: { kind: string; job: ReturnType<typeof deferred<Response>>; url: string }[] = [];
+    const original = otherBranch;
+    const h = decisionFixture(3, original, (url, init) => {
+      if (init.method === 'POST') return Promise.resolve(reply(decisionOutcome(original, 'approved')));
+      if (!delay) return undefined;
+      const kind = url.startsWith('/api/transfers?') ? 'list' : url === '/api/transfers/counts' ? 'counts'
+        : url === '/api/transfers/1' ? 'detail' : url.startsWith('/api/inventory?') ? 'inventory' : '';
+      if (!kind) return undefined;
+      const job = deferred<Response>(); waiting.push({ kind, job, url }); return job.promise;
+    }, true);
+    await h.ready(); await screen.findByText(/^TOYO ·/);
+    act(() => h.lanes.forEach(lane => lane.selectDetail('1')));
+    await waitFor(() => expect(h.lanes[1].detail?.id).toBe('1'));
+    delay = true;
+    await act(async () => { await h.lanes[0].decide(h.original, 'approve'); });
+    await waitFor(() => expect(waiting).toHaveLength(8));
+    await act(async () => { await h.lanes[1].retryDecision(); });
+    expect(waiting).toHaveLength(8); expect(h.lanes[0].counts).toBeNull();
+    const lists = listCalls(h.fetch).length; const inventory = inventoryCalls(h.fetch).length;
+    delay = false;
+    await act(async () => {
+      for (const { kind, job, url } of waiting) {
+        const body = kind === 'list' ? { page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] }
+          : kind === 'counts' ? { pending_total: '0', action_count: '0' }
+          : kind === 'detail' ? original
+          : pageJSON(undefined, 1, 1).replace('"page_size":10', '"page_size":' + new URL(url, 'http://localhost').searchParams.get('page_size'))
+            .replace('"location":{"id":1,"name":"Almacén"}', '"location":' + JSON.stringify(locations[Number(new URL(url, 'http://localhost').searchParams.get('location_id')) - 1]));
+        job.resolve(reply(body));
+      }
+    });
+    await waitFor(() => expect(listCalls(h.fetch)).toHaveLength(lists + 2));
+    await waitFor(() => expect(inventoryCalls(h.fetch)).toHaveLength(inventory + 2));
+    await waitFor(() => expect(h.lanes[1].counts?.pending_total).toBe(9n));
+    expect(h.lanes[0].page?.total_count).toBe(1n); expect(h.lanes[1].detail?.id).toBe('1');
+    expect(decisionPosts(h.fetch)).toHaveLength(2); h.view.unmount();
+  });
+  it.each(['approve', 'reject'] as const)('warehouse can %s, and completion refreshes all mounted lanes without SSE', async action => {
+    const original = wire(2, '1');
+    const h = decisionFixture(1, original, (url, init) => init.method === 'POST' && url.endsWith('/' + action)
+      ? Promise.resolve(reply(decisionOutcome(original, action === 'approve' ? 'approved' : 'rejected'))) : undefined);
+    await h.ready(); act(() => h.lanes.forEach(lane => lane.selectDetail('1')));
+    await waitFor(() => expect(h.lanes[1].detail?.id).toBe('1'));
+    const lists = listCalls(h.fetch).length; const details = h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/1').length;
+    const counts = h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts').length;
+    const inventory = inventoryCalls(h.fetch).length;
+    await act(async () => { await expect(h.lanes[0].decide(h.original, action)).resolves.toMatchObject({ status: action === 'approve' ? 'approved' : 'rejected' }); });
+    await waitFor(() => expect(listCalls(h.fetch)).toHaveLength(lists + 2));
+    await waitFor(() => expect(h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts')).toHaveLength(counts + 2));
+    // Two passive detail reads plus the POST; snapshots remain independent.
+    expect(h.fetch.mock.calls.filter(([url, init]) => url === '/api/transfers/1' && init?.method !== 'POST')).toHaveLength(details + 2);
+    expect(h.lanes[1].decision?.phase).toBe('confirmed'); expect(h.lanes[0].counts?.pending_total).toBe(9n);
+    await waitFor(() => expect(inventoryCalls(h.fetch)).toHaveLength(inventory + (action === 'approve' ? 1 : 0)));
+    expect(decisionPosts(h.fetch)).toHaveLength(1); expect(Source.instances).toHaveLength(1); h.view.unmount();
+  });
+  it.each([wire(2, '1'), otherBranch, send].flatMap(original => (['approve', 'reject'] as const).map(action => ({ original, action }))))
+   ('retains unknown $action/$original.kind/$original.origin_location_id across child remount, never auto-posts, and explicitly retries', async ({ original, action }) => {
+    let failing = true;
+    const h = decisionFixture(original.approver_location_id, original, (_url, init) => init.method === 'POST' ? failing ? Promise.reject(new Error('private transport'))
+      : Promise.resolve(reply(decisionOutcome(original, action === 'approve' ? 'approved' : 'rejected'))) : undefined);
+    await h.ready(); const saved = h.lanes[0];
+    await act(async () => { await expect(saved.decide(h.original, action)).rejects.toMatchObject({ code: 'network', uncertainDecision: true, uncertainCreation: false }); });
+    expect(h.lanes[1].decision?.original.id).toBe('1'); expect(String(h.lanes[0].decisionError)).not.toContain('private');
+    h.show(false); h.show(true); await h.ready();
+    expect(h.lanes[0].decision?.phase).toBe('uncertain'); expect(decisionPosts(h.fetch)).toHaveLength(1);
+    expect(h.lanes[0].decisionError).toMatchObject({ code: 'network', uncertainDecision: true });
+    await expect(saved.retryDecision()).rejects.toMatchObject({ code: 'unauthenticated' });
+    await act(async () => { await expect(h.lanes[0].recoverDecision()).resolves.toMatchObject({ status: 'pending' }); });
+    expect(h.lanes[0].decision?.phase).toBe('uncertain'); expect(decisionPosts(h.fetch)).toHaveLength(1);
+    await expect(h.lanes[1].decide(h.original, action === 'approve' ? 'reject' : 'approve')).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(h.lanes[1].decide({ ...h.original, id: '2', reference: 'TR-002' }, action)).rejects.toMatchObject({ code: 'invalid_request' });
+    failing = false; await act(async () => { await h.lanes[1].retryDecision(); });
+    expect(decisionPosts(h.fetch).map(([, init]) => init?.body)).toEqual(['{}', '{}']); expect(h.lanes[0].decision?.phase).toBe('confirmed'); h.view.unmount();
+  });
+  it.each([wire(2, '1'), otherBranch, send].flatMap(original => (['approve', 'reject'] as const).flatMap(action =>
+    (['approved', 'rejected'] as const).map(status => ({ original, action, status })))))
+   ('authorized $original.kind/$original.origin_location_id recovery of $status for $action publishes persisted outcome and invalidates', async ({ original, action, status }) => {
+      let terminal = false;
+      const h = decisionFixture(original.approver_location_id, original, (url, init) => init.method === 'POST' ? Promise.resolve(reply({ error: 'decision_conflict' }, 409))
+        : url === '/api/transfers/1' && terminal ? Promise.resolve(reply(decisionOutcome(original, status))) : undefined);
+      await h.ready();
+      act(() => h.lanes.forEach(lane => lane.selectDetail('1')));
+      await waitFor(() => expect(h.lanes[1].detail?.id).toBe('1'));
+      await act(async () => { await expect(h.lanes[0].decide(h.original, action)).rejects.toMatchObject({ code: 'decision_conflict' }); });
+      expect(h.lanes[0].decision?.result).toBeNull(); expect(decisionPosts(h.fetch)).toHaveLength(1);
+      const inventory = inventoryCalls(h.fetch).length; const lists = listCalls(h.fetch).length;
+      const details = h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/1').length;
+      const counts = h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts').length;
+      terminal = true;
+      await act(async () => { await expect(h.lanes[1].recoverDecision()).resolves.toMatchObject({ status, decided_at: '2026-04-03T00:00:00.000000001Z' }); });
+      expect(h.lanes[0].decision?.phase).toBe(status === (action === 'approve' ? 'approved' : 'rejected') ? 'confirmed' : 'conflict');
+      await waitFor(() => expect(listCalls(h.fetch)).toHaveLength(lists + 2));
+      await waitFor(() => expect(h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/1')).toHaveLength(details + 3));
+      await waitFor(() => expect(h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts')).toHaveLength(counts + 2));
+      await waitFor(() => expect(h.lanes[0].detail?.status).toBe(status));
+      await waitFor(() => expect(inventoryCalls(h.fetch)).toHaveLength(inventory + (status === 'approved' ? 1 : 0)));
+      expect(decisionPosts(h.fetch)).toHaveLength(1); h.view.unmount();
+    });
+});
 
 describe('A05a independent counts and authority fences', () => {
   it.each([1, 2, 3])('opt-in counts are passive for participant %s, not creation permission', async actor => {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createTransferAPI, TransferAPIError } from './transferAPI';
-import type { TransferCreateInput } from './transferModel';
+import { parseTransferRecord, type TransferCreateInput } from './transferModel';
 
 const wire = {
   id: '1', reference: 'TR-001', kind: 'request_stock', status: 'pending', created_at: '2026-04-02T00:00:00Z',
@@ -12,6 +12,111 @@ const input = (): TransferCreateInput => ({ kind: 'request_stock', counterparty_
   items: [{ variant_id: 201, quantity: '9007199254740993' }, { variant_id: 1, quantity: '2' }] });
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const mockFetch = () => vi.fn<typeof fetch>();
+
+describe('A05b decision transport', () => {
+  const flows = [wire, { ...wire, origin_location_id: 3, origin_location_name: 'Sucursal B', approver_location_id: 3, approver_location_name: 'Sucursal B' },
+    { ...wire, kind: 'send_to_warehouse', origin_location_id: 2, origin_location_name: 'Sucursal A', destination_location_id: 1, destination_location_name: 'Almacén' }];
+  const terminal = (original: typeof wire, action: 'approve' | 'reject') => ({ ...original,
+    status: action === 'approve' ? 'approved' : 'rejected', decision_location_id: original.approver_location_id, decided_at: '2026-04-03T00:00:00.000000001Z' });
+  it.each(flows.flatMap(original => (['approve', 'reject'] as const).map(action => ({ original, action }))))
+   ('posts only the empty whole-request decision $action for $original.kind/$original.origin_location_id', async ({ original, action }) => {
+      const fetch = mockFetch().mockResolvedValue(response(terminal(original, action)));
+      const signal = new AbortController().signal;
+      const record = parseTransferRecord(JSON.stringify(original));
+      expect(await createTransferAPI(fetch).decide(record, action, 'memory_csrf', signal)).toMatchObject({ status: action === 'approve' ? 'approved' : 'rejected', id: original.id });
+      expect(fetch).toHaveBeenCalledExactlyOnceWith('/api/transfers/1/' + action, {
+        method: 'POST', credentials: 'same-origin', cache: 'no-store', signal,
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': 'memory_csrf' }, body: '{}',
+      });
+      expect([...new Headers(fetch.mock.calls[0][1]?.headers)]).toEqual([['content-type', 'application/json'], ['x-csrf-token', 'memory_csrf']]);
+    });
+  it.each(['9007199254740993', '9223372036854775807'])('keeps canonical int64 ID %s lossless in the decision path', async id => {
+    const original = { ...wire, id, reference: `TR-${id}` };
+    const fetch = mockFetch().mockResolvedValue(response(terminal(original, 'reject')));
+    await createTransferAPI(fetch).decide(parseTransferRecord(JSON.stringify(original)), 'reject', 'memory');
+    expect(fetch.mock.calls[0][0]).toBe(`/api/transfers/${id}/reject`);
+  });
+  it('creation never accepts decision_conflict or acquires decision uncertainty', async () => {
+    const fetch = mockFetch().mockResolvedValue(response({ error: 'decision_conflict' }, 409));
+    await expect(createTransferAPI(fetch).create(input(), 'memory')).rejects.toMatchObject({ code: 'invalid_response', uncertainCreation: true, uncertainDecision: false });
+  });
+  it.each(['approve', 'reject'] as const)('terminal original retries preserve persisted decision time on %s', async action => {
+    const original = terminal(wire, action);
+    const fetch = mockFetch().mockResolvedValueOnce(response(original))
+      .mockResolvedValueOnce(response({ ...original, decided_at: '2026-04-03T00:00:00.000000002Z' }));
+    const api = createTransferAPI(fetch); const record = parseTransferRecord(JSON.stringify(original));
+    await expect(api.decide(record, action, 'memory')).resolves.toMatchObject({ decided_at: original.decided_at });
+    await expect(api.decide(record, action, 'memory')).rejects.toMatchObject({ code: 'invalid_response', uncertainDecision: true });
+  });
+  it.each(['approve', 'reject'] as const)('captures the original before caller mutation on %s', async action => {
+    let resolve!: (reply: Response) => void;
+    const fetch = mockFetch().mockReturnValue(new Promise<Response>(yes => { resolve = yes; }));
+    const original = parseTransferRecord(JSON.stringify(wire));
+    const job = createTransferAPI(fetch).decide(original, action, 'memory');
+    original.items[0].quantity = 1n; original.reference = 'changed';
+    resolve(response(terminal(wire, action)));
+    await expect(job).resolves.toMatchObject({ reference: wire.reference, items: [{ quantity: 9007199254740993n }] });
+  });
+  const mismatches = [
+    { id: '2', reference: 'TR-002' }, { reference: 'different' }, { created_at: '2026-04-02T00:00:00.000000001Z' },
+    { creator_location_id: 3, creator_location_name: 'Sucursal B', destination_location_id: 3, destination_location_name: 'Sucursal B' },
+    { creator_location_name: 'different' }, { origin_location_name: 'different' }, { destination_location_name: 'different' },
+    { approver_location_name: 'different' }, { origin_location_id: 3, approver_location_id: 3, decision_location_id: 3 },
+    { kind: 'send_to_warehouse', origin_location_id: 2, destination_location_id: 1 },
+    ...['variant_id', 'brand', 'model', 'capacity_ah', 'polarity', 'quantity'].map(field => ({ items: [{ ...wire.items[0],
+      [field]: ({ variant_id: 202, brand: 'other', model: 'other', capacity_ah: '35.500001', polarity: 'L', quantity: '9007199254740992' } as Record<string, unknown>)[field] }] })),
+    { items: [] }, { items: [...wire.items, { ...wire.items[0], variant_id: 202 }] },
+    { decision_location_id: 2 }, { decided_at: 'private' }, { status: 'pending' },
+  ];
+  it.each((['approve', 'reject'] as const).flatMap(action => mismatches.map(patch => ({ action, patch }))))
+   ('does not publish changed immutable identity or metadata on $action/$patch', async ({ action, patch }) => {
+      const fetch = mockFetch().mockResolvedValue(response({ ...terminal(wire, action), ...patch }));
+      await expect(createTransferAPI(fetch).decide(parseTransferRecord(JSON.stringify(wire)), action, 'memory'))
+        .rejects.toMatchObject({ code: 'invalid_response', status: 200, uncertainCreation: false, uncertainDecision: true });
+    });
+  it.each(['approve', 'reject'] as const)('rejects wrong action and item order on %s', async action => {
+    const original = { ...wire, items: [...wire.items, { ...wire.items[0], variant_id: 202 }] };
+    const fetch = mockFetch().mockResolvedValueOnce(response(terminal(original, action === 'approve' ? 'reject' : 'approve')))
+      .mockResolvedValueOnce(response({ ...terminal(original, action), items: [...original.items].reverse() }));
+    const api = createTransferAPI(fetch); const record = parseTransferRecord(JSON.stringify(original));
+    for (let i = 0; i < 2; i++) await expect(api.decide(record, action, 'memory')).rejects.toMatchObject({ code: 'invalid_response', uncertainDecision: true });
+  });
+  it.each([[401, 'unauthenticated'], [403, 'forbidden'], [404, 'not_found'], [409, 'insufficient_stock'], [409, 'decision_conflict'], [503, 'service_unavailable']] as const)
+   ('sanitizes decision status %s/%s separately from creation', async (status, code) => {
+      const fetch = mockFetch().mockResolvedValue(response({ error: code }, status));
+      await expect(createTransferAPI(fetch).decide(parseTransferRecord(JSON.stringify(wire)), 'approve', 'memory'))
+        .rejects.toMatchObject({ code, status, uncertainCreation: false, uncertainDecision: false, message: code });
+    });
+  it.each([response({ error: 'retry_conflict' }, 409), response({ error: 'SQL private' }, 403), response({ error: 'forbidden', private: wire }, 403),
+    response(wire, 201), response(terminal(wire, 'approve'), 202), new Response('private', { status: 503 }),
+    new Response('private malformed JSON', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    new Response(JSON.stringify(terminal(wire, 'approve')), { status: 200, headers: { 'Content-Type': 'text/html' } }),
+    response({ ...terminal(wire, 'approve'), secret: 'private' })])
+   ('keeps malformed decision replies uncertain and private', async reply => {
+      const fetch = mockFetch().mockResolvedValue(reply.clone());
+      const error = await createTransferAPI(fetch).decide(parseTransferRecord(JSON.stringify(wire)), 'approve', 'memory').catch(error => error);
+      expect(error).toMatchObject({ code: 'invalid_response', uncertainDecision: true, uncertainCreation: false });
+      expect(String(error)).not.toMatch(/SQL|private/);
+    });
+  it.each(['approve', 'reject'] as const)('keeps unknown network/abort outcomes distinct on %s', async action => {
+    const fetch = mockFetch().mockRejectedValueOnce(new Error('private')).mockRejectedValueOnce(new DOMException('private', 'AbortError'));
+    const api = createTransferAPI(fetch); const original = parseTransferRecord(JSON.stringify(wire));
+    await expect(api.decide(original, action, 'memory')).rejects.toMatchObject({ code: 'network', uncertainDecision: true, uncertainCreation: false });
+    await expect(api.decide(original, action, 'memory')).rejects.toMatchObject({ code: 'aborted', uncertainDecision: true });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+  it.each(['0', '01', '9223372036854775808', '1/approve', '1?x=1'])('rejects noncanonical ID %s locally', async id => {
+    const fetch = mockFetch(); const original = { ...parseTransferRecord(JSON.stringify(wire)), id };
+    await expect(createTransferAPI(fetch).decide(original, 'approve', 'memory')).rejects.toMatchObject({ code: 'invalid_request', uncertainDecision: false });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it.each(['', 'private token', 'x\r\ny'])('rejects invalid CSRF %s before transport', async token => {
+    const fetch = mockFetch();
+    await expect(createTransferAPI(fetch).decide(parseTransferRecord(JSON.stringify(wire)), 'reject', token)).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(createTransferAPI(fetch).decide(parseTransferRecord(JSON.stringify(wire)), 'other' as never, 'memory')).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
 
 describe('A05a outcome transport', () => {
   it.each(['approved', 'rejected'] as const)('reads and replays the original %s DTO without a Location prerequisite', async status => {

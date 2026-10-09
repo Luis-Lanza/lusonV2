@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { TransferController } from './useInventory';
 import type { Session } from './model';
+import { captureDecisionRecord, decisionOwner, matchesDecisionRecord, requestedDecision, type DecisionFlight, type TransferDecision } from './transferDecisionRecovery';
 import { createTransferAPI, TransferAPIError, type TransferCreateResult } from './transferAPI';
 import {
   canonicalTransferInput, transferDetailPath, transferListPath,
@@ -215,6 +216,76 @@ export function useTransfers({ controller, api: injectedAPI, listEnabled = false
       if (valid()) { creation.current = null; setSubmission(previous => ({ ...previous, busy: false })); }
     }
   }
+  const recovery = controller.decisionRecovery;
+  const [, updateDecision] = useState(0);
+  const decisionTransport = useRef<AbortController | null>(null);
+  useEffect(() => recovery?.subscribe(() => updateDecision(value => value + 1)), [recovery]);
+  useEffect(() => () => { decisionTransport.current?.abort(); }, []);
+  function currentDecisionOwner() {
+    const now = controller.getTransferAuthority();
+    return mounted.current && visibleAuthority() && now.sessionGeneration === authority.sessionGeneration ? decisionOwner(now) : null;
+  }
+  function admittedDecision() {
+    const owner = currentDecisionOwner();
+    if (!owner) throw new TransferAPIError('unauthenticated', null);
+    if (!recovery) throw new TransferAPIError('invalid_request', null);
+    return { owner, recovery };
+  }
+  async function runDecision(token: DecisionFlight, reading: boolean): Promise<TransferRecord> {
+    const transport = new AbortController(); decisionTransport.current = transport;
+    const { original, action, owner } = token.attempt;
+    const valid = () => !!currentDecisionOwner() && recovery!.isCurrent(token, currentDecisionOwner());
+    try {
+      const before = controller.getTransferAuthority();
+      if (!valid() || !before.session?.authenticated) throw new TransferAPIError('aborted', null, false, true);
+      const returned = reading ? await api.detail(original.id, { signal: transport.signal })
+        : await api.decide(original, action, before.session.csrf_token, transport.signal);
+      if (!valid()) throw new TransferAPIError('aborted', null, false, true);
+      let record: TransferRecord;
+      try {
+        record = captureDecisionRecord(returned);
+        participant(record, owner.location);
+        if (!matchesDecisionRecord(original, record) || record.approver_location_id !== owner.location
+          || (!reading && record.status !== requestedDecision(action))) throw new Error();
+      } catch { throw new TransferAPIError('invalid_response', 200, false, !reading); }
+      const terminal = recovery!.finish(token, record);
+      if (terminal) controller.confirmTransferDecision?.(owner, record.status);
+      return record;
+    } catch (error) {
+      const current = valid();
+      const safe = current ? error instanceof TransferAPIError ? error : new TransferAPIError('invalid_response', null, false, !reading)
+        : new TransferAPIError('aborted', null, false, true);
+      // A stale/unmounted completion remains unknown. Only its opaque flight may
+      // be released; it cannot settle or reveal a replacement owner's attempt.
+      recovery!.finish(token, undefined, current && (safe.status === 403 || safe.status === 404), safe);
+      if (current) {
+        if (safe.status === 401 && currentDecisionOwner()) await controller.settleUnauthorized(owner.epoch);
+      }
+      throw safe;
+    } finally {
+      if (decisionTransport.current === transport) decisionTransport.current = null;
+    }
+  }
+  async function decide(original: TransferRecord, action: TransferDecision): Promise<TransferRecord> {
+    const { owner, recovery } = admittedDecision();
+    if (original.approver_location_id !== owner.location) throw new TransferAPIError('forbidden', null);
+    let token: DecisionFlight | null;
+    try { token = recovery.start(original, action, owner); } catch { throw new TransferAPIError('invalid_request', null); }
+    if (!token) throw new TransferAPIError('invalid_request', null);
+    return runDecision(token, false);
+  }
+  async function retryDecision(): Promise<TransferRecord> {
+    const { owner, recovery } = admittedDecision();
+    const snapshot = recovery.get(owner);
+    if (!snapshot) throw new TransferAPIError('invalid_request', null);
+    return decide(snapshot.original, snapshot.action);
+  }
+  async function recoverDecision(): Promise<TransferRecord> {
+    const { owner, recovery } = admittedDecision();
+    const token = recovery.claim(owner, true);
+    if (!token) throw new TransferAPIError('invalid_request', null);
+    return runDecision(token, true);
+  }
   const visibleAuthority = () => {
     const now = controller.getTransferAuthority(); return now.ready && now.epoch === epoch && sessionIdentity(now.session) === identity;
   };
@@ -224,5 +295,11 @@ export function useTransfers({ controller, api: injectedAPI, listEnabled = false
     get detail() { return detail.data; }, get detailBusy() { return detail.busy; }, get detailError() { return detail.error; },
     get submitBusy() { return visibleAuthority() && submission.epoch === epoch && submission.busy; },
     get submitError() { return visibleAuthority() && submission.epoch === epoch ? submission.error : null; },
+    get decision() { return recovery?.get(currentDecisionOwner()) ?? null; },
+    get decisionError() {
+      const failure = recovery?.get(currentDecisionOwner())?.failure;
+      return failure ? new TransferAPIError(failure.code, failure.status, false, failure.uncertainDecision) : null;
+    },
+    decide, retryDecision, recoverDecision,
     changeQuery, selectDetail, retryList: () => list.refresh(false), retryDetail: () => detail.refresh(false), submit };
 }
