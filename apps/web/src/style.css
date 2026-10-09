@@ -317,6 +317,25 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .transfer-impact p + p { margin-top: 8px; }
 .transfer-impact h3 { margin: 0 0 10px; font-size: 14px; }
 .transfer-detail-cards { display: none; }
+.transfer-decision { display: grid; gap: 14px; }
+.transfer-decision-actions { display: grid; gap: 10px; }
+.transfer-decision-actions button { width: 100%; height: auto; min-height: 42px; }
+.transfer-decision-actions p { text-align: center; color: var(--muted); }
+.transfer-decision-recovery { display: grid; gap: 10px; padding: 16px; border: 1px solid var(--border); border-radius: 6px; background: var(--page); overflow-wrap: anywhere; }
+.transfer-decision-recovery h3 { font-size: 15px; margin: 0; }
+.transfer-decision-recovery button { justify-self: start; height: auto; min-height: 38px; }
+.transfer-decision .transfer-reject { color: #991515; border-color: #ccaaaa; background: white; }
+.transfer-decision .transfer-reject-confirm { color: white; border-color: #ba1a1a; background: #ba1a1a; }
+.transfer-decision-backdrop { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; background: rgb(36 33 36 / 45%); padding: 24px; }
+.transfer-decision-modal { display: flex; flex-direction: column; width: min(760px, 100%); max-height: 92dvh; background: white; border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 16px 48px rgb(0 0 0 / 20%); overflow: hidden; }
+.transfer-decision-modal:focus { outline: 2px solid var(--wine); outline-offset: 2px; }
+.transfer-decision-modal > header { display: flex; justify-content: space-between; align-items: start; gap: 16px; padding: 24px; border-bottom: 1px solid var(--border); }
+.transfer-decision-modal > header h2 { font-size: 22px; }
+.transfer-decision-modal > header p { color: var(--muted); margin-top: 6px; }
+.transfer-decision-modal > header button { min-width: 36px; font-size: 22px; }
+.transfer-decision-body { display: grid; gap: 20px; padding: 24px; overflow-y: auto; min-height: 0; }
+.transfer-decision-modal > footer { display: flex; justify-content: flex-end; gap: 12px; padding: 20px 24px; border-top: 1px solid var(--border); }
+.transfer-decision-modal > footer button { min-height: 42px; height: auto; }
 @media (max-width: 1150px) {
   .transfer-detail-grid { grid-template-columns: minmax(0, 1fr); }
 }
@@ -328,4 +347,9 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .pending-warehouse .transfer-detail-cards { display: grid; gap: 14px; }
   .pending-warehouse .transfer-detail-cards article { padding: 14px; background: white; border: 1px solid var(--border); border-radius: 6px; display: grid; gap: 8px; }
   .pending-warehouse .transfer-detail-cards h3 { margin: 0; font-size: 15px; }
+  .transfer-decision-backdrop { padding: 12px; }
+  .transfer-decision-modal { max-height: 94dvh; }
+  .transfer-decision-modal > header, .transfer-decision-body { padding: 16px; }
+  .transfer-decision-modal > footer { padding: 16px; flex-wrap: wrap; }
+  .transfer-decision-modal > footer button { flex: 1 1 160px; }
 }
