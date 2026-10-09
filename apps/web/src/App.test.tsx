@@ -29,6 +29,7 @@ function setup(current: unknown = anonymous, override?: (url: string, init: Requ
     const url = String(input);
     const custom = override?.(url, init);
     if (custom) return custom;
+    if (url === '/api/transfers/counts') return Promise.resolve(response({ pending_total: '0', action_count: '0' }));
     if (url === '/api/auth/validate') return Promise.resolve(response((current as typeof session).authenticated ? current : { authenticated: false }));
     if (url.endsWith('/session')) return Promise.resolve(response(current));
     if (url.endsWith('/login')) { current = session; return Promise.resolve(response(session)); }
@@ -835,7 +836,7 @@ describe('R04b2c2 root lifetime', () => {
     expect(screen.getByLabelText('Buscar marca o modelo')).toHaveValue('kept-query');
     expect(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('region', { name: 'Recuperación de solicitud' })).toHaveTextContent('Recargar o cerrar');
-    expect(h.posts).toHaveLength(1); expect(h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers/'))).toHaveLength(0);
+    expect(h.posts).toHaveLength(1); expect(h.mock.mock.calls.filter(([url]) => /^\/api\/transfers\/[1-9][0-9]*$/.test(String(url)))).toHaveLength(0);
     expect(screen.getByRole('button', { name: 'Transferencias' })).toBeEnabled();
   });
   it('does not persist recovery across actual App unmount and new mount', async () => {
@@ -889,6 +890,7 @@ function r04cApp(status: number, stalled?: ReturnType<typeof deferred<Response>>
   const posts: RequestInit[] = [];
   const mock = setup(actor, (url, init) => {
     if (url === '/api/transfers') { posts.push(init); return stalled?.promise ?? Promise.resolve(new Response(JSON.stringify(r04cRecord()), { status, headers: { 'Content-Type': 'application/json' } })); }
+    if (url === '/api/transfers/counts') return Promise.resolve(response({ pending_total: '1', action_count: assigned === 1 ? '1' : '0' }));
     if (url.startsWith('/api/transfers/')) return Promise.resolve(new Response(JSON.stringify(r04cRecord()), { headers: { 'Content-Type': 'application/json' } }));
     if (url.startsWith('/api/transfers?')) {
       const q = new URL(url, 'http://localhost').searchParams;
@@ -1020,19 +1022,20 @@ describe('R04c guarded success navigation', () => {
       const url = String(input);
       if (url.endsWith('/login')) assigned = 3;
       if (url.startsWith('/api/transfers?')) return Promise.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, status: 'pending', total_count: '1', records: records() }), { headers: { 'Content-Type': 'application/json' } }));
-      if (url.startsWith('/api/transfers/')) return late.promise;
+      if (url === '/api/transfers/counts') return Promise.resolve(response({ pending_total: '1', action_count: '0' }));
+      if (/^\/api\/transfers\/[1-9][0-9]*$/.test(url)) return late.promise;
       return previous(input, init);
     }); vi.stubGlobal('fetch', fetch);
     render(<App />); await inventory(); fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Ver detalle TR-9007199254740993' }));
-    await waitFor(() => expect(fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers/'))).toHaveLength(1));
+    await waitFor(() => expect(fetch.mock.calls.filter(([url]) => String(url) === '/api/transfers/9007199254740993')).toHaveLength(1));
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' })); await screen.findByLabelText('Usuario'); await login();
     expect(screen.queryByRole('heading', { name: 'Detalle de solicitud' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
     await screen.findByRole('button', { name: 'Ver detalle TR-9007199254740994' });
     await act(async () => { late.resolve(new Response(JSON.stringify(r04cRecord()), { headers: { 'Content-Type': 'application/json' } })); });
     expect(document.body).not.toHaveTextContent('TR-9007199254740993');
-    expect(fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers/'))).toHaveLength(1); expect(h.posts).toHaveLength(0);
+    expect(fetch.mock.calls.filter(([url]) => /^\/api\/transfers\/[1-9][0-9]*$/.test(String(url))).map(([url]) => url)).toEqual(['/api/transfers/9007199254740993']); expect(h.posts).toHaveLength(0);
   });
   it.each([1, 2])('uses assigned role %s at narrow viewport independently of the consulted warehouse', async assigned => {
     vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
@@ -1060,7 +1063,12 @@ describe('R04c guarded success navigation', () => {
     expect(h.mock.mock.calls.filter(([url, init]) => String(url).startsWith('/api/transfers') && init?.method !== 'POST')).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: 'Ver detalle' }));
     await screen.findByRole('heading', { name: 'TR-9007199254740993' });
-    const reads = h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers/'));
+    const reads = h.mock.mock.calls.filter(([url]) => /^\/api\/transfers\/[1-9][0-9]*$/.test(String(url)));
+    const counts = h.mock.mock.calls.filter(([url]) => url === '/api/transfers/counts');
+    expect(counts).toHaveLength(1);
+    expect(counts[0][1]).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+    expect([...new Headers(counts[0][1]?.headers)]).toEqual([]);
+    expect(counts[0][1]?.body).toBeUndefined();
     expect(reads).toHaveLength(1); expect(reads[0][0]).toBe('/api/transfers/9007199254740993');
     expect(new Headers(reads[0][1]?.headers).has('X-Luson-Passive')).toBe(false);
     expect(h.posts).toHaveLength(1);
@@ -1084,12 +1092,20 @@ describe('R04c guarded success navigation', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Ver detalle TR-9007199254740993' })); await screen.findByRole('heading', { name: 'TR-9007199254740993' });
     for (const kind of ['transfers', 'resync']) {
       const listBefore = h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers?')).length;
-      const detailBefore = h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers/')).length;
+      const detailBefore = h.mock.mock.calls.filter(([url]) => url === '/api/transfers/9007199254740993').length;
+      const countsBefore = h.mock.mock.calls.filter(([url]) => url === '/api/transfers/counts').length;
       act(() => { AppSource.instances[0].emit(kind); });
-      await waitFor(() => expect(h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers/'))).toHaveLength(detailBefore + 1));
+      await waitFor(() => expect(h.mock.mock.calls.filter(([url]) => url === '/api/transfers/9007199254740993')).toHaveLength(detailBefore + 1));
+      await waitFor(() => expect(h.mock.mock.calls.filter(([url]) => url === '/api/transfers/counts')).toHaveLength(countsBefore + 1));
       expect(h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers?'))).toHaveLength(listBefore + 1);
     }
     expect(AppSource.instances.filter(s => s.readyState !== 2)).toHaveLength(1); expect(h.posts).toHaveLength(0);
-    for (const [, init] of h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers')).slice(-2)) expect(new Headers(init?.headers).get('X-Luson-Passive')).toBe('1');
+    for (const [url, init] of h.mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers')).slice(-3)) {
+      if (url === '/api/transfers/counts') {
+        expect(init).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+        expect([...new Headers(init?.headers)]).toEqual([]);
+        expect(init?.body).toBeUndefined();
+      } else expect(new Headers(init?.headers).get('X-Luson-Passive')).toBe('1');
+    }
   });
 });

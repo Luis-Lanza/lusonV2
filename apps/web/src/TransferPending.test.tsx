@@ -30,7 +30,8 @@ function deferred() {
   return { promise, resolve, reject };
 }
 function fixture(id = 2, override?: (url: string, init: RequestInit) => Promise<Response> | undefined) {
-  const env = { current: authority(id), record: wire(), count: '9007199254740993' };
+  const env = { current: authority(id), record: wire(), count: '9007199254740993',
+    counts: { pending_total: '9007199254740995', action_count: '9007199254740994' } };
   const listeners = new Set<() => void>();
   const sourceListeners = new Set<() => void>();
   const controller: DetailController = {
@@ -47,6 +48,7 @@ function fixture(id = 2, override?: (url: string, init: RequestInit) => Promise<
   };
   const fetch = vi.fn((input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
     const url = String(input); const custom = override?.(url, init); if (custom) return custom;
+    if (url === '/api/transfers/counts') return Promise.resolve(reply(env.counts));
     if (url.startsWith('/api/transfers?')) {
       const query = new URL(url, 'http://localhost').searchParams;
       const page = Number(query.get('page')); const size = Number(query.get('page_size'));
@@ -75,11 +77,138 @@ function fixture(id = 2, override?: (url: string, init: RequestInit) => Promise<
   const element = (initialDetail?: { ownerTag: string; id: string }) => <TransferPending controller={controller} ownerTag={ownerTag} initialDetail={initialDetail} onInventory={back} />;
   return { env, controller, listeners, sourceListeners, fetch, back, ownerTag, element };
 }
-const calls = (f: ReturnType<typeof fixture>, detail = false) => f.fetch.mock.calls.filter(([url]) => String(url).startsWith(detail ? '/api/transfers/' : '/api/transfers?'));
+const calls = (f: ReturnType<typeof fixture>, detail = false) => f.fetch.mock.calls.filter(([url]) => detail
+  ? /^\/api\/transfers\/[1-9][0-9]*$/.test(String(url)) : String(url).startsWith('/api/transfers?'));
+const countCalls = (f: ReturnType<typeof fixture>) => f.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts');
 const isPassive = (call: [RequestInfo | URL, RequestInit?]) => new Headers(call[1]?.headers).get('X-Luson-Passive') === '1';
 async function loaded() { await screen.findByText('9007199254740993 solicitudes pendientes'); }
 async function detail() { fireEvent.click(screen.getByRole('button', { name: 'Ver detalle TR-9007199254740993' })); await screen.findByRole('heading', { name: 'TR-9007199254740993' }); }
 afterEach(() => { vi.unstubAllGlobals(); });
+
+describe('A06b independent passive counters', () => {
+  it('shows exact independent request counters, not rows, selected totals or item units', async () => {
+    const f = fixture(); render(f.element()); await loaded();
+    const counters = await screen.findByRole('region', { name: 'Contadores de solicitudes' });
+    expect(counters).toHaveTextContent('Pendientes de tu ubicación9007199254740995');
+    expect(counters).toHaveTextContent('Requieren tu aprobación9007199254740994');
+    expect(counters).not.toHaveTextContent('18446744073709551614');
+    expect(counters).not.toHaveTextContent('9007199254740993');
+  });
+
+  it.each([1, 2, 3])('uses intrinsic headerless counts GET for assigned participant %s through query/detail/Back', async id => {
+    const f = fixture(id); if (id === 3) f.env.record = wire(2, 3);
+    render(f.element()); await loaded();
+    const counters = await screen.findByRole('region', { name: 'Contadores de solicitudes' });
+    await waitFor(() => expect(counters.querySelectorAll('dd')).toHaveLength(2));
+    fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'approved' } });
+    await screen.findByText('9007199254740993 solicitudes aprobadas');
+    fireEvent.click(screen.getByRole('button', { name: 'Siguiente aprobadas' }));
+    await screen.findByText('Página 2');
+    f.env.record = wire(f.env.record.origin_location_id, f.env.record.destination_location_id, f.env.record.id, 'approved');
+    await detail(); fireEvent.click(screen.getByRole('button', { name: 'Volver a aprobadas' }));
+    expect(screen.getByLabelText('Estado de transferencia')).toHaveValue('approved');
+    expect(screen.getByText('Página 2')).toBeVisible();
+    expect(countCalls(f)).toHaveLength(1);
+    expect(countCalls(f)[0][1]).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+    expect([...new Headers(countCalls(f)[0][1]?.headers)]).toEqual([]);
+    expect(countCalls(f)[0][1]?.body).toBeUndefined();
+    expect(counters).toHaveTextContent('9007199254740994');
+    expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+    expect(f.listeners.size).toBe(1);
+  });
+
+  it('keeps initial/loading unknown distinct from genuine zero even when the list fails', async () => {
+    const flight = deferred();
+    const f = fixture(2, url => url === '/api/transfers/counts' ? flight.promise
+      : url.startsWith('/api/transfers?') ? Promise.reject(new Error('PRIVATE list')) : undefined);
+    render(f.element());
+    const counters = screen.getByRole('region', { name: 'Contadores de solicitudes' });
+    expect(counters).toHaveTextContent('Consultando contadores…');
+    expect(counters.querySelector('dd')).toBeNull();
+    await screen.findByText('No se pudieron consultar las solicitudes.');
+    await act(async () => flight.resolve(reply({ pending_total: '0', action_count: '0' })));
+    expect([...counters.querySelectorAll('dd')].map(value => value.textContent)).toEqual(['0', '0']);
+    expect(counters).not.toHaveTextContent('no disponibles');
+    expect(document.body).not.toHaveTextContent('PRIVATE');
+  });
+
+  it.each(['malformed', 'network', '403', '404', '503', '401'])('sanitizes current counts %s without hiding a successful list', async mode => {
+    const f = fixture(2, url => url === '/api/transfers/counts'
+      ? mode === 'network' ? Promise.reject(new Error('PRIVATE count id 777'))
+        : Promise.resolve(mode === 'malformed' ? reply({ pending_total: '1', action_count: '2', private: 'PRIVATE' })
+          : reply({ error: 'PRIVATE count id 777' }, Number(mode))) : undefined);
+    render(f.element()); await loaded();
+    const counters = screen.getByRole('region', { name: 'Contadores de solicitudes' });
+    await waitFor(() => expect(counters).toHaveTextContent('Contadores no disponibles.'));
+    expect(counters.querySelector('dd')).toBeNull();
+    expect(screen.getByRole('table')).toHaveTextContent('TR-9007199254740993');
+    expect(document.body).not.toHaveTextContent('PRIVATE');
+    if (mode === '401') await waitFor(() => expect(f.controller.settleUnauthorized).toHaveBeenCalledExactlyOnceWith(1));
+    else expect(f.controller.settleUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it('immediately clears refreshed metrics, discards dirty snapshots and coalesces one follow-up', async () => {
+    let held: ReturnType<typeof deferred> | null = null;
+    const f = fixture(2, url => url === '/api/transfers/counts' ? held?.promise : undefined);
+    render(f.element()); await loaded();
+    const counters = screen.getByRole('region', { name: 'Contadores de solicitudes' });
+    await waitFor(() => expect(counters).toHaveTextContent('9007199254740994'));
+    held = deferred();
+    act(() => { for (const listener of f.listeners) listener(); });
+    expect(counters.querySelector('dd')).toBeNull();
+    expect(counters).toHaveTextContent('Consultando contadores…');
+    await waitFor(() => expect(countCalls(f)).toHaveLength(2));
+    act(() => { for (const listener of f.listeners) { listener(); listener(); } });
+    expect(countCalls(f)).toHaveLength(2);
+    const first = held; held = deferred();
+    await act(async () => first.resolve(reply({ pending_total: '777', action_count: '666' })));
+    await waitFor(() => expect(countCalls(f)).toHaveLength(3));
+    expect(counters.querySelector('dd')).toBeNull();
+    await act(async () => held!.resolve(reply({ pending_total: '5', action_count: '1' })));
+    expect([...counters.querySelectorAll('dd')].map(value => value.textContent)).toEqual(['5', '1']);
+    await act(async () => {}); expect(countCalls(f)).toHaveLength(3);
+    held = deferred(); act(() => { for (const listener of f.listeners) listener(); });
+    expect(counters.querySelector('dd')).toBeNull();
+    await act(async () => held!.reject(new Error('PRIVATE refresh')));
+    expect(counters).toHaveTextContent('Contadores no disponibles.');
+    expect(counters.querySelector('dd')).toBeNull();
+    expect(document.body).not.toHaveTextContent('PRIVATE');
+  });
+
+  it.each(['csrf', 'account', 'location', 'unready', 'logout'])('fences same-object %s before rerender and ignores obsolete success/error/401', async mode => {
+    for (const outcome of ['success', 'error', '401']) {
+      const old = deferred(); let held = false;
+      const f = fixture(2, url => held && url === '/api/transfers/counts' ? old.promise : undefined);
+      const view = render(f.element()); await loaded();
+      await waitFor(() => expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toHaveTextContent('9007199254740994'));
+      held = true; act(() => { for (const listener of f.listeners) listener(); });
+      await waitFor(() => expect(countCalls(f)).toHaveLength(2));
+      const saved = [...f.listeners];
+      if (mode === 'unready') f.env.current.ready = false;
+      else if (mode === 'logout') f.env.current.session = { authenticated: false, csrf_token: 'b'.repeat(43) };
+      else if (f.env.current.session?.authenticated) {
+        if (mode === 'csrf') f.env.current.session.csrf_token = 'b'.repeat(43);
+        if (mode === 'account') f.env.current.session.identity.account_id = 3;
+        if (mode === 'location') f.env.current.session.identity.location.id = 3;
+      }
+      act(() => { for (const listener of saved) listener(); });
+      expect(countCalls(f)).toHaveLength(2);
+      await act(async () => {
+        if (outcome === 'error') old.reject(new Error('PRIVATE obsolete count'));
+        else old.resolve(outcome === '401' ? reply({ error: 'unauthenticated' }, 401)
+          : reply({ pending_total: '777', action_count: '666' }));
+      });
+      expect(f.controller.settleUnauthorized).not.toHaveBeenCalled();
+      view.rerender(f.element());
+      expect(document.body).not.toHaveTextContent('9007199254740994');
+      expect(document.body).not.toHaveTextContent('PRIVATE');
+      const counters = screen.queryByRole('region', { name: 'Contadores de solicitudes' });
+      expect(counters?.querySelector('dd') ?? null).toBeNull();
+      expect(countCalls(f).every(([, init]) => init?.method === 'GET')).toBe(true);
+      view.unmount();
+    }
+  });
+});
 
 describe('A06b status-specific consultation', () => {
   const selectStatus = (status: string) => fireEvent.change(screen.getByRole('combobox', { name: 'Estado de transferencia' }), { target: { value: status } });
@@ -185,7 +314,7 @@ describe('A06b status-specific consultation', () => {
     await waitFor(() => expect(calls(f, true)).toHaveLength(2));
     expect(screen.getByRole('heading', { name: 'TR-099' })).toBeVisible();
     expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toBeVisible();
-    expect(f.fetch.mock.calls.filter(([url]) => String(url).includes('/counts'))).toHaveLength(0);
+    expect(countCalls(f)).toHaveLength(4);
   });
 
   it.each([401, 403, 404])('sanitizes current terminal list HTTP %s without exposing old requester rows', async status => {
@@ -534,7 +663,8 @@ describe('R04c participant Pending', () => {
   });
   it('does not invent zero while loading or echo selected ID before detail validation', async () => {
     const list = deferred(); const item = deferred();
-    const f = fixture(2, url => url.startsWith('/api/transfers?') ? list.promise : item.promise);
+    const f = fixture(2, url => url.startsWith('/api/transfers?') ? list.promise
+      : url === '/api/transfers/123456789' ? item.promise : undefined);
     render(f.element({ ownerTag: f.ownerTag, id: '123456789' }));
     expect(screen.queryByText('0 solicitudes pendientes')).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent('123456789');
@@ -547,8 +677,9 @@ describe('R04c participant Pending', () => {
     expect(await screen.findByText('0 solicitudes pendientes')).toBeVisible();
   });
   it.each(['private-third-account', 'unknown-id'])('uses identical generic 404 presentation for %s', async () => {
-    const f = fixture(3, url => url.startsWith('/api/transfers/') ? Promise.resolve(reply({ error: 'not_found' }, 404))
-      : Promise.resolve(reply({ page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] })));
+    const f = fixture(3, url => url === '/api/transfers/counts' ? undefined
+      : url === '/api/transfers/999999999' ? Promise.resolve(reply({ error: 'not_found' }, 404))
+        : Promise.resolve(reply({ page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] })));
     render(f.element({ ownerTag: f.ownerTag, id: '999999999' }));
     expect(await screen.findByText('La solicitud no está disponible.')).toBeVisible();
     expect(document.body).not.toHaveTextContent('999999999'); expect(document.body).not.toHaveTextContent('TR-');
@@ -634,7 +765,7 @@ describe('R04c participant Pending', () => {
     expect(calls(f, true)).toHaveLength(0);
   });
   it.each(['success', 'error'])('ignores late old-owner detail %s after authority switch', async outcome => {
-    const item = deferred(); const f = fixture(2, url => url.startsWith('/api/transfers/') ? item.promise : undefined);
+    const item = deferred(); const f = fixture(2, url => url === '/api/transfers/9007199254740993' ? item.promise : undefined);
     const view = render(f.element()); await loaded(); fireEvent.click(screen.getByRole('button', { name: 'Ver detalle TR-9007199254740993' }));
     await waitFor(() => expect(calls(f, true)).toHaveLength(1));
     f.env.current = authority(3, 2); view.rerender(f.element());
@@ -644,7 +775,7 @@ describe('R04c participant Pending', () => {
   });
   it('invalidates both active lanes passively and coalesces a dirty detail flight', async () => {
     let next: ReturnType<typeof deferred> | null = null;
-    const f = fixture(2, url => url.startsWith('/api/transfers/') && next ? next.promise : undefined);
+    const f = fixture(2, url => url === '/api/transfers/9007199254740993' && next ? next.promise : undefined);
     render(f.element()); await loaded(); await detail();
     const beforeList = calls(f).length; const beforeDetail = calls(f, true).length;
     next = deferred();

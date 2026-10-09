@@ -257,6 +257,12 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .pending-heading .pending-heading-actions { display: flex; flex-direction: column; align-items: flex-end; align-self: flex-start; gap: 6px; margin-left: auto; text-align: right; }
 .pending-heading .pending-heading-actions .pending-count { margin: 0; }
 .pending-count { font-weight: 600; font-variant-numeric: tabular-nums; }
+.transfer-request-counters { padding: 12px 16px; background: white; border: 1px solid var(--border); border-radius: 8px; }
+.transfer-request-counters dl { display: flex; flex-wrap: wrap; gap: 16px 32px; margin: 0 0 8px; }
+.transfer-request-counters dl > div { flex: 1 1 180px; min-width: 0; }
+.transfer-request-counters dt, .transfer-request-counters small { color: var(--muted); font-size: 12px; }
+.transfer-request-counters dd { margin: 4px 0 0; color: var(--wine); font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.transfer-request-counters p { margin: 0 0 8px; }
 .transfer-status-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 16px; background: white; border: 1px solid var(--border); border-radius: 8px; }
 .transfer-status-toolbar label { font-size: 13px; font-weight: 600; color: var(--muted); }
 .transfer-status-toolbar select { min-width: 180px; max-width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; background: white; color: inherit; font: inherit; }

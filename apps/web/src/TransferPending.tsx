@@ -35,7 +35,7 @@ const statusOptions = [
 export default function TransferPending(props: TransferPendingProps) {
   const authority = props.controller.getTransferAuthority();
   const permitted = transferViewOwner(authority) === props.ownerTag;
-  const transfers = useTransfers({ controller: props.controller, listEnabled: permitted, detailEnabled: permitted });
+  const transfers = useTransfers({ controller: props.controller, listEnabled: permitted, detailEnabled: permitted, countsEnabled: permitted });
   const consumed = useRef(false);
   const [masked, setMasked] = useState<{ fence: string; id: string } | null>(null);
   const [stock, setStock] = useState<{ fence: string; id: string; advice: StockAdvice } | null>(null);
@@ -65,6 +65,9 @@ export default function TransferPending(props: TransferPendingProps) {
   const record = privateUnavailable ? null : decision?.result?.id === selected ? decision.result : transfers.detail;
   const unavailable = transfers.detailError;
   const listError = transfers.listError;
+  const counts = transfers.counts;
+  const countsBusy = transfers.countsBusy;
+  const countsError = transfers.countsError;
   const warehouse = authority.session?.authenticated && authority.session.identity.location.id === 1;
   const queryPage = transfers.query.page ?? 1;
   const size = transfers.query.page_size ?? 25;
@@ -89,6 +92,13 @@ export default function TransferPending(props: TransferPendingProps) {
         {pageCount}
       </div> : pageCount}
     </header>
+    <section className="transfer-request-counters" aria-label="Contadores de solicitudes" aria-live="polite" aria-busy={countsBusy}>
+      {counts && !countsBusy && !countsError ? <dl>
+        <div><dt>Pendientes de tu ubicación</dt><dd>{counts.pending_total.toString()}</dd></div>
+        <div><dt>Requieren tu aprobación</dt><dd>{counts.action_count.toString()}</dd></div>
+      </dl> : <p>{countsError ? 'Contadores no disponibles.' : 'Consultando contadores…'}</p>}
+      <small>Solicitudes pendientes participantes y asignadas a tu aprobación. Consulta independiente del listado.</small>
+    </section>
     {selected ? <>
       <button type="button" className="creation-back" onClick={back}>Volver a {plural}</button>
       {transfers.detailBusy && <p role="status">Consultando solicitud…</p>}
