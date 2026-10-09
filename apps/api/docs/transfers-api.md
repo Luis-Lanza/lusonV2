@@ -3,8 +3,9 @@
 Authenticated branches can create immutable Pending requests. Only physical
 origin and destination can read them; warehouse can read participating records
 but cannot create. Pending does **not** reserve or change stock. This read API
-also exposes persisted Approved/Rejected outcomes. Public decision mutations,
-cancellation, dispatch, receipt and UI integration remain outside this unit.
+also exposes persisted Approved/Rejected outcomes and guarded whole-request
+approval/rejection. Cancellation, dispatch, receipt and UI integration remain
+outside this unit.
 
 ## Quick path
 
@@ -30,13 +31,15 @@ never registers transfers: those routes remain 404 for legacy callers.
 | `/api/transfers` | POST | 201 new Pending; 200 identical original replay, including terminal outcomes |
 | `/api/transfers/{id}` | GET | Full participant record; missing/inaccessible both 404 |
 | `/api/transfers/counts` | GET | Private Pending total and assigned-approver action count |
+| `/api/transfers/{id}/approve` | POST | Full persisted Approved outcome |
+| `/api/transfers/{id}/reject` | POST | Full persisted Rejected outcome |
 
 Unsupported methods return 405 with exact `Allow: GET, POST` for the collection
 and `Allow: GET` for numeric detail and the exact static counts route. HEAD is
 not implicitly enabled; `/api/transfers/counts/` is not an alias.
 Text-only detail segments (including operation names), trailing-slash paths and
-extra operation segments such as `/api/transfers/1/approve` are unknown 404
-routes, not lifecycle capabilities. Digit-containing malformed detail segments
+unknown operation segments are 404 routes. Approval and rejection are exact
+POST-only routes with `Allow: POST`; trailing/extra segments are not aliases. Digit-containing malformed detail segments
 (e.g. `0`, `01`, `-1`, `1.0`, overflowing int64) return 400 after authentication.
 Detail IDs must be canonical positive int64 decimal strings. Encoded path aliases
 are rejected 400; unsafe dot/double-slash paths are rejected 404 without redirects.
@@ -97,6 +100,68 @@ replays the original immutable record even if current availability changes;
 reordered lines are equivalent. Changed payload with the same actor/key is 409.
 Independent actors may reuse a key. References remain globally generated,
 continue beyond 999 and may have rollback gaps. No client reference is accepted.
+
+## Whole-request decisions
+
+The persisted approver, not the consulted inventory location, may perform:
+
+```http
+POST /api/transfers/123/approve
+Content-Type: application/json
+Origin: <configured same origin>
+X-CSRF-Token: <session-derived token>
+
+{}
+```
+
+Rejection uses `/api/transfers/123/reject` with the same empty body. Warehouse
+assignment is eligible when it is the persisted approver. There is no reason,
+new retry key, item selection, actor override or allocation DTO in either input.
+The decision covers every original immutable item; it is not partial approval.
+
+Decision body framing is deliberately narrow:
+
+- One required empty JSON object, with optional surrounding whitespace.
+- One `application/json` Content-Type; optional UTF-8 charset only.
+- No duplicate parameters, dangling separators or duplicate Content-Type headers.
+- Valid UTF-8, at most 64 KiB including whitespace.
+- Arrays, null, absent bodies, trailing objects/scalars and every key are invalid.
+- Escaped keys and duplicate keys are invalid too; no field is admitted.
+
+Admission order is outer path safety, exact POST method, authenticated identity,
+unique optional same-origin FetchSite, Origin/CSRF mutation guard, no query,
+canonical positive int64 ID and strict body, then the domain operation. An empty
+query marker `?` is also forbidden. Invalid identity/guards take precedence over
+malformed IDs or bodies. POST always calls touching Current, never passive Peek,
+even when a passive-read header is supplied. No caller-provided actor is used.
+
+First success and same-action retries return 200 with the complete validated
+persisted transfer record. Original reference, creation time, items and quantities
+are retained. Decision actor and UTC timestamp come from the persisted server
+outcome, not the request. A decision response does not require Location.
+
+Approval atomically rechecks all physical-origin availability and reserves all
+items with one exact request-owned allocation set. It does not deduct physical
+stock or increase destination availability. Rejection closes Pending without
+changing inventory or allocations. Any failed transaction rolls back the whole
+request; later-item shortage cannot leave earlier reservations behind.
+
+An already-completed same-action request returns the original outcome without
+rechecking stock or emitting another change. Opposite action is 409
+`decision_conflict`, distinct from original-creation `retry_conflict`. Shortage
+is 409 `insufficient_stock`; missing/foreign is 404 `not_found`; a visible
+participant who is not the approver gets 403 `forbidden`. Backend/context failures
+are sanitized 503 `service_unavailable`, never driver text or partial metadata.
+
+A lost decision response is recovered by an authorized GET of the same ID.
+Do not invent a new creation key to recover a decision. Original creation replay
+continues to return the original terminal payload and original Location; changed
+cart with the same key remains a creation retry conflict.
+
+Committed invalidations are hints to refetch authorized detail, selected-status
+list and Pending/action counts. They are not decision payloads or delivery
+receipts. The current frontend does not yet implement this mutation/recovery
+workflow; A05/A06 and separately admitted human acceptance remain pending.
 
 ## Full persisted outcomes and original replay
 

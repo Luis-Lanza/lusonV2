@@ -66,6 +66,8 @@ func transferFailure(w http.ResponseWriter, err error) {
 		failure(w, 404, "not_found")
 	case errors.Is(err, transfers.ErrInsufficientStock):
 		failure(w, 409, "insufficient_stock")
+	case errors.Is(err, transfers.ErrDecisionConflict):
+		failure(w, 409, "decision_conflict")
 	case errors.Is(err, transfers.ErrRetryConflict):
 		failure(w, 409, "retry_conflict")
 	default:
@@ -408,6 +410,8 @@ func (a *API) transferCounts(store *transfers.Store) http.HandlerFunc {
 }
 
 func (a *API) registerTransfers(mux *http.ServeMux, store *transfers.Store) {
+	mux.HandleFunc("/api/transfers/{id}/approve", a.transferDecision(store, true))
+	mux.HandleFunc("/api/transfers/{id}/reject", a.transferDecision(store, false))
 	mux.HandleFunc("/api/transfers/counts", a.transferCounts(store))
 	mux.HandleFunc("/api/transfers", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {

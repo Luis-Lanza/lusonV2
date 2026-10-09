@@ -119,6 +119,32 @@ universal deadlock-freedom guarantee. `TestA04TransferStatus*` exercises actual
 decisions, commit privacy, rollback, multirow deduplication and observed PG waits.
 These owned-PG checks do not replace pending human UI/realtime acceptance.
 
+## Guarded decision HTTP invalidation
+
+POST `/api/transfers/{id}/approve` and `/reject` use the authenticated persisted
+approver and the existing Origin/CSRF mutation guard. Each accepts one empty
+JSON object. The full persisted outcome is returned with 200, including the
+original immutable payload and server-derived decision metadata.
+
+A committed status change invalidates both physical participants privately.
+Approval also emits the existing globally authorized inventory invalidation;
+rejection emits no inventory change. A third account receives no transfer hint.
+Clients refetch participant detail, the selected terminal-status list and
+Pending/action counts; events themselves contain neither IDs nor outcome data.
+A Pending request contributes one action only at its persisted approver, so a
+committed decision removes that contribution once, not once per button/item.
+
+Same-action retries preserve the original metadata and make no new changes.
+Original creation replay and opposite-action conflicts also do not publish a
+new transition. Rollback and deferred commit failure remain transactional and
+must not be treated as successful live delivery.
+
+The new `TestA04DecisionLive` uses real httptest SSE clients and owned PostgreSQL
+for guarded HTTP decisions, participant refetch and third-account privacy.
+This is source-level coverage, not completed browser/workflow acceptance.
+Frontend consumers/recovery remain A05/A06; human UI/realtime smoke and runtime
+deployment require their separate authorization and cannot be inferred here.
+
 ## Passive session authority and verification
 
 Peek uses the same strict token hash lookup, account/location joins, clock and

@@ -541,7 +541,14 @@ func testTransferGuards(t *testing.T) {
 	expectTransferError(t, f.request(t, 2, "GET", "/api/transfers/1?page=1", ""), 400, "invalid_request")
 	for _, path := range []string{"/api/transfers/1/approve", "/api/transfers/1/reject", "/api/transfers/1/cancel", "/api/transfers/1/dispatch", "/api/transfers/1/receive", "/api/transfers/approve", "/api/transfers/", "/api/transfers//1", "/api/transfers/../inventory"} {
 		for _, verb := range []string{"GET", "POST", "HEAD"} {
-			if f.request(t, 2, verb, path, "").Code != 404 {
+			want := 404
+			if path == "/api/transfers/1/approve" || path == "/api/transfers/1/reject" {
+				want = 405
+				if verb == "POST" {
+					want = 400
+				}
+			}
+			if f.request(t, 2, verb, path, "").Code != want {
 				t.Fatal("unsupported/unsafe route did not fail closed")
 			}
 		}
@@ -806,7 +813,11 @@ func testTransferDispatch(t *testing.T) {
 	transferWirePage(t, f.request(t, 2, "GET", "/api/transfers", ""))
 	for _, path := range []string{"/api/transfers/1/approve", "/api/unknown"} {
 		w := f.request(t, 2, "GET", path, "")
-		if w.Code != 404 || strings.Contains(w.Body.String(), "public test index") {
+		want := 404
+		if path == "/api/transfers/1/approve" {
+			want = 405
+		}
+		if w.Code != want || strings.Contains(w.Body.String(), "public test index") {
 			t.Fatal("API fell back to public index")
 		}
 	}
