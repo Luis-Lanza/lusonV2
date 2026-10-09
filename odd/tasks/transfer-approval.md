@@ -1,0 +1,90 @@
+# Transfer approval, rejection and source reservations
+
+## Objective and authorization
+
+Implement whole-request approval/rejection and request-owned source reservations, following the definitive saved mockups. User explicitly authorized this slice after read-only mapping (Engram 3799). Existing Pending creation/consultation acceptance remains valid; this slice requires its own verification.
+
+Branch: `feature/transfer-requests`, starting source commit `910961bd7f28d20631226dd9fb27868b577ce3ae`. Existing local verified transfer-feature commit authorization is recorded in Engram 3054. No push, PR, merge or publishing. Preserve the existing dirty transfer-request journal and three unrelated untracked historical task documents.
+
+## Scope and non-goals
+
+- Approval revalidates every immutable item and reserves all quantities at the physical origin atomically. Physical stock is not deducted and destination availability does not increase.
+- Rejection closes a Pending request in full, with no inventory changes. Do not invent a required rejection reason.
+- Approver is derived from the persisted flow and authenticated assigned location, never consulted inventory or client actor fields.
+- Preserve participant privacy, creation replay after transitions, outcome history and live updates.
+- Persist request-owned allocations; aggregate reserved balances alone cannot support exact future release/dispatch.
+- Exclude cancellation, dispatch, receipt, direct warehouse creation and exception resolution. Their settled rules are future scope, not product questions to repeat.
+- Preserve all 105 mockups; use only the 48 definitive registry selections. No generation, deletion or archive mutations.
+- Existing manual smoke environment, DB, accounts, requests, TLS and rollback APPs remain untouched. Deployment/fixture resource changes require separate admission.
+
+## Design authority
+
+Immutable local reference root: `backups/stitch/luson-6509355458249521776/capture-2840/payload/`; registry `definitive-registry.json`; exports `screens/<id>.html` and corresponding images.
+
+| Purpose | Definitive ID |
+| --- | --- |
+| Warehouse-to-branch approval confirmation | `2fa8888b6c0f411188a59128df0830c0` |
+| Warehouse supplier approved | `1c804bb72de24df7b84f547e33239bcc` |
+| Branch requester approved | `488e1a4eb0894ebc8e876ad435d16355` |
+| Warehouse rejection confirmation | `6b1eda1dc19548599fe7750939e8bebf` |
+| Rejected requester | `4ffaf3cfab964eb58baec439b14f4700` |
+| Interbranch approval confirmation | `7192e51a73374416b9347ab6adc6f90a` |
+| Supplying branch B approved | `bdb9dd9acf9948f983208c6530de6848` |
+| Branch-to-warehouse approval desktop | `d5e3220eae8445d5b43d358cf96331b9` |
+| Branch-to-warehouse approval mobile | `e5a074beb12a4d1489c622eb5cd64e6f` |
+| Approved branch-origin outcome | `69624d6a9cee42c3a4fe76c9688fcc1a` |
+
+Mapping evidence: Engram 3790/3786 and settled explorer `mv09hvda-1-srmv`. Relevant HTML was read; no pixel/render verification occurred. Dispatch/cancel controls visible on approved references are excluded from this slice, not enabled by copying mockups. Existing Spanish product copy convention remains; technical artifacts default to English.
+
+## Work units
+
+Keep one writer and exactly one active task. Roughly 400 authored lines is an advisory review-planning heuristic, not a hard cap; never compress code or omit tests to fit it. Resolve the first unit's exact migration/allocation/audit boundaries and applicable test commands read-only before writer dispatch. Adjust coherent boundaries transparently if necessary.
+
+- [ ] **A01 — Establish lifecycle-safe persistence and outcome replay.** In progress: bounded technical mapping before source edits. New migration must allow only admitted status changes while retaining immutable payload/items, support outcome loading and original creation replay, and define request-owned allocation/audit storage consistently. Preserve migrations 001–004. Observe compiling behavior RED then identical GREEN for database protections/replay; test migration/bootstrap compatibility and participant reads. Commit after applicable verification.
+- [ ] **A02 — Implement atomic approval and source reservation.** Ordered request/balance locks; all-item availability recheck, whole transaction, exact owned allocations, stable same-action retry/lost-reply recovery, competing approvals and shortage rollback. Preserve other holds and physical stock. Commit with PG concurrency tests/docs.
+- [ ] **A03 — Implement atomic Pending rejection.** Persist authorized whole-request terminal result/history, approval/rejection race protection and stable retry semantics; zero stock/reservation effects. Commit with domain/PG tests/docs.
+- [ ] **A04 — Integrate guarded API and outcome reads/realtime.** Strict bodies/session/Origin/CSRF, inaccessible-as-404, participant counts/list/detail outcomes and original creation replay. Transfer status updates must invalidate participant views; reserved changes already invalidate inventory. Pending total is not the action badge: define slice-appropriate action-count semantics without inventing future actions. Commit with HTTP/privacy/live tests/docs.
+- [ ] **A05 — Extend frontend models and guarded mutations.** Decode admitted outcomes losslessly, preserve owner/epoch/session fences, explicit uncertain-result recovery and no blind retry/new-key substitution. Commit with focused/full frontend checks/docs.
+- [ ] **A06 — Deliver saved-design confirmations and outcomes.** Reuse selected approval/rejection/outcome designs with immutable whole-request review, branch desktop and warehouse desktop/mobile, role privacy and live stock/detail/count refresh. Inspect selected images before visual implementation; human manual smoke (no Playwright or other automated browser harnesses) and separate deployment admission. Commit source unit only after applicable verification; never imply runtime deployment from source checks.
+
+## Acceptance and verification
+
+- Existing creation payload/retry key semantics, private views and all unrelated behavior remain intact.
+- Meaningful test-first RED/GREEN by default; import/type/fixture failures are not behavioral RED. Record unavailable runners or missing safe fixture access as blockers, never success.
+- Use only an existing explicitly admitted test fixture, through its nonsecret manifest pointer; never adopt or repurpose the human smoke DB. Map current helper admission and fixture readiness before PG commands. No credentials in tool output, argv, logs or artifacts.
+- Each writer self-verifies; parent calls native ASSESS and follows its exact independent-verification plan. Native review only under the user-owned RDD switch and exact provider bindings; no review-mode changes, invented verdicts or authority recovery.
+- Unit/PG/API tests, typecheck and build remain applicable for internal correctness. Final end-to-end visual/workflow/realtime acceptance is the human manual smoke, as explicitly requested (Engram 3804): no Playwright, synthetic-browser harnesses or browser-automation infrastructure. Prepare the verified environment only under separate runtime admission, then give the human a focused smoke checklist; never claim unperformed human checks. Native review does not replace these checks. Parent records actual failures/skips/pending checks and at least one local work-unit commit per completed task.
+- Parent owns this file, full Engram mirror `odd/transfer-approval/tasks` and visible todo; reconcile/read back before any source write and update each transition.
+
+## Evidence ledger
+
+| Unit | State | Checks / commit |
+| --- | --- | --- |
+| A01 | in progress: A01a candidate verification | Writer `mv0abwuv-6-ep69` settled with four-file925-line candidate. Compiling behavior RED→same GREEN and all nine Go check groups/fmt/whitespace passed (writer evidence). Native review approved/acknowledged (Engram3827) and independent high-risk verification PASS (Engram3831). Parent pure-contract spotcheck and four-source equality to frozen reviewed blobs PASS. Local A01a commit next; no deployment. A01b remains pending. |
+| A02–A06 | pending | Not started. |
+
+Pre-source state checked: branch `feature/transfer-requests`; HEAD `910961bd`; only existing tracking journal modified plus three historical untracked task files. Engram lifecycle review returned no pending observations. Prior broader independent R05 evidence and 1024px click/back remain unverified; do not erase them or repeat accepted manual smoke automatically.
+
+## Next step
+
+A01 planning settled (`mv0a12rg-2-5hqx`, Engram 3803). Split A01a persistence/schema tests/bootstrap assertions/docs (~450–650 authored lines) from A01b outcome loading/replay/HTTP fence (~350–450), without trimming tests. A01a candidate surfaces: new `apps/api/migrations/005_transfer_decisions.sql`, new `apps/api/internal/transfers/lifecycle_schema_test.go`, existing `apps/api/internal/bootstrap/integration_test.go` and `apps/api/docs/pending-requests-store.md`. Old schema/source files remain frozen.
+
+Admitted technical design: only Pending→Approved/Rejected; immutable original fields/items and one persisted approver/time outcome. Owned allocations match every immutable item for Approved, none for Pending/Rejected; aggregate reserved covers owned sums, not equality (other holds remain). No audit/event framework. A01b domain outcomes/replay must not leak unsupported DTOs: existing encoder forwards status verbatim, so temporary sanitized503 for terminal detail/creation replay until A04; list stays Pending-only.
+
+Prerequisite verifier `mv0a4q0k-4-beqo` PASS (Engram 3807): ONE `TestR01AdmissionPostgres` run exit0/0.428s; unchanged helper freshly validates exact R01 resource binding, generates an empty owned database and proves its cleanup plus unchanged administrative schema. Git status unchanged. Nonsecret pointer `odd/evidence/transfer-requests/r01-pg-manifest.json`; exact scope `transfer-requests/R01`. This proves admission only at check time; each test must recheck it. No resource recreation/adoption or human smoke access.
+
+ONE challenge `mv0a4pwl-3-arib` settled: original universal deadlock-free concurrency premise rejected. Parent accepts (Engram 3809) ONE transaction-scoped reservation-integrity advisory lock in BEFORE STATEMENT header UPDATE/allocation INSERT/balance UPDATE or DELETE triggers. Protected writes require READ COMMITTED; read transactions unaffected. A02 must obtain this lock BEFORE request/balance locks. Deferred checks inspect current final rows, Approved exact allocations/Pending-Rejected none and affected source balances; `SUM(bigint)` stays numeric for overflow safety. Allocations UPDATE/DELETE/TRUNCATE prohibited. Direct SQL prelocking can deadlock/abort; no universal success/deadlock-free claim and no defense against operator disabling guards. Trigger/data consistency, not authentication, is the database guarantee.
+
+Existing four A01a paths suffice: preserve unchanged Pending UPDATE refusal (`store_test.go:488–497`) and malformed direct Approved INSERT SQLSTATE23514 (`:563–578`). Bootstrap changes only migration4→5 and allocation-table whitelist. Stronger schema/concurrency checks increase the original450–650 forecast; honest coverage takes precedence over the advisory400-line heuristic. Keep the four-path schema/test/docs behavior unit; material scope expansion must stop for parent.
+
+A01a writer admission: exactly four candidate source paths listed above, original001–004/domain/API/frontend/realtime/helpers/oldtests frozen. Meaningful compiling behavior RED first (minimal migration scaffolding may make metadata/table names exist without granting transitions; missing-column/import failures are not RED), identical tests GREEN after protections. Tests: valid whole approval/rejection; original fields/items/outcome immutability; malformed inserts/no-op/reopen; allocation set/quantity/aggregate coverage/other holds/numeric-overflow; concurrent competing approvals and reservation reduction using explicit wait handshakes; non-READ-COMMITTED rejection; `SET CONSTRAINTS` immediate/final rows; rollback/snapshot preservation. No public approval endpoint in this unit.
+
+Writer self-checks from `apps/api`, exact admitted manifest pointer: focused new `TestA01LifecycleSchema`, existing pure/PG transfers+bootstrap+HTTP compatibility, API package suite, race transfers/httpapi/bootstrap, vet/build, readonly formatting/whitespace and original migrations SHA preservation. No generated server binary in tracked source. Parent ASSESS/native review and risk-appropriate independent checks precede local verified commit. Final workflow/UI acceptance remains human manual smoke without browser automation. No runtime schema deployment or manual data mutation.
+
+Writer `mv0a835e-5-ootq` settled `interaction_required`, zero source writes (Engram 3812). Revised forecast: migration220–260, behavior/concurrency tests640–740, docs35–45 and two bootstrap assertions, approximately900–1050 authored lines. This exceeds the earlier450–650 estimate, not a hard line cap; no coverage compression or scope expansion is proposed. Read-only Git/migration-hash checks passed; all behavior RED/GREEN and Go verification commands remain UNRUN. Blocking human choice: approve the revised workload in the same four paths retaining all coverage, or defer A01a without source changes. The human then explicitly selected `approve_revised_four_file_workload` (Engram3814): same four paths, full coverage, revised900–1050 forecast authorized.
+
+A01a candidate settled (Engram3824): four files920add5delete=925 authored lines. New005175lines/newtest700/bootstrap+2-2/docs+43-3. Compiling RED refused a valid Pending→Rejected transition under original guard; identical command/assertions GREEN after implementation. Nine final Go groups, formatting and whitespace PASS writer evidence; formatting discrepancy fixed before final PRE/POST cycle. Parent current four SHA values match writer, whitespace spotcheck passes and RDD reads on. Migrations001–004 unchanged reported. Actual native ASSESS returned unassessable/high because explicit untracked declaration is required; outcome unknown/runtime large, independentVerifier=true. No assessment bypass, review-mode change or fabricated native outcome. Independent read-only source/invariant review and fresh applicable Go checks admitted; native INSPECT preflight before any START. No source or tracking writes during a bound transaction; immutable candidate until verification result. Human smoke/deployment, API/domain outcomes and approval mutations remain pending.
+
+Native closure: `review-be930c5f1c2b51b5` medium/1031 frozen authored lines/six paths (four source files plus this Task and existing request journal), selected new SQL/test/Task only; three historical untracked documents excluded. Frozen tree `bfb6be5054900ec1f82869177b89e15c13c63cc2`. One reliability capture approved; exact acknowledgement returned authority burned for target `sha256:f491c0e47d47f4b88ec005ca2cc169ae16cf5807ee3f107cffb675bc447ae4a2` (Engram3827). No source/tracking writes during the bound transaction, no reuse/status after burn. This passive closure record follows burn and changes no reviewed source. Independent verifier `mv0at0v6-7-vtbq` subsequently settled PASS (Engram3831): full invariant/source review, all nine fresh Go groups exit0, focused lifecycle20.233s/full15packageok+3notestfiles/race3packageok/vet/build/fmt/white PASS. Four actual PRE/POST source hashes equal expected; original001–004 match HEAD; exactly925sourceauthoredlines/Gitunchanged. Nonverbose output gives no individual-test counts; RED remains writer-attributed. Parent spotcheck `go test ./internal/transfers -run '^TestR01PendingContract$' -count=1` PASS; all four source blobs equal frozen native candidate. Native approval does not replace functional checks or authorize publishing.
+
+Local delivery plan: exactly four verified source files plus this current tracking document; existing dirty request journal and three historical untracked design tasks remain untouched/excluded. Source equality to native frozen blobs is verified; this Task contains newer passive verification evidence, so do not claim full-tree equality to the six-path review snapshot. Commit identity recorded after actual commit. No deployment or human smoke performed. Parent may now resume the existing stopped writer after full task/mirror/todo synchronization; no extra paths/features/browser automation or runtime changes admitted.

@@ -54,12 +54,12 @@ stock. Approval must independently revalidate and reserve later.
 
 Migration 003 adds only `transfer_requests` and `transfer_request_items`, plus
 supporting sequence/functions/triggers. It preserves migrations 001/002. Database
-checks enforce legal branch direction, Pending-only status, positive IDs/items,
+checks enforce legal branch direction, Pending-only creation, positive IDs/items,
 retry/fingerprint bounds, foreign keys and uniqueness. Deferred completeness
 requires 1–190 items. An internal `creation_xid` permits item insertion only within
 the header's creation transaction; later appends, updates, deletes and truncation
-are refused. Future lifecycle changes need an explicit migration, not an update
-path hidden in this store. Database owner access remains administrative authority,
+are refused. Migration 005 adds the narrowly admitted schema transitions below,
+not an approval/rejection operation hidden in this store. Database owner access remains administrative authority,
 not a security boundary against an operator disabling protections.
 
 Public references use a global positive BIGINT `NO CYCLE` sequence: `TR-001`,
@@ -74,6 +74,46 @@ Errors are stable `ErrForbidden`, `ErrInvalid`, `ErrNotFound`,
 `ErrInsufficientStock`, `ErrRetryConflict` and sanitized `ErrUnavailable` values.
 Cancellation/deadline errors retain their standard Go semantics. Driver/config,
 private credentials and raw SQL errors are not returned.
+
+## A01a lifecycle persistence prerequisite
+
+Migration 005 preserves migrations 001–004. Requests must still be created Pending
+with null decision metadata. Only Pending → Approved/Rejected is admitted; no
+same-status update, reopen or terminal mutation is allowed. Original identity,
+flow participants, retry fingerprint, creation timestamp/xid and items stay
+immutable. The one persisted decision supplies lifecycle history without a
+generic audit/event framework. Its location comes from the persisted approver;
+its timestamp comes from the server statement and cannot precede creation.
+
+`transfer_request_allocations` owns each request/variant once, with an immutable
+item foreign key, exact item quantity and header-derived physical origin.
+Deferred checks inspect **current final rows**, including under `SET CONSTRAINTS
+ALL IMMEDIATE`: Approved owns every item, while Pending/Rejected own none. Every
+source balance must cover the numeric sum of owned allocations. Equality is not
+required: independent holds remain valid. Physical `existing` is unchanged by
+allocation storage itself, and the existing balance constraints still apply.
+Allocation updates/deletes/truncation are forbidden. Balance deletion/relocation
+cannot strand allocations; balance truncation is forbidden because it bypasses
+row-level deferred checks. Delete-and-reinsert may restore final coverage.
+
+All protected header UPDATE, allocation INSERT and balance UPDATE/DELETE
+statements acquire the same transaction-owned reservation-integrity advisory
+lock (`pg_advisory_xact_lock(714025, 1)`) before row locking. These writes require
+READ COMMITTED so waiting writers can validate newly committed state. Other
+isolation levels remain available for reads. Future A02 approval transactions
+must acquire this lock **before** explicit request/balance locks. Arbitrary SQL
+that prelocks rows can deadlock and abort; universal deadlock-free success is not
+promised. The committed invariants, not the SQL actor's authenticated identity,
+are the database guarantee. Operators disabling guards are outside that boundary.
+
+This unit adds schema capabilities only: it does not expose an approval/rejection
+API, implement domain outcome loading/replay, or establish workflow/UI/realtime
+acceptance. Those later units require authorization and compatible outcome DTOs;
+final visual/workflow acceptance remains human manual smoke, not browser automation.
+
+Focused schema coverage is `TestA01LifecycleSchema`, using a newly admitted owned
+empty database per case, real PostgreSQL wait-event handshakes, strict rollback
+stock snapshots and clean numeric-overflow coverage failures.
 
 ## Focused verification
 

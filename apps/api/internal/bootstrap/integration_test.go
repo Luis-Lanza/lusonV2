@@ -38,7 +38,7 @@ func TestPostgres(t *testing.T) {
 	t.Run("schema_seed_and_preservation", func(t *testing.T) {
 		p := fresh(t)
 		initialize(t, p)
-		for table, want := range map[string]int{"schema_migrations": 4, "locations": 3, "catalog_entries": 95, "catalog_variants": 190, "inventory_balances": 570, "initialization_metadata": 1} {
+		for table, want := range map[string]int{"schema_migrations": 5, "locations": 3, "catalog_entries": 95, "catalog_variants": 190, "inventory_balances": 570, "initialization_metadata": 1} {
 			if n := scalar(t, p, "SELECT count(*) FROM "+table); n != want {
 				t.Fatalf("%s count %d, want %d", table, n, want)
 			}
@@ -81,7 +81,7 @@ func TestPostgres(t *testing.T) {
 		if err := bootstrap.Check(ctx, p); err != nil {
 			t.Fatal(err)
 		}
-		if n := scalar(t, p, "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name NOT IN ('schema_migrations','locations','catalog_entries','catalog_variants','inventory_balances','initialization_metadata','auth_accounts','auth_sessions','auth_throttle','transfer_requests','transfer_request_items','realtime_revisions')"); n != 0 {
+		if n := scalar(t, p, "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name NOT IN ('schema_migrations','locations','catalog_entries','catalog_variants','inventory_balances','initialization_metadata','auth_accounts','auth_sessions','auth_throttle','transfer_requests','transfer_request_items','transfer_request_allocations','realtime_revisions')"); n != 0 {
 			t.Fatal("unexpected domain tables")
 		}
 	})
