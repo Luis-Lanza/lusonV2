@@ -5,7 +5,7 @@ import { addCartItem, createTransferCart, reviewCart } from './transferCart';
 import { createTransferRecovery, type RecoverySnapshot } from './transferRecovery';
 import type { TransferAuthority } from './useInventory';
 import type { Metadata } from './model';
-import type { TransferRecord } from './transferModel';
+import { parseTransferRecord, type TransferRecord } from './transferModel';
 
 const metadata: Metadata = { locations: [{ id: 1, name: 'Almacén' }, { id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }], brands: ['TOYO'] };
 function setup(flow: 'requestWarehouse' | 'requestOther' | 'sendWarehouse' = 'requestWarehouse') {
@@ -23,6 +23,25 @@ function setup(flow: 'requestWarehouse' | 'requestOther' | 'sendWarehouse' = 're
     returnFocus: null, onBack: vi.fn(), onClose: vi.fn(), onEdit: vi.fn(), onSend: vi.fn() };
   return { props, set: (next: TransferAuthority) => { authority = next; }, get: () => authority };
 }
+
+describe('A05a terminal replay presentation', () => {
+  it.each(['approved', 'rejected'] as const)('does not describe %s replay as Pending', status => {
+    const h = setup();
+    const record = { id: '1001', reference: 'TR-1001', kind: 'request_stock', status,
+      created_at: '2028-01-01T00:00:00.123456789Z', creator_location_id: 2, creator_location_name: 'Sucursal A',
+      origin_location_id: 1, origin_location_name: 'Almacén', destination_location_id: 2, destination_location_name: 'Sucursal A',
+      approver_location_id: 1, approver_location_name: 'Almacén', decision_location_id: 1, decided_at: '2028-01-02T00:00:00.000000001Z',
+      items: [{ variant_id: 1, brand: 'TOYO', model: 'Private model 1', capacity_ah: '75.125', polarity: 'L', quantity: '1' }] };
+    render(<TransferReview {...h.props} result={{ record: parseTransferRecord(JSON.stringify(record)), replayed: true }} />);
+    const label = status === 'approved' ? 'Aprobada' : 'Rechazada';
+    expect(screen.getByRole('dialog')).toHaveAccessibleName(`Solicitud ${label} confirmada`);
+    expect(screen.getByText(`Estado: ${label}`)).toBeVisible();
+    expect(screen.queryByText(/La solicitud quedará Pending/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Enviar la solicitud no reserva/)).not.toBeInTheDocument();
+    expect(screen.getByText(/El servidor devolvió la solicitud original/)).toBeVisible();
+    expect(screen.getByText(record.decided_at)).toBeVisible();
+  });
+});
 
 describe('R05-U1 confirmed return guard', () => {
   it.each(['current', 'epoch', 'unready', 'account', 'inFlight'])('guards the Transfers return against latest %s authority', mode => {

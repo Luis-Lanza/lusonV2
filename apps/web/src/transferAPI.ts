@@ -1,6 +1,6 @@
 import {
-  canonicalTransferInput, parseTransferPage, parseTransferRecord, transferDetailPath, transferListPath,
-  type TransferCreateInput, type TransferPage, type TransferQuery, type TransferRecord,
+  canonicalTransferInput, parseTransferCounts, parseTransferPage, parseTransferRecord, transferDetailPath, transferListPath,
+  type TransferCounts, type TransferCreateInput, type TransferPage, type TransferQuery, type TransferRecord,
 } from './transferModel';
 export type TransferErrorCode = 'invalid_request' | 'unauthenticated' | 'forbidden' | 'not_found' | 'method_not_allowed' | 'insufficient_stock' | 'retry_conflict' | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
 export class TransferAPIError extends Error {
@@ -48,10 +48,22 @@ export function createTransferAPI(fetch: typeof globalThis.fetch = globalThis.fe
     try { return parse(); } catch { throw new TransferAPIError('invalid_response', status, creating); }
   }
   return {
+    async counts(options: Pick<TransferReadOptions, 'signal'> = {}): Promise<TransferCounts> {
+      // This endpoint is intrinsically passive: no selector or caller headers.
+      const reply = await request('/api/transfers/counts', {
+        method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: options.signal,
+      }, [200]);
+      return checked(() => parseTransferCounts(reply.body), reply.status);
+    },
     async list(query: TransferQuery = {}, options: TransferReadOptions = {}): Promise<TransferPage> {
       const path = local(() => transferListPath(query));
+      const selected = query.status ?? 'pending';
       const reply = await request(path, readInit(options), [200]);
-      return checked(() => parseTransferPage(reply.body), reply.status);
+      return checked(() => {
+        const page = parseTransferPage(reply.body);
+        if (page.status !== selected) throw new Error();
+        return page;
+      }, reply.status);
     },
     async detail(id: string, options: TransferReadOptions = {}): Promise<TransferRecord> {
       const path = local(() => transferDetailPath(id));

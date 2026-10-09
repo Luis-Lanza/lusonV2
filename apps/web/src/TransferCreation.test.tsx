@@ -284,6 +284,67 @@ async function selectAndReview() {
   return screen.getByRole('dialog', { name: 'Revisar solicitud' });
 }
 
+describe('A05a terminal original creation replay', () => {
+  it.each([
+    ['approved', 'requestWarehouse'], ['approved', 'requestOther'], ['approved', 'sendWarehouse'],
+    ['rejected', 'requestWarehouse'], ['rejected', 'requestOther'], ['rejected', 'sendWarehouse'],
+  ] as const)('confirms only the matching %s/%s replay flight, clears recovery and navigates by actual ID', async (status, selected) => {
+    const h = harness(); const recovery = archived(h, selected); const detail = vi.fn(); const back = vi.fn();
+    const snapshot = recovery.getCurrent(h.controller.getTransferAuthority)!;
+    const route = snapshot.direction;
+    const outcome = { ...recordDTO(), status, kind: route.kind, origin_location_id: route.origin_location_id,
+      origin_location_name: metadata.locations[route.origin_location_id - 1].name,
+      destination_location_id: route.destination_location_id, destination_location_name: metadata.locations[route.destination_location_id - 1].name,
+      approver_location_id: route.approver_location_id, approver_location_name: metadata.locations[route.approver_location_id - 1].name,
+      decision_location_id: route.approver_location_id, decided_at: '2028-03-01T00:00:00.000000001Z' };
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply(outcome, 200));
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery}
+      loader={async source => catalog(source)} onBack={back} onDetail={detail} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Retomar misma solicitud' }));
+    const attempt = recovery.getCurrent(h.controller.getTransferAuthority)!.attempt;
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar misma solicitud' }));
+    const label = status === 'approved' ? 'Aprobada' : 'Rechazada';
+    expect(await screen.findByRole('dialog', { name: `Solicitud ${label} confirmada` })).toBeVisible();
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)).toBeNull();
+    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual(attempt);
+    expect(screen.queryByLabelText('Cantidad seleccionada Modelo 1')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Ver detalle' })); expect(detail).toHaveBeenCalledExactlyOnceWith('1001', '1/2/2');
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' })); expect(back).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledTimes(1); fetcher.mockRestore();
+  });
+  it.each(['approved', 'rejected'] as const)('retains the exact key and cart when a terminal %s reply is for different items', async status => {
+    const h = harness(); const recovery = archived(h); const detail = vi.fn();
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply({ ...recordDTO(), status,
+      decision_location_id: 1, decided_at: '2028-03-01T00:00:00Z', items: [{ ...recordDTO().items[0], quantity: '2' }] }, 200));
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery}
+      loader={async source => catalog(source)} onBack={vi.fn()} onDetail={detail} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Retomar misma solicitud' }));
+    const original = recovery.getCurrent(h.controller.getTransferAuthority)!;
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar misma solicitud' }));
+    await screen.findByRole('alert');
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)?.attempt).toEqual(original.attempt);
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)?.phase).toBe('unknown');
+    expect(screen.queryByRole('region', { name: 'Resultado confirmado' })).not.toBeInTheDocument();
+    expect(detail).not.toHaveBeenCalled(); expect(fetcher).toHaveBeenCalledTimes(1); fetcher.mockRestore();
+  });
+  it.each(['approved', 'rejected'] as const)('does not clear a replacement flight on stale %s replay', async status => {
+    const h = harness(); const recovery = createTransferRecovery(); const old = deferred<Response>(); const fresh = deferred<Response>();
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => old.promise).mockImplementationOnce(() => fresh.promise);
+    const props = { controller: h.controller, metadata, recovery, loader: async (source: number) => catalog(source), onBack: vi.fn() };
+    const view = render(<TransferCreation {...props} />); await selectAndReview(); fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' }));
+    h.set(authority(2, 9)); view.rerender(<TransferCreation {...props} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Retomar misma solicitud' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reintentar misma solicitud' }));
+    const replacement = recovery.getCurrent(h.controller.getTransferAuthority)!;
+    await act(async () => old.resolve(reply({ ...recordDTO('1002'), status, decision_location_id: 1, decided_at: '2028-03-01T00:00:00Z' }, 200)));
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)?.handle).toBe(replacement.handle);
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)?.phase).toBe('inFlight');
+    expect(screen.queryByText('TR-1002')).not.toBeInTheDocument();
+    await act(async () => fresh.resolve(reply({ ...recordDTO(), status, decision_location_id: 1, decided_at: '2028-03-01T00:00:00Z' }, 200)));
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)).toBeNull(); fetcher.mockRestore();
+  });
+});
+
 describe('R04b2c2 manual lifecycle', () => {
   it.each([201, 200])('shows only actual parsed %s reference, string ID and exact UTC then returns to Transfers', async status => {
     const h = harness(); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source)); const back = vi.fn();

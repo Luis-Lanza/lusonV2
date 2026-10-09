@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  canonicalTransferInput, newTransferRetryKey, parseTransferPage, parseTransferRecord,
+  canonicalTransferInput, newTransferRetryKey, parseTransferPage, parseTransferRecord, parseTransferCounts,
   transferDetailPath, transferDirection, transferListPath, transferQuantityTotal,
   type TransferCreateInput, type TransferFlow,
 } from './transferModel';
@@ -22,6 +22,66 @@ export function createInput(): TransferCreateInput {
     items: [{ variant_id: 201, quantity: '9007199254740993' }, { variant_id: 1, quantity: '2' }] };
 }
 const parse = (o: unknown) => parseTransferRecord(JSON.stringify(o));
+
+describe('A05a outcome and count contracts', () => {
+  it.each(['approved', 'rejected'] as const)('decodes lossless %s in every physical flow', status => {
+    for (const flow of ['requestWarehouse', 'requestOther', 'sendWarehouse'] as const) {
+      const direction = transferDirection(2, flow);
+      const wire = wireRecord({ ...direction, status, decision_location_id: direction.approver_location_id,
+        decided_at: '2028-02-29T23:59:59.000000001Z' });
+      delete (wire as Record<string, unknown>).counterparty_location_id;
+      const outcome = parse(wire);
+      expect(outcome).toMatchObject({ status, decision_location_id: direction.approver_location_id,
+        decided_at: '2028-02-29T23:59:59.000000001Z', created_at: wire.created_at, reference: wire.reference });
+      expect(outcome.items[0].quantity).toBe(9223372036854775807n);
+      expect(outcome.items[0].capacity_ah).toBe('0.000001');
+    }
+  });
+  it.each(['pending', 'approved', 'rejected'] as const)('selects only %s records with unchanged pagination', status => {
+    const record = wireRecord(status === 'pending' ? {} : { status, decision_location_id: 1, decided_at: '2026-04-03T00:00:00Z' });
+    const page = { page: 1, page_size: 10, status, total_count: '1', records: [record] };
+    expect(transferListPath({ status })).toBe(`/api/transfers?page=1&page_size=25&status=${status}`);
+    expect(parseTransferPage(JSON.stringify(page)).records[0].status).toBe(status);
+    expect(() => parseTransferPage(JSON.stringify({ ...page, status: status === 'pending' ? 'approved' : 'pending' }))).toThrow();
+    expect(() => parseTransferPage(JSON.stringify({ ...page, total_count: '2', records: [record, record] }))).toThrow();
+    expect(parseTransferPage(JSON.stringify({ ...page, page: 2, records: [] })).total_count).toBe(1n);
+  });
+  it('rejects metadata on Pending and incomplete, foreign or noncanonical terminal decisions', () => {
+    for (const metadata of [{ decision_location_id: 1 }, { decided_at: '2026-04-03T00:00:00Z' },
+      { decision_location_id: null, decided_at: null }]) expect(() => parse(wireRecord(metadata))).toThrow();
+    for (const status of ['approved', 'rejected']) {
+      const terminal = { status, decision_location_id: 1, decided_at: '2026-04-03T00:00:00.123456789Z' };
+      for (const invalid of [{ decision_location_id: undefined }, { decided_at: undefined }, { decision_location_id: '1' },
+        { decision_location_id: 2 }, { decision_location_id: 0 }, { decision_location_id: 4 }, { decision_location_id: 1.5 },
+        { decided_at: '2026-02-30T00:00:00Z' }, { decided_at: '2026-04-03T00:00:00+00:00' },
+        { decided_at: '2026-04-03T00:00:00.100Z' }, { decided_at: '2026-04-03T00:00:00.1234567891Z' },
+        { private_allocation: 'secret' }, { status: 'dispatched' }]) expect(() => parse(wireRecord({ ...terminal, ...invalid }))).toThrow();
+    }
+  });
+  it.each(['approved', 'rejected'] as const)('retains item order, precision and strict original fields on %s', status => {
+    const wire = wireRecord({ status, decision_location_id: 1, decided_at: '2028-02-29T00:00:00Z' });
+    wire.items.push({ ...wire.items[0], variant_id: 1, capacity_ah: '999999.999999', quantity: '9007199254740993' });
+    const decoded = parse(wire);
+    expect(decoded.items.map(item => item.variant_id)).toEqual([2147483647, 1]);
+    expect(decoded.items[1]).toMatchObject({ capacity_ah: '999999.999999', quantity: 9007199254740993n });
+    for (const invalid of [{ id: '9223372036854775808' }, { reference: 'TR-001' }, { origin_location_id: 3 },
+      { items: [{ ...wire.items[0], quantity: '-1' }] }, { items: [{ ...wire.items[0], capacity_ah: '35.0' }] },
+      { items: [{ ...wire.items[0], private_stock: '1' }] }, { created_at: '2028-02-30T00:00:00Z' }]) {
+      expect(() => parse({ ...wire, ...invalid })).toThrow();
+    }
+  });
+  it('admits exactly two bounded canonical nonnegative counts, never an inferred badge', () => {
+    expect(parseTransferCounts('{"pending_total":"9223372036854775807","action_count":"9007199254740993"}'))
+      .toEqual({ pending_total: 9223372036854775807n, action_count: 9007199254740993n });
+    expect(parseTransferCounts('{"pending_total":"0","action_count":"0"}')).toEqual({ pending_total: 0n, action_count: 0n });
+    for (const invalid of [{ pending_total: '0', action_count: '1' }, { pending_total: '01', action_count: '0' },
+      { pending_total: '9223372036854775808', action_count: '0' }, { pending_total: 2, action_count: '0' },
+      { pending_total: '2', action_count: '-1' }, { pending_total: '2', action_count: '1e0' },
+      { pending_total: '2', action_count: 1 }, { pending_total: '2' }, { pending_total: '2', action_count: '1', warehouse: 1 }]) {
+      expect(() => parseTransferCounts(JSON.stringify(invalid))).toThrow();
+    }
+  });
+});
 
 describe('R04 pure transfer model', () => {
   it('keeps wire strings lossless and sums beyond int64', () => {
@@ -98,7 +158,7 @@ describe('R04 pure transfer model', () => {
     expect(transferListPath()).toBe('/api/transfers?page=1&page_size=25&status=pending');
     expect(transferListPath({ page: 1000000, page_size: 50 })).toContain('page=1000000&page_size=50');
     expect(transferDetailPath('9007199254740993')).toBe('/api/transfers/9007199254740993');
-    for (const q of [{ page: 0 }, { page: 1000001 }, { page: 1.5 }, { page_size: 20 }, { status: 'approved' }, { search: 'private' }]) {
+    for (const q of [{ page: 0 }, { page: 1000001 }, { page: 1.5 }, { page_size: 20 }, { status: 'all' }, { search: 'private' }]) {
       expect(() => transferListPath(q as never)).toThrow();
     }
     for (const id of ['01', '0', '1?x=1', '../1', '9223372036854775808']) expect(() => transferDetailPath(id)).toThrow();

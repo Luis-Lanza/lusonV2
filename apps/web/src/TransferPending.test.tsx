@@ -63,6 +63,21 @@ async function loaded() { await screen.findByText('9007199254740993 solicitudes 
 async function detail() { fireEvent.click(screen.getByRole('button', { name: 'Ver detalle TR-9007199254740993' })); await screen.findByRole('heading', { name: 'TR-9007199254740993' }); }
 afterEach(() => { vi.unstubAllGlobals(); });
 
+describe('A05a truthful terminal detail', () => {
+  it.each(['approved', 'rejected'] as const)('shows %s without Pending-only reservation claims', async status => {
+    const label = status === 'approved' ? 'Aprobada' : 'Rechazada';
+    const f = fixture(1, url => url === '/api/transfers/9007199254740993'
+      ? Promise.resolve(reply({ ...wire(), status, decision_location_id: 1, decided_at: '2028-01-02T00:00:00.000000001Z' })) : undefined);
+    render(f.element({ ownerTag: f.ownerTag, id: '9007199254740993' }));
+    expect(await screen.findByText(label, { selector: '.pending-status' })).toBeVisible();
+    expect(screen.getByRole('heading', { name: `Solicitud ${label}` })).toBeVisible();
+    expect(screen.queryByText('Esta solicitud todavía no reserva ni mueve stock.')).not.toBeInTheDocument();
+    expect(screen.queryByText(/La aprobación deberá revalidar/)).not.toBeInTheDocument();
+    expect(screen.getByText('2028-01-02T00:00:00.000000001Z')).toBeVisible();
+    for (const name of ['Aprobar', 'Rechazar', 'Confirmar aprobación']) expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+  });
+});
+
 describe('R05-U2 pending header action stack', () => {
   it.each([2, 3])('groups branch %s creation before the live count separately from the title', async id => {
     const f = fixture(id); if (id === 3) f.env.record = wire(2, 3);

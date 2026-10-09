@@ -13,6 +13,61 @@ const input = (): TransferCreateInput => ({ kind: 'request_stock', counterparty_
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const mockFetch = () => vi.fn<typeof fetch>();
 
+describe('A05a outcome transport', () => {
+  it.each(['approved', 'rejected'] as const)('reads and replays the original %s DTO without a Location prerequisite', async status => {
+    const outcome = { ...wire, status, decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z' };
+    const fetch = mockFetch().mockResolvedValueOnce(response({ page: 1, page_size: 25, status, total_count: '1', records: [outcome] }))
+      .mockResolvedValueOnce(response(outcome)).mockResolvedValueOnce(response(outcome, 200));
+    const api = createTransferAPI(fetch);
+    expect((await api.list({ status })).records[0]).toMatchObject({ status, decided_at: outcome.decided_at });
+    expect(await api.detail('1')).toMatchObject({ status, created_at: wire.created_at });
+    expect(await api.create(input(), 'memory')).toMatchObject({ replayed: true, record: { status, id: '1' } });
+    expect(fetch.mock.calls[0][0]).toBe(`/api/transfers?page=1&page_size=25&status=${status}`);
+    expect(fetch.mock.calls[2][1]?.body).toContain('stable_key_000001');
+  });
+  it.each(['approved', 'rejected'] as const)('accepts a full %s creation201 as well as replay200 and rejects malformed metadata', async status => {
+    const outcome = { ...wire, status, decision_location_id: 1, decided_at: '2028-02-29T23:59:59.123456789Z' };
+    const fetch = mockFetch().mockResolvedValueOnce(response(outcome, 201))
+      .mockResolvedValueOnce(response({ ...outcome, decision_location_id: 2 }, 200));
+    const api = createTransferAPI(fetch);
+    expect(await api.create(input(), 'memory')).toMatchObject({ replayed: false, record: { status, decided_at: outcome.decided_at } });
+    await expect(api.create(input(), 'memory')).rejects.toMatchObject({ code: 'invalid_response', status: 200, uncertainCreation: true });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+  it('captures selected list status before await and rejects a different returned status', async () => {
+    let resolve!: (reply: Response) => void;
+    const delayed = new Promise<Response>(yes => { resolve = yes; });
+    const fetch = mockFetch().mockReturnValueOnce(delayed).mockResolvedValueOnce(response({ page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] }));
+    const api = createTransferAPI(fetch); const query = { status: 'approved' as 'approved' | 'rejected' };
+    const pending = api.list(query); query.status = 'rejected';
+    resolve(response({ page: 1, page_size: 25, status: 'approved', total_count: '0', records: [] }));
+    expect((await pending).status).toBe('approved');
+    await expect(api.list({ status: 'rejected' })).rejects.toMatchObject({ code: 'invalid_response', status: 200 });
+  });
+  it.each([401, 403, 503] as const)('preserves counts error classification for status%s without creation uncertainty', async status => {
+    const code = status === 401 ? 'unauthenticated' : status === 403 ? 'forbidden' : 'service_unavailable';
+    const fetch = mockFetch().mockResolvedValue(response({ error: code }, status));
+    await expect(createTransferAPI(fetch).counts()).rejects.toMatchObject({ code, status, uncertainCreation: false });
+    expect(new Headers(fetch.mock.calls[0][1]?.headers).has('X-Luson-Passive')).toBe(false);
+  });
+  it('issues passive counts without query, CSRF, selectors or caller headers', async () => {
+    const fetch = mockFetch().mockResolvedValue(response({ pending_total: '9007199254740993', action_count: '2' }));
+    const signal = new AbortController().signal;
+    const api = createTransferAPI(fetch);
+    expect(await api.counts({ signal, passive: true, headers: { Origin: 'private' }, location: 1 } as never))
+      .toEqual({ pending_total: 9007199254740993n, action_count: 2n });
+    expect(fetch.mock.calls[0][0]).toBe('/api/transfers/counts');
+    expect(fetch.mock.calls[0][1]).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store', signal });
+    expect([...new Headers(fetch.mock.calls[0][1]?.headers)]).toEqual([]);
+  });
+  it.each([response({ pending_total: '1', action_count: '2' }), response({ pending_total: '1', action_count: '0', secret: 'private' }),
+    response({ error: 'private' }, 403), response({ pending_total: '1', action_count: '0' }, 201)])('sanitizes malformed counts and unknown replies', async reply => {
+    const fetch = mockFetch().mockResolvedValue(reply.clone());
+    await expect(createTransferAPI(fetch).counts()).rejects.toMatchObject({ code: 'invalid_response', uncertainCreation: false });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('R04 pure transfer API', () => {
   it('uses relative private GET paths, same-origin cookies, no-store and immutable passive selection', async () => {
     const fetch = mockFetch();

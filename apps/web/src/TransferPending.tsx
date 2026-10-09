@@ -21,7 +21,10 @@ function kindLabel(record: TransferRecord) {
   if (record.kind === 'send_to_warehouse') return 'Propuesta de envío a Almacén';
   return record.origin_location_id === 1 ? 'Solicitud a Almacén' : 'Solicitud entre sucursales';
 }
-function Status() { return <span className="pending-status">Pendiente de aprobación</span>; }
+function statusLabel(record: TransferRecord) {
+  return record.status === 'pending' ? 'Pendiente de aprobación' : record.status === 'approved' ? 'Aprobada' : 'Rechazada';
+}
+function Status({ record }: { record: TransferRecord }) { return <span className="pending-status">{statusLabel(record)}</span>; }
 function Items({ record }: { record: TransferRecord }) {
   return <table><caption className="sr-only">Baterías solicitadas</caption><thead><tr>
     <th scope="col">Batería</th><th scope="col">Capacidad (Ah)</th><th scope="col">Polaridad</th><th scope="col">Cantidad solicitada</th>
@@ -60,7 +63,7 @@ export default function TransferPending(props: TransferPendingProps) {
   return <section className={'transfer-pending' + (warehouse ? ' pending-warehouse' : '')} aria-labelledby="pending-title">
     <button type="button" className="creation-back" onClick={inventory}>Volver al inventario</button>
     <header className="pending-heading"><div><h1 id="pending-title">{selected ? 'Detalle de solicitud' : 'Transferencias pendientes'}</h1>
-      <p>Solicitudes Pending de tu ubicación asignada. La consulta de inventario no cambia los participantes.</p></div>
+      <p>Solicitudes Pending de tu ubicación asignada. La consulta de inventario no cambia los participantes.{selected && ' El detalle muestra el estado actual de la solicitud.'}</p></div>
       {!selected && !warehouse ? <div className="pending-heading-actions">
         <button type="button" className="primary transfer-cta" disabled={!props.creationAvailable || !props.onCreate} onClick={() => {
           const latest = props.controller.getTransferAuthority();
@@ -76,16 +79,17 @@ export default function TransferPending(props: TransferPendingProps) {
       {unavailable && <div role="alert" className="message"><p>{unavailable.code === 'not_found' ? 'La solicitud no está disponible.' : 'No se pudo consultar la solicitud.'}</p>
         <button type="button" onClick={() => { if (current()) transfers.retryDetail(); }}>Reintentar detalle</button></div>}
       {record && <>
-        <header className="pending-record-heading"><div><h2>{record.reference}</h2><p>{kindLabel(record)}</p></div><Status /></header>
+        <header className="pending-record-heading"><div><h2>{record.reference}</h2><p>{kindLabel(record)}</p></div><Status record={record} /></header>
         <section className="creation-route" aria-label="Ruta física"><div><span>Origen</span><strong>{record.origin_location_name}</strong></div><b aria-hidden="true">→</b>
           <div><span>Destino</span><strong>{record.destination_location_name}</strong></div></section>
         <div className="pending-detail-grid"><div className="table-scroll pending-items"><Items record={record} /></div>
-          <aside className="pending-summary" aria-label="Resumen de solicitud"><h2>Solicitud Pending</h2>
+          <aside className="pending-summary" aria-label="Resumen de solicitud"><h2>Solicitud {record.status === 'pending' ? 'Pending' : statusLabel(record)}</h2>
             <p>{transferQuantityTotal(record).toString()} baterías solicitadas</p>
             <dl><dt>Ubicación creadora</dt><dd>{record.creator_location_name}</dd>
               <dt>Requiere aprobación de</dt><dd>{record.approver_location_name}</dd>
               <dt>Creada (UTC)</dt><dd><time>{record.created_at}</time></dd></dl>
-            <p>Esta solicitud todavía no reserva ni mueve stock.</p><p>La aprobación deberá revalidar y reservar la solicitud completa. La aprobación no está disponible en esta etapa.</p>
+            {record.status === 'pending' ? <><p>Esta solicitud todavía no reserva ni mueve stock.</p><p>La aprobación deberá revalidar y reservar la solicitud completa. La aprobación no está disponible en esta etapa.</p></>
+              : <p>Decidida (UTC): <time>{record.decided_at}</time></p>}
           </aside></div>
       </>}
     </> : <>
@@ -97,12 +101,12 @@ export default function TransferPending(props: TransferPendingProps) {
         <div className="table-scroll pending-table"><table><caption className="sr-only">Solicitudes pendientes participantes</caption>
           <thead><tr>{['Transferencia', 'Origen', 'Destino', 'Estado', 'Unidades', 'Requiere aprobación de', 'Detalle'].map(label => <th scope="col" key={label}>{label}</th>)}</tr></thead>
           <tbody>{page.records.map(row => <tr key={row.id}><td><strong>{row.reference}</strong><small>{kindLabel(row)}</small></td>
-            <td>{row.origin_location_name}</td><td>{row.destination_location_name}</td><td><Status /></td>
+            <td>{row.origin_location_name}</td><td>{row.destination_location_name}</td><td><Status record={row} /></td>
             <td>{transferQuantityTotal(row).toString()}</td><td>{row.approver_location_name}</td>
             <td><button type="button" onClick={() => open(row)} aria-label={`Ver detalle ${row.reference}`}>Ver detalle</button></td></tr>)}</tbody>
         </table></div>
         {warehouse && <div className="pending-cards">{page.records.map(row => <article key={row.id}>
-          <header><h2>{row.reference}</h2><span>{transferQuantityTotal(row).toString()} unidades</span></header><p>{kindLabel(row)}</p><Status />
+          <header><h2>{row.reference}</h2><span>{transferQuantityTotal(row).toString()} unidades</span></header><p>{kindLabel(row)}</p><Status record={row} />
           <p>{row.origin_location_name} → {row.destination_location_name}</p>
           <p>Ubicación creadora: {row.creator_location_name}</p><p>Requiere aprobación de: {row.approver_location_name}</p>
           <ul>{row.items.map(item => <li key={item.variant_id}>{item.brand} · {item.model} · {item.capacity_ah} Ah · {item.polarity} · {item.quantity.toString()} unidades</li>)}</ul>

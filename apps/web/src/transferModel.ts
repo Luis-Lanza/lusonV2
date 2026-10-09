@@ -15,17 +15,30 @@ export interface TransferItem {
   variant_id: number; brand: string; model: string; capacity_ah: string;
   polarity: 'L' | 'R'; quantity: bigint;
 }
-export interface TransferRecord {
-  id: string; reference: string; kind: TransferKind; status: 'pending'; created_at: string;
+export type TransferStatus = 'pending' | 'approved' | 'rejected';
+interface TransferRecordFields {
+  id: string; reference: string; kind: TransferKind; created_at: string;
   creator_location_id: 2 | 3; creator_location_name: string;
   origin_location_id: TransferLocationID; origin_location_name: string;
   destination_location_id: TransferLocationID; destination_location_name: string;
   approver_location_id: TransferLocationID; approver_location_name: string;
   items: TransferItem[];
 }
-export interface TransferQuery { page?: number; page_size?: 10 | 25 | 50; status?: 'pending' }
+export type TransferRecord = TransferRecordFields & (
+  { status: 'pending'; decision_location_id?: never; decided_at?: never }
+  | { status: 'approved' | 'rejected'; decision_location_id: TransferLocationID; decided_at: string }
+);
+export interface TransferQuery { page?: number; page_size?: 10 | 25 | 50; status?: TransferStatus }
+export interface TransferCounts { pending_total: bigint; action_count: bigint }
+export function parseTransferCounts(raw: string): TransferCounts {
+  const o = object(decode(raw), ['pending_total', 'action_count']);
+  const pending_total = exact(o.pending_total, true);
+  const action_count = exact(o.action_count, true);
+  if (action_count > pending_total) return invalid();
+  return { pending_total, action_count };
+}
 export interface TransferPage {
-  page: number; page_size: 10 | 25 | 50; status: 'pending'; total_count: bigint; records: TransferRecord[];
+  page: number; page_size: 10 | 25 | 50; status: TransferStatus; total_count: bigint; records: TransferRecord[];
 }
 const maxInt64 = 9223372036854775807n;
 function invalid(): never { throw new Error('Invalid transfer response'); }
@@ -98,17 +111,20 @@ export function canonicalTransferInput(input: TransferCreateInput): TransferCrea
   const items = lines(o.items).sort((a, b) => a.variant_id - b.variant_id).map(item => Object.freeze(item));
   return Object.freeze({ kind: k, counterparty_location_id: counterpart, retry_key: o.retry_key, items: Object.freeze(items) });
 }
-function queryValues(query: TransferQuery): { page: number; page_size: 10 | 25 | 50; status: 'pending' } {
+function status(value: unknown): TransferStatus {
+  if (value !== 'pending' && value !== 'approved' && value !== 'rejected') return invalid();
+  return value;
+}
+function queryValues(query: TransferQuery): { page: number; page_size: 10 | 25 | 50; status: TransferStatus } {
   const o = object(query, ['page', 'page_size', 'status'], false);
   const page = integer(o.page === undefined ? 1 : o.page, 1, 1000000);
   const size = o.page_size === undefined ? 25 : o.page_size;
   if (size !== 10 && size !== 25 && size !== 50) return invalid();
-  if (o.status !== undefined && o.status !== 'pending') return invalid();
-  return { page, page_size: size, status: 'pending' as const };
+  return { page, page_size: size, status: status(o.status === undefined ? 'pending' : o.status) };
 }
 export function transferListPath(query: TransferQuery = {}): string {
   const q = queryValues(query);
-  return `/api/transfers?page=${q.page}&page_size=${q.page_size}&status=pending`;
+  return `/api/transfers?page=${q.page}&page_size=${q.page_size}&status=${q.status}`;
 }
 export function transferDetailPath(id: string): string {
   exact(id);
@@ -123,10 +139,13 @@ const recordKeys = ['id', 'reference', 'kind', 'status', 'created_at', 'items',
   'creator_location_id', 'creator_location_name', 'origin_location_id', 'origin_location_name',
   'destination_location_id', 'destination_location_name', 'approver_location_id', 'approver_location_name'];
 function record(value: unknown): TransferRecord {
-  const o = object(value, recordKeys);
+  // Determine the discriminant before enforcing an exact status-specific whitelist.
+  const candidate = object(value, [...recordKeys, 'decision_location_id', 'decided_at'], false);
+  const selected = status(candidate.status);
+  const o = object(value, selected === 'pending' ? recordKeys : [...recordKeys, 'decision_location_id', 'decided_at']);
   exact(o.id);
   const id = o.id as string;
-  if (o.reference !== `TR-${id.padStart(3, '0')}` || o.status !== 'pending') return invalid();
+  if (o.reference !== `TR-${id.padStart(3, '0')}`) return invalid();
   const k = kind(o.kind);
   const creator = integer(o.creator_location_id, 2, 3) as 2 | 3;
   const origin = location(o.origin_location_id);
@@ -146,7 +165,11 @@ function record(value: unknown): TransferRecord {
     return { variant_id: quantities[i].variant_id, quantity: BigInt(quantities[i].quantity),
       brand: text(item.brand), model: text(item.model), capacity_ah: capacity(item.capacity_ah), polarity: item.polarity };
   });
-  return { id, reference: o.reference as string, kind: k, status: 'pending', created_at: createdAt(o.created_at),
+  const outcome = selected === 'pending' ? { status: selected } : {
+    status: selected, decision_location_id: location(o.decision_location_id), decided_at: createdAt(o.decided_at),
+  };
+  if (outcome.decision_location_id !== undefined && outcome.decision_location_id !== approver) return invalid();
+  return { ...outcome, id, reference: o.reference as string, kind: k, created_at: createdAt(o.created_at),
     creator_location_id: creator, creator_location_name: text(o.creator_location_name),
     origin_location_id: origin, origin_location_name: text(o.origin_location_name),
     destination_location_id: destination, destination_location_name: text(o.destination_location_name),
@@ -155,10 +178,11 @@ function record(value: unknown): TransferRecord {
 export function parseTransferRecord(raw: string): TransferRecord { return record(decode(raw)); }
 export function parseTransferPage(raw: string): TransferPage {
   const o = object(decode(raw), ['page', 'page_size', 'status', 'total_count', 'records']);
-  if (o.status !== 'pending' || !Array.isArray(o.records)) return invalid();
-  const q = queryValues({ page: o.page as number, page_size: o.page_size as 10 | 25 | 50, status: 'pending' });
+  if (!Array.isArray(o.records)) return invalid();
+  const q = queryValues({ page: o.page as number, page_size: o.page_size as 10 | 25 | 50, status: status(o.status) });
   const total_count = exact(o.total_count, true);
   const records = o.records.map(record);
+  if (records.some(r => r.status !== q.status)) return invalid();
   const offset = BigInt(q.page - 1) * BigInt(q.page_size);
   const remaining = total_count > offset ? total_count - offset : 0n;
   const expected = remaining > BigInt(q.page_size) ? BigInt(q.page_size) : remaining;

@@ -47,6 +47,7 @@ export default function TransferReview(props: TransferReviewProps) {
   // Check owner metadata before snapshot or result getters, not just before effects.
   if (!permitted || props.snapshot.epoch !== authority.epoch) return null;
   const { snapshot, result } = props;
+  const outcomeLabel = result?.record.status === 'approved' ? 'Aprobada' : result?.record.status === 'rejected' ? 'Rechazada' : 'Pending';
   const location = (id: number) => props.metadata.locations.find(l => l.id === id)?.name ?? 'Ubicación no disponible';
   const total = snapshot.items.reduce((sum, line) => sum + BigInt(line.quantity), 0n);
   return <div className="review-backdrop"><section ref={dialog} tabIndex={-1} className="transfer-review" role="dialog" aria-modal="true" aria-labelledby="review-title" aria-busy={blocked} onKeyDown={event => {
@@ -59,22 +60,23 @@ export default function TransferReview(props: TransferReviewProps) {
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     }
   }}>
-    <header><div><h2 id="review-title">{result ? 'Solicitud Pending confirmada' : 'Revisar solicitud'}</h2>
+    <header><div><h2 id="review-title">{result ? `Solicitud ${outcomeLabel} confirmada` : 'Revisar solicitud'}</h2>
       <p>{result ? (result.replayed ? 'El servidor devolvió la solicitud original.' : 'El servidor creó la solicitud.') : 'Comprobá las cantidades y la ruta antes del envío manual.'}</p></div>
       <button ref={close} type="button" aria-label="Cerrar revisión" disabled={blocked} onClick={props.onClose}>×</button></header>
     <div className="review-body">
       <div className="review-route"><div><span>Origen</span><strong>{location(snapshot.direction.origin_location_id)}</strong></div><b aria-hidden="true">→</b>
         <div><span>Destino</span><strong>{location(snapshot.direction.destination_location_id)}</strong></div></div>
       {result && <section className="review-result" aria-label="Resultado confirmado">
-        <h3>{result.record.reference}</h3><p>ID: {result.record.id}</p><p>Creada (UTC): <time>{result.record.created_at}</time></p><p>Estado: Pending · Pendiente de aprobación</p>
+        <h3>{result.record.reference}</h3><p>ID: {result.record.id}</p><p>Creada (UTC): <time>{result.record.created_at}</time></p><p>Estado: {result.record.status === 'pending' ? 'Pending · Pendiente de aprobación' : outcomeLabel}</p>
+        {result.record.status !== 'pending' && <p>Decidida (UTC): <time>{result.record.decided_at}</time></p>}
       </section>}
       <div className="review-table"><table><caption className="sr-only">Selección inmutable</caption><thead><tr><th scope="col">Batería</th><th scope="col">Polaridad</th><th scope="col">Cantidad solicitada</th></tr></thead>
         <tbody>{snapshot.items.map(line => <tr key={line.variant_id}><td><strong>{line.brand} · {line.model}</strong><small>{line.capacity_ah} Ah</small></td>
           <td><span className="polarity">{line.polarity}</span></td><td>{line.quantity}</td></tr>)}</tbody>
         <tfoot><tr><td colSpan={3}>{snapshot.items.length} variantes · {total.toString()} baterías</td></tr></tfoot></table></div>
-      <div className="review-notice"><p>La solicitud quedará Pending, pendiente de aprobación de {location(snapshot.direction.approver_location_id)}.</p>
+      {(!result || result.record.status === 'pending') && <div className="review-notice"><p>La solicitud quedará Pending, pendiente de aprobación de {location(snapshot.direction.approver_location_id)}.</p>
         <p>Enviar la solicitud no reserva ni mueve stock. La aprobación deberá revalidar y reservar la solicitud completa.</p>
-        <p>El servidor comprobará la disponibilidad al crear. Un reintento con la misma solicitud puede devolver el registro original.</p></div>
+        <p>El servidor comprobará la disponibilidad al crear. Un reintento con la misma solicitud puede devolver el registro original.</p></div>}
       {!result && snapshot.phase === 'ready' && <p>Revisión preparada, todavía no enviada.</p>}
       {!result && snapshot.phase === 'unknown' && <p role="status">No pudimos confirmar el resultado. La solicitud puede haberse creado. Reintentá esta misma solicitud para comprobarlo.</p>}
       {props.error && <p role="alert" className="message">{props.error}</p>}

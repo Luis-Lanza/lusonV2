@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useInventory } from './useInventory';
 import { useTransfers } from './useTransfers';
 import { createTransferAPI } from './transferAPI';
+import type { TransferAuthority, TransferController } from './useInventory';
 import { pageJSON } from './test-fixtures';
 import type { TransferCreateInput } from './transferModel';
 
@@ -80,6 +81,192 @@ const detailCalls = (fetch: ReturnType<typeof fixture>['fetch']) => fetch.mock.c
 const passive = (call: [RequestInfo | URL, RequestInit?]) => new Headers(call[1]?.headers).get('X-Luson-Passive');
 const attempt = (): TransferCreateInput => ({ kind: 'request_stock', counterparty_location_id: 1, retry_key: 'stable_hook_key_01', items: [{ variant_id: 201, quantity: '2' }] });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+function boundedHarness(countsEnabled = true, actor = 2) {
+  const a: TransferAuthority = { epoch: 1, ready: true, session: structuredClone(session(actor)) };
+  const listeners = new Set<() => void>();
+  const controller: TransferController = { authorityEpoch: 1, getTransferAuthority: () => a,
+    subscribeTransferInvalidation: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    settleUnauthorized: vi.fn(async () => 'unavailable' as const) };
+  const jobs: ReturnType<typeof deferred<Response>>[] = [];
+  const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+    const job = deferred<Response>(); jobs.push(job); return job.promise;
+  });
+  const api = createTransferAPI(fetch);
+  const hook = renderHook(({ enabled }) => useTransfers({ controller, api, countsEnabled: enabled }),
+    { initialProps: { enabled: countsEnabled } });
+  const emit = () => act(() => { for (const listener of listeners) listener(); });
+  return { a, controller, listeners, jobs, fetch, hook, emit, api };
+}
+
+describe('A05a independent counts and authority fences', () => {
+  it.each([1, 2, 3])('opt-in counts are passive for participant %s, not creation permission', async actor => {
+    const h = boundedHarness(false, actor);
+    expect(h.fetch).not.toHaveBeenCalled(); h.emit(); expect(h.fetch).not.toHaveBeenCalled();
+    h.hook.rerender({ enabled: true });
+    await waitFor(() => expect(h.jobs).toHaveLength(1));
+    await act(async () => h.jobs[0].resolve(reply({ pending_total: '9007199254740993', action_count: '2' })));
+    expect(h.hook.result.current.counts).toEqual({ pending_total: 9007199254740993n, action_count: 2n });
+    expect(h.fetch.mock.calls[0][0]).toBe('/api/transfers/counts');
+    expect([...new Headers(h.fetch.mock.calls[0][1]?.headers)]).toEqual([]);
+    if (actor === 1) await expect(h.hook.result.current.submit(attempt())).rejects.toMatchObject({ code: 'forbidden' });
+    h.hook.rerender({ enabled: false }); expect(h.hook.result.current.counts).toBeNull();
+    h.emit(); expect(h.fetch).toHaveBeenCalledTimes(1); h.hook.unmount(); expect(h.listeners.size).toBe(0);
+  });
+  it('coalesces counts bursts, discards dirty snapshots and masks current failure', async () => {
+    const h = boundedHarness(); await waitFor(() => expect(h.jobs).toHaveLength(1));
+    h.emit(); h.emit(); h.emit();
+    await act(async () => h.jobs[0].resolve(reply({ pending_total: '8', action_count: '4' })));
+    expect(h.hook.result.current.counts).toBeNull(); await waitFor(() => expect(h.jobs).toHaveLength(2));
+    await act(async () => h.jobs[1].resolve(reply({ pending_total: '3', action_count: '1' })));
+    expect(h.hook.result.current.counts?.action_count).toBe(1n);
+    h.emit(); expect(h.hook.result.current.counts).toBeNull();
+    await act(async () => h.jobs[2].resolve(reply({ error: 'service_unavailable' }, 503)));
+    expect(h.hook.result.current.counts).toBeNull(); expect(h.hook.result.current.countsError?.code).toBe('service_unavailable');
+    h.hook.unmount(); expect(h.listeners.size).toBe(0);
+  });
+  it.each(['account', 'csrf', 'assignment', 'username', 'expiry', 'revoked'] as const)
+    ('discards counts and saved callbacks on same-object %s change BEFORE rerender', async field => {
+      const h = boundedHarness(); await waitFor(() => expect(h.jobs).toHaveLength(1));
+      await act(async () => h.jobs[0].resolve(reply({ pending_total: '2', action_count: '1' })));
+      const saved = h.hook.result.current;
+      h.emit(); await waitFor(() => expect(h.jobs).toHaveLength(2));
+      if (!h.a.session?.authenticated) throw new Error('fixture');
+      if (field === 'account') h.a.session.identity.account_id = 99;
+      if (field === 'csrf') h.a.session.csrf_token = 'different';
+      if (field === 'assignment') h.a.session.identity.location.id = 3;
+      if (field === 'username') h.a.session.identity.username = 'different';
+      if (field === 'expiry') h.a.session.expires_at = '2040-01-01T00:00:00Z';
+      if (field === 'revoked') h.a.ready = false;
+      expect(saved.counts).toBeNull(); h.emit(); expect(h.jobs).toHaveLength(2);
+      await act(async () => h.jobs[1].resolve(reply({ error: 'unauthenticated' }, 401)));
+      expect(h.controller.settleUnauthorized).not.toHaveBeenCalled();
+      expect(saved.countsError).toBeNull(); h.hook.unmount();
+    });
+  it('aborts disabled/unmounted counts and ignores transport that ignores AbortSignal', async () => {
+    const h = boundedHarness(); await waitFor(() => expect(h.jobs).toHaveLength(1));
+    h.hook.rerender({ enabled: false }); expect(h.fetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    h.hook.rerender({ enabled: true }); await waitFor(() => expect(h.jobs).toHaveLength(2));
+    await act(async () => h.jobs[0].resolve(reply({ pending_total: '8', action_count: '8' })));
+    expect(h.hook.result.current.counts).toBeNull();
+    h.hook.unmount(); expect(h.fetch.mock.calls[1][1]?.signal?.aborted).toBe(true);
+    await act(async () => h.jobs[1].resolve(reply({ error: 'unauthenticated' }, 401)));
+    expect(h.controller.settleUnauthorized).not.toHaveBeenCalled();
+  });
+  it('accepts separate count/list snapshots without atomic equality or inferred actions', async () => {
+    fixture(session(), url => url === '/api/transfers/counts' ? Promise.resolve(reply({ pending_total: '9', action_count: '3' })) : undefined);
+    const { result } = renderHook(() => {
+      const controller = useInventory(); return useTransfers({ controller, listEnabled: true, countsEnabled: true });
+    });
+    await waitFor(() => expect(result.current.counts?.action_count).toBe(3n));
+    expect(result.current.page?.total_count).toBe(1n); expect(result.current.counts?.pending_total).toBe(9n);
+  });
+  it.each(['account', 'csrf', 'assignment', 'expiry'] as const)('masks settled list/detail on same-object %s mutation and fences retained actions', async field => {
+    const h = boundedHarness(false);
+    const fetch = vi.fn<typeof globalThis.fetch>(async input => String(input).includes('?')
+      ? reply({ page: 1, page_size: 25, status: 'pending', total_count: '1', records: [wire(2, '1')] }) : reply(wire(2, '1')));
+    const api = createTransferAPI(fetch);
+    const hook = renderHook(() => useTransfers({ controller: h.controller, api, listEnabled: true, detailEnabled: true }));
+    await waitFor(() => expect(hook.result.current.page?.total_count).toBe(1n));
+    act(() => hook.result.current.selectDetail('1'));
+    await waitFor(() => expect(hook.result.current.detail?.id).toBe('1'));
+    const saved = hook.result.current;
+    if (!h.a.session?.authenticated) throw new Error('fixture');
+    if (field === 'account') h.a.session.identity.account_id = 99;
+    if (field === 'csrf') h.a.session.csrf_token = 'new_token';
+    if (field === 'assignment') h.a.session.identity.location.id = 3;
+    if (field === 'expiry') h.a.session.expires_at = '2040-01-01T00:00:00Z';
+    expect(saved.page).toBeNull(); expect(saved.detail).toBeNull(); expect(saved.selectedID).toBeNull();
+    act(() => { saved.retryList(); saved.retryDetail(); saved.changeQuery({ page: 2 }); saved.selectDetail('2'); });
+    await expect(saved.submit(attempt())).rejects.toMatchObject({ code: 'unauthenticated' });
+    expect(fetch).toHaveBeenCalledTimes(2); hook.unmount(); h.hook.unmount();
+  });
+  it('masks settled counts before any refresh when authority changes in place', async () => {
+    const h = boundedHarness(); await waitFor(() => expect(h.jobs).toHaveLength(1));
+    await act(async () => h.jobs[0].resolve(reply({ pending_total: '2', action_count: '1' })));
+    const saved = h.hook.result.current; expect(saved.counts?.action_count).toBe(1n);
+    if (!h.a.session?.authenticated) throw new Error('fixture');
+    h.a.session.identity.account_id = 99;
+    expect(saved.counts).toBeNull(); expect(saved.countsBusy).toBe(false); expect(saved.countsError).toBeNull();
+    h.emit(); expect(h.fetch).toHaveBeenCalledTimes(1); h.hook.unmount();
+  });
+  it('rejects old counts and detached subscriptions after epoch/account replacement even with ignored abort', async () => {
+    const h = boundedHarness(); await waitFor(() => expect(h.jobs).toHaveLength(1));
+    const oldListener = [...h.listeners][0];
+    h.a.epoch = 2; h.a.session = structuredClone(session(3)); h.hook.rerender({ enabled: true });
+    await waitFor(() => expect(h.jobs).toHaveLength(2));
+    expect(h.fetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
+    await act(async () => h.jobs[1].resolve(reply({ pending_total: '1', action_count: '0' })));
+    act(() => oldListener()); expect(h.jobs).toHaveLength(2);
+    await act(async () => h.jobs[0].resolve(reply({ error: 'unauthenticated' }, 401)));
+    expect(h.hook.result.current.counts).toEqual({ pending_total: 1n, action_count: 0n });
+    expect(h.controller.settleUnauthorized).not.toHaveBeenCalled(); expect(h.listeners.size).toBe(1);
+    h.hook.unmount(); expect(h.listeners.size).toBe(0);
+  });
+  it('settles current counts401 through revoked/expired neutral authority and clears metrics', async () => {
+    const h = boundedHarness(); await waitFor(() => expect(h.jobs).toHaveLength(1));
+    const settle = vi.mocked(h.controller.settleUnauthorized);
+    settle.mockImplementation(async () => { h.a.ready = false; h.a.session = null; return 'anonymous'; });
+    await act(async () => h.jobs[0].resolve(reply({ error: 'unauthenticated' }, 401)));
+    expect(settle).toHaveBeenCalledExactlyOnceWith(1); expect(h.hook.result.current.counts).toBeNull();
+    expect(h.hook.result.current.countsError).toBeNull(); h.emit(); expect(h.jobs).toHaveLength(1);
+    h.hook.unmount();
+  });
+  it('preserves independent list and detail while a count response is missing or malformed', async () => {
+    const h = boundedHarness(false); const counts = deferred<Response>();
+    const fetch = vi.fn<typeof globalThis.fetch>(async input => {
+      const path = String(input);
+      if (path === '/api/transfers/counts') return counts.promise;
+      return path.includes('?') ? reply({ page: 1, page_size: 25, status: 'pending', total_count: '1', records: [wire(2, '1')] }) : reply(wire(2, '1'));
+    });
+    const api = createTransferAPI(fetch);
+    const hook = renderHook(() => useTransfers({ controller: h.controller, api, listEnabled: true, detailEnabled: true, countsEnabled: true }));
+    await waitFor(() => expect(hook.result.current.page?.total_count).toBe(1n));
+    act(() => hook.result.current.selectDetail('1')); await waitFor(() => expect(hook.result.current.detail?.id).toBe('1'));
+    expect(hook.result.current.counts).toBeNull(); expect(hook.result.current.countsBusy).toBe(true);
+    await act(async () => counts.resolve(reply({ pending_total: '1' })));
+    expect(hook.result.current.countsError?.code).toBe('invalid_response'); expect(hook.result.current.counts).toBeNull();
+    expect(hook.result.current.page?.total_count).toBe(1n); expect(hook.result.current.detail?.id).toBe('1');
+    hook.unmount(); h.hook.unmount();
+  });
+  it.each(['approved', 'rejected'] as const)('publishes %s detail only for the selected ID and physical participant', async status => {
+    const h = boundedHarness(false, 1);
+    const outcome = { ...wire(2, '1'), status, decision_location_id: 1, decided_at: '2028-01-01T00:00:00.000000001Z' };
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => reply(outcome));
+    const hook = renderHook(() => useTransfers({ controller: h.controller, api: createTransferAPI(fetch), detailEnabled: true }));
+    act(() => hook.result.current.selectDetail('1'));
+    await waitFor(() => expect(hook.result.current.detail?.status).toBe(status));
+    expect(hook.result.current.detail).toMatchObject({ decided_at: outcome.decided_at });
+    act(() => hook.result.current.selectDetail('2'));
+    await waitFor(() => expect(hook.result.current.detailError?.code).toBe('invalid_response'));
+    expect(hook.result.current.detail).toBeNull(); hook.unmount(); h.hook.unmount();
+  });
+  it.each(['account', 'csrf'] as const)('rejects creation completion after same-object %s change without publishing or invalidating', async field => {
+    const h = boundedHarness(false); const create = deferred<Response>();
+    const fetch = vi.fn<typeof globalThis.fetch>().mockReturnValue(create.promise);
+    const hook = renderHook(() => useTransfers({ controller: h.controller, api: createTransferAPI(fetch) }));
+    let pending!: Promise<unknown>;
+    act(() => { pending = hook.result.current.submit(attempt()).catch(error => error); });
+    if (!h.a.session?.authenticated) throw new Error('fixture');
+    if (field === 'account') h.a.session.identity.account_id = 99;
+    else h.a.session.csrf_token = 'rotated';
+    expect(hook.result.current.submitBusy).toBe(false);
+    await act(async () => create.resolve(reply({ ...wire(), status: 'approved', decision_location_id: 1,
+      decided_at: '2028-01-01T00:00:00Z', items: [{ ...wire().items[0], quantity: '2' }] }, 200)));
+    await expect(pending).resolves.toMatchObject({ code: 'aborted', uncertainCreation: true });
+    expect(hook.result.current.submitError).toBeNull(); expect(fetch).toHaveBeenCalledTimes(1);
+    expect(h.controller.settleUnauthorized).not.toHaveBeenCalled(); hook.unmount(); h.hook.unmount();
+  });
+  it('requires returned selected status even when an injected API bypasses the decoder', async () => {
+    const h = boundedHarness(false);
+    const list = vi.spyOn(h.api, 'list').mockResolvedValue({ page: 1, page_size: 25, status: 'pending', total_count: 0n, records: [] });
+    const hook = renderHook(() => useTransfers({ controller: h.controller, api: h.api, listEnabled: true }));
+    await waitFor(() => expect(hook.result.current.page).not.toBeNull());
+    act(() => hook.result.current.changeQuery({ status: 'approved' }));
+    await waitFor(() => expect(hook.result.current.listError?.code).toBe('invalid_response'));
+    expect(hook.result.current.page).toBeNull(); expect(list).toHaveBeenCalledTimes(2); hook.unmount(); h.hook.unmount();
+  });
+});
 
 describe('R04 transfer hook', () => {
   it('has no protected reads while anonymous or disabled, then activates passively', async () => {
