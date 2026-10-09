@@ -106,14 +106,43 @@ that prelocks rows can deadlock and abort; universal deadlock-free success is no
 promised. The committed invariants, not the SQL actor's authenticated identity,
 are the database guarantee. Operators disabling guards are outside that boundary.
 
-This unit adds schema capabilities only: it does not expose an approval/rejection
-API, implement domain outcome loading/replay, or establish workflow/UI/realtime
-acceptance. Those later units require authorization and compatible outcome DTOs;
-final visual/workflow acceptance remains human manual smoke, not browser automation.
+A01a adds schema capabilities only; A01b adds the domain outcome reads below.
+Neither exposes an approval/rejection API or establishes workflow/UI/realtime
+acceptance. Later units require authorization and compatible outcome DTOs; final
+visual/workflow acceptance remains human manual smoke, not browser automation.
 
 Focused schema coverage is `TestA01LifecycleSchema`, using a newly admitted owned
 empty database per case, real PostgreSQL wait-event handshakes, strict rollback
 stock snapshots and clean numeric-overflow coverage failures.
+
+## A01b persisted outcomes and temporary HTTP fence
+
+`Get` and identical original creation replay return the persisted `pending`,
+`approved` or `rejected` status, never a Pending disguise. Status remains a string
+with exactly those three admitted values. `DecisionLocationID` and `DecidedAt`
+are nullable pointers: both absent for Pending, both present for terminal rows,
+with the persisted approver location and a timestamp not earlier than creation.
+Inconsistent metadata or an unrecognized status returns `ErrUnavailable`.
+Fingerprint, completeness and participant checks remain in force.
+
+Terminal reads/replays preserve the original ID, reference, creation time,
+direction and every item. Replay lookup still precedes fresh stock checks and
+writes no header, reference, item, allocation or balance, even when present
+availability is insufficient. Changed carts still return `ErrRetryConflict`;
+foreign/missing detail still returns `ErrNotFound`. List records and counts remain
+Pending-only. No allocation DTO/query or decision mutation method is added.
+
+Until A04 admits outcome DTOs, the HTTP adapter fences successful terminal Get
+and creation replay **before** Location or serialization, returning only the
+existing sanitized 503 `service_unavailable`. Pending HTTP behavior is unchanged.
+This is a temporary compatibility boundary, not outcome/UI readiness; clients
+must not substitute a fresh retry key to work around the fence.
+
+`TestA01bOutcomeStore` covers both outcomes across all three flows, persisted
+metadata and exact immutable payloads, participant privacy, reordered replay
+under exhausted availability, mixed Pending-only lists and complete unchanged
+header/item/allocation/balance snapshots. Fixtures use real guarded transitions
+in a committed READ COMMITTED transaction with reservation advisory lock first.
 
 ## Focused verification
 

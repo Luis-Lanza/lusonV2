@@ -362,6 +362,12 @@ func (a *API) registerTransfers(mux *http.ServeMux, store *transfers.Store) {
 				transferFailure(w, err)
 				return
 			}
+			// Outcome DTOs are not admitted until A04. Fence before Location
+			// or serialization; never disguise an original terminal replay.
+			if result.Request.Status != "pending" {
+				transferFailure(w, transfers.ErrUnavailable)
+				return
+			}
 			status := 201
 			if result.Replayed {
 				status = 200
@@ -408,6 +414,10 @@ func (a *API) registerTransfers(mux *http.ServeMux, store *transfers.Store) {
 		record, err := store.Get(r.Context(), actor, id)
 		if err != nil {
 			transferFailure(w, err)
+			return
+		}
+		if record.Status != "pending" {
+			transferFailure(w, transfers.ErrUnavailable)
 			return
 		}
 		respond(w, 200, transferRecord(record))

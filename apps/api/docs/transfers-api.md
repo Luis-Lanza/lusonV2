@@ -27,8 +27,8 @@ never registers transfers: those routes remain 404 for legacy callers.
 | Route | Methods | Result |
 |---|---|---|
 | `/api/transfers` | GET | Participant-scoped Pending page |
-| `/api/transfers` | POST | 201 new record; 200 identical actor/key replay |
-| `/api/transfers/{id}` | GET | Participant record; missing/inaccessible both 404 |
+| `/api/transfers` | POST | 201 new Pending; 200 identical Pending replay; terminal replay fenced 503 |
+| `/api/transfers/{id}` | GET | Participant Pending record; terminal fenced 503; missing/inaccessible both 404 |
 
 Unsupported methods return 405 with exact `Allow: GET, POST` for the collection
 and `Allow: GET` for numeric detail routes. HEAD is not implicitly enabled.
@@ -92,6 +92,29 @@ reordered lines are equivalent. Changed payload with the same actor/key is 409.
 Independent actors may reuse a key. References remain globally generated,
 continue beyond 999 and may have rollback gaps. No client reference is accepted.
 
+## Temporary terminal-outcome fence (A01b, until A04)
+
+The domain now loads persisted Approved/Rejected decisions and returns them on
+identical original creation replay, preserving immutable payload and decision
+metadata even if current stock is insufficient. HTTP outcome DTOs are not yet
+admitted. After a successful store Get/replay, the adapter checks status before
+setting Location or serializing any record. Non-Pending results return exactly
+`{"error":"service_unavailable"}` with status 503, no Location or cookies, and
+no request, status, decision, items or retry material. Existing no-store/nosniff
+headers remain. The outcome is not disguised as Pending.
+
+The DTO whitelist below is unchanged; decision metadata is domain-only. Lists
+and counts remain Pending-only. Inaccessible detail stays 404, changed-cart
+replay stays 409, and authentication, Origin/CSRF and strict framing keep their
+existing precedence. Pending creation/replay/detail retain 201/200, their
+original DTOs and creation/replay Location. This fence is not workflow/UI or
+realtime readiness. Do not switch retry keys to bypass it.
+
+`TestA01bPendingFence` exercises both outcomes and all three flows through real
+sessions and guarded terminal fixtures, exact sanitized errors, participant
+privacy, Pending whitelists/list/counts, security boundaries and complete
+header/item/allocation/balance snapshots around reads, replays and errors.
+
 ## Bounded list and lossless responses
 
 GET accepts only `page`, `page_size` and `status`, each at most once:
@@ -124,8 +147,8 @@ never floating-point conversions. Bounded location/variant/page values are JSON
 integer numbers. Timestamps are canonical UTC RFC3339 with only necessary
 fractional precision. Exact catalog model, Ah and L/R data are preserved. Retry
 keys, hashes, creation XIDs, account usernames and authentication metadata are
-never transfer-response fields. Creation/replay returns the same public record
-and `Location: /api/transfers/{id}`; read responses use the same record DTO.
+never transfer-response fields. Pending creation/replay returns the same public
+record and `Location: /api/transfers/{id}`; Pending reads use the same record DTO.
 
 ## Sanitized errors and verification
 

@@ -65,6 +65,8 @@ type Request struct {
 	Status                                 string
 	Creator, Origin, Destination, Approver Location
 	CreatedAt                              time.Time
+	DecisionLocationID                     *int
+	DecidedAt                              *time.Time
 	Items                                  []Item
 }
 type CreateResult struct {
