@@ -291,3 +291,41 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .warehouse .transfer-pending .page-controls button { width: auto; height: auto; font-size: 12px; padding: 6px 10px; }
   .warehouse .transfer-pending .creation-route { flex-wrap: wrap; padding: 12px; }
 }
+
+/* Immutable decision review. Shell, inventory and creation styles stay unchanged. */
+.transfer-detail { min-width: 0; }
+.transfer-detail-heading { display: grid; justify-items: start; gap: 8px; margin-bottom: 20px; }
+.transfer-detail-heading h2 { font-size: 24px; }
+.transfer-detail-heading p { color: var(--muted); }
+.transfer-detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; align-items: start; }
+.transfer-detail-grid > div { display: grid; gap: 16px; min-width: 0; }
+.transfer-detail-route small { color: var(--muted); font-size: 12px; }
+.transfer-detail-items { border: 1px solid var(--border); border-radius: 6px; background: white; }
+.transfer-detail-items table { min-width: 620px; }
+.transfer-detail-items td { font-variant-numeric: tabular-nums; }
+.transfer-detail-items td:first-child small { display: block; margin-top: 4px; color: var(--muted); }
+.transfer-detail-items tfoot { background: var(--page); text-align: right; font-weight: 600; }
+.transfer-stock { display: grid; gap: 6px; font-variant-numeric: tabular-nums; }
+.transfer-stock small { font-size: 11px; color: var(--muted); }
+.transfer-advisory { padding: 14px; border: 1px solid var(--border); background: white; border-radius: 6px; }
+.transfer-advisory button { margin-top: 10px; }
+.transfer-detail-summary { display: grid; gap: 16px; border: 1px solid var(--border); border-radius: 6px; background: white; padding: 20px; overflow-wrap: anywhere; }
+.transfer-detail-summary dl { margin: 0; }
+.transfer-detail-summary dt { margin-top: 12px; font-size: 12px; color: var(--muted); }
+.transfer-detail-summary dd { margin: 4px 0 0; font-size: 13px; }
+.transfer-impact { padding: 14px; background: #fffbef; border: 1px solid #e8cf86; border-radius: 4px; }
+.transfer-impact p + p { margin-top: 8px; }
+.transfer-impact h3 { margin: 0 0 10px; font-size: 14px; }
+.transfer-detail-cards { display: none; }
+@media (max-width: 1150px) {
+  .transfer-detail-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 767px) {
+  .pending-warehouse .transfer-detail-heading h2 { font-size: 22px; }
+  .pending-warehouse .transfer-detail-grid { gap: 16px; }
+  .pending-warehouse .transfer-detail-summary { padding: 16px; }
+  .pending-warehouse .transfer-detail-grid > div > .transfer-detail-items { display: none; }
+  .pending-warehouse .transfer-detail-cards { display: grid; gap: 14px; }
+  .pending-warehouse .transfer-detail-cards article { padding: 14px; background: white; border: 1px solid var(--border); border-radius: 6px; display: grid; gap: 8px; }
+  .pending-warehouse .transfer-detail-cards h3 { margin: 0; font-size: 15px; }
+}
