@@ -268,7 +268,7 @@ func transferQuery(raw string) (transfers.Query, error) {
 				err = transfers.ErrInvalid
 			}
 		case "status":
-			if value != "pending" && value != "approved" && value != "rejected" && value != "in_transit" {
+			if value != "pending" && value != "approved" && value != "rejected" && value != "in_transit" && value != "received" {
 				err = transfers.ErrInvalid
 			}
 			q.Status = value
@@ -309,6 +309,9 @@ type transferDTO struct {
 	DecidedAt               *string           `json:"decided_at,omitempty"`
 	DispatchLocationID      *int              `json:"dispatch_location_id,omitempty"`
 	DispatchedAt            *string           `json:"dispatched_at,omitempty"`
+	ReceiptLocationID       *int              `json:"receipt_location_id,omitempty"`
+	ReceivedAt              *string           `json:"received_at,omitempty"`
+	Receipt                 *receiptDTO       `json:"receipt,omitempty"`
 }
 
 // Outcomes must be complete persisted results, never fabricated Pending or
@@ -320,7 +323,7 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 		if r.DecisionLocationID != nil || r.DecidedAt != nil {
 			return transferDTO{}, transfers.ErrUnavailable
 		}
-	case "approved", "rejected", "in_transit":
+	case "approved", "rejected", "in_transit", "received":
 		if r.DecisionLocationID == nil || r.DecidedAt == nil ||
 			*r.DecisionLocationID < 1 || *r.DecisionLocationID > 3 ||
 			*r.DecisionLocationID != r.Approver.ID || r.DecidedAt.IsZero() ||
@@ -333,7 +336,7 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 		return transferDTO{}, transfers.ErrUnavailable
 	}
 	var dispatchedAt *string
-	if r.Status == "in_transit" {
+	if r.Status == "in_transit" || r.Status == "received" {
 		if r.DispatchLocationID == nil || *r.DispatchLocationID != r.Origin.ID || r.DispatchedAt == nil || r.DispatchedAt.IsZero() || r.DispatchedAt.Before(*r.DecidedAt) {
 			return transferDTO{}, transfers.ErrUnavailable
 		}
@@ -341,6 +344,10 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 		dispatchedAt = &stamp
 	} else if r.DispatchLocationID != nil || r.DispatchedAt != nil {
 		return transferDTO{}, transfers.ErrUnavailable
+	}
+	receipt, receivedAt, err := receiptRecord(r)
+	if err != nil {
+		return transferDTO{}, err
 	}
 	items := make([]transferItemDTO, 0, len(r.Items))
 	for _, item := range r.Items {
@@ -365,6 +372,9 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 		DecidedAt:               decidedAt,
 		DispatchLocationID:      r.DispatchLocationID,
 		DispatchedAt:            dispatchedAt,
+		ReceiptLocationID:       r.ReceiptLocationID,
+		ReceivedAt:              receivedAt,
+		Receipt:                 receipt,
 	}, nil
 }
 
@@ -424,6 +434,7 @@ func (a *API) transferCounts(store *transfers.Store) http.HandlerFunc {
 }
 
 func (a *API) registerTransfers(mux *http.ServeMux, store *transfers.Store) {
+	mux.HandleFunc("/api/transfers/{id}/receive", a.transferReceive(store))
 	mux.HandleFunc("/api/transfers/{id}/dispatch", a.transferDispatch(store))
 	mux.HandleFunc("/api/transfers/{id}/approve", a.transferDecision(store, true))
 	mux.HandleFunc("/api/transfers/{id}/reject", a.transferDecision(store, false))

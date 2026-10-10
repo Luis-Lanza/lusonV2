@@ -68,21 +68,21 @@ func TestA04CountsStates(t *testing.T) {
 	if err != nil {
 		t.Fatal("counts rejection setup failed")
 	}
-	check([3]transfers.Totals{{1, 1}, {1, 0}, {0, 0}})
+	check([3]transfers.Totals{{1, 2}, {1, 0}, {0, 0}})
 	before := outcomeSnapshot(t, ctx, p)
 	a, ae := s.Approve(ctx, actor(1), pending[0].ID)
 	r, re := s.Reject(ctx, actor(3), pending[1].ID)
 	if ae != nil || re != nil || !reflect.DeepEqual(a, approved) || !reflect.DeepEqual(r, rejected) || outcomeSnapshot(t, ctx, p) != before {
 		t.Fatal("decision retries changed original outcomes or owned state")
 	}
-	check([3]transfers.Totals{{1, 1}, {1, 0}, {0, 0}})
+	check([3]transfers.Totals{{1, 2}, {1, 0}, {0, 0}})
 	for i := 0; i < 51; i++ {
 		in := input()
 		in.RetryKey = fmt.Sprintf("a04-count-many-key-%03d", i)
 		create(t, ctx, s, 3, in)
 	}
 	// Branch A is not a participant in these 51 two-item requests.
-	check([3]transfers.Totals{{52, 52}, {1, 0}, {51, 0}})
+	check([3]transfers.Totals{{52, 53}, {1, 0}, {51, 0}})
 	page, err := s.List(ctx, actor(1), transfers.Query{Page: 1_000_000, PageSize: 10})
 	if err != nil || page.Total != 52 || len(page.Records) != 0 {
 		t.Fatal("counts must not depend on page size or far pages")
@@ -186,6 +186,59 @@ func TestA04CountsSnapshot(t *testing.T) {
 	fresh, err := s.Counts(ctx, actor(1))
 	if err != nil || fresh != (transfers.Totals{}) || outcomeSnapshot(t, ctx, p) != before {
 		t.Fatal("fresh aggregate or read-only state incorrect")
+	}
+}
+
+func TestR1CountsReceiptSnapshot(t *testing.T) {
+	ctx, p, s := fixture(t)
+	r := receiptDispatch(t, ctx, s, input())
+	trace := &a04CountTrace{done: make(chan struct{}), resume: make(chan struct{}), pid: make(chan uint32, 1)}
+	cfg := p.Config().Copy()
+	cfg.ConnConfig.Tracer = trace
+	traced, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatal("receipt count traced pool")
+	}
+	defer traced.Close()
+	readctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type result struct {
+		totals transfers.Totals
+		err    error
+	}
+	done := make(chan result, 1)
+	joined := false
+	defer func() {
+		cancel()
+		if !joined {
+			<-done
+		}
+	}()
+	go func() { got, err := transfers.New(traced).Counts(readctx, actor(2)); done <- result{got, err} }()
+	select {
+	case <-trace.done:
+	case <-ctx.Done():
+		t.Fatal("receipt aggregate handshake missing")
+	}
+	if _, err := s.Receive(ctx, actor(2), r.ID, receiptInput(r)); err != nil {
+		t.Fatal("concurrent receipt finalization", err)
+	}
+	before := receiptSnapshot(t, ctx, p)
+	close(trace.resume)
+	got := <-done
+	joined = true
+	if got.err != nil || got.totals != (transfers.Totals{PendingTotal: 0, ActionCount: 1}) {
+		t.Fatal("receipt split the read-only aggregate snapshot", got.err)
+	}
+	trace.mu.Lock()
+	rr := trace.rr
+	trace.mu.Unlock()
+	if !rr {
+		t.Fatal("receipt aggregate was not read-only repeatable-read")
+	}
+	fresh, err := s.Counts(ctx, actor(2))
+	if err != nil || fresh != (transfers.Totals{}) || receiptSnapshot(t, ctx, p) != before {
+		t.Fatal("fresh final receipt counts incorrect or mutated state")
 	}
 }
 

@@ -32,7 +32,7 @@ func normalizeQuery(q Query) (Query, error) {
 	if q.Status == "" {
 		q.Status = "pending"
 	}
-	if q.Status != "pending" && q.Status != "approved" && q.Status != "rejected" && q.Status != "in_transit" {
+	if q.Status != "pending" && q.Status != "approved" && q.Status != "rejected" && q.Status != "in_transit" && q.Status != "received" {
 		return Query{}, ErrInvalid
 	}
 	if q.Page < 1 || q.Page > 1_000_000 || (q.PageSize != 10 && q.PageSize != 25 && q.PageSize != 50) {

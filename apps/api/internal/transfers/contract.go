@@ -71,6 +71,9 @@ type Request struct {
 	DispatchLocationID                     *int
 	DispatchedAt                           *time.Time
 	Items                                  []Item
+	ReceiptLocationID                      *int
+	ReceivedAt                             *time.Time
+	Receipt                                *Receipt
 }
 type CreateResult struct {
 	Request  Request

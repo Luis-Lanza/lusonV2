@@ -157,12 +157,12 @@ func load(ctx context.Context, q querier, participant int, id int64) (Request, e
 	var fingerprint []byte
 	err := q.QueryRow(ctx, `SELECT r.id,r.kind,r.status,r.created_at,
   c.id,c.name,o.id,o.name,d.id,d.name,a.id,a.name,r.retry_key,r.payload_sha256,
-  r.decision_location_id,r.decided_at,r.dispatch_location_id,r.dispatched_at
+  r.decision_location_id,r.decided_at,r.dispatch_location_id,r.dispatched_at,r.receipt_location_id,r.received_at
   FROM transfer_requests r
   JOIN locations c ON c.id=r.creator_location_id JOIN locations o ON o.id=r.origin_location_id
   JOIN locations d ON d.id=r.destination_location_id JOIN locations a ON a.id=r.approver_location_id
   WHERE r.id=$1 AND $2 IN (r.origin_location_id,r.destination_location_id)`, id, participant).Scan(
-		&r.ID, &r.Kind, &r.Status, &r.CreatedAt, &r.Creator.ID, &r.Creator.Name, &r.Origin.ID, &r.Origin.Name, &r.Destination.ID, &r.Destination.Name, &r.Approver.ID, &r.Approver.Name, &retryKey, &fingerprint, &r.DecisionLocationID, &r.DecidedAt, &r.DispatchLocationID, &r.DispatchedAt)
+		&r.ID, &r.Kind, &r.Status, &r.CreatedAt, &r.Creator.ID, &r.Creator.Name, &r.Origin.ID, &r.Origin.Name, &r.Destination.ID, &r.Destination.Name, &r.Approver.ID, &r.Approver.Name, &retryKey, &fingerprint, &r.DecisionLocationID, &r.DecidedAt, &r.DispatchLocationID, &r.DispatchedAt, &r.ReceiptLocationID, &r.ReceivedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Request{}, ErrNotFound
 	}
@@ -210,19 +210,23 @@ func load(ctx context.Context, q querier, participant int, id int64) (Request, e
 		if r.DecisionLocationID != nil || r.DecidedAt != nil {
 			return Request{}, ErrUnavailable
 		}
-	case "approved", "rejected", "in_transit":
+	case "approved", "rejected", "in_transit", "received":
 		if r.DecisionLocationID == nil || *r.DecisionLocationID != r.Approver.ID || r.DecidedAt == nil || r.DecidedAt.Before(r.CreatedAt) {
 			return Request{}, ErrUnavailable
 		}
 	default:
 		return Request{}, ErrUnavailable
 	}
-	if r.Status == "in_transit" {
+	if r.Status == "in_transit" || r.Status == "received" {
 		if r.DispatchLocationID == nil || *r.DispatchLocationID != r.Origin.ID || r.DispatchedAt == nil || r.DispatchedAt.Before(*r.DecidedAt) {
 			return Request{}, ErrUnavailable
 		}
 	} else if r.DispatchLocationID != nil || r.DispatchedAt != nil {
 		return Request{}, ErrUnavailable
+	}
+	rows.Close()
+	if err := loadReceipt(ctx, q, &r); err != nil {
+		return Request{}, err
 	}
 	r.Reference = fmt.Sprintf("TR-%03d", r.ID)
 	return r, nil

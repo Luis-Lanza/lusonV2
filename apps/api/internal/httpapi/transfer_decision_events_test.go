@@ -63,7 +63,7 @@ func decisionLiveViews(t *testing.T, f *transferHTTPFixture, server *httptest.Se
 		} else {
 			expectTransferError(t, detail, 404, "not_found")
 		}
-		for _, selected := range []string{"pending", "approved", "rejected"} {
+		for _, selected := range []string{"pending", "approved", "rejected", "in_transit", "received"} {
 			page := transferObject(t, decisionNetwork(t, f, server, f.newRequest(actor, "GET", "/api/transfers?status="+selected, "")), 200)
 			var rows []map[string]json.RawMessage
 			var total string
@@ -83,11 +83,13 @@ func decisionLiveViews(t *testing.T, f *transferHTTPFixture, server *httptest.Se
 		if status == "pending" && visible {
 			pending = `"1"`
 		}
-		if status == "pending" && actor == original.ApproverLocationID {
+		if (status == "pending" && actor == original.ApproverLocationID) ||
+			(status == "approved" && actor == original.OriginLocationID) ||
+			(status == "in_transit" && actor == original.DestinationLocationID) {
 			action = `"1"`
 		}
 		if len(counts) != 2 || string(counts["pending_total"]) != pending || string(counts["action_count"]) != action {
-			t.Fatal("Pending/action count did not change exactly once at the persisted approver")
+			t.Fatal("Pending/workflow count does not match the persisted location-owned obligation")
 		}
 	}
 	f.unchanged(t)

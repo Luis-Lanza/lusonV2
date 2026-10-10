@@ -55,7 +55,7 @@ func (s *Store) Dispatch(ctx context.Context, actor auth.Identity, id int64) (Re
 		return Request{}, err
 	}
 	switch r.Status {
-	case "in_transit":
+	case "in_transit", "received":
 		if tx.Commit(ctx) != nil {
 			return Request{}, fail(ctx)
 		}

@@ -100,8 +100,12 @@ func TestD01DispatchStore(t *testing.T) {
 				t.Fatal("creation replay failed", err)
 			}
 			counts, err := s.Counts(ctx, actor(r.Approver.ID))
-			if err != nil || counts.PendingTotal != 0 || counts.ActionCount != 0 {
-				t.Fatal("Pending counts changed", err)
+			wantAction := int64(0)
+			if r.Approver.ID == r.Destination.ID {
+				wantAction = 1
+			}
+			if err != nil || counts.PendingTotal != 0 || counts.ActionCount != wantAction {
+				t.Fatal("workflow counts changed", err)
 			}
 			if terminal != outcomeSnapshot(t, ctx, p) {
 				t.Fatal("retry/read mutated stock or lifecycle")

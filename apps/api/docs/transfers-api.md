@@ -3,9 +3,10 @@
 Authenticated branches can create immutable Pending requests. Only physical
 origin and destination can read them; warehouse can read participating records
 but cannot create. Pending does **not** reserve or change stock. This read API
-also exposes persisted Approved/Rejected/In-transit outcomes and guarded
-whole-request approval, rejection and origin-only dispatch. Cancellation, receipt
-and frontend dispatch integration remain outside D1.
+also exposes persisted Approved/Rejected/In-transit/Received outcomes and guarded
+whole-request approval, rejection, origin-only dispatch and destination-only
+receipt. Cancellation, direct warehouse creation and discrepancy resolution are
+excluded. Receipt frontend integration and human smoke remain pending.
 
 ## Quick path
 
@@ -30,16 +31,17 @@ never registers transfers: those routes remain 404 for legacy callers.
 | `/api/transfers` | GET | Participant-scoped page for the selected status |
 | `/api/transfers` | POST | 201 new Pending; 200 identical original replay, including terminal outcomes |
 | `/api/transfers/{id}` | GET | Full participant record; missing/inaccessible both 404 |
-| `/api/transfers/counts` | GET | Private Pending total and assigned-approver action count |
+| `/api/transfers/counts` | GET | Private Pending total and location-owned workflow action count |
 | `/api/transfers/{id}/approve` | POST | Full persisted Approved outcome |
 | `/api/transfers/{id}/reject` | POST | Full persisted Rejected outcome |
-| `/api/transfers/{id}/dispatch` | POST | Origin-only full persisted In-transit outcome |
+| `/api/transfers/{id}/dispatch` | POST | Origin-only current persisted dispatch outcome |
+| `/api/transfers/{id}/receive` | POST | Destination-only current persisted receipt outcome |
 
 Unsupported methods return 405 with exact `Allow: GET, POST` for the collection
 and `Allow: GET` for numeric detail and the exact static counts route. HEAD is
 not implicitly enabled; `/api/transfers/counts/` is not an alias.
 Text-only detail segments (including operation names), trailing-slash paths and
-unknown operation segments are 404 routes. Approval, rejection and dispatch are exact
+unknown operation segments are 404 routes. Approval, rejection, dispatch and receipt are exact
 POST-only routes with `Allow: POST`; trailing/extra segments are not aliases. Digit-containing malformed detail segments
 (e.g. `0`, `01`, `-1`, `1.0`, overflowing int64) return 400 after authentication.
 Detail IDs must be canonical positive int64 decimal strings. Encoded path aliases
@@ -149,7 +151,7 @@ request; later-item shortage cannot leave earlier reservations behind.
 
 An already-completed same-action request returns the current persisted outcome
 without rechecking stock or emitting another change. After dispatch, authorized
-approval retries return In-transit without reserving again; rejection is a
+approval retries return the current In-transit or Received outcome without reserving again; rejection is a
 409 `decision_conflict`. Opposite action is 409
 `decision_conflict`, distinct from original-creation `retry_conflict`. Shortage
 is 409 `insufficient_stock`; missing/foreign is 404 `not_found`; a visible
@@ -163,8 +165,8 @@ cart with the same key remains a creation retry conflict.
 
 Committed invalidations are hints to refetch authorized detail, selected-status
 list and Pending/action counts. They are not decision payloads or delivery
-receipts. D1 does not deliver a frontend dispatch workflow. D2 integration and separately
-admitted human acceptance remain pending.
+receipts. D2 delivers dispatch UI; receipt UI integration and separately admitted
+human acceptance remain pending.
 
 ## Origin-only whole-request dispatch
 
@@ -212,8 +214,82 @@ must explicitly handle uncertainty rather than silently replay mutations.
 
 Existing commit-only inventory and participant transfer invalidations are reused.
 Rollback, recovery reads and mutation-free retries emit no new mutation hints.
-Pending/action counters remain approval-only; dispatch does not add future action
-counts. Receipt, cancellation and direct warehouse creation are excluded.
+Workflow action counters now include origin-owned Approved dispatches and
+destination-owned In-transit receipts. Cancellation and direct warehouse creation
+remain excluded.
+
+## Destination-only finalized receipt
+
+```http
+POST /api/transfers/123/receive
+Content-Type: application/json
+Origin: <configured same origin>
+X-CSRF-Token: <session-derived token>
+
+{"items":[{"variant_id":1,"actual_quantity":"0"},{"variant_id":2,"actual_quantity":"3"},{"variant_id":3,"actual_quantity":"7"}]}
+```
+
+Receipt follows the same authenticated mutation admission order as dispatch.
+The root object has exactly `items`; every item has exactly `variant_id` and
+`actual_quantity`. Variant IDs use the existing canonical positive integer JSON
+token parser and must belong to the immutable preloaded catalog. Actual quantities
+are canonical decimal **strings** from `"0"` through `"9223372036854775807"`.
+Unknown fields (including actor/time), duplicate keys/variants, missing fields,
+trailing data, numeric quantities, signs, padding and exponent/float aliases are
+400. The same single JSON Content-Type, UTF-8 and 64 KiB framing rules apply.
+There is no smaller arbitrary line cap than catalog uniqueness.
+
+Every sent variant must appear exactly once, including explicit zero actuals.
+Unexpected catalog variants must have positive actuals. A total-zero actual
+receipt is forbidden. Unexpected-only arrivals are allowed when all expected
+lines explicitly report zero: all sent units become recorded shortages. Positive
+actual existence is checked without summing across variants into int64.
+
+Only the persisted physical destination may receive, including warehouse for
+`send_to_warehouse`. Participant lookup precedes destination authorization, which
+precedes retry/conflict handling. A visible origin is 403; foreign/missing is 404.
+Pending/Approved/Rejected receipt is 409 `decision_conflict`.
+
+First success transitions `in_transit` → `received` once. For each expected
+variant, destination `existing` increases by `min(actual,sent)`; `reserved` is
+unchanged. All additions are overflow-checked before any writes; overflow is 400
+`invalid_request`. Shortage, excess and unexpected units are separate immutable
+exceptions, not sale-available stock. No automatic return, loss booking or
+exception-resolution action is performed.
+
+Received records retain original `items`, approval and dispatch metadata and add:
+
+- `receipt_location_id`: integer physical destination.
+- `received_at`: server-derived UTC RFC3339Nano, not earlier than `dispatched_at`.
+- `receipt.items`: sorted `variant_id` plus decimal-string `expected_quantity`,
+  `actual_quantity`, `available_quantity` (expected zero identifies unexpected).
+- `receipt.exceptions`: sorted `variant_id`, exact `kind` (`shortage`, `excess`,
+  `unexpected`) and positive decimal-string `quantity`; empty is `[]`.
+
+For example, if sent variants 1 and 2 each have quantity 1, the body above yields
+receipt lines `(1,1,0,0)`, `(2,1,3,1)`, `(3,0,7,0)` in variant/expected/actual/available
+order, with shortage 1, excess 2 and unexpected 7 respectively. Only variant 2
+receives one inventory unit. No private retry fingerprint or creation XID is exposed.
+
+An identical normalized payload (item/key order irrelevant) returns 200 with the
+current persisted receipt, without stock writes or new events. Changed valid
+actuals or line sets after finalization return 409 `retry_conflict`. Structurally
+invalid payloads remain 400. Authorized approval and dispatch retries return the
+current Received outcome read-only; authorized rejection deliberately returns
+409 `decision_conflict`, never a fabricated 503.
+
+GET, `status=received` participant pages and identical original creation replay
+return the same full persisted outcome. Recover uncertainty through participant
+GET of the same ID; clients must not silently replay uncertain mutations or create
+a replacement key. Existing commit-only invalidations are reused: credited rows
+produce inventory hints, and both participants receive transfer hints. An
+unexpected-only receipt emits transfer hints only; rollback and retries emit none.
+
+**R1 → R2 dependency:** the stopped D2 client still rejects `action_count >
+pending_total` and uses approval-only copy. R2 must remove that decoder constraint,
+admit Received/receipt metadata and update workflow labels. R1 does not inflate
+Pending totals or introduce a versioned compatibility layer. Receipt UI, manual
+smoke, native approval and commit are separate acceptance steps.
 
 ## Full persisted outcomes and original replay
 
@@ -235,9 +311,9 @@ Incomplete, inconsistent or unsupported internal outcome metadata yields
 sanitized 503 before serialization or Location, not an invented outcome.
 The former terminal-only 503 fences are removed, not domain integrity checks.
 
-**Frontend boundary:** D2 must admit `in_transit` and both dispatch metadata
-fields in lossless decoders, recovery and origin-only controls. This backend
-contract is not a dispatch UI, deployed runtime or human acceptance.
+**Frontend boundary:** D2 admits dispatch; R2 must admit `received` and its
+receipt metadata in lossless decoders, recovery and destination-only controls.
+This backend contract is not receipt UI, deployed runtime or human acceptance.
 
 ## Bounded list and lossless responses
 
@@ -247,7 +323,7 @@ GET accepts only `page`, `page_size` and `status`, each at most once:
 |---|---|---|
 | `page` | 1 | Canonical ASCII decimal 1–1000000 |
 | `page_size` | 25 | Exact 10, 25, 50 |
-| `status` | pending | Exact `pending`, `approved`, `rejected`, `in_transit` |
+| `status` | pending | Exact `pending`, `approved`, `rejected`, `in_transit`, `received` |
 
 Raw queries are bounded to 4096 bytes. Empty values/components, unknown fields,
 duplicates, encoding aliases and malformed encoding are rejected 400. Parameter
@@ -266,7 +342,8 @@ Only explicit snake_case DTOs are serialized:
   `destination_location_id/name`, `approver_location_id/name` (each pair means
   two flat fields, e.g. `origin_location_id` and `origin_location_name`).
 - Decided record only: `decision_location_id`, `decided_at`.
-- In-transit record additionally: `dispatch_location_id`, `dispatched_at`.
+- In-transit/Received record additionally: `dispatch_location_id`, `dispatched_at`.
+- Received record additionally: `receipt_location_id`, `received_at`, `receipt`.
 - Item: `variant_id`, `brand`, `model`, `capacity_ah`, `polarity`, `quantity`.
 - Page: `page`, `page_size`, `status`, `total_count`, `records`.
 
@@ -278,7 +355,7 @@ keys, hashes, creation XIDs, account usernames and authentication metadata are
 never transfer-response fields. Pending creation/replay returns the same public
 record and `Location: /api/transfers/{id}`; all reads use the same full record DTO.
 
-## Private Pending counts
+## Private workflow counts
 
 `GET /api/transfers/counts` accepts no query, including an explicit empty `?`.
 It shares strict path-alias, unique-cookie, identity and privacy guards with
@@ -289,10 +366,13 @@ existing reads. Its exact response has only decimal-string counts:
 ```
 
 `pending_total` counts Pending requests whose physical origin or destination is
-the authenticated assigned location. `action_count` counts the Pending subset
-whose **persisted approver** is that location. One request contributes once,
-regardless of item count/quantities or the two possible decision buttons.
-Warehouse assignment is legal. These are not future dispatch/receipt actions.
+the authenticated assigned location. `action_count` counts one header for:
+Pending at its **persisted approver**, Approved at its **physical origin**, or
+In-transit at its **physical destination**. Received/Rejected contribute no action.
+One request contributes once, regardless of item count/quantities or possible
+buttons. Warehouse assignment is legal. These are not unread events, item totals
+or page counts. `action_count` may exceed `pending_total`, including `0` Pending
+and `1` required dispatch/receipt.
 
 The domain uses one participant-filtered aggregate in a read-only repeatable-read
 transaction, with a 10-second operation budget and bounded 5-second background
@@ -337,6 +417,13 @@ origin/participant privacy, recovery, rollback and commit-only hints. The domain
 and schema tests cover exact owned consumption, stock invariants, SQL bypass
 rejection and concurrent dispatch/approval retries. These are source verification,
 not manual smoke or independent review approval.
+
+`TestR1Receipt*`, `TestR1ReceiveHTTP*` and `TestR1WorkflowCountsHTTP` cover strict
+receipt parsing, truthful shortages/excess/unexpected-only receipts, overflow,
+all participant roles, full recovery/replay, direct SQL guards, immutable history,
+rollback/failed commit, deterministic identical/conflicting concurrency and
+commit-only/no-op events using the admitted fixture. `TestR1CountsReceiptSnapshot`
+checks a read-only aggregate interleaved with actual receipt finalization.
 
 See [the immutable store contract](pending-requests-store.md) for persistence,
 replay ordering, Pending stock policy and snapshot rationale.

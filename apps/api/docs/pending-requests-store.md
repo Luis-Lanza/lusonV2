@@ -6,10 +6,95 @@ without inventory changes. `Dispatch` consumes approved requests at their
 physical origin with atomic stock deduction. Creation does not hold stock;
 approval/rejection themselves do not dispatch or receive. The guarded HTTP API
 and commit-only invalidations are documented in [transfers-api.md](transfers-api.md).
-Receipt and frontend dispatch remain outside D1.
+`Receive` finalizes at the destination with exact line-level quantities and
+immutable exceptions; only expected minimums become available stock.
 
-The A01–A03/R02 sections below retain prerequisite implementation history;
-the D1 contract immediately below supersedes their earlier lifecycle/HTTP fences.
+The A01–A03/R02 and D1 sections below retain prerequisite implementation history;
+the R1 contract supersedes their earlier lifecycle/count/HTTP fences. D2 dispatch
+UI is complete; R2 receipt UI and manual smoke remain pending.
+
+## R1 destination receipt and workflow counts
+
+`Store.Receive(ctx, authenticatedIdentity, requestID, ReceiptInput)` returns the
+complete persisted `Request` only after commit. Physical participant lookup
+precedes destination authorization; authorization precedes normalized retry and
+lifecycle conflict handling. Invalid identity is forbidden; missing/foreign ID is
+not-found. A visible origin cannot receive or probe a finalized retry outcome.
+
+Input `Items []Line` uses `Line.Quantity` as actual received quantity. Every
+expected variant appears once, with zero allowed. Additional preloaded catalog
+variants require positive actuals. Duplicates, noncatalog variants, missing
+expected lines, negative actuals, unexpected zeros and all-zero receipts are
+`ErrInvalid`. Positive actual existence is tested without an int64 aggregate;
+cross-variant totals may exceed signed bigint. `NormalizeReceipt` copies and
+sorts without mutating input, imposing no arbitrary smaller line cap.
+
+Only In-transit can finalize. Pending/Approved/Rejected return
+`ErrDecisionConflict`. Received plus identical sorted variant/actual pairs returns
+the immutable persisted receipt without stock checks/writes. A changed valid
+normalized payload returns `ErrRetryConflict`. No separate receipt retry key or
+client-derived actor/time is accepted. Original creation replay, participant
+Get/List, authorized Approve and Dispatch retries all return current Received;
+authorized Reject returns `ErrDecisionConflict`.
+
+Receipt shares the global integrity advisory lock, READ COMMITTED, 10-second
+operation budget and 5-second background rollback. Lock the advisory key before
+the participant header, then destination balances in sorted variant order.
+Catalog completeness, all line rules and every destination addition are checked
+before any INSERT/UPDATE. Addition overflow is `ErrInvalid`; driver/SQL failures
+are sanitized `ErrUnavailable`, while Go context semantics remain intact. Every
+failure returns a zero request and rolls back header, stock, lines, exceptions
+and revisions together.
+
+Migration 008 preserves 001–007 and extends header/allocation lifecycle guards to
+Received. `receipt_location_id` and `received_at` are server-derived destination
+and statement timestamp, no earlier than dispatch. Consumed allocations survive
+unchanged, and active-only reservation coverage remains enforced. Immutable
+`transfer_receipt_lines` persist expected/actual/available quantities per variant;
+expected equals original sent quantity, or zero for unexpected catalog variants.
+Available equals `LEAST(expected,actual)` exactly. `transfer_receipt_exceptions`
+separately persist positive typed shortage/excess/unexpected quantities. No
+exceptions become automatically available inventory.
+
+Line INSERTs require the integrity lock, In-transit header and current creation
+transaction. Deferred final-row guards reject standalone line commits, incomplete
+receipts and arithmetic/ownership inconsistencies. Updates, deletes, appends after
+finalization and truncation are refused. The header trigger prevalidates every
+line and overflow before any credit, then credits only positive available units
+and generates exact exceptions. Raw SQL finalization therefore cannot persist a
+stock-free or header-only receipt. Exceptions may only be inserted by that header
+transition. Owner-level disabling of triggers is outside the existing integrity
+boundary; arbitrary SQL prelocking can still deadlock/abort.
+
+`Receipt` contains sorted `Items []ReceiptLine` and `Exceptions []ReceiptException`;
+`CheckReceipt` verifies persisted complete arithmetic before domain/wire exposure.
+Received retains original request items, participants, approval and dispatch.
+Unexpected-only arrivals record every expected shortage with zero inventory
+credit; no automatic loss, return, discrepancy resolution or cancellation exists.
+
+Counts remain one participant-filtered, read-only REPEATABLE READ aggregate:
+`PendingTotal` counts participant Pending only; `ActionCount` counts Pending at
+persisted approver, Approved at physical origin, In-transit at physical destination.
+Each header contributes once, independent of units/items/pages. Received/Rejected
+are no actions. The two totals share a snapshot, not a separate page request.
+`ActionCount` may exceed `PendingTotal`. R2 must remove D2's outdated decoder
+constraint and approval-only copy; the app remains stopped, with no old-client
+production compatibility or versioned count layer added.
+
+Migration 004 inventory and 006 participant status invalidations are unchanged.
+Only positive credit produces inventory movement/hints. Unexpected-only receipts
+produce participant transfer hints, not fabricated inventory updates. Rollback,
+failed commit, reads and no-op retries produce no mutation hints.
+
+Focused `TestR1*` tests use actual admitted isolated PostgreSQL databases and
+connection-local tracer/PID wait handshakes. They cover line arithmetic, all
+roles, overflow/max boundaries, unexpected-only and all-zero rules, full catalog,
+normalized retries, complete recovery/replay, direct SQL bypass rejection,
+immutable histories, injected rollback/deferred failure, canceled lock waits,
+identical/conflicting and overlapping receipts, true count transitions/snapshots
+and commit-only events. Pure normalization/decoder tests do not require PG.
+Documentation has no meaningful behavioral RED. Native approval, commit and
+human manual smoke remain parent-owned and pending.
 
 ## D1 whole-request dispatch contract
 
