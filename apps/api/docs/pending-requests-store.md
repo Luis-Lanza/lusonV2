@@ -2,10 +2,76 @@
 
 `internal/transfers` creates durable, participant-private Pending requests,
 approves whole requests with atomic source reservations and rejects whole requests
-without inventory changes. Creation does not hold stock. Neither decision
-dispatches, receives or deducts physical stock. Domain decisions have no HTTP
-mutation route, UI or realtime integration; those require separate integration
-and authorization checks.
+without inventory changes. `Dispatch` consumes approved requests at their
+physical origin with atomic stock deduction. Creation does not hold stock;
+approval/rejection themselves do not dispatch or receive. The guarded HTTP API
+and commit-only invalidations are documented in [transfers-api.md](transfers-api.md).
+Receipt and frontend dispatch remain outside D1.
+
+The A01–A03/R02 sections below retain prerequisite implementation history;
+the D1 contract immediately below supersedes their earlier lifecycle/HTTP fences.
+
+## D1 whole-request dispatch contract
+
+`Store.Dispatch(ctx, authenticatedIdentity, requestID)` returns the complete
+persisted `Request` only after commit. Account and assigned location must agree.
+Physical-participant lookup precedes origin authorization; authorization precedes
+retry/conflict handling. The warehouse can dispatch requests whose physical
+origin is warehouse, but remains forbidden to create requests. A warehouse
+approver cannot dispatch a branch's `send_to_warehouse` proposal.
+
+| Condition | Result |
+| --- | --- |
+| Nil context/store/pool | `ErrUnavailable`, zero request |
+| Invalid/unassigned identity or visible non-origin | `ErrForbidden` |
+| Nonpositive, missing or foreign ID | `ErrNotFound` |
+| Origin dispatch of Pending/Rejected | `ErrDecisionConflict` |
+| Origin dispatch of Approved | Commit whole In-transit outcome |
+| Origin retry of In-transit | Current persisted outcome without mutation |
+
+Dispatch uses READ COMMITTED, a 10-second operation deadline and bounded
+5-second background rollback. It takes `pg_advisory_xact_lock(714025,1)` before
+locking the participant header. Migration 007's header transition locks source
+balances in ascending variant order, validates every active owned allocation,
+and deducts each exact item quantity from `existing` and `reserved` together.
+This keeps `available` unchanged, preserves other owned/independent holds and
+never credits destination inventory. The database owns those coupled effects:
+a direct SQL header transition cannot persist a stock-free dispatch. Missing or
+uncovered stock aborts; any partial effects roll back with the header.
+
+Migration 007 preserves 001–006 and extends the existing guards rather than
+adding a ledger/framework. Request status now admits `in_transit`; immutable
+original items and approval metadata stay sealed. `DispatchLocationID` and
+`DispatchedAt` are nullable pointers, both absent before dispatch and both present
+for In-transit. The database derives the origin location and statement timestamp;
+dispatch cannot precede approval. The allocation's minimal `consumed_at` marker
+retains immutable request/variant/source/quantity history. Only the header
+transition may consume allocations; standalone consumption, release, reactivation,
+delete and truncation are refused. Deferred final-row checks require exactly one
+allocation per item with consumption matching the header. Only active allocations
+contribute to numeric-sum reservation coverage; independent reservations may
+still exceed that owned sum. Owner-level disabling of guards remains outside the
+integrity boundary, and arbitrary SQL prelocking can still deadlock/abort.
+
+Participant Get/List and identical original creation replay validate and return
+In-transit consistently. Authorized Approve after dispatch returns the current
+In-transit outcome without reserving again; Reject returns `ErrDecisionConflict`.
+Authorized dispatch retries never recheck stock or issue writes. Standard Go
+cancellation/deadline semantics remain intact; driver failures are sanitized.
+Every failure returns a zero request. Reads/replays preserve immutable payload,
+participant privacy and original creation-key conflict semantics.
+
+Existing inventory/status triggers release metadata-only hints on commit.
+Rollback and mutation-free retries add no revisions or hints. Pending/action
+counts retain their approval-only meaning. Receipt, cancellation and direct
+warehouse creation are not admitted by this migration.
+
+`TestD01DispatchDependencies` is pure. `TestD01DispatchStore`,
+`TestD01DispatchSchema` and `TestD01DispatchConcurrency` use the existing admitted
+per-test PostgreSQL databases for all flows, stock/reservation snapshots, retained
+history, direct-SQL guard rejection, midwrite rollback, retries/replay and actual
+lock-wait handshakes. HTTP/event coverage is described in the API contract.
+Verification does not establish deployment, manual smoke or independent approval.
 
 ## Trusted entry points
 

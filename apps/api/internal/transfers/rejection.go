@@ -63,7 +63,7 @@ func (s *Store) Reject(ctx context.Context, actor auth.Identity, id int64) (Requ
 			return Request{}, fail(ctx)
 		}
 		return r, nil
-	case "approved":
+	case "approved", "in_transit":
 		return Request{}, ErrDecisionConflict
 	case "pending":
 		// Continue with the whole-request status transition only.

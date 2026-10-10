@@ -38,7 +38,7 @@ func TestPostgres(t *testing.T) {
 	t.Run("schema_seed_and_preservation", func(t *testing.T) {
 		p := fresh(t)
 		initialize(t, p)
-		for table, want := range map[string]int{"schema_migrations": 6, "locations": 3, "catalog_entries": 95, "catalog_variants": 190, "inventory_balances": 570, "initialization_metadata": 1} {
+		for table, want := range map[string]int{"schema_migrations": 7, "locations": 3, "catalog_entries": 95, "catalog_variants": 190, "inventory_balances": 570, "initialization_metadata": 1} {
 			if n := scalar(t, p, "SELECT count(*) FROM "+table); n != want {
 				t.Fatalf("%s count %d, want %d", table, n, want)
 			}

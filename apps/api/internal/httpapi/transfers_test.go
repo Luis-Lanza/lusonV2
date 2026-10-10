@@ -542,7 +542,7 @@ func testTransferGuards(t *testing.T) {
 	for _, path := range []string{"/api/transfers/1/approve", "/api/transfers/1/reject", "/api/transfers/1/cancel", "/api/transfers/1/dispatch", "/api/transfers/1/receive", "/api/transfers/approve", "/api/transfers/", "/api/transfers//1", "/api/transfers/../inventory"} {
 		for _, verb := range []string{"GET", "POST", "HEAD"} {
 			want := 404
-			if path == "/api/transfers/1/approve" || path == "/api/transfers/1/reject" {
+			if path == "/api/transfers/1/approve" || path == "/api/transfers/1/reject" || path == "/api/transfers/1/dispatch" {
 				want = 405
 				if verb == "POST" {
 					want = 400

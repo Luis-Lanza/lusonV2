@@ -68,6 +68,8 @@ type Request struct {
 	CreatedAt                              time.Time
 	DecisionLocationID                     *int
 	DecidedAt                              *time.Time
+	DispatchLocationID                     *int
+	DispatchedAt                           *time.Time
 	Items                                  []Item
 }
 type CreateResult struct {

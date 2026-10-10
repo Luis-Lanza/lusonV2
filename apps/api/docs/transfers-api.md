@@ -3,9 +3,9 @@
 Authenticated branches can create immutable Pending requests. Only physical
 origin and destination can read them; warehouse can read participating records
 but cannot create. Pending does **not** reserve or change stock. This read API
-also exposes persisted Approved/Rejected outcomes and guarded whole-request
-approval/rejection. Cancellation, dispatch, receipt and UI integration remain
-outside this unit.
+also exposes persisted Approved/Rejected/In-transit outcomes and guarded
+whole-request approval, rejection and origin-only dispatch. Cancellation, receipt
+and frontend dispatch integration remain outside D1.
 
 ## Quick path
 
@@ -33,12 +33,13 @@ never registers transfers: those routes remain 404 for legacy callers.
 | `/api/transfers/counts` | GET | Private Pending total and assigned-approver action count |
 | `/api/transfers/{id}/approve` | POST | Full persisted Approved outcome |
 | `/api/transfers/{id}/reject` | POST | Full persisted Rejected outcome |
+| `/api/transfers/{id}/dispatch` | POST | Origin-only full persisted In-transit outcome |
 
 Unsupported methods return 405 with exact `Allow: GET, POST` for the collection
 and `Allow: GET` for numeric detail and the exact static counts route. HEAD is
 not implicitly enabled; `/api/transfers/counts/` is not an alias.
 Text-only detail segments (including operation names), trailing-slash paths and
-unknown operation segments are 404 routes. Approval and rejection are exact
+unknown operation segments are 404 routes. Approval, rejection and dispatch are exact
 POST-only routes with `Allow: POST`; trailing/extra segments are not aliases. Digit-containing malformed detail segments
 (e.g. `0`, `01`, `-1`, `1.0`, overflowing int64) return 400 after authentication.
 Detail IDs must be canonical positive int64 decimal strings. Encoded path aliases
@@ -146,8 +147,10 @@ stock or increase destination availability. Rejection closes Pending without
 changing inventory or allocations. Any failed transaction rolls back the whole
 request; later-item shortage cannot leave earlier reservations behind.
 
-An already-completed same-action request returns the original outcome without
-rechecking stock or emitting another change. Opposite action is 409
+An already-completed same-action request returns the current persisted outcome
+without rechecking stock or emitting another change. After dispatch, authorized
+approval retries return In-transit without reserving again; rejection is a
+409 `decision_conflict`. Opposite action is 409
 `decision_conflict`, distinct from original-creation `retry_conflict`. Shortage
 is 409 `insufficient_stock`; missing/foreign is 404 `not_found`; a visible
 participant who is not the approver gets 403 `forbidden`. Backend/context failures
@@ -160,8 +163,57 @@ cart with the same key remains a creation retry conflict.
 
 Committed invalidations are hints to refetch authorized detail, selected-status
 list and Pending/action counts. They are not decision payloads or delivery
-receipts. The current frontend does not yet implement this mutation/recovery
-workflow; A05/A06 and separately admitted human acceptance remain pending.
+receipts. D1 does not deliver a frontend dispatch workflow. D2 integration and separately
+admitted human acceptance remain pending.
+
+## Origin-only whole-request dispatch
+
+```http
+POST /api/transfers/123/dispatch
+Content-Type: application/json
+Origin: <configured same origin>
+X-CSRF-Token: <session-derived token>
+
+{}
+```
+
+Dispatch uses the same strict empty-object framing and authenticated mutation
+admission order as decisions. No actor, item quantities, retry key or consulted
+inventory location is accepted. Only the persisted physical origin may dispatch,
+including a warehouse origin. For `send_to_warehouse`, the branch origin dispatches;
+warehouse approval does not grant warehouse dispatch authority.
+
+Approved → `in_transit` consumes every immutable request-owned allocation and
+atomically deducts its quantity from both source `existing` and `reserved`.
+Unreserved availability is unchanged; other allocations and independent holds
+survive. Destination balances receive no credit. Items, participants, creation
+identity and approval actor/time remain unchanged. Allocation history stays
+internal, marked consumed rather than deleted.
+
+First success and authorized retries return 200 with the complete current
+persisted record. Dispatch adds `dispatch_location_id`, an integer matching the
+origin, and `dispatched_at`, a server-derived canonical UTC RFC3339Nano timestamp
+not earlier than `decided_at`. Both fields are omitted before dispatch, never null.
+Decision fields remain present. IDs and quantities keep their decimal-string
+encoding. No new response retry key, allocation DTO or Location requirement is
+introduced.
+
+Pending/Rejected dispatch is 409 `decision_conflict`. A visible destination actor
+gets 403 `forbidden`; missing/foreign records are indistinguishable 404
+`not_found`. Standard framing, authentication, method and backend errors retain
+their existing mappings. A retry never deducts stock twice. Authorized approval
+retry after dispatch returns the current In-transit record without reserving;
+rejection after dispatch returns 409, not unavailable.
+
+Recover an uncertain result through participant `GET /api/transfers/{id}`.
+Identical original creation replay and `status=in_transit` participant pages also
+return the complete persisted outcome. Do not invent a new creation key. Clients
+must explicitly handle uncertainty rather than silently replay mutations.
+
+Existing commit-only inventory and participant transfer invalidations are reused.
+Rollback, recovery reads and mutation-free retries emit no new mutation hints.
+Pending/action counters remain approval-only; dispatch does not add future action
+counts. Receipt, cancellation and direct warehouse creation are excluded.
 
 ## Full persisted outcomes and original replay
 
@@ -183,9 +235,9 @@ Incomplete, inconsistent or unsupported internal outcome metadata yields
 sanitized 503 before serialization or Location, not an invented outcome.
 The former terminal-only 503 fences are removed, not domain integrity checks.
 
-**Frontend limitation:** the current strict frontend decoder still rejects
-terminal statuses and their new keys. A05/A06 must extend decoders/consumers;
-this API contract is not a working UI, deployed runtime or human acceptance.
+**Frontend boundary:** D2 must admit `in_transit` and both dispatch metadata
+fields in lossless decoders, recovery and origin-only controls. This backend
+contract is not a dispatch UI, deployed runtime or human acceptance.
 
 ## Bounded list and lossless responses
 
@@ -195,7 +247,7 @@ GET accepts only `page`, `page_size` and `status`, each at most once:
 |---|---|---|
 | `page` | 1 | Canonical ASCII decimal 1–1000000 |
 | `page_size` | 25 | Exact 10, 25, 50 |
-| `status` | pending | Exact `pending`, `approved`, `rejected` |
+| `status` | pending | Exact `pending`, `approved`, `rejected`, `in_transit` |
 
 Raw queries are bounded to 4096 bytes. Empty values/components, unknown fields,
 duplicates, encoding aliases and malformed encoding are rejected 400. Parameter
@@ -213,7 +265,8 @@ Only explicit snake_case DTOs are serialized:
   `creator_location_id/name`, `origin_location_id/name`,
   `destination_location_id/name`, `approver_location_id/name` (each pair means
   two flat fields, e.g. `origin_location_id` and `origin_location_name`).
-- Terminal record only: `decision_location_id`, `decided_at`.
+- Decided record only: `decision_location_id`, `decided_at`.
+- In-transit record additionally: `dispatch_location_id`, `dispatched_at`.
 - Item: `variant_id`, `brand`, `model`, `capacity_ah`, `polarity`, `quantity`.
 - Page: `page`, `page_size`, `status`, `total_count`, `records`.
 
@@ -257,7 +310,7 @@ with a separately fetched list**; later calls can observe newer commits.
 | 403 | `forbidden` |
 | 404 | `not_found` (numeric detail; inaccessible equals missing) |
 | 405 | `method_not_allowed` |
-| 409 | `insufficient_stock` or `retry_conflict` |
+| 409 | `insufficient_stock`, `retry_conflict` or `decision_conflict` |
 | 503 | `service_unavailable` (including cancellation/deadlines) |
 
 Unknown routes retain ordinary 404 behavior. No backend/SQL/credential text is
@@ -277,6 +330,13 @@ pages and deterministic snapshot interleaving. The retained
 `TestA01bPendingFence` now covers full HTTP outcomes for both decisions/all flows,
 original replay, Pending compatibility and exact state invariance. Its guarded
 setup proves exact owned allocations/reservations before resetting test baseline.
+
+`TestD01DispatchContract` covers the pure filter/metadata boundary;
+`TestD01DispatchHTTP` and `TestD01DispatchEvents` cover the real guarded route,
+origin/participant privacy, recovery, rollback and commit-only hints. The domain
+and schema tests cover exact owned consumption, stock invariants, SQL bypass
+rejection and concurrent dispatch/approval retries. These are source verification,
+not manual smoke or independent review approval.
 
 See [the immutable store contract](pending-requests-store.md) for persistence,
 replay ordering, Pending stock policy and snapshot rationale.

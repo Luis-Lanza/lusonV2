@@ -268,7 +268,7 @@ func transferQuery(raw string) (transfers.Query, error) {
 				err = transfers.ErrInvalid
 			}
 		case "status":
-			if value != "pending" && value != "approved" && value != "rejected" {
+			if value != "pending" && value != "approved" && value != "rejected" && value != "in_transit" {
 				err = transfers.ErrInvalid
 			}
 			q.Status = value
@@ -307,6 +307,8 @@ type transferDTO struct {
 	Items                   []transferItemDTO `json:"items"`
 	DecisionLocationID      *int              `json:"decision_location_id,omitempty"`
 	DecidedAt               *string           `json:"decided_at,omitempty"`
+	DispatchLocationID      *int              `json:"dispatch_location_id,omitempty"`
+	DispatchedAt            *string           `json:"dispatched_at,omitempty"`
 }
 
 // Outcomes must be complete persisted results, never fabricated Pending or
@@ -318,7 +320,7 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 		if r.DecisionLocationID != nil || r.DecidedAt != nil {
 			return transferDTO{}, transfers.ErrUnavailable
 		}
-	case "approved", "rejected":
+	case "approved", "rejected", "in_transit":
 		if r.DecisionLocationID == nil || r.DecidedAt == nil ||
 			*r.DecisionLocationID < 1 || *r.DecisionLocationID > 3 ||
 			*r.DecisionLocationID != r.Approver.ID || r.DecidedAt.IsZero() ||
@@ -328,6 +330,16 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 		stamp := r.DecidedAt.UTC().Format(time.RFC3339Nano)
 		decidedAt = &stamp
 	default:
+		return transferDTO{}, transfers.ErrUnavailable
+	}
+	var dispatchedAt *string
+	if r.Status == "in_transit" {
+		if r.DispatchLocationID == nil || *r.DispatchLocationID != r.Origin.ID || r.DispatchedAt == nil || r.DispatchedAt.IsZero() || r.DispatchedAt.Before(*r.DecidedAt) {
+			return transferDTO{}, transfers.ErrUnavailable
+		}
+		stamp := r.DispatchedAt.UTC().Format(time.RFC3339Nano)
+		dispatchedAt = &stamp
+	} else if r.DispatchLocationID != nil || r.DispatchedAt != nil {
 		return transferDTO{}, transfers.ErrUnavailable
 	}
 	items := make([]transferItemDTO, 0, len(r.Items))
@@ -351,6 +363,8 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 		Items:                   items,
 		DecisionLocationID:      r.DecisionLocationID,
 		DecidedAt:               decidedAt,
+		DispatchLocationID:      r.DispatchLocationID,
+		DispatchedAt:            dispatchedAt,
 	}, nil
 }
 
@@ -410,6 +424,7 @@ func (a *API) transferCounts(store *transfers.Store) http.HandlerFunc {
 }
 
 func (a *API) registerTransfers(mux *http.ServeMux, store *transfers.Store) {
+	mux.HandleFunc("/api/transfers/{id}/dispatch", a.transferDispatch(store))
 	mux.HandleFunc("/api/transfers/{id}/approve", a.transferDecision(store, true))
 	mux.HandleFunc("/api/transfers/{id}/reject", a.transferDecision(store, false))
 	mux.HandleFunc("/api/transfers/counts", a.transferCounts(store))

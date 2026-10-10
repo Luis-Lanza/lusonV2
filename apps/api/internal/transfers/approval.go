@@ -57,7 +57,7 @@ func (s *Store) Approve(ctx context.Context, actor auth.Identity, id int64) (Req
 		return Request{}, err
 	}
 	switch r.Status {
-	case "approved":
+	case "approved", "in_transit":
 		// No stock query or mutation on same-action retry, even when later
 		// independent holds have exhausted all remaining availability.
 		if tx.Commit(ctx) != nil {
