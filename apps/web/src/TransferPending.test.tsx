@@ -218,7 +218,7 @@ describe('A06b status-specific consultation', () => {
     const f = fixture(); render(f.element()); await loaded();
     const selector = screen.getByRole('combobox', { name: 'Estado de transferencia' });
     expect(selector).toHaveValue('pending');
-    expect(within(selector).getAllByRole('option').map(option => option.getAttribute('value'))).toEqual(['pending', 'approved', 'rejected']);
+    expect(within(selector).getAllByRole('option').map(option => option.getAttribute('value'))).toEqual(['pending', 'approved', 'rejected', 'in_transit']);
     fireEvent.click(screen.getByRole('button', { name: 'Siguiente pendientes' })); await loaded();
     selectStatus(status);
     await screen.findByText(`9007199254740993 solicitudes ${status === 'approved' ? 'aprobadas' : 'rechazadas'}`);

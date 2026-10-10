@@ -447,6 +447,110 @@ privacy conclusion follows from mocked getters or participant fixtures. API/hook
 backend authority protocols are unchanged by this UI unit. Two-service PG stock
 invariance, real desktop/mobile layout and complete feature acceptance remain pending.
 
+## D2 dispatch frontend — source candidate, verification pending
+
+This section describes the dispatch candidate and supersedes the historical
+Pending-only boundaries above. It is not deployed-browser acceptance. Full
+Vitest, typecheck and a non-destructive build remain parent-owned checks; newly
+added stale-session and shell-navigation tests have not been executed by the
+source writer. Earlier focused RED/GREEN evidence does not establish that the
+final candidate passes every check.
+
+### Dispatch and current outcomes
+
+Participant list/detail and original creation replay admit `in_transit` alongside
+Pending, Approved and Rejected. Transfer IDs remain canonical int64 strings,
+quantities remain bigint, and UTC timestamps retain their original nanosecond
+text. Transit requires retained approval location/time plus origin-matching
+`dispatch_location_id` and canonical `dispatched_at >= decided_at`; other states
+reject dispatch metadata. Fractional timestamp ordering never uses rounded
+JavaScript milliseconds. Immutable identity, items and approval metadata must
+match the original attempt before a mutation or recovery result is confirmed.
+
+Only the authenticated assigned physical origin may open dispatch confirmation
+for an Approved request, including warehouse origins. A warehouse approving a
+branch-to-warehouse send cannot dispatch it: the branch origin does that.
+Consulted inventory location never grants authority. Dispatch is whole-request,
+with strict `{}` POST to `/api/transfers/{id}/dispatch`, current memory CSRF,
+same-origin cookies and no-store. There are no quantity overrides, new retry
+keys, partial dispatch, cancellation or receipt controls. Approval retries may
+return the current In-transit record; rejection conflict remains a sanitized409.
+
+The UI does not require unreserved availability to cover an already approved
+request's owned reservation. Confirmation explains that dispatch deducts the
+same quantity from source physical stock and this request's reservation,
+leaving unreserved availability and other holds unchanged. No destination stock
+credit occurs. `En tránsito` details show sent quantities, consumed own reserve,
+retained approval history and dispatch origin/time. Destination receipt is
+pending, not a confirmed zero quantity. Original creation replay shows its real
+current state, not a new Pending request. A cached approval must not hide newer
+transit detail or confirmed dispatch.
+
+### Explicit live-memory recovery
+
+`useInventory` owns `createTransferDispatchRecovery()` above conditional panes;
+`useTransfers` supplies `dispatch(original)`, `retryDispatch()` and
+`recoverDispatch()`, with `dispatchAttempt` and sanitized `dispatchError`.
+The recovery retains a frozen original record and approval metadata, not stock,
+session objects, cookies or CSRF. Account, assigned location, auth epoch and
+session generation fence every read and completion; opaque flights prevent an
+old response from settling a replacement attempt. Reload/tab close/App unmount
+loses this live memory. A replacement session does not inherit private recovery.
+
+Network/abort, malformed replies and mismatched success are dispatch uncertainty,
+never creation uncertainty. Uncertain POSTs are never automatically replayed by
+rendering, navigation, inventory refresh or realtime. The recovery panel offers
+an explicit ordinary GET of the original ID and a guarded retry of the same
+whole-request dispatch. An Approved GET cannot prove the uncertain POST failed;
+it leaves the original attempt unresolved. Only matching transit confirms it.
+403/404 mask private recovery and remove the selected private outcome; obsolete
+401 completions cannot reconcile replacement authority.
+
+Confirmed POST or recovery GET independently refreshes fenced participant
+list/detail/count subscribers and inventory/source subscribers, without requiring
+an SSE event. A failed subscriber cannot block other lanes. Existing shell and
+pane labels/counts remain **approval-only**: `Requieren tu aprobación` does not
+count dispatch or receipt obligations. Workflow-wide counters belong to the
+later receipt work, not D2.
+
+### Styling and manual acceptance boundary
+
+Dispatch reuses the existing decision confirmation backdrop/modal, focus trap,
+focus restoration, busy dismissal guards, recovery panel, item table and
+responsive footer. Only the shared grid selector is extended to the dispatch
+wrapper so recovery and detail retain the existing14px separation. The bounded
+modal keeps header/footer outside its central scrolling body for up to190 items;
+no new layout system or dependency is introduced. jsdom assertions are not
+measured browser geometry, keyboard acceptance or pixel fidelity.
+
+Manual user checklist (not executed):
+
+- Dispatch Approved warehouse→branch, branch→branch and branch→warehouse requests
+  from their physical origins; verify destinations cannot dispatch them.
+- Check full immutable quantities, retained approval and dispatch history, source
+  existing/reserved deductions, unchanged unreserved availability/other holds,
+  and no destination credit.
+- Lose a dispatch response, navigate Inventory→Transfers, consult explicitly,
+  then retry the same dispatch if still unresolved; ensure it never moves twice.
+- Check `En tránsito` filtering/detail and original replay, pending receipt wording,
+  focus cycling/restoration, busy dismissal and long-item scrolling.
+- Confirm approval-only shell labels/counts remain unchanged in meaning and that
+  replacement sessions reveal no previous private recovery.
+
+Suggested focused verification from `apps/web`, for the parent/verifier:
+
+```sh
+npm test -- --run src/transferModel.test.ts src/transferAPI.test.ts src/transferDispatchRecovery.test.ts src/transferDecisionRecovery.test.ts
+npm test -- --run src/useTransfers.test.ts src/TransferDispatch.test.tsx src/TransferCreation.test.tsx src/TransferPending.test.tsx src/TransferDetail.test.tsx src/TransferReview.test.tsx src/App.test.tsx
+npm test
+npm run typecheck
+```
+
+The parent also owns build verification using a fresh output and a non-destructive
+build route. The default `npm run build` can empty `dist`; the source writer is
+not authorized to generate/delete artifacts or mutate build configuration.
+Receipt, workflow-wide counters and user manual acceptance remain pending.
+
 ## Worker checks
 
 From repository root:

@@ -30,12 +30,17 @@ export function matchesDecisionRecord(original: TransferRecord, result: Transfer
     'origin_location_id', 'origin_location_name', 'destination_location_id', 'destination_location_name',
     'approver_location_id', 'approver_location_name'] as const;
   const itemFields = ['variant_id', 'brand', 'model', 'capacity_ah', 'polarity', 'quantity'] as const;
-  const metadataMatches = original.status === 'pending' || (result.status === original.status
-    && result.decision_location_id === original.decision_location_id && result.decided_at === original.decided_at);
+  const metadataMatches = original.status === 'pending' || ((result.status === original.status
+    || (original.status === 'approved' && result.status === 'in_transit'))
+    && result.decision_location_id === original.decision_location_id && result.decided_at === original.decided_at
+    && (original.status !== 'in_transit' || (result.dispatch_location_id === original.dispatch_location_id && result.dispatched_at === original.dispatched_at)));
   return metadataMatches && fields.every(field => original[field] === result[field]) && original.items.length === result.items.length
     && original.items.every((item, index) => itemFields.every(field => item[field] === result.items[index][field]));
 }
 export function requestedDecision(action: TransferDecision) { return action === 'approve' ? 'approved' : 'rejected'; }
+export function satisfiesDecision(action: TransferDecision, result: TransferRecord) {
+  return result.status === requestedDecision(action) || (action === 'approve' && result.status === 'in_transit');
+}
 
 export function createTransferDecisionRecovery() {
   let attempt: DecisionAttempt | null = null;
@@ -83,7 +88,7 @@ export function createTransferDecisionRecovery() {
       if (result && result.status !== 'pending' && result.decision_location_id !== attempt.owner.location) throw new Error('Invalid decision actor');
       flight = null; masked = privateView;
       const terminal = result?.status !== 'pending' && result !== null;
-      attempt = Object.freeze({ ...attempt, phase: terminal ? result.status === requestedDecision(attempt.action) ? 'confirmed' : 'conflict' : 'uncertain', result: terminal ? result : null,
+      attempt = Object.freeze({ ...attempt, phase: terminal ? satisfiesDecision(attempt.action, result) ? 'confirmed' : 'conflict' : 'uncertain', result: terminal ? result : null,
         failure: failure ? Object.freeze({ code: failure.code, status: failure.status, uncertainDecision: failure.uncertainDecision }) : null });
       emit(); return terminal;
     },

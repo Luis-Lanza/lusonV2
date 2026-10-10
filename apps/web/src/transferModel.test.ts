@@ -23,6 +23,32 @@ export function createInput(): TransferCreateInput {
 }
 const parse = (o: unknown) => parseTransferRecord(JSON.stringify(o));
 
+export function dispatchWire(overrides: Record<string, unknown> = {}) {
+  return wireRecord({ status: 'in_transit', decision_location_id: 1,
+    decided_at: '2026-04-03T00:00:00.000000001Z', dispatch_location_id: 1,
+    dispatched_at: '2026-04-03T00:00:00.000000002Z', ...overrides });
+}
+describe('D2 dispatch model', () => {
+  it('preserves exact transit identity, approval and nanoseconds on pages and replay', () => {
+    const record = parse(dispatchWire());
+    expect(record).toMatchObject({ status: 'in_transit', dispatch_location_id: 1,
+      dispatched_at: '2026-04-03T00:00:00.000000002Z', decided_at: '2026-04-03T00:00:00.000000001Z' });
+    expect(record.items[0].quantity).toBe(9223372036854775807n);
+    expect(transferListPath({ status: 'in_transit' })).toContain('status=in_transit');
+    expect(parseTransferPage(JSON.stringify({ page: 1, page_size: 10, status: 'in_transit', total_count: '1', records: [dispatchWire()] })).records[0]).toEqual(record);
+  });
+  it('requires origin dispatch metadata only in transit and compares time without millisecond rounding', () => {
+    for (const invalid of [{ dispatch_location_id: 2 }, { dispatch_location_id: '1' },
+      { dispatch_location_id: undefined }, { dispatched_at: undefined }, { dispatched_at: null },
+      { dispatched_at: '2026-04-03T00:00:00Z' }, { dispatched_at: '2026-04-03T00:00:00.000000000Z' },
+      { dispatched_at: '2026-02-30T00:00:00Z' }, { dispatched_at: '2026-04-03T00:00:00+00:00' }]) {
+      expect(() => parse(dispatchWire(invalid))).toThrow();
+    }
+    expect(parse(dispatchWire({ dispatched_at: '2026-04-03T00:00:00.000000001Z' })).status).toBe('in_transit');
+    for (const status of ['pending', 'approved', 'rejected']) expect(() => parse(dispatchWire({ status }))).toThrow();
+  });
+});
+
 describe('A05a outcome and count contracts', () => {
   it.each(['approved', 'rejected'] as const)('decodes lossless %s in every physical flow', status => {
     for (const flow of ['requestWarehouse', 'requestOther', 'sendWarehouse'] as const) {

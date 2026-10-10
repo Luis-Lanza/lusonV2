@@ -13,6 +13,32 @@ const input = (): TransferCreateInput => ({ kind: 'request_stock', counterparty_
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const mockFetch = () => vi.fn<typeof fetch>();
 
+describe('D2 dispatch transport', () => {
+  const approved = { ...wire, status: 'approved', decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z' };
+  const transit = { ...approved, status: 'in_transit', dispatch_location_id: 1, dispatched_at: '2026-04-03T00:00:00.000000002Z' };
+  const original = () => parseTransferRecord(JSON.stringify(approved));
+  it('posts strict empty dispatch, accepts current transit approval retry and creation replay', async () => {
+    const fetch = mockFetch().mockImplementation(async () => response(transit));
+    const api = createTransferAPI(fetch);
+    expect(await api.dispatch(original(), 'memory_csrf')).toMatchObject({ status: 'in_transit' });
+    expect(fetch).toHaveBeenCalledWith('/api/transfers/1/dispatch', expect.objectContaining({ method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': 'memory_csrf' } }));
+    expect(await api.decide(original(), 'approve', 'memory_csrf')).toMatchObject({ status: 'in_transit' });
+    expect((await api.create(input(), 'memory_csrf')).record.status).toBe('in_transit');
+  });
+  it('classifies lost or mismatched dispatch as dispatch uncertainty, never creation', async () => {
+    for (const reply of [() => Promise.reject(new Error('offline')), () => Promise.resolve(response(approved)),
+      () => Promise.resolve(response({ ...transit, decided_at: '2026-04-03T00:00:00Z' })),
+      () => Promise.resolve(response({ ...transit, items: [{ ...wire.items[0], quantity: '2' }] }))]) {
+      const fetch = mockFetch().mockImplementation(reply);
+      await expect(createTransferAPI(fetch).dispatch(original(), 'memory_csrf')).rejects.toMatchObject({ uncertainDispatch: true, uncertainCreation: false, uncertainDecision: false });
+    }
+  });
+  it.each([[403, 'forbidden'], [404, 'not_found'], [409, 'decision_conflict'], [503, 'service_unavailable']] as const)('preserves definite dispatch failure %s', async (status, error) => {
+    const fetch = mockFetch().mockResolvedValue(response({ error }, status));
+    await expect(createTransferAPI(fetch).dispatch(original(), 'memory_csrf')).rejects.toMatchObject({ status, code: error, uncertainDispatch: false });
+  });
+});
+
 describe('A05b decision transport', () => {
   const flows = [wire, { ...wire, origin_location_id: 3, origin_location_name: 'Sucursal B', approver_location_id: 3, approver_location_name: 'Sucursal B' },
     { ...wire, kind: 'send_to_warehouse', origin_location_id: 2, origin_location_name: 'Sucursal A', destination_location_id: 1, destination_location_name: 'Almacén' }];

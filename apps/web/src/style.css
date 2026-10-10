@@ -357,7 +357,7 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .transfer-impact p + p { margin-top: 8px; }
 .transfer-impact h3 { margin: 0 0 10px; font-size: 14px; }
 .transfer-detail-cards { display: none; }
-.transfer-decision { display: grid; gap: 14px; }
+.transfer-decision, .transfer-dispatch { display: grid; gap: 14px; }
 .transfer-decision-actions { display: grid; gap: 10px; }
 .transfer-decision-actions button { width: 100%; height: auto; min-height: 42px; }
 .transfer-decision-actions p { text-align: center; color: var(--muted); }

@@ -15,7 +15,7 @@ export interface TransferItem {
   variant_id: number; brand: string; model: string; capacity_ah: string;
   polarity: 'L' | 'R'; quantity: bigint;
 }
-export type TransferStatus = 'pending' | 'approved' | 'rejected';
+export type TransferStatus = 'pending' | 'approved' | 'rejected' | 'in_transit';
 interface TransferRecordFields {
   id: string; reference: string; kind: TransferKind; created_at: string;
   creator_location_id: 2 | 3; creator_location_name: string;
@@ -25,8 +25,9 @@ interface TransferRecordFields {
   items: TransferItem[];
 }
 export type TransferRecord = TransferRecordFields & (
-  { status: 'pending'; decision_location_id?: never; decided_at?: never }
-  | { status: 'approved' | 'rejected'; decision_location_id: TransferLocationID; decided_at: string }
+  { status: 'pending'; decision_location_id?: never; decided_at?: never; dispatch_location_id?: never; dispatched_at?: never }
+  | { status: 'approved' | 'rejected'; decision_location_id: TransferLocationID; decided_at: string; dispatch_location_id?: never; dispatched_at?: never }
+  | { status: 'in_transit'; decision_location_id: TransferLocationID; decided_at: string; dispatch_location_id: TransferLocationID; dispatched_at: string }
 );
 export interface TransferQuery { page?: number; page_size?: 10 | 25 | 50; status?: TransferStatus }
 export interface TransferCounts { pending_total: bigint; action_count: bigint }
@@ -112,7 +113,7 @@ export function canonicalTransferInput(input: TransferCreateInput): TransferCrea
   return Object.freeze({ kind: k, counterparty_location_id: counterpart, retry_key: o.retry_key, items: Object.freeze(items) });
 }
 function status(value: unknown): TransferStatus {
-  if (value !== 'pending' && value !== 'approved' && value !== 'rejected') return invalid();
+  if (value !== 'pending' && value !== 'approved' && value !== 'rejected' && value !== 'in_transit') return invalid();
   return value;
 }
 function queryValues(query: TransferQuery): { page: number; page_size: 10 | 25 | 50; status: TransferStatus } {
@@ -140,9 +141,11 @@ const recordKeys = ['id', 'reference', 'kind', 'status', 'created_at', 'items',
   'destination_location_id', 'destination_location_name', 'approver_location_id', 'approver_location_name'];
 function record(value: unknown): TransferRecord {
   // Determine the discriminant before enforcing an exact status-specific whitelist.
-  const candidate = object(value, [...recordKeys, 'decision_location_id', 'decided_at'], false);
+  const decisionKeys = [...recordKeys, 'decision_location_id', 'decided_at'];
+  const dispatchKeys = [...decisionKeys, 'dispatch_location_id', 'dispatched_at'];
+  const candidate = object(value, dispatchKeys, false);
   const selected = status(candidate.status);
-  const o = object(value, selected === 'pending' ? recordKeys : [...recordKeys, 'decision_location_id', 'decided_at']);
+  const o = object(value, selected === 'pending' ? recordKeys : selected === 'in_transit' ? dispatchKeys : decisionKeys);
   exact(o.id);
   const id = o.id as string;
   if (o.reference !== `TR-${id.padStart(3, '0')}`) return invalid();
@@ -165,15 +168,24 @@ function record(value: unknown): TransferRecord {
     return { variant_id: quantities[i].variant_id, quantity: BigInt(quantities[i].quantity),
       brand: text(item.brand), model: text(item.model), capacity_ah: capacity(item.capacity_ah), polarity: item.polarity };
   });
-  const outcome = selected === 'pending' ? { status: selected } : {
-    status: selected, decision_location_id: location(o.decision_location_id), decided_at: createdAt(o.decided_at),
+  const decision = selected === 'pending' ? null : {
+    decision_location_id: location(o.decision_location_id), decided_at: createdAt(o.decided_at),
   };
-  if (outcome.decision_location_id !== undefined && outcome.decision_location_id !== approver) return invalid();
+  if (decision && decision.decision_location_id !== approver) return invalid();
+  let outcome: Pick<TransferRecord, 'status' | 'decision_location_id' | 'decided_at' | 'dispatch_location_id' | 'dispatched_at'>;
+  if (selected === 'pending') outcome = { status: selected };
+  else if (selected === 'in_transit') {
+    const dispatched_at = createdAt(o.dispatched_at);
+    // Fixed-width UTC seconds + padded fractions retain nanosecond ordering.
+    const ordered = (time: string) => time.slice(0, 19) + (time.includes('.') ? time.slice(20, -1) : '').padEnd(9, '0');
+    if (location(o.dispatch_location_id) !== origin || ordered(dispatched_at) < ordered(decision!.decided_at)) return invalid();
+    outcome = { status: selected, ...decision!, dispatch_location_id: origin, dispatched_at };
+  } else outcome = { status: selected, ...decision! };
   return { ...outcome, id, reference: o.reference as string, kind: k, created_at: createdAt(o.created_at),
     creator_location_id: creator, creator_location_name: text(o.creator_location_name),
     origin_location_id: origin, origin_location_name: text(o.origin_location_name),
     destination_location_id: destination, destination_location_name: text(o.destination_location_name),
-    approver_location_id: approver, approver_location_name: text(o.approver_location_name), items };
+    approver_location_id: approver, approver_location_name: text(o.approver_location_name), items } as TransferRecord;
 }
 export function parseTransferRecord(raw: string): TransferRecord { return record(decode(raw)); }
 export function parseTransferPage(raw: string): TransferPage {

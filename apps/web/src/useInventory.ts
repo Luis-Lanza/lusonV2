@@ -5,6 +5,7 @@ import { useRealtime } from './useRealtime';
 import type { Recovery } from './useRealtime';
 import { createTransferDecisionRecovery, decisionOwner, type DecisionOwner, type TransferDecisionRecovery } from './transferDecisionRecovery';
 import type { TransferStatus } from './transferModel';
+import { createTransferDispatchRecovery, type TransferDispatchRecovery } from './transferDispatchRecovery';
 
 class HTTPError extends Error {
   constructor(public status: number) { super('HTTP request failed'); }
@@ -43,6 +44,8 @@ export interface TransferController {
   subscribeTransferInvalidation: (listener: () => void) => () => void;
   settleUnauthorized: (expectedEpoch: number) => Promise<Recovery>;
   decisionRecovery?: TransferDecisionRecovery;
+  dispatchRecovery?: TransferDispatchRecovery;
+  confirmTransferDispatch?: (owner: DecisionOwner) => void;
   confirmTransferDecision?: (owner: DecisionOwner, status: TransferStatus) => void;
 }
 
@@ -54,6 +57,7 @@ export interface SourceInventoryController {
 
 export function useInventory() {
   const [decisionRecovery] = useState(createTransferDecisionRecovery);
+  const [dispatchRecovery] = useState(createTransferDispatchRecovery);
   const [session, setSession] = useState<Session | null>(null);
   const [metadata, setMetadata] = useState<Metadata | null>(null);
   const [data, setData] = useState<Inventory | null>(null);
@@ -267,7 +271,7 @@ export function useInventory() {
   decisionEffects.current = (owner, status) => {
     if (!decisionIsCurrent(owner) || status === 'pending') return;
     notifyTransfers(owner.epoch, owner);
-    if (status === 'approved' && decisionIsCurrent(owner)) {
+    if ((status === 'approved' || status === 'in_transit') && decisionIsCurrent(owner)) {
       invalidate(false); notifySourceInventory(owner.epoch, owner);
     }
   };
@@ -398,6 +402,7 @@ export function useInventory() {
   }
   return { session, metadata, data, query, loading, authBusy, formError, resultsError: resultsError || realtimeError, focusLogin,
     login, logout, change, retrySession: () => restore(), retryInventory: () => change({}, true),
-    decisionRecovery, confirmTransferDecision,
+    decisionRecovery, confirmTransferDecision, dispatchRecovery,
+    confirmTransferDispatch: useCallback((owner: DecisionOwner) => decisionEffects.current(owner, 'in_transit'), []),
     authorityEpoch: authGeneration.current, getTransferAuthority, subscribeTransferInvalidation, subscribeSourceInventoryInvalidation, settleUnauthorized };
 }

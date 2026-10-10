@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { TransferController } from './useInventory';
 import type { Session } from './model';
-import { captureDecisionRecord, decisionOwner, matchesDecisionRecord, requestedDecision, type DecisionFlight, type TransferDecision } from './transferDecisionRecovery';
+import { captureDecisionRecord, decisionOwner, matchesDecisionRecord, satisfiesDecision, type DecisionFlight, type TransferDecision } from './transferDecisionRecovery';
+import type { DispatchFlight } from './transferDispatchRecovery';
 import { createTransferAPI, TransferAPIError, type TransferCreateResult } from './transferAPI';
 import {
   canonicalTransferInput, transferDetailPath, transferListPath,
@@ -246,7 +247,7 @@ export function useTransfers({ controller, api: injectedAPI, listEnabled = false
         record = captureDecisionRecord(returned);
         participant(record, owner.location);
         if (!matchesDecisionRecord(original, record) || record.approver_location_id !== owner.location
-          || (!reading && record.status !== requestedDecision(action))) throw new Error();
+          || (!reading && !satisfiesDecision(action, record))) throw new Error();
       } catch { throw new TransferAPIError('invalid_response', 200, false, !reading); }
       const terminal = recovery!.finish(token, record);
       if (terminal) controller.confirmTransferDecision?.(owner, record.status);
@@ -286,6 +287,69 @@ export function useTransfers({ controller, api: injectedAPI, listEnabled = false
     if (!token) throw new TransferAPIError('invalid_request', null);
     return runDecision(token, true);
   }
+  const dispatchRecovery = controller.dispatchRecovery;
+  const [, updateDispatch] = useState(0);
+  const dispatchTransport = useRef<AbortController | null>(null);
+  useEffect(() => dispatchRecovery?.subscribe(() => updateDispatch(value => value + 1)), [dispatchRecovery]);
+  useEffect(() => () => { dispatchTransport.current?.abort(); }, []);
+  function admittedDispatch() {
+    const owner = currentDecisionOwner();
+    if (!owner) throw new TransferAPIError('unauthenticated', null);
+    if (!dispatchRecovery) throw new TransferAPIError('invalid_request', null);
+    return { owner, recovery: dispatchRecovery };
+  }
+  async function runDispatch(token: DispatchFlight, reading: boolean): Promise<TransferRecord> {
+    const transport = new AbortController(); dispatchTransport.current = transport;
+    const { original, owner } = token.attempt;
+    const valid = () => !!currentDecisionOwner() && dispatchRecovery!.isCurrent(token, currentDecisionOwner());
+    try {
+      const before = controller.getTransferAuthority();
+      if (!valid() || !before.session?.authenticated) throw new TransferAPIError('aborted', null, false, false, true);
+      const returned = reading ? await api.detail(original.id, { signal: transport.signal })
+        : await api.dispatch(original, before.session.csrf_token, transport.signal);
+      if (!valid()) throw new TransferAPIError('aborted', null, false, false, true);
+      let record: TransferRecord;
+      try {
+        record = captureDecisionRecord(returned);
+        participant(record, owner.location);
+        if (!matchesDecisionRecord(original, record) || record.origin_location_id !== owner.location
+          || (reading ? record.status !== 'approved' && record.status !== 'in_transit' : record.status !== 'in_transit')) throw new Error();
+      } catch { throw new TransferAPIError('invalid_response', 200, false, false, !reading); }
+      const confirmed = dispatchRecovery!.finish(token, record);
+      if (confirmed) controller.confirmTransferDispatch?.(owner);
+      return record;
+    } catch (error) {
+      const current = valid();
+      const safe = current ? error instanceof TransferAPIError ? error : new TransferAPIError('invalid_response', null, false, false, !reading)
+        : new TransferAPIError('aborted', null, false, false, true);
+      // Obsolete transports can release only their own opaque flight, not a replacement.
+      dispatchRecovery!.finish(token, undefined, current && (safe.status === 403 || safe.status === 404), safe);
+      if (current && safe.status === 401 && currentDecisionOwner()) await controller.settleUnauthorized(owner.epoch);
+      throw safe;
+    } finally {
+      if (dispatchTransport.current === transport) dispatchTransport.current = null;
+    }
+  }
+  async function dispatch(original: TransferRecord): Promise<TransferRecord> {
+    const { owner, recovery } = admittedDispatch();
+    if (original.origin_location_id !== owner.location) throw new TransferAPIError('forbidden', null);
+    let token: DispatchFlight | null;
+    try { token = recovery.start(original, owner); } catch { throw new TransferAPIError('invalid_request', null); }
+    if (!token) throw new TransferAPIError('invalid_request', null);
+    return runDispatch(token, false);
+  }
+  async function retryDispatch(): Promise<TransferRecord> {
+    const { owner, recovery } = admittedDispatch();
+    const snapshot = recovery.get(owner);
+    if (!snapshot) throw new TransferAPIError('invalid_request', null);
+    return dispatch(snapshot.original);
+  }
+  async function recoverDispatch(): Promise<TransferRecord> {
+    const { owner, recovery } = admittedDispatch();
+    const token = recovery.claim(owner, true);
+    if (!token) throw new TransferAPIError('invalid_request', null);
+    return runDispatch(token, true);
+  }
   const visibleAuthority = () => {
     const now = controller.getTransferAuthority(); return now.ready && now.epoch === epoch && sessionIdentity(now.session) === identity;
   };
@@ -295,11 +359,23 @@ export function useTransfers({ controller, api: injectedAPI, listEnabled = false
     get detail() { return detail.data; }, get detailBusy() { return detail.busy; }, get detailError() { return detail.error; },
     get submitBusy() { return visibleAuthority() && submission.epoch === epoch && submission.busy; },
     get submitError() { return visibleAuthority() && submission.epoch === epoch ? submission.error : null; },
-    get decision() { return recovery?.get(currentDecisionOwner()) ?? null; },
+    get decision() {
+      const attempt = recovery?.get(currentDecisionOwner()) ?? null;
+      const latest = dispatchRecovery?.get(currentDecisionOwner())?.result ?? detail.data;
+      // A current later lifecycle record must not be hidden by cached approval.
+      return attempt?.result?.status === 'approved' && latest?.status === 'in_transit'
+        && matchesDecisionRecord(attempt.result, latest) ? { ...attempt, result: latest } : attempt;
+    },
     get decisionError() {
       const failure = recovery?.get(currentDecisionOwner())?.failure;
       return failure ? new TransferAPIError(failure.code, failure.status, false, failure.uncertainDecision) : null;
     },
+    get dispatchAttempt() { return dispatchRecovery?.get(currentDecisionOwner()) ?? null; },
+    get dispatchError() {
+      const failure = dispatchRecovery?.get(currentDecisionOwner())?.failure;
+      return failure ? new TransferAPIError(failure.code, failure.status, false, false, failure.uncertainDispatch) : null;
+    },
+    dispatch, retryDispatch, recoverDispatch,
     decide, retryDecision, recoverDecision,
     changeQuery, selectDetail, retryList: () => list.refresh(false), retryDetail: () => detail.refresh(false), submit };
 }
