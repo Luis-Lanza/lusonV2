@@ -1,11 +1,11 @@
 import {
-  canonicalTransferInput, parseTransferCounts, parseTransferPage, parseTransferRecord, transferDetailPath, transferListPath,
-  type TransferCounts, type TransferCreateInput, type TransferPage, type TransferQuery, type TransferRecord,
+  canonicalTransferReceiptInput, matchesReceiptInput, canonicalTransferInput, parseTransferCounts, parseTransferPage, parseTransferRecord, transferDetailPath, transferListPath,
+  type TransferReceiptInput, type TransferCounts, type TransferCreateInput, type TransferPage, type TransferQuery, type TransferRecord,
 } from './transferModel';
 import { captureDecisionRecord, matchesDecisionRecord, satisfiesDecision, type TransferDecision } from './transferDecisionRecovery';
 export type TransferErrorCode = 'invalid_request' | 'unauthenticated' | 'forbidden' | 'not_found' | 'method_not_allowed' | 'insufficient_stock' | 'retry_conflict' | 'decision_conflict' | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
 export class TransferAPIError extends Error {
-  constructor(public readonly code: TransferErrorCode, public readonly status: number | null, public readonly uncertainCreation = false, public readonly uncertainDecision = false, public readonly uncertainDispatch = false) { super(code); this.name = 'TransferAPIError'; }
+  constructor(public readonly code: TransferErrorCode, public readonly status: number | null, public readonly uncertainCreation = false, public readonly uncertainDecision = false, public readonly uncertainDispatch = false, public readonly uncertainReceipt = false) { super(code); this.name = 'TransferAPIError'; }
 }
 export interface TransferReadOptions { signal?: AbortSignal; passive?: boolean }
 export interface TransferCreateResult { record: TransferRecord; replayed: boolean }
@@ -22,8 +22,8 @@ function readInit(options: TransferReadOptions): RequestInit {
     headers: options.passive === true ? { 'X-Luson-Passive': '1' } : {} };
 }
 export function createTransferAPI(fetch: typeof globalThis.fetch = globalThis.fetch) {
-  async function request(path: string, init: RequestInit, statuses: readonly number[], decision = false, dispatch = false) {
-    const creating = init.method === 'POST' && !decision && !dispatch;
+  async function request(path: string, init: RequestInit, statuses: readonly number[], decision = false, dispatch = false, receipt = false) {
+    const creating = init.method === 'POST' && !decision && !dispatch && !receipt;
     let reply: Response;
     let body: string;
     try {
@@ -31,28 +31,44 @@ export function createTransferAPI(fetch: typeof globalThis.fetch = globalThis.fe
       body = await reply.text();
     } catch (error) {
       const aborted = init.signal?.aborted || (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError');
-      throw new TransferAPIError(aborted ? 'aborted' : 'network', null, creating, decision, dispatch);
+      throw new TransferAPIError(aborted ? 'aborted' : 'network', null, creating, decision, dispatch, receipt);
     }
-    const malformed = () => new TransferAPIError('invalid_response', reply.status, creating, decision, dispatch);
+    const malformed = () => new TransferAPIError('invalid_response', reply.status, creating, decision, dispatch, receipt);
     if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(reply.headers.get('Content-Type') ?? '')) throw malformed();
     if (!statuses.includes(reply.status)) {
       let value: unknown;
       try { value = JSON.parse(body); } catch { throw malformed(); }
       if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'error')) throw malformed();
       const code = (value as { error: unknown }).error;
-      const admitted = reply.status === 409 && (decision || dispatch) ? ['insufficient_stock', 'decision_conflict'] : serverCodes[reply.status];
+      const admitted = reply.status === 409 && receipt ? ['retry_conflict', 'decision_conflict']
+        : reply.status === 409 && (decision || dispatch) ? ['insufficient_stock', 'decision_conflict'] : serverCodes[reply.status];
       if (typeof code !== 'string' || !admitted?.includes(code as TransferErrorCode)) throw malformed();
       throw new TransferAPIError(code as TransferErrorCode, reply.status);
     }
     return { body, status: reply.status };
   }
-  function checked<T>(parse: () => T, status: number, creating = false, decision = false, dispatch = false): T {
-    try { return parse(); } catch { throw new TransferAPIError('invalid_response', status, creating, decision, dispatch); }
+  function checked<T>(parse: () => T, status: number, creating = false, decision = false, dispatch = false, receipt = false): T {
+    try { return parse(); } catch { throw new TransferAPIError('invalid_response', status, creating, decision, dispatch, receipt); }
   }
   return {
+    async receive(original: TransferRecord, input: TransferReceiptInput, csrf: string, signal?: AbortSignal): Promise<TransferRecord> {
+      const captured = local(() => {
+        if ((original.status !== 'in_transit' && original.status !== 'received') || typeof csrf !== 'string' || !/^[A-Za-z0-9_-]+$/.test(csrf)) throw new Error();
+        return captureDecisionRecord(original);
+      });
+      const payload = local(() => canonicalTransferReceiptInput(input, captured));
+      const path = local(() => transferDetailPath(captured.id)) + '/receive';
+      const reply = await request(path, { method: 'POST', credentials: 'same-origin', cache: 'no-store', signal,
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify(payload) }, [200], false, false, true);
+      return checked(() => {
+        const record = parseTransferRecord(reply.body);
+        if (!matchesDecisionRecord(captured, record) || !matchesReceiptInput(payload, record)) throw new Error();
+        return record;
+      }, reply.status, false, false, false, true);
+    },
     async dispatch(original: TransferRecord, csrf: string, signal?: AbortSignal): Promise<TransferRecord> {
       const captured = local(() => {
-        if (original.status !== 'approved' || typeof csrf !== 'string' || !/^[A-Za-z0-9_-]+$/.test(csrf)) throw new Error();
+        if (!['approved', 'in_transit', 'received'].includes(original.status) || typeof csrf !== 'string' || !/^[A-Za-z0-9_-]+$/.test(csrf)) throw new Error();
         return captureDecisionRecord(original);
       });
       const path = local(() => transferDetailPath(captured.id)) + '/dispatch';
@@ -60,7 +76,7 @@ export function createTransferAPI(fetch: typeof globalThis.fetch = globalThis.fe
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: '{}' }, [200], false, true);
       return checked(() => {
         const record = parseTransferRecord(reply.body);
-        if (record.status !== 'in_transit' || !matchesDecisionRecord(captured, record)) throw new Error();
+        if ((record.status !== 'in_transit' && record.status !== 'received') || !matchesDecisionRecord(captured, record)) throw new Error();
         return record;
       }, reply.status, false, false, true);
     },

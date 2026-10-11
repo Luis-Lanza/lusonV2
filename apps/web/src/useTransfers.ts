@@ -3,10 +3,11 @@ import type { TransferController } from './useInventory';
 import type { Session } from './model';
 import { captureDecisionRecord, decisionOwner, matchesDecisionRecord, satisfiesDecision, type DecisionFlight, type TransferDecision } from './transferDecisionRecovery';
 import type { DispatchFlight } from './transferDispatchRecovery';
+import type { ReceiptFlight } from './transferReceiptRecovery';
 import { createTransferAPI, TransferAPIError, type TransferCreateResult } from './transferAPI';
 import {
-  canonicalTransferInput, transferDetailPath, transferListPath,
-  type TransferCounts, type TransferCreateInput, type TransferPage, type TransferQuery, type TransferRecord,
+  matchesReceiptInput, canonicalTransferInput, transferDetailPath, transferListPath,
+  type TransferReceiptInput, type TransferCounts, type TransferCreateInput, type TransferPage, type TransferQuery, type TransferRecord,
 } from './transferModel';
 
 export interface TransferHookOptions {
@@ -313,7 +314,7 @@ export function useTransfers({ controller, api: injectedAPI, listEnabled = false
         record = captureDecisionRecord(returned);
         participant(record, owner.location);
         if (!matchesDecisionRecord(original, record) || record.origin_location_id !== owner.location
-          || (reading ? record.status !== 'approved' && record.status !== 'in_transit' : record.status !== 'in_transit')) throw new Error();
+          || (reading ? record.status !== 'approved' && record.status !== 'in_transit' && record.status !== 'received' : record.status !== 'in_transit' && record.status !== 'received')) throw new Error();
       } catch { throw new TransferAPIError('invalid_response', 200, false, false, !reading); }
       const confirmed = dispatchRecovery!.finish(token, record);
       if (confirmed) controller.confirmTransferDispatch?.(owner);
@@ -350,6 +351,63 @@ export function useTransfers({ controller, api: injectedAPI, listEnabled = false
     if (!token) throw new TransferAPIError('invalid_request', null);
     return runDispatch(token, true);
   }
+  const receiptRecovery = controller.receiptRecovery;
+  const [, updateReceipt] = useState(0);
+  const receiptTransport = useRef<AbortController | null>(null);
+  useEffect(() => receiptRecovery?.subscribe(() => updateReceipt(value => value + 1)), [receiptRecovery]);
+  useEffect(() => () => { receiptTransport.current?.abort(); }, []);
+  function admittedReceipt() {
+    const owner = currentDecisionOwner();
+    if (!owner) throw new TransferAPIError('unauthenticated', null);
+    if (!receiptRecovery) throw new TransferAPIError('invalid_request', null);
+    return { owner, recovery: receiptRecovery };
+  }
+  async function runReceipt(token: ReceiptFlight, reading: boolean): Promise<TransferRecord> {
+    const transport = new AbortController(); receiptTransport.current = transport;
+    const { original, input, owner } = token.attempt;
+    const valid = () => !!currentDecisionOwner() && receiptRecovery!.isCurrent(token, currentDecisionOwner());
+    try {
+      const before = controller.getTransferAuthority();
+      if (!valid() || !before.session?.authenticated) throw new TransferAPIError('aborted', null, false, false, false, true);
+      const returned = reading ? await api.detail(original.id, { signal: transport.signal })
+        : await api.receive(original, input, before.session.csrf_token, transport.signal);
+      if (!valid()) throw new TransferAPIError('aborted', null, false, false, false, true);
+      let record: TransferRecord;
+      try {
+        record = captureDecisionRecord(returned); participant(record, owner.location);
+        if (!matchesDecisionRecord(original, record) || record.destination_location_id !== owner.location
+          || (reading ? record.status !== 'in_transit' && record.status !== 'received' : !matchesReceiptInput(input, record))) throw new Error();
+      } catch { throw new TransferAPIError('invalid_response', 200, false, false, false, !reading); }
+      const confirmed = receiptRecovery!.finish(token, record);
+      if (confirmed) controller.confirmTransferReceipt?.(owner, record);
+      return record;
+    } catch (error) {
+      const current = valid();
+      const safe = current ? error instanceof TransferAPIError ? error : new TransferAPIError('invalid_response', null, false, false, false, !reading)
+        : new TransferAPIError('aborted', null, false, false, false, true);
+      receiptRecovery!.finish(token, undefined, current && (safe.status === 403 || safe.status === 404), safe);
+      if (current && safe.status === 401 && currentDecisionOwner()) await controller.settleUnauthorized(owner.epoch);
+      throw safe;
+    } finally { if (receiptTransport.current === transport) receiptTransport.current = null; }
+  }
+  async function receive(original: TransferRecord, input: TransferReceiptInput): Promise<TransferRecord> {
+    const { owner, recovery } = admittedReceipt();
+    if (original.destination_location_id !== owner.location) throw new TransferAPIError('forbidden', null);
+    let token: ReceiptFlight | null;
+    try { token = recovery.start(original, input, owner); } catch { throw new TransferAPIError('invalid_request', null); }
+    if (!token) throw new TransferAPIError('invalid_request', null);
+    return runReceipt(token, false);
+  }
+  async function retryReceipt(): Promise<TransferRecord> {
+    const { owner, recovery } = admittedReceipt(); const snapshot = recovery.get(owner);
+    if (!snapshot) throw new TransferAPIError('invalid_request', null);
+    return receive(snapshot.original, snapshot.input);
+  }
+  async function recoverReceipt(): Promise<TransferRecord> {
+    const { owner, recovery } = admittedReceipt(); const token = recovery.claim(owner, true);
+    if (!token) throw new TransferAPIError('invalid_request', null);
+    return runReceipt(token, true);
+  }
   const visibleAuthority = () => {
     const now = controller.getTransferAuthority(); return now.ready && now.epoch === epoch && sessionIdentity(now.session) === identity;
   };
@@ -361,16 +419,26 @@ export function useTransfers({ controller, api: injectedAPI, listEnabled = false
     get submitError() { return visibleAuthority() && submission.epoch === epoch ? submission.error : null; },
     get decision() {
       const attempt = recovery?.get(currentDecisionOwner()) ?? null;
-      const latest = dispatchRecovery?.get(currentDecisionOwner())?.result ?? detail.data;
+      const latest = receiptRecovery?.get(currentDecisionOwner())?.result ?? (detail.data?.status === 'received' ? detail.data : dispatchRecovery?.get(currentDecisionOwner())?.result ?? detail.data);
       // A current later lifecycle record must not be hidden by cached approval.
-      return attempt?.result?.status === 'approved' && latest?.status === 'in_transit'
+      return attempt?.result?.status === 'approved' && (latest?.status === 'in_transit' || latest?.status === 'received')
         && matchesDecisionRecord(attempt.result, latest) ? { ...attempt, result: latest } : attempt;
     },
     get decisionError() {
       const failure = recovery?.get(currentDecisionOwner())?.failure;
       return failure ? new TransferAPIError(failure.code, failure.status, false, failure.uncertainDecision) : null;
     },
-    get dispatchAttempt() { return dispatchRecovery?.get(currentDecisionOwner()) ?? null; },
+    get dispatchAttempt() {
+      const attempt = dispatchRecovery?.get(currentDecisionOwner()) ?? null;
+      const latest = receiptRecovery?.get(currentDecisionOwner())?.result ?? detail.data;
+      return attempt?.result && latest?.status === 'received' && matchesDecisionRecord(attempt.result, latest) ? { ...attempt, result: latest } : attempt;
+    },
+    get receiptAttempt() { return receiptRecovery?.get(currentDecisionOwner()) ?? null; },
+    get receiptError() {
+      const failure = receiptRecovery?.get(currentDecisionOwner())?.failure;
+      return failure ? new TransferAPIError(failure.code, failure.status, false, false, false, failure.uncertainReceipt) : null;
+    },
+    receive, retryReceipt, recoverReceipt,
     get dispatchError() {
       const failure = dispatchRecovery?.get(currentDecisionOwner())?.failure;
       return failure ? new TransferAPIError(failure.code, failure.status, false, false, failure.uncertainDispatch) : null;

@@ -51,10 +51,10 @@ export function createTransferDispatchRecovery() {
     finish(token: DispatchFlight, outcome?: TransferRecord, privateView = false, failure?: DispatchFailure): boolean {
       if (flight !== token || attempt !== token.attempt) return false;
       const result = outcome ? captureDecisionRecord(outcome) : null;
-      if (result && (!matchesDecisionRecord(attempt.original, result) || (result.status !== 'approved' && result.status !== 'in_transit'))) {
+      if (result && (!matchesDecisionRecord(attempt.original, result) || (result.status !== 'approved' && result.status !== 'in_transit' && result.status !== 'received'))) {
         throw new Error('Invalid dispatch identity');
       }
-      const confirmed = result?.status === 'in_transit';
+      const confirmed = result?.status === 'in_transit' || result?.status === 'received';
       flight = null; masked = privateView;
       // An Approved GET cannot establish that a previously sent POST failed.
       attempt = Object.freeze({ ...attempt, phase: confirmed ? 'confirmed' : 'uncertain', result: confirmed ? result : null,

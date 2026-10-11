@@ -289,6 +289,7 @@ describe('A05a terminal original creation replay', () => {
     ['approved', 'requestWarehouse'], ['approved', 'requestOther'], ['approved', 'sendWarehouse'],
     ['rejected', 'requestWarehouse'], ['rejected', 'requestOther'], ['rejected', 'sendWarehouse'],
     ['in_transit', 'requestWarehouse'], ['in_transit', 'requestOther'], ['in_transit', 'sendWarehouse'],
+    ['received', 'requestWarehouse'], ['received', 'requestOther'], ['received', 'sendWarehouse'],
   ] as const)('confirms only the matching %s/%s replay flight, clears recovery and navigates by actual ID', async (status, selected) => {
     const h = harness(); const recovery = archived(h, selected); const detail = vi.fn(); const back = vi.fn();
     const snapshot = recovery.getCurrent(h.controller.getTransferAuthority)!;
@@ -298,14 +299,17 @@ describe('A05a terminal original creation replay', () => {
       destination_location_id: route.destination_location_id, destination_location_name: metadata.locations[route.destination_location_id - 1].name,
       approver_location_id: route.approver_location_id, approver_location_name: metadata.locations[route.approver_location_id - 1].name,
       decision_location_id: route.approver_location_id, decided_at: '2028-03-01T00:00:00.000000001Z',
-      ...(status === 'in_transit' ? { dispatch_location_id: route.origin_location_id, dispatched_at: '2028-03-01T00:00:00.000000002Z' } : {}) };
+      ...(status === 'in_transit' || status === 'received' ? { dispatch_location_id: route.origin_location_id, dispatched_at: '2028-03-01T00:00:00.000000002Z' } : {}),
+      ...(status === 'received' ? { receipt_location_id: route.destination_location_id, received_at: '2028-03-01T00:00:00.000000003Z',
+        receipt: { items: recordDTO().items.map(item => ({ variant_id: item.variant_id,
+          expected_quantity: item.quantity, actual_quantity: item.quantity, available_quantity: item.quantity })), exceptions: [] } } : {}) };
     const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply(outcome, 200));
     render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery}
       loader={async source => catalog(source)} onBack={back} onDetail={detail} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Retomar misma solicitud' }));
     const attempt = recovery.getCurrent(h.controller.getTransferAuthority)!.attempt;
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar misma solicitud' }));
-    const label = status === 'approved' ? 'Aprobada' : status === 'in_transit' ? 'En tránsito' : 'Rechazada';
+    const label = status === 'approved' ? 'Aprobada' : status === 'in_transit' ? 'En tránsito' : status === 'received' ? 'Recibida' : 'Rechazada';
     expect(await screen.findByRole('dialog', { name: `Solicitud ${label} confirmada` })).toBeVisible();
     expect(recovery.getCurrent(h.controller.getTransferAuthority)).toBeNull();
     expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual(attempt);

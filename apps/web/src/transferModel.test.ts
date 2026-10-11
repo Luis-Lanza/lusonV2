@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  canonicalTransferInput, newTransferRetryKey, parseTransferPage, parseTransferRecord, parseTransferCounts,
+  canonicalTransferReceiptInput, previewTransferReceipt, canonicalTransferInput, newTransferRetryKey, parseTransferPage, parseTransferRecord, parseTransferCounts,
   transferDetailPath, transferDirection, transferListPath, transferQuantityTotal,
   type TransferCreateInput, type TransferFlow,
 } from './transferModel';
@@ -28,6 +28,124 @@ export function dispatchWire(overrides: Record<string, unknown> = {}) {
     decided_at: '2026-04-03T00:00:00.000000001Z', dispatch_location_id: 1,
     dispatched_at: '2026-04-03T00:00:00.000000002Z', ...overrides });
 }
+export function receiptWire(overrides: Record<string, unknown> = {}) {
+  return { ...dispatchWire(), status: 'received', receipt_location_id: 2,
+    received_at: '2026-04-03T00:00:00.000000003Z',
+    receipt: { items: [{ variant_id: 2147483647, expected_quantity: '9223372036854775807',
+      actual_quantity: '9007199254740993', available_quantity: '9007199254740993' }],
+    exceptions: [{ variant_id: 2147483647, kind: 'shortage', quantity: '9214364837600034814' }] }, ...overrides };
+}
+
+describe('R2 receipt wire contract', () => {
+  it('normalizes an immutable receipt payload, including explicit zeros, without numeric aggregate limits', () => {
+    const original = parse(dispatchWire({ items: [1, 2].map(variant_id => ({ ...wireRecord().items[0], variant_id, quantity: '2' })) }));
+    const input = { items: [
+      { variant_id: 3, actual_quantity: '9223372036854775807' },
+      { variant_id: 2, actual_quantity: '9223372036854775807' },
+      { variant_id: 1, actual_quantity: '0' },
+    ] };
+    const before = JSON.stringify(input); const canonical = canonicalTransferReceiptInput(input, original);
+    expect(JSON.stringify(input)).toBe(before);
+    expect(canonical.items.map(line => line.variant_id)).toEqual([1, 2, 3]);
+    for (const value of [canonical, canonical.items, ...canonical.items]) expect(Object.isFrozen(value)).toBe(true);
+    expect(previewTransferReceipt(canonical, original)).toMatchObject({ items: [
+      { variant_id: 1, available_quantity: 0n }, { variant_id: 2, available_quantity: 2n }, { variant_id: 3, available_quantity: 0n },
+    ], exceptions: [ { kind: 'shortage', quantity: 2n }, { kind: 'excess', quantity: 9223372036854775805n },
+      { kind: 'unexpected', quantity: 9223372036854775807n } ] });
+    for (const bad of [ { items: input.items.slice(0, 2) }, { items: [...input.items, input.items[0]] },
+      { items: input.items.map(line => ({ ...line, actual_quantity: '0' })) },
+      { items: input.items.map(line => line.variant_id === 3 ? { ...line, actual_quantity: '0' } : line) },
+      { ...input, actor: 2 }, { items: input.items.map(line => ({ ...line, actual_quantity: 1 })) } ]) {
+      expect(() => canonicalTransferReceiptInput(bad as never, original)).toThrow();
+    }
+  });
+  it('admits action obligations independently of Pending participant totals', () => {
+    expect(parseTransferCounts('{"pending_total":"0","action_count":"1"}'))
+      .toEqual({ pending_total: 0n, action_count: 1n });
+    expect(parseTransferCounts('{"pending_total":"2","action_count":"9223372036854775807"}'))
+      .toEqual({ pending_total: 2n, action_count: 9223372036854775807n });
+  });
+  it('decodes immutable Received history losslessly, retaining original sent units and nanoseconds', () => {
+    const decoded = parse(receiptWire());
+    expect(decoded).toMatchObject({ status: 'received', receipt_location_id: 2,
+      received_at: '2026-04-03T00:00:00.000000003Z',
+      receipt: { items: [{ variant_id: 2147483647, expected_quantity: 9223372036854775807n,
+        actual_quantity: 9007199254740993n, available_quantity: 9007199254740993n }],
+      exceptions: [{ variant_id: 2147483647, kind: 'shortage', quantity: 9214364837600034814n }] } });
+    expect(decoded.items[0].quantity).toBe(9223372036854775807n);
+    // Reflect avoids narrowing the pre-R2 union; this is the proposed nested bigint DTO.
+    const receipt = Reflect.get(decoded, 'receipt');
+    for (const value of [decoded, decoded.items, decoded.items[0], receipt,
+      receipt.items, receipt.items[0], receipt.exceptions, receipt.exceptions[0]]) {
+      expect(Object.isFrozen(value)).toBe(true);
+    }
+  });
+  it('filters and paginates Received records without changing original reference semantics', () => {
+    expect(transferListPath({ status: 'received' as never })).toBe('/api/transfers?page=1&page_size=25&status=received');
+    const page = parseTransferPage(JSON.stringify({ page: 1, page_size: 10, status: 'received', total_count: '1', records: [receiptWire()] }));
+    expect(page.records[0].status).toBe('received');
+    expect(page.records[0].reference).toBe('TR-9007199254740993');
+    expect(() => parseTransferPage(JSON.stringify({ page: 1, page_size: 10, status: 'in_transit', total_count: '1', records: [receiptWire()] }))).toThrow();
+  });
+  it('accepts shortages, excess and unexpected units without crediting exceptions', () => {
+    const sent = wireRecord().items[0];
+    const receipt = { items: [
+      { variant_id: 1, expected_quantity: '2', actual_quantity: '0', available_quantity: '0' },
+      { variant_id: 2, expected_quantity: '2', actual_quantity: '5', available_quantity: '2' },
+      { variant_id: 3, expected_quantity: '0', actual_quantity: '9223372036854775807', available_quantity: '0' },
+    ], exceptions: [
+      { variant_id: 1, kind: 'shortage', quantity: '2' },
+      { variant_id: 2, kind: 'excess', quantity: '3' },
+      { variant_id: 3, kind: 'unexpected', quantity: '9223372036854775807' },
+    ] };
+    expect(parse(receiptWire({ items: [1, 2].map(variant_id => ({ ...sent, variant_id, quantity: '2' })), receipt })))
+      .toMatchObject({ receipt: { items: [{ available_quantity: 0n }, { available_quantity: 2n }, { available_quantity: 0n }] } });
+    expect(parse(receiptWire({ receipt: { items: [{ variant_id: 2147483647,
+      expected_quantity: sent.quantity, actual_quantity: sent.quantity, available_quantity: sent.quantity }], exceptions: [] } })))
+      .toMatchObject({ receipt: { exceptions: [] } });
+  });
+  it('admits unexpected-only receipts but rejects total-zero and zero unexpected lines', () => {
+    const expected = { variant_id: 2147483647, expected_quantity: '9223372036854775807', actual_quantity: '0', available_quantity: '0' };
+    const shortage = { variant_id: 2147483647, kind: 'shortage', quantity: '9223372036854775807' };
+    const unexpected = { variant_id: 1, expected_quantity: '0', actual_quantity: '9223372036854775807', available_quantity: '0' };
+    const receipt = { items: [unexpected, expected], exceptions: [
+      { variant_id: 1, kind: 'unexpected', quantity: '9223372036854775807' }, shortage,
+    ] };
+    expect(parse(receiptWire({ receipt }))).toMatchObject({ receipt: { items: [{ available_quantity: 0n }, { actual_quantity: 0n }] } });
+    expect(() => parse(receiptWire({ receipt: { items: [expected], exceptions: [shortage] } }))).toThrow();
+    expect(() => parse(receiptWire({ receipt: { ...receipt, items: [{ ...unexpected, actual_quantity: '0' }, expected] } }))).toThrow();
+    expect(() => parse(receiptWire({ receipt: { ...receipt, items: [{ ...unexpected, available_quantity: '1' }, expected] } }))).toThrow();
+  });
+  it('requires destination receipt metadata and nanosecond chronological ordering', () => {
+    for (const patch of [{ receipt_location_id: 1 }, { receipt_location_id: '2' }, { receipt_location_id: undefined },
+      { received_at: undefined }, { received_at: '2026-04-03T00:00:00.000000001Z' },
+      { received_at: '2026-02-30T00:00:00Z' }, { received_at: '2026-04-03T00:00:00+00:00' },
+      { dispatched_at: undefined }, { receipt: undefined }, { private_fingerprint: 'hidden' }]) {
+      expect(() => parse(receiptWire(patch))).toThrow();
+    }
+    expect(parse(receiptWire({ received_at: '2026-04-03T00:00:00.000000002Z' })).status).toBe('received');
+    for (const status of ['pending', 'approved', 'rejected', 'in_transit']) expect(() => parse(receiptWire({ status }))).toThrow();
+  });
+  it('rejects forged credit, incomplete expected lines and noncanonical receipt quantities', () => {
+    const good = receiptWire().receipt;
+    for (const items of [[], [good.items[0], good.items[0]],
+      [{ ...good.items[0], expected_quantity: '1' }], [{ ...good.items[0], available_quantity: '9223372036854775807' }],
+      [{ ...good.items[0], variant_id: 1 }]]) {
+      expect(() => parse(receiptWire({ receipt: { ...good, items } }))).toThrow();
+    }
+    for (const field of ['expected_quantity', 'actual_quantity', 'available_quantity']) {
+      for (const value of ['01', '-1', '+1', '1e2', '1.0', '9223372036854775808', 1, null]) {
+        expect(() => parse(receiptWire({ receipt: { ...good, items: [{ ...good.items[0], [field]: value }] } }))).toThrow();
+      }
+    }
+    for (const exceptions of [[], [good.exceptions[0], good.exceptions[0]],
+      [{ ...good.exceptions[0], kind: 'loss' }], [{ ...good.exceptions[0], quantity: '0' }],
+      [{ ...good.exceptions[0], quantity: '1' }], [{ ...good.exceptions[0], variant_id: 1 }]]) {
+      expect(() => parse(receiptWire({ receipt: { ...good, exceptions } }))).toThrow();
+    }
+  });
+});
+
 describe('D2 dispatch model', () => {
   it('preserves exact transit identity, approval and nanoseconds on pages and replay', () => {
     const record = parse(dispatchWire());
@@ -100,7 +218,7 @@ describe('A05a outcome and count contracts', () => {
     expect(parseTransferCounts('{"pending_total":"9223372036854775807","action_count":"9007199254740993"}'))
       .toEqual({ pending_total: 9223372036854775807n, action_count: 9007199254740993n });
     expect(parseTransferCounts('{"pending_total":"0","action_count":"0"}')).toEqual({ pending_total: 0n, action_count: 0n });
-    for (const invalid of [{ pending_total: '0', action_count: '1' }, { pending_total: '01', action_count: '0' },
+    for (const invalid of [{ pending_total: '01', action_count: '0' },
       { pending_total: '9223372036854775808', action_count: '0' }, { pending_total: 2, action_count: '0' },
       { pending_total: '2', action_count: '-1' }, { pending_total: '2', action_count: '1e0' },
       { pending_total: '2', action_count: 1 }, { pending_total: '2' }, { pending_total: '2', action_count: '1', warehouse: 1 }]) {

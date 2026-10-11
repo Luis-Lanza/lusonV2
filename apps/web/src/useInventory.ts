@@ -4,7 +4,8 @@ import type { Inventory, Metadata, Query, Session } from './model';
 import { useRealtime } from './useRealtime';
 import type { Recovery } from './useRealtime';
 import { createTransferDecisionRecovery, decisionOwner, type DecisionOwner, type TransferDecisionRecovery } from './transferDecisionRecovery';
-import type { TransferStatus } from './transferModel';
+import type { TransferRecord, TransferStatus } from './transferModel';
+import { createTransferReceiptRecovery, type TransferReceiptRecovery } from './transferReceiptRecovery';
 import { createTransferDispatchRecovery, type TransferDispatchRecovery } from './transferDispatchRecovery';
 
 class HTTPError extends Error {
@@ -45,6 +46,8 @@ export interface TransferController {
   settleUnauthorized: (expectedEpoch: number) => Promise<Recovery>;
   decisionRecovery?: TransferDecisionRecovery;
   dispatchRecovery?: TransferDispatchRecovery;
+  receiptRecovery?: TransferReceiptRecovery;
+  confirmTransferReceipt?: (owner: DecisionOwner, record: TransferRecord) => void;
   confirmTransferDispatch?: (owner: DecisionOwner) => void;
   confirmTransferDecision?: (owner: DecisionOwner, status: TransferStatus) => void;
 }
@@ -58,6 +61,7 @@ export interface SourceInventoryController {
 export function useInventory() {
   const [decisionRecovery] = useState(createTransferDecisionRecovery);
   const [dispatchRecovery] = useState(createTransferDispatchRecovery);
+  const [receiptRecovery] = useState(createTransferReceiptRecovery);
   const [session, setSession] = useState<Session | null>(null);
   const [metadata, setMetadata] = useState<Metadata | null>(null);
   const [data, setData] = useState<Inventory | null>(null);
@@ -276,6 +280,15 @@ export function useInventory() {
     }
   };
   const confirmTransferDecision = useCallback((owner: DecisionOwner, status: TransferStatus) => decisionEffects.current(owner, status), []);
+  const receiptEffects = useRef<(owner: DecisionOwner, record: TransferRecord) => void>(() => {});
+  receiptEffects.current = (owner, record) => {
+    if (!decisionIsCurrent(owner) || record.status !== 'received' || record.destination_location_id !== owner.location) return;
+    notifyTransfers(owner.epoch, owner);
+    if (record.receipt.items.some(line => line.expected_quantity > 0n && line.available_quantity > 0n) && decisionIsCurrent(owner)) {
+      invalidate(false); notifySourceInventory(owner.epoch, owner);
+    }
+  };
+  const confirmTransferReceipt = useCallback((owner: DecisionOwner, record: TransferRecord) => receiptEffects.current(owner, record), []);
   const realtimeEpoch = authGeneration.current;
   const stopRealtime = useRealtime({ enabled: !!session?.authenticated && !authBusy, epoch: realtimeEpoch,
     resync: () => { invalidate(true); notifyTransfers(realtimeEpoch); notifySourceInventory(realtimeEpoch); },
@@ -402,7 +415,7 @@ export function useInventory() {
   }
   return { session, metadata, data, query, loading, authBusy, formError, resultsError: resultsError || realtimeError, focusLogin,
     login, logout, change, retrySession: () => restore(), retryInventory: () => change({}, true),
-    decisionRecovery, confirmTransferDecision, dispatchRecovery,
+    decisionRecovery, confirmTransferDecision, dispatchRecovery, receiptRecovery, confirmTransferReceipt,
     confirmTransferDispatch: useCallback((owner: DecisionOwner) => decisionEffects.current(owner, 'in_transit'), []),
     authorityEpoch: authGeneration.current, getTransferAuthority, subscribeTransferInvalidation, subscribeSourceInventoryInvalidation, settleUnauthorized };
 }

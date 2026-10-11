@@ -90,7 +90,7 @@ describe('A06b independent passive counters', () => {
     const f = fixture(); render(f.element()); await loaded();
     const counters = await screen.findByRole('region', { name: 'Contadores de solicitudes' });
     expect(counters).toHaveTextContent('Pendientes de tu ubicación9007199254740995');
-    expect(counters).toHaveTextContent('Requieren tu aprobación9007199254740994');
+    expect(counters).toHaveTextContent('Acciones requeridas9007199254740994');
     expect(counters).not.toHaveTextContent('18446744073709551614');
     expect(counters).not.toHaveTextContent('9007199254740993');
   });
@@ -218,7 +218,7 @@ describe('A06b status-specific consultation', () => {
     const f = fixture(); render(f.element()); await loaded();
     const selector = screen.getByRole('combobox', { name: 'Estado de transferencia' });
     expect(selector).toHaveValue('pending');
-    expect(within(selector).getAllByRole('option').map(option => option.getAttribute('value'))).toEqual(['pending', 'approved', 'rejected', 'in_transit']);
+    expect(within(selector).getAllByRole('option').map(option => option.getAttribute('value'))).toEqual(['pending', 'approved', 'rejected', 'in_transit', 'received']);
     fireEvent.click(screen.getByRole('button', { name: 'Siguiente pendientes' })); await loaded();
     selectStatus(status);
     await screen.findByText(`9007199254740993 solicitudes ${status === 'approved' ? 'aprobadas' : 'rechazadas'}`);

@@ -6,6 +6,7 @@ import { useInventory } from './useInventory';
 import { useTransfers } from './useTransfers';
 import { createTransferAPI } from './transferAPI';
 import { parseTransferRecord } from './transferModel';
+import { decisionOwner } from './transferDecisionRecovery';
 import type { TransferAuthority, TransferController } from './useInventory';
 import { pageJSON } from './test-fixtures';
 import type { TransferCreateInput } from './transferModel';
@@ -140,6 +141,149 @@ const decisionOutcome = (original: ReturnType<typeof wire>, status: 'approved' |
   decision_location_id: original.approver_location_id, decided_at: '2026-04-03T00:00:00.000000001Z' });
 const decisionPosts = (fetch: ReturnType<typeof fixture>['fetch']) => fetch.mock.calls.filter(([, init]) => init?.method === 'POST' && String(init?.body) === '{}');
 const inventoryCalls = (fetch: ReturnType<typeof fixture>['fetch']) => fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?'));
+
+describe('R2 receipt controller and refresh lanes', () => {
+  const pending = wire(2, '1');
+  const transit = { ...decisionOutcome(pending, 'approved'), status: 'in_transit', dispatch_location_id: 1,
+    dispatched_at: '2026-04-03T00:00:00.000000002Z' };
+  const received = (unexpectedOnly = false) => ({ ...transit, status: 'received', receipt_location_id: 2,
+    received_at: '2026-04-03T00:00:00.000000003Z', receipt: {
+      items: unexpectedOnly ? [
+        { variant_id: 1, expected_quantity: '0', actual_quantity: '7', available_quantity: '0' },
+        { variant_id: 201, expected_quantity: '9223372036854775807', actual_quantity: '0', available_quantity: '0' },
+      ] : [{ variant_id: 201, expected_quantity: '9223372036854775807', actual_quantity: '1', available_quantity: '1' }],
+      exceptions: unexpectedOnly ? [{ variant_id: 1, kind: 'unexpected', quantity: '7' },
+        { variant_id: 201, kind: 'shortage', quantity: '9223372036854775807' }]
+        : [{ variant_id: 201, kind: 'shortage', quantity: '9223372036854775806' }],
+    } });
+  const input = (unexpectedOnly = false) => ({ items: unexpectedOnly
+    ? [{ variant_id: 201, actual_quantity: '0' }, { variant_id: 1, actual_quantity: '7' }]
+    : [{ variant_id: 201, actual_quantity: '1' }] });
+  const receiptPosts = (fetch: ReturnType<typeof fixture>['fetch']) => fetch.mock.calls.filter(([url, init]) => String(url).endsWith('/receive') && init?.method === 'POST');
+  it('publishes required workflow actions even with zero Pending participants', async () => {
+    const h = boundedHarness();
+    await waitFor(() => expect(h.jobs).toHaveLength(1));
+    await act(async () => { h.jobs[0].resolve(reply({ pending_total: '0', action_count: '2' })); });
+    expect(h.hook.result.current.counts).toEqual({ pending_total: 0n, action_count: 2n });
+    expect(h.hook.result.current.countsError).toBeNull(); h.hook.unmount();
+  });
+  it('reads Received as the current detail rather than an unavailable request', async () => {
+    const h = decisionFixture(2, pending, (url, init) => url === '/api/transfers/1' && init.method === 'GET'
+      ? Promise.resolve(reply(received())) : undefined);
+    await h.ready();
+    act(() => h.lanes[0].selectDetail('1'));
+    await waitFor(() => expect(h.lanes[0].detail?.status).toBe('received'));
+    expect(h.lanes[0].detailError).toBeNull(); h.view.unmount();
+  });
+  it.each(['approval', 'dispatch'] as const)('passive Received detail refresh outranks cached %s without POST or owner leakage', async cached => {
+    const approved = decisionOutcome(pending, 'approved');
+    const older = cached === 'approval' ? approved : transit;
+    let delivered = false;
+    const h = decisionFixture(1, pending, (url, init) => url === '/api/transfers/1' && init.method === 'GET'
+      ? Promise.resolve(reply(delivered ? received() : older)) : undefined);
+    await h.ready();
+    const owner = decisionOwner(h.controller.getTransferAuthority())!;
+    act(() => {
+      const approval = h.controller.decisionRecovery.start(h.original, 'approve', owner)!;
+      h.controller.decisionRecovery.finish(approval, parseTransferRecord(JSON.stringify(approved)));
+      if (cached === 'dispatch') {
+        const dispatch = h.controller.dispatchRecovery.start(parseTransferRecord(JSON.stringify(approved)), owner)!;
+        h.controller.dispatchRecovery.finish(dispatch, parseTransferRecord(JSON.stringify(transit)));
+      }
+      h.lanes[0].selectDetail('1');
+    });
+    await waitFor(() => expect(h.lanes[0].detail?.status).toBe(older.status));
+    expect(h.lanes[0].decision?.result?.status).toBe(older.status);
+    const readsBefore = h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/1').length;
+    delivered = true;
+    act(() => Source.instances[0].emit('transfers'));
+    await waitFor(() => expect(h.lanes[0].detail?.status).toBe('received'));
+    const latest = h.lanes[0].detail;
+    if (!latest || latest.status !== 'received') throw new Error('Expected refreshed Received detail');
+    expect(h.lanes[0].decision?.result).toEqual(latest);
+    if (cached === 'dispatch') expect(h.lanes[0].dispatchAttempt?.result).toEqual(latest);
+    for (const value of [latest, latest.items, latest.items[0], latest.receipt,
+      latest.receipt.items, latest.receipt.items[0], latest.receipt.exceptions, latest.receipt.exceptions[0]]) {
+      expect(Object.isFrozen(value)).toBe(true);
+    }
+    // Historical snapshots remain older; their derived getters must prefer current detail.
+    expect(h.controller.decisionRecovery.get(owner)?.result?.status).toBe('approved');
+    if (cached === 'dispatch') expect(h.controller.dispatchRecovery.get(owner)?.result?.status).toBe('in_transit');
+    const reads = h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/1');
+    expect(reads).toHaveLength(readsBefore + 1);
+    expect(passive(reads[reads.length - 1])).toBe('1');
+    const mutationPosts = () => h.fetch.mock.calls.filter(([url, init]) => String(url).startsWith('/api/transfers') && init?.method === 'POST');
+    expect(mutationPosts()).toHaveLength(0);
+    await act(async () => { await h.controller.logout(); });
+    expect(h.lanes[0].detail).toBeNull(); expect(h.lanes[0].decision).toBeNull(); expect(h.lanes[0].dispatchAttempt).toBeNull();
+    expect(mutationPosts()).toHaveLength(0); h.view.unmount();
+  });
+  it('owns pinned receipt uncertainty across pane unmounts, with explicit GET and identical POST retry only', async () => {
+    let sent = 0;
+    const h = decisionFixture(2, pending, (url, init) => {
+      if (url.endsWith('/receive')) return ++sent === 1 ? Promise.reject(new Error('lost')) : Promise.resolve(reply(received()));
+      if (url === '/api/transfers/1' && init.method === 'GET') return Promise.resolve(reply(transit));
+      return undefined;
+    });
+    await h.ready();
+    await act(async () => { await expect(h.lanes[0].receive(parseTransferRecord(JSON.stringify(transit)), input())).rejects.toMatchObject({ uncertainReceipt: true }); });
+    h.show(false); h.show(true); await h.ready();
+    expect(h.lanes[1].receiptAttempt).toMatchObject({ phase: 'uncertain', input: input() });
+    for (const event of ['transfers', 'inventory', 'resync']) {
+      act(() => Source.instances[0].emit(event));
+      await waitFor(() => expect(h.lanes[0].listBusy).toBe(false));
+      expect(receiptPosts(h.fetch)).toHaveLength(1);
+    }
+    await act(async () => { await h.lanes[1].recoverReceipt(); });
+    expect(h.lanes[1].receiptAttempt?.phase).toBe('uncertain'); expect(sent).toBe(1);
+    await act(async () => { await h.lanes[1].retryReceipt(); });
+    expect(h.lanes[0].receiptAttempt).toMatchObject({ phase: 'confirmed', result: { status: 'received' } });
+    expect(receiptPosts(h.fetch)).toHaveLength(2);
+    expect(receiptPosts(h.fetch).map(([, init]) => init?.body)).toEqual([JSON.stringify(input()), JSON.stringify(input())]);
+    h.view.unmount();
+  });
+  it.each([false, true])('refreshes all transfer/count lanes but stock/source only for expected available credit (unexpectedOnly=%s)', async unexpectedOnly => {
+    const h = decisionFixture(2, pending, url => url.endsWith('/receive') ? Promise.resolve(reply(received(unexpectedOnly))) : undefined);
+    await h.ready();
+    const stockObserver = vi.fn(); const detach = h.controller.subscribeSourceInventoryInvalidation(stockObserver);
+    const stockBefore = inventoryCalls(h.fetch).length; const listsBefore = listCalls(h.fetch).length;
+    const countsBefore = h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts').length;
+    await act(async () => { await h.lanes[0].receive(parseTransferRecord(JSON.stringify(transit)), input(unexpectedOnly)); });
+    await waitFor(() => expect(listCalls(h.fetch).length).toBeGreaterThan(listsBefore));
+    await waitFor(() => expect(h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts').length).toBeGreaterThan(countsBefore));
+    if (unexpectedOnly) {
+      expect(inventoryCalls(h.fetch)).toHaveLength(stockBefore); expect(stockObserver).not.toHaveBeenCalled();
+    } else {
+      await waitFor(() => expect(inventoryCalls(h.fetch).length).toBeGreaterThan(stockBefore)); expect(stockObserver).toHaveBeenCalledTimes(1);
+    }
+    expect(h.lanes[1].receiptAttempt?.result?.status).toBe('received'); detach(); h.view.unmount();
+  });
+  it('a different Received GET settles current truth without rewriting the pinned payload or POST replay', async () => {
+    const h = decisionFixture(2, pending, (url, init) => {
+      if (url.endsWith('/receive')) return Promise.reject(new Error('lost'));
+      if (url === '/api/transfers/1' && init.method === 'GET') return Promise.resolve(reply(received(true)));
+      return undefined;
+    });
+    await h.ready();
+    await act(async () => { await h.lanes[0].receive(parseTransferRecord(JSON.stringify(transit)), input()).catch(() => {}); });
+    await act(async () => { await h.lanes[1].recoverReceipt(); });
+    expect(h.lanes[0].receiptAttempt).toMatchObject({ phase: 'conflict', input: input(), result: { status: 'received' } });
+    expect(receiptPosts(h.fetch)).toHaveLength(1); h.view.unmount();
+  });
+  it('fences a late receipt after logout before publishing or refreshing any lane', async () => {
+    const job = deferred<Response>();
+    const h = decisionFixture(2, pending, url => url.endsWith('/receive') ? job.promise : undefined);
+    await h.ready(); let mutation!: Promise<unknown>;
+    act(() => { mutation = h.lanes[0].receive(parseTransferRecord(JSON.stringify(transit)), input()).catch(() => {}); });
+    await waitFor(() => expect(receiptPosts(h.fetch)).toHaveLength(1));
+    await act(async () => { await h.controller.logout(); });
+    const inventoryBefore = inventoryCalls(h.fetch).length; const transferBefore = transferCalls(h.fetch).length;
+    await act(async () => { job.resolve(reply(received())); await mutation; });
+    expect(h.lanes[0].receiptAttempt).toBeNull();
+    expect(inventoryCalls(h.fetch)).toHaveLength(inventoryBefore); expect(transferCalls(h.fetch)).toHaveLength(transferBefore);
+    h.view.unmount();
+  });
+});
 
 describe('D2 real controller dispatch', () => {
   const original = wire(2, '1');

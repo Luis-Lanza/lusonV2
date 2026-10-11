@@ -11,6 +11,24 @@ const owner: DecisionOwner = { account: 42, location: 1, epoch: 7, generation: 3
 const outcome = (status: 'approved' | 'rejected') => parseTransferRecord(JSON.stringify({ ...wire, status,
   decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z' }));
 
+describe('R2 historical decision recovery', () => {
+  it('an approval retry confirms current Received and freezes its nested receipt', () => {
+    const recovery = createTransferDecisionRecovery(); const token = recovery.start(record(), 'approve', owner)!;
+    const received = parseTransferRecord(JSON.stringify({ ...wire, status: 'received', decision_location_id: 1,
+      decided_at: '2026-04-03T00:00:00.000000001Z', dispatch_location_id: 1,
+      dispatched_at: '2026-04-03T00:00:00.000000002Z', receipt_location_id: 2,
+      received_at: '2026-04-03T00:00:00.000000003Z', receipt: {
+        items: [{ variant_id: 201, expected_quantity: '9007199254740993', actual_quantity: '9007199254740993', available_quantity: '9007199254740993' }], exceptions: [],
+      } }));
+    expect(recovery.finish(token, received)).toBe(true);
+    expect(recovery.get(owner)).toMatchObject({ phase: 'confirmed', result: { status: 'received' } });
+    const receipt = Reflect.get(recovery.get(owner)!.result!, 'receipt');
+    for (const value of [receipt, receipt.items, receipt.items[0], receipt.exceptions]) expect(Object.isFrozen(value)).toBe(true);
+    const changed = { ...received, receipt: { ...receipt, items: [{ ...receipt.items[0], actual_quantity: 1n }] } };
+    expect(matchesDecisionRecord(received, changed)).toBe(false);
+  });
+});
+
 describe('controller-owned decision recovery', () => {
   it.each(['approve', 'reject'] as const)('deep captures a credential-free immutable %s original and never mutates its source', action => {
     const recovery = createTransferDecisionRecovery(); const source = record(); const actor = { ...owner };

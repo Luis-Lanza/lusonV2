@@ -15,7 +15,11 @@ export interface TransferItem {
   variant_id: number; brand: string; model: string; capacity_ah: string;
   polarity: 'L' | 'R'; quantity: bigint;
 }
-export type TransferStatus = 'pending' | 'approved' | 'rejected' | 'in_transit';
+export type TransferStatus = 'pending' | 'approved' | 'rejected' | 'in_transit' | 'received';
+export interface TransferReceiptInput { items: readonly { readonly variant_id: number; readonly actual_quantity: string }[] }
+export interface TransferReceiptLine { readonly variant_id: number; readonly expected_quantity: bigint; readonly actual_quantity: bigint; readonly available_quantity: bigint }
+export interface TransferReceiptException { readonly variant_id: number; readonly kind: 'shortage' | 'excess' | 'unexpected'; readonly quantity: bigint }
+export interface TransferReceiptData { readonly items: readonly TransferReceiptLine[]; readonly exceptions: readonly TransferReceiptException[] }
 interface TransferRecordFields {
   id: string; reference: string; kind: TransferKind; created_at: string;
   creator_location_id: 2 | 3; creator_location_name: string;
@@ -27,7 +31,8 @@ interface TransferRecordFields {
 export type TransferRecord = TransferRecordFields & (
   { status: 'pending'; decision_location_id?: never; decided_at?: never; dispatch_location_id?: never; dispatched_at?: never }
   | { status: 'approved' | 'rejected'; decision_location_id: TransferLocationID; decided_at: string; dispatch_location_id?: never; dispatched_at?: never }
-  | { status: 'in_transit'; decision_location_id: TransferLocationID; decided_at: string; dispatch_location_id: TransferLocationID; dispatched_at: string }
+  | { status: 'in_transit'; decision_location_id: TransferLocationID; decided_at: string; dispatch_location_id: TransferLocationID; dispatched_at: string; receipt_location_id?: never; received_at?: never; receipt?: never }
+  | { status: 'received'; decision_location_id: TransferLocationID; decided_at: string; dispatch_location_id: TransferLocationID; dispatched_at: string; receipt_location_id: TransferLocationID; received_at: string; receipt: TransferReceiptData }
 );
 export interface TransferQuery { page?: number; page_size?: 10 | 25 | 50; status?: TransferStatus }
 export interface TransferCounts { pending_total: bigint; action_count: bigint }
@@ -35,7 +40,6 @@ export function parseTransferCounts(raw: string): TransferCounts {
   const o = object(decode(raw), ['pending_total', 'action_count']);
   const pending_total = exact(o.pending_total, true);
   const action_count = exact(o.action_count, true);
-  if (action_count > pending_total) return invalid();
   return { pending_total, action_count };
 }
 export interface TransferPage {
@@ -112,8 +116,67 @@ export function canonicalTransferInput(input: TransferCreateInput): TransferCrea
   const items = lines(o.items).sort((a, b) => a.variant_id - b.variant_id).map(item => Object.freeze(item));
   return Object.freeze({ kind: k, counterparty_location_id: counterpart, retry_key: o.retry_key, items: Object.freeze(items) });
 }
+export function canonicalTransferReceiptInput(input: TransferReceiptInput, original: Pick<TransferRecord, 'items'>): TransferReceiptInput {
+  const o = object(input, ['items']);
+  if (!Array.isArray(o.items) || o.items.length === 0) return invalid();
+  const expected = new Set(original.items.map(item => item.variant_id));
+  const seen = new Set<number>();
+  let positive = false;
+  const items = o.items.map(value => {
+    const line = object(value, ['variant_id', 'actual_quantity']);
+    const variant_id = integer(line.variant_id, 1, 2147483647);
+    const actual = exact(line.actual_quantity, true);
+    if (seen.has(variant_id) || (!expected.has(variant_id) && actual === 0n)) return invalid();
+    seen.add(variant_id); positive ||= actual > 0n;
+    return Object.freeze({ variant_id, actual_quantity: line.actual_quantity as string });
+  }).sort((a, b) => a.variant_id - b.variant_id);
+  if (!positive || [...expected].some(id => !seen.has(id))) return invalid();
+  return Object.freeze({ items: Object.freeze(items) });
+}
+export function previewTransferReceipt(input: TransferReceiptInput, original: Pick<TransferRecord, 'items'>): TransferReceiptData {
+  const canonical = canonicalTransferReceiptInput(input, original);
+  const sent = new Map(original.items.map(item => [item.variant_id, item.quantity]));
+  const exceptions: TransferReceiptException[] = [];
+  const items = canonical.items.map(line => {
+    const expected_quantity = sent.get(line.variant_id) ?? 0n;
+    const actual_quantity = BigInt(line.actual_quantity);
+    const available_quantity = actual_quantity < expected_quantity ? actual_quantity : expected_quantity;
+    if (expected_quantity === 0n) exceptions.push(Object.freeze({ variant_id: line.variant_id, kind: 'unexpected', quantity: actual_quantity }));
+    else if (actual_quantity !== expected_quantity) exceptions.push(Object.freeze({ variant_id: line.variant_id,
+      kind: actual_quantity < expected_quantity ? 'shortage' : 'excess',
+      quantity: actual_quantity < expected_quantity ? expected_quantity - actual_quantity : actual_quantity - expected_quantity }));
+    return Object.freeze({ variant_id: line.variant_id, expected_quantity, actual_quantity, available_quantity });
+  });
+  return Object.freeze({ items: Object.freeze(items), exceptions: Object.freeze(exceptions) });
+}
+function receiptData(value: unknown, sent: TransferItem[]): TransferReceiptData {
+  const o = object(value, ['items', 'exceptions']);
+  if (!Array.isArray(o.items) || !Array.isArray(o.exceptions)) return invalid();
+  const items = o.items.map(value => {
+    const line = object(value, ['variant_id', 'expected_quantity', 'actual_quantity', 'available_quantity']);
+    return { variant_id: integer(line.variant_id, 1, 2147483647), expected_quantity: exact(line.expected_quantity, true),
+      actual_quantity: exact(line.actual_quantity, true), available_quantity: exact(line.available_quantity, true) };
+  });
+  const exceptions = o.exceptions.map(value => {
+    const exception = object(value, ['variant_id', 'kind', 'quantity']);
+    if (!['shortage', 'excess', 'unexpected'].includes(exception.kind as string)) return invalid();
+    return { variant_id: integer(exception.variant_id, 1, 2147483647), kind: exception.kind, quantity: exact(exception.quantity) };
+  });
+  // Recompute the contract from original sent units; never trust supplied credit or exceptions.
+  const expected = previewTransferReceipt({ items: items.map(item => ({ variant_id: item.variant_id,
+    actual_quantity: item.actual_quantity.toString() })) }, { items: sent });
+  if (items.length !== expected.items.length || exceptions.length !== expected.exceptions.length
+    || items.some((line, i) => Object.keys(line).some(key => Reflect.get(line, key) !== Reflect.get(expected.items[i], key)))
+    || exceptions.some((line, i) => Object.keys(line).some(key => Reflect.get(line, key) !== Reflect.get(expected.exceptions[i], key)))) return invalid();
+  return expected;
+}
+export function matchesReceiptInput(input: TransferReceiptInput, record: TransferRecord): boolean {
+  return record.status === 'received' && input.items.length === record.receipt.items.length
+    && input.items.every((line, i) => line.variant_id === record.receipt.items[i].variant_id
+      && BigInt(line.actual_quantity) === record.receipt.items[i].actual_quantity);
+}
 function status(value: unknown): TransferStatus {
-  if (value !== 'pending' && value !== 'approved' && value !== 'rejected' && value !== 'in_transit') return invalid();
+  if (value !== 'pending' && value !== 'approved' && value !== 'rejected' && value !== 'in_transit' && value !== 'received') return invalid();
   return value;
 }
 function queryValues(query: TransferQuery): { page: number; page_size: 10 | 25 | 50; status: TransferStatus } {
@@ -143,9 +206,10 @@ function record(value: unknown): TransferRecord {
   // Determine the discriminant before enforcing an exact status-specific whitelist.
   const decisionKeys = [...recordKeys, 'decision_location_id', 'decided_at'];
   const dispatchKeys = [...decisionKeys, 'dispatch_location_id', 'dispatched_at'];
-  const candidate = object(value, dispatchKeys, false);
+  const receiptKeys = [...dispatchKeys, 'receipt_location_id', 'received_at', 'receipt'];
+  const candidate = object(value, receiptKeys, false);
   const selected = status(candidate.status);
-  const o = object(value, selected === 'pending' ? recordKeys : selected === 'in_transit' ? dispatchKeys : decisionKeys);
+  const o = object(value, selected === 'pending' ? recordKeys : selected === 'received' ? receiptKeys : selected === 'in_transit' ? dispatchKeys : decisionKeys);
   exact(o.id);
   const id = o.id as string;
   if (o.reference !== `TR-${id.padStart(3, '0')}`) return invalid();
@@ -174,18 +238,26 @@ function record(value: unknown): TransferRecord {
   if (decision && decision.decision_location_id !== approver) return invalid();
   let outcome: Pick<TransferRecord, 'status' | 'decision_location_id' | 'decided_at' | 'dispatch_location_id' | 'dispatched_at'>;
   if (selected === 'pending') outcome = { status: selected };
-  else if (selected === 'in_transit') {
+  else if (selected === 'in_transit' || selected === 'received') {
     const dispatched_at = createdAt(o.dispatched_at);
     // Fixed-width UTC seconds + padded fractions retain nanosecond ordering.
     const ordered = (time: string) => time.slice(0, 19) + (time.includes('.') ? time.slice(20, -1) : '').padEnd(9, '0');
     if (location(o.dispatch_location_id) !== origin || ordered(dispatched_at) < ordered(decision!.decided_at)) return invalid();
     outcome = { status: selected, ...decision!, dispatch_location_id: origin, dispatched_at };
   } else outcome = { status: selected, ...decision! };
-  return { ...outcome, id, reference: o.reference as string, kind: k, created_at: createdAt(o.created_at),
+  const receiptFields = selected === 'received' ? (() => {
+    const received_at = createdAt(o.received_at);
+    const ordered = (time: string) => time.slice(0, 19) + (time.includes('.') ? time.slice(20, -1) : '').padEnd(9, '0');
+    if (location(o.receipt_location_id) !== destination || ordered(received_at) < ordered(outcome.dispatched_at!)) return invalid();
+    return { receipt_location_id: destination, received_at, receipt: receiptData(o.receipt, items) };
+  })() : {};
+  const decoded = { ...outcome, ...receiptFields, id, reference: o.reference as string, kind: k, created_at: createdAt(o.created_at),
     creator_location_id: creator, creator_location_name: text(o.creator_location_name),
     origin_location_id: origin, origin_location_name: text(o.origin_location_name),
     destination_location_id: destination, destination_location_name: text(o.destination_location_name),
     approver_location_id: approver, approver_location_name: text(o.approver_location_name), items } as TransferRecord;
+  if (selected === 'received') { items.forEach(Object.freeze); Object.freeze(items); Object.freeze(decoded); }
+  return decoded;
 }
 export function parseTransferRecord(raw: string): TransferRecord { return record(decode(raw)); }
 export function parseTransferPage(raw: string): TransferPage {

@@ -357,7 +357,13 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .transfer-impact p + p { margin-top: 8px; }
 .transfer-impact h3 { margin: 0 0 10px; font-size: 14px; }
 .transfer-detail-cards { display: none; }
-.transfer-decision, .transfer-dispatch { display: grid; gap: 14px; }
+.transfer-decision, .transfer-dispatch, .transfer-receipt { display: grid; gap: 14px; }
+.receipt-quantities { display: grid; gap: 16px; margin: 16px 0; }
+.receipt-quantities > div { display: grid; gap: 6px; }
+.receipt-quantities small { color: var(--muted); }
+.receipt-quantities input { width: 100%; min-height: 42px; }
+.transfer-receipt select { max-width: 100%; }
+.transfer-receipt .transfer-decision-body > label { display: block; margin-bottom: 6px; }
 .transfer-decision-actions { display: grid; gap: 10px; }
 .transfer-decision-actions button { width: 100%; height: auto; min-height: 42px; }
 .transfer-decision-actions p { text-align: center; color: var(--muted); }

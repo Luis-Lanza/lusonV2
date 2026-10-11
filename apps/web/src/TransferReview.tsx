@@ -47,7 +47,7 @@ export default function TransferReview(props: TransferReviewProps) {
   // Check owner metadata before snapshot or result getters, not just before effects.
   if (!permitted || props.snapshot.epoch !== authority.epoch) return null;
   const { snapshot, result } = props;
-  const outcomeLabel = result?.record.status === 'approved' ? 'Aprobada' : result?.record.status === 'rejected' ? 'Rechazada' : result?.record.status === 'in_transit' ? 'En tránsito' : 'Pending';
+  const outcomeLabel = result?.record.status === 'approved' ? 'Aprobada' : result?.record.status === 'rejected' ? 'Rechazada' : result?.record.status === 'in_transit' ? 'En tránsito' : result?.record.status === 'received' ? 'Recibida' : 'Pending';
   const location = (id: number) => props.metadata.locations.find(l => l.id === id)?.name ?? 'Ubicación no disponible';
   const total = snapshot.items.reduce((sum, line) => sum + BigInt(line.quantity), 0n);
   return <div className="review-backdrop"><section ref={dialog} tabIndex={-1} className="transfer-review" role="dialog" aria-modal="true" aria-labelledby="review-title" aria-busy={blocked} onKeyDown={event => {
@@ -69,8 +69,10 @@ export default function TransferReview(props: TransferReviewProps) {
       {result && <section className="review-result" aria-label="Resultado confirmado">
         <h3>{result.record.reference}</h3><p>ID: {result.record.id}</p><p>Creada (UTC): <time>{result.record.created_at}</time></p><p>Estado: {result.record.status === 'pending' ? 'Pending · Pendiente de aprobación' : outcomeLabel}</p>
         {result.record.status !== 'pending' && <p>Decidida (UTC): <time>{result.record.decided_at}</time></p>}
-        {result.record.status === 'in_transit' && <><p>Despachada desde {result.record.origin_location_name} (UTC): <time>{result.record.dispatched_at}</time></p>
-          <p>Reserva propia consumida; baterías enviadas. Pendiente de recepción en {result.record.destination_location_name}, sin crédito de stock en destino.</p></>}
+        {(result.record.status === 'in_transit' || result.record.status === 'received') && <p>Despachada desde {result.record.origin_location_name} (UTC): <time>{result.record.dispatched_at}</time></p>}
+        {result.record.status === 'in_transit' && <p>Reserva propia consumida; baterías enviadas. Pendiente de recepción en {result.record.destination_location_name}, sin crédito de stock en destino.</p>}
+        {result.record.status === 'received' && <><p>Recibida en {result.record.destination_location_name} (UTC): <time>{result.record.received_at}</time></p>
+          <p>La recepción ya está finalizada. Solo se acreditaron unidades esperadas recibidas hasta lo enviado; las discrepancias permanecen registradas por separado.</p></>}
       </section>}
       <div className="review-table"><table><caption className="sr-only">Selección inmutable</caption><thead><tr><th scope="col">Batería</th><th scope="col">Polaridad</th><th scope="col">Cantidad solicitada</th></tr></thead>
         <tbody>{snapshot.items.map(line => <tr key={line.variant_id}><td><strong>{line.brand} · {line.model}</strong><small>{line.capacity_ah} Ah</small></td>

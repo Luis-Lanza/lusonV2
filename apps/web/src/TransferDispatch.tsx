@@ -81,10 +81,11 @@ export default function TransferDispatch(props: TransferDispatchProps) {
         <p role="status">El resultado sigue sin confirmar. La solicitud puede haberse despachado, aunque una consulta muestre Aprobada. No envíes otra solicitud.</p>
         <button type="button" onClick={() => void run(transfers.recoverDispatch)}>Consultar resultado original del despacho</button>
         <button type="button" onClick={() => void run(transfers.retryDispatch)}>Reintentar mismo despacho</button>
-      </> : result?.status === 'in_transit' && <>
-        <p role="status">Estado confirmado: En tránsito.</p>
+      </> : (result?.status === 'in_transit' || result?.status === 'received') && <>
+        <p role="status">Estado confirmado: {result.status === 'received' ? 'Recibida' : 'En tránsito'}.</p>
         <p>Despachada desde {result.origin_location_name} (UTC): <time>{result.dispatched_at}</time></p>
-        <p>Pendiente de recepción en {result.destination_location_name}; todavía no recibe stock.</p>
+        {result.status === 'in_transit' ? <p>Pendiente de recepción en {result.destination_location_name}; todavía no recibe stock.</p>
+          : <p>Recepción finalizada en {result.destination_location_name} (UTC): <time>{result.received_at}</time></p>}
       </>}
       {error && <p role="alert">{error}</p>}
       <p>Volver o cerrar la confirmación no cancela un despacho enviado. La recuperación permanece en esta App; recargar o cerrar la pestaña pierde esta memoria.</p>
@@ -117,7 +118,7 @@ export default function TransferDispatch(props: TransferDispatchProps) {
         {busy && <p role="status">Confirmando despacho…</p>}
         {error && <p role="alert">{error}</p>}
         {unresolved && !busy && <p role="status">Resultado sin confirmar. Usá la recuperación del despacho original.</p>}
-        {result?.id === visibleReview.record.id && <p role="status">Estado confirmado: En tránsito.</p>}
+        {result?.id === visibleReview.record.id && <p role="status">Estado confirmado: {result.status === 'received' ? 'Recibida' : 'En tránsito'}.</p>}
       </div>
       <footer><button type="button" disabled={busy} onClick={dismiss}>Volver al detalle</button>
         {!unresolved && canDispatch && record.id === visibleReview.record.id && !(result && result.id === visibleReview.record.id) &&

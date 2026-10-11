@@ -549,7 +549,101 @@ npm run typecheck
 The parent also owns build verification using a fresh output and a non-destructive
 build route. The default `npm run build` can empty `dist`; the source writer is
 not authorized to generate/delete artifacts or mutate build configuration.
-Receipt, workflow-wide counters and user manual acceptance remain pending.
+D2's approval-only labels above are historical; R2 below replaces them. User manual acceptance remains pending.
+
+## R2 destination receipt and workflow actions
+
+Receipt completes the physical lifecycle without a discrepancy-resolution flow.
+Only the authenticated physical destination sees `Recibir solicitud` on an
+InTransit record, including warehouse receipt of a branch send. Capture includes
+every expected variant, with explicit `0` for missing arrivals. Unexpected
+variants come from the complete destination catalog through the existing
+`loadSourceInventory(destination)` helper. Catalog availability is not a receipt
+cap. Unknown catalog variants cannot be added through this UI.
+
+Each actual quantity is a canonical decimal string from `0` to
+`9223372036854775807`; numeric arithmetic never handles quantities. Unexpected
+lines must be positive. A total-zero receipt is invalid, but unexpected-only
+arrivals are allowed: every expected arrival is zero and recorded as a shortage.
+Admission checks positive existence instead of summing into a bounded integer.
+Review shows sent, actual and available-credit quantities plus shortages, excess
+and unexpected units. Only `min(actual,sent)` for expected variants becomes
+available inventory; exceptions stay separate and unresolved. Explicit confirmation
+finalizes receipt once. There is no edit, second receipt, loss, return or resolve
+control after finalization.
+
+### Immutable reads and explicit recovery
+
+The strict Received DTO retains original request, approval and dispatch history,
+adds server destination/time, and includes sorted receipt items and typed
+exceptions. Nested receipt arrays and lines are frozen; the decoder verifies
+available credit and every exception against the original sent quantities.
+Received filtering, detail, original creation replay and authorized approve/dispatch
+retries show the persisted current outcome. Current Received detail outranks
+cached approval or transit; historical approval does not make stock reserved again.
+
+`useInventory` owns `createTransferReceiptRecovery()` across pane navigation.
+`useTransfers` exposes `receive(original,input)`, `recoverReceipt()` and
+`retryReceipt()`, plus `receiptAttempt` and sanitized `receiptError`. The recovery
+pins a normalized immutable payload and original approval/dispatch identity,
+never session credentials. Account, assigned location, auth epoch, session
+generation and opaque flight tokens fence reads and completions. A 403/404 mask
+is scoped to the unavailable request, not every request owned by that location.
+
+No uncertain POST is silently replayed by rendering, events or navigation.
+`Consultar resultado original de la recepción` performs an explicit ordinary GET;
+an InTransit result cannot prove the earlier POST failed. Only the explicit
+`Reintentar misma recepción` action resends identical quantities. Received GET
+establishes current truth. If its persisted quantities differ from the pinned
+payload, both remain distinguished and no second receipt/retry is offered. A
+mismatched POST success remains uncertain rather than claiming those quantities
+were submitted. Closing a dialog does not undo a sent mutation. Reload, tab close
+or App unmount loses this live-memory recovery; changed authority cannot inherit it.
+
+### Workflow counters and refresh
+
+`pending_total` counts Pending participant requests. Independent `action_count`
+counts required approval at the persisted approver, dispatch at the physical
+origin, or receipt at the physical destination. It may exceed Pending, including
+zero Pending with required dispatch/receipt. Received and Rejected have no action.
+Desktop/mobile shell badges and pane copy now describe `Acciones requeridas`,
+not unread events, line totals or approval-only obligations.
+
+Every confirmed receipt POST or recovery GET refreshes transfer/detail/count
+lanes without waiting for SSE. Inventory and source-catalog lanes refresh only
+when the persisted receipt has positive expected available credit; unexpected-only
+arrivals do not invalidate available inventory. Stale completions cannot refresh
+replacement authority. Server events remain independent invalidation signals.
+
+### Verification and user smoke handoff
+
+Parent-owned pre-implementation verification observed real decoder/count/API,
+hook, UI and lifecycle RED separately from the planned absent receipt module.
+Post-implementation focused/full tests, typecheck and isolated build are pending;
+no GREEN, browser geometry or human acceptance is claimed here. The parent owns
+Vite cache and build output, using a fresh outDir with `--emptyOutDir=false` to
+preserve existing `dist`. No automated browser or Playwright run is part of R2.
+
+Manual user checklist (not executed):
+
+- Receive warehouse→branch, branch→branch and branch→warehouse transfers from
+  their destinations; verify origins cannot receive and inventory consultation
+  never changes authority.
+- Review exact quantities above JS safe integer range, explicit expected zeros,
+  shortage, excess and unexpected variants. Verify only expected received units
+  up to sent units become available and reserved balances remain unchanged.
+- Reject all-zero capture; confirm unexpected-only arrivals with all expected
+  shortages, no available inventory credit and no resolution action.
+- Verify review itself sends no POST, confirmation sends once, busy dialogs cannot
+  dismiss/double-submit, focus restores on cancel, and long tables scroll centrally.
+- Lose a reply and navigate Inventory→Transfers: consult explicitly, retain
+  uncertainty on InTransit, and explicitly retry the same quantities. Confirm
+  persisted differing quantities are distinguished without a second receipt.
+- Check Received filter, complete immutable history, latest-state precedence and
+  original creation replay. Check desktop/mobile workflow badges when Pending is
+  zero but a dispatch/receipt remains required.
+- Verify 403/404 privacy and logout/session replacement reveal no previous receipt
+  quantities; a different authorized request remains operable.
 
 ## Worker checks
 

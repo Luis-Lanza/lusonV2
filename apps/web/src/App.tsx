@@ -79,8 +79,8 @@ function Navigation({ mobile = false, transfers, disabled, actionCount, countUna
   onInventory: () => void; onPending: () => void;
 }) {
   const statusID = mobile ? 'mobile-transfer-count' : 'desktop-transfer-count';
-  const countStatus = actionCount !== null ? `Solicitudes que requieren tu aprobación: ${actionCount}`
-    : countUnavailable ? 'Contador de aprobación no disponible.' : 'Consultando solicitudes que requieren tu aprobación…';
+  const countStatus = actionCount !== null ? `Acciones requeridas: ${actionCount}`
+    : countUnavailable ? 'Contador de acciones no disponible.' : 'Consultando acciones requeridas…';
   return <nav className={mobile ? 'bottom-nav' : 'side-nav'} aria-label={mobile ? 'Navegación móvil' : 'Navegación principal'}>
     <a href="#inventario" aria-current={!transfers ? 'page' : undefined} aria-disabled={disabled} onClick={event => { event.preventDefault(); if (!disabled) onInventory(); }}><Icon name="inventory" /><span>Inventario</span></a>
     <button type="button" disabled={disabled} aria-current={transfers ? 'page' : undefined} aria-describedby={statusID} onClick={onPending}><Icon name="transfer" /><span>Transferencias</span>

@@ -76,8 +76,23 @@ function passiveCounts(mock: ReturnType<typeof setup>) {
   }
 }
 
+describe('R2 workflow action badges', () => {
+  it.each([false, true])('truthfully exposes required actions when Pending is zero (mobile=%s)', async mobile => {
+    vi.stubGlobal('matchMedia', () => ({ matches: mobile, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    const mock = setup(session, url => url === '/api/transfers/counts' ? Promise.resolve(countResponse('1', '0')) : undefined);
+    render(<App />);
+    const navigation = await screen.findByRole('navigation', { name: mobile ? 'Navegación móvil' : 'Navegación principal' });
+    const status = within(navigation).getByRole('status');
+    await waitFor(() => expect(status).toHaveTextContent(/acciones.*1/i));
+    expect(status).not.toHaveTextContent(/aprobación/i);
+    expect(within(navigation).getByRole('button', { name: 'Transferencias' }).querySelector('.transfer-action-badge')).toHaveTextContent('1');
+    passiveCounts(mock);
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+});
+
 describe('D2 dispatch shell lifetime', () => {
-  it('keeps uncertain dispatch across Inventory navigation, consults explicitly, and refreshes approval-only shell counts without SSE', async () => {
+  it('keeps uncertain dispatch across Inventory navigation, consults explicitly, and refreshes workflow shell counts without SSE', async () => {
     const approved = { id: '1001', reference: 'TR-1001', kind: 'request_stock', status: 'approved',
       creator_location_id: 2, creator_location_name: 'Sucursal A', origin_location_id: 1, origin_location_name: 'Almacén',
       destination_location_id: 2, destination_location_name: 'Sucursal A', approver_location_id: 1, approver_location_name: 'Almacén',
@@ -118,7 +133,7 @@ describe('D2 dispatch shell lifetime', () => {
     await waitFor(() => expect(recovery).toHaveTextContent('Estado confirmado: En tránsito.'));
     await waitFor(() => expect(countCalls(mock).length).toBeGreaterThan(countsBefore));
     await waitFor(() => expect(stockCalls(mock).length).toBeGreaterThan(stockBefore));
-    expect(shellCount()).toHaveTextContent('Solicitudes que requieren tu aprobación: 2');
+    expect(shellCount()).toHaveTextContent('Acciones requeridas: 2');
     expect(posts()).toHaveLength(1); expect(AppSource.instances).toHaveLength(1);
   });
 });
@@ -137,7 +152,7 @@ describe('B4 assigned-participant shell badge', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
     await screen.findByText('0 solicitudes pendientes');
     await waitFor(() => expect(document.querySelector('.transfer-request-counters dd')).toHaveTextContent('9007199254740994'));
-    expect(shellCount()).toHaveTextContent('Solicitudes que requieren tu aprobación: 9007199254740993');
+    expect(shellCount()).toHaveTextContent('Acciones requeridas: 9007199254740993');
     expect(document.querySelector('nav .transfer-action-badge')).toHaveTextContent('9007199254740993');
     await waitFor(() => expect(countCalls(mock)).toHaveLength(2));
     expect(document.querySelectorAll('.transfer-request-counters dd')[1]).toHaveTextContent('2');
@@ -163,28 +178,28 @@ describe('B4 assigned-participant shell badge', () => {
     const mock = setup(session, url => url === '/api/transfers/counts' ? held.promise : undefined);
     render(<App />);
     await screen.findByRole('navigation', { name: mobile ? 'Navegación móvil' : 'Navegación principal' });
-    expect(shellCount()).toHaveTextContent('Consultando solicitudes que requieren tu aprobación…');
+    expect(shellCount()).toHaveTextContent('Consultando acciones requeridas…');
     expect(document.querySelector('nav .transfer-action-badge')).not.toHaveTextContent('0');
     expect(screen.getByRole('button', { name: 'Transferencias' })).toBeEnabled();
     await act(async () => held.resolve(countResponse('0', '7')));
-    await waitFor(() => expect(shellCount()).toHaveTextContent('Solicitudes que requieren tu aprobación: 0'));
+    await waitFor(() => expect(shellCount()).toHaveTextContent('Acciones requeridas: 0'));
     expect(document.querySelector('nav .transfer-action-badge')).toHaveTextContent(/^0$/);
     expect(screen.getByRole('button', { name: mobile ? /Crear envío/ : /Nueva transferencia/ })).toBeDisabled(); passiveCounts(mock);
   });
   it.each(['403', '404', '503', 'network', 'malformed'])('keeps navigation usable with unavailable counts: %s', async kind => {
     const mock = setup(session, url => {
       if (url === '/api/transfers/counts') return kind === 'network' ? Promise.reject(new Error('offline'))
-        : Promise.resolve(kind === 'malformed' ? transferResponse({ pending_total: '1', action_count: '2' })
+        : Promise.resolve(kind === 'malformed' ? transferResponse({ pending_total: '1', action_count: '01' })
           : transferResponse({ error: kind === '403' ? 'forbidden' : kind === '404' ? 'not_found' : 'service_unavailable' }, Number(kind)));
       if (url.startsWith('/api/transfers?')) return Promise.resolve(transferResponse({ error: 'service_unavailable' }, 503));
       return undefined;
     });
     render(<App />); await inventory();
-    await waitFor(() => expect(shellCount()).toHaveTextContent('Contador de aprobación no disponible.'));
+    await waitFor(() => expect(shellCount()).toHaveTextContent('Contador de acciones no disponible.'));
     expect(document.querySelector('nav .transfer-action-badge')).toHaveTextContent('—');
     fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
     await screen.findByText('No se pudieron consultar las solicitudes.');
-    expect(shellCount()).toHaveTextContent('Contador de aprobación no disponible.');
+    expect(shellCount()).toHaveTextContent('Contador de acciones no disponible.');
     fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' })); await inventory();
     expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false); passiveCounts(mock);
   });
@@ -200,12 +215,12 @@ describe('B4 assigned-participant shell badge', () => {
     let reads = 0;
     const mock = setup(session, url => url === '/api/transfers/counts'
       ? Promise.resolve(++reads === 2 ? transferResponse({ error: 'forbidden' }, 403) : countResponse(reads === 1 ? '6' : '0')) : undefined);
-    render(<App />); await inventory(); await waitFor(() => expect(shellCount()).toHaveTextContent('aprobación: 6'));
+    render(<App />); await inventory(); await waitFor(() => expect(shellCount()).toHaveTextContent('requeridas: 6'));
     act(() => AppSource.instances[0].emit('transfers'));
-    await waitFor(() => expect(shellCount()).toHaveTextContent('Contador de aprobación no disponible.'));
+    await waitFor(() => expect(shellCount()).toHaveTextContent('Contador de acciones no disponible.'));
     expect(document.querySelector('nav .transfer-action-badge')).toHaveTextContent('—');
     act(() => AppSource.instances[0].emit('resync'));
-    await waitFor(() => expect(shellCount()).toHaveTextContent('aprobación: 0')); expect(reads).toBe(3); passiveCounts(mock);
+    await waitFor(() => expect(shellCount()).toHaveTextContent('requeridas: 0')); expect(reads).toBe(3); passiveCounts(mock);
   });
   it('discards stale values and coalesces dirty refreshes within its lane without reading stock on transfers', async () => {
     const held = deferred<Response>(); const latest = deferred<Response>(); let reads = 0;
@@ -223,7 +238,7 @@ describe('B4 assigned-participant shell badge', () => {
     await waitFor(() => expect(reads).toBe(3));
     expect(shellCount()).not.toHaveTextContent('8');
     await act(async () => latest.resolve(countResponse('0')));
-    await waitFor(() => expect(shellCount()).toHaveTextContent('aprobación: 0'));
+    await waitFor(() => expect(shellCount()).toHaveTextContent('requeridas: 0'));
     expect(stockCalls(mock)).toHaveLength(stocks); passiveCounts(mock);
   });
   it.each(['success', 'network', '401'])('ignores obsolete %s after logout and a new login', async kind => {
@@ -234,10 +249,10 @@ describe('B4 assigned-participant shell badge', () => {
     act(() => AppSource.instances[0].emit('transfers')); await waitFor(() => expect(reads).toBe(2));
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' })); await screen.findByLabelText('Usuario');
     expect(screen.queryByRole('navigation')).not.toBeInTheDocument(); expect(reads).toBe(2);
-    await login(); await waitFor(() => expect(shellCount()).toHaveTextContent('aprobación: 3'));
+    await login(); await waitFor(() => expect(shellCount()).toHaveTextContent('requeridas: 3'));
     expect(countCalls(mock)[1][1]?.signal?.aborted).toBe(true);
     await act(async () => { if (kind === 'network') held.reject(new Error('old offline')); else held.resolve(kind === '401' ? transferResponse({ error: 'unauthenticated' }, 401) : countResponse('8')); });
-    expect(shellCount()).toHaveTextContent('aprobación: 3'); expect(screen.queryByLabelText('Usuario')).not.toBeInTheDocument();
+    expect(shellCount()).toHaveTextContent('requeridas: 3'); expect(screen.queryByLabelText('Usuario')).not.toBeInTheDocument();
     expect(mock.mock.calls.filter(([url]) => String(url).endsWith('/logout'))).toHaveLength(1); passiveCounts(mock);
   });
   it.each(['identity', 'csrf'].flatMap(kind => ['success', 'network', '401'].map(reply => [kind, reply])))('fences %s changes against obsolete %s in the same shell', async (kind, reply) => {
@@ -248,13 +263,13 @@ describe('B4 assigned-participant shell badge', () => {
       : url === '/api/transfers/counts' ? ++reads === 1 ? held.promise : Promise.resolve(countResponse('4')) : undefined);
     render(<App />); await inventory(); await waitFor(() => expect(reads).toBe(1));
     act(() => AppSource.instances[0].emit('error'));
-    await waitFor(() => expect(shellCount()).toHaveTextContent('aprobación: 4'));
+    await waitFor(() => expect(shellCount()).toHaveTextContent('requeridas: 4'));
     expect(countCalls(mock)[0][1]?.signal?.aborted).toBe(true);
     await act(async () => {
       if (reply === 'network') held.reject(new Error('old offline'));
       else held.resolve(reply === '401' ? transferResponse({ error: 'unauthenticated' }, 401) : countResponse('8'));
     });
-    expect(shellCount()).toHaveTextContent('aprobación: 4'); expect(screen.queryByLabelText('Usuario')).not.toBeInTheDocument();
+    expect(shellCount()).toHaveTextContent('requeridas: 4'); expect(screen.queryByLabelText('Usuario')).not.toBeInTheDocument();
     expect(countCalls(mock)).toHaveLength(2); passiveCounts(mock);
   });
   it('clears private counts on current 401 and never reads counts while anonymous', async () => {

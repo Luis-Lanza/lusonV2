@@ -30,16 +30,25 @@ export function matchesDecisionRecord(original: TransferRecord, result: Transfer
     'origin_location_id', 'origin_location_name', 'destination_location_id', 'destination_location_name',
     'approver_location_id', 'approver_location_name'] as const;
   const itemFields = ['variant_id', 'brand', 'model', 'capacity_ah', 'polarity', 'quantity'] as const;
-  const metadataMatches = original.status === 'pending' || ((result.status === original.status
-    || (original.status === 'approved' && result.status === 'in_transit'))
+  const later = (original.status === 'approved' && (result.status === 'in_transit' || result.status === 'received'))
+    || (original.status === 'in_transit' && result.status === 'received');
+  const receiptMatches = original.status !== 'received' || (result.status === 'received'
+    && original.receipt_location_id === result.receipt_location_id && original.received_at === result.received_at
+    && original.receipt.items.length === result.receipt.items.length && original.receipt.exceptions.length === result.receipt.exceptions.length
+    && original.receipt.items.every((line, i) => ['variant_id', 'expected_quantity', 'actual_quantity', 'available_quantity']
+      .every(key => Reflect.get(line, key) === Reflect.get(result.receipt.items[i], key)))
+    && original.receipt.exceptions.every((line, i) => ['variant_id', 'kind', 'quantity']
+      .every(key => Reflect.get(line, key) === Reflect.get(result.receipt.exceptions[i], key))));
+  const metadataMatches = original.status === 'pending' || ((result.status === original.status || later)
     && result.decision_location_id === original.decision_location_id && result.decided_at === original.decided_at
-    && (original.status !== 'in_transit' || (result.dispatch_location_id === original.dispatch_location_id && result.dispatched_at === original.dispatched_at)));
+    && ((original.status !== 'in_transit' && original.status !== 'received')
+      || (result.dispatch_location_id === original.dispatch_location_id && result.dispatched_at === original.dispatched_at)) && receiptMatches);
   return metadataMatches && fields.every(field => original[field] === result[field]) && original.items.length === result.items.length
     && original.items.every((item, index) => itemFields.every(field => item[field] === result.items[index][field]));
 }
 export function requestedDecision(action: TransferDecision) { return action === 'approve' ? 'approved' : 'rejected'; }
 export function satisfiesDecision(action: TransferDecision, result: TransferRecord) {
-  return result.status === requestedDecision(action) || (action === 'approve' && result.status === 'in_transit');
+  return result.status === requestedDecision(action) || (action === 'approve' && (result.status === 'in_transit' || result.status === 'received'));
 }
 
 export function createTransferDecisionRecovery() {

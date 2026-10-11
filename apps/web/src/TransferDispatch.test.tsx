@@ -55,6 +55,38 @@ function fixture(actor = 1, origin = 1, destination = 2, override?: (url: string
 }
 const posts = (f: ReturnType<typeof fixture>) => f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST');
 afterEach(() => vi.unstubAllGlobals());
+describe('R2 latest Received participant history', () => {
+  it.each(['approval', 'dispatch'] as const)('latest Received detail outranks cached %s and exposes immutable history/filter', async cached => {
+    const f = fixture();
+    if (cached === 'approval') {
+      const pending = parseTransferRecord(JSON.stringify({ ...wire(), status: 'pending', decision_location_id: undefined, decided_at: undefined }));
+      const token = f.controller.decisionRecovery!.start(pending, 'approve', decisionOwner(f.env.authority)!)!;
+      f.controller.decisionRecovery!.finish(token, parseTransferRecord(JSON.stringify(wire())));
+    } else {
+      const token = f.controller.dispatchRecovery!.start(parseTransferRecord(JSON.stringify(wire())), decisionOwner(f.env.authority)!)!;
+      f.controller.dispatchRecovery!.finish(token, parseTransferRecord(JSON.stringify(wire(1, 2, 'in_transit'))));
+    }
+    const transit = wire(1, 2, 'in_transit');
+    f.env.record = { ...transit, status: 'received', ...{
+      receipt_location_id: 2, received_at: '2026-04-03T00:00:00.000000003Z', receipt: {
+        items: transit.items.map(item => ({ variant_id: item.variant_id, expected_quantity: item.quantity,
+          actual_quantity: item.quantity, available_quantity: item.quantity })), exceptions: [],
+      },
+    } };
+    render(f.element());
+    const history = await screen.findByRole('region', { name: 'Historial de la solicitud' });
+    await waitFor(() => expect(history).toHaveTextContent('Solicitud recibida'));
+    expect(history).toHaveTextContent('Solicitud aprobada'); expect(history).toHaveTextContent('Solicitud despachada');
+    expect(screen.getByRole('complementary', { name: 'Resumen de solicitud' })).toHaveTextContent('Recibida');
+    expect(screen.queryByRole('button', { name: /Despachar solicitud|Recibir solicitud|Resolver/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'received' } });
+    await screen.findByText('1 solicitudes recibidas');
+    expect(screen.getByRole('table', { name: 'Solicitudes recibidas participantes' })).toHaveTextContent('Recibida');
+    expect(posts(f)).toHaveLength(0);
+  });
+});
+
 describe('D2 dispatch participant UI', () => {
   it.each([[1, 1, 2], [3, 3, 2], [2, 2, 1]])('only assigned physical origin %s confirms %s → %s in full', async (actor, origin, destination) => {
     const f = fixture(actor, origin, destination); render(f.element());
@@ -124,7 +156,7 @@ describe('D2 dispatch participant UI', () => {
     await act(async () => { delayed.resolve(reply(wire(1, 2, 'in_transit', 190))); });
     await screen.findByRole('heading', { name: 'Despacho confirmado', level: 2 });
   });
-  it('does not let cached approval hide newer transit detail, and keeps counters approval-only', async () => {
+  it('does not let cached approval hide newer transit detail, and labels workflow counters truthfully', async () => {
     const f = fixture();
     const pending = parseTransferRecord(JSON.stringify({ ...wire(), status: 'pending', decision_location_id: undefined, decided_at: undefined }));
     const token = f.controller.decisionRecovery!.start(pending, 'approve', decisionOwner(f.env.authority)!)!;
@@ -132,7 +164,7 @@ describe('D2 dispatch participant UI', () => {
     f.env.record = wire(1, 2, 'in_transit'); render(f.element());
     await waitFor(() => expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toHaveTextContent('Solicitud despachada'));
     expect(screen.queryByRole('button', { name: 'Despachar solicitud' })).not.toBeInTheDocument();
-    expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toHaveTextContent('Requieren tu aprobación2');
+    expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toHaveTextContent('Acciones requeridas2');
     fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
     fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'in_transit' } });
     await screen.findByText('1 solicitudes en tránsito');

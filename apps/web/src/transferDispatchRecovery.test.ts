@@ -13,6 +13,22 @@ const dispatchWire = (overrides = {}) => ({
 const approved = () => parseTransferRecord(JSON.stringify(dispatchWire({ status: 'approved', dispatch_location_id: undefined, dispatched_at: undefined })));
 const transit = (changes = {}) => parseTransferRecord(JSON.stringify(dispatchWire(changes)));
 const owner = { account: 1, location: 1, epoch: 1, generation: 1 };
+describe('R2 later dispatch outcome', () => {
+  it('confirms Received on explicit dispatch recovery without discarding approval or dispatch identity', () => {
+    const recovery = createTransferDispatchRecovery(); const token = recovery.start(approved(), owner)!;
+    recovery.finish(token); const read = recovery.claim(owner, true)!;
+    const received = parseTransferRecord(JSON.stringify(dispatchWire({ status: 'received', receipt_location_id: 2,
+      received_at: '2026-04-03T00:00:00.000000003Z', receipt: {
+        items: [{ variant_id: 1, expected_quantity: '9223372036854775807', actual_quantity: '9223372036854775807', available_quantity: '9223372036854775807' }], exceptions: [],
+      } })));
+    expect(recovery.finish(read, received)).toBe(true);
+    expect(recovery.get(owner)).toMatchObject({ phase: 'confirmed', result: { status: 'received',
+      decided_at: '2026-04-03T00:00:00.000000001Z', dispatched_at: '2026-04-03T00:00:00.000000002Z' } });
+    const receipt = Reflect.get(recovery.get(owner)!.result!, 'receipt');
+    for (const value of [receipt, receipt.items, receipt.items[0], receipt.exceptions]) expect(Object.isFrozen(value)).toBe(true);
+  });
+});
+
 describe('D2 controller-owned dispatch recovery', () => {
   it('keeps approved GET uncertain and confirms only matching transit, with immutable approval', () => {
     const recovery = createTransferDispatchRecovery();

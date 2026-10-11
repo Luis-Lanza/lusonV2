@@ -3,6 +3,7 @@ import type { TransferController, SourceInventoryController } from './useInvento
 import { loadSourceInventory, SourceInventoryError, type SourceCatalog } from './sourceInventory';
 import { transferQuantityTotal, type TransferRecord } from './transferModel';
 import { transferViewOwner } from './TransferPending';
+import { ReceiptTable } from './TransferReceipt';
 
 export type DetailController = TransferController & Partial<SourceInventoryController>;
 export interface StockAdvice { catalog: SourceCatalog | null; busy: boolean; unavailable: boolean }
@@ -24,7 +25,7 @@ export function detailAuthority(controller: TransferController): string {
     s.csrf_token, s.expires_at]) : '';
 }
 export function transferStatusLabel(record: TransferRecord) {
-  return record.status === 'pending' ? 'Pendiente de aprobación' : record.status === 'approved' ? 'Aprobada' : record.status === 'in_transit' ? 'En tránsito' : 'Rechazada';
+  return record.status === 'pending' ? 'Pendiente de aprobación' : record.status === 'approved' ? 'Aprobada' : record.status === 'in_transit' ? 'En tránsito' : record.status === 'received' ? 'Recibida' : 'Rechazada';
 }
 function Stock({ stock, variant }: { stock: StockAdvice; variant: number }) {
   const row = stock.catalog?.rows.find(item => item.variant_id === variant);
@@ -40,7 +41,7 @@ export function TransferItems({ record, stock, confirmation = false, reject = fa
   return <div className="table-scroll transfer-detail-items"><table>
     <caption className="sr-only">{confirmation ? 'Solicitud completa a confirmar' : 'Baterías solicitadas'}</caption>
     <thead><tr><th scope="col">Batería</th><th scope="col">Polaridad</th>
-      <th scope="col">{dispatch ? 'Cantidad a despachar' : record.status === 'in_transit' ? 'Cantidad enviada' : confirmation && !reject ? 'Cantidad a reservar' : 'Cantidad solicitada'}</th>
+      <th scope="col">{dispatch ? 'Cantidad a despachar' : (record.status === 'in_transit' || record.status === 'received') ? 'Cantidad enviada' : confirmation && !reject ? 'Cantidad a reservar' : 'Cantidad solicitada'}</th>
       {advice && <th scope="col">Disponible en {record.origin_location_name} (orientativo)</th>}</tr></thead>
     <tbody>{record.items.map(item => <tr key={item.variant_id} data-variant-id={item.variant_id}>
       <td><strong>{item.brand} · {item.model}</strong><small>{item.capacity_ah} Ah</small></td>
@@ -125,6 +126,7 @@ export default function TransferDetail(props: TransferDetailProps) {
           <small>{record.kind === 'send_to_warehouse' ? 'Receptor · requiere aprobación' : 'Ubicación solicitante'}</small></div>
       </section>
       <TransferItems record={record} stock={terminal ? undefined : stock} />
+      {record.status === 'received' && <ReceiptTable receipt={record.receipt} record={record} />}
       {!terminal && <div className="transfer-advisory"><p>Stock de origen orientativo, no es una garantía de disponibilidad. El servidor revalida toda la solicitud al aprobar.</p>
         {stock.unavailable && <p role="alert">No se pudo consultar el stock de origen. La solicitud completa sigue disponible para revisión.</p>}
         <button type="button" disabled={stock.busy} onClick={() => { if (current()) refresh.current(); }}>Actualizar stock de origen</button>
@@ -132,7 +134,7 @@ export default function TransferDetail(props: TransferDetailProps) {
       {warehouse && <div className="transfer-detail-cards" aria-label="Baterías solicitadas móvil">
         {record.items.map(item => <article key={item.variant_id} data-variant-id={item.variant_id}>
           <h3>{item.brand} · {item.model}</h3><p>{item.capacity_ah} Ah · {item.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</p>
-          <p>{record.status === 'in_transit' ? 'Cantidad enviada' : 'Cantidad solicitada'}: <strong>{item.quantity.toString()}</strong></p>
+          <p>{(record.status === 'in_transit' || record.status === 'received') ? 'Cantidad enviada' : 'Cantidad solicitada'}: <strong>{item.quantity.toString()}</strong></p>
           {!terminal && <><p>Disponible en {record.origin_location_name} (orientativo)</p><Stock stock={stock} variant={item.variant_id} /></>}
         </article>)}
       </div>}
@@ -141,7 +143,7 @@ export default function TransferDetail(props: TransferDetailProps) {
       <section aria-label="Cantidades de la solicitud" className={`transfer-outcome-metrics ${record.status}`}>
         <dl><dt>Baterías solicitadas</dt>
           <dd aria-label="Baterías solicitadas">{transferQuantityTotal(record).toString()}</dd></dl>
-        {terminal && record.status !== 'in_transit' && <dl><dt>Baterías reservadas en esta solicitud</dt>
+        {terminal && record.status !== 'in_transit' && record.status !== 'received' && <dl><dt>Baterías reservadas en esta solicitud</dt>
           {/* Validated Approved records guarantee exact whole-request allocations, not global balances. */}
           <dd aria-label="Baterías reservadas en esta solicitud">{record.status === 'approved' ? transferQuantityTotal(record).toString() : '0'}</dd></dl>}
         {record.status === 'in_transit' && <>
@@ -149,16 +151,22 @@ export default function TransferDetail(props: TransferDetailProps) {
           <dl><dt>Reserva propia consumida</dt><dd>{transferQuantityTotal(record).toString()}</dd></dl>
           <dl><dt>Recepción en destino</dt><dd>Pendiente de recepción</dd></dl>
         </>}
+        {record.status === 'received' && <>
+          <dl><dt>Baterías enviadas</dt><dd>{transferQuantityTotal(record).toString()}</dd></dl>
+          <dl><dt>Stock disponible acreditado</dt><dd>{record.receipt.items.reduce((total, line) => total + line.available_quantity, 0n).toString()}</dd></dl>
+          <dl><dt>Recepción en destino</dt><dd>Recibida</dd></dl>
+        </>}
       </section>
       <dl><dt>Ubicación creadora</dt><dd>{record.creator_location_name}</dd>
         <dt>Requiere aprobación de</dt><dd>{record.approver_location_name}</dd>
         <dt>Creada (UTC)</dt><dd><time>{record.created_at}</time></dd></dl>
       {terminal ? <><p>Decidida (UTC): <time>{record.decided_at}</time></p>
-        <p>{record.status === 'in_transit' ? `Se despachó la solicitud completa desde ${record.origin_location_name}, consumiendo su reserva y descontando existencias. ${record.destination_location_name} todavía no recibe stock; la recepción está pendiente.` : record.status === 'approved' ? `La solicitud completa está reservada en ${record.origin_location_name}. Las existencias físicas no cambian y el destino no recibe stock por la aprobación.` : 'La solicitud completa fue rechazada. No reserva ni mueve stock.'}</p></>
+        <p>{record.status === 'received' ? `La recepción se confirmó en ${record.destination_location_name}. Solo las cantidades esperadas recibidas, hasta lo enviado, se acreditaron como stock disponible. Las discrepancias permanecen registradas, sin resolución automática.` : record.status === 'in_transit' ? `Se despachó la solicitud completa desde ${record.origin_location_name}, consumiendo su reserva y descontando existencias. ${record.destination_location_name} todavía no recibe stock; la recepción está pendiente.` : record.status === 'approved' ? `La solicitud completa está reservada en ${record.origin_location_name}. Las existencias físicas no cambian y el destino no recibe stock por la aprobación.` : 'La solicitud completa fue rechazada. No reserva ni mueve stock.'}</p></>
         : <div className="transfer-impact"><p>Esta solicitud todavía no reserva ni mueve stock.</p>
           <p>Al aprobar se revalida y reserva la solicitud completa en {record.origin_location_name}. Si falta disponibilidad en alguna variante, no se reserva ninguna.</p>
           <p>Aprobar no mueve existencias ni aumenta el stock del destino.</p></div>}
-      {record.status === 'in_transit' && <p>Despachada desde {record.origin_location_name} (UTC): <time>{record.dispatched_at}</time></p>}
+      {(record.status === 'in_transit' || record.status === 'received') && <p>Despachada desde {record.origin_location_name} (UTC): <time>{record.dispatched_at}</time></p>}
+      {record.status === 'received' && <p>Recibida en {record.destination_location_name} (UTC): <time>{record.received_at}</time></p>}
       {props.actions?.(stock)}
     </aside>
       <section className={`transfer-history ${record.status}`} aria-label="Historial de la solicitud">
@@ -173,10 +181,15 @@ export default function TransferDetail(props: TransferDetailProps) {
             <p>Ubicación: {record.approver_location_name}</p>
             <time dateTime={record.decided_at}>{record.decided_at}</time>
           </li>}
-          {record.status === 'in_transit' && <li><h3>Solicitud despachada</h3>
+          {(record.status === 'in_transit' || record.status === 'received') && <li><h3>Solicitud despachada</h3>
             <p>Origen: {record.origin_location_name}</p>
             <time dateTime={record.dispatched_at}>{record.dispatched_at}</time>
-            <p>Pendiente de recepción en {record.destination_location_name}.</p>
+            {record.status === 'in_transit' && <p>Pendiente de recepción en {record.destination_location_name}.</p>}
+          </li>}
+          {record.status === 'received' && <li><h3>Solicitud recibida</h3>
+            <p>Destino: {record.destination_location_name}</p>
+            <time dateTime={record.received_at}>{record.received_at}</time>
+            <p>Recepción finalizada una sola vez. Discrepancias registradas por separado.</p>
           </li>}
         </ol>
       </section>
