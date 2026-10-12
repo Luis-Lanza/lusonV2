@@ -1,12 +1,13 @@
 # Create transfers and read private outcomes
 
-Authenticated branches can create immutable Pending requests. Only physical
-origin and destination can read them; warehouse can read participating records
-but cannot create. Pending does **not** reserve or change stock. This read API
+Authenticated branches can create immutable Pending requests. The assigned
+warehouse can create an authorized, reserved `direct_shipment` to either branch.
+Only physical origin and destination can read either kind. Branch Pending
+creation does **not** reserve or change stock. This read API
 also exposes persisted Approved/Rejected/In-transit/Received/Cancelled outcomes
 and guarded whole-request approval, rejection, origin-only dispatch,
 destination-only receipt and creator-only cancellation before dispatch.
-Direct warehouse creation and discrepancy resolution remain excluded.
+Discrepancy resolution remains excluded. Direct-shipment UI is a separate unit.
 Cancellation UI and human acceptance remain separate delivery steps.
 
 ## Quick path
@@ -30,7 +31,7 @@ never registers transfers: those routes remain 404 for legacy callers.
 | Route | Methods | Result |
 |---|---|---|
 | `/api/transfers` | GET | Participant-scoped page for the selected status |
-| `/api/transfers` | POST | 201 new Pending; 200 identical original replay, including terminal outcomes |
+| `/api/transfers` | POST | 201 new branch Pending or authorized direct shipment; 200 identical creation replay of the current outcome |
 | `/api/transfers/{id}` | GET | Full participant record; missing/inaccessible both 404 |
 | `/api/transfers/counts` | GET | Private Pending total and location-owned workflow action count |
 | `/api/transfers/{id}/approve` | POST | Full persisted Approved outcome |
@@ -75,7 +76,7 @@ Responses retain `Cache-Control: no-store` and
 
 | Field | Contract |
 |---|---|
-| `kind` | Exact `request_stock` or `send_to_warehouse` |
+| `kind` | Exact `request_stock`, `send_to_warehouse` or `direct_shipment` |
 | `counterparty_location_id` | Canonical integer JSON token 1–3; direction validated against actor |
 | `retry_key` | Opaque ASCII `[A-Za-z0-9_-]{16,128}`, actor-scoped |
 | `items` | 1–190 objects, one line per variant; duplicates rejected |
@@ -106,9 +107,55 @@ reordered lines are equivalent. Changed payload with the same actor/key is 409.
 Independent actors may reuse a key. References remain globally generated,
 continue beyond 999 and may have rollback gaps. No client reference is accepted.
 
+## Direct warehouse creation
+
+Use the same POST route and strict four-field body with `kind: "direct_shipment"`
+and `counterparty_location_id: 2` or `3`. Only assigned warehouse account/location
+1 may create this kind. A valid direct-kind request by either branch is 403;
+warehouse/self or unknown destinations are 400. Selected inventory locations
+never grant creation authority. Server participant, status, timestamp, decision
+and allocation fields are not accepted in the request body.
+
+A 201 response is already `approved`: here that internal state means **authorized
+and reserved at creation**, not a later human approval. Creator, origin and
+approver are warehouse 1; destination is the selected branch. Persisted
+`decision_location_id` is 1 and `decided_at` equals `created_at`. Clients must
+label this history as creation-time authorization/reservation, not invent a
+subsequent approval event. Direct shipments never enter Pending or Rejected.
+
+Creation atomically reserves the complete immutable cart, adding each quantity
+to warehouse `reserved` and subtracting it from `available`; no `existing` stock
+changes and no destination stock is credited. Each item owns one exact active
+allocation. Existing unrelated holds survive. Whole-cart shortage returns 409
+`insufficient_stock`; any later write or commit failure rolls everything back.
+The transaction serializes actor/key first, checks canonical current-state replay
+before stock, then takes the lifecycle integrity lock before sorted balance locks.
+Migration 010 preserves existing immutable and deferred full-coverage guards.
+
+Warehouse dispatch consumes the reservation and physical stock; the destination
+then records the existing immutable receipt. Before dispatch, warehouse creator
+cancellation releases only these reservations and retains the creation-time
+authorization metadata. Cancellation cannot reverse dispatch. Approve/reject do
+not represent actions or successful retries for this kind: warehouse gets 409
+`decision_conflict`, destination gets 403, and a nonparticipant gets 404.
+Existing branch-request approval retry semantics remain unchanged.
+
+Reordered same-key/same-payload creation replay returns 200 and the **current**
+persisted Approved, Cancelled, In-transit or Received record, without stock
+revalidation or another reservation. Changed payload remains 409 `retry_conflict`.
+Read/detail/status pages share participant privacy. Initial counts are zero
+Pending and one warehouse dispatch action; the destination has no approval action.
+
+Successful committed creation emits existing inventory hints and transfer hints
+for warehouse and destination. The unrelated branch receives only the existing
+global inventory hint, not shipment identity/history. Hints require authorized
+refetch; rollback, failed commit, reads and identical replay emit no mutation hint.
+No endpoint, response version, client-supplied authorization or automatic dispatch
+is introduced. UI delivery, deployment and human acceptance remain separate.
+
 ## Whole-request decisions
 
-The persisted approver, not the consulted inventory location, may perform:
+For branch-created requests, the persisted approver, not the consulted inventory location, may perform:
 
 ```http
 POST /api/transfers/123/approve
@@ -218,7 +265,7 @@ Existing commit-only inventory and participant transfer invalidations are reused
 Rollback, recovery reads and mutation-free retries emit no new mutation hints.
 Workflow action counters now include origin-owned Approved dispatches and
 destination-owned In-transit receipts. Cancelled contributes no action;
-direct warehouse creation remains excluded.
+direct creation contributes a warehouse dispatch action, not a Pending approval.
 
 ## Creator-only cancellation before dispatch
 
@@ -226,7 +273,7 @@ direct warehouse creation remains excluded.
 Content-Type, session, Origin/CSRF, optional FetchSite, canonical ID and no-query
 admission as decisions. No reason, retry key, actor, timestamp or item selection
 is accepted. Only the original creator may cancel Pending or Approved, including
-warehouse requests and branch proposals to warehouse. Visible noncreators get
+warehouse requests, branch proposals to warehouse and direct warehouse shipments. Visible noncreators get
 403; missing/nonparticipant records both get 404. Authorization precedes retries
 and lifecycle conflicts. Rejected, In-transit and Received return 409
 `decision_conflict`; cancellation cannot reverse dispatch or receipt.
@@ -321,7 +368,8 @@ An identical normalized payload (item/key order irrelevant) returns 200 with the
 current persisted receipt, without stock writes or new events. Changed valid
 actuals or line sets after finalization return 409 `retry_conflict`. Structurally
 invalid payloads remain 400. Authorized approval and dispatch retries return the
-current Received outcome read-only; authorized rejection deliberately returns
+current Received outcome read-only for branch-created requests. Direct shipments
+allow dispatch retries but never approval retries. Authorized rejection returns
 409 `decision_conflict`, never a fabricated 503.
 
 GET, `status=received` participant pages and identical original creation replay
@@ -391,7 +439,8 @@ Only explicit snake_case DTOs are serialized:
 - In-transit/Received record additionally: `dispatch_location_id`, `dispatched_at`.
 - Received record additionally: `receipt_location_id`, `received_at`, `receipt`.
 - Cancelled record additionally: `cancellation_location_id`, `cancelled_at`;
-  original decision fields only when cancellation followed approval.
+  original decision fields when cancellation followed approval, or always for
+  direct shipments authorized at creation.
 - Item: `variant_id`, `brand`, `model`, `capacity_ah`, `polarity`, `quantity`.
 - Page: `page`, `page_size`, `status`, `total_count`, `records`.
 
@@ -478,6 +527,13 @@ approval preservation, release-only stock effects, SQL history/ownership guards,
 strict HTTP authorization/framing, recovery/filter/replay/counts, deterministic
 duplicate and approve/dispatch races, rollback and commit-only events on the
 admitted isolated PostgreSQL fixture. These checks do not imply manual acceptance.
+
+`TestW01*` covers warehouse creation to both branches, simultaneous initial
+authorization, complete owned reservation, whole-cart rollback, independent holds,
+current terminal replay, schema bypass/immutability, deterministic competing
+creations/approvals and context waits. HTTP tests cover strict roles, full lifecycle
+recovery, participant pages/counts and commit-only inventory/transfer hints.
+These backend checks do not establish direct-shipment frontend delivery.
 
 See [the immutable store contract](pending-requests-store.md) for persistence,
 replay ordering, Pending stock policy and snapshot rationale.

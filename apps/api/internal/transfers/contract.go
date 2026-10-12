@@ -1,4 +1,4 @@
-// Package transfers persists immutable Pending requests without reserving stock.
+// Package transfers persists immutable requests and their owned stock lifecycle.
 package transfers
 
 import (
@@ -19,6 +19,7 @@ type Kind string
 const (
 	RequestStock    Kind = "request_stock"
 	SendToWarehouse Kind = "send_to_warehouse"
+	DirectShipment  Kind = "direct_shipment"
 )
 
 var (
@@ -92,7 +93,7 @@ func assigned(actor auth.Identity) bool {
 // rejects duplicate variants before sorting a copy, never modifies the cart,
 // and never adds quantities across lines (their sum could overflow int64).
 func Validate(actor auth.Identity, input CreateInput) (Intent, error) {
-	if !assigned(actor) || actor.AccountID == 1 {
+	if !assigned(actor) || (actor.AccountID == 1 && input.Kind != DirectShipment) || (actor.AccountID != 1 && input.Kind == DirectShipment) {
 		return Intent{}, ErrForbidden
 	}
 	if !retryKeyPattern.MatchString(input.RetryKey) || len(input.Items) == 0 || len(input.Items) > 190 {
@@ -100,6 +101,12 @@ func Validate(actor auth.Identity, input CreateInput) (Intent, error) {
 	}
 	n := Intent{CreatorID: actor.AccountID, Kind: input.Kind, RetryKey: input.RetryKey}
 	switch input.Kind {
+	case DirectShipment:
+		if input.CounterpartyID != 2 && input.CounterpartyID != 3 {
+			return Intent{}, ErrInvalid
+		}
+		n.OriginID, n.ApproverID = 1, 1
+		n.DestinationID = input.CounterpartyID
 	case RequestStock:
 		if input.CounterpartyID < 1 || input.CounterpartyID > 3 || input.CounterpartyID == n.CreatorID {
 			return Intent{}, ErrInvalid

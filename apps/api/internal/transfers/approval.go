@@ -11,7 +11,7 @@ import (
 
 // Approve reserves the immutable whole request at its physical origin. The
 // caller supplies an authenticated identity; the persisted approver authorizes
-// the decision, including warehouse actors who cannot create requests.
+// the decision. Direct shipments are already authorized at creation.
 func (s *Store) Approve(ctx context.Context, actor auth.Identity, id int64) (Request, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return Request{}, ErrUnavailable
@@ -55,6 +55,9 @@ func (s *Store) Approve(ctx context.Context, actor auth.Identity, id int64) (Req
 	r, err := load(ctx, tx, actor.AccountID, id)
 	if err != nil {
 		return Request{}, err
+	}
+	if r.Kind == DirectShipment {
+		return Request{}, ErrDecisionConflict
 	}
 	switch r.Status {
 	case "approved", "in_transit", "received":

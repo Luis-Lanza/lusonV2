@@ -16,6 +16,60 @@ func actor(id int) auth.Identity {
 func input() transfers.CreateInput {
 	return transfers.CreateInput{Kind: transfers.RequestStock, CounterpartyID: 1, RetryKey: "opaque-retry-key-0001", Items: []transfers.Line{{VariantID: 2, Quantity: 1}, {VariantID: 1, Quantity: 2}}}
 }
+func TestW01DirectShipmentContract(t *testing.T) {
+	for _, destination := range []int{2, 3} {
+		in := input()
+		in.Kind, in.CounterpartyID = transfers.DirectShipment, destination
+		original := append([]transfers.Line(nil), in.Items...)
+		got, err := transfers.Validate(actor(1), in)
+		if err != nil || got.CreatorID != 1 || got.OriginID != 1 || got.ApproverID != 1 || got.DestinationID != destination || got.Kind != in.Kind || !reflect.DeepEqual(in.Items, original) {
+			t.Fatal("direct intent must derive exclusively from assigned warehouse identity")
+		}
+		in.Items[0], in.Items[1] = in.Items[1], in.Items[0]
+		reordered, err := transfers.Validate(actor(1), in)
+		if err != nil || !reflect.DeepEqual(got, reordered) {
+			t.Fatal("direct intent must canonicalize without mutating caller cart")
+		}
+		in.Items[0].Quantity++
+		changed, err := transfers.Validate(actor(1), in)
+		if err != nil || changed.Fingerprint == got.Fingerprint {
+			t.Fatal("direct fingerprint must bind the whole cart")
+		}
+	}
+	for _, id := range []int{0, 2, 3, 4} {
+		in := input()
+		in.Kind, in.CounterpartyID = transfers.DirectShipment, 2
+		if _, err := transfers.Validate(actor(id), in); !errors.Is(err, transfers.ErrForbidden) {
+			t.Fatal("nonwarehouse direct creator admitted")
+		}
+	}
+	for _, destination := range []int{0, 1, 4} {
+		in := input()
+		in.Kind, in.CounterpartyID = transfers.DirectShipment, destination
+		if _, err := transfers.Validate(actor(1), in); !errors.Is(err, transfers.ErrInvalid) {
+			t.Fatal("nonbranch direct destination admitted")
+		}
+	}
+	for _, change := range []func(*transfers.CreateInput){
+		func(in *transfers.CreateInput) { in.RetryKey = "short" },
+		func(in *transfers.CreateInput) { in.Items = nil },
+		func(in *transfers.CreateInput) { in.Items[0].Quantity = 0 },
+		func(in *transfers.CreateInput) { in.Items[0].VariantID = in.Items[1].VariantID },
+	} {
+		in := input()
+		in.Kind, in.CounterpartyID = transfers.DirectShipment, 2
+		change(&in)
+		if _, err := transfers.Validate(actor(1), in); !errors.Is(err, transfers.ErrInvalid) {
+			t.Fatal("direct creation bypassed payload validation")
+		}
+	}
+	in := input()
+	in.Kind, in.CounterpartyID = transfers.DirectShipment, 2
+	if _, err := transfers.Validate(auth.Identity{AccountID: 1, Location: auth.Location{ID: 2}}, in); !errors.Is(err, transfers.ErrForbidden) {
+		t.Fatal("mismatched warehouse account/location admitted")
+	}
+}
+
 func TestR01PendingContract(t *testing.T) {
 	for _, tc := range []struct {
 		name                          string

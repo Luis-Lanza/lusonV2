@@ -222,7 +222,7 @@ func decodeTransfer(r *http.Request) (transfers.CreateInput, error) {
 	if _, err := d.Token(); err != io.EOF {
 		return transfers.CreateInput{}, transfers.ErrInvalid
 	}
-	if (in.Kind != transfers.RequestStock && in.Kind != transfers.SendToWarehouse) || !transferRetryKey.MatchString(in.RetryKey) {
+	if (in.Kind != transfers.RequestStock && in.Kind != transfers.SendToWarehouse && in.Kind != transfers.DirectShipment) || !transferRetryKey.MatchString(in.RetryKey) {
 		return transfers.CreateInput{}, transfers.ErrInvalid
 	}
 	variants := map[int64]bool{}
@@ -319,6 +319,11 @@ type transferDTO struct {
 // Outcomes must be complete persisted results, never fabricated Pending or
 // partially exposed metadata. Pending keeps its exact original field set.
 func transferRecord(r transfers.Request) (transferDTO, error) {
+	if r.Kind == transfers.DirectShipment && (r.Creator.ID != 1 || r.Origin.ID != 1 || r.Approver.ID != 1 ||
+		(r.Destination.ID != 2 && r.Destination.ID != 3) || r.Status == "pending" || r.Status == "rejected" ||
+		r.DecisionLocationID == nil || *r.DecisionLocationID != 1 || r.DecidedAt == nil || !r.DecidedAt.Equal(r.CreatedAt)) {
+		return transferDTO{}, transfers.ErrUnavailable
+	}
 	var decidedAt *string
 	switch r.Status {
 	case "pending":
