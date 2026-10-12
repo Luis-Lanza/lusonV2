@@ -469,6 +469,11 @@ func (a *API) transferCounts(store *transfers.Store) http.HandlerFunc {
 func (a *API) registerTransfers(mux *http.ServeMux, store *transfers.Store) {
 	mux.HandleFunc("/api/transfers/{id}/cancel", a.transferCancellation(store))
 	mux.HandleFunc("/api/transfers/{id}/receive", a.transferReceive(store))
+	mux.HandleFunc("/api/transfers/{id}/count-corrections", a.transferCountCorrections(store, ""))
+	mux.HandleFunc("/api/transfers/{id}/count-corrections/", countCorrectionNotFound)
+	mux.HandleFunc("/api/transfers/{id}/count-corrections/propose", a.transferCountCorrections(store, "propose"))
+	mux.HandleFunc("/api/transfers/{id}/count-corrections/accept", a.transferCountCorrections(store, "accept"))
+	mux.HandleFunc("/api/transfers/{id}/count-corrections/reject", a.transferCountCorrections(store, "reject"))
 	mux.HandleFunc("/api/transfers/{id}/dispatch", a.transferDispatch(store))
 	mux.HandleFunc("/api/transfers/{id}/approve", a.transferDecision(store, true))
 	mux.HandleFunc("/api/transfers/{id}/reject", a.transferDecision(store, false))
