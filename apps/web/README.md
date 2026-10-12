@@ -25,9 +25,44 @@ backups remain out of scope; no pixel-perfect claim is made.
 - All production requests use relative `/api` paths and same-origin browser cookies. There are no demo accounts, frontend inventory fixtures, storage tokens or external font/CDN requests.
 - Session restoration is a GET. Login is an explicit form-submit POST with exactly `username` and `password`, JSON content type and memory-only CSRF. The browser supplies Origin. Password input clears on submission. Logout is successful only on 204, followed by anonymous CSRF restoration.
 - A current 401 clears protected identity, metadata and rows before refreshing the session and focusing login. Request/auth generations reject obsolete successes and errors, including transports that ignore AbortSignal. Filter changes cancel pending reads and reset page atomically without moving keyboard focus.
-- Metadata supplies all locations and brands. Consultation never changes account assignment. Warehouse assignment ID1 uses page-local catalog cards below 768 CSS pixels; branch accounts keep the desktop table. Pagination counts variants, not cards. Transfer navigation is available to all assigned participants; warehouse creation stays disabled. Assigned branches use the same Transfers-owned creation form from the Inventory shortcut or the Transfers list CTA. Creation/recovery use Transfers navigation, header and main semantics; back, confirmed discard and confirmed-review return always go to Transfers, regardless of entry point. Inventory consultation and its query remain unchanged.
+- Metadata supplies all locations and brands. Consultation never changes account assignment. Warehouse assignment ID1 uses page-local catalog cards below 768 CSS pixels; branch accounts keep the desktop table. Pagination counts variants, not cards. Transfer navigation is available to all assigned participants; warehouse accounts can create direct shipments to either branch. Assigned participants use the same Transfers-owned creation form from the Inventory shortcut or the Transfers list CTA. Creation/recovery use Transfers navigation, header and main semantics; back, confirmed discard and confirmed-review return always go to Transfers, regardless of entry point. Inventory consultation and its query remain unchanged.
 - `lossless-json` 4.3.1 is intentional: default parse produces `LosslessNumber`; raw `toString()` tokens become bounded nonnegative int64 bigint quantities and canonical positive decimal capacity text. Only checked bounded IDs/pages/counts become Number. Server availability is displayed, not recomputed. Zero availability is `Sin disponible`, with no low-stock threshold.
 - Search is literal brand/model text, bounded to 128 UTF-8 bytes. Empty filters are omitted; brand and L/R filters combine with search. Page sizes are 10/25/50.
+
+## Direct warehouse shipments
+
+Assigned warehouse accounts create `direct_shipment` to Sucursal A or B from either
+creation shortcut. Consulting another inventory location never changes creator,
+source, or authority. Branch request/send routes remain unchanged.
+
+1. Select the destination and quantities from the complete warehouse catalog.
+2. Review the immutable cart, then explicitly submit creation.
+3. Creation reserves every line, without moving physical stock or crediting the
+   destination. The UI shows **Pendiente de despacho**.
+4. Dispatch separately, or cancel before dispatch to release only this shipment's
+   reservation. The destination records the existing immutable receipt afterward.
+
+Authorization occurs at creation: `decision_location_id=1` and
+`decided_at=created_at`. History presents a single creation/authorization/reservation
+event, not a later human approval. No destination approval exists. The strict DTO
+parser accepts legitimate reserved and terminal direct states, rejects Pending or
+Rejected direct records and forged participant/authorization metadata, and retains
+lossless int64 quantities.
+
+Every creation response (201 or 200, including current terminal replay) must match
+the original kind, destination, participants and full immutable cart. Confirmation
+uses the current owner/session/generation and exact request flight before notifying
+transfer/count subscribers and refreshing inventory/source lanes. It neither fakes
+a decision nor waits solely for SSE. Failed or stale completions do not refresh or
+publish success, and no POST is automatically retried.
+
+Creation recovery is memory-only and bounded to three owner-isolated slots. It
+never evicts another owner's unresolved attempt to admit warehouse. Reauthentication
+makes old flights uncertain; only an explicit retry can confirm the original
+payload/key. Reloading or closing the App loses this memory. Earlier R04 sections
+below describe historical branch-only stages; this section supersedes their
+warehouse-disabled and two-slot restrictions. Runtime deployment and browser
+acceptance are separate, not established by frontend tests.
 
 ## R04b2a source-stock invalidation seam
 
@@ -136,7 +171,7 @@ have unique keys; these parsers do not independently detect duplicate JSON keys.
 
 `transferDirection(assignedLocation, flow)` provides branch-assignment guidance
 for warehouse requests, other-branch requests and warehouse sends. Consultation
-is not identity. Warehouse creation is refused; server cookies alone determine
+is not identity. Warehouse direct creation fixes source/creator/authorization to ID1; server cookies alone determine
 actor authority. `canonicalTransferInput(input)` clones, sorts and freezes a
 1–190-line attempt with string quantities and its caller-owned retry key.
 `newTransferRetryKey(crypto?)` uses secure randomness only, on explicit new-attempt
@@ -200,7 +235,7 @@ follow-up; a push racing a queued manual read cannot reclassify its headers.
 Obsolete jobs are aborted and cannot carry dirty flags into newer selections.
 
 `submit(input)` exposes `submitBusy/submitError` and a checked creation/replay
-result, never an optimistic row. Only assigned branches may submit, with current
+result, never an optimistic row. Assigned branches submit requests/sends and warehouse submits direct shipments, with current
 memory CSRF; attempts are cloned/frozen and never regenerated or automatically
 retried. Network/abort uncertainty remains typed so the caller can retain the
 same key/payload. Obsolete creation results cannot publish success. Stock409,
@@ -253,7 +288,7 @@ at physical origin. Pending/cart items neither reserve nor move stock.
 
 `createTransferCart(getTransferAuthority(), flow, sourceCatalog)` binds a branch,
 account and ephemeral epoch to the committed three-flow direction helper. It
-stores no CSRF/session cookie. Warehouse is refused; consulted inventory never
+stores no CSRF/session cookie. Warehouse uses directA/directB with fixed source1; consulted inventory never
 sets actor/source. Source must match direction. `addCartItem` deliberately
 increments an existing unique line; `setCartQuantity` accepts canonical positive
 int64 string/bigint only. Both check actual catalog membership and advisory source

@@ -64,7 +64,8 @@ function fixture(initial: unknown = session(), override?: (url: string, init: Re
       return Promise.resolve(reply({ page, page_size, status: 'pending', total_count: '1', records: page === 1 ? [wire(branch)] : [] }));
     }
     if (url.startsWith('/api/transfers/')) return Promise.resolve(reply(wire(branch, url.slice('/api/transfers/'.length))));
-    if (url === '/api/transfers' && init.method === 'POST') return Promise.resolve(reply(wire(branch), 201));
+    if (url === '/api/transfers' && init.method === 'POST') return Promise.resolve(reply({ ...wire(branch),
+      items: wire(branch).items.map(item => ({ ...item, quantity: '2' })) }, 201));
     throw new Error('Unexpected mock route');
   });
   vi.stubGlobal('fetch', fetch);
@@ -141,6 +142,167 @@ const decisionOutcome = (original: ReturnType<typeof wire>, status: 'approved' |
   decision_location_id: original.approver_location_id, decided_at: '2026-04-03T00:00:00.000000001Z' });
 const decisionPosts = (fetch: ReturnType<typeof fixture>['fetch']) => fetch.mock.calls.filter(([, init]) => init?.method === 'POST' && String(init?.body) === '{}');
 const inventoryCalls = (fetch: ReturnType<typeof fixture>['fetch']) => fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?'));
+
+describe('W2 warehouse direct creation', () => {
+  // Runtime JSON exercises the wire contract without importing a future kind symbol.
+  const input = (destination = 2): TransferCreateInput => JSON.parse(JSON.stringify({
+    kind: 'direct_shipment', counterparty_location_id: destination, retry_key: 'warehouse_hook_key_01',
+    items: [{ variant_id: 201, quantity: '2' }],
+  }));
+  const direct = (destination = 2, patch: Record<string, unknown> = {}) => ({
+    ...wire(destination, '1'), kind: 'direct_shipment', status: 'approved',
+    creator_location_id: 1, creator_location_name: 'Warehouse', decision_location_id: 1,
+    decided_at: wire().created_at, items: [{ ...wire().items[0], quantity: '2' }], ...patch,
+  });
+  const posts = (fetch: ReturnType<typeof fixture>['fetch']) => fetch.mock.calls.filter(([url, init]) =>
+    url === '/api/transfers' && init?.method === 'POST');
+
+  it.each([2, 3])('explicit warehouse POST to destination %s preserves the payload and refreshes every reservation lane', async destination => {
+    const h = decisionFixture(1, wire(2, '1'), (url, init) => url === '/api/transfers' && init.method === 'POST'
+      ? Promise.resolve(reply(direct(destination), 201)) : undefined);
+    await h.ready();
+    act(() => h.controller.change({ location: destination }));
+    await waitFor(() => expect(h.controller.loading).toBe(false));
+    expect(posts(h.fetch)).toHaveLength(0);
+    const source = vi.fn(); const detach = h.controller.subscribeSourceInventoryInvalidation(source);
+    const before = { lists: listCalls(h.fetch).length, inventory: inventoryCalls(h.fetch).length,
+      counts: h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts').length };
+    const payload = input(destination); const saved = JSON.stringify(payload);
+    let result!: Awaited<ReturnType<DecisionHook['submit']>>;
+    await act(async () => { result = await h.lanes[0].submit(payload); });
+    expect(result).toMatchObject({ replayed: false, record: { kind: 'direct_shipment', status: 'approved',
+      creator_location_id: 1, origin_location_id: 1, destination_location_id: destination,
+      decision_location_id: 1, decided_at: wire().created_at } });
+    expect(result.record.items[0].quantity).toBe(2n);
+    for (const value of [result.record, result.record.items, result.record.items[0]]) expect(Object.isFrozen(value)).toBe(true);
+    expect(JSON.stringify(payload)).toBe(saved);
+    expect(posts(h.fetch)).toHaveLength(1);
+    expect(posts(h.fetch)[0][1]?.body).toBe(saved);
+    expect(new Headers(posts(h.fetch)[0][1]?.headers).get('X-CSRF-Token')).toBe(csrf);
+    expect(passive(posts(h.fetch)[0])).toBeNull();
+    await waitFor(() => expect(listCalls(h.fetch)).toHaveLength(before.lists + 2));
+    await waitFor(() => expect(h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts')).toHaveLength(before.counts + 2));
+    await waitFor(() => expect(inventoryCalls(h.fetch)).toHaveLength(before.inventory + 1));
+    expect(source).toHaveBeenCalledTimes(1);
+    detach(); h.view.unmount();
+  });
+  it.each(['cancelled', 'in_transit'] as const)('accepts immutable current-state %s creation replay without dispatching or cancelling', async status => {
+    const patch = status === 'cancelled'
+      ? { status, cancellation_location_id: 1, cancelled_at: '2026-04-03T00:00:00Z' }
+      : { status, dispatch_location_id: 1, dispatched_at: '2026-04-03T00:00:00Z' };
+    const h = decisionFixture(1, wire(2, '1'), (url, init) => url === '/api/transfers' && init.method === 'POST'
+      ? Promise.resolve(reply(direct(2, patch), 200)) : undefined);
+    await h.ready();
+    const source = vi.fn(); const detach = h.controller.subscribeSourceInventoryInvalidation(source);
+    await act(async () => {
+      const result = await h.lanes[0].submit(input());
+      expect(result).toMatchObject({ replayed: true, record: { status, decided_at: wire().created_at } });
+      expect(result.record.items[0].quantity).toBe(2n);
+    });
+    expect(source).toHaveBeenCalledTimes(1);
+    expect(h.fetch.mock.calls.filter(([url, init]) => String(url).startsWith('/api/transfers') && init?.method === 'POST'))
+      .toHaveLength(1);
+    detach(); h.view.unmount();
+  });
+  it.each(['destination', 'quantity', 'kind'] as const)('rejects a mismatched direct creation %s replay before reservation refresh', async field => {
+    const response = field === 'destination' ? direct(3) : field === 'quantity'
+      ? direct(2, { items: [{ ...wire().items[0], quantity: '3' }] })
+      : decisionOutcome({ ...wire(2, '1'), items: [{ ...wire().items[0], quantity: '2' }] }, 'approved');
+    const h = decisionFixture(1, wire(2, '1'), (url, init) => url === '/api/transfers' && init.method === 'POST'
+      ? Promise.resolve(reply(response, 200)) : undefined);
+    await h.ready();
+    const source = vi.fn(); const detach = h.controller.subscribeSourceInventoryInvalidation(source);
+    const before = { lists: listCalls(h.fetch).length, inventory: inventoryCalls(h.fetch).length,
+      counts: h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts').length };
+    await act(async () => { await expect(h.lanes[0].submit(input())).rejects.toMatchObject({ code: 'invalid_response', uncertainCreation: true }); });
+    expect(posts(h.fetch)).toHaveLength(1);
+    expect(source).not.toHaveBeenCalled();
+    expect(listCalls(h.fetch)).toHaveLength(before.lists);
+    expect(inventoryCalls(h.fetch)).toHaveLength(before.inventory);
+    expect(h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts')).toHaveLength(before.counts);
+    detach(); h.view.unmount();
+  });
+  it.each(['insufficient_stock', 'retry_conflict', 'forbidden'] as const)('retains direct %s failure without confirming or refreshing reservations', async code => {
+    const h = decisionFixture(1, wire(2, '1'), (url, init) => url === '/api/transfers' && init.method === 'POST'
+      ? Promise.resolve(reply({ error: code }, code === 'forbidden' ? 403 : 409)) : undefined);
+    await h.ready(); const source = vi.fn(); h.controller.subscribeSourceInventoryInvalidation(source);
+    const before = { transfers: transferCalls(h.fetch).length, inventory: inventoryCalls(h.fetch).length };
+    const payload = input(); const saved = JSON.stringify(payload);
+    await act(async () => { await expect(h.lanes[0].submit(payload)).rejects.toMatchObject({ code }); });
+    expect(JSON.stringify(payload)).toBe(saved); expect(h.controller.session?.authenticated).toBe(true);
+    expect(transferCalls(h.fetch)).toHaveLength(before.transfers + 1);
+    expect(inventoryCalls(h.fetch)).toHaveLength(before.inventory); expect(source).not.toHaveBeenCalled();
+    expect(posts(h.fetch)).toHaveLength(1); h.view.unmount();
+  });
+  it.each(['generation', 'csrf', 'account', 'unready', 'unmount'] as const)('fences direct creation confirmation after %s change without refreshing', async change => {
+    const h = boundedHarness(false, 1); h.a.sessionGeneration = 1;
+    const confirmed = vi.fn(); h.controller.confirmTransferCreation = confirmed;
+    const invalidated = vi.fn(); h.listeners.add(invalidated);
+    let job!: Promise<unknown>;
+    act(() => { job = h.hook.result.current.submit(input()).catch(error => error); });
+    expect(h.jobs).toHaveLength(1);
+    if (change === 'generation') h.a.sessionGeneration = 2;
+    if (change === 'csrf' && h.a.session?.authenticated) h.a.session.csrf_token = 'replacement';
+    if (change === 'account' && h.a.session?.authenticated) h.a.session.identity.account_id = 99;
+    if (change === 'unready') h.a.ready = false;
+    if (change === 'unmount') h.hook.unmount();
+    await act(async () => { h.jobs[0].resolve(reply(direct(), 201)); await job; });
+    await expect(job).resolves.toMatchObject({ code: 'aborted', uncertainCreation: true });
+    expect(confirmed).not.toHaveBeenCalled(); expect(invalidated).not.toHaveBeenCalled();
+    expect(h.fetch).toHaveBeenCalledTimes(1); h.hook.unmount();
+  });
+  it.each([201, 200])('rejects mismatched initial reserved status%s without refresh or automatic retry', async status => {
+    const h = decisionFixture(1, wire(2, '1'), (url, init) => url === '/api/transfers' && init.method === 'POST'
+      ? Promise.resolve(reply(direct(3), status)) : undefined);
+    await h.ready(); const source = vi.fn(); h.controller.subscribeSourceInventoryInvalidation(source);
+    const before = transferCalls(h.fetch).length;
+    await act(async () => { await expect(h.lanes[0].submit(input())).rejects.toMatchObject({ code: 'invalid_response', uncertainCreation: true }); });
+    expect(transferCalls(h.fetch)).toHaveLength(before + 1); expect(source).not.toHaveBeenCalled();
+    expect(posts(h.fetch)).toHaveLength(1); h.view.unmount();
+  });
+  it.each(['dispatch', 'cancel', 'receive'] as const)('reuses immutable direct %s lifecycle without destination approval', async action => {
+    const reserved = direct(2, { items: [{ ...wire().items[0], quantity: '9223372036854775807' }] });
+    const transit = { ...reserved, status: 'in_transit', dispatch_location_id: 1, dispatched_at: '2026-04-03T00:00:00Z' };
+    const outcome = action === 'dispatch' ? transit : action === 'cancel'
+      ? { ...reserved, status: 'cancelled', cancellation_location_id: 1, cancelled_at: '2026-04-03T00:00:00Z' }
+      : { ...transit, status: 'received', receipt_location_id: 2, received_at: '2026-04-04T00:00:00Z',
+        receipt: { items: [{ variant_id: 201, expected_quantity: '9223372036854775807', actual_quantity: '9223372036854775807',
+          available_quantity: '9223372036854775807' }], exceptions: [] } };
+    const actor = action === 'receive' ? 2 : 1;
+    const h = decisionFixture(actor, wire(2, '1'), (url, init) => url === `/api/transfers/1/${action === 'receive' ? 'receive' : action}` && init.method === 'POST'
+      ? Promise.resolve(reply(outcome)) : undefined);
+    await h.ready(); const original = parseTransferRecord(JSON.stringify(action === 'receive' ? transit : reserved));
+    await act(async () => {
+      const result = action === 'receive' ? await h.lanes[0].receive(original, { items: [{ variant_id: 201, actual_quantity: '9223372036854775807' }] })
+        : action === 'dispatch' ? await h.lanes[0].dispatch(original) : await h.lanes[0].cancel(original);
+      expect(result.kind).toBe('direct_shipment'); expect(result.items[0].quantity).toBe(9223372036854775807n);
+      expect(result.decided_at).toBe(result.created_at); expect(result.status).toBe(outcome.status);
+    });
+    expect(h.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    await expect(h.lanes[0].decide(original, 'approve')).rejects.toMatchObject({ code: 'forbidden' });
+    if (action !== 'receive') {
+      const dispatched = parseTransferRecord(JSON.stringify(transit));
+      await expect(h.lanes[0].cancel(dispatched)).rejects.toMatchObject({ code: 'invalid_request' });
+    }
+    h.view.unmount();
+  });
+  it('fences a late direct creation after logout without publishing or refreshing', async () => {
+    const held = deferred<Response>();
+    const h = decisionFixture(1, wire(2, '1'), (url, init) => url === '/api/transfers' && init.method === 'POST' ? held.promise : undefined);
+    await h.ready();
+    let job!: Promise<unknown>;
+    act(() => { job = h.lanes[0].submit(input()).catch(error => error); });
+    await waitFor(() => expect(posts(h.fetch)).toHaveLength(1));
+    await act(async () => { await h.controller.logout(); });
+    const before = { transfers: transferCalls(h.fetch).length, inventory: inventoryCalls(h.fetch).length };
+    await act(async () => { held.resolve(reply(direct(), 201)); await job; });
+    await expect(job).resolves.toMatchObject({ code: 'aborted', uncertainCreation: true });
+    expect(h.lanes[0].submitError).toBeNull();
+    expect(transferCalls(h.fetch)).toHaveLength(before.transfers);
+    expect(inventoryCalls(h.fetch)).toHaveLength(before.inventory);
+    h.view.unmount();
+  });
+});
 
 describe('C2 cancellation controller and refresh lanes', () => {
   const pending = wire(2, '1');
@@ -1270,7 +1432,7 @@ describe('R04 transfer hook', () => {
     expect(source.listeners.get('transfers')?.size).toBe(0);
   });
   it.each([201, 200])('submits once with memory authority and status%s, then invalidates passively', async status => {
-    const f = fixture(session(), (url, init) => url === '/api/transfers' && init.method === 'POST' ? Promise.resolve(reply(wire(), status)) : undefined);
+    const f = fixture(session(), (url, init) => url === '/api/transfers' && init.method === 'POST' ? Promise.resolve(reply({ ...wire(), items: wire().items.map(item => ({ ...item, quantity: '2' })) }, status)) : undefined);
     const { result } = harness(); await loaded(result); const input = attempt(); const original = JSON.stringify(input);
     let outcome;
     await act(async () => { outcome = await result.current.transfers.submit(input); });
@@ -1352,7 +1514,7 @@ describe('R04 transfer hook', () => {
     let pending!: Promise<unknown>; act(() => { pending = result.current.transfers.submit(attempt()); });
     await expect(result.current.transfers.submit(attempt())).rejects.toMatchObject({ code: 'invalid_request' });
     expect(transferCalls(f.fetch).filter(([, i]) => i?.method === 'POST')).toHaveLength(1);
-    await act(async () => { deferredCreate.resolve(reply(wire(), 201)); await pending; });
+    await act(async () => { deferredCreate.resolve(reply({ ...wire(), items: wire().items.map(item => ({ ...item, quantity: '2' })) }, 201)); await pending; });
   });
   it('never publishes an obsolete creation success under changed authority', async () => {
     const create = deferred<Response>(); const f = fixture(session(), (u, i) => u === '/api/transfers' && i.method === 'POST' ? create.promise : undefined);

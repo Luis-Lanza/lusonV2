@@ -22,8 +22,8 @@ export interface TransferCreationProps {
 }
 function owner(authority: TransferAuthority): string | null {
   const session = authority.session;
-  if (!session?.authenticated || ![2, 3].includes(session.identity.location.id)) return null;
-  return `${authority.epoch}/${session.identity.account_id}/${session.identity.location.id}`;
+  if (!session?.authenticated || ![1, 2, 3].includes(session.identity.location.id)) return null;
+  return `${authority.epoch}/${session.identity.account_id}/${session.identity.location.id}${authority.sessionGeneration === undefined ? '' : `/${authority.sessionGeneration}`}`;
 }
 type Flight = { sequence: number; abort: AbortController; dirty: boolean };
 type Held = { owner: string; flow: TransferFlow; cart: TransferCart };
@@ -33,8 +33,11 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
   const recovery = injectedRecovery ?? isolatedRecovery;
   const cachedFlow = () => {
     const snapshot = recovery.getCurrent(controller.getTransferAuthority);
-    return snapshot ? snapshot.attempt.kind === 'send_to_warehouse' ? 'sendWarehouse'
-      : snapshot.attempt.counterparty_location_id === 1 ? 'requestWarehouse' : 'requestOther' : 'requestWarehouse';
+    if (snapshot) return snapshot.attempt.kind === 'direct_shipment' ? snapshot.attempt.counterparty_location_id === 2 ? 'directA' : 'directB'
+      : snapshot.attempt.kind === 'send_to_warehouse' ? 'sendWarehouse'
+        : snapshot.attempt.counterparty_location_id === 1 ? 'requestWarehouse' : 'requestOther';
+    const session = controller.getTransferAuthority().session;
+    return session?.authenticated && session.identity.location.id === 1 ? 'directA' : 'requestWarehouse';
   };
   // Fence every raw private read before effects: readiness is not a saved permission.
   const authority = controller.getTransferAuthority();
@@ -142,7 +145,7 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
   useEffect(() => { if (pending) cancel.current?.focus(); else trigger.current?.focus(); }, [pending]);
 
   // Do not even inspect held.cart, error strings or row inputs outside this fence.
-  if (!allowed) return <section className="transfer-creation"><p role="status">La creación requiere una sesión activa de sucursal.</p></section>;
+  if (!allowed) return <section className="transfer-creation"><p role="status">La creación requiere una sesión activa asignada.</p></section>;
   if (activeKey.current !== key || (held !== null && held.owner !== key)) return <section className="transfer-creation"><p role="status">Preparando catálogo de la sesión activa…</p></section>;
   const snapshot = recovery.getCurrent(controller.getTransferAuthority);
   const inFlight = snapshot?.phase === 'inFlight' || (sending && sendLock.current?.owner === key);
@@ -159,7 +162,8 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
   const lastPage = Math.max(1, Math.ceil(rows.length / 25));
   const displayedPage = Math.min(page, lastPage);
   const pageRows = rows.slice((displayedPage - 1) * 25, displayedPage * 25);
-  const title = flow === 'sendWarehouse' ? 'Proponer envío a Almacén' : flow === 'requestOther' ? 'Solicitar a otra sucursal' : 'Solicitar baterías';
+  const direct = direction.kind === 'direct_shipment';
+  const title = direct ? 'Crear envío' : flow === 'sendWarehouse' ? 'Proponer envío a Almacén' : flow === 'requestOther' ? 'Solicitar a otra sucursal' : 'Solicitar baterías';
 
   function guardedCart() {
     const latest = current();
@@ -305,11 +309,14 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
     <label className="creation-flow">Tipo de transferencia<select ref={picker} value={flow} onChange={e => {
       if (!current()) return;
       const value = e.target.value;
-      if (value === 'requestWarehouse' || value === 'requestOther' || value === 'sendWarehouse') changeFlow(value);
-    }}><option value="requestWarehouse">Solicitar a Almacén</option><option value="requestOther">Solicitar a {location(assigned === 2 ? 3 : 2)}</option><option value="sendWarehouse">Proponer envío a Almacén</option></select></label>
+      if (assigned === 1 ? value === 'directA' || value === 'directB'
+        : value === 'requestWarehouse' || value === 'requestOther' || value === 'sendWarehouse') changeFlow(value as TransferFlow);
+    }}>{assigned === 1 ? <><option value="directA">Enviar a {location(2)}</option><option value="directB">Enviar a {location(3)}</option></>
+      : <><option value="requestWarehouse">Solicitar a Almacén</option><option value="requestOther">Solicitar a {location(assigned === 2 ? 3 : 2)}</option><option value="sendWarehouse">Proponer envío a Almacén</option></>}</select></label>
     <section className="creation-route" aria-label="Ruta física">
       <div><span>Origen</span><strong>{sourceName}</strong></div><b aria-hidden="true">→</b><div><span>Destino</span><strong>{location(direction.destination_location_id)}</strong></div>
-      <p>Requiere aprobación de {location(direction.approver_location_id)} · No genera reserva inmediata de stock</p>
+      <p>{direct ? 'La creación autoriza y reserva el envío completo. No requiere aprobación del destino; el despacho se confirma por separado.'
+        : <>Requiere aprobación de {location(direction.approver_location_id)} · No genera reserva inmediata de stock</>}</p>
     </section>
     <div className="creation-grid">
       <section className="creation-catalog" aria-label="Catálogo de origen" aria-busy={busy}>
@@ -376,7 +383,9 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
         if (archived?.phase === 'unknown') requestCaution('edit'); else closeReview();
       }} onBack={() => { if (current() && !inFlight) onBack(); }} onSend={submit => { void send(submit); }}
       onDetail={onDetail ? id => {
-        if (current() && !inFlight && outcome?.owner === key && outcome.result.record.id === id) onDetail(id, key!);
+        const latest = current(); const session = latest?.session;
+        if (latest && session?.authenticated && !inFlight && outcome?.owner === key && outcome.result.record.id === id)
+          onDetail(id, `${latest.epoch}/${session.identity.account_id}/${session.identity.location.id}`);
       } : undefined} />}
     {pending && <div className="creation-dialog-backdrop"><section role="dialog" aria-modal="true" aria-labelledby="discard-title" className="creation-dialog" onKeyDown={e => {
       if (e.key === 'Escape') { e.preventDefault(); closeDialog(); }

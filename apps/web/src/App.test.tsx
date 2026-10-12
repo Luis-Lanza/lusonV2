@@ -76,6 +76,33 @@ function passiveCounts(mock: ReturnType<typeof setup>) {
   }
 }
 
+describe('W2 assigned warehouse creation entry', () => {
+  it.each([2, 3])('opens warehouse creation without POST while consulting branch %s and keeps source fixed at 1', async consulted => {
+    const mock = setup(session);
+    render(<App />); await inventory();
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(metadata.locations[consulted - 1].name) }));
+    await inventory();
+    expect(new URL(String(stockCalls(mock).at(-1)![0]), 'http://localhost').searchParams.get('location_id'))
+      .toBe(String(consulted));
+    expect(screen.getByText('Almacén', { selector: '.assigned-location' })).toBeInTheDocument();
+    const entry = screen.getByRole('button', { name: /Nueva transferencia/ });
+    expect(entry).toBeEnabled();
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+    const before = stockCalls(mock).length;
+    fireEvent.click(entry);
+    const route = await screen.findByRole('region', { name: 'Ruta física' });
+    expect(within(route).getByText('Origen').parentElement).toHaveTextContent('Almacén');
+    await screen.findByRole('region', { name: 'Catálogo de origen' });
+    await waitFor(() => expect(stockCalls(mock).length).toBeGreaterThan(before));
+    for (const [url] of stockCalls(mock).slice(before)) {
+      const query = new URL(String(url), 'http://localhost').searchParams;
+      expect(query.get('location_id')).toBe('1');
+      expect(query.get('page_size')).toBe('50');
+    }
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+});
+
 describe('R2 workflow action badges', () => {
   it.each([false, true])('truthfully exposes required actions when Pending is zero (mobile=%s)', async mobile => {
     vi.stubGlobal('matchMedia', () => ({ matches: mobile, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
@@ -169,7 +196,7 @@ describe('B4 assigned-participant shell badge', () => {
     await waitFor(() => expect(shellCount()).toHaveTextContent('9007199254740993'));
     fireEvent.click(screen.getByRole('button', { name: new RegExp(metadata.locations[assigned === 3 ? 0 : 2].name) })); await inventory();
     expect(countCalls(mock)).toHaveLength(1); expect(shellCount()).toHaveTextContent('9007199254740993');
-    if (assigned === 1) expect(screen.getByRole('button', { name: /Nueva transferencia/ })).toBeDisabled();
+    if (assigned === 1) expect(screen.getByRole('button', { name: /Nueva transferencia/ })).toBeEnabled();
     expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false); passiveCounts(mock);
   });
   it.each([false, true])('distinguishes loading from exact zero in the mobile=%s shell', async mobile => {
@@ -184,7 +211,7 @@ describe('B4 assigned-participant shell badge', () => {
     await act(async () => held.resolve(countResponse('0', '7')));
     await waitFor(() => expect(shellCount()).toHaveTextContent('Acciones requeridas: 0'));
     expect(document.querySelector('nav .transfer-action-badge')).toHaveTextContent(/^0$/);
-    expect(screen.getByRole('button', { name: mobile ? /Crear envío/ : /Nueva transferencia/ })).toBeDisabled(); passiveCounts(mock);
+    expect(screen.getByRole('button', { name: mobile ? /Crear envío/ : /Nueva transferencia/ })).toBeEnabled(); passiveCounts(mock);
   });
   it.each(['403', '404', '503', 'network', 'malformed'])('keeps navigation usable with unavailable counts: %s', async kind => {
     const mock = setup(session, url => {
@@ -685,7 +712,7 @@ describe('inventory interaction and stale guards', () => {
     expect(screen.getByText('Almacén', { selector: '.assigned-location' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Sucursal B/ })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Transferencias' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: /Nueva transferencia/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Nueva transferencia/ })).toBeEnabled();
   });
   it.each(['success', 'error'])('ignores obsolete %s even when transport ignores AbortSignal', async kind => {
     let finish!: (r: Response) => void;
@@ -744,7 +771,7 @@ describe('inventory interaction and stale guards', () => {
     expect(screen.queryByText('Sin stock')).not.toBeInTheDocument();
     expect(screen.getByText('6', { selector: '.variant-bottom span:first-child b' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Transferencias' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: /Crear envío/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Crear envío/ })).toBeEnabled();
     // CSS chooses the visible renderer at 768px; real geometry is verifier-owned.
     expect(container.querySelectorAll('.product-card')).toHaveLength(1);
     expect(container.querySelector('.product-card')).toHaveTextContent('1 variante');
@@ -974,11 +1001,11 @@ describe('R04b2b App workspace entry', () => {
     expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
     expect(AppSource.instances).toHaveLength(1);
   });
-  it('keeps warehouse creation disabled when consulting a branch on desktop', async () => {
+  it('keeps warehouse creation available without automatic reads when consulting a branch on desktop', async () => {
     const mock = setup(session); render(<App />); await inventory();
     fireEvent.click(screen.getByRole('button', { name: /Sucursal A/ })); await inventory();
     const before = mock.mock.calls.length;
-    const cta = screen.getByRole('button', { name: /Nueva transferencia/ }); expect(cta).toBeDisabled(); fireEvent.click(cta);
+    const cta = screen.getByRole('button', { name: /Nueva transferencia/ }); expect(cta).toBeEnabled();
     expect(mock.mock.calls).toHaveLength(before); expect(screen.queryByLabelText('Tipo de transferencia')).not.toBeInTheDocument();
   });
   it('has no anonymous creation entry or private source request', async () => {
@@ -1198,12 +1225,12 @@ describe('R05-U1 creation section', () => {
     await screen.findByText('9007199254740993');
     expect(catalogReads()).toHaveLength(0);
     const cta = screen.getByRole('button', { name: /Nueva transferencia|Crear envío/ });
-    expect(cta).toBeDisabled(); fireEvent.click(cta);
+    expect(cta).toBeEnabled();
     expect(catalogReads()).toHaveLength(0);
     expect(screen.queryByLabelText('Tipo de transferencia')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
     await screen.findByText('1 solicitudes pendientes');
-    expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Nueva transferencia' })).toBeEnabled();
     expect(screen.getByRole('main')).toHaveAttribute('id', 'transferencias');
     expect(document.querySelectorAll('nav [aria-current="page"]')).toHaveLength(1);
     expect(catalogReads()).toHaveLength(0);
@@ -1282,7 +1309,7 @@ describe('R04c guarded success navigation', () => {
     expect(document.querySelector('.pending-cards') !== null).toBe(assigned === 1);
     expect(screen.getByRole('main')).toHaveAttribute('id', 'transferencias');
     expect(document.querySelectorAll('nav [aria-current="page"]')).toHaveLength(1);
-    if (assigned === 1) expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
+    if (assigned === 1) expect(screen.getByRole('button', { name: 'Nueva transferencia' })).toBeEnabled();
     expect(screen.queryByRole('navigation', { name: 'Navegación móvil' }) !== null).toBe(assigned === 1);
     expect(screen.getByRole('table', { name: 'Solicitudes pendientes participantes' })).toBeInTheDocument();
   });
@@ -1295,12 +1322,13 @@ describe('R04c guarded success navigation', () => {
     fireEvent.change(screen.getByLabelText('Filas por página'), { target: { value: '10' } }); await inventory();
     await r04cSend(); await screen.findByRole('heading', { name: 'Solicitud Pending confirmada' });
     expect(h.mock.mock.calls.filter(([url, init]) => String(url).startsWith('/api/transfers') && url !== '/api/transfers/counts' && init?.method !== 'POST')).toHaveLength(0);
-    expect(countCalls(h.mock)).toHaveLength(1); passiveCounts(h.mock);
+    await waitFor(() => expect(countCalls(h.mock)).toHaveLength(2)); passiveCounts(h.mock);
     fireEvent.click(screen.getByRole('button', { name: 'Ver detalle' }));
     await screen.findByRole('heading', { name: 'TR-9007199254740993' });
     const reads = h.mock.mock.calls.filter(([url]) => /^\/api\/transfers\/[1-9][0-9]*$/.test(String(url)));
-    const counts = h.mock.mock.calls.filter(([url]) => url === '/api/transfers/counts');
-    expect(counts).toHaveLength(2); passiveCounts(h.mock);
+    await waitFor(() => expect(countCalls(h.mock)).toHaveLength(3));
+    const counts = countCalls(h.mock);
+    expect(counts).toHaveLength(3); passiveCounts(h.mock);
     expect(counts[0][1]).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
     expect([...new Headers(counts[0][1]?.headers)]).toEqual([]);
     expect(counts[0][1]?.body).toBeUndefined();

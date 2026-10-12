@@ -38,6 +38,44 @@ function harness(initial = authority()) {
 const add = () => screen.getByRole('button', { name: 'Añadir Modelo 1 L' });
 const flow = (value: string) => fireEvent.change(screen.getByLabelText('Tipo de transferencia'), { target: { value } });
 
+describe('W2 direct warehouse workspace', () => {
+  it.each([2, 3])('creates destination %s only from an explicit immutable warehouse review', async destination => {
+    const h = harness(authority(1)); const recovery = createTransferRecovery();
+    const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
+    const confirmation = deferred<Response>();
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(() => confirmation.promise);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} recovery={recovery} onBack={vi.fn()} />);
+    await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
+    expect(screen.getByLabelText('Tipo de transferencia')).toHaveValue('directA');
+    expect(screen.queryByRole('option', { name: 'Solicitar a Almacén' })).not.toBeInTheDocument();
+    if (destination === 3) { flow('directB'); await waitFor(() => expect(loader).toHaveBeenCalledTimes(2)); }
+    expect(loader.mock.calls.every(([source]) => source === 1)).toBe(true);
+    fireEvent.change(screen.getByLabelText('Cantidad Modelo 1 L'), { target: { value: '9223372036854775807' } });
+    fireEvent.click(add()); fireEvent.click(screen.getByRole('button', { name: 'Revisar solicitud' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('9223372036854775807')).toBeVisible();
+    expect(within(dialog).getByText(/La creación autoriza y reserva/)).toBeVisible();
+    expect(within(dialog).queryByText(/pendiente de aprobación/)).not.toBeInTheDocument();
+    expect(fetcher).not.toHaveBeenCalled();
+    const attempt = recovery.getCurrent(h.controller.getTransferAuthority)!.attempt;
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Enviar solicitud' }));
+    expect(screen.getByLabelText('Tipo de transferencia')).toBeDisabled();
+    expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual({ ...attempt,
+      kind: 'direct_shipment', counterparty_location_id: destination, items: [{ variant_id: 1, quantity: '9223372036854775807' }] });
+    const created_at = '2028-03-01T00:00:00Z';
+    await act(async () => confirmation.resolve(reply({ ...recordDTO(), kind: 'direct_shipment', status: 'approved',
+      creator_location_id: 1, creator_location_name: 'Almacén', origin_location_id: 1, origin_location_name: 'Almacén',
+      destination_location_id: destination, destination_location_name: metadata.locations[destination - 1].name,
+      approver_location_id: 1, approver_location_name: 'Almacén', created_at, decision_location_id: 1, decided_at: created_at,
+      items: recordDTO().items.map(item => ({ ...item, quantity: '9223372036854775807' })) }, 201)));
+    await screen.findByRole('dialog', { name: 'Solicitud Pendiente de despacho confirmada' });
+    expect(screen.getByText('Autorizada y reservada al crear (UTC):')).toBeVisible();
+    expect(screen.queryByText('Decidida (UTC):')).not.toBeInTheDocument();
+    expect(recovery.getCurrent(h.controller.getTransferAuthority)).toBeNull();
+    expect(fetcher).toHaveBeenCalledTimes(1); fetcher.mockRestore();
+  });
+});
+
 describe('R04b2b workspace', () => {
   it('opens the physical warehouse catalog with explicit real review and no stock mutations', async () => {
     const h = harness(); const original = catalog(); const loader = vi.fn<typeof loadSourceInventory>(async () => original);
@@ -69,11 +107,11 @@ describe('R04b2b workspace', () => {
     expect(route().getByText('Almacén', { selector: 'strong' })).toBeVisible();
     expect(route().getByText('Requiere aprobación de Almacén · No genera reserva inmediata de stock')).toBeVisible();
   });
-  it.each(['warehouse', 'anonymous', 'unready'])('denies %s without catalog requests or subscriptions', async denied => {
-    const a = denied === 'warehouse' ? authority(1) : denied === 'anonymous' ? { epoch: 1, ready: true, session: null } : { ...authority(), ready: false };
+  it.each(['anonymous', 'unready'])('denies %s without catalog requests or subscriptions', async denied => {
+    const a = denied === 'anonymous' ? { epoch: 1, ready: true, session: null } : { ...authority(), ready: false };
     const h = harness(a); const loader = vi.fn<typeof loadSourceInventory>();
     render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
-    expect(screen.getByRole('status')).toHaveTextContent('sesión activa de sucursal');
+    expect(screen.getByRole('status')).toHaveTextContent('sesión activa asignada');
     expect(loader).not.toHaveBeenCalled(); expect(h.listeners.size).toBe(0);
   });
   it.each(['epoch', 'account', 'assignment', 'unready', 'anonymous'])('masks all raw private UI in the same render on %s change', async changed => {
@@ -433,7 +471,8 @@ describe('R04b2c2 manual lifecycle', () => {
     const h = harness(); const recovery = archived(h, 'requestOther', '9007199254740993'); const a = authority(2, 8);
     if (a.session?.authenticated) a.session.csrf_token = 'fresh_current_csrf'; h.set(a);
     const loader = vi.fn<typeof loadSourceInventory>(async source => { if (guidance === 'failed') throw new Error('private source'); return catalog(source, guidance === 'missing' ? 0 : 1, 0n); });
-    const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply({ ...recordDTO(), origin_location_id: 3, origin_location_name: 'Sucursal B', approver_location_id: 3, approver_location_name: 'Sucursal B' }, 200));
+    const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply({ ...recordDTO(), origin_location_id: 3, origin_location_name: 'Sucursal B', approver_location_id: 3, approver_location_name: 'Sucursal B',
+      items: recordDTO().items.map(item => ({ ...item, quantity: '9007199254740993' })) }, 200));
     const rng = vi.spyOn(crypto, 'getRandomValues');
     render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={loader} onBack={vi.fn()} />);
     const resume = await screen.findByRole('button', { name: 'Retomar misma solicitud' }); fireEvent.click(resume);

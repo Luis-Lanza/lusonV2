@@ -44,6 +44,63 @@ export function cancellationWire(approved = false, overrides: Record<string, unk
     ...overrides });
 }
 
+describe('W2 direct shipment wire contract', () => {
+  const direct = (destination: number, overrides: Record<string, unknown> = {}) => wireRecord({
+    kind: 'direct_shipment', status: 'approved', creator_location_id: 1, creator_location_name: 'Almacén',
+    destination_location_id: destination, destination_location_name: destination === 2 ? 'Sucursal A' : 'Sucursal B',
+    decision_location_id: 1, decided_at: wireRecord().created_at, ...overrides,
+  });
+  it.each([2, 3])('admits reserved creation for destination %s with lossless frozen quantities', destination => {
+    const wire = direct(destination);
+    const record = parse(wire);
+    expect(record).toMatchObject({ kind: 'direct_shipment', status: 'approved', creator_location_id: 1,
+      origin_location_id: 1, destination_location_id: destination, approver_location_id: 1,
+      decision_location_id: 1, decided_at: wire.created_at });
+    expect(record.items[0].quantity).toBe(9223372036854775807n);
+    for (const value of [record, record.items, record.items[0]]) expect(Object.isFrozen(value)).toBe(true);
+    expect(record).not.toHaveProperty('dispatched_at');
+    const page = parseTransferPage(JSON.stringify({ page: 1, page_size: 10, status: 'approved',
+      total_count: '1', records: [wire] }));
+    expect(page.records[0]).toEqual(record);
+  });
+  it.each([2, 3])('retains creation authorization through cancellation and transit for destination %s', destination => {
+    for (const patch of [
+      { status: 'cancelled', cancellation_location_id: 1, cancelled_at: '2026-04-03T00:00:00Z' },
+      { status: 'in_transit', dispatch_location_id: 1, dispatched_at: '2026-04-03T00:00:00Z' },
+    ]) {
+      const record = parse(direct(destination, patch));
+      expect(record).toMatchObject({ ...patch, creator_location_id: 1, decided_at: record.created_at });
+      expect(record.items[0].quantity).toBe(9223372036854775807n);
+    }
+  });
+  it.each([2, 3])('validates immutable direct receipt and original creation authorization for destination %s', destination => {
+    const received = direct(destination, { status: 'received', dispatch_location_id: 1,
+      dispatched_at: '2026-04-03T00:00:00.000000001Z', receipt_location_id: destination,
+      received_at: '2026-04-03T00:00:00.000000002Z', receipt: receiptWire().receipt });
+    const record = parse(received);
+    expect(record.status).toBe('received'); expect(record.creator_location_id).toBe(1);
+    expect(record.decided_at).toBe(record.created_at);
+    if (record.status !== 'received') throw new Error('Expected receipt');
+    expect(record.receipt.items[0].actual_quantity).toBe(9007199254740993n);
+    for (const patch of [{ receipt_location_id: 1 }, { decision_location_id: destination },
+      { decided_at: '2026-04-03T00:00:00.000000001Z' }, { creator_location_id: destination }, { dispatch_location_id: destination }])
+      expect(() => parse({ ...received, ...patch })).toThrow('Invalid transfer response');
+  });
+  it('rejects direct pending and rejected states, invalid participants and fabricated authorization', () => {
+    for (const patch of [
+      { status: 'pending', decision_location_id: undefined, decided_at: undefined },
+      { status: 'rejected' }, { destination_location_id: 1 },
+      { creator_location_id: 2 }, { origin_location_id: 2 }, { approver_location_id: 2 },
+      { decision_location_id: undefined }, { decided_at: undefined },
+      { decision_location_id: null }, { decision_location_id: '1' }, { decision_location_id: 2 },
+      { decided_at: '2026-04-02T12:34:56.123456788Z' },
+      { decided_at: '2026-04-02T12:34:56.123456790Z' },
+      { status: 'cancelled', cancellation_location_id: 1, cancelled_at: '2026-04-03T00:00:00Z',
+        decision_location_id: undefined, decided_at: undefined },
+    ]) expect(() => parse(direct(2, patch))).toThrow('Invalid transfer response');
+  });
+});
+
 describe('C2 cancelled wire contract', () => {
   it.each([false, true])('preserves immutable original identity and optional approval (approved=%s)', approved => {
     const wire = cancellationWire(approved);

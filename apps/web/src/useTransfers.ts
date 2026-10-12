@@ -178,37 +178,42 @@ export function useTransfers({ controller, api: injectedAPI, listEnabled = false
     const before = controller.getTransferAuthority();
     if (!mounted.current || !before.ready || before.epoch !== epoch || sessionIdentity(before.session) !== identity || !before.session?.authenticated) throw new TransferAPIError('unauthenticated', null);
     const actor = before.session.identity.location.id;
-    if (actor !== 2 && actor !== 3) throw new TransferAPIError('forbidden', null);
+    if (![1, 2, 3].includes(actor)) throw new TransferAPIError('forbidden', null);
     let canonical: TransferCreateInput;
     try { canonical = canonicalTransferInput(input); } catch { throw new TransferAPIError('invalid_request', null); }
+    if ((actor === 1) !== (canonical.kind === 'direct_shipment')) throw new TransferAPIError('forbidden', null);
     if (canonical.kind === 'request_stock' && canonical.counterparty_location_id === actor) throw new TransferAPIError('invalid_request', null);
     if (creation.current?.epoch === before.epoch) throw new TransferAPIError('invalid_request', null);
+    const owner = decisionOwner(before);
+    const generation = before.sessionGeneration;
     const flight = { epoch: before.epoch, controller: new AbortController() }; creation.current = flight;
     const valid = () => {
       const now = controller.getTransferAuthority();
-      return mounted.current && creation.current === flight && now.ready && now.epoch === before.epoch
-        && sessionIdentity(now.session) === identity;
+      return mounted.current && creation.current === flight && now.ready && now.epoch === flight.epoch
+        && now.sessionGeneration === generation && sessionIdentity(now.session) === identity;
     };
     setSubmission({ epoch: before.epoch, busy: true, error: null });
     try {
       const result = await api.create(canonical, before.session.csrf_token, flight.controller.signal);
       if (!valid()) throw new TransferAPIError('aborted', null, true);
       participant(result.record, actor);
-      if (result.record.status !== 'pending') {
-        // A terminal original-creation replay must confirm THIS immutable attempt.
-        // Pending creation compatibility remains unchanged; no decision retry here.
+      {
+        // Every creation response must confirm THIS immutable attempt, in any state.
         const record = result.record;
         const counterpart = canonical.counterparty_location_id;
         const send = canonical.kind === 'send_to_warehouse';
+        const direct = canonical.kind === 'direct_shipment';
         const matches = record.kind === canonical.kind && record.creator_location_id === actor
-          && record.origin_location_id === (send ? actor : counterpart)
-          && record.destination_location_id === (send ? 1 : actor)
-          && record.approver_location_id === counterpart && record.items.length === canonical.items.length
+          && record.origin_location_id === (send || direct ? actor : counterpart)
+          && record.destination_location_id === (direct ? counterpart : send ? 1 : actor)
+          && record.approver_location_id === (direct ? 1 : counterpart) && record.items.length === canonical.items.length
           && canonical.items.every(line => record.items.some(item => item.variant_id === line.variant_id
             && item.quantity === BigInt(line.quantity)));
         if (!matches) throw new TransferAPIError('invalid_response', result.replayed ? 200 : 201, true);
       }
-      invalidate(); return result;
+      if (owner) controller.confirmTransferCreation?.(owner, result.record);
+      if (valid()) invalidate();
+      return result;
     } catch (error) {
       if (!valid()) throw new TransferAPIError('aborted', null, true);
       const safe = sanitized(error, true);
@@ -274,7 +279,7 @@ export function useTransfers({ controller, api: injectedAPI, listEnabled = false
   }
   async function decide(original: TransferRecord, action: TransferDecision): Promise<TransferRecord> {
     const { owner, recovery } = admittedDecision();
-    if (original.approver_location_id !== owner.location) throw new TransferAPIError('forbidden', null);
+    if (original.kind === 'direct_shipment' || original.approver_location_id !== owner.location) throw new TransferAPIError('forbidden', null);
     let token: DecisionFlight | null;
     try { token = recovery.start(original, action, owner); } catch { throw new TransferAPIError('invalid_request', null); }
     if (!token) throw new TransferAPIError('invalid_request', null);

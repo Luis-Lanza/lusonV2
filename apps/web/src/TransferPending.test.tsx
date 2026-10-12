@@ -638,30 +638,27 @@ describe('R05-U2 pending header action stack', () => {
     expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
     expect(screen.getByText('3 solicitudes pendientes')).toHaveAttribute('aria-live', 'polite');
   });
-  it('keeps warehouse count separate from the title without a creation action', async () => {
+  it('keeps warehouse count separate from the title beside the creation action', async () => {
     const f = fixture(1);
     render(<TransferPending controller={f.controller} ownerTag={f.ownerTag} onInventory={f.back} creationAvailable onCreate={vi.fn()} />);
     await loaded();
     const title = screen.getByRole('heading', { name: 'Transferencias pendientes' });
     const count = screen.getByText('9007199254740993 solicitudes pendientes');
-    expect(count.parentElement).toBe(title.closest('header'));
-    expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
+    expect(count.closest('header')).toBe(title.closest('header'));
+    expect(screen.getByRole('button', { name: 'Nueva transferencia' })).toBeEnabled();
     await detail();
     expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
   });
 });
 
 describe('R05-U1 list creation entry', () => {
-  it.each([1, 2, 3])('offers creation only on the assigned branch %s list, never detail', async id => {
+  it.each([1, 2, 3])('offers creation on the assigned location %s list, never detail', async id => {
     const f = fixture(id); if (id === 3) f.env.record = wire(2, 3);
     const create = vi.fn();
     render(<TransferPending controller={f.controller} ownerTag={f.ownerTag} onInventory={f.back} creationAvailable onCreate={create} />);
     await loaded();
-    if (id === 1) expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
-    else {
-      fireEvent.click(screen.getByRole('button', { name: 'Nueva transferencia' }));
-      expect(create).toHaveBeenCalledOnce();
-    }
+    fireEvent.click(screen.getByRole('button', { name: 'Nueva transferencia' }));
+    expect(create).toHaveBeenCalledOnce();
     await detail();
     expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
     expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);

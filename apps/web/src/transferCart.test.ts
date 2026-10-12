@@ -19,6 +19,31 @@ function catalog(source = 1, count = 2, available = max): SourceCatalog {
 }
 const cart = () => createTransferCart(authority(), 'requestWarehouse', catalog());
 
+describe('W2 warehouse cart', () => {
+  it.each(['directA', 'directB'] as const)('freezes and restores full int64 %s selection from warehouse only', flow => {
+    const a = authority(1); const recovery = createTransferRecovery();
+    const selected = reviewCart(addCartItem(createTransferCart(a, flow, catalog()), a, 1, max), a, key);
+    expect(selected.direction).toMatchObject({ kind: 'direct_shipment', creator_location_id: 1, origin_location_id: 1,
+      destination_location_id: flow === 'directA' ? 2 : 3, approver_location_id: 1 });
+    recovery.capture(() => a, selected);
+    const next = authority(1, 8); const snapshot = recovery.getCurrent(() => next)!;
+    const restored = restoreTransferCart(next, catalog(1, 0), snapshot);
+    expect(restored.lines[0].quantity).toBe(max);
+    expect(restored.lines[0].available).toBeNull();
+    expect(reviewCart(restored, next).attempt).toEqual(selected.attempt);
+    expect(() => createTransferCart(a, flow, catalog(2))).toThrow();
+    expect(() => createTransferCart(authority(2), flow, catalog())).toThrow();
+    expect(() => createTransferCart(a, 'requestWarehouse', catalog())).toThrow();
+  });
+  it('rejects retained cart edits after a same-epoch session generation change', () => {
+    const a = { ...authority(1), sessionGeneration: 1 };
+    const selected = addCartItem(createTransferCart(a, 'directA', catalog()), a, 1, '1');
+    const next = { ...a, sessionGeneration: 2 };
+    expect(cartStatus(selected, next).usable).toBe(false);
+    expect(() => setCartQuantity(selected, next, 1, '2')).toThrow();
+  });
+});
+
 describe('R04b2c-hydration', () => {
   function snapshot() {
     const recovery = createTransferRecovery();
@@ -58,8 +83,8 @@ describe('R04b2c-hydration', () => {
     expect(state.direction.origin_location_id).toBe(1);
     expect(state.catalog.location.id).toBe(1);
   });
-  it.each(['stale', 'unready', 'anonymous', 'warehouse'] as const)('guards %s before private payload getters', mode => {
-    const current = mode === 'warehouse' ? authority(1, 8) : authority(2, 8);
+  it.each(['stale', 'unready', 'anonymous', 'unsupported-role'] as const)('guards %s before private payload getters', mode => {
+    const current = mode === 'unsupported-role' ? authority(4, 8) : authority(2, 8);
     if (mode === 'unready') current.ready = false;
     if (mode === 'anonymous') current.session = { authenticated: false, csrf_token: 'blocked' };
     const payload = vi.fn((): never => { throw new Error('private payload'); });

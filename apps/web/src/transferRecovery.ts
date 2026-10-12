@@ -1,6 +1,6 @@
 import type { TransferCart } from './transferCart';
 import type { TransferAuthority } from './useInventory';
-import { canonicalTransferInput, transferDirection, type TransferCreateInput, type TransferDirection } from './transferModel';
+import { canonicalTransferInput, transferDirection, type TransferCreateInput, type TransferDirection, type TransferLocationID } from './transferModel';
 export interface RecoveryHandle { readonly __recoveryHandle?: never }
 export interface RecoveryFlight { readonly __recoveryFlight?: never }
 export interface RecoveryItem {
@@ -12,10 +12,10 @@ export interface RecoverySnapshot {
   readonly attempt: TransferCreateInput; readonly direction: Readonly<TransferDirection>; readonly items: readonly RecoveryItem[];
 }
 type AuthorityGetter = () => TransferAuthority;
-type Owner = { key: string; epoch: number; account: number; assigned: 2 | 3 };
+type Owner = { key: string; epoch: number; generation: number; account: number; assigned: TransferLocationID };
 type Entry = { owner: string; handle: RecoveryHandle; phase: RecoverySnapshot['phase'];
   attempt: TransferCreateInput; direction: Readonly<TransferDirection>; items: readonly RecoveryItem[]; flight: RecoveryFlight | null };
-type Flight = { entry: Entry; epoch: number };
+type Flight = { entry: Entry; epoch: number; generation: number };
 function unavailable(): never { throw new Error('Transfer recovery unavailable'); }
 function integer(value: number, max: number): boolean { return Number.isInteger(value) && value >= 1 && value <= max; }
 function text(value: string): boolean { return typeof value === 'string' && !!value && !value.includes('\0') && value.isWellFormed(); }
@@ -30,14 +30,14 @@ export function createTransferRecovery() {
       const a = get(); const s = a.session;
       if (!a.ready || !s?.authenticated) return null;
       const account = s.identity.account_id; const assigned = s.identity.location.id;
-      if (!integer(account, 2147483647) || (assigned !== 2 && assigned !== 3)) return null;
-      return { key: `${account}:${assigned}`, account, assigned, epoch: a.epoch };
+      if (!integer(account, 2147483647) || (assigned !== 1 && assigned !== 2 && assigned !== 3)) return null;
+      return { key: `${account}:${assigned}`, account, assigned, epoch: a.epoch, generation: a.sessionGeneration ?? 0 };
     } catch { return null; }
   }
   function current(o: Owner): Entry | undefined {
     const entry = slots.get(o.key);
     // Reauthentication makes an unsettled old flight uncertain, never auto-sends.
-    if (entry?.flight && flights.get(entry.flight)?.epoch !== o.epoch) {
+    if (entry?.flight && (flights.get(entry.flight)?.epoch !== o.epoch || flights.get(entry.flight)?.generation !== o.generation)) {
       entry.phase = 'unknown'; entry.flight = null;
     }
     return entry;
@@ -62,10 +62,11 @@ export function createTransferRecovery() {
       const o = owner(get); if (!o) return unavailable();
       try {
         // Metadata guard precedes all cart payload getters (including attempt/lines).
-        if (cart.epoch !== o.epoch || cart.accountID !== o.account || cart.assigned !== o.assigned) return unavailable();
+        if (cart.epoch !== o.epoch || cart.sessionGeneration !== o.generation || cart.accountID !== o.account || cart.assigned !== o.assigned) return unavailable();
         if (!cart.attempt) return unavailable();
         const attempt = canonicalTransferInput(cart.attempt);
-        const flow = attempt.kind === 'send_to_warehouse' ? 'sendWarehouse'
+        const flow = attempt.kind === 'direct_shipment' ? attempt.counterparty_location_id === 2 ? 'directA' : 'directB'
+          : attempt.kind === 'send_to_warehouse' ? 'sendWarehouse'
           : attempt.counterparty_location_id === 1 ? 'requestWarehouse' : 'requestOther';
         const direction = Object.freeze(transferDirection(o.assigned, flow));
         if (Object.keys(direction).some(k => direction[k as keyof TransferDirection] !== cart.direction[k as keyof TransferDirection])
@@ -89,7 +90,7 @@ export function createTransferRecovery() {
           if (JSON.stringify(previous.attempt) !== JSON.stringify(attempt)) return unavailable();
           return previous.handle;
         }
-        if (slots.size >= 2) return unavailable();
+        if (slots.size >= 3) return unavailable();
         const handle = Object.freeze({});
         const entry: Entry = { owner: o.key, handle, phase: 'ready', attempt, direction, items, flight: null };
         slots.set(o.key, entry); handles.set(handle, entry);
@@ -100,7 +101,7 @@ export function createTransferRecovery() {
       const o = owner(get); if (!o) return unavailable();
       const entry = selected(o, handle); if (!entry || entry.phase === 'inFlight') return unavailable();
       const flight = Object.freeze({});
-      flights.set(flight, { entry, epoch: o.epoch }); entry.flight = flight; entry.phase = 'inFlight';
+      flights.set(flight, { entry, epoch: o.epoch, generation: o.generation }); entry.flight = flight; entry.phase = 'inFlight';
       return flight;
     },
     markUnknown(flight: RecoveryFlight): boolean {
@@ -110,7 +111,7 @@ export function createTransferRecovery() {
     confirmSuccess(get: AuthorityGetter, flight: RecoveryFlight): boolean {
       const o = owner(get); if (!o) return false;
       const record = live(flight);
-      if (!record || record.entry.owner !== o.key || record.epoch !== o.epoch) return false;
+      if (!record || record.entry.owner !== o.key || record.epoch !== o.epoch || record.generation !== o.generation) return false;
       remove(record.entry); return true;
     },
     discardCurrent(get: AuthorityGetter, handle: RecoveryHandle, acknowledgedUncertainty: boolean): boolean {

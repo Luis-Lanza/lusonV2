@@ -25,7 +25,7 @@ export function detailAuthority(controller: TransferController): string {
     s.csrf_token, s.expires_at]) : '';
 }
 export function transferStatusLabel(record: TransferRecord) {
-  return record.status === 'pending' ? 'Pendiente de aprobación' : record.status === 'approved' ? 'Aprobada' : record.status === 'in_transit' ? 'En tránsito' : record.status === 'received' ? 'Recibida' : record.status === 'cancelled' ? 'Cancelada' : 'Rechazada';
+  return record.status === 'pending' ? 'Pendiente de aprobación' : record.status === 'approved' ? record.kind === 'direct_shipment' ? 'Pendiente de despacho' : 'Aprobada' : record.status === 'in_transit' ? 'En tránsito' : record.status === 'received' ? 'Recibida' : record.status === 'cancelled' ? 'Cancelada' : 'Rechazada';
 }
 function Stock({ stock, variant }: { stock: StockAdvice; variant: number }) {
   const row = stock.catalog?.rows.find(item => item.variant_id === variant);
@@ -111,19 +111,20 @@ export default function TransferDetail(props: TransferDetailProps) {
   }, [props.onStock, state, permitted, id, pending]);
   if (!permitted || !record) return null;
   const terminal = record.status !== 'pending';
+  const direct = record.kind === 'direct_shipment';
   const session = controller.getTransferAuthority().session;
   const warehouse = session?.authenticated && session.identity.location.id === 1;
   return <div className="transfer-detail">
     <header className="transfer-detail-heading"><h2>{record.reference}</h2>
       <span className="pending-status">{transferStatusLabel(record)}</span>
-      <p>{record.kind === 'send_to_warehouse' ? 'Propuesta de envío a Almacén' : record.origin_location_id === 1 ? 'Solicitud a Almacén' : 'Solicitud entre sucursales'}</p>
+      <p>{direct ? 'Envío directo de Almacén' : record.kind === 'send_to_warehouse' ? 'Propuesta de envío a Almacén' : record.origin_location_id === 1 ? 'Solicitud a Almacén' : 'Solicitud entre sucursales'}</p>
     </header>
     <div className="transfer-detail-grid"><div>
       <section className="transfer-detail-route creation-route" aria-label="Ruta física">
         <div><span>Origen</span><strong>{record.origin_location_name}</strong>
-          <small>{record.kind === 'send_to_warehouse' ? 'Emisor · solicita enviar su stock' : 'Suministra el stock solicitado'}</small></div>
+          <small>{direct ? 'Creador y origen físico' : record.kind === 'send_to_warehouse' ? 'Emisor · solicita enviar su stock' : 'Suministra el stock solicitado'}</small></div>
         <b aria-hidden="true">→</b><div><span>Destino</span><strong>{record.destination_location_name}</strong>
-          <small>{record.kind === 'send_to_warehouse' ? 'Receptor · requiere aprobación' : 'Ubicación solicitante'}</small></div>
+          <small>{direct ? 'Receptor · no requiere aprobación' : record.kind === 'send_to_warehouse' ? 'Receptor · requiere aprobación' : 'Ubicación solicitante'}</small></div>
       </section>
       <TransferItems record={record} stock={terminal ? undefined : stock} />
       {record.status === 'received' && <ReceiptTable receipt={record.receipt} record={record} />}
@@ -158,10 +159,10 @@ export default function TransferDetail(props: TransferDetailProps) {
         </>}
       </section>
       <dl><dt>Ubicación creadora</dt><dd>{record.creator_location_name}</dd>
-        <dt>Requiere aprobación de</dt><dd>{record.approver_location_name}</dd>
+        <dt>{direct ? 'Autorizado al crear por' : 'Requiere aprobación de'}</dt><dd>{record.approver_location_name}</dd>
         <dt>Creada (UTC)</dt><dd><time>{record.created_at}</time></dd></dl>
-      {terminal ? <>{record.decided_at && <p>Decidida (UTC): <time>{record.decided_at}</time></p>}
-        <p>{record.status === 'cancelled' ? (record.decision_location_id !== undefined ? `La solicitud completa fue cancelada. Se liberó únicamente su reserva en ${record.origin_location_name}; las existencias físicas, otras reservas y el stock del destino no cambian.` : 'La solicitud pendiente fue cancelada. No reserva ni mueve stock.') : record.status === 'received' ? `La recepción se confirmó en ${record.destination_location_name}. Solo las cantidades esperadas recibidas, hasta lo enviado, se acreditaron como stock disponible. Las discrepancias permanecen registradas, sin resolución automática.` : record.status === 'in_transit' ? `Se despachó la solicitud completa desde ${record.origin_location_name}, consumiendo su reserva y descontando existencias. ${record.destination_location_name} todavía no recibe stock; la recepción está pendiente.` : record.status === 'approved' ? `La solicitud completa está reservada en ${record.origin_location_name}. Las existencias físicas no cambian y el destino no recibe stock por la aprobación.` : 'La solicitud completa fue rechazada. No reserva ni mueve stock.'}</p></>
+      {terminal ? <>{record.decided_at && <p>{direct ? 'Autorizada y reservada al crear (UTC):' : 'Decidida (UTC):'} <time>{record.decided_at}</time></p>}
+        <p>{record.status === 'cancelled' ? (record.decision_location_id !== undefined ? `La solicitud completa fue cancelada. Se liberó únicamente su reserva en ${record.origin_location_name}; las existencias físicas, otras reservas y el stock del destino no cambian.` : 'La solicitud pendiente fue cancelada. No reserva ni mueve stock.') : record.status === 'received' ? `La recepción se confirmó en ${record.destination_location_name}. Solo las cantidades esperadas recibidas, hasta lo enviado, se acreditaron como stock disponible. Las discrepancias permanecen registradas, sin resolución automática.` : record.status === 'in_transit' ? `Se despachó la solicitud completa desde ${record.origin_location_name}, consumiendo su reserva y descontando existencias. ${record.destination_location_name} todavía no recibe stock; la recepción está pendiente.` : record.status === 'approved' && direct ? 'El envío completo fue autorizado y reservado al crear. Las existencias físicas no cambian ni se acredita el destino. El despacho es separado; podés cancelar antes de despachar.' : record.status === 'approved' ? `La solicitud completa está reservada en ${record.origin_location_name}. Las existencias físicas no cambian y el destino no recibe stock por la aprobación.` : 'La solicitud completa fue rechazada. No reserva ni mueve stock.'}</p></>
         : <div className="transfer-impact"><p>Esta solicitud todavía no reserva ni mueve stock.</p>
           <p>Al aprobar se revalida y reserva la solicitud completa en {record.origin_location_name}. Si falta disponibilidad en alguna variante, no se reserva ninguna.</p>
           <p>Aprobar no mueve existencias ni aumenta el stock del destino.</p></div>}
@@ -173,11 +174,11 @@ export default function TransferDetail(props: TransferDetailProps) {
       <section className={`transfer-history ${record.status}`} aria-label="Historial de la solicitud">
         <h2>Historial de la solicitud</h2>
         <ol>
-          <li><h3>Solicitud creada</h3>
+          <li><h3>{direct ? 'Envío creado, autorizado y stock reservado' : 'Solicitud creada'}</h3>
             <p>Ubicación: {record.creator_location_name}</p>
             <time dateTime={record.created_at}>{record.created_at}</time>
           </li>
-          {terminal && record.decision_location_id !== undefined && <li><h3>{record.status !== 'rejected' ? 'Solicitud aprobada y stock reservado' : 'Solicitud rechazada'}</h3>
+          {terminal && !direct && record.decision_location_id !== undefined && <li><h3>{record.status !== 'rejected' ? 'Solicitud aprobada y stock reservado' : 'Solicitud rechazada'}</h3>
             {/* The validated decision location is the persisted approver, never the current viewer. */}
             <p>Ubicación: {record.approver_location_name}</p>
             <time dateTime={record.decided_at}>{record.decided_at}</time>

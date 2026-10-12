@@ -13,10 +13,37 @@ function authority(account = 2, assigned = 2, epoch = 7): TransferAuthority {
 function reviewed(a = authority(), count = 2): TransferCart {
   const rows = Array.from({ length: count }, (_, i) => ({ variant_id: i + 1, catalog_entry_id: Math.ceil((i + 1) / 2),
     brand: 'TOYO', model: 'Model', capacity_ah: '6.000001', polarity: 'L' as const, existing: BigInt(max), reserved: 0n, available: BigInt(max) }));
-  let cart = createTransferCart(a, 'requestWarehouse', { location: { id: 1, name: 'Warehouse' }, rows });
+  let cart = createTransferCart(a, a.session?.authenticated && a.session.identity.location.id === 1 ? 'directA' : 'requestWarehouse', { location: { id: 1, name: 'Warehouse' }, rows });
   for (const row of rows) cart = setCartQuantity(cart, a, row.variant_id, max);
   return reviewCart(cart, a, key);
 }
+
+describe('W2 warehouse recovery fences', () => {
+  it('releases only the warehouse flight while two branches retain unresolved attempts', () => {
+    const cache = createTransferRecovery();
+    const owners = [authority(), authority(3, 3), authority(1, 1)];
+    const tokens = owners.map(a => cache.begin(() => a, cache.capture(() => a, reviewed(a))));
+    expect(cache.confirmSuccess(() => owners[0], tokens[2])).toBe(false);
+    expect(cache.confirmSuccess(() => owners[2], tokens[2])).toBe(true);
+    expect(cache.getCurrent(() => owners[2])).toBeNull();
+    for (const a of owners.slice(0, 2)) expect(cache.getCurrent(() => a)?.phase).toBe('inFlight');
+    const replacement = authority(99, 1);
+    cache.capture(() => replacement, reviewed(replacement));
+    expect(cache.markUnknown(tokens[2])).toBe(false);
+    expect(cache.getCurrent(() => replacement)?.phase).toBe('ready');
+  });
+  it('retains an uncertain immutable warehouse attempt after same-epoch reauthentication', () => {
+    const cache = createTransferRecovery(); let a = { ...authority(1, 1), sessionGeneration: 1 };
+    const get = () => a; const handle = cache.capture(get, reviewed(a)); const flight = cache.begin(get, handle);
+    a = { ...a, sessionGeneration: 2 };
+    expect(cache.confirmSuccess(get, flight)).toBe(false);
+    expect(cache.getCurrent(get)).toMatchObject({ phase: 'unknown', handle, attempt: { kind: 'direct_shipment' } });
+    expect(cache.markUnknown(flight)).toBe(false);
+    const retry = cache.begin(get, handle);
+    expect(cache.confirmSuccess(get, flight)).toBe(false);
+    expect(cache.confirmSuccess(get, retry)).toBe(true);
+  });
+});
 
 describe('Transfer recovery R04b2c1', () => {
   it('recovers exact A attempt after B and a fresh verified A epoch', () => {
@@ -157,13 +184,17 @@ describe('Transfer recovery R04b2c1', () => {
     expect(cache.discardCurrent(get, handle, false)).toBe(false);
     expect(cache.discardCurrent(get, handle, true)).toBe(true); expect(cache.getCurrent(get)).toBeNull();
   });
-  it('keeps two owners without eviction and gives generic capacity failure', () => {
+  it('keeps three owners including warehouse without eviction and gives generic capacity failure', () => {
     const cache = createTransferRecovery();
-    for (const a of [authority(), authority(3, 3)]) cache.capture(() => a, reviewed(a));
-    const third = authority(99, 2);
-    expect(cache.getCurrent(() => third)).toBeNull();
-    expect(() => cache.capture(() => third, reviewed(third))).toThrow('Transfer recovery unavailable');
-    for (const a of [authority(), authority(3, 3)]) expect(cache.getCurrent(() => a)?.attempt.retry_key).toBe(key);
+    const owners = [authority(), authority(3, 3), authority(1, 1)];
+    for (const a of owners) {
+      const handle = cache.capture(() => a, reviewed(a));
+      cache.markUnknown(cache.begin(() => a, handle));
+    }
+    const fourth = authority(99, 2);
+    expect(cache.getCurrent(() => fourth)).toBeNull();
+    expect(() => cache.capture(() => fourth, reviewed(fourth))).toThrow('Transfer recovery unavailable');
+    for (const a of owners) expect(cache.getCurrent(() => a)).toMatchObject({ phase: 'unknown', attempt: { retry_key: key } });
     expect(Object.keys(cache).sort()).toEqual(['begin', 'capture', 'confirmSuccess', 'discardCurrent', 'getCurrent', 'markUnknown']);
   });
   it('isolates instances and rejects forged or foreign opaque handles and tokens', () => {

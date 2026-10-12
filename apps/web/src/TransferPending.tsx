@@ -23,11 +23,12 @@ export interface TransferPendingProps {
   onCreate?: () => void;
 }
 function kindLabel(record: TransferRecord) {
+  if (record.kind === 'direct_shipment') return 'Envío directo de Almacén';
   if (record.kind === 'send_to_warehouse') return 'Propuesta de envío a Almacén';
   return record.origin_location_id === 1 ? 'Solicitud a Almacén' : 'Solicitud entre sucursales';
 }
 function statusLabel(record: TransferRecord) {
-  return record.status === 'pending' ? 'Pendiente de aprobación' : record.status === 'approved' ? 'Aprobada' : record.status === 'in_transit' ? 'En tránsito' : record.status === 'received' ? 'Recibida' : record.status === 'cancelled' ? 'Cancelada' : 'Rechazada';
+  return record.status === 'pending' ? 'Pendiente de aprobación' : record.status === 'approved' ? record.kind === 'direct_shipment' ? 'Pendiente de despacho' : 'Aprobada' : record.status === 'in_transit' ? 'En tránsito' : record.status === 'received' ? 'Recibida' : record.status === 'cancelled' ? 'Cancelada' : 'Rechazada';
 }
 function Status({ record }: { record: TransferRecord }) { return <span className={`pending-status status-${record.status}`}>{statusLabel(record)}</span>; }
 const statusOptions = [
@@ -99,10 +100,10 @@ export default function TransferPending(props: TransferPendingProps) {
     <button type="button" className="creation-back" onClick={inventory}>Volver al inventario</button>
     <header className="pending-heading"><div><h1 id="pending-title">{selected ? 'Detalle de solicitud' : `Transferencias ${plural}`}</h1>
       <p>{selected ? 'El detalle muestra el estado actual de la solicitud.' : `Solicitudes ${plural} de tu ubicación asignada.`} La consulta de inventario no cambia los participantes.</p></div>
-      {!selected && !warehouse ? <div className="pending-heading-actions">
+      {!selected ? <div className="pending-heading-actions">
         <button type="button" className="primary transfer-cta" disabled={!props.creationAvailable || !props.onCreate} onClick={() => {
           const latest = props.controller.getTransferAuthority();
-          if (current() && latest.session?.authenticated && [2, 3].includes(latest.session.identity.location.id)
+          if (current() && latest.session?.authenticated && [1, 2, 3].includes(latest.session.identity.location.id)
             && props.creationAvailable) props.onCreate?.();
         }}>Nueva transferencia</button>
         {pageCount}

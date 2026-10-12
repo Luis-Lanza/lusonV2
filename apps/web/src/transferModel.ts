@@ -1,11 +1,11 @@
 import { parse as parseJSON } from 'lossless-json';
 
-export type TransferKind = 'request_stock' | 'send_to_warehouse';
-export type TransferFlow = 'requestWarehouse' | 'requestOther' | 'sendWarehouse';
+export type TransferKind = 'request_stock' | 'send_to_warehouse' | 'direct_shipment';
+export type TransferFlow = 'requestWarehouse' | 'requestOther' | 'sendWarehouse' | 'directA' | 'directB';
 export type TransferLocationID = 1 | 2 | 3;
 export interface TransferDirection {
   kind: TransferKind; counterparty_location_id: TransferLocationID;
-  creator_location_id: 2 | 3; origin_location_id: TransferLocationID;
+  creator_location_id: TransferLocationID; origin_location_id: TransferLocationID;
   destination_location_id: TransferLocationID; approver_location_id: TransferLocationID;
 }
 export interface TransferLine { variant_id: number; quantity: string }
@@ -24,7 +24,7 @@ export interface TransferReceiptException { readonly variant_id: number; readonl
 export interface TransferReceiptData { readonly items: readonly TransferReceiptLine[]; readonly exceptions: readonly TransferReceiptException[] }
 interface TransferRecordFields {
   id: string; reference: string; kind: TransferKind; created_at: string;
-  creator_location_id: 2 | 3; creator_location_name: string;
+  creator_location_id: TransferLocationID; creator_location_name: string;
   origin_location_id: TransferLocationID; origin_location_name: string;
   destination_location_id: TransferLocationID; destination_location_name: string;
   approver_location_id: TransferLocationID; approver_location_name: string;
@@ -75,7 +75,7 @@ function text(value: unknown): string {
   return value;
 }
 function kind(value: unknown): TransferKind {
-  if (value !== 'request_stock' && value !== 'send_to_warehouse') return invalid();
+  if (value !== 'request_stock' && value !== 'send_to_warehouse' && value !== 'direct_shipment') return invalid();
   return value;
 }
 function location(value: unknown): TransferLocationID { return integer(value, 1, 3) as TransferLocationID; }
@@ -94,6 +94,12 @@ function createdAt(value: unknown): string {
   return s;
 }
 export function transferDirection(assigned: number, flow: TransferFlow): TransferDirection {
+  if (assigned === 1) {
+    if (flow !== 'directA' && flow !== 'directB') return invalid();
+    const destination = flow === 'directA' ? 2 : 3;
+    return { kind: 'direct_shipment', counterparty_location_id: destination, creator_location_id: 1,
+      origin_location_id: 1, destination_location_id: destination, approver_location_id: 1 };
+  }
   if (assigned !== 2 && assigned !== 3) return invalid();
   if (!['requestWarehouse', 'requestOther', 'sendWarehouse'].includes(flow)) return invalid();
   const counterpart = flow === 'requestOther' ? (assigned === 2 ? 3 : 2) : 1;
@@ -118,7 +124,7 @@ export function canonicalTransferInput(input: TransferCreateInput): TransferCrea
   const o = object(input, ['kind', 'counterparty_location_id', 'retry_key', 'items']);
   const k = kind(o.kind);
   const counterpart = location(o.counterparty_location_id);
-  if (k === 'send_to_warehouse' && counterpart !== 1) return invalid();
+  if ((k === 'send_to_warehouse' && counterpart !== 1) || (k === 'direct_shipment' && counterpart === 1)) return invalid();
   if (typeof o.retry_key !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(o.retry_key)) return invalid();
   const items = lines(o.items).sort((a, b) => a.variant_id - b.variant_id).map(item => Object.freeze(item));
   return Object.freeze({ kind: k, counterparty_location_id: counterpart, retry_key: o.retry_key, items: Object.freeze(items) });
@@ -268,13 +274,14 @@ function record(value: unknown): TransferRecord {
   const id = o.id as string;
   if (o.reference !== `TR-${id.padStart(3, '0')}`) return invalid();
   const k = kind(o.kind);
-  const creator = integer(o.creator_location_id, 2, 3) as 2 | 3;
+  const creator = location(o.creator_location_id);
   const origin = location(o.origin_location_id);
   const destination = location(o.destination_location_id);
   const approver = location(o.approver_location_id);
-  const flow = k === 'send_to_warehouse' ? 'sendWarehouse' : origin === 1 ? 'requestWarehouse' : 'requestOther';
+  const flow = k === 'direct_shipment' ? destination === 2 ? 'directA' : 'directB'
+    : k === 'send_to_warehouse' ? 'sendWarehouse' : origin === 1 ? 'requestWarehouse' : 'requestOther';
   const direction = transferDirection(creator, flow);
-  if (origin !== direction.origin_location_id || destination !== direction.destination_location_id || approver !== direction.approver_location_id) return invalid();
+  if (k !== direction.kind || origin !== direction.origin_location_id || destination !== direction.destination_location_id || approver !== direction.approver_location_id) return invalid();
   if (!Array.isArray(o.items) || o.items.length < 1 || o.items.length > 190) return invalid();
   const quantities = lines(o.items.map(v => {
     const item = object(v, ['variant_id', 'brand', 'model', 'capacity_ah', 'polarity', 'quantity']);
@@ -306,6 +313,8 @@ function record(value: unknown): TransferRecord {
     return { receipt_location_id: destination, received_at, receipt: receiptData(o.receipt, items) };
   })() : {};
   const created_at = createdAt(o.created_at);
+  if (k === 'direct_shipment' && (selected === 'pending' || selected === 'rejected'
+    || !decision || decision.decision_location_id !== 1 || decision.decided_at !== created_at)) return invalid();
   const ordered = (time: string) => time.slice(0, 19) + (time.includes('.') ? time.slice(20, -1) : '').padEnd(9, '0');
   const cancellationFields = selected === 'cancelled' ? (() => {
     const cancelled_at = createdAt(o.cancelled_at);
@@ -318,7 +327,7 @@ function record(value: unknown): TransferRecord {
     origin_location_id: origin, origin_location_name: text(o.origin_location_name),
     destination_location_id: destination, destination_location_name: text(o.destination_location_name),
     approver_location_id: approver, approver_location_name: text(o.approver_location_name), items } as TransferRecord;
-  if (selected === 'received' || selected === 'cancelled') { items.forEach(Object.freeze); Object.freeze(items); Object.freeze(decoded); }
+  if (k === 'direct_shipment' || selected === 'received' || selected === 'cancelled') { items.forEach(Object.freeze); Object.freeze(items); Object.freeze(decoded); }
   return decoded;
 }
 export function parseTransferRecord(raw: string): TransferRecord { return record(decode(raw)); }

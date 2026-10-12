@@ -49,6 +49,7 @@ export interface TransferController {
   dispatchRecovery?: TransferDispatchRecovery;
   receiptRecovery?: TransferReceiptRecovery;
   cancellationRecovery?: TransferCancellationRecovery;
+  confirmTransferCreation?: (owner: DecisionOwner, record: TransferRecord) => void;
   confirmTransferCancellation?: (owner: DecisionOwner, record: TransferRecord) => void;
   confirmTransferReceipt?: (owner: DecisionOwner, record: TransferRecord) => void;
   confirmTransferDispatch?: (owner: DecisionOwner) => void;
@@ -275,6 +276,15 @@ export function useInventory() {
     return promise;
   }
   validateLatest.current = validate;
+  const creationEffects = useRef<(owner: DecisionOwner, record: TransferRecord) => void>(() => {});
+  creationEffects.current = (owner, record) => {
+    if (!decisionIsCurrent(owner) || record.creator_location_id !== owner.location) return;
+    notifyTransfers(owner.epoch, owner);
+    if (record.kind === 'direct_shipment' && decisionIsCurrent(owner)) {
+      invalidate(false); notifySourceInventory(owner.epoch, owner);
+    }
+  };
+  const confirmTransferCreation = useCallback((owner: DecisionOwner, record: TransferRecord) => creationEffects.current(owner, record), []);
   const decisionEffects = useRef<(owner: DecisionOwner, status: TransferStatus) => void>(() => {});
   decisionEffects.current = (owner, status) => {
     if (!decisionIsCurrent(owner) || status === 'pending') return;
@@ -429,7 +439,7 @@ export function useInventory() {
   }
   return { session, metadata, data, query, loading, authBusy, formError, resultsError: resultsError || realtimeError, focusLogin,
     login, logout, change, retrySession: () => restore(), retryInventory: () => change({}, true),
-    decisionRecovery, confirmTransferDecision, dispatchRecovery, receiptRecovery, confirmTransferReceipt, cancellationRecovery, confirmTransferCancellation,
+    confirmTransferCreation, decisionRecovery, confirmTransferDecision, dispatchRecovery, receiptRecovery, confirmTransferReceipt, cancellationRecovery, confirmTransferCancellation,
     confirmTransferDispatch: useCallback((owner: DecisionOwner) => decisionEffects.current(owner, 'in_transit'), []),
     authorityEpoch: authGeneration.current, getTransferAuthority, subscribeTransferInvalidation, subscribeSourceInventoryInvalidation, settleUnauthorized };
 }

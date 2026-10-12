@@ -6,6 +6,27 @@ import { parseTransferRecord } from './transferModel';
 import type { DetailController } from './TransferDetail';
 import type { TransferAuthority } from './useInventory';
 
+describe('W2 direct warehouse history', () => {
+  it.each(['approved', 'in_transit', 'cancelled', 'received'])('retains creation authorization truthfully in %s history', status => {
+    const f = fixture(); const original = wire(1, 2, 'approved');
+    const record = parseTransferRecord(JSON.stringify({ ...original, kind: 'direct_shipment', status,
+      creator_location_id: 1, creator_location_name: 'Almacén', decided_at: original.created_at,
+      ...(status === 'cancelled' ? { cancellation_location_id: 1, cancelled_at: '2028-01-03T00:00:00Z' } : {}),
+      ...(status === 'in_transit' || status === 'received' ? { dispatch_location_id: 1, dispatched_at: '2028-01-03T00:00:00Z' } : {}),
+      ...(status === 'received' ? { receipt_location_id: 2, received_at: '2028-01-04T00:00:00Z',
+        receipt: { items: original.items.map(item => ({ variant_id: item.variant_id, expected_quantity: item.quantity,
+          actual_quantity: item.quantity, available_quantity: item.quantity })), exceptions: [] } } : {}) }));
+    render(f.element(record));
+    const history = within(screen.getByRole('region', { name: 'Historial de la solicitud' }));
+    expect(history.getByRole('heading', { name: 'Envío creado, autorizado y stock reservado' })).toBeVisible();
+    expect(history.queryByRole('heading', { name: 'Solicitud aprobada y stock reservado' })).not.toBeInTheDocument();
+    expect(history.getAllByText(original.created_at)).toHaveLength(1);
+    expect(screen.queryByText('Decidida (UTC):')).not.toBeInTheDocument();
+    if (status === 'approved') expect(screen.getAllByText('Pendiente de despacho').length).toBeGreaterThan(0);
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+});
+
 const names = ['Almacén', 'Sucursal A', 'Sucursal B'];
 function wire(origin = 1, destination = 2, status = 'pending') {
   const creator = destination === 1 ? origin : destination;
