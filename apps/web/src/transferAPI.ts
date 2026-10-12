@@ -4,9 +4,14 @@ import {
   type TransferReceiptInput, type TransferCounts, type TransferCreateInput, type TransferPage, type TransferQuery, type TransferRecord,
 } from './transferModel';
 import { captureDecisionRecord, matchesDecisionRecord, satisfiesDecision, type TransferDecision } from './transferDecisionRecovery';
+import {
+  countActorLocation, countCorrectionsPath, matchesCountOperation, normalizeCountDecision, normalizeCountProposal,
+  parseCountCorrectionError, parseCountCorrections, parseCountOperation, type CountAction, type CountCorrections, type CountDecisionInput,
+  type CountOperation, type CountProposalInput,
+} from './transferCountCorrectionModel';
 export type TransferErrorCode = 'invalid_request' | 'unauthenticated' | 'forbidden' | 'not_found' | 'method_not_allowed' | 'insufficient_stock' | 'retry_conflict' | 'decision_conflict' | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
 export class TransferAPIError extends Error {
-  constructor(public readonly code: TransferErrorCode, public readonly status: number | null, public readonly uncertainCreation = false, public readonly uncertainDecision = false, public readonly uncertainDispatch = false, public readonly uncertainReceipt = false, public readonly uncertainCancellation = false) { super(code); this.name = 'TransferAPIError'; }
+  constructor(public readonly code: TransferErrorCode, public readonly status: number | null, public readonly uncertainCreation = false, public readonly uncertainDecision = false, public readonly uncertainDispatch = false, public readonly uncertainReceipt = false, public readonly uncertainCancellation = false, public readonly uncertainCorrection = false) { super(code); this.name = 'TransferAPIError'; }
 }
 export interface TransferReadOptions { signal?: AbortSignal; passive?: boolean }
 export interface TransferCreateResult { record: TransferRecord; replayed: boolean }
@@ -23,8 +28,8 @@ function readInit(options: TransferReadOptions): RequestInit {
     headers: options.passive === true ? { 'X-Luson-Passive': '1' } : {} };
 }
 export function createTransferAPI(fetch: typeof globalThis.fetch = globalThis.fetch) {
-  async function request(path: string, init: RequestInit, statuses: readonly number[], decision = false, dispatch = false, receipt = false, cancellation = false) {
-    const creating = init.method === 'POST' && !decision && !dispatch && !receipt && !cancellation;
+  async function request(path: string, init: RequestInit, statuses: readonly number[], decision = false, dispatch = false, receipt = false, cancellation = false, correction = false) {
+    const creating = init.method === 'POST' && !decision && !dispatch && !receipt && !cancellation && !correction;
     let reply: Response;
     let body: string;
     try {
@@ -32,26 +37,70 @@ export function createTransferAPI(fetch: typeof globalThis.fetch = globalThis.fe
       body = await reply.text();
     } catch (error) {
       const aborted = init.signal?.aborted || (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError');
-      throw new TransferAPIError(aborted ? 'aborted' : 'network', null, creating, decision, dispatch, receipt, cancellation);
+      throw new TransferAPIError(aborted ? 'aborted' : 'network', null, creating, decision, dispatch, receipt, cancellation, correction);
     }
-    const malformed = () => new TransferAPIError('invalid_response', reply.status, creating, decision, dispatch, receipt, cancellation);
+    const malformed = () => new TransferAPIError('invalid_response', reply.status, creating, decision, dispatch, receipt, cancellation, correction);
     if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(reply.headers.get('Content-Type') ?? '')) throw malformed();
     if (!statuses.includes(reply.status)) {
       let value: unknown;
-      try { value = parseJSON(body, null, { parseNumber: Number, onDuplicateKey: () => { throw malformed(); } }); } catch { throw malformed(); }
+      try {
+        value = correction ? { error: parseCountCorrectionError(body) }
+          : parseJSON(body, null, { parseNumber: Number, onDuplicateKey: () => { throw malformed(); } });
+      } catch { throw malformed(); }
       if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'error')) throw malformed();
       const code = (value as { error: unknown }).error;
-      const admitted = reply.status === 409 && cancellation ? ['decision_conflict'] : reply.status === 409 && receipt ? ['retry_conflict', 'decision_conflict']
+      const admitted = reply.status === 409 && correction ? ['retry_conflict', 'decision_conflict', 'insufficient_stock'] : reply.status === 409 && cancellation ? ['decision_conflict'] : reply.status === 409 && receipt ? ['retry_conflict', 'decision_conflict']
         : reply.status === 409 && (decision || dispatch) ? ['insufficient_stock', 'decision_conflict'] : serverCodes[reply.status];
       if (typeof code !== 'string' || !admitted?.includes(code as TransferErrorCode)) throw malformed();
-      throw new TransferAPIError(code as TransferErrorCode, reply.status);
+      // A recognized correction 503 still cannot prove that the write rolled back.
+      throw new TransferAPIError(code as TransferErrorCode, reply.status, false, false, false, false, false,
+        correction && reply.status === 503);
     }
     return { body, status: reply.status };
   }
-  function checked<T>(parse: () => T, status: number, creating = false, decision = false, dispatch = false, receipt = false, cancellation = false): T {
-    try { return parse(); } catch { throw new TransferAPIError('invalid_response', status, creating, decision, dispatch, receipt, cancellation); }
+  function checked<T>(parse: () => T, status: number, creating = false, decision = false, dispatch = false, receipt = false, cancellation = false, correction = false): T {
+    try { return parse(); } catch { throw new TransferAPIError('invalid_response', status, creating, decision, dispatch, receipt, cancellation, correction); }
+  }
+  async function writeCount(id: string, actorLocation: number, selectedAction: CountAction,
+    input: CountProposalInput | CountDecisionInput, csrf: string, signal?: AbortSignal): Promise<CountOperation> {
+    const captured = local(() => {
+      if (typeof csrf !== 'string' || !/^[A-Za-z0-9_-]+$/.test(csrf)
+        || !['propose', 'accept', 'reject'].includes(selectedAction)) throw new Error();
+      const path = countCorrectionsPath(id);
+      const actor = countActorLocation(actorLocation);
+      const payload = selectedAction === 'propose' ? normalizeCountProposal(input as CountProposalInput) : normalizeCountDecision(input);
+      // Capture immutable evidence before serialization or any asynchronous work.
+      return Object.freeze({ path, requestID: BigInt(id), actor, action: selectedAction, payload });
+    });
+    const body = JSON.stringify(captured.payload, (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value);
+    const reply = await request(captured.path + '/' + captured.action, {
+      method: 'POST', credentials: 'same-origin', cache: 'no-store', signal,
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body,
+    }, [200], false, false, false, false, true);
+    return checked(() => {
+      const op = parseCountOperation(reply.body);
+      if (!matchesCountOperation(op, captured.requestID, captured.actor, captured.action, captured.payload)) throw new Error();
+      return op;
+    }, reply.status, false, false, false, false, false, true);
   }
   return {
+    async countCorrections(id: string, options: TransferReadOptions = {}): Promise<CountCorrections> {
+      const path = local(() => countCorrectionsPath(id));
+      const requestID = BigInt(id);
+      const reply = await request(path, readInit(options), [200]);
+      return checked(() => {
+        const snapshot = parseCountCorrections(reply.body);
+        if (snapshot.request_id !== requestID) throw new Error();
+        return snapshot;
+      }, reply.status);
+    },
+    proposeCount(id: string, actorLocation: number, input: CountProposalInput, csrf: string, signal?: AbortSignal): Promise<CountOperation> {
+      return writeCount(id, actorLocation, 'propose', input, csrf, signal);
+    },
+    async decideCount(id: string, actorLocation: number, action: 'accept' | 'reject', input: CountDecisionInput, csrf: string, signal?: AbortSignal): Promise<CountOperation> {
+      local(() => { if (action !== 'accept' && action !== 'reject') throw new Error(); });
+      return writeCount(id, actorLocation, action, input, csrf, signal);
+    },
     async cancel(original: TransferRecord, csrf: string, signal?: AbortSignal): Promise<TransferRecord> {
       const captured = local(() => {
         if (!['pending', 'approved', 'cancelled'].includes(original.status) || typeof csrf !== 'string' || !/^[A-Za-z0-9_-]+$/.test(csrf)) throw new Error();

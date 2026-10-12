@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { createTransferAPI, TransferAPIError } from './transferAPI';
 import { parseTransferRecord, type TransferCreateInput } from './transferModel';
 
+import type { CountDecisionInput, CountProposalInput } from './transferCountCorrectionModel';
+
 const wire = {
   id: '1', reference: 'TR-001', kind: 'request_stock', status: 'pending', created_at: '2026-04-02T00:00:00Z',
   creator_location_id: 2, creator_location_name: 'Sucursal A', origin_location_id: 1, origin_location_name: 'Almacén',
@@ -12,6 +14,126 @@ const input = (): TransferCreateInput => ({ kind: 'request_stock', counterparty_
   items: [{ variant_id: 201, quantity: '9007199254740993' }, { variant_id: 1, quantity: '2' }] });
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const mockFetch = () => vi.fn<typeof fetch>();
+
+describe('C3b count correction transport', () => {
+  const id = '9007199254740993';
+  const input = (): CountProposalInput => ({ variant_id: 201, operation_key: 'count_proposal_0001',
+    expected_revision: '9007199254740993', actual_quantity: '9223372036854775807', reason: '  physical recount  ' });
+  const decision = (): CountDecisionInput => ({ variant_id: 201, operation_key: 'count_decision_0001',
+    expected_revision: '9007199254740994', reason: '  verified  ' });
+  const persisted = (action = 'propose') => ({ ...(action === 'propose' ? input() : decision()), request_id: id,
+    actor_location_id: 2, action, actual_quantity: action === 'propose' ? input().actual_quantity : null,
+    revision: '9007199254740994', recorded_at: '2026-01-02T12:00:00.000000001Z' });
+  const call = (fetch: typeof globalThis.fetch, signal?: AbortSignal) => createTransferAPI(fetch).proposeCount(id, 2, input(), 'memory_csrf', signal);
+  it('captures exact immutable proposal before network and returns historical persisted operation on identical retry', async () => {
+    let resolve!: (value: Response) => void;
+    const fetch = mockFetch().mockReturnValueOnce(new Promise<Response>(yes => { resolve = yes; }))
+      .mockResolvedValue(response(persisted()));
+    const original = input(); const api = createTransferAPI(fetch); const signal = new AbortController().signal;
+    const job = api.proposeCount(id, 2, original, 'memory_csrf', signal);
+    Object.assign(original, { operation_key: 'changed_key_00001', expected_revision: '1', actual_quantity: '0', reason: 'changed', variant_id: 1 });
+    resolve(response(persisted()));
+    const op = await job;
+    expect(op).toMatchObject({ request_id: 9007199254740993n, actual_quantity: 9223372036854775807n });
+    expect(Object.isFrozen(op)).toBe(true);
+    expect(await api.proposeCount(id, 2, input(), 'memory_csrf', signal)).toEqual(op);
+    for (const args of fetch.mock.calls) expect(args).toEqual([`/api/transfers/${id}/count-corrections/propose`, {
+      method: 'POST', credentials: 'same-origin', cache: 'no-store', signal,
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': 'memory_csrf' },
+      body: '{"variant_id":201,"operation_key":"count_proposal_0001","expected_revision":"9007199254740993","reason":"  physical recount  ","actual_quantity":"9223372036854775807"}',
+    }]);
+    expect(fetch.mock.calls[0][1]?.body).not.toContain('actor_location_id');
+  });
+  it.each(['accept', 'reject'] as const)('sends %s without actual or actor and accepts null actual', async action => {
+    const fetch = mockFetch().mockResolvedValue(response(persisted(action)));
+    const op = await createTransferAPI(fetch).decideCount(id, 2, action, decision(), 'memory');
+    expect(op).toMatchObject({ action, actual_quantity: null, expected_revision: 9007199254740994n });
+    expect(fetch.mock.calls[0]).toEqual([`/api/transfers/${id}/count-corrections/${action}`, {
+      method: 'POST', credentials: 'same-origin', cache: 'no-store', signal: undefined,
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': 'memory' }, body: JSON.stringify(decision()),
+    }]);
+  });
+  it.each([
+    { request_id: '1' }, { variant_id: 202 }, { actor_location_id: 1 }, { action: 'accept', actual_quantity: null, expected_revision: '9007199254740994' },
+    { operation_key: 'different_key_0001' }, { expected_revision: '9007199254740992', revision: '9007199254740993' },
+    { actual_quantity: '0' }, { actual_quantity: null }, { reason: 'physical recount' }, { revision: '1' },
+  ])('treats any requested identity mismatch as correction-only uncertainty %j', async patch => {
+    const fetch = mockFetch().mockResolvedValue(response({ ...persisted(), ...patch }));
+    await expect(call(fetch)).rejects.toMatchObject({ code: 'invalid_response', uncertainCorrection: true,
+      uncertainCreation: false, uncertainDecision: false, uncertainDispatch: false, uncertainReceipt: false, uncertainCancellation: false });
+  });
+  it.each(['accept', 'reject'] as const)('rejects decision %s with non-null actual or swapped action', async action => {
+    for (const patch of [{ actual_quantity: '0' }, { action: action === 'accept' ? 'reject' : 'accept' }]) {
+      const fetch = mockFetch().mockResolvedValue(response({ ...persisted(action), ...patch }));
+      await expect(createTransferAPI(fetch).decideCount(id, 2, action, decision(), 'memory')).rejects.toMatchObject({ uncertainCorrection: true });
+    }
+  });
+  it.each(['network', 'abort', 'read', 'json', 'media', 'schema', '503', 'wrongStatus', 'duplicate', 'private'] as const)
+    ('sanitizes ambiguous %s without creation uncertainty or private payload', async mode => {
+      const fetch = mockFetch().mockImplementation(async () => {
+        if (mode === 'network') throw new Error('PRIVATE SQL');
+        if (mode === 'abort') throw new DOMException('PRIVATE SQL', 'AbortError');
+        if (mode === 'read') {
+          const reply = response(persisted());
+          vi.spyOn(reply, 'text').mockRejectedValue(new Error('PRIVATE SQL'));
+          return reply;
+        }
+        if (mode === 'json') return new Response('{PRIVATE', { headers: { 'Content-Type': 'application/json' } });
+        if (mode === 'media') return new Response('PRIVATE', { status: 400, headers: { 'Content-Type': 'text/html' } });
+        if (mode === '503') return response({ error: 'service_unavailable' }, 503);
+        if (mode === 'wrongStatus') return response({ error: 'invalid_request' }, 500);
+        if (mode === 'duplicate') return new Response('{"error":"invalid_request","error":"invalid_request"}', { status: 400, headers: { 'Content-Type': 'application/json' } });
+        return response({ ...persisted(), ...(mode === 'private' ? { private_history: 'PRIVATE SQL' } : { actual_quantity: 1 }) });
+      });
+      const error = await call(fetch).catch(error => error);
+      expect(error).toBeInstanceOf(TransferAPIError);
+      expect(error).toMatchObject({ uncertainCorrection: true, uncertainCreation: false, uncertainDecision: false,
+        uncertainDispatch: false, uncertainReceipt: false, uncertainCancellation: false });
+      expect(String(error)).not.toMatch(/PRIVATE|SQL/);
+      expect(Object.values(error)).not.toContain('PRIVATE SQL');
+      if (mode === 'abort') expect(error.code).toBe('aborted');
+      if (mode === '503') expect(error).toMatchObject({ code: 'service_unavailable', status: 503 });
+    });
+  it('retains abort uncertainty when an aborted signal causes transport failure', async () => {
+    const controller = new AbortController(); controller.abort();
+    await expect(call(mockFetch().mockRejectedValue(new Error()), controller.signal)).rejects.toMatchObject({ code: 'aborted', uncertainCorrection: true });
+  });
+  it.each([[400, 'invalid_request'], [409, 'retry_conflict'], [409, 'decision_conflict'], [409, 'insufficient_stock'],
+    [401, 'unauthenticated'], [403, 'forbidden'], [404, 'not_found']] as const)
+    ('maps recognized %s/%s as definite for this call only', async (status, code) => {
+      await expect(call(mockFetch().mockResolvedValue(response({ error: code }, status)))).rejects.toMatchObject({ code, status,
+        uncertainCorrection: false, uncertainCreation: false });
+    });
+  it.each([[400, 'retry_conflict'], [409, 'invalid_request'], [503, 'not_found'], [201, 'service_unavailable']] as const)
+    ('does not trust wrong status/code %s/%s as definite', async (status, code) => {
+      await expect(call(mockFetch().mockResolvedValue(response({ error: code }, status)))).rejects.toMatchObject({ code: 'invalid_response', uncertainCorrection: true });
+    });
+  it('reads private immutable snapshot with exact route ID and no mutation headers', async () => {
+    const fetch = mockFetch().mockResolvedValue(response({ request_id: id, lines: [], operations: [persisted()] }));
+    const signal = new AbortController().signal;
+    expect(await createTransferAPI(fetch).countCorrections(id, { signal, passive: true })).toMatchObject({ request_id: BigInt(id) });
+    expect(fetch.mock.calls[0]).toEqual([`/api/transfers/${id}/count-corrections`, {
+      method: 'GET', credentials: 'same-origin', cache: 'no-store', signal, headers: { 'X-Luson-Passive': '1' },
+    }]);
+    fetch.mockResolvedValue(response({ request_id: '1', lines: [], operations: [] }));
+    await expect(createTransferAPI(fetch).countCorrections(id)).rejects.toMatchObject({ code: 'invalid_response', uncertainCorrection: false });
+  });
+  it('rejects invalid route, actor context, CSRF, action and payload locally', async () => {
+    const fetch = mockFetch(); const api = createTransferAPI(fetch);
+    for (const badID of ['0', '01', '1/accept', '1?x=1', '9223372036854775808']) {
+      await expect(api.proposeCount(badID, 2, input(), 'memory')).rejects.toMatchObject({ code: 'invalid_request', uncertainCorrection: false });
+      await expect(api.countCorrections(badID)).rejects.toMatchObject({ code: 'invalid_request' });
+    }
+    for (const actor of [0, 4, 1.5, '2']) await expect(api.proposeCount(id, actor as number, input(), 'memory')).rejects.toMatchObject({ code: 'invalid_request' });
+    for (const csrf of ['', 'bad token', 'x\r\ny']) await expect(api.proposeCount(id, 2, input(), csrf)).rejects.toMatchObject({ code: 'invalid_request' });
+    for (const action of ['approve', 'propose', null]) {
+      await expect(api.decideCount(id, 2, action as never, input(), 'memory')).rejects.toMatchObject({ code: 'invalid_request' });
+    }
+    await expect(api.decideCount(id, 2, 'accept', input(), 'memory')).rejects.toMatchObject({ code: 'invalid_request' });
+    await expect(api.proposeCount(id, 2, { ...input(), actual_quantity: 1 } as never, 'memory')).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
 
 describe('C2 cancelled lifecycle transport', () => {
   const cancelled = (approved = false, patch: Record<string, unknown> = {}) => ({ ...wire, status: 'cancelled',
