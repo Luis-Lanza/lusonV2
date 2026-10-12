@@ -85,6 +85,61 @@ async function loaded() { await screen.findByText('9007199254740993 solicitudes 
 async function detail() { fireEvent.click(screen.getByRole('button', { name: 'Ver detalle TR-9007199254740993' })); await screen.findByRole('heading', { name: 'TR-9007199254740993' }); }
 afterEach(() => { vi.unstubAllGlobals(); });
 
+describe('C2 creator cancellation entry and consultation', () => {
+  it.each([[1, 2], [1, 3], [2, 3], [3, 2], [2, 1], [3, 1]])
+    ('offers Pending/Approved cancellation only to the original creator on %s → %s', async (origin, destination) => {
+      const creator = destination === 1 ? origin : destination;
+      for (const status of ['pending', 'approved']) {
+        for (const actor of [origin, destination]) {
+          const f = fixture(actor);
+          f.env.record = wire(origin, destination, '9007199254740993', status);
+          const view = render(f.element({ ownerTag: f.ownerTag, id: f.env.record.id }));
+          await screen.findByRole('heading', { name: f.env.record.reference });
+          const button = screen.queryByRole('button', { name: 'Cancelar solicitud' });
+          if (actor === creator) expect(button).toBeEnabled();
+          else expect(button).not.toBeInTheDocument();
+          expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+          view.unmount();
+        }
+      }
+    });
+  it.each([false, true])('consults Cancelada with immutable history, zero actions and no fake approval (approved=%s)', async approved => {
+    const original = wire();
+    const cancelled = { ...original, status: 'cancelled', cancellation_location_id: 2,
+      cancelled_at: '2028-01-02T00:00:00.000000002Z',
+      ...(approved ? { decision_location_id: 1, decided_at: '2028-01-02T00:00:00.000000001Z' } : {}) };
+    const f = fixture(2, (url, init) => {
+      if (url === '/api/transfers/counts') return Promise.resolve(reply({ pending_total: '0', action_count: '0' }));
+      if (url.includes('status=cancelled')) return Promise.resolve(reply({ page: 1, page_size: 25,
+        status: 'cancelled', total_count: '1', records: [cancelled] }));
+      if (url === `/api/transfers/${original.id}` && init.method === 'GET') return Promise.resolve(reply(cancelled));
+      return undefined;
+    });
+    render(f.element()); await loaded();
+    const selector = screen.getByRole('combobox', { name: 'Estado de transferencia' });
+    expect(within(selector).getByRole('option', { name: 'Canceladas' })).toHaveValue('cancelled');
+    fireEvent.change(selector, { target: { value: 'cancelled' } });
+    await screen.findByText('1 solicitudes canceladas');
+    expect(screen.getByRole('table')).toHaveTextContent('Cancelada');
+    await detail();
+    expect(screen.getByRole('heading', { name: 'Solicitud Cancelada' })).toBeVisible();
+    const history = screen.getByRole('region', { name: 'Historial de la solicitud' });
+    expect(within(history).getAllByRole('listitem')).toHaveLength(approved ? 3 : 2);
+    expect(history).toHaveTextContent(original.created_at);
+    expect(history).toHaveTextContent('Solicitud cancelada');
+    expect(history).toHaveTextContent('Sucursal A');
+    expect(history).toHaveTextContent(cancelled.cancelled_at);
+    if (approved) expect(history).toHaveTextContent('2028-01-02T00:00:00.000000001Z');
+    else expect(history).not.toHaveTextContent(/aprobada|reservado|Decidida/);
+    expect(history).not.toHaveTextContent(/rechazada|despachada|recibida/);
+    expect(screen.queryByRole('button', { name: /^(Cancelar|Aprobar|Rechazar|Despachar|Recibir) / })).not.toBeInTheDocument();
+    expect(screen.getByRole('table', { name: 'Baterías solicitadas' })).toHaveTextContent('18446744073709551614');
+    expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a canceladas' }));
+    expect(screen.getByLabelText('Estado de transferencia')).toHaveValue('cancelled');
+  });
+});
+
 describe('A06b independent passive counters', () => {
   it('shows exact independent request counters, not rows, selected totals or item units', async () => {
     const f = fixture(); render(f.element()); await loaded();
@@ -218,7 +273,7 @@ describe('A06b status-specific consultation', () => {
     const f = fixture(); render(f.element()); await loaded();
     const selector = screen.getByRole('combobox', { name: 'Estado de transferencia' });
     expect(selector).toHaveValue('pending');
-    expect(within(selector).getAllByRole('option').map(option => option.getAttribute('value'))).toEqual(['pending', 'approved', 'rejected', 'in_transit', 'received']);
+    expect(within(selector).getAllByRole('option').map(option => option.getAttribute('value'))).toEqual(['pending', 'approved', 'rejected', 'in_transit', 'received', 'cancelled']);
     fireEvent.click(screen.getByRole('button', { name: 'Siguiente pendientes' })); await loaded();
     selectStatus(status);
     await screen.findByText(`9007199254740993 solicitudes ${status === 'approved' ? 'aprobadas' : 'rechazadas'}`);

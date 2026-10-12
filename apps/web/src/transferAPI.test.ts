@@ -13,6 +13,105 @@ const input = (): TransferCreateInput => ({ kind: 'request_stock', counterparty_
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const mockFetch = () => vi.fn<typeof fetch>();
 
+describe('C2 cancelled lifecycle transport', () => {
+  const cancelled = (approved = false, patch: Record<string, unknown> = {}) => ({ ...wire, status: 'cancelled',
+    cancellation_location_id: 2, cancelled_at: '2026-04-03T00:00:00.000000002Z',
+    ...(approved ? { decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z' } : {}), ...patch });
+  const original = (approved = false) => parseTransferRecord(JSON.stringify({ ...wire,
+    ...(approved ? { status: 'approved', decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z' } : {}) }));
+  it.each([false, true])('reads cancelled detail and identical original creation replay (approved=%s)', async approved => {
+    const current = cancelled(approved);
+    const fetch = mockFetch().mockImplementation(async () => response(current));
+    const api = createTransferAPI(fetch);
+    expect(await api.detail('1')).toMatchObject({ status: 'cancelled', cancellation_location_id: 2 });
+    expect(await api.create(input(), 'memory')).toMatchObject({ replayed: true, record: { status: 'cancelled', id: '1' } });
+    expect(fetch.mock.calls.map(([url]) => url)).toEqual(['/api/transfers/1', '/api/transfers']);
+    expect(fetch.mock.calls[1][1]?.body).toContain('stable_key_000001');
+  });
+  it('queries cancelled participant pages and reads terminal zero counts without mutation', async () => {
+    const fetch = mockFetch().mockResolvedValueOnce(response({ page: 1, page_size: 25, status: 'cancelled', total_count: '1', records: [cancelled()] }))
+      .mockResolvedValueOnce(response({ pending_total: '0', action_count: '0' }));
+    const api = createTransferAPI(fetch);
+    expect((await api.list({ status: 'cancelled' as never })).records[0].status).toBe('cancelled');
+    expect(await api.counts()).toEqual({ pending_total: 0n, action_count: 0n });
+    expect(fetch.mock.calls[0][0]).toBe('/api/transfers?page=1&page_size=25&status=cancelled');
+    expect(fetch.mock.calls.every(([, init]) => init?.method === 'GET' && init.body === undefined)).toBe(true);
+  });
+  it.each([false, true])('posts only strict empty cancellation and preserves approval identity (approved=%s)', async approved => {
+    const fetch = mockFetch().mockResolvedValue(response(cancelled(approved)));
+    const signal = new AbortController().signal;
+    // Planned method absence is not the behavioral decoder RED above.
+    expect(await createTransferAPI(fetch).cancel(original(approved), 'memory_csrf', signal))
+      .toMatchObject({ status: 'cancelled', cancelled_at: '2026-04-03T00:00:00.000000002Z' });
+    expect(fetch).toHaveBeenCalledExactlyOnceWith('/api/transfers/1/cancel', {
+      method: 'POST', credentials: 'same-origin', cache: 'no-store', signal,
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': 'memory_csrf' }, body: '{}',
+    });
+  });
+  it.each([[400, 'invalid_request'], [401, 'unauthenticated'], [403, 'forbidden'], [404, 'not_found'],
+    [409, 'decision_conflict'], [503, 'service_unavailable']] as const)
+    ('keeps definite cancellation %s/%s separate from uncertainty', async (status, code) => {
+      const fetch = mockFetch().mockResolvedValue(response({ error: code }, status));
+      await expect(createTransferAPI(fetch).cancel(original(), 'memory')).rejects.toMatchObject({ status, code,
+        uncertainCancellation: false, uncertainCreation: false, uncertainDecision: false, uncertainDispatch: false, uncertainReceipt: false });
+    });
+  it.each(['network', 'media', 'identity', 'approval', 'missingApproval', 'pending', 'private'] as const)
+    ('sanitizes uncertain cancellation %s without publishing changed immutable history', async mode => {
+      const fetch = mockFetch().mockImplementation(async () => {
+        if (mode === 'network') throw new Error('PRIVATE SQL');
+        if (mode === 'media') return new Response(JSON.stringify(cancelled(true)), { headers: { 'Content-Type': 'text/html' } });
+        const patch = mode === 'identity' ? { items: [{ ...wire.items[0], quantity: '1' }] }
+          : mode === 'approval' ? { decided_at: '2026-04-03T00:00:00Z' }
+          : mode === 'missingApproval' ? { decision_location_id: undefined, decided_at: undefined }
+          : mode === 'pending' ? { status: 'pending' } : mode === 'private' ? { allocations: 'PRIVATE SQL' } : {};
+        return response(cancelled(true, patch));
+      });
+      const error = await createTransferAPI(fetch).cancel(original(true), 'memory').catch(error => error);
+      expect(error).toMatchObject({ uncertainCancellation: true, uncertainCreation: false, uncertainDecision: false, uncertainDispatch: false });
+      expect(String(error)).not.toMatch(/PRIVATE|SQL/);
+    });
+  it('admits approval serialized before a Pending cancellation without changing original creation identity', async () => {
+    const fetch = mockFetch().mockResolvedValue(response(cancelled(true)));
+    expect(await createTransferAPI(fetch).cancel(original(), 'memory')).toMatchObject({ status: 'cancelled',
+      decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it('pins the original before transport and admits identical persisted cancellation retries', async () => {
+    let resolve!: (value: Response) => void;
+    const fetch = mockFetch().mockReturnValueOnce(new Promise<Response>(yes => { resolve = yes; }))
+      .mockResolvedValue(response(cancelled(true)));
+    const api = createTransferAPI(fetch); const captured = original(true);
+    const job = api.cancel(captured, 'memory');
+    captured.items[0].quantity = 1n; captured.reference = 'changed';
+    resolve(response(cancelled(true)));
+    const outcome = await job;
+    expect(outcome).toMatchObject({ status: 'cancelled', reference: 'TR-001', items: [{ quantity: 9007199254740993n }] });
+    expect(await api.cancel(outcome, 'memory')).toEqual(outcome);
+    expect(fetch.mock.calls.map(([url, init]) => [url, init?.body])).toEqual([
+      ['/api/transfers/1/cancel', '{}'], ['/api/transfers/1/cancel', '{}'],
+    ]);
+  });
+  it('rejects invalid cancellation authority, identifiers and terminal inputs locally', async () => {
+    const fetch = mockFetch(); const api = createTransferAPI(fetch);
+    for (const id of ['0', '01', '1/cancel', '1?x=1', '9223372036854775808']) {
+      await expect(api.cancel({ ...original(), id }, 'memory')).rejects.toMatchObject({ code: 'invalid_request', uncertainCancellation: false });
+    }
+    for (const token of ['', 'private token', 'x\r\ny']) {
+      await expect(api.cancel(original(), token)).rejects.toMatchObject({ code: 'invalid_request' });
+    }
+    const rejected = parseTransferRecord(JSON.stringify({ ...wire, status: 'rejected', decision_location_id: 1,
+      decided_at: '2026-04-03T00:00:00.000000001Z' }));
+    await expect(api.cancel(rejected, 'memory')).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it('does not transform decision/dispatch conflict into cancellation success', async () => {
+    const fetch = mockFetch().mockImplementation(async () => response({ error: 'decision_conflict' }, 409));
+    const api = createTransferAPI(fetch);
+    await expect(api.decide(original(true), 'approve', 'memory')).rejects.toMatchObject({ code: 'decision_conflict', uncertainDecision: false });
+    await expect(api.dispatch(original(true), 'memory')).rejects.toMatchObject({ code: 'decision_conflict', uncertainDispatch: false });
+  });
+});
+
 describe('R2 Received lifecycle transport', () => {
   const approved = { ...wire, status: 'approved', decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z' };
   const transit = { ...approved, status: 'in_transit', dispatch_location_id: 1, dispatched_at: '2026-04-03T00:00:00.000000002Z' };

@@ -75,7 +75,7 @@ export default function TransferDispatch(props: TransferDispatchProps) {
   </div> : null;
   return <div className="transfer-dispatch">
     {attempt && <section className="transfer-decision-recovery" aria-label="Recuperación de despacho">
-      <h3>{unresolved ? 'Despacho pendiente de confirmación' : 'Despacho confirmado'}</h3>
+      <h3>{unresolved ? 'Despacho pendiente de confirmación' : attempt.phase === 'conflict' ? 'Resultado confirmado' : 'Despacho confirmado'}</h3>
       <p>{attempt.original.reference} · Despacho de la solicitud completa</p>
       {busy ? <p role="status">Consultando o enviando el despacho…</p> : unresolved ? <>
         <p role="status">El resultado sigue sin confirmar. La solicitud puede haberse despachado, aunque una consulta muestre Aprobada. No envíes otra solicitud.</p>
@@ -87,6 +87,7 @@ export default function TransferDispatch(props: TransferDispatchProps) {
         {result.status === 'in_transit' ? <p>Pendiente de recepción en {result.destination_location_name}; todavía no recibe stock.</p>
           : <p>Recepción finalizada en {result.destination_location_name} (UTC): <time>{result.received_at}</time></p>}
       </>}
+      {result?.status === 'cancelled' && <p role="status">Estado confirmado: Cancelada (UTC): <time>{result.cancelled_at}</time>. No se confirmó un despacho.</p>}
       {error && <p role="alert">{error}</p>}
       <p>Volver o cerrar la confirmación no cancela un despacho enviado. La recuperación permanece en esta App; recargar o cerrar la pestaña pierde esta memoria.</p>
     </section>}
@@ -104,7 +105,7 @@ export default function TransferDispatch(props: TransferDispatchProps) {
           else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialog.current)) { event.preventDefault(); first.focus(); }
         }
       }}>
-      <header><div><h2 id="dispatch-title">{result?.id === visibleReview.record.id ? 'Despacho confirmado' : 'Confirmar despacho'}</h2>
+      <header><div><h2 id="dispatch-title">{result?.id === visibleReview.record.id ? result.status === 'cancelled' ? 'Solicitud Cancelada' : 'Despacho confirmado' : 'Confirmar despacho'}</h2>
         <p>{visibleReview.record.reference} · {visibleReview.record.origin_location_name} → {visibleReview.record.destination_location_name}</p></div>
         <button ref={close} type="button" aria-label="Cerrar confirmación de despacho" disabled={busy} onClick={dismiss}>×</button>
       </header>
@@ -118,7 +119,7 @@ export default function TransferDispatch(props: TransferDispatchProps) {
         {busy && <p role="status">Confirmando despacho…</p>}
         {error && <p role="alert">{error}</p>}
         {unresolved && !busy && <p role="status">Resultado sin confirmar. Usá la recuperación del despacho original.</p>}
-        {result?.id === visibleReview.record.id && <p role="status">Estado confirmado: {result.status === 'received' ? 'Recibida' : 'En tránsito'}.</p>}
+        {result?.id === visibleReview.record.id && <p role="status">Estado confirmado: {result.status === 'cancelled' ? 'Cancelada' : result.status === 'received' ? 'Recibida' : 'En tránsito'}.</p>}
       </div>
       <footer><button type="button" disabled={busy} onClick={dismiss}>Volver al detalle</button>
         {!unresolved && canDispatch && record.id === visibleReview.record.id && !(result && result.id === visibleReview.record.id) &&

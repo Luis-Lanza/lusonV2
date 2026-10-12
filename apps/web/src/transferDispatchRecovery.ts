@@ -5,7 +5,7 @@ import type { TransferErrorCode } from './transferAPI';
 export interface DispatchFailure { readonly code: TransferErrorCode; readonly status: number | null; readonly uncertainDispatch: boolean }
 export interface DispatchAttempt {
   readonly original: TransferRecord; readonly owner: Readonly<DecisionOwner>;
-  readonly phase: 'uncertain' | 'inFlight' | 'confirmed'; readonly result: TransferRecord | null;
+  readonly phase: 'uncertain' | 'inFlight' | 'confirmed' | 'conflict'; readonly result: TransferRecord | null;
   readonly failure: Readonly<DispatchFailure> | null;
 }
 export interface DispatchFlight { readonly attempt: DispatchAttempt }
@@ -36,7 +36,7 @@ export function createTransferDispatchRecovery() {
       const original = captureDecisionRecord(record);
       if (owned(owner) && attempt) {
         // Mask only the unavailable request; unmasked uncertainty still pins its original.
-        if (flight || (masked && attempt.original.id === original.id)) return null;
+        if (flight || ((masked || attempt.phase === 'conflict') && attempt.original.id === original.id)) return null;
         if (!masked && attempt.phase === 'uncertain') {
           if (!matchesDecisionRecord(attempt.original, original)) return null;
           return claim(owner);
@@ -51,15 +51,16 @@ export function createTransferDispatchRecovery() {
     finish(token: DispatchFlight, outcome?: TransferRecord, privateView = false, failure?: DispatchFailure): boolean {
       if (flight !== token || attempt !== token.attempt) return false;
       const result = outcome ? captureDecisionRecord(outcome) : null;
-      if (result && (!matchesDecisionRecord(attempt.original, result) || (result.status !== 'approved' && result.status !== 'in_transit' && result.status !== 'received'))) {
+      if (result && (!matchesDecisionRecord(attempt.original, result) || (result.status !== 'approved' && result.status !== 'in_transit' && result.status !== 'received' && result.status !== 'cancelled'))) {
         throw new Error('Invalid dispatch identity');
       }
       const confirmed = result?.status === 'in_transit' || result?.status === 'received';
+      const terminal = confirmed || result?.status === 'cancelled';
       flight = null; masked = privateView;
       // An Approved GET cannot establish that a previously sent POST failed.
-      attempt = Object.freeze({ ...attempt, phase: confirmed ? 'confirmed' : 'uncertain', result: confirmed ? result : null,
+      attempt = Object.freeze({ ...attempt, phase: confirmed ? 'confirmed' : terminal ? 'conflict' : 'uncertain', result: terminal ? result : null,
         failure: failure ? Object.freeze({ code: failure.code, status: failure.status, uncertainDispatch: failure.uncertainDispatch }) : null });
-      emit(); return confirmed;
+      emit(); return terminal;
     },
   };
 }

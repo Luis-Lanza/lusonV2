@@ -142,6 +142,215 @@ const decisionOutcome = (original: ReturnType<typeof wire>, status: 'approved' |
 const decisionPosts = (fetch: ReturnType<typeof fixture>['fetch']) => fetch.mock.calls.filter(([, init]) => init?.method === 'POST' && String(init?.body) === '{}');
 const inventoryCalls = (fetch: ReturnType<typeof fixture>['fetch']) => fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?'));
 
+describe('C2 cancellation controller and refresh lanes', () => {
+  const pending = wire(2, '1');
+  const approved = decisionOutcome(pending, 'approved');
+  const cancelled = (wasApproved = false) => ({ ...(wasApproved ? approved : pending), status: 'cancelled',
+    cancellation_location_id: 2, cancelled_at: '2026-04-03T00:00:00.000000002Z' });
+  const parse = (value: unknown) => parseTransferRecord(JSON.stringify(value));
+  const posts = (fetch: ReturnType<typeof fixture>['fetch']) => fetch.mock.calls.filter(([url, init]) =>
+    String(url).endsWith('/cancel') && init?.method === 'POST');
+
+  it.each([false, true])('reads latest cancelled detail without unavailable or fake approval (approved=%s)', async wasApproved => {
+    const h = decisionFixture(2, pending, (url, init) => url === '/api/transfers/1' && init.method === 'GET'
+      ? Promise.resolve(reply(cancelled(wasApproved))) : undefined);
+    await h.ready();
+    act(() => h.lanes[0].selectDetail('1'));
+    await waitFor(() => expect(h.lanes[0].detail?.status).toBe('cancelled'));
+    expect(h.lanes[0].detailError).toBeNull();
+    expect(posts(h.fetch)).toHaveLength(0);
+    if (!wasApproved) expect(h.lanes[0].detail).not.toHaveProperty('decided_at');
+    h.view.unmount();
+  });
+  it('passive cancelled GET outranks cached approval while preserving its historical snapshot', async () => {
+    let latest = false;
+    const h = decisionFixture(1, pending, (url, init) => url === '/api/transfers/1' && init.method === 'GET'
+      ? Promise.resolve(reply(latest ? cancelled(true) : approved)) : undefined);
+    await h.ready();
+    const owner = decisionOwner(h.controller.getTransferAuthority())!;
+    act(() => {
+      const token = h.controller.decisionRecovery.start(h.original, 'approve', owner)!;
+      h.controller.decisionRecovery.finish(token, parse(approved));
+      h.lanes[0].selectDetail('1');
+    });
+    await waitFor(() => expect(h.lanes[0].detail?.status).toBe('approved'));
+    latest = true;
+    act(() => Source.instances[0].emit('transfers'));
+    await waitFor(() => expect(h.lanes[0].detail?.status).toBe('cancelled'));
+    expect(h.lanes[0].decision).toMatchObject({ phase: 'conflict', result: { status: 'cancelled' } });
+    expect(h.controller.decisionRecovery.get(owner)?.result?.status).toBe('approved');
+    expect(decisionPosts(h.fetch)).toHaveLength(0);
+    const reads = h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/1');
+    expect(passive(reads.at(-1)!)).toBe('1');
+    h.view.unmount();
+  });
+  it.each(['decision', 'dispatch'] as const)('explicit uncertain %s recovery recognizes Cancelled without claiming operation success', async operation => {
+    const h = decisionFixture(1, pending, (url, init) => {
+      if (init.method === 'POST' && (url.endsWith('/approve') || url.endsWith('/dispatch'))) return Promise.reject(new Error('lost'));
+      if (url === '/api/transfers/1' && init.method === 'GET') return Promise.resolve(reply(cancelled(true)));
+      return undefined;
+    });
+    await h.ready();
+    await act(async () => {
+      if (operation === 'decision') await expect(h.lanes[0].decide(h.original, 'approve')).rejects.toMatchObject({ uncertainDecision: true });
+      else await expect(h.lanes[0].dispatch(parse(approved))).rejects.toMatchObject({ uncertainDispatch: true });
+    });
+    await act(async () => {
+      if (operation === 'decision') await h.lanes[0].recoverDecision();
+      else await h.lanes[0].recoverDispatch();
+    });
+    const snapshot = operation === 'decision' ? h.lanes[0].decision : h.lanes[0].dispatchAttempt;
+    expect(snapshot).toMatchObject({ phase: 'conflict', result: { status: 'cancelled' } });
+    expect(decisionPosts(h.fetch)).toHaveLength(1);
+    expect(posts(h.fetch)).toHaveLength(0);
+    h.view.unmount();
+  });
+  // New hook methods are planned API coverage, not the existing-export RED cases above.
+  it.each([false, true])('refreshes transfer/count lanes always, stock/source only after Approved release (approved=%s)', async wasApproved => {
+    const h = decisionFixture(2, pending, (url, init) => url.endsWith('/cancel') && init.method === 'POST'
+      ? Promise.resolve(reply(cancelled(wasApproved))) : undefined);
+    await h.ready();
+    const source = vi.fn();
+    const detach = h.controller.subscribeSourceInventoryInvalidation(source);
+    const before = { lists: listCalls(h.fetch).length,
+      counts: h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts').length,
+      inventory: inventoryCalls(h.fetch).length };
+    await act(async () => { await h.lanes[0].cancel(parse(wasApproved ? approved : pending)); });
+    expect(h.lanes[1].cancellationAttempt).toMatchObject({ phase: 'confirmed', result: { status: 'cancelled' } });
+    await waitFor(() => expect(listCalls(h.fetch)).toHaveLength(before.lists + 2));
+    await waitFor(() => expect(h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts')).toHaveLength(before.counts + 2));
+    if (wasApproved) await waitFor(() => expect(inventoryCalls(h.fetch)).toHaveLength(before.inventory + 1));
+    else expect(inventoryCalls(h.fetch)).toHaveLength(before.inventory);
+    expect(source).toHaveBeenCalledTimes(wasApproved ? 1 : 0);
+    expect(posts(h.fetch)).toHaveLength(1);
+    detach(); h.view.unmount();
+  });
+  it('retains uncertainty across remount and Pending-to-Approved GET, then explicitly retries the identical cancel', async () => {
+    let sent = 0;
+    const h = decisionFixture(2, pending, (url, init) => {
+      if (url.endsWith('/cancel') && init.method === 'POST') return ++sent === 1
+        ? Promise.reject(new Error('PRIVATE lost')) : Promise.resolve(reply(cancelled(true)));
+      if (url === '/api/transfers/1' && init.method === 'GET') return Promise.resolve(reply(approved));
+      return undefined;
+    });
+    await h.ready();
+    await act(async () => { await expect(h.lanes[0].cancel(h.original)).rejects.toMatchObject({ uncertainCancellation: true }); });
+    h.show(false); h.show(true); await h.ready();
+    expect(h.lanes[1].cancellationAttempt?.phase).toBe('uncertain');
+    for (const event of ['transfers', 'inventory', 'resync']) {
+      act(() => Source.instances[0].emit(event));
+      await waitFor(() => expect(h.lanes[0].listBusy).toBe(false));
+      expect(sent).toBe(1);
+    }
+    await act(async () => { await h.lanes[1].recoverCancellation(); });
+    expect(h.lanes[1].cancellationAttempt?.phase).toBe('uncertain');
+    expect(sent).toBe(1);
+    await act(async () => { await h.lanes[1].retryCancellation(); });
+    expect(h.lanes[0].cancellationAttempt).toMatchObject({ phase: 'confirmed', result: { status: 'cancelled', decided_at: approved.decided_at } });
+    expect(posts(h.fetch).map(([url, init]) => [url, init?.body])).toEqual([
+      ['/api/transfers/1/cancel', '{}'], ['/api/transfers/1/cancel', '{}'],
+    ]);
+    h.view.unmount();
+  });
+  it.each(['pending', 'approved', 'rejected', 'in_transit', 'received', 'cancelled'] as const)
+    ('explicit cancellation GET publishes current %s truth without silently retrying or claiming conflict success', async status => {
+      const transit = { ...approved, status: 'in_transit', dispatch_location_id: 1,
+        dispatched_at: '2026-04-03T00:00:00.000000002Z' };
+      const received = { ...transit, status: 'received', receipt_location_id: 2,
+        received_at: '2026-04-03T00:00:00.000000003Z', receipt: { items: [{ variant_id: 201,
+          expected_quantity: '9223372036854775807', actual_quantity: '9223372036854775807',
+          available_quantity: '9223372036854775807' }], exceptions: [] } };
+      const current = status === 'pending' ? pending : status === 'approved' ? approved
+        : status === 'rejected' ? decisionOutcome(pending, 'rejected') : status === 'in_transit' ? transit
+        : status === 'received' ? received : cancelled(true);
+      const h = decisionFixture(2, pending, (url, init) => {
+        if (url.endsWith('/cancel') && init.method === 'POST') return Promise.reject(new Error('lost'));
+        if (url === '/api/transfers/1' && init.method === 'GET') return Promise.resolve(reply(current));
+        return undefined;
+      });
+      await h.ready();
+      await act(async () => { await expect(h.lanes[0].cancel(h.original)).rejects.toMatchObject({ uncertainCancellation: true }); });
+      await act(async () => { await h.lanes[1].recoverCancellation(); });
+      const phase = status === 'pending' || status === 'approved' ? 'uncertain' : status === 'cancelled' ? 'confirmed' : 'conflict';
+      expect(h.lanes[0].cancellationAttempt?.phase).toBe(phase);
+      if (phase !== 'uncertain') expect(h.lanes[0].cancellationAttempt?.result?.status).toBe(status);
+      expect(posts(h.fetch)).toHaveLength(1);
+      h.view.unmount();
+    });
+  it.each([403, 404])('masks cancellation request %s without blocking a different creator request', async status => {
+    const h = decisionFixture(2, pending, (url, init) => url.endsWith('/cancel') && init.method === 'POST'
+      ? Promise.resolve(reply({ error: status === 403 ? 'forbidden' : 'not_found' }, status)) : undefined);
+    await h.ready();
+    await act(async () => { await expect(h.lanes[0].cancel(h.original)).rejects.toMatchObject({ status }); });
+    expect(h.lanes[0].cancellationAttempt).toBeNull();
+    await act(async () => { await expect(h.lanes[0].cancel(h.original)).rejects.toBeDefined(); });
+    expect(posts(h.fetch)).toHaveLength(1);
+    const other = parse({ ...pending, id: '2', reference: 'TR-002' });
+    await act(async () => { await expect(h.lanes[0].cancel(other)).rejects.toMatchObject({ status }); });
+    expect(posts(h.fetch).map(([url]) => url)).toEqual(['/api/transfers/1/cancel', '/api/transfers/2/cancel']);
+    h.view.unmount();
+  });
+  it('shares one cancellation flight across two panes and never replaces the original uncertain request', async () => {
+    const held = deferred<Response>();
+    const h = decisionFixture(2, pending, (url, init) => url.endsWith('/cancel') && init.method === 'POST' ? held.promise : undefined);
+    await h.ready();
+    let first!: Promise<unknown>;
+    act(() => { first = h.lanes[0].cancel(h.original).catch(error => error); });
+    await waitFor(() => expect(posts(h.fetch)).toHaveLength(1));
+    await act(async () => {
+      await expect(h.lanes[1].cancel(h.original)).rejects.toMatchObject({ code: 'invalid_request' });
+      await expect(h.lanes[1].recoverCancellation()).rejects.toMatchObject({ code: 'invalid_request' });
+    });
+    await act(async () => { held.resolve(reply({ error: 'service_unavailable' }, 503)); await first; });
+    expect(h.lanes[1].cancellationAttempt?.phase).toBe('uncertain');
+    await act(async () => {
+      await expect(h.lanes[1].cancel(parse({ ...pending, id: '2', reference: 'TR-002' }))).rejects.toMatchObject({ code: 'invalid_request' });
+    });
+    expect(posts(h.fetch)).toHaveLength(1);
+    h.view.unmount();
+  });
+  it('gates cancellation stock callbacks again after a transfer subscriber changes the live token', async () => {
+    const h = decisionFixture(2, pending);
+    await h.ready();
+    const owner = decisionOwner(h.controller.getTransferAuthority())!;
+    const source = vi.fn(); const later = vi.fn();
+    const detachSource = h.controller.subscribeSourceInventoryInvalidation(source);
+    const detachMutation = h.controller.subscribeTransferInvalidation(() => {
+      const session = h.controller.getTransferAuthority().session;
+      if (session?.authenticated) session.csrf_token = 'd'.repeat(43);
+    });
+    const detachLater = h.controller.subscribeTransferInvalidation(later);
+    const before = inventoryCalls(h.fetch).length;
+    act(() => h.controller.confirmTransferCancellation(owner, parse(cancelled(true))));
+    await act(async () => {});
+    expect(source).not.toHaveBeenCalled();
+    expect(later).not.toHaveBeenCalled();
+    expect(inventoryCalls(h.fetch)).toHaveLength(before);
+    expect(posts(h.fetch)).toHaveLength(0);
+    detachSource(); detachMutation(); detachLater(); h.view.unmount();
+  });
+  it.each(['csrf', 'account', 'logout'] as const)('fences a late cancellation result and retry after %s authority change', async mode => {
+    const held = deferred<Response>();
+    const h = decisionFixture(2, pending, (url, init) => url.endsWith('/cancel') && init.method === 'POST' ? held.promise : undefined);
+    await h.ready();
+    let job!: Promise<unknown>;
+    act(() => { job = h.lanes[0].cancel(h.original).catch(error => error); });
+    await waitFor(() => expect(posts(h.fetch)).toHaveLength(1));
+    await act(async () => {
+      if (mode === 'logout') await h.controller.logout();
+      else {
+        h.env.current = session(mode === 'account' ? 3 : 2, mode === 'csrf' ? 'd'.repeat(43) : csrf);
+        await h.controller.settleUnauthorized(h.controller.authorityEpoch);
+      }
+    });
+    await act(async () => { held.resolve(reply(cancelled())); await job; });
+    expect(h.lanes[0].cancellationAttempt).toBeNull();
+    await act(async () => { await expect(h.lanes[0].retryCancellation()).rejects.toBeDefined(); });
+    expect(posts(h.fetch)).toHaveLength(1);
+    h.view.unmount();
+  });
+});
+
 describe('R2 receipt controller and refresh lanes', () => {
   const pending = wire(2, '1');
   const transit = { ...decisionOutcome(pending, 'approved'), status: 'in_transit', dispatch_location_id: 1,

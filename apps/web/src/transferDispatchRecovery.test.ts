@@ -13,6 +13,34 @@ const dispatchWire = (overrides = {}) => ({
 const approved = () => parseTransferRecord(JSON.stringify(dispatchWire({ status: 'approved', dispatch_location_id: undefined, dispatched_at: undefined })));
 const transit = (changes = {}) => parseTransferRecord(JSON.stringify(dispatchWire(changes)));
 const owner = { account: 1, location: 1, epoch: 1, generation: 1 };
+describe('C2 dispatch recovery discovers cancellation truth', () => {
+  it('explicit GET accepts cancelled Approved history as conflict, never a successful dispatch', () => {
+    const recovery = createTransferDispatchRecovery();
+    const first = recovery.start(approved(), owner)!;
+    recovery.finish(first);
+    const read = recovery.claim(owner, true)!;
+    const cancelled = parseTransferRecord(JSON.stringify(dispatchWire({ status: 'cancelled',
+      dispatch_location_id: undefined, dispatched_at: undefined, cancellation_location_id: 2,
+      cancelled_at: '2026-04-03T00:00:00.000000002Z' })));
+    expect(recovery.finish(read, cancelled)).toBe(true);
+    expect(recovery.get(owner)).toMatchObject({ phase: 'conflict', result: { status: 'cancelled',
+      decided_at: '2026-04-03T00:00:00.000000001Z' } });
+    expect(recovery.get(owner)?.result).not.toHaveProperty('dispatched_at');
+    expect(recovery.start(approved(), owner)).toBeNull();
+  });
+  it('does not discard the pinned original approval when cancellation GET changes it', () => {
+    const recovery = createTransferDispatchRecovery();
+    const first = recovery.start(approved(), owner)!;
+    recovery.finish(first);
+    const read = recovery.claim(owner, true)!;
+    const changed = parseTransferRecord(JSON.stringify(dispatchWire({ status: 'cancelled',
+      dispatch_location_id: undefined, dispatched_at: undefined, cancellation_location_id: 2,
+      cancelled_at: '2026-04-03T00:00:00.000000002Z', decided_at: '2026-04-03T00:00:00Z' })));
+    expect(() => recovery.finish(read, changed)).toThrow();
+    expect(recovery.isCurrent(read, owner)).toBe(true);
+  });
+});
+
 describe('R2 later dispatch outcome', () => {
   it('confirms Received on explicit dispatch recovery without discarding approval or dispatch identity', () => {
     const recovery = createTransferDispatchRecovery(); const token = recovery.start(approved(), owner)!;

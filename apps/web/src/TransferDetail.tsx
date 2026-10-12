@@ -25,7 +25,7 @@ export function detailAuthority(controller: TransferController): string {
     s.csrf_token, s.expires_at]) : '';
 }
 export function transferStatusLabel(record: TransferRecord) {
-  return record.status === 'pending' ? 'Pendiente de aprobación' : record.status === 'approved' ? 'Aprobada' : record.status === 'in_transit' ? 'En tránsito' : record.status === 'received' ? 'Recibida' : 'Rechazada';
+  return record.status === 'pending' ? 'Pendiente de aprobación' : record.status === 'approved' ? 'Aprobada' : record.status === 'in_transit' ? 'En tránsito' : record.status === 'received' ? 'Recibida' : record.status === 'cancelled' ? 'Cancelada' : 'Rechazada';
 }
 function Stock({ stock, variant }: { stock: StockAdvice; variant: number }) {
   const row = stock.catalog?.rows.find(item => item.variant_id === variant);
@@ -160,13 +160,14 @@ export default function TransferDetail(props: TransferDetailProps) {
       <dl><dt>Ubicación creadora</dt><dd>{record.creator_location_name}</dd>
         <dt>Requiere aprobación de</dt><dd>{record.approver_location_name}</dd>
         <dt>Creada (UTC)</dt><dd><time>{record.created_at}</time></dd></dl>
-      {terminal ? <><p>Decidida (UTC): <time>{record.decided_at}</time></p>
-        <p>{record.status === 'received' ? `La recepción se confirmó en ${record.destination_location_name}. Solo las cantidades esperadas recibidas, hasta lo enviado, se acreditaron como stock disponible. Las discrepancias permanecen registradas, sin resolución automática.` : record.status === 'in_transit' ? `Se despachó la solicitud completa desde ${record.origin_location_name}, consumiendo su reserva y descontando existencias. ${record.destination_location_name} todavía no recibe stock; la recepción está pendiente.` : record.status === 'approved' ? `La solicitud completa está reservada en ${record.origin_location_name}. Las existencias físicas no cambian y el destino no recibe stock por la aprobación.` : 'La solicitud completa fue rechazada. No reserva ni mueve stock.'}</p></>
+      {terminal ? <>{record.decided_at && <p>Decidida (UTC): <time>{record.decided_at}</time></p>}
+        <p>{record.status === 'cancelled' ? (record.decision_location_id !== undefined ? `La solicitud completa fue cancelada. Se liberó únicamente su reserva en ${record.origin_location_name}; las existencias físicas, otras reservas y el stock del destino no cambian.` : 'La solicitud pendiente fue cancelada. No reserva ni mueve stock.') : record.status === 'received' ? `La recepción se confirmó en ${record.destination_location_name}. Solo las cantidades esperadas recibidas, hasta lo enviado, se acreditaron como stock disponible. Las discrepancias permanecen registradas, sin resolución automática.` : record.status === 'in_transit' ? `Se despachó la solicitud completa desde ${record.origin_location_name}, consumiendo su reserva y descontando existencias. ${record.destination_location_name} todavía no recibe stock; la recepción está pendiente.` : record.status === 'approved' ? `La solicitud completa está reservada en ${record.origin_location_name}. Las existencias físicas no cambian y el destino no recibe stock por la aprobación.` : 'La solicitud completa fue rechazada. No reserva ni mueve stock.'}</p></>
         : <div className="transfer-impact"><p>Esta solicitud todavía no reserva ni mueve stock.</p>
           <p>Al aprobar se revalida y reserva la solicitud completa en {record.origin_location_name}. Si falta disponibilidad en alguna variante, no se reserva ninguna.</p>
           <p>Aprobar no mueve existencias ni aumenta el stock del destino.</p></div>}
       {(record.status === 'in_transit' || record.status === 'received') && <p>Despachada desde {record.origin_location_name} (UTC): <time>{record.dispatched_at}</time></p>}
       {record.status === 'received' && <p>Recibida en {record.destination_location_name} (UTC): <time>{record.received_at}</time></p>}
+      {record.status === 'cancelled' && <p>Cancelada en {record.creator_location_name} (UTC): <time>{record.cancelled_at}</time></p>}
       {props.actions?.(stock)}
     </aside>
       <section className={`transfer-history ${record.status}`} aria-label="Historial de la solicitud">
@@ -176,7 +177,7 @@ export default function TransferDetail(props: TransferDetailProps) {
             <p>Ubicación: {record.creator_location_name}</p>
             <time dateTime={record.created_at}>{record.created_at}</time>
           </li>
-          {terminal && <li><h3>{record.status !== 'rejected' ? 'Solicitud aprobada y stock reservado' : 'Solicitud rechazada'}</h3>
+          {terminal && record.decision_location_id !== undefined && <li><h3>{record.status !== 'rejected' ? 'Solicitud aprobada y stock reservado' : 'Solicitud rechazada'}</h3>
             {/* The validated decision location is the persisted approver, never the current viewer. */}
             <p>Ubicación: {record.approver_location_name}</p>
             <time dateTime={record.decided_at}>{record.decided_at}</time>
@@ -185,6 +186,11 @@ export default function TransferDetail(props: TransferDetailProps) {
             <p>Origen: {record.origin_location_name}</p>
             <time dateTime={record.dispatched_at}>{record.dispatched_at}</time>
             {record.status === 'in_transit' && <p>Pendiente de recepción en {record.destination_location_name}.</p>}
+          </li>}
+          {record.status === 'cancelled' && <li><h3>Solicitud cancelada</h3>
+            <p>Ubicación: {record.creator_location_name}</p>
+            <time dateTime={record.cancelled_at}>{record.cancelled_at}</time>
+            {record.decision_location_id !== undefined && <p>Reserva propia liberada; existencias físicas sin cambios.</p>}
           </li>}
           {record.status === 'received' && <li><h3>Solicitud recibida</h3>
             <p>Destino: {record.destination_location_name}</p>

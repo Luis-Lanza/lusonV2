@@ -1,3 +1,4 @@
+import { parse as parseJSON } from 'lossless-json';
 import {
   canonicalTransferReceiptInput, matchesReceiptInput, canonicalTransferInput, parseTransferCounts, parseTransferPage, parseTransferRecord, transferDetailPath, transferListPath,
   type TransferReceiptInput, type TransferCounts, type TransferCreateInput, type TransferPage, type TransferQuery, type TransferRecord,
@@ -5,7 +6,7 @@ import {
 import { captureDecisionRecord, matchesDecisionRecord, satisfiesDecision, type TransferDecision } from './transferDecisionRecovery';
 export type TransferErrorCode = 'invalid_request' | 'unauthenticated' | 'forbidden' | 'not_found' | 'method_not_allowed' | 'insufficient_stock' | 'retry_conflict' | 'decision_conflict' | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
 export class TransferAPIError extends Error {
-  constructor(public readonly code: TransferErrorCode, public readonly status: number | null, public readonly uncertainCreation = false, public readonly uncertainDecision = false, public readonly uncertainDispatch = false, public readonly uncertainReceipt = false) { super(code); this.name = 'TransferAPIError'; }
+  constructor(public readonly code: TransferErrorCode, public readonly status: number | null, public readonly uncertainCreation = false, public readonly uncertainDecision = false, public readonly uncertainDispatch = false, public readonly uncertainReceipt = false, public readonly uncertainCancellation = false) { super(code); this.name = 'TransferAPIError'; }
 }
 export interface TransferReadOptions { signal?: AbortSignal; passive?: boolean }
 export interface TransferCreateResult { record: TransferRecord; replayed: boolean }
@@ -22,8 +23,8 @@ function readInit(options: TransferReadOptions): RequestInit {
     headers: options.passive === true ? { 'X-Luson-Passive': '1' } : {} };
 }
 export function createTransferAPI(fetch: typeof globalThis.fetch = globalThis.fetch) {
-  async function request(path: string, init: RequestInit, statuses: readonly number[], decision = false, dispatch = false, receipt = false) {
-    const creating = init.method === 'POST' && !decision && !dispatch && !receipt;
+  async function request(path: string, init: RequestInit, statuses: readonly number[], decision = false, dispatch = false, receipt = false, cancellation = false) {
+    const creating = init.method === 'POST' && !decision && !dispatch && !receipt && !cancellation;
     let reply: Response;
     let body: string;
     try {
@@ -31,26 +32,40 @@ export function createTransferAPI(fetch: typeof globalThis.fetch = globalThis.fe
       body = await reply.text();
     } catch (error) {
       const aborted = init.signal?.aborted || (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError');
-      throw new TransferAPIError(aborted ? 'aborted' : 'network', null, creating, decision, dispatch, receipt);
+      throw new TransferAPIError(aborted ? 'aborted' : 'network', null, creating, decision, dispatch, receipt, cancellation);
     }
-    const malformed = () => new TransferAPIError('invalid_response', reply.status, creating, decision, dispatch, receipt);
+    const malformed = () => new TransferAPIError('invalid_response', reply.status, creating, decision, dispatch, receipt, cancellation);
     if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(reply.headers.get('Content-Type') ?? '')) throw malformed();
     if (!statuses.includes(reply.status)) {
       let value: unknown;
-      try { value = JSON.parse(body); } catch { throw malformed(); }
+      try { value = parseJSON(body, null, { parseNumber: Number, onDuplicateKey: () => { throw malformed(); } }); } catch { throw malformed(); }
       if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'error')) throw malformed();
       const code = (value as { error: unknown }).error;
-      const admitted = reply.status === 409 && receipt ? ['retry_conflict', 'decision_conflict']
+      const admitted = reply.status === 409 && cancellation ? ['decision_conflict'] : reply.status === 409 && receipt ? ['retry_conflict', 'decision_conflict']
         : reply.status === 409 && (decision || dispatch) ? ['insufficient_stock', 'decision_conflict'] : serverCodes[reply.status];
       if (typeof code !== 'string' || !admitted?.includes(code as TransferErrorCode)) throw malformed();
       throw new TransferAPIError(code as TransferErrorCode, reply.status);
     }
     return { body, status: reply.status };
   }
-  function checked<T>(parse: () => T, status: number, creating = false, decision = false, dispatch = false, receipt = false): T {
-    try { return parse(); } catch { throw new TransferAPIError('invalid_response', status, creating, decision, dispatch, receipt); }
+  function checked<T>(parse: () => T, status: number, creating = false, decision = false, dispatch = false, receipt = false, cancellation = false): T {
+    try { return parse(); } catch { throw new TransferAPIError('invalid_response', status, creating, decision, dispatch, receipt, cancellation); }
   }
   return {
+    async cancel(original: TransferRecord, csrf: string, signal?: AbortSignal): Promise<TransferRecord> {
+      const captured = local(() => {
+        if (!['pending', 'approved', 'cancelled'].includes(original.status) || typeof csrf !== 'string' || !/^[A-Za-z0-9_-]+$/.test(csrf)) throw new Error();
+        return captureDecisionRecord(original);
+      });
+      const path = local(() => transferDetailPath(captured.id)) + '/cancel';
+      const reply = await request(path, { method: 'POST', credentials: 'same-origin', cache: 'no-store', signal,
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: '{}' }, [200], false, false, false, true);
+      return checked(() => {
+        const record = parseTransferRecord(reply.body);
+        if (record.status !== 'cancelled' || !matchesDecisionRecord(captured, record)) throw new Error();
+        return record;
+      }, reply.status, false, false, false, false, true);
+    },
     async receive(original: TransferRecord, input: TransferReceiptInput, csrf: string, signal?: AbortSignal): Promise<TransferRecord> {
       const captured = local(() => {
         if ((original.status !== 'in_transit' && original.status !== 'received') || typeof csrf !== 'string' || !/^[A-Za-z0-9_-]+$/.test(csrf)) throw new Error();

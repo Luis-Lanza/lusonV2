@@ -36,6 +36,129 @@ export function receiptWire(overrides: Record<string, unknown> = {}) {
     exceptions: [{ variant_id: 2147483647, kind: 'shortage', quantity: '9214364837600034814' }] }, ...overrides };
 }
 
+// C1 emits cancellation metadata, not a fabricated rejection or approval.
+export function cancellationWire(approved = false, overrides: Record<string, unknown> = {}) {
+  return wireRecord({ status: 'cancelled', cancellation_location_id: 2,
+    cancelled_at: '2026-04-03T00:00:00.000000002Z',
+    ...(approved ? { decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z' } : {}),
+    ...overrides });
+}
+
+describe('C2 cancelled wire contract', () => {
+  it.each([false, true])('preserves immutable original identity and optional approval (approved=%s)', approved => {
+    const wire = cancellationWire(approved);
+    const decoded = parse(wire);
+    expect(decoded).toMatchObject({ id: wire.id, reference: wire.reference, status: 'cancelled',
+      created_at: wire.created_at, cancellation_location_id: 2, cancelled_at: '2026-04-03T00:00:00.000000002Z' });
+    expect(decoded.items[0]).toMatchObject({ quantity: 9223372036854775807n, capacity_ah: '0.000001' });
+    if (approved) expect(decoded).toMatchObject({ decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z' });
+    else {
+      expect(decoded).not.toHaveProperty('decision_location_id');
+      expect(decoded).not.toHaveProperty('decided_at');
+    }
+    for (const value of [decoded, decoded.items, decoded.items[0]]) expect(Object.isFrozen(value)).toBe(true);
+    for (const field of ['dispatch_location_id', 'dispatched_at', 'receipt_location_id', 'received_at', 'receipt']) {
+      expect(decoded).not.toHaveProperty(field);
+    }
+  });
+  it.each([2, 3])('derives cancellation authority from creator %s in all three flows', creator => {
+    for (const flow of ['requestWarehouse', 'requestOther', 'sendWarehouse'] as const) {
+      const direction = transferDirection(creator, flow);
+      const { counterparty_location_id: _counterparty, ...participants } = direction;
+      for (const approved of [false, true]) {
+        const wire = cancellationWire(approved, { ...participants, cancellation_location_id: creator,
+          ...(approved ? { decision_location_id: direction.approver_location_id } : {}) });
+        expect(parse(wire)).toMatchObject({ status: 'cancelled', creator_location_id: creator,
+          cancellation_location_id: creator, origin_location_id: direction.origin_location_id,
+          destination_location_id: direction.destination_location_id });
+      }
+    }
+  });
+  it.each([false, true])('filters cancelled pages and rejects mismatched or duplicate records (approved=%s)', approved => {
+    const wire = cancellationWire(approved);
+    expect(transferListPath({ status: 'cancelled' as never })).toBe('/api/transfers?page=1&page_size=25&status=cancelled');
+    const page = { page: 1, page_size: 10, status: 'cancelled', total_count: '1', records: [wire] };
+    expect(parseTransferPage(JSON.stringify(page)).records[0]).toEqual(parse(wire));
+    expect(() => parseTransferPage(JSON.stringify({ ...page, status: 'approved' }))).toThrow();
+    expect(() => parseTransferPage(JSON.stringify({ ...page, total_count: '2', records: [wire, wire] }))).toThrow();
+  });
+  it.each([false, true])('requires exact creator metadata and canonical chronological UTC (approved=%s)', approved => {
+    for (const patch of [
+      { cancellation_location_id: undefined }, { cancellation_location_id: null }, { cancellation_location_id: '2' },
+      { cancellation_location_id: 1 }, { cancellation_location_id: 3 }, { cancellation_location_id: 2.5 },
+      { cancelled_at: undefined }, { cancelled_at: null }, { cancelled_at: '2026-02-30T00:00:00Z' },
+      { cancelled_at: '2026-04-03T00:00:00+00:00' }, { cancelled_at: '2026-04-03T00:00:00.100Z' },
+      { cancelled_at: '2026-04-02T12:34:56.123456788Z' },
+      { dispatch_location_id: 1 }, { dispatched_at: '2026-04-03T00:00:00.000000003Z' },
+      { receipt_location_id: 2 }, { receipt: {} }, { retry_key: 'private' }, { released_at: 'private' },
+      { allocations: [] }, { private_fingerprint: 'private' },
+    ]) expect(() => parse(cancellationWire(approved, patch))).toThrow();
+    const earliest = approved ? '2026-04-03T00:00:00.000000001Z' : wireRecord().created_at;
+    expect(parse(cancellationWire(approved, { cancelled_at: earliest })).status).toBe('cancelled');
+    if (approved) expect(() => parse(cancellationWire(true, { cancelled_at: '2026-04-03T00:00:00Z' }))).toThrow();
+  });
+  it('requires either complete preserved approval or none, never null or a different actor', () => {
+    for (const patch of [{ decision_location_id: 1 }, { decided_at: '2026-04-03T00:00:00Z' },
+      { decision_location_id: null, decided_at: null },
+      { decision_location_id: 2, decided_at: '2026-04-03T00:00:00Z' }]) {
+      expect(() => parse(cancellationWire(false, patch))).toThrow();
+    }
+    for (const status of ['pending', 'approved', 'rejected', 'in_transit', 'received']) {
+      expect(() => parse(cancellationWire(true, { status }))).toThrow();
+    }
+  });
+  it.each(['cancelled_at', 'cancellation_location_id'])('rejects identical and different duplicate %s values and escaped keys', key => {
+    const wire = cancellationWire();
+    const raw = JSON.stringify(wire);
+    const same = JSON.stringify(Reflect.get(wire, key));
+    const different = JSON.stringify(key === 'cancelled_at' ? '2026-04-03T00:00:00.000000003Z' : 3);
+    const escapedKey = key.replace('_', '\\u005f');
+    for (const value of [same, different]) {
+      for (const spelling of [key, escapedKey]) {
+        expect(() => parseTransferRecord(raw.replace('{', `{"${spelling}":${value},`))).toThrow('Invalid transfer response');
+      }
+    }
+  });
+  it('rejects nested identical, different and escaped-equivalent item keys inside arrays', () => {
+    const raw = JSON.stringify(cancellationWire());
+    for (const spelling of ['brand', 'br\\u0061nd']) {
+      for (const value of ['Brand', 'Different']) {
+        const duplicate = raw.replace('"brand":"Brand"', `"brand":"Brand","${spelling}":${JSON.stringify(value)}`);
+        expect(() => parseTransferRecord(duplicate)).toThrow('Invalid transfer response');
+      }
+    }
+  });
+  it('keeps object key sets independent and skips key-like strings with quotes, slashes and braces', () => {
+    const brand = 'Brand "cancelled_at": {"brand":"value"}, ["items"] \\ tail';
+    const model = 'Escaped \\u005f key text: "cancellation_location_id": 2';
+    const wire = cancellationWire(true, { items: [1, 2].map(variant_id => ({ ...wireRecord().items[0], variant_id, brand, model })) });
+    const decoded = parse(wire);
+    expect(decoded.items.map(item => item.variant_id)).toEqual([1, 2]);
+    expect(decoded.items.map(item => item.brand)).toEqual([brand, brand]);
+    expect(decoded.items.map(item => item.model)).toEqual([model, model]);
+    const escapedRaw = JSON.stringify(wire).replaceAll('"brand":', '"br\\u0061nd" \n\t:');
+    expect(parseTransferRecord(escapedRaw)).toEqual(decoded);
+    expect(transferQuantityTotal(decoded)).toBe(18446744073709551614n);
+    const second = { ...wire, id: '9007199254740992', reference: 'TR-9007199254740992' };
+    const page = parseTransferPage(JSON.stringify({ page: 1, page_size: 10, status: 'cancelled', total_count: '2', records: [wire, second] }));
+    expect(page.records.map(item => item.id)).toEqual(['9007199254740993', '9007199254740992']);
+    expect(page.records[1].items[0].quantity).toBe(9223372036854775807n);
+  });
+  it('rejects duplicate cancellation keys, trailing data and noncanonical original quantities', () => {
+    const raw = JSON.stringify(cancellationWire());
+    for (const extra of [' {}', 'null', 'x']) expect(() => parseTransferRecord(raw + extra)).toThrow();
+    for (const key of ['cancelled_at', 'cancellation_location_id']) {
+      const value = JSON.stringify(Reflect.get(cancellationWire(), key));
+      expect(() => parseTransferRecord(raw.replace('{', `{"${key}":${value},`))).toThrow();
+    }
+    const escaped = raw.replace('{', '{"cancellation\\u005flocation_id":2,');
+    expect(() => parseTransferRecord(escaped)).toThrow();
+    for (const quantity of ['01', '0', '-1', '9223372036854775808', 1]) {
+      expect(() => parse(cancellationWire(false, { items: [{ ...wireRecord().items[0], quantity }] }))).toThrow();
+    }
+  });
+});
+
 describe('R2 receipt wire contract', () => {
   it('normalizes an immutable receipt payload, including explicit zeros, without numeric aggregate limits', () => {
     const original = parse(dispatchWire({ items: [1, 2].map(variant_id => ({ ...wireRecord().items[0], variant_id, quantity: '2' })) }));

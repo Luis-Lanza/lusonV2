@@ -1,3 +1,5 @@
+import { parse as parseJSON } from 'lossless-json';
+
 export type TransferKind = 'request_stock' | 'send_to_warehouse';
 export type TransferFlow = 'requestWarehouse' | 'requestOther' | 'sendWarehouse';
 export type TransferLocationID = 1 | 2 | 3;
@@ -15,7 +17,7 @@ export interface TransferItem {
   variant_id: number; brand: string; model: string; capacity_ah: string;
   polarity: 'L' | 'R'; quantity: bigint;
 }
-export type TransferStatus = 'pending' | 'approved' | 'rejected' | 'in_transit' | 'received';
+export type TransferStatus = 'pending' | 'approved' | 'rejected' | 'in_transit' | 'received' | 'cancelled';
 export interface TransferReceiptInput { items: readonly { readonly variant_id: number; readonly actual_quantity: string }[] }
 export interface TransferReceiptLine { readonly variant_id: number; readonly expected_quantity: bigint; readonly actual_quantity: bigint; readonly available_quantity: bigint }
 export interface TransferReceiptException { readonly variant_id: number; readonly kind: 'shortage' | 'excess' | 'unexpected'; readonly quantity: bigint }
@@ -27,9 +29,14 @@ interface TransferRecordFields {
   destination_location_id: TransferLocationID; destination_location_name: string;
   approver_location_id: TransferLocationID; approver_location_name: string;
   items: TransferItem[];
+  cancellation_location_id?: TransferLocationID; cancelled_at?: string;
 }
 export type TransferRecord = TransferRecordFields & (
-  { status: 'pending'; decision_location_id?: never; decided_at?: never; dispatch_location_id?: never; dispatched_at?: never }
+  { status: 'cancelled'; cancellation_location_id: TransferLocationID; cancelled_at: string;
+    dispatch_location_id?: never; dispatched_at?: never } & (
+      { decision_location_id?: never; decided_at?: never }
+      | { decision_location_id: TransferLocationID; decided_at: string })
+  | { status: 'pending'; decision_location_id?: never; decided_at?: never; dispatch_location_id?: never; dispatched_at?: never }
   | { status: 'approved' | 'rejected'; decision_location_id: TransferLocationID; decided_at: string; dispatch_location_id?: never; dispatched_at?: never }
   | { status: 'in_transit'; decision_location_id: TransferLocationID; decided_at: string; dispatch_location_id: TransferLocationID; dispatched_at: string; receipt_location_id?: never; received_at?: never; receipt?: never }
   | { status: 'received'; decision_location_id: TransferLocationID; decided_at: string; dispatch_location_id: TransferLocationID; dispatched_at: string; receipt_location_id: TransferLocationID; received_at: string; receipt: TransferReceiptData }
@@ -176,7 +183,7 @@ export function matchesReceiptInput(input: TransferReceiptInput, record: Transfe
       && BigInt(line.actual_quantity) === record.receipt.items[i].actual_quantity);
 }
 function status(value: unknown): TransferStatus {
-  if (value !== 'pending' && value !== 'approved' && value !== 'rejected' && value !== 'in_transit' && value !== 'received') return invalid();
+  if (value !== 'pending' && value !== 'approved' && value !== 'rejected' && value !== 'in_transit' && value !== 'received' && value !== 'cancelled') return invalid();
   return value;
 }
 function queryValues(query: TransferQuery): { page: number; page_size: 10 | 25 | 50; status: TransferStatus } {
@@ -194,10 +201,54 @@ export function transferDetailPath(id: string): string {
   exact(id);
   return `/api/transfers/${id}`;
 }
+function assertUniqueJSONKeys(raw: string): void {
+  // lossless-json's duplicate callback omits equal values. Scan tokens first,
+  // with one key set per object; syntax and numeric decoding remain its job.
+  // This is an iterative linear scan, with stack/storage bounded by input size.
+  const stack: { kind: '{' | '['; keys: Set<string>; expectingKey: boolean }[] = [];
+  const whitespace = (char: string | undefined) => char === ' ' || char === '\t' || char === '\r' || char === '\n';
+  let index = 0;
+  while (index < raw.length) {
+    const char = raw[index];
+    if (char === '"') {
+      const start = index++;
+      while (index < raw.length && raw[index] !== '"') {
+        // Skip an escaped character, including quotes and backslashes. Unicode
+        // escape validity is checked when decoding keys, or by the final parser.
+        index += raw[index] === '\\' ? 2 : 1;
+      }
+      if (index >= raw.length) return invalid();
+      const end = ++index;
+      const frame = stack.at(-1);
+      if (frame?.kind === '{' && frame.expectingKey) {
+        let next = end;
+        while (whitespace(raw[next])) next++;
+        if (raw[next] === ':') {
+          // Decode only this quoted key token, never values or the whole DTO.
+          const key: unknown = JSON.parse(raw.slice(start, end));
+          if (typeof key !== 'string' || frame.keys.has(key)) return invalid();
+          frame.keys.add(key); frame.expectingKey = false;
+        }
+      }
+      continue;
+    }
+    if (char === '{' || char === '[') stack.push({ kind: char, keys: new Set<string>(), expectingKey: char === '{' });
+    else if (char === '}' || char === ']') {
+      const frame = stack.pop();
+      if (!frame || frame.kind !== (char === '}' ? '{' : '[')) return invalid();
+    } else if (char === ',') {
+      const frame = stack.at(-1);
+      if (frame?.kind === '{') frame.expectingKey = true;
+    }
+    index++;
+  }
+  if (stack.length !== 0) return invalid();
+}
 function decode(raw: string): unknown {
-  // Trusted Go DTOs contain no duplicate keys. JSON.parse keeps string quantities
-  // lossless; duplicates are not independently detected, unlike POST server input.
-  try { return JSON.parse(raw); } catch { return invalid(); }
+  try {
+    assertUniqueJSONKeys(raw);
+    return parseJSON(raw, null, { parseNumber: Number, onDuplicateKey: invalid });
+  } catch { return invalid(); }
 }
 const recordKeys = ['id', 'reference', 'kind', 'status', 'created_at', 'items',
   'creator_location_id', 'creator_location_name', 'origin_location_id', 'origin_location_name',
@@ -207,9 +258,12 @@ function record(value: unknown): TransferRecord {
   const decisionKeys = [...recordKeys, 'decision_location_id', 'decided_at'];
   const dispatchKeys = [...decisionKeys, 'dispatch_location_id', 'dispatched_at'];
   const receiptKeys = [...dispatchKeys, 'receipt_location_id', 'received_at', 'receipt'];
-  const candidate = object(value, receiptKeys, false);
+  const cancellationKeys = [...recordKeys, 'cancellation_location_id', 'cancelled_at'];
+  const candidate = object(value, [...receiptKeys, 'cancellation_location_id', 'cancelled_at'], false);
   const selected = status(candidate.status);
-  const o = object(value, selected === 'pending' ? recordKeys : selected === 'received' ? receiptKeys : selected === 'in_transit' ? dispatchKeys : decisionKeys);
+  const preservedApproval = selected === 'cancelled' && (Object.hasOwn(candidate, 'decision_location_id') || Object.hasOwn(candidate, 'decided_at'));
+  const o = object(value, selected === 'cancelled' ? preservedApproval ? [...cancellationKeys, 'decision_location_id', 'decided_at'] : cancellationKeys
+    : selected === 'pending' ? recordKeys : selected === 'received' ? receiptKeys : selected === 'in_transit' ? dispatchKeys : decisionKeys);
   exact(o.id);
   const id = o.id as string;
   if (o.reference !== `TR-${id.padStart(3, '0')}`) return invalid();
@@ -232,12 +286,12 @@ function record(value: unknown): TransferRecord {
     return { variant_id: quantities[i].variant_id, quantity: BigInt(quantities[i].quantity),
       brand: text(item.brand), model: text(item.model), capacity_ah: capacity(item.capacity_ah), polarity: item.polarity };
   });
-  const decision = selected === 'pending' ? null : {
+  const decision = selected === 'pending' || (selected === 'cancelled' && !preservedApproval) ? null : {
     decision_location_id: location(o.decision_location_id), decided_at: createdAt(o.decided_at),
   };
   if (decision && decision.decision_location_id !== approver) return invalid();
   let outcome: Pick<TransferRecord, 'status' | 'decision_location_id' | 'decided_at' | 'dispatch_location_id' | 'dispatched_at'>;
-  if (selected === 'pending') outcome = { status: selected };
+  if (selected === 'pending' || selected === 'cancelled') outcome = { status: selected, ...decision };
   else if (selected === 'in_transit' || selected === 'received') {
     const dispatched_at = createdAt(o.dispatched_at);
     // Fixed-width UTC seconds + padded fractions retain nanosecond ordering.
@@ -251,12 +305,20 @@ function record(value: unknown): TransferRecord {
     if (location(o.receipt_location_id) !== destination || ordered(received_at) < ordered(outcome.dispatched_at!)) return invalid();
     return { receipt_location_id: destination, received_at, receipt: receiptData(o.receipt, items) };
   })() : {};
-  const decoded = { ...outcome, ...receiptFields, id, reference: o.reference as string, kind: k, created_at: createdAt(o.created_at),
+  const created_at = createdAt(o.created_at);
+  const ordered = (time: string) => time.slice(0, 19) + (time.includes('.') ? time.slice(20, -1) : '').padEnd(9, '0');
+  const cancellationFields = selected === 'cancelled' ? (() => {
+    const cancelled_at = createdAt(o.cancelled_at);
+    if (location(o.cancellation_location_id) !== creator || ordered(cancelled_at) < ordered(created_at)
+      || (decision && (ordered(decision.decided_at) < ordered(created_at) || ordered(cancelled_at) < ordered(decision.decided_at)))) return invalid();
+    return { cancellation_location_id: creator, cancelled_at };
+  })() : {};
+  const decoded = { ...outcome, ...receiptFields, ...cancellationFields, id, reference: o.reference as string, kind: k, created_at,
     creator_location_id: creator, creator_location_name: text(o.creator_location_name),
     origin_location_id: origin, origin_location_name: text(o.origin_location_name),
     destination_location_id: destination, destination_location_name: text(o.destination_location_name),
     approver_location_id: approver, approver_location_name: text(o.approver_location_name), items } as TransferRecord;
-  if (selected === 'received') { items.forEach(Object.freeze); Object.freeze(items); Object.freeze(decoded); }
+  if (selected === 'received' || selected === 'cancelled') { items.forEach(Object.freeze); Object.freeze(items); Object.freeze(decoded); }
   return decoded;
 }
 export function parseTransferRecord(raw: string): TransferRecord { return record(decode(raw)); }

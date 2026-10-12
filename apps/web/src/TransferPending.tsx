@@ -6,6 +6,7 @@ import TransferDetail, { detailAuthority, type DetailController, type StockAdvic
 import TransferDecision from './TransferDecision';
 import TransferDispatch from './TransferDispatch';
 import TransferReceipt from './TransferReceipt';
+import TransferCancellation from './TransferCancellation';
 
 // No session or CSRF retained in routing state. Epoch changes invalidate this tag.
 export function transferViewOwner(authority: TransferAuthority): string | null {
@@ -26,7 +27,7 @@ function kindLabel(record: TransferRecord) {
   return record.origin_location_id === 1 ? 'Solicitud a Almacén' : 'Solicitud entre sucursales';
 }
 function statusLabel(record: TransferRecord) {
-  return record.status === 'pending' ? 'Pendiente de aprobación' : record.status === 'approved' ? 'Aprobada' : record.status === 'in_transit' ? 'En tránsito' : record.status === 'received' ? 'Recibida' : 'Rechazada';
+  return record.status === 'pending' ? 'Pendiente de aprobación' : record.status === 'approved' ? 'Aprobada' : record.status === 'in_transit' ? 'En tránsito' : record.status === 'received' ? 'Recibida' : record.status === 'cancelled' ? 'Cancelada' : 'Rechazada';
 }
 function Status({ record }: { record: TransferRecord }) { return <span className={`pending-status status-${record.status}`}>{statusLabel(record)}</span>; }
 const statusOptions = [
@@ -35,6 +36,7 @@ const statusOptions = [
   { value: 'rejected', label: 'Rechazadas', plural: 'rechazadas' },
   { value: 'in_transit', label: 'En tránsito', plural: 'en tránsito' },
   { value: 'received', label: 'Recibidas', plural: 'recibidas' },
+  { value: 'cancelled', label: 'Canceladas', plural: 'canceladas' },
 ] as const;
 export default function TransferPending(props: TransferPendingProps) {
   const authority = props.controller.getTransferAuthority();
@@ -69,7 +71,12 @@ export default function TransferPending(props: TransferPendingProps) {
   const dispatchResult = transfers.dispatchAttempt?.result;
   const detail = transfers.detail;
   const receiptResult = transfers.receiptAttempt?.result;
-  const record = privateUnavailable ? null : detail?.status === 'received' ? detail
+  const cancellation = transfers.cancellationAttempt;
+  const cancellationResult = cancellation?.result;
+  const record = privateUnavailable ? null : detail?.status === 'cancelled' ? detail
+    : cancellationResult?.id === selected ? cancellationResult
+      : detail?.status === 'pending' && cancellation?.current.id === selected && cancellation.current.status === 'approved' ? cancellation.current
+        : detail?.status === 'received' ? detail
     : receiptResult?.id === selected ? receiptResult : dispatchResult?.id === selected ? dispatchResult
       : detail?.status === 'in_transit' ? detail : decision?.result?.id === selected ? decision.result : detail;
   const unavailable = transfers.detailError;
@@ -121,19 +128,22 @@ export default function TransferPending(props: TransferPendingProps) {
           onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
           renderDetail={dispatchActions => <TransferReceipt controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record}
             onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
-            renderDetail={receiptActions => record && <TransferDetail controller={props.controller} ownerTag={props.ownerTag} record={record}
-              onStock={receiveStock} stockRefresh={stockRefresh} actions={() => <>{actions}{dispatchActions}{receiptActions}</>} />} />} />} />
+            renderDetail={receiptActions => <TransferCancellation controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record}
+              onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
+              renderDetail={cancellationActions => record && <TransferDetail controller={props.controller} ownerTag={props.ownerTag} record={record}
+                onStock={receiveStock} stockRefresh={stockRefresh} actions={() => <>{actions}{dispatchActions}{receiptActions}{cancellationActions}</>} />} />} />} />} />
     </> : <>
       <div className="transfer-status-toolbar">
         <label htmlFor="transfer-status">Estado de transferencia</label>
         <select id="transfer-status" value={status} onChange={event => {
           const next = event.target.value;
-          if (current() && (next === 'pending' || next === 'approved' || next === 'rejected' || next === 'in_transit' || next === 'received')) transfers.changeQuery({ status: next });
+          if (current() && (next === 'pending' || next === 'approved' || next === 'rejected' || next === 'in_transit' || next === 'received' || next === 'cancelled')) transfers.changeQuery({ status: next });
         }}>{statusOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
       </div>
       <TransferDecision controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} />
       <TransferDispatch controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} />
       <TransferReceipt controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} />
+      <TransferCancellation controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} />
       {transfers.listBusy && <p role="status">Actualizando solicitudes {plural}…</p>}
       {listError && <div role="alert" className="message"><p>{status === 'pending' ? 'No se pudieron consultar las solicitudes.' : `No se pudieron consultar las solicitudes ${plural}.`}</p>
         <button type="button" onClick={() => { if (current()) transfers.retryList(); }}>Reintentar {plural}</button></div>}

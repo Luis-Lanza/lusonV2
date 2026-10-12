@@ -645,6 +645,55 @@ Manual user checklist (not executed):
 - Verify 403/404 privacy and logout/session replacement reveal no previous receipt
   quantities; a different authorized request remains operable.
 
+## C2 creator cancellation before dispatch — source candidate
+
+Only the original creator sees `Cancelar solicitud` on Pending or Approved,
+including branch-to-warehouse sends and warehouse-origin requests. Inventory
+consultation grants no authority. Review sends nothing; explicit confirmation
+POSTs only `{}` to `/api/transfers/{id}/cancel` with current memory CSRF,
+same-origin cookies and no-store. Busy confirmation blocks dismissal and duplicate
+submission, with the existing modal keyboard/focus mechanics and no visual redesign.
+Rejected, In-transit, Received and Cancelled have no cancellation action.
+
+`Cancelada` pages, detail and original creation replay retain immutable identity,
+creation time and exact quantities. Strict DTOs require creator-matching
+`cancellation_location_id` and canonical `cancelled_at`, never dispatch/receipt
+metadata. Duplicate JSON keys, including escaped-equivalent keys, are rejected
+using the existing lossless-json dependency. Complete original approval is optional: cancelled Pending has no fake
+approval history; cancelled Approved preserves it. Cancellation releases only its
+own Approved reservation; physical stock and independent holds remain unchanged.
+Cancelled contributes no workflow action or Pending total.
+
+`useInventory` owns live-memory `createTransferCancellationRecovery()` above panes.
+`useTransfers` exposes `cancel(original)`, `recoverCancellation()` and
+`retryCancellation()`, plus `cancellationAttempt` and sanitized `cancellationError`.
+Account/location, auth epoch, session generation and opaque flights fence data and
+completions. A 403/404 mask applies only to that request; unmasked uncertainty pins
+its original rather than silently replacing it. Reload/tab close loses recovery.
+
+Recovery is explicit: ordinary GET versus identical cancellation POST retry.
+Pending/Approved GET does not prove a sent POST failed; newly discovered approval
+is pinned for subsequent outcomes. Cancelled GET confirms current truth; Rejected,
+In-transit or Received is a conflict, never cancellation success. No render, pane
+navigation or event automatically resends POST. Approval/dispatch recovery also
+recognizes Cancelled as conflict, and cached approval cannot hide latest cancellation.
+Confirmed cancellation refreshes transfer/detail/count lanes; inventory/source
+lanes refresh only when preserved approval proves an Approved reservation release.
+
+Parent-owned behavioral RED was observed before implementation. Final functional
+GREEN, typecheck, isolated build and independent review remain pending. The source
+writer ran no commands. Original `dist` and the human runtime serving c8210ea are
+untouched; that runtime does not yet serve cancellation. No browser acceptance is
+claimed. After authorized deployment, the manual checklist remains:
+
+- Cancel Pending and Approved in all three flows from the creator; verify the other
+  participant cannot cancel and dispatched requests cannot be reversed.
+- Verify exact creation/optional approval/cancellation history, release-only stock
+  effects, terminal counts, Cancelada filtering and truthful original replay.
+- Lose a reply, navigate Inventory↔Transfers, explicitly GET and retry only the
+  identical cancellation; confirm no duplicate mutation or cross-session disclosure.
+- Check review without POST, one confirmation, busy guards, Escape and focus return.
+
 ## Worker checks
 
 From repository root:

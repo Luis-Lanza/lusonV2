@@ -81,6 +81,7 @@ describe('A06b persisted outcome and history', () => {
           expect(within(metrics).queryByLabelText('Baterías reservadas en esta solicitud')).not.toBeInTheDocument();
           expect(history).not.toHaveTextContent(/aprobada|rechazada|reservad/i);
         } else {
+          if (record.status !== 'approved' && record.status !== 'rejected') throw new Error('Expected persisted Approved or Rejected decision');
           expect(events[1]).toHaveTextContent(record.status === 'approved' ? 'Solicitud aprobada y stock reservado' : 'Solicitud rechazada');
           expect(events[1]).toHaveTextContent(`Ubicación: ${names[record.decision_location_id - 1]}`);
           expect(events[1].querySelector('time')).toHaveTextContent(record.decided_at);
