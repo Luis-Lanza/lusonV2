@@ -74,6 +74,8 @@ type Request struct {
 	ReceiptLocationID                      *int
 	ReceivedAt                             *time.Time
 	Receipt                                *Receipt
+	CancellationLocationID                 *int
+	CancelledAt                            *time.Time
 }
 type CreateResult struct {
 	Request  Request

@@ -64,7 +64,7 @@ func (s *Store) Approve(ctx context.Context, actor auth.Identity, id int64) (Req
 			return Request{}, fail(ctx)
 		}
 		return r, nil
-	case "rejected":
+	case "rejected", "cancelled":
 		return Request{}, ErrDecisionConflict
 	case "pending":
 		// Continue with all-item current availability validation.

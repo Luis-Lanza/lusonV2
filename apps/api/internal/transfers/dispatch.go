@@ -62,7 +62,7 @@ func (s *Store) Dispatch(ctx context.Context, actor auth.Identity, id int64) (Re
 		return r, nil
 	case "approved":
 		// The transition locks source inventory in sorted variant order.
-	case "pending", "rejected":
+	case "pending", "rejected", "cancelled":
 		return Request{}, ErrDecisionConflict
 	default:
 		return Request{}, ErrUnavailable

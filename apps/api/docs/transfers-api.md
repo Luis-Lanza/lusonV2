@@ -3,10 +3,11 @@
 Authenticated branches can create immutable Pending requests. Only physical
 origin and destination can read them; warehouse can read participating records
 but cannot create. Pending does **not** reserve or change stock. This read API
-also exposes persisted Approved/Rejected/In-transit/Received outcomes and guarded
-whole-request approval, rejection, origin-only dispatch and destination-only
-receipt. Cancellation, direct warehouse creation and discrepancy resolution are
-excluded. Receipt frontend integration and human smoke remain pending.
+also exposes persisted Approved/Rejected/In-transit/Received/Cancelled outcomes
+and guarded whole-request approval, rejection, origin-only dispatch,
+destination-only receipt and creator-only cancellation before dispatch.
+Direct warehouse creation and discrepancy resolution remain excluded.
+Cancellation UI and human acceptance remain separate delivery steps.
 
 ## Quick path
 
@@ -36,12 +37,13 @@ never registers transfers: those routes remain 404 for legacy callers.
 | `/api/transfers/{id}/reject` | POST | Full persisted Rejected outcome |
 | `/api/transfers/{id}/dispatch` | POST | Origin-only current persisted dispatch outcome |
 | `/api/transfers/{id}/receive` | POST | Destination-only current persisted receipt outcome |
+| `/api/transfers/{id}/cancel` | POST | Creator-only persisted Cancelled outcome before dispatch |
 
 Unsupported methods return 405 with exact `Allow: GET, POST` for the collection
 and `Allow: GET` for numeric detail and the exact static counts route. HEAD is
 not implicitly enabled; `/api/transfers/counts/` is not an alias.
 Text-only detail segments (including operation names), trailing-slash paths and
-unknown operation segments are 404 routes. Approval, rejection, dispatch and receipt are exact
+unknown operation segments are 404 routes. Approval, rejection, dispatch, receipt and cancellation are exact
 POST-only routes with `Allow: POST`; trailing/extra segments are not aliases. Digit-containing malformed detail segments
 (e.g. `0`, `01`, `-1`, `1.0`, overflowing int64) return 400 after authentication.
 Detail IDs must be canonical positive int64 decimal strings. Encoded path aliases
@@ -215,8 +217,52 @@ must explicitly handle uncertainty rather than silently replay mutations.
 Existing commit-only inventory and participant transfer invalidations are reused.
 Rollback, recovery reads and mutation-free retries emit no new mutation hints.
 Workflow action counters now include origin-owned Approved dispatches and
-destination-owned In-transit receipts. Cancellation and direct warehouse creation
-remain excluded.
+destination-owned In-transit receipts. Cancelled contributes no action;
+direct warehouse creation remains excluded.
+
+## Creator-only cancellation before dispatch
+
+`POST /api/transfers/{id}/cancel` requires the same strict empty JSON object,
+Content-Type, session, Origin/CSRF, optional FetchSite, canonical ID and no-query
+admission as decisions. No reason, retry key, actor, timestamp or item selection
+is accepted. Only the original creator may cancel Pending or Approved, including
+warehouse requests and branch proposals to warehouse. Visible noncreators get
+403; missing/nonparticipant records both get 404. Authorization precedes retries
+and lifecycle conflicts. Rejected, In-transit and Received return 409
+`decision_conflict`; cancellation cannot reverse dispatch or receipt.
+
+Success returns 200 with the complete immutable original record and `status`
+`cancelled`, plus exactly `cancellation_location_id` (integer original creator)
+and `cancelled_at` (server-derived canonical UTC RFC3339Nano). These keys are
+omitted for other statuses, never null. Cancellation time is not earlier than
+creation or original approval. Pending cancellation does not fabricate decision
+metadata. Approved cancellation preserves the original `decision_location_id`
+and `decided_at`. Neither carries dispatch or receipt metadata.
+
+Pending cancellation changes no inventory or allocation. Approved cancellation
+atomically decrements only this request's reservations at its physical origin;
+all physical `existing` stock, destination balances, unrelated allocations and
+independent holds survive. Allocation rows remain immutable history, marked
+`released_at` equal to `cancelled_at`, not deleted or marked `consumed_at`.
+Active ownership requires both markers absent. SQL header transitions own these
+effects and enforce complete ownership/coverage; partial writes or failed commits
+roll back metadata, reservations and release markers together.
+
+An identical creator retry returns the same persisted cancellation read-only,
+without checking current availability or emitting another hint. Participant GET,
+`status=cancelled` pages and identical original creation replay return that same
+current truth. Changed creation payload still conflicts. Authorized approve,
+reject and dispatch calls on Cancelled deliberately return `decision_conflict`,
+not a fabricated success or unavailable outcome. Recover a lost reply with an
+explicit participant GET or identical POST retry; a still-Pending/Approved GET
+alone does not prove that an uncertain POST failed. Do not silently replay.
+
+Commit-only hints reuse existing participant transfer invalidations (refetch
+selected-status detail/list and counts). Approved release also emits existing
+inventory hints; Pending emits none. Rollback, refused operations, GET and
+duplicate retries emit no mutation hints. Cancelled is terminal and absent from
+both Pending totals and required-action counts. Cancellation UI/recovery controls,
+manual acceptance and native review are not established by this backend contract.
 
 ## Destination-only finalized receipt
 
@@ -323,7 +369,7 @@ GET accepts only `page`, `page_size` and `status`, each at most once:
 |---|---|---|
 | `page` | 1 | Canonical ASCII decimal 1–1000000 |
 | `page_size` | 25 | Exact 10, 25, 50 |
-| `status` | pending | Exact `pending`, `approved`, `rejected`, `in_transit`, `received` |
+| `status` | pending | Exact `pending`, `approved`, `rejected`, `in_transit`, `received`, `cancelled` |
 
 Raw queries are bounded to 4096 bytes. Empty values/components, unknown fields,
 duplicates, encoding aliases and malformed encoding are rejected 400. Parameter
@@ -344,6 +390,8 @@ Only explicit snake_case DTOs are serialized:
 - Decided record only: `decision_location_id`, `decided_at`.
 - In-transit/Received record additionally: `dispatch_location_id`, `dispatched_at`.
 - Received record additionally: `receipt_location_id`, `received_at`, `receipt`.
+- Cancelled record additionally: `cancellation_location_id`, `cancelled_at`;
+  original decision fields only when cancellation followed approval.
 - Item: `variant_id`, `brand`, `model`, `capacity_ah`, `polarity`, `quantity`.
 - Page: `page`, `page_size`, `status`, `total_count`, `records`.
 
@@ -368,7 +416,7 @@ existing reads. Its exact response has only decimal-string counts:
 `pending_total` counts Pending requests whose physical origin or destination is
 the authenticated assigned location. `action_count` counts one header for:
 Pending at its **persisted approver**, Approved at its **physical origin**, or
-In-transit at its **physical destination**. Received/Rejected contribute no action.
+In-transit at its **physical destination**. Received/Rejected/Cancelled contribute no action.
 One request contributes once, regardless of item count/quantities or possible
 buttons. Warehouse assignment is legal. These are not unread events, item totals
 or page counts. `action_count` may exceed `pending_total`, including `0` Pending
@@ -424,6 +472,12 @@ all participant roles, full recovery/replay, direct SQL guards, immutable histor
 rollback/failed commit, deterministic identical/conflicting concurrency and
 commit-only/no-op events using the admitted fixture. `TestR1CountsReceiptSnapshot`
 checks a read-only aggregate interleaved with actual receipt finalization.
+
+`TestC01*` covers Pending/Approved cancellation across all three flows, original
+approval preservation, release-only stock effects, SQL history/ownership guards,
+strict HTTP authorization/framing, recovery/filter/replay/counts, deterministic
+duplicate and approve/dispatch races, rollback and commit-only events on the
+admitted isolated PostgreSQL fixture. These checks do not imply manual acceptance.
 
 See [the immutable store contract](pending-requests-store.md) for persistence,
 replay ordering, Pending stock policy and snapshot rationale.

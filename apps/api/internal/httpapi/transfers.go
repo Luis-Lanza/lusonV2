@@ -268,7 +268,7 @@ func transferQuery(raw string) (transfers.Query, error) {
 				err = transfers.ErrInvalid
 			}
 		case "status":
-			if value != "pending" && value != "approved" && value != "rejected" && value != "in_transit" && value != "received" {
+			if value != "pending" && value != "approved" && value != "rejected" && value != "in_transit" && value != "received" && value != "cancelled" {
 				err = transfers.ErrInvalid
 			}
 			q.Status = value
@@ -312,6 +312,8 @@ type transferDTO struct {
 	ReceiptLocationID       *int              `json:"receipt_location_id,omitempty"`
 	ReceivedAt              *string           `json:"received_at,omitempty"`
 	Receipt                 *receiptDTO       `json:"receipt,omitempty"`
+	CancellationLocationID  *int              `json:"cancellation_location_id,omitempty"`
+	CancelledAt             *string           `json:"cancelled_at,omitempty"`
 }
 
 // Outcomes must be complete persisted results, never fabricated Pending or
@@ -323,6 +325,18 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 		if r.DecisionLocationID != nil || r.DecidedAt != nil {
 			return transferDTO{}, transfers.ErrUnavailable
 		}
+	case "cancelled":
+		if (r.DecisionLocationID == nil) != (r.DecidedAt == nil) {
+			return transferDTO{}, transfers.ErrUnavailable
+		}
+		if r.DecidedAt != nil {
+			if *r.DecisionLocationID != r.Approver.ID || *r.DecisionLocationID < 1 || *r.DecisionLocationID > 3 ||
+				r.DecidedAt.IsZero() || r.DecidedAt.Before(r.CreatedAt) {
+				return transferDTO{}, transfers.ErrUnavailable
+			}
+			stamp := r.DecidedAt.UTC().Format(time.RFC3339Nano)
+			decidedAt = &stamp
+		}
 	case "approved", "rejected", "in_transit", "received":
 		if r.DecisionLocationID == nil || r.DecidedAt == nil ||
 			*r.DecisionLocationID < 1 || *r.DecisionLocationID > 3 ||
@@ -333,6 +347,18 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 		stamp := r.DecidedAt.UTC().Format(time.RFC3339Nano)
 		decidedAt = &stamp
 	default:
+		return transferDTO{}, transfers.ErrUnavailable
+	}
+	var cancelledAt *string
+	if r.Status == "cancelled" {
+		if r.CancellationLocationID == nil || *r.CancellationLocationID != r.Creator.ID ||
+			*r.CancellationLocationID < 1 || *r.CancellationLocationID > 3 || r.CancelledAt == nil || r.CancelledAt.IsZero() ||
+			r.CancelledAt.Before(r.CreatedAt) || (r.DecidedAt != nil && r.CancelledAt.Before(*r.DecidedAt)) {
+			return transferDTO{}, transfers.ErrUnavailable
+		}
+		stamp := r.CancelledAt.UTC().Format(time.RFC3339Nano)
+		cancelledAt = &stamp
+	} else if r.CancellationLocationID != nil || r.CancelledAt != nil {
 		return transferDTO{}, transfers.ErrUnavailable
 	}
 	var dispatchedAt *string
@@ -375,6 +401,8 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 		ReceiptLocationID:       r.ReceiptLocationID,
 		ReceivedAt:              receivedAt,
 		Receipt:                 receipt,
+		CancellationLocationID:  r.CancellationLocationID,
+		CancelledAt:             cancelledAt,
 	}, nil
 }
 
@@ -434,6 +462,7 @@ func (a *API) transferCounts(store *transfers.Store) http.HandlerFunc {
 }
 
 func (a *API) registerTransfers(mux *http.ServeMux, store *transfers.Store) {
+	mux.HandleFunc("/api/transfers/{id}/cancel", a.transferCancellation(store))
 	mux.HandleFunc("/api/transfers/{id}/receive", a.transferReceive(store))
 	mux.HandleFunc("/api/transfers/{id}/dispatch", a.transferDispatch(store))
 	mux.HandleFunc("/api/transfers/{id}/approve", a.transferDecision(store, true))

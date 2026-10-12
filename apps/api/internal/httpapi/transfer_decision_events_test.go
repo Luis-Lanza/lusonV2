@@ -63,7 +63,7 @@ func decisionLiveViews(t *testing.T, f *transferHTTPFixture, server *httptest.Se
 		} else {
 			expectTransferError(t, detail, 404, "not_found")
 		}
-		for _, selected := range []string{"pending", "approved", "rejected", "in_transit", "received"} {
+		for _, selected := range []string{"pending", "approved", "rejected", "in_transit", "received", "cancelled"} {
 			page := transferObject(t, decisionNetwork(t, f, server, f.newRequest(actor, "GET", "/api/transfers?status="+selected, "")), 200)
 			var rows []map[string]json.RawMessage
 			var total string
