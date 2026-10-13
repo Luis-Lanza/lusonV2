@@ -5,6 +5,7 @@ import { transferViewOwner } from './TransferPending';
 import { parseTransferRecord } from './transferModel';
 import type { DetailController } from './TransferDetail';
 import type { TransferAuthority } from './useInventory';
+import type { TransferCountCorrectionsProps } from './TransferCountCorrections';
 
 describe('W2 direct warehouse history', () => {
   it.each(['approved', 'in_transit', 'cancelled', 'received'])('retains creation authorization truthfully in %s history', status => {
@@ -79,6 +80,37 @@ function fixture(origin = 1, destination = 2, assigned = 1, override?: (url: str
 }
 async function loaded() { await waitFor(() => expect(screen.getByRole('button', { name: 'Actualizar stock de origen' })).toBeEnabled()); }
 afterEach(() => vi.unstubAllGlobals());
+
+describe('C4b optional detail correction composition', () => {
+  it('keeps legacy callers read-free and requires explicit matching selection and enablement', () => {
+    const f = fixture(1, 2, 2); const original = wire(1, 2, 'approved');
+    const record = parseTransferRecord(JSON.stringify({ ...original, status: 'received', dispatch_location_id: 1,
+      dispatched_at: '2028-01-03T00:00:00Z', receipt_location_id: 2, received_at: '2028-01-04T00:00:00Z',
+      receipt: { items: original.items.map(item => ({ variant_id: item.variant_id, expected_quantity: item.quantity,
+        actual_quantity: item.quantity, available_quantity: item.quantity })), exceptions: [] } }));
+    const corrections: TransferCountCorrectionsProps['corrections'] = { snapshot: null, busy: false, error: null,
+      masked: false, attempts: [], refresh: vi.fn(async () => {}), propose: vi.fn(async () => {}),
+      decide: vi.fn(async () => {}), retry: vi.fn(async () => {}), recover: vi.fn(async () => {}) };
+    const view = render(f.element(record));
+    const originalReceipt = screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML;
+    const element = (requestID?: string | null, enabled?: boolean) => <TransferDetail controller={f.controller}
+      ownerTag={transferViewOwner(f.env.current)!} record={record} corrections={corrections}
+      correctionRequestID={requestID} correctionsEnabled={enabled} />;
+    expect(screen.queryByRole('region', { name: 'Correcciones de conteo' })).not.toBeInTheDocument();
+    view.rerender(element());
+    expect(screen.queryByRole('region', { name: 'Correcciones de conteo' })).not.toBeInTheDocument();
+    view.rerender(element('2', true));
+    expect(screen.queryByRole('region', { name: 'Correcciones de conteo' })).not.toBeInTheDocument();
+    view.rerender(element(record.id, false));
+    expect(screen.queryByRole('region', { name: 'Correcciones de conteo' })).not.toBeInTheDocument();
+    view.rerender(element(record.id, true));
+    const section = screen.getByRole('region', { name: 'Correcciones de conteo' });
+    expect(section).toHaveClass('count-corrections');
+    expect(section.previousElementSibling?.querySelector('table')?.outerHTML).toBe(originalReceipt);
+    expect(screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML).toBe(originalReceipt);
+    expect(f.fetch).not.toHaveBeenCalled(); expect(corrections.propose).not.toHaveBeenCalled();
+  });
+});
 
 describe('A06b persisted outcome and history', () => {
   it.each(['pending', 'approved', 'rejected'])('renders only persisted %s events and request-owned whole quantities', async status => {

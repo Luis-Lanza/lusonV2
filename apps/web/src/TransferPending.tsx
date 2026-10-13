@@ -7,6 +7,7 @@ import TransferDecision from './TransferDecision';
 import TransferDispatch from './TransferDispatch';
 import TransferReceipt from './TransferReceipt';
 import TransferCancellation from './TransferCancellation';
+import { useTransferCountCorrections } from './useTransferCountCorrections';
 
 // No session or CSRF retained in routing state. Epoch changes invalidate this tag.
 export function transferViewOwner(authority: TransferAuthority): string | null {
@@ -62,17 +63,15 @@ export default function TransferPending(props: TransferPendingProps) {
     consumed.current = true;
     transfers.selectDetail(props.initialDetail.id);
   }, [permitted, props.ownerTag, props.initialDetail, transfers.selectDetail]);
-  // Fence private DTOs, error objects, IDs and totals before their getters are read.
-  if (!permitted) return <section className="transfer-pending"><p role="status">Verificando acceso a transferencias…</p></section>;
-  const page = transfers.page;
-  const selected = transfers.selectedID;
-  const decision = transfers.decision;
+  // Fence private DTOs and IDs before reading getters, while keeping hooks unconditional.
+  const selected = permitted ? transfers.selectedID : null;
+  const decision = permitted ? transfers.decision : null;
   // A confirmed POST/GET is immediately truthful even while the passive detail refresh is pending.
   const privateUnavailable = masked?.fence === fence && masked.id === selected;
-  const dispatchResult = transfers.dispatchAttempt?.result;
-  const detail = transfers.detail;
-  const receiptResult = transfers.receiptAttempt?.result;
-  const cancellation = transfers.cancellationAttempt;
+  const dispatchResult = permitted ? transfers.dispatchAttempt?.result : null;
+  const detail = permitted ? transfers.detail : null;
+  const receiptResult = permitted ? transfers.receiptAttempt?.result : null;
+  const cancellation = permitted ? transfers.cancellationAttempt : null;
   const cancellationResult = cancellation?.result;
   const record = privateUnavailable ? null : detail?.status === 'cancelled' ? detail
     : cancellationResult?.id === selected ? cancellationResult
@@ -80,6 +79,17 @@ export default function TransferPending(props: TransferPendingProps) {
         : detail?.status === 'received' ? detail
     : receiptResult?.id === selected ? receiptResult : dispatchResult?.id === selected ? dispatchResult
       : detail?.status === 'in_transit' ? detail : decision?.result?.id === selected ? decision.result : detail;
+  // Use the very same authoritative record as the detail, including a just-confirmed receipt.
+  const actor = authority.session?.authenticated ? authority.session.identity.location.id : null;
+  // Match TransferDetail's mount-bound fence: a retired private pane must not read history.
+  const correctionAuthority = useRef(fence);
+  const correctionsEnabled = permitted && !!fence && fence === correctionAuthority.current && !privateUnavailable && record?.status === 'received'
+    && record.id === selected && (actor === record.origin_location_id || actor === record.destination_location_id);
+  const correctionRequestID = correctionsEnabled ? record.id : null;
+  const corrections = useTransferCountCorrections({ controller: props.controller,
+    requestID: correctionRequestID, enabled: correctionsEnabled });
+  if (!permitted) return <section className="transfer-pending"><p role="status">Verificando acceso a transferencias…</p></section>;
+  const page = transfers.page;
   const unavailable = transfers.detailError;
   const listError = transfers.listError;
   const counts = transfers.counts;
@@ -132,6 +142,7 @@ export default function TransferPending(props: TransferPendingProps) {
             renderDetail={receiptActions => <TransferCancellation controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record}
               onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
               renderDetail={cancellationActions => record && <TransferDetail controller={props.controller} ownerTag={props.ownerTag} record={record}
+                corrections={corrections} correctionRequestID={correctionRequestID} correctionsEnabled={correctionsEnabled}
                 onStock={receiveStock} stockRefresh={stockRefresh} actions={() => <>{actions}{dispatchActions}{receiptActions}{cancellationActions}</>} />} />} />} />} />
     </> : <>
       <div className="transfer-status-toolbar">

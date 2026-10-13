@@ -64,13 +64,20 @@ below describe historical branch-only stages; this section supersedes their
 warehouse-disabled and two-slot restrictions. Runtime deployment and browser
 acceptance are separate, not established by frontend tests.
 
-## C4a standalone count corrections (integration pending)
+## C4b received-detail count corrections
 
-`TransferCountCorrections` consumes the immutable received `record`, authenticated
-`controller`, existing `useTransferCountCorrections` output as `corrections`, exact
-selected `requestID`, and optional `enabled` (default true). C4b must mount the hook
-above conditional detail panes and pass matching selection/enablement; this section
-is not mounted in the application yet.
+`TransferPending` now mounts `useTransferCountCorrections` unconditionally above
+conditional panes, with the stable controller seams and default API. Its history
+lane is enabled only for the same authoritative selected received record shown in
+`TransferDetail`, including a just-confirmed receipt before passive detail refresh.
+Unready/retired owners, other statuses, unavailable details and nonphysical
+participants cannot open that lane. Inventory consultation never changes authority.
+
+`TransferDetail` renders `TransferCountCorrections` in its own section beside the
+unchanged original receipt table. Legacy detail callers remain compatible: optional
+`corrections`, `correctionRequestID` and `correctionsEnabled` must explicitly match
+and enable the section. The root supplies all three; the standalone component's
+existing record/controller/corrections/requestID/enabled contract is unchanged.
 
 Physical endpoints review bigint quantities and exact reasons before explicit,
 revision-pinned proposal/decision submission. History and memory-only recovery stay
@@ -78,9 +85,18 @@ separate from original receipt evidence. Unexpected lines are audit-only, never
 stock incorporation. Explicit retries delegate the captured attempt to the hook;
 authority changes retire local forms and masked history stays hidden.
 
-Deterministic component checks do not establish full-reload recovery, browser
-layout acceptance, runtime deployment or human acceptance. C4b integration/build
-and separately authorized C4c browser/manual checks remain pending.
+Deterministic real-hook integration checks cover selection, physical authority,
+receipt-confirmation precedence, exact proposal/decision submission, history and
+inventory refresh, private masking, stable-wrapper drafts and uncertain exact retries
+across pane remounts. Original receipt/header/timestamps/credited totals stay separate
+from effective counts, including after application. Recovery remains controller-owned;
+no payload is reconstructed, rebased or automatically posted by this integration.
+
+Source integration/regression checks, typecheck and the isolated C4b production
+build pass. Build output is verification-only, not a deployed application.
+These checks do not establish full-reload recovery, browser layout acceptance,
+runtime deployment or human acceptance. Separately authorized C4c browser/manual
+checks remain pending regardless of test/build results.
 
 ## R04b2a source-stock invalidation seam
 
