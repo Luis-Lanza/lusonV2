@@ -401,3 +401,45 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .transfer-decision-modal > footer { padding: 16px; flex-wrap: wrap; }
   .transfer-decision-modal > footer button { flex: 1 1 160px; }
 }
+
+/* Count corrections deliberately do not inherit the warehouse receipt table. */
+.count-corrections { display: grid; gap: 18px; min-width: 0; color: #242124; }
+.count-corrections h2 { font-size: 22px; }
+.count-corrections h3, .count-corrections h4 { margin: 0; font-size: 17px; }
+.count-corrections h5 { margin: 0; font-size: 15px; }
+.count-card, .count-form, .count-recovery { display: grid; gap: 12px; padding: 20px; border: 1px solid var(--border); border-radius: 6px; background: white; min-width: 0; overflow-wrap: anywhere; }
+.count-recovery { background: var(--page); border-left: 4px solid var(--wine); }
+.count-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.count-metrics dt { color: var(--muted); font-size: 13px; }
+.count-metrics dd { margin: 4px 0 0; font-weight: 600; }
+.count-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.count-actions button, .count-recovery > button, .count-modal button { height: auto; min-height: 44px; padding: 10px 16px; border: 1px solid var(--wine); border-radius: 4px; color: var(--wine); background: white; }
+.count-corrections button:disabled { cursor: not-allowed; color: #595459; border-color: #aaa5aa; background: #efedef; }
+.count-corrections button:focus-visible, .count-corrections input:focus-visible, .count-corrections textarea:focus-visible { outline: 2px solid var(--wine); outline-offset: 3px; }
+.count-history { display: grid; gap: 12px; margin: 0; padding-left: 24px; }
+.count-history li { padding: 12px; background: var(--page); border-radius: 4px; }
+.count-history p + p { margin-top: 6px; }
+.count-evidence { white-space: pre-wrap; overflow-wrap: anywhere; }
+.count-form label { font-weight: 600; }
+.count-form input, .count-form textarea { width: 100%; max-width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--border); border-radius: 4px; font: inherit; color: inherit; background: white; }
+.count-form textarea { min-height: 100px; resize: vertical; }
+.count-backdrop { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgb(36 33 36 / 45%); }
+.count-modal { display: flex; flex-direction: column; width: min(720px, 100%); max-height: 92dvh; min-width: 0; border: 1px solid var(--border); border-radius: 6px; background: white; box-shadow: 0 16px 48px rgb(0 0 0 / 20%); overflow: hidden; }
+.count-modal:focus { outline: 2px solid var(--wine); outline-offset: 2px; }
+.count-modal > h3 { padding: 24px; border-bottom: 1px solid var(--border); }
+.count-modal-body { display: grid; gap: 14px; padding: 24px; min-height: 0; overflow-y: auto; overflow-wrap: anywhere; }
+.count-modal footer { display: flex; justify-content: flex-end; gap: 12px; padding: 20px 24px; border-top: 1px solid var(--border); }
+.count-modal footer button:last-child { color: white; background: var(--wine); }
+.count-modal footer button:last-child:disabled { color: #595459; background: #efedef; }
+@media (max-width: 767px) {
+  .count-corrections { gap: 14px; }
+  .count-card, .count-form, .count-recovery { padding: 16px; }
+  .count-metrics { grid-template-columns: minmax(0, 1fr); }
+  .count-actions { display: grid; }
+  .count-actions button, .count-recovery > button { width: 100%; }
+  .count-backdrop { padding: 12px; }
+  .count-modal { max-height: 94dvh; }
+  .count-modal > h3, .count-modal-body, .count-modal footer { padding: 16px; }
+  .count-modal footer { flex-wrap: wrap; }
+  .count-modal footer button { flex: 1 1 160px; }
+}

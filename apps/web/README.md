@@ -64,6 +64,24 @@ below describe historical branch-only stages; this section supersedes their
 warehouse-disabled and two-slot restrictions. Runtime deployment and browser
 acceptance are separate, not established by frontend tests.
 
+## C4a standalone count corrections (integration pending)
+
+`TransferCountCorrections` consumes the immutable received `record`, authenticated
+`controller`, existing `useTransferCountCorrections` output as `corrections`, exact
+selected `requestID`, and optional `enabled` (default true). C4b must mount the hook
+above conditional detail panes and pass matching selection/enablement; this section
+is not mounted in the application yet.
+
+Physical endpoints review bigint quantities and exact reasons before explicit,
+revision-pinned proposal/decision submission. History and memory-only recovery stay
+separate from original receipt evidence. Unexpected lines are audit-only, never
+stock incorporation. Explicit retries delegate the captured attempt to the hook;
+authority changes retire local forms and masked history stays hidden.
+
+Deterministic component checks do not establish full-reload recovery, browser
+layout acceptance, runtime deployment or human acceptance. C4b integration/build
+and separately authorized C4c browser/manual checks remain pending.
+
 ## R04b2a source-stock invalidation seam
 
 `useInventory` exposes stable `subscribeSourceInventoryInvalidation(listener): unsubscribe`
