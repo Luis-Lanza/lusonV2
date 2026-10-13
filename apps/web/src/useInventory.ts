@@ -10,6 +10,8 @@ import { createTransferDispatchRecovery, type TransferDispatchRecovery } from '.
 import { createTransferCancellationRecovery, type TransferCancellationRecovery } from './transferCancellationRecovery';
 import { createTransferCountCorrectionRecovery, type TransferCountCorrectionRecovery } from './transferCountCorrectionRecovery';
 import type { CountOperation } from './transferCountCorrectionModel';
+import { createTransferRestitutionRecovery, type TransferRestitutionRecovery } from './transferRestitutionRecovery';
+import type { RestitutionOperation } from './transferRestitutionModel';
 
 class HTTPError extends Error {
   constructor(public status: number) { super('HTTP request failed'); }
@@ -51,6 +53,8 @@ export interface TransferController {
   dispatchRecovery?: TransferDispatchRecovery;
   receiptRecovery?: TransferReceiptRecovery;
   cancellationRecovery?: TransferCancellationRecovery;
+  restitutionRecovery?: TransferRestitutionRecovery;
+  confirmTransferRestitution?: (owner: DecisionOwner, operation: RestitutionOperation) => void;
   countCorrectionRecovery?: TransferCountCorrectionRecovery;
   confirmTransferCountCorrection?: (owner: DecisionOwner, operation: CountOperation) => void;
   confirmTransferCreation?: (owner: DecisionOwner, record: TransferRecord) => void;
@@ -72,6 +76,7 @@ export function useInventory() {
   const [receiptRecovery] = useState(createTransferReceiptRecovery);
   const [cancellationRecovery] = useState(createTransferCancellationRecovery);
   const [countCorrectionRecovery] = useState(createTransferCountCorrectionRecovery);
+  const [restitutionRecovery] = useState(createTransferRestitutionRecovery);
   const [session, setSession] = useState<Session | null>(null);
   const [metadata, setMetadata] = useState<Metadata | null>(null);
   const [data, setData] = useState<Inventory | null>(null);
@@ -108,9 +113,13 @@ export function useInventory() {
     if (sessionFence.current.fingerprint !== fingerprint) {
       sessionFence.current = { fingerprint, generation: sessionFence.current.generation + 1 };
     }
-    return { epoch: authGeneration.current, session, sessionGeneration: sessionFence.current.generation,
+    const authority = { epoch: authGeneration.current, session, sessionGeneration: sessionFence.current.generation,
       ready: mounted.current && !mutation.current && !authorityState.current.authBusy && !!session?.authenticated };
-  }, []);
+    restitutionRecovery.synchronize(decisionOwner(authority));
+    return authority;
+  }, [restitutionRecovery]);
+  // Controller memory survives pane remounts, but never authority retirement.
+  getTransferAuthority();
   const subscribeTransferInvalidation = useCallback((listener: () => void) => {
     const entry = { epoch: authGeneration.current, listener };
     transferListeners.current.add(entry);
@@ -168,6 +177,7 @@ export function useInventory() {
     neutralProbe.current?.cancel(); neutralProbe.current = null;
     cancelReads(); setMetadata(null); setData(null); setResultsError(''); setRealtimeError(''); setLoading(false);
     csrf.current = ''; authorityState.current.session = null; setSession(null);
+    restitutionRecovery.synchronize(null);
   }
   function current(auth: number, read?: number) {
     return mounted.current && authGeneration.current === auth && (read === undefined || readGeneration.current === read);
@@ -321,6 +331,12 @@ export function useInventory() {
   const countCorrectionEffects = useRef<(owner: DecisionOwner, operation: CountOperation) => void>(() => {});
   countCorrectionEffects.current = (owner, operation) => {
     if (!decisionIsCurrent(owner) || operation.actor_location_id !== owner.location) return;
+    // Detached panes can retain pins: retire this request before any fanout,
+    // including proposals, rejections and zero-delta acceptances.
+    restitutionRecovery.invalidate(owner, operation.request_id, 'restitution');
+    if (!decisionIsCurrent(owner)) return;
+    restitutionRecovery.invalidate(owner, operation.request_id, 'count');
+    if (!decisionIsCurrent(owner)) return;
     notifyTransfers(owner.epoch, owner);
     if (operation.action === 'accept' && decisionIsCurrent(owner)) {
       invalidate(false);
@@ -328,6 +344,18 @@ export function useInventory() {
     }
   };
   const confirmTransferCountCorrection = useCallback((owner: DecisionOwner, operation: CountOperation) => countCorrectionEffects.current(owner, operation), []);
+  const restitutionEffects = useRef<(owner: DecisionOwner, operation: RestitutionOperation) => void>(() => {});
+  restitutionEffects.current = (owner, operation) => {
+    if (!decisionIsCurrent(owner) || operation.actor_location_id !== owner.location) return;
+    notifyTransfers(owner.epoch, owner);
+    // Destination confirms, origin is credited. These are read invalidations,
+    // independent of the currently selected inventory location.
+    if (operation.action === 'accept' && decisionIsCurrent(owner)) {
+      invalidate(false);
+      if (decisionIsCurrent(owner)) notifySourceInventory(owner.epoch, owner);
+    }
+  };
+  const confirmTransferRestitution = useCallback((owner: DecisionOwner, operation: RestitutionOperation) => restitutionEffects.current(owner, operation), []);
   const realtimeEpoch = authGeneration.current;
   const stopRealtime = useRealtime({ enabled: !!session?.authenticated && !authBusy, epoch: realtimeEpoch,
     resync: () => { invalidate(true); notifyTransfers(realtimeEpoch); notifySourceInventory(realtimeEpoch); },
@@ -338,6 +366,7 @@ export function useInventory() {
     mounted.current = true; void restore();
     return () => {
       mounted.current = false; stopRealtime(); authGeneration.current++; cancelReads(); csrf.current = '';
+      restitutionRecovery.synchronize(null);
       transferListeners.current.clear(); sourceInventoryListeners.current.clear();
       neutralProbe.current?.cancel(); neutralProbe.current = null;
       const gate = bootstrap.current;
@@ -455,7 +484,7 @@ export function useInventory() {
   return { session, metadata, data, query, loading, authBusy, formError, resultsError: resultsError || realtimeError, focusLogin,
     login, logout, change, retrySession: () => restore(), retryInventory: () => change({}, true),
     confirmTransferCreation, decisionRecovery, confirmTransferDecision, dispatchRecovery, receiptRecovery, confirmTransferReceipt, cancellationRecovery, confirmTransferCancellation,
-    countCorrectionRecovery, confirmTransferCountCorrection,
+    countCorrectionRecovery, confirmTransferCountCorrection, restitutionRecovery, confirmTransferRestitution,
     confirmTransferDispatch: useCallback((owner: DecisionOwner) => decisionEffects.current(owner, 'in_transit'), []),
     authorityEpoch: authGeneration.current, getTransferAuthority, subscribeTransferInvalidation, subscribeSourceInventoryInvalidation, settleUnauthorized };
 }
