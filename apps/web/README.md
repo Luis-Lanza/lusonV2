@@ -98,6 +98,49 @@ These checks do not establish full-reload recovery, browser layout acceptance,
 runtime deployment or human acceptance. Separately authorized C4c browser/manual
 checks remain pending regardless of test/build results.
 
+## R6a received-transfer restitution
+
+On an eligible **Received** transfer, the separate “Restituciones de origen” detail
+section shows original dispatch and receipt facts alongside the effective destination
+credit and any applied origin restitution. It does not rewrite the original receipt,
+change reservations, or merge restitution events into C4 count-correction history.
+
+1. **Consult before proposing or accepting.** Open the Received detail and explicitly
+   consult restitution evidence. Passive initial reads and refresh notifications do
+   not grant fresh write consent. A pending count agreement or stale/missing evidence
+   blocks a new proposal or acceptance; rejection follows its separate count-free
+   eligibility rules.
+2. **Origin proposes retained stock.** Only the physical origin account may propose
+   a positive canonical quantity and reason, and must explicitly attest that those
+   units remain physically at origin. The quantity is never inferred or prefilled
+   from a destination shortage. Review is read-only until the explicit confirmation.
+3. **Exact destination decides.** Only the physical destination account may accept
+   or reject the current exact proposal, with a separate decision reason. A decision
+   does not submit quantity or retention attestation. Proposal and rejection move no
+   stock; acceptance credits existing stock at origin once and leaves destination
+   stock and reservations unchanged.
+4. **Inspect separate immutable evidence.** Proposal, decision and application
+   history remain separate from the original dispatch/receipt. A successful
+   application, even a partial one, closes the one-application policy for that
+   transfer variant. Shortage or remaining conservation capacity is not proof of
+   physical retention.
+
+The UI is limited to the matching Received detail and authorized physical endpoint;
+there is no administrator or third-party approval action. Recovery is controller-
+owned: consult an uncertain result explicitly and retry only the captured exact
+operation. Authority, selection or evidence changes retire local drafts/reviews;
+masked evidence remains hidden. Confirmed events refresh transfer readers, while
+acceptance additionally refreshes origin inventory/source readers. No optimistic
+stock mutation occurs in the browser.
+
+Focused component/controller tests and typecheck pass for this source candidate.
+They do not establish browser layout/accessibility, deployed runtime behavior,
+backend/live-stock acceptance or human operational acceptance. Manual acceptance
+and runtime rollout remain separate and require their own authorization. The
+original workflow `action_count` descriptions above refer to approval, dispatch and
+receipt; restitution is a separate Received-detail workflow and does not rewrite
+those original actions.
+
 ## R04b2a source-stock invalidation seam
 
 `useInventory` exposes stable `subscribeSourceInventoryInvalidation(listener): unsubscribe`
