@@ -1,5 +1,10 @@
 import { parse as parseJSON } from 'lossless-json';
 import {
+  matchesRestitutionOperation, normalizeRestitutionDecision, normalizeRestitutionProposal, parseRestitutionError,
+  parseRestitutionOperation, parseRestitutions, restitutionActorLocation, restitutionsPath,
+  type RestitutionAction, type RestitutionDecisionInput, type RestitutionOperation, type RestitutionProposalInput, type Restitutions,
+} from './transferRestitutionModel';
+import {
   canonicalTransferReceiptInput, matchesReceiptInput, canonicalTransferInput, parseTransferCounts, parseTransferPage, parseTransferRecord, transferDetailPath, transferListPath,
   type TransferReceiptInput, type TransferCounts, type TransferCreateInput, type TransferPage, type TransferQuery, type TransferRecord,
 } from './transferModel';
@@ -12,6 +17,10 @@ import {
 export type TransferErrorCode = 'invalid_request' | 'unauthenticated' | 'forbidden' | 'not_found' | 'method_not_allowed' | 'insufficient_stock' | 'retry_conflict' | 'decision_conflict' | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
 export class TransferAPIError extends Error {
   constructor(public readonly code: TransferErrorCode, public readonly status: number | null, public readonly uncertainCreation = false, public readonly uncertainDecision = false, public readonly uncertainDispatch = false, public readonly uncertainReceipt = false, public readonly uncertainCancellation = false, public readonly uncertainCorrection = false) { super(code); this.name = 'TransferAPIError'; }
+}
+export class RestitutionAPIError extends Error {
+  constructor(public readonly code: TransferErrorCode, public readonly status: number | null,
+    public readonly uncertainRestitution = false) { super(code); this.name = 'RestitutionAPIError'; }
 }
 export interface TransferReadOptions { signal?: AbortSignal; passive?: boolean }
 export interface TransferCreateResult { record: TransferRecord; replayed: boolean }
@@ -83,7 +92,71 @@ export function createTransferAPI(fetch: typeof globalThis.fetch = globalThis.fe
       return op;
     }, reply.status, false, false, false, false, false, true);
   }
+  function restitutionLocal<T>(build: () => T): T {
+    try { return build(); } catch { throw new RestitutionAPIError('invalid_request', null); }
+  }
+  async function restitutionRequest<T>(path: string, init: RequestInit, parse: (body: string) => T): Promise<T> {
+    const writing = init.method === 'POST';
+    let reply: Response;
+    let bytes: ArrayBuffer;
+    try {
+      reply = await fetch(path, init);
+      bytes = await reply.arrayBuffer();
+    } catch (error) {
+      const aborted = init.signal?.aborted || (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError');
+      throw new RestitutionAPIError(aborted ? 'aborted' : 'network', null, writing);
+    }
+    const malformed = () => new RestitutionAPIError('invalid_response', reply.status, writing);
+    let body: string;
+    // Decode strictly before admitting any JSON evidence or server error envelope.
+    try { body = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { throw malformed(); }
+    if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(reply.headers.get('Content-Type') ?? '')) throw malformed();
+    if (reply.status !== 200) {
+      let code: string;
+      try { code = parseRestitutionError(body); } catch { throw malformed(); }
+      const admitted = reply.status === 409 ? ['retry_conflict', 'decision_conflict', 'insufficient_stock'] : serverCodes[reply.status];
+      if (!admitted?.includes(code as TransferErrorCode)) throw malformed();
+      throw new RestitutionAPIError(code as TransferErrorCode, reply.status, writing && reply.status === 503);
+    }
+    try { return parse(body); } catch { throw malformed(); }
+  }
+  async function writeRestitution(id: string, actorLocation: number, selectedAction: RestitutionAction,
+    input: RestitutionProposalInput | RestitutionDecisionInput, csrf: string, signal?: AbortSignal): Promise<RestitutionOperation> {
+    const captured = restitutionLocal(() => {
+      if (typeof csrf !== 'string' || !/^[A-Za-z0-9_-]+$/.test(csrf)
+        || !['propose', 'accept', 'reject'].includes(selectedAction)) throw new Error();
+      const path = restitutionsPath(id);
+      const actor = restitutionActorLocation(actorLocation);
+      const payload = selectedAction === 'propose' ? normalizeRestitutionProposal(input as RestitutionProposalInput) : normalizeRestitutionDecision(input);
+      return Object.freeze({ path, requestID: BigInt(id), actor, action: selectedAction, payload });
+    });
+    const body = JSON.stringify(captured.payload, (_key, value: unknown) => typeof value === 'bigint' ? value.toString() : value);
+    return restitutionRequest(captured.path + '/' + captured.action, {
+      method: 'POST', credentials: 'same-origin', cache: 'no-store', signal,
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body,
+    }, raw => {
+      const op = parseRestitutionOperation(raw);
+      if (!matchesRestitutionOperation(op, captured.requestID, captured.actor, captured.action, captured.payload)) throw new Error();
+      return op;
+    });
+  }
   return {
+    async restitutions(id: string, options: TransferReadOptions = {}): Promise<Restitutions> {
+      const path = restitutionLocal(() => restitutionsPath(id));
+      const requestID = BigInt(id);
+      return restitutionRequest(path, readInit(options), raw => {
+        const snapshot = parseRestitutions(raw);
+        if (snapshot.request_id !== requestID) throw new Error();
+        return snapshot;
+      });
+    },
+    proposeRestitution(id: string, actorLocation: number, input: RestitutionProposalInput, csrf: string, signal?: AbortSignal): Promise<RestitutionOperation> {
+      return writeRestitution(id, actorLocation, 'propose', input, csrf, signal);
+    },
+    async decideRestitution(id: string, actorLocation: number, action: 'accept' | 'reject', input: RestitutionDecisionInput, csrf: string, signal?: AbortSignal): Promise<RestitutionOperation> {
+      restitutionLocal(() => { if (action !== 'accept' && action !== 'reject') throw new Error(); });
+      return writeRestitution(id, actorLocation, action, input, csrf, signal);
+    },
     async countCorrections(id: string, options: TransferReadOptions = {}): Promise<CountCorrections> {
       const path = local(() => countCorrectionsPath(id));
       const requestID = BigInt(id);
