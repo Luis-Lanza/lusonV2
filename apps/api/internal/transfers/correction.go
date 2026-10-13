@@ -180,7 +180,7 @@ func countError(ctx context.Context, err error) error {
 		switch p.Message {
 		case "Correction requires persisted receipt membership", "Corrected count must be nonnegative", "Invalid correction action":
 			return ErrInvalid
-		case "Stale correction revision", "Decision revision is terminal or payload invalid", "Correction predecessor changed":
+		case "Stale correction revision", "Decision revision is terminal or payload invalid", "Correction predecessor changed", "Correction exceeds debit after restitution":
 			return ErrDecisionConflict
 		case "Correction requires covered nonoverflowing destination stock":
 			return ErrInsufficientStock
