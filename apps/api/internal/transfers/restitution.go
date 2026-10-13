@@ -212,6 +212,36 @@ func restitutionError(ctx context.Context, err error) error {
 	return fail(ctx)
 }
 
+// CheckRestitutionAccess is an HTTP privacy fence before payload decoding, not
+// mutation authorization or freshness/replay authority. Both participants may
+// pass; SQL rechecks action-specific roles and state under its advisory lock.
+// Only the header is read, independently of private history decoding.
+func (s *Store) CheckRestitutionAccess(ctx context.Context, actor auth.Identity, id int64) error {
+	if ctx == nil || s == nil || s.pool == nil {
+		return ErrUnavailable
+	}
+	if !assigned(actor) {
+		return ErrForbidden
+	}
+	if id < 1 {
+		return ErrNotFound
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	var status string
+	err := s.pool.QueryRow(ctx, `SELECT status FROM transfer_requests WHERE id=$1 AND $2 IN(origin_location_id,destination_location_id)`, id, actor.Location.ID).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return fail(ctx)
+	}
+	if status != "received" {
+		return ErrDecisionConflict
+	}
+	return nil
+}
+
 func (s *Store) GetRestitutions(ctx context.Context, actor auth.Identity, id int64) (Restitutions, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return Restitutions{}, ErrReadUnavailable
