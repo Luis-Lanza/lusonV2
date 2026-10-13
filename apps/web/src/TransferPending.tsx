@@ -143,6 +143,7 @@ export default function TransferPending(props: TransferPendingProps) {
               onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
               renderDetail={cancellationActions => record && <TransferDetail controller={props.controller} ownerTag={props.ownerTag} record={record}
                 corrections={corrections} correctionRequestID={correctionRequestID} correctionsEnabled={correctionsEnabled}
+                restitutionRequestID={correctionRequestID} restitutionsEnabled={correctionsEnabled}
                 onStock={receiveStock} stockRefresh={stockRefresh} actions={() => <>{actions}{dispatchActions}{receiptActions}{cancellationActions}</>} />} />} />} />} />
     </> : <>
       <div className="transfer-status-toolbar">

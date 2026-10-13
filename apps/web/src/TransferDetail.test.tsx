@@ -6,6 +6,7 @@ import { parseTransferRecord } from './transferModel';
 import type { DetailController } from './TransferDetail';
 import type { TransferAuthority } from './useInventory';
 import type { TransferCountCorrectionsProps } from './TransferCountCorrections';
+import { createTransferRestitutionRecovery } from './transferRestitutionRecovery';
 
 describe('W2 direct warehouse history', () => {
   it.each(['approved', 'in_transit', 'cancelled', 'received'])('retains creation authorization truthfully in %s history', status => {
@@ -80,6 +81,26 @@ function fixture(origin = 1, destination = 2, assigned = 1, override?: (url: str
 }
 async function loaded() { await waitFor(() => expect(screen.getByRole('button', { name: 'Actualizar stock de origen' })).toBeEnabled()); }
 afterEach(() => vi.unstubAllGlobals());
+
+describe('R6a optional detail restitution composition', () => {
+  it('requires controller-owned recovery and explicit matching received selection without changing the receipt', async () => {
+    const f = fixture(1, 2, 2); const original = wire(1, 2, 'approved');
+    const record = parseTransferRecord(JSON.stringify({ ...original, status: 'received', dispatch_location_id: 1,
+      dispatched_at: '2028-01-03T00:00:00Z', receipt_location_id: 2, received_at: '2028-01-04T00:00:00Z',
+      receipt: { items: original.items.map(i => ({ variant_id: i.variant_id, expected_quantity: i.quantity, actual_quantity: i.quantity, available_quantity: i.quantity })), exceptions: [] } }));
+    const element = (requestID = record.id, enabled = true) => <TransferDetail controller={f.controller} ownerTag={transferViewOwner(f.env.current)!}
+      record={record} restitutionRequestID={requestID} restitutionsEnabled={enabled} />;
+    const view = render(element()); const receipt = screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML;
+    expect(screen.queryByRole('region', { name: 'Restituciones de origen' })).not.toBeInTheDocument(); expect(f.fetch).not.toHaveBeenCalled();
+    f.controller.restitutionRecovery = createTransferRestitutionRecovery();
+    view.rerender(element('2')); expect(f.fetch).not.toHaveBeenCalled();
+    view.rerender(element(record.id, false)); expect(f.fetch).not.toHaveBeenCalled();
+    view.rerender(element()); expect(screen.getByRole('region', { name: 'Restituciones de origen' })).toBeVisible();
+    await waitFor(() => expect(f.fetch).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML).toBe(receipt);
+    expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+  });
+});
 
 describe('C4b optional detail correction composition', () => {
   it('keeps legacy callers read-free and requires explicit matching selection and enablement', () => {

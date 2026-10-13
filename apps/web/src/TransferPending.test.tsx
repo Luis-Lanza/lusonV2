@@ -11,6 +11,7 @@ import { createTransferCountCorrectionRecovery } from './transferCountCorrection
 import type { CountDecisionInput, CountProposalInput } from './transferCountCorrectionModel';
 import App from './App';
 import { createTransferReceiptRecovery } from './transferReceiptRecovery';
+import { createTransferRestitutionRecovery } from './transferRestitutionRecovery';
 
 const locations = ['Almacén', 'Sucursal A', 'Sucursal B'];
 function authority(id = 2, epoch = 1, token = 'a'.repeat(43)): TransferAuthority {
@@ -136,6 +137,29 @@ function pendingHistory(record = receivedWire()) {
       recorded_at: correctionStamp, state: 'pending', decision: null, application: null }] : [] })) };
 }
 
+describe('R6a received detail restitution composition', () => {
+  it('mounts one controller-owned restitution lane after C4 and preserves original receipt through Back', async () => {
+    const record = receivedWire();
+    const f = correctionFixture(2, url => url.endsWith('/restitutions') ? Promise.resolve(reply({ request_id: record.id, operations: [],
+      lines: record.receipt.items.map(i => ({ variant_id: i.variant_id, expected_quantity: i.expected_quantity, original_credit: i.available_quantity,
+        workflow_revision: '0', applied_revision: '0', count_generation: '0', count_applied_revision: '0', effective_credit: i.available_quantity,
+        applied_retained_quantity: '0', proposals: [] })) })) : undefined, record);
+    f.controller.restitutionRecovery = createTransferRestitutionRecovery();
+    f.controller.confirmTransferRestitution = vi.fn();
+    render(f.element()); await screen.findByText('Crédito efectivo en destino');
+    const original = screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML;
+    const section = screen.getByRole('region', { name: 'Restituciones de origen' });
+    expect(section.previousElementSibling).toBe(screen.getByRole('region', { name: 'Correcciones de conteo' }));
+    expect(f.fetch.mock.calls.filter(([url]) => String(url).endsWith('/restitutions'))).toHaveLength(1);
+    fireEvent.click(within(section).getByRole('button', { name: 'Consultar para revisar restitución' }));
+    await waitFor(() => expect(f.fetch.mock.calls.filter(([url]) => String(url).endsWith('/restitutions'))).toHaveLength(2));
+    expect(screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML).toBe(original);
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    expect(screen.queryByRole('region', { name: 'Restituciones de origen' })).not.toBeInTheDocument();
+    expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+  });
+});
+
 describe('C4b received detail real-hook integration', () => {
   it('opens exactly the selected correction lane beside unchanged original receipt evidence', async () => {
     const record = receivedWire();
@@ -222,7 +246,8 @@ describe('C4b App correction settlement with real inventory controller', () => {
     expect(f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?'))).toHaveLength(inventoryBefore + (action === 'accept' ? 1 : 0));
     const inventoryLast = f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?')).at(-1)!;
     expect(String(inventoryLast[0])).toContain('location_id=3');
-    expect(correctionCalls(f).filter(([, init]) => init?.method === 'GET')).toHaveLength(2);
+    // C4 and the restitution hook independently consult count evidence initially and after settlement.
+    expect(correctionCalls(f).filter(([, init]) => init?.method === 'GET')).toHaveLength(4);
   });
 });
 

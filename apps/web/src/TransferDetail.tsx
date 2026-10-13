@@ -5,6 +5,7 @@ import { transferQuantityTotal, type TransferRecord } from './transferModel';
 import { transferViewOwner } from './TransferPending';
 import { ReceiptTable } from './TransferReceipt';
 import TransferCountCorrections, { type TransferCountCorrectionsProps } from './TransferCountCorrections';
+import TransferRestitutions from './TransferRestitutions';
 
 export type DetailController = TransferController & Partial<SourceInventoryController>;
 export interface StockAdvice { catalog: SourceCatalog | null; busy: boolean; unavailable: boolean }
@@ -18,6 +19,8 @@ export interface TransferDetailProps {
   corrections?: TransferCountCorrectionsProps['corrections'];
   correctionRequestID?: string | null;
   correctionsEnabled?: boolean;
+  restitutionRequestID?: string | null;
+  restitutionsEnabled?: boolean;
 }
 
 // Local render/handler fence only. Nothing here becomes a decision/retry identity.
@@ -134,6 +137,8 @@ export default function TransferDetail(props: TransferDetailProps) {
       {record.status === 'received' && <ReceiptTable receipt={record.receipt} record={record} />}
       {props.corrections && <TransferCountCorrections record={record} controller={controller}
         corrections={props.corrections} requestID={props.correctionRequestID ?? null} enabled={props.correctionsEnabled ?? false} />}
+      <TransferRestitutions controller={controller} record={record} requestID={props.restitutionRequestID ?? null}
+        enabled={props.restitutionsEnabled ?? false} />
       {!terminal && <div className="transfer-advisory"><p>Stock de origen orientativo, no es una garantía de disponibilidad. El servidor revalida toda la solicitud al aprobar.</p>
         {stock.unavailable && <p role="alert">No se pudo consultar el stock de origen. La solicitud completa sigue disponible para revisión.</p>}
         <button type="button" disabled={stock.busy} onClick={() => { if (current()) refresh.current(); }}>Actualizar stock de origen</button>

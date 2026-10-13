@@ -402,6 +402,32 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .transfer-decision-modal > footer button { flex: 1 1 160px; }
 }
 
+/* Restitution surfaces are independent of receipt and C4 styling. */
+.transfer-restitutions { display: grid; gap: 16px; min-width: 0; }
+.transfer-restitutions h3, .transfer-restitutions h4 { margin: 0; }
+.transfer-restitutions .restitution-card, .transfer-restitutions .restitution-form { display: grid; gap: 12px; padding: 20px; border: 1px solid var(--border); border-radius: 6px; background: white; overflow-wrap: anywhere; }
+.transfer-restitutions dl { margin: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.transfer-restitutions dd { margin: 0; font-weight: 600; }
+.transfer-restitutions ol, .transfer-restitutions li, .transfer-restitutions li section { display: grid; gap: 12px; }
+.transfer-restitutions ol { padding-left: 24px; }
+.transfer-restitutions li section { padding: 12px; background: var(--page); border-radius: 4px; }
+.transfer-restitutions .restitution-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.transfer-restitutions button { min-height: 44px; }
+.transfer-restitutions .restitution-evidence { white-space: pre-wrap; overflow-wrap: anywhere; }
+.transfer-restitutions .restitution-form textarea { min-height: 100px; width: 100%; padding: 10px; border: 1px solid var(--border); border-radius: 4px; font: inherit; }
+.transfer-restitutions :is(button, input, textarea, select):focus-visible { outline: 2px solid var(--wine); outline-offset: 3px; }
+.transfer-restitutions .restitution-backdrop { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 24px; background: rgb(36 33 36 / 45%); }
+.transfer-restitutions .restitution-modal { display: flex; flex-direction: column; width: min(720px, 100%); max-height: 92dvh; background: white; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.transfer-restitutions .restitution-modal > h3, .transfer-restitutions .restitution-modal-body, .transfer-restitutions .restitution-modal footer { padding: 24px; }
+.transfer-restitutions .restitution-modal-body { display: grid; gap: 14px; overflow-y: auto; }
+.transfer-restitutions .restitution-modal footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; border-top: 1px solid var(--border); }
+@media (max-width: 767px) {
+  .transfer-restitutions .restitution-card, .transfer-restitutions .restitution-form { padding: 16px; }
+  .transfer-restitutions .restitution-actions { display: grid; }
+  .transfer-restitutions .restitution-backdrop { padding: 12px; }
+  .transfer-restitutions .restitution-modal > h3, .transfer-restitutions .restitution-modal-body, .transfer-restitutions .restitution-modal footer { padding: 16px; }
+}
+
 /* Count corrections deliberately do not inherit the warehouse receipt table. */
 .count-corrections { display: grid; gap: 18px; min-width: 0; color: #242124; }
 .count-corrections h2 { font-size: 22px; }
