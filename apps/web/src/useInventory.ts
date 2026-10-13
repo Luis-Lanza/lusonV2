@@ -8,6 +8,8 @@ import type { TransferRecord, TransferStatus } from './transferModel';
 import { createTransferReceiptRecovery, type TransferReceiptRecovery } from './transferReceiptRecovery';
 import { createTransferDispatchRecovery, type TransferDispatchRecovery } from './transferDispatchRecovery';
 import { createTransferCancellationRecovery, type TransferCancellationRecovery } from './transferCancellationRecovery';
+import { createTransferCountCorrectionRecovery, type TransferCountCorrectionRecovery } from './transferCountCorrectionRecovery';
+import type { CountOperation } from './transferCountCorrectionModel';
 
 class HTTPError extends Error {
   constructor(public status: number) { super('HTTP request failed'); }
@@ -49,6 +51,8 @@ export interface TransferController {
   dispatchRecovery?: TransferDispatchRecovery;
   receiptRecovery?: TransferReceiptRecovery;
   cancellationRecovery?: TransferCancellationRecovery;
+  countCorrectionRecovery?: TransferCountCorrectionRecovery;
+  confirmTransferCountCorrection?: (owner: DecisionOwner, operation: CountOperation) => void;
   confirmTransferCreation?: (owner: DecisionOwner, record: TransferRecord) => void;
   confirmTransferCancellation?: (owner: DecisionOwner, record: TransferRecord) => void;
   confirmTransferReceipt?: (owner: DecisionOwner, record: TransferRecord) => void;
@@ -67,6 +71,7 @@ export function useInventory() {
   const [dispatchRecovery] = useState(createTransferDispatchRecovery);
   const [receiptRecovery] = useState(createTransferReceiptRecovery);
   const [cancellationRecovery] = useState(createTransferCancellationRecovery);
+  const [countCorrectionRecovery] = useState(createTransferCountCorrectionRecovery);
   const [session, setSession] = useState<Session | null>(null);
   const [metadata, setMetadata] = useState<Metadata | null>(null);
   const [data, setData] = useState<Inventory | null>(null);
@@ -313,6 +318,16 @@ export function useInventory() {
     }
   };
   const confirmTransferCancellation = useCallback((owner: DecisionOwner, record: TransferRecord) => cancellationEffects.current(owner, record), []);
+  const countCorrectionEffects = useRef<(owner: DecisionOwner, operation: CountOperation) => void>(() => {});
+  countCorrectionEffects.current = (owner, operation) => {
+    if (!decisionIsCurrent(owner) || operation.actor_location_id !== owner.location) return;
+    notifyTransfers(owner.epoch, owner);
+    if (operation.action === 'accept' && decisionIsCurrent(owner)) {
+      invalidate(false);
+      if (decisionIsCurrent(owner)) notifySourceInventory(owner.epoch, owner);
+    }
+  };
+  const confirmTransferCountCorrection = useCallback((owner: DecisionOwner, operation: CountOperation) => countCorrectionEffects.current(owner, operation), []);
   const realtimeEpoch = authGeneration.current;
   const stopRealtime = useRealtime({ enabled: !!session?.authenticated && !authBusy, epoch: realtimeEpoch,
     resync: () => { invalidate(true); notifyTransfers(realtimeEpoch); notifySourceInventory(realtimeEpoch); },
@@ -440,6 +455,7 @@ export function useInventory() {
   return { session, metadata, data, query, loading, authBusy, formError, resultsError: resultsError || realtimeError, focusLogin,
     login, logout, change, retrySession: () => restore(), retryInventory: () => change({}, true),
     confirmTransferCreation, decisionRecovery, confirmTransferDecision, dispatchRecovery, receiptRecovery, confirmTransferReceipt, cancellationRecovery, confirmTransferCancellation,
+    countCorrectionRecovery, confirmTransferCountCorrection,
     confirmTransferDispatch: useCallback((owner: DecisionOwner) => decisionEffects.current(owner, 'in_transit'), []),
     authorityEpoch: authGeneration.current, getTransferAuthority, subscribeTransferInvalidation, subscribeSourceInventoryInvalidation, settleUnauthorized };
 }
