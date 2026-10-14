@@ -51,14 +51,14 @@ describe('W2 direct warehouse workspace', () => {
     if (destination === 3) { flow('directB'); await waitFor(() => expect(loader).toHaveBeenCalledTimes(2)); }
     expect(loader.mock.calls.every(([source]) => source === 1)).toBe(true);
     fireEvent.change(screen.getByLabelText('Cantidad Modelo 1 L'), { target: { value: '9223372036854775807' } });
-    fireEvent.click(add()); fireEvent.click(screen.getByRole('button', { name: 'Revisar solicitud' }));
-    const dialog = screen.getByRole('dialog');
+    fireEvent.click(add()); fireEvent.click(screen.getByRole('button', { name: 'Revisar envío' }));
+    const dialog = screen.getByRole('dialog', { name: 'Revisar envío' });
     expect(within(dialog).getByText('9223372036854775807')).toBeVisible();
     expect(within(dialog).getByText(/La creación autoriza y reserva/)).toBeVisible();
     expect(within(dialog).queryByText(/pendiente de aprobación/)).not.toBeInTheDocument();
     expect(fetcher).not.toHaveBeenCalled();
     const attempt = recovery.getCurrent(h.controller.getTransferAuthority)!.attempt;
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Enviar solicitud' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Crear envío y reservar' }));
     expect(screen.getByLabelText('Tipo de transferencia')).toBeDisabled();
     expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual({ ...attempt,
       kind: 'direct_shipment', counterparty_location_id: destination, items: [{ variant_id: 1, quantity: '9223372036854775807' }] });
@@ -150,6 +150,38 @@ describe('F3 grouped catalog and compact route', () => {
     fireEvent.click(within(next).getByRole('button', { name: 'Añadir Modelo 25 R' }));
     expect(screen.getByLabelText('Total a transferir')).toHaveTextContent('2 baterías');
     expect(loader).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('F3 responsive selection contract', () => {
+  it.each([1, 2])('keeps a single editable selection and truthful review for assignment %s', async assigned => {
+    const h = harness(authority(assigned));
+    const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source, 3, 17n));
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
+    expect(screen.getAllByLabelText('Cantidad Modelo 1 L')).toHaveLength(1);
+    fireEvent.change(screen.getByLabelText('Cantidad Modelo 1 L'), { target: { value: '4' } });
+    fireEvent.click(add());
+    expect(add()).toHaveTextContent('Añadir más');
+    expect(screen.getByText('En la selección: 4')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Aumentar Modelo 1' }));
+    expect(screen.getByLabelText('Cantidad seleccionada Modelo 1')).toHaveValue('5');
+    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'Modelo 3' } });
+    expect(screen.queryByLabelText('Cantidad Modelo 1 L')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Cantidad seleccionada Modelo 1')).toHaveValue('5');
+    fireEvent.click(screen.getByRole('button', { name: 'Añadir Modelo 3 L' }));
+    expect(screen.getByLabelText('Total a transferir')).toHaveTextContent('6');
+    fireEvent.click(screen.getByRole('button', { name: assigned === 1 ? 'Revisar envío' : 'Revisar solicitud' }));
+    const dialog = screen.getByRole('dialog', { name: assigned === 1 ? 'Revisar envío' : 'Revisar solicitud' });
+    expect(within(dialog).getByLabelText('Total a transferir')).toHaveTextContent('6');
+    expect(within(dialog).getByText('5', { selector: 'td' })).toBeVisible();
+    expect(within(dialog).getByRole('columnheader', { name: 'Cantidad a transferir' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: assigned === 1 ? 'Crear envío y reservar' : 'Enviar solicitud' })).toBeEnabled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Volver a editar' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Quitar Modelo 1' }));
+    expect(screen.queryByLabelText('Cantidad seleccionada Modelo 1')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Total a transferir')).toHaveTextContent('1');
+    expect(screen.getByText('Este borrador no reserva ni mueve existencias.')).toBeVisible();
   });
 });
 
@@ -261,7 +293,8 @@ describe('R04b2b workspace', () => {
     fireEvent.change(screen.getByLabelText('Cantidad Modelo 1 L'), { target: { value: '9223372036854775807' } }); fireEvent.click(add());
     fireEvent.change(screen.getByLabelText('Cantidad Modelo 3 L'), { target: { value: '9223372036854775807' } });
     fireEvent.click(screen.getByRole('button', { name: 'Añadir Modelo 3 L' }));
-    expect(screen.getByText('2 variantes · 18446744073709551614 baterías')).toBeVisible();
+    expect(within(screen.getByRole('complementary', { name: 'Carrito de transferencia' })).getByText('2 variantes')).toBeVisible();
+    expect(screen.getByLabelText('Total a transferir')).toHaveTextContent('18446744073709551614 baterías');
     expect(screen.getByRole('button', { name: 'Añadir Modelo 2 R' })).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'Modelo 189' } });
     expect(screen.getByRole('button', { name: 'Añadir Modelo 189 L' })).toBeEnabled();

@@ -117,7 +117,8 @@ describe('R04b2c2 review dialog', () => {
     const expectedDestination = flow === 'sendWarehouse' ? 'Almacén' : 'Sucursal A';
     const route = dialog.querySelector('.review-route')!;
     expect(route.textContent).toBe(`Origen${expectedSource}→Destino${expectedDestination}`);
-    expect(within(dialog).getByText('2 variantes · 18446744073709551614 baterías')).toBeVisible();
+    expect(dialog.querySelector('tfoot')).toHaveTextContent('2 variantes · 18446744073709551614 baterías');
+    expect(within(dialog).getByLabelText('Total a transferir')).toHaveTextContent('18446744073709551614 baterías');
     expect(within(dialog).getAllByText('9223372036854775807')).toHaveLength(2); expect(within(dialog).getAllByText('75.125 Ah')).toHaveLength(2);
     expect(within(dialog).getByText('L')).toBeVisible(); expect(within(dialog).getByText('R')).toBeVisible();
     expect(dialog).toHaveTextContent(`pendiente de aprobación de ${flow === 'requestOther' ? 'Sucursal B' : 'Almacén'}`);

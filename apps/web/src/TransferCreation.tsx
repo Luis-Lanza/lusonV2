@@ -356,9 +356,9 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
           <button type="button" aria-label="Página anterior" disabled={displayedPage <= 1} onClick={() => { if (current()) setPage(displayedPage - 1); }}>Anterior</button><span>{displayedPage} / {lastPage}</span>
           <button type="button" aria-label="Página siguiente" disabled={displayedPage >= lastPage} onClick={() => { if (current()) setPage(displayedPage + 1); }}>Siguiente</button></footer>
       </section>
-      <aside className="creation-cart" aria-label="Carrito de transferencia"><h2>Solicitud</h2><p>{cart?.lines.length ?? 0} variantes · {status?.total.toString() ?? '0'} baterías</p>
+      <aside className="creation-cart" aria-label="Carrito de transferencia"><header><h2>{direct ? 'Baterías en el envío' : 'Baterías en la solicitud'}</h2><p>{cart?.lines.length ?? 0} {cart?.lines.length === 1 ? 'variante' : 'variantes'}</p></header>
         {!cart?.lines.length && <p>Agregá baterías del catálogo de origen.</p>}
-        {cart?.lines.map(line => <article key={line.item.variant_id}>
+        {cart?.lines.map(line => <article key={line.item.variant_id} className="creation-cart-line">
           <h3>{line.item.brand} · {line.item.model}</h3><p>{line.item.capacity_ah} Ah · Polaridad {line.item.polarity}</p>
           <p>Disponible: {line.available === null ? 'Variante ausente' : line.available.toString()}</p>
           {status?.invalid.includes(line.item.variant_id) && <p className="message" role="alert">Selección inválida: revisá la cantidad o quitá la variante. No se ajustó automáticamente.</p>}
@@ -374,13 +374,13 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
             if (!guardedCart()) return;
             editCart((draft, latest) => setCartQuantity(draft, latest, line.item.variant_id, line.quantity + 1n));
           }}>+</button></div>
-          <button type="button" aria-label={`Quitar ${line.item.model}`} onClick={() => {
+          <button type="button" className="creation-remove" aria-label={`Quitar ${line.item.model}`} onClick={() => {
             if (editCart((draft, latest) => removeCartItem(draft, latest, line.item.variant_id))) focusAdd(line.item.variant_id);
           }}>Quitar</button>
         </article>)}
         {quantityError && <p className="message" role="alert">{quantityError}</p>}
         <p className="creation-total">Total a transferir <strong aria-label="Total a transferir">{status?.total.toString() ?? '0'} baterías</strong></p>
-        <p>Este borrador no reserva ni mueve existencias.</p><button type="button" className="primary" disabled={!snapshot && !status?.ready} onClick={event => openReview(event.currentTarget)}>Revisar solicitud</button>
+        <p className="creation-draft-notice">Este borrador no reserva ni mueve existencias.</p><button type="button" className="primary" disabled={!snapshot && !status?.ready} onClick={event => openReview(event.currentTarget)}>{direct ? 'Revisar envío' : 'Revisar solicitud'}</button>
         <p>El envío es manual desde la revisión. Recargar o cerrar la pestaña pierde la recuperación en memoria.</p>
       </aside>
     </div>

@@ -224,11 +224,18 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .transfer-creation .creation-pager > span:first-child { margin-right: auto; }
 .transfer-creation .creation-retry { margin: 8px 16px; font-size: 12px; }
 .transfer-creation .creation-cart { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-.transfer-creation .creation-cart article { border: 1px solid var(--border); border-radius: 6px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-.transfer-creation .creation-stepper { display: flex; gap: 6px; }
-.transfer-creation .creation-stepper input { width: 100%; font-variant-numeric: tabular-nums; }
+.transfer-creation .creation-cart > header { display: flex; gap: 8px; justify-content: space-between; align-items: start; }
+.transfer-creation .creation-cart > header p { background: var(--tint); color: var(--wine); padding: 2px 6px; white-space: nowrap; }
+.transfer-creation .creation-cart article { position: relative; border: 0; border-top: 1px solid var(--border); border-radius: 0; padding: 12px 0 0; display: grid; gap: 4px; }
+.transfer-creation .creation-cart article h3 { padding-right: 54px; }
+.transfer-creation .creation-cart .creation-remove { position: absolute; right: 0; top: 6px; border: 0; background: transparent; color: var(--muted); padding: 6px; font-size: 11px; }
+.transfer-creation .creation-stepper { display: flex; gap: 4px; justify-self: end; margin-top: 4px; max-width: 100%; }
+.transfer-creation .creation-stepper input { width: 84px; min-width: 0; text-align: center; font-variant-numeric: tabular-nums; }
+.transfer-creation .creation-stepper button { min-width: 32px; padding: 6px; }
 .transfer-creation .creation-total { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; border-top: 1px solid var(--border); padding-top: 12px; }
 .transfer-creation .creation-total strong { color: var(--wine); font-size: 18px; overflow-wrap: anywhere; }
+.transfer-creation .creation-draft-notice { padding: 8px; background: var(--page); border: 1px solid var(--border); border-radius: 4px; }
+.transfer-creation .creation-cart > .primary { width: 100%; }
 .transfer-creation .creation-cart .message, .transfer-creation .message { color: var(--wine); }
 .transfer-creation .creation-dialog-backdrop { position: fixed; inset: 0; z-index: 50; background: #24212466; display: flex; align-items: center; justify-content: center; padding: 24px; }
 .transfer-creation .creation-dialog { background: white; width: 480px; max-width: 100%; padding: 24px; border-radius: 8px; border: 1px solid var(--border); }
@@ -291,6 +298,34 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .transfer-review .review-notice, .transfer-review .review-result { background: var(--tint); padding: 16px; border: 1px solid var(--border); border-radius: 8px; }
 .transfer-review .review-memory { font-size: 11px; }
 .transfer-review > footer { padding: 20px 24px; border-top: 1px solid var(--border); background: var(--page); display: flex; justify-content: flex-end; gap: 12px; }
+
+/* Pre-submit fidelity only: confirmed-result presentation stays independent. */
+.transfer-review.review-presubmit { width: 680px; }
+.review-presubmit .review-route { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+.review-presubmit .review-route > div { min-width: 0; overflow-wrap: anywhere; }
+.review-presubmit .review-table table { min-width: 0; width: 100%; }
+.review-presubmit .review-immutable { padding: 10px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--page); }
+@media (max-width: 600px) {
+  .review-presubmit-backdrop { padding: 0; align-items: stretch; background: var(--page); }
+  .transfer-review.review-presubmit { width: 100%; max-height: 100%; border: 0; border-radius: 0; box-shadow: none; overflow-y: auto; background: var(--page); }
+  .review-presubmit > header { padding: 20px 16px; border-bottom: 0; }
+  .review-presubmit .review-body { padding: 0 16px 16px; overflow: visible; gap: 16px; }
+  .review-presubmit .review-route { padding: 12px; background: white; border: 1px solid var(--border); border-radius: 8px; gap: 8px; }
+  .review-presubmit .review-route > div { padding: 8px; }
+  .review-presubmit .review-table { overflow: visible; border: 0; }
+  .review-presubmit .review-table table, .review-presubmit .review-table tbody, .review-presubmit .review-table tfoot { display: block; }
+  .review-presubmit .review-table thead { display: none; }
+  .review-presubmit .review-table tbody { display: grid; gap: 12px; }
+  .review-presubmit .review-table tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding: 12px; gap: 10px; background: white; border: 1px solid var(--border); border-radius: 8px; }
+  .review-presubmit .review-table tbody td { display: block; border: 0; padding: 0; min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+  .review-presubmit .review-table tbody td:first-child { grid-column: 1 / -1; }
+  .review-presubmit .review-table td[data-label]::before { content: attr(data-label); display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .review-presubmit .review-table tbody td:last-child { text-align: right; font-size: 18px; color: var(--wine); font-weight: 700; }
+  .review-presubmit .review-table tfoot { margin-top: 12px; border: 1px solid var(--border); border-radius: 8px; }
+  .review-presubmit .review-table tfoot tr, .review-presubmit .review-table tfoot td { display: block; white-space: normal; overflow-wrap: anywhere; }
+  .review-presubmit > footer { padding: 16px; flex-direction: column-reverse; gap: 8px; }
+  .review-presubmit > footer button { width: 100%; min-height: 44px; }
+}
 
 /* Participant status views; branches retain the desktop table at every width. */
 .transfer-pending { display: flex; flex-direction: column; gap: 16px; min-width: 0; }

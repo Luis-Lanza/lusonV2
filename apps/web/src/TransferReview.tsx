@@ -58,7 +58,7 @@ export default function TransferReview(props: TransferReviewProps) {
   const outcomeLabel = result?.record.status === 'approved' ? direct ? 'Pendiente de despacho' : 'Aprobada' : result?.record.status === 'rejected' ? 'Rechazada' : result?.record.status === 'in_transit' ? 'En tránsito' : result?.record.status === 'received' ? 'Recibida' : result?.record.status === 'cancelled' ? 'Cancelada' : 'Pending';
   const location = (id: number) => props.metadata.locations.find(l => l.id === id)?.name ?? 'Ubicación no disponible';
   const total = snapshot.items.reduce((sum, line) => sum + BigInt(line.quantity), 0n);
-  return <div className="review-backdrop"><section ref={dialog} tabIndex={-1} className="transfer-review" role="dialog" aria-modal="true" aria-labelledby="review-title" aria-busy={blocked} onKeyDown={event => {
+  return <div className={`review-backdrop${result ? '' : ' review-presubmit-backdrop'}`}><section ref={dialog} tabIndex={-1} className={`transfer-review${result ? '' : ' review-presubmit'}`} role="dialog" aria-modal="true" aria-labelledby="review-title" aria-busy={blocked} onKeyDown={event => {
     if (event.key === 'Escape') { event.preventDefault(); if (!blocked) props.onClose(); }
     if (event.key === 'Tab') {
       const buttons = dialog.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)');
@@ -68,7 +68,7 @@ export default function TransferReview(props: TransferReviewProps) {
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     }
   }}>
-    <header><div><h2 id="review-title">{result ? `Solicitud ${outcomeLabel} confirmada` : 'Revisar solicitud'}</h2>
+    <header><div><h2 id="review-title">{result ? `Solicitud ${outcomeLabel} confirmada` : direct ? 'Revisar envío' : 'Revisar solicitud'}</h2>
       <p>{result ? (result.replayed ? 'El servidor devolvió la solicitud original.' : 'El servidor creó la solicitud.') : 'Comprobá las cantidades y la ruta antes del envío manual.'}</p></div>
       <button ref={close} type="button" aria-label="Cerrar revisión" disabled={blocked} onClick={props.onClose}>×</button></header>
     <div className="review-body">
@@ -85,15 +85,16 @@ export default function TransferReview(props: TransferReviewProps) {
         {result.record.status === 'received' && <><p>Recibida en {result.record.destination_location_name}: <TransferDate value={result.record.received_at} /></p>
           <p>La recepción ya está finalizada. Solo se acreditaron unidades esperadas recibidas hasta lo enviado; las discrepancias permanecen registradas por separado.</p></>}
       </section>}
-      <div className="review-table"><table><caption className="sr-only">Selección inmutable</caption><thead><tr><th scope="col">Batería</th><th scope="col">Polaridad</th><th scope="col">Cantidad solicitada</th></tr></thead>
+      <div className="review-table"><table><caption className="sr-only">Selección inmutable</caption><thead><tr><th scope="col">Batería</th><th scope="col">Polaridad</th><th scope="col">{result ? 'Cantidad solicitada' : 'Cantidad a transferir'}</th></tr></thead>
         <tbody>{snapshot.items.map(line => <tr key={line.variant_id}><td><strong>{line.brand} · {line.model}</strong><small>{line.capacity_ah} Ah</small></td>
-          <td><span className="polarity">{line.polarity}</span></td><td>{line.quantity}</td></tr>)}</tbody>
-        <tfoot><tr><td colSpan={3}>{snapshot.items.length} variantes · {total.toString()} baterías</td></tr></tfoot></table></div>
+          <td data-label="Polaridad"><span className="polarity">{line.polarity}</span></td><td data-label="Cantidad a transferir">{line.quantity}</td></tr>)}</tbody>
+        <tfoot><tr><td colSpan={3}>{snapshot.items.length} {snapshot.items.length === 1 ? 'variante' : 'variantes'} · <span aria-label="Total a transferir">{total.toString()} baterías</span></td></tr></tfoot></table></div>
       {direct && (!result || result.record.status === 'approved') && <div className="review-notice"><p>La creación autoriza y reserva todas las cantidades en Almacén, sin mover existencias ni acreditar el destino.</p>
         <p>Queda Pendiente de despacho. El despacho es una acción separada; podés cancelar antes de despachar. El destino no debe aprobar.</p></div>}
       {!direct && (!result || result.record.status === 'pending') && <div className="review-notice"><p>La solicitud quedará Pending, pendiente de aprobación de {location(snapshot.direction.approver_location_id)}.</p>
         <p>Enviar la solicitud no reserva ni mueve stock. La aprobación deberá revalidar y reservar la solicitud completa.</p>
         <p>El servidor comprobará la disponibilidad al crear. Un reintento con la misma solicitud puede devolver el registro original.</p></div>}
+      {!result && <p className="review-immutable">{direct ? 'Una vez creado, el envío no puede editarse. Podés cancelarlo antes del despacho.' : 'Una vez enviada, la solicitud no puede editarse.'}</p>}
       {!result && snapshot.phase === 'ready' && <p>Revisión preparada, todavía no enviada.</p>}
       {!result && snapshot.phase === 'unknown' && <p role="status">No pudimos confirmar el resultado. La solicitud puede haberse creado. Reintentá esta misma solicitud para comprobarlo.</p>}
       {props.error && <p role="alert" className="message">{props.error}</p>}
@@ -110,6 +111,6 @@ export default function TransferReview(props: TransferReviewProps) {
           && props.snapshot.epoch === now.epoch && props.result) props.onBack();
       }}>Volver a transferencias</button></>
       : <><button type="button" disabled={blocked} onClick={props.onEdit}>Volver a editar</button>
-        <button type="button" className="primary" disabled={blocked} onClick={() => props.onSend(transfers.submit)}>{snapshot.phase === 'unknown' ? 'Reintentar misma solicitud' : 'Enviar solicitud'}</button></>}</footer>
+        <button type="button" className="primary" disabled={blocked} onClick={() => props.onSend(transfers.submit)}>{snapshot.phase === 'unknown' ? 'Reintentar misma solicitud' : direct ? 'Crear envío y reservar' : 'Enviar solicitud'}</button></>}</footer>
   </section></div>;
 }
