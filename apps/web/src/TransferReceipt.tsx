@@ -59,6 +59,10 @@ export default function TransferReceipt(props: TransferReceiptProps) {
   const unresolved = attempt?.phase === 'uncertain' || busy;
   const result = attempt?.result;
   const reviewAttempt = visibleReview && attempt?.original.id === visibleReview.record.id ? attempt : null;
+  const reviewResult = reviewAttempt?.result?.status === 'received'
+    && reviewAttempt.result.id === visibleReview?.record.id
+    && (reviewAttempt.phase === 'confirmed' || reviewAttempt.phase === 'conflict') ? reviewAttempt.result : null;
+  const reviewConfirmed = !!reviewResult && reviewAttempt?.phase === 'confirmed';
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
     if (visibleReview) { if (busy) dialog.current?.focus(); else close.current?.focus(); }
@@ -162,11 +166,15 @@ export default function TransferReceipt(props: TransferReceiptProps) {
           else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialog.current)) { event.preventDefault(); first.focus(); }
         }
       }}>
-      <header><div><h2 id="receipt-title">{result?.id === visibleReview.record.id ? 'Recepción confirmada' : 'Confirmar recepción'}</h2>
+      <header><div><h2 id="receipt-title">{reviewConfirmed ? 'Recepción confirmada' : reviewResult ? 'Recepción con conflicto' : 'Confirmar recepción'}</h2>
         <p>{visibleReview.record.reference} · {visibleReview.record.destination_location_name}</p></div>
         <button ref={close} type="button" aria-label="Cerrar confirmación de recepción" disabled={busy} onClick={dismiss}>×</button></header>
       <div className="transfer-decision-body">
-        {visibleReview.step === 'capture' ? <>
+        {reviewResult ? <>
+          {reviewConfirmed ? <p role="status">Recepción registrada correctamente.</p>
+            : <p role="alert">La recepción persistida tiene cantidades diferentes de las enviadas en este intento. No se reemplazaron las cantidades originales ni se reintentará la recepción.</p>}
+          <ReceiptTable receipt={reviewResult.receipt} record={reviewResult} />
+        </> : visibleReview.step === 'capture' ? <>
           <p>Ingresá cada cantidad recibida, incluido 0 si no llegó esa variante. No se limita por disponibilidad del destino.</p>
           <div className="receipt-quantities">{[...visibleReview.record.items.map(item => ({ id: item.variant_id, label: `${item.brand} · ${item.model}`, sent: item.quantity })),
             ...visibleReview.unexpected.map(id => ({ id, label: source?.rows.find(row => row.variant_id === id)?.model ?? `Variante ${id}`, sent: 0n }))].map(line => <div key={line.id}>
@@ -199,7 +207,6 @@ export default function TransferReceipt(props: TransferReceiptProps) {
         {busy && <p role="status">Confirmando recepción…</p>}
         {error && <p role="alert">{error}</p>}
         {unresolved && !busy && <p role="status">Resultado sin confirmar. Usá la recuperación de la recepción original.</p>}
-        {result?.status === 'received' && result.id === visibleReview.record.id && <ReceiptTable receipt={result.receipt} record={result} />}
       </div>
       <footer><button type="button" disabled={busy} onClick={dismiss}>Volver al detalle</button>
         {visibleReview.step === 'capture' ? <button type="button" className="primary" disabled={!input || busy} onClick={() => {

@@ -91,8 +91,18 @@ describe('R2 destination receipt capture/review/once UI', () => {
     const dialog = screen.getByRole('dialog', { name: 'Confirmar recepción' });
     expect(dialog).toHaveTextContent('Exceso'); expect(dialog).toHaveTextContent(sent);
     expect(dialog).toHaveTextContent('disponible'); expect(posts(f)).toHaveLength(0);
+    expect(dialog).toHaveTextContent('Solo el mínimo entre lo recibido y lo enviado de cada variante esperada se acredita como stock disponible. Faltantes, excesos y variantes inesperadas quedan registrados por separado; no se acreditan ni se resuelven automáticamente.');
+    expect(dialog).toHaveTextContent('Confirmar finaliza la recepción una sola vez. No se podrá modificar después.');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar recepción' }));
     await screen.findByRole('heading', { name: 'Recepción confirmada', level: 2 });
+    expect(within(dialog).getByRole('status')).toHaveTextContent('Recepción registrada correctamente.');
+    expect(within(dialog).getAllByRole('table', { name: 'Detalle de recepción' })).toHaveLength(1);
+    const persisted = within(dialog).getByRole('table', { name: 'Detalle de recepción' });
+    expect(persisted).toHaveTextContent('9007199254740994');
+    expect(persisted).toHaveTextContent(sent);
+    expect(persisted).toHaveTextContent('Exceso: 1');
+    expect(within(dialog).queryByText(/^Solo el mínimo entre lo recibido y lo enviado/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/^Confirmar finaliza la recepción una sola vez/)).not.toBeInTheDocument();
     expect(posts(f)).toHaveLength(1);
     expect(JSON.parse(String(posts(f)[0][1]?.body))).toEqual({ items: [{ variant_id: 1, actual_quantity: '9007199254740994' }] });
     expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toHaveTextContent('Solicitud recibida');
@@ -138,6 +148,7 @@ describe('R2 destination receipt capture/review/once UI', () => {
     const confirm = screen.getByRole('button', { name: 'Confirmar recepción' });
     fireEvent.click(confirm); fireEvent.click(confirm); fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(dialog).toHaveAttribute('aria-busy', 'true'); expect(confirm).toBeDisabled(); expect(posts(f)).toHaveLength(1);
+    expect(within(dialog).queryByText('Recepción registrada correctamente.')).not.toBeInTheDocument();
     await act(async () => { resolve(reply(outcome())); }); await screen.findByRole('heading', { name: 'Recepción confirmada', level: 2 });
   });
   it('retains receipt across Inventory navigation; InTransit consult is not proof of failure', async () => {
@@ -168,6 +179,38 @@ describe('R2 destination receipt capture/review/once UI', () => {
     expect(screen.queryByLabelText(/Cantidad recibida.*Expected/)).not.toBeInTheDocument();
     expect(posts(f)).toHaveLength(1);
   });
+  it.each(['received', 'in_transit'] as const)('keeps the open receipt dialog truthful after a lost POST and %s consultation', async status => {
+    const f = fixture(2, url => url.endsWith('/receive') ? Promise.reject(new Error('lost')) : undefined);
+    render(<App />); await detail();
+    const dialog = await capture();
+    fireEvent.change(actualInput(), { target: { value: '1' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revisar recepción' }));
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar recepción' })); });
+    await screen.findByText('Recepción pendiente de confirmación');
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).queryByText('Recepción registrada correctamente.')).not.toBeInTheDocument();
+    f.setRecord(status === 'received' ? outcome() : transit);
+    const recovery = screen.getByRole('region', { name: 'Recuperación de recepción' });
+    await act(async () => { fireEvent.click(within(recovery).getByRole('button', { name: 'Consultar resultado original de la recepción' })); });
+    expect(posts(f)).toHaveLength(1);
+    if (status === 'received') {
+      expect(await within(dialog).findByText(
+        'La recepción persistida tiene cantidades diferentes de las enviadas en este intento. No se reemplazaron las cantidades originales ni se reintentará la recepción.')).toBeVisible();
+      expect(within(dialog).queryByRole('heading', { name: 'Recepción confirmada' })).not.toBeInTheDocument();
+      expect(within(dialog).getAllByRole('table', { name: 'Detalle de recepción' })).toHaveLength(1);
+      const persisted = within(dialog).getByRole('table', { name: 'Detalle de recepción' });
+      expect(persisted).toHaveTextContent(sent);
+      expect(persisted).toHaveTextContent('Sin discrepancia');
+      expect(within(recovery).queryByRole('button', { name: 'Reintentar misma recepción' })).not.toBeInTheDocument();
+    } else {
+      expect(within(dialog).getByText('Resultado sin confirmar. Usá la recuperación de la recepción original.')).toBeVisible();
+      expect(within(recovery).getByRole('button', { name: 'Reintentar misma recepción' })).toBeEnabled();
+    }
+    expect(within(dialog).queryByText('Recepción registrada correctamente.')).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: 'Confirmar recepción' })).not.toBeInTheDocument();
+    expect(posts(f)).toHaveLength(1);
+  });
+
   it('distinguishes a different persisted receipt from the sent quantities, without offering a second receipt', async () => {
     const f = fixture(2, url => url.endsWith('/receive') ? Promise.reject(new Error('lost')) : undefined);
     render(<App />); await detail(); await capture(); fireEvent.change(actualInput(), { target: { value: '1' } });
