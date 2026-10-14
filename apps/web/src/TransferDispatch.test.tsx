@@ -87,6 +87,33 @@ describe('R2 latest Received participant history', () => {
   });
 });
 
+it.each(['cancelled', 'received'])('presents readable %s dispatch recovery dates with exact evidence', async status => {
+  const dispatched_at = '2026-04-03T00:00:00.000000002Z';
+  const terminalStamp = '2026-04-04T00:00:00.000000003Z';
+  const result = { ...wire(1, 2, 'in_transit'), status,
+    ...(status === 'cancelled' ? { cancellation_location_id: 2, cancelled_at: terminalStamp,
+      dispatch_location_id: undefined, dispatched_at: undefined }
+      : { receipt_location_id: 2, received_at: terminalStamp, receipt: {
+        items: wire().items.map(item => ({ variant_id: item.variant_id, expected_quantity: item.quantity,
+          actual_quantity: item.quantity, available_quantity: item.quantity })), exceptions: [],
+      } }),
+  };
+  let recovering = false;
+  const f = fixture(1, 1, 2, url => url.endsWith('/dispatch') ? Promise.reject(new Error('Lost reply'))
+    : recovering && url === '/api/transfers/9007199254740993' ? Promise.resolve(reply(result)) : undefined);
+  render(f.element()); fireEvent.click(await screen.findByRole('button', { name: 'Despachar solicitud' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Confirmar despacho' }));
+  const consult = await screen.findByRole('button', { name: 'Consultar resultado original del despacho' });
+  recovering = true; fireEvent.click(consult);
+  const recovery = await screen.findByRole('region', { name: 'Recuperación de despacho' });
+  const time = await within(recovery).findByText('03/04/2026 · 20:00 (hora Bolivia)');
+  expect(time).toHaveAttribute('datetime', terminalStamp);
+  expect(time).toHaveAttribute('title', terminalStamp);
+  if (status === 'received') expect(within(recovery).getByText('02/04/2026 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', dispatched_at);
+  else expect(recovery).toHaveTextContent('No se confirmó un despacho');
+  expect(posts(f)).toHaveLength(1);
+});
+
 describe('D2 dispatch participant UI', () => {
   it.each([[1, 1, 2], [3, 3, 2], [2, 2, 1]])('only assigned physical origin %s confirms %s → %s in full', async (actor, origin, destination) => {
     const f = fixture(actor, origin, destination); render(f.element());
@@ -100,6 +127,10 @@ describe('D2 dispatch participant UI', () => {
     expect(posts(f)).toHaveLength(0);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar despacho' }));
     await screen.findByRole('heading', { name: 'Despacho confirmado', level: 2 });
+    const recovery = screen.getByRole('region', { name: 'Recuperación de despacho' });
+    const time = within(recovery).getByText('02/04/2026 · 20:00 (hora Bolivia)');
+    expect(time).toHaveAttribute('datetime', '2026-04-03T00:00:00.000000002Z');
+    expect(time).toHaveAttribute('title', '2026-04-03T00:00:00.000000002Z');
     expect(posts(f)).toHaveLength(1);
     expect(posts(f)[0]).toMatchObject(['/api/transfers/9007199254740993/dispatch', { body: '{}' }]);
     expect(f.controller.confirmTransferDispatch).toHaveBeenCalledTimes(1);

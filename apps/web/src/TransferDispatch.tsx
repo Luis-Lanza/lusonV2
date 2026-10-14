@@ -6,6 +6,7 @@ import { captureDecisionRecord } from './transferDecisionRecovery';
 import { detailAuthority, TransferItems } from './TransferDetail';
 import { transferViewOwner } from './TransferPending';
 import { TransferAPIError } from './transferAPI';
+import TransferDate from './TransferDate';
 
 export interface TransferDispatchProps {
   controller: TransferController; ownerTag: string; transfers: ReturnType<typeof useTransfers>;
@@ -83,11 +84,11 @@ export default function TransferDispatch(props: TransferDispatchProps) {
         <button type="button" onClick={() => void run(transfers.retryDispatch)}>Reintentar mismo despacho</button>
       </> : (result?.status === 'in_transit' || result?.status === 'received') && <>
         <p role="status">Estado confirmado: {result.status === 'received' ? 'Recibida' : 'En tránsito'}.</p>
-        <p>Despachada desde {result.origin_location_name} (UTC): <time>{result.dispatched_at}</time></p>
+        <p>Despachada desde {result.origin_location_name}: <TransferDate value={result.dispatched_at} /></p>
         {result.status === 'in_transit' ? <p>Pendiente de recepción en {result.destination_location_name}; todavía no recibe stock.</p>
-          : <p>Recepción finalizada en {result.destination_location_name} (UTC): <time>{result.received_at}</time></p>}
+          : <p>Recepción finalizada en {result.destination_location_name}: <TransferDate value={result.received_at} /></p>}
       </>}
-      {result?.status === 'cancelled' && <p role="status">Estado confirmado: Cancelada (UTC): <time>{result.cancelled_at}</time>. No se confirmó un despacho.</p>}
+      {result?.status === 'cancelled' && <p role="status">Estado confirmado: Cancelada: <TransferDate value={result.cancelled_at} />. No se confirmó un despacho.</p>}
       {error && <p role="alert">{error}</p>}
       <p>Volver o cerrar la confirmación no cancela un despacho enviado. La recuperación permanece en esta App; recargar o cerrar la pestaña pierde esta memoria.</p>
     </section>}

@@ -6,6 +6,7 @@ import { captureDecisionRecord, type TransferDecision as Action } from './transf
 import { detailAuthority, TransferItems, transferStatusLabel, type StockAdvice } from './TransferDetail';
 import { transferViewOwner } from './TransferPending';
 import { TransferAPIError } from './transferAPI';
+import TransferDate from './TransferDate';
 
 export interface TransferDecisionProps {
   controller: TransferController;
@@ -96,8 +97,8 @@ export default function TransferDecision(props: TransferDecisionProps) {
       </> : result && <>
         <p role="status">Estado confirmado: {transferStatusLabel(result)}.</p>
         {attempt.phase === 'conflict' && <p>El servidor confirmó una decisión distinta de la acción original. Se muestra el resultado real, sin enviar otra decisión.</p>}
-        {result.decided_at && <p>Decidida (UTC): <time>{result.decided_at}</time></p>}
-        {result.status === 'cancelled' && <p>Cancelada (UTC): <time>{result.cancelled_at}</time>. No se confirmó la acción original.</p>}
+        {result.decided_at && <p>Decidida: <TransferDate value={result.decided_at} /></p>}
+        {result.status === 'cancelled' && <p>Cancelada: <TransferDate value={result.cancelled_at} />. No se confirmó la acción original.</p>}
       </>}
       {error && <p role="alert">{error}</p>}
       <p>Volver o cerrar la confirmación no cancela una decisión enviada. La recuperación permanece en esta App; recargar o cerrar la pestaña pierde esta memoria.</p>

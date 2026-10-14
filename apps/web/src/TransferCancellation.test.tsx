@@ -85,6 +85,10 @@ describe('C2 creator cancellation confirmation through existing UI', () => {
     expect(posts(f)[0][1]).toMatchObject({ body: '{}', method: 'POST', credentials: 'same-origin', cache: 'no-store' });
     await act(async () => { held.resolve(reply(cancelled(approved))); });
     await screen.findByText('Cancelada', { selector: '.pending-status' });
+    const recovery = screen.getByRole('region', { name: 'Recuperación de cancelación' });
+    const time = within(recovery).getByText('02/04/2026 · 20:00 (hora Bolivia)');
+    expect(time).toHaveAttribute('datetime', cancelled(approved).cancelled_at);
+    expect(time).toHaveAttribute('title', cancelled(approved).cancelled_at);
     expect(screen.queryByRole('button', { name: 'Cancelar solicitud' })).not.toBeInTheDocument();
     expect(posts(f)).toHaveLength(1);
   });

@@ -71,6 +71,20 @@ function confirm(action: 'approve' | 'reject') {
 async function uncertain() { await screen.findByRole('button', { name: 'Consultar resultado original' }); }
 afterEach(() => vi.unstubAllGlobals());
 
+it('presents a cancelled decision conflict date without claiming the original action succeeded', async () => {
+  const cancelled_at = '2028-01-03T00:00:00.000000002Z';
+  const f = fixture(1, 2, 1, async (_url, init) => {
+    if (init.method === 'POST') throw new Error('Lost reply');
+    return reply({ ...wire(), status: 'cancelled', cancellation_location_id: 2, cancelled_at });
+  });
+  render(f.element()); open('approve'); confirm('approve');
+  fireEvent.click(await screen.findByRole('button', { name: 'Consultar resultado original' }));
+  const time = await screen.findByText('02/01/2028 · 20:00 (hora Bolivia)');
+  expect(time).toHaveAttribute('datetime', cancelled_at);
+  expect(time).toHaveAttribute('title', cancelled_at);
+  expect(screen.getByRole('region', { name: 'Recuperación de decisión' })).toHaveTextContent('No se confirmó la acción original');
+});
+
 describe('A06a explicit immutable confirmations', () => {
   it.each(['terminal', 'differentID'])('blocks a retained confirmation after the current view becomes %s without replacing the reviewed original', async mode => {
     const f = fixture();
@@ -113,6 +127,10 @@ describe('A06a explicit immutable confirmations', () => {
       expect(new Headers(init?.headers).get('X-CSRF-Token')).toBe('a'.repeat(43));
       expect(new Headers(init?.headers).has('X-Luson-Passive')).toBe(false);
       expect(f.controller.confirmTransferDecision).toHaveBeenCalledWith(expect.objectContaining({ location: destination === 1 ? 1 : origin }), action === 'approve' ? 'approved' : 'rejected');
+      const recovery = screen.getByRole('region', { name: 'Recuperación de decisión' });
+      const time = within(recovery).getByText('01/01/2028 · 20:00 (hora Bolivia)');
+      expect(time).toHaveAttribute('datetime', '2028-01-02T00:00:00.000000001Z');
+      expect(time).toHaveAttribute('title', '2028-01-02T00:00:00.000000001Z');
       expect(screen.queryByRole('button', { name: /^(Aprobar|Rechazar) / })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Consultar resultado original' })).not.toBeInTheDocument();
       view.unmount();
@@ -273,7 +291,7 @@ describe('A06a controller-owned uncertain outcome recovery', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Consultar resultado original' }));
     await waitFor(() => expect(f.controller.confirmTransferDecision).toHaveBeenCalledOnce());
     expect(screen.getByLabelText('Recuperación de decisión')).toHaveTextContent(status === 'approved' ? 'Estado confirmado: Aprobada.' : 'Estado confirmado: Rechazada.');
-    expect(screen.getByLabelText('Recuperación de decisión')).toHaveTextContent('2028-01-02T00:00:00.000000001Z');
+    expect(within(screen.getByLabelText('Recuperación de decisión')).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-02T00:00:00.000000001Z');
     expect(document.body.textContent?.includes('decisión distinta')).toBe((action === 'approve') !== (status === 'approved'));
     expect(f.controller.confirmTransferDecision).toHaveBeenCalledWith(expect.anything(), status);
     expect(f.fetch).toHaveBeenCalledTimes(2);

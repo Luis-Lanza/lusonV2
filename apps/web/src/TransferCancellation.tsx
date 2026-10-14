@@ -6,6 +6,7 @@ import { captureDecisionRecord } from './transferDecisionRecovery';
 import { detailAuthority, TransferItems, transferStatusLabel } from './TransferDetail';
 import { transferViewOwner } from './TransferPending';
 import { TransferAPIError } from './transferAPI';
+import TransferDate from './TransferDate';
 
 export interface TransferCancellationProps {
   controller: TransferController; ownerTag: string; transfers: ReturnType<typeof useTransfers>;
@@ -81,7 +82,7 @@ export default function TransferCancellation(props: TransferCancellationProps) {
       </> : result && <>
         <p role="status">Estado confirmado: {transferStatusLabel(result)}.</p>
         {attempt.phase === 'conflict' && <p>La solicitud ya no puede cancelarse. Se muestra el estado real, sin afirmar que fue cancelada.</p>}
-        {result.status === 'cancelled' && <p>Cancelada en {result.creator_location_name} (UTC): <time>{result.cancelled_at}</time></p>}
+        {result.status === 'cancelled' && <p>Cancelada en {result.creator_location_name}: <TransferDate value={result.cancelled_at} /></p>}
       </>}
       {errorText && <p role="alert">{errorText}</p>}
       <p>Cerrar o volver no deshace una cancelación enviada. La recuperación permanece en esta App; recargar o cerrar la pestaña pierde esta memoria.</p>
