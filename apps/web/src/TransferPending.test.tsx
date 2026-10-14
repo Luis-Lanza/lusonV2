@@ -433,7 +433,7 @@ describe('C4b correction authority and operation boundaries', () => {
     render(<TransferPending controller={f.controller} ownerTag={f.ownerTag} onInventory={f.back} />);
     await loaded();
     fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'received' } });
-    await screen.findByText('1 solicitudes recibidas'); expect(correctionCalls(f)).toHaveLength(0);
+    await screen.findByText('1 solicitud recibida'); expect(correctionCalls(f)).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: `Ver detalle ${record.reference}` })); await correctionLoaded();
     expect(correctionCalls(f)).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Volver a recibidas' }));
@@ -511,7 +511,7 @@ describe('C2 creator cancellation entry and consultation', () => {
     const selector = screen.getByRole('combobox', { name: 'Estado de transferencia' });
     expect(within(selector).getByRole('option', { name: 'Canceladas' })).toHaveValue('cancelled');
     fireEvent.change(selector, { target: { value: 'cancelled' } });
-    await screen.findByText('1 solicitudes canceladas');
+    await screen.findByText('1 solicitud cancelada');
     expect(screen.getByRole('table')).toHaveTextContent('Cancelada');
     await detail();
     expect(screen.getByRole('heading', { name: 'Solicitud Cancelada' })).toBeVisible();
@@ -716,9 +716,9 @@ describe('A06b status-specific consultation', () => {
   it.each([[1, 2], [1, 3], [2, 3], [3, 2], [2, 1], [3, 1]])('keeps terminal %s → %s routes and persisted participants without pending work', async (origin, destination) => {
     for (const status of ['approved', 'rejected']) {
       const f = fixture(destination === 1 ? 1 : destination); f.env.record = wire(origin, destination); f.env.count = '1';
-      const view = render(f.element()); await screen.findByText('1 solicitudes pendientes'); selectStatus(status);
+      const view = render(f.element()); await screen.findByText('1 solicitud pendiente'); selectStatus(status);
       const plural = status === 'approved' ? 'aprobadas' : 'rechazadas';
-      await screen.findByText(`1 solicitudes ${plural}`);
+      await screen.findByText(`1 solicitud ${status === 'approved' ? 'aprobada' : 'rechazada'}`);
       const table = screen.getByRole('table', { name: `Solicitudes ${plural} participantes` });
       expect(table).toHaveTextContent(locations[origin - 1]); expect(table).toHaveTextContent(locations[destination - 1]);
       expect(table).toHaveTextContent('18446744073709551614');
@@ -743,7 +743,7 @@ describe('A06b status-specific consultation', () => {
     let held: ReturnType<typeof deferred> | null = null;
     const f = fixture(2, url => url.includes('status=approved') ? (held?.promise ?? Promise.resolve(listReply('approved', [wire(1, 2, '99', 'approved')], '1'))) : undefined);
     render(f.element()); await loaded(); selectStatus('approved');
-    await screen.findByText('1 solicitudes aprobadas');
+    await screen.findByText('1 solicitud aprobada');
     expect(screen.getByRole('button', { name: 'Siguiente aprobadas' })).toBeDisabled();
     held = deferred(); const before = calls(f).length;
     act(() => { for (const listener of f.listeners) listener(); });
@@ -1008,6 +1008,73 @@ describe('A05a truthful terminal detail', () => {
   });
 });
 
+describe('F2 list presentation', () => {
+  it('keeps independent counter semantics in compact expandable help', async () => {
+    const f = fixture(); render(f.element()); await loaded();
+    const counters = screen.getByRole('region', { name: 'Contadores de solicitudes' });
+    const help = within(counters).getByText('Sobre los totales').closest('details');
+    expect(help).not.toBeNull();
+    expect(help).not.toHaveAttribute('open');
+    expect(help).toHaveTextContent('Totales independientes del filtro');
+    expect(help).toHaveTextContent('aprobar, despachar o recibir');
+    expect(counters.querySelectorAll('dd')).toHaveLength(2);
+  });
+  it('groups mobile route participants, flow and exact variant quantities', async () => {
+    const f = fixture(1); f.env.count = '1'; render(f.element());
+    await screen.findByText('1 solicitud pendiente');
+    const card = document.querySelector('.pending-cards article')!;
+    expect(card.querySelector('header .pending-flow')).toHaveTextContent('Solicitud a Almacén');
+    const route = card.querySelector('.pending-card-route');
+    expect(route).toHaveTextContent('Ruta: Almacén → Sucursal A');
+    expect(route).toHaveTextContent('Ubicación creadora: Sucursal A');
+    expect(route).toHaveTextContent('Requiere aprobación de: Almacén');
+    expect(within(card as HTMLElement).getByRole('heading', { name: 'Detalle del envío (2 variantes)' })).toBeInTheDocument();
+    expect([...card.querySelectorAll('.pending-variant-quantity')].map(node => node.textContent)).toEqual([
+      '9223372036854775807 unidades', '9223372036854775807 unidades',
+    ]);
+  });
+  it.each(['0', '1'])('keeps pagination within the list region with %s records', async count => {
+    const f = fixture(); f.env.count = count; render(f.element());
+    await screen.findByText(count === '0' ? '0 solicitudes pendientes' : '1 solicitud pendiente');
+    const results = screen.getByRole('region', { name: 'Listado de transferencias' });
+    expect(within(results).getByLabelText('Ir a página')).toBeInTheDocument();
+    expect(results.querySelector('footer')).toHaveAttribute('aria-label', 'Paginación de transferencias');
+    if (count === '1') expect(within(results).getByRole('table')).toBeInTheDocument();
+    else expect(within(results).getByRole('status')).toHaveTextContent('No hay solicitudes pendientes');
+  });
+  it.each([1, 2, 3])('uses direct-send copy only for assigned warehouse %s', async id => {
+    const f = fixture(id); if (id === 3) f.env.record = wire(2, 3);
+    render(<TransferPending controller={f.controller} ownerTag={f.ownerTag} onInventory={f.back} creationAvailable onCreate={vi.fn()} />);
+    await loaded();
+    expect(screen.getByRole('button', { name: id === 1 ? 'Crear envío' : 'Nueva transferencia' })).toHaveTextContent(id === 1 ? 'Crear envío' : 'Nueva transferencia');
+    const heading = screen.getByRole('heading', { name: 'Transferencias pendientes' });
+    expect(heading.firstChild?.textContent).toBe('Transferencias');
+    expect(screen.getByText('Consultá las transferencias de tu ubicación asignada.')).toBeVisible();
+    expect(screen.queryByRole('option', { name: 'Todas' })).not.toBeInTheDocument();
+  });
+  it.each([
+    ['pending', 'pendiente'], ['approved', 'aprobada'], ['rejected', 'rechazada'],
+    ['in_transit', 'en tránsito'], ['received', 'recibida'], ['cancelled', 'cancelada'],
+  ])('uses singular summary for one %s request without changing independent counters', async (status, singular) => {
+    const f = fixture(2, url => {
+      if (!url.startsWith('/api/transfers?')) return undefined;
+      const selectedStatus = new URL(url, 'http://localhost').searchParams.get('status')!;
+      const base = wire(1, 2, '9007199254740993', selectedStatus);
+      const record = selectedStatus === 'received' ? receivedWire()
+        : selectedStatus === 'in_transit' ? { ...base, dispatch_location_id: 1, dispatched_at: correctionStamp }
+          : selectedStatus === 'cancelled' ? { ...base, cancellation_location_id: 2, cancelled_at: correctionStamp } : base;
+      return Promise.resolve(reply({ page: 1, page_size: 25, status: selectedStatus, total_count: '1', records: [record] }));
+    });
+    render(f.element());
+    await screen.findByText('1 solicitud pendiente');
+    fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: status } });
+    expect(await screen.findByText(`1 solicitud ${singular}`)).toHaveAttribute('aria-live', 'polite');
+    const counters = screen.getByRole('region', { name: 'Contadores de solicitudes' });
+    expect(counters).toHaveTextContent('9007199254740995');
+    expect(counters).toHaveTextContent('9007199254740994');
+  });
+});
+
 describe('R05-U2 pending header action stack', () => {
   it.each([2, 3])('groups branch %s creation before the live count separately from the title', async id => {
     const f = fixture(id); if (id === 3) f.env.record = wire(2, 3);
@@ -1037,9 +1104,9 @@ describe('R05-U2 pending header action stack', () => {
     const title = screen.getByRole('heading', { name: 'Transferencias pendientes' });
     const count = screen.getByText('9007199254740993 solicitudes pendientes');
     expect(count.closest('header')).toBe(title.closest('header'));
-    expect(screen.getByRole('button', { name: 'Nueva transferencia' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Crear envío' })).toBeEnabled();
     await detail();
-    expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Crear envío' })).not.toBeInTheDocument();
   });
 });
 
@@ -1049,10 +1116,10 @@ describe('R05-U1 list creation entry', () => {
     const create = vi.fn();
     render(<TransferPending controller={f.controller} ownerTag={f.ownerTag} onInventory={f.back} creationAvailable onCreate={create} />);
     await loaded();
-    fireEvent.click(screen.getByRole('button', { name: 'Nueva transferencia' }));
+    fireEvent.click(screen.getByRole('button', { name: id === 1 ? 'Crear envío' : 'Nueva transferencia' }));
     expect(create).toHaveBeenCalledOnce();
     await detail();
-    expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: id === 1 ? 'Crear envío' : 'Nueva transferencia' })).not.toBeInTheDocument();
     expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
   });
   it.each(['unready', 'epoch', 'warehouse', 'unavailable'])('blocks retained creation callbacks for %s', async mode => {
@@ -1075,7 +1142,7 @@ describe('R04c participant Pending', () => {
     expect(table).toHaveTextContent('Pendiente de aprobación');
     expect(table).toHaveTextContent('Requiere aprobación de');
     expect(calls(f)).toHaveLength(1); expect(isPassive(calls(f)[0])).toBe(true);
-    expect(screen.queryByText('1 solicitudes pendientes')).not.toBeInTheDocument();
+    expect(screen.queryByText('1 solicitud pendiente')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Aprobar|Rechazar|Cancelar|Despachar/ })).not.toBeInTheDocument();
   });
   it.each([[1, 2, 'Solicitud a Almacén'], [2, 3, 'Solicitud entre sucursales'], [2, 1, 'Propuesta de envío a Almacén']])('labels physical route %s to %s honestly', async (origin, destination, label) => {
@@ -1156,7 +1223,7 @@ describe('R04c participant Pending', () => {
     expect(screen.queryByText('No hay solicitudes pendientes para tu ubicación.')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Anterior pendientes' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Siguiente pendientes' })); await screen.findByText('Página 2');
-    await screen.findByText('1 solicitudes pendientes');
+    await screen.findByText('1 solicitud pendiente');
     expect(screen.getByRole('button', { name: 'Siguiente pendientes' })).toBeDisabled();
     expect(screen.queryByText('No hay solicitudes pendientes para tu ubicación.')).not.toBeInTheDocument();
   });

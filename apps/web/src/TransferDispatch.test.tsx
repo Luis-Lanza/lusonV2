@@ -81,7 +81,7 @@ describe('R2 latest Received participant history', () => {
     expect(screen.queryByRole('button', { name: /Despachar solicitud|Recibir solicitud|Resolver/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
     fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'received' } });
-    await screen.findByText('1 solicitudes recibidas');
+    await screen.findByText('1 solicitud recibida');
     expect(screen.getByRole('table', { name: 'Solicitudes recibidas participantes' })).toHaveTextContent('Recibida');
     expect(posts(f)).toHaveLength(0);
   });
@@ -198,7 +198,7 @@ describe('D2 dispatch participant UI', () => {
     expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toHaveTextContent('Acciones requeridas2');
     fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
     fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'in_transit' } });
-    await screen.findByText('1 solicitudes en tránsito');
+    await screen.findByText('1 solicitud en tránsito');
     expect(screen.getByRole('table', { name: 'Solicitudes en tránsito participantes' })).toHaveTextContent('En tránsito');
   });
   it.each(['epoch', 'generation', 'unready'] as const)('fences saved confirmation handlers and private dialog on %s replacement', async change => {

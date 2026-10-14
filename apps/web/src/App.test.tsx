@@ -1189,7 +1189,7 @@ describe('R05-U1 creation section', () => {
     fireEvent.click(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })); await inventory();
     if (entry !== 'inventory') {
       fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
-      await screen.findByText('1 solicitudes pendientes');
+      await screen.findByText('1 solicitud pendiente');
     }
     fireEvent.click(screen.getByRole('button', { name: /Nueva transferencia/ }));
     const add = await screen.findByRole('button', { name: 'Añadir Real response L' });
@@ -1229,14 +1229,14 @@ describe('R05-U1 creation section', () => {
     expect(catalogReads()).toHaveLength(0);
     expect(screen.queryByLabelText('Tipo de transferencia')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
-    await screen.findByText('1 solicitudes pendientes');
-    expect(screen.getByRole('button', { name: 'Nueva transferencia' })).toBeEnabled();
+    await screen.findByText('1 solicitud pendiente');
+    expect(screen.getByRole('button', { name: 'Crear envío' })).toBeEnabled();
     expect(screen.getByRole('main')).toHaveAttribute('id', 'transferencias');
     expect(document.querySelectorAll('nav [aria-current="page"]')).toHaveLength(1);
     expect(catalogReads()).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: 'Ver detalle TR-9007199254740993' }));
     await screen.findByRole('heading', { name: 'TR-9007199254740993' });
-    expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Crear envío' })).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole('button', { name: 'Actualizar stock de origen' })).toBeEnabled());
     expect(catalogReads()).toHaveLength(1);
     const [input, init] = catalogReads()[0];
@@ -1304,12 +1304,12 @@ describe('R04c guarded success navigation', () => {
     setup(actor, url => url.startsWith('/api/transfers?') ? Promise.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, status: 'pending', total_count: '1', records: [r04cRecord()] }), { headers: { 'Content-Type': 'application/json' } })) : undefined);
     render(<App />); if (assigned === 1) await screen.findByText('9007199254740993'); else await inventory();
     if (assigned === 2) { fireEvent.click(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })); await inventory(); }
-    fireEvent.click(screen.getByRole('button', { name: 'Transferencias' })); await screen.findByText('1 solicitudes pendientes');
+    fireEvent.click(screen.getByRole('button', { name: 'Transferencias' })); await screen.findByText('1 solicitud pendiente');
     expect(document.querySelector('.app-shell')?.classList.contains('warehouse')).toBe(assigned === 1);
     expect(document.querySelector('.pending-cards') !== null).toBe(assigned === 1);
     expect(screen.getByRole('main')).toHaveAttribute('id', 'transferencias');
     expect(document.querySelectorAll('nav [aria-current="page"]')).toHaveLength(1);
-    if (assigned === 1) expect(screen.getByRole('button', { name: 'Nueva transferencia' })).toBeEnabled();
+    if (assigned === 1) expect(screen.getByRole('button', { name: 'Crear envío' })).toBeEnabled();
     expect(screen.queryByRole('navigation', { name: 'Navegación móvil' }) !== null).toBe(assigned === 1);
     expect(screen.getByRole('table', { name: 'Solicitudes pendientes participantes' })).toBeInTheDocument();
   });

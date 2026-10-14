@@ -140,7 +140,7 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .warehouse .title-row { align-items: flex-start; position: relative; display: block; }
   .warehouse h1 { font-size: 20px; font-weight: 700; margin-bottom: 16px; min-height: 32px; display: flex; align-items: center; }
   .warehouse .title-row p { font-size: 12px; line-height: 20px; margin: 0; }
-  .warehouse .transfer-cta { position: absolute; right: 0; top: 0; font-size: 12px; height: 32px; padding: 0 12px; gap: 6px; }
+  .warehouse .inventory-heading .title-row .transfer-cta { position: absolute; right: 0; top: 0; font-size: 12px; height: 32px; padding: 0 12px; gap: 6px; }
   .warehouse .desktop-cta { display: none; }
   .warehouse .mobile-cta { display: inline; }
   .mobile-location { display: flex; flex-direction: column; gap: 8px; background: white; border: 1px solid var(--border); border-radius: 8px; padding: 12px; box-shadow: 0 1px 2px #2421240d; }
@@ -265,6 +265,31 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .pending-heading .pending-heading-actions { display: flex; flex-direction: column; align-items: flex-end; align-self: flex-start; gap: 6px; margin-left: auto; text-align: right; }
 .pending-heading .pending-heading-actions .pending-count { margin: 0; }
 .pending-count { font-weight: 600; font-variant-numeric: tabular-nums; }
+/* List-only hierarchy; detail, creation and inventory retain their own panels. */
+.pending-list > .creation-back { border: 0; background: transparent; padding: 0; font-size: 12px; }
+.pending-list > .pending-heading { padding: 0; background: transparent; border: 0; border-radius: 0; align-items: flex-start; }
+.pending-list > .pending-heading > div:first-child { min-width: 0; }
+.pending-list .pending-heading h1 { margin: 0; }
+.pending-list .pending-heading-actions { min-width: 0; }
+.pending-list .pending-heading-actions .pending-count { font-size: 12px; overflow-wrap: anywhere; }
+.pending-list > .transfer-request-counters { padding: 4px 0; background: transparent; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; }
+.pending-list > .transfer-request-counters dl { gap: 4px 24px; margin-bottom: 0; }
+.pending-list .pending-counter-help { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 16px; }
+.pending-list .pending-counter-help summary { cursor: pointer; width: fit-content; }
+.pending-list .pending-counter-help summary:focus-visible { outline: 2px solid var(--wine); outline-offset: 2px; }
+.pending-list .pending-counter-help small { display: block; margin-top: 4px; }
+.pending-list > .transfer-request-counters dl > div { flex: 0 1 auto; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.pending-list > .transfer-request-counters dd { margin: 0; }
+.pending-list > .transfer-status-toolbar { padding: 10px 12px; gap: 8px; }
+.pending-list > .transfer-status-toolbar select { padding: 7px 10px; font-size: 13px; }
+.pending-list > :is(.transfer-decision, .transfer-dispatch, .transfer-receipt, .transfer-cancellation):empty { display: none; }
+.pending-list .pending-results { min-width: 0; background: white; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.pending-list .pending-results > .pending-table { border: 0; border-radius: 0; }
+.pending-list .pending-results > :is(p, .message) { margin: 16px; }
+.pending-list .pending-results > .pager { flex-wrap: wrap; background: white; }
+.pending-list .pending-results > .pager .page-controls { flex-wrap: wrap; min-width: 0; }
+.pending-list .pending-status.status-received { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+.pending-list #pending-page { width: 72px; }
 .transfer-request-counters { padding: 12px 16px; background: white; border: 1px solid var(--border); border-radius: 8px; }
 .transfer-request-counters dl { display: flex; flex-wrap: wrap; gap: 16px 32px; margin: 0 0 8px; }
 .transfer-request-counters dl > div { flex: 1 1 180px; min-width: 0; }
@@ -304,6 +329,35 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .transfer-status-toolbar { flex-direction: column; align-items: stretch; }
   .warehouse .pending-cards .pending-status { display: block; font-size: 14px; }
   .warehouse .pending-heading, .warehouse .pending-record-heading { flex-direction: column; align-items: flex-start; padding: 16px; }
+  .transfer-pending.pending-list > .pending-heading { flex-direction: row; flex-wrap: wrap; padding: 0; gap: 8px 12px; }
+  .pending-list > .pending-heading > div:first-child { flex: 1 1 180px; }
+  .pending-list .pending-heading h1 { font-size: 20px; min-height: 0; margin: 0; }
+  .pending-list .pending-heading p { font-size: 12px; line-height: 1.5; }
+  .pending-list .pending-heading .pending-heading-actions { flex: 0 1 150px; gap: 8px; }
+  .pending-list .transfer-cta { height: auto; min-height: 36px; padding: 8px 12px; font-size: 12px; white-space: normal; }
+  .pending-list > .transfer-status-toolbar { flex-direction: row; align-items: center; }
+  .pending-list > .transfer-status-toolbar select { flex: 1 1 140px; min-width: 0; }
+  .warehouse .pending-list { gap: 12px; }
+  /* The warehouse shell already supplies keyboard-accessible Inventario navigation. */
+  .warehouse .pending-list > .creation-back { display: none; }
+  .warehouse .pending-list .pending-results { display: grid; gap: 12px; border: 0; background: transparent; overflow: visible; }
+  .warehouse .pending-list .pending-results > :is(p, .message) { margin: 0; }
+  .warehouse .pending-list .pending-results > .pager { margin-top: 0; }
+  .warehouse .pending-list .pending-card-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+  .warehouse .pending-list .pending-card-identity h2 { font-size: 14px; font-weight: 700; margin: 0; overflow-wrap: anywhere; }
+  .warehouse .pending-list .pending-flow { padding: 3px 6px; border-radius: 4px; background: var(--tint); color: var(--wine); font-size: 10px; }
+  .warehouse .pending-list .pending-unit-total { padding: 3px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--page); font-size: 11px; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .warehouse .pending-list .pending-card-route { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--page); }
+  .warehouse .pending-list .pending-card-route p { font-size: 12px; margin: 0; }
+  .warehouse .pending-list .pending-card-route p > span, .warehouse .pending-list .pending-card-participants { color: var(--muted); }
+  .warehouse .pending-list .pending-card-participants { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; }
+  .warehouse .pending-list .pending-card-participants p { font-size: 11px; }
+  .warehouse .pending-list .pending-card-participants strong { color: #242124; font-weight: 500; }
+  .warehouse .pending-list .pending-card-variants { border-top: 1px solid var(--border); padding-top: 10px; }
+  .warehouse .pending-list .pending-card-variants h3 { margin: 0 0 8px; font-size: 10px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+  .warehouse .pending-list .pending-card-variants ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  .warehouse .pending-list .pending-card-variants li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto); gap: 8px; align-items: baseline; overflow-wrap: anywhere; }
+  .warehouse .pending-list .pending-variant-quantity { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
   .warehouse .pending-table { display: none; }
   .warehouse .pending-cards { display: grid; gap: 14px; }
   .warehouse .pending-cards article { display: grid; gap: 10px; background: white; border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
