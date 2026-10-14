@@ -82,6 +82,77 @@ describe('W2 direct warehouse workspace', () => {
   });
 });
 
+describe('F3 grouped catalog and compact route', () => {
+  function pairedCatalog() {
+    const source = catalog(1, 3, 17n);
+    return { ...source, rows: source.rows.map((row, index): Item => index === 1
+      ? { ...source.rows[0], variant_id: 2, polarity: 'R', existing: 9n, available: 9n } : row) };
+  }
+  it('groups paired polarities by catalog identity with independent quantities and stock bounds', async () => {
+    const h = harness(authority(1));
+    const loader = vi.fn<typeof loadSourceInventory>(async () => pairedCatalog());
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    const group = await screen.findByRole('rowgroup', { name: 'TOYO · Modelo 1 · 75.125 Ah' });
+    expect(within(group).getByText('2 variantes')).toBeInTheDocument();
+    expect(screen.getAllByLabelText('Cantidad Modelo 1 L')).toHaveLength(1);
+    expect(screen.getAllByLabelText('Cantidad Modelo 1 R')).toHaveLength(1);
+    fireEvent.change(within(group).getByLabelText('Cantidad Modelo 1 L'), { target: { value: '4' } });
+    fireEvent.change(within(group).getByLabelText('Cantidad Modelo 1 R'), { target: { value: '7' } });
+    fireEvent.click(within(group).getByRole('button', { name: 'Añadir Modelo 1 L' }));
+    fireEvent.click(within(group).getByRole('button', { name: 'Añadir Modelo 1 R' }));
+    expect(within(group).getByText('En la selección: 4')).toBeVisible();
+    expect(within(group).getByText('En la selección: 7')).toBeVisible();
+    expect(screen.getByLabelText('Total a transferir')).toHaveTextContent('11 baterías');
+    fireEvent.change(within(group).getByLabelText('Cantidad Modelo 1 R'), { target: { value: '10' } });
+    fireEvent.click(within(group).getByRole('button', { name: 'Añadir Modelo 1 R' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('dentro del disponible');
+    expect(screen.getByLabelText('Total a transferir')).toHaveTextContent('11 baterías');
+    const route = screen.getByRole('region', { name: 'Ruta física' });
+    expect(within(route).getByText('Origen · Fijo')).toBeVisible();
+    expect(within(route).getAllByText('Almacén', { selector: 'strong' })).toHaveLength(1);
+    expect(within(route).queryByText('Sucursal A', { selector: 'strong' })).not.toBeInTheDocument();
+    expect(within(route).getByLabelText('Tipo de transferencia')).toHaveValue('directA');
+  });
+  it('retains unavailable variants without inventing absent or filtered polarities or merging identical labels', async () => {
+    const h = harness(); const original = pairedCatalog();
+    const source = { ...original, rows: original.rows.map((row, index): Item => index === 1
+      ? { ...row, existing: 0n, available: 0n } : index === 2
+        ? { ...original.rows[0], variant_id: 3, catalog_entry_id: 2 } : row) };
+    const loader = vi.fn<typeof loadSourceInventory>(async () => source);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    await screen.findByRole('button', { name: 'Añadir Modelo 1 R' });
+    const groups = screen.getAllByRole('rowgroup', { name: 'TOYO · Modelo 1 · 75.125 Ah' });
+    expect(groups).toHaveLength(2);
+    expect(within(groups[0]).getByRole('button', { name: 'Añadir Modelo 1 R' })).toBeDisabled();
+    expect(within(groups[0]).getByLabelText('Cantidad Modelo 1 R')).toBeDisabled();
+    expect(within(groups[1]).getByText('1 variante')).toBeInTheDocument();
+    expect(within(groups[1]).queryByLabelText('Cantidad Modelo 1 R')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Polaridad'), { target: { value: 'L' } });
+    expect(screen.queryByLabelText('Cantidad Modelo 1 R')).not.toBeInTheDocument();
+    expect(screen.getAllByText('1 variante')).toHaveLength(2);
+    expect(loader).toHaveBeenCalledTimes(1);
+  });
+  it('groups only the displayed page even when a pair crosses its boundary', async () => {
+    const h = harness(); const original = catalog(1, 26, 17n);
+    const source = { ...original, rows: original.rows.map((row, index): Item => index === 25
+      ? { ...original.rows[24], variant_id: 26, polarity: 'R' } : row) };
+    const loader = vi.fn<typeof loadSourceInventory>(async () => source);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    const name = 'TOYO · Modelo 25 · 75.125 Ah';
+    const group = await screen.findByRole('rowgroup', { name });
+    expect(within(group).getByText('1 variante')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Cantidad Modelo 25 R')).not.toBeInTheDocument();
+    fireEvent.click(within(group).getByRole('button', { name: 'Añadir Modelo 25 L' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Página siguiente' }));
+    const next = screen.getByRole('rowgroup', { name });
+    expect(within(next).getByText('1 variante')).toBeInTheDocument();
+    expect(within(next).queryByLabelText('Cantidad Modelo 25 L')).not.toBeInTheDocument();
+    fireEvent.click(within(next).getByRole('button', { name: 'Añadir Modelo 25 R' }));
+    expect(screen.getByLabelText('Total a transferir')).toHaveTextContent('2 baterías');
+    expect(loader).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('R04b2b workspace', () => {
   it('opens the physical warehouse catalog with explicit real review and no stock mutations', async () => {
     const h = harness(); const original = catalog(); const loader = vi.fn<typeof loadSourceInventory>(async () => original);

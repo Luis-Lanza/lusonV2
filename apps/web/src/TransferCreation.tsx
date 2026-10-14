@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Metadata } from './model';
-import { validSearch } from './model';
+import { groupItems, validSearch } from './model';
 import { filterSourceInventory, loadSourceInventory, SourceInventoryError } from './sourceInventory';
 import { addCartItem, cartStatus, createTransferCart, refreshCart, removeCartItem, setCartQuantity, reviewCart, restoreTransferCart } from './transferCart';
 import { createTransferRecovery, type RecoveryFlight, type RecoverySnapshot } from './transferRecovery';
@@ -300,24 +300,27 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
     <p className="creation-breadcrumb">Transferencias / {title}</p>
     <button id="creation-back" type="button" disabled={inFlight} className="creation-back" onClick={() => changeFlow('back')}>← Volver a transferencias</button>
     <h1 id="creation-title">{title}</h1>
-    <p>Prepará una solicitud con el stock de su origen físico. La consulta de inventario no cambia tu ubicación asignada.</p>
+    <p className="creation-intro">{direct ? 'Envío directo desde Almacén, sin aprobación del destino.' : 'Prepará una solicitud con el stock de su origen físico.'} La consulta no cambia tu ubicación asignada.</p>
     {snapshot && !visibleReview && <div className="creation-recovery" role="status"><p>{snapshot.phase === 'ready' ? 'Tenés una revisión preparada, todavía no enviada.' : 'Tenés un intento pendiente de confirmación.'}</p>
       <button type="button" disabled={inFlight} onClick={event => openReview(event.currentTarget)}>{snapshot.phase === 'ready' ? 'Retomar revisión' : 'Retomar misma solicitud'}</button>
       <button type="button" disabled={inFlight} onClick={() => requestCaution('edit')}>Editar selección conservada</button>
       <p>Recargar o cerrar la pestaña pierde esta memoria.</p></div>}
     <fieldset className="creation-workspace" disabled={inFlight || !!visibleReview || !!pending}>
-    <label className="creation-flow">Tipo de transferencia<select ref={picker} value={flow} onChange={e => {
+    <section className={`creation-route-controls${direct ? ' creation-direct-route' : ''}`} aria-label="Ruta física">
+    {direct && <div className="creation-fixed-origin"><span>Origen · Fijo</span><strong>{sourceName}</strong></div>}
+    <label className="creation-flow">{direct ? 'Destino' : 'Tipo de transferencia'}<select aria-label="Tipo de transferencia" ref={picker} value={flow} onChange={e => {
       if (!current()) return;
       const value = e.target.value;
       if (assigned === 1 ? value === 'directA' || value === 'directB'
         : value === 'requestWarehouse' || value === 'requestOther' || value === 'sendWarehouse') changeFlow(value as TransferFlow);
     }}>{assigned === 1 ? <><option value="directA">Enviar a {location(2)}</option><option value="directB">Enviar a {location(3)}</option></>
       : <><option value="requestWarehouse">Solicitar a Almacén</option><option value="requestOther">Solicitar a {location(assigned === 2 ? 3 : 2)}</option><option value="sendWarehouse">Proponer envío a Almacén</option></>}</select></label>
-    <section className="creation-route" aria-label="Ruta física">
+    {!direct && <div className="creation-route">
       <div><span>Origen</span><strong>{sourceName}</strong></div><b aria-hidden="true">→</b><div><span>Destino</span><strong>{location(direction.destination_location_id)}</strong></div>
-      <p>{direct ? 'La creación autoriza y reserva el envío completo. No requiere aprobación del destino; el despacho se confirma por separado.'
-        : <>Requiere aprobación de {location(direction.approver_location_id)} · No genera reserva inmediata de stock</>}</p>
+      <p>Requiere aprobación de {location(direction.approver_location_id)} · No genera reserva inmediata de stock</p>
+    </div>}
     </section>
+    {direct && <p className="creation-route-notice">La creación autoriza y reserva el envío completo. No requiere aprobación del destino; el despacho se confirma por separado.</p>}
     <div className="creation-grid">
       <section className="creation-catalog" aria-label="Catálogo de origen" aria-busy={busy}>
         <header><h2>Disponibilidad en {sourceName}</h2><p>Disponibilidad orientativa. El servidor validará todas las cantidades al enviar; las páginas no son una foto atómica del stock.</p>
@@ -333,16 +336,21 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
         {error && <p className="message" role="alert">{error}</p>}
         <button id="creation-retry" type="button" className="creation-retry" onClick={() => { if (current()) read.current('manual'); }}>Reintentar catálogo</button>
         <div className="creation-table"><table><caption className="sr-only">Catálogo de {sourceName}</caption><thead><tr>{['Batería', 'Polaridad', 'Disponible', 'Cantidad', 'Acción'].map(text => <th key={text} scope="col">{text}</th>)}</tr></thead>
-          <tbody>{pageRows.map(row => <tr key={row.variant_id}>
-            <td><strong>{row.brand} · {row.model}</strong><small>{row.capacity_ah} Ah</small></td><td><span className="polarity">{row.polarity}</span></td><td>{row.available.toString()}{row.available === 0n && <small>Sin disponible</small>}</td>
-            <td><input id={`source-quantity-${row.variant_id}`} aria-label={`Cantidad ${row.model} ${row.polarity}`} inputMode="numeric" value={quantities[row.variant_id] ?? '1'} disabled={row.available === 0n} onChange={e => {
+          {groupItems(pageRows).map(group => <tbody key={group[0].catalog_entry_id} className="creation-model-group" aria-label={`${group[0].brand} · ${group[0].model} · ${group[0].capacity_ah} Ah`}>
+          <tr className="creation-model-heading"><td colSpan={5}><strong>{group[0].brand} · {group[0].model}</strong><span>{group[0].capacity_ah} Ah</span><small>{group.length} {group.length === 1 ? 'variante' : 'variantes'}</small></td></tr>
+          {group.map(row => {
+            const selected = cart?.lines.find(line => line.item.variant_id === row.variant_id);
+            return <tr key={row.variant_id}>
+            <td className="creation-product"><strong>{row.brand} · {row.model}</strong><small>{row.capacity_ah} Ah</small></td><td data-label="Polaridad"><span className="polarity">{row.polarity}</span></td><td data-label="Disponible">{row.available.toString()}{row.available === 0n && <small>Sin disponible</small>}</td>
+            <td data-label="Cantidad"><input id={`source-quantity-${row.variant_id}`} aria-label={`Cantidad ${row.model} ${row.polarity}`} inputMode="numeric" value={quantities[row.variant_id] ?? '1'} disabled={row.available === 0n} onChange={e => {
               if (!guardedCart()) return;
               setQuantities(previous => ({ ...previous, [row.variant_id]: e.target.value }));
             }} /></td><td><button type="button" disabled={row.available === 0n} aria-label={`Añadir ${row.model} ${row.polarity}`} onClick={() => {
               if (!guardedCart()) return;
               if (editCart((draft, latest) => addCartItem(draft, latest, row.variant_id, quantities[row.variant_id] ?? '1'))) focusAdd(row.variant_id);
-            }}>Añadir</button></td>
-          </tr>)}</tbody></table></div>
+            }}>{selected ? 'Añadir más' : 'Añadir'}</button>
+              {selected && <small className="creation-selected">En la selección: {selected.quantity.toString()}</small>}</td>
+          </tr>; })}</tbody>)}</table></div>
         {visible && rows.length === 0 && <p role="status" className="message">No hay variantes para esta consulta.</p>}
         <footer className="creation-pager"><span>Mostrando {rows.length ? (displayedPage - 1) * 25 + 1 : 0}–{Math.min(displayedPage * 25, rows.length)} de {rows.length} variantes</span>
           <button type="button" aria-label="Página anterior" disabled={displayedPage <= 1} onClick={() => { if (current()) setPage(displayedPage - 1); }}>Anterior</button><span>{displayedPage} / {lastPage}</span>
@@ -371,6 +379,7 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
           }}>Quitar</button>
         </article>)}
         {quantityError && <p className="message" role="alert">{quantityError}</p>}
+        <p className="creation-total">Total a transferir <strong aria-label="Total a transferir">{status?.total.toString() ?? '0'} baterías</strong></p>
         <p>Este borrador no reserva ni mueve existencias.</p><button type="button" className="primary" disabled={!snapshot && !status?.ready} onClick={event => openReview(event.currentTarget)}>Revisar solicitud</button>
         <p>El envío es manual desde la revisión. Recargar o cerrar la pestaña pierde la recuperación en memoria.</p>
       </aside>

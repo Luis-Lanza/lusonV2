@@ -985,7 +985,7 @@ describe('A05b real controller decisions', () => {
       const h = decisionFixture(3, original, (url, init) => init.method === 'POST' ? mode === 'post'
         ? Promise.resolve(reply(decisionOutcome(original, status))) : Promise.reject(new Error('unknown'))
         : reading && url === '/api/transfers/1' ? Promise.resolve(reply(decisionOutcome(original, status))) : undefined, true);
-      await h.ready(); await screen.findByText(/^TOYO ·/);
+      await h.ready(); expect(await screen.findByRole('button', { name: 'Añadir A_%\\ L' })).toBeEnabled();
       const sourceCalls = () => inventoryCalls(h.fetch).filter(([url]) => new URL(String(url), 'http://localhost').searchParams.get('page_size') === '50');
       expect(sourceCalls()).toHaveLength(1);
       const inventory = inventoryCalls(h.fetch).length;
@@ -1009,7 +1009,7 @@ describe('A05b real controller decisions', () => {
       if (!kind) return undefined;
       const job = deferred<Response>(); waiting.push({ kind, job, url }); return job.promise;
     }, true);
-    await h.ready(); await screen.findByText(/^TOYO ·/);
+    await h.ready(); expect(await screen.findByRole('button', { name: 'Añadir A_%\\ L' })).toBeEnabled();
     act(() => h.lanes.forEach(lane => lane.selectDetail('1')));
     await waitFor(() => expect(h.lanes[1].detail?.id).toBe('1'));
     delay = true;

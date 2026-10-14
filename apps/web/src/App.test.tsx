@@ -91,7 +91,7 @@ describe('W2 assigned warehouse creation entry', () => {
     const before = stockCalls(mock).length;
     fireEvent.click(entry);
     const route = await screen.findByRole('region', { name: 'Ruta física' });
-    expect(within(route).getByText('Origen').parentElement).toHaveTextContent('Almacén');
+    expect(within(route).getByText('Origen · Fijo').parentElement).toHaveTextContent('Almacén');
     await screen.findByRole('region', { name: 'Catálogo de origen' });
     await waitFor(() => expect(stockCalls(mock).length).toBeGreaterThan(before));
     for (const [url] of stockCalls(mock).slice(before)) {
