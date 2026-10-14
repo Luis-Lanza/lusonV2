@@ -560,6 +560,35 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 /* Restitution surfaces are independent of receipt and C4 styling. */
 .transfer-restitutions { display: grid; gap: 16px; min-width: 0; }
 .transfer-restitutions h3, .transfer-restitutions h4 { margin: 0; }
+.transfer-restitutions .restitution-outcome { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 6px; background: white; overflow-wrap: anywhere; }
+.transfer-restitutions .restitution-outcome-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.transfer-restitutions .restitution-closed { padding: 4px 8px; border: 1px solid #a7d9c3; border-radius: 4px; background: #ecfdf5; color: #065f46; font-size: 12px; font-weight: 600; }
+.transfer-restitutions dl.restitution-quantities { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.transfer-restitutions .restitution-quantities > div { display: grid; align-content: start; gap: 6px; padding: 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--page); }
+.transfer-restitutions .restitution-quantities dt { font-size: 13px; }
+.transfer-restitutions .restitution-quantities dd { font-size: 24px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.transfer-restitutions .restitution-outcome p, .transfer-restitutions .restitution-safety p, .transfer-restitutions li p { margin: 0; }
+.transfer-restitutions .restitution-immutable { color: var(--muted); font-size: 13px; }
+.transfer-restitutions .restitution-safety { display: grid; gap: 8px; font-size: 13px; }
+.transfer-restitutions .restitution-technical { min-width: 0; border-top: 1px solid var(--border); font-size: 13px; }
+.transfer-restitutions .restitution-technical summary { padding: 12px 0; cursor: pointer; color: var(--wine); font-weight: 600; }
+.transfer-restitutions .restitution-technical summary:focus-visible { outline: 2px solid var(--wine); outline-offset: 3px; }
+.transfer-restitutions .restitution-technical p { margin: 0 0 8px; }
+.transfer-restitutions .restitution-consultation, .transfer-restitutions .restitution-consultation > div { display: grid; gap: 16px; min-width: 0; }
+.transfer-restitutions .restitution-consultation select { min-width: 0; width: 100%; }
+/* Closed evidence stays fully readable, without repeated identity rows or roomy history stacks. */
+.transfer-restitutions.restitution-is-closed { gap: 10px; }
+.transfer-restitutions.restitution-is-closed .restitution-outcome { gap: 8px; padding: 12px; }
+.transfer-restitutions.restitution-is-closed .restitution-quantities > div { padding: 10px; }
+.transfer-restitutions.restitution-is-closed .restitution-consultation { grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; }
+.transfer-restitutions.restitution-is-closed .restitution-consultation > div { gap: 6px; }
+.transfer-restitutions.restitution-is-closed .restitution-consultation select { min-height: 44px; }
+.transfer-restitutions.restitution-is-closed .restitution-card { padding: 16px; gap: 8px; }
+.transfer-restitutions.restitution-is-closed dl { gap: 6px; }
+.transfer-restitutions.restitution-is-closed ol { margin: 0; padding-left: 16px; }
+.transfer-restitutions.restitution-is-closed :is(ol, li, li section) { gap: 6px; }
+.transfer-restitutions.restitution-is-closed li section { padding: 10px; min-width: 0; }
+.transfer-restitutions.restitution-is-closed .restitution-technical summary { min-height: 44px; padding: 10px 0; }
 .transfer-restitutions .restitution-card, .transfer-restitutions .restitution-form { display: grid; gap: 12px; padding: 20px; border: 1px solid var(--border); border-radius: 6px; background: white; overflow-wrap: anywhere; }
 .transfer-restitutions dl { margin: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 .transfer-restitutions dd { margin: 0; font-weight: 600; }
@@ -579,6 +608,7 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 @media (max-width: 767px) {
   .transfer-restitutions .restitution-card, .transfer-restitutions .restitution-form { padding: 16px; }
   .transfer-restitutions .restitution-actions { display: grid; }
+  .transfer-restitutions.restitution-is-closed .restitution-consultation { grid-template-columns: minmax(0, 1fr); }
   .transfer-restitutions .restitution-backdrop { padding: 12px; }
   .transfer-restitutions .restitution-modal > h3, .transfer-restitutions .restitution-modal-body, .transfer-restitutions .restitution-modal footer { padding: 16px; }
 }

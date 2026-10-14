@@ -50,6 +50,15 @@ function fixture(actor = 1, proposed = false, dispatched = '5', multiple = false
   const posts = () => fetch.mock.calls.filter(([, init]) => init?.method === 'POST');
   return { authority, record, controller, history, listeners, element, fetch, posts, fail: () => { fail = true; }, mask: () => { mask = true; } };
 }
+function appliedFixture(dispatched = '5') {
+  const f = fixture(2, true, dispatched); const line = f.history.lines[0];
+  line.applied_revision = '1'; line.applied_retained_quantity = '1'; const p = line.proposals[0]; p.state = 'applied';
+  const decision = { operation_key: 'retained_accept_01', actor_location_id: 2, accepted: true, reason: ' exact acceptance ', recorded_at: stamp };
+  Object.assign(p, { decision, application: { operation_key: decision.operation_key, origin_location_id: 1, quantity: '1', recorded_at: stamp } });
+  f.history.operations.push({ ...f.history.operations[0], operation_key: decision.operation_key, actor_location_id: 2, action: 'accept',
+    expected_revision: '1', retained_quantity: null, retained_at_origin: null, reason: decision.reason, source_existing_before: '10', source_existing_after: '11' } as unknown as typeof f.history.operations[number]);
+  return f;
+}
 it.each(['0', '01', '-1', '1.5', '2', '9223372036854775808'])('does not review invalid or excessive retained quantity %s', async quantity => {
   const f = fixture(); render(f.element()); await screen.findByText('Crédito efectivo en destino'); await consult(); draft();
   fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
@@ -97,7 +106,8 @@ it('keeps separate immutable proposal, decision and partial application evidence
     expect(time).toHaveAttribute('datetime', stamp);
     expect(time).toHaveAttribute('title', stamp);
   }
-  expect(screen.getByText('Restitución cerrada: ya existe una aplicación, aunque sea parcial.')).toBeVisible();
+  expect(screen.getByText('Restitución cerrada')).toBeVisible();
+  expect(screen.getByText('Una aplicación, incluso parcial, cierra esta restitución.')).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: 'Consultar para revisar restitución' })); await act(async () => {});
   expect(screen.getByRole('button', { name: 'Aceptar restitución' })).toBeDisabled(); expect(f.posts()).toHaveLength(0);
 });
@@ -111,6 +121,55 @@ it('owns one selected variant, retires its review and requires another explicit 
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); expect(f.posts()).toHaveLength(0);
   await consult(); draft(); fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirmar propuesta' }));
   await waitFor(() => expect(f.posts()).toHaveLength(1)); expect(JSON.parse(String(f.posts()[0][1]?.body)).variant_id).toBe(202);
+});
+it.each(['5', '6'])('presents applied origin outcome separately from destination credit and closes even partial dispatch %s', async dispatched => {
+  const f = appliedFixture(dispatched);
+  render(f.element()); await screen.findByText('Crédito efectivo en destino');
+  const outcome = screen.getByRole('region', { name: 'Resultado de restitución de la variante seleccionada' });
+  expect(outcome).toHaveTextContent('Restitución cerrada');
+  expect(within(outcome).getByText('Crédito efectivo en destino').nextElementSibling).toHaveTextContent(/^4$/);
+  expect(within(outcome).getByText('Restitución aplicada en origen').nextElementSibling).toHaveTextContent(/^1$/);
+  expect(outcome).toHaveTextContent('Una aplicación, incluso parcial, cierra esta restitución.');
+  expect(outcome.compareDocumentPosition(screen.getByLabelText('Variante de restitución')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(screen.queryByText(/^La falta en destino no prueba retención/)).not.toBeInTheDocument();
+  expect(screen.getByText(/El despacho y la recepción original son inmutables/)).toBeVisible();
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Consultar para revisar restitución' })); });
+  expect(screen.getByRole('button', { name: 'Aceptar restitución' })).toBeDisabled(); expect(f.posts()).toHaveLength(0);
+});
+it('keeps operational history visible while exact technical evidence is disclosed without reads or writes', async () => {
+  const f = appliedFixture();
+  render(f.element()); await screen.findByText('Crédito efectivo en destino');
+  for (const name of ['Propuesta 1', 'Decisión 1', 'Aplicación 1']) {
+    const region = screen.getByRole('region', { name });
+    expect(region.querySelector('time')).toBeVisible(); expect(region.querySelector('h4')).toBeVisible();
+  }
+  expect(screen.getByText('Motivo: origin evidence', { exact: false })).toBeVisible();
+  expect(screen.getByText('Motivo de decisión: exact acceptance', { exact: false })).toBeVisible();
+  expect(screen.getByText(/Clave: retained_proposal_01/)).not.toBeVisible();
+  expect(screen.getByText(/Existencias de origen registradas: 10 → 11/)).not.toBeVisible();
+  expect(screen.getByText('Retenidas en origen: 1 · Retención física atestada explícitamente')).toBeVisible();
+  expect(screen.getByText(/Existencias acreditadas: \+1/)).toBeVisible();
+  const before = f.fetch.mock.calls.length;
+  for (const summary of screen.getAllByText('Evidencia técnica', { selector: 'summary' })) {
+    const details = summary.closest('details')!; expect(details).not.toHaveAttribute('open');
+    fireEvent.click(summary); details.open = true; fireEvent(details, new Event('toggle'));
+    expect(details).toHaveAttribute('open');
+  }
+  expect(screen.getByText(/Clave: retained_proposal_01/)).toBeVisible();
+  for (const key of screen.getAllByText(/Clave: retained_accept_01/, { selector: 'p' })) expect(key).toBeVisible();
+  expect(screen.getByText(/Existencias de origen registradas: 10 → 11/)).toBeVisible();
+  expect(screen.getByText(/Revisión base: 0 · Crédito base: 4 · Restitución base: 0/)).toBeVisible();
+  expect(screen.getByText(/Generación de conteo: 0 · Revisión de conteo aplicada: 0/)).toBeVisible();
+  await act(async () => {}); expect(f.fetch.mock.calls).toHaveLength(before); expect(f.posts()).toHaveLength(0);
+});
+it('does not substitute zero for unavailable evidence and keeps pending safety warnings outside disclosures', async () => {
+  const f = fixture(); const view = render(f.element());
+  expect(screen.queryByRole('region', { name: 'Resultado de restitución de la variante seleccionada' })).not.toBeInTheDocument();
+  await screen.findByText('Crédito efectivo en destino');
+  const warning = screen.getByText(/^La falta en destino no prueba retención/);
+  expect(warning).toBeVisible(); expect(warning.closest('details')).toBeNull();
+  expect(screen.getByText(/Una aplicación, incluso parcial/)).toBeVisible();
+  view.unmount(); expect(f.posts()).toHaveLength(0);
 });
 afterEach(() => vi.unstubAllGlobals());
 async function consult() {
@@ -136,6 +195,9 @@ it('requires explicit consultation and unchecked physical attestation, reviews w
   expect(f.posts()).toHaveLength(0);
   const dialog = screen.getByRole('dialog', { name: 'Revisar restitución' });
   expect(dialog).toHaveTextContent('No mueve stock');
+  expect(dialog).toHaveTextContent('permanecen físicamente en origen');
+  expect(dialog).toHaveTextContent('Una aplicación, incluso parcial, cierra esta restitución');
+  expect(dialog).toHaveTextContent('El despacho y la recepción original son inmutables');
   const confirm = within(dialog).getByRole('button', { name: 'Confirmar propuesta' }); fireEvent.click(confirm); fireEvent.click(confirm);
   await waitFor(() => expect(f.posts()).toHaveLength(1));
   expect(JSON.parse(String(f.posts()[0][1]?.body))).toEqual({ variant_id: 201, operation_key: expect.stringMatching(/^[a-f0-9]{32}$/), expected_revision: '0', retained_quantity: '1', retained_at_origin: true, reason: ' exact reason ' });
@@ -171,6 +233,9 @@ it('preserves controller-owned uncertainty across remount and retries only captu
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirmar propuesta' }));
   await screen.findByRole('button', { name: 'Reintentar carga exacta' }); const body = f.posts()[0][1]?.body;
   view.unmount(); render(f.element()); await screen.findByRole('button', { name: 'Reintentar carga exacta' }); expect(f.posts()).toHaveLength(1);
+  const warning = screen.getByText('Resultado incierto. No crees otra operación para esta variante.');
+  expect(warning).toBeVisible(); expect(warning.closest('details')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Consultar resultado de restitución' })).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: 'Reintentar carga exacta' })); await waitFor(() => expect(f.posts()).toHaveLength(2)); expect(f.posts()[1][1]?.body).toBe(body); expect(document.body).not.toHaveTextContent('PRIVATE');
 });
 it.each([false, true])('does not read for disabled or mismatched selection (%s)', async enabled => {
