@@ -8,6 +8,45 @@ import type { TransferAuthority } from './useInventory';
 import type { TransferCountCorrectionsProps } from './TransferCountCorrections';
 import { createTransferRestitutionRecovery } from './transferRestitutionRecovery';
 
+describe('F4a original receipt overview', () => {
+  it('puts route, immutable totals and comparison before discrepancy lanes without inventing restitution balances', () => {
+    const f = fixture(); const original = wire(1, 2, 'approved');
+    const record = parseTransferRecord(JSON.stringify({ ...original, status: 'received',
+      items: original.items.map(item => ({ ...item, quantity: '5' })),
+      dispatch_location_id: 1, dispatched_at: '2028-01-03T00:00:00Z',
+      receipt_location_id: 2, received_at: '2028-01-04T00:00:00Z',
+      receipt: { items: [
+        { variant_id: 1, expected_quantity: '5', actual_quantity: '2', available_quantity: '2' },
+        { variant_id: 2, expected_quantity: '5', actual_quantity: '7', available_quantity: '5' },
+        { variant_id: 3, expected_quantity: '0', actual_quantity: '4', available_quantity: '0' },
+      ], exceptions: [
+        { variant_id: 1, kind: 'shortage', quantity: '3' },
+        { variant_id: 2, kind: 'excess', quantity: '2' },
+        { variant_id: 3, kind: 'unexpected', quantity: '4' },
+      ] } }));
+    render(f.element(record));
+    const overview = screen.getByRole('region', { name: 'Recepción original' });
+    const metrics = within(overview);
+    expect(metrics.getByText('Baterías enviadas').nextElementSibling).toHaveTextContent(/^10$/);
+    expect(metrics.getByText('Recibidas físicamente (original)').nextElementSibling).toHaveTextContent(/^13$/);
+    expect(metrics.getByText('Stock acreditado (recepción original)').nextElementSibling).toHaveTextContent(/^7$/);
+    const table = screen.getByRole('table', { name: 'Detalle de recepción' });
+    expect(overview.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(table).toHaveTextContent('75.125 Ah · Izquierda [L]');
+    expect(table).toHaveTextContent('75.125 Ah · Derecha [R]');
+    expect(table).toHaveTextContent('Faltante: 3');
+    expect(table).toHaveTextContent('Exceso: 2');
+    expect(table).toHaveTextContent('Variante inesperada 3');
+    expect(table).toHaveTextContent('Inesperada: 4');
+    expect(table.parentElement).toHaveClass('receipt-detail-comparison');
+    expect(screen.queryByRole('table', { name: 'Baterías solicitadas' })).not.toBeInTheDocument();
+    expect(document.querySelector('.transfer-detail-cards')).toBeNull();
+    expect(overview).toHaveTextContent('Las correcciones posteriores muestran el conteo efectivo por separado');
+    expect(overview).not.toHaveTextContent(/restituid|restituci|pendiente de resolución/i);
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe('W2 direct warehouse history', () => {
   it.each(['approved', 'in_transit', 'cancelled', 'received'])('retains creation authorization truthfully in %s history', status => {
     const f = fixture(); const original = wire(1, 2, 'approved');

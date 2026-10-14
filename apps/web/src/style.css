@@ -443,7 +443,25 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 /* Immutable decision review. Shell, inventory and creation styles stay unchanged. */
 .transfer-detail { min-width: 0; }
 .transfer-detail-heading { display: grid; justify-items: start; gap: 8px; margin-bottom: 20px; }
-.transfer-detail-heading h2 { font-size: 24px; }
+.transfer-detail-heading h1 { font-size: 24px; overflow-wrap: anywhere; }
+.pending-detail-navigation { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.pending-selected .pending-detail-navigation .creation-back { margin: 0; width: auto; }
+.pending-selected > .transfer-request-counters { margin-top: 20px; }
+.transfer-detail > .transfer-detail-route { margin-bottom: 16px; }
+.transfer-receipt-overview { display: grid; gap: 12px; margin-bottom: 16px; }
+.transfer-receipt-overview h2 { font-size: 16px; }
+.transfer-receipt-overview p { font-size: 12px; color: var(--muted); }
+.transfer-receipt-overview .transfer-outcome-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.transfer-receipt-overview dl { margin: 0; background: white; }
+.transfer-receipt-overview dt { font-size: 12px; color: var(--muted); }
+.transfer-receipt-overview dd { margin: 6px 0 0; font-size: 24px; font-weight: 700; overflow-wrap: anywhere; }
+.receipt-detail-comparison table { width: 100%; }
+.receipt-detail-comparison caption { padding: 14px; text-align: left; font-weight: 600; }
+.receipt-detail-comparison th, .receipt-detail-comparison td { white-space: normal; overflow-wrap: anywhere; padding: 10px 12px; }
+.receipt-detail-comparison th { overflow-wrap: normal; }
+.receipt-discrepancy { display: inline-block; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; }
+.receipt-discrepancy.shortage { background: #fff0f0; border-color: #ffdad6; color: #ba1a1a; }
+.receipt-discrepancy.excess, .receipt-discrepancy.unexpected { background: #fffbef; border-color: #e8cf86; color: #805400; }
 .transfer-detail-heading p { color: var(--muted); }
 .transfer-detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; align-items: start; }
 .transfer-detail-grid > div { display: grid; gap: 16px; min-width: 0; }
@@ -512,12 +530,23 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .transfer-detail-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 767px) {
-  .pending-warehouse .transfer-detail-heading h2 { font-size: 22px; }
+  .transfer-detail-heading h1 { font-size: 22px; }
+  .transfer-receipt-overview .transfer-outcome-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .transfer-receipt-overview .transfer-outcome-metrics dl:last-child { grid-column: 1 / -1; }
+  .transfer-detail .receipt-detail-comparison { display: block; overflow: visible; border: 0; background: transparent; }
+  .receipt-detail-comparison table { display: block; min-width: 0; }
+  .receipt-detail-comparison caption { display: block; padding: 0 0 12px; }
+  .receipt-detail-comparison thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .receipt-detail-comparison tbody { display: grid; gap: 12px; }
+  .receipt-detail-comparison tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--border); border-radius: 6px; background: white; padding: 14px; gap: 12px; }
+  .receipt-detail-comparison td { display: block; padding: 0; border: 0; min-width: 0; height: auto; text-align: left; white-space: normal; font-weight: 600; }
+  .receipt-detail-comparison td:first-child, .receipt-detail-comparison td:last-child { grid-column: 1 / -1; }
+  .receipt-detail-comparison td:not(:first-child)::before { content: attr(data-label); display: block; color: var(--muted); font-size: 12px; font-weight: 400; margin-bottom: 4px; }
   .pending-warehouse .transfer-detail-grid { gap: 16px; }
   .pending-warehouse .transfer-detail-summary { padding: 16px; }
   .transfer-history { padding: 16px; }
   .transfer-outcome-metrics { grid-template-columns: minmax(0, 1fr); }
-  .pending-warehouse .transfer-detail-grid > div > .transfer-detail-items { display: none; }
+  .pending-warehouse .transfer-detail-grid > div > .transfer-detail-items:not(.receipt-detail-comparison) { display: none; }
   .pending-warehouse .transfer-detail-cards { display: grid; gap: 14px; }
   .pending-warehouse .transfer-detail-cards article { padding: 14px; background: white; border: 1px solid var(--border); border-radius: 6px; display: grid; gap: 8px; }
   .pending-warehouse .transfer-detail-cards h3 { margin: 0; font-size: 15px; }

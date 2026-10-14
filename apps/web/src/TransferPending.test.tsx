@@ -137,6 +137,29 @@ function pendingHistory(record = receivedWire()) {
       recorded_at: correctionStamp, state: 'pending', decision: null, application: null }] : [] })) };
 }
 
+describe('F4a selected chrome', () => {
+  it('prioritizes selected identity and preserves counters, navigation and mounted lanes', async () => {
+    const f = correctionFixture();
+    render(f.element()); await correctionLoaded();
+    const identity = screen.getByRole('heading', { name: f.record.reference, level: 1 });
+    expect(screen.queryByRole('heading', { name: 'Detalle de solicitud' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/solicitudes pendientes$/)).not.toBeInTheDocument();
+    const counters = screen.getByRole('region', { name: 'Contadores de solicitudes' });
+    expect(identity.compareDocumentPosition(counters) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(counters).toHaveTextContent('9007199254740995');
+    expect(counters).toHaveTextContent('9007199254740994');
+    const lane = screen.getByRole('region', { name: 'Correcciones de conteo' });
+    expect(screen.getAllByRole('region', { name: 'Correcciones de conteo' })).toHaveLength(1);
+    expect(screen.getByRole('region', { name: 'Recepción original' }).compareDocumentPosition(lane) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Recibir solicitud' })).not.toBeInTheDocument();
+    expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    await loaded();
+    fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' }));
+    expect(f.back).toHaveBeenCalledOnce();
+  });
+});
+
 describe('R6a received detail restitution composition', () => {
   it('mounts one controller-owned restitution lane after C4 and preserves original receipt through Back', async () => {
     const record = receivedWire();
@@ -174,7 +197,7 @@ describe('C4b received detail real-hook integration', () => {
     const receivedTime = screen.getByRole('region', { name: 'Historial de la solicitud' }).querySelector(`time[datetime="${record.received_at}"]`);
     expect(receivedTime).toHaveTextContent('02/01/2028 · 20:00 (hora Bolivia)');
     expect(receivedTime).toHaveAttribute('datetime', record.received_at);
-    expect(within(screen.getByRole('region', { name: 'Cantidades de la solicitud' })).getByText('Stock disponible acreditado').nextElementSibling).toHaveTextContent('18446744073709551614');
+    expect(within(screen.getByRole('region', { name: 'Cantidades de la solicitud' })).getByText('Stock acreditado (recepción original)').nextElementSibling).toHaveTextContent('18446744073709551614');
     expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
   });
 });
@@ -1095,7 +1118,10 @@ describe('R05-U2 pending header action stack', () => {
     expect(count).toHaveAttribute('aria-live', 'polite');
     await detail();
     expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
-    expect(screen.getByText('3 solicitudes pendientes')).toHaveAttribute('aria-live', 'polite');
+    expect(screen.queryByText('3 solicitudes pendientes')).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toHaveAttribute('aria-live', 'polite');
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    expect(await screen.findByText('3 solicitudes pendientes')).toHaveAttribute('aria-live', 'polite');
   });
   it('keeps warehouse count separate from the title beside the creation action', async () => {
     const f = fixture(1);
@@ -1185,6 +1211,9 @@ describe('R04c participant Pending', () => {
     expect(await screen.findByText('La solicitud no está disponible.')).toBeVisible();
     expect(document.body).not.toHaveTextContent('123456789');
     list.resolve(reply({ page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] }));
+    expect(screen.queryByText('0 solicitudes pendientes')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('123456789');
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
     expect(await screen.findByText('0 solicitudes pendientes')).toBeVisible();
   });
   it.each(['private-third-account', 'unknown-id'])('uses identical generic 404 presentation for %s', async () => {

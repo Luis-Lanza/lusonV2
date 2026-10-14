@@ -107,30 +107,36 @@ export default function TransferPending(props: TransferPendingProps) {
   const inventory = () => { if (current()) props.onInventory(); };
   // This is the selected-status participant total, not the independent Pending/action counters.
   const pageCount = <p className="pending-count" aria-live="polite">{page ? `${page.total_count.toString()} ${page.total_count === 1n ? `solicitud ${singular}` : `solicitudes ${plural}`}` : `Consultando solicitudes ${plural}…`}</p>;
-  return <section className={'transfer-pending' + (warehouse ? ' pending-warehouse' : '') + (!selected ? ' pending-list' : '')} aria-labelledby="pending-title">
+  const counters = <section className="transfer-request-counters" aria-label="Contadores de solicitudes" aria-live="polite" aria-busy={countsBusy}>
+    {counts && !countsBusy && !countsError ? <dl>
+      <div><dt>Pendientes de tu ubicación</dt><dd>{counts.pending_total.toString()}</dd></div>
+      <div><dt>Acciones requeridas</dt><dd>{counts.action_count.toString()}</dd></div>
+    </dl> : <p>{countsError ? 'Contadores no disponibles.' : 'Consultando contadores…'}</p>}
+    <details className="pending-counter-help"><summary>Sobre los totales</summary>
+      <small>Totales independientes del filtro: pendientes de tu ubicación y acciones asignadas (aprobar, despachar o recibir).</small>
+    </details>
+  </section>;
+  return <section className={'transfer-pending' + (warehouse ? ' pending-warehouse' : '') + (selected ? ' pending-selected' : ' pending-list')}
+    aria-labelledby={selected ? undefined : 'pending-title'} aria-label={selected ? 'Detalle de transferencia' : undefined}>
+    {selected ? <nav className="pending-detail-navigation" aria-label="Navegación de transferencia">
+      <button type="button" className="creation-back" onClick={back}>Volver a {plural}</button>
+      <button type="button" className="creation-back" onClick={inventory}>Volver al inventario</button>
+    </nav> : <>
     <button type="button" className="creation-back" onClick={inventory}>Volver al inventario</button>
-    <header className="pending-heading"><div><h1 id="pending-title" aria-label={selected ? undefined : `Transferencias ${plural}`}>{selected ? 'Detalle de solicitud' : <>Transferencias<span className="sr-only"> {plural}</span></>}</h1>
-      <p>{selected ? 'El detalle muestra el estado actual de la solicitud.' : 'Consultá las transferencias de tu ubicación asignada.'}{selected && ' La consulta de inventario no cambia los participantes.'}</p></div>
-      {!selected ? <div className="pending-heading-actions">
+    <header className="pending-heading"><div><h1 id="pending-title" aria-label={`Transferencias ${plural}`}>Transferencias<span className="sr-only"> {plural}</span></h1>
+      <p>Consultá las transferencias de tu ubicación asignada.</p></div>
+      <div className="pending-heading-actions">
         <button type="button" className="primary transfer-cta" disabled={!props.creationAvailable || !props.onCreate} onClick={() => {
           const latest = props.controller.getTransferAuthority();
           if (current() && latest.session?.authenticated && [1, 2, 3].includes(latest.session.identity.location.id)
             && props.creationAvailable) props.onCreate?.();
         }}>{warehouse ? 'Crear envío' : 'Nueva transferencia'}</button>
         {pageCount}
-      </div> : pageCount}
+      </div>
     </header>
-    <section className="transfer-request-counters" aria-label="Contadores de solicitudes" aria-live="polite" aria-busy={countsBusy}>
-      {counts && !countsBusy && !countsError ? <dl>
-        <div><dt>Pendientes de tu ubicación</dt><dd>{counts.pending_total.toString()}</dd></div>
-        <div><dt>Acciones requeridas</dt><dd>{counts.action_count.toString()}</dd></div>
-      </dl> : <p>{countsError ? 'Contadores no disponibles.' : 'Consultando contadores…'}</p>}
-      <details className="pending-counter-help"><summary>Sobre los totales</summary>
-        <small>Totales independientes del filtro: pendientes de tu ubicación y acciones asignadas (aprobar, despachar o recibir).</small>
-      </details>
-    </section>
+    {counters}
+    </>}
     {selected ? <>
-      <button type="button" className="creation-back" onClick={back}>Volver a {plural}</button>
       {transfers.detailBusy && <p role="status">Consultando solicitud…</p>}
       {(unavailable || privateUnavailable) && <div role="alert" className="message"><p>{privateUnavailable || unavailable?.code === 'not_found' || unavailable?.status === 403 ? 'La solicitud no está disponible.' : 'No se pudo consultar la solicitud.'}</p>
         <button type="button" onClick={() => { if (current()) { setMasked(null); transfers.retryDetail(); } }}>Reintentar detalle</button></div>}
@@ -148,6 +154,7 @@ export default function TransferPending(props: TransferPendingProps) {
                 corrections={corrections} correctionRequestID={correctionRequestID} correctionsEnabled={correctionsEnabled}
                 restitutionRequestID={correctionRequestID} restitutionsEnabled={correctionsEnabled}
                 onStock={receiveStock} stockRefresh={stockRefresh} actions={() => <>{actions}{dispatchActions}{receiptActions}{cancellationActions}</>} />} />} />} />} />
+      {counters}
     </> : <>
       <div className="transfer-status-toolbar">
         <label htmlFor="transfer-status">Estado de transferencia</label>

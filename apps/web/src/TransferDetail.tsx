@@ -123,19 +123,28 @@ export default function TransferDetail(props: TransferDetailProps) {
   const session = controller.getTransferAuthority().session;
   const warehouse = session?.authenticated && session.identity.location.id === 1;
   return <div className="transfer-detail">
-    <header className="transfer-detail-heading"><h2>{record.reference}</h2>
-      <span className="pending-status">{transferStatusLabel(record)}</span>
+    <header className="transfer-detail-heading"><h1>{record.reference}</h1>
+      <span className={`pending-status status-${record.status}`}>{transferStatusLabel(record)}</span>
       <p>{direct ? 'Envío directo de Almacén' : record.kind === 'send_to_warehouse' ? 'Propuesta de envío a Almacén' : record.origin_location_id === 1 ? 'Solicitud a Almacén' : 'Solicitud entre sucursales'}</p>
     </header>
-    <div className="transfer-detail-grid"><div>
-      <section className="transfer-detail-route creation-route" aria-label="Ruta física">
+    <section className="transfer-detail-route creation-route" aria-label="Ruta física">
         <div><span>Origen</span><strong>{record.origin_location_name}</strong>
           <small>{direct ? 'Creador y origen físico' : record.kind === 'send_to_warehouse' ? 'Emisor · solicita enviar su stock' : 'Suministra el stock solicitado'}</small></div>
         <b aria-hidden="true">→</b><div><span>Destino</span><strong>{record.destination_location_name}</strong>
           <small>{direct ? 'Receptor · no requiere aprobación' : record.kind === 'send_to_warehouse' ? 'Receptor · requiere aprobación' : 'Ubicación solicitante'}</small></div>
+    </section>
+    {record.status === 'received' && <section className="transfer-receipt-overview" aria-label="Recepción original">
+      <h2>Recepción original</h2>
+      <section aria-label="Cantidades de la solicitud" className="transfer-outcome-metrics received">
+        <dl><dt>Baterías enviadas</dt><dd>{transferQuantityTotal(record).toString()}</dd></dl>
+        <dl><dt>Recibidas físicamente (original)</dt><dd>{record.receipt.items.reduce((total, line) => total + line.actual_quantity, 0n).toString()}</dd></dl>
+        <dl><dt>Stock acreditado (recepción original)</dt><dd>{record.receipt.items.reduce((total, line) => total + line.available_quantity, 0n).toString()}</dd></dl>
       </section>
-      <TransferItems record={record} stock={terminal ? undefined : stock} />
-      {record.status === 'received' && <ReceiptTable receipt={record.receipt} record={record} />}
+      <p>Evidencia inmutable de la recepción confirmada. Las correcciones posteriores muestran el conteo efectivo por separado; estos valores no son el stock actual.</p>
+    </section>}
+    <div className="transfer-detail-grid"><div>
+      {record.status === 'received' ? <ReceiptTable receipt={record.receipt} record={record} detailPresentation />
+        : <TransferItems record={record} stock={terminal ? undefined : stock} />}
       {props.corrections && <TransferCountCorrections record={record} controller={controller}
         corrections={props.corrections} requestID={props.correctionRequestID ?? null} enabled={props.correctionsEnabled ?? false} />}
       <TransferRestitutions controller={controller} record={record} requestID={props.restitutionRequestID ?? null}
@@ -144,19 +153,19 @@ export default function TransferDetail(props: TransferDetailProps) {
         {stock.unavailable && <p role="alert">No se pudo consultar el stock de origen. La solicitud completa sigue disponible para revisión.</p>}
         <button type="button" disabled={stock.busy} onClick={() => { if (current()) refresh.current(); }}>Actualizar stock de origen</button>
       </div>}
-      {warehouse && <div className="transfer-detail-cards" aria-label="Baterías solicitadas móvil">
+      {warehouse && record.status !== 'received' && <div className="transfer-detail-cards" aria-label="Baterías solicitadas móvil">
         {record.items.map(item => <article key={item.variant_id} data-variant-id={item.variant_id}>
           <h3>{item.brand} · {item.model}</h3><p>{item.capacity_ah} Ah · {item.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</p>
-          <p>{(record.status === 'in_transit' || record.status === 'received') ? 'Cantidad enviada' : 'Cantidad solicitada'}: <strong>{item.quantity.toString()}</strong></p>
+          <p>{record.status === 'in_transit' ? 'Cantidad enviada' : 'Cantidad solicitada'}: <strong>{item.quantity.toString()}</strong></p>
           {!terminal && <><p>Disponible en {record.origin_location_name} (orientativo)</p><Stock stock={stock} variant={item.variant_id} /></>}
         </article>)}
       </div>}
     </div><div className="transfer-detail-outcome"><aside className="transfer-detail-summary" aria-label="Resumen de solicitud">
       <h2>Solicitud {terminal ? transferStatusLabel(record) : 'Pending'}</h2>
-      <section aria-label="Cantidades de la solicitud" className={`transfer-outcome-metrics ${record.status}`}>
+      {record.status !== 'received' && <section aria-label="Cantidades de la solicitud" className={`transfer-outcome-metrics ${record.status}`}>
         <dl><dt>Baterías solicitadas</dt>
           <dd aria-label="Baterías solicitadas">{transferQuantityTotal(record).toString()}</dd></dl>
-        {terminal && record.status !== 'in_transit' && record.status !== 'received' && <dl><dt>Baterías reservadas en esta solicitud</dt>
+        {terminal && record.status !== 'in_transit' && <dl><dt>Baterías reservadas en esta solicitud</dt>
           {/* Validated Approved records guarantee exact whole-request allocations, not global balances. */}
           <dd aria-label="Baterías reservadas en esta solicitud">{record.status === 'approved' ? transferQuantityTotal(record).toString() : '0'}</dd></dl>}
         {record.status === 'in_transit' && <>
@@ -164,12 +173,7 @@ export default function TransferDetail(props: TransferDetailProps) {
           <dl><dt>Reserva propia consumida</dt><dd>{transferQuantityTotal(record).toString()}</dd></dl>
           <dl><dt>Recepción en destino</dt><dd>Pendiente de recepción</dd></dl>
         </>}
-        {record.status === 'received' && <>
-          <dl><dt>Baterías enviadas</dt><dd>{transferQuantityTotal(record).toString()}</dd></dl>
-          <dl><dt>Stock disponible acreditado</dt><dd>{record.receipt.items.reduce((total, line) => total + line.available_quantity, 0n).toString()}</dd></dl>
-          <dl><dt>Recepción en destino</dt><dd>Recibida</dd></dl>
-        </>}
-      </section>
+      </section>}
       <dl><dt>Ubicación creadora</dt><dd>{record.creator_location_name}</dd>
         <dt>{direct ? 'Autorizado al crear por' : 'Requiere aprobación de'}</dt><dd>{record.approver_location_name}</dd>
         <dt>Creada</dt><dd><TransferDate value={record.created_at} /></dd></dl>

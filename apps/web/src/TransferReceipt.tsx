@@ -9,16 +9,27 @@ import { loadSourceInventory, SourceInventoryError, type SourceCatalog } from '.
 import { TransferAPIError } from './transferAPI';
 
 const exceptionLabel = { shortage: 'Faltante', excess: 'Exceso', unexpected: 'Inesperada' };
-export function ReceiptTable({ receipt, record }: { receipt: TransferReceiptData; record: TransferRecord }) {
-  return <div className="table-scroll transfer-detail-items"><table>
+export function ReceiptTable({ receipt, record, detailPresentation = false }: {
+  receipt: TransferReceiptData; record: TransferRecord; detailPresentation?: boolean;
+}) {
+  const labels = detailPresentation
+    ? ['Batería', 'Enviadas', 'Recibidas físicamente', 'Crédito original', 'Discrepancia original']
+    : ['Variante', 'Cantidad enviada', 'Cantidad recibida', 'Stock disponible acreditado', 'Discrepancia'];
+  return <div className={`table-scroll transfer-detail-items${detailPresentation ? ' receipt-detail-comparison' : ''}`}><table>
     <caption>Detalle de recepción</caption>
-    <thead><tr>{['Variante', 'Cantidad enviada', 'Cantidad recibida', 'Stock disponible acreditado', 'Discrepancia'].map(label => <th scope="col" key={label}>{label}</th>)}</tr></thead>
+    <thead><tr>{labels.map(label => <th scope="col" key={label}>{label}</th>)}</tr></thead>
     <tbody>{receipt.items.map(line => {
       const item = record.items.find(item => item.variant_id === line.variant_id);
       const exception = receipt.exceptions.find(exception => exception.variant_id === line.variant_id);
-      return <tr key={line.variant_id}><td>{item ? `${item.brand} · ${item.model}` : `Variante inesperada ${line.variant_id}`}</td>
-        <td>{line.expected_quantity.toString()}</td><td>{line.actual_quantity.toString()}</td><td>{line.available_quantity.toString()}</td>
-        <td>{exception ? `${exceptionLabel[exception.kind]}: ${exception.quantity.toString()}` : 'Sin discrepancia'}</td></tr>;
+      return <tr key={line.variant_id} data-variant-id={line.variant_id}>
+        <td data-label={labels[0]}>{item ? <>{`${item.brand} · ${item.model}`}
+          {detailPresentation && <small>{item.capacity_ah} Ah · {item.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</small>}</>
+          : `Variante inesperada ${line.variant_id}`}</td>
+        <td data-label={labels[1]}>{line.expected_quantity.toString()}</td>
+        <td data-label={labels[2]}>{line.actual_quantity.toString()}</td>
+        <td data-label={labels[3]}>{line.available_quantity.toString()}</td>
+        <td data-label={labels[4]}><span className={detailPresentation ? `receipt-discrepancy ${exception?.kind ?? 'matched'}` : undefined}>
+          {exception ? `${exceptionLabel[exception.kind]}: ${exception.quantity.toString()}` : 'Sin discrepancia'}</span></td></tr>;
     })}</tbody>
   </table></div>;
 }
