@@ -78,6 +78,36 @@ const actualInput = () => screen.getByLabelText(/Cantidad recibida.*Expected/);
 afterEach(() => vi.unstubAllGlobals());
 
 describe('R2 destination receipt capture/review/once UI', () => {
+  it.each(['escape', 'close', 'back'] as const)('restores receipt cancellation/success focus via %s, not during review', async method => {
+    for (const confirmed of [false, true]) {
+      const f = fixture(); const view = render(<App />); await detail();
+      const trigger = screen.getByRole('button', { name: 'Recibir solicitud' });
+      const dialog = await capture();
+      const restoration = vi.spyOn(trigger, 'focus');
+      fireEvent.change(actualInput(), { target: { value: sent } });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Revisar recepción' }));
+      expect(restoration).not.toHaveBeenCalled();
+      expect(within(dialog).getByRole('button', { name: 'Cerrar confirmación de recepción' })).toHaveFocus();
+      if (confirmed) {
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar recepción' }));
+        await within(dialog).findByRole('heading', { name: 'Recepción confirmada' });
+        expect(trigger.isConnected).toBe(false);
+      }
+      await act(async () => {});
+      const before = f.fetch.mock.calls.length;
+      if (method === 'escape') fireEvent.keyDown(dialog, { key: 'Escape' });
+      if (method === 'close') fireEvent.click(within(dialog).getByRole('button', { name: 'Cerrar confirmación de recepción' }));
+      if (method === 'back') fireEvent.click(within(dialog).getByRole('button', { name: 'Volver al detalle' }));
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      if (confirmed) expect(screen.getByRole('button', { name: 'Volver a en tránsito' })).toHaveFocus();
+      else { expect(trigger).toBeEnabled(); expect(trigger).toHaveFocus(); }
+      await act(async () => {});
+      expect(f.fetch.mock.calls).toHaveLength(before);
+      expect(posts(f)).toHaveLength(confirmed ? 1 : 0);
+      restoration.mockRestore();
+      view.unmount();
+    }
+  });
   it('offers capture only to destination, never physical origin', async () => {
     const f = fixture(1); render(<App />); await detail();
     expect(screen.queryByRole('button', { name: 'Recibir solicitud' })).not.toBeInTheDocument();

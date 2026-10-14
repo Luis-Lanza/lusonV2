@@ -136,6 +136,31 @@ it.each(['cancelled', 'received'])('presents readable %s dispatch recovery dates
 });
 
 describe('D2 dispatch participant UI', () => {
+  it.each(['escape', 'close', 'back'] as const)('restores dispatch cancellation/success focus via %s without requests', async method => {
+    for (const confirmed of [false, true]) {
+      const f = fixture(); const view = render(f.element());
+      const trigger = await screen.findByRole('button', { name: 'Despachar solicitud' });
+      fireEvent.click(trigger);
+      const dialog = screen.getByRole('dialog');
+      if (confirmed) {
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar despacho' }));
+        await within(dialog).findByRole('heading', { name: 'Despacho confirmado' });
+        expect(trigger.isConnected).toBe(false);
+      }
+      await act(async () => {});
+      const before = f.fetch.mock.calls.length;
+      if (method === 'escape') fireEvent.keyDown(dialog, { key: 'Escape' });
+      if (method === 'close') fireEvent.click(within(dialog).getByRole('button', { name: 'Cerrar confirmación de despacho' }));
+      if (method === 'back') fireEvent.click(within(dialog).getByRole('button', { name: 'Volver al detalle' }));
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      if (confirmed) expect(screen.getByRole('button', { name: 'Volver a pendientes' })).toHaveFocus();
+      else { expect(trigger).toBeEnabled(); expect(trigger).toHaveFocus(); }
+      await act(async () => {});
+      expect(f.fetch.mock.calls).toHaveLength(before);
+      expect(posts(f)).toHaveLength(confirmed ? 1 : 0);
+      view.unmount();
+    }
+  });
   it.each([[1, 1, 2], [3, 3, 2], [2, 2, 1]])('only assigned physical origin %s confirms %s → %s in full', async (actor, origin, destination) => {
     const f = fixture(actor, origin, destination); render(f.element());
     const trigger = await screen.findByRole('button', { name: 'Despachar solicitud' });

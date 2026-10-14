@@ -7,6 +7,7 @@ import { detailAuthority, TransferItems, transferStatusLabel, type StockAdvice }
 import { transferViewOwner } from './TransferPending';
 import { TransferAPIError } from './transferAPI';
 import TransferDate from './TransferDate';
+import { useTransferModalFocus, type TransferModalFocusBinding } from './transferModalFocus';
 
 export interface TransferDecisionProps {
   controller: TransferController;
@@ -17,6 +18,7 @@ export interface TransferDecisionProps {
   onPrivateUnavailable?: () => void;
   onStockRefresh?: () => void;
   renderDetail?: (actions: ReactNode) => ReactNode;
+  modalFocus?: TransferModalFocusBinding;
 }
 export default function TransferDecision(props: TransferDecisionProps) {
   const { controller, ownerTag, transfers } = props;
@@ -35,17 +37,13 @@ export default function TransferDecision(props: TransferDecisionProps) {
   const attempt = permitted ? transfers.decision : null;
   const busy = attempt?.phase === 'inFlight';
   const visibleReview = permitted && review?.fence === fence ? review : null;
+  const focus = useTransferModalFocus({ active: !!visibleReview, id: props.record?.id, fence, current, binding: props.modalFocus });
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
     if (!visibleReview) return;
     if (busy) dialog.current?.focus();
     else close.current?.focus();
   }, [visibleReview, busy]);
-  useEffect(() => {
-    if (!visibleReview) return;
-    const trigger = visibleReview.trigger;
-    return () => { if (detailAuthority(controller) === visibleReview.fence) trigger.focus(); };
-  }, [visibleReview, controller]);
   if (!permitted) return null;
   const record = props.record;
   const assigned = authority.session?.authenticated ? authority.session.identity.location.id : null;
@@ -65,6 +63,7 @@ export default function TransferDecision(props: TransferDecisionProps) {
         : failure ? 'No se pudo confirmar la decisión con el servidor.' : '';
   const dismiss = () => {
     if (!current() || transfers.decision?.phase === 'inFlight' || pendingCall.current) return;
+    if (visibleReview) focus.queue({ id: visibleReview.record.id, fence: visibleReview.fence, trigger: visibleReview.trigger });
     setReview(null);
   };
   const run = async (operation: () => Promise<TransferRecord>) => {
@@ -85,6 +84,7 @@ export default function TransferDecision(props: TransferDecisionProps) {
       || latest.current.record?.id !== record.id || latest.current.record.status !== 'pending') return;
     const now = controller.getTransferAuthority();
     if (!now.session?.authenticated || now.session.identity.location.id !== record.approver_location_id) return;
+    focus.begin();
     setReview({ fence, record: captureDecisionRecord(record), action, trigger });
   };
   const actions = canReview && !(result && result.id === record.id) ? <div className="transfer-decision-actions">

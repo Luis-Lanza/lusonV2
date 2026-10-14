@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { TransferAuthority } from './useInventory';
 import { useTransfers } from './useTransfers';
 import { transferQuantityTotal, type TransferRecord } from './transferModel';
@@ -8,6 +8,7 @@ import TransferDispatch from './TransferDispatch';
 import TransferReceipt from './TransferReceipt';
 import TransferCancellation from './TransferCancellation';
 import { useTransferCountCorrections } from './useTransferCountCorrections';
+import { isTransferFocusTarget, type TransferModalFocusBinding } from './transferModalFocus';
 
 // No session or CSRF retained in routing state. Epoch changes invalidate this tag.
 export function transferViewOwner(authority: TransferAuthority): string | null {
@@ -46,6 +47,12 @@ export default function TransferPending(props: TransferPendingProps) {
   const permitted = transferViewOwner(authority) === props.ownerTag;
   const transfers = useTransfers({ controller: props.controller, listEnabled: permitted, detailEnabled: permitted, countsEnabled: permitted });
   const consumed = useRef(false);
+  const detailPane = useRef<HTMLElement>(null);
+  const detailBack = useRef<HTMLButtonElement>(null);
+  const focusMounted = useRef(false);
+  const focusScope = useRef({ id: null as string | null, fence: '', blocked: false, token: {} });
+  const focusLatest = useRef({ props, selected: null as string | null, fence: '', available: false });
+  useLayoutEffect(() => { focusMounted.current = true; return () => { focusMounted.current = false; }; }, []);
   const [masked, setMasked] = useState<{ fence: string; id: string } | null>(null);
   const [stock, setStock] = useState<{ fence: string; id: string; advice: StockAdvice } | null>(null);
   const receiveStock = useCallback((advice: StockAdvice, id: string) => {
@@ -80,6 +87,8 @@ export default function TransferPending(props: TransferPendingProps) {
         : detail?.status === 'received' ? detail
     : receiptResult?.id === selected ? receiptResult : dispatchResult?.id === selected ? dispatchResult
       : detail?.status === 'in_transit' ? detail : decision?.result?.id === selected ? decision.result : detail;
+  if (focusScope.current.id !== selected || focusScope.current.fence !== fence) focusScope.current = { id: selected, fence, blocked: false, token: {} };
+  focusLatest.current = { props, selected, fence, available: !!record && record.id === selected && !privateUnavailable && !transfers.detailError };
   // Use the very same authoritative record as the detail, including a just-confirmed receipt.
   const actor = authority.session?.authenticated ? authority.session.identity.location.id : null;
   // Match TransferDetail's mount-bound fence: a retired private pane must not read history.
@@ -89,6 +98,19 @@ export default function TransferPending(props: TransferPendingProps) {
   const correctionRequestID = correctionsEnabled ? record.id : null;
   const corrections = useTransferCountCorrections({ controller: props.controller,
     requestID: correctionRequestID, enabled: correctionsEnabled });
+  const modalFocus: TransferModalFocusBinding = {
+    scope: focusScope.current.token,
+    restore: request => {
+      const now = focusLatest.current;
+      const scope = focusScope.current;
+      if (!focusMounted.current || scope.blocked || scope.token !== request.scope
+        || !now.available || now.selected !== request.id || now.fence !== request.fence) return;
+      if (detailAuthority(now.props.controller) !== request.fence || transferViewOwner(now.props.controller.getTransferAuthority()) !== now.props.ownerTag) return;
+      const target = isTransferFocusTarget(request.trigger) && detailPane.current?.contains(request.trigger)
+        ? request.trigger : detailBack.current;
+      if (isTransferFocusTarget(target) && detailPane.current?.contains(target)) target.focus();
+    },
+  };
   if (!permitted) return <section className="transfer-pending"><p role="status">Verificando acceso a transferencias…</p></section>;
   const page = transfers.page;
   const unavailable = transfers.detailError;
@@ -102,9 +124,9 @@ export default function TransferPending(props: TransferPendingProps) {
   const status = transfers.query.status ?? 'pending';
   const { plural, singular } = statusOptions.find(option => option.value === status)!;
   const approverLabel = (row: TransferRecord) => row.status === 'pending' ? 'Requiere aprobación de' : 'Ubicación aprobadora';
-  const open = (row: TransferRecord) => { if (current()) transfers.selectDetail(row.id); };
-  const back = () => { if (current()) transfers.selectDetail(null); };
-  const inventory = () => { if (current()) props.onInventory(); };
+  const open = (row: TransferRecord) => { if (current()) { focusScope.current.blocked = true; transfers.selectDetail(row.id); } };
+  const back = () => { if (current()) { focusScope.current.blocked = true; transfers.selectDetail(null); } };
+  const inventory = () => { if (current()) { focusScope.current.blocked = true; props.onInventory(); } };
   // This is the selected-status participant total, not the independent Pending/action counters.
   const pageCount = <p className="pending-count" aria-live="polite">{page ? `${page.total_count.toString()} ${page.total_count === 1n ? `solicitud ${singular}` : `solicitudes ${plural}`}` : `Consultando solicitudes ${plural}…`}</p>;
   const counters = <section className="transfer-request-counters" aria-label="Contadores de solicitudes" aria-live="polite" aria-busy={countsBusy}>
@@ -116,10 +138,10 @@ export default function TransferPending(props: TransferPendingProps) {
       <small>Totales independientes del filtro: pendientes de tu ubicación y acciones asignadas (aprobar, despachar o recibir).</small>
     </details>
   </section>;
-  return <section className={'transfer-pending' + (warehouse ? ' pending-warehouse' : '') + (selected ? ' pending-selected' : ' pending-list')}
+  return <section ref={detailPane} className={'transfer-pending' + (warehouse ? ' pending-warehouse' : '') + (selected ? ' pending-selected' : ' pending-list')}
     aria-labelledby={selected ? undefined : 'pending-title'} aria-label={selected ? 'Detalle de transferencia' : undefined}>
     {selected ? <nav className="pending-detail-navigation" aria-label="Navegación de transferencia">
-      <button type="button" className="creation-back" onClick={back}>Volver a {plural}</button>
+      <button ref={detailBack} type="button" className="creation-back" onClick={back}>Volver a {plural}</button>
       <button type="button" className="creation-back" onClick={inventory}>Volver al inventario</button>
     </nav> : <>
     <button type="button" className="creation-back" onClick={inventory}>Volver al inventario</button>
@@ -140,13 +162,13 @@ export default function TransferPending(props: TransferPendingProps) {
       {transfers.detailBusy && <p role="status">Consultando solicitud…</p>}
       {(unavailable || privateUnavailable) && <div role="alert" className="message"><p>{privateUnavailable || unavailable?.code === 'not_found' || unavailable?.status === 403 ? 'La solicitud no está disponible.' : 'No se pudo consultar la solicitud.'}</p>
         <button type="button" onClick={() => { if (current()) { setMasked(null); transfers.retryDetail(); } }}>Reintentar detalle</button></div>}
-      <TransferDecision controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record}
+      <TransferDecision controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record} modalFocus={modalFocus}
         stock={stock?.fence === fence && stock.id === record?.id ? stock.advice : { catalog: null, busy: false, unavailable: true }}
         onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
         onStockRefresh={() => { if (current()) setStockRefresh(value => value + 1); }}
-        renderDetail={actions => <TransferDispatch controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record}
+        renderDetail={actions => <TransferDispatch controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record} modalFocus={modalFocus}
           onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
-          renderDetail={dispatchActions => <TransferReceipt controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record}
+          renderDetail={dispatchActions => <TransferReceipt controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record} modalFocus={modalFocus}
             onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
             renderDetail={receiptActions => <TransferCancellation controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record}
               onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}

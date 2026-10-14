@@ -7,11 +7,13 @@ import { detailAuthority, TransferItems } from './TransferDetail';
 import { transferViewOwner } from './TransferPending';
 import { TransferAPIError } from './transferAPI';
 import TransferDate from './TransferDate';
+import { useTransferModalFocus, type TransferModalFocusBinding } from './transferModalFocus';
 
 export interface TransferDispatchProps {
   controller: TransferController; ownerTag: string; transfers: ReturnType<typeof useTransfers>;
   record?: TransferRecord | null; onPrivateUnavailable?: () => void;
   renderDetail?: (actions: ReactNode) => ReactNode;
+  modalFocus?: TransferModalFocusBinding;
 }
 export default function TransferDispatch(props: TransferDispatchProps) {
   const { controller, ownerTag, transfers } = props;
@@ -28,17 +30,13 @@ export default function TransferDispatch(props: TransferDispatchProps) {
   const attempt = permitted ? transfers.dispatchAttempt : null;
   const busy = attempt?.phase === 'inFlight';
   const visibleReview = permitted && review?.fence === fence ? review : null;
+  const focus = useTransferModalFocus({ active: !!visibleReview, id: props.record?.id, fence, current, binding: props.modalFocus });
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
     if (!visibleReview) return;
     if (busy) dialog.current?.focus();
     else close.current?.focus();
   }, [visibleReview, busy]);
-  useEffect(() => {
-    if (!visibleReview) return;
-    const trigger = visibleReview.trigger;
-    return () => { if (detailAuthority(controller) === visibleReview.fence) trigger.focus(); };
-  }, [visibleReview, controller]);
   if (!permitted) return null;
   const record = props.record;
   const authority = controller.getTransferAuthority();
@@ -59,6 +57,7 @@ export default function TransferDispatch(props: TransferDispatchProps) {
       : failure ? 'No se pudo confirmar el despacho con el servidor.' : '';
   const dismiss = () => {
     if (!current() || transfers.dispatchAttempt?.phase === 'inFlight' || pendingCall.current) return;
+    if (visibleReview) focus.queue({ id: visibleReview.record.id, fence: visibleReview.fence, trigger: visibleReview.trigger });
     setReview(null);
   };
   const run = async (operation: () => Promise<TransferRecord>) => {
@@ -75,6 +74,7 @@ export default function TransferDispatch(props: TransferDispatchProps) {
       || latest.current.record?.id !== record.id || latest.current.record.status !== 'approved') return;
     const now = controller.getTransferAuthority();
     if (!now.session?.authenticated || now.session.identity.location.id !== record.origin_location_id) return;
+    focus.begin();
     setReview({ fence, record: captureDecisionRecord(record), trigger });
   };
   const actions = canDispatch && !(result && result.id === record.id) ? <div className="transfer-decision-actions">

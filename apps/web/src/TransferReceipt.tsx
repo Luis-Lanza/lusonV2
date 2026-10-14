@@ -7,6 +7,7 @@ import { detailAuthority } from './TransferDetail';
 import { transferViewOwner } from './TransferPending';
 import { loadSourceInventory, SourceInventoryError, type SourceCatalog } from './sourceInventory';
 import { TransferAPIError } from './transferAPI';
+import { useTransferModalFocus, type TransferModalFocusBinding } from './transferModalFocus';
 
 const exceptionLabel = { shortage: 'Faltante', excess: 'Exceso', unexpected: 'Inesperada' };
 export function ReceiptTable({ receipt, record, detailPresentation = false }: {
@@ -37,6 +38,7 @@ export interface TransferReceiptProps {
   controller: TransferController; ownerTag: string; transfers: ReturnType<typeof useTransfers>;
   record?: TransferRecord | null; onPrivateUnavailable?: () => void;
   renderDetail?: (actions: ReactNode) => ReactNode;
+  modalFocus?: TransferModalFocusBinding;
 }
 interface Review {
   fence: string; record: TransferRecord; trigger: HTMLElement;
@@ -54,6 +56,7 @@ export default function TransferReceipt(props: TransferReceiptProps) {
   const dialog = useRef<HTMLElement>(null); const close = useRef<HTMLButtonElement>(null);
   const current = () => mounted.current && permitted && detailAuthority(controller) === fence;
   const visibleReview = permitted && review?.fence === fence ? review : null;
+  const focus = useTransferModalFocus({ active: !!visibleReview, id: props.record?.id, fence, current, binding: props.modalFocus });
   const attempt = permitted ? transfers.receiptAttempt : null;
   const busy = attempt?.phase === 'inFlight';
   const unresolved = attempt?.phase === 'uncertain' || busy;
@@ -67,11 +70,6 @@ export default function TransferReceipt(props: TransferReceiptProps) {
   useEffect(() => {
     if (visibleReview) { if (busy) dialog.current?.focus(); else close.current?.focus(); }
   }, [visibleReview?.record, visibleReview?.step, busy]);
-  useEffect(() => {
-    if (!visibleReview) return;
-    const { trigger, fence } = visibleReview;
-    return () => { if (detailAuthority(controller) === fence) trigger.focus(); };
-  }, [visibleReview?.record, controller.getTransferAuthority]);
   useEffect(() => {
     const original = visibleReview?.record;
     if (!original) return;
@@ -97,6 +95,7 @@ export default function TransferReceipt(props: TransferReceiptProps) {
       : failure?.status === 401 ? 'No se pudo verificar la sesión.' : failure ? 'No se pudo confirmar la recepción con el servidor.' : '';
   const dismiss = () => {
     if (!current() || transfers.receiptAttempt?.phase === 'inFlight' || pendingCall.current) return;
+    if (visibleReview) focus.queue({ id: visibleReview.record.id, fence: visibleReview.fence, trigger: visibleReview.trigger });
     setReview(null);
   };
   const run = async (operation: () => Promise<TransferRecord>) => {
@@ -112,6 +111,7 @@ export default function TransferReceipt(props: TransferReceiptProps) {
     if (!current() || !record || !canReceive || unresolved || pendingCall.current || latest.current.record?.id !== record.id
       || latest.current.record.status !== 'in_transit' || (attempt?.original.id === record.id && result)) return;
     const original = captureDecisionRecord(record);
+    focus.begin();
     setSelectedUnexpected('');
     setReview({ fence, record: original, trigger, values: Object.fromEntries(original.items.map(item => [item.variant_id, ''])), unexpected: [], step: 'capture' });
   };

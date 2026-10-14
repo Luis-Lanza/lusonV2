@@ -891,6 +891,49 @@ describe('A06a decision entry', () => {
   });
 });
 
+describe('F5d1 explicit decision dismissal focus', () => {
+  it.each(['escape', 'close', 'back'] as const)('returns confirmed decisions to current detail navigation via %s', async method => {
+    for (const action of ['approve', 'reject'] as const) {
+      const f = fixture(1);
+      const view = render(f.element({ ownerTag: f.ownerTag, id: f.env.record.id }));
+      await screen.findByRole('heading', { name: f.env.record.reference });
+      const trigger = screen.getByRole('button', { name: action === 'approve' ? 'Aprobar solicitud' : 'Rechazar solicitud' });
+      fireEvent.click(trigger);
+      const dialog = screen.getByRole('dialog');
+      fireEvent.click(within(dialog).getByRole('button', { name: action === 'approve' ? 'Confirmar aprobación' : 'Confirmar rechazo' }));
+      await within(dialog).findByRole('heading', { name: /^Solicitud (Aprobada|Rechazada) confirmada$/ });
+      expect(trigger.isConnected).toBe(false);
+      await act(async () => {});
+      const before = f.fetch.mock.calls.length;
+      if (method === 'escape') fireEvent.keyDown(dialog, { key: 'Escape' });
+      if (method === 'close') fireEvent.click(within(dialog).getByRole('button', { name: 'Cerrar confirmación' }));
+      if (method === 'back') fireEvent.click(within(dialog).getByRole('button', { name: 'Volver al detalle' }));
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Volver a pendientes' })).toHaveFocus();
+      await act(async () => {});
+      expect(f.fetch.mock.calls).toHaveLength(before);
+      expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+      view.unmount();
+    }
+  });
+  it.each(['unmount', 'authority', 'list'] as const)('never restores the decision trigger during automatic %s teardown', async mode => {
+    const f = fixture(1);
+    const view = render(f.element({ ownerTag: f.ownerTag, id: f.env.record.id }));
+    await screen.findByRole('heading', { name: f.env.record.reference });
+    const trigger = screen.getByRole('button', { name: 'Aprobar solicitud' });
+    fireEvent.click(trigger);
+    const restoration = vi.spyOn(trigger, 'focus');
+    if (mode === 'unmount') view.unmount();
+    if (mode === 'authority') { f.env.current = authority(1, 2); view.rerender(f.element()); }
+    if (mode === 'list') fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    await act(async () => {});
+    expect(restoration).not.toHaveBeenCalled();
+    expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+    restoration.mockRestore();
+    view.unmount();
+  });
+});
+
 describe('A06a real list/detail decision bindings', () => {
   it.each([[1, 2], [1, 3], [2, 3], [3, 2], [2, 1], [3, 1]])('keeps confirmed whole-request outcomes truthful for %s → %s while refresh is pending', async (origin, destination) => {
     for (const action of ['approve', 'reject'] as const) {
