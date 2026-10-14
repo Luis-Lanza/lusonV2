@@ -11,6 +11,53 @@ const owner: DecisionOwner = { account: 42, location: 1, epoch: 7, generation: 3
 const outcome = (status: 'approved' | 'rejected') => parseTransferRecord(JSON.stringify({ ...wire, status,
   decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z' }));
 
+describe('C2 decision recovery discovers cancellation truth', () => {
+  it.each(['approve', 'reject'] as const)('explicit GET after uncertain %s records cancelled as conflict, not decision success', action => {
+    for (const approved of [false, true]) {
+      const recovery = createTransferDecisionRecovery();
+      const first = recovery.start(record(), action, owner)!;
+      recovery.finish(first);
+      const read = recovery.claim(owner, true)!;
+      const cancelled = parseTransferRecord(JSON.stringify({ ...wire, status: 'cancelled',
+        cancellation_location_id: 2, cancelled_at: '2026-04-03T00:00:00.000000002Z',
+        ...(approved ? { decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z' } : {}) }));
+      expect(recovery.finish(read, cancelled)).toBe(true);
+      expect(recovery.get(owner)).toMatchObject({ phase: 'conflict', result: { status: 'cancelled' } });
+      expect(recovery.get(owner)?.result).toEqual(cancelled);
+      expect(recovery.start(record(), action, owner)).toBeNull();
+      expect(Object.isFrozen(recovery.get(owner)?.result)).toBe(true);
+    }
+  });
+  it('matching cancelled history compares cancellation and optional approval identity', () => {
+    const cancelled = parseTransferRecord(JSON.stringify({ ...wire, status: 'cancelled', cancellation_location_id: 2,
+      cancelled_at: '2026-04-03T00:00:00.000000002Z', decision_location_id: 1,
+      decided_at: '2026-04-03T00:00:00.000000001Z' }));
+    expect(matchesDecisionRecord(record(), cancelled)).toBe(true);
+    for (const patch of [{ cancelled_at: '2026-04-03T00:00:00.000000003Z' }, { cancellation_location_id: 1 },
+      { decided_at: '2026-04-03T00:00:00Z' }, { decision_location_id: undefined, decided_at: undefined }]) {
+      expect(matchesDecisionRecord(cancelled, { ...cancelled, ...patch } as TransferRecord)).toBe(false);
+    }
+  });
+});
+
+describe('R2 historical decision recovery', () => {
+  it('an approval retry confirms current Received and freezes its nested receipt', () => {
+    const recovery = createTransferDecisionRecovery(); const token = recovery.start(record(), 'approve', owner)!;
+    const received = parseTransferRecord(JSON.stringify({ ...wire, status: 'received', decision_location_id: 1,
+      decided_at: '2026-04-03T00:00:00.000000001Z', dispatch_location_id: 1,
+      dispatched_at: '2026-04-03T00:00:00.000000002Z', receipt_location_id: 2,
+      received_at: '2026-04-03T00:00:00.000000003Z', receipt: {
+        items: [{ variant_id: 201, expected_quantity: '9007199254740993', actual_quantity: '9007199254740993', available_quantity: '9007199254740993' }], exceptions: [],
+      } }));
+    expect(recovery.finish(token, received)).toBe(true);
+    expect(recovery.get(owner)).toMatchObject({ phase: 'confirmed', result: { status: 'received' } });
+    const receipt = Reflect.get(recovery.get(owner)!.result!, 'receipt');
+    for (const value of [receipt, receipt.items, receipt.items[0], receipt.exceptions]) expect(Object.isFrozen(value)).toBe(true);
+    const changed = { ...received, receipt: { ...receipt, items: [{ ...receipt.items[0], actual_quantity: 1n }] } };
+    expect(matchesDecisionRecord(received, changed)).toBe(false);
+  });
+});
+
 describe('controller-owned decision recovery', () => {
   it.each(['approve', 'reject'] as const)('deep captures a credential-free immutable %s original and never mutates its source', action => {
     const recovery = createTransferDecisionRecovery(); const source = record(); const actor = { ...owner };

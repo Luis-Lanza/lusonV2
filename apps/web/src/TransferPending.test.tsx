@@ -7,6 +7,11 @@ import type { RecoverySnapshot } from './transferRecovery';
 import type { TransferAuthority } from './useInventory';
 import type { DetailController } from './TransferDetail';
 import { createTransferDecisionRecovery, decisionOwner } from './transferDecisionRecovery';
+import { createTransferCountCorrectionRecovery } from './transferCountCorrectionRecovery';
+import type { CountDecisionInput, CountProposalInput } from './transferCountCorrectionModel';
+import App from './App';
+import { createTransferReceiptRecovery } from './transferReceiptRecovery';
+import { createTransferRestitutionRecovery } from './transferRestitutionRecovery';
 
 const locations = ['Almacén', 'Sucursal A', 'Sucursal B'];
 function authority(id = 2, epoch = 1, token = 'a'.repeat(43)): TransferAuthority {
@@ -85,12 +90,452 @@ async function loaded() { await screen.findByText('9007199254740993 solicitudes 
 async function detail() { fireEvent.click(screen.getByRole('button', { name: 'Ver detalle TR-9007199254740993' })); await screen.findByRole('heading', { name: 'TR-9007199254740993' }); }
 afterEach(() => { vi.unstubAllGlobals(); });
 
+const correctionStamp = '2028-01-03T00:00:00.000000001Z';
+function receivedWire(origin = 1, destination = 2) {
+  const original = wire(origin, destination, '9007199254740993', 'approved');
+  return { ...original, status: 'received', dispatch_location_id: origin, dispatched_at: correctionStamp,
+    receipt_location_id: destination, received_at: correctionStamp,
+    receipt: { items: original.items.map(item => ({ variant_id: item.variant_id,
+      expected_quantity: item.quantity, actual_quantity: item.quantity, available_quantity: item.quantity })), exceptions: [] } };
+}
+function correctionHistory(record = receivedWire()) {
+  return { request_id: record.id, operations: [], lines: record.receipt.items.map(item => ({ ...item,
+    workflow_revision: '0', applied_revision: '0', effective_actual: item.actual_quantity,
+    effective_credit: item.available_quantity, proposals: [] })) };
+}
+const correctionCalls = (f: ReturnType<typeof fixture>) => f.fetch.mock.calls.filter(([url]) => String(url).includes('/count-corrections'));
+const correctionPosts = (f: ReturnType<typeof fixture>) => correctionCalls(f).filter(([, init]) => init?.method === 'POST');
+function correctionFixture(actor = 2, override?: (url: string, init: RequestInit) => Promise<Response> | undefined,
+  record = receivedWire()) {
+  const f = fixture(actor, (url, init) => override?.(url, init)
+    ?? (url === `/api/transfers/${record.id}` ? Promise.resolve(reply(record))
+      : url === `/api/transfers/${record.id}/count-corrections` ? Promise.resolve(reply(correctionHistory(record))) : undefined));
+  f.controller.countCorrectionRecovery = createTransferCountCorrectionRecovery();
+  f.controller.confirmTransferCountCorrection = vi.fn(() => { for (const listener of f.listeners) listener(); });
+  const element = () => f.element({ ownerTag: f.ownerTag, id: record.id });
+  return { ...f, record, element };
+}
+async function correctionLoaded() { await screen.findByRole('heading', { name: 'Conteo efectivo confirmado' }); }
+function correctionPreview(action: 'propose' | 'accept' | 'reject' = 'propose') {
+  fireEvent.click(screen.getAllByRole('button', { name: action === 'propose' ? 'Proponer corrección'
+    : `${action === 'accept' ? 'Aceptar' : 'Rechazar'} revisión 1` })[0]);
+  if (action === 'propose') fireEvent.change(screen.getByLabelText('Cantidad corregida'), { target: { value: '5' } });
+  fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: '  Recuento exacto  ' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Revisar corrección' }));
+  return screen.getByRole('dialog', { name: 'Revisar corrección de conteo' });
+}
+function operationWire(input: CountDecisionInput | CountProposalInput, actor = 2, action = 'propose') {
+  return { ...input, request_id: '9007199254740993', actor_location_id: actor, action,
+    actual_quantity: 'actual_quantity' in input ? input.actual_quantity : null,
+    revision: (BigInt(input.expected_revision) + (action === 'propose' ? 1n : 0n)).toString(), recorded_at: correctionStamp };
+}
+function pendingHistory(record = receivedWire()) {
+  const history = correctionHistory(record);
+  return { ...history, lines: history.lines.map((line, index) => ({ ...line, workflow_revision: index === 0 ? '1' : '0',
+    proposals: index === 0 ? [{ revision: '1', operation_key: 'original_proposal_0001', initiator_location_id: 1,
+      actual_quantity: '5', base_revision: '0', base_credit: line.available_quantity, reason: 'Reconteo de origen',
+      recorded_at: correctionStamp, state: 'pending', decision: null, application: null }] : [] })) };
+}
+
+describe('R6a received detail restitution composition', () => {
+  it('mounts one controller-owned restitution lane after C4 and preserves original receipt through Back', async () => {
+    const record = receivedWire();
+    const f = correctionFixture(2, url => url.endsWith('/restitutions') ? Promise.resolve(reply({ request_id: record.id, operations: [],
+      lines: record.receipt.items.map(i => ({ variant_id: i.variant_id, expected_quantity: i.expected_quantity, original_credit: i.available_quantity,
+        workflow_revision: '0', applied_revision: '0', count_generation: '0', count_applied_revision: '0', effective_credit: i.available_quantity,
+        applied_retained_quantity: '0', proposals: [] })) })) : undefined, record);
+    f.controller.restitutionRecovery = createTransferRestitutionRecovery();
+    f.controller.confirmTransferRestitution = vi.fn();
+    render(f.element()); await screen.findByText('Crédito efectivo en destino');
+    const original = screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML;
+    const section = screen.getByRole('region', { name: 'Restituciones de origen' });
+    expect(section.previousElementSibling).toBe(screen.getByRole('region', { name: 'Correcciones de conteo' }));
+    expect(f.fetch.mock.calls.filter(([url]) => String(url).endsWith('/restitutions'))).toHaveLength(1);
+    fireEvent.click(within(section).getByRole('button', { name: 'Consultar para revisar restitución' }));
+    await waitFor(() => expect(f.fetch.mock.calls.filter(([url]) => String(url).endsWith('/restitutions'))).toHaveLength(2));
+    expect(screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML).toBe(original);
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    expect(screen.queryByRole('region', { name: 'Restituciones de origen' })).not.toBeInTheDocument();
+    expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+  });
+});
+
+describe('C4b received detail real-hook integration', () => {
+  it('opens exactly the selected correction lane beside unchanged original receipt evidence', async () => {
+    const record = receivedWire();
+    const f = fixture(2, url => url === `/api/transfers/${record.id}` ? Promise.resolve(reply(record))
+      : url === `/api/transfers/${record.id}/count-corrections` ? Promise.resolve(reply(correctionHistory(record))) : undefined);
+    render(f.element({ ownerTag: f.ownerTag, id: record.id }));
+    await screen.findByRole('heading', { name: 'TR-9007199254740993' });
+    await screen.findByRole('heading', { name: 'Conteo efectivo confirmado' });
+    expect(correctionCalls(f)).toHaveLength(1);
+    expect(correctionCalls(f)[0][0]).toBe(`/api/transfers/${record.id}/count-corrections`);
+    expect(isPassive(correctionCalls(f)[0])).toBe(true);
+    expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toHaveTextContent(record.received_at);
+    expect(within(screen.getByRole('region', { name: 'Cantidades de la solicitud' })).getByText('Stock disponible acreditado').nextElementSibling).toHaveTextContent('18446744073709551614');
+    expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+  });
+});
+
+describe('C4b App correction settlement with real inventory controller', () => {
+  it.each(['accept', 'reject'] as const)('previews %s without POST, settles history and refreshes inventory only for acceptance', async action => {
+    const record = receivedWire(); const originalHistory = pendingHistory(record);
+    let nextHistory: unknown = originalHistory;
+    let settled = false;
+    class Source { addEventListener() {} removeEventListener() {} close() {} }
+    vi.stubGlobal('EventSource', Source);
+    const f = correctionFixture(2, (url, init) => {
+      if (url === '/api/auth/session') return Promise.resolve(reply(authority().session));
+      if (url === '/api/inventory/metadata') return Promise.resolve(reply({ locations: locations.map((name, index) => ({ id: index + 1, name })), brands: ['TOYO'] }));
+      if (url.startsWith('/api/inventory?')) {
+        const query = new URL(url, 'http://localhost').searchParams;
+        const location = Number(query.get('location_id'));
+        return Promise.resolve(reply({ location: { id: location, name: locations[location - 1] }, page: Number(query.get('page')),
+          page_size: Number(query.get('page_size')), total_variants: 0, items: [] }));
+      }
+      if (url.startsWith('/api/transfers?')) {
+        const status = new URL(url, 'http://localhost').searchParams.get('status');
+        return Promise.resolve(reply({ page: 1, page_size: 25, status, total_count: status === 'received' ? '1' : '0', records: status === 'received' ? [record] : [] }));
+      }
+      if (url.endsWith(`/count-corrections/${action}`) && init.method === 'POST') {
+        const input = JSON.parse(String(init.body)) as CountDecisionInput;
+        settled = true;
+        const proposal = originalHistory.lines[0].proposals[0];
+        const snapshot = { ...originalHistory, operations: [operationWire(input, 2, action)], lines: originalHistory.lines.map((line, index) => index ? line : {
+          ...line, applied_revision: action === 'accept' ? '1' : '0', effective_actual: action === 'accept' ? '5' : line.actual_quantity,
+          effective_credit: action === 'accept' ? '5' : line.available_quantity, proposals: [{ ...proposal,
+            state: action === 'accept' ? 'applied' : 'rejected', decision: { operation_key: input.operation_key,
+              actor_location_id: 2, accepted: action === 'accept', reason: input.reason, recorded_at: correctionStamp },
+            application: action === 'accept' ? { effective_credit: '5', delta: '-9223372036854775802', recorded_at: correctionStamp } : null }] }) };
+        nextHistory = snapshot;
+        return Promise.resolve(reply(operationWire(input, 2, action)));
+      }
+      if (url.endsWith('/count-corrections')) return Promise.resolve(reply(settled ? nextHistory : originalHistory));
+      return undefined;
+    });
+    render(<App />);
+    await screen.findByRole('region', { name: 'Resultados de inventario' });
+    // Consulted inventory differs from the assigned destination; it grants no authority.
+    fireEvent.click(await screen.findByRole('button', { name: /Sucursal B/ }));
+    await waitFor(() => expect(String(f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?')).at(-1)?.[0])).toContain('location_id=3'));
+    fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
+    fireEvent.change(await screen.findByLabelText('Estado de transferencia'), { target: { value: 'received' } });
+    fireEvent.click(await screen.findByRole('button', { name: `Ver detalle ${record.reference}` })); await correctionLoaded();
+    const receipt = screen.getByRole('table', { name: 'Detalle de recepción' });
+    const metrics = screen.getByRole('region', { name: 'Cantidades de la solicitud' });
+    const summary = screen.getByRole('complementary', { name: 'Resumen de solicitud' });
+    const original = { receipt: receipt.outerHTML, metrics: metrics.outerHTML,
+      times: [...summary.querySelectorAll('time')].map(time => time.outerHTML), header: screen.getByRole('heading', { name: record.reference }).parentElement!.outerHTML };
+    const inventoryBefore = f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?')).length;
+    const modal = correctionPreview(action);
+    expect(modal).toHaveTextContent('Revisión de flujo esperada: 1');
+    expect(modal).toHaveTextContent(action === 'accept' ? 'Efecto en destino: -9223372036854775802' : 'Efecto en destino: 0');
+    expect(correctionPosts(f)).toHaveLength(0);
+    const confirm = screen.getByRole('button', { name: action === 'accept' ? 'Confirmar aceptación' : 'Confirmar rechazo' });
+    fireEvent.click(confirm); fireEvent.click(confirm);
+    await screen.findByText(`${action === 'accept' ? 'Aplicada' : 'Rechazada'} · Revisión 1`);
+    expect(correctionPosts(f)).toHaveLength(1);
+    const input = JSON.parse(String(correctionPosts(f)[0][1]?.body)) as CountDecisionInput;
+    expect(input).toEqual({ variant_id: 1, operation_key: expect.stringMatching(/^[a-f0-9]{32}$/), expected_revision: '1', reason: '  Recuento exacto  ' });
+    expect(screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML).toBe(original.receipt);
+    expect(screen.getByRole('region', { name: 'Cantidades de la solicitud' }).outerHTML).toBe(original.metrics);
+    expect([...screen.getByRole('complementary', { name: 'Resumen de solicitud' }).querySelectorAll('time')]
+      .map(time => time.outerHTML)).toEqual(original.times);
+    expect(screen.getByRole('heading', { name: record.reference }).parentElement!.outerHTML).toBe(original.header);
+    await act(async () => {});
+    expect(f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?'))).toHaveLength(inventoryBefore + (action === 'accept' ? 1 : 0));
+    const inventoryLast = f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?')).at(-1)!;
+    expect(String(inventoryLast[0])).toContain('location_id=3');
+    // C4 and the restitution hook independently consult count evidence initially and after settlement.
+    expect(correctionCalls(f).filter(([, init]) => init?.method === 'GET')).toHaveLength(4);
+  });
+});
+
+describe('C4b correction authority and operation boundaries', () => {
+  it('uses a just-confirmed receipt while the list and detail still say in transit', async () => {
+    const record = receivedWire();
+    const { receipt: _receipt, receipt_location_id: _location, received_at: _stamp, ...sent } = record;
+    const transit = { ...sent, status: 'in_transit' };
+    const refresh = deferred(); let confirmed = false;
+    const f = correctionFixture(2, (url, init) => {
+      if (url === `/api/transfers/${record.id}`) return confirmed ? refresh.promise : Promise.resolve(reply(transit));
+      if (url.endsWith('/receive') && init.method === 'POST') { confirmed = true; return Promise.resolve(reply(record)); }
+      return undefined;
+    });
+    f.controller.receiptRecovery = createTransferReceiptRecovery();
+    f.controller.confirmTransferReceipt = vi.fn(() => { for (const listener of f.listeners) listener(); });
+    render(f.element()); await screen.findByRole('button', { name: 'Recibir solicitud' });
+    expect(correctionCalls(f)).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Recibir solicitud' }));
+    for (const input of screen.getAllByLabelText(/Cantidad recibida.*Exact/)) fireEvent.change(input, { target: { value: '9223372036854775807' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar recepción' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirmar recepción' }));
+    await correctionLoaded();
+    expect(correctionCalls(f)).toHaveLength(1);
+    expect(screen.getByRole('heading', { name: 'Solicitud Recibida' })).toBeInTheDocument();
+    expect(within(screen.getByRole('heading', { name: record.reference }).closest('.transfer-detail') as HTMLElement)
+      .getByRole('table', { name: 'Detalle de recepción' })).toHaveTextContent('9223372036854775807');
+    await act(async () => refresh.resolve(reply(transit)));
+    expect(screen.getByRole('heading', { name: 'Conteo efectivo confirmado' })).toBeInTheDocument();
+    expect(correctionCalls(f)).toHaveLength(1); expect(correctionPosts(f)).toHaveLength(0);
+  });
+  it.each(['pending', 'approved', 'rejected', 'in_transit', 'cancelled'])('reads no correction history for %s', async status => {
+    const original = wire(1, 2, '9007199254740993', status);
+    const record = status === 'in_transit' ? { ...original, dispatch_location_id: 1, dispatched_at: correctionStamp }
+      : status === 'cancelled' ? { ...original, cancellation_location_id: 2, cancelled_at: correctionStamp } : original;
+    const f = fixture(2, url => url === `/api/transfers/${record.id}` ? Promise.resolve(reply(record)) : undefined);
+    render(f.element({ ownerTag: f.ownerTag, id: record.id }));
+    await screen.findByRole('heading', { name: record.reference });
+    expect(correctionCalls(f)).toHaveLength(0);
+    expect(screen.queryByRole('region', { name: 'Correcciones de conteo' })).not.toBeInTheDocument();
+  });
+
+  it.each([[1, 1, 2], [2, 1, 2], [1, 2, 1], [2, 2, 1], [2, 3, 2], [3, 3, 2], [1, 3, 2]])(
+    'gates actor %s on physical route %s → %s', async (actor, origin, destination) => {
+      const f = correctionFixture(actor, undefined, receivedWire(origin, destination));
+      render(f.element());
+      if (actor === origin || actor === destination) {
+        await screen.findByRole('heading', { name: f.record.reference });
+        await correctionLoaded(); expect(correctionCalls(f)).toHaveLength(1);
+      } else {
+        await screen.findByText('No se pudo consultar la solicitud.');
+        expect(correctionCalls(f)).toHaveLength(0);
+        expect(screen.queryByRole('region', { name: 'Correcciones de conteo' })).not.toBeInTheDocument();
+      }
+      expect(correctionPosts(f)).toHaveLength(0);
+    });
+
+  it('keeps previews through fresh controller wrappers but cancels on genuine record refresh', async () => {
+    const f = correctionFixture(); const view = render(f.element()); await correctionLoaded();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Proponer corrección' })[0]);
+    fireEvent.change(screen.getByLabelText('Cantidad corregida'), { target: { value: '5' } });
+    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Recuento exacto' } });
+    const rerender = () => view.rerender(<TransferPending controller={{ ...f.controller }} ownerTag={f.ownerTag}
+      initialDetail={{ ownerTag: f.ownerTag, id: f.record.id }} onInventory={f.back} />);
+    rerender();
+    expect(screen.getByLabelText('Cantidad corregida')).toHaveValue('5');
+    expect(screen.getByLabelText('Motivo')).toHaveValue('Recuento exacto');
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar corrección' })); rerender();
+    expect(screen.getByRole('dialog')).toHaveTextContent('Recuento exacto');
+    expect(correctionCalls(f)).toHaveLength(1); expect(correctionPosts(f)).toHaveLength(0);
+    act(() => { for (const listener of f.listeners) listener(); });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(correctionPosts(f)).toHaveLength(0);
+    await waitFor(() => expect(correctionCalls(f)).toHaveLength(2));
+  });
+
+  it('cancels a preview when only the correction snapshot changes, without posting the stale revision', async () => {
+    let reads = 0;
+    const f = correctionFixture(2, url => url.endsWith('/count-corrections')
+      ? Promise.resolve(reply(++reads === 1 ? correctionHistory() : pendingHistory())) : undefined);
+    render(f.element()); await correctionLoaded(); correctionPreview();
+    // The newly enabled parent hook subscribes after the detail's child effect.
+    // Isolate that history lane so the received record retains its object identity.
+    const historyListener = [...f.listeners].at(-1)!;
+    expect(historyListener).toBeTypeOf('function');
+    act(() => historyListener());
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(screen.getByText('Pendiente · Revisión 1')).toBeInTheDocument();
+    expect(screen.queryByRole('form', { name: 'Editar corrección' })).not.toBeInTheDocument();
+    expect(correctionPosts(f)).toHaveLength(0);
+    expect(calls(f, true)).toHaveLength(1);
+  });
+
+  it.each(['unready', 'generation', 'account', 'location'])('retires a private preview on %s changes without a write', async change => {
+    const f = correctionFixture(); const view = render(f.element()); await correctionLoaded(); correctionPreview();
+    const before = correctionCalls(f).length;
+    if (change === 'unready') f.env.current = { ...f.env.current, ready: false };
+    else if (change === 'generation') f.env.current = { ...f.env.current, sessionGeneration: 2 };
+    else if (change === 'location') f.env.current = authority(3);
+    else {
+      const session = f.env.current.session;
+      if (!session?.authenticated) throw new Error('Missing synthetic session');
+      f.env.current = { ...f.env.current, session: { ...session, identity: { ...session.identity, account_id: 77 } } };
+    }
+    view.rerender(f.element());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); expect(correctionPosts(f)).toHaveLength(0);
+    await act(async () => {});
+    expect(correctionCalls(f)).toHaveLength(before);
+  });
+
+  it.each([403, 404])('masks correction %s while retaining original receipt, and does not resume on re-render', async status => {
+    const f = correctionFixture(2, url => url.endsWith('/count-corrections')
+      ? Promise.resolve(reply({ error: 'PRIVATE evidence' }, status)) : undefined);
+    const view = render(f.element()); await screen.findByText('Correcciones no disponibles para esta sesión.');
+    expect(screen.getByRole('table', { name: 'Detalle de recepción' })).toHaveTextContent('9223372036854775807');
+    expect(screen.queryByRole('button', { name: 'Proponer corrección' })).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('PRIVATE');
+    view.rerender(f.element()); await act(async () => {});
+    expect(correctionCalls(f)).toHaveLength(1); expect(correctionPosts(f)).toHaveLength(0);
+  });
+
+  it.each([403, 404])('never opens corrections for an unavailable original detail %s', async status => {
+    const f = correctionFixture(2, url => url === '/api/transfers/9007199254740993'
+      ? Promise.resolve(reply({ error: status === 404 ? 'not_found' : 'PRIVATE detail' }, status)) : undefined);
+    render(f.element()); await screen.findByText('La solicitud no está disponible.');
+    expect(correctionCalls(f)).toHaveLength(0);
+    expect(screen.queryByRole('table', { name: 'Detalle de recepción' })).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('PRIVATE');
+  });
+
+  it('sends no proposal during preview, then confirms exactly once with the full captured identity', async () => {
+    const write = deferred();
+    const f = correctionFixture(2, (url, init) => url.endsWith('/count-corrections/propose') && init.method === 'POST' ? write.promise : undefined);
+    render(f.element()); await correctionLoaded(); const modal = correctionPreview();
+    expect(modal).toHaveTextContent('Crédito limitado: 5');
+    expect(modal).toHaveTextContent('Efecto en destino: -9223372036854775802');
+    expect(correctionPosts(f)).toHaveLength(0);
+    const confirm = screen.getByRole('button', { name: 'Confirmar propuesta' });
+    fireEvent.click(confirm); fireEvent.click(confirm);
+    expect(correctionPosts(f)).toHaveLength(1);
+    const [url, init] = correctionPosts(f)[0];
+    expect(url).toBe(`/api/transfers/${f.record.id}/count-corrections/propose`);
+    const input = JSON.parse(String(init?.body)) as CountProposalInput;
+    expect(input).toEqual({ variant_id: 1, operation_key: expect.stringMatching(/^[a-f0-9]{32}$/),
+      expected_revision: '0', actual_quantity: '5', reason: '  Recuento exacto  ' });
+    expect(new Headers(init?.headers).get('X-CSRF-Token')).toBe('a'.repeat(43));
+    await act(async () => write.resolve(reply(operationWire(input))));
+    expect(f.controller.confirmTransferCountCorrection).toHaveBeenCalledExactlyOnceWith(decisionOwner(f.env.current),
+      expect.objectContaining({ request_id: BigInt(f.record.id), actor_location_id: 2, action: 'propose',
+        operation_key: input.operation_key, reason: input.reason, expected_revision: 0n, actual_quantity: 5n, revision: 1n }));
+    await waitFor(() => expect(correctionCalls(f).filter(([, init]) => init?.method === 'GET')).toHaveLength(2));
+  });
+
+  it('retains uncertainty across parent unmount/remount and explicitly retries the same payload without rebase', async () => {
+    let fail = true;
+    const f = correctionFixture(2, (url, init) => url.endsWith('/count-corrections/propose') && init.method === 'POST'
+      ? fail ? Promise.reject(new Error('PRIVATE lost reply'))
+        : Promise.resolve(reply(operationWire(JSON.parse(String(init.body)) as CountProposalInput))) : undefined);
+    const view = render(f.element()); await correctionLoaded(); correctionPreview();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar propuesta' }));
+    await screen.findByRole('button', { name: 'Reintentar carga exacta' });
+    const captured = correctionPosts(f)[0][1]?.body;
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    expect(screen.queryByRole('region', { name: 'Correcciones de conteo' })).not.toBeInTheDocument();
+    view.unmount(); render(f.element()); await correctionLoaded();
+    expect(screen.getByRole('article', { name: 'Recuperación 1' })).toHaveTextContent('Recuento exacto');
+    expect(correctionPosts(f)).toHaveLength(1);
+    expect(within(screen.getByRole('article', { name: 'TOYO · Exact-1 · 75.125 Ah · L' })).queryByRole('button', { name: 'Proponer corrección' })).not.toBeInTheDocument();
+    fail = false; fireEvent.click(screen.getByRole('button', { name: 'Reintentar carga exacta' }));
+    await waitFor(() => expect(f.controller.confirmTransferCountCorrection).toHaveBeenCalledTimes(1));
+    expect(correctionPosts(f)).toHaveLength(2); expect(correctionPosts(f)[1][1]?.body).toBe(captured);
+    expect(document.body).not.toHaveTextContent('PRIVATE');
+  });
+
+  it('opens history only after selecting a received row and disables it again on Back', async () => {
+    const record = receivedWire();
+    const f = correctionFixture(2, url => {
+      if (url.includes('status=received')) return Promise.resolve(reply({ page: 1, page_size: 25, status: 'received', total_count: '1', records: [record] }));
+      return undefined;
+    });
+    render(<TransferPending controller={f.controller} ownerTag={f.ownerTag} onInventory={f.back} />);
+    await loaded();
+    fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'received' } });
+    await screen.findByText('1 solicitudes recibidas'); expect(correctionCalls(f)).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: `Ver detalle ${record.reference}` })); await correctionLoaded();
+    expect(correctionCalls(f)).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a recibidas' }));
+    expect(screen.queryByRole('region', { name: 'Correcciones de conteo' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Estado de transferencia')).toHaveValue('received');
+    await act(async () => {}); expect(correctionCalls(f)).toHaveLength(1);
+  });
+
+  it('keeps a privately unavailable receipt masked even if a later GET says received', async () => {
+    const record = receivedWire();
+    const { receipt: _receipt, receipt_location_id: _location, received_at: _stamp, ...sent } = record;
+    let received = false;
+    const f = correctionFixture(2, (url, init) => {
+      if (url === `/api/transfers/${record.id}`) return Promise.resolve(reply(received ? record : { ...sent, status: 'in_transit' }));
+      if (url.endsWith('/receive') && init.method === 'POST') return Promise.resolve(reply({ error: 'not_found' }, 404));
+      return undefined;
+    });
+    f.controller.receiptRecovery = createTransferReceiptRecovery();
+    render(f.element()); fireEvent.click(await screen.findByRole('button', { name: 'Recibir solicitud' }));
+    for (const input of screen.getAllByLabelText(/Cantidad recibida.*Exact/)) fireEvent.change(input, { target: { value: '9223372036854775807' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar recepción' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirmar recepción' }));
+    await screen.findByText('La solicitud no está disponible.');
+    received = true; act(() => { for (const listener of f.listeners) listener(); });
+    await waitFor(() => expect(calls(f, true)).toHaveLength(2)); await act(async () => {});
+    expect(correctionCalls(f)).toHaveLength(0);
+    expect(screen.queryByRole('table', { name: 'Detalle de recepción' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Correcciones de conteo' })).not.toBeInTheDocument();
+  });
+
+  it('ignores an aborted late history from a previous selection', async () => {
+    const read = deferred();
+    const f = correctionFixture(2, url => url.endsWith('/count-corrections') ? read.promise : undefined);
+    render(f.element()); await screen.findByRole('heading', { name: f.record.reference });
+    await waitFor(() => expect(correctionCalls(f)).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    expect(correctionCalls(f)[0][1]?.signal?.aborted).toBe(true);
+    await act(async () => read.resolve(reply(correctionHistory(f.record))));
+    expect(screen.queryByRole('region', { name: 'Correcciones de conteo' })).not.toBeInTheDocument();
+    expect(correctionPosts(f)).toHaveLength(0); expect(f.controller.confirmTransferCountCorrection).not.toHaveBeenCalled();
+  });
+});
+
+describe('C2 creator cancellation entry and consultation', () => {
+  it.each([[1, 2], [1, 3], [2, 3], [3, 2], [2, 1], [3, 1]])
+    ('offers Pending/Approved cancellation only to the original creator on %s → %s', async (origin, destination) => {
+      const creator = destination === 1 ? origin : destination;
+      for (const status of ['pending', 'approved']) {
+        for (const actor of [origin, destination]) {
+          const f = fixture(actor);
+          f.env.record = wire(origin, destination, '9007199254740993', status);
+          const view = render(f.element({ ownerTag: f.ownerTag, id: f.env.record.id }));
+          await screen.findByRole('heading', { name: f.env.record.reference });
+          const button = screen.queryByRole('button', { name: 'Cancelar solicitud' });
+          if (actor === creator) expect(button).toBeEnabled();
+          else expect(button).not.toBeInTheDocument();
+          expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+          view.unmount();
+        }
+      }
+    });
+  it.each([false, true])('consults Cancelada with immutable history, zero actions and no fake approval (approved=%s)', async approved => {
+    const original = wire();
+    const cancelled = { ...original, status: 'cancelled', cancellation_location_id: 2,
+      cancelled_at: '2028-01-02T00:00:00.000000002Z',
+      ...(approved ? { decision_location_id: 1, decided_at: '2028-01-02T00:00:00.000000001Z' } : {}) };
+    const f = fixture(2, (url, init) => {
+      if (url === '/api/transfers/counts') return Promise.resolve(reply({ pending_total: '0', action_count: '0' }));
+      if (url.includes('status=cancelled')) return Promise.resolve(reply({ page: 1, page_size: 25,
+        status: 'cancelled', total_count: '1', records: [cancelled] }));
+      if (url === `/api/transfers/${original.id}` && init.method === 'GET') return Promise.resolve(reply(cancelled));
+      return undefined;
+    });
+    render(f.element()); await loaded();
+    const selector = screen.getByRole('combobox', { name: 'Estado de transferencia' });
+    expect(within(selector).getByRole('option', { name: 'Canceladas' })).toHaveValue('cancelled');
+    fireEvent.change(selector, { target: { value: 'cancelled' } });
+    await screen.findByText('1 solicitudes canceladas');
+    expect(screen.getByRole('table')).toHaveTextContent('Cancelada');
+    await detail();
+    expect(screen.getByRole('heading', { name: 'Solicitud Cancelada' })).toBeVisible();
+    const history = screen.getByRole('region', { name: 'Historial de la solicitud' });
+    expect(within(history).getAllByRole('listitem')).toHaveLength(approved ? 3 : 2);
+    expect(history).toHaveTextContent(original.created_at);
+    expect(history).toHaveTextContent('Solicitud cancelada');
+    expect(history).toHaveTextContent('Sucursal A');
+    expect(history).toHaveTextContent(cancelled.cancelled_at);
+    if (approved) expect(history).toHaveTextContent('2028-01-02T00:00:00.000000001Z');
+    else expect(history).not.toHaveTextContent(/aprobada|reservado|Decidida/);
+    expect(history).not.toHaveTextContent(/rechazada|despachada|recibida/);
+    expect(screen.queryByRole('button', { name: /^(Cancelar|Aprobar|Rechazar|Despachar|Recibir) / })).not.toBeInTheDocument();
+    expect(screen.getByRole('table', { name: 'Baterías solicitadas' })).toHaveTextContent('18446744073709551614');
+    expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a canceladas' }));
+    expect(screen.getByLabelText('Estado de transferencia')).toHaveValue('cancelled');
+  });
+});
+
 describe('A06b independent passive counters', () => {
   it('shows exact independent request counters, not rows, selected totals or item units', async () => {
     const f = fixture(); render(f.element()); await loaded();
     const counters = await screen.findByRole('region', { name: 'Contadores de solicitudes' });
     expect(counters).toHaveTextContent('Pendientes de tu ubicación9007199254740995');
-    expect(counters).toHaveTextContent('Requieren tu aprobación9007199254740994');
+    expect(counters).toHaveTextContent('Acciones requeridas9007199254740994');
     expect(counters).not.toHaveTextContent('18446744073709551614');
     expect(counters).not.toHaveTextContent('9007199254740993');
   });
@@ -218,7 +663,7 @@ describe('A06b status-specific consultation', () => {
     const f = fixture(); render(f.element()); await loaded();
     const selector = screen.getByRole('combobox', { name: 'Estado de transferencia' });
     expect(selector).toHaveValue('pending');
-    expect(within(selector).getAllByRole('option').map(option => option.getAttribute('value'))).toEqual(['pending', 'approved', 'rejected']);
+    expect(within(selector).getAllByRole('option').map(option => option.getAttribute('value'))).toEqual(['pending', 'approved', 'rejected', 'in_transit', 'received', 'cancelled']);
     fireEvent.click(screen.getByRole('button', { name: 'Siguiente pendientes' })); await loaded();
     selectStatus(status);
     await screen.findByText(`9007199254740993 solicitudes ${status === 'approved' ? 'aprobadas' : 'rechazadas'}`);
@@ -583,30 +1028,27 @@ describe('R05-U2 pending header action stack', () => {
     expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
     expect(screen.getByText('3 solicitudes pendientes')).toHaveAttribute('aria-live', 'polite');
   });
-  it('keeps warehouse count separate from the title without a creation action', async () => {
+  it('keeps warehouse count separate from the title beside the creation action', async () => {
     const f = fixture(1);
     render(<TransferPending controller={f.controller} ownerTag={f.ownerTag} onInventory={f.back} creationAvailable onCreate={vi.fn()} />);
     await loaded();
     const title = screen.getByRole('heading', { name: 'Transferencias pendientes' });
     const count = screen.getByText('9007199254740993 solicitudes pendientes');
-    expect(count.parentElement).toBe(title.closest('header'));
-    expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
+    expect(count.closest('header')).toBe(title.closest('header'));
+    expect(screen.getByRole('button', { name: 'Nueva transferencia' })).toBeEnabled();
     await detail();
     expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
   });
 });
 
 describe('R05-U1 list creation entry', () => {
-  it.each([1, 2, 3])('offers creation only on the assigned branch %s list, never detail', async id => {
+  it.each([1, 2, 3])('offers creation on the assigned location %s list, never detail', async id => {
     const f = fixture(id); if (id === 3) f.env.record = wire(2, 3);
     const create = vi.fn();
     render(<TransferPending controller={f.controller} ownerTag={f.ownerTag} onInventory={f.back} creationAvailable onCreate={create} />);
     await loaded();
-    if (id === 1) expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
-    else {
-      fireEvent.click(screen.getByRole('button', { name: 'Nueva transferencia' }));
-      expect(create).toHaveBeenCalledOnce();
-    }
+    fireEvent.click(screen.getByRole('button', { name: 'Nueva transferencia' }));
+    expect(create).toHaveBeenCalledOnce();
     await detail();
     expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
     expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);

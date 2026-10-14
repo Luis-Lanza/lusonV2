@@ -1,7 +1,7 @@
 import type { Item } from './model';
 import type { TransferAuthority } from './useInventory';
 import type { SourceCatalog } from './sourceInventory';
-import { canonicalTransferInput, newTransferRetryKey, transferDirection, type TransferCreateInput, type TransferDirection, type TransferFlow } from './transferModel';
+import { canonicalTransferInput, newTransferRetryKey, transferDirection, type TransferCreateInput, type TransferDirection, type TransferFlow, type TransferLocationID } from './transferModel';
 
 export type CartDescriptor = Readonly<Pick<Item, 'variant_id' | 'catalog_entry_id' | 'brand' | 'model' | 'capacity_ah' | 'polarity'>>;
 export interface CartRestoration {
@@ -10,24 +10,24 @@ export interface CartRestoration {
 }
 export interface CartLine { readonly item: CartDescriptor; readonly quantity: bigint; readonly available: bigint | null }
 export interface TransferCart {
-  readonly epoch: number; readonly accountID: number; readonly assigned: 2 | 3;
+  readonly epoch: number; readonly sessionGeneration: number; readonly accountID: number; readonly assigned: TransferLocationID;
   readonly direction: Readonly<TransferDirection>; readonly catalog: SourceCatalog;
   readonly lines: readonly CartLine[]; readonly attempt: TransferCreateInput | null;
 }
 export type CartQuantity = string | bigint;
 const maxInt64 = 9223372036854775807n;
 function invalid(): never { throw new Error('Invalid transfer cart'); }
-function actor(authority: TransferAuthority): { assigned: 2 | 3; accountID: number; epoch: number } {
+function actor(authority: TransferAuthority): { assigned: TransferLocationID; accountID: number; epoch: number; sessionGeneration: number } {
   const session = authority.session;
   if (!authority.ready || !session?.authenticated) return invalid();
   const assigned = session.identity.location.id;
-  if (assigned !== 2 && assigned !== 3) return invalid();
-  return { assigned, accountID: session.identity.account_id, epoch: authority.epoch };
+  if (assigned !== 1 && assigned !== 2 && assigned !== 3) return invalid();
+  return { assigned, accountID: session.identity.account_id, epoch: authority.epoch, sessionGeneration: authority.sessionGeneration ?? 0 };
 }
 function usable(cart: TransferCart, authority: TransferAuthority): boolean {
   try {
     const current = actor(authority);
-    return current.epoch === cart.epoch && current.accountID === cart.accountID && current.assigned === cart.assigned;
+    return current.epoch === cart.epoch && current.sessionGeneration === cart.sessionGeneration && current.accountID === cart.accountID && current.assigned === cart.assigned;
   } catch { return false; }
 }
 function guard(cart: TransferCart, authority: TransferAuthority) { if (!usable(cart, authority)) invalid(); }
@@ -67,7 +67,8 @@ export function restoreTransferCart(authority: TransferAuthority, catalog: Sourc
     if (!Number.isInteger(current.accountID) || current.accountID < 1 || current.accountID > 2147483647
       || snapshot.epoch !== current.epoch) return invalid();
     const attempt = canonicalTransferInput(snapshot.attempt);
-    const flow = attempt.kind === 'send_to_warehouse' ? 'sendWarehouse'
+    const flow = attempt.kind === 'direct_shipment' ? attempt.counterparty_location_id === 2 ? 'directA' : 'directB'
+      : attempt.kind === 'send_to_warehouse' ? 'sendWarehouse'
       : attempt.counterparty_location_id === 1 ? 'requestWarehouse' : 'requestOther';
     const direction = Object.freeze(transferDirection(current.assigned, flow));
     if (attempt.counterparty_location_id !== direction.counterparty_location_id

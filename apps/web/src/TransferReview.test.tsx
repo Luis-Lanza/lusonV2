@@ -24,6 +24,29 @@ function setup(flow: 'requestWarehouse' | 'requestOther' | 'sendWarehouse' = 're
   return { props, set: (next: TransferAuthority) => { authority = next; }, get: () => authority };
 }
 
+describe('C2 original creation replay presents cancelled history', () => {
+  it.each([false, true])('shows Cancelada without fabricated approval or new creation intent (approved=%s)', approved => {
+    const h = setup();
+    const wire = { id: '1001', reference: 'TR-1001', kind: 'request_stock', status: 'cancelled',
+      created_at: '2028-01-01T00:00:00.123456789Z', creator_location_id: 2, creator_location_name: 'Sucursal A',
+      origin_location_id: 1, origin_location_name: 'Almacén', destination_location_id: 2, destination_location_name: 'Sucursal A',
+      approver_location_id: 1, approver_location_name: 'Almacén', cancellation_location_id: 2,
+      cancelled_at: '2028-01-02T00:00:00.000000002Z',
+      ...(approved ? { decision_location_id: 1, decided_at: '2028-01-02T00:00:00.000000001Z' } : {}),
+      items: [{ variant_id: 1, brand: 'TOYO', model: 'Private model 1', capacity_ah: '75.125', polarity: 'L', quantity: '9223372036854775807' }] };
+    render(<TransferReview {...h.props} result={{ record: parseTransferRecord(JSON.stringify(wire)), replayed: true }} />);
+    const modal = screen.getByRole('dialog');
+    expect(modal).toHaveAccessibleName('Solicitud Cancelada confirmada');
+    expect(modal).toHaveTextContent('Estado: Cancelada');
+    expect(modal).toHaveTextContent(wire.cancelled_at);
+    expect(modal).toHaveTextContent('TR-1001');
+    expect(modal).not.toHaveTextContent(/quedará Pending|fue rechazada|está reservada/);
+    expect(screen.getByText(/El servidor devolvió la solicitud original/)).toBeVisible();
+    expect(h.props.onSend).not.toHaveBeenCalled();
+    if (!approved) expect(modal).not.toHaveTextContent('2028-01-02T00:00:00.000000001Z');
+  });
+});
+
 describe('A05a terminal replay presentation', () => {
   it.each(['approved', 'rejected'] as const)('does not describe %s replay as Pending', status => {
     const h = setup();

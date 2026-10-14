@@ -252,7 +252,14 @@ func TestA04DecisionGuards(t *testing.T) {
 			} {
 				check(t, f.newRequest(0, "POST", alias.path, "bad"), alias.status, alias.code)
 			}
-			for _, unknown := range []string{path + "/", path + "/extra", "/api/transfers/" + original.ID + "/dispatch", "/api/transfers/" + original.ID + "/cancel", "/api/transfers/" + original.ID + "/receive"} {
+			// Dispatch is now a known guarded mutation. This request is still
+			// Pending, so its origin receives a deliberate lifecycle conflict.
+			check(t, f.newRequest(original.OriginLocationID, "POST", "/api/transfers/"+original.ID+"/dispatch", "{}"), 409, "decision_conflict")
+			check(t, f.newRequest(original.DestinationLocationID, "POST", "/api/transfers/"+original.ID+"/receive", `{"items":[{"variant_id":1,"actual_quantity":"1"},{"variant_id":2,"actual_quantity":"1"}]}`), 409, "decision_conflict")
+			// Cancellation is now a known creator-only capability, not an alias
+			// for an approver decision. This actor remains unauthorized.
+			check(t, f.newRequest(1, "POST", "/api/transfers/"+original.ID+"/cancel", "{}"), 403, "forbidden")
+			for _, unknown := range []string{path + "/", path + "/extra"} {
 				w := f.request(t, 1, "POST", unknown, "{}")
 				if w.Code != 404 || len(w.Result().Cookies()) != 0 || fenceSnapshot(t, f) != before {
 					t.Fatal("unknown operation/trailing segment admitted")

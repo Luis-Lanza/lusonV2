@@ -165,9 +165,14 @@ func TestA01bPendingFence(t *testing.T) {
 					pendingTotal, actions := `"0"`, `"0"`
 					if visible {
 						pendingTotal = `"1"`
+						actionCount := 0
 						if participant == decision {
-							actions = `"1"`
+							actionCount++
 						}
+						if status == "approved" && participant == flow.origin {
+							actionCount++
+						}
+						actions = fmt.Sprintf("%q", fmt.Sprint(actionCount))
 					}
 					if len(counts) != 2 || string(counts["pending_total"]) != pendingTotal || string(counts["action_count"]) != actions {
 						t.Fatal("terminal count or physical participant action semantics incorrect")

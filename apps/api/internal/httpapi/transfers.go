@@ -222,7 +222,7 @@ func decodeTransfer(r *http.Request) (transfers.CreateInput, error) {
 	if _, err := d.Token(); err != io.EOF {
 		return transfers.CreateInput{}, transfers.ErrInvalid
 	}
-	if (in.Kind != transfers.RequestStock && in.Kind != transfers.SendToWarehouse) || !transferRetryKey.MatchString(in.RetryKey) {
+	if (in.Kind != transfers.RequestStock && in.Kind != transfers.SendToWarehouse && in.Kind != transfers.DirectShipment) || !transferRetryKey.MatchString(in.RetryKey) {
 		return transfers.CreateInput{}, transfers.ErrInvalid
 	}
 	variants := map[int64]bool{}
@@ -268,7 +268,7 @@ func transferQuery(raw string) (transfers.Query, error) {
 				err = transfers.ErrInvalid
 			}
 		case "status":
-			if value != "pending" && value != "approved" && value != "rejected" {
+			if value != "pending" && value != "approved" && value != "rejected" && value != "in_transit" && value != "received" && value != "cancelled" {
 				err = transfers.ErrInvalid
 			}
 			q.Status = value
@@ -307,18 +307,42 @@ type transferDTO struct {
 	Items                   []transferItemDTO `json:"items"`
 	DecisionLocationID      *int              `json:"decision_location_id,omitempty"`
 	DecidedAt               *string           `json:"decided_at,omitempty"`
+	DispatchLocationID      *int              `json:"dispatch_location_id,omitempty"`
+	DispatchedAt            *string           `json:"dispatched_at,omitempty"`
+	ReceiptLocationID       *int              `json:"receipt_location_id,omitempty"`
+	ReceivedAt              *string           `json:"received_at,omitempty"`
+	Receipt                 *receiptDTO       `json:"receipt,omitempty"`
+	CancellationLocationID  *int              `json:"cancellation_location_id,omitempty"`
+	CancelledAt             *string           `json:"cancelled_at,omitempty"`
 }
 
 // Outcomes must be complete persisted results, never fabricated Pending or
 // partially exposed metadata. Pending keeps its exact original field set.
 func transferRecord(r transfers.Request) (transferDTO, error) {
+	if r.Kind == transfers.DirectShipment && (r.Creator.ID != 1 || r.Origin.ID != 1 || r.Approver.ID != 1 ||
+		(r.Destination.ID != 2 && r.Destination.ID != 3) || r.Status == "pending" || r.Status == "rejected" ||
+		r.DecisionLocationID == nil || *r.DecisionLocationID != 1 || r.DecidedAt == nil || !r.DecidedAt.Equal(r.CreatedAt)) {
+		return transferDTO{}, transfers.ErrUnavailable
+	}
 	var decidedAt *string
 	switch r.Status {
 	case "pending":
 		if r.DecisionLocationID != nil || r.DecidedAt != nil {
 			return transferDTO{}, transfers.ErrUnavailable
 		}
-	case "approved", "rejected":
+	case "cancelled":
+		if (r.DecisionLocationID == nil) != (r.DecidedAt == nil) {
+			return transferDTO{}, transfers.ErrUnavailable
+		}
+		if r.DecidedAt != nil {
+			if *r.DecisionLocationID != r.Approver.ID || *r.DecisionLocationID < 1 || *r.DecisionLocationID > 3 ||
+				r.DecidedAt.IsZero() || r.DecidedAt.Before(r.CreatedAt) {
+				return transferDTO{}, transfers.ErrUnavailable
+			}
+			stamp := r.DecidedAt.UTC().Format(time.RFC3339Nano)
+			decidedAt = &stamp
+		}
+	case "approved", "rejected", "in_transit", "received":
 		if r.DecisionLocationID == nil || r.DecidedAt == nil ||
 			*r.DecisionLocationID < 1 || *r.DecisionLocationID > 3 ||
 			*r.DecisionLocationID != r.Approver.ID || r.DecidedAt.IsZero() ||
@@ -329,6 +353,32 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 		decidedAt = &stamp
 	default:
 		return transferDTO{}, transfers.ErrUnavailable
+	}
+	var cancelledAt *string
+	if r.Status == "cancelled" {
+		if r.CancellationLocationID == nil || *r.CancellationLocationID != r.Creator.ID ||
+			*r.CancellationLocationID < 1 || *r.CancellationLocationID > 3 || r.CancelledAt == nil || r.CancelledAt.IsZero() ||
+			r.CancelledAt.Before(r.CreatedAt) || (r.DecidedAt != nil && r.CancelledAt.Before(*r.DecidedAt)) {
+			return transferDTO{}, transfers.ErrUnavailable
+		}
+		stamp := r.CancelledAt.UTC().Format(time.RFC3339Nano)
+		cancelledAt = &stamp
+	} else if r.CancellationLocationID != nil || r.CancelledAt != nil {
+		return transferDTO{}, transfers.ErrUnavailable
+	}
+	var dispatchedAt *string
+	if r.Status == "in_transit" || r.Status == "received" {
+		if r.DispatchLocationID == nil || *r.DispatchLocationID != r.Origin.ID || r.DispatchedAt == nil || r.DispatchedAt.IsZero() || r.DispatchedAt.Before(*r.DecidedAt) {
+			return transferDTO{}, transfers.ErrUnavailable
+		}
+		stamp := r.DispatchedAt.UTC().Format(time.RFC3339Nano)
+		dispatchedAt = &stamp
+	} else if r.DispatchLocationID != nil || r.DispatchedAt != nil {
+		return transferDTO{}, transfers.ErrUnavailable
+	}
+	receipt, receivedAt, err := receiptRecord(r)
+	if err != nil {
+		return transferDTO{}, err
 	}
 	items := make([]transferItemDTO, 0, len(r.Items))
 	for _, item := range r.Items {
@@ -351,6 +401,13 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 		Items:                   items,
 		DecisionLocationID:      r.DecisionLocationID,
 		DecidedAt:               decidedAt,
+		DispatchLocationID:      r.DispatchLocationID,
+		DispatchedAt:            dispatchedAt,
+		ReceiptLocationID:       r.ReceiptLocationID,
+		ReceivedAt:              receivedAt,
+		Receipt:                 receipt,
+		CancellationLocationID:  r.CancellationLocationID,
+		CancelledAt:             cancelledAt,
 	}, nil
 }
 
@@ -410,6 +467,19 @@ func (a *API) transferCounts(store *transfers.Store) http.HandlerFunc {
 }
 
 func (a *API) registerTransfers(mux *http.ServeMux, store *transfers.Store) {
+	mux.HandleFunc("/api/transfers/{id}/cancel", a.transferCancellation(store))
+	mux.HandleFunc("/api/transfers/{id}/receive", a.transferReceive(store))
+	mux.HandleFunc("/api/transfers/{id}/count-corrections", a.transferCountCorrections(store, ""))
+	mux.HandleFunc("/api/transfers/{id}/count-corrections/", countCorrectionNotFound)
+	mux.HandleFunc("/api/transfers/{id}/count-corrections/propose", a.transferCountCorrections(store, "propose"))
+	mux.HandleFunc("/api/transfers/{id}/count-corrections/accept", a.transferCountCorrections(store, "accept"))
+	mux.HandleFunc("/api/transfers/{id}/count-corrections/reject", a.transferCountCorrections(store, "reject"))
+	mux.HandleFunc("/api/transfers/{id}/restitutions", a.transferRestitutions(store, ""))
+	mux.HandleFunc("/api/transfers/{id}/restitutions/", restitutionNotFound)
+	mux.HandleFunc("/api/transfers/{id}/restitutions/propose", a.transferRestitutions(store, "propose"))
+	mux.HandleFunc("/api/transfers/{id}/restitutions/accept", a.transferRestitutions(store, "accept"))
+	mux.HandleFunc("/api/transfers/{id}/restitutions/reject", a.transferRestitutions(store, "reject"))
+	mux.HandleFunc("/api/transfers/{id}/dispatch", a.transferDispatch(store))
 	mux.HandleFunc("/api/transfers/{id}/approve", a.transferDecision(store, true))
 	mux.HandleFunc("/api/transfers/{id}/reject", a.transferDecision(store, false))
 	mux.HandleFunc("/api/transfers/counts", a.transferCounts(store))

@@ -30,12 +30,27 @@ export function matchesDecisionRecord(original: TransferRecord, result: Transfer
     'origin_location_id', 'origin_location_name', 'destination_location_id', 'destination_location_name',
     'approver_location_id', 'approver_location_name'] as const;
   const itemFields = ['variant_id', 'brand', 'model', 'capacity_ah', 'polarity', 'quantity'] as const;
-  const metadataMatches = original.status === 'pending' || (result.status === original.status
-    && result.decision_location_id === original.decision_location_id && result.decided_at === original.decided_at);
+  const later = (original.status === 'approved' && (result.status === 'in_transit' || result.status === 'received' || result.status === 'cancelled'))
+    || (original.status === 'in_transit' && result.status === 'received');
+  const receiptMatches = original.status !== 'received' || (result.status === 'received'
+    && original.receipt_location_id === result.receipt_location_id && original.received_at === result.received_at
+    && original.receipt.items.length === result.receipt.items.length && original.receipt.exceptions.length === result.receipt.exceptions.length
+    && original.receipt.items.every((line, i) => ['variant_id', 'expected_quantity', 'actual_quantity', 'available_quantity']
+      .every(key => Reflect.get(line, key) === Reflect.get(result.receipt.items[i], key)))
+    && original.receipt.exceptions.every((line, i) => ['variant_id', 'kind', 'quantity']
+      .every(key => Reflect.get(line, key) === Reflect.get(result.receipt.exceptions[i], key))));
+  const metadataMatches = original.status === 'pending' || ((result.status === original.status || later)
+    && result.decision_location_id === original.decision_location_id && result.decided_at === original.decided_at
+    && (original.status !== 'cancelled' || (result.cancellation_location_id === original.cancellation_location_id && result.cancelled_at === original.cancelled_at))
+    && ((original.status !== 'in_transit' && original.status !== 'received')
+      || (result.dispatch_location_id === original.dispatch_location_id && result.dispatched_at === original.dispatched_at)) && receiptMatches);
   return metadataMatches && fields.every(field => original[field] === result[field]) && original.items.length === result.items.length
     && original.items.every((item, index) => itemFields.every(field => item[field] === result.items[index][field]));
 }
 export function requestedDecision(action: TransferDecision) { return action === 'approve' ? 'approved' : 'rejected'; }
+export function satisfiesDecision(action: TransferDecision, result: TransferRecord) {
+  return result.status === requestedDecision(action) || (action === 'approve' && (result.status === 'in_transit' || result.status === 'received'));
+}
 
 export function createTransferDecisionRecovery() {
   let attempt: DecisionAttempt | null = null;
@@ -61,7 +76,7 @@ export function createTransferDecisionRecovery() {
       if (owner.location !== record.approver_location_id || (action !== 'approve' && action !== 'reject')) return null;
       const original = captureDecisionRecord(record);
       if (owned(owner) && attempt) {
-        if (flight || masked) return null;
+        if (flight || masked || (attempt.result?.status === 'cancelled' && attempt.original.id === original.id)) return null;
         if (attempt.phase === 'uncertain') {
           if (attempt.action !== action || !matchesDecisionRecord(attempt.original, original)) return null;
           return claim(owner);
@@ -80,10 +95,10 @@ export function createTransferDecisionRecovery() {
       // Identity validation precedes releasing the flight, including Pending GETs.
       const result = outcome ? captureDecisionRecord(outcome) : null;
       if (result && !matchesDecisionRecord(attempt.original, result)) throw new Error('Invalid decision identity');
-      if (result && result.status !== 'pending' && result.decision_location_id !== attempt.owner.location) throw new Error('Invalid decision actor');
+      if (result && result.status !== 'pending' && result.status !== 'cancelled' && result.decision_location_id !== attempt.owner.location) throw new Error('Invalid decision actor');
       flight = null; masked = privateView;
       const terminal = result?.status !== 'pending' && result !== null;
-      attempt = Object.freeze({ ...attempt, phase: terminal ? result.status === requestedDecision(attempt.action) ? 'confirmed' : 'conflict' : 'uncertain', result: terminal ? result : null,
+      attempt = Object.freeze({ ...attempt, phase: terminal ? satisfiesDecision(attempt.action, result) ? 'confirmed' : 'conflict' : 'uncertain', result: terminal ? result : null,
         failure: failure ? Object.freeze({ code: failure.code, status: failure.status, uncertainDecision: failure.uncertainDecision }) : null });
       emit(); return terminal;
     },

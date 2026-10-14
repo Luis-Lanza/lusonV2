@@ -6,6 +6,7 @@ import { useInventory } from './useInventory';
 import { useTransfers } from './useTransfers';
 import { createTransferAPI } from './transferAPI';
 import { parseTransferRecord } from './transferModel';
+import { decisionOwner } from './transferDecisionRecovery';
 import type { TransferAuthority, TransferController } from './useInventory';
 import { pageJSON } from './test-fixtures';
 import type { TransferCreateInput } from './transferModel';
@@ -63,7 +64,8 @@ function fixture(initial: unknown = session(), override?: (url: string, init: Re
       return Promise.resolve(reply({ page, page_size, status: 'pending', total_count: '1', records: page === 1 ? [wire(branch)] : [] }));
     }
     if (url.startsWith('/api/transfers/')) return Promise.resolve(reply(wire(branch, url.slice('/api/transfers/'.length))));
-    if (url === '/api/transfers' && init.method === 'POST') return Promise.resolve(reply(wire(branch), 201));
+    if (url === '/api/transfers' && init.method === 'POST') return Promise.resolve(reply({ ...wire(branch),
+      items: wire(branch).items.map(item => ({ ...item, quantity: '2' })) }, 201));
     throw new Error('Unexpected mock route');
   });
   vi.stubGlobal('fetch', fetch);
@@ -140,6 +142,645 @@ const decisionOutcome = (original: ReturnType<typeof wire>, status: 'approved' |
   decision_location_id: original.approver_location_id, decided_at: '2026-04-03T00:00:00.000000001Z' });
 const decisionPosts = (fetch: ReturnType<typeof fixture>['fetch']) => fetch.mock.calls.filter(([, init]) => init?.method === 'POST' && String(init?.body) === '{}');
 const inventoryCalls = (fetch: ReturnType<typeof fixture>['fetch']) => fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?'));
+
+describe('W2 warehouse direct creation', () => {
+  // Runtime JSON exercises the wire contract without importing a future kind symbol.
+  const input = (destination = 2): TransferCreateInput => JSON.parse(JSON.stringify({
+    kind: 'direct_shipment', counterparty_location_id: destination, retry_key: 'warehouse_hook_key_01',
+    items: [{ variant_id: 201, quantity: '2' }],
+  }));
+  const direct = (destination = 2, patch: Record<string, unknown> = {}) => ({
+    ...wire(destination, '1'), kind: 'direct_shipment', status: 'approved',
+    creator_location_id: 1, creator_location_name: 'Warehouse', decision_location_id: 1,
+    decided_at: wire().created_at, items: [{ ...wire().items[0], quantity: '2' }], ...patch,
+  });
+  const posts = (fetch: ReturnType<typeof fixture>['fetch']) => fetch.mock.calls.filter(([url, init]) =>
+    url === '/api/transfers' && init?.method === 'POST');
+
+  it.each([2, 3])('explicit warehouse POST to destination %s preserves the payload and refreshes every reservation lane', async destination => {
+    const h = decisionFixture(1, wire(2, '1'), (url, init) => url === '/api/transfers' && init.method === 'POST'
+      ? Promise.resolve(reply(direct(destination), 201)) : undefined);
+    await h.ready();
+    act(() => h.controller.change({ location: destination }));
+    await waitFor(() => expect(h.controller.loading).toBe(false));
+    expect(posts(h.fetch)).toHaveLength(0);
+    const source = vi.fn(); const detach = h.controller.subscribeSourceInventoryInvalidation(source);
+    const before = { lists: listCalls(h.fetch).length, inventory: inventoryCalls(h.fetch).length,
+      counts: h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts').length };
+    const payload = input(destination); const saved = JSON.stringify(payload);
+    let result!: Awaited<ReturnType<DecisionHook['submit']>>;
+    await act(async () => { result = await h.lanes[0].submit(payload); });
+    expect(result).toMatchObject({ replayed: false, record: { kind: 'direct_shipment', status: 'approved',
+      creator_location_id: 1, origin_location_id: 1, destination_location_id: destination,
+      decision_location_id: 1, decided_at: wire().created_at } });
+    expect(result.record.items[0].quantity).toBe(2n);
+    for (const value of [result.record, result.record.items, result.record.items[0]]) expect(Object.isFrozen(value)).toBe(true);
+    expect(JSON.stringify(payload)).toBe(saved);
+    expect(posts(h.fetch)).toHaveLength(1);
+    expect(posts(h.fetch)[0][1]?.body).toBe(saved);
+    expect(new Headers(posts(h.fetch)[0][1]?.headers).get('X-CSRF-Token')).toBe(csrf);
+    expect(passive(posts(h.fetch)[0])).toBeNull();
+    await waitFor(() => expect(listCalls(h.fetch)).toHaveLength(before.lists + 2));
+    await waitFor(() => expect(h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts')).toHaveLength(before.counts + 2));
+    await waitFor(() => expect(inventoryCalls(h.fetch)).toHaveLength(before.inventory + 1));
+    expect(source).toHaveBeenCalledTimes(1);
+    detach(); h.view.unmount();
+  });
+  it.each(['cancelled', 'in_transit'] as const)('accepts immutable current-state %s creation replay without dispatching or cancelling', async status => {
+    const patch = status === 'cancelled'
+      ? { status, cancellation_location_id: 1, cancelled_at: '2026-04-03T00:00:00Z' }
+      : { status, dispatch_location_id: 1, dispatched_at: '2026-04-03T00:00:00Z' };
+    const h = decisionFixture(1, wire(2, '1'), (url, init) => url === '/api/transfers' && init.method === 'POST'
+      ? Promise.resolve(reply(direct(2, patch), 200)) : undefined);
+    await h.ready();
+    const source = vi.fn(); const detach = h.controller.subscribeSourceInventoryInvalidation(source);
+    await act(async () => {
+      const result = await h.lanes[0].submit(input());
+      expect(result).toMatchObject({ replayed: true, record: { status, decided_at: wire().created_at } });
+      expect(result.record.items[0].quantity).toBe(2n);
+    });
+    expect(source).toHaveBeenCalledTimes(1);
+    expect(h.fetch.mock.calls.filter(([url, init]) => String(url).startsWith('/api/transfers') && init?.method === 'POST'))
+      .toHaveLength(1);
+    detach(); h.view.unmount();
+  });
+  it.each(['destination', 'quantity', 'kind'] as const)('rejects a mismatched direct creation %s replay before reservation refresh', async field => {
+    const response = field === 'destination' ? direct(3) : field === 'quantity'
+      ? direct(2, { items: [{ ...wire().items[0], quantity: '3' }] })
+      : decisionOutcome({ ...wire(2, '1'), items: [{ ...wire().items[0], quantity: '2' }] }, 'approved');
+    const h = decisionFixture(1, wire(2, '1'), (url, init) => url === '/api/transfers' && init.method === 'POST'
+      ? Promise.resolve(reply(response, 200)) : undefined);
+    await h.ready();
+    const source = vi.fn(); const detach = h.controller.subscribeSourceInventoryInvalidation(source);
+    const before = { lists: listCalls(h.fetch).length, inventory: inventoryCalls(h.fetch).length,
+      counts: h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts').length };
+    await act(async () => { await expect(h.lanes[0].submit(input())).rejects.toMatchObject({ code: 'invalid_response', uncertainCreation: true }); });
+    expect(posts(h.fetch)).toHaveLength(1);
+    expect(source).not.toHaveBeenCalled();
+    expect(listCalls(h.fetch)).toHaveLength(before.lists);
+    expect(inventoryCalls(h.fetch)).toHaveLength(before.inventory);
+    expect(h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts')).toHaveLength(before.counts);
+    detach(); h.view.unmount();
+  });
+  it.each(['insufficient_stock', 'retry_conflict', 'forbidden'] as const)('retains direct %s failure without confirming or refreshing reservations', async code => {
+    const h = decisionFixture(1, wire(2, '1'), (url, init) => url === '/api/transfers' && init.method === 'POST'
+      ? Promise.resolve(reply({ error: code }, code === 'forbidden' ? 403 : 409)) : undefined);
+    await h.ready(); const source = vi.fn(); h.controller.subscribeSourceInventoryInvalidation(source);
+    const before = { transfers: transferCalls(h.fetch).length, inventory: inventoryCalls(h.fetch).length };
+    const payload = input(); const saved = JSON.stringify(payload);
+    await act(async () => { await expect(h.lanes[0].submit(payload)).rejects.toMatchObject({ code }); });
+    expect(JSON.stringify(payload)).toBe(saved); expect(h.controller.session?.authenticated).toBe(true);
+    expect(transferCalls(h.fetch)).toHaveLength(before.transfers + 1);
+    expect(inventoryCalls(h.fetch)).toHaveLength(before.inventory); expect(source).not.toHaveBeenCalled();
+    expect(posts(h.fetch)).toHaveLength(1); h.view.unmount();
+  });
+  it.each(['generation', 'csrf', 'account', 'unready', 'unmount'] as const)('fences direct creation confirmation after %s change without refreshing', async change => {
+    const h = boundedHarness(false, 1); h.a.sessionGeneration = 1;
+    const confirmed = vi.fn(); h.controller.confirmTransferCreation = confirmed;
+    const invalidated = vi.fn(); h.listeners.add(invalidated);
+    let job!: Promise<unknown>;
+    act(() => { job = h.hook.result.current.submit(input()).catch(error => error); });
+    expect(h.jobs).toHaveLength(1);
+    if (change === 'generation') h.a.sessionGeneration = 2;
+    if (change === 'csrf' && h.a.session?.authenticated) h.a.session.csrf_token = 'replacement';
+    if (change === 'account' && h.a.session?.authenticated) h.a.session.identity.account_id = 99;
+    if (change === 'unready') h.a.ready = false;
+    if (change === 'unmount') h.hook.unmount();
+    await act(async () => { h.jobs[0].resolve(reply(direct(), 201)); await job; });
+    await expect(job).resolves.toMatchObject({ code: 'aborted', uncertainCreation: true });
+    expect(confirmed).not.toHaveBeenCalled(); expect(invalidated).not.toHaveBeenCalled();
+    expect(h.fetch).toHaveBeenCalledTimes(1); h.hook.unmount();
+  });
+  it.each([201, 200])('rejects mismatched initial reserved status%s without refresh or automatic retry', async status => {
+    const h = decisionFixture(1, wire(2, '1'), (url, init) => url === '/api/transfers' && init.method === 'POST'
+      ? Promise.resolve(reply(direct(3), status)) : undefined);
+    await h.ready(); const source = vi.fn(); h.controller.subscribeSourceInventoryInvalidation(source);
+    const before = transferCalls(h.fetch).length;
+    await act(async () => { await expect(h.lanes[0].submit(input())).rejects.toMatchObject({ code: 'invalid_response', uncertainCreation: true }); });
+    expect(transferCalls(h.fetch)).toHaveLength(before + 1); expect(source).not.toHaveBeenCalled();
+    expect(posts(h.fetch)).toHaveLength(1); h.view.unmount();
+  });
+  it.each(['dispatch', 'cancel', 'receive'] as const)('reuses immutable direct %s lifecycle without destination approval', async action => {
+    const reserved = direct(2, { items: [{ ...wire().items[0], quantity: '9223372036854775807' }] });
+    const transit = { ...reserved, status: 'in_transit', dispatch_location_id: 1, dispatched_at: '2026-04-03T00:00:00Z' };
+    const outcome = action === 'dispatch' ? transit : action === 'cancel'
+      ? { ...reserved, status: 'cancelled', cancellation_location_id: 1, cancelled_at: '2026-04-03T00:00:00Z' }
+      : { ...transit, status: 'received', receipt_location_id: 2, received_at: '2026-04-04T00:00:00Z',
+        receipt: { items: [{ variant_id: 201, expected_quantity: '9223372036854775807', actual_quantity: '9223372036854775807',
+          available_quantity: '9223372036854775807' }], exceptions: [] } };
+    const actor = action === 'receive' ? 2 : 1;
+    const h = decisionFixture(actor, wire(2, '1'), (url, init) => url === `/api/transfers/1/${action === 'receive' ? 'receive' : action}` && init.method === 'POST'
+      ? Promise.resolve(reply(outcome)) : undefined);
+    await h.ready(); const original = parseTransferRecord(JSON.stringify(action === 'receive' ? transit : reserved));
+    await act(async () => {
+      const result = action === 'receive' ? await h.lanes[0].receive(original, { items: [{ variant_id: 201, actual_quantity: '9223372036854775807' }] })
+        : action === 'dispatch' ? await h.lanes[0].dispatch(original) : await h.lanes[0].cancel(original);
+      expect(result.kind).toBe('direct_shipment'); expect(result.items[0].quantity).toBe(9223372036854775807n);
+      expect(result.decided_at).toBe(result.created_at); expect(result.status).toBe(outcome.status);
+    });
+    expect(h.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
+    await expect(h.lanes[0].decide(original, 'approve')).rejects.toMatchObject({ code: 'forbidden' });
+    if (action !== 'receive') {
+      const dispatched = parseTransferRecord(JSON.stringify(transit));
+      await expect(h.lanes[0].cancel(dispatched)).rejects.toMatchObject({ code: 'invalid_request' });
+    }
+    h.view.unmount();
+  });
+  it('fences a late direct creation after logout without publishing or refreshing', async () => {
+    const held = deferred<Response>();
+    const h = decisionFixture(1, wire(2, '1'), (url, init) => url === '/api/transfers' && init.method === 'POST' ? held.promise : undefined);
+    await h.ready();
+    let job!: Promise<unknown>;
+    act(() => { job = h.lanes[0].submit(input()).catch(error => error); });
+    await waitFor(() => expect(posts(h.fetch)).toHaveLength(1));
+    await act(async () => { await h.controller.logout(); });
+    const before = { transfers: transferCalls(h.fetch).length, inventory: inventoryCalls(h.fetch).length };
+    await act(async () => { held.resolve(reply(direct(), 201)); await job; });
+    await expect(job).resolves.toMatchObject({ code: 'aborted', uncertainCreation: true });
+    expect(h.lanes[0].submitError).toBeNull();
+    expect(transferCalls(h.fetch)).toHaveLength(before.transfers);
+    expect(inventoryCalls(h.fetch)).toHaveLength(before.inventory);
+    h.view.unmount();
+  });
+});
+
+describe('C2 cancellation controller and refresh lanes', () => {
+  const pending = wire(2, '1');
+  const approved = decisionOutcome(pending, 'approved');
+  const cancelled = (wasApproved = false) => ({ ...(wasApproved ? approved : pending), status: 'cancelled',
+    cancellation_location_id: 2, cancelled_at: '2026-04-03T00:00:00.000000002Z' });
+  const parse = (value: unknown) => parseTransferRecord(JSON.stringify(value));
+  const posts = (fetch: ReturnType<typeof fixture>['fetch']) => fetch.mock.calls.filter(([url, init]) =>
+    String(url).endsWith('/cancel') && init?.method === 'POST');
+
+  it.each([false, true])('reads latest cancelled detail without unavailable or fake approval (approved=%s)', async wasApproved => {
+    const h = decisionFixture(2, pending, (url, init) => url === '/api/transfers/1' && init.method === 'GET'
+      ? Promise.resolve(reply(cancelled(wasApproved))) : undefined);
+    await h.ready();
+    act(() => h.lanes[0].selectDetail('1'));
+    await waitFor(() => expect(h.lanes[0].detail?.status).toBe('cancelled'));
+    expect(h.lanes[0].detailError).toBeNull();
+    expect(posts(h.fetch)).toHaveLength(0);
+    if (!wasApproved) expect(h.lanes[0].detail).not.toHaveProperty('decided_at');
+    h.view.unmount();
+  });
+  it('passive cancelled GET outranks cached approval while preserving its historical snapshot', async () => {
+    let latest = false;
+    const h = decisionFixture(1, pending, (url, init) => url === '/api/transfers/1' && init.method === 'GET'
+      ? Promise.resolve(reply(latest ? cancelled(true) : approved)) : undefined);
+    await h.ready();
+    const owner = decisionOwner(h.controller.getTransferAuthority())!;
+    act(() => {
+      const token = h.controller.decisionRecovery.start(h.original, 'approve', owner)!;
+      h.controller.decisionRecovery.finish(token, parse(approved));
+      h.lanes[0].selectDetail('1');
+    });
+    await waitFor(() => expect(h.lanes[0].detail?.status).toBe('approved'));
+    latest = true;
+    act(() => Source.instances[0].emit('transfers'));
+    await waitFor(() => expect(h.lanes[0].detail?.status).toBe('cancelled'));
+    expect(h.lanes[0].decision).toMatchObject({ phase: 'conflict', result: { status: 'cancelled' } });
+    expect(h.controller.decisionRecovery.get(owner)?.result?.status).toBe('approved');
+    expect(decisionPosts(h.fetch)).toHaveLength(0);
+    const reads = h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/1');
+    expect(passive(reads.at(-1)!)).toBe('1');
+    h.view.unmount();
+  });
+  it.each(['decision', 'dispatch'] as const)('explicit uncertain %s recovery recognizes Cancelled without claiming operation success', async operation => {
+    const h = decisionFixture(1, pending, (url, init) => {
+      if (init.method === 'POST' && (url.endsWith('/approve') || url.endsWith('/dispatch'))) return Promise.reject(new Error('lost'));
+      if (url === '/api/transfers/1' && init.method === 'GET') return Promise.resolve(reply(cancelled(true)));
+      return undefined;
+    });
+    await h.ready();
+    await act(async () => {
+      if (operation === 'decision') await expect(h.lanes[0].decide(h.original, 'approve')).rejects.toMatchObject({ uncertainDecision: true });
+      else await expect(h.lanes[0].dispatch(parse(approved))).rejects.toMatchObject({ uncertainDispatch: true });
+    });
+    await act(async () => {
+      if (operation === 'decision') await h.lanes[0].recoverDecision();
+      else await h.lanes[0].recoverDispatch();
+    });
+    const snapshot = operation === 'decision' ? h.lanes[0].decision : h.lanes[0].dispatchAttempt;
+    expect(snapshot).toMatchObject({ phase: 'conflict', result: { status: 'cancelled' } });
+    expect(decisionPosts(h.fetch)).toHaveLength(1);
+    expect(posts(h.fetch)).toHaveLength(0);
+    h.view.unmount();
+  });
+  // New hook methods are planned API coverage, not the existing-export RED cases above.
+  it.each([false, true])('refreshes transfer/count lanes always, stock/source only after Approved release (approved=%s)', async wasApproved => {
+    const h = decisionFixture(2, pending, (url, init) => url.endsWith('/cancel') && init.method === 'POST'
+      ? Promise.resolve(reply(cancelled(wasApproved))) : undefined);
+    await h.ready();
+    const source = vi.fn();
+    const detach = h.controller.subscribeSourceInventoryInvalidation(source);
+    const before = { lists: listCalls(h.fetch).length,
+      counts: h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts').length,
+      inventory: inventoryCalls(h.fetch).length };
+    await act(async () => { await h.lanes[0].cancel(parse(wasApproved ? approved : pending)); });
+    expect(h.lanes[1].cancellationAttempt).toMatchObject({ phase: 'confirmed', result: { status: 'cancelled' } });
+    await waitFor(() => expect(listCalls(h.fetch)).toHaveLength(before.lists + 2));
+    await waitFor(() => expect(h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts')).toHaveLength(before.counts + 2));
+    if (wasApproved) await waitFor(() => expect(inventoryCalls(h.fetch)).toHaveLength(before.inventory + 1));
+    else expect(inventoryCalls(h.fetch)).toHaveLength(before.inventory);
+    expect(source).toHaveBeenCalledTimes(wasApproved ? 1 : 0);
+    expect(posts(h.fetch)).toHaveLength(1);
+    detach(); h.view.unmount();
+  });
+  it('retains uncertainty across remount and Pending-to-Approved GET, then explicitly retries the identical cancel', async () => {
+    let sent = 0;
+    const h = decisionFixture(2, pending, (url, init) => {
+      if (url.endsWith('/cancel') && init.method === 'POST') return ++sent === 1
+        ? Promise.reject(new Error('PRIVATE lost')) : Promise.resolve(reply(cancelled(true)));
+      if (url === '/api/transfers/1' && init.method === 'GET') return Promise.resolve(reply(approved));
+      return undefined;
+    });
+    await h.ready();
+    await act(async () => { await expect(h.lanes[0].cancel(h.original)).rejects.toMatchObject({ uncertainCancellation: true }); });
+    h.show(false); h.show(true); await h.ready();
+    expect(h.lanes[1].cancellationAttempt?.phase).toBe('uncertain');
+    for (const event of ['transfers', 'inventory', 'resync']) {
+      act(() => Source.instances[0].emit(event));
+      await waitFor(() => expect(h.lanes[0].listBusy).toBe(false));
+      expect(sent).toBe(1);
+    }
+    await act(async () => { await h.lanes[1].recoverCancellation(); });
+    expect(h.lanes[1].cancellationAttempt?.phase).toBe('uncertain');
+    expect(sent).toBe(1);
+    await act(async () => { await h.lanes[1].retryCancellation(); });
+    expect(h.lanes[0].cancellationAttempt).toMatchObject({ phase: 'confirmed', result: { status: 'cancelled', decided_at: approved.decided_at } });
+    expect(posts(h.fetch).map(([url, init]) => [url, init?.body])).toEqual([
+      ['/api/transfers/1/cancel', '{}'], ['/api/transfers/1/cancel', '{}'],
+    ]);
+    h.view.unmount();
+  });
+  it.each(['pending', 'approved', 'rejected', 'in_transit', 'received', 'cancelled'] as const)
+    ('explicit cancellation GET publishes current %s truth without silently retrying or claiming conflict success', async status => {
+      const transit = { ...approved, status: 'in_transit', dispatch_location_id: 1,
+        dispatched_at: '2026-04-03T00:00:00.000000002Z' };
+      const received = { ...transit, status: 'received', receipt_location_id: 2,
+        received_at: '2026-04-03T00:00:00.000000003Z', receipt: { items: [{ variant_id: 201,
+          expected_quantity: '9223372036854775807', actual_quantity: '9223372036854775807',
+          available_quantity: '9223372036854775807' }], exceptions: [] } };
+      const current = status === 'pending' ? pending : status === 'approved' ? approved
+        : status === 'rejected' ? decisionOutcome(pending, 'rejected') : status === 'in_transit' ? transit
+        : status === 'received' ? received : cancelled(true);
+      const h = decisionFixture(2, pending, (url, init) => {
+        if (url.endsWith('/cancel') && init.method === 'POST') return Promise.reject(new Error('lost'));
+        if (url === '/api/transfers/1' && init.method === 'GET') return Promise.resolve(reply(current));
+        return undefined;
+      });
+      await h.ready();
+      await act(async () => { await expect(h.lanes[0].cancel(h.original)).rejects.toMatchObject({ uncertainCancellation: true }); });
+      await act(async () => { await h.lanes[1].recoverCancellation(); });
+      const phase = status === 'pending' || status === 'approved' ? 'uncertain' : status === 'cancelled' ? 'confirmed' : 'conflict';
+      expect(h.lanes[0].cancellationAttempt?.phase).toBe(phase);
+      if (phase !== 'uncertain') expect(h.lanes[0].cancellationAttempt?.result?.status).toBe(status);
+      expect(posts(h.fetch)).toHaveLength(1);
+      h.view.unmount();
+    });
+  it.each([403, 404])('masks cancellation request %s without blocking a different creator request', async status => {
+    const h = decisionFixture(2, pending, (url, init) => url.endsWith('/cancel') && init.method === 'POST'
+      ? Promise.resolve(reply({ error: status === 403 ? 'forbidden' : 'not_found' }, status)) : undefined);
+    await h.ready();
+    await act(async () => { await expect(h.lanes[0].cancel(h.original)).rejects.toMatchObject({ status }); });
+    expect(h.lanes[0].cancellationAttempt).toBeNull();
+    await act(async () => { await expect(h.lanes[0].cancel(h.original)).rejects.toBeDefined(); });
+    expect(posts(h.fetch)).toHaveLength(1);
+    const other = parse({ ...pending, id: '2', reference: 'TR-002' });
+    await act(async () => { await expect(h.lanes[0].cancel(other)).rejects.toMatchObject({ status }); });
+    expect(posts(h.fetch).map(([url]) => url)).toEqual(['/api/transfers/1/cancel', '/api/transfers/2/cancel']);
+    h.view.unmount();
+  });
+  it('shares one cancellation flight across two panes and never replaces the original uncertain request', async () => {
+    const held = deferred<Response>();
+    const h = decisionFixture(2, pending, (url, init) => url.endsWith('/cancel') && init.method === 'POST' ? held.promise : undefined);
+    await h.ready();
+    let first!: Promise<unknown>;
+    act(() => { first = h.lanes[0].cancel(h.original).catch(error => error); });
+    await waitFor(() => expect(posts(h.fetch)).toHaveLength(1));
+    await act(async () => {
+      await expect(h.lanes[1].cancel(h.original)).rejects.toMatchObject({ code: 'invalid_request' });
+      await expect(h.lanes[1].recoverCancellation()).rejects.toMatchObject({ code: 'invalid_request' });
+    });
+    await act(async () => { held.resolve(reply({ error: 'service_unavailable' }, 503)); await first; });
+    expect(h.lanes[1].cancellationAttempt?.phase).toBe('uncertain');
+    await act(async () => {
+      await expect(h.lanes[1].cancel(parse({ ...pending, id: '2', reference: 'TR-002' }))).rejects.toMatchObject({ code: 'invalid_request' });
+    });
+    expect(posts(h.fetch)).toHaveLength(1);
+    h.view.unmount();
+  });
+  it('gates cancellation stock callbacks again after a transfer subscriber changes the live token', async () => {
+    const h = decisionFixture(2, pending);
+    await h.ready();
+    const owner = decisionOwner(h.controller.getTransferAuthority())!;
+    const source = vi.fn(); const later = vi.fn();
+    const detachSource = h.controller.subscribeSourceInventoryInvalidation(source);
+    const detachMutation = h.controller.subscribeTransferInvalidation(() => {
+      const session = h.controller.getTransferAuthority().session;
+      if (session?.authenticated) session.csrf_token = 'd'.repeat(43);
+    });
+    const detachLater = h.controller.subscribeTransferInvalidation(later);
+    const before = inventoryCalls(h.fetch).length;
+    act(() => h.controller.confirmTransferCancellation(owner, parse(cancelled(true))));
+    await act(async () => {});
+    expect(source).not.toHaveBeenCalled();
+    expect(later).not.toHaveBeenCalled();
+    expect(inventoryCalls(h.fetch)).toHaveLength(before);
+    expect(posts(h.fetch)).toHaveLength(0);
+    detachSource(); detachMutation(); detachLater(); h.view.unmount();
+  });
+  it.each(['csrf', 'account', 'logout'] as const)('fences a late cancellation result and retry after %s authority change', async mode => {
+    const held = deferred<Response>();
+    const h = decisionFixture(2, pending, (url, init) => url.endsWith('/cancel') && init.method === 'POST' ? held.promise : undefined);
+    await h.ready();
+    let job!: Promise<unknown>;
+    act(() => { job = h.lanes[0].cancel(h.original).catch(error => error); });
+    await waitFor(() => expect(posts(h.fetch)).toHaveLength(1));
+    await act(async () => {
+      if (mode === 'logout') await h.controller.logout();
+      else {
+        h.env.current = session(mode === 'account' ? 3 : 2, mode === 'csrf' ? 'd'.repeat(43) : csrf);
+        await h.controller.settleUnauthorized(h.controller.authorityEpoch);
+      }
+    });
+    await act(async () => { held.resolve(reply(cancelled())); await job; });
+    expect(h.lanes[0].cancellationAttempt).toBeNull();
+    await act(async () => { await expect(h.lanes[0].retryCancellation()).rejects.toBeDefined(); });
+    expect(posts(h.fetch)).toHaveLength(1);
+    h.view.unmount();
+  });
+});
+
+describe('R2 receipt controller and refresh lanes', () => {
+  const pending = wire(2, '1');
+  const transit = { ...decisionOutcome(pending, 'approved'), status: 'in_transit', dispatch_location_id: 1,
+    dispatched_at: '2026-04-03T00:00:00.000000002Z' };
+  const received = (unexpectedOnly = false) => ({ ...transit, status: 'received', receipt_location_id: 2,
+    received_at: '2026-04-03T00:00:00.000000003Z', receipt: {
+      items: unexpectedOnly ? [
+        { variant_id: 1, expected_quantity: '0', actual_quantity: '7', available_quantity: '0' },
+        { variant_id: 201, expected_quantity: '9223372036854775807', actual_quantity: '0', available_quantity: '0' },
+      ] : [{ variant_id: 201, expected_quantity: '9223372036854775807', actual_quantity: '1', available_quantity: '1' }],
+      exceptions: unexpectedOnly ? [{ variant_id: 1, kind: 'unexpected', quantity: '7' },
+        { variant_id: 201, kind: 'shortage', quantity: '9223372036854775807' }]
+        : [{ variant_id: 201, kind: 'shortage', quantity: '9223372036854775806' }],
+    } });
+  const input = (unexpectedOnly = false) => ({ items: unexpectedOnly
+    ? [{ variant_id: 201, actual_quantity: '0' }, { variant_id: 1, actual_quantity: '7' }]
+    : [{ variant_id: 201, actual_quantity: '1' }] });
+  const receiptPosts = (fetch: ReturnType<typeof fixture>['fetch']) => fetch.mock.calls.filter(([url, init]) => String(url).endsWith('/receive') && init?.method === 'POST');
+  it('publishes required workflow actions even with zero Pending participants', async () => {
+    const h = boundedHarness();
+    await waitFor(() => expect(h.jobs).toHaveLength(1));
+    await act(async () => { h.jobs[0].resolve(reply({ pending_total: '0', action_count: '2' })); });
+    expect(h.hook.result.current.counts).toEqual({ pending_total: 0n, action_count: 2n });
+    expect(h.hook.result.current.countsError).toBeNull(); h.hook.unmount();
+  });
+  it('reads Received as the current detail rather than an unavailable request', async () => {
+    const h = decisionFixture(2, pending, (url, init) => url === '/api/transfers/1' && init.method === 'GET'
+      ? Promise.resolve(reply(received())) : undefined);
+    await h.ready();
+    act(() => h.lanes[0].selectDetail('1'));
+    await waitFor(() => expect(h.lanes[0].detail?.status).toBe('received'));
+    expect(h.lanes[0].detailError).toBeNull(); h.view.unmount();
+  });
+  it.each(['approval', 'dispatch'] as const)('passive Received detail refresh outranks cached %s without POST or owner leakage', async cached => {
+    const approved = decisionOutcome(pending, 'approved');
+    const older = cached === 'approval' ? approved : transit;
+    let delivered = false;
+    const h = decisionFixture(1, pending, (url, init) => url === '/api/transfers/1' && init.method === 'GET'
+      ? Promise.resolve(reply(delivered ? received() : older)) : undefined);
+    await h.ready();
+    const owner = decisionOwner(h.controller.getTransferAuthority())!;
+    act(() => {
+      const approval = h.controller.decisionRecovery.start(h.original, 'approve', owner)!;
+      h.controller.decisionRecovery.finish(approval, parseTransferRecord(JSON.stringify(approved)));
+      if (cached === 'dispatch') {
+        const dispatch = h.controller.dispatchRecovery.start(parseTransferRecord(JSON.stringify(approved)), owner)!;
+        h.controller.dispatchRecovery.finish(dispatch, parseTransferRecord(JSON.stringify(transit)));
+      }
+      h.lanes[0].selectDetail('1');
+    });
+    await waitFor(() => expect(h.lanes[0].detail?.status).toBe(older.status));
+    expect(h.lanes[0].decision?.result?.status).toBe(older.status);
+    const readsBefore = h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/1').length;
+    delivered = true;
+    act(() => Source.instances[0].emit('transfers'));
+    await waitFor(() => expect(h.lanes[0].detail?.status).toBe('received'));
+    const latest = h.lanes[0].detail;
+    if (!latest || latest.status !== 'received') throw new Error('Expected refreshed Received detail');
+    expect(h.lanes[0].decision?.result).toEqual(latest);
+    if (cached === 'dispatch') expect(h.lanes[0].dispatchAttempt?.result).toEqual(latest);
+    for (const value of [latest, latest.items, latest.items[0], latest.receipt,
+      latest.receipt.items, latest.receipt.items[0], latest.receipt.exceptions, latest.receipt.exceptions[0]]) {
+      expect(Object.isFrozen(value)).toBe(true);
+    }
+    // Historical snapshots remain older; their derived getters must prefer current detail.
+    expect(h.controller.decisionRecovery.get(owner)?.result?.status).toBe('approved');
+    if (cached === 'dispatch') expect(h.controller.dispatchRecovery.get(owner)?.result?.status).toBe('in_transit');
+    const reads = h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/1');
+    expect(reads).toHaveLength(readsBefore + 1);
+    expect(passive(reads[reads.length - 1])).toBe('1');
+    const mutationPosts = () => h.fetch.mock.calls.filter(([url, init]) => String(url).startsWith('/api/transfers') && init?.method === 'POST');
+    expect(mutationPosts()).toHaveLength(0);
+    await act(async () => { await h.controller.logout(); });
+    expect(h.lanes[0].detail).toBeNull(); expect(h.lanes[0].decision).toBeNull(); expect(h.lanes[0].dispatchAttempt).toBeNull();
+    expect(mutationPosts()).toHaveLength(0); h.view.unmount();
+  });
+  it('owns pinned receipt uncertainty across pane unmounts, with explicit GET and identical POST retry only', async () => {
+    let sent = 0;
+    const h = decisionFixture(2, pending, (url, init) => {
+      if (url.endsWith('/receive')) return ++sent === 1 ? Promise.reject(new Error('lost')) : Promise.resolve(reply(received()));
+      if (url === '/api/transfers/1' && init.method === 'GET') return Promise.resolve(reply(transit));
+      return undefined;
+    });
+    await h.ready();
+    await act(async () => { await expect(h.lanes[0].receive(parseTransferRecord(JSON.stringify(transit)), input())).rejects.toMatchObject({ uncertainReceipt: true }); });
+    h.show(false); h.show(true); await h.ready();
+    expect(h.lanes[1].receiptAttempt).toMatchObject({ phase: 'uncertain', input: input() });
+    for (const event of ['transfers', 'inventory', 'resync']) {
+      act(() => Source.instances[0].emit(event));
+      await waitFor(() => expect(h.lanes[0].listBusy).toBe(false));
+      expect(receiptPosts(h.fetch)).toHaveLength(1);
+    }
+    await act(async () => { await h.lanes[1].recoverReceipt(); });
+    expect(h.lanes[1].receiptAttempt?.phase).toBe('uncertain'); expect(sent).toBe(1);
+    await act(async () => { await h.lanes[1].retryReceipt(); });
+    expect(h.lanes[0].receiptAttempt).toMatchObject({ phase: 'confirmed', result: { status: 'received' } });
+    expect(receiptPosts(h.fetch)).toHaveLength(2);
+    expect(receiptPosts(h.fetch).map(([, init]) => init?.body)).toEqual([JSON.stringify(input()), JSON.stringify(input())]);
+    h.view.unmount();
+  });
+  it.each([false, true])('refreshes all transfer/count lanes but stock/source only for expected available credit (unexpectedOnly=%s)', async unexpectedOnly => {
+    const h = decisionFixture(2, pending, url => url.endsWith('/receive') ? Promise.resolve(reply(received(unexpectedOnly))) : undefined);
+    await h.ready();
+    const stockObserver = vi.fn(); const detach = h.controller.subscribeSourceInventoryInvalidation(stockObserver);
+    const stockBefore = inventoryCalls(h.fetch).length; const listsBefore = listCalls(h.fetch).length;
+    const countsBefore = h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts').length;
+    await act(async () => { await h.lanes[0].receive(parseTransferRecord(JSON.stringify(transit)), input(unexpectedOnly)); });
+    await waitFor(() => expect(listCalls(h.fetch).length).toBeGreaterThan(listsBefore));
+    await waitFor(() => expect(h.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts').length).toBeGreaterThan(countsBefore));
+    if (unexpectedOnly) {
+      expect(inventoryCalls(h.fetch)).toHaveLength(stockBefore); expect(stockObserver).not.toHaveBeenCalled();
+    } else {
+      await waitFor(() => expect(inventoryCalls(h.fetch).length).toBeGreaterThan(stockBefore)); expect(stockObserver).toHaveBeenCalledTimes(1);
+    }
+    expect(h.lanes[1].receiptAttempt?.result?.status).toBe('received'); detach(); h.view.unmount();
+  });
+  it('a different Received GET settles current truth without rewriting the pinned payload or POST replay', async () => {
+    const h = decisionFixture(2, pending, (url, init) => {
+      if (url.endsWith('/receive')) return Promise.reject(new Error('lost'));
+      if (url === '/api/transfers/1' && init.method === 'GET') return Promise.resolve(reply(received(true)));
+      return undefined;
+    });
+    await h.ready();
+    await act(async () => { await h.lanes[0].receive(parseTransferRecord(JSON.stringify(transit)), input()).catch(() => {}); });
+    await act(async () => { await h.lanes[1].recoverReceipt(); });
+    expect(h.lanes[0].receiptAttempt).toMatchObject({ phase: 'conflict', input: input(), result: { status: 'received' } });
+    expect(receiptPosts(h.fetch)).toHaveLength(1); h.view.unmount();
+  });
+  it('fences a late receipt after logout before publishing or refreshing any lane', async () => {
+    const job = deferred<Response>();
+    const h = decisionFixture(2, pending, url => url.endsWith('/receive') ? job.promise : undefined);
+    await h.ready(); let mutation!: Promise<unknown>;
+    act(() => { mutation = h.lanes[0].receive(parseTransferRecord(JSON.stringify(transit)), input()).catch(() => {}); });
+    await waitFor(() => expect(receiptPosts(h.fetch)).toHaveLength(1));
+    await act(async () => { await h.controller.logout(); });
+    const inventoryBefore = inventoryCalls(h.fetch).length; const transferBefore = transferCalls(h.fetch).length;
+    await act(async () => { job.resolve(reply(received())); await mutation; });
+    expect(h.lanes[0].receiptAttempt).toBeNull();
+    expect(inventoryCalls(h.fetch)).toHaveLength(inventoryBefore); expect(transferCalls(h.fetch)).toHaveLength(transferBefore);
+    h.view.unmount();
+  });
+});
+
+describe('D2 real controller dispatch', () => {
+  const original = wire(2, '1');
+  const approved = () => parseTransferRecord(JSON.stringify(decisionOutcome(original, 'approved')));
+  const transit = () => ({ ...decisionOutcome(original, 'approved'), status: 'in_transit', dispatch_location_id: 1, dispatched_at: '2026-04-03T00:00:00.000000002Z' });
+  it('retains recovery through panes; GET approved stays uncertain; explicit same retry refreshes independent lanes', async () => {
+    let sent = 0;
+    const h = decisionFixture(1, original, (url, init) => {
+      if (url.endsWith('/dispatch')) return ++sent === 1 ? Promise.reject(new Error('lost')) : Promise.resolve(reply(transit()));
+      if (url === '/api/transfers/1' && init.method === 'GET') return Promise.resolve(reply(decisionOutcome(original, 'approved')));
+      return undefined;
+    });
+    await h.ready();
+    await act(async () => { await expect(h.lanes[0].dispatch(approved())).rejects.toMatchObject({ uncertainDispatch: true, uncertainCreation: false }); });
+    h.show(false); h.show(true); await h.ready();
+    expect(h.lanes[1].dispatchAttempt?.phase).toBe('uncertain');
+    await act(async () => { await h.lanes[1].recoverDispatch(); });
+    expect(h.lanes[1].dispatchAttempt?.phase).toBe('uncertain');
+    expect(sent).toBe(1);
+    const before = inventoryCalls(h.fetch).length; const lists = listCalls(h.fetch).length;
+    await act(async () => { await h.lanes[1].retryDispatch(); });
+    expect(h.lanes[0].dispatchAttempt?.result?.status).toBe('in_transit');
+    await waitFor(() => expect(inventoryCalls(h.fetch).length).toBeGreaterThan(before));
+    await waitFor(() => expect(listCalls(h.fetch).length).toBeGreaterThan(lists));
+    expect(sent).toBe(2); h.view.unmount();
+  });
+  it('never replays uncertain dispatch on transfer, inventory or resync invalidations', async () => {
+    const h = decisionFixture(1, original, url => url.endsWith('/dispatch') ? Promise.reject(new Error('lost')) : undefined);
+    await h.ready();
+    await act(async () => { await h.lanes[0].dispatch(approved()).catch(() => {}); });
+    for (const event of ['transfers', 'inventory', 'resync']) {
+      act(() => Source.instances[0].emit(event));
+      await waitFor(() => expect(h.lanes[0].listBusy).toBe(false));
+      expect(h.lanes[1].dispatchAttempt).toMatchObject({ phase: 'uncertain', result: null });
+      expect(decisionPosts(h.fetch)).toHaveLength(1);
+    }
+    h.view.unmount();
+  });
+  it.each([2, 3])('rejects non-origin %s even on an approved record', async actor => {
+    const h = decisionFixture(actor, wire(actor, '1')); await h.ready();
+    await expect(h.lanes[0].dispatch(approved())).rejects.toMatchObject({ code: 'forbidden' });
+    expect(decisionPosts(h.fetch)).toHaveLength(0); h.view.unmount();
+  });
+  it.each([403, 404])('masks private recovery after %s', async status => {
+    const h = decisionFixture(1, original, url => url.endsWith('/dispatch') ? Promise.resolve(reply({ error: status === 403 ? 'forbidden' : 'not_found' }, status)) : undefined);
+    await h.ready();
+    await act(async () => { await h.lanes[0].dispatch(approved()).catch(() => {}); });
+    expect(h.lanes[1].dispatchAttempt).toBeNull();
+    await expect(h.lanes[1].retryDispatch()).rejects.toMatchObject({ code: 'invalid_request' }); h.view.unmount();
+  });
+  it('fences ignored abort completion after pane unmount without losing the original', async () => {
+    const delayed = deferred<Response>();
+    const h = decisionFixture(1, original, url => url.endsWith('/dispatch') ? delayed.promise : undefined);
+    await h.ready(); let pending!: Promise<unknown>;
+    act(() => { pending = h.lanes[0].dispatch(approved()).catch(error => error); });
+    h.show(false); h.show(true); await h.ready();
+    await expect(h.lanes[1].retryDispatch()).rejects.toMatchObject({ code: 'invalid_request' });
+    await act(async () => { delayed.resolve(reply(transit())); await pending; });
+    await expect(pending).resolves.toMatchObject({ code: 'aborted', uncertainDispatch: true });
+    expect(h.lanes[1].dispatchAttempt?.phase).toBe('uncertain'); h.view.unmount();
+  });
+  it.each((['post', 'get'] as const).flatMap(operation =>
+    (['account', 'location', 'csrf', 'username', 'expiry'] as const).flatMap(field =>
+      (['terminal', 'unauthenticated'] as const).map(completion => ({ operation, field, completion })))))
+    ('fences retained dispatch callbacks and ignored-abort $operation on same-object $field change ($completion)', async ({ operation, field, completion }) => {
+      const delayed = deferred<Response>();
+      const h = decisionFixture(1, original, (url, init) => {
+        if (url.endsWith('/dispatch')) return operation === 'post' ? delayed.promise : Promise.reject(new Error('lost'));
+        if (operation === 'get' && url === '/api/transfers/1' && init.method === 'GET') return delayed.promise;
+        return undefined;
+      });
+      await h.ready();
+      if (operation === 'get') await act(async () => { await h.lanes[0].dispatch(approved()).catch(() => {}); });
+      const saved = h.lanes[0]; let pending!: Promise<unknown>;
+      act(() => { pending = (operation === 'post' ? saved.dispatch(approved()) : saved.recoverDispatch()).catch(error => error); });
+      const session = h.controller.getTransferAuthority().session;
+      if (!session?.authenticated) throw new Error('fixture');
+      if (field === 'account') session.identity.account_id = 99;
+      if (field === 'location') session.identity.location = { id: 3, name: 'Branch B' };
+      if (field === 'csrf') session.csrf_token = 'rotated';
+      if (field === 'username') session.identity.username = 'replacement';
+      if (field === 'expiry') session.expires_at = '2040-01-01T00:00:00Z';
+      expect(saved.dispatchAttempt).toBeNull(); expect(saved.dispatchError).toBeNull();
+      const calls = h.fetch.mock.calls.length;
+      await expect(saved.dispatch(approved())).rejects.toMatchObject({ code: 'unauthenticated' });
+      await expect(saved.retryDispatch()).rejects.toMatchObject({ code: 'unauthenticated' });
+      await expect(saved.recoverDispatch()).rejects.toMatchObject({ code: 'unauthenticated' });
+      expect(h.fetch.mock.calls).toHaveLength(calls);
+      await act(async () => {
+        delayed.resolve(completion === 'terminal' ? reply(transit()) : reply({ error: 'unauthenticated' }, 401));
+        await pending;
+      });
+      await expect(pending).resolves.toMatchObject({ code: 'aborted', uncertainDispatch: true, uncertainCreation: false });
+      expect(saved.dispatchAttempt).toBeNull();
+      expect(h.fetch.mock.calls.filter(([url]) => url === '/api/auth/validate')).toHaveLength(0);
+      h.view.unmount();
+    });
+  it('cannot release a replacement session flight with a late old dispatch response', async () => {
+    const old = deferred<Response>(); const replacement = deferred<Response>(); let sent = 0;
+    const h = decisionFixture(1, original, url => url.endsWith('/dispatch') ? (++sent === 1 ? old.promise : replacement.promise) : undefined);
+    await h.ready(); let stale!: Promise<unknown>;
+    act(() => { stale = h.lanes[0].dispatch(approved()).catch(error => error); });
+    const session = h.controller.getTransferAuthority().session;
+    if (!session?.authenticated) throw new Error('fixture');
+    session.csrf_token = 'replacement_csrf';
+    h.show(false); h.show(true); await h.ready();
+    expect(h.lanes[0].dispatchAttempt).toBeNull();
+    let current!: Promise<unknown>;
+    act(() => { current = h.lanes[0].dispatch(approved()); });
+    expect(h.lanes[1].dispatchAttempt?.phase).toBe('inFlight');
+    const inventories = inventoryCalls(h.fetch).length; const lists = listCalls(h.fetch).length;
+    await act(async () => { old.resolve(reply(transit())); await stale; });
+    await expect(stale).resolves.toMatchObject({ code: 'aborted', uncertainDispatch: true });
+    expect(h.lanes[1].dispatchAttempt?.phase).toBe('inFlight');
+    expect(inventoryCalls(h.fetch)).toHaveLength(inventories); expect(listCalls(h.fetch)).toHaveLength(lists);
+    await expect(h.lanes[1].retryDispatch()).rejects.toMatchObject({ code: 'invalid_request' });
+    await act(async () => { replacement.resolve(reply(transit())); await current; });
+    expect(h.lanes[1].dispatchAttempt).toMatchObject({ phase: 'confirmed', result: { status: 'in_transit' } });
+    expect(decisionPosts(h.fetch)).toHaveLength(2); h.view.unmount();
+  });
+  it('accepts in-transit approval recovery as confirmed rather than conflict', async () => {
+    const h = decisionFixture(1, original, (_url, init) => init.method === 'POST' ? Promise.resolve(reply(transit())) : undefined);
+    await h.ready(); await act(async () => { await h.lanes[0].decide(h.original, 'approve'); });
+    expect(h.lanes[1].decision).toMatchObject({ phase: 'confirmed', result: { status: 'in_transit' } }); h.view.unmount();
+  });
+});
 
 describe('A05b real controller decisions', () => {
   const otherBranch = { ...wire(2, '1'), origin_location_id: 3, origin_location_name: 'Branch B', approver_location_id: 3, approver_location_name: 'Branch B' };
@@ -791,7 +1432,7 @@ describe('R04 transfer hook', () => {
     expect(source.listeners.get('transfers')?.size).toBe(0);
   });
   it.each([201, 200])('submits once with memory authority and status%s, then invalidates passively', async status => {
-    const f = fixture(session(), (url, init) => url === '/api/transfers' && init.method === 'POST' ? Promise.resolve(reply(wire(), status)) : undefined);
+    const f = fixture(session(), (url, init) => url === '/api/transfers' && init.method === 'POST' ? Promise.resolve(reply({ ...wire(), items: wire().items.map(item => ({ ...item, quantity: '2' })) }, status)) : undefined);
     const { result } = harness(); await loaded(result); const input = attempt(); const original = JSON.stringify(input);
     let outcome;
     await act(async () => { outcome = await result.current.transfers.submit(input); });
@@ -873,7 +1514,7 @@ describe('R04 transfer hook', () => {
     let pending!: Promise<unknown>; act(() => { pending = result.current.transfers.submit(attempt()); });
     await expect(result.current.transfers.submit(attempt())).rejects.toMatchObject({ code: 'invalid_request' });
     expect(transferCalls(f.fetch).filter(([, i]) => i?.method === 'POST')).toHaveLength(1);
-    await act(async () => { deferredCreate.resolve(reply(wire(), 201)); await pending; });
+    await act(async () => { deferredCreate.resolve(reply({ ...wire(), items: wire().items.map(item => ({ ...item, quantity: '2' })) }, 201)); await pending; });
   });
   it('never publishes an obsolete creation success under changed authority', async () => {
     const create = deferred<Response>(); const f = fixture(session(), (u, i) => u === '/api/transfers' && i.method === 'POST' ? create.promise : undefined);

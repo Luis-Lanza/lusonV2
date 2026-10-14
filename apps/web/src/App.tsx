@@ -79,8 +79,8 @@ function Navigation({ mobile = false, transfers, disabled, actionCount, countUna
   onInventory: () => void; onPending: () => void;
 }) {
   const statusID = mobile ? 'mobile-transfer-count' : 'desktop-transfer-count';
-  const countStatus = actionCount !== null ? `Solicitudes que requieren tu aprobación: ${actionCount}`
-    : countUnavailable ? 'Contador de aprobación no disponible.' : 'Consultando solicitudes que requieren tu aprobación…';
+  const countStatus = actionCount !== null ? `Acciones requeridas: ${actionCount}`
+    : countUnavailable ? 'Contador de acciones no disponible.' : 'Consultando acciones requeridas…';
   return <nav className={mobile ? 'bottom-nav' : 'side-nav'} aria-label={mobile ? 'Navegación móvil' : 'Navegación principal'}>
     <a href="#inventario" aria-current={!transfers ? 'page' : undefined} aria-disabled={disabled} onClick={event => { event.preventDefault(); if (!disabled) onInventory(); }}><Icon name="inventory" /><span>Inventario</span></a>
     <button type="button" disabled={disabled} aria-current={transfers ? 'page' : undefined} aria-describedby={statusID} onClick={onPending}><Icon name="transfer" /><span>Transferencias</span>
@@ -107,13 +107,13 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
   const [pane, setPane] = useState<{ ownerTag: string; initialDetail?: { ownerTag: string; id: string } } | null>(null);
   const pending = ownerTag !== null && pane?.ownerTag === ownerTag;
   const transfers = pending || creation;
-  const creationAvailable = !warehouse && !state.authBusy && !!metadata && !!ownerTag
+  const creationAvailable = !state.authBusy && !!metadata && !!ownerTag
     && recovery.getCurrent(state.getTransferAuthority)?.phase !== 'inFlight';
   function openCreation() {
     const authority = state.getTransferAuthority();
     const latest = transferViewOwner(authority);
     if (!creationAvailable || creation || !latest || latest !== ownerTag || !authority.session?.authenticated
-      || ![2, 3].includes(authority.session.identity.location.id)
+      || ![1, 2, 3].includes(authority.session.identity.location.id)
       || recovery.getCurrent(state.getTransferAuthority)?.phase === 'inFlight') return;
     setCreationOwner(latest); setCreation(true);
   }
@@ -152,7 +152,7 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
     <header className="app-header" hidden={mobile}><strong>Luson {transfers ? 'Transferencias' : 'Inventario'}</strong><span><Icon name="warehouse" />Ubicación asignada: <b>{identity.location.name}</b></span></header>
     <header className="mobile-header" hidden={!mobile}><div><Brand /><button type="button" aria-label="Cerrar sesión" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" /></button></div><div className="mobile-identity"><span><Icon name="warehouse" />{identity.location.name}</span><span>{identity.username}</span></div></header>
     <main id={transfers ? 'transferencias' : 'inventario'} className="inventory-main">
-      {creation && !warehouse && metadata ? <TransferCreation controller={state} metadata={metadata} recovery={recovery} onBack={returnToTransfers} onDetail={openCreatedDetail} />
+      {creation && metadata ? <TransferCreation controller={state} metadata={metadata} recovery={recovery} onBack={returnToTransfers} onDetail={openCreatedDetail} />
         : pending && pane ? <TransferPending key={pane.ownerTag} controller={state} ownerTag={pane.ownerTag} initialDetail={pane.initialDetail} onInventory={() => navigate(false)} creationAvailable={creationAvailable} onCreate={openCreation} /> : <>
       {recoverable && <section className="creation-recovery" aria-label="Recuperación de solicitud"><p>{recoverable.phase === 'ready' ? 'Tenés una revisión preparada, todavía no enviada.' : 'Tenés un intento pendiente de confirmación.'}</p>
         <button type="button" disabled={!creationAvailable} onClick={openCreation}>{recoverable.phase === 'ready' ? 'Retomar revisión' : 'Retomar misma solicitud'}</button>

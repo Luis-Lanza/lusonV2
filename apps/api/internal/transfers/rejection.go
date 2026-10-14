@@ -11,7 +11,7 @@ import (
 
 // Reject closes an authorized whole Pending request without reserving stock.
 // The caller supplies an authenticated identity; the persisted approver is
-// authoritative, including warehouse actors who cannot create requests.
+// authoritative. Direct shipments have no later approval/rejection workflow.
 func (s *Store) Reject(ctx context.Context, actor auth.Identity, id int64) (Request, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return Request{}, ErrUnavailable
@@ -56,6 +56,9 @@ func (s *Store) Reject(ctx context.Context, actor auth.Identity, id int64) (Requ
 	if err != nil {
 		return Request{}, err
 	}
+	if r.Kind == DirectShipment {
+		return Request{}, ErrDecisionConflict
+	}
 	switch r.Status {
 	case "rejected":
 		// Same-action retry returns the original outcome/time without writes.
@@ -63,7 +66,7 @@ func (s *Store) Reject(ctx context.Context, actor auth.Identity, id int64) (Requ
 			return Request{}, fail(ctx)
 		}
 		return r, nil
-	case "approved":
+	case "approved", "in_transit", "received", "cancelled":
 		return Request{}, ErrDecisionConflict
 	case "pending":
 		// Continue with the whole-request status transition only.

@@ -3,7 +3,7 @@ import type { Metadata } from './model';
 import type { RecoverySnapshot } from './transferRecovery';
 import type { TransferCreateInput } from './transferModel';
 import type { TransferCreateResult } from './transferAPI';
-import type { TransferController } from './useInventory';
+import type { TransferAuthority, TransferController } from './useInventory';
 import { useTransfers } from './useTransfers';
 
 export interface TransferReviewProps {
@@ -22,6 +22,12 @@ export interface TransferReviewProps {
   onSend: (submit: (attempt: TransferCreateInput) => Promise<TransferCreateResult>) => void;
 }
 
+function reviewOwner(authority: TransferAuthority): string | null {
+  const session = authority.session;
+  return authority.ready && session?.authenticated
+    ? `${authority.epoch}/${session.identity.account_id}/${session.identity.location.id}${authority.sessionGeneration === undefined ? '' : `/${authority.sessionGeneration}`}` : null;
+}
+
 // This hook exists only during explicit review. Its participant reads remain disabled.
 export default function TransferReview(props: TransferReviewProps) {
   const transfers = useTransfers({ controller: props.controller, listEnabled: false, detailEnabled: false });
@@ -29,8 +35,8 @@ export default function TransferReview(props: TransferReviewProps) {
   const close = useRef<HTMLButtonElement>(null);
   const authority = props.controller.getTransferAuthority();
   const session = authority.session;
-  const permitted = authority.ready && session?.authenticated && [2, 3].includes(session.identity.location.id)
-    && props.ownerTag === `${authority.epoch}/${session.identity.account_id}/${session.identity.location.id}`;
+  const permitted = authority.ready && session?.authenticated && [1, 2, 3].includes(session.identity.location.id)
+    && props.ownerTag === reviewOwner(authority);
   const blocked = props.busy || (permitted && props.snapshot.epoch === authority.epoch && props.snapshot.phase === 'inFlight');
   useEffect(() => {
     if (permitted && blocked) dialog.current?.focus();
@@ -41,13 +47,14 @@ export default function TransferReview(props: TransferReviewProps) {
     const trigger = props.returnFocus;
     return () => {
       const now = props.controller.getTransferAuthority(); const s = now.session;
-      if (now.ready && s?.authenticated && props.ownerTag === `${now.epoch}/${s.identity.account_id}/${s.identity.location.id}`) trigger?.focus();
+      if (now.ready && s?.authenticated && props.ownerTag === reviewOwner(now)) trigger?.focus();
     };
   }, [permitted, props.ownerTag, props.controller, props.returnFocus]);
   // Check owner metadata before snapshot or result getters, not just before effects.
   if (!permitted || props.snapshot.epoch !== authority.epoch) return null;
   const { snapshot, result } = props;
-  const outcomeLabel = result?.record.status === 'approved' ? 'Aprobada' : result?.record.status === 'rejected' ? 'Rechazada' : 'Pending';
+  const direct = snapshot.attempt.kind === 'direct_shipment';
+  const outcomeLabel = result?.record.status === 'approved' ? direct ? 'Pendiente de despacho' : 'Aprobada' : result?.record.status === 'rejected' ? 'Rechazada' : result?.record.status === 'in_transit' ? 'En tránsito' : result?.record.status === 'received' ? 'Recibida' : result?.record.status === 'cancelled' ? 'Cancelada' : 'Pending';
   const location = (id: number) => props.metadata.locations.find(l => l.id === id)?.name ?? 'Ubicación no disponible';
   const total = snapshot.items.reduce((sum, line) => sum + BigInt(line.quantity), 0n);
   return <div className="review-backdrop"><section ref={dialog} tabIndex={-1} className="transfer-review" role="dialog" aria-modal="true" aria-labelledby="review-title" aria-busy={blocked} onKeyDown={event => {
@@ -68,13 +75,22 @@ export default function TransferReview(props: TransferReviewProps) {
         <div><span>Destino</span><strong>{location(snapshot.direction.destination_location_id)}</strong></div></div>
       {result && <section className="review-result" aria-label="Resultado confirmado">
         <h3>{result.record.reference}</h3><p>ID: {result.record.id}</p><p>Creada (UTC): <time>{result.record.created_at}</time></p><p>Estado: {result.record.status === 'pending' ? 'Pending · Pendiente de aprobación' : outcomeLabel}</p>
-        {result.record.status !== 'pending' && <p>Decidida (UTC): <time>{result.record.decided_at}</time></p>}
+        {result.record.decided_at && <p>{direct ? 'Autorizada y reservada al crear (UTC):' : 'Decidida (UTC):'} <time>{result.record.decided_at}</time></p>}
+        {(result.record.status === 'in_transit' || result.record.status === 'received') && <p>Despachada desde {result.record.origin_location_name} (UTC): <time>{result.record.dispatched_at}</time></p>}
+        {result.record.status === 'cancelled' && <><p>Cancelada en {result.record.creator_location_name} (UTC): <time>{result.record.cancelled_at}</time></p>
+          <p>{direct ? 'El envío original permanece cancelado. No se crea otro envío ni se mueve stock; la autorización al crear queda conservada.'
+            : 'El registro original permanece cancelado. No se crea otra solicitud ni se mueve stock; cualquier aprobación anterior queda conservada.'}</p></>}
+        {result.record.status === 'in_transit' && <p>Reserva propia consumida; baterías enviadas. Pendiente de recepción en {result.record.destination_location_name}, sin crédito de stock en destino.</p>}
+        {result.record.status === 'received' && <><p>Recibida en {result.record.destination_location_name} (UTC): <time>{result.record.received_at}</time></p>
+          <p>La recepción ya está finalizada. Solo se acreditaron unidades esperadas recibidas hasta lo enviado; las discrepancias permanecen registradas por separado.</p></>}
       </section>}
       <div className="review-table"><table><caption className="sr-only">Selección inmutable</caption><thead><tr><th scope="col">Batería</th><th scope="col">Polaridad</th><th scope="col">Cantidad solicitada</th></tr></thead>
         <tbody>{snapshot.items.map(line => <tr key={line.variant_id}><td><strong>{line.brand} · {line.model}</strong><small>{line.capacity_ah} Ah</small></td>
           <td><span className="polarity">{line.polarity}</span></td><td>{line.quantity}</td></tr>)}</tbody>
         <tfoot><tr><td colSpan={3}>{snapshot.items.length} variantes · {total.toString()} baterías</td></tr></tfoot></table></div>
-      {(!result || result.record.status === 'pending') && <div className="review-notice"><p>La solicitud quedará Pending, pendiente de aprobación de {location(snapshot.direction.approver_location_id)}.</p>
+      {direct && (!result || result.record.status === 'approved') && <div className="review-notice"><p>La creación autoriza y reserva todas las cantidades en Almacén, sin mover existencias ni acreditar el destino.</p>
+        <p>Queda Pendiente de despacho. El despacho es una acción separada; podés cancelar antes de despachar. El destino no debe aprobar.</p></div>}
+      {!direct && (!result || result.record.status === 'pending') && <div className="review-notice"><p>La solicitud quedará Pending, pendiente de aprobación de {location(snapshot.direction.approver_location_id)}.</p>
         <p>Enviar la solicitud no reserva ni mueve stock. La aprobación deberá revalidar y reservar la solicitud completa.</p>
         <p>El servidor comprobará la disponibilidad al crear. Un reintento con la misma solicitud puede devolver el registro original.</p></div>}
       {!result && snapshot.phase === 'ready' && <p>Revisión preparada, todavía no enviada.</p>}
@@ -85,11 +101,11 @@ export default function TransferReview(props: TransferReviewProps) {
     </div>
     <footer>{result ? <><button type="button" disabled={!props.onDetail || blocked} onClick={() => {
         const now = props.controller.getTransferAuthority(); const s = now.session;
-        if (!props.busy && now.ready && s?.authenticated && props.ownerTag === `${now.epoch}/${s.identity.account_id}/${s.identity.location.id}`
+        if (!props.busy && now.ready && s?.authenticated && props.ownerTag === reviewOwner(now)
           && props.snapshot.epoch === now.epoch && props.result) props.onDetail?.(props.result.record.id);
       }}>{props.onDetail ? 'Ver detalle' : 'Ver detalle (próxima etapa)'}</button><button type="button" className="primary" disabled={blocked} onClick={() => {
         const now = props.controller.getTransferAuthority(); const s = now.session;
-        if (!props.busy && now.ready && s?.authenticated && props.ownerTag === `${now.epoch}/${s.identity.account_id}/${s.identity.location.id}`
+        if (!props.busy && now.ready && s?.authenticated && props.ownerTag === reviewOwner(now)
           && props.snapshot.epoch === now.epoch && props.result) props.onBack();
       }}>Volver a transferencias</button></>
       : <><button type="button" disabled={blocked} onClick={props.onEdit}>Volver a editar</button>

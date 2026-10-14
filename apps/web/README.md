@@ -25,9 +25,121 @@ backups remain out of scope; no pixel-perfect claim is made.
 - All production requests use relative `/api` paths and same-origin browser cookies. There are no demo accounts, frontend inventory fixtures, storage tokens or external font/CDN requests.
 - Session restoration is a GET. Login is an explicit form-submit POST with exactly `username` and `password`, JSON content type and memory-only CSRF. The browser supplies Origin. Password input clears on submission. Logout is successful only on 204, followed by anonymous CSRF restoration.
 - A current 401 clears protected identity, metadata and rows before refreshing the session and focusing login. Request/auth generations reject obsolete successes and errors, including transports that ignore AbortSignal. Filter changes cancel pending reads and reset page atomically without moving keyboard focus.
-- Metadata supplies all locations and brands. Consultation never changes account assignment. Warehouse assignment ID1 uses page-local catalog cards below 768 CSS pixels; branch accounts keep the desktop table. Pagination counts variants, not cards. Transfer navigation is available to all assigned participants; warehouse creation stays disabled. Assigned branches use the same Transfers-owned creation form from the Inventory shortcut or the Transfers list CTA. Creation/recovery use Transfers navigation, header and main semantics; back, confirmed discard and confirmed-review return always go to Transfers, regardless of entry point. Inventory consultation and its query remain unchanged.
+- Metadata supplies all locations and brands. Consultation never changes account assignment. Warehouse assignment ID1 uses page-local catalog cards below 768 CSS pixels; branch accounts keep the desktop table. Pagination counts variants, not cards. Transfer navigation is available to all assigned participants; warehouse accounts can create direct shipments to either branch. Assigned participants use the same Transfers-owned creation form from the Inventory shortcut or the Transfers list CTA. Creation/recovery use Transfers navigation, header and main semantics; back, confirmed discard and confirmed-review return always go to Transfers, regardless of entry point. Inventory consultation and its query remain unchanged.
 - `lossless-json` 4.3.1 is intentional: default parse produces `LosslessNumber`; raw `toString()` tokens become bounded nonnegative int64 bigint quantities and canonical positive decimal capacity text. Only checked bounded IDs/pages/counts become Number. Server availability is displayed, not recomputed. Zero availability is `Sin disponible`, with no low-stock threshold.
 - Search is literal brand/model text, bounded to 128 UTF-8 bytes. Empty filters are omitted; brand and L/R filters combine with search. Page sizes are 10/25/50.
+
+## Direct warehouse shipments
+
+Assigned warehouse accounts create `direct_shipment` to Sucursal A or B from either
+creation shortcut. Consulting another inventory location never changes creator,
+source, or authority. Branch request/send routes remain unchanged.
+
+1. Select the destination and quantities from the complete warehouse catalog.
+2. Review the immutable cart, then explicitly submit creation.
+3. Creation reserves every line, without moving physical stock or crediting the
+   destination. The UI shows **Pendiente de despacho**.
+4. Dispatch separately, or cancel before dispatch to release only this shipment's
+   reservation. The destination records the existing immutable receipt afterward.
+
+Authorization occurs at creation: `decision_location_id=1` and
+`decided_at=created_at`. History presents a single creation/authorization/reservation
+event, not a later human approval. No destination approval exists. The strict DTO
+parser accepts legitimate reserved and terminal direct states, rejects Pending or
+Rejected direct records and forged participant/authorization metadata, and retains
+lossless int64 quantities.
+
+Every creation response (201 or 200, including current terminal replay) must match
+the original kind, destination, participants and full immutable cart. Confirmation
+uses the current owner/session/generation and exact request flight before notifying
+transfer/count subscribers and refreshing inventory/source lanes. It neither fakes
+a decision nor waits solely for SSE. Failed or stale completions do not refresh or
+publish success, and no POST is automatically retried.
+
+Creation recovery is memory-only and bounded to three owner-isolated slots. It
+never evicts another owner's unresolved attempt to admit warehouse. Reauthentication
+makes old flights uncertain; only an explicit retry can confirm the original
+payload/key. Reloading or closing the App loses this memory. Earlier R04 sections
+below describe historical branch-only stages; this section supersedes their
+warehouse-disabled and two-slot restrictions. Runtime deployment and browser
+acceptance are separate, not established by frontend tests.
+
+## C4b received-detail count corrections
+
+`TransferPending` now mounts `useTransferCountCorrections` unconditionally above
+conditional panes, with the stable controller seams and default API. Its history
+lane is enabled only for the same authoritative selected received record shown in
+`TransferDetail`, including a just-confirmed receipt before passive detail refresh.
+Unready/retired owners, other statuses, unavailable details and nonphysical
+participants cannot open that lane. Inventory consultation never changes authority.
+
+`TransferDetail` renders `TransferCountCorrections` in its own section beside the
+unchanged original receipt table. Legacy detail callers remain compatible: optional
+`corrections`, `correctionRequestID` and `correctionsEnabled` must explicitly match
+and enable the section. The root supplies all three; the standalone component's
+existing record/controller/corrections/requestID/enabled contract is unchanged.
+
+Physical endpoints review bigint quantities and exact reasons before explicit,
+revision-pinned proposal/decision submission. History and memory-only recovery stay
+separate from original receipt evidence. Unexpected lines are audit-only, never
+stock incorporation. Explicit retries delegate the captured attempt to the hook;
+authority changes retire local forms and masked history stays hidden.
+
+Deterministic real-hook integration checks cover selection, physical authority,
+receipt-confirmation precedence, exact proposal/decision submission, history and
+inventory refresh, private masking, stable-wrapper drafts and uncertain exact retries
+across pane remounts. Original receipt/header/timestamps/credited totals stay separate
+from effective counts, including after application. Recovery remains controller-owned;
+no payload is reconstructed, rebased or automatically posted by this integration.
+
+Source integration/regression checks, typecheck and the isolated C4b production
+build pass. Build output is verification-only, not a deployed application.
+These checks do not establish full-reload recovery, browser layout acceptance,
+runtime deployment or human acceptance. Separately authorized C4c browser/manual
+checks remain pending regardless of test/build results.
+
+## R6a received-transfer restitution
+
+On an eligible **Received** transfer, the separate “Restituciones de origen” detail
+section shows original dispatch and receipt facts alongside the effective destination
+credit and any applied origin restitution. It does not rewrite the original receipt,
+change reservations, or merge restitution events into C4 count-correction history.
+
+1. **Consult before proposing or accepting.** Open the Received detail and explicitly
+   consult restitution evidence. Passive initial reads and refresh notifications do
+   not grant fresh write consent. A pending count agreement or stale/missing evidence
+   blocks a new proposal or acceptance; rejection follows its separate count-free
+   eligibility rules.
+2. **Origin proposes retained stock.** Only the physical origin account may propose
+   a positive canonical quantity and reason, and must explicitly attest that those
+   units remain physically at origin. The quantity is never inferred or prefilled
+   from a destination shortage. Review is read-only until the explicit confirmation.
+3. **Exact destination decides.** Only the physical destination account may accept
+   or reject the current exact proposal, with a separate decision reason. A decision
+   does not submit quantity or retention attestation. Proposal and rejection move no
+   stock; acceptance credits existing stock at origin once and leaves destination
+   stock and reservations unchanged.
+4. **Inspect separate immutable evidence.** Proposal, decision and application
+   history remain separate from the original dispatch/receipt. A successful
+   application, even a partial one, closes the one-application policy for that
+   transfer variant. Shortage or remaining conservation capacity is not proof of
+   physical retention.
+
+The UI is limited to the matching Received detail and authorized physical endpoint;
+there is no administrator or third-party approval action. Recovery is controller-
+owned: consult an uncertain result explicitly and retry only the captured exact
+operation. Authority, selection or evidence changes retire local drafts/reviews;
+masked evidence remains hidden. Confirmed events refresh transfer readers, while
+acceptance additionally refreshes origin inventory/source readers. No optimistic
+stock mutation occurs in the browser.
+
+Focused component/controller tests and typecheck pass for this source candidate.
+They do not establish browser layout/accessibility, deployed runtime behavior,
+backend/live-stock acceptance or human operational acceptance. Manual acceptance
+and runtime rollout remain separate and require their own authorization. The
+original workflow `action_count` descriptions above refer to approval, dispatch and
+receipt; restitution is a separate Received-detail workflow and does not rewrite
+those original actions.
 
 ## R04b2a source-stock invalidation seam
 
@@ -136,7 +248,7 @@ have unique keys; these parsers do not independently detect duplicate JSON keys.
 
 `transferDirection(assignedLocation, flow)` provides branch-assignment guidance
 for warehouse requests, other-branch requests and warehouse sends. Consultation
-is not identity. Warehouse creation is refused; server cookies alone determine
+is not identity. Warehouse direct creation fixes source/creator/authorization to ID1; server cookies alone determine
 actor authority. `canonicalTransferInput(input)` clones, sorts and freezes a
 1–190-line attempt with string quantities and its caller-owned retry key.
 `newTransferRetryKey(crypto?)` uses secure randomness only, on explicit new-attempt
@@ -200,7 +312,7 @@ follow-up; a push racing a queued manual read cannot reclassify its headers.
 Obsolete jobs are aborted and cannot carry dirty flags into newer selections.
 
 `submit(input)` exposes `submitBusy/submitError` and a checked creation/replay
-result, never an optimistic row. Only assigned branches may submit, with current
+result, never an optimistic row. Assigned branches submit requests/sends and warehouse submits direct shipments, with current
 memory CSRF; attempts are cloned/frozen and never regenerated or automatically
 retried. Network/abort uncertainty remains typed so the caller can retain the
 same key/payload. Obsolete creation results cannot publish success. Stock409,
@@ -253,7 +365,7 @@ at physical origin. Pending/cart items neither reserve nor move stock.
 
 `createTransferCart(getTransferAuthority(), flow, sourceCatalog)` binds a branch,
 account and ephemeral epoch to the committed three-flow direction helper. It
-stores no CSRF/session cookie. Warehouse is refused; consulted inventory never
+stores no CSRF/session cookie. Warehouse uses directA/directB with fixed source1; consulted inventory never
 sets actor/source. Source must match direction. `addCartItem` deliberately
 increments an existing unique line; `setCartQuantity` accepts canonical positive
 int64 string/bigint only. Both check actual catalog membership and advisory source
@@ -446,6 +558,253 @@ actor/response-count authority binding in isolated owned contexts; no universal 
 privacy conclusion follows from mocked getters or participant fixtures. API/hooks and
 backend authority protocols are unchanged by this UI unit. Two-service PG stock
 invariance, real desktop/mobile layout and complete feature acceptance remain pending.
+
+## D2 dispatch frontend — source candidate, verification pending
+
+This section describes the dispatch candidate and supersedes the historical
+Pending-only boundaries above. It is not deployed-browser acceptance. Full
+Vitest, typecheck and a non-destructive build remain parent-owned checks; newly
+added stale-session and shell-navigation tests have not been executed by the
+source writer. Earlier focused RED/GREEN evidence does not establish that the
+final candidate passes every check.
+
+### Dispatch and current outcomes
+
+Participant list/detail and original creation replay admit `in_transit` alongside
+Pending, Approved and Rejected. Transfer IDs remain canonical int64 strings,
+quantities remain bigint, and UTC timestamps retain their original nanosecond
+text. Transit requires retained approval location/time plus origin-matching
+`dispatch_location_id` and canonical `dispatched_at >= decided_at`; other states
+reject dispatch metadata. Fractional timestamp ordering never uses rounded
+JavaScript milliseconds. Immutable identity, items and approval metadata must
+match the original attempt before a mutation or recovery result is confirmed.
+
+Only the authenticated assigned physical origin may open dispatch confirmation
+for an Approved request, including warehouse origins. A warehouse approving a
+branch-to-warehouse send cannot dispatch it: the branch origin does that.
+Consulted inventory location never grants authority. Dispatch is whole-request,
+with strict `{}` POST to `/api/transfers/{id}/dispatch`, current memory CSRF,
+same-origin cookies and no-store. There are no quantity overrides, new retry
+keys, partial dispatch, cancellation or receipt controls. Approval retries may
+return the current In-transit record; rejection conflict remains a sanitized409.
+
+The UI does not require unreserved availability to cover an already approved
+request's owned reservation. Confirmation explains that dispatch deducts the
+same quantity from source physical stock and this request's reservation,
+leaving unreserved availability and other holds unchanged. No destination stock
+credit occurs. `En tránsito` details show sent quantities, consumed own reserve,
+retained approval history and dispatch origin/time. Destination receipt is
+pending, not a confirmed zero quantity. Original creation replay shows its real
+current state, not a new Pending request. A cached approval must not hide newer
+transit detail or confirmed dispatch.
+
+### Explicit live-memory recovery
+
+`useInventory` owns `createTransferDispatchRecovery()` above conditional panes;
+`useTransfers` supplies `dispatch(original)`, `retryDispatch()` and
+`recoverDispatch()`, with `dispatchAttempt` and sanitized `dispatchError`.
+The recovery retains a frozen original record and approval metadata, not stock,
+session objects, cookies or CSRF. Account, assigned location, auth epoch and
+session generation fence every read and completion; opaque flights prevent an
+old response from settling a replacement attempt. Reload/tab close/App unmount
+loses this live memory. A replacement session does not inherit private recovery.
+
+Network/abort, malformed replies and mismatched success are dispatch uncertainty,
+never creation uncertainty. Uncertain POSTs are never automatically replayed by
+rendering, navigation, inventory refresh or realtime. The recovery panel offers
+an explicit ordinary GET of the original ID and a guarded retry of the same
+whole-request dispatch. An Approved GET cannot prove the uncertain POST failed;
+it leaves the original attempt unresolved. Only matching transit confirms it.
+403/404 mask private recovery and remove the selected private outcome; obsolete
+401 completions cannot reconcile replacement authority.
+
+Confirmed POST or recovery GET independently refreshes fenced participant
+list/detail/count subscribers and inventory/source subscribers, without requiring
+an SSE event. A failed subscriber cannot block other lanes. Existing shell and
+pane labels/counts remain **approval-only**: `Requieren tu aprobación` does not
+count dispatch or receipt obligations. Workflow-wide counters belong to the
+later receipt work, not D2.
+
+### Styling and manual acceptance boundary
+
+Dispatch reuses the existing decision confirmation backdrop/modal, focus trap,
+focus restoration, busy dismissal guards, recovery panel, item table and
+responsive footer. Only the shared grid selector is extended to the dispatch
+wrapper so recovery and detail retain the existing14px separation. The bounded
+modal keeps header/footer outside its central scrolling body for up to190 items;
+no new layout system or dependency is introduced. jsdom assertions are not
+measured browser geometry, keyboard acceptance or pixel fidelity.
+
+Manual user checklist (not executed):
+
+- Dispatch Approved warehouse→branch, branch→branch and branch→warehouse requests
+  from their physical origins; verify destinations cannot dispatch them.
+- Check full immutable quantities, retained approval and dispatch history, source
+  existing/reserved deductions, unchanged unreserved availability/other holds,
+  and no destination credit.
+- Lose a dispatch response, navigate Inventory→Transfers, consult explicitly,
+  then retry the same dispatch if still unresolved; ensure it never moves twice.
+- Check `En tránsito` filtering/detail and original replay, pending receipt wording,
+  focus cycling/restoration, busy dismissal and long-item scrolling.
+- Confirm approval-only shell labels/counts remain unchanged in meaning and that
+  replacement sessions reveal no previous private recovery.
+
+Suggested focused verification from `apps/web`, for the parent/verifier:
+
+```sh
+npm test -- --run src/transferModel.test.ts src/transferAPI.test.ts src/transferDispatchRecovery.test.ts src/transferDecisionRecovery.test.ts
+npm test -- --run src/useTransfers.test.ts src/TransferDispatch.test.tsx src/TransferCreation.test.tsx src/TransferPending.test.tsx src/TransferDetail.test.tsx src/TransferReview.test.tsx src/App.test.tsx
+npm test
+npm run typecheck
+```
+
+The parent also owns build verification using a fresh output and a non-destructive
+build route. The default `npm run build` can empty `dist`; the source writer is
+not authorized to generate/delete artifacts or mutate build configuration.
+D2's approval-only labels above are historical; R2 below replaces them. User manual acceptance remains pending.
+
+## R2 destination receipt and workflow actions
+
+Receipt completes the physical lifecycle without a discrepancy-resolution flow.
+Only the authenticated physical destination sees `Recibir solicitud` on an
+InTransit record, including warehouse receipt of a branch send. Capture includes
+every expected variant, with explicit `0` for missing arrivals. Unexpected
+variants come from the complete destination catalog through the existing
+`loadSourceInventory(destination)` helper. Catalog availability is not a receipt
+cap. Unknown catalog variants cannot be added through this UI.
+
+Each actual quantity is a canonical decimal string from `0` to
+`9223372036854775807`; numeric arithmetic never handles quantities. Unexpected
+lines must be positive. A total-zero receipt is invalid, but unexpected-only
+arrivals are allowed: every expected arrival is zero and recorded as a shortage.
+Admission checks positive existence instead of summing into a bounded integer.
+Review shows sent, actual and available-credit quantities plus shortages, excess
+and unexpected units. Only `min(actual,sent)` for expected variants becomes
+available inventory; exceptions stay separate and unresolved. Explicit confirmation
+finalizes receipt once. There is no edit, second receipt, loss, return or resolve
+control after finalization.
+
+### Immutable reads and explicit recovery
+
+The strict Received DTO retains original request, approval and dispatch history,
+adds server destination/time, and includes sorted receipt items and typed
+exceptions. Nested receipt arrays and lines are frozen; the decoder verifies
+available credit and every exception against the original sent quantities.
+Received filtering, detail, original creation replay and authorized approve/dispatch
+retries show the persisted current outcome. Current Received detail outranks
+cached approval or transit; historical approval does not make stock reserved again.
+
+`useInventory` owns `createTransferReceiptRecovery()` across pane navigation.
+`useTransfers` exposes `receive(original,input)`, `recoverReceipt()` and
+`retryReceipt()`, plus `receiptAttempt` and sanitized `receiptError`. The recovery
+pins a normalized immutable payload and original approval/dispatch identity,
+never session credentials. Account, assigned location, auth epoch, session
+generation and opaque flight tokens fence reads and completions. A 403/404 mask
+is scoped to the unavailable request, not every request owned by that location.
+
+No uncertain POST is silently replayed by rendering, events or navigation.
+`Consultar resultado original de la recepción` performs an explicit ordinary GET;
+an InTransit result cannot prove the earlier POST failed. Only the explicit
+`Reintentar misma recepción` action resends identical quantities. Received GET
+establishes current truth. If its persisted quantities differ from the pinned
+payload, both remain distinguished and no second receipt/retry is offered. A
+mismatched POST success remains uncertain rather than claiming those quantities
+were submitted. Closing a dialog does not undo a sent mutation. Reload, tab close
+or App unmount loses this live-memory recovery; changed authority cannot inherit it.
+
+### Workflow counters and refresh
+
+`pending_total` counts Pending participant requests. Independent `action_count`
+counts required approval at the persisted approver, dispatch at the physical
+origin, or receipt at the physical destination. It may exceed Pending, including
+zero Pending with required dispatch/receipt. Received and Rejected have no action.
+Desktop/mobile shell badges and pane copy now describe `Acciones requeridas`,
+not unread events, line totals or approval-only obligations.
+
+Every confirmed receipt POST or recovery GET refreshes transfer/detail/count
+lanes without waiting for SSE. Inventory and source-catalog lanes refresh only
+when the persisted receipt has positive expected available credit; unexpected-only
+arrivals do not invalidate available inventory. Stale completions cannot refresh
+replacement authority. Server events remain independent invalidation signals.
+
+### Verification and user smoke handoff
+
+Parent-owned pre-implementation verification observed real decoder/count/API,
+hook, UI and lifecycle RED separately from the planned absent receipt module.
+Post-implementation focused/full tests, typecheck and isolated build are pending;
+no GREEN, browser geometry or human acceptance is claimed here. The parent owns
+Vite cache and build output, using a fresh outDir with `--emptyOutDir=false` to
+preserve existing `dist`. No automated browser or Playwright run is part of R2.
+
+Manual user checklist (not executed):
+
+- Receive warehouse→branch, branch→branch and branch→warehouse transfers from
+  their destinations; verify origins cannot receive and inventory consultation
+  never changes authority.
+- Review exact quantities above JS safe integer range, explicit expected zeros,
+  shortage, excess and unexpected variants. Verify only expected received units
+  up to sent units become available and reserved balances remain unchanged.
+- Reject all-zero capture; confirm unexpected-only arrivals with all expected
+  shortages, no available inventory credit and no resolution action.
+- Verify review itself sends no POST, confirmation sends once, busy dialogs cannot
+  dismiss/double-submit, focus restores on cancel, and long tables scroll centrally.
+- Lose a reply and navigate Inventory→Transfers: consult explicitly, retain
+  uncertainty on InTransit, and explicitly retry the same quantities. Confirm
+  persisted differing quantities are distinguished without a second receipt.
+- Check Received filter, complete immutable history, latest-state precedence and
+  original creation replay. Check desktop/mobile workflow badges when Pending is
+  zero but a dispatch/receipt remains required.
+- Verify 403/404 privacy and logout/session replacement reveal no previous receipt
+  quantities; a different authorized request remains operable.
+
+## C2 creator cancellation before dispatch — source candidate
+
+Only the original creator sees `Cancelar solicitud` on Pending or Approved,
+including branch-to-warehouse sends and warehouse-origin requests. Inventory
+consultation grants no authority. Review sends nothing; explicit confirmation
+POSTs only `{}` to `/api/transfers/{id}/cancel` with current memory CSRF,
+same-origin cookies and no-store. Busy confirmation blocks dismissal and duplicate
+submission, with the existing modal keyboard/focus mechanics and no visual redesign.
+Rejected, In-transit, Received and Cancelled have no cancellation action.
+
+`Cancelada` pages, detail and original creation replay retain immutable identity,
+creation time and exact quantities. Strict DTOs require creator-matching
+`cancellation_location_id` and canonical `cancelled_at`, never dispatch/receipt
+metadata. Duplicate JSON keys, including escaped-equivalent keys, are rejected
+using the existing lossless-json dependency. Complete original approval is optional: cancelled Pending has no fake
+approval history; cancelled Approved preserves it. Cancellation releases only its
+own Approved reservation; physical stock and independent holds remain unchanged.
+Cancelled contributes no workflow action or Pending total.
+
+`useInventory` owns live-memory `createTransferCancellationRecovery()` above panes.
+`useTransfers` exposes `cancel(original)`, `recoverCancellation()` and
+`retryCancellation()`, plus `cancellationAttempt` and sanitized `cancellationError`.
+Account/location, auth epoch, session generation and opaque flights fence data and
+completions. A 403/404 mask applies only to that request; unmasked uncertainty pins
+its original rather than silently replacing it. Reload/tab close loses recovery.
+
+Recovery is explicit: ordinary GET versus identical cancellation POST retry.
+Pending/Approved GET does not prove a sent POST failed; newly discovered approval
+is pinned for subsequent outcomes. Cancelled GET confirms current truth; Rejected,
+In-transit or Received is a conflict, never cancellation success. No render, pane
+navigation or event automatically resends POST. Approval/dispatch recovery also
+recognizes Cancelled as conflict, and cached approval cannot hide latest cancellation.
+Confirmed cancellation refreshes transfer/detail/count lanes; inventory/source
+lanes refresh only when preserved approval proves an Approved reservation release.
+
+Parent-owned behavioral RED was observed before implementation. Final functional
+GREEN, typecheck, isolated build and independent review remain pending. The source
+writer ran no commands. Original `dist` and the human runtime serving c8210ea are
+untouched; that runtime does not yet serve cancellation. No browser acceptance is
+claimed. After authorized deployment, the manual checklist remains:
+
+- Cancel Pending and Approved in all three flows from the creator; verify the other
+  participant cannot cancel and dispatched requests cannot be reversed.
+- Verify exact creation/optional approval/cancellation history, release-only stock
+  effects, terminal counts, Cancelada filtering and truthful original replay.
+- Lose a reply, navigate Inventory↔Transfers, explicitly GET and retry only the
+  identical cancellation; confirm no duplicate mutation or cross-session disclosure.
+- Check review without POST, one confirmation, busy guards, Escape and focus return.
 
 ## Worker checks
 

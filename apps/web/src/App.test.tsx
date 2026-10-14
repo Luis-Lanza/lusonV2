@@ -76,6 +76,95 @@ function passiveCounts(mock: ReturnType<typeof setup>) {
   }
 }
 
+describe('W2 assigned warehouse creation entry', () => {
+  it.each([2, 3])('opens warehouse creation without POST while consulting branch %s and keeps source fixed at 1', async consulted => {
+    const mock = setup(session);
+    render(<App />); await inventory();
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(metadata.locations[consulted - 1].name) }));
+    await inventory();
+    expect(new URL(String(stockCalls(mock).at(-1)![0]), 'http://localhost').searchParams.get('location_id'))
+      .toBe(String(consulted));
+    expect(screen.getByText('Almacén', { selector: '.assigned-location' })).toBeInTheDocument();
+    const entry = screen.getByRole('button', { name: /Nueva transferencia/ });
+    expect(entry).toBeEnabled();
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+    const before = stockCalls(mock).length;
+    fireEvent.click(entry);
+    const route = await screen.findByRole('region', { name: 'Ruta física' });
+    expect(within(route).getByText('Origen').parentElement).toHaveTextContent('Almacén');
+    await screen.findByRole('region', { name: 'Catálogo de origen' });
+    await waitFor(() => expect(stockCalls(mock).length).toBeGreaterThan(before));
+    for (const [url] of stockCalls(mock).slice(before)) {
+      const query = new URL(String(url), 'http://localhost').searchParams;
+      expect(query.get('location_id')).toBe('1');
+      expect(query.get('page_size')).toBe('50');
+    }
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+});
+
+describe('R2 workflow action badges', () => {
+  it.each([false, true])('truthfully exposes required actions when Pending is zero (mobile=%s)', async mobile => {
+    vi.stubGlobal('matchMedia', () => ({ matches: mobile, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    const mock = setup(session, url => url === '/api/transfers/counts' ? Promise.resolve(countResponse('1', '0')) : undefined);
+    render(<App />);
+    const navigation = await screen.findByRole('navigation', { name: mobile ? 'Navegación móvil' : 'Navegación principal' });
+    const status = within(navigation).getByRole('status');
+    await waitFor(() => expect(status).toHaveTextContent(/acciones.*1/i));
+    expect(status).not.toHaveTextContent(/aprobación/i);
+    expect(within(navigation).getByRole('button', { name: 'Transferencias' }).querySelector('.transfer-action-badge')).toHaveTextContent('1');
+    passiveCounts(mock);
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+});
+
+describe('D2 dispatch shell lifetime', () => {
+  it('keeps uncertain dispatch across Inventory navigation, consults explicitly, and refreshes workflow shell counts without SSE', async () => {
+    const approved = { id: '1001', reference: 'TR-1001', kind: 'request_stock', status: 'approved',
+      creator_location_id: 2, creator_location_name: 'Sucursal A', origin_location_id: 1, origin_location_name: 'Almacén',
+      destination_location_id: 2, destination_location_name: 'Sucursal A', approver_location_id: 1, approver_location_name: 'Almacén',
+      created_at: '2028-01-01T00:00:00Z', decision_location_id: 1, decided_at: '2028-01-02T00:00:00.000000001Z',
+      items: [{ variant_id: 1, brand: 'TOYO', model: 'Exact-1', capacity_ah: '75.125', polarity: 'L', quantity: '2' }] };
+    const transit = { ...approved, status: 'in_transit', dispatch_location_id: 1, dispatched_at: '2028-01-02T00:00:00.000000002Z' };
+    let dispatched = false;
+    const mock = setup(session, (url, init) => {
+      if (url === '/api/transfers/counts') return Promise.resolve(countResponse('2', '5'));
+      if (url.startsWith('/api/transfers?')) {
+        const query = new URL(url, 'http://localhost').searchParams;
+        const selected = query.get('status'); const record = dispatched ? transit : approved;
+        const records = selected === record.status ? [record] : [];
+        return Promise.resolve(transferResponse({ page: 1, page_size: 25, status: selected, total_count: records.length.toString(), records }));
+      }
+      if (url === '/api/transfers/1001/dispatch' && init.method === 'POST') {
+        dispatched = true; return Promise.reject(new Error('lost after commit'));
+      }
+      if (url === '/api/transfers/1001') return Promise.resolve(transferResponse(dispatched ? transit : approved));
+      return undefined;
+    });
+    render(<App />); await inventory();
+    fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
+    fireEvent.change(await screen.findByLabelText('Estado de transferencia'), { target: { value: 'approved' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Ver detalle TR-1001' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Despachar solicitud' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar despacho' }));
+    await screen.findByText('Despacho pendiente de confirmación');
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar confirmación de despacho' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' })); await inventory();
+    fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
+    const recovery = await screen.findByRole('region', { name: 'Recuperación de despacho' });
+    expect(recovery).toHaveTextContent('Despacho pendiente de confirmación');
+    const posts = () => mock.mock.calls.filter(([url, init]) => String(url).endsWith('/dispatch') && init?.method === 'POST');
+    expect(posts()).toHaveLength(1);
+    const countsBefore = countCalls(mock).length; const stockBefore = stockCalls(mock).length;
+    fireEvent.click(within(recovery).getByRole('button', { name: 'Consultar resultado original del despacho' }));
+    await waitFor(() => expect(recovery).toHaveTextContent('Estado confirmado: En tránsito.'));
+    await waitFor(() => expect(countCalls(mock).length).toBeGreaterThan(countsBefore));
+    await waitFor(() => expect(stockCalls(mock).length).toBeGreaterThan(stockBefore));
+    expect(shellCount()).toHaveTextContent('Acciones requeridas: 2');
+    expect(posts()).toHaveLength(1); expect(AppSource.instances).toHaveLength(1);
+  });
+});
+
 describe('B4 assigned-participant shell badge', () => {
   it.each([false, true])('shows exact shell counts independently of Pending rows and totals, mobile=%s', async mobile => {
     vi.stubGlobal('matchMedia', () => ({ matches: mobile, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
@@ -90,7 +179,7 @@ describe('B4 assigned-participant shell badge', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
     await screen.findByText('0 solicitudes pendientes');
     await waitFor(() => expect(document.querySelector('.transfer-request-counters dd')).toHaveTextContent('9007199254740994'));
-    expect(shellCount()).toHaveTextContent('Solicitudes que requieren tu aprobación: 9007199254740993');
+    expect(shellCount()).toHaveTextContent('Acciones requeridas: 9007199254740993');
     expect(document.querySelector('nav .transfer-action-badge')).toHaveTextContent('9007199254740993');
     await waitFor(() => expect(countCalls(mock)).toHaveLength(2));
     expect(document.querySelectorAll('.transfer-request-counters dd')[1]).toHaveTextContent('2');
@@ -107,7 +196,7 @@ describe('B4 assigned-participant shell badge', () => {
     await waitFor(() => expect(shellCount()).toHaveTextContent('9007199254740993'));
     fireEvent.click(screen.getByRole('button', { name: new RegExp(metadata.locations[assigned === 3 ? 0 : 2].name) })); await inventory();
     expect(countCalls(mock)).toHaveLength(1); expect(shellCount()).toHaveTextContent('9007199254740993');
-    if (assigned === 1) expect(screen.getByRole('button', { name: /Nueva transferencia/ })).toBeDisabled();
+    if (assigned === 1) expect(screen.getByRole('button', { name: /Nueva transferencia/ })).toBeEnabled();
     expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false); passiveCounts(mock);
   });
   it.each([false, true])('distinguishes loading from exact zero in the mobile=%s shell', async mobile => {
@@ -116,28 +205,28 @@ describe('B4 assigned-participant shell badge', () => {
     const mock = setup(session, url => url === '/api/transfers/counts' ? held.promise : undefined);
     render(<App />);
     await screen.findByRole('navigation', { name: mobile ? 'Navegación móvil' : 'Navegación principal' });
-    expect(shellCount()).toHaveTextContent('Consultando solicitudes que requieren tu aprobación…');
+    expect(shellCount()).toHaveTextContent('Consultando acciones requeridas…');
     expect(document.querySelector('nav .transfer-action-badge')).not.toHaveTextContent('0');
     expect(screen.getByRole('button', { name: 'Transferencias' })).toBeEnabled();
     await act(async () => held.resolve(countResponse('0', '7')));
-    await waitFor(() => expect(shellCount()).toHaveTextContent('Solicitudes que requieren tu aprobación: 0'));
+    await waitFor(() => expect(shellCount()).toHaveTextContent('Acciones requeridas: 0'));
     expect(document.querySelector('nav .transfer-action-badge')).toHaveTextContent(/^0$/);
-    expect(screen.getByRole('button', { name: mobile ? /Crear envío/ : /Nueva transferencia/ })).toBeDisabled(); passiveCounts(mock);
+    expect(screen.getByRole('button', { name: mobile ? /Crear envío/ : /Nueva transferencia/ })).toBeEnabled(); passiveCounts(mock);
   });
   it.each(['403', '404', '503', 'network', 'malformed'])('keeps navigation usable with unavailable counts: %s', async kind => {
     const mock = setup(session, url => {
       if (url === '/api/transfers/counts') return kind === 'network' ? Promise.reject(new Error('offline'))
-        : Promise.resolve(kind === 'malformed' ? transferResponse({ pending_total: '1', action_count: '2' })
+        : Promise.resolve(kind === 'malformed' ? transferResponse({ pending_total: '1', action_count: '01' })
           : transferResponse({ error: kind === '403' ? 'forbidden' : kind === '404' ? 'not_found' : 'service_unavailable' }, Number(kind)));
       if (url.startsWith('/api/transfers?')) return Promise.resolve(transferResponse({ error: 'service_unavailable' }, 503));
       return undefined;
     });
     render(<App />); await inventory();
-    await waitFor(() => expect(shellCount()).toHaveTextContent('Contador de aprobación no disponible.'));
+    await waitFor(() => expect(shellCount()).toHaveTextContent('Contador de acciones no disponible.'));
     expect(document.querySelector('nav .transfer-action-badge')).toHaveTextContent('—');
     fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
     await screen.findByText('No se pudieron consultar las solicitudes.');
-    expect(shellCount()).toHaveTextContent('Contador de aprobación no disponible.');
+    expect(shellCount()).toHaveTextContent('Contador de acciones no disponible.');
     fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' })); await inventory();
     expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false); passiveCounts(mock);
   });
@@ -153,12 +242,12 @@ describe('B4 assigned-participant shell badge', () => {
     let reads = 0;
     const mock = setup(session, url => url === '/api/transfers/counts'
       ? Promise.resolve(++reads === 2 ? transferResponse({ error: 'forbidden' }, 403) : countResponse(reads === 1 ? '6' : '0')) : undefined);
-    render(<App />); await inventory(); await waitFor(() => expect(shellCount()).toHaveTextContent('aprobación: 6'));
+    render(<App />); await inventory(); await waitFor(() => expect(shellCount()).toHaveTextContent('requeridas: 6'));
     act(() => AppSource.instances[0].emit('transfers'));
-    await waitFor(() => expect(shellCount()).toHaveTextContent('Contador de aprobación no disponible.'));
+    await waitFor(() => expect(shellCount()).toHaveTextContent('Contador de acciones no disponible.'));
     expect(document.querySelector('nav .transfer-action-badge')).toHaveTextContent('—');
     act(() => AppSource.instances[0].emit('resync'));
-    await waitFor(() => expect(shellCount()).toHaveTextContent('aprobación: 0')); expect(reads).toBe(3); passiveCounts(mock);
+    await waitFor(() => expect(shellCount()).toHaveTextContent('requeridas: 0')); expect(reads).toBe(3); passiveCounts(mock);
   });
   it('discards stale values and coalesces dirty refreshes within its lane without reading stock on transfers', async () => {
     const held = deferred<Response>(); const latest = deferred<Response>(); let reads = 0;
@@ -176,7 +265,7 @@ describe('B4 assigned-participant shell badge', () => {
     await waitFor(() => expect(reads).toBe(3));
     expect(shellCount()).not.toHaveTextContent('8');
     await act(async () => latest.resolve(countResponse('0')));
-    await waitFor(() => expect(shellCount()).toHaveTextContent('aprobación: 0'));
+    await waitFor(() => expect(shellCount()).toHaveTextContent('requeridas: 0'));
     expect(stockCalls(mock)).toHaveLength(stocks); passiveCounts(mock);
   });
   it.each(['success', 'network', '401'])('ignores obsolete %s after logout and a new login', async kind => {
@@ -187,10 +276,10 @@ describe('B4 assigned-participant shell badge', () => {
     act(() => AppSource.instances[0].emit('transfers')); await waitFor(() => expect(reads).toBe(2));
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' })); await screen.findByLabelText('Usuario');
     expect(screen.queryByRole('navigation')).not.toBeInTheDocument(); expect(reads).toBe(2);
-    await login(); await waitFor(() => expect(shellCount()).toHaveTextContent('aprobación: 3'));
+    await login(); await waitFor(() => expect(shellCount()).toHaveTextContent('requeridas: 3'));
     expect(countCalls(mock)[1][1]?.signal?.aborted).toBe(true);
     await act(async () => { if (kind === 'network') held.reject(new Error('old offline')); else held.resolve(kind === '401' ? transferResponse({ error: 'unauthenticated' }, 401) : countResponse('8')); });
-    expect(shellCount()).toHaveTextContent('aprobación: 3'); expect(screen.queryByLabelText('Usuario')).not.toBeInTheDocument();
+    expect(shellCount()).toHaveTextContent('requeridas: 3'); expect(screen.queryByLabelText('Usuario')).not.toBeInTheDocument();
     expect(mock.mock.calls.filter(([url]) => String(url).endsWith('/logout'))).toHaveLength(1); passiveCounts(mock);
   });
   it.each(['identity', 'csrf'].flatMap(kind => ['success', 'network', '401'].map(reply => [kind, reply])))('fences %s changes against obsolete %s in the same shell', async (kind, reply) => {
@@ -201,13 +290,13 @@ describe('B4 assigned-participant shell badge', () => {
       : url === '/api/transfers/counts' ? ++reads === 1 ? held.promise : Promise.resolve(countResponse('4')) : undefined);
     render(<App />); await inventory(); await waitFor(() => expect(reads).toBe(1));
     act(() => AppSource.instances[0].emit('error'));
-    await waitFor(() => expect(shellCount()).toHaveTextContent('aprobación: 4'));
+    await waitFor(() => expect(shellCount()).toHaveTextContent('requeridas: 4'));
     expect(countCalls(mock)[0][1]?.signal?.aborted).toBe(true);
     await act(async () => {
       if (reply === 'network') held.reject(new Error('old offline'));
       else held.resolve(reply === '401' ? transferResponse({ error: 'unauthenticated' }, 401) : countResponse('8'));
     });
-    expect(shellCount()).toHaveTextContent('aprobación: 4'); expect(screen.queryByLabelText('Usuario')).not.toBeInTheDocument();
+    expect(shellCount()).toHaveTextContent('requeridas: 4'); expect(screen.queryByLabelText('Usuario')).not.toBeInTheDocument();
     expect(countCalls(mock)).toHaveLength(2); passiveCounts(mock);
   });
   it('clears private counts on current 401 and never reads counts while anonymous', async () => {
@@ -623,7 +712,7 @@ describe('inventory interaction and stale guards', () => {
     expect(screen.getByText('Almacén', { selector: '.assigned-location' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Sucursal B/ })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Transferencias' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: /Nueva transferencia/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Nueva transferencia/ })).toBeEnabled();
   });
   it.each(['success', 'error'])('ignores obsolete %s even when transport ignores AbortSignal', async kind => {
     let finish!: (r: Response) => void;
@@ -682,7 +771,7 @@ describe('inventory interaction and stale guards', () => {
     expect(screen.queryByText('Sin stock')).not.toBeInTheDocument();
     expect(screen.getByText('6', { selector: '.variant-bottom span:first-child b' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Transferencias' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: /Crear envío/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Crear envío/ })).toBeEnabled();
     // CSS chooses the visible renderer at 768px; real geometry is verifier-owned.
     expect(container.querySelectorAll('.product-card')).toHaveLength(1);
     expect(container.querySelector('.product-card')).toHaveTextContent('1 variante');
@@ -912,11 +1001,11 @@ describe('R04b2b App workspace entry', () => {
     expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
     expect(AppSource.instances).toHaveLength(1);
   });
-  it('keeps warehouse creation disabled when consulting a branch on desktop', async () => {
+  it('keeps warehouse creation available without automatic reads when consulting a branch on desktop', async () => {
     const mock = setup(session); render(<App />); await inventory();
     fireEvent.click(screen.getByRole('button', { name: /Sucursal A/ })); await inventory();
     const before = mock.mock.calls.length;
-    const cta = screen.getByRole('button', { name: /Nueva transferencia/ }); expect(cta).toBeDisabled(); fireEvent.click(cta);
+    const cta = screen.getByRole('button', { name: /Nueva transferencia/ }); expect(cta).toBeEnabled();
     expect(mock.mock.calls).toHaveLength(before); expect(screen.queryByLabelText('Tipo de transferencia')).not.toBeInTheDocument();
   });
   it('has no anonymous creation entry or private source request', async () => {
@@ -1136,12 +1225,12 @@ describe('R05-U1 creation section', () => {
     await screen.findByText('9007199254740993');
     expect(catalogReads()).toHaveLength(0);
     const cta = screen.getByRole('button', { name: /Nueva transferencia|Crear envío/ });
-    expect(cta).toBeDisabled(); fireEvent.click(cta);
+    expect(cta).toBeEnabled();
     expect(catalogReads()).toHaveLength(0);
     expect(screen.queryByLabelText('Tipo de transferencia')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
     await screen.findByText('1 solicitudes pendientes');
-    expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Nueva transferencia' })).toBeEnabled();
     expect(screen.getByRole('main')).toHaveAttribute('id', 'transferencias');
     expect(document.querySelectorAll('nav [aria-current="page"]')).toHaveLength(1);
     expect(catalogReads()).toHaveLength(0);
@@ -1220,7 +1309,7 @@ describe('R04c guarded success navigation', () => {
     expect(document.querySelector('.pending-cards') !== null).toBe(assigned === 1);
     expect(screen.getByRole('main')).toHaveAttribute('id', 'transferencias');
     expect(document.querySelectorAll('nav [aria-current="page"]')).toHaveLength(1);
-    if (assigned === 1) expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
+    if (assigned === 1) expect(screen.getByRole('button', { name: 'Nueva transferencia' })).toBeEnabled();
     expect(screen.queryByRole('navigation', { name: 'Navegación móvil' }) !== null).toBe(assigned === 1);
     expect(screen.getByRole('table', { name: 'Solicitudes pendientes participantes' })).toBeInTheDocument();
   });
@@ -1233,12 +1322,13 @@ describe('R04c guarded success navigation', () => {
     fireEvent.change(screen.getByLabelText('Filas por página'), { target: { value: '10' } }); await inventory();
     await r04cSend(); await screen.findByRole('heading', { name: 'Solicitud Pending confirmada' });
     expect(h.mock.mock.calls.filter(([url, init]) => String(url).startsWith('/api/transfers') && url !== '/api/transfers/counts' && init?.method !== 'POST')).toHaveLength(0);
-    expect(countCalls(h.mock)).toHaveLength(1); passiveCounts(h.mock);
+    await waitFor(() => expect(countCalls(h.mock)).toHaveLength(2)); passiveCounts(h.mock);
     fireEvent.click(screen.getByRole('button', { name: 'Ver detalle' }));
     await screen.findByRole('heading', { name: 'TR-9007199254740993' });
     const reads = h.mock.mock.calls.filter(([url]) => /^\/api\/transfers\/[1-9][0-9]*$/.test(String(url)));
-    const counts = h.mock.mock.calls.filter(([url]) => url === '/api/transfers/counts');
-    expect(counts).toHaveLength(2); passiveCounts(h.mock);
+    await waitFor(() => expect(countCalls(h.mock)).toHaveLength(3));
+    const counts = countCalls(h.mock);
+    expect(counts).toHaveLength(3); passiveCounts(h.mock);
     expect(counts[0][1]).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
     expect([...new Headers(counts[0][1]?.headers)]).toEqual([]);
     expect(counts[0][1]?.body).toBeUndefined();

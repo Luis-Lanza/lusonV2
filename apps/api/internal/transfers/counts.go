@@ -9,7 +9,7 @@ import (
 )
 
 // Totals counts requests, not quantities or possible decision buttons.
-// ActionCount is the Pending subset assigned to the persisted approver.
+// ActionCount is the location-owned approval, dispatch or receipt obligation.
 type Totals struct {
 	PendingTotal int64
 	ActionCount  int64
@@ -43,10 +43,12 @@ func (s *Store) Counts(ctx context.Context, actor auth.Identity) (Totals, error)
 	var totals Totals
 	// Apply participant privacy before aggregating. Each header contributes
 	// exactly once regardless of item count, quantities, or future actions.
-	err = tx.QueryRow(ctx, `SELECT count(*),
- count(*) FILTER (WHERE approver_location_id=$1)
+	err = tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status='pending'),
+ count(*) FILTER (WHERE (status='pending' AND approver_location_id=$1)
+ OR (status='approved' AND origin_location_id=$1)
+ OR (status='in_transit' AND destination_location_id=$1))
  FROM transfer_requests
- WHERE $1 IN (origin_location_id,destination_location_id) AND status='pending'`,
+ WHERE $1 IN (origin_location_id,destination_location_id)`,
 		actor.AccountID).Scan(&totals.PendingTotal, &totals.ActionCount)
 	if err != nil {
 		return Totals{}, fail(ctx)
