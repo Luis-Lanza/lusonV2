@@ -592,7 +592,14 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .count-recovery { background: var(--page); border-left: 4px solid var(--wine); }
 .count-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; }
 .count-metrics dt { color: var(--muted); font-size: 13px; }
-.count-metrics dd { margin: 4px 0 0; font-weight: 600; }
+.count-metrics dd { margin: 4px 0 0; font-weight: 600; font-size: 24px; font-variant-numeric: tabular-nums; }
+.count-corrections .count-outcome { padding: 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--page); font-weight: 600; }
+.count-corrections .count-technical { min-width: 0; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+.count-corrections .count-technical summary { padding: 12px 0; min-height: 44px; cursor: pointer; font-weight: 600; }
+.count-corrections .count-technical summary:focus-visible { outline: 2px solid var(--wine); outline-offset: 3px; }
+.count-corrections .count-technical p { margin: 0 0 8px; overflow-wrap: anywhere; }
+.count-corrections .count-revisions { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 0 0 12px; }
+.count-corrections .count-revisions dd { margin: 4px 0 0; font-variant-numeric: tabular-nums; }
 .count-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .count-actions button, .count-recovery > button, .count-modal button { height: auto; min-height: 44px; padding: 10px 16px; border: 1px solid var(--wine); border-radius: 4px; color: var(--wine); background: white; }
 .count-corrections button:disabled { cursor: not-allowed; color: #595459; border-color: #aaa5aa; background: #efedef; }

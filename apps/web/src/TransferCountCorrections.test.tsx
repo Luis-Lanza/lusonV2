@@ -118,7 +118,9 @@ it('uses absent original expected membership for audit-only unexpected counts', 
   if (f.props.record.status !== 'received') throw new Error();
   f.props.record = { ...f.props.record, receipt: { ...f.props.record.receipt, items: [...f.props.record.receipt.items,
     { variant_id: 202, expected_quantity: 0n, actual_quantity: 7n, available_quantity: 0n }] } };
-  render(<TransferCountCorrections {...f.props} />); draft('9223372036854775807'); const modal = review();
+  render(<TransferCountCorrections {...f.props} />);
+  expect(screen.getByText('Solo auditoría: crédito y efecto en stock cero. La procedencia e incorporación se resuelven por separado.').closest('details')).toBeNull();
+  draft('9223372036854775807'); const modal = review();
   expect(modal).toHaveTextContent('Variante inesperada 202'); expect(modal).toHaveTextContent('Solo auditoría');
   expect(modal).toHaveTextContent('Crédito limitado: 0'); expect(modal).toHaveTextContent('Efecto en destino: 0');
   await act(async () => confirm());
@@ -146,6 +148,84 @@ it('shows all history states with exact evidence, Bolivia dates and application 
   expect(screen.getByRole('region')).toHaveTextContent('La recepción original es inmutable');
   expect(screen.getByRole('region')).toHaveTextContent('sigue Recibida');
 });
+it('puts effective quantities and applied effect before closed technical evidence without hiding history context', () => {
+  const f = fixture();
+  f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals: [
+    { ...proposal('applied'), revision: 3n }, proposal(),
+  ] }] };
+  render(<TransferCountCorrections {...f.props} />);
+  const card = screen.getByRole('article', { name: 'TOYO · Exact · 75.125 Ah · L' });
+  const disclosures = Array.from(card.querySelectorAll('details'));
+  expect(disclosures).toHaveLength(3);
+  for (const details of disclosures) {
+    expect(details).not.toHaveAttribute('open');
+    expect(details.firstElementChild?.tagName).toBe('SUMMARY');
+    expect(details.firstElementChild).toHaveTextContent('Evidencia técnica');
+  }
+  const metrics = card.querySelector('.count-metrics')!;
+  expect(metrics).toHaveTextContent('Cantidad efectiva5');
+  expect(metrics).toHaveTextContent('Crédito efectivo de esta recepción5');
+  expect(metrics).not.toHaveTextContent('Revisión');
+  const effect = within(card).getByText(/Efecto aplicado en destino: \+2/);
+  expect(effect.closest('details')).toBeNull();
+  expect(effect.compareDocumentPosition(disclosures[0])).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  for (const text of ['Pendiente · Revisión 4', 'Iniciador Sucursal A', 'Motivo: Reconteo original',
+    'Aceptada por Sucursal B', 'Motivo de decisión: Decisión exacta', 'Aplicación: crédito 7 · Efecto +2']) {
+    for (const element of within(card).getAllByText(text, { exact: false })) expect(element.closest('details')).toBeNull();
+  }
+  for (const time of card.querySelectorAll('time')) {
+    expect(time.closest('details')).toBeNull();
+    expect(time).toHaveAttribute('datetime', stamp);
+  }
+  expect(within(card).getByText('Revisión de flujo').closest('details')).toBe(disclosures[0]);
+  expect(disclosures[1]).toHaveTextContent('Base 3 · Crédito base 5');
+  expect(disclosures[1]).toHaveTextContent('proposal_key_0001');
+  expect(disclosures[1]).toHaveTextContent('decision_key_0001');
+});
+
+it('does not infer an applied effect from pending or historical applications', () => {
+  const f = fixture();
+  f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals: [
+    { ...proposal('applied'), revision: 1n }, proposal(),
+  ] }] };
+  render(<TransferCountCorrections {...f.props} />);
+  expect(screen.queryByText(/Efecto aplicado en destino:/)).not.toBeInTheDocument();
+  expect(screen.getByText(/Aplicación: crédito 7/).closest('details')).toBeNull();
+});
+
+it('native evidence disclosure is focusable and expands locally without reads or writes', () => {
+  const f = fixture(); render(<TransferCountCorrections {...f.props} />);
+  const summary = screen.getByText('Evidencia técnica del conteo');
+  expect(summary.tagName).toBe('SUMMARY');
+  summary.focus(); expect(summary).toHaveFocus();
+  const details = summary.parentElement!;
+  expect(details).not.toHaveAttribute('open');
+  fireEvent.click(summary); expect(details).toHaveAttribute('open');
+  expect(details).toHaveTextContent('Revisión de flujo4');
+  expect(details).toHaveTextContent('Revisión aplicada3');
+  fireEvent.click(summary); expect(details).not.toHaveAttribute('open');
+  for (const method of ['refresh', 'recover', 'retry', 'propose', 'decide'] as const) {
+    expect(f.corrections[method]).not.toHaveBeenCalled();
+  }
+});
+
+it.each(['uncertain', 'conflict', 'failed'] as const)('keeps %s recovery instructions and captured reason outside technical disclosure', phase => {
+  const f = fixture(); f.corrections.attempts = [attempt(phase, true)];
+  f.corrections.error = new TransferAPIError('invalid_response', 500);
+  render(<TransferCountCorrections {...f.props} />);
+  const panel = screen.getByRole('article', { name: 'Recuperación 201' });
+  const details = panel.querySelector('details')!;
+  expect(details).not.toBeNull(); expect(details).not.toHaveAttribute('open');
+  expect(details).toHaveTextContent('captured_key_0001');
+  expect(details).toHaveTextContent('Revisión exacta 4');
+  expect(details).toHaveTextContent('Cuenta 2');
+  for (const element of [within(panel).getByText(/Resultado aún incierto\. No crees otra propuesta/),
+    within(panel).getByText(/Motivo capturado:/), within(panel).getByText(/Cantidad capturada:/),
+    within(panel).getByText('Proponer · Actor Sucursal A'), within(panel).getByRole('button', { name: 'Consultar resultado' }),
+    screen.getByRole('alert')]) expect(element.closest('details')).toBeNull();
+  if (phase !== 'failed') expect(within(panel).getByRole('button', { name: 'Reintentar carga exacta' }).closest('details')).toBeNull();
+});
+
 it('only pending initiator can replace and replacement obtains a new key and agreement', async () => {
   const f = fixture(); f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals: [proposal()] }] };
   const h = render(<TransferCountCorrections {...f.props} />);
