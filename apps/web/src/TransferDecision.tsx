@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { TransferController } from './useInventory';
 import type { useTransfers } from './useTransfers';
 import type { TransferRecord } from './transferModel';
-import { captureDecisionRecord, type TransferDecision as Action } from './transferDecisionRecovery';
+import { captureDecisionRecord, matchesDecisionRecord, satisfiesDecision, type TransferDecision as Action } from './transferDecisionRecovery';
 import { detailAuthority, TransferItems, transferStatusLabel, type StockAdvice } from './TransferDetail';
 import { transferViewOwner } from './TransferPending';
 import { TransferAPIError } from './transferAPI';
@@ -52,6 +52,12 @@ export default function TransferDecision(props: TransferDecisionProps) {
   const canReview = record?.status === 'pending' && record.approver_location_id === assigned;
   const unresolved = attempt?.phase === 'uncertain' || busy;
   const result = attempt?.result;
+  const reviewAttempt = visibleReview && attempt?.action === visibleReview.action
+    && matchesDecisionRecord(visibleReview.record, attempt.original) ? attempt : null;
+  const reviewResult = reviewAttempt?.result && reviewAttempt.result.status !== 'pending'
+    && matchesDecisionRecord(reviewAttempt.original, reviewAttempt.result)
+    && (reviewAttempt.phase === 'confirmed' || reviewAttempt.phase === 'conflict') ? reviewAttempt.result : null;
+  const reviewConfirmed = !!reviewResult && reviewAttempt?.phase === 'confirmed' && satisfiesDecision(reviewAttempt.action, reviewResult);
   const failure = transfers.decisionError;
   const error = failure?.code === 'insufficient_stock' ? 'No hay disponibilidad suficiente para aprobar la solicitud completa.'
     : failure?.status === 403 || failure?.status === 404 ? 'La solicitud no está disponible.'
@@ -117,14 +123,17 @@ export default function TransferDecision(props: TransferDecisionProps) {
           else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialog.current)) { event.preventDefault(); first.focus(); }
         }
       }}>
-      <header><div><h2 id="decision-title">{result?.id === visibleReview.record.id ? `Solicitud ${transferStatusLabel(result)} confirmada` : visibleReview.action === 'approve' ? 'Confirmar aprobación' : 'Confirmar rechazo'}</h2>
+      <header><div><h2 id="decision-title">{reviewConfirmed ? `Solicitud ${transferStatusLabel(reviewResult)} confirmada` : reviewResult ? `Resultado de la solicitud: ${transferStatusLabel(reviewResult)}` : visibleReview.action === 'approve' ? 'Confirmar aprobación' : 'Confirmar rechazo'}</h2>
         <p>{visibleReview.record.reference} · {visibleReview.record.origin_location_name} → {visibleReview.record.destination_location_name}</p></div>
         <button ref={close} type="button" aria-label="Cerrar confirmación" disabled={busy} onClick={dismiss}>×</button>
       </header>
       <div className="transfer-decision-body">
         <TransferItems record={visibleReview.record} stock={props.stock ?? { catalog: null, busy: false, unavailable: true }} confirmation reject={visibleReview.action === 'reject'} />
-        <div className="transfer-impact"><h3>{visibleReview.action === 'approve' ? 'Impacto de la confirmación' : 'Impacto del rechazo'}</h3>
-          {visibleReview.action === 'approve' ? <>
+        <div className="transfer-impact"><h3>{reviewResult ? 'Resultado de la decisión' : visibleReview.action === 'approve' ? 'Impacto de la confirmación' : 'Impacto del rechazo'}</h3>
+          {reviewResult ? (reviewConfirmed ? <p role="status">{visibleReview.action === 'approve'
+            ? 'Solicitud aprobada correctamente. Se autorizó y reservó la solicitud completa; no se movieron existencias ni se acreditó stock en destino.'
+            : 'Solicitud rechazada correctamente. No se movieron existencias ni se modificaron reservas.'}</p>
+            : <p role="alert">La acción original no se confirmó. Se muestra el estado real de la solicitud, sin enviar otra decisión.</p>) : visibleReview.action === 'approve' ? <>
             <p>Se revalidará toda la solicitud y se reservarán sus cantidades completas en {visibleReview.record.origin_location_name}.</p>
             <p>Si alguna variante no tiene suficiente disponible, no se aprobará ni se reservará ninguna batería.</p>
             <p>El stock mostrado es orientativo. Aprobar no mueve existencias ni aumenta el stock del destino.</p>
@@ -137,7 +146,7 @@ export default function TransferDecision(props: TransferDecisionProps) {
         {busy && <p role="status">Confirmando decisión…</p>}
         {error && <p role="alert">{error}</p>}
         {unresolved && !busy && <p role="status">Resultado sin confirmar. Usá la recuperación de la decisión original.</p>}
-        {result?.id === visibleReview.record.id && <p role="status">Estado confirmado: {transferStatusLabel(result)}.</p>}
+        {reviewResult && <p role="status">Estado confirmado: {transferStatusLabel(reviewResult)}.</p>}
       </div>
       <footer><button type="button" disabled={busy} onClick={dismiss}>Volver al detalle</button>
         {!unresolved && canReview && record.id === visibleReview.record.id && !(result && result.id === visibleReview.record.id) && <button type="button" className={visibleReview.action === 'approve' ? 'primary' : 'transfer-reject-confirm'} onClick={() => {

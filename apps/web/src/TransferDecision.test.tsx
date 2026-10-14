@@ -8,6 +8,14 @@ import { createTransferDecisionRecovery } from './transferDecisionRecovery';
 import type { TransferAuthority, TransferController } from './useInventory';
 
 const names = ['Almacén', 'Sucursal A', 'Sucursal B'];
+const decisionCompletion = {
+  approve: 'Solicitud aprobada correctamente. Se autorizó y reservó la solicitud completa; no se movieron existencias ni se acreditó stock en destino.',
+  reject: 'Solicitud rechazada correctamente. No se movieron existencias ni se modificaron reservas.',
+};
+function expectNoDecisionCompletion(dialog: HTMLElement) {
+  for (const message of Object.values(decisionCompletion)) expect(within(dialog).queryByText(message)).not.toBeInTheDocument();
+}
+
 function wire(origin = 1, destination = 2, status = 'pending', id = '9007199254740993') {
   const creator = destination === 1 ? origin : destination;
   const approver = destination === 1 ? 1 : origin;
@@ -83,6 +91,10 @@ it('presents a cancelled decision conflict date without claiming the original ac
   expect(time).toHaveAttribute('datetime', cancelled_at);
   expect(time).toHaveAttribute('title', cancelled_at);
   expect(screen.getByRole('region', { name: 'Recuperación de decisión' })).toHaveTextContent('No se confirmó la acción original');
+  const dialog = screen.getByRole('dialog');
+  expect(dialog).toHaveTextContent('Estado confirmado: Cancelada.');
+  expect(within(dialog).getByText('La acción original no se confirmó. Se muestra el estado real de la solicitud, sin enviar otra decisión.')).toBeVisible();
+  expectNoDecisionCompletion(dialog);
 });
 
 describe('A06a explicit immutable confirmations', () => {
@@ -123,6 +135,10 @@ describe('A06a explicit immutable confirmations', () => {
       confirm(action);
       await waitFor(() => expect(f.controller.confirmTransferDecision).toHaveBeenCalledOnce());
       expect(f.fetch).toHaveBeenCalledExactlyOnceWith(`/api/transfers/9007199254740993/${action}`, expect.objectContaining({ method: 'POST', body: '{}', credentials: 'same-origin', cache: 'no-store' }));
+      expect(within(dialog).getByText(decisionCompletion[action])).toBeVisible();
+      expect(dialog).toHaveTextContent(action === 'approve' ? 'Estado confirmado: Aprobada.' : 'Estado confirmado: Rechazada.');
+      expect(within(dialog).queryByText(/^Se revalidará toda la solicitud/)).not.toBeInTheDocument();
+      expect(within(dialog).queryByText(/^Se rechazará la solicitud completa/)).not.toBeInTheDocument();
       const init = f.fetch.mock.calls[0][1];
       expect(new Headers(init?.headers).get('X-CSRF-Token')).toBe('a'.repeat(43));
       expect(new Headers(init?.headers).has('X-Luson-Passive')).toBe(false);
@@ -183,6 +199,7 @@ describe('A06a explicit immutable confirmations', () => {
     fireEvent.click(button);
     expect(f.fetch).toHaveBeenCalledOnce();
     expect(dialog).toHaveAttribute('aria-busy', 'true');
+    expectNoDecisionCompletion(dialog);
     expect(dialog).toHaveFocus();
     expect(within(dialog).getByRole('button', { name: 'Cerrar confirmación' })).toBeDisabled();
     expect(within(dialog).getByRole('button', { name: 'Volver al detalle' })).toBeDisabled();
@@ -233,6 +250,7 @@ describe('A06a controller-owned uncertain outcome recovery', () => {
     await uncertain();
     expect(screen.getByLabelText('Recuperación de decisión')).toHaveTextContent('TR-9007199254740993');
     expect(document.body).not.toHaveTextContent('TR-999');
+    expectNoDecisionCompletion(screen.getByRole('dialog'));
     expect(f.controller.confirmTransferDecision).not.toHaveBeenCalled();
     expect(f.fetch).toHaveBeenCalledTimes(2);
     expect(screen.getByRole('button', { name: action === 'approve' ? 'Reintentar misma aprobación' : 'Reintentar mismo rechazo' })).toBeEnabled();
@@ -293,10 +311,35 @@ describe('A06a controller-owned uncertain outcome recovery', () => {
     expect(screen.getByLabelText('Recuperación de decisión')).toHaveTextContent(status === 'approved' ? 'Estado confirmado: Aprobada.' : 'Estado confirmado: Rechazada.');
     expect(within(screen.getByLabelText('Recuperación de decisión')).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-02T00:00:00.000000001Z');
     expect(document.body.textContent?.includes('decisión distinta')).toBe((action === 'approve') !== (status === 'approved'));
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveTextContent(status === 'approved' ? 'Estado confirmado: Aprobada.' : 'Estado confirmado: Rechazada.');
+    if ((action === 'approve') === (status === 'approved')) expect(within(dialog).getByText(decisionCompletion[action])).toBeVisible();
+    else {
+      expect(within(dialog).getByText('La acción original no se confirmó. Se muestra el estado real de la solicitud, sin enviar otra decisión.')).toBeVisible();
+      expectNoDecisionCompletion(dialog);
+    }
+    expect(within(dialog).queryByText(/^(Se revalidará toda la solicitud|Se rechazará la solicitud completa)/)).not.toBeInTheDocument();
     expect(f.controller.confirmTransferDecision).toHaveBeenCalledWith(expect.anything(), status);
     expect(f.fetch).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole('button', { name: /^Reintentar/ })).not.toBeInTheDocument();
   });
+  it.each(['approve', 'reject'] as const)('keeps an open %s dialog uncertain after a lost POST and Pending GET', async action => {
+    const f = fixture(1, 2, 1, async (_url, init) => {
+      if (init.method === 'POST') throw new Error('lost');
+      return reply(wire());
+    });
+    render(f.element()); open(action);
+    confirm(action);
+    await uncertain();
+    const dialog = screen.getByRole('dialog');
+    expectNoDecisionCompletion(dialog);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Consultar resultado original' })); });
+    expect(within(dialog).getByText('Resultado sin confirmar. Usá la recuperación de la decisión original.')).toBeVisible();
+    expectNoDecisionCompletion(dialog);
+    expect(f.fetch).toHaveBeenCalledTimes(2);
+    expect(f.controller.confirmTransferDecision).not.toHaveBeenCalled();
+  });
+
   it.each([401, 403, 404, 503, 409])('sanitizes decision HTTP %s and masks private recovery when required', async status => {
     const code = status === 401 ? 'unauthenticated' : status === 403 ? 'forbidden' : status === 404 ? 'not_found' : status === 409 ? 'insufficient_stock' : 'service_unavailable';
     const f = fixture(1, 2, 1, async () => reply({ error: code }, status));
@@ -311,6 +354,7 @@ describe('A06a controller-owned uncertain outcome recovery', () => {
       expect(screen.queryByLabelText('Recuperación de decisión')).not.toBeInTheDocument();
     } else {
       await uncertain();
+      expectNoDecisionCompletion(screen.getByRole('dialog'));
       expect(screen.getByLabelText('Recuperación de decisión')).toHaveTextContent(status === 409 ? 'No hay disponibilidad suficiente' : status === 401 ? 'No se pudo verificar la sesión' : 'No se pudo confirmar la decisión');
     }
     expect(f.controller.settleUnauthorized).toHaveBeenCalledTimes(status === 401 ? 1 : 0);
