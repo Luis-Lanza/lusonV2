@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
+import TransferDate from './TransferDate';
 import { useTransferRestitutions } from './useTransferRestitutions';
 import { decisionOwner } from './transferDecisionRecovery';
 import { newTransferRetryKey, type TransferRecord } from './transferModel';
@@ -116,10 +117,10 @@ function Section(props: TransferRestitutionsProps) {
             <p>Retenidas en origen: {p.retained_quantity.toString()} · Retención física atestada explícitamente</p>
             <p>Origen: {p.initiator_location_id} · Revisión base: {p.base_revision.toString()} · Crédito base: {p.base_credit.toString()} · Restitución base: {p.base_restitution.toString()}</p>
             <p>Generación de conteo: {p.count_generation.toString()} · Revisión de conteo aplicada: {p.count_applied_revision.toString()}</p>
-            <p className="restitution-evidence">Motivo: {p.reason}</p><p>Clave: {p.operation_key} · <time>{p.recorded_at}</time> UTC</p></section>
+            <p className="restitution-evidence">Motivo: {p.reason}</p><p>Clave: {p.operation_key} · <TransferDate value={p.recorded_at} /></p></section>
           {p.decision && <section aria-label={`Decisión ${p.revision}`}><h4>{p.decision.accepted ? 'Aceptada' : 'Rechazada'}</h4>
-            <p>Destino: {p.decision.actor_location_id} · Clave: {p.decision.operation_key} · <time>{p.decision.recorded_at}</time> UTC</p><p className="restitution-evidence">Motivo de decisión: {p.decision.reason}</p></section>}
-          {p.application && <section aria-label={`Aplicación ${p.revision}`}><h4>Aplicación en origen</h4><p>Origen: {p.application.origin_location_id} · Existencias acreditadas: +{p.application.quantity.toString()} · Clave: {p.application.operation_key} · <time>{p.application.recorded_at}</time> UTC</p>
+            <p>Destino: {p.decision.actor_location_id} · Clave: {p.decision.operation_key} · <TransferDate value={p.decision.recorded_at} /></p><p className="restitution-evidence">Motivo de decisión: {p.decision.reason}</p></section>}
+          {p.application && <section aria-label={`Aplicación ${p.revision}`}><h4>Aplicación en origen</h4><p>Origen: {p.application.origin_location_id} · Existencias acreditadas: +{p.application.quantity.toString()} · Clave: {p.application.operation_key} · <TransferDate value={p.application.recorded_at} /></p>
             {snapshot?.operations.filter(o => o.operation_key === p.application!.operation_key && o.action === 'accept').map(o => <p key={o.operation_key}>Existencias de origen registradas: {o.source_existing_before?.toString()} → {o.source_existing_after?.toString()}</p>)}
           </section>}
         </li>)}</ol>

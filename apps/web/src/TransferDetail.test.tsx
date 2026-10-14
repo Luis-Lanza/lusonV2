@@ -22,7 +22,7 @@ describe('W2 direct warehouse history', () => {
     const history = within(screen.getByRole('region', { name: 'Historial de la solicitud' }));
     expect(history.getByRole('heading', { name: 'Envío creado, autorizado y stock reservado' })).toBeVisible();
     expect(history.queryByRole('heading', { name: 'Solicitud aprobada y stock reservado' })).not.toBeInTheDocument();
-    expect(history.getAllByText(original.created_at)).toHaveLength(1);
+    expect(history.getByText('31/12/2027 · 20:00 (hora Bolivia)')).toHaveAttribute('title', original.created_at);
     expect(screen.queryByText('Decidida (UTC):')).not.toBeInTheDocument();
     if (status === 'approved') expect(screen.getAllByText('Pendiente de despacho').length).toBeGreaterThan(0);
     expect(f.fetch).not.toHaveBeenCalled();
@@ -147,7 +147,7 @@ describe('A06b persisted outcome and history', () => {
         expect(within(history).getAllByRole('list')).toHaveLength(1);
         expect(events[0]).toHaveTextContent('Solicitud creada');
         expect(events[0]).toHaveTextContent(`Ubicación: ${record.creator_location_name}`);
-        expect(events[0].querySelector('time')).toHaveTextContent(record.created_at);
+        expect(events[0].querySelector('time')).toHaveTextContent('31/12/2027 · 20:00 (hora Bolivia)');
         expect(events[0].querySelector('time')).toHaveAttribute('datetime', record.created_at);
         const metrics = screen.getByRole('region', { name: 'Cantidades de la solicitud' });
         expect(within(metrics).getByLabelText('Baterías solicitadas')).toHaveTextContent(/^18446744073709551614$/);
@@ -158,7 +158,7 @@ describe('A06b persisted outcome and history', () => {
           if (record.status !== 'approved' && record.status !== 'rejected') throw new Error('Expected persisted Approved or Rejected decision');
           expect(events[1]).toHaveTextContent(record.status === 'approved' ? 'Solicitud aprobada y stock reservado' : 'Solicitud rechazada');
           expect(events[1]).toHaveTextContent(`Ubicación: ${names[record.decision_location_id - 1]}`);
-          expect(events[1].querySelector('time')).toHaveTextContent(record.decided_at);
+          expect(events[1].querySelector('time')).toHaveTextContent('01/01/2028 · 20:00 (hora Bolivia)');
           expect(events[1].querySelector('time')).toHaveAttribute('datetime', record.decided_at);
           expect(within(metrics).getByLabelText('Baterías reservadas en esta solicitud')).toHaveTextContent(
             record.status === 'approved' ? /^18446744073709551614$/ : /^0$/);
@@ -215,7 +215,7 @@ describe('A06a immutable physical review', () => {
     expect(table).toHaveTextContent('Izquierda [L]');
     expect(table).toHaveTextContent('Derecha [R]');
     expect(document.body).not.toHaveTextContent('LIVE NOT ORIGINAL');
-    expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('2028-01-01T00:00:00.123456789Z')).toBeVisible();
+    expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('31/12/2027 · 20:00 (hora Bolivia)')).toHaveAttribute('title', '2028-01-01T00:00:00.123456789Z');
     const summary = screen.getByLabelText('Resumen de solicitud');
     expect(summary).toHaveTextContent(`Ubicación creadora${names[(destination === 1 ? origin : destination) - 1]}`);
     expect(summary).toHaveTextContent(`Requiere aprobación de${names[(destination === 1 ? 1 : origin) - 1]}`);
@@ -235,8 +235,8 @@ describe('A06a immutable physical review', () => {
         const f = fixture(origin, destination, assigned);
         const view = render(f.element(parseTransferRecord(JSON.stringify(wire(origin, destination, status)))));
         expect(f.fetch).not.toHaveBeenCalled();
-        expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('2028-01-02T00:00:00.000000001Z')).toBeVisible();
-        expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('2028-01-01T00:00:00.123456789Z')).toBeVisible();
+        expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('title', '2028-01-02T00:00:00.000000001Z');
+        expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('31/12/2027 · 20:00 (hora Bolivia)')).toHaveAttribute('title', '2028-01-01T00:00:00.123456789Z');
         expect(screen.queryByText('Esta solicitud todavía no reserva ni mueve stock.')).not.toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Actualizar stock de origen' })).not.toBeInTheDocument();
         expect(screen.getByLabelText('Resumen de solicitud')).toHaveTextContent(status === 'approved' ? `solicitud completa está reservada en ${names[origin - 1]}` : 'No reserva ni mueve stock');

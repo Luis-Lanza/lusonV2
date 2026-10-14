@@ -6,6 +6,7 @@ import { transferViewOwner } from './TransferPending';
 import { ReceiptTable } from './TransferReceipt';
 import TransferCountCorrections, { type TransferCountCorrectionsProps } from './TransferCountCorrections';
 import TransferRestitutions from './TransferRestitutions';
+import TransferDate from './TransferDate';
 
 export type DetailController = TransferController & Partial<SourceInventoryController>;
 export interface StockAdvice { catalog: SourceCatalog | null; busy: boolean; unavailable: boolean }
@@ -171,15 +172,15 @@ export default function TransferDetail(props: TransferDetailProps) {
       </section>
       <dl><dt>Ubicación creadora</dt><dd>{record.creator_location_name}</dd>
         <dt>{direct ? 'Autorizado al crear por' : 'Requiere aprobación de'}</dt><dd>{record.approver_location_name}</dd>
-        <dt>Creada (UTC)</dt><dd><time>{record.created_at}</time></dd></dl>
-      {terminal ? <>{record.decided_at && <p>{direct ? 'Autorizada y reservada al crear (UTC):' : 'Decidida (UTC):'} <time>{record.decided_at}</time></p>}
+        <dt>Creada</dt><dd><TransferDate value={record.created_at} /></dd></dl>
+      {terminal ? <>{record.decided_at && <p>{direct ? 'Autorizada y reservada al crear:' : 'Decidida:'} <TransferDate value={record.decided_at} /></p>}
         <p>{record.status === 'cancelled' ? (record.decision_location_id !== undefined ? `La solicitud completa fue cancelada. Se liberó únicamente su reserva en ${record.origin_location_name}; las existencias físicas, otras reservas y el stock del destino no cambian.` : 'La solicitud pendiente fue cancelada. No reserva ni mueve stock.') : record.status === 'received' ? `La recepción se confirmó en ${record.destination_location_name}. Solo las cantidades esperadas recibidas, hasta lo enviado, se acreditaron como stock disponible. Las discrepancias permanecen registradas, sin resolución automática.` : record.status === 'in_transit' ? `Se despachó la solicitud completa desde ${record.origin_location_name}, consumiendo su reserva y descontando existencias. ${record.destination_location_name} todavía no recibe stock; la recepción está pendiente.` : record.status === 'approved' && direct ? 'El envío completo fue autorizado y reservado al crear. Las existencias físicas no cambian ni se acredita el destino. El despacho es separado; podés cancelar antes de despachar.' : record.status === 'approved' ? `La solicitud completa está reservada en ${record.origin_location_name}. Las existencias físicas no cambian y el destino no recibe stock por la aprobación.` : 'La solicitud completa fue rechazada. No reserva ni mueve stock.'}</p></>
         : <div className="transfer-impact"><p>Esta solicitud todavía no reserva ni mueve stock.</p>
           <p>Al aprobar se revalida y reserva la solicitud completa en {record.origin_location_name}. Si falta disponibilidad en alguna variante, no se reserva ninguna.</p>
           <p>Aprobar no mueve existencias ni aumenta el stock del destino.</p></div>}
-      {(record.status === 'in_transit' || record.status === 'received') && <p>Despachada desde {record.origin_location_name} (UTC): <time>{record.dispatched_at}</time></p>}
-      {record.status === 'received' && <p>Recibida en {record.destination_location_name} (UTC): <time>{record.received_at}</time></p>}
-      {record.status === 'cancelled' && <p>Cancelada en {record.creator_location_name} (UTC): <time>{record.cancelled_at}</time></p>}
+      {(record.status === 'in_transit' || record.status === 'received') && <p>Despachada desde {record.origin_location_name}: <TransferDate value={record.dispatched_at} /></p>}
+      {record.status === 'received' && <p>Recibida en {record.destination_location_name}: <TransferDate value={record.received_at} /></p>}
+      {record.status === 'cancelled' && <p>Cancelada en {record.creator_location_name}: <TransferDate value={record.cancelled_at} /></p>}
       {props.actions?.(stock)}
     </aside>
       <section className={`transfer-history ${record.status}`} aria-label="Historial de la solicitud">
@@ -187,26 +188,26 @@ export default function TransferDetail(props: TransferDetailProps) {
         <ol>
           <li><h3>{direct ? 'Envío creado, autorizado y stock reservado' : 'Solicitud creada'}</h3>
             <p>Ubicación: {record.creator_location_name}</p>
-            <time dateTime={record.created_at}>{record.created_at}</time>
+            <TransferDate value={record.created_at} />
           </li>
           {terminal && !direct && record.decision_location_id !== undefined && <li><h3>{record.status !== 'rejected' ? 'Solicitud aprobada y stock reservado' : 'Solicitud rechazada'}</h3>
             {/* The validated decision location is the persisted approver, never the current viewer. */}
             <p>Ubicación: {record.approver_location_name}</p>
-            <time dateTime={record.decided_at}>{record.decided_at}</time>
+            <TransferDate value={record.decided_at} />
           </li>}
           {(record.status === 'in_transit' || record.status === 'received') && <li><h3>Solicitud despachada</h3>
             <p>Origen: {record.origin_location_name}</p>
-            <time dateTime={record.dispatched_at}>{record.dispatched_at}</time>
+            <TransferDate value={record.dispatched_at} />
             {record.status === 'in_transit' && <p>Pendiente de recepción en {record.destination_location_name}.</p>}
           </li>}
           {record.status === 'cancelled' && <li><h3>Solicitud cancelada</h3>
             <p>Ubicación: {record.creator_location_name}</p>
-            <time dateTime={record.cancelled_at}>{record.cancelled_at}</time>
+            <TransferDate value={record.cancelled_at} />
             {record.decision_location_id !== undefined && <p>Reserva propia liberada; existencias físicas sin cambios.</p>}
           </li>}
           {record.status === 'received' && <li><h3>Solicitud recibida</h3>
             <p>Destino: {record.destination_location_name}</p>
-            <time dateTime={record.received_at}>{record.received_at}</time>
+            <TransferDate value={record.received_at} />
             <p>Recepción finalizada una sola vez. Discrepancias registradas por separado.</p>
           </li>}
         </ol>

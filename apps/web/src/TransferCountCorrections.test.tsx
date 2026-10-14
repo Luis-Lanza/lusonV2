@@ -128,13 +128,19 @@ it('does not offer a line missing from the original receipt', () => {
   const f = fixture(); f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [line(999)] };
   render(<TransferCountCorrections {...f.props} />); expect(screen.queryByRole('button', { name: 'Proponer corrección' })).not.toBeInTheDocument();
 });
-it('shows all history states with exact reasons, actors, UTC and application effect', () => {
+it('shows all history states with exact evidence, Bolivia dates and application effect', () => {
   const f = fixture(); f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals:
     (['superseded', 'rejected', 'applied', 'pending'] as const).map((state, index) => ({ ...proposal(state), revision: BigInt(index + 1) })) }] };
   render(<TransferCountCorrections {...f.props} />);
   for (const state of ['Reemplazada', 'Rechazada', 'Aplicada', 'Pendiente']) expect(screen.getByRole('region')).toHaveTextContent(state);
   expect(screen.getByRole('region')).toHaveTextContent('Aplicación: crédito 7 · Efecto +2');
-  expect(screen.getByRole('region')).toHaveTextContent(stamp + ' UTC');
+  const times = screen.getByRole('region').querySelectorAll('time');
+  expect(times).toHaveLength(7);
+  for (const time of times) {
+    expect(time.textContent).toBe('01/04/2026 · 20:00 (hora Bolivia)');
+    expect(time).toHaveAttribute('datetime', stamp);
+    expect(time).toHaveAttribute('title', stamp);
+  }
   expect(screen.getByRole('region')).toHaveTextContent('Iniciador Sucursal A');
   expect(screen.getByRole('region')).toHaveTextContent('Decisión exacta');
   expect(screen.getByRole('region')).toHaveTextContent('La recepción original es inmutable');

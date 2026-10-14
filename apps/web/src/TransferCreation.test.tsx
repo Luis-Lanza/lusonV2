@@ -69,8 +69,14 @@ describe('W2 direct warehouse workspace', () => {
       approver_location_id: 1, approver_location_name: 'Almacén', created_at, decision_location_id: 1, decided_at: created_at,
       items: recordDTO().items.map(item => ({ ...item, quantity: '9223372036854775807' })) }, 201)));
     await screen.findByRole('dialog', { name: 'Solicitud Pendiente de despacho confirmada' });
-    expect(screen.getByText('Autorizada y reservada al crear (UTC):')).toBeVisible();
-    expect(screen.queryByText('Decidida (UTC):')).not.toBeInTheDocument();
+    expect(screen.getByText('Autorizada y reservada al crear:')).toBeVisible();
+    const times = screen.getByRole('region', { name: 'Resultado confirmado' }).querySelectorAll('time');
+    expect(times).toHaveLength(2);
+    for (const time of times) {
+      expect(time).toHaveTextContent('29/02/2028 · 20:00 (hora Bolivia)');
+      expect(time).toHaveAttribute('datetime', created_at);
+    }
+    expect(screen.queryByText('Decidida:')).not.toBeInTheDocument();
     expect(recovery.getCurrent(h.controller.getTransferAuthority)).toBeNull();
     expect(fetcher).toHaveBeenCalledTimes(1); fetcher.mockRestore();
   });
@@ -390,13 +396,16 @@ describe('A05a terminal original creation replay', () => {
 });
 
 describe('R04b2c2 manual lifecycle', () => {
-  it.each([201, 200])('shows only actual parsed %s reference, string ID and exact UTC then returns to Transfers', async status => {
+  it.each([201, 200])('shows actual parsed %s reference, string ID, readable date and exact evidence then returns to Transfers', async status => {
     const h = harness(); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source)); const back = vi.fn();
     const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply(recordDTO(), status));
     render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={back} />);
     await selectAndReview(); fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' }));
     expect(await screen.findByRole('heading', { name: 'TR-1001' })).toBeVisible();
-    expect(screen.getByText('ID: 1001')).toBeVisible(); expect(screen.getByText(recordDTO().created_at)).toBeVisible();
+    expect(screen.getByText('ID: 1001')).toBeVisible();
+    const time = screen.getByText('29/02/2028 · 08:34 (hora Bolivia)');
+    expect(time).toHaveAttribute('datetime', recordDTO().created_at);
+    expect(time).toHaveAttribute('title', recordDTO().created_at);
     expect(screen.getByText(status === 200 ? 'El servidor devolvió la solicitud original.' : 'El servidor creó la solicitud.')).toBeVisible();
     expect(screen.getByRole('button', { name: /Ver detalle/ })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' })); expect(back).toHaveBeenCalledOnce();

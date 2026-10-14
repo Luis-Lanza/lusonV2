@@ -91,6 +91,12 @@ it('keeps separate immutable proposal, decision and partial application evidence
   expect(screen.getByRole('region', { name: 'Propuesta 1' })).toHaveTextContent('origin evidence');
   expect(screen.getByRole('region', { name: 'Decisión 1' })).toHaveTextContent('exact acceptance');
   expect(screen.getByRole('region', { name: 'Aplicación 1' })).toHaveTextContent('10 → 11');
+  for (const name of ['Propuesta 1', 'Decisión 1', 'Aplicación 1']) {
+    const time = screen.getByRole('region', { name }).querySelector('time');
+    expect(time?.textContent).toBe('01/04/2026 · 20:00 (hora Bolivia)');
+    expect(time).toHaveAttribute('datetime', stamp);
+    expect(time).toHaveAttribute('title', stamp);
+  }
   expect(screen.getByText('Restitución cerrada: ya existe una aplicación, aunque sea parcial.')).toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: 'Consultar para revisar restitución' })); await act(async () => {});
   expect(screen.getByRole('button', { name: 'Aceptar restitución' })).toBeDisabled(); expect(f.posts()).toHaveLength(0);
@@ -107,7 +113,12 @@ it('owns one selected variant, retires its review and requires another explicit 
   await waitFor(() => expect(f.posts()).toHaveLength(1)); expect(JSON.parse(String(f.posts()[0][1]?.body)).variant_id).toBe(202);
 });
 afterEach(() => vi.unstubAllGlobals());
-async function consult() { fireEvent.click(screen.getByRole('button', { name: 'Consultar para revisar restitución' })); await waitFor(() => expect(screen.getByRole('button', { name: 'Proponer restitución' })).toBeEnabled()); }
+async function consult() {
+  // An enabled button reflects hook state, but run() still owns a synchronous
+  // sending guard until its promise settles. Flush that event before drafting.
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Consultar para revisar restitución' })); });
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Proponer restitución' })).toBeEnabled());
+}
 function draft() {
   fireEvent.click(screen.getByRole('button', { name: 'Proponer restitución' }));
   expect(screen.getByLabelText('Cantidad retenida')).toHaveValue('');
@@ -134,7 +145,7 @@ it.each(['accept', 'reject'])('destination reviews %s with required reason and n
   const f = fixture(2, true); render(f.element()); await screen.findByText('Crédito efectivo en destino');
   const label = action === 'accept' ? 'Aceptar restitución' : 'Rechazar restitución';
   expect(screen.getByRole('button', { name: label })).toBeDisabled();
-  fireEvent.click(screen.getByRole('button', { name: 'Consultar para revisar restitución' }));
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Consultar para revisar restitución' })); });
   await waitFor(() => expect(screen.getByRole('button', { name: label })).toBeEnabled()); fireEvent.click(screen.getByRole('button', { name: label }));
   expect(screen.queryByLabelText('Cantidad retenida')).not.toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('Motivo de restitución'), { target: { value: ' destination reason ' } });

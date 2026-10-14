@@ -5,6 +5,7 @@ import type { TransferCreateInput } from './transferModel';
 import type { TransferCreateResult } from './transferAPI';
 import type { TransferAuthority, TransferController } from './useInventory';
 import { useTransfers } from './useTransfers';
+import TransferDate from './TransferDate';
 
 export interface TransferReviewProps {
   controller: TransferController;
@@ -74,14 +75,14 @@ export default function TransferReview(props: TransferReviewProps) {
       <div className="review-route"><div><span>Origen</span><strong>{location(snapshot.direction.origin_location_id)}</strong></div><b aria-hidden="true">→</b>
         <div><span>Destino</span><strong>{location(snapshot.direction.destination_location_id)}</strong></div></div>
       {result && <section className="review-result" aria-label="Resultado confirmado">
-        <h3>{result.record.reference}</h3><p>ID: {result.record.id}</p><p>Creada (UTC): <time>{result.record.created_at}</time></p><p>Estado: {result.record.status === 'pending' ? 'Pending · Pendiente de aprobación' : outcomeLabel}</p>
-        {result.record.decided_at && <p>{direct ? 'Autorizada y reservada al crear (UTC):' : 'Decidida (UTC):'} <time>{result.record.decided_at}</time></p>}
-        {(result.record.status === 'in_transit' || result.record.status === 'received') && <p>Despachada desde {result.record.origin_location_name} (UTC): <time>{result.record.dispatched_at}</time></p>}
-        {result.record.status === 'cancelled' && <><p>Cancelada en {result.record.creator_location_name} (UTC): <time>{result.record.cancelled_at}</time></p>
+        <h3>{result.record.reference}</h3><p>ID: {result.record.id}</p><p>Creada: <TransferDate value={result.record.created_at} /></p><p>Estado: {result.record.status === 'pending' ? 'Pending · Pendiente de aprobación' : outcomeLabel}</p>
+        {result.record.decided_at && <p>{direct ? 'Autorizada y reservada al crear:' : 'Decidida:'} <TransferDate value={result.record.decided_at} /></p>}
+        {(result.record.status === 'in_transit' || result.record.status === 'received') && <p>Despachada desde {result.record.origin_location_name}: <TransferDate value={result.record.dispatched_at} /></p>}
+        {result.record.status === 'cancelled' && <><p>Cancelada en {result.record.creator_location_name}: <TransferDate value={result.record.cancelled_at} /></p>
           <p>{direct ? 'El envío original permanece cancelado. No se crea otro envío ni se mueve stock; la autorización al crear queda conservada.'
             : 'El registro original permanece cancelado. No se crea otra solicitud ni se mueve stock; cualquier aprobación anterior queda conservada.'}</p></>}
         {result.record.status === 'in_transit' && <p>Reserva propia consumida; baterías enviadas. Pendiente de recepción en {result.record.destination_location_name}, sin crédito de stock en destino.</p>}
-        {result.record.status === 'received' && <><p>Recibida en {result.record.destination_location_name} (UTC): <time>{result.record.received_at}</time></p>
+        {result.record.status === 'received' && <><p>Recibida en {result.record.destination_location_name}: <TransferDate value={result.record.received_at} /></p>
           <p>La recepción ya está finalizada. Solo se acreditaron unidades esperadas recibidas hasta lo enviado; las discrepancias permanecen registradas por separado.</p></>}
       </section>}
       <div className="review-table"><table><caption className="sr-only">Selección inmutable</caption><thead><tr><th scope="col">Batería</th><th scope="col">Polaridad</th><th scope="col">Cantidad solicitada</th></tr></thead>

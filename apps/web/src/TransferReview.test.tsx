@@ -38,12 +38,15 @@ describe('C2 original creation replay presents cancelled history', () => {
     const modal = screen.getByRole('dialog');
     expect(modal).toHaveAccessibleName('Solicitud Cancelada confirmada');
     expect(modal).toHaveTextContent('Estado: Cancelada');
-    expect(modal).toHaveTextContent(wire.cancelled_at);
+    const cancelledTime = modal.querySelector(`time[datetime="${wire.cancelled_at}"]`);
+    expect(cancelledTime).toHaveTextContent('01/01/2028 · 20:00 (hora Bolivia)');
+    expect(cancelledTime).toHaveAttribute('title', wire.cancelled_at);
+    expect(modal.querySelector(`time[datetime="${wire.created_at}"]`)).toHaveTextContent('31/12/2027 · 20:00 (hora Bolivia)');
     expect(modal).toHaveTextContent('TR-1001');
     expect(modal).not.toHaveTextContent(/quedará Pending|fue rechazada|está reservada/);
     expect(screen.getByText(/El servidor devolvió la solicitud original/)).toBeVisible();
     expect(h.props.onSend).not.toHaveBeenCalled();
-    if (!approved) expect(modal).not.toHaveTextContent('2028-01-02T00:00:00.000000001Z');
+    if (!approved) expect(modal.querySelector('time[datetime="2028-01-02T00:00:00.000000001Z"]')).toBeNull();
   });
 });
 
@@ -62,8 +65,29 @@ describe('A05a terminal replay presentation', () => {
     expect(screen.queryByText(/La solicitud quedará Pending/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Enviar la solicitud no reserva/)).not.toBeInTheDocument();
     expect(screen.getByText(/El servidor devolvió la solicitud original/)).toBeVisible();
-    expect(screen.getByText(record.decided_at)).toBeVisible();
+    expect(screen.getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', record.decided_at);
+    expect(screen.getByText('31/12/2027 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', record.created_at);
   });
+});
+
+it.each(['in_transit', 'received'])('presents readable persisted %s replay dates with exact evidence', status => {
+  const h = setup();
+  const record = parseTransferRecord(JSON.stringify({ id: '1001', reference: 'TR-1001', kind: 'request_stock', status,
+    created_at: '2028-01-01T00:00:00.123456789Z', creator_location_id: 2, creator_location_name: 'Sucursal A',
+    origin_location_id: 1, origin_location_name: 'Almacén', destination_location_id: 2, destination_location_name: 'Sucursal A',
+    approver_location_id: 1, approver_location_name: 'Almacén', decision_location_id: 1, decided_at: '2028-01-02T00:00:00Z',
+    dispatch_location_id: 1, dispatched_at: '2028-01-03T00:00:00.000000002Z',
+    items: [{ variant_id: 1, brand: 'TOYO', model: 'Original', capacity_ah: '75.125', polarity: 'L', quantity: '1' }],
+    ...(status === 'received' ? { receipt_location_id: 2, received_at: '2028-01-04T00:00:00.000000003Z',
+      receipt: { items: [{ variant_id: 1, expected_quantity: '1', actual_quantity: '1', available_quantity: '1' }], exceptions: [] } } : {}),
+  }));
+  render(<TransferReview {...h.props} result={{ record, replayed: true }} />);
+  const result = screen.getByRole('region', { name: 'Resultado confirmado' });
+  expect(within(result).getByText('02/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-03T00:00:00.000000002Z');
+  if (status === 'received') expect(within(result).getByText('03/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-04T00:00:00.000000003Z');
+  expect(result.querySelectorAll('time')).toHaveLength(status === 'received' ? 4 : 3);
+  for (const time of result.querySelectorAll('time')) expect(time).toHaveAttribute('title', time.getAttribute('datetime'));
+  expect(h.props.onSend).not.toHaveBeenCalled();
 });
 
 describe('R05-U1 confirmed return guard', () => {

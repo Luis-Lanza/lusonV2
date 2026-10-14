@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
+import TransferDate from './TransferDate';
 import { newTransferRetryKey, type TransferRecord } from './transferModel';
 import type { TransferController } from './useInventory';
 import type { useTransferCountCorrections } from './useTransferCountCorrections';
@@ -233,10 +234,10 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
           <ol className="count-history">{line.proposals.map(p => <li key={p.revision.toString()}>
             <p><strong>{states[p.state]} · Revisión {p.revision.toString()}</strong> · Cantidad {p.actual_quantity.toString()}</p>
             <p>Base {p.base_revision.toString()} · Crédito base {p.base_credit.toString()} · Iniciador {location(p.initiator_location_id)}</p>
-            <p className="count-evidence">Motivo: {p.reason}</p><p><time>{p.recorded_at}</time> UTC · Clave {p.operation_key}</p>
+            <p className="count-evidence">Motivo: {p.reason}</p><p><TransferDate value={p.recorded_at} /> · Clave {p.operation_key}</p>
             {p.decision && <><p>{p.decision.accepted ? 'Aceptada' : 'Rechazada'} por {location(p.decision.actor_location_id)}</p>
-              <p className="count-evidence">Motivo de decisión: {p.decision.reason}</p><p><time>{p.decision.recorded_at}</time> UTC · Clave {p.decision.operation_key}</p></>}
-            {p.application && <p>Aplicación: crédito {p.application.effective_credit.toString()} · Efecto {signed(p.application.delta)} · <time>{p.application.recorded_at}</time> UTC</p>}
+              <p className="count-evidence">Motivo de decisión: {p.decision.reason}</p><p><TransferDate value={p.decision.recorded_at} /> · Clave {p.decision.operation_key}</p></>}
+            {p.application && <p>Aplicación: crédito {p.application.effective_credit.toString()} · Efecto {signed(p.application.delta)} · <TransferDate value={p.application.recorded_at} /></p>}
           </li>)}</ol>
         </article>;
       })}

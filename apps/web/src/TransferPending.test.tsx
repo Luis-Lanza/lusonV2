@@ -171,7 +171,9 @@ describe('C4b received detail real-hook integration', () => {
     expect(correctionCalls(f)).toHaveLength(1);
     expect(correctionCalls(f)[0][0]).toBe(`/api/transfers/${record.id}/count-corrections`);
     expect(isPassive(correctionCalls(f)[0])).toBe(true);
-    expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toHaveTextContent(record.received_at);
+    const receivedTime = screen.getByRole('region', { name: 'Historial de la solicitud' }).querySelector(`time[datetime="${record.received_at}"]`);
+    expect(receivedTime).toHaveTextContent('02/01/2028 · 20:00 (hora Bolivia)');
+    expect(receivedTime).toHaveAttribute('datetime', record.received_at);
     expect(within(screen.getByRole('region', { name: 'Cantidades de la solicitud' })).getByText('Stock disponible acreditado').nextElementSibling).toHaveTextContent('18446744073709551614');
     expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
   });
@@ -515,11 +517,11 @@ describe('C2 creator cancellation entry and consultation', () => {
     expect(screen.getByRole('heading', { name: 'Solicitud Cancelada' })).toBeVisible();
     const history = screen.getByRole('region', { name: 'Historial de la solicitud' });
     expect(within(history).getAllByRole('listitem')).toHaveLength(approved ? 3 : 2);
-    expect(history).toHaveTextContent(original.created_at);
+    expect(within(history).getByText('31/12/2027 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', original.created_at);
     expect(history).toHaveTextContent('Solicitud cancelada');
     expect(history).toHaveTextContent('Sucursal A');
-    expect(history).toHaveTextContent(cancelled.cancelled_at);
-    if (approved) expect(history).toHaveTextContent('2028-01-02T00:00:00.000000001Z');
+    expect(history.querySelector(`time[datetime="${cancelled.cancelled_at}"]`)).toHaveTextContent('01/01/2028 · 20:00 (hora Bolivia)');
+    if (approved) expect(history.querySelector('time[datetime="2028-01-02T00:00:00.000000001Z"]')).toHaveTextContent('01/01/2028 · 20:00 (hora Bolivia)');
     else expect(history).not.toHaveTextContent(/aprobada|reservado|Decidida/);
     expect(history).not.toHaveTextContent(/rechazada|despachada|recibida/);
     expect(screen.queryByRole('button', { name: /^(Cancelar|Aprobar|Rechazar|Despachar|Recibir) / })).not.toBeInTheDocument();
@@ -731,7 +733,7 @@ describe('A06b status-specific consultation', () => {
         expect(cards).toHaveTextContent('Ubicación aprobadora: Almacén');
       }
       f.env.record = wire(origin, destination, f.env.record.id, status); await detail();
-      expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toHaveTextContent('2028-01-02T00:00:00.000000001Z');
+      expect(within(screen.getByRole('region', { name: 'Historial de la solicitud' })).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-02T00:00:00.000000001Z');
       expect(f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?'))).toHaveLength(0);
       expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true); view.unmount();
     }
@@ -890,7 +892,7 @@ describe('A06a real list/detail decision bindings', () => {
       await waitFor(() => expect(f.controller.confirmTransferDecision).toHaveBeenCalledOnce());
       const summary = screen.getByLabelText('Resumen de solicitud');
       expect(summary).toHaveTextContent(action === 'approve' ? `está reservada en ${locations[origin - 1]}` : 'completa fue rechazada');
-      expect(summary).toHaveTextContent('2028-01-02T00:00:00.000000001Z');
+      expect(within(summary).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-02T00:00:00.000000001Z');
       expect(screen.queryByText('Esta solicitud todavía no reserva ni mueve stock.')).not.toBeInTheDocument();
       expect(screen.queryByRole('heading', { name: 'Solicitud Pending' })).not.toBeInTheDocument();
       expect(screen.getByRole('table', { name: 'Baterías solicitadas' })).toHaveTextContent('9223372036854775807');
@@ -1001,7 +1003,7 @@ describe('A05a truthful terminal detail', () => {
     expect(screen.getByRole('heading', { name: `Solicitud ${label}` })).toBeVisible();
     expect(screen.queryByText('Esta solicitud todavía no reserva ni mueve stock.')).not.toBeInTheDocument();
     expect(screen.queryByText(/La aprobación deberá revalidar/)).not.toBeInTheDocument();
-    expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('2028-01-02T00:00:00.000000001Z')).toBeVisible();
+    expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-02T00:00:00.000000001Z');
     for (const name of ['Aprobar', 'Rechazar', 'Confirmar aprobación']) expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
   });
 });
@@ -1090,13 +1092,13 @@ describe('R04c participant Pending', () => {
     const items = screen.getByRole('table', { name: 'Baterías solicitadas' });
     expect(items).toHaveTextContent('75.125 Ah'); expect(items).toHaveTextContent('Izquierda [L]'); expect(items).toHaveTextContent('Derecha [R]');
     expect(within(items).getAllByText('9223372036854775807')).toHaveLength(2);
-    expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('2028-01-01T00:00:00.123456789Z')).toBeVisible();
+    expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('31/12/2027 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-01T00:00:00.123456789Z');
     expect(screen.getByLabelText('Resumen de solicitud')).toHaveTextContent('Ubicación creadoraSucursal A');
     const history = screen.getByRole('region', { name: 'Historial de la solicitud' });
     expect(within(history).getAllByRole('listitem')).toHaveLength(1);
     expect(history).toHaveTextContent('Solicitud creada');
     expect(history).toHaveTextContent('Ubicación: Sucursal A');
-    expect(within(history).getByText('2028-01-01T00:00:00.123456789Z')).toBeVisible();
+    expect(within(history).getByText('31/12/2027 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-01T00:00:00.123456789Z');
     expect(history).not.toHaveTextContent(/aprobada|rechazada|reservad|despacho|recepción/i);
     expect(screen.queryByRole('button', { name: /Aprobar|Rechazar/ })).not.toBeInTheDocument();
     expect(screen.queryByText(/Empleado|Verificadas en origen/)).not.toBeInTheDocument();
