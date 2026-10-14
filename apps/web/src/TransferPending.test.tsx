@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import TransferPending, { transferViewOwner } from './TransferPending';
 import TransferReview from './TransferReview';
@@ -12,6 +13,7 @@ import type { CountDecisionInput, CountProposalInput } from './transferCountCorr
 import App from './App';
 import { createTransferReceiptRecovery } from './transferReceiptRecovery';
 import { createTransferRestitutionRecovery } from './transferRestitutionRecovery';
+import { createTransferDispatchRecovery } from './transferDispatchRecovery';
 
 const locations = ['Almacén', 'Sucursal A', 'Sucursal B'];
 function authority(id = 2, epoch = 1, token = 'a'.repeat(43)): TransferAuthority {
@@ -930,6 +932,70 @@ describe('F5d1 explicit decision dismissal focus', () => {
     expect(restoration).not.toHaveBeenCalled();
     expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
     restoration.mockRestore();
+    view.unmount();
+  });
+});
+
+describe('F5d2 automatic modal teardown focus boundaries', () => {
+  const cases = (['decision', 'dispatch', 'receipt'] as const).flatMap(lane =>
+    (['403', '404', 'authority', 'selection', 'unmount', 'strict-unmount', 'inventory', 'list'] as const).map(mode => ({ lane, mode })));
+  it.each(cases)('$lane never restores focus during $mode', async ({ lane, mode }) => {
+    const actor = lane === 'receipt' ? 2 : 1;
+    const status = lane === 'decision' ? 'pending' : lane === 'dispatch' ? 'approved' : 'in_transit';
+    const record = { ...wire(1, 2, '9007199254740993', status),
+      ...(lane === 'receipt' ? { dispatch_location_id: 1, dispatched_at: correctionStamp } : {}) };
+    const next = { ...record, id: '9007199254740992', reference: 'TR-9007199254740992' };
+    const f = fixture(actor, (url, init) => {
+      if (init.method === 'POST') return Promise.resolve(reply({ error: mode === '404' ? 'not_found' : 'forbidden' }, mode === '404' ? 404 : 403));
+      if (url === `/api/transfers/${next.id}`) return Promise.resolve(reply(next));
+      return undefined;
+    });
+    f.env.record = record;
+    f.controller.dispatchRecovery = createTransferDispatchRecovery();
+    f.controller.receiptRecovery = createTransferReceiptRecovery();
+    const element = () => mode === 'strict-unmount' ? <StrictMode>{f.element({ ownerTag: f.ownerTag, id: record.id })}</StrictMode> : f.element({ ownerTag: f.ownerTag, id: record.id });
+    const view = render(element());
+    await screen.findByRole('heading', { name: record.reference });
+    const trigger = screen.getByRole('button', { name: lane === 'decision' ? 'Aprobar solicitud' : lane === 'dispatch' ? 'Despachar solicitud' : 'Recibir solicitud' });
+    fireEvent.click(trigger);
+    const dialog = screen.getByRole('dialog');
+    if (lane === 'receipt') {
+      for (const input of within(dialog).getAllByLabelText(/Cantidad recibida/)) fireEvent.change(input, { target: { value: '1' } });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Revisar recepción' }));
+    }
+    await act(async () => {});
+    const back = screen.getByRole('button', { name: 'Volver a pendientes' });
+    const triggerFocus = vi.spyOn(trigger, 'focus');
+    const backFocus = vi.spyOn(back, 'focus');
+    if (mode === '403' || mode === '404') {
+      fireEvent.click(within(dialog).getByRole('button', { name: /^Confirmar (aprobación|despacho|recepción)$/ }));
+      await screen.findByText('La solicitud no está disponible.');
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    } else if (mode === 'authority') {
+      f.env.current = authority(actor, 2); view.rerender(element());
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    } else if (mode === 'unmount' || mode === 'strict-unmount') view.unmount();
+    else {
+      fireEvent.click(mode === 'inventory' ? screen.getByRole('button', { name: 'Volver al inventario' }) : back);
+      if (mode === 'inventory') expect(f.back).toHaveBeenCalledOnce();
+      if (mode === 'selection') {
+        await screen.findByRole('heading', { name: 'Transferencias pendientes' });
+        fireEvent.click(screen.getByRole('button', { name: `Ver detalle ${next.reference}` }));
+        await screen.findByRole('heading', { name: next.reference });
+        expect(screen.getByRole('button', { name: lane === 'decision' ? 'Aprobar solicitud' : lane === 'dispatch' ? 'Despachar solicitud' : 'Recibir solicitud' })).toBeEnabled();
+      }
+    }
+    await act(async () => {});
+    expect(triggerFocus).not.toHaveBeenCalled();
+    expect(backFocus).not.toHaveBeenCalled();
+    const before = f.fetch.mock.calls.length;
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await act(async () => {});
+    expect(f.fetch.mock.calls).toHaveLength(before);
+    expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(mode === '403' || mode === '404' ? 1 : 0);
+    expect(triggerFocus).not.toHaveBeenCalled();
+    expect(backFocus).not.toHaveBeenCalled();
+    triggerFocus.mockRestore(); backFocus.mockRestore();
     view.unmount();
   });
 });
