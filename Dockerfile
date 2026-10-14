@@ -2,12 +2,13 @@
 FROM node:26.8.1-bookworm-slim AS web
 WORKDIR /build/web
 COPY apps/web/package.json apps/web/package-lock.json ./
-RUN npm ci --ignore-scripts
+RUN npm ci --ignore-scripts --no-audit
 COPY apps/web/index.html apps/web/tsconfig.json apps/web/vite.config.ts ./
 COPY apps/web/src ./src
 RUN npm run build
 
 FROM golang:1.27.0-bookworm AS api
+ENV GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org GOPRIVATE="" GONOSUMDB="" GOTOOLCHAIN=local
 WORKDIR /build/api
 COPY apps/api/go.mod apps/api/go.sum ./
 RUN go mod download
