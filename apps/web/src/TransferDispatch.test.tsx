@@ -8,6 +8,14 @@ import type { TransferAuthority } from './useInventory';
 import type { DetailController } from './TransferDetail';
 
 const names = ['Almacén', 'Sucursal A', 'Sucursal B'];
+const dispatchCompletion = {
+  in_transit: 'Despacho registrado correctamente. La solicitud está En tránsito; la recepción en destino sigue pendiente y todavía no se acreditó stock.',
+  received: 'Despacho confirmado. La solicitud ya fue recibida en destino; la recepción está finalizada.',
+};
+function expectNoDispatchCompletion(dialog: HTMLElement) {
+  for (const message of Object.values(dispatchCompletion)) expect(within(dialog).queryByText(message)).not.toBeInTheDocument();
+}
+
 function wire(origin = 1, destination = 2, status = 'approved', length = 2) {
   const approver = destination === 1 ? 1 : origin;
   const creator = destination === 1 ? origin : destination;
@@ -111,6 +119,19 @@ it.each(['cancelled', 'received'])('presents readable %s dispatch recovery dates
   expect(time).toHaveAttribute('title', terminalStamp);
   if (status === 'received') expect(within(recovery).getByText('02/04/2026 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', dispatched_at);
   else expect(recovery).toHaveTextContent('No se confirmó un despacho');
+  const dialog = screen.getByRole('dialog');
+  expect(dialog).toHaveTextContent(status === 'received' ? 'Estado confirmado: Recibida.' : 'Estado confirmado: Cancelada.');
+  if (status === 'received') {
+    expect(within(dialog).getByText(dispatchCompletion.received)).toBeVisible();
+    expect(within(dialog).queryByText(dispatchCompletion.in_transit)).not.toBeInTheDocument();
+  } else {
+    expect(within(dialog).getByText('No se confirmó el despacho original. La solicitud está Cancelada; no se enviará otro despacho.')).toBeVisible();
+    expectNoDispatchCompletion(dialog);
+    expect(within(dialog).queryByRole('heading', { name: 'Despacho confirmado' })).not.toBeInTheDocument();
+  }
+  expect(within(dialog).queryByText(/^Se despacharán todas las baterías/)).not.toBeInTheDocument();
+  expect(within(dialog).queryByText(/^Se descontarán existencias/)).not.toBeInTheDocument();
+  expect(within(dialog).queryByText(/^El destino no recibe stock con el despacho/)).not.toBeInTheDocument();
   expect(posts(f)).toHaveLength(1);
 });
 
@@ -124,9 +145,16 @@ describe('D2 dispatch participant UI', () => {
     expect(dialog).toHaveTextContent('18446744073709551614 baterías');
     expect(dialog).toHaveTextContent('reserva propia');
     expect(dialog).toHaveTextContent('no recibe stock');
+    expect(within(dialog).getByText('Se descontarán existencias y se consumirá la reserva propia de esta solicitud por las mismas cantidades. La disponibilidad sin reservar no cambia; otras reservas se conservan.')).toBeVisible();
+    expect(within(dialog).getByText('El destino no recibe stock con el despacho. La solicitud quedará En tránsito, pendiente de recepción.')).toBeVisible();
     expect(posts(f)).toHaveLength(0);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar despacho' }));
     await screen.findByRole('heading', { name: 'Despacho confirmado', level: 2 });
+    expect(within(dialog).getByText(dispatchCompletion.in_transit)).toBeVisible();
+    expect(dialog).toHaveTextContent('Estado confirmado: En tránsito.');
+    expect(within(dialog).queryByText(/^Se despacharán todas las baterías/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/^Se descontarán existencias/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/^El destino no recibe stock con el despacho/)).not.toBeInTheDocument();
     const recovery = screen.getByRole('region', { name: 'Recuperación de despacho' });
     const time = within(recovery).getByText('02/04/2026 · 20:00 (hora Bolivia)');
     expect(time).toHaveAttribute('datetime', '2026-04-03T00:00:00.000000002Z');
@@ -145,6 +173,22 @@ describe('D2 dispatch participant UI', () => {
     await screen.findByRole('heading', { name: f.env.record.reference });
     expect(screen.queryByRole('button', { name: 'Despachar solicitud' })).not.toBeInTheDocument();
     expect(posts(f)).toHaveLength(0);
+  });
+  it.each(['lost', '503'] as const)('keeps the open dispatch dialog uncertain after %s and an Approved GET', async mode => {
+    const f = fixture(1, 1, 2, url => url.endsWith('/dispatch')
+      ? mode === '503' ? Promise.resolve(reply({ error: 'service_unavailable' }, 503)) : Promise.reject(new Error('lost'))
+      : undefined);
+    render(f.element()); fireEvent.click(await screen.findByRole('button', { name: 'Despachar solicitud' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar despacho' }));
+    await screen.findByText('Despacho pendiente de confirmación');
+    const dialog = screen.getByRole('dialog');
+    expectNoDispatchCompletion(dialog);
+    const recovery = screen.getByRole('region', { name: 'Recuperación de despacho' });
+    await act(async () => { fireEvent.click(within(recovery).getByRole('button', { name: 'Consultar resultado original del despacho' })); });
+    await waitFor(() => expect(within(recovery).getByRole('button', { name: 'Reintentar mismo despacho' })).toBeEnabled());
+    expect(within(dialog).getByText('Resultado sin confirmar. Usá la recuperación del despacho original.')).toBeVisible();
+    expectNoDispatchCompletion(dialog);
+    expect(posts(f)).toHaveLength(1);
   });
   it('requires explicit consult/retry after lost POST, preserves uncertainty through pane remount and Approved GET', async () => {
     let sent = 0;
@@ -182,6 +226,7 @@ describe('D2 dispatch participant UI', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar despacho' }));
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(dialog).toBeInTheDocument(); expect(dialog).toHaveAttribute('aria-busy', 'true');
+    expectNoDispatchCompletion(dialog);
     expect(within(dialog).getByRole('button', { name: 'Cerrar confirmación de despacho' })).toBeDisabled();
     expect(posts(f)).toHaveLength(1);
     await act(async () => { delayed.resolve(reply(wire(1, 2, 'in_transit', 190))); });

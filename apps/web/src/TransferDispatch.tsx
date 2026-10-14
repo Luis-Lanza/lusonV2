@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { TransferController } from './useInventory';
 import type { useTransfers } from './useTransfers';
 import type { TransferRecord } from './transferModel';
-import { captureDecisionRecord } from './transferDecisionRecovery';
+import { captureDecisionRecord, matchesDecisionRecord } from './transferDecisionRecovery';
 import { detailAuthority, TransferItems } from './TransferDetail';
 import { transferViewOwner } from './TransferPending';
 import { TransferAPIError } from './transferAPI';
@@ -46,6 +46,13 @@ export default function TransferDispatch(props: TransferDispatchProps) {
   const canDispatch = record?.status === 'approved' && record.origin_location_id === assigned;
   const unresolved = attempt?.phase === 'uncertain' || busy;
   const result = attempt?.result;
+  const reviewAttempt = visibleReview && attempt?.original.status === 'approved'
+    && matchesDecisionRecord(visibleReview.record, attempt.original) ? attempt : null;
+  const reviewResult = reviewAttempt?.result
+    && matchesDecisionRecord(reviewAttempt.original, reviewAttempt.result)
+    && ((reviewAttempt.phase === 'confirmed' && (reviewAttempt.result.status === 'in_transit' || reviewAttempt.result.status === 'received'))
+      || (reviewAttempt.phase === 'conflict' && reviewAttempt.result.status === 'cancelled')) ? reviewAttempt.result : null;
+  const reviewConfirmed = !!reviewResult && reviewAttempt?.phase === 'confirmed';
   const failure = transfers.dispatchError;
   const error = failure?.status === 401 ? 'No se pudo verificar la sesión.'
     : failure?.code === 'decision_conflict' ? 'El estado de la solicitud cambió. Consultá el resultado original.'
@@ -106,21 +113,26 @@ export default function TransferDispatch(props: TransferDispatchProps) {
           else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialog.current)) { event.preventDefault(); first.focus(); }
         }
       }}>
-      <header><div><h2 id="dispatch-title">{result?.id === visibleReview.record.id ? result.status === 'cancelled' ? 'Solicitud Cancelada' : 'Despacho confirmado' : 'Confirmar despacho'}</h2>
+      <header><div><h2 id="dispatch-title">{reviewConfirmed ? 'Despacho confirmado' : reviewResult ? 'Solicitud Cancelada' : 'Confirmar despacho'}</h2>
         <p>{visibleReview.record.reference} · {visibleReview.record.origin_location_name} → {visibleReview.record.destination_location_name}</p></div>
         <button ref={close} type="button" aria-label="Cerrar confirmación de despacho" disabled={busy} onClick={dismiss}>×</button>
       </header>
       <div className="transfer-decision-body">
         <TransferItems record={visibleReview.record} dispatch />
-        <div className="transfer-impact"><h3>Impacto del despacho</h3>
+        <div className="transfer-impact"><h3>{reviewResult ? 'Resultado del despacho' : 'Impacto del despacho'}</h3>
+          {reviewResult ? (reviewConfirmed ? <p role="status">{reviewResult.status === 'received'
+            ? 'Despacho confirmado. La solicitud ya fue recibida en destino; la recepción está finalizada.'
+            : 'Despacho registrado correctamente. La solicitud está En tránsito; la recepción en destino sigue pendiente y todavía no se acreditó stock.'}</p>
+            : <p role="alert">No se confirmó el despacho original. La solicitud está Cancelada; no se enviará otro despacho.</p>) : <>
           <p>Se despacharán todas las baterías, sin selección parcial, desde {visibleReview.record.origin_location_name}.</p>
           <p>Se descontarán existencias y se consumirá la reserva propia de esta solicitud por las mismas cantidades. La disponibilidad sin reservar no cambia; otras reservas se conservan.</p>
           <p>El destino no recibe stock con el despacho. La solicitud quedará En tránsito, pendiente de recepción.</p>
+          </>}
         </div>
         {busy && <p role="status">Confirmando despacho…</p>}
         {error && <p role="alert">{error}</p>}
         {unresolved && !busy && <p role="status">Resultado sin confirmar. Usá la recuperación del despacho original.</p>}
-        {result?.id === visibleReview.record.id && <p role="status">Estado confirmado: {result.status === 'cancelled' ? 'Cancelada' : result.status === 'received' ? 'Recibida' : 'En tránsito'}.</p>}
+        {reviewResult && <p role="status">Estado confirmado: {reviewResult.status === 'cancelled' ? 'Cancelada' : reviewResult.status === 'received' ? 'Recibida' : 'En tránsito'}.</p>}
       </div>
       <footer><button type="button" disabled={busy} onClick={dismiss}>Volver al detalle</button>
         {!unresolved && canDispatch && record.id === visibleReview.record.id && !(result && result.id === visibleReview.record.id) &&
