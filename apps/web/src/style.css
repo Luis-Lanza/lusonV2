@@ -557,6 +557,72 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .transfer-decision-modal > footer button { flex: 1 1 160px; }
 }
 
+/* F6a: participant controls only, including disabled activation boxes. */
+.transfer-pending > .creation-back,
+.pending-detail-navigation > button,
+.pending-heading-actions > .transfer-cta,
+.transfer-pending > .transfer-request-counters > .pending-counter-help > summary,
+.transfer-pending > .transfer-status-toolbar > select,
+.pending-results > .message > button, .transfer-pending > .message > button,
+.pending-results > .pending-table > table > tbody > tr > td > button,
+.pending-results > .pending-cards > article > button,
+.pending-results > .pager > .page-controls > :is(button, input, select),
+.transfer-advisory > button,
+.transfer-decision-actions > button,
+.transfer-decision-recovery > button,
+.transfer-decision-modal > header > button,
+.transfer-decision-modal > footer > button,
+.transfer-decision-modal > .transfer-decision-body > :is(button, select),
+.transfer-decision-modal .receipt-quantities > div > :is(input, button) { min-width: 44px; min-height: 44px; max-width: 100%; height: auto; flex-shrink: 0; }
+
+/* Labels grow the activation box instead of overflowing a fixed height. */
+.transfer-pending > .creation-back,
+.pending-detail-navigation > button,
+.pending-heading-actions > .transfer-cta,
+.transfer-pending > .transfer-request-counters > .pending-counter-help > summary,
+.pending-results > .message > button, .transfer-pending > .message > button,
+.pending-results > .pending-table > table > tbody > tr > td > button,
+.pending-results > .pending-cards > article > button,
+.pending-results > .pager > .page-controls > button,
+.transfer-advisory > button,
+.transfer-decision-actions > button,
+.transfer-decision-recovery > button,
+.transfer-decision-modal > header > button,
+.transfer-decision-modal > footer > button,
+.transfer-decision-modal > .transfer-decision-body > button,
+.transfer-decision-modal .receipt-quantities > div > button { white-space: normal; overflow-wrap: anywhere; }
+
+.transfer-pending > .transfer-request-counters > .pending-counter-help > summary { padding: 12px 0; cursor: pointer; }
+.transfer-pending > .transfer-request-counters > .pending-counter-help > summary:focus-visible { outline: 2px solid var(--wine); outline-offset: -2px; }
+
+/* Constrain local layout without creating a workspace scroll container. */
+.transfer-pending { max-width: 100%; }
+.transfer-pending > :is(.pending-heading, .pending-detail-navigation, .transfer-status-toolbar, .transfer-request-counters, .pending-results) { min-width: 0; max-width: 100%; }
+.transfer-detail, .transfer-detail-grid, .transfer-decision, .transfer-dispatch, .transfer-receipt, .transfer-cancellation { min-width: 0; max-width: 100%; }
+.transfer-decision, .transfer-dispatch, .transfer-receipt { grid-template-columns: minmax(0, 1fr); }
+.transfer-pending > .pending-heading { flex-wrap: wrap; }
+.transfer-pending > .pending-heading > div { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.pending-heading .pending-heading-actions { max-width: 100%; }
+.pending-heading-actions > .transfer-cta { padding-top: 10px; padding-bottom: 10px; }
+.pending-detail-navigation, .pending-results > .pager, .pending-results > .pager > .page-controls { flex-wrap: wrap; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.transfer-pending > .transfer-status-toolbar > select { min-width: 44px; }
+.transfer-pending .transfer-detail > .transfer-detail-route { flex-wrap: wrap; }
+.transfer-pending .transfer-detail > .transfer-detail-route > div { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.pending-results > .pending-table, .transfer-detail-grid > div > .transfer-detail-items { min-width: 0; max-width: 100%; overflow-x: auto; }
+.transfer-advisory, .transfer-decision-actions, .transfer-decision-recovery, .transfer-decision-modal > header > div, .transfer-decision-modal > .transfer-decision-body, .transfer-decision-modal .receipt-quantities, .transfer-decision-modal .receipt-quantities > div { min-width: 0; overflow-wrap: anywhere; }
+.transfer-decision-modal > header, .transfer-decision-modal > footer { flex-wrap: wrap; }
+.transfer-decision-modal > header > div { flex: 1 1 180px; }
+.transfer-decision-modal > .transfer-decision-body, .transfer-decision-modal .receipt-quantities > div { grid-template-columns: minmax(0, 1fr); }
+
+/* A narrow branch retains its table; only local panels and controls reflow. */
+@media (max-width: 600px) {
+  .transfer-pending > .transfer-status-toolbar, .pending-results > .pager, .transfer-pending .transfer-detail > .transfer-detail-route, .transfer-detail-grid > .transfer-detail-outcome > .transfer-detail-summary, .transfer-advisory, .transfer-decision-recovery { padding: 8px; }
+  .transfer-pending .transfer-detail > .transfer-detail-route > div { padding: 8px; }
+  .pending-results > .pager > .page-controls > :is(input, select), .transfer-pending > .transfer-status-toolbar > select { padding-left: 2px; padding-right: 2px; }
+  .pending-results > .message, .transfer-pending > .message { padding: 4px; }
+  .pending-list .pending-results > .message > button, .transfer-pending > .message > button { margin-left: 0; }
+}
+
 /* Restitution surfaces are independent of receipt and C4 styling. */
 .transfer-restitutions { display: grid; gap: 16px; min-width: 0; }
 .transfer-restitutions h3, .transfer-restitutions h4 { margin: 0; }
