@@ -56,6 +56,63 @@ describe('U1 pending approver presentation', () => {
   });
 });
 
+describe('U2 approved stock request at physical origin', () => {
+  it.each([[1, 2], [2, 3]])('shows immutable own reservations and closed audit history at origin %s', (origin, destination) => {
+    const f = fixture(origin, destination, origin);
+    const record = parseTransferRecord(JSON.stringify(wire(origin, destination, 'approved')));
+    render(<TransferDetail controller={f.controller} ownerTag={transferViewOwner(f.env.current)!}
+      record={record} actions={() => <><button>Dispatch sentinel</button><button>Cancel sentinel</button></>} />);
+    const products = screen.getByRole('region', { name: 'Productos solicitados' });
+    expect(products).toHaveTextContent('2 variantes · 18446744073709551614 baterías');
+    expect(products).toHaveTextContent(`Las 18446744073709551614 baterías están reservadas en ${names[origin - 1]}. Pendiente de despacho.`);
+    const table = within(products).getByRole('table');
+    expect(within(table).getAllByRole('columnheader').map(cell => cell.textContent)).toEqual([
+      'Batería', 'Polaridad', 'Solicitadas', 'Reservadas para esta solicitud',
+    ]);
+    for (const row of table.querySelectorAll('tbody tr')) {
+      expect(row.querySelector('[data-label="Solicitadas"]')).toHaveTextContent(/^9223372036854775807$/);
+      expect(row.querySelector('[data-label="Reservadas para esta solicitud"]')).toHaveTextContent(/^9223372036854775807 uds\.$/);
+      expect(row.querySelector('td small')).toHaveTextContent('75.125 Ah');
+    }
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    expect(within(products).getByRole('button', { name: 'Dispatch sentinel' })).toBeVisible();
+    expect(within(products).getByRole('button', { name: 'Cancel sentinel' })).toBeVisible();
+    expect(screen.getByLabelText('Ruta física')).toHaveTextContent(`${names[origin - 1]} → ${names[destination - 1]}`);
+    expect(document.querySelector('.transfer-detail-summary')).toBeNull();
+    expect(document.querySelector('.transfer-detail-cards')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Actualizar/ })).not.toBeInTheDocument();
+    const history = screen.getByRole('button', { name: 'Ver historial' });
+    expect(history).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('region', { name: 'Historial de la solicitud' })).not.toBeInTheDocument();
+    fireEvent.click(history);
+    const audit = screen.getByRole('region', { name: 'Historial de la solicitud' });
+    expect(history).toHaveAttribute('aria-controls', audit.id);
+    expect(audit).toHaveTextContent(`Ubicación: ${names[destination - 1]}`);
+    expect(audit).toHaveTextContent(`Ubicación: ${names[origin - 1]}`);
+    expect(within(audit).getByRole('heading', { name: 'Solicitud aprobada y stock reservado' })).toBeVisible();
+    expect(audit.querySelectorAll('time')).toHaveLength(2);
+    fireEvent.click(history);
+    expect(history).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('region', { name: 'Historial de la solicitud' })).not.toBeInTheDocument();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['destination', 'direct', 'send-to-warehouse', 'rejected'])('does not adapt the %s context', context => {
+    const f = fixture(1, 2, context === 'destination' ? 2 : 1);
+    const original = wire(context === 'send-to-warehouse' ? 2 : 1, context === 'send-to-warehouse' ? 1 : 2,
+      context === 'rejected' ? 'rejected' : 'approved');
+    const record = parseTransferRecord(JSON.stringify(context === 'direct' ? { ...original, kind: 'direct_shipment',
+      creator_location_id: 1, creator_location_name: 'Almacén', decided_at: original.created_at } : original));
+    render(f.element(record));
+    expect(document.querySelector('.transfer-approved-detail')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Ver historial' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toBeVisible();
+    expect(screen.queryByRole('columnheader', { name: 'Reservadas para esta solicitud' })).not.toBeInTheDocument();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe('F4a original receipt overview', () => {
   it('puts route, immutable totals and comparison before discrepancy lanes without inventing restitution balances', () => {
     const f = fixture(); const original = wire(1, 2, 'approved');
@@ -249,7 +306,11 @@ describe('A06b persisted outcome and history', () => {
           expect(events[1]).toHaveTextContent(`Ubicación: ${names[record.decision_location_id - 1]}`);
           expect(events[1].querySelector('time')).toHaveTextContent('01/01/2028 · 20:00 (hora Bolivia)');
           expect(events[1].querySelector('time')).toHaveAttribute('datetime', record.decided_at);
-          expect(within(metrics).getByLabelText('Baterías reservadas en esta solicitud')).toHaveTextContent(
+          if (historyToggle) {
+            const reservations = metrics.querySelectorAll('[data-label="Reservadas para esta solicitud"]');
+            expect(reservations).toHaveLength(2);
+            for (const quantity of reservations) expect(quantity).toHaveTextContent(/^9223372036854775807 uds\.$/);
+          } else expect(within(metrics).getByLabelText('Baterías reservadas en esta solicitud')).toHaveTextContent(
             record.status === 'approved' ? /^18446744073709551614$/ : /^0$/);
           expect(f.fetch).not.toHaveBeenCalled();
         }
@@ -327,12 +388,16 @@ describe('A06a immutable physical review', () => {
         const f = fixture(origin, destination, assigned);
         const view = render(f.element(parseTransferRecord(JSON.stringify(wire(origin, destination, status)))));
         expect(f.fetch).not.toHaveBeenCalled();
-        expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('title', '2028-01-02T00:00:00.000000001Z');
-        expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('31/12/2027 · 20:00 (hora Bolivia)')).toHaveAttribute('title', '2028-01-01T00:00:00.123456789Z');
+        const historyToggle = screen.queryByRole('button', { name: 'Ver historial' });
+        if (historyToggle) fireEvent.click(historyToggle);
+        const metadata = screen.getByLabelText(historyToggle ? 'Historial de la solicitud' : 'Resumen de solicitud');
+        expect(within(metadata).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('title', '2028-01-02T00:00:00.000000001Z');
+        expect(within(metadata).getByText('31/12/2027 · 20:00 (hora Bolivia)')).toHaveAttribute('title', '2028-01-01T00:00:00.123456789Z');
         expect(screen.queryByText('Esta solicitud todavía no reserva ni mueve stock.')).not.toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Actualizar stock de origen' })).not.toBeInTheDocument();
-        expect(screen.getByLabelText('Resumen de solicitud')).toHaveTextContent(status === 'approved' ? `solicitud completa está reservada en ${names[origin - 1]}` : 'No reserva ni mueve stock');
-        expect(screen.getByRole('table')).toHaveTextContent('18446744073709551614');
+        expect(historyToggle ? screen.getByLabelText('Productos solicitados') : metadata).toHaveTextContent(
+          status === 'approved' ? historyToggle ? `baterías están reservadas en ${names[origin - 1]}` : `solicitud completa está reservada en ${names[origin - 1]}` : 'No reserva ni mueve stock');
+        expect(historyToggle ? screen.getByLabelText('Productos solicitados') : screen.getByRole('table')).toHaveTextContent('18446744073709551614');
         expect(screen.getByRole('table')).not.toHaveTextContent('Disponible');
         expect(screen.queryByText(/Encargado|Empleado|usuario/)).not.toBeInTheDocument();
         view.unmount();

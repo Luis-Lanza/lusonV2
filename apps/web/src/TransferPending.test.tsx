@@ -139,10 +139,11 @@ function pendingHistory(record = receivedWire()) {
       recorded_at: correctionStamp, state: 'pending', decision: null, application: null }] : [] })) };
 }
 
-describe('U1 pending approver chrome', () => {
+describe('U1/U2 context-specific chrome', () => {
   it.each([
-    [1, 1, 2, 'pending', true], [2, 1, 2, 'pending', false],
-    [1, 1, 2, 'approved', false], [1, 2, 1, 'pending', false],
+    [1, 1, 2, 'pending', 'pending-approver-navigation'], [2, 1, 2, 'pending', null],
+    [1, 1, 2, 'approved', 'approved-origin-navigation'], [1, 2, 1, 'pending', null],
+    [2, 2, 3, 'approved', 'approved-origin-navigation'], [2, 1, 2, 'approved', null],
   ] as const)('scopes chrome for actor %s, route %s → %s, status %s', async (actor, origin, destination, status, adapted) => {
     const f = fixture(actor);
     f.env.record = wire(origin, destination, f.env.record.id, status);
@@ -151,10 +152,11 @@ describe('U1 pending approver chrome', () => {
     await detail();
     const navigation = screen.getByRole('navigation', { name: 'Navegación de transferencia' });
     if (adapted) {
-      expect(navigation).toHaveClass('pending-approver-navigation');
+      expect(navigation).toHaveClass(adapted);
+      expect(navigation).toHaveTextContent('Volver a pendientes·Volver al inventario');
       expect(screen.queryByRole('region', { name: 'Contadores de solicitudes' })).not.toBeInTheDocument();
     } else {
-      expect(navigation).not.toHaveClass('pending-approver-navigation');
+      expect(navigation).not.toHaveClass('pending-approver-navigation', 'approved-origin-navigation');
       expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toBeVisible();
     }
     fireEvent.click(within(navigation).getByRole('button', { name: 'Volver a pendientes' }));
@@ -1046,9 +1048,13 @@ describe('A06a real list/detail decision bindings', () => {
       expect(modal).toHaveTextContent('18446744073709551614');
       fireEvent.click(within(modal).getByRole('button', { name: action === 'approve' ? 'Confirmar aprobación' : 'Confirmar rechazo' }));
       await waitFor(() => expect(f.controller.confirmTransferDecision).toHaveBeenCalledOnce());
-      const summary = screen.getByLabelText('Resumen de solicitud');
-      expect(summary).toHaveTextContent(action === 'approve' ? `está reservada en ${locations[origin - 1]}` : 'completa fue rechazada');
-      expect(within(summary).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-02T00:00:00.000000001Z');
+      const adapted = action === 'approve' && destination !== 1;
+      const summary = screen.getByLabelText(adapted ? 'Productos solicitados' : 'Resumen de solicitud');
+      expect(summary).toHaveTextContent(action === 'approve' ? `${adapted ? 'están reservadas' : 'está reservada'} en ${locations[origin - 1]}` : 'completa fue rechazada');
+      fireEvent.click(within(modal).getByRole('button', { name: 'Volver al detalle' }));
+      if (adapted) fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+      const metadata = adapted ? screen.getByLabelText('Historial de la solicitud') : summary;
+      expect(within(metadata).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-02T00:00:00.000000001Z');
       expect(screen.queryByText('Esta solicitud todavía no reserva ni mueve stock.')).not.toBeInTheDocument();
       expect(screen.queryByRole('heading', { name: 'Solicitud Pending' })).not.toBeInTheDocument();
       expect(screen.getByRole('table', { name: 'Baterías solicitadas' })).toHaveTextContent('9223372036854775807');
@@ -1156,10 +1162,12 @@ describe('A05a truthful terminal detail', () => {
       ? Promise.resolve(reply({ ...wire(), status, decision_location_id: 1, decided_at: '2028-01-02T00:00:00.000000001Z' })) : undefined);
     render(f.element({ ownerTag: f.ownerTag, id: '9007199254740993' }));
     expect(await screen.findByText(label, { selector: '.pending-status' })).toBeVisible();
-    expect(screen.getByRole('heading', { name: `Solicitud ${label}` })).toBeVisible();
+    expect(screen.getByRole('heading', { name: status === 'approved' ? 'Productos solicitados' : `Solicitud ${label}` })).toBeVisible();
     expect(screen.queryByText('Esta solicitud todavía no reserva ni mueve stock.')).not.toBeInTheDocument();
     expect(screen.queryByText(/La aprobación deberá revalidar/)).not.toBeInTheDocument();
-    expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-02T00:00:00.000000001Z');
+    if (status === 'approved') fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+    const metadata = screen.getByLabelText(status === 'approved' ? 'Historial de la solicitud' : 'Resumen de solicitud');
+    expect(within(metadata).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-02T00:00:00.000000001Z');
     for (const name of ['Aprobar', 'Rechazar', 'Confirmar aprobación']) expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
   });
 });
