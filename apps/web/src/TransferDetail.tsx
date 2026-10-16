@@ -7,6 +7,8 @@ import { ReceiptTable } from './TransferReceipt';
 import TransferCountCorrections, { type TransferCountCorrectionsProps } from './TransferCountCorrections';
 import TransferRestitutions from './TransferRestitutions';
 import TransferDate from './TransferDate';
+import { Icon } from './icons';
+import './transfer-detail.css';
 
 export type DetailController = TransferController & Partial<SourceInventoryController>;
 export interface StockAdvice { catalog: SourceCatalog | null; busy: boolean; unavailable: boolean }
@@ -35,28 +37,32 @@ export function detailAuthority(controller: TransferController): string {
 export function transferStatusLabel(record: TransferRecord) {
   return record.status === 'pending' ? 'Pendiente de aprobación' : record.status === 'approved' ? record.kind === 'direct_shipment' ? 'Pendiente de despacho' : 'Aprobada' : record.status === 'in_transit' ? 'En tránsito' : record.status === 'received' ? 'Recibida' : record.status === 'cancelled' ? 'Cancelada' : 'Rechazada';
 }
-function Stock({ stock, variant }: { stock: StockAdvice; variant: number }) {
+function Stock({ stock, variant, compact = false }: { stock: StockAdvice; variant: number; compact?: boolean }) {
   const row = stock.catalog?.rows.find(item => item.variant_id === variant);
   if (stock.busy) return <span>Consultando stock…</span>;
   if (!row) return <span>Disponibilidad no disponible</span>;
+  if (compact) return <span>{row.available.toString()} uds.</span>;
   return <span className="transfer-stock"><strong>{row.available.toString()} disponibles</strong>
     <small>Existencias: {row.existing.toString()} · Reservadas: {row.reserved.toString()}</small></span>;
 }
-export function TransferItems({ record, stock, confirmation = false, reject = false, dispatch = false }: {
-  record: TransferRecord; stock?: StockAdvice; confirmation?: boolean; reject?: boolean; dispatch?: boolean;
+export function TransferItems({ record, stock, confirmation = false, reject = false, dispatch = false, compact = false }: {
+  record: TransferRecord; stock?: StockAdvice; confirmation?: boolean; reject?: boolean; dispatch?: boolean; compact?: boolean;
 }) {
   const advice = stock && !reject;
+  const pendingDetail = compact && !confirmation;
   return <div className="table-scroll transfer-detail-items"><table>
     <caption className="sr-only">{confirmation ? 'Solicitud completa a confirmar' : 'Baterías solicitadas'}</caption>
-    <thead><tr><th scope="col">Batería</th><th scope="col">Polaridad</th>
-      <th scope="col">{dispatch ? 'Cantidad a despachar' : (record.status === 'in_transit' || record.status === 'received') ? 'Cantidad enviada' : confirmation && !reject ? 'Cantidad a reservar' : 'Cantidad solicitada'}</th>
-      {advice && <th scope="col">Disponible en {record.origin_location_name} (orientativo)</th>}</tr></thead>
+    <thead><tr><th scope="col">{compact && confirmation ? 'Producto' : 'Batería'}</th><th scope="col">Polaridad</th>
+      <th scope="col">{compact ? 'Solicitadas' : dispatch ? 'Cantidad a despachar' : (record.status === 'in_transit' || record.status === 'received') ? 'Cantidad enviada' : confirmation && !reject ? 'Cantidad a reservar' : 'Cantidad solicitada'}</th>
+      {advice && <th scope="col">{compact ? 'Disponibles en origen' : `Disponible en ${record.origin_location_name} (orientativo)`}</th>}</tr></thead>
     <tbody>{record.items.map(item => <tr key={item.variant_id} data-variant-id={item.variant_id}>
-      <td><strong>{item.brand} · {item.model}</strong><small>{item.capacity_ah} Ah</small></td>
-      <td>{item.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</td><td>{item.quantity.toString()}</td>
-      {advice && <td><Stock stock={stock} variant={item.variant_id} /></td>}
+      <td>{compact && confirmation ? <>{item.brand} {item.model} · <span>{item.capacity_ah} Ah</span></>
+        : <><strong>{item.brand} · {item.model}</strong><small>{item.capacity_ah} Ah</small></>}</td>
+      <td data-label={pendingDetail ? 'Polaridad' : undefined}>{item.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</td>
+      <td data-label={pendingDetail ? 'Solicitadas' : undefined}>{item.quantity.toString()}</td>
+      {advice && <td data-label={pendingDetail ? 'Disponibles en origen' : undefined}><Stock stock={stock} variant={item.variant_id} compact={compact} /></td>}
     </tr>)}</tbody>
-    <tfoot><tr><td colSpan={advice ? 4 : 3}>{record.items.length} variantes · {transferQuantityTotal(record).toString()} baterías</td></tr></tfoot>
+    {(!compact || confirmation) && <tfoot><tr><td colSpan={advice ? 4 : 3}>{compact && confirmation ? 'Total: ' : ''}{record.items.length} variantes · {transferQuantityTotal(record).toString()} baterías</td></tr></tfoot>}
   </table></div>;
 }
 
@@ -70,6 +76,7 @@ export default function TransferDetail(props: TransferDetailProps) {
   const source = record?.origin_location_id;
   const id = record?.id;
   const pending = record?.status === 'pending';
+  const [historyFor, setHistoryFor] = useState<string | null>(null);
   const [state, setState] = useState<{ fence: string; id: string; stock: StockAdvice } | null>(null);
   const mounted = useRef(false);
   const flight = useRef<{ abort: AbortController; dirty: boolean } | null>(null);
@@ -122,6 +129,39 @@ export default function TransferDetail(props: TransferDetailProps) {
   const direct = record.kind === 'direct_shipment';
   const session = controller.getTransferAuthority().session;
   const warehouse = session?.authenticated && session.identity.location.id === 1;
+  const pendingApprover = pending && record.kind === 'request_stock'
+    && session?.authenticated && session.identity.location.id === record.approver_location_id;
+  const historyKey = JSON.stringify([fence, record.id]);
+  const historyOpen = historyFor === historyKey;
+  if (pendingApprover) return <div className="transfer-detail transfer-pending-detail">
+    <header className="transfer-pending-heading">
+      <div><h1>{record.reference}</h1><span className="pending-status status-pending">{transferStatusLabel(record)}</span></div>
+      <button type="button" aria-expanded={historyOpen} aria-controls="pending-transfer-history"
+        onClick={() => setHistoryFor(historyOpen ? null : historyKey)}><svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="12" cy="12" r="9" /><path d="M12 6v6l4 2" /></svg>Ver historial</button>
+      <p>Solicitud de stock · <span aria-label="Ruta física">{record.origin_location_name} → {record.destination_location_name}</span></p>
+    </header>
+    <section className="transfer-pending-products" aria-label="Productos solicitados">
+      <header><div><h2>Productos solicitados</h2><span> · {record.items.length} variantes · <span aria-label="Baterías solicitadas">{transferQuantityTotal(record).toString()}</span> baterías</span></div>
+        <button type="button" disabled={stock.busy} onClick={() => { if (current()) refresh.current(); }}><svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M20 5v6h-6 M20 11a8 8 0 1 0-2 7" /></svg>Actualizar stock de origen</button>
+      </header>
+      <TransferItems record={record} stock={stock} compact />
+      <div className="transfer-pending-advice">
+        <p><Icon name="info" />Disponibilidad orientativa; se valida al aprobar.</p>
+        {stock.unavailable && <p role="alert">No se pudo consultar el stock de origen. La solicitud completa sigue disponible para revisión.</p>}
+      </div>
+      <footer><p>Al aprobar se reservan las cantidades, sin mover stock.</p>{props.actions?.(stock)}</footer>
+    </section>
+    {historyOpen && <section id="pending-transfer-history" className="transfer-history pending" aria-label="Historial de la solicitud">
+      <h2>Historial de la solicitud</h2>
+      <ol><li><h3>Solicitud creada</h3><p>Ubicación: {record.creator_location_name}</p><TransferDate value={record.created_at} /></li></ol>
+      <div aria-label="Resumen de solicitud">
+        <dl><dt>Ubicación creadora</dt><dd>{record.creator_location_name}</dd>
+          <dt>Requiere aprobación de</dt><dd>{record.approver_location_name}</dd></dl>
+        <p>Al aprobar se revalida y reserva la solicitud completa en {record.origin_location_name}.</p>
+        <p>Aprobar no mueve existencias ni aumenta el stock del destino.</p>
+      </div>
+    </section>}
+  </div>;
   return <div className="transfer-detail">
     <header className="transfer-detail-heading"><h1>{record.reference}</h1>
       <span className={`pending-status status-${record.status}`}>{transferStatusLabel(record)}</span>

@@ -8,6 +8,54 @@ import type { TransferAuthority } from './useInventory';
 import type { TransferCountCorrectionsProps } from './TransferCountCorrections';
 import { createTransferRestitutionRecovery } from './transferRestitutionRecovery';
 
+describe('U1 pending approver presentation', () => {
+  it('keeps unknown stock advisory and recovers with passive refresh for the approver', async () => {
+    let failing = true;
+    const f = fixture(1, 2, 1, async () => failing ? Promise.reject(new Error('unavailable')) : catalog(1, 1, 2, '0'));
+    render(<TransferDetail controller={f.controller} ownerTag={transferViewOwner(f.env.current)!}
+      record={f.record} actions={() => <button>Review sentinel</button>} />);
+    await screen.findByRole('alert');
+    expect(screen.getByRole('table')).toHaveTextContent('Disponibilidad no disponible');
+    expect(screen.getByRole('table')).not.toHaveTextContent('0 uds.');
+    expect(screen.getByRole('button', { name: 'Review sentinel' })).toBeEnabled();
+    failing = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Actualizar stock de origen' }));
+    await loaded();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('table')).toHaveTextContent('0 uds.');
+    expect(screen.getByRole('button', { name: 'Review sentinel' })).toBeEnabled();
+    expect(f.fetch).toHaveBeenCalledTimes(2);
+    expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET'
+      && new Headers(init.headers).get('X-Luson-Passive') === '1')).toBe(true);
+  });
+  it('groups products and actions with compact route and closed discoverable history', async () => {
+    const f = fixture();
+    render(<TransferDetail controller={f.controller} ownerTag={transferViewOwner(f.env.current)!}
+      record={f.record} actions={() => <button>Review sentinel</button>} />);
+    await loaded();
+    const products = screen.getByRole('region', { name: 'Productos solicitados' });
+    expect(products).toHaveTextContent('18446744073709551614');
+    const table = within(products).getByRole('table');
+    expect(table).toHaveTextContent('9223372036854775807');
+    for (const row of table.querySelectorAll('tbody tr')) {
+      expect(row.querySelector('[data-label="Solicitadas"]')).toHaveTextContent('9223372036854775807');
+      expect(row.querySelector('[data-label="Disponibles en origen"]')).toHaveTextContent('9223372036854775807 uds.');
+    }
+    expect(within(products).getByRole('button', { name: 'Review sentinel' })).toBeVisible();
+    expect(within(products).getByRole('button', { name: 'Actualizar stock de origen' })).toBeEnabled();
+    expect(screen.getByLabelText('Ruta física')).toHaveTextContent('Almacén → Sucursal A');
+    expect(screen.queryByRole('region', { name: 'Historial de la solicitud' })).not.toBeInTheDocument();
+    const history = screen.getByRole('button', { name: 'Ver historial' });
+    expect(history).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(history);
+    expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toBeVisible();
+    expect(history).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.queryByText('Ver desglose')).not.toBeInTheDocument();
+    expect(f.fetch).toHaveBeenCalledOnce();
+    expect(f.fetch.mock.calls[0][1]?.method ?? 'GET').toBe('GET');
+  });
+});
+
 describe('F4a original receipt overview', () => {
   it('puts route, immutable totals and comparison before discrepancy lanes without inventing restitution balances', () => {
     const f = fixture(); const original = wire(1, 2, 'approved');
@@ -180,6 +228,8 @@ describe('A06b persisted outcome and history', () => {
         const record = parseTransferRecord(JSON.stringify(wire(origin, destination, status)));
         const view = render(f.element(record));
         if (status === 'pending') await loaded();
+        const historyToggle = screen.queryByRole('button', { name: 'Ver historial' });
+        if (historyToggle) fireEvent.click(historyToggle);
         const history = screen.getByRole('region', { name: 'Historial de la solicitud' });
         const events = within(history).getAllByRole('listitem');
         expect(events).toHaveLength(status === 'pending' ? 1 : 2);
@@ -188,7 +238,7 @@ describe('A06b persisted outcome and history', () => {
         expect(events[0]).toHaveTextContent(`Ubicación: ${record.creator_location_name}`);
         expect(events[0].querySelector('time')).toHaveTextContent('31/12/2027 · 20:00 (hora Bolivia)');
         expect(events[0].querySelector('time')).toHaveAttribute('datetime', record.created_at);
-        const metrics = screen.getByRole('region', { name: 'Cantidades de la solicitud' });
+        const metrics = screen.getByRole('region', { name: historyToggle ? 'Productos solicitados' : 'Cantidades de la solicitud' });
         expect(within(metrics).getByLabelText('Baterías solicitadas')).toHaveTextContent(/^18446744073709551614$/);
         if (record.status === 'pending') {
           expect(within(metrics).queryByLabelText('Baterías reservadas en esta solicitud')).not.toBeInTheDocument();
@@ -246,7 +296,7 @@ describe('A06a immutable physical review', () => {
     render(f.element());
     await loaded();
     const table = screen.getByRole('table', { name: 'Baterías solicitadas' });
-    expect(table).toHaveTextContent('18446744073709551614');
+    expect(document.body).toHaveTextContent('18446744073709551614');
     expect(within(table).getAllByText('9223372036854775807')).toHaveLength(2);
     expect(within(table).getAllByText('75.125 Ah')).toHaveLength(2);
     expect(Array.from(table.querySelectorAll('tbody tr')).map(row => row.getAttribute('data-variant-id'))).toEqual(['1', '2']);
@@ -254,7 +304,10 @@ describe('A06a immutable physical review', () => {
     expect(table).toHaveTextContent('Izquierda [L]');
     expect(table).toHaveTextContent('Derecha [R]');
     expect(document.body).not.toHaveTextContent('LIVE NOT ORIGINAL');
-    expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('31/12/2027 · 20:00 (hora Bolivia)')).toHaveAttribute('title', '2028-01-01T00:00:00.123456789Z');
+    const historyToggle = screen.queryByRole('button', { name: 'Ver historial' });
+    if (historyToggle) fireEvent.click(historyToggle);
+    const metadata = screen.getByLabelText(historyToggle ? 'Historial de la solicitud' : 'Resumen de solicitud');
+    expect(within(metadata).getByText('31/12/2027 · 20:00 (hora Bolivia)')).toHaveAttribute('title', '2028-01-01T00:00:00.123456789Z');
     const summary = screen.getByLabelText('Resumen de solicitud');
     expect(summary).toHaveTextContent(`Ubicación creadora${names[(destination === 1 ? origin : destination) - 1]}`);
     expect(summary).toHaveTextContent(`Requiere aprobación de${names[(destination === 1 ? 1 : origin) - 1]}`);
@@ -265,7 +318,7 @@ describe('A06a immutable physical review', () => {
     expect(url.searchParams.get('page_size')).toBe('50');
     expect(f.fetch.mock.calls[0][1]).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
     expect(new Headers(f.fetch.mock.calls[0][1]?.headers).get('X-Luson-Passive')).toBe('1');
-    expect(document.querySelector('.transfer-detail-cards') !== null).toBe(assigned === 1);
+    expect(document.querySelector('.transfer-detail-cards') !== null).toBe(assigned === 1 && !historyToggle);
     expect(document.body).not.toHaveTextContent('Verificadas en origen');
   });
   it.each(['approved', 'rejected'])('preserves truthful %s terminal metadata without loading a fabricated stock snapshot', async status => {

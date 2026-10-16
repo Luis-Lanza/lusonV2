@@ -139,6 +139,30 @@ function pendingHistory(record = receivedWire()) {
       recorded_at: correctionStamp, state: 'pending', decision: null, application: null }] : [] })) };
 }
 
+describe('U1 pending approver chrome', () => {
+  it.each([
+    [1, 1, 2, 'pending', true], [2, 1, 2, 'pending', false],
+    [1, 1, 2, 'approved', false], [1, 2, 1, 'pending', false],
+  ] as const)('scopes chrome for actor %s, route %s → %s, status %s', async (actor, origin, destination, status, adapted) => {
+    const f = fixture(actor);
+    f.env.record = wire(origin, destination, f.env.record.id, status);
+    render(f.element()); await loaded();
+    expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toBeVisible();
+    await detail();
+    const navigation = screen.getByRole('navigation', { name: 'Navegación de transferencia' });
+    if (adapted) {
+      expect(navigation).toHaveClass('pending-approver-navigation');
+      expect(screen.queryByRole('region', { name: 'Contadores de solicitudes' })).not.toBeInTheDocument();
+    } else {
+      expect(navigation).not.toHaveClass('pending-approver-navigation');
+      expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toBeVisible();
+    }
+    fireEvent.click(within(navigation).getByRole('button', { name: 'Volver a pendientes' }));
+    await loaded();
+    expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toBeVisible();
+  });
+});
+
 describe('F4a selected chrome', () => {
   it('prioritizes selected identity and preserves counters, navigation and mounted lanes', async () => {
     const f = correctionFixture();
@@ -1099,7 +1123,7 @@ describe('A06a real list/detail decision bindings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirmar aprobación' }));
     await screen.findByRole('button', { name: 'Consultar resultado original' });
     await waitFor(() => expect(f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?'))).toHaveLength(before + 1));
-    expect(screen.getByRole('table', { name: 'Baterías solicitadas' })).toHaveTextContent('18446744073709551614');
+    expect(screen.getByRole('region', { name: 'Productos solicitados' })).toHaveTextContent('18446744073709551614');
     expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
     expect(f.controller.confirmTransferDecision).not.toHaveBeenCalled();
     for (const [url, init] of f.fetch.mock.calls) if (String(url).startsWith('/api/inventory?')) expect(new Headers(init?.headers).get('X-Luson-Passive')).toBe('1');
@@ -1283,11 +1307,16 @@ describe('R04c participant Pending', () => {
   it.each([[1, 2, 'Solicitud a Almacén'], [2, 3, 'Solicitud entre sucursales'], [2, 1, 'Propuesta de envío a Almacén']])('labels physical route %s to %s honestly', async (origin, destination, label) => {
     const f = fixture(2); f.env.record = wire(Number(origin), Number(destination)); render(f.element()); await loaded();
     expect(screen.getByRole('table')).toHaveTextContent(String(label)); await detail();
-    const route = screen.getByRole('region', { name: 'Ruta física' });
-    expect(route.querySelector(':scope > div:first-child strong')).toHaveTextContent(locations[Number(origin) - 1]);
-    expect(route.querySelector(':scope > div:last-child strong')).toHaveTextContent(locations[Number(destination) - 1]);
-    expect(route.querySelector('b')).toHaveTextContent('→');
-    expect(screen.getByLabelText('Resumen de solicitud')).toHaveTextContent('Esta solicitud todavía no reserva ni mueve stock.');
+    if (origin === 2 && destination === 3) {
+      expect(screen.getByLabelText('Ruta física')).toHaveTextContent('Sucursal A → Sucursal B');
+      expect(screen.getByRole('region', { name: 'Productos solicitados' })).toHaveTextContent('Al aprobar se reservan las cantidades, sin mover stock.');
+    } else {
+      const route = screen.getByRole('region', { name: 'Ruta física' });
+      expect(route.querySelector(':scope > div:first-child strong')).toHaveTextContent(locations[Number(origin) - 1]);
+      expect(route.querySelector(':scope > div:last-child strong')).toHaveTextContent(locations[Number(destination) - 1]);
+      expect(route.querySelector('b')).toHaveTextContent('→');
+      expect(screen.getByLabelText('Resumen de solicitud')).toHaveTextContent('Esta solicitud todavía no reserva ni mueve stock.');
+    }
   });
   it('keeps exact Ah, nanosecond UTC, quantities and physical creator/approver in detail', async () => {
     const f = fixture(); render(f.element()); await loaded(); await detail();

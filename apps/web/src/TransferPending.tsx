@@ -4,6 +4,7 @@ import { useTransfers } from './useTransfers';
 import { transferQuantityTotal, type TransferRecord } from './transferModel';
 import TransferDetail, { detailAuthority, type DetailController, type StockAdvice } from './TransferDetail';
 import TransferDecision from './TransferDecision';
+import { Icon } from './icons';
 import TransferDispatch from './TransferDispatch';
 import TransferReceipt from './TransferReceipt';
 import TransferCancellation from './TransferCancellation';
@@ -119,6 +120,8 @@ export default function TransferPending(props: TransferPendingProps) {
   const countsBusy = transfers.countsBusy;
   const countsError = transfers.countsError;
   const warehouse = authority.session?.authenticated && authority.session.identity.location.id === 1;
+  const pendingApprover = record?.status === 'pending' && record.kind === 'request_stock'
+    && actor === record.approver_location_id;
   const queryPage = transfers.query.page ?? 1;
   const size = transfers.query.page_size ?? 25;
   const status = transfers.query.status ?? 'pending';
@@ -140,8 +143,9 @@ export default function TransferPending(props: TransferPendingProps) {
   </section>;
   return <section ref={detailPane} className={'transfer-pending' + (warehouse ? ' pending-warehouse' : '') + (selected ? ' pending-selected' : ' pending-list')}
     aria-labelledby={selected ? undefined : 'pending-title'} aria-label={selected ? 'Detalle de transferencia' : undefined}>
-    {selected ? <nav className="pending-detail-navigation" aria-label="Navegación de transferencia">
-      <button ref={detailBack} type="button" className="creation-back" onClick={back}>Volver a {plural}</button>
+    {selected ? <nav className={`pending-detail-navigation${pendingApprover ? ' pending-approver-navigation' : ''}`} aria-label="Navegación de transferencia">
+      <button ref={detailBack} type="button" className="creation-back" onClick={back}>{pendingApprover && <Icon name="arrow" />}Volver a {plural}</button>
+      {pendingApprover && <span aria-hidden="true">·</span>}
       <button type="button" className="creation-back" onClick={inventory}>Volver al inventario</button>
     </nav> : <>
     <button type="button" className="creation-back" onClick={inventory}>Volver al inventario</button>
@@ -176,7 +180,7 @@ export default function TransferPending(props: TransferPendingProps) {
                 corrections={corrections} correctionRequestID={correctionRequestID} correctionsEnabled={correctionsEnabled}
                 restitutionRequestID={correctionRequestID} restitutionsEnabled={correctionsEnabled}
                 onStock={receiveStock} stockRefresh={stockRefresh} actions={() => <>{actions}{dispatchActions}{receiptActions}{cancellationActions}</>} />} />} />} />} />
-      {counters}
+      {!pendingApprover && counters}
     </> : <>
       <div className="transfer-status-toolbar">
         <label htmlFor="transfer-status">Estado de transferencia</label>

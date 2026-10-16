@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { TransferController } from './useInventory';
 import type { useTransfers } from './useTransfers';
-import type { TransferRecord } from './transferModel';
+import { transferQuantityTotal, type TransferRecord } from './transferModel';
 import { captureDecisionRecord, matchesDecisionRecord, satisfiesDecision, type TransferDecision as Action } from './transferDecisionRecovery';
 import { detailAuthority, TransferItems, transferStatusLabel, type StockAdvice } from './TransferDetail';
 import { transferViewOwner } from './TransferPending';
 import { TransferAPIError } from './transferAPI';
 import TransferDate from './TransferDate';
+import { Icon } from './icons';
 import { useTransferModalFocus, type TransferModalFocusBinding } from './transferModalFocus';
 
 export interface TransferDecisionProps {
@@ -37,6 +38,33 @@ export default function TransferDecision(props: TransferDecisionProps) {
   const attempt = permitted ? transfers.decision : null;
   const busy = attempt?.phase === 'inFlight';
   const visibleReview = permitted && review?.fence === fence ? review : null;
+  const isolate = visibleReview?.record.kind === 'request_stock';
+  // Register cleanup before the focus-restoration hook; busy/result renders keep isolation.
+  useLayoutEffect(() => {
+    const backdrop = dialog.current?.parentElement;
+    if (!isolate || !backdrop) return;
+    const previous = new Map<Element, string | null>();
+    const isolateSiblings = () => {
+      for (let branch: Element | null = backdrop; branch && branch !== document.body; branch = branch.parentElement) {
+        for (const sibling of branch.parentElement?.children ?? []) {
+          if (sibling === branch || previous.has(sibling)) continue;
+          previous.set(sibling, sibling.getAttribute('inert'));
+          if (!sibling.hasAttribute('inert')) sibling.setAttribute('inert', '');
+        }
+      }
+    };
+    isolateSiblings();
+    // Recovery content can be mounted outside the backdrop while the request is busy.
+    const observer = new MutationObserver(isolateSiblings);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      for (const [element, value] of previous) {
+        if (value === null) element.removeAttribute('inert');
+        else element.setAttribute('inert', value);
+      }
+    };
+  }, [isolate]);
   const focus = useTransferModalFocus({ active: !!visibleReview, id: props.record?.id, fence, current, binding: props.modalFocus });
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
@@ -111,7 +139,7 @@ export default function TransferDecision(props: TransferDecisionProps) {
     </section>}
     {props.renderDetail ? props.renderDetail(actions) : actions}
     {visibleReview && <div className="transfer-decision-backdrop"><section ref={dialog} tabIndex={-1}
-      className="transfer-decision-modal" role="dialog" aria-modal="true" aria-labelledby="decision-title" aria-busy={busy}
+      className={`transfer-decision-modal${visibleReview.record.kind === 'request_stock' && !reviewResult ? ` transfer-pending-confirmation transfer-pending-${visibleReview.action}` : ''}`} role="dialog" aria-modal="true" aria-labelledby="decision-title" aria-busy={busy}
       onKeyDown={event => {
         if (!current()) return;
         if (event.key === 'Escape') { event.preventDefault(); dismiss(); }
@@ -128,8 +156,21 @@ export default function TransferDecision(props: TransferDecisionProps) {
         <button ref={close} type="button" aria-label="Cerrar confirmación" disabled={busy} onClick={dismiss}>×</button>
       </header>
       <div className="transfer-decision-body">
-        <TransferItems record={visibleReview.record} stock={props.stock ?? { catalog: null, busy: false, unavailable: true }} confirmation reject={visibleReview.action === 'reject'} />
-        <div className="transfer-impact"><h3>{reviewResult ? 'Resultado de la decisión' : visibleReview.action === 'approve' ? 'Impacto de la confirmación' : 'Impacto del rechazo'}</h3>
+        <TransferItems record={visibleReview.record}
+          stock={visibleReview.record.kind === 'request_stock' ? undefined : props.stock ?? { catalog: null, busy: false, unavailable: true }}
+          compact={visibleReview.record.kind === 'request_stock'} confirmation reject={visibleReview.action === 'reject'} />
+        <div className="transfer-impact">{visibleReview.record.kind === 'request_stock' && !reviewResult ? <>
+          <p><Icon name="info" /><strong>{visibleReview.action === 'approve' ? 'Al confirmar:' : 'Al rechazar:'}</strong></p>
+          <ul>{visibleReview.action === 'approve' ? <>
+            <li>Se validará la disponibilidad y se reservarán las {transferQuantityTotal(visibleReview.record).toString()} baterías en {visibleReview.record.origin_location_name}.</li>
+            <li className="transfer-impact-warning">Si falta stock de alguna variante, no se aprobará ni reservará ninguna batería.</li>
+            <li>No se moverán existencias ni aumentará el stock de {visibleReview.record.destination_location_name}.</li>
+          </> : <>
+            <li>Se rechazará la solicitud completa y se conservará el registro.</li>
+            <li>No se moverán existencias ni se modificarán reservas.</li>
+            <li className="transfer-impact-warning">Después de confirmar, esta solicitud no podrá aprobarse ni editarse.</li>
+          </>}</ul>
+        </> : <><h3>{reviewResult ? 'Resultado de la decisión' : visibleReview.action === 'approve' ? 'Impacto de la confirmación' : 'Impacto del rechazo'}</h3>
           {reviewResult ? (reviewConfirmed ? <p role="status">{visibleReview.action === 'approve'
             ? 'Solicitud aprobada correctamente. Se autorizó y reservó la solicitud completa; no se movieron existencias ni se acreditó stock en destino.'
             : 'Solicitud rechazada correctamente. No se movieron existencias ni se modificaron reservas.'}</p>
@@ -141,7 +182,7 @@ export default function TransferDecision(props: TransferDecisionProps) {
             <p>Se rechazará la solicitud completa. Estado al confirmar: Rechazada.</p>
             <p>No se liberarán reservas ni se moverán existencias. El registro se conserva.</p>
             <p>Después de confirmar el rechazo, la solicitud no podrá aprobarse ni editarse.</p>
-          </>}
+          </>}</>}
         </div>
         {busy && <p role="status">Confirmando decisión…</p>}
         {error && <p role="alert">{error}</p>}

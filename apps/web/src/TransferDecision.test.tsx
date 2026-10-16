@@ -79,6 +79,70 @@ function confirm(action: 'approve' | 'reject') {
 async function uncertain() { await screen.findByRole('button', { name: 'Consultar resultado original' }); }
 afterEach(() => vi.unstubAllGlobals());
 
+it.each(['approve', 'reject'] as const)('shows the U1 %s confirmation as a read-only three-column summary', action => {
+  const f = fixture();
+  render(f.element());
+  const dialog = open(action);
+  expect(within(dialog).getAllByRole('columnheader')).toHaveLength(3);
+  expect(dialog).toHaveClass('transfer-pending-confirmation');
+  expect(within(dialog).getByRole('columnheader', { name: 'Producto' })).toBeVisible();
+  const rows = within(dialog).getByRole('table').querySelectorAll('tbody tr');
+  for (const row of rows) {
+    expect(row.querySelector('td:first-child small')).toBeNull();
+    expect(row.querySelector('td:first-child')).toHaveTextContent('75.125 Ah');
+  }
+  const impact = dialog.querySelector('.transfer-impact')!;
+  expect(within(impact as HTMLElement).getByText(action === 'approve' ? 'Al confirmar:' : 'Al rechazar:').tagName).toBe('STRONG');
+  expect(within(impact as HTMLElement).getAllByRole('listitem')).toHaveLength(3);
+  expect(impact.querySelector('.transfer-impact-warning')).not.toBeNull();
+  expect(dialog).toHaveTextContent('18446744073709551614');
+  expect(within(dialog).queryByRole('textbox')).not.toBeInTheDocument();
+  expect(within(dialog).queryByRole('spinbutton')).not.toBeInTheDocument();
+  expect(f.fetch).not.toHaveBeenCalled();
+  fireEvent.keyDown(dialog, { key: 'Escape' });
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: action === 'approve' ? 'Aprobar solicitud' : 'Rechazar solicitud' })).toHaveFocus();
+});
+
+it.each(['dismiss', 'cancel', 'close', 'unmount', 'authority'] as const)('restores prior background inert attributes on %s', mode => {
+  const f = fixture();
+  const element = () => <><aside data-testid="prior">Already isolated</aside><aside data-testid="background">Background</aside>{f.element()}</>;
+  const view = render(element());
+  const prior = screen.getByTestId('prior'); const background = screen.getByTestId('background');
+  prior.setAttribute('inert', 'previous');
+  const trigger = screen.getByRole('button', { name: 'Aprobar solicitud' });
+  open('approve');
+  expect(prior).toHaveAttribute('inert', 'previous');
+  expect(background).toHaveAttribute('inert');
+  if (mode === 'dismiss' || mode === 'cancel' || mode === 'close') {
+    if (mode === 'dismiss') fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    else fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: mode === 'cancel' ? 'Volver al detalle' : 'Cerrar confirmación' }));
+    expect(trigger).toHaveFocus();
+  } else if (mode === 'unmount') view.unmount();
+  else { f.env.current.ready = false; view.rerender(element()); }
+  expect(prior).toHaveAttribute('inert', 'previous');
+  expect(background).not.toHaveAttribute('inert');
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+});
+
+it('isolates new busy recovery content until dismissal and disconnects its observer', async () => {
+  const pending = deferred();
+  const f = fixture(1, 2, 1, () => pending.promise);
+  render(f.element());
+  const dialog = open('approve'); confirm('approve');
+  const recovery = screen.getByRole('region', { name: 'Recuperación de decisión' });
+  await waitFor(() => expect(recovery).toHaveAttribute('inert'));
+  fireEvent.keyDown(dialog, { key: 'Escape' });
+  expect(recovery).toHaveAttribute('inert');
+  await act(async () => pending.resolve(reply(wire(1, 2, 'approved'))));
+  expect(recovery).toHaveAttribute('inert');
+  fireEvent.keyDown(dialog, { key: 'Escape' });
+  expect(recovery).not.toHaveAttribute('inert');
+  recovery.append(document.createElement('button'));
+  await act(async () => {});
+  expect(recovery).not.toHaveAttribute('inert');
+});
+
 it('presents a cancelled decision conflict date without claiming the original action succeeded', async () => {
   const cancelled_at = '2028-01-03T00:00:00.000000002Z';
   const f = fixture(1, 2, 1, async (_url, init) => {
@@ -126,10 +190,12 @@ describe('A06a explicit immutable confirmations', () => {
       expect(Array.from(table.querySelectorAll('tbody tr')).map(row => row.getAttribute('data-variant-id'))).toEqual(['1', '2']);
       expect(table).toHaveTextContent('Izquierda [L]');
       expect(table).toHaveTextContent('Derecha [R]');
-      expect(within(table).getAllByRole('columnheader')).toHaveLength(action === 'approve' ? 4 : 3);
+      expect(within(table).getAllByRole('columnheader')).toHaveLength(action === 'approve' && destination === 1 ? 4 : 3);
       expect(within(dialog).queryByRole('textbox')).not.toBeInTheDocument();
       expect(within(dialog).queryByRole('spinbutton')).not.toBeInTheDocument();
-      expect(dialog).toHaveTextContent(action === 'approve' ? `cantidades completas en ${names[origin - 1]}` : 'No se liberarán reservas ni se moverán existencias');
+      expect(dialog).toHaveTextContent(action === 'approve'
+        ? destination === 1 ? `cantidades completas en ${names[origin - 1]}` : `se reservarán las 18446744073709551614 baterías en ${names[origin - 1]}`
+        : destination === 1 ? 'No se liberarán reservas ni se moverán existencias' : 'No se moverán existencias ni se modificarán reservas');
       expect(dialog).not.toHaveTextContent('cancelar antes');
       expect(f.fetch).not.toHaveBeenCalled();
       confirm(action);
