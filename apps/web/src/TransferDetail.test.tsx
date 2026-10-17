@@ -2,13 +2,15 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import TransferDetail from './TransferDetail';
 import { transferViewOwner } from './TransferPending';
-import { parseTransferRecord } from './transferModel';
+import { parseTransferRecord, previewTransferReceipt } from './transferModel';
 import type { DetailController } from './TransferDetail';
 import type { TransferAuthority } from './useInventory';
 import type { TransferCountCorrectionsProps } from './TransferCountCorrections';
 import { createTransferRestitutionRecovery } from './transferRestitutionRecovery';
 import { TransferAPIError } from './transferAPI';
 import type { CountProposal } from './transferCountCorrectionModel';
+import { decisionOwner } from './transferDecisionRecovery';
+import type { CountCorrectionAttempt } from './transferCountCorrectionRecovery';
 
 describe('U1 pending approver presentation', () => {
   it('keeps unknown stock advisory and recovers with passive refresh for the approver', async () => {
@@ -198,6 +200,178 @@ describe('U4b effective received detail', () => {
       correctionsEnabled={enabled} correctionRequestID={requestID} actions={() => <button>Result sentinel</button>} />;
     return { ...f, record, corrections, element };
   }
+  function outcome(assigned = 2, rejected = false, quantity = 1n, original = 0n, expected = 1n) {
+    const f = received(assigned);
+    const items = f.record.items.map((item, index) => ({ ...item, quantity: index === 0 ? expected : 1n })).filter(item => item.quantity > 0n);
+    const record = { ...f.record, items, receipt: previewTransferReceipt({ items: [
+      { variant_id: 1, actual_quantity: original.toString() }, { variant_id: 2, actual_quantity: '1' }] }, { items }) };
+    const proposal: CountProposal = { revision: 1n, operation_key: 'result_proposal_key', initiator_location_id: 2,
+      actual_quantity: quantity, base_revision: 0n, base_credit: original < expected ? original : expected,
+      reason: 'Recount', recorded_at: '2028-01-05T00:00:00Z', state: rejected ? 'rejected' : 'applied',
+      decision: { operation_key: 'result_decision_key', actor_location_id: 1, accepted: !rejected,
+        reason: 'Verified', recorded_at: '2028-01-06T00:00:00Z' },
+      application: rejected ? null : { effective_credit: quantity < expected ? quantity : expected,
+        delta: (quantity < expected ? quantity : expected) - (original < expected ? original : expected),
+        recorded_at: '2028-01-06T00:00:00Z' } };
+    const line = { ...record.receipt.items[0], workflow_revision: 1n, applied_revision: rejected ? 0n : 1n,
+      effective_actual: rejected ? original : quantity,
+      effective_credit: rejected ? proposal.base_credit : proposal.application!.effective_credit, proposals: [proposal] };
+    const evidence = { ...f.corrections, snapshot: { request_id: BigInt(record.id), operations: [], lines: [line,
+      { ...record.receipt.items[1], workflow_revision: 0n, applied_revision: 0n,
+        effective_actual: 1n, effective_credit: 1n, proposals: [] }] } };
+    const owner = transferViewOwner(f.env.current)!;
+    const element = (enabled = true, requestID = record.id) => <TransferDetail controller={f.controller}
+      ownerTag={owner} record={record} corrections={evidence} correctionsEnabled={enabled} correctionRequestID={requestID} />;
+    const attempt = (phase: CountCorrectionAttempt['phase']): CountCorrectionAttempt => ({ requestID: BigInt(record.id),
+      action: 'propose', payload: { variant_id: 1, operation_key: proposal.operation_key, expected_revision: 0n,
+        actual_quantity: quantity, reason: 'Recount' }, owner: decisionOwner(f.controller.getTransferAuthority())!,
+      phase, priorUncertainty: true, result: phase === 'confirmed' ? { request_id: BigInt(record.id), variant_id: 1,
+        operation_key: proposal.operation_key, actor_location_id: 2, action: 'propose', expected_revision: 0n,
+        revision: 1n, actual_quantity: quantity, reason: proposal.reason, recorded_at: proposal.recorded_at } : null, failure: null });
+    return { ...f, record, proposal, line, evidence, element, attempt };
+  }
+  const results = () => screen.queryByRole('region', { name: 'Resultados de corrección confirmados' });
+  it.each([1, 2])('presents persisted applied and rejected provenance for actor %s', assigned => {
+    const f = outcome(assigned); const view = render(f.element());
+    expect(results()).toHaveTextContent('Corrección aplicada vigente en Izquierda [L]: 0 → 1');
+    expect(results()).toHaveTextContent('Propuesta de Sucursal A · Aceptada por Almacén');
+    expect(results()).toHaveTextContent('Cambio de crédito registrado en destino: +1');
+    expect(screen.getByRole('table', { name: 'Conteo efectivo' }).querySelector('tbody [data-label="Recibidas efectivas"]')).toHaveTextContent(/^1$/);
+    const r = outcome(assigned, true); view.rerender(r.element());
+    expect(results()).toHaveTextContent('Propuesta de corrección rechazada en Izquierda [L]: 0 → 1');
+    expect(results()).toHaveTextContent('Rechazada por Almacén');
+    expect(results()).toHaveTextContent('Sin cambios en el conteo ni en el stock por este rechazo. El faltante permanece.');
+    expect(results()).not.toHaveTextContent('Cambio de crédito');
+  });
+  it('shows a persisted rejection independently of acceptance', () => {
+    const f = outcome(2, true); render(f.element());
+    expect(results()).toHaveTextContent('Propuesta de corrección rechazada en Izquierda [L]: 0 → 1');
+  });
+  it.each([[0n, 1n, 1n, '-1'], [5n, 1n, 0n, '0'], [9007199254740993n, 0n, 9223372036854775807n, '+9007199254740993']])(
+    'keeps exact credit arithmetic for actual %s/original %s/sent %s', (actual, original, sent, delta) => {
+      const f = outcome(2, false, actual, original, sent);
+      render(f.element());
+      expect(results()).toHaveTextContent(`${original} → ${actual}`);
+      expect(results()).toHaveTextContent(`Cambio de crédito registrado en destino: ${delta}`);
+      expect(results()).not.toHaveTextContent('stock actual');
+    });
+  it('proves recursive applied baselines and later rejection without globally sorting variants', () => {
+    const f = outcome(); const first = f.proposal;
+    const second = { ...first, revision: 2n, operation_key: 'second_proposal_key', actual_quantity: 0n,
+      base_revision: 1n, base_credit: 1n, decision: { ...first.decision!, operation_key: 'second_decision_key' },
+      application: { ...first.application!, effective_credit: 0n, delta: -1n } };
+    const third = { ...first, revision: 3n, operation_key: 'third_proposal_key', base_revision: 2n, base_credit: 0n,
+      state: 'rejected' as const, application: null,
+      decision: { ...first.decision!, operation_key: 'third_decision_key', accepted: false } };
+    Object.assign(f.line, { workflow_revision: 3n, applied_revision: 2n, effective_actual: 0n,
+      effective_credit: 0n, proposals: [third, first, second] });
+    f.evidence.snapshot.lines[1] = { ...f.evidence.snapshot.lines[1], workflow_revision: 1n, applied_revision: 1n,
+      proposals: [{ ...first, base_credit: 1n, application: { ...first.application!, delta: 0n } }] };
+    render(f.element());
+    expect(results()).toHaveTextContent('Corrección aplicada vigente en Izquierda [L]: 1 → 0');
+    expect(results()).toHaveTextContent('Propuesta de corrección rechazada en Izquierda [L]: 0 → 1');
+    expect(results()).toHaveTextContent('Corrección aplicada vigente en Derecha [R]: 1 → 1');
+    expect(results()!.textContent!.indexOf('Izquierda')).toBeLessThan(results()!.textContent!.indexOf('Derecha'));
+    const table = screen.getByRole('table', { name: 'Conteo efectivo' });
+    expect(table.querySelector('tbody [data-label="Recibidas efectivas"]')).toHaveTextContent(/^0$/);
+    expect(table.querySelector('tbody [data-label="Crédito efectivo"]')).toHaveTextContent(/^0$/);
+  });
+  it.each(['duplicate', 'missing', 'cycle', 'base-credit', 'revision', 'workflow', 'application', 'delta', 'cap',
+    'effective-actual', 'effective-credit', 'decision', 'actor', 'initiator', 'negative', 'original', 'rejection-application',
+    'missing-base', 'duplicate-key', 'application-time', 'rejected-accepted', 'prior-duplicate', 'prior-delta', 'prior-cycle'])('fails closed for %s proof', mode => {
+    const f = outcome(2, mode === 'rejection-application' || mode === 'rejected-accepted'); const p = { ...f.proposal };
+    f.line.proposals = [p];
+    if (mode === 'duplicate') f.line.proposals.push(p);
+    if (mode === 'missing') f.line.proposals = [];
+    if (mode === 'cycle') Object.assign(p, { base_revision: 1n });
+    if (mode === 'missing-base' || mode.startsWith('prior-')) {
+      Object.assign(p, { revision: 2n, base_revision: 1n, base_credit: 1n, operation_key: 'next_proposal_key',
+        decision: { ...p.decision!, operation_key: 'next_decision_key' }, application: { ...p.application!, delta: 0n } });
+      Object.assign(f.line, { workflow_revision: 2n, applied_revision: 2n });
+      if (mode.startsWith('prior-')) {
+        const prior = { ...f.proposal, base_revision: mode === 'prior-cycle' ? 2n : 0n,
+          application: { ...f.proposal.application!, delta: mode === 'prior-delta' ? 0n : 1n } };
+        f.line.proposals.push(prior); if (mode === 'prior-duplicate') f.line.proposals.push(prior);
+      }
+    }
+    if (mode === 'duplicate-key') Object.assign(p, { operation_key: p.decision!.operation_key });
+    if (mode === 'application-time') Object.assign(p, { application: { ...p.application!, recorded_at: p.recorded_at } });
+    if (mode === 'rejected-accepted') Object.assign(p, { decision: { ...p.decision!, accepted: true } });
+    if (mode === 'base-credit') Object.assign(p, { base_credit: 1n });
+    if (mode === 'revision') Object.assign(f.line, { applied_revision: 2n });
+    if (mode === 'workflow') Object.assign(f.line, { workflow_revision: 2n });
+    if (mode === 'application') Object.assign(p, { application: null });
+    if (mode === 'delta') Object.assign(p, { application: { ...p.application!, delta: 0n } });
+    if (mode === 'cap') Object.assign(p, { application: { ...p.application!, effective_credit: 2n } });
+    if (mode === 'effective-actual') Object.assign(f.line, { effective_actual: 2n });
+    if (mode === 'effective-credit') Object.assign(f.line, { effective_credit: 0n });
+    if (mode === 'decision') Object.assign(p, { decision: { ...p.decision!, accepted: false } });
+    if (mode === 'actor') Object.assign(p, { decision: { ...p.decision!, actor_location_id: 2 } });
+    if (mode === 'initiator') Object.assign(p, { initiator_location_id: 3 });
+    if (mode === 'negative') Object.assign(p, { actual_quantity: -1n });
+    if (mode === 'original') Object.assign(f.line, { actual_quantity: 1n });
+    if (mode === 'rejection-application') Object.assign(p, { application: { effective_credit: 1n, delta: 1n, recorded_at: p.recorded_at } });
+    render(f.element()); expect(results()).toBeNull();
+  });
+  it.each(['busy', 'error', 'null', 'mask', 'owner', 'request', 'record', 'disabled', 'missing-line', 'duplicate-line',
+    'inFlight', 'uncertain', 'conflict', 'failed-uncertain', 'pending', 'superseded'])('suppresses new claims for %s', mode => {
+    const f = outcome(); let enabled = true; let request = f.record.id;
+    if (mode === 'busy') f.evidence.busy = true;
+    if (mode === 'error') Object.assign(f.evidence, { error: new TransferAPIError('invalid_response', null, false, false, false, false, false, true) });
+    if (mode === 'mask') f.evidence.masked = true;
+    if (mode === 'null') Object.assign(f.evidence, { snapshot: null });
+    const prior = mode === 'owner' ? render(f.element()) : null;
+    if (mode === 'owner') f.env.current.sessionGeneration = 2;
+    if (mode === 'request') request = '1';
+    if (mode === 'record') f.evidence.snapshot.request_id = 1n;
+    if (mode === 'disabled') enabled = false;
+    if (mode === 'missing-line') f.evidence.snapshot.lines.pop();
+    if (mode === 'duplicate-line') f.evidence.snapshot.lines.push(f.line);
+    if (['inFlight', 'uncertain', 'conflict', 'failed-uncertain'].includes(mode)) Object.assign(f.evidence, {
+      attempts: [f.attempt(mode === 'failed-uncertain' ? 'failed' : mode as CountCorrectionAttempt['phase'])] });
+    if (mode === 'pending' || mode === 'superseded') {
+      Object.assign(f.line, { applied_revision: 0n, effective_actual: 0n, effective_credit: 0n });
+      Object.assign(f.proposal, { state: mode, decision: null, application: null });
+    }
+    if (prior) prior.rerender(f.element(enabled, request)); else render(f.element(enabled, request));
+    expect(results()).toBeNull();
+  });
+  it('allows confirmed historical attempts, keeps rejection shortage conditional and recovery mounted', () => {
+    const f = outcome(2, true, 2n, 1n); Object.assign(f.evidence, { attempts: [f.attempt('confirmed')] });
+    const view = render(f.element());
+    expect(results()).toBeVisible(); expect(results()).not.toHaveTextContent('El faltante permanece');
+    const disclosure = screen.getByText('Ver recepción original').closest('details')!;
+    expect(disclosure).not.toHaveAttribute('open'); fireEvent.click(screen.getByText('Ver recepción original'));
+    const original = screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML;
+    fireEvent.click(screen.getByRole('button', { name: 'Gestiones' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Corregir conteo' }));
+    const workflow = screen.getByRole('region', { name: 'Correcciones de conteo' });
+    f.evidence.busy = true; view.rerender(f.element());
+    expect(results()).toBeNull(); expect(screen.getByRole('region', { name: 'Correcciones de conteo' })).toBe(workflow);
+    expect(screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML).toBe(original);
+    expect(f.fetch).not.toHaveBeenCalled(); expect(f.evidence.decide).not.toHaveBeenCalled();
+  });
+  it('keeps valid variants visible in original order while invalid proof remains silent', () => {
+    const f = outcome(); const valid = { ...f.evidence.snapshot.lines[1], workflow_revision: 1n, applied_revision: 1n,
+      proposals: [{ ...f.proposal, base_credit: 1n, application: { ...f.proposal.application!, delta: 0n } }] };
+    f.line.proposals = []; f.evidence.snapshot.lines = [valid, f.line];
+    render(f.element()); expect(results()).not.toHaveTextContent('Izquierda');
+    expect(results()).toHaveTextContent('Derecha [R]: 1 → 1');
+    expect(document.body).not.toHaveTextContent('Conteo corregido');
+  });
+  it('exposes uncertainty recovery outside the closed original without a result', () => {
+    const f = outcome(); Object.assign(f.evidence, { attempts: [f.attempt('uncertain')] }); render(f.element());
+    expect(results()).toBeNull(); const recover = screen.getByRole('button', { name: 'Consultar resultado' });
+    expect(recover).toBeVisible(); fireEvent.click(recover); expect(f.evidence.recover).toHaveBeenCalledWith(1);
+    expect(screen.getByText('Ver recepción original').closest('details')).not.toHaveAttribute('open');
+  });
+  it('keeps prior applied evidence separate from a later pending proposal', () => {
+    const f = outcome(); const later = { ...f.proposal, revision: 2n, operation_key: 'pending_proposal_key',
+      actual_quantity: 99n, base_revision: 1n, base_credit: 1n, state: 'pending' as const, decision: null, application: null };
+    f.line.proposals = [later, f.proposal]; f.line.workflow_revision = 2n;
+    render(f.element()); expect(results()).toHaveTextContent('0 → 1'); expect(results()).not.toHaveTextContent('99');
+    expect(screen.getByRole('table', { name: 'Conteo efectivo' })).not.toHaveTextContent('99');
+  });
   it('routes exactly two management entries by keyboard without losing an active correction', async () => {
     const f = received(); f.controller.restitutionRecovery = createTransferRestitutionRecovery();
     const element = (requestID = f.record.id) => <TransferDetail controller={f.controller}

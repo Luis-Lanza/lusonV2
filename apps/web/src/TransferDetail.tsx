@@ -13,6 +13,7 @@ import './transfer-approved.css';
 import './transfer-transit.css';
 import './transfer-received.css';
 import { projectTransferReceived, type ReceivedQuantities } from './transferReceivedModel';
+import type { CountCorrectionLine, CountProposal } from './transferCountCorrectionModel';
 
 export type DetailController = TransferController & Partial<SourceInventoryController>;
 export interface StockAdvice { catalog: SourceCatalog | null; busy: boolean; unavailable: boolean }
@@ -79,6 +80,97 @@ function ReceivedDifferences({ quantities }: { quantities: ReceivedQuantities })
     {quantities.unexpected > 0n && <span className="received-difference">No enviada: {quantities.unexpected.toString()}</span>}
     {quantities.shortage === 0n && quantities.excess === 0n && quantities.unexpected === 0n
       && <span className="received-matched">✓ Sin diferencias de conteo</span>}</>;
+}
+
+// Presentation proof only: the effective table remains the GET projection.
+// Revisions are per variant; decisions retain their proposal's revision.
+function countResultProof(line: CountCorrectionLine, record: TransferRecord) {
+  const quantity = (n: bigint) => n >= 0n && n <= 9223372036854775807n;
+  const credit = (n: bigint) => n < line.expected_quantity ? n : line.expected_quantity;
+  const participant = (id: number) => id === record.origin_location_id || id === record.destination_location_id;
+  const proposals = new Map<bigint, CountProposal>();
+  const keys = new Set<string>();
+  if (![line.expected_quantity, line.actual_quantity, line.available_quantity, line.effective_actual,
+    line.effective_credit, line.workflow_revision, line.applied_revision].every(quantity)
+    || line.available_quantity !== credit(line.actual_quantity)) return null;
+  for (const p of line.proposals) {
+    if (!quantity(p.revision) || p.revision === 0n || proposals.has(p.revision)
+      || !quantity(p.actual_quantity) || !quantity(p.base_revision) || !quantity(p.base_credit)
+      || !participant(p.initiator_location_id) || keys.has(p.operation_key)) return null;
+    proposals.set(p.revision, p); keys.add(p.operation_key);
+    if (p.decision) {
+      if (!participant(p.decision.actor_location_id) || p.decision.actor_location_id === p.initiator_location_id
+        || keys.has(p.decision.operation_key)) return null;
+      keys.add(p.decision.operation_key);
+    }
+  }
+  const applied = line.proposals.filter(p => p.state === 'applied');
+  const latestRevision = line.proposals.reduce((max, p) => p.revision > max ? p.revision : max, 0n);
+  const appliedRevision = applied.reduce((max, p) => p.revision > max ? p.revision : max, 0n);
+  if (line.workflow_revision !== latestRevision || line.applied_revision !== appliedRevision) return null;
+  // Strictly decreasing references exclude cycles. Every predecessor must be
+  // the latest earlier application, not an arbitrary pending/rejected proposal.
+  const verified = new Map<bigint, { actual: bigint; credit: bigint }>();
+  function baseline(p: CountProposal): { actual: bigint; credit: bigint } | null {
+    const previous = applied.reduce((max, item) => item.revision < p.revision && item.revision > max ? item.revision : max, 0n);
+    if (p.base_revision !== previous || p.base_revision >= p.revision) return null;
+    const base = previous === 0n ? { actual: line.actual_quantity, credit: line.available_quantity }
+      : proveApplied(proposals.get(previous)!);
+    return base && p.base_credit === base.credit ? base : null;
+  }
+  function proveApplied(p: CountProposal): { actual: bigint; credit: bigint } | null {
+    const cached = verified.get(p.revision);
+    if (cached) return cached;
+    const base = baseline(p);
+    if (!base || p.state !== 'applied' || p.decision?.accepted !== true || !p.application
+      || p.application.recorded_at !== p.decision.recorded_at
+      || p.application.effective_credit !== credit(p.actual_quantity)
+      || p.application.delta !== p.application.effective_credit - base.credit) return null;
+    const value = { actual: p.actual_quantity, credit: p.application.effective_credit };
+    verified.set(p.revision, value);
+    return value;
+  }
+  for (const p of line.proposals) {
+    if (p.state === 'applied') { if (!proveApplied(p)) return null; }
+    else if (!baseline(p) || p.application !== null
+      || (p.state === 'rejected' ? p.decision?.accepted !== false
+        : p.decision !== null || p.state !== (p.revision === latestRevision ? 'pending' : 'superseded'))) return null;
+  }
+  const current = appliedRevision === 0n ? { actual: line.actual_quantity, credit: line.available_quantity }
+    : verified.get(appliedRevision);
+  if (!current || current.actual !== line.effective_actual || current.credit !== line.effective_credit) return null;
+  const application = proposals.get(appliedRevision);
+  const latest = proposals.get(latestRevision);
+  return { application, rejected: latest?.state === 'rejected' ? latest : undefined,
+    baseline: (p: CountProposal) => baseline(p)! };
+}
+
+function CountCorrectionResults({ record, corrections }: {
+  record: TransferRecord; corrections: TransferCountCorrectionsProps['corrections'];
+}) {
+  if (record.status !== 'received' || !corrections.snapshot || corrections.attempts.some(a => a.phase === 'inFlight' || a.phase === 'uncertain'
+    || a.phase === 'conflict' || a.phase !== 'confirmed' && a.priorUncertainty)) return null;
+  const location = (id: number) => id === record.origin_location_id ? record.origin_location_name : record.destination_location_name;
+  const snapshot = corrections.snapshot;
+  const content = record.receipt.items.flatMap(original => {
+    const line = snapshot.lines.find(item => item.variant_id === original.variant_id)!;
+    const proof = countResultProof(line, record);
+    if (!proof) return [];
+    const product = record.items.find(item => item.variant_id === line.variant_id);
+    const label = product ? product.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]' : `Variante ${line.variant_id}`;
+    return [proof.application, proof.rejected].flatMap(p => {
+      if (!p) return [];
+      const before = proof.baseline(p).actual;
+      const delta = p.application?.delta;
+      return [<p className="count-evidence" key={`${line.variant_id}:${p.revision}`}>
+        {p.state === 'applied' ? 'Corrección aplicada vigente' : 'Propuesta de corrección rechazada'} en {label}: {before.toString()} → {p.actual_quantity.toString()}.
+        {' '}Variante {line.variant_id}{product && <> · {product.brand} {product.model}</>}. Propuesta de {location(p.initiator_location_id)} · {p.state === 'applied' ? 'Aceptada' : 'Rechazada'} por {location(p.decision!.actor_location_id)}.
+        {delta !== undefined ? <> Cambio de crédito registrado en destino: {delta > 0n ? '+' : ''}{delta.toString()}.</>
+          : <> Sin cambios en el conteo ni en el stock por este rechazo.{line.effective_actual < line.expected_quantity && ' El faltante permanece.'}</>}
+      </p>];
+    });
+  });
+  return content.length ? <section aria-label="Resultados de corrección confirmados">{content}</section> : null;
 }
 
 function OriginalReceiptOverview({ record }: { record: TransferRecord }) {
@@ -328,7 +420,8 @@ export default function TransferDetail(props: TransferDetailProps) {
             <td data-label="Diferencia"><ReceivedDifferences quantities={effective.totals} /></td></tr></tfoot>
         </table></div>
         <p className="received-scope"><Icon name="info" />Estas cantidades reflejan el conteo efectivo de esta recepción, no el stock actual de {record.destination_location_name}.</p>
-        <footer><ReceivedDifferences quantities={effective.totals} />
+        <footer>{effective.status === 'available' && corrections && <CountCorrectionResults record={record} corrections={corrections} />}
+          <ReceivedDifferences quantities={effective.totals} />
           {(effective.totals.shortage > 0n || effective.totals.excess > 0n || effective.totals.unexpected > 0n)
             && <p>Las diferencias se registran por variante, sin compensarse ni resolverse automáticamente.</p>}</footer>
       </>}
