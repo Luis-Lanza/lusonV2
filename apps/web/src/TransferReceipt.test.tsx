@@ -77,6 +77,74 @@ async function capture() {
 const actualInput = () => screen.getByLabelText(/Cantidad recibida.*Expected/);
 afterEach(() => vi.unstubAllGlobals());
 
+describe('U3c receipt capture presentation', () => {
+  it('shows immutable sent evidence, blank labeled counts and the visible catalog before review', async () => {
+    const f = fixture(); render(<App />); await detail(); const dialog = await capture();
+    const table = within(dialog).getByRole('table', { name: 'Cantidades recibidas' });
+    expect(within(table).getAllByRole('columnheader').map(cell => cell.textContent)).toEqual(['Producto', 'Polaridad', 'Enviadas', 'Recibidas']);
+    expect(table).toHaveTextContent('TOYO · Expected'); expect(table).toHaveTextContent('75.125 Ah');
+    expect(table).toHaveTextContent('Izquierda [L]'); expect(table).toHaveTextContent(sent);
+    expect(actualInput()).toHaveValue(''); expect(actualInput()).toHaveAttribute('placeholder', 'Cantidad');
+    expect(actualInput()).toHaveAttribute('aria-describedby', 'receipt-capture-rules');
+    expect(within(dialog).getByRole('button', { name: 'Revisar recepción' })).toBeDisabled();
+    expect(within(dialog).queryByRole('button', { name: 'Confirmar recepción' })).toBeNull();
+    const catalog = within(dialog).getByRole('region', { name: '¿Llegó otra variante?' });
+    expect(within(catalog).getByLabelText('Variante inesperada')).toBeVisible();
+    expect(within(catalog).getByRole('button', { name: 'Agregar variante inesperada' })).toBeDisabled();
+    expect(dialog).toHaveTextContent('Usá 0 si una variante no llegó.');
+    expect(dialog).toHaveTextContent('Todavía no se modifica el stock. Primero revisarás el conteo.');
+    expect(posts(f)).toHaveLength(0);
+  });
+  it.each(['00', '+1', '-1', '1.0', '1e2', '9223372036854775808', '0'])('explains invalid complete capture %s without allowing review', async value => {
+    const f = fixture(); render(<App />); await detail(); const dialog = await capture();
+    fireEvent.change(actualInput(), { target: { value } });
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Revisá las cantidades');
+    expect(screen.getByRole('button', { name: 'Revisar recepción' })).toBeDisabled();
+    fireEvent.change(actualInput(), { target: { value: sent } });
+    expect(within(dialog).queryByText(/Revisá las cantidades/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Revisar recepción' })).toBeEnabled();
+    expect(posts(f)).toHaveLength(0);
+  });
+  it('retains visible loading/unavailable guidance and still permits expected-only review', async () => {
+    let resolve!: (value: Response) => void;
+    const job = new Promise<Response>(yes => { resolve = yes; });
+    const f = fixture(2, url => url.startsWith('/api/inventory?') && url.includes('page_size=50') ? job : undefined);
+    render(<App />); await detail(); const dialog = await capture();
+    const panel = within(dialog).getByRole('region', { name: '¿Llegó otra variante?' });
+    expect(within(panel).getByRole('status')).toHaveTextContent('Consultando catálogo');
+    expect(within(panel).getByLabelText('Variante inesperada')).toBeDisabled();
+    await act(async () => resolve(reply({ error: 'service_unavailable' }, 503)));
+    expect(within(panel).getByRole('alert')).toHaveTextContent('Catálogo del destino no disponible');
+    fireEvent.change(actualInput(), { target: { value: sent } });
+    expect(screen.getByRole('button', { name: 'Revisar recepción' })).toBeEnabled();
+    expect(posts(f)).toHaveLength(0);
+  });
+  it('uses real catalog identity for added rows, excludes duplicates, removes and preserves the draft on edit', async () => {
+    const f = fixture(); render(<App />); await detail(); const dialog = await capture();
+    const selector = within(dialog).getByLabelText('Variante inesperada');
+    await waitFor(() => expect(selector).toBeEnabled());
+    expect(within(selector).queryByRole('option', { name: /Expected/ })).toBeNull();
+    fireEvent.change(selector, { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Agregar variante inesperada' }));
+    const table = within(dialog).getByRole('table', { name: 'Cantidades recibidas' });
+    expect(table).toHaveTextContent('TOYO · Unexpected'); expect(table).toHaveTextContent('75.125 Ah');
+    expect(within(selector).queryByRole('option', { name: /Unexpected/ })).toBeNull();
+    expect(screen.getByLabelText(/Cantidad recibida.*Unexpected/)).toHaveValue('');
+    fireEvent.change(actualInput(), { target: { value: '0' } });
+    fireEvent.change(screen.getByLabelText(/Cantidad recibida.*Unexpected/), { target: { value: '0' } });
+    expect(screen.getByRole('button', { name: 'Revisar recepción' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/Cantidad recibida.*Unexpected/), { target: { value: '7' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar recepción' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Editar cantidades' }));
+    expect(actualInput()).toHaveValue('0'); expect(screen.getByLabelText(/Cantidad recibida.*Unexpected/)).toHaveValue('7');
+    fireEvent.click(screen.getByRole('button', { name: /Quitar variante inesperada/ }));
+    expect(within(dialog).getByRole('table', { name: 'Cantidades recibidas' })).not.toHaveTextContent('Unexpected');
+    expect(within(screen.getByLabelText('Variante inesperada')).getByRole('option', { name: /Unexpected/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Revisar recepción' })).toBeDisabled();
+    expect(posts(f)).toHaveLength(0);
+  });
+});
+
 describe('U3b receipt modal foundation', () => {
   it('names each step, keeps the physical route and preserves the complete draft when editing', async () => {
     const f = fixture(); render(<App />); await detail();
@@ -133,6 +201,8 @@ describe('U3b receipt modal foundation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Recibir solicitud' }));
     const dialog = screen.getByRole('dialog', { name: 'Confirmar recepción' });
     expect(dialog).not.toHaveClass('transfer-receipt-modal');
+    expect(within(dialog).queryByRole('table', { name: 'Cantidades recibidas' })).toBeNull();
+    expect(within(dialog).queryByRole('region', { name: '¿Llegó otra variante?' })).toBeNull();
     expect(dialog).not.toHaveTextContent('Conteo · Luego revisarás la recepción');
     expect(actualInput()).toHaveValue('');
     fireEvent.keyDown(dialog, { key: 'Escape' });
