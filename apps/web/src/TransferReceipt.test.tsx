@@ -1,6 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
+import TransferReceipt, { ReceiptPreview, type TransferReceiptProps } from './TransferReceipt';
+import { parseTransferRecord, previewTransferReceipt } from './transferModel';
 
 // Exercise the existing App/controller boundary, not an import of the planned
 // component. Before R2 these fail at the destination receipt affordance.
@@ -129,7 +131,7 @@ describe('U3d expected receipt review', () => {
     expect(total).toHaveTextContent('Faltante: 1'); expect(total).toHaveTextContent('Exceso: 1');
     expect(posts(f)).toHaveLength(0);
   });
-  it('keeps mixed unexpected review on the existing functional fallback', async () => {
+  it('reviews unexpected catalog identity with zero future credit', async () => {
     const f = fixture(); render(<App />); await detail(); const dialog = await capture();
     const selector = screen.getByLabelText('Variante inesperada');
     await waitFor(() => expect(selector).toBeEnabled());
@@ -138,8 +140,108 @@ describe('U3d expected receipt review', () => {
     fireEvent.change(actualInput(), { target: { value: sent } });
     fireEvent.change(screen.getByLabelText(/Cantidad recibida.*Unexpected/), { target: { value: '7' } });
     fireEvent.click(screen.getByRole('button', { name: 'Revisar recepción' }));
-    expect(within(dialog).getByRole('table', { name: 'Detalle de recepción' })).toHaveTextContent('Variante inesperada 2');
-    expect(within(dialog).queryByRole('table', { name: 'Revisión de cantidades recibidas' })).toBeNull();
+    const table = within(dialog).getByRole('table', { name: 'Revisión de cantidades recibidas' });
+    const row = table.querySelector('[data-variant-id="2"]')!;
+    expect(row).toHaveTextContent('TOYO Unexpected · 75.125 Ah · Izquierda [L]');
+    expect(within(row as HTMLElement).getAllByRole('cell').slice(1, 4).map(cell => cell.textContent)).toEqual(['0', '7', '0']);
+    expect(row).toHaveTextContent('No enviada: 7');
+    expect(dialog).toHaveTextContent('La variante no enviada quedará registrada por separado; no se acreditará automáticamente al stock disponible ni se resolverá esta diferencia.');
+    expect(dialog.querySelector('input, select')).toBeNull();
+    expect(posts(f)).toHaveLength(0);
+  });
+});
+
+describe('U3e unexpected and mixed receipt preview', () => {
+  it('uses only the ID and unavailable guidance when no catalog identity is known', () => {
+    const record = parseTransferRecord(JSON.stringify(transit));
+    const receipt = previewTransferReceipt({ items: [{ variant_id: 1, actual_quantity: '0' }, { variant_id: 2, actual_quantity: '1' }] }, record);
+    render(<ReceiptPreview record={record} receipt={receipt} identities={{}} />);
+    const row = screen.getByRole('table').querySelector('[data-variant-id="2"]')!;
+    expect(row).toHaveTextContent('Variante 2');
+    expect(row).toHaveTextContent('Identidad no disponible. Consultá el catálogo del destino.');
+    expect(row).not.toHaveTextContent('Ah'); expect(row).not.toHaveTextContent('Izquierda'); expect(row).not.toHaveTextContent('Derecha');
+    expect(row).toHaveTextContent('No enviada: 1');
+  });
+  it.each(['request_stock', 'direct_shipment'])('preserves %s per-variant counts and bigint credit without netting', async kind => {
+    const f = fixture();
+    f.setRecord({ ...transit, kind, ...(kind === 'direct_shipment' ? { creator_location_id: 1, creator_location_name: 'Almacén', decided_at: transit.created_at } : {}), items: [1, 3].map((variant_id, index) => ({
+      ...transit.items[0], variant_id, polarity: index ? 'R' : 'L', quantity: sent,
+    })) });
+    render(<App />); await detail();
+    fireEvent.click(await screen.findByRole('button', { name: 'Recibir solicitud' }));
+    const dialog = screen.getByRole('dialog');
+    const selector = within(dialog).getByLabelText('Variante inesperada');
+    await waitFor(() => expect(selector).toBeEnabled());
+    fireEvent.change(selector, { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Agregar variante inesperada' }));
+    const inputs = within(dialog).getAllByRole('textbox');
+    const values = [(BigInt(sent) - 1n).toString(), (BigInt(sent) + 1n).toString(), '1'];
+    inputs.forEach((input, index) => fireEvent.change(input, { target: { value: values[index] } }));
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar recepción' }));
+    // The accepted request-stock preview is shared; other kinds keep their existing presentation.
+    const table = within(dialog).getByRole('table', { name: kind === 'request_stock' ? 'Revisión de cantidades recibidas' : 'Detalle de recepción' });
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(3);
+    for (const [id, expected] of [[1, [sent, values[0], values[0]]], [3, [sent, values[1], sent]], [2, ['0', '1', '0']]] as const) {
+      const row = table.querySelector(`[data-variant-id="${id}"]`) as HTMLElement;
+      expect(within(row).getAllByRole('cell').slice(1, 4).map(cell => cell.textContent)).toEqual(expected);
+    }
+    expect(table).toHaveTextContent('Faltante: 1'); expect(table).toHaveTextContent('Exceso: 1');
+    if (kind === 'request_stock') {
+      const total = within(table).getByRole('row', { name: /Total: 3 variantes/ });
+      expect(within(total).getAllByRole('cell').slice(1, 4).map(cell => cell.textContent)).toEqual([
+        '18014398509481986', '18014398509481987', '18014398509481985',
+      ]);
+      for (const badge of ['Faltante: 1', 'Exceso: 1', 'No enviada: 1']) expect(total).toHaveTextContent(badge);
+      expect(table.querySelectorAll('.receipt-preview-difference svg')).toHaveLength(3);
+    }
+    expect(dialog.querySelector('input, select')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Editar cantidades' }));
+    expect(within(dialog).getAllByRole('textbox').map(input => (input as HTMLInputElement).value)).toEqual(values);
+    expect(posts(f)).toHaveLength(0);
+  });
+  it.each(['changed', 'unavailable'])('pins captured destination identity through %s catalog reload and draft editing', async mode => {
+    let reload = false;
+    let resolve!: (response: Response) => void;
+    const job = new Promise<Response>(yes => { resolve = yes; });
+    const f = fixture(2, url => reload && url.startsWith('/api/inventory?') ? job : undefined);
+    const authority = { ready: true, epoch: 1, session: { authenticated: true,
+      identity: { account_id: 2, username: 'receipt-2', location: locations[1] },
+      csrf_token: 'c'.repeat(43), expires_at: '2030-01-01T00:00:00Z' } };
+    const props = { ownerTag: '1/2/2', controller: { getTransferAuthority: () => authority },
+      transfers: {}, record: parseTransferRecord(JSON.stringify({ ...transit, items: [1, 3].map(variant_id => ({
+        ...transit.items[0], variant_id, quantity: '1',
+      })) })) } as unknown as TransferReceiptProps;
+    const view = render(<TransferReceipt {...props} />); const dialog = await capture();
+    const selector = within(dialog).getByLabelText('Variante inesperada');
+    await waitFor(() => expect(selector).toBeEnabled());
+    fireEvent.change(selector, { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Agregar variante inesperada' }));
+    within(dialog).getAllByRole('textbox').forEach(input => fireEvent.change(input, { target: { value: '1' } }));
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar recepción' }));
+    const assertReview = () => {
+      const table = within(dialog).getByRole('table', { name: 'Revisión de cantidades recibidas' });
+      expect(table).toHaveTextContent('TOYO Unexpected · 75.125 Ah · Izquierda [L]');
+      const total = within(table).getByRole('row', { name: /Total: 3 variantes/ });
+      expect(within(total).getAllByRole('cell').slice(1, 4).map(cell => cell.textContent)).toEqual(['2', '3', '2']);
+      expect(total).toHaveTextContent('No enviada: 1');
+      expect(screen.getByRole('button', { name: 'Confirmar recepción' })).toBeEnabled();
+    };
+    assertReview(); reload = true;
+    // Same authority, new getter identity: exercise a passive catalog effect rerun.
+    view.rerender(<TransferReceipt {...props} controller={{ ...props.controller, getTransferAuthority: () => authority } as TransferReceiptProps['controller']} />);
+    assertReview();
+    await act(async () => resolve(mode === 'unavailable' ? reply({}, 503) : reply({
+      location: locations[1], page: 1, page_size: 50, total_variants: 1,
+      items: [{ variant_id: 2, catalog_entry_id: 2, brand: 'RENAMED', model: 'Replacement', capacity_ah: 100,
+        polarity: 'R', existing: 0, reserved: 0, available: 0 }],
+    })));
+    assertReview(); expect(dialog).not.toHaveTextContent('RENAMED');
+    fireEvent.click(screen.getByRole('button', { name: 'Editar cantidades' }));
+    expect(screen.getByLabelText(/Cantidad recibida.*Unexpected/)).toHaveValue('1');
+    expect(dialog).toHaveTextContent('75.125 Ah'); expect(dialog).toHaveTextContent('Izquierda [L]');
+    expect(screen.getByRole('button', { name: 'Revisar recepción' })).toBeEnabled();
+    if (mode === 'unavailable') expect(within(dialog).getByRole('alert')).toHaveTextContent('Catálogo del destino no disponible');
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar recepción' })); assertReview();
     expect(posts(f)).toHaveLength(0);
   });
 });
@@ -395,7 +497,7 @@ describe('R2 destination receipt capture/review/once UI', () => {
     fireEvent.change(screen.getByLabelText(/Cantidad recibida.*Unexpected/), { target: { value: '7' } });
     fireEvent.click(screen.getByRole('button', { name: 'Revisar recepción' }));
     const dialog = screen.getByRole('dialog');
-    expect(dialog).toHaveTextContent('Faltante'); expect(dialog).toHaveTextContent('Inesperada');
+    expect(dialog).toHaveTextContent('Faltante'); expect(dialog).toHaveTextContent('No enviada: 7');
     expect(dialog).toHaveTextContent('0'); expect(posts(f)).toHaveLength(0);
     const stockReadsBefore = f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?')).length;
     fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar recepción' }));

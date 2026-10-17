@@ -74,7 +74,7 @@
   .transfer-receipt-modal > footer > button { flex: 1 1 160px; }
 }
 
-/* Expected preview only; immutable historical receipt tables are unchanged. */
+/* Draft preview only; immutable historical receipt tables are unchanged. */
 .receipt-preview { display: grid; gap: 16px; min-width: 0; }
 .receipt-preview-intro { color: var(--muted); }
 .receipt-preview-intro small, .receipt-preview-effect small { font-size: 12px; color: var(--muted); }
@@ -101,6 +101,7 @@
 .receipt-preview-table :is(td:nth-child(4), tfoot) { font-weight: 500; }
 .receipt-preview-table strong { font-weight: 500; }
 .receipt-preview-table small { font-size: inherit; color: var(--muted); }
+.receipt-preview-table .receipt-preview-provenance { display: block; margin-top: 4px; font-size: 11px; }
 .receipt-preview-table tfoot td:nth-child(4) { color: var(--wine); font-weight: 600; }
 .receipt-preview-table tfoot span { display: block; }
 .receipt-preview-difference { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; border: 1px solid; border-radius: 4px; padding: 2px 6px; font-size: 12px; }

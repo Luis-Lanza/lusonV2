@@ -36,14 +36,27 @@ export function ReceiptTable({ receipt, record, detailPresentation = false }: {
   </table></div>;
 }
 // Preview only: persisted receipt history retains its original labels and evidence.
-function ExpectedReceiptPreview({ receipt, record }: { receipt: TransferReceiptData; record: TransferRecord }) {
+interface CatalogIdentity {
+  readonly brand: string; readonly model: string; readonly capacity_ah: string; readonly polarity: 'L' | 'R';
+  readonly destinationLocationID: TransferRecord['destination_location_id'];
+}
+export function ReceiptPreview({ receipt, record, identities }: {
+  receipt: TransferReceiptData; record: TransferRecord; identities: Readonly<Record<number, CatalogIdentity>>;
+}) {
+  const identity = (id: number) => record.items.find(item => item.variant_id === id) ?? identities[id];
+  const product = (id: number) => {
+    const item = identity(id);
+    return item ? <><strong>{item.brand} {item.model}</strong>{' · '}
+      <small>{item.capacity_ah} Ah · {item.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</small></>
+      : <><strong>Variante {id}</strong><small>Identidad no disponible. Consultá el catálogo del destino.</small></>;
+  };
   const labels = ['Producto', 'Enviadas', 'Recibidas', 'A acreditar', 'Diferencia'];
   const totals = receipt.items.reduce((sum, line) => ({
     sent: sum.sent + line.expected_quantity, physical: sum.physical + line.actual_quantity,
     credit: sum.credit + line.available_quantity,
   }), { sent: 0n, physical: 0n, credit: 0n });
-  const difference = (kind: string, quantity: bigint) => `${kind === 'shortage' ? 'Faltante' : 'Exceso'}: ${quantity.toString()}`;
-  const summary = ['shortage', 'excess'].map(kind => ({ kind,
+  const difference = (kind: string, quantity: bigint) => `${kind === 'shortage' ? 'Faltante' : kind === 'unexpected' ? 'No enviada' : 'Exceso'}: ${quantity.toString()}`;
+  const summary = ['shortage', 'excess', 'unexpected'].map(kind => ({ kind,
     quantity: receipt.exceptions.filter(line => line.kind === kind).reduce((sum, line) => sum + line.quantity, 0n),
   })).filter(line => line.quantity > 0n);
   return <div className="receipt-preview">
@@ -52,11 +65,10 @@ function ExpectedReceiptPreview({ receipt, record }: { receipt: TransferReceiptD
       <caption className="sr-only">Revisión de cantidades recibidas</caption>
       <thead><tr>{labels.map(label => <th scope="col" key={label}>{label}</th>)}</tr></thead>
       <tbody>{receipt.items.map(line => {
-        const item = record.items.find(item => item.variant_id === line.variant_id)!;
         const exception = receipt.exceptions.find(exception => exception.variant_id === line.variant_id);
         return <tr key={line.variant_id} data-variant-id={line.variant_id} className={exception ? 'receipt-preview-discrepant' : undefined}>
-          <td data-label={labels[0]}><strong>{item.brand} {item.model}</strong>{' · '}
-            <small>{item.capacity_ah} Ah · {item.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</small></td>
+          <td data-label={labels[0]}>{product(line.variant_id)}
+            {exception?.kind === 'unexpected' && identity(line.variant_id) && <small className="receipt-preview-provenance">Identidad del catálogo del destino al agregar.</small>}</td>
           <td data-label={labels[1]}>{line.expected_quantity.toString()}</td>
           <td data-label={labels[2]}>{line.actual_quantity.toString()}</td>
           <td data-label={labels[3]}>{line.available_quantity.toString()}</td>
@@ -79,11 +91,12 @@ function ExpectedReceiptPreview({ receipt, record }: { receipt: TransferReceiptD
         <small>No es inventario actual.</small></p>
       {!receipt.exceptions.length && <p>El conteo coincide con lo enviado.</p>}
       {receipt.exceptions.map(exception => {
-        const item = record.items.find(item => item.variant_id === exception.variant_id)!;
+        const item = identity(exception.variant_id);
         return <div className="receipt-preview-exception" key={exception.variant_id}>
-          <p>{exception.kind === 'shortage' ? 'Faltante' : 'Exceso'}: {exception.quantity.toString()} · {item.brand} {item.model} · {item.capacity_ah} Ah · {item.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}.</p>
+          <p>{difference(exception.kind, exception.quantity)} · {item ? <>{item.brand} {item.model} · {item.capacity_ah} Ah · {item.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</> : `Variante ${exception.variant_id} · Identidad no disponible`}.</p>
           <p className="receipt-preview-warning">{exception.kind === 'shortage' ? 'El faltante quedará registrado; no se resuelve automáticamente.'
-            : 'El exceso quedará registrado por separado; no se sumará automáticamente al stock disponible.'}</p>
+            : exception.kind === 'unexpected' ? 'La variante no enviada quedará registrada por separado; no se acreditará automáticamente al stock disponible ni se resolverá esta diferencia.'
+              : 'El exceso quedará registrado por separado; no se sumará automáticamente al stock disponible.'}</p>
         </div>;
       })}
       <p className="receipt-preview-immutable">Al confirmar: Conteo original guardado una sola vez; no se podrá editar.</p>
@@ -99,6 +112,8 @@ export interface TransferReceiptProps {
 interface Review {
   fence: string; record: TransferRecord; trigger: HTMLElement;
   values: Record<number, string>; unexpected: number[]; step: 'capture' | 'review';
+  // Display-only identity and catalog membership captured at selection, never receipt history or payload.
+  identities: Readonly<Record<number, CatalogIdentity>>;
 }
 export default function TransferReceipt(props: TransferReceiptProps) {
   const { controller, ownerTag, transfers } = props;
@@ -195,7 +210,7 @@ export default function TransferReceipt(props: TransferReceiptProps) {
     const original = captureDecisionRecord(record);
     focus.begin();
     setSelectedUnexpected('');
-    setReview({ fence, record: original, trigger, values: Object.fromEntries(original.items.map(item => [item.variant_id, ''])), unexpected: [], step: 'capture' });
+    setReview({ fence, record: original, trigger, values: Object.fromEntries(original.items.map(item => [item.variant_id, ''])), unexpected: [], identities: {}, step: 'capture' });
   };
   const source = catalog?.fence === fence && catalog.record === visibleReview?.record ? catalog.data : null;
   const candidates = source?.rows.filter(row => !visibleReview?.record.items.some(item => item.variant_id === row.variant_id)
@@ -206,7 +221,8 @@ export default function TransferReceipt(props: TransferReceiptProps) {
     try {
       input = canonicalTransferReceiptInput({ items: [...visibleReview.record.items.map(item => item.variant_id), ...visibleReview.unexpected]
         .map(variant_id => ({ variant_id, actual_quantity: visibleReview.values[variant_id] })) }, visibleReview.record);
-      if (visibleReview.unexpected.some(id => !source?.rows.some(row => row.variant_id === id))) throw new Error();
+      if (visibleReview.unexpected.some(id => visibleReview.identities[id]?.destinationLocationID !== visibleReview.record.destination_location_id
+        && !source?.rows.some(row => row.variant_id === id))) throw new Error();
       preview = previewTransferReceipt(input, visibleReview.record);
     } catch { input = null; }
   }
@@ -222,7 +238,11 @@ export default function TransferReceipt(props: TransferReceiptProps) {
         const row = candidates.find(row => String(row.variant_id) === selectedUnexpected);
         if (!current() || !row || busy) return;
         setReview(before => before && !before.unexpected.includes(row.variant_id)
-          ? { ...before, unexpected: [...before.unexpected, row.variant_id], values: { ...before.values, [row.variant_id]: '' } } : before);
+          ? { ...before, unexpected: [...before.unexpected, row.variant_id], values: { ...before.values, [row.variant_id]: '' },
+            identities: { ...before.identities, [row.variant_id]: Object.freeze({
+              brand: row.brand, model: row.model, capacity_ah: String(row.capacity_ah), polarity: row.polarity,
+              destinationLocationID: before.record.destination_location_id,
+            }) } } : before);
         setSelectedUnexpected('');
       }}>{receiptPresentation ? 'Agregar variante' : 'Agregar variante inesperada'}</button>
   </>;
@@ -234,11 +254,10 @@ export default function TransferReceipt(props: TransferReceiptProps) {
   </>;
   const captureLines = visibleReview ? [
     ...visibleReview.record.items.map(item => ({ ...item, sent: item.quantity, unexpected: false })),
-    ...visibleReview.unexpected.map(variant_id => ({ ...source?.rows.find(row => row.variant_id === variant_id),
+    ...visibleReview.unexpected.map(variant_id => ({ ...visibleReview.identities[variant_id],
       variant_id, sent: 0n, unexpected: true })),
   ] : [];
-  const expectedReviewPresentation = receiptPresentation && visibleReview.step === 'review'
-    && visibleReview.unexpected.length === 0 && !reviewResult;
+  const previewPresentation = receiptPresentation && visibleReview.step === 'review' && !reviewResult;
   const completeInvalidCapture = !input && captureLines.length > 0
     && captureLines.every(line => visibleReview?.values[line.variant_id] !== '');
   const actions = canReceive && !(attempt?.original.id === record.id && result) ? <div className="transfer-decision-actions">
@@ -264,7 +283,7 @@ export default function TransferReceipt(props: TransferReceiptProps) {
     </section>}
     {props.renderDetail ? props.renderDetail(actions) : actions}
     {visibleReview && <div className={`transfer-decision-backdrop${receiptPresentation ? ' transfer-receipt-backdrop' : ''}`}><section ref={dialog} tabIndex={-1}
-      className={`transfer-decision-modal${receiptPresentation ? ' transfer-receipt-modal' : ''}${expectedReviewPresentation ? ' receipt-expected-review' : ''}`}
+      className={`transfer-decision-modal${receiptPresentation ? ' transfer-receipt-modal' : ''}${previewPresentation ? ' receipt-expected-review' : ''}`}
       role="dialog" aria-modal="true" aria-labelledby="receipt-title" aria-busy={busy} onKeyDown={event => {
         if (!current() || event.nativeEvent.isComposing || event.defaultPrevented) return;
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); dismiss(); }
@@ -325,7 +344,7 @@ export default function TransferReceipt(props: TransferReceiptProps) {
         </div> : visibleReview.step === 'capture' ? <>
           <p>Ingresá cada cantidad recibida, incluido 0 si no llegó esa variante. No se limita por disponibilidad del destino.</p>
           <div className="receipt-quantities">{[...visibleReview.record.items.map(item => ({ id: item.variant_id, label: `${item.brand} · ${item.model}`, sent: item.quantity })),
-            ...visibleReview.unexpected.map(id => ({ id, label: source?.rows.find(row => row.variant_id === id)?.model ?? `Variante ${id}`, sent: 0n }))].map(line => <div key={line.id}>
+            ...visibleReview.unexpected.map(id => ({ id, label: visibleReview.identities[id]?.model ?? `Variante ${id}`, sent: 0n }))].map(line => <div key={line.id}>
               <label htmlFor={`receipt-quantity-${line.id}`}>Cantidad recibida {line.label}</label><small>Cantidad enviada: {line.sent.toString()}</small>
               <input id={`receipt-quantity-${line.id}`} type="text" inputMode="numeric" autoComplete="off" value={visibleReview.values[line.id]} disabled={busy}
                 onChange={event => editValue(line.id, event.target.value)} />
@@ -335,8 +354,8 @@ export default function TransferReceipt(props: TransferReceiptProps) {
             </div>)}</div>
           {catalogControls}
           <p>Solo enteros sin signos, espacios ni ceros iniciales, hasta 9223372036854775807. Las variantes inesperadas requieren cantidades positivas; una recepción totalmente en cero no es válida.</p>
-        </> : preview && receiptPresentation && visibleReview.unexpected.length === 0 ?
-          <ExpectedReceiptPreview receipt={preview} record={visibleReview.record} /> : preview && <>
+        </> : preview && receiptPresentation ?
+          <ReceiptPreview receipt={preview} record={visibleReview.record} identities={visibleReview.identities} /> : preview && <>
           <ReceiptTable receipt={preview} record={visibleReview.record} />
           <p>Solo el mínimo entre lo recibido y lo enviado de cada variante esperada se acredita como stock disponible. Faltantes, excesos y variantes inesperadas quedan registrados por separado; no se acreditan ni se resuelven automáticamente.</p>
           <p>Confirmar finaliza la recepción una sola vez. No se podrá modificar después.</p>
