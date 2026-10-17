@@ -183,6 +183,36 @@
 .count-corrections .count-proposal-review .count-technical { font-size: 14px; }
 .count-corrections .count-proposal-review footer { padding: 8px 0 0; margin-top: 4px; justify-content: space-between; }
 .count-corrections .count-proposal-review footer button { flex: 0 1 auto; }
+/* Final decision review is independent of accepted capture/consultation geometry. */
+.count-corrections .count-decision-review {
+  width: min(580px, 100%);
+  padding: 20px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.count-corrections .count-decision-review > h3 {
+  padding: 0 70px 8px 0;
+  border: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+.count-corrections .count-decision-review p { font-size: 14px; line-height: inherit; }
+.count-corrections .count-decision-review .count-review-body { gap: 12px; }
+.count-corrections .count-decision-review .count-decision-reason { border-left: 3px solid var(--wine); }
+.count-corrections .count-decision-review strong { overflow-wrap: anywhere; }
+.count-corrections .count-decision-review .count-review-warning strong { color: var(--wine); }
+.count-corrections .count-decision-review .count-technical { font-size: 14px; }
+.count-corrections .count-decision-review footer {
+  padding: 12px 0 0;
+  margin-top: 4px;
+  justify-content: flex-end;
+}
+.count-corrections .count-decision-review footer button { flex: 0 1 auto; }
+.count-corrections .count-decision-review footer button:last-child { color: white; background: var(--wine); }
+@media (max-width: 767px) {
+  .count-corrections .count-decision-review { padding: 18px; }
+  .count-corrections .count-decision-review footer button { flex: 1 1 160px; }
+}
 /* Decision capture is independent of accepted consultation/proposal geometry. */
 .count-corrections .count-decision-capture {
   width: min(580px, 100%);

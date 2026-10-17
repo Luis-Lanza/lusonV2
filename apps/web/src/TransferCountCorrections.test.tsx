@@ -88,12 +88,145 @@ it.each(['accept', 'reject'] as const)('captures approved %s evidence, admission
   enter(action); expect(decisionReason()).toHaveValue(raw); back();
   enter(action === 'accept' ? 'reject' : 'accept'); expect(decisionReason()).toHaveValue('Opposite private reason'); back();
   expect(key).not.toHaveBeenCalled(); enter(action); review();
-  expect(key).toHaveBeenCalledTimes(1); expect(modal.querySelector('.count-evidence')?.textContent).toBe(`Motivo exacto: ${raw}`);
+  expect(key).toHaveBeenCalledTimes(1); expect(modal.querySelector('.count-decision-reason')?.textContent).toBe(raw);
   expect(f.corrections.decide).not.toHaveBeenCalled(); expect(f.corrections.refresh).not.toHaveBeenCalled();
   fireEvent.keyDown(modal, { key: 'Escape' }); expect(trigger).toHaveFocus();
   fireEvent.click(trigger); enter(action); expect(decisionReason()).toHaveValue(''); back();
   enter(action === 'accept' ? 'reject' : 'accept'); expect(decisionReason()).toHaveValue('');
   key.mockRestore();
+});
+it.each(['accept', 'reject'] as const)('reviews pinned %s evidence and edits raw reason with a fresh identity', async action => {
+  const user = userEvent.setup(); const f = fixture(3); const key = vi.spyOn(crypto, 'getRandomValues');
+  const raw = ' \u00a0🙂 decisión\t '; const original = '  Original\n propuesta  ';
+  Object.assign(f.corrections.snapshot!.lines[0], { proposals: [{ ...proposal(), reason: original }] });
+  render(<><button>Outside</button><TransferCountCorrections {...f.props} /></>);
+  const trigger = screen.getByRole('button', { name: 'Consultar propuesta' }); fireEvent.click(trigger);
+  fireEvent.click(screen.getByRole('button', { name: action === 'accept' ? 'Aceptar propuesta' : 'Rechazar propuesta' }));
+  fireEvent.change(decisionReason(), { target: { value: raw } }); const modal = review();
+  expect(modal).toHaveAccessibleName(`Confirmar ${action === 'accept' ? 'aceptación' : 'rechazo'} de conteo`);
+  expect(modal).toHaveTextContent('TR-001 · Propuesta de Sucursal A'); expect(modal).toHaveTextContent('Decisión de Sucursal B');
+  expect(modal).toHaveTextContent(`Enviadas: ${big}`);
+  expect(within(modal).getByRole('row', { name: 'Cantidad recibida 5 7' })).toBeInTheDocument();
+  expect(within(modal).getByRole('row', { name: 'Crédito de esta recepción 5 7' })).toBeInTheDocument();
+  expect(within(modal).getByRole('columnheader', { name: action === 'accept' ? 'Al aceptar' : 'Propuesto' })).toBeInTheDocument();
+  expect(modal.querySelector('.count-review-reason')?.textContent).toBe(original);
+  expect(modal.querySelector('.count-decision-reason')?.textContent).toBe(raw);
+  expect(within(modal).queryByRole('textbox')).toBeNull(); expect(within(modal).queryByRole('checkbox')).toBeNull();
+  expect(modal).toHaveTextContent(action === 'accept' ? 'Efecto en destino: +2' : 'La cantidad propuesta no se aplicará.');
+  expect(modal).toHaveTextContent('La recepción original se conserva.');
+  expect(modal).toHaveTextContent('El crédito no es inventario actual.');
+  const technical = within(modal).getByText('Evidencia técnica de la decisión').closest('details')!;
+  expect(technical).not.toHaveAttribute('open');
+  const identity = technical.textContent; const edit = within(modal).getByRole('button', { name: 'Editar motivo' });
+  expect(edit).toHaveFocus();
+  await user.tab({ shift: true }); expect(within(modal).getByText('Evidencia técnica de la decisión')).toHaveFocus();
+  await user.tab(); expect(edit).toHaveFocus();
+  fireEvent.keyDown(modal, { key: 'Escape', keyCode: 229 }); expect(modal).toBeInTheDocument();
+  fireEvent.click(edit); expect(screen.getByRole('dialog')).toBe(modal);
+  expect(decisionReason()).toHaveValue(raw); expect(decisionReason()).toHaveFocus();
+  expect(screen.getByRole('button', { name: 'Outside' })).toHaveAttribute('inert');
+  expect(modal).not.toHaveTextContent('Evidencia técnica de la decisión'); expect(key).toHaveBeenCalledTimes(1);
+  review(); expect(key).toHaveBeenCalledTimes(2);
+  expect(within(modal).getByText('Evidencia técnica de la decisión').closest('details')!.textContent).not.toBe(identity);
+  expect(modal.querySelector('.count-decision-reason')?.textContent).toBe(raw);
+  fireEvent.click(within(modal).getByRole('button', { name: 'Editar motivo' }));
+  fireEvent.click(within(modal).getByRole('button', { name: 'Volver' }));
+  fireEvent.click(within(modal).getByRole('button', { name: action === 'accept' ? 'Rechazar propuesta' : 'Aceptar propuesta' }));
+  expect(decisionReason()).toHaveValue('');
+  fireEvent.change(decisionReason(), { target: { value: 'Other branch private' } });
+  fireEvent.click(within(modal).getByRole('button', { name: 'Volver' }));
+  fireEvent.click(within(modal).getByRole('button', { name: action === 'accept' ? 'Aceptar propuesta' : 'Rechazar propuesta' }));
+  expect(decisionReason()).toHaveValue(raw); review();
+  expect(f.corrections.decide).not.toHaveBeenCalled(); expect(f.corrections.propose).not.toHaveBeenCalled();
+  expect(f.corrections.refresh).not.toHaveBeenCalled(); expect(f.corrections.recover).not.toHaveBeenCalled();
+  fireEvent.keyDown(modal, { key: 'Escape' }); expect(trigger).toHaveFocus();
+  fireEvent.click(trigger); fireEvent.click(screen.getByRole('button', { name: action === 'accept' ? 'Rechazar propuesta' : 'Aceptar propuesta' }));
+  expect(decisionReason()).toHaveValue(''); key.mockRestore();
+});
+it.each(['accept', 'reject'] as const)('submits only the freshly prepared %s identity after editing', async action => {
+  const f = fixture(3); Object.assign(f.corrections.snapshot!.lines[0], { proposals: [proposal()] });
+  const view = render(<TransferCountCorrections {...f.props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+  fireEvent.click(screen.getByRole('button', { name: action === 'accept' ? 'Aceptar propuesta' : 'Rechazar propuesta' }));
+  fireEvent.change(decisionReason(), { target: { value: '  First raw 🙂  ' } }); const modal = review();
+  const oldKey = within(modal).getByText(/^Clave /).textContent!.slice(6);
+  fireEvent.click(within(modal).getByRole('button', { name: 'Editar motivo' }));
+  const raw = ' \u00a0 Edited\t🙂  '; fireEvent.change(decisionReason(), { target: { value: raw } }); review();
+  const newKey = within(modal).getByText(/^Clave /).textContent!.slice(6); expect(newKey).not.toBe(oldKey);
+  Object.assign(f.props.record, { reference: 'Changed live reference', destination_location_name: 'Changed live location' });
+  view.rerender(<TransferCountCorrections {...f.props} />);
+  expect(modal).toHaveTextContent('TR-001 · Propuesta de Sucursal A'); expect(modal).not.toHaveTextContent('Changed live');
+  await act(async () => fireEvent.click(within(modal).getByRole('button', { name: action === 'accept' ? 'Confirmar aceptación' : 'Confirmar rechazo' })));
+  expect(f.corrections.decide).toHaveBeenCalledExactlyOnceWith(action, {
+    variant_id: 201, expected_revision: '4', operation_key: newKey, reason: raw });
+  expect(f.corrections.refresh).not.toHaveBeenCalled();
+});
+it.each((['accept', 'reject'] as const).flatMap(action => [false, true].flatMap(rerender =>
+  ['Editar motivo', action === 'accept' ? 'Confirmar aceptación' : 'Confirmar rechazo'].map(operation =>
+    ({ action, rerender, operation })))))('refuses stale $action review (render=$rerender) at $operation', ({ action, rerender, operation }) => {
+    for (const mutation of ['owner', 'request', 'record', 'snapshot', 'quantity', 'reason', 'key', 'actual', 'credit', 'workflow', 'applied', 'busy', 'mask', 'uncertain', 'initiator', 'base', 'baseCredit', 'stamp', 'removed', 'requestPin', 'membership']) {
+      const f = fixture(3); const pending = proposal(); const confirmed = { ...line(), proposals: [pending] };
+      Object.assign(f.corrections.snapshot!, { lines: [confirmed] }); const view = render(<TransferCountCorrections {...f.props} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+      fireEvent.click(screen.getByRole('button', { name: action === 'accept' ? 'Aceptar propuesta' : 'Rechazar propuesta' }));
+      fireEvent.change(decisionReason(), { target: { value: '  Private raw  ' } }); const modal = review();
+      const button = within(modal).getByRole('button', { name: operation });
+      const key = vi.spyOn(crypto, 'getRandomValues');
+      if (mutation === 'owner') f.authority.sessionGeneration = 2;
+      if (mutation === 'request') Object.assign(f.props.record, { id: '2' });
+      if (mutation === 'record') {
+        if (rerender) f.props.record = { ...f.props.record };
+        else Object.assign(f.props.record, { status: 'approved' });
+      }
+      if (mutation === 'snapshot') f.corrections.snapshot = { ...f.corrections.snapshot! };
+      if (mutation === 'quantity') Object.assign(pending, { actual_quantity: 9n });
+      if (mutation === 'reason') Object.assign(pending, { reason: 'Replacement' });
+      if (mutation === 'key') Object.assign(pending, { operation_key: 'replacement_key' });
+      if (mutation === 'actual') confirmed.effective_actual++;
+      if (mutation === 'credit') confirmed.effective_credit++;
+      if (mutation === 'workflow') confirmed.workflow_revision++;
+      if (mutation === 'applied') confirmed.applied_revision++;
+      if (mutation === 'busy') f.corrections.busy = true;
+      if (mutation === 'mask') f.corrections.masked = true;
+      if (mutation === 'uncertain') f.corrections.attempts = [attempt('uncertain')];
+      if (mutation === 'initiator') Object.assign(pending, { initiator_location_id: 3 });
+      if (mutation === 'base') Object.assign(pending, { base_revision: 2n });
+      if (mutation === 'baseCredit') Object.assign(pending, { base_credit: 4n });
+      if (mutation === 'stamp') Object.assign(pending, { recorded_at: 'changed' });
+      if (mutation === 'removed') confirmed.proposals = [];
+      if (mutation === 'requestPin') Object.assign(f.corrections.snapshot!, { request_id: 2n });
+      if (mutation === 'membership' && f.props.record.status === 'received') Object.assign(f.props.record.receipt, { items: [] });
+      if (rerender) {
+        view.rerender(<TransferCountCorrections {...f.props} />);
+        expect(screen.queryByRole('button', { name: 'Editar motivo' }), mutation).toBeNull();
+        expect(screen.queryByRole('button', { name: /Confirmar (aceptación|rechazo)/ }), mutation).toBeNull();
+      } else fireEvent.click(button);
+      expect(screen.queryByRole('textbox'), mutation).toBeNull();
+      expect(f.corrections.decide, mutation).not.toHaveBeenCalled(); expect(key, mutation).not.toHaveBeenCalled();
+      expect(f.corrections.refresh, mutation).not.toHaveBeenCalled(); key.mockRestore(); view.unmount();
+    }
+});
+it.each([
+  { actual: 1n, credit: 1n, delta: '-4', unexpected: false },
+  { actual: 9n, credit: 2n, delta: '-3', unexpected: false },
+  { actual: 9n, credit: 0n, delta: '0', unexpected: true },
+])('keeps final decision stock/credit semantics for $actual (audit=$unexpected)', ({ actual, credit, delta, unexpected }) => {
+  for (const action of ['accept', 'reject'] as const) {
+    const f = fixture(3); f.props.record.items = unexpected ? [] : [{ ...f.props.record.items[0], quantity: 2n }];
+    Object.assign(f.corrections.snapshot!.lines[0], { proposals: [{ ...proposal(), actual_quantity: actual }] });
+    const view = render(<TransferCountCorrections {...f.props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+    fireEvent.click(screen.getByRole('button', { name: action === 'accept' ? 'Aceptar propuesta' : 'Rechazar propuesta' }));
+    fireEvent.change(decisionReason(), { target: { value: '  Verified reason  ' } }); const modal = review();
+    expect(within(modal).getByRole('row', { name: `Crédito de esta recepción 5 ${credit}` })).toBeInTheDocument();
+    expect(modal).toHaveTextContent(`Efecto en destino: ${action === 'reject' ? '0' : delta}`);
+    if (action === 'reject') {
+      expect(modal).toHaveTextContent('Sin cambios en el conteo efectivo ni en el stock.');
+      expect(modal).not.toHaveTextContent('El faltante permanece');
+    } else expect(modal).toHaveTextContent('si las validaciones del sistema son satisfactorias');
+    if (unexpected) expect(modal).toHaveTextContent('Solo auditoría: crédito y efecto cero.');
+    expect(f.corrections.decide).not.toHaveBeenCalled(); view.unmount();
+  }
 });
 const confirm = () => fireEvent.click(screen.getByRole('button', { name: 'Enviar propuesta' }));
 afterEach(() => vi.unstubAllGlobals());
@@ -514,7 +647,7 @@ it.each(['Aceptar', 'Rechazar'])('%s capture focuses reason and requires separat
   expect(screen.queryByLabelText('Cantidad corregida')).not.toBeInTheDocument();
   fireEvent.change(decisionReason(), { target: { value: 'Exact decision' } });
   expect(review()).toBe(modal);
-  expect(within(modal).getByRole('button', { name: 'Cancelar' })).toHaveFocus();
+  expect(within(modal).getByRole('button', { name: 'Editar motivo' })).toHaveFocus();
   expect(f.corrections.decide).not.toHaveBeenCalled();
   fireEvent.click(within(modal).getByRole('button', { name: 'Cerrar corrección' }));
   expect(screen.getByRole('button', { name: 'Consultar propuesta' })).toHaveFocus();

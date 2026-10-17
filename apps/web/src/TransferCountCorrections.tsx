@@ -109,6 +109,8 @@ interface Review {
   draft: Draft; snapshot: NonNullable<TransferCountCorrectionsProps['corrections']['snapshot']>;
   input: CountProposalInput | CountDecisionInput; actual: bigint; revision: bigint; base: bigint; credit: bigint; delta: bigint;
   currentActual: bigint; currentCredit: bigint;
+  decision?: Readonly<{ reference: string; battery: string; sent: bigint; proposer: string; reviewer: string;
+    destination: string; origin: string; unexpected: boolean; originalReason: string }>;
 }
 function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCurrent: () => boolean }) {
   const { record, controller, corrections } = props;
@@ -131,7 +133,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
   const validSnapshot = !masked && snapshot?.request_id.toString() === record.id ? snapshot : null;
   const recoveryVariant = record.status === 'received' ? record.receipt.items[0]?.variant_id : undefined;
   const attempts = masked ? [] : corrections.attempts.filter(a => a.requestID.toString() === record.id && sameCountOwner(a.owner, owner));
-  const visibleReview = review && validSnapshot === review.snapshot ? review : null;
+  const visibleReview = review && validSnapshot === review.snapshot && reviewCurrent(review) ? review : null;
   function current() {
     const p = latest.current;
     return mounted.current && p.isBoundaryCurrent() && eligible(p)
@@ -173,6 +175,11 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
       && pending.reason === original.reason && pending.initiator_location_id === original.initiator_location_id
       && pending.base_revision === original.base_revision && pending.base_credit === original.base_credit
       && pending.operation_key === original.operation_key && pending.recorded_at === original.recorded_at;
+  }
+  function reviewCurrent(captured: Review) {
+    return captured.draft.action === 'propose' || current() && !submitting.current
+      && !latest.current.corrections.busy && !!consultation && consultationCurrent(consultation)
+      && latest.current.corrections.snapshot === captured.snapshot;
   }
   const validConsultation = consultation && consultationCurrent(consultation) ? consultation : null;
   const consulting = !!validConsultation && !draft;
@@ -291,7 +298,12 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
         revision: draft.action === 'propose' ? line.workflow_revision + 1n : pending!.revision,
         base: draft.action === 'propose' ? line.applied_revision : pending!.base_revision,
         currentActual: line.effective_actual, currentCredit: line.effective_credit,
-        credit, delta: draft.action === 'reject' || !item ? 0n : credit - line.effective_credit });
+        credit, delta: draft.action === 'reject' || !item ? 0n : credit - line.effective_credit,
+        decision: draft.action === 'propose' ? undefined : Object.freeze({ reference: record.reference,
+          battery: name(draft.variant), sent: item?.quantity ?? 0n,
+          proposer: location(pending!.initiator_location_id), reviewer: location(owner!.location),
+          destination: record.destination_location_name, origin: record.origin_location_name,
+          unexpected: !item, originalReason: pending!.reason }) });
       setMessage('');
     } catch { setMessage('Ingresá cantidad decimal canónica entre 0 y 9223372036854775807 y un motivo válido. Si no se puede crear una clave segura, no se enviará nada.'); }
   }
@@ -328,6 +340,12 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
       return;
     }
     // Keep the capture and isolation lifetime, but retire the reviewed transport identity.
+    setDraft({ ...captured.draft }); setReview(null); setMessage('');
+  }
+  function editDecision(captured: Review) {
+    if (!current() || submitting.current || latest.current.corrections.busy) return;
+    if (review !== captured || captured.draft.action === 'propose' || !reviewCurrent(captured)) { retire(); return; }
+    // Preserve the branch capture and isolation, never the old transport identity.
     setDraft({ ...captured.draft }); setReview(null); setMessage('');
   }
   function close() {
@@ -441,7 +459,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
             onClick={() => { if (current() && latest.current.corrections.attempts.includes(a)) void run(() => latest.current.corrections.retry(a.payload.variant_id)); }}>Reintentar carga exacta</button>}
         </div>
       </article>)}
-      {modalActive && <div className="count-backdrop"><div ref={dialog} className={`count-modal${consulting ? ' count-consultation' : ''}${decisionCapture ? ' count-decision-capture' : ''}${draft?.action === 'propose' ? review ? ' count-proposal-review' : ' count-proposal-capture' : ''}`} role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1}
+      {modalActive && <div className="count-backdrop"><div ref={dialog} className={`count-modal${consulting ? ' count-consultation' : ''}${decisionCapture ? ' count-decision-capture' : visibleReview?.decision ? ' count-decision-review' : ''}${draft?.action === 'propose' ? review ? ' count-proposal-review' : ' count-proposal-capture' : ''}`} role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1}
         onKeyDown={e => {
           if (e.key === 'Escape' && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); close(); }
           if (e.key === 'Tab') {
@@ -455,7 +473,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
         {consulting ? <header className="count-consultation-heading">
           <h3 ref={consultationHeading} id={headingID} tabIndex={-1}>Propuesta de corrección de conteo</h3>
           <p className="count-consultation-status" role="status">Pendiente de decisión</p>
-        </header> : <h3 id={headingID}>{visibleReview ? visibleReview.draft.action === 'propose' ? 'Revisar propuesta de conteo' : 'Revisar corrección de conteo' : draft?.action === 'propose' ? 'Corregir conteo' : `${actions[draft!.action]} propuesta de conteo`}</h3>}
+        </header> : <h3 id={headingID}>{visibleReview ? visibleReview.draft.action === 'propose' ? 'Revisar propuesta de conteo' : `Confirmar ${decisionNoun} de conteo` : draft?.action === 'propose' ? 'Corregir conteo' : `${actions[draft!.action]} propuesta de conteo`}</h3>}
         {message && <p role="alert">{message}</p>}
         {consulting && validConsultation && <>
           <CounterpartyContext pin={validConsultation} reference={record.reference}
@@ -542,16 +560,41 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
             <p>Revisión de flujo esperada: {visibleReview.input.expected_revision} · Revisión: {visibleReview.revision.toString()} · Base aplicada: {visibleReview.base.toString()}</p>
             <p>Crédito efectivo actual: {visibleReview.currentCredit.toString()}</p>
           </details>
-        </div> : <div className="count-modal-body"><p>{name(visibleReview.draft.variant)}</p>
-          <p>Cantidad corregida: {visibleReview.actual.toString()} · Revisión: {visibleReview.revision.toString()} · Base aplicada: {visibleReview.base.toString()}</p>
-          <p>Revisión de flujo esperada: {visibleReview.input.expected_revision}</p>
-          <p>Crédito limitado: {visibleReview.credit.toString()} · Crédito efectivo actual: {lineFor(visibleReview.draft.variant)?.effective_credit.toString()}</p>
-          <p>Efecto en destino: {signed(visibleReview.delta)} · Destino: {record.destination_location_name}</p>
-          <p className="count-evidence">Motivo exacto: {visibleReview.input.reason}</p>
-          {!record.items.some(i => i.variant_id === visibleReview.draft.variant) && <p>Solo auditoría: crédito y efecto cero. Procedencia e incorporación separadas.</p>}
-          {visibleReview.draft.action === 'reject' ? <p>Rechazar no tiene efecto en inventario.</p> : <p>Sin restitución al origen, resolución de pérdidas, incorporación de excedentes ni política de entregas posteriores.</p>}
+        </div> : visibleReview.decision && <div className="count-modal-body count-review-body">
+          <div><p>{visibleReview.decision.reference} · Propuesta de {visibleReview.decision.proposer}</p>
+            <p className="count-review-muted">Decisión de {visibleReview.decision.reviewer}</p></div>
+          <div className="count-review-battery"><div><p className="count-review-label">Batería a corregir</p>
+            <strong>{visibleReview.decision.battery}</strong></div><span>Enviadas: {visibleReview.decision.sent.toString()}</span></div>
+          <table className="count-review-comparison" aria-label="Comparación de conteo">
+            <thead><tr><th scope="col">Concepto</th><th scope="col">Vigente confirmado</th><th scope="col">{visibleReview.draft.action === 'accept' ? 'Al aceptar' : 'Propuesto'}</th></tr></thead>
+            <tbody><tr><th scope="row">Cantidad recibida</th><td>{visibleReview.currentActual.toString()}</td><td>{visibleReview.actual.toString()}</td></tr>
+              <tr><th scope="row">Crédito de esta recepción</th><td>{visibleReview.currentCredit.toString()}</td><td>{visibleReview.credit.toString()}</td></tr></tbody>
+          </table>
+          {visibleReview.draft.action === 'reject' && <p className="count-review-muted">La cantidad propuesta no se aplicará.</p>}
+          <div><p className="count-review-label">Motivo de {visibleReview.decision.proposer}</p>
+            <p className="count-evidence count-review-reason">{visibleReview.decision.originalReason}</p></div>
+          <div><p className="count-review-label">Motivo de {decisionNoun} de {visibleReview.decision.reviewer}</p>
+            <p className="count-evidence count-review-reason count-decision-reason">{visibleReview.input.reason}</p></div>
+          <div className="count-review-warning">
+            <p className="count-review-label">Efecto al confirmar</p>
+            {visibleReview.draft.action === 'accept' ? <>
+              <p><strong>Efecto en destino: {signed(visibleReview.delta)} · {visibleReview.decision.destination}</strong></p>
+              <p>La aceptación se aplicará solo al confirmar y si las validaciones del sistema son satisfactorias.</p>
+            </> : <><p>Sin cambios en el conteo efectivo ni en el stock.</p>
+              <p>Se mantienen {visibleReview.currentActual.toString()} baterías contabilizadas y {visibleReview.currentCredit.toString()} acreditadas en esta recepción.</p></>}
+            <p>La recepción original se conserva. El stock de {visibleReview.decision.origin} no cambia.</p>
+            <p>Sin restitución al origen, resolución automática de faltantes ni incorporación de excedentes. El crédito no es inventario actual.</p>
+            {visibleReview.decision.unexpected && <p>Solo auditoría: crédito y efecto cero. Procedencia e incorporación separadas.</p>}
+          </div>
+          <details className="count-technical"><summary>Evidencia técnica de la decisión</summary>
+            <p>Clave {visibleReview.input.operation_key}</p>
+            <p>Cantidad corregida: {visibleReview.actual.toString()} · Revisión: {visibleReview.revision.toString()} · Base aplicada: {visibleReview.base.toString()}</p>
+            <p>Revisión de flujo esperada: {visibleReview.input.expected_revision}</p>
+            <p>Crédito limitado: {visibleReview.credit.toString()} · Crédito efectivo actual: {visibleReview.currentCredit.toString()}</p>
+            <p>Efecto en destino: {signed(visibleReview.delta)}</p>
+          </details>
         </div>}<footer><button ref={cancelButton} disabled={sending || corrections.busy}
-          onClick={() => visibleReview.draft.action === 'propose' ? editProposal(visibleReview) : close()}>{visibleReview.draft.action === 'propose' ? 'Editar datos' : 'Cancelar'}</button>
+          onClick={() => visibleReview.draft.action === 'propose' ? editProposal(visibleReview) : editDecision(visibleReview)}>{visibleReview.draft.action === 'propose' ? 'Editar datos' : 'Editar motivo'}</button>
           <button disabled={sending || corrections.busy} onClick={() => submit(visibleReview)}>{visibleReview.draft.action === 'propose' ? 'Enviar propuesta' : visibleReview.draft.action === 'accept' ? 'Confirmar aceptación' : 'Confirmar rechazo'}</button></footer>
       </>}
         <button className="count-modal-close" aria-label="Cerrar corrección" disabled={sending || corrections.busy} onClick={close}>Cerrar</button>
