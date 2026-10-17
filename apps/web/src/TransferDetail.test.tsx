@@ -113,6 +113,70 @@ describe('U2 approved stock request at physical origin', () => {
   });
 });
 
+describe('U3 destination stock request in transit', () => {
+  it.each([[1, 3], [2, 3]])('shows immutable sent quantities and persisted closed history for route %s → %s', (origin, destination) => {
+    const f = fixture(origin, destination, destination);
+    const original = wire(origin, destination, 'approved');
+    const record = parseTransferRecord(JSON.stringify({ ...original, status: 'in_transit',
+      dispatch_location_id: origin, dispatched_at: '2028-01-03T00:00:00Z' }));
+    render(<TransferDetail controller={f.controller} ownerTag={transferViewOwner(f.env.current)!}
+      record={record} actions={() => <><button>Receive sentinel</button><p role="alert">Recovery sentinel</p></>} />);
+    const products = screen.getByRole('region', { name: 'Productos enviados' });
+    expect(products).toHaveTextContent('2 variantes · 18446744073709551614 baterías');
+    expect(products).toHaveTextContent(`Pendiente de recepción en ${names[destination - 1]}. El stock todavía no fue acreditado.`);
+    const table = within(products).getByRole('table', { name: 'Baterías enviadas' });
+    expect(within(table).getAllByRole('columnheader').map(cell => cell.textContent)).toEqual(['Batería', 'Polaridad', 'Enviadas']);
+    for (const row of table.querySelectorAll('tbody tr')) {
+      expect(row.querySelector('[data-label="Enviadas"]')).toHaveTextContent(/^9223372036854775807$/);
+      expect(row.querySelector('td small')).toHaveTextContent('75.125 Ah');
+    }
+    expect(table).toHaveTextContent('Original · Immutable-1');
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Actualizar/ })).not.toBeInTheDocument();
+    expect(document.querySelector('.transfer-detail-summary')).toBeNull();
+    expect(products).not.toHaveTextContent(/Reserva propia consumida|Faltante|Exceso|Stock acreditado:/);
+    expect(within(products).getByRole('button', { name: 'Receive sentinel' })).toBeVisible();
+    expect(within(products).getByRole('alert')).toHaveTextContent('Recovery sentinel');
+    expect(screen.getByLabelText('Ruta física')).toHaveTextContent(`${names[origin - 1]} → ${names[destination - 1]}`);
+    const toggle = screen.getByRole('button', { name: 'Ver historial' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('region', { name: 'Historial de la solicitud' })).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    const history = screen.getByRole('region', { name: 'Historial de la solicitud' });
+    expect(toggle).toHaveAttribute('aria-controls', history.id);
+    expect(within(history).getAllByRole('heading', { level: 3 }).map(heading => heading.textContent)).toEqual([
+      'Solicitud creada', 'Solicitud aprobada y stock reservado', 'Solicitud despachada',
+    ]);
+    expect(Array.from(history.querySelectorAll('time')).map(time => time.getAttribute('title'))).toEqual([
+      record.created_at, record.decided_at, record.dispatched_at,
+    ]);
+    expect(history).toHaveTextContent(`Ubicación: ${record.creator_location_name}`);
+    expect(history).toHaveTextContent(`Ubicación: ${record.approver_location_name}`);
+    expect(history).toHaveTextContent(`Origen: ${record.origin_location_name}`);
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('region', { name: 'Historial de la solicitud' })).not.toBeInTheDocument();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['origin', 'unrelated', 'direct', 'send-to-warehouse', 'approved'])('leaves %s outside the transit adaptation', context => {
+    const origin = context === 'send-to-warehouse' ? 2 : 1;
+    const destination = context === 'send-to-warehouse' ? 1 : 3;
+    const f = fixture(origin, destination, context === 'origin' ? origin : context === 'unrelated' ? 2 : destination);
+    const original = wire(origin, destination, 'approved');
+    const record = parseTransferRecord(JSON.stringify({ ...original,
+      ...(context === 'direct' ? { kind: 'direct_shipment', creator_location_id: 1, creator_location_name: names[0], decided_at: original.created_at } : {}),
+      ...(context === 'approved' ? {} : { status: 'in_transit', dispatch_location_id: origin, dispatched_at: '2028-01-03T00:00:00Z' }),
+    }));
+    render(f.element(record));
+    expect(document.querySelector('.transfer-transit-detail')).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Productos enviados' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toBeVisible();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe('F4a original receipt overview', () => {
   it('puts route, immutable totals and comparison before discrepancy lanes without inventing restitution balances', () => {
     const f = fixture(); const original = wire(1, 2, 'approved');

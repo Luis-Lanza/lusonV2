@@ -139,6 +139,30 @@ function pendingHistory(record = receivedWire()) {
       recorded_at: correctionStamp, state: 'pending', decision: null, application: null }] : [] })) };
 }
 
+describe('U3 destination transit chrome', () => {
+  it('uses adjacent navigation and retains unchanged receipt capture without submitting', async () => {
+    const original = wire(1, 3, '9007199254740993', 'approved');
+    const record = { ...original, status: 'in_transit', dispatch_location_id: 1, dispatched_at: correctionStamp };
+    const f = fixture(3, url => url === `/api/transfers/${record.id}` ? Promise.resolve(reply(record)) : undefined);
+    f.controller.receiptRecovery = createTransferReceiptRecovery();
+    render(f.element({ ownerTag: f.ownerTag, id: record.id }));
+    await screen.findByRole('heading', { name: record.reference });
+    const navigation = screen.getByRole('navigation', { name: 'Navegación de transferencia' });
+    expect(navigation).toHaveClass('transit-destination-navigation');
+    expect(navigation).toHaveTextContent('Volver a pendientes·Volver al inventario');
+    expect(screen.queryByRole('region', { name: 'Contadores de solicitudes' })).not.toBeInTheDocument();
+    const receive = within(screen.getByRole('region', { name: 'Productos enviados' })).getByRole('button', { name: 'Recibir solicitud' });
+    fireEvent.click(receive);
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).queryByRole('button', { name: 'Confirmar recepción' })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Revisar recepción' })).toBeDisabled();
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(receive).toHaveFocus();
+    expect(f.fetch.mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true);
+  });
+});
+
 describe('U1/U2 context-specific chrome', () => {
   it.each([
     [1, 1, 2, 'pending', 'pending-approver-navigation'], [2, 1, 2, 'pending', null],
@@ -318,6 +342,8 @@ describe('C4b correction authority and operation boundaries', () => {
     f.controller.receiptRecovery = createTransferReceiptRecovery();
     f.controller.confirmTransferReceipt = vi.fn(() => { for (const listener of f.listeners) listener(); });
     render(f.element()); await screen.findByRole('button', { name: 'Recibir solicitud' });
+    expect(screen.getByRole('region', { name: 'Productos enviados' })).toBeVisible();
+    expect(screen.getByRole('navigation', { name: 'Navegación de transferencia' })).toHaveClass('transit-destination-navigation');
     expect(correctionCalls(f)).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: 'Recibir solicitud' }));
     for (const input of screen.getAllByLabelText(/Cantidad recibida.*Exact/)) fireEvent.change(input, { target: { value: '9223372036854775807' } });
@@ -329,6 +355,9 @@ describe('C4b correction authority and operation boundaries', () => {
     expect(within(screen.getByRole('heading', { name: record.reference }).closest('.transfer-detail') as HTMLElement)
       .getByRole('table', { name: 'Detalle de recepción' })).toHaveTextContent('9223372036854775807');
     await act(async () => refresh.resolve(reply(transit)));
+    expect(screen.queryByRole('region', { name: 'Productos enviados' })).not.toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'Navegación de transferencia' })).not.toHaveClass('transit-destination-navigation');
+    expect(screen.queryByRole('button', { name: 'Recibir solicitud' })).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Conteo efectivo confirmado' })).toBeInTheDocument();
     expect(correctionCalls(f)).toHaveLength(1); expect(correctionPosts(f)).toHaveLength(0);
   });
