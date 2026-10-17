@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
+import userEvent from '@testing-library/user-event';
 import TransferCountCorrections, { type TransferCountCorrectionsProps } from './TransferCountCorrections';
 import { parseSession } from './model';
 import type { TransferAuthority, TransferController } from './useInventory';
@@ -48,8 +49,107 @@ function draft(actual = '9007199254740994', reason = '  Conteo exacto  ') {
   fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: reason } });
 }
 function review() { fireEvent.click(screen.getByRole('button', { name: 'Revisar corrección' })); return screen.getByRole('dialog'); }
-const confirm = () => fireEvent.click(screen.getByRole('button', { name: 'Confirmar propuesta' }));
+const confirm = () => fireEvent.click(screen.getByRole('button', { name: 'Enviar propuesta' }));
 afterEach(() => vi.unstubAllGlobals());
+
+it('compares pinned confirmed quantities and preserves exact reason outside closed technical evidence', () => {
+  const f = fixture();
+  const confirmed = { ...line(), effective_actual: 9n, effective_credit: 7n, applied_revision: 1n };
+  f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [confirmed] };
+  const view = render(<TransferCountCorrections {...f.props} />); draft('8', '  First line\n\n  Second line  ');
+  const modal = review();
+  // Even an in-place injected view change cannot rewrite already reviewed evidence.
+  confirmed.effective_actual = 99n; confirmed.effective_credit = 98n;
+  view.rerender(<TransferCountCorrections {...f.props} />);
+  const table = within(modal).getByRole('table', { name: 'Comparación de conteo' });
+  expect(within(table).getAllByRole('row').map(row => row.textContent)).toEqual([
+    'ConceptoVigente confirmadoPropuesto', 'Cantidad recibida98', 'Crédito de esta recepción78',
+  ]);
+  expect(modal.querySelector('.count-review-reason')?.textContent).toBe('  First line\n\n  Second line  ');
+  const details = modal.querySelector('details')!;
+  expect(details).not.toHaveAttribute('open');
+  expect(details).toHaveTextContent('Revisión de flujo esperada: 4');
+  expect(details).toHaveTextContent('Base aplicada: 1');
+  expect(details).toHaveTextContent(/Clave [a-f0-9]{32}/);
+  expect(modal).toHaveTextContent('Enviar propuesta no modifica stock');
+  expect(modal).toHaveTextContent('Si Sucursal B acepta');
+  expect(f.corrections.propose).not.toHaveBeenCalled();
+});
+it('edits the same isolated modal without sending and mints a fresh identity only on prepare', async () => {
+  const f = fixture(); let seed = 0;
+  const random = vi.fn((bytes: Uint8Array) => { bytes.fill(++seed); return bytes; });
+  vi.stubGlobal('crypto', { getRandomValues: random });
+  render(<><button>Outside</button><TransferCountCorrections {...f.props} /></>);
+  draft('9007199254740994', '  Raw\n  reason  ');
+  expect(random).not.toHaveBeenCalled();
+  const modal = review(); const firstEvidence = modal.querySelector('details')!.textContent;
+  expect(random).toHaveBeenCalledTimes(1);
+  for (let loop = 0; loop < 2; loop++) {
+    fireEvent.click(within(modal).getByRole('button', { name: 'Editar datos' }));
+    expect(screen.getByRole('dialog')).toBe(modal);
+    expect(screen.getByRole('button', { name: 'Outside' })).toHaveAttribute('inert');
+    expect(screen.getByLabelText('Batería a corregir')).toHaveValue('201');
+    expect(screen.getByLabelText('Batería a corregir')).toHaveFocus();
+    expect(screen.getByLabelText('Cantidad corregida')).toHaveValue('9007199254740994');
+    expect(screen.getByLabelText('Motivo')).toHaveValue('  Raw\n  reason  ');
+    expect(random).toHaveBeenCalledTimes(loop + 1);
+    expect(f.corrections.propose).not.toHaveBeenCalled();
+    expect(review()).toBe(modal);
+  }
+  expect(random).toHaveBeenCalledTimes(3);
+  expect(modal.querySelector('details')!.textContent).not.toBe(firstEvidence);
+  await act(async () => fireEvent.click(within(modal).getByRole('button', { name: 'Enviar propuesta' })));
+  expect(f.corrections.propose).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    actual_quantity: '9007199254740994', reason: '  Raw\n  reason  ', operation_key: '03'.repeat(16),
+  }));
+});
+it.each(['owner', 'revision', 'mask', 'uncertain', 'busy'])('refuses edit-back after %s changes before rendering', mode => {
+  const f = fixture(); render(<TransferCountCorrections {...f.props} />); draft('8'); const modal = review();
+  if (mode === 'owner') f.authority.sessionGeneration = 2;
+  if (mode === 'revision') f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), workflow_revision: 5n }] };
+  if (mode === 'mask') f.corrections.masked = true;
+  if (mode === 'uncertain') f.corrections.attempts = [attempt('uncertain')];
+  if (mode === 'busy') f.corrections.busy = true;
+  fireEvent.click(within(modal).getByRole('button', { name: 'Editar datos' }));
+  expect(screen.queryByLabelText('Motivo')).not.toBeInTheDocument();
+  expect(f.corrections.propose).not.toHaveBeenCalled();
+});
+it('prepares edited data against newly confirmed evidence instead of reusing the discarded pin', async () => {
+  const f = fixture(); const view = render(<TransferCountCorrections {...f.props} />); draft('8'); const modal = review();
+  fireEvent.click(within(modal).getByRole('button', { name: 'Editar datos' }));
+  f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), workflow_revision: 6n, effective_actual: 3n, effective_credit: 2n }] };
+  view.rerender(<TransferCountCorrections {...f.props} />);
+  review();
+  expect(within(modal).getByRole('row', { name: 'Cantidad recibida 3 8' })).toBeInTheDocument();
+  expect(modal).toHaveTextContent('Efecto en destino: +6');
+  await act(async () => confirm());
+  expect(f.corrections.propose).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ expected_revision: '6', actual_quantity: '8' }));
+});
+it.each(['owner', 'incompatible', 'mask', 'uncertain', 'busy'])('revalidates %s before preparing an edited draft', mode => {
+  const f = fixture(); render(<TransferCountCorrections {...f.props} />); draft('8'); const modal = review();
+  fireEvent.click(within(modal).getByRole('button', { name: 'Editar datos' }));
+  const random = vi.fn(() => { throw new Error('must not prepare'); });
+  vi.stubGlobal('crypto', { getRandomValues: random });
+  if (mode === 'owner') f.authority.sessionGeneration = 2;
+  if (mode === 'incompatible') f.corrections.snapshot = { ...f.corrections.snapshot!, request_id: 2n };
+  if (mode === 'mask') f.corrections.masked = true;
+  if (mode === 'uncertain') f.corrections.attempts = [attempt('uncertain')];
+  if (mode === 'busy') f.corrections.busy = true;
+  fireEvent.submit(screen.getByRole('form', { name: 'Editar corrección' }));
+  expect(random).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Enviar propuesta' })).not.toBeInTheDocument();
+  expect(f.corrections.propose).not.toHaveBeenCalled();
+});
+it.each([['0', '-5'], ['3', '-2'], ['8', '+3'], ['9007199254740994', '+9007199254740988']])(
+  'keeps proposed %s credit effect %s conditional on later acceptance', (quantity, delta) => {
+    const f = fixture(); render(<TransferCountCorrections {...f.props} />); draft(quantity);
+    const modal = review();
+    expect(within(modal).getByRole('table', { name: 'Comparación de conteo' })).toHaveTextContent('Crédito de esta recepción');
+    expect(modal).toHaveTextContent(`Efecto en destino: ${delta}`);
+    expect(modal).toHaveTextContent('Si Sucursal B acepta');
+    expect(modal).toHaveTextContent('Enviar propuesta no modifica stock');
+    expect(f.corrections.propose).not.toHaveBeenCalled();
+  });
 
 it('offers only eligible receipt batteries and clears cross-battery capture before reviewing', () => {
   const f = fixture();
@@ -79,7 +179,11 @@ it('offers only eligible receipt batteries and clears cross-battery capture befo
   expect(modal).toHaveTextContent('Variante inesperada 999');
   expect(modal).toHaveTextContent('Crédito limitado: 0');
   expect(modal).not.toHaveTextContent('Exact reason');
-  confirm();
+  fireEvent.click(within(modal).getByRole('button', { name: 'Editar datos' }));
+  expect(screen.getByLabelText('Batería a corregir')).toHaveValue('999');
+  expect(screen.getByLabelText('Cantidad corregida')).toHaveValue('0');
+  expect(screen.getByLabelText('Motivo')).toHaveValue('  New exact reason  ');
+  review(); confirm();
   expect(f.corrections.propose).toHaveBeenCalledWith(expect.objectContaining({ variant_id: 999, actual_quantity: '0', reason: '  New exact reason  ' }));
 });
 it('uses applied effective actual and credit, not original receipt or proposed totals', () => {
@@ -110,7 +214,7 @@ it('excludes counterparty-pending and uncertain options while retaining own repl
 it.each(['', '-1', '1.5', '1e2', '01', '9223372036854775808'])('disables proposal review for invalid quantity %j', value => {
   const f = fixture(); render(<TransferCountCorrections {...f.props} />); draft(value, 'Valid reason');
   expect(screen.getByRole('button', { name: 'Revisar corrección' })).toBeDisabled();
-  expect(screen.queryByRole('button', { name: 'Confirmar propuesta' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Enviar propuesta' })).not.toBeInTheDocument();
 });
 it.each(['', '   ', '\0', 'a'.repeat(2001)])('uses exact reason admission for capture case %#', reason => {
   const f = fixture(); render(<TransferCountCorrections {...f.props} />); draft('0', reason);
@@ -161,7 +265,13 @@ it('isolates capture continuously through review and restores prior attributes b
   expect(releases).toHaveLength(0);
   expect(focused).not.toHaveBeenCalled();
   expect(screen.queryByRole('form', { name: 'Editar corrección' })).not.toBeInTheDocument();
-  fireEvent.click(within(modal).getByRole('button', { name: 'Cancelar' }));
+  fireEvent.click(within(modal).getByRole('button', { name: 'Editar datos' }));
+  await act(async () => {});
+  expect(releases).toHaveLength(0);
+  expect(focused).not.toHaveBeenCalled();
+  expect(screen.getByLabelText('Batería a corregir')).toHaveFocus();
+  review();
+  fireEvent.click(within(modal).getByRole('button', { name: 'Cerrar corrección' }));
   expect(focused).toHaveBeenCalledTimes(1);
   expect(recovery).not.toHaveAttribute('inert');
   expect(within(recovery).getByRole('button', { name: 'Consultar resultado' })).toBeEnabled();
@@ -244,7 +354,7 @@ it('blocks every dismissal and duplicate confirm while busy', () => {
   f.corrections.busy = true; view.rerender(<TransferCountCorrections {...f.props} />);
   fireEvent.keyDown(modal, { key: 'Escape' });
   fireEvent.click(within(modal).getByRole('button', { name: 'Cerrar corrección' }));
-  fireEvent.click(within(modal).getByRole('button', { name: 'Cancelar' }));
+  fireEvent.click(within(modal).getByRole('button', { name: 'Editar datos' }));
   confirm(); confirm(); expect(screen.getByRole('dialog')).toBe(modal);
   expect(f.corrections.propose).not.toHaveBeenCalled();
 });
@@ -330,7 +440,7 @@ function reviewInvalid(title = 'Corregir conteo') {
   // Exercise the handler's validation too, beyond native required-field gating.
   fireEvent.submit(screen.getByRole('form', { name: 'Editar corrección' }));
   expect(screen.getByRole('dialog')).toHaveAccessibleName(title);
-  expect(screen.queryByRole('button', { name: 'Confirmar propuesta' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Enviar propuesta' })).not.toBeInTheDocument();
   expect(screen.getByRole('alert')).toBeInTheDocument();
 }
 it.each(['0', '9223372036854775807'])('preserves canonical bounded quantity %s exactly', async actual => {
@@ -551,26 +661,64 @@ function deferred() {
 it('suppresses synchronous duplicate clicks and tolerates unmount before late completion', async () => {
   const f = fixture(); const d = deferred(); f.corrections.propose = vi.fn(() => d.promise);
   const h = render(<TransferCountCorrections {...f.props} />); draft(); review();
-  const button = screen.getByRole('button', { name: 'Confirmar propuesta' });
+  const button = screen.getByRole('button', { name: 'Enviar propuesta' });
   act(() => { fireEvent.click(button); fireEvent.click(button); });
   expect(f.corrections.propose).toHaveBeenCalledTimes(1); h.unmount();
   await act(async () => { d.resolve(); await d.promise; }); expect(f.corrections.propose).toHaveBeenCalledTimes(1);
 });
-it('labels the modal, focuses cancel, wraps Tab/Escape and restores trigger focus', () => {
+it('includes native disclosure in both Tab directions without leaking closed details or outside controls', async () => {
+  const user = userEvent.setup(); const f = fixture();
+  render(<><button>Outside</button><TransferCountCorrections {...f.props} /></>); draft('0');
+  const modal = review(); const details = modal.querySelector('details')!;
+  const summary = details.querySelector('summary')!;
+  const child = document.createElement('button'); child.textContent = 'Expanded control'; details.append(child);
+  // user-event does not model closed-details visibility; mirror it for simulated native Tab.
+  child.hidden = true;
+  for (const attribute of ['disabled', 'hidden', 'inert', 'aria-hidden']) {
+    const excluded = document.createElement('button');
+    excluded.setAttribute(attribute, attribute === 'aria-hidden' ? 'true' : '');
+    details.before(excluded);
+  }
+  const edit = within(modal).getByRole('button', { name: 'Editar datos' });
+  const send = within(modal).getByRole('button', { name: 'Enviar propuesta' });
+  const close = within(modal).getByRole('button', { name: 'Cerrar corrección' });
+  expect(edit).toHaveFocus();
+  await user.tab({ shift: true }); expect(summary).toHaveFocus();
+  await user.tab({ shift: true }); expect(close).toHaveFocus();
+  await user.tab(); expect(summary).toHaveFocus();
+  await user.tab(); expect(edit).toHaveFocus();
+  await user.tab(); expect(send).toHaveFocus();
+  await user.tab(); expect(close).toHaveFocus();
+  await user.tab(); expect(summary).toHaveFocus();
+  await user.click(summary); expect(details).toHaveAttribute('open'); child.hidden = false;
+  await user.tab(); expect(child).toHaveFocus();
+  await user.tab(); expect(edit).toHaveFocus();
+  await user.tab({ shift: true }); expect(child).toHaveFocus();
+  await user.tab({ shift: true }); expect(summary).toHaveFocus();
+  await user.click(summary); expect(details).not.toHaveAttribute('open');
+  // jsdom permits focusing a closed descendant; it must not become a trap boundary.
+  child.focus(); await user.tab({ shift: true }); expect(close).toHaveFocus();
+  expect(screen.getByRole('button', { name: 'Outside' })).toHaveAttribute('inert');
+  expect(modal).toContainElement(document.activeElement as HTMLElement);
+  expect(f.corrections.propose).not.toHaveBeenCalled();
+});
+it('labels the modal, focuses edit, wraps Tab/Escape and restores trigger focus', () => {
   const f = fixture(); render(<TransferCountCorrections {...f.props} />);
   const trigger = screen.getByRole('button', { name: 'Proponer corrección' }); draft('0'); const modal = review();
-  expect(modal).toHaveAttribute('aria-modal', 'true'); expect(modal).toHaveAccessibleName('Revisar corrección de conteo');
-  const cancel = within(modal).getByRole('button', { name: 'Cancelar' });
+  expect(modal).toHaveAttribute('aria-modal', 'true'); expect(modal).toHaveAccessibleName('Revisar propuesta de conteo');
+  const cancel = within(modal).getByRole('button', { name: 'Editar datos' });
   const close = within(modal).getByRole('button', { name: 'Cerrar corrección' });
-  expect(cancel).toHaveFocus(); fireEvent.keyDown(cancel, { key: 'Tab', shiftKey: true }); expect(close).toHaveFocus();
-  fireEvent.keyDown(close, { key: 'Tab' }); expect(cancel).toHaveFocus();
+  const summary = within(modal).getByText('Evidencia técnica de la propuesta');
+  expect(cancel).toHaveFocus(); summary.focus();
+  fireEvent.keyDown(summary, { key: 'Tab', shiftKey: true }); expect(close).toHaveFocus();
+  fireEvent.keyDown(close, { key: 'Tab' }); expect(summary).toHaveFocus();
   fireEvent.keyDown(cancel, { key: 'Escape' }); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); expect(trigger).toHaveFocus();
   expect(f.corrections.propose).not.toHaveBeenCalled();
 });
 it('busy prevents confirming a reviewed draft', () => {
   const f = fixture(); const h = render(<TransferCountCorrections {...f.props} />); draft(); review();
   f.corrections.busy = true; h.rerender(<TransferCountCorrections {...f.props} />);
-  expect(screen.getByRole('button', { name: 'Confirmar propuesta' })).toBeDisabled(); expect(screen.getByRole('status')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Enviar propuesta' })).toBeDisabled(); expect(screen.getByRole('status')).toBeInTheDocument();
   confirm(); expect(f.corrections.propose).not.toHaveBeenCalled();
 });
 function attempt(phase: CountCorrectionAttempt['phase'], priorUncertainty = phase === 'uncertain'): CountCorrectionAttempt {

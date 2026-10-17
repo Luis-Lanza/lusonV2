@@ -131,7 +131,7 @@ function correctionPreview(action: 'propose' | 'accept' | 'reject' = 'propose') 
   if (action === 'propose') fireEvent.change(screen.getByLabelText('Cantidad corregida'), { target: { value: '5' } });
   fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: '  Recuento exacto  ' } });
   fireEvent.click(screen.getByRole('button', { name: 'Revisar corrección' }));
-  return screen.getByRole('dialog', { name: 'Revisar corrección de conteo' });
+  return screen.getByRole('dialog', { name: action === 'propose' ? 'Revisar propuesta de conteo' : 'Revisar corrección de conteo' });
 }
 function operationWire(input: CountDecisionInput | CountProposalInput, actor = 2, action = 'propose') {
   return { ...input, request_id: '9007199254740993', actor_location_id: actor, action,
@@ -483,7 +483,7 @@ describe('C4b correction authority and operation boundaries', () => {
     expect(modal).toHaveTextContent('Crédito limitado: 5');
     expect(modal).toHaveTextContent('Efecto en destino: -9223372036854775802');
     expect(correctionPosts(f)).toHaveLength(0);
-    const confirm = screen.getByRole('button', { name: 'Confirmar propuesta' });
+    const confirm = screen.getByRole('button', { name: 'Enviar propuesta' });
     fireEvent.click(confirm); fireEvent.click(confirm);
     expect(correctionPosts(f)).toHaveLength(1);
     const [url, init] = correctionPosts(f)[0];
@@ -505,7 +505,7 @@ describe('C4b correction authority and operation boundaries', () => {
       ? fail ? Promise.reject(new Error('PRIVATE lost reply'))
         : Promise.resolve(reply(operationWire(JSON.parse(String(init.body)) as CountProposalInput))) : undefined);
     const view = render(f.element()); await correctionLoaded(); correctionPreview();
-    fireEvent.click(screen.getByRole('button', { name: 'Confirmar propuesta' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Enviar propuesta' }));
     await screen.findByRole('button', { name: 'Reintentar carga exacta' });
     const captured = correctionPosts(f)[0][1]?.body;
     fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));

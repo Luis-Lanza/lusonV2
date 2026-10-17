@@ -77,6 +77,7 @@ interface Draft {
 interface Review {
   draft: Draft; snapshot: NonNullable<TransferCountCorrectionsProps['corrections']['snapshot']>;
   input: CountProposalInput | CountDecisionInput; actual: bigint; revision: bigint; base: bigint; credit: bigint; delta: bigint;
+  currentActual: bigint; currentCredit: bigint;
 }
 function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCurrent: () => boolean }) {
   const { record, controller, corrections } = props;
@@ -130,9 +131,13 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const modalActive = !!draft && !!validSnapshot;
   const focusableControls = () => Array.from(dialog.current?.querySelectorAll<HTMLElement>(
-    'input:not([type="hidden"]), select, textarea, button, a[href], [tabindex]') ?? [])
+    'input:not([type="hidden"]), select, textarea, button, a[href], details > summary:first-of-type, [tabindex]') ?? [])
     .filter(control => isTransferFocusTarget(control) && control.tabIndex >= 0
-      && !control.closest('[hidden], [inert], [aria-hidden="true"]'));
+      && !control.closest('[hidden], [inert], [aria-hidden="true"]'))
+    .filter(control => {
+      const closed = control.closest('details:not([open])');
+      return !closed || !!closed.querySelector(':scope > summary')?.contains(control);
+    });
   // One isolation lifetime spans capture and review; restore before returning focus.
   useLayoutEffect(() => {
     const backdrop = dialog.current?.parentElement;
@@ -201,6 +206,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
       setReview({ draft: { ...draft }, snapshot: snap, input, actual,
         revision: draft.action === 'propose' ? line.workflow_revision + 1n : pending!.revision,
         base: draft.action === 'propose' ? line.applied_revision : pending!.base_revision,
+        currentActual: line.effective_actual, currentCredit: line.effective_credit,
         credit, delta: draft.action === 'reject' || !item ? 0n : credit - line.effective_credit });
       setMessage('');
     } catch { setMessage('Ingresá cantidad decimal canónica entre 0 y 9223372036854775807 y un motivo válido. Si no se puede crear una clave segura, no se enviará nada.'); }
@@ -227,6 +233,17 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
       return captured.draft.action === 'propose' ? p.corrections.propose(captured.input as CountProposalInput)
         : p.corrections.decide(captured.draft.action, captured.input);
     });
+  }
+  function editProposal(captured: Review) {
+    const p = latest.current; const line = lineFor(captured.draft.variant);
+    if (!current() || submitting.current || p.corrections.busy || captured.draft.action !== 'propose') return;
+    if (review !== captured || p.corrections.snapshot !== captured.snapshot || !line
+      || !allowed(line, 'propose') || line.workflow_revision.toString() !== captured.input.expected_revision) {
+      setReview(null); setDraft(null); setMessage('El conteo cambió. Revisá nuevamente antes de confirmar.');
+      return;
+    }
+    // Keep the capture and isolation lifetime, but retire the reviewed transport identity.
+    setDraft({ ...captured.draft }); setReview(null); setMessage('');
   }
   function close() {
     if (!current() || submitting.current || latest.current.corrections.busy) return;
@@ -336,7 +353,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
             onClick={() => { if (current() && latest.current.corrections.attempts.includes(a)) void run(() => latest.current.corrections.retry(a.payload.variant_id)); }}>Reintentar carga exacta</button>}
         </div>
       </article>)}
-      {modalActive && <div className="count-backdrop"><div ref={dialog} className={`count-modal${draft?.action === 'propose' && !review ? ' count-proposal-capture' : ''}`} role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1}
+      {modalActive && <div className="count-backdrop"><div ref={dialog} className={`count-modal${draft?.action === 'propose' ? review ? ' count-proposal-review' : ' count-proposal-capture' : ''}`} role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1}
         onKeyDown={e => {
           if (e.key === 'Escape' && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); close(); }
           if (e.key === 'Tab') {
@@ -347,7 +364,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
             else if (!e.shiftKey && (document.activeElement === last || !controls.includes(document.activeElement as HTMLElement))) { e.preventDefault(); first.focus(); }
           }
         }}>
-        <h3 id={headingID}>{visibleReview ? 'Revisar corrección de conteo' : draft?.action === 'propose' ? 'Corregir conteo' : 'Capturar corrección de conteo'}</h3>
+        <h3 id={headingID}>{visibleReview ? visibleReview.draft.action === 'propose' ? 'Revisar propuesta de conteo' : 'Revisar corrección de conteo' : draft?.action === 'propose' ? 'Corregir conteo' : 'Capturar corrección de conteo'}</h3>
         {message && <p role="alert">{message}</p>}
       {draft && !review && <form className="count-form" onSubmit={e => { e.preventDefault(); prepare(); }} aria-label="Editar corrección">
         {draft.action === 'propose' ? <>
@@ -385,7 +402,31 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
         <div className="count-actions"><button type="submit" disabled={sending || corrections.busy || draft.action === 'propose' && !proposalValid}>Revisar corrección</button><button type="button" disabled={sending || corrections.busy} onClick={close}>Cancelar</button></div>
       </form>}
       {visibleReview && <>
-        <div className="count-modal-body"><p>{name(visibleReview.draft.variant)}</p>
+        {visibleReview.draft.action === 'propose' ? <div className="count-modal-body count-review-body">
+          <div><p>{record.reference} · Propuesta de {location(owner!.location)}</p>
+            <p className="count-review-muted">Revisión a cargo de {location(owner!.location === record.origin_location_id ? record.destination_location_id : record.origin_location_id)}</p></div>
+          <div className="count-review-battery"><div><p className="count-review-label">Batería a corregir</p>
+            <strong>{name(visibleReview.draft.variant)}</strong></div>
+            <span>Enviadas: {record.items.find(i => i.variant_id === visibleReview.draft.variant)?.quantity.toString() ?? '0'}</span></div>
+          <table className="count-review-comparison" aria-label="Comparación de conteo">
+            <thead><tr><th scope="col">Concepto</th><th scope="col">Vigente confirmado</th><th scope="col">Propuesto</th></tr></thead>
+            <tbody><tr><th scope="row">Cantidad recibida</th><td>{visibleReview.currentActual.toString()}</td><td>{visibleReview.actual.toString()}</td></tr>
+              <tr><th scope="row">Crédito de esta recepción</th><td>{visibleReview.currentCredit.toString()}</td><td>{visibleReview.credit.toString()}</td></tr></tbody>
+          </table>
+          <div><p className="count-review-label">Motivo</p><p className="count-evidence count-review-reason">{visibleReview.input.reason}</p></div>
+          <div className="count-review-warning">
+            <p><strong>Enviar propuesta no modifica stock.</strong></p>
+            <p>Si {location(owner!.location === record.origin_location_id ? record.destination_location_id : record.origin_location_id)} acepta, sujeto a validación: Efecto en destino: {signed(visibleReview.delta)} · {record.destination_location_name}. Crédito limitado: {visibleReview.credit.toString()}.</p>
+            <p>La recepción original se conserva. Sin restitución al origen, resolución de pérdidas, incorporación de excedentes ni política de entregas posteriores. El crédito no es inventario actual.</p>
+            <p>Una propuesta nueva o reemplazada requiere un nuevo acuerdo de la contraparte; no conserva el consentimiento anterior.</p>
+            {!record.items.some(i => i.variant_id === visibleReview.draft.variant) && <p>Solo auditoría: crédito y efecto cero. Procedencia e incorporación separadas.</p>}
+          </div>
+          <details className="count-technical"><summary>Evidencia técnica de la propuesta</summary>
+            <p>Clave {visibleReview.input.operation_key}</p>
+            <p>Revisión de flujo esperada: {visibleReview.input.expected_revision} · Revisión: {visibleReview.revision.toString()} · Base aplicada: {visibleReview.base.toString()}</p>
+            <p>Crédito efectivo actual: {visibleReview.currentCredit.toString()}</p>
+          </details>
+        </div> : <div className="count-modal-body"><p>{name(visibleReview.draft.variant)}</p>
           <p>Cantidad corregida: {visibleReview.actual.toString()} · Revisión: {visibleReview.revision.toString()} · Base aplicada: {visibleReview.base.toString()}</p>
           <p>Revisión de flujo esperada: {visibleReview.input.expected_revision}</p>
           <p>Crédito limitado: {visibleReview.credit.toString()} · Crédito efectivo actual: {lineFor(visibleReview.draft.variant)?.effective_credit.toString()}</p>
@@ -393,9 +434,9 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
           <p className="count-evidence">Motivo exacto: {visibleReview.input.reason}</p>
           {!record.items.some(i => i.variant_id === visibleReview.draft.variant) && <p>Solo auditoría: crédito y efecto cero. Procedencia e incorporación separadas.</p>}
           {visibleReview.draft.action === 'reject' ? <p>Rechazar no tiene efecto en inventario.</p> : <p>Sin restitución al origen, resolución de pérdidas, incorporación de excedentes ni política de entregas posteriores.</p>}
-          {visibleReview.draft.action === 'propose' && <p>Una propuesta nueva o reemplazada requiere un nuevo acuerdo de la contraparte; no conserva el consentimiento anterior.</p>}
-        </div><footer><button ref={cancelButton} disabled={sending || corrections.busy} onClick={close}>Cancelar</button>
-          <button disabled={sending || corrections.busy} onClick={() => submit(visibleReview)}>{visibleReview.draft.action === 'propose' ? 'Confirmar propuesta' : visibleReview.draft.action === 'accept' ? 'Confirmar aceptación' : 'Confirmar rechazo'}</button></footer>
+        </div>}<footer><button ref={cancelButton} disabled={sending || corrections.busy}
+          onClick={() => visibleReview.draft.action === 'propose' ? editProposal(visibleReview) : close()}>{visibleReview.draft.action === 'propose' ? 'Editar datos' : 'Cancelar'}</button>
+          <button disabled={sending || corrections.busy} onClick={() => submit(visibleReview)}>{visibleReview.draft.action === 'propose' ? 'Enviar propuesta' : visibleReview.draft.action === 'accept' ? 'Confirmar aceptación' : 'Confirmar rechazo'}</button></footer>
       </>}
         <button className="count-modal-close" aria-label="Cerrar corrección" disabled={sending || corrections.busy} onClick={close}>Cerrar</button>
       </div></div>}

@@ -1,4 +1,4 @@
-/* Count-only modal foundation and proposal capture. Other bodies remain separate. */
+/* Count-only modal foundation and proposal steps. Other bodies remain separate. */
 .count-corrections .count-backdrop {
   padding: clamp(8px, 3vw, 24px);
 }
@@ -108,7 +108,89 @@
   color: #595459;
   background: #efedef;
 }
+.count-corrections .count-proposal-review {
+  width: min(580px, 100%);
+  padding: 20px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.count-corrections .count-proposal-review > h3 {
+  padding: 0 70px 8px 0;
+  border: 0;
+  font-size: 20px;
+}
+.count-corrections .count-review-body {
+  padding: 0;
+  gap: 8px;
+  overflow: visible;
+  flex-shrink: 0;
+}
+.count-corrections .count-proposal-review p {
+  font-size: 14px;
+  line-height: inherit;
+}
+.count-corrections .count-review-muted,
+.count-corrections .count-review-label { color: var(--muted); }
+.count-corrections .count-review-label {
+  text-transform: uppercase;
+  letter-spacing: .03em;
+  margin-bottom: 4px;
+}
+.count-corrections .count-review-battery,
+.count-corrections .count-review-reason,
+.count-corrections .count-review-warning {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--page);
+}
+.count-corrections .count-review-battery {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.count-corrections .count-review-battery > span { flex-shrink: 0; }
+.count-corrections .count-review-comparison {
+  table-layout: fixed;
+  border: 1px solid var(--border);
+  font-size: 14px;
+}
+.count-corrections .count-review-comparison th,
+.count-corrections .count-review-comparison td {
+  padding: 8px 10px;
+  height: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+.count-corrections .count-review-comparison th:first-child { width: 42%; text-align: left; }
+.count-corrections .count-review-comparison th:nth-child(2) { width: 36%; }
+.count-corrections .count-review-comparison thead th { font-size: 12px; }
+.count-corrections .count-review-comparison tbody th {
+  background: white;
+  color: inherit;
+  text-transform: none;
+  font-size: inherit;
+  letter-spacing: normal;
+  font-weight: 400;
+}
+.count-corrections .count-review-comparison td:last-child { color: var(--wine); background: #f5e8ed; font-weight: 600; }
+.count-corrections .count-review-reason { white-space: pre-wrap; overflow-wrap: anywhere; }
+.count-corrections .count-review-warning { background: #fdfbfc; line-height: 1.4; }
+.count-corrections .count-review-warning p + p { margin-top: 4px; }
+.count-corrections .count-proposal-review .count-technical { font-size: 14px; }
+.count-corrections .count-proposal-review footer { padding: 8px 0 0; margin-top: 4px; justify-content: space-between; }
+.count-corrections .count-proposal-review footer button { flex: 0 1 auto; }
 @media (max-width: 767px) {
+  .count-corrections .count-proposal-review { padding: 18px; }
+  .count-corrections .count-review-comparison th,
+  .count-corrections .count-review-comparison td { padding: 8px 6px; }
+  .count-corrections .count-review-comparison th:first-child { width: 34%; }
+  .count-corrections .count-review-comparison th:nth-child(2) { width: 33%; }
+  .count-corrections .count-review-comparison thead th { text-transform: none; letter-spacing: normal; }
+  .count-corrections .count-proposal-review footer button { flex: 1 1 160px; }
   .count-corrections .count-proposal-capture { padding: 18px; }
   .count-corrections .count-capture-context { flex-direction: column; }
 }
