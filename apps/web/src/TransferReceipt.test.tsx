@@ -72,10 +72,109 @@ async function detail() {
 }
 async function capture() {
   fireEvent.click(await screen.findByRole('button', { name: 'Recibir solicitud' }));
-  return screen.getByRole('dialog', { name: 'Confirmar recepción' });
+  return screen.getByRole('dialog', { name: 'Registrar cantidades recibidas' });
 }
 const actualInput = () => screen.getByLabelText(/Cantidad recibida.*Expected/);
 afterEach(() => vi.unstubAllGlobals());
+
+describe('U3b receipt modal foundation', () => {
+  it('names each step, keeps the physical route and preserves the complete draft when editing', async () => {
+    const f = fixture(); render(<App />); await detail();
+    const dialog = await capture();
+    expect(dialog).toHaveClass('transfer-receipt-modal');
+    expect(dialog).toHaveTextContent('TR-001 · Almacén → Sucursal A');
+    expect(dialog).toHaveTextContent('Conteo · Luego revisarás la recepción');
+    expect(actualInput()).toHaveValue('');
+    const selector = screen.getByLabelText('Variante inesperada');
+    await waitFor(() => expect(selector).toBeEnabled());
+    fireEvent.change(actualInput(), { target: { value: sent } });
+    fireEvent.change(selector, { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Agregar variante inesperada' }));
+    fireEvent.change(screen.getByLabelText(/Cantidad recibida.*Unexpected/), { target: { value: '7' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar recepción' }));
+    expect(screen.getByRole('dialog', { name: 'Revisar recepción' })).toBe(dialog);
+    expect(dialog).toHaveTextContent('Revisión previa a confirmar');
+    expect(dialog.querySelector('input, select')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Editar cantidades' }));
+    expect(screen.getByRole('dialog', { name: 'Registrar cantidades recibidas' })).toBe(dialog);
+    expect(actualInput()).toHaveValue(sent);
+    expect(screen.getByLabelText(/Cantidad recibida.*Unexpected/)).toHaveValue('7');
+    expect(posts(f)).toHaveLength(0);
+  });
+  it.each(['escape', 'close', 'back', 'unmount'] as const)('restores dynamic background attributes before focus on %s', async method => {
+    const f = fixture(); const view = render(<App />); await detail();
+    const trigger = screen.getByRole('button', { name: 'Recibir solicitud' });
+    const background = view.container.querySelector('.transfer-receipt > .transfer-cancellation')!;
+    const prior = document.createElement('aside'); prior.setAttribute('inert', 'retained'); document.body.append(prior);
+    const dynamic = document.createElement('button'); dynamic.textContent = 'Dynamic background';
+    try {
+      const dialog = await capture();
+      expect(background).toHaveAttribute('inert');
+      document.querySelector('.transfer-receipt')!.prepend(dynamic);
+      await waitFor(() => expect(dynamic).toHaveAttribute('inert'));
+      const restored = vi.fn(() => expect(background).not.toHaveAttribute('inert'));
+      trigger.addEventListener('focus', restored);
+      if (method === 'escape') fireEvent.keyDown(actualInput(), { key: 'Escape' });
+      if (method === 'close') fireEvent.click(within(dialog).getByRole('button', { name: 'Cerrar confirmación de recepción' }));
+      if (method === 'back') fireEvent.click(within(dialog).getByRole('button', { name: 'Volver al detalle' }));
+      if (method === 'unmount') view.unmount();
+      expect(prior).toHaveAttribute('inert', 'retained');
+      expect(dynamic).not.toHaveAttribute('inert');
+      expect(background).not.toHaveAttribute('inert');
+      if (method !== 'unmount') { expect(trigger).toHaveFocus(); expect(restored).toHaveBeenCalled(); }
+      else expect(restored).not.toHaveBeenCalled();
+      expect(posts(f)).toHaveLength(0);
+    } finally { prior.remove(); dynamic.remove(); }
+  });
+  it('preserves the default receipt presentation for direct shipments', async () => {
+    const f = fixture();
+    f.setRecord({ ...transit, kind: 'direct_shipment', creator_location_id: 1, creator_location_name: 'Almacén', decided_at: transit.created_at });
+    render(<App />); await detail();
+    fireEvent.click(screen.getByRole('button', { name: 'Recibir solicitud' }));
+    const dialog = screen.getByRole('dialog', { name: 'Confirmar recepción' });
+    expect(dialog).not.toHaveClass('transfer-receipt-modal');
+    expect(dialog).not.toHaveTextContent('Conteo · Luego revisarás la recepción');
+    expect(actualInput()).toHaveValue('');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(posts(f)).toHaveLength(0);
+  });
+  it('cleans up isolation without returning stale focus after catalog authority loss', async () => {
+    let resolve!: (value: Response) => void;
+    const job = new Promise<Response>(yes => { resolve = yes; });
+    fixture(2, url => url.startsWith('/api/inventory?') && url.includes('page_size=50') ? job
+      : url === '/api/auth/validate' ? Promise.resolve(reply({ authenticated: false })) : undefined);
+    const view = render(<App />); await detail();
+    const trigger = screen.getByRole('button', { name: 'Recibir solicitud' });
+    const dialog = await capture();
+    const background = view.container.querySelector('.transfer-receipt > .transfer-cancellation')!;
+    expect(background).toHaveAttribute('inert');
+    const restoration = vi.spyOn(trigger, 'focus');
+    await act(async () => resolve(reply({ error: 'unauthorized' }, 401)));
+    await waitFor(() => expect(dialog).not.toBeInTheDocument());
+    expect(background).not.toHaveAttribute('inert');
+    expect(view.container).not.toHaveAttribute('inert');
+    expect(restoration).not.toHaveBeenCalled();
+  });
+  it('wraps Tab around enabled inputs, selects and textareas without intercepting interior controls or composing Escape', async () => {
+    fixture(); render(<App />); await detail(); const dialog = await capture();
+    const first = within(dialog).getByRole('button', { name: 'Cerrar confirmación de recepción' });
+    const last = within(dialog).getByRole('button', { name: 'Volver al detalle' });
+    const selector = screen.getByLabelText('Variante inesperada');
+    await waitFor(() => expect(selector).toBeEnabled());
+    for (const control of [actualInput(), selector]) {
+      control.focus(); fireEvent.keyDown(control, { key: 'Tab' }); expect(control).toHaveFocus();
+    }
+    first.focus(); fireEvent.keyDown(first, { key: 'Tab', shiftKey: true }); expect(last).toHaveFocus();
+    last.focus(); fireEvent.keyDown(last, { key: 'Tab' }); expect(first).toHaveFocus();
+    const textarea = document.createElement('textarea'); dialog.append(textarea);
+    try {
+      first.focus(); fireEvent.keyDown(first, { key: 'Tab', shiftKey: true }); expect(textarea).toHaveFocus();
+      fireEvent.keyDown(textarea, { key: 'Tab' }); expect(first).toHaveFocus();
+      fireEvent.keyDown(actualInput(), { key: 'Escape', isComposing: true }); expect(dialog).toBeInTheDocument();
+      fireEvent.keyDown(selector, { key: 'Escape' }); expect(dialog).not.toBeInTheDocument();
+    } finally { textarea.remove(); }
+  });
+});
 
 describe('R2 destination receipt capture/review/once UI', () => {
   it.each(['escape', 'close', 'back'] as const)('restores receipt cancellation/success focus via %s, not during review', async method => {
@@ -118,7 +217,7 @@ describe('R2 destination receipt capture/review/once UI', () => {
     await capture();
     fireEvent.change(actualInput(), { target: { value: '9007199254740994' } });
     fireEvent.click(screen.getByRole('button', { name: 'Revisar recepción' }));
-    const dialog = screen.getByRole('dialog', { name: 'Confirmar recepción' });
+    const dialog = screen.getByRole('dialog', { name: 'Revisar recepción' });
     expect(dialog).toHaveTextContent('Exceso'); expect(dialog).toHaveTextContent(sent);
     expect(dialog).toHaveTextContent('disponible'); expect(posts(f)).toHaveLength(0);
     expect(dialog).toHaveTextContent('Solo el mínimo entre lo recibido y lo enviado de cada variante esperada se acredita como stock disponible. Faltantes, excesos y variantes inesperadas quedan registrados por separado; no se acreditan ni se resuelven automáticamente.');
@@ -178,8 +277,15 @@ describe('R2 destination receipt capture/review/once UI', () => {
     const confirm = screen.getByRole('button', { name: 'Confirmar recepción' });
     fireEvent.click(confirm); fireEvent.click(confirm); fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(dialog).toHaveAttribute('aria-busy', 'true'); expect(confirm).toBeDisabled(); expect(posts(f)).toHaveLength(1);
+    const recovery = screen.getByRole('region', { name: 'Recuperación de recepción' });
+    await waitFor(() => expect(recovery).toHaveAttribute('inert'));
+    expect(dialog).toHaveFocus();
+    fireEvent.keyDown(dialog, { key: 'Tab' }); expect(dialog).toHaveFocus();
     expect(within(dialog).queryByText('Recepción registrada correctamente.')).not.toBeInTheDocument();
     await act(async () => { resolve(reply(outcome())); }); await screen.findByRole('heading', { name: 'Recepción confirmada', level: 2 });
+    expect(recovery).toHaveAttribute('inert');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Volver al detalle' }));
+    expect(recovery).not.toHaveAttribute('inert');
   });
   it('retains receipt across Inventory navigation; InTransit consult is not proof of failure', async () => {
     let sentPosts = 0;
@@ -218,6 +324,7 @@ describe('R2 destination receipt capture/review/once UI', () => {
     await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar recepción' })); });
     await screen.findByText('Recepción pendiente de confirmación');
     expect(dialog).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Recuperación de recepción' })).toHaveAttribute('inert'));
     expect(within(dialog).queryByText('Recepción registrada correctamente.')).not.toBeInTheDocument();
     f.setRecord(status === 'received' ? outcome() : transit);
     const recovery = screen.getByRole('region', { name: 'Recuperación de recepción' });

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import './transfer-receipt.css';
 import type { TransferController } from './useInventory';
 import type { useTransfers } from './useTransfers';
 import { canonicalTransferReceiptInput, previewTransferReceipt, type TransferReceiptData, type TransferReceiptInput, type TransferRecord } from './transferModel';
@@ -56,6 +57,32 @@ export default function TransferReceipt(props: TransferReceiptProps) {
   const dialog = useRef<HTMLElement>(null); const close = useRef<HTMLButtonElement>(null);
   const current = () => mounted.current && permitted && detailAuthority(controller) === fence;
   const visibleReview = permitted && review?.fence === fence ? review : null;
+  const receiptPresentation = visibleReview?.record.kind === 'request_stock' && visibleReview.record.status === 'in_transit';
+  // Cleanup must precede the focus hook's layout-effect restoration.
+  useLayoutEffect(() => {
+    const backdrop = dialog.current?.parentElement;
+    if (!receiptPresentation || !backdrop) return;
+    const previous = new Map<Element, string | null>();
+    const isolateSiblings = () => {
+      for (let branch: Element | null = backdrop; branch && branch !== document.body; branch = branch.parentElement) {
+        for (const sibling of branch.parentElement?.children ?? []) {
+          if (sibling === branch || previous.has(sibling)) continue;
+          previous.set(sibling, sibling.getAttribute('inert'));
+          if (!sibling.hasAttribute('inert')) sibling.setAttribute('inert', '');
+        }
+      }
+    };
+    isolateSiblings();
+    const observer = new MutationObserver(isolateSiblings);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      for (const [element, value] of previous) {
+        if (value === null) element.removeAttribute('inert');
+        else element.setAttribute('inert', value);
+      }
+    };
+  }, [receiptPresentation]);
   const focus = useTransferModalFocus({ active: !!visibleReview, id: props.record?.id, fence, current, binding: props.modalFocus });
   const attempt = permitted ? transfers.receiptAttempt : null;
   const busy = attempt?.phase === 'inFlight';
@@ -154,20 +181,26 @@ export default function TransferReceipt(props: TransferReceiptProps) {
       <p>Cerrar o volver no cancela una recepción enviada. La recuperación permanece en esta App; recargar o cerrar la pestaña pierde esta memoria.</p>
     </section>}
     {props.renderDetail ? props.renderDetail(actions) : actions}
-    {visibleReview && <div className="transfer-decision-backdrop"><section ref={dialog} tabIndex={-1} className="transfer-decision-modal"
+    {visibleReview && <div className={`transfer-decision-backdrop${receiptPresentation ? ' transfer-receipt-backdrop' : ''}`}><section ref={dialog} tabIndex={-1}
+      className={`transfer-decision-modal${receiptPresentation ? ' transfer-receipt-modal' : ''}`}
       role="dialog" aria-modal="true" aria-labelledby="receipt-title" aria-busy={busy} onKeyDown={event => {
-        if (!current()) return;
-        if (event.key === 'Escape') { event.preventDefault(); dismiss(); }
+        if (!current() || event.nativeEvent.isComposing || event.defaultPrevented) return;
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); dismiss(); }
         if (event.key === 'Tab') {
-          const controls = dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled)');
+          const controls = dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled)');
           if (!controls?.length) { event.preventDefault(); return; }
           const first = controls[0]; const last = controls[controls.length - 1];
           if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog.current)) { event.preventDefault(); last.focus(); }
           else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialog.current)) { event.preventDefault(); first.focus(); }
         }
       }}>
-      <header><div><h2 id="receipt-title">{reviewConfirmed ? 'Recepción confirmada' : reviewResult ? 'Recepción con conflicto' : 'Confirmar recepción'}</h2>
-        <p>{visibleReview.record.reference} · {visibleReview.record.destination_location_name}</p></div>
+      <header><div><h2 id="receipt-title">{reviewConfirmed ? 'Recepción confirmada' : reviewResult ? 'Recepción con conflicto'
+        : receiptPresentation ? visibleReview.step === 'capture' ? 'Registrar cantidades recibidas' : 'Revisar recepción' : 'Confirmar recepción'}</h2>
+        {receiptPresentation ? <div className="transfer-receipt-context">
+          <p>{visibleReview.record.reference} · {visibleReview.record.origin_location_name} → {visibleReview.record.destination_location_name}</p>
+          {!reviewResult && <span className="transfer-receipt-step">{visibleReview.step === 'capture'
+            ? 'Conteo · Luego revisarás la recepción' : 'Revisión previa a confirmar'}</span>}
+        </div> : <p>{visibleReview.record.reference} · {visibleReview.record.destination_location_name}</p>}</div>
         <button ref={close} type="button" aria-label="Cerrar confirmación de recepción" disabled={busy} onClick={dismiss}>×</button></header>
       <div className="transfer-decision-body">
         {reviewResult ? <>
