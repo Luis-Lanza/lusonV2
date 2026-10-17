@@ -11,6 +11,8 @@ import { Icon } from './icons';
 import './transfer-detail.css';
 import './transfer-approved.css';
 import './transfer-transit.css';
+import './transfer-received.css';
+import { projectTransferReceived, type ReceivedQuantities } from './transferReceivedModel';
 
 export type DetailController = TransferController & Partial<SourceInventoryController>;
 export interface StockAdvice { catalog: SourceCatalog | null; busy: boolean; unavailable: boolean }
@@ -69,6 +71,14 @@ export function TransferItems({ record, stock, confirmation = false, reject = fa
     </tr>)}</tbody>
     {(!compact || confirmation) && <tfoot><tr><td colSpan={advice ? 4 : 3}>{compact && confirmation ? 'Total: ' : ''}{record.items.length} variantes · {transferQuantityTotal(record).toString()} baterías</td></tr></tfoot>}
   </table></div>;
+}
+
+function ReceivedDifferences({ quantities }: { quantities: ReceivedQuantities }) {
+  return <>{quantities.shortage > 0n && <span className="received-difference">Faltante: {quantities.shortage.toString()}</span>}
+    {quantities.excess > 0n && <span className="received-difference">Exceso: {quantities.excess.toString()}</span>}
+    {quantities.unexpected > 0n && <span className="received-difference">No enviada: {quantities.unexpected.toString()}</span>}
+    {quantities.shortage === 0n && quantities.excess === 0n && quantities.unexpected === 0n
+      && <span className="received-matched">✓ Sin diferencias de conteo</span>}</>;
 }
 
 export default function TransferDetail(props: TransferDetailProps) {
@@ -215,17 +225,62 @@ export default function TransferDetail(props: TransferDetailProps) {
       </ol>
     </section>}
   </div>;
-  return <div className="transfer-detail">
-    <header className="transfer-detail-heading"><h1>{record.reference}</h1>
+  const receivedParticipant = record.status === 'received' && record.kind === 'request_stock'
+    && session?.authenticated === true && (session.identity.location.id === record.origin_location_id
+      || session.identity.location.id === record.destination_location_id);
+  // Do not read private hook evidence until both the mount-bound authority and
+  // the caller's selected-record enablement agree. The hook owns head freshness.
+  const effectiveContext = receivedParticipant && props.correctionsEnabled === true
+    && props.correctionRequestID === record.id;
+  const corrections = effectiveContext ? props.corrections : undefined;
+  const effective = receivedParticipant ? projectTransferReceived({ record,
+    snapshot: corrections?.snapshot ?? null, busy: corrections?.busy ?? false,
+    error: corrections?.error ?? null, masked: corrections?.masked ?? false, contextValid: effectiveContext }) : null;
+  return <div className={`transfer-detail${receivedParticipant ? ' transfer-received-detail' : ''}`}>
+    <header className={receivedParticipant ? 'transfer-received-heading' : 'transfer-detail-heading'}><h1>{record.reference}</h1>
       <span className={`pending-status status-${record.status}`}>{transferStatusLabel(record)}</span>
-      <p>{direct ? 'Envío directo de Almacén' : record.kind === 'send_to_warehouse' ? 'Propuesta de envío a Almacén' : record.origin_location_id === 1 ? 'Solicitud a Almacén' : 'Solicitud entre sucursales'}</p>
+      {receivedParticipant && <button type="button" aria-expanded={historyOpen} aria-controls="received-transfer-history"
+        onClick={() => setHistoryFor(historyOpen ? null : historyKey)}><span aria-hidden="true">◷ </span>Ver historial</button>}
+      <p>{receivedParticipant ? <>Solicitud de stock · <span aria-label="Ruta física">{record.origin_location_name} → {record.destination_location_name}</span></> : direct ? 'Envío directo de Almacén' : record.kind === 'send_to_warehouse' ? 'Propuesta de envío a Almacén' : record.origin_location_id === 1 ? 'Solicitud a Almacén' : 'Solicitud entre sucursales'}</p>
     </header>
-    <section className="transfer-detail-route creation-route" aria-label="Ruta física">
+    {!receivedParticipant && <section className="transfer-detail-route creation-route" aria-label="Ruta física">
         <div><span>Origen</span><strong>{record.origin_location_name}</strong>
           <small>{direct ? 'Creador y origen físico' : record.kind === 'send_to_warehouse' ? 'Emisor · solicita enviar su stock' : 'Suministra el stock solicitado'}</small></div>
         <b aria-hidden="true">→</b><div><span>Destino</span><strong>{record.destination_location_name}</strong>
           <small>{direct ? 'Receptor · no requiere aprobación' : record.kind === 'send_to_warehouse' ? 'Receptor · requiere aprobación' : 'Ubicación solicitante'}</small></div>
-    </section>
+    </section>}
+    {receivedParticipant && effective && <section className="transfer-received-products" aria-busy={effective.status === 'updating'}
+      aria-label={effective.status === 'available' ? 'Conteo efectivo confirmado' : 'Conteo efectivo de recepción'}>
+      {effective.status === 'unavailable' ? <div className="received-unavailable" data-reason={effective.reason}>
+        <h2>Conteo efectivo no disponible</h2>
+        <p>No se muestran cantidades originales como conteo efectivo. Consultá el estado y los controles de recuperación en Correcciones de conteo.</p>
+        {corrections && !corrections.masked && <button type="button" disabled={corrections.busy}
+          onClick={() => { if (current() && effectiveContext) void corrections.refresh(); }}>Reintentar conteo efectivo</button>}
+      </div> : <>
+        <header><h2>{effective.status === 'updating' ? 'Actualizando conteo efectivo…' : 'Conteo efectivo confirmado'}</h2>
+          <span> · {effective.rows.length} variantes · {effective.totals.actual.toString()} {effective.totals.actual === 1n ? 'batería contabilizada' : 'baterías contabilizadas'}</span></header>
+        {effective.status === 'updating' && <p role="status">Actualizando: evidencia retenida, pendiente de consulta; no confirma el estado más reciente.</p>}
+        <div className="received-table"><table><caption className="sr-only">Conteo efectivo</caption>
+          <thead><tr>{['Batería', 'Enviadas', 'Recibidas efectivas', 'Crédito efectivo', 'Diferencia'].map(label => <th scope="col" key={label}>{label}</th>)}</tr></thead>
+          <tbody>{effective.rows.map(row => <tr key={row.variant_id} data-variant-id={row.variant_id}
+            className={row.shortage || row.excess || row.unexpected ? 'received-discrepant' : undefined}>
+            <td>{row.product ? <>{row.product.brand} {row.product.model}<small>{row.product.capacity_ah} Ah · {row.product.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</small></>
+              : <>Variante {row.variant_id} · identidad no disponible</>}
+              {row.applied_revision > 0n && <small className="received-corrected">Corrección aplicada · revisión {row.applied_revision.toString()}</small>}</td>
+            <td data-label="Enviadas">{row.expected.toString()}</td><td data-label="Recibidas efectivas">{row.actual.toString()}</td>
+            <td data-label="Crédito efectivo">{row.credit.toString()}</td><td data-label="Diferencia"><ReceivedDifferences quantities={row} /></td>
+          </tr>)}</tbody>
+          <tfoot><tr><th scope="row">Total · {effective.rows.length} variantes</th><td data-label="Enviadas">{effective.totals.expected.toString()}</td>
+            <td data-label="Recibidas efectivas">{effective.totals.actual.toString()}</td><td data-label="Crédito efectivo">{effective.totals.credit.toString()}</td>
+            <td data-label="Diferencia"><ReceivedDifferences quantities={effective.totals} /></td></tr></tfoot>
+        </table></div>
+        <p className="received-scope"><Icon name="info" />Estas cantidades reflejan el conteo efectivo de esta recepción, no el stock actual de {record.destination_location_name}.</p>
+        <footer><ReceivedDifferences quantities={effective.totals} />
+          {(effective.totals.shortage > 0n || effective.totals.excess > 0n || effective.totals.unexpected > 0n)
+            && <p>Las diferencias se registran por variante, sin compensarse ni resolverse automáticamente.</p>}</footer>
+      </>}
+      {props.actions?.(stock)}
+    </section>}
     {record.status === 'received' && <section className="transfer-receipt-overview" aria-label="Recepción original">
       <h2>Recepción original</h2>
       <section aria-label="Cantidades de la solicitud" className="transfer-outcome-metrics received">
@@ -253,7 +308,7 @@ export default function TransferDetail(props: TransferDetailProps) {
           {!terminal && <><p>Disponible en {record.origin_location_name} (orientativo)</p><Stock stock={stock} variant={item.variant_id} /></>}
         </article>)}
       </div>}
-    </div><div className="transfer-detail-outcome"><aside className="transfer-detail-summary" aria-label="Resumen de solicitud">
+    </div><div className="transfer-detail-outcome">{!receivedParticipant && <aside className="transfer-detail-summary" aria-label="Resumen de solicitud">
       <h2>Solicitud {terminal ? transferStatusLabel(record) : 'Pending'}</h2>
       {record.status !== 'received' && <section aria-label="Cantidades de la solicitud" className={`transfer-outcome-metrics ${record.status}`}>
         <dl><dt>Baterías solicitadas</dt>
@@ -279,8 +334,8 @@ export default function TransferDetail(props: TransferDetailProps) {
       {record.status === 'received' && <p>Recibida en {record.destination_location_name}: <TransferDate value={record.received_at} /></p>}
       {record.status === 'cancelled' && <p>Cancelada en {record.creator_location_name}: <TransferDate value={record.cancelled_at} /></p>}
       {props.actions?.(stock)}
-    </aside>
-      <section className={`transfer-history ${record.status}`} aria-label="Historial de la solicitud">
+    </aside>}
+      {(!receivedParticipant || historyOpen) && <section id={receivedParticipant ? 'received-transfer-history' : undefined} className={`transfer-history ${record.status}`} aria-label="Historial de la solicitud">
         <h2>Historial de la solicitud</h2>
         <ol>
           <li><h3>{direct ? 'Envío creado, autorizado y stock reservado' : 'Solicitud creada'}</h3>
@@ -308,7 +363,7 @@ export default function TransferDetail(props: TransferDetailProps) {
             <p>Recepción finalizada una sola vez. Discrepancias registradas por separado.</p>
           </li>}
         </ol>
-      </section>
+      </section>}
     </div></div>
   </div>;
 }

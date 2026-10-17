@@ -82,10 +82,14 @@ describe('R2 latest Received participant history', () => {
       },
     } };
     render(f.element());
-    const history = await screen.findByRole('region', { name: 'Historial de la solicitud' });
-    await waitFor(() => expect(history).toHaveTextContent('Solicitud recibida'));
+    await waitFor(() => expect(document.querySelector('.transfer-received-heading')).toHaveTextContent('Recibida'));
+    expect(screen.queryByRole('region', { name: 'Historial de la solicitud' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+    const history = screen.getByRole('region', { name: 'Historial de la solicitud' });
+    expect(history).toHaveTextContent('Solicitud recibida');
     expect(history).toHaveTextContent('Solicitud aprobada'); expect(history).toHaveTextContent('Solicitud despachada');
-    expect(screen.getByRole('complementary', { name: 'Resumen de solicitud' })).toHaveTextContent('Recibida');
+    expect(history.querySelector('time[datetime="2026-04-03T00:00:00.000000003Z"]')).not.toBeNull();
+    expect(document.querySelector('.transfer-received-heading')).toHaveTextContent('Recibida');
     expect(screen.queryByRole('button', { name: /Despachar solicitud|Recibir solicitud|Resolver/ })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
     fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'received' } });

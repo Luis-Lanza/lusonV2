@@ -478,6 +478,9 @@ describe('R2 destination receipt capture/review/once UI', () => {
     expect(within(dialog).queryByText(/^Confirmar finaliza la recepción una sola vez/)).not.toBeInTheDocument();
     expect(posts(f)).toHaveLength(1);
     expect(JSON.parse(String(posts(f)[0][1]?.body))).toEqual({ items: [{ variant_id: 1, actual_quantity: '9007199254740994' }] });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Volver al detalle' }));
+    expect(screen.queryByRole('region', { name: 'Historial de la solicitud' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
     expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toHaveTextContent('Solicitud recibida');
     expect(screen.queryByRole('button', { name: /Resolver discrepancia|Recibir solicitud/ })).not.toBeInTheDocument();
   });

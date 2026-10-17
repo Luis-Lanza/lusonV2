@@ -7,6 +7,8 @@ import type { DetailController } from './TransferDetail';
 import type { TransferAuthority } from './useInventory';
 import type { TransferCountCorrectionsProps } from './TransferCountCorrections';
 import { createTransferRestitutionRecovery } from './transferRestitutionRecovery';
+import { TransferAPIError } from './transferAPI';
+import type { CountProposal } from './transferCountCorrectionModel';
 
 describe('U1 pending approver presentation', () => {
   it('keeps unknown stock advisory and recovers with passive refresh for the approver', async () => {
@@ -177,6 +179,122 @@ describe('U3 destination stock request in transit', () => {
   });
 });
 
+describe('U4b effective received detail', () => {
+  function received(assigned = 2) {
+    const f = fixture(1, 2, assigned); const original = wire(1, 2, 'approved');
+    const record = parseTransferRecord(JSON.stringify({ ...original, status: 'received',
+      dispatch_location_id: 1, dispatched_at: '2028-01-03T00:00:00Z',
+      receipt_location_id: 2, received_at: '2028-01-04T00:00:00Z',
+      receipt: { items: original.items.map(i => ({ variant_id: i.variant_id, expected_quantity: i.quantity,
+        actual_quantity: i.quantity, available_quantity: i.quantity })), exceptions: [] } }));
+    if (record.status !== 'received') throw new Error('received fixture');
+    const corrections: TransferCountCorrectionsProps['corrections'] = { snapshot: {
+      request_id: BigInt(record.id), operations: [], lines: record.receipt.items.map(line => ({ ...line,
+        workflow_revision: 2n, applied_revision: 1n, effective_actual: 3n, effective_credit: 3n, proposals: [] })) },
+      busy: false, error: null, masked: false, attempts: [], refresh: vi.fn(async () => {}),
+      propose: vi.fn(async () => {}), decide: vi.fn(async () => {}), retry: vi.fn(async () => {}), recover: vi.fn(async () => {}) };
+    const element = (enabled = true, requestID = record.id, evidence = corrections) => <TransferDetail controller={f.controller}
+      ownerTag={transferViewOwner(f.env.current)!} record={record} corrections={evidence}
+      correctionsEnabled={enabled} correctionRequestID={requestID} actions={() => <button>Result sentinel</button>} />;
+    return { ...f, record, corrections, element };
+  }
+  it.each([1, 2])('shows effective evidence, separate original and closed persisted history for participant %s', assigned => {
+    const f = received(assigned); render(f.element());
+    const effective = screen.getByRole('region', { name: 'Conteo efectivo confirmado' });
+    expect(effective).toHaveTextContent('2 variantes · 6 baterías contabilizadas');
+    expect(within(effective).getByRole('table')).toHaveTextContent('Recibidas efectivas');
+    expect(effective).toHaveTextContent('Crédito efectivo');
+    expect(effective).toHaveTextContent('no el stock actual');
+    expect(effective).toHaveTextContent('Corrección aplicada · revisión 1');
+    const original = screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML;
+    expect(original).toContain('9223372036854775807');
+    expect(screen.getByRole('button', { name: 'Result sentinel' })).toBeVisible();
+    expect(screen.queryByRole('region', { name: 'Historial de la solicitud' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+    expect(screen.getByRole('region', { name: 'Historial de la solicitud' }).querySelectorAll('time')).toHaveLength(4);
+    expect(screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML).toBe(original);
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+  it.each(['pending', 'rejected'] as const)('keeps applied values despite a later %s proposal', state => {
+    const f = received(); const line = f.corrections.snapshot!.lines[0];
+    const proposals: readonly CountProposal[] = [{ revision: 2n, operation_key: 'later_proposal_key', initiator_location_id: 2,
+      actual_quantity: 99n, base_revision: 1n, base_credit: 3n, reason: 'Later recount',
+      recorded_at: '2028-01-05T00:00:00Z', state, application: null,
+      decision: state === 'pending' ? null : { operation_key: 'reject_operation_key', actor_location_id: 1,
+        accepted: false, reason: 'Rejected recount', recorded_at: '2028-01-06T00:00:00Z' } }];
+    render(f.element(true, f.record.id, { ...f.corrections, snapshot: { ...f.corrections.snapshot!,
+      lines: [{ ...line, proposals }, ...f.corrections.snapshot!.lines.slice(1)] } }));
+    const effective = screen.getByRole('table', { name: 'Conteo efectivo' });
+    expect(effective).not.toHaveTextContent('99');
+    expect(effective.querySelector('tbody [data-label="Recibidas efectivas"]')).toHaveTextContent(/^3$/);
+    expect(effective.querySelector('tbody [data-label="Crédito efectivo"]')).toHaveTextContent(/^3$/);
+    expect(effective).toHaveTextContent('Corrección aplicada · revisión 1');
+    expect(screen.getByRole('region', { name: 'Correcciones de conteo' })).toHaveTextContent(state === 'pending' ? 'Pendiente' : 'Rechazada');
+  });
+  it('marks retained busy evidence updating without claiming a newly confirmed head', () => {
+    const f = received(); const view = render(f.element());
+    view.rerender(f.element(true, f.record.id, { ...f.corrections, busy: true }));
+    const effective = screen.getByRole('region', { name: 'Conteo efectivo de recepción' });
+    expect(effective).toHaveAttribute('aria-busy', 'true');
+    expect(effective).toHaveTextContent('Actualizando');
+    expect(effective).not.toHaveTextContent('Conteo efectivo confirmado');
+    expect(effective).toHaveTextContent('6 baterías contabilizadas');
+  });
+  it.each(['error', 'masked', 'missing', 'duplicate', 'request', 'original', 'disabled', 'selection'])(
+    'makes %s evidence unavailable without presenting original as effective', mode => {
+      const f = received(); const snapshot = f.corrections.snapshot!;
+      const evidence = { ...f.corrections,
+        error: mode === 'error' ? new TransferAPIError('invalid_response', null, false, false, false, false, false, true) : null,
+        masked: mode === 'masked', snapshot: { ...snapshot,
+          request_id: mode === 'request' ? 1n : snapshot.request_id,
+          lines: mode === 'missing' ? snapshot.lines.slice(1) : mode === 'duplicate' ? [...snapshot.lines, snapshot.lines[0]]
+            : mode === 'original' ? snapshot.lines.map(line => ({ ...line, actual_quantity: 1n })) : snapshot.lines } };
+      render(f.element(mode !== 'disabled', mode === 'selection' ? '1' : f.record.id, evidence));
+      expect(screen.getByRole('region', { name: 'Conteo efectivo de recepción' })).toHaveTextContent('Conteo efectivo no disponible');
+      expect(screen.queryByRole('table', { name: 'Conteo efectivo' })).toBeNull();
+      expect(screen.getByRole('table', { name: 'Detalle de recepción' })).toHaveTextContent('9223372036854775807');
+      if (mode === 'missing') {
+        fireEvent.click(screen.getByRole('button', { name: 'Reintentar conteo efectivo' }));
+        expect(f.corrections.refresh).toHaveBeenCalledOnce();
+      }
+      expect(f.fetch).not.toHaveBeenCalled();
+    });
+  it('accepts all-zero effective evidence and preserves exact non-netted unexpected quantities', () => {
+    const f = received(); const snapshot = { ...f.corrections.snapshot!,
+      lines: f.corrections.snapshot!.lines.map(line => ({ ...line, effective_actual: 0n, effective_credit: 0n })) };
+    const view = render(f.element(true, f.record.id, { ...f.corrections, snapshot }));
+    expect(screen.getByRole('region', { name: 'Conteo efectivo confirmado' })).toHaveTextContent('0 baterías contabilizadas');
+    const record = { ...f.record, receipt: { ...f.record.receipt, items: [...f.record.receipt.items,
+      { variant_id: 99, expected_quantity: 0n, actual_quantity: 1n, available_quantity: 0n }] } };
+    const evidence = { ...f.corrections, snapshot: { ...snapshot, lines: [snapshot.lines[0],
+      { ...snapshot.lines[1], effective_actual: 9223372036854775809n },
+      { variant_id: 99, expected_quantity: 0n, actual_quantity: 1n, available_quantity: 0n,
+        effective_actual: 9007199254740993n, effective_credit: 0n, workflow_revision: 0n, applied_revision: 0n, proposals: [] }] } };
+    view.rerender(<TransferDetail controller={f.controller} ownerTag={transferViewOwner(f.env.current)!}
+      record={record} corrections={evidence} correctionsEnabled correctionRequestID={record.id} />);
+    const effective = screen.getByRole('table', { name: 'Conteo efectivo' });
+    expect(effective).toHaveTextContent('Variante 99 · identidad no disponible');
+    expect(effective).toHaveTextContent('No enviada: 9007199254740993');
+    expect(effective).toHaveTextContent('Faltante: 9223372036854775807');
+    expect(effective).toHaveTextContent('Exceso: 2');
+  });
+  it('fences correction getters for nonparticipants and retires evidence after authority changes', () => {
+    const f = received(3); const snapshot = Object.getOwnPropertyDescriptor(f.corrections, 'snapshot')!;
+    Object.defineProperty(f.corrections, 'snapshot', { configurable: true, get: () => { throw new Error('private evidence'); } });
+    const view = render(f.element());
+    expect(document.querySelector('.transfer-received-detail')).toBeNull();
+    view.unmount(); Object.defineProperty(f.corrections, 'snapshot', snapshot);
+    const allowed = received(); const owner = transferViewOwner(allowed.env.current)!;
+    const element = () => <TransferDetail controller={allowed.controller} ownerTag={owner} record={allowed.record}
+      corrections={allowed.corrections} correctionsEnabled correctionRequestID={allowed.record.id} />;
+    const active = render(element());
+    allowed.env.current = { ...allowed.env.current, sessionGeneration: 2 };
+    Object.defineProperty(allowed.corrections, 'snapshot', { get: () => { throw new Error('retired evidence'); } });
+    active.rerender(element());
+    expect(document.querySelector('.transfer-received-detail')).toBeNull();
+  });
+});
+
 describe('F4a original receipt overview', () => {
   it('puts route, immutable totals and comparison before discrepancy lanes without inventing restitution balances', () => {
     const f = fixture(); const original = wire(1, 2, 'approved');
@@ -227,6 +345,7 @@ describe('W2 direct warehouse history', () => {
         receipt: { items: original.items.map(item => ({ variant_id: item.variant_id, expected_quantity: item.quantity,
           actual_quantity: item.quantity, available_quantity: item.quantity })), exceptions: [] } } : {}) }));
     render(f.element(record));
+    expect(document.querySelector('.transfer-received-detail')).toBeNull();
     const history = within(screen.getByRole('region', { name: 'Historial de la solicitud' }));
     expect(history.getByRole('heading', { name: 'Envío creado, autorizado y stock reservado' })).toBeVisible();
     expect(history.queryByRole('heading', { name: 'Solicitud aprobada y stock reservado' })).not.toBeInTheDocument();

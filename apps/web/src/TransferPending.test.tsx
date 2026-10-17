@@ -117,7 +117,7 @@ function correctionFixture(actor = 2, override?: (url: string, init: RequestInit
   const element = () => f.element({ ownerTag: f.ownerTag, id: record.id });
   return { ...f, record, element };
 }
-async function correctionLoaded() { await screen.findByRole('heading', { name: 'Conteo efectivo confirmado' }); }
+async function correctionLoaded() { await screen.findByRole('heading', { name: 'Conteo efectivo confirmado', level: 3 }); }
 function correctionPreview(action: 'propose' | 'accept' | 'reject' = 'propose') {
   fireEvent.click(screen.getAllByRole('button', { name: action === 'propose' ? 'Proponer corrección'
     : `${action === 'accept' ? 'Aceptar' : 'Rechazar'} revisión 1` })[0]);
@@ -196,10 +196,10 @@ describe('F4a selected chrome', () => {
     const identity = screen.getByRole('heading', { name: f.record.reference, level: 1 });
     expect(screen.queryByRole('heading', { name: 'Detalle de solicitud' })).not.toBeInTheDocument();
     expect(screen.queryByText(/solicitudes pendientes$/)).not.toBeInTheDocument();
-    const counters = screen.getByRole('region', { name: 'Contadores de solicitudes' });
-    expect(identity.compareDocumentPosition(counters) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(counters).toHaveTextContent('9007199254740995');
-    expect(counters).toHaveTextContent('9007199254740994');
+    expect(screen.queryByRole('region', { name: 'Contadores de solicitudes' })).toBeNull();
+    const effective = screen.getByRole('region', { name: 'Conteo efectivo confirmado' });
+    expect(identity.compareDocumentPosition(effective) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole('navigation', { name: 'Navegación de transferencia' })).toHaveClass('received-participant-navigation');
     const lane = screen.getByRole('region', { name: 'Correcciones de conteo' });
     expect(screen.getAllByRole('region', { name: 'Correcciones de conteo' })).toHaveLength(1);
     expect(screen.getByRole('region', { name: 'Recepción original' }).compareDocumentPosition(lane) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -207,6 +207,7 @@ describe('F4a selected chrome', () => {
     expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
     await loaded();
+    expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toHaveTextContent('9007199254740995');
     fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' }));
     expect(f.back).toHaveBeenCalledOnce();
   });
@@ -242,10 +243,12 @@ describe('C4b received detail real-hook integration', () => {
       : url === `/api/transfers/${record.id}/count-corrections` ? Promise.resolve(reply(correctionHistory(record))) : undefined);
     render(f.element({ ownerTag: f.ownerTag, id: record.id }));
     await screen.findByRole('heading', { name: 'TR-9007199254740993' });
-    await screen.findByRole('heading', { name: 'Conteo efectivo confirmado' });
+    await screen.findByRole('heading', { name: 'Conteo efectivo confirmado', level: 3 });
     expect(correctionCalls(f)).toHaveLength(1);
     expect(correctionCalls(f)[0][0]).toBe(`/api/transfers/${record.id}/count-corrections`);
     expect(isPassive(correctionCalls(f)[0])).toBe(true);
+    expect(screen.queryByRole('region', { name: 'Historial de la solicitud' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
     const receivedTime = screen.getByRole('region', { name: 'Historial de la solicitud' }).querySelector(`time[datetime="${record.received_at}"]`);
     expect(receivedTime).toHaveTextContent('02/01/2028 · 20:00 (hora Bolivia)');
     expect(receivedTime).toHaveAttribute('datetime', record.received_at);
@@ -300,7 +303,8 @@ describe('C4b App correction settlement with real inventory controller', () => {
     fireEvent.click(await screen.findByRole('button', { name: `Ver detalle ${record.reference}` })); await correctionLoaded();
     const receipt = screen.getByRole('table', { name: 'Detalle de recepción' });
     const metrics = screen.getByRole('region', { name: 'Cantidades de la solicitud' });
-    const summary = screen.getByRole('complementary', { name: 'Resumen de solicitud' });
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+    const summary = screen.getByRole('region', { name: 'Historial de la solicitud' });
     const original = { receipt: receipt.outerHTML, metrics: metrics.outerHTML,
       times: [...summary.querySelectorAll('time')].map(time => time.outerHTML), header: screen.getByRole('heading', { name: record.reference }).parentElement!.outerHTML };
     const inventoryBefore = f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?')).length;
@@ -316,7 +320,7 @@ describe('C4b App correction settlement with real inventory controller', () => {
     expect(input).toEqual({ variant_id: 1, operation_key: expect.stringMatching(/^[a-f0-9]{32}$/), expected_revision: '1', reason: '  Recuento exacto  ' });
     expect(screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML).toBe(original.receipt);
     expect(screen.getByRole('region', { name: 'Cantidades de la solicitud' }).outerHTML).toBe(original.metrics);
-    expect([...screen.getByRole('complementary', { name: 'Resumen de solicitud' }).querySelectorAll('time')]
+    expect([...screen.getByRole('region', { name: 'Historial de la solicitud' }).querySelectorAll('time')]
       .map(time => time.outerHTML)).toEqual(original.times);
     expect(screen.getByRole('heading', { name: record.reference }).parentElement!.outerHTML).toBe(original.header);
     await act(async () => {});
@@ -351,14 +355,15 @@ describe('C4b correction authority and operation boundaries', () => {
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirmar recepción' }));
     await correctionLoaded();
     expect(correctionCalls(f)).toHaveLength(1);
-    expect(screen.getByRole('heading', { name: 'Solicitud Recibida' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: record.reference }).parentElement).toHaveTextContent('Recibida');
     expect(within(screen.getByRole('heading', { name: record.reference }).closest('.transfer-detail') as HTMLElement)
       .getByRole('table', { name: 'Detalle de recepción' })).toHaveTextContent('9223372036854775807');
     await act(async () => refresh.resolve(reply(transit)));
     expect(screen.queryByRole('region', { name: 'Productos enviados' })).not.toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: 'Navegación de transferencia' })).not.toHaveClass('transit-destination-navigation');
     expect(screen.queryByRole('button', { name: 'Recibir solicitud' })).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Conteo efectivo confirmado' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Conteo efectivo confirmado', level: 3 })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Conteo efectivo confirmado' })).toBeVisible();
     expect(correctionCalls(f)).toHaveLength(1); expect(correctionPosts(f)).toHaveLength(0);
   });
   it.each(['pending', 'approved', 'rejected', 'in_transit', 'cancelled'])('reads no correction history for %s', async status => {
