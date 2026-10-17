@@ -135,6 +135,88 @@ it.each(['cancelled', 'received'])('presents readable %s dispatch recovery dates
   expect(posts(f)).toHaveLength(1);
 });
 
+describe('U2b approved stock-request dispatch review', () => {
+  it('shows a read-only compact whole-request summary, exact total and three stock effects', async () => {
+    const f = fixture(); render(f.element());
+    const trigger = await screen.findByRole('button', { name: 'Despachar solicitud' });
+    expect(trigger).toHaveTextContent(/^Despachar$/); fireEvent.click(trigger);
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveClass('transfer-dispatch-confirmation');
+    expect(within(dialog).getAllByRole('columnheader').map(cell => cell.textContent)).toEqual(['Producto', 'Polaridad', 'A despachar']);
+    expect(within(dialog).getByRole('cell', { name: 'TOYO Exact-1 · 75.125 Ah' })).toBeVisible();
+    expect(dialog).toHaveTextContent('Total: 2 variantes · 18446744073709551614 baterías');
+    const bullets = within(dialog).getAllByRole('listitem');
+    expect(bullets).toHaveLength(3);
+    expect(bullets[0]).toHaveTextContent('18446744073709551614 baterías de Almacén');
+    expect(bullets[0]).toHaveTextContent('reserva propia');
+    expect(bullets[1]).toHaveTextContent('disponibilidad libre y las reservas de otras transferencias no cambian');
+    expect(bullets[2]).toHaveTextContent('En tránsito');
+    expect(bullets[2]).toHaveTextContent('Sucursal A recibirá stock solo al confirmar la recepción');
+    expect(dialog.querySelector('input, select, textarea')).toBeNull();
+    expect(within(dialog).queryByRole('button', { name: /Actualizar/ })).toBeNull();
+    expect(posts(f)).toHaveLength(0);
+  });
+  it.each(['escape', 'close', 'back', 'unmount', 'authority'] as const)('isolates dynamic background and restores prior inert state on %s', async method => {
+    const f = fixture(); const view = render(f.element());
+    const trigger = await screen.findByRole('button', { name: 'Despachar solicitud' });
+    const background = view.container.querySelector('.transfer-receipt')!;
+    const prior = document.createElement('aside'); prior.setAttribute('inert', 'retained'); document.body.append(prior);
+    const dynamic = document.createElement('button'); dynamic.textContent = 'Dynamic background';
+    try {
+      fireEvent.click(trigger);
+      expect(background).toHaveAttribute('inert');
+      document.querySelector('.transfer-dispatch')!.prepend(dynamic);
+      await waitFor(() => expect(dynamic).toHaveAttribute('inert'));
+      const restored = vi.fn(() => expect(background).not.toHaveAttribute('inert'));
+      trigger.addEventListener('focus', restored);
+      if (method === 'escape') fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+      if (method === 'close') fireEvent.click(screen.getByRole('button', { name: 'Cerrar confirmación de despacho' }));
+      if (method === 'back') fireEvent.click(screen.getByRole('button', { name: 'Volver al detalle' }));
+      if (method === 'unmount') view.unmount();
+      if (method === 'authority') {
+        f.env.authority = { ...f.env.authority, epoch: 2 }; view.rerender(f.element());
+      }
+      expect(prior).toHaveAttribute('inert', 'retained');
+      expect(dynamic).not.toHaveAttribute('inert');
+      expect(background).not.toHaveAttribute('inert');
+      if (['escape', 'close', 'back'].includes(method)) { expect(trigger).toHaveFocus(); expect(restored).toHaveBeenCalled(); }
+      else expect(restored).not.toHaveBeenCalled();
+      expect(posts(f)).toHaveLength(0);
+    } finally { prior.remove(); dynamic.remove(); }
+  });
+  it('keeps direct-shipment review and creator cancellation available without the new presentation', async () => {
+    const f = fixture();
+    f.env.record = { ...f.env.record, kind: 'direct_shipment', creator_location_id: 1,
+      creator_location_name: 'Almacén', decided_at: f.env.record.created_at };
+    render(f.element());
+    const trigger = await screen.findByRole('button', { name: 'Despachar solicitud' });
+    expect(screen.getByRole('button', { name: 'Cancelar solicitud' })).toBeEnabled();
+    expect(trigger).toHaveTextContent('Despachar solicitud'); fireEvent.click(trigger);
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).not.toHaveClass('transfer-dispatch-confirmation');
+    expect(within(dialog).getByRole('columnheader', { name: 'Cantidad a despachar' })).toBeVisible();
+    fireEvent.keyDown(dialog, { key: 'Escape' }); expect(trigger).toHaveFocus();
+    expect(posts(f)).toHaveLength(0);
+  });
+  it('isolates recovery mounted during busy and uncertain renders until dismissal', async () => {
+    const delayed = deferred();
+    const f = fixture(1, 1, 2, url => url.endsWith('/dispatch') ? delayed.promise : undefined);
+    const view = render(f.element());
+    fireEvent.click(await screen.findByRole('button', { name: 'Despachar solicitud' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirmar despacho' }));
+    const recovery = await screen.findByRole('region', { name: 'Recuperación de despacho' });
+    await waitFor(() => expect(recovery).toHaveAttribute('inert'));
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(screen.getByRole('dialog')).toHaveAttribute('aria-busy', 'true');
+    await act(async () => delayed.resolve(reply({ error: 'service_unavailable' }, 503)));
+    expect(recovery).toHaveAttribute('inert');
+    fireEvent.click(screen.getByRole('button', { name: 'Volver al detalle' }));
+    expect(recovery).not.toHaveAttribute('inert');
+    expect(view.container).not.toHaveAttribute('inert');
+    expect(posts(f)).toHaveLength(1);
+  });
+});
+
 describe('D2 dispatch participant UI', () => {
   it.each(['escape', 'close', 'back'] as const)('restores dispatch cancellation/success focus via %s without requests', async method => {
     for (const confirmed of [false, true]) {
@@ -166,12 +248,14 @@ describe('D2 dispatch participant UI', () => {
     const trigger = await screen.findByRole('button', { name: 'Despachar solicitud' });
     fireEvent.click(trigger);
     const dialog = screen.getByRole('dialog', { name: 'Confirmar despacho' });
-    expect(within(dialog).getByText('Cantidad a despachar')).toBeInTheDocument();
+    expect(within(dialog).getByText(destination === 1 ? 'Cantidad a despachar' : 'A despachar')).toBeInTheDocument();
     expect(dialog).toHaveTextContent('18446744073709551614 baterías');
     expect(dialog).toHaveTextContent('reserva propia');
-    expect(dialog).toHaveTextContent('no recibe stock');
-    expect(within(dialog).getByText('Se descontarán existencias y se consumirá la reserva propia de esta solicitud por las mismas cantidades. La disponibilidad sin reservar no cambia; otras reservas se conservan.')).toBeVisible();
-    expect(within(dialog).getByText('El destino no recibe stock con el despacho. La solicitud quedará En tránsito, pendiente de recepción.')).toBeVisible();
+    if (destination === 1) {
+      expect(dialog).not.toHaveClass('transfer-dispatch-confirmation');
+      expect(within(dialog).getByText('Se descontarán existencias y se consumirá la reserva propia de esta solicitud por las mismas cantidades. La disponibilidad sin reservar no cambia; otras reservas se conservan.')).toBeVisible();
+      expect(within(dialog).getByText('El destino no recibe stock con el despacho. La solicitud quedará En tránsito, pendiente de recepción.')).toBeVisible();
+    } else expect(dialog).toHaveTextContent('recibirá stock solo al confirmar la recepción');
     expect(posts(f)).toHaveLength(0);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar despacho' }));
     await screen.findByRole('heading', { name: 'Despacho confirmado', level: 2 });

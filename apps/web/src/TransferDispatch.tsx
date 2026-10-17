@@ -1,12 +1,14 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { TransferController } from './useInventory';
 import type { useTransfers } from './useTransfers';
-import type { TransferRecord } from './transferModel';
+import { transferQuantityTotal, type TransferRecord } from './transferModel';
 import { captureDecisionRecord, matchesDecisionRecord } from './transferDecisionRecovery';
 import { detailAuthority, TransferItems } from './TransferDetail';
 import { transferViewOwner } from './TransferPending';
 import { TransferAPIError } from './transferAPI';
 import TransferDate from './TransferDate';
+import { Icon } from './icons';
+import './transfer-dispatch.css';
 import { useTransferModalFocus, type TransferModalFocusBinding } from './transferModalFocus';
 
 export interface TransferDispatchProps {
@@ -30,6 +32,33 @@ export default function TransferDispatch(props: TransferDispatchProps) {
   const attempt = permitted ? transfers.dispatchAttempt : null;
   const busy = attempt?.phase === 'inFlight';
   const visibleReview = permitted && review?.fence === fence ? review : null;
+  const compactReview = visibleReview?.record.kind === 'request_stock' && visibleReview.record.status === 'approved';
+  // Restore background state before the focus hook returns focus to the detail.
+  useLayoutEffect(() => {
+    const backdrop = dialog.current?.parentElement;
+    if (!compactReview || !backdrop) return;
+    const previous = new Map<Element, string | null>();
+    const isolateSiblings = () => {
+      for (let branch: Element | null = backdrop; branch && branch !== document.body; branch = branch.parentElement) {
+        for (const sibling of branch.parentElement?.children ?? []) {
+          if (sibling === branch || previous.has(sibling)) continue;
+          previous.set(sibling, sibling.getAttribute('inert'));
+          if (!sibling.hasAttribute('inert')) sibling.setAttribute('inert', '');
+        }
+      }
+    };
+    isolateSiblings();
+    // Recovery and other background siblings may appear after opening the dialog.
+    const observer = new MutationObserver(isolateSiblings);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      for (const [element, value] of previous) {
+        if (value === null) element.removeAttribute('inert');
+        else element.setAttribute('inert', value);
+      }
+    };
+  }, [compactReview]);
   const focus = useTransferModalFocus({ active: !!visibleReview, id: props.record?.id, fence, current, binding: props.modalFocus });
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
@@ -78,7 +107,7 @@ export default function TransferDispatch(props: TransferDispatchProps) {
     setReview({ fence, record: captureDecisionRecord(record), trigger });
   };
   const actions = canDispatch && !(result && result.id === record.id) ? <div className="transfer-decision-actions">
-    <button type="button" className="primary" disabled={!!unresolved} onClick={event => open(event.currentTarget)}>Despachar solicitud</button>
+    <button type="button" className="primary" aria-label="Despachar solicitud" disabled={!!unresolved} onClick={event => open(event.currentTarget)}>{record.kind === 'request_stock' ? 'Despachar' : 'Despachar solicitud'}</button>
     <p>El despacho completo requiere confirmación desde el origen físico.</p>
   </div> : null;
   return <div className="transfer-dispatch">
@@ -101,7 +130,7 @@ export default function TransferDispatch(props: TransferDispatchProps) {
     </section>}
     {props.renderDetail ? props.renderDetail(actions) : actions}
     {visibleReview && <div className="transfer-decision-backdrop"><section ref={dialog} tabIndex={-1}
-      className="transfer-decision-modal" role="dialog" aria-modal="true" aria-labelledby="dispatch-title" aria-busy={busy}
+      className={`transfer-decision-modal${compactReview ? ' transfer-dispatch-confirmation' : ''}`} role="dialog" aria-modal="true" aria-labelledby="dispatch-title" aria-busy={busy}
       onKeyDown={event => {
         if (!current()) return;
         if (event.key === 'Escape') { event.preventDefault(); dismiss(); }
@@ -118,15 +147,24 @@ export default function TransferDispatch(props: TransferDispatchProps) {
         <button ref={close} type="button" aria-label="Cerrar confirmación de despacho" disabled={busy} onClick={dismiss}>×</button>
       </header>
       <div className="transfer-decision-body">
-        <TransferItems record={visibleReview.record} dispatch />
-        <div className="transfer-impact"><h3>{reviewResult ? 'Resultado del despacho' : 'Impacto del despacho'}</h3>
+        <TransferItems record={visibleReview.record} dispatch compact={compactReview} confirmation={compactReview} />
+        <div className="transfer-impact">{(!compactReview || reviewResult) && <h3>{reviewResult ? 'Resultado del despacho' : 'Impacto del despacho'}</h3>}
           {reviewResult ? (reviewConfirmed ? <p role="status">{reviewResult.status === 'received'
             ? 'Despacho confirmado. La solicitud ya fue recibida en destino; la recepción está finalizada.'
             : 'Despacho registrado correctamente. La solicitud está En tránsito; la recepción en destino sigue pendiente y todavía no se acreditó stock.'}</p>
             : <p role="alert">No se confirmó el despacho original. La solicitud está Cancelada; no se enviará otro despacho.</p>) : <>
+          {compactReview ? <>
+            <p><Icon name="info" /><strong>Al despachar:</strong></p>
+            <ul>
+              <li>Saldrán las {transferQuantityTotal(visibleReview.record).toString()} baterías de {visibleReview.record.origin_location_name} y se consumirá la reserva propia de esta solicitud.</li>
+              <li>La disponibilidad libre y las reservas de otras transferencias no cambian.</li>
+              <li>Quedará En tránsito. {visibleReview.record.destination_location_name} recibirá stock solo al confirmar la recepción.</li>
+            </ul>
+          </> : <>
           <p>Se despacharán todas las baterías, sin selección parcial, desde {visibleReview.record.origin_location_name}.</p>
           <p>Se descontarán existencias y se consumirá la reserva propia de esta solicitud por las mismas cantidades. La disponibilidad sin reservar no cambia; otras reservas se conservan.</p>
           <p>El destino no recibe stock con el despacho. La solicitud quedará En tránsito, pendiente de recepción.</p>
+          </>}
           </>}
         </div>
         {busy && <p role="status">Confirmando despacho…</p>}

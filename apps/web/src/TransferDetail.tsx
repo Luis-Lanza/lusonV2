@@ -54,7 +54,7 @@ export function TransferItems({ record, stock, confirmation = false, reject = fa
   return <div className="table-scroll transfer-detail-items"><table>
     <caption className="sr-only">{confirmation ? 'Solicitud completa a confirmar' : 'Baterías solicitadas'}</caption>
     <thead><tr><th scope="col">{compact && confirmation ? 'Producto' : 'Batería'}</th><th scope="col">Polaridad</th>
-      <th scope="col">{compact ? 'Solicitadas' : dispatch ? 'Cantidad a despachar' : (record.status === 'in_transit' || record.status === 'received') ? 'Cantidad enviada' : confirmation && !reject ? 'Cantidad a reservar' : 'Cantidad solicitada'}</th>
+      <th scope="col">{compact && dispatch ? 'A despachar' : compact ? 'Solicitadas' : dispatch ? 'Cantidad a despachar' : (record.status === 'in_transit' || record.status === 'received') ? 'Cantidad enviada' : confirmation && !reject ? 'Cantidad a reservar' : 'Cantidad solicitada'}</th>
       {approved && <th scope="col">Reservadas para esta solicitud</th>}
       {advice && <th scope="col">{compact ? 'Disponibles en origen' : `Disponible en ${record.origin_location_name} (orientativo)`}</th>}</tr></thead>
     <tbody>{record.items.map(item => <tr key={item.variant_id} data-variant-id={item.variant_id}>
