@@ -35,6 +35,61 @@ export function ReceiptTable({ receipt, record, detailPresentation = false }: {
     })}</tbody>
   </table></div>;
 }
+// Preview only: persisted receipt history retains its original labels and evidence.
+function ExpectedReceiptPreview({ receipt, record }: { receipt: TransferReceiptData; record: TransferRecord }) {
+  const labels = ['Producto', 'Enviadas', 'Recibidas', 'A acreditar', 'Diferencia'];
+  const totals = receipt.items.reduce((sum, line) => ({
+    sent: sum.sent + line.expected_quantity, physical: sum.physical + line.actual_quantity,
+    credit: sum.credit + line.available_quantity,
+  }), { sent: 0n, physical: 0n, credit: 0n });
+  const difference = (kind: string, quantity: bigint) => `${kind === 'shortage' ? 'Faltante' : 'Exceso'}: ${quantity.toString()}`;
+  const summary = ['shortage', 'excess'].map(kind => ({ kind,
+    quantity: receipt.exceptions.filter(line => line.kind === kind).reduce((sum, line) => sum + line.quantity, 0n),
+  })).filter(line => line.quantity > 0n);
+  return <div className="receipt-preview">
+    <p className="receipt-preview-intro">Revisá el conteo antes de registrarlo. <small>Se acreditará el mínimo recibido/enviado por variante.</small></p>
+    <div className="receipt-preview-table"><table>
+      <caption className="sr-only">Revisión de cantidades recibidas</caption>
+      <thead><tr>{labels.map(label => <th scope="col" key={label}>{label}</th>)}</tr></thead>
+      <tbody>{receipt.items.map(line => {
+        const item = record.items.find(item => item.variant_id === line.variant_id)!;
+        const exception = receipt.exceptions.find(exception => exception.variant_id === line.variant_id);
+        return <tr key={line.variant_id} data-variant-id={line.variant_id} className={exception ? 'receipt-preview-discrepant' : undefined}>
+          <td data-label={labels[0]}><strong>{item.brand} {item.model}</strong>{' · '}
+            <small>{item.capacity_ah} Ah · {item.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</small></td>
+          <td data-label={labels[1]}>{line.expected_quantity.toString()}</td>
+          <td data-label={labels[2]}>{line.actual_quantity.toString()}</td>
+          <td data-label={labels[3]}>{line.available_quantity.toString()}</td>
+          <td data-label={labels[4]}><span className={`receipt-preview-difference ${exception ? 'different' : 'matched'}`}>
+            <svg aria-hidden="true" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+              <path d={exception ? 'M12 3 2 21h20L12 3 M12 9v5 M12 17v.01' : 'm5 12 4 4L19 6'} />
+            </svg>{exception ? difference(exception.kind, exception.quantity) : 'Sin diferencias'}</span></td>
+        </tr>;
+      })}</tbody>
+      <tfoot><tr><td>Total: {receipt.items.length} variantes</td>
+        <td data-label={labels[1]}>{totals.sent.toString()}</td>
+        <td data-label={labels[2]}>{totals.physical.toString()}</td>
+        <td data-label={labels[3]}>{totals.credit.toString()}</td>
+        <td data-label={labels[4]}>{summary.length ? summary.map(line => <span key={line.kind}>
+          {difference(line.kind, line.quantity)}</span>) : 'Sin diferencias'}</td>
+      </tr></tfoot>
+    </table></div>
+    <section className="receipt-preview-effect" aria-label="Efecto al confirmar">
+      <p><strong>{totals.credit === 1n ? 'Se acreditará' : 'Se acreditarán'} {totals.credit.toString()} {totals.credit === 1n ? 'batería' : 'baterías'} en {record.destination_location_name} al confirmar.</strong>{' '}
+        <small>No es inventario actual.</small></p>
+      {!receipt.exceptions.length && <p>El conteo coincide con lo enviado.</p>}
+      {receipt.exceptions.map(exception => {
+        const item = record.items.find(item => item.variant_id === exception.variant_id)!;
+        return <div className="receipt-preview-exception" key={exception.variant_id}>
+          <p>{exception.kind === 'shortage' ? 'Faltante' : 'Exceso'}: {exception.quantity.toString()} · {item.brand} {item.model} · {item.capacity_ah} Ah · {item.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}.</p>
+          <p className="receipt-preview-warning">{exception.kind === 'shortage' ? 'El faltante quedará registrado; no se resuelve automáticamente.'
+            : 'El exceso quedará registrado por separado; no se sumará automáticamente al stock disponible.'}</p>
+        </div>;
+      })}
+      <p className="receipt-preview-immutable">Al confirmar: Conteo original guardado una sola vez; no se podrá editar.</p>
+    </section>
+  </div>;
+}
 export interface TransferReceiptProps {
   controller: TransferController; ownerTag: string; transfers: ReturnType<typeof useTransfers>;
   record?: TransferRecord | null; onPrivateUnavailable?: () => void;
@@ -182,6 +237,8 @@ export default function TransferReceipt(props: TransferReceiptProps) {
     ...visibleReview.unexpected.map(variant_id => ({ ...source?.rows.find(row => row.variant_id === variant_id),
       variant_id, sent: 0n, unexpected: true })),
   ] : [];
+  const expectedReviewPresentation = receiptPresentation && visibleReview.step === 'review'
+    && visibleReview.unexpected.length === 0 && !reviewResult;
   const completeInvalidCapture = !input && captureLines.length > 0
     && captureLines.every(line => visibleReview?.values[line.variant_id] !== '');
   const actions = canReceive && !(attempt?.original.id === record.id && result) ? <div className="transfer-decision-actions">
@@ -207,7 +264,7 @@ export default function TransferReceipt(props: TransferReceiptProps) {
     </section>}
     {props.renderDetail ? props.renderDetail(actions) : actions}
     {visibleReview && <div className={`transfer-decision-backdrop${receiptPresentation ? ' transfer-receipt-backdrop' : ''}`}><section ref={dialog} tabIndex={-1}
-      className={`transfer-decision-modal${receiptPresentation ? ' transfer-receipt-modal' : ''}`}
+      className={`transfer-decision-modal${receiptPresentation ? ' transfer-receipt-modal' : ''}${expectedReviewPresentation ? ' receipt-expected-review' : ''}`}
       role="dialog" aria-modal="true" aria-labelledby="receipt-title" aria-busy={busy} onKeyDown={event => {
         if (!current() || event.nativeEvent.isComposing || event.defaultPrevented) return;
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); dismiss(); }
@@ -278,7 +335,8 @@ export default function TransferReceipt(props: TransferReceiptProps) {
             </div>)}</div>
           {catalogControls}
           <p>Solo enteros sin signos, espacios ni ceros iniciales, hasta 9223372036854775807. Las variantes inesperadas requieren cantidades positivas; una recepción totalmente en cero no es válida.</p>
-        </> : preview && <>
+        </> : preview && receiptPresentation && visibleReview.unexpected.length === 0 ?
+          <ExpectedReceiptPreview receipt={preview} record={visibleReview.record} /> : preview && <>
           <ReceiptTable receipt={preview} record={visibleReview.record} />
           <p>Solo el mínimo entre lo recibido y lo enviado de cada variante esperada se acredita como stock disponible. Faltantes, excesos y variantes inesperadas quedan registrados por separado; no se acreditan ni se resuelven automáticamente.</p>
           <p>Confirmar finaliza la recepción una sola vez. No se podrá modificar después.</p>

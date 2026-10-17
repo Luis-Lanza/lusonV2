@@ -77,6 +77,73 @@ async function capture() {
 const actualInput = () => screen.getByLabelText(/Cantidad recibida.*Expected/);
 afterEach(() => vi.unstubAllGlobals());
 
+describe('U3d expected receipt review', () => {
+  const pair = { ...transit, items: ['L', 'R'].map((polarity, index) => ({
+    ...transit.items[0], variant_id: index + 1, polarity, quantity: '1',
+  })) };
+  it.each([
+    ['matched', '1', ['2', '2', '2'], 'Sin diferencias'],
+    ['shortage', '0', ['2', '1', '1'], 'Faltante: 1'],
+    ['excess', '2', ['2', '3', '2'], 'Exceso: 1'],
+  ])('reviews %s with physical counts and future credit, preserving the draft', async (_kind, right, totals, difference) => {
+    const f = fixture(); f.setRecord(pair); render(<App />); await detail(); const dialog = await capture();
+    const inputs = within(dialog).getAllByRole('textbox');
+    fireEvent.change(inputs[0], { target: { value: '1' } });
+    fireEvent.change(inputs[1], { target: { value: right } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar recepción' }));
+    const table = within(dialog).getByRole('table', { name: 'Revisión de cantidades recibidas' });
+    expect(within(table).getAllByRole('columnheader').map(cell => cell.textContent)).toEqual([
+      'Producto', 'Enviadas', 'Recibidas', 'A acreditar', 'Diferencia',
+    ]);
+    expect(table).toHaveTextContent('75.125 Ah · Izquierda [L]');
+    expect(table).toHaveTextContent('75.125 Ah · Derecha [R]');
+    expect(table).toHaveTextContent(difference);
+    const total = within(table).getByRole('row', { name: /Total: 2 variantes/ });
+    expect(within(total).getAllByRole('cell').slice(1, 4).map(cell => cell.textContent)).toEqual(totals);
+    expect(dialog).toHaveTextContent(totals[2] === '1'
+      ? 'Se acreditará 1 batería en Sucursal A al confirmar.' : `Se acreditarán ${totals[2]} baterías en Sucursal A al confirmar.`);
+    expect(dialog).toHaveTextContent('No es inventario actual.');
+    expect(dialog).toHaveTextContent('Conteo original guardado una sola vez; no se podrá editar.');
+    expect(dialog).toHaveTextContent('Se acreditará el mínimo recibido/enviado por variante.');
+    expect(table.querySelectorAll('.receipt-preview-difference svg')).toHaveLength(2);
+    if (right === '0') expect(dialog).toHaveTextContent('El faltante quedará registrado; no se resuelve automáticamente.');
+    if (right === '2') expect(dialog).toHaveTextContent('El exceso quedará registrado por separado; no se sumará automáticamente al stock disponible.');
+    expect(dialog.querySelector('input, select')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Editar cantidades' }));
+    expect(within(dialog).getAllByRole('textbox').map(input => (input as HTMLInputElement).value)).toEqual(['1', right]);
+    expect(pair.items.map(item => item.quantity)).toEqual(['1', '1']);
+    expect(posts(f)).toHaveLength(0);
+  });
+  it('sums canonical bigints exactly without netting opposite variant differences', async () => {
+    const f = fixture(); f.setRecord({ ...pair, items: pair.items.map(item => ({ ...item, quantity: sent })) });
+    render(<App />); await detail(); const dialog = await capture();
+    const inputs = within(dialog).getAllByRole('textbox');
+    fireEvent.change(inputs[0], { target: { value: (BigInt(sent) - 1n).toString() } });
+    fireEvent.change(inputs[1], { target: { value: (BigInt(sent) + 1n).toString() } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar recepción' }));
+    const table = within(dialog).getByRole('table', { name: 'Revisión de cantidades recibidas' });
+    const total = within(table).getByRole('row', { name: /Total: 2 variantes/ });
+    expect(within(total).getAllByRole('cell').slice(1, 4).map(cell => cell.textContent)).toEqual([
+      '18014398509481986', '18014398509481986', '18014398509481985',
+    ]);
+    expect(total).toHaveTextContent('Faltante: 1'); expect(total).toHaveTextContent('Exceso: 1');
+    expect(posts(f)).toHaveLength(0);
+  });
+  it('keeps mixed unexpected review on the existing functional fallback', async () => {
+    const f = fixture(); render(<App />); await detail(); const dialog = await capture();
+    const selector = screen.getByLabelText('Variante inesperada');
+    await waitFor(() => expect(selector).toBeEnabled());
+    fireEvent.change(selector, { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Agregar variante inesperada' }));
+    fireEvent.change(actualInput(), { target: { value: sent } });
+    fireEvent.change(screen.getByLabelText(/Cantidad recibida.*Unexpected/), { target: { value: '7' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar recepción' }));
+    expect(within(dialog).getByRole('table', { name: 'Detalle de recepción' })).toHaveTextContent('Variante inesperada 2');
+    expect(within(dialog).queryByRole('table', { name: 'Revisión de cantidades recibidas' })).toBeNull();
+    expect(posts(f)).toHaveLength(0);
+  });
+});
+
 describe('U3c receipt capture presentation', () => {
   it('shows immutable sent evidence, blank labeled counts and the visible catalog before review', async () => {
     const f = fixture(); render(<App />); await detail(); const dialog = await capture();
@@ -205,6 +272,10 @@ describe('U3b receipt modal foundation', () => {
     expect(within(dialog).queryByRole('region', { name: '¿Llegó otra variante?' })).toBeNull();
     expect(dialog).not.toHaveTextContent('Conteo · Luego revisarás la recepción');
     expect(actualInput()).toHaveValue('');
+    fireEvent.change(actualInput(), { target: { value: sent } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revisar recepción' }));
+    expect(within(dialog).getByRole('table', { name: 'Detalle de recepción' })).toHaveTextContent('Stock disponible acreditado');
+    expect(dialog.querySelector('.receipt-preview')).toBeNull();
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(posts(f)).toHaveLength(0);
   });
@@ -290,8 +361,9 @@ describe('R2 destination receipt capture/review/once UI', () => {
     const dialog = screen.getByRole('dialog', { name: 'Revisar recepción' });
     expect(dialog).toHaveTextContent('Exceso'); expect(dialog).toHaveTextContent(sent);
     expect(dialog).toHaveTextContent('disponible'); expect(posts(f)).toHaveLength(0);
-    expect(dialog).toHaveTextContent('Solo el mínimo entre lo recibido y lo enviado de cada variante esperada se acredita como stock disponible. Faltantes, excesos y variantes inesperadas quedan registrados por separado; no se acreditan ni se resuelven automáticamente.');
-    expect(dialog).toHaveTextContent('Confirmar finaliza la recepción una sola vez. No se podrá modificar después.');
+    expect(dialog).toHaveTextContent('Se acreditará el mínimo recibido/enviado por variante.');
+    expect(dialog).toHaveTextContent('El exceso quedará registrado por separado; no se sumará automáticamente al stock disponible.');
+    expect(dialog).toHaveTextContent('Conteo original guardado una sola vez; no se podrá editar.');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar recepción' }));
     await screen.findByRole('heading', { name: 'Recepción confirmada', level: 2 });
     expect(within(dialog).getByRole('status')).toHaveTextContent('Recepción registrada correctamente.');
