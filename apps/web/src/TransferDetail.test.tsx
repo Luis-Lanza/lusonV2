@@ -198,6 +198,37 @@ describe('U4b effective received detail', () => {
       correctionsEnabled={enabled} correctionRequestID={requestID} actions={() => <button>Result sentinel</button>} />;
     return { ...f, record, corrections, element };
   }
+  it('routes exactly two management entries by keyboard without losing an active correction', async () => {
+    const f = received(); f.controller.restitutionRecovery = createTransferRestitutionRecovery();
+    const element = (requestID = f.record.id) => <TransferDetail controller={f.controller}
+      ownerTag={transferViewOwner(f.env.current)!} record={f.record} corrections={f.corrections}
+      correctionsEnabled correctionRequestID={requestID} restitutionsEnabled restitutionRequestID={f.record.id} />;
+    const view = render(element());
+    const trigger = screen.getByRole('button', { name: 'Gestiones' });
+    expect(screen.queryByRole('button', { name: 'Proponer corrección' })).not.toBeInTheDocument();
+    fireEvent.click(trigger);
+    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Corregir conteo', 'Restituciones de origen']);
+    expect(screen.getByRole('menuitem', { name: 'Corregir conteo' })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowDown' });
+    expect(screen.getByRole('menuitem', { name: 'Restituciones de origen' })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'ArrowUp' });
+    expect(screen.getByRole('menuitem', { name: 'Corregir conteo' })).toHaveFocus();
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' }); expect(trigger).toHaveFocus();
+    fireEvent.click(trigger); fireEvent.click(screen.getByRole('menuitem', { name: 'Corregir conteo' }));
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Correcciones de conteo' })).toHaveFocus();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Proponer corrección' })[0]);
+    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Keep this draft' } });
+    fireEvent.click(trigger); fireEvent.click(screen.getByRole('menuitem', { name: 'Restituciones de origen' }));
+    expect(screen.getByRole('heading', { name: 'Restituciones de origen' })).toHaveFocus();
+    expect(screen.getByLabelText('Motivo')).toHaveValue('Keep this draft');
+    view.rerender(element('another-request'));
+    expect(screen.queryByRole('form', { name: 'Editar corrección' })).not.toBeInTheDocument();
+    fireEvent.click(trigger);
+    expect(screen.queryByRole('menuitem', { name: 'Corregir conteo' })).not.toBeInTheDocument();
+    expect(f.corrections.propose).not.toHaveBeenCalled();
+    await act(async () => {});
+  });
   it('starts original evidence closed without moving focus or enclosing current evidence and workflows', () => {
     const f = received(); render(f.element());
     const summary = screen.getByText('Ver recepción original');
@@ -208,6 +239,8 @@ describe('U4b effective received detail', () => {
     const table = disclosure.querySelector('table')!;
     expect(table).not.toBeVisible();
     const effective = screen.getByRole('region', { name: 'Conteo efectivo confirmado' });
+    fireEvent.click(screen.getByRole('button', { name: 'Gestiones' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Corregir conteo' }));
     const workflow = screen.getByRole('region', { name: 'Correcciones de conteo' });
     expect(disclosure).not.toContainElement(effective);
     expect(disclosure).not.toContainElement(workflow);
@@ -246,6 +279,9 @@ describe('U4b effective received detail', () => {
     fireEvent.click(retry);
     expect(f.corrections.refresh).toHaveBeenCalledOnce();
     view.rerender(f.element());
+    expect(workflow).not.toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Gestiones' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Corregir conteo' }));
     expect(screen.getByRole('region', { name: 'Correcciones de conteo' })).toBe(workflow);
     expect(screen.getByRole('region', { name: 'Conteo efectivo confirmado' })).toBeVisible();
     expect(disclosure).not.toHaveAttribute('open');
@@ -282,6 +318,8 @@ describe('U4b effective received detail', () => {
     expect(effective.querySelector('tbody [data-label="Recibidas efectivas"]')).toHaveTextContent(/^3$/);
     expect(effective.querySelector('tbody [data-label="Crédito efectivo"]')).toHaveTextContent(/^3$/);
     expect(effective).toHaveTextContent('Corrección aplicada · revisión 1');
+    fireEvent.click(screen.getByRole('button', { name: 'Gestiones' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Corregir conteo' }));
     expect(screen.getByRole('region', { name: 'Correcciones de conteo' })).toHaveTextContent(state === 'pending' ? 'Pendiente' : 'Rechazada');
   });
   it('marks retained busy evidence updating without claiming a newly confirmed head', () => {

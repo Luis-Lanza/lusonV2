@@ -117,7 +117,14 @@ function correctionFixture(actor = 2, override?: (url: string, init: RequestInit
   const element = () => f.element({ ownerTag: f.ownerTag, id: record.id });
   return { ...f, record, element };
 }
-async function correctionLoaded() { await screen.findByRole('heading', { name: 'Conteo efectivo confirmado', level: 3 }); }
+async function selectManagement(name: 'Corregir conteo' | 'Restituciones de origen') {
+  fireEvent.click(await screen.findByRole('button', { name: 'Gestiones' }));
+  fireEvent.click(screen.getByRole('menuitem', { name }));
+}
+async function correctionLoaded(managed = true) {
+  if (managed) await selectManagement('Corregir conteo');
+  await screen.findByRole('heading', { name: 'Conteo efectivo confirmado', level: 3 });
+}
 function correctionPreview(action: 'propose' | 'accept' | 'reject' = 'propose') {
   fireEvent.click(screen.getAllByRole('button', { name: action === 'propose' ? 'Proponer corrección'
     : `${action === 'accept' ? 'Aceptar' : 'Rechazar'} revisión 1` })[0]);
@@ -222,10 +229,14 @@ describe('R6a received detail restitution composition', () => {
         applied_retained_quantity: '0', proposals: [] })) })) : undefined, record);
     f.controller.restitutionRecovery = createTransferRestitutionRecovery();
     f.controller.confirmTransferRestitution = vi.fn();
-    render(f.element()); await screen.findByText('Crédito efectivo en destino');
+    render(f.element()); await correctionLoaded();
+    const correctionSection = screen.getByRole('region', { name: 'Correcciones de conteo' });
+    await selectManagement('Restituciones de origen');
+    await screen.findByText('Crédito efectivo en destino');
     const original = screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML;
     const section = screen.getByRole('region', { name: 'Restituciones de origen' });
-    expect(section.previousElementSibling).toBe(screen.getByRole('region', { name: 'Correcciones de conteo' }));
+    expect(section.previousElementSibling).toBe(correctionSection);
+    expect(correctionSection).not.toBeVisible();
     expect(f.fetch.mock.calls.filter(([url]) => String(url).endsWith('/restitutions'))).toHaveLength(1);
     fireEvent.click(within(section).getByRole('button', { name: 'Consultar para revisar restitución' }));
     await waitFor(() => expect(f.fetch.mock.calls.filter(([url]) => String(url).endsWith('/restitutions'))).toHaveLength(2));
@@ -243,7 +254,7 @@ describe('C4b received detail real-hook integration', () => {
       : url === `/api/transfers/${record.id}/count-corrections` ? Promise.resolve(reply(correctionHistory(record))) : undefined);
     render(f.element({ ownerTag: f.ownerTag, id: record.id }));
     await screen.findByRole('heading', { name: 'TR-9007199254740993' });
-    await screen.findByRole('heading', { name: 'Conteo efectivo confirmado', level: 3 });
+    await correctionLoaded();
     expect(correctionCalls(f)).toHaveLength(1);
     expect(correctionCalls(f)[0][0]).toBe(`/api/transfers/${record.id}/count-corrections`);
     expect(isPassive(correctionCalls(f)[0])).toBe(true);
@@ -383,7 +394,7 @@ describe('C4b correction authority and operation boundaries', () => {
       render(f.element());
       if (actor === origin || actor === destination) {
         await screen.findByRole('heading', { name: f.record.reference });
-        await correctionLoaded(); expect(correctionCalls(f)).toHaveLength(1);
+        await correctionLoaded(f.record.kind === 'request_stock'); expect(correctionCalls(f)).toHaveLength(1);
       } else {
         await screen.findByText('No se pudo consultar la solicitud.');
         expect(correctionCalls(f)).toHaveLength(0);

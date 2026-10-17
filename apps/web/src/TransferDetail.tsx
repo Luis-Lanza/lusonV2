@@ -94,6 +94,37 @@ function OriginalReceiptOverview({ record }: { record: TransferRecord }) {
   </section>;
 }
 
+type ManagementContext = 'count' | 'restitution';
+function ManagementMenu({ count, restitution, onSelect }: {
+  count: boolean; restitution: boolean; onSelect: (context: ManagementContext) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const first = useRef<HTMLButtonElement>(null);
+  const second = useRef<HTMLButtonElement>(null);
+  useEffect(() => { if (open) first.current?.focus(); }, [open]);
+  return <div className="received-management" onBlur={e => {
+    if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false);
+  }}>
+    <button ref={trigger} type="button" aria-haspopup="menu" aria-expanded={open}
+      onClick={() => setOpen(!open)}>Gestiones<span aria-hidden="true"> {open ? '▴' : '▾'}</span></button>
+    {open && <div role="menu" aria-label="Gestiones" onKeyDown={e => {
+      if (e.key === 'Escape') { e.preventDefault(); setOpen(false); trigger.current?.focus(); }
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        (document.activeElement === first.current ? second.current ?? first.current : first.current)?.focus();
+      }
+    }}>
+      {count && <button ref={first} type="button" role="menuitem" onClick={() => {
+        setOpen(false); onSelect('count');
+      }}>Corregir conteo</button>}
+      {restitution && <button ref={count ? second : first} type="button" role="menuitem" onClick={() => {
+        setOpen(false); onSelect('restitution');
+      }}>Restituciones de origen</button>}
+    </div>}
+  </div>;
+}
+
 export default function TransferDetail(props: TransferDetailProps) {
   const { controller, ownerTag } = props;
   const fence = detailAuthority(controller);
@@ -105,6 +136,11 @@ export default function TransferDetail(props: TransferDetailProps) {
   const id = record?.id;
   const pending = record?.status === 'pending';
   const [historyFor, setHistoryFor] = useState<string | null>(null);
+  const managementScope = JSON.stringify([fence, ownerTag, id, record?.status,
+    props.correctionRequestID, props.correctionsEnabled, props.restitutionRequestID, props.restitutionsEnabled]);
+  const [management, setManagement] = useState<{ scope: string; context: ManagementContext; token: number } | null>(null);
+  const entrySerial = useRef(0);
+  useEffect(() => { setManagement(null); }, [managementScope]);
   const [state, setState] = useState<{ fence: string; id: string; stock: StockAdvice } | null>(null);
   const mounted = useRef(false);
   const flight = useRef<{ abort: AbortController; dirty: boolean } | null>(null);
@@ -245,6 +281,10 @@ export default function TransferDetail(props: TransferDetailProps) {
   // the caller's selected-record enablement agree. The hook owns head freshness.
   const effectiveContext = receivedParticipant && props.correctionsEnabled === true
     && props.correctionRequestID === record.id;
+  const countEntry = effectiveContext && !!props.corrections;
+  const restitutionEntry = receivedParticipant && props.restitutionsEnabled === true
+    && props.restitutionRequestID === record.id && !!controller.restitutionRecovery;
+  const selected = management?.scope === managementScope ? management : null;
   const corrections = effectiveContext ? props.corrections : undefined;
   const effective = receivedParticipant ? projectTransferReceived({ record,
     snapshot: corrections?.snapshot ?? null, busy: corrections?.busy ?? false,
@@ -294,6 +334,10 @@ export default function TransferDetail(props: TransferDetailProps) {
       </>}
       {props.actions?.(stock)}
     </section>}
+    {receivedParticipant && (countEntry || restitutionEntry) && <ManagementMenu
+      key={managementScope} count={countEntry} restitution={restitutionEntry} onSelect={context => {
+        if (current()) setManagement({ scope: managementScope, context, token: ++entrySerial.current });
+      }} />}
     {receivedParticipant && record.status === 'received' ? <footer className="received-original-footer">
       <details className="received-original" key={historyKey}>
         <summary>Ver recepción original</summary>
@@ -305,9 +349,12 @@ export default function TransferDetail(props: TransferDetailProps) {
       {record.status === 'received' ? !receivedParticipant && <ReceiptTable receipt={record.receipt} record={record} detailPresentation />
         : <TransferItems record={record} stock={terminal ? undefined : stock} />}
       {props.corrections && <TransferCountCorrections record={record} controller={controller}
-        corrections={props.corrections} requestID={props.correctionRequestID ?? null} enabled={props.correctionsEnabled ?? false} />}
+        corrections={props.corrections} requestID={props.correctionRequestID ?? null} enabled={props.correctionsEnabled ?? false}
+        contextVisible={!receivedParticipant || selected?.context === 'count'}
+        entryFocusKey={selected?.context === 'count' ? selected.token : undefined} />}
       <TransferRestitutions controller={controller} record={record} requestID={props.restitutionRequestID ?? null}
-        enabled={props.restitutionsEnabled ?? false} />
+        enabled={props.restitutionsEnabled ?? false} contextVisible={!receivedParticipant || selected?.context === 'restitution'}
+        entryFocusKey={selected?.context === 'restitution' ? selected.token : undefined} />
       {!terminal && <div className="transfer-advisory"><p>Stock de origen orientativo, no es una garantía de disponibilidad. El servidor revalida toda la solicitud al aprobar.</p>
         {stock.unavailable && <p role="alert">No se pudo consultar el stock de origen. La solicitud completa sigue disponible para revisión.</p>}
         <button type="button" disabled={stock.busy} onClick={() => { if (current()) refresh.current(); }}>Actualizar stock de origen</button>

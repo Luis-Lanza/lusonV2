@@ -7,7 +7,11 @@ import { normalizeRestitutionDecision, normalizeRestitutionProposal, type Restit
   type RestitutionDecisionInput, type RestitutionProposalInput } from './transferRestitutionModel';
 import type { RestitutionReviewPin } from './transferRestitutionRecovery';
 import type { TransferController } from './useInventory';
-export interface TransferRestitutionsProps { controller: TransferController; record: TransferRecord; requestID: string | null; enabled: boolean }
+export interface TransferRestitutionsProps {
+  controller: TransferController; record: TransferRecord; requestID: string | null; enabled: boolean;
+  contextVisible?: boolean;
+  entryFocusKey?: number;
+}
 const ownerKey = (c: TransferController) => {
   const authority = c.getTransferAuthority();
   const owner = decisionOwner(authority);
@@ -89,11 +93,24 @@ function Section(props: TransferRestitutionsProps) {
     try { await operation(); } catch { if (current()) setMessage('No se pudo verificar el resultado. Consultá la recuperación.'); }
     finally { sending.current = false; }
   }
+  const contextHeading = useRef<HTMLHeadingElement>(null);
+  const lastEntry = useRef(props.entryFocusKey);
+  useEffect(() => {
+    if (props.entryFocusKey !== lastEntry.current) {
+      lastEntry.current = props.entryFocusKey;
+      if (props.entryFocusKey !== undefined && props.contextVisible !== false) contextHeading.current?.focus();
+    }
+  }, [props.entryFocusKey, props.contextVisible]);
+  // Keep action triggers available for existing form/review focus restoration.
+  const routineVisible = props.contextVisible !== false || !!draft || !!review || sending.current;
+  const sectionVisible = routineVisible || masked || hook.busy || !!hook.error || !!message
+    || !line || hook.attempts.length > 0;
   const actions: RestitutionAction[] = decisionOwner(controller.getTransferAuthority())?.account === record.destination_location_id
     ? ['accept', 'reject'] : decisionOwner(controller.getTransferAuthority())?.account === record.origin_location_id ? ['propose'] : [];
-  return <section className={`transfer-restitutions${closed ? ' restitution-is-closed' : ''}`} aria-label="Restituciones de origen">
-    <h2>Restituciones de origen</h2>
+  return <section className={`transfer-restitutions${closed ? ' restitution-is-closed' : ''}`} aria-label="Restituciones de origen" hidden={!sectionVisible}>
+    <h2 ref={contextHeading} tabIndex={-1}>Restituciones de origen</h2>
     {masked ? <><p role="status">Restituciones no disponibles para esta sesión.</p><button disabled={hook.busy} onClick={() => { if (current()) void run(hook.recover); }}>Consultar recuperación autorizada</button></> : <>
+      <div className="workflow-routine" hidden={!routineVisible}>
       {line && <section className="restitution-outcome" aria-label="Resultado de restitución de la variante seleccionada">
         <div className="restitution-outcome-heading"><h3>{selectedItem?.brand} · {selectedItem?.model} · {selectedItem?.capacity_ah} Ah · {selectedItem?.polarity}</h3>
           {closed && <span className="restitution-closed">Restitución cerrada</span>}</div>
@@ -106,15 +123,20 @@ function Section(props: TransferRestitutionsProps) {
         <p>La falta en destino no prueba retención. Proponer o rechazar no mueve stock. Aceptar acredita existencias en origen una sola vez; destino y reservas no cambian.</p>
         <p>Una aplicación, incluso parcial, cierra esta restitución. El despacho y la recepción original son inmutables.</p>
       </div>}
+      </div>
+      {/* Consultation is recovery too; it must not depend on routine selection. */}
+      <div className="workflow-routine" hidden={!sectionVisible}>
       <div className="restitution-consultation"><div>
         <label htmlFor={selectID}>Variante de restitución</label><select id={selectID} value={variant ?? ''} disabled={hook.busy} onChange={e => {
           if (current()) { setDraft(null); setReview(null); setVariant(Number(e.target.value)); }
         }}>{record.items.map(i => <option key={i.variant_id} value={i.variant_id}>{i.brand} · {i.model} · {i.capacity_ah} Ah · {i.polarity}</option>)}</select>
       </div><button ref={consultation} disabled={hook.busy} onClick={() => { if (current()) void run(hook.refresh); }}>Consultar para revisar restitución</button></div>
+      </div>
       {hook.busy && <p role="status">Consultando o enviando restitución…</p>}
       {hook.error && <p role="alert">No se pudo verificar la restitución. Consultá el estado antes de enviar.</p>}
       {message && <p role="alert">{message}</p>}
       {!line && !hook.busy && <p role="status">Evidencia de restitución no disponible.</p>}
+      <div className="workflow-routine" hidden={!routineVisible}>
       {line && <article className="restitution-card">
         <dl><dt>Despacho original</dt><dd>{line.expected_quantity.toString()}</dd>
           <dt>Recepción original (cantidad física)</dt><dd>{receipt?.actual_quantity.toString()}</dd>
@@ -141,6 +163,7 @@ function Section(props: TransferRestitutionsProps) {
             </details></section>}
         </li>)}</ol>
       </article>}
+      </div>
       {hook.attempts.map(a => <article className="restitution-card" key={a.payload.operation_key} aria-label={`Recuperación de restitución ${a.payload.variant_id}`}>
         <h3>Operación {a.phase}</h3><p>{labels[a.action]} · Variante {a.payload.variant_id} · Cuenta {a.owner.account} · Revisión {a.payload.expected_revision.toString()} · Clave {a.payload.operation_key}</p>
         <p className="restitution-evidence">Motivo capturado: {a.payload.reason}</p>

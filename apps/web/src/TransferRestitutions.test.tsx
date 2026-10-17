@@ -59,6 +59,85 @@ function appliedFixture(dispatched = '5') {
     expected_revision: '1', retained_quantity: null, retained_at_origin: null, reason: decision.reason, source_existing_before: '10', source_existing_after: '11' } as unknown as typeof f.history.operations[number]);
   return f;
 }
+it.each([1, 2].flatMap(actor => ['restitutions', 'count-corrections'].flatMap(stream =>
+  ['failed', 'missing', 'mismatched'].map(evidence => ({ actor, stream, evidence })))))(
+  'keeps collapsed $stream $evidence consultation usable for actor $actor', async ({ actor, stream, evidence }) => {
+    const f = fixture(actor); const read = f.fetch.getMockImplementation()!;
+    let unavailable = true;
+    f.fetch.mockImplementation(async (url, init = {}) => {
+      if (unavailable && String(url).endsWith(`/${stream}`)) {
+        if (evidence === 'failed') return new Response(JSON.stringify({ error: 'service_unavailable' }), { status: 503 });
+        const response = await read(url, init); const history = await response.json();
+        return new Response(JSON.stringify({ ...history,
+          ...(evidence === 'missing' ? { lines: [] } : { request_id: '2' }) }));
+      }
+      return read(url, init);
+    });
+    const view = render(<TransferRestitutions controller={f.controller} record={f.record}
+      requestID={id} enabled contextVisible={false} />);
+    await screen.findByRole('alert');
+    const button = screen.getByRole('button', { name: 'Consultar para revisar restitución' });
+    expect(button).toBeVisible(); expect(button).toBeEnabled();
+    button.focus(); expect(button).toHaveFocus();
+    for (const name of ['Proponer restitución', 'Aceptar restitución', 'Rechazar restitución']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+    }
+    const before = f.fetch.mock.calls.length; unavailable = false;
+    await act(async () => { fireEvent.click(button); });
+    await waitFor(() => expect(screen.queryByText('Evidencia de restitución no disponible.')).not.toBeInTheDocument());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(f.fetch).toHaveBeenCalledTimes(before + 2); expect(f.posts()).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: 'Consultar para revisar restitución' })).not.toBeInTheDocument();
+    for (const name of ['Proponer restitución', 'Aceptar restitución', 'Rechazar restitución']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+    }
+    view.unmount();
+});
+
+it('keeps collapsed consultation visible but disabled while evidence is loading', async () => {
+  const f = fixture(); const read = f.fetch.getMockImplementation()!;
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  f.fetch.mockImplementation(async (url, init) => { await pending; return read(url, init); });
+  render(<TransferRestitutions controller={f.controller} record={f.record} requestID={id} enabled contextVisible={false} />);
+  const button = screen.getByRole('button', { name: 'Consultar para revisar restitución' });
+  expect(button).toBeVisible(); expect(button).toBeDisabled();
+  expect(screen.getByLabelText('Variante de restitución')).toBeDisabled();
+  expect(screen.queryByRole('button', { name: 'Proponer restitución' })).not.toBeInTheDocument();
+  await act(async () => { release(); });
+  expect(screen.queryByRole('button', { name: 'Consultar para revisar restitución' })).not.toBeInTheDocument();
+});
+
+it('keeps consultation mounted and a captured review pinned when its routine context collapses', async () => {
+  const f = fixture();
+  const element = (visible: boolean, token?: number) => <TransferRestitutions controller={f.controller}
+    record={f.record} requestID={id} enabled contextVisible={visible} entryFocusKey={token} />;
+  const view = render(element(false));
+  await waitFor(() => expect(f.fetch).toHaveBeenCalledTimes(2));
+  expect(screen.queryByRole('button', { name: 'Consultar para revisar restitución' })).not.toBeInTheDocument();
+  view.rerender(element(true, 1));
+  expect(screen.getByRole('heading', { name: 'Restituciones de origen' })).toHaveFocus();
+  await screen.findByText('Crédito efectivo en destino'); await consult();
+  fireEvent.click(screen.getByRole('button', { name: 'Proponer restitución' }));
+  fireEvent.change(screen.getByLabelText('Cantidad retenida'), { target: { value: '1' } });
+  fireEvent.change(screen.getByLabelText('Motivo de restitución'), { target: { value: 'Pinned private reason' } });
+  view.rerender(element(false, 1));
+  expect(screen.getByLabelText('Motivo de restitución')).toHaveValue('Pinned private reason');
+  fireEvent.click(screen.getByLabelText('Confirmo que estas unidades permanecen físicamente en origen'));
+  fireEvent.click(screen.getByRole('button', { name: 'Revisar restitución' }));
+  const modal = screen.getByRole('dialog'); const reads = f.fetch.mock.calls.length;
+  view.rerender(element(false, 1));
+  expect(screen.getByRole('dialog')).toBe(modal); expect(modal).toHaveTextContent('Pinned private reason');
+  expect(f.fetch).toHaveBeenCalledTimes(reads); expect(f.posts()).toHaveLength(0);
+});
+it('keeps masked recovery visible while routine restitution context is collapsed', async () => {
+  const f = fixture(); f.mask();
+  render(<TransferRestitutions controller={f.controller} record={f.record} requestID={id} enabled contextVisible={false} />);
+  expect(await screen.findByRole('button', { name: 'Consultar recuperación autorizada' })).toBeVisible();
+  expect(screen.getByRole('status')).toHaveTextContent('Restituciones no disponibles');
+  expect(screen.getByRole('heading')).not.toHaveFocus();
+});
+
 it.each(['0', '01', '-1', '1.5', '2', '9223372036854775808'])('does not review invalid or excessive retained quantity %s', async quantity => {
   const f = fixture(); render(f.element()); await screen.findByText('Crédito efectivo en destino'); await consult(); draft();
   fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
@@ -232,7 +311,9 @@ it('preserves controller-owned uncertainty across remount and retries only captu
   const f = fixture(); f.fail(); const view = render(f.element()); await screen.findByText('Crédito efectivo en destino'); await consult(); draft();
   fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirmar propuesta' }));
   await screen.findByRole('button', { name: 'Reintentar carga exacta' }); const body = f.posts()[0][1]?.body;
-  view.unmount(); render(f.element()); await screen.findByRole('button', { name: 'Reintentar carga exacta' }); expect(f.posts()).toHaveLength(1);
+  view.unmount();
+  render(<TransferRestitutions controller={f.controller} record={f.record} requestID={id} enabled contextVisible={false} />);
+  await screen.findByRole('button', { name: 'Reintentar carga exacta' }); expect(f.posts()).toHaveLength(1);
   const warning = screen.getByText('Resultado incierto. No crees otra operación para esta variante.');
   expect(warning).toBeVisible(); expect(warning.closest('details')).toBeNull();
   expect(screen.getByRole('button', { name: 'Consultar resultado de restitución' })).toBeVisible();

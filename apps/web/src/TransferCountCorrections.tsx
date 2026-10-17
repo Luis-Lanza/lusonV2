@@ -15,6 +15,8 @@ export interface TransferCountCorrectionsProps {
   corrections: ReturnType<typeof useTransferCountCorrections>;
   requestID: string | null;
   enabled?: boolean;
+  contextVisible?: boolean;
+  entryFocusKey?: number;
 }
 const states = { pending: 'Pendiente', superseded: 'Reemplazada', rejected: 'Rechazada', applied: 'Aplicada' };
 const actions = { propose: 'Proponer', accept: 'Aceptar', reject: 'Rechazar' };
@@ -194,11 +196,23 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
     if (!current() || submitting.current) return;
     setReview(null); setDraft(null); draft?.trigger.focus();
   }
+  const contextHeading = useRef<HTMLHeadingElement>(null);
+  const lastEntry = useRef(props.entryFocusKey);
+  useEffect(() => {
+    if (props.entryFocusKey !== lastEntry.current) {
+      lastEntry.current = props.entryFocusKey;
+      if (props.entryFocusKey !== undefined && props.contextVisible !== false) contextHeading.current?.focus();
+    }
+  }, [props.entryFocusKey, props.contextVisible]);
+  // Presentation never participates in the private authority boundary.
+  const routineVisible = props.contextVisible !== false || !!draft || !!review || sending;
+  const sectionVisible = routineVisible || masked || corrections.busy || !!corrections.error
+    || !validSnapshot || !!message || attempts.length > 0;
   const privateLines = validSnapshot?.lines.filter(line => record.status === 'received'
     && record.receipt.items.some(i => i.variant_id === line.variant_id)) ?? [];
-  return <section className="count-corrections" aria-label="Correcciones de conteo">
-    <h2>Correcciones de conteo</h2>
-    <p>La recepción original es inmutable. La solicitud sigue Recibida; estas correcciones conservan su evidencia original.</p>
+  return <section className="count-corrections" aria-label="Correcciones de conteo" hidden={!sectionVisible}>
+    <h2 ref={contextHeading} tabIndex={-1}>Correcciones de conteo</h2>
+    <p hidden={!routineVisible}>La recepción original es inmutable. La solicitud sigue Recibida; estas correcciones conservan su evidencia original.</p>
     {masked ? <div className="count-recovery"><p role="status">Correcciones no disponibles para esta sesión.</p>
       <button disabled={sending || corrections.busy || recoveryVariant === undefined} onClick={() => {
         if (!mounted.current || !latest.current.isBoundaryCurrent() || !eligible(latest.current)
@@ -213,6 +227,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
       {corrections.error && <p role="alert">No se pudo verificar el conteo con el servidor. Consultá el estado antes de enviar.</p>}
       {!validSnapshot && <p role="status">Conteo no disponible.</p>}
       {message && <p role="alert">{message}</p>}
+      <div className="workflow-routine" hidden={!routineVisible}>
       {validSnapshot && <h3>Conteo efectivo confirmado</h3>}
       {privateLines.map(line => {
         const unexpected = !record.items.some(i => i.variant_id === line.variant_id);
@@ -252,6 +267,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
           </li>)}</ol>
         </article>;
       })}
+      </div>
       {attempts.map(a => <article className="count-recovery" key={a.payload.variant_id} aria-label={`Recuperación ${a.payload.variant_id}`}>
         <h3>{phases[a.phase]} · {name(a.payload.variant_id)}</h3>
         <p>{actions[a.action]} · Actor {location(a.owner.location)}</p>

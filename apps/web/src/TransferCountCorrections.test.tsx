@@ -51,6 +51,42 @@ function review() { fireEvent.click(screen.getByRole('button', { name: 'Revisar 
 const confirm = () => fireEvent.click(screen.getByRole('button', { name: 'Confirmar propuesta' }));
 afterEach(() => vi.unstubAllGlobals());
 
+it('controls routine context without retiring drafts, review pins or explicit-entry focus', () => {
+  const f = fixture(); const view = render(<TransferCountCorrections {...f.props} contextVisible={false} />);
+  expect(screen.queryByRole('button', { name: 'Proponer corrección' })).not.toBeInTheDocument();
+  view.rerender(<TransferCountCorrections {...f.props} contextVisible entryFocusKey={1} />);
+  expect(screen.getByRole('heading', { name: 'Correcciones de conteo' })).toHaveFocus();
+  draft('7', 'Private retained reason');
+  view.rerender(<TransferCountCorrections {...f.props} contextVisible={false} entryFocusKey={1} />);
+  expect(screen.getByLabelText('Motivo')).toHaveValue('Private retained reason');
+  const modal = review();
+  view.rerender(<TransferCountCorrections {...f.props} contextVisible={false} entryFocusKey={1} />);
+  expect(screen.getByRole('dialog')).toBe(modal);
+  expect(modal).toHaveTextContent('Private retained reason');
+  expect(f.corrections.propose).not.toHaveBeenCalled();
+});
+it.each(['masked', 'error', 'busy', 'unavailable'])('keeps collapsed %s evidence visible without initial focus', condition => {
+  const f = fixture();
+  if (condition === 'masked') f.corrections.masked = true;
+  if (condition === 'error') f.corrections.error = new TransferAPIError('service_unavailable', 503);
+  if (condition === 'busy') f.corrections.busy = true;
+  if (condition === 'unavailable') f.corrections.snapshot = null;
+  render(<TransferCountCorrections {...f.props} contextVisible={false} entryFocusKey={3} />);
+  expect(screen.getByRole('heading', { name: 'Correcciones de conteo' })).not.toHaveFocus();
+  expect(screen.getByRole(condition === 'error' ? 'alert' : 'status')).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Proponer corrección' })).not.toBeInTheDocument();
+});
+
+it('keeps captured recovery and exact retry reachable in a collapsed healthy context', async () => {
+  const f = fixture(); f.corrections.attempts = [attempt('uncertain')];
+  render(<TransferCountCorrections {...f.props} contextVisible={false} />);
+  const panel = screen.getByRole('article', { name: 'Recuperación 201' });
+  expect(panel).toBeVisible(); expect(panel).toHaveTextContent('Captured private evidence');
+  await act(async () => fireEvent.click(within(panel).getByRole('button', { name: 'Reintentar carga exacta' })));
+  expect(f.corrections.retry).toHaveBeenCalledExactlyOnceWith(201);
+  expect(f.corrections.propose).not.toHaveBeenCalled();
+});
+
 it('allows a matching received line and previews capped credit against latest credit without writing', async () => {
   const f = fixture(); render(<TransferCountCorrections {...f.props} />);
   expect(screen.getByRole('heading', { name: 'Conteo efectivo confirmado' })).toBeInTheDocument();
