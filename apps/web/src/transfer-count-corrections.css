@@ -183,6 +183,41 @@
 .count-corrections .count-proposal-review .count-technical { font-size: 14px; }
 .count-corrections .count-proposal-review footer { padding: 8px 0 0; margin-top: 4px; justify-content: space-between; }
 .count-corrections .count-proposal-review footer button { flex: 0 1 auto; }
+/* Decision capture is independent of accepted consultation/proposal geometry. */
+.count-corrections .count-decision-capture {
+  width: min(580px, 100%);
+  padding: 20px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.count-corrections .count-decision-capture > h3 {
+  padding: 0 70px 8px 0;
+  border: 0;
+  font-size: 20px;
+}
+.count-corrections .count-decision-capture > .count-form {
+  padding: 0;
+  gap: 8px;
+  overflow: visible;
+}
+.count-corrections .count-decision-context { display: grid; gap: 12px; min-width: 0; }
+.count-corrections .count-decision-capture p { font-size: 14px; line-height: inherit; }
+.count-corrections .count-decision-capture textarea { min-height: 88px; }
+.count-corrections .count-decision-capture .count-actions {
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  margin-top: 4px;
+}
+.count-corrections .count-decision-capture button[type="submit"] {
+  order: 1;
+  color: white;
+  background: var(--wine);
+}
+.count-corrections .count-decision-capture button[type="submit"]:disabled {
+  color: #595459;
+  background: #efedef;
+}
 /* Consultation has its own geometry; accepted proposal steps remain unchanged. */
 .count-corrections .count-consultation {
   width: min(580px, 100%);

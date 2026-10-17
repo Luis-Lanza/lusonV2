@@ -130,8 +130,8 @@ function correctionPreview(action: 'propose' | 'accept' | 'reject' = 'propose') 
     : 'Consultar propuesta' })[0]);
   if (action !== 'propose') fireEvent.click(screen.getByRole('button', { name: `${action === 'accept' ? 'Aceptar' : 'Rechazar'} propuesta` }));
   if (action === 'propose') fireEvent.change(screen.getByLabelText('Cantidad corregida'), { target: { value: '5' } });
-  fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: '  Recuento exacto  ' } });
-  fireEvent.click(screen.getByRole('button', { name: 'Revisar corrección' }));
+  fireEvent.change(screen.getByLabelText(action === 'propose' ? 'Motivo' : `Motivo de ${action === 'accept' ? 'aceptación' : 'rechazo'} (obligatorio)`), { target: { value: '  Recuento exacto  ' } });
+  fireEvent.click(screen.getByRole('button', { name: action === 'propose' ? 'Revisar corrección' : `Revisar ${action === 'accept' ? 'aceptación' : 'rechazo'}` }));
   return screen.getByRole('dialog', { name: action === 'propose' ? 'Revisar propuesta de conteo' : 'Revisar corrección de conteo' });
 }
 function operationWire(input: CountDecisionInput | CountProposalInput, actor = 2, action = 'propose') {

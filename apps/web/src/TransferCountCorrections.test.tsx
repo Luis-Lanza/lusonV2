@@ -48,7 +48,53 @@ function draft(actual = '9007199254740994', reason = '  Conteo exacto  ') {
   fireEvent.change(screen.getByLabelText('Cantidad corregida'), { target: { value: actual } });
   fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: reason } });
 }
-function review() { fireEvent.click(screen.getByRole('button', { name: 'Revisar corrección' })); return screen.getByRole('dialog'); }
+function review() { fireEvent.click(screen.getByRole('button', { name: /^Revisar (corrección|aceptación|rechazo)$/ })); return screen.getByRole('dialog'); }
+const decisionReason = () => screen.getByRole('textbox', { name: /^Motivo de (aceptación|rechazo)/ });
+it.each(['accept', 'reject'] as const)('captures approved %s evidence, admission and separate reasons within consultation', action => {
+  const f = fixture(3); const key = vi.spyOn(crypto, 'getRandomValues');
+  const original = '  Original\n  propuesta  '; const raw = ' \u00a0🙂 decisión\t ';
+  f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals: [{ ...proposal(), reason: original }] }] };
+  render(<><button>Outside</button><TransferCountCorrections {...f.props} /></>);
+  const trigger = screen.getByRole('button', { name: 'Consultar propuesta' }); fireEvent.click(trigger);
+  const modal = screen.getByRole('dialog');
+  const enter = (branch: 'accept' | 'reject') => fireEvent.click(screen.getByRole('button', { name: branch === 'accept' ? 'Aceptar propuesta' : 'Rechazar propuesta' }));
+  const back = () => fireEvent.click(screen.getByRole('button', { name: 'Volver' }));
+  enter(action);
+  expect(screen.getByRole('dialog')).toBe(modal);
+  expect(modal).toHaveAccessibleName(`${action === 'accept' ? 'Aceptar' : 'Rechazar'} propuesta de conteo`);
+  expect(modal).toHaveTextContent('TR-001 · Propuesta de Sucursal A'); expect(modal).toHaveTextContent('Decisión de Sucursal B');
+  expect(modal).toHaveTextContent(`Enviadas: ${big}`);
+  expect(within(modal).getByRole('row', { name: 'Cantidad recibida 5 7' })).toBeInTheDocument();
+  expect(within(modal).getByRole('row', { name: 'Crédito de esta recepción 5 7' })).toBeInTheDocument();
+  expect(modal.querySelector('.count-review-reason')?.textContent).toBe(original);
+  expect(decisionReason()).toHaveValue(''); expect(decisionReason()).toHaveFocus();
+  expect(within(modal).getAllByRole('textbox')).toHaveLength(1); expect(within(modal).queryByRole('checkbox')).toBeNull();
+  expect(decisionReason()).toHaveAttribute('placeholder', `Explicá por qué ${action === 'accept' ? 'aceptás' : 'rechazás'} esta corrección`);
+  const admission = screen.getByRole('button', { name: action === 'accept' ? 'Revisar aceptación' : 'Revisar rechazo' });
+  for (const invalid of ['', '   ', '\0', 'x'.repeat(2001), '\ud800']) {
+    fireEvent.change(decisionReason(), { target: { value: invalid } }); expect(admission).toBeDisabled();
+    fireEvent.submit(screen.getByRole('form', { name: 'Editar corrección' }));
+    expect(screen.queryByRole('button', { name: /Confirmar (aceptación|rechazo)/ })).toBeNull();
+  }
+  expect(key).not.toHaveBeenCalled();
+  fireEvent.change(decisionReason(), { target: { value: '\u00a0' } }); expect(admission).toBeEnabled();
+  fireEvent.change(decisionReason(), { target: { value: raw } }); expect(admission).toBeEnabled();
+  back(); expect(screen.getByRole('dialog')).toBe(modal);
+  expect(screen.getByRole('heading', { name: 'Propuesta de corrección de conteo' })).toHaveFocus();
+  expect(screen.getByRole('button', { name: 'Outside' })).toHaveAttribute('inert');
+  enter(action); expect(decisionReason()).toHaveValue(raw); back();
+  enter(action === 'accept' ? 'reject' : 'accept'); expect(decisionReason()).toHaveValue('');
+  fireEvent.change(decisionReason(), { target: { value: 'Opposite private reason' } }); back();
+  enter(action); expect(decisionReason()).toHaveValue(raw); back();
+  enter(action === 'accept' ? 'reject' : 'accept'); expect(decisionReason()).toHaveValue('Opposite private reason'); back();
+  expect(key).not.toHaveBeenCalled(); enter(action); review();
+  expect(key).toHaveBeenCalledTimes(1); expect(modal.querySelector('.count-evidence')?.textContent).toBe(`Motivo exacto: ${raw}`);
+  expect(f.corrections.decide).not.toHaveBeenCalled(); expect(f.corrections.refresh).not.toHaveBeenCalled();
+  fireEvent.keyDown(modal, { key: 'Escape' }); expect(trigger).toHaveFocus();
+  fireEvent.click(trigger); enter(action); expect(decisionReason()).toHaveValue(''); back();
+  enter(action === 'accept' ? 'reject' : 'accept'); expect(decisionReason()).toHaveValue('');
+  key.mockRestore();
+});
 const confirm = () => fireEvent.click(screen.getByRole('button', { name: 'Enviar propuesta' }));
 afterEach(() => vi.unstubAllGlobals());
 
@@ -96,23 +142,23 @@ it.each(['accept', 'reject'] as const)('consults exact pending evidence before %
   const outside = screen.getByRole('button', { name: 'Outside' }); expect(outside).toHaveAttribute('inert');
   fireEvent.click(within(modal).getByRole('button', { name: action === 'accept' ? 'Aceptar propuesta' : 'Rechazar propuesta' }));
   expect(screen.getByRole('dialog')).toBe(modal); expect(outside).toHaveAttribute('inert');
-  expect(screen.getByLabelText('Motivo')).toHaveValue(''); expect(screen.getByLabelText('Motivo')).toHaveFocus();
-  fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: '  Separate decision  ' } });
+  expect(decisionReason()).toHaveValue(''); expect(decisionReason()).toHaveFocus();
+  fireEvent.change(decisionReason(), { target: { value: '  Separate decision  ' } });
   expect(review()).toBe(modal); expect(outside).toHaveAttribute('inert');
   expect(f.corrections.decide).not.toHaveBeenCalled(); expect(f.corrections.propose).not.toHaveBeenCalled();
   let inertAtFocus = true; trigger.addEventListener('focus', () => { inertAtFocus = trigger.closest('[inert]') !== null; });
   fireEvent.keyDown(modal, { key: 'Escape' }); expect(trigger).toHaveFocus(); expect(inertAtFocus).toBe(false);
 });
-it.each(['branch', 'prepare'] as const)('refuses stale consultation evidence at %s', stage => {
+it.each(['branch', 'prepare', 'back'] as const)('refuses stale consultation evidence at %s', stage => {
   const mutations = ['snapshot', 'revision', 'quantity', 'reason', 'confirmed', 'owner', 'mask', 'busy', 'uncertain', 'membership'];
   for (const mutation of mutations) {
     const f = fixture(3); const pending = proposal(); const confirmed = { ...line(), proposals: [pending] };
     f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [confirmed] };
     const view = render(<TransferCountCorrections {...f.props} />);
     fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
-    if (stage === 'prepare') {
+    if (stage !== 'branch') {
       fireEvent.click(screen.getByRole('button', { name: 'Aceptar propuesta' }));
-      fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Private decision' } });
+      fireEvent.change(decisionReason(), { target: { value: 'Private decision' } });
     }
     if (mutation === 'snapshot') f.corrections.snapshot = { ...f.corrections.snapshot! };
     if (mutation === 'revision') { Object.assign(pending, { revision: 5n }); confirmed.workflow_revision = 5n; }
@@ -125,7 +171,9 @@ it.each(['branch', 'prepare'] as const)('refuses stale consultation evidence at 
     if (mutation === 'uncertain') f.corrections.attempts = [attempt('uncertain')];
     if (mutation === 'membership' && f.props.record.status === 'received') Object.assign(f.props.record.receipt, { items: [] });
     if (stage === 'branch') fireEvent.click(screen.getByRole('button', { name: 'Aceptar propuesta' }));
+    else if (stage === 'back') fireEvent.click(screen.getByRole('button', { name: 'Volver' }));
     else fireEvent.submit(screen.getByRole('form', { name: 'Editar corrección' }));
+    if (stage === 'back') expect(screen.queryByRole('heading', { name: 'Propuesta de corrección de conteo' }), mutation).toBeNull();
     expect(screen.queryByRole('button', { name: 'Confirmar aceptación' }), mutation).not.toBeInTheDocument();
     if (stage === 'branch') expect(screen.queryByLabelText('Motivo'), mutation).not.toBeInTheDocument();
     expect(f.corrections.decide, mutation).not.toHaveBeenCalled(); view.unmount();
@@ -137,7 +185,7 @@ it.each(['consultation', 'capture', 'review'])('retires %s on replacement render
   fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
   if (stage !== 'consultation') {
     fireEvent.click(screen.getByRole('button', { name: 'Aceptar propuesta' }));
-    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Retired private decision' } });
+    fireEvent.change(decisionReason(), { target: { value: 'Retired private decision' } });
     if (stage === 'review') review();
   }
   f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), workflow_revision: 5n,
@@ -149,23 +197,37 @@ it.each(['consultation', 'capture', 'review'])('retires %s on replacement render
   expect(screen.getByRole('dialog')).toHaveTextContent('Fresh replacement');
   expect(screen.getByRole('row', { name: 'Cantidad recibida 5 9' })).toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'Aceptar propuesta' }));
-  expect(screen.getByLabelText('Motivo')).toHaveValue('');
+  expect(decisionReason()).toHaveValue('');
   expect(f.corrections.decide).not.toHaveBeenCalled();
 });
-it.each(['owner', 'mask', 'record', 'request'])('does not resurrect consulted private evidence after %s round trip', mutation => {
+it.each(['owner', 'mask', 'record', 'request', 'snapshot', 'context'])('does not resurrect consulted private evidence after %s round trip', mutation => {
   const f = fixture(3); f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals: [proposal()] }] };
   const view = render(<TransferCountCorrections {...f.props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
-  const original = { ...f.props };
+  for (const branch of ['Aceptar', 'Rechazar']) {
+    fireEvent.click(screen.getByRole('button', { name: `${branch} propuesta` }));
+    fireEvent.change(decisionReason(), { target: { value: `Private ${branch}` } });
+    fireEvent.click(screen.getByRole('button', { name: 'Volver' }));
+  }
+  const original = { ...f.props }; const snapshot = f.corrections.snapshot;
+  if (mutation === 'snapshot') f.corrections.snapshot = { ...snapshot! };
+  // Management visibility alone is not authority; disabling the workflow is.
+  if (mutation === 'context') f.props.enabled = false;
   if (mutation === 'owner') f.authority.sessionGeneration = 2;
   if (mutation === 'mask') f.corrections.masked = true;
   if (mutation === 'record') f.props.record = { ...f.props.record };
   if (mutation === 'request') f.props.requestID = '2';
   view.rerender(<TransferCountCorrections {...f.props} />);
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-  f.corrections.masked = false; f.authority.sessionGeneration = 1;
+  f.corrections.masked = false; f.authority.sessionGeneration = 1; f.corrections.snapshot = snapshot;
   view.rerender(<TransferCountCorrections {...original} />);
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+  for (const branch of ['Aceptar', 'Rechazar']) {
+    fireEvent.click(screen.getByRole('button', { name: `${branch} propuesta` }));
+    expect(decisionReason()).toHaveValue('');
+    fireEvent.click(screen.getByRole('button', { name: 'Volver' }));
+  }
   expect(f.corrections.decide).not.toHaveBeenCalled();
 });
 it('keeps an unexpected received variant audit-only at consultation', () => {
@@ -448,9 +510,9 @@ it.each(['Aceptar', 'Rechazar'])('%s capture focuses reason and requires separat
   fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
   fireEvent.click(screen.getByRole('button', { name: `${action} propuesta` }));
   const modal = screen.getByRole('dialog');
-  expect(screen.getByLabelText('Motivo')).toHaveFocus();
+  expect(decisionReason()).toHaveFocus();
   expect(screen.queryByLabelText('Cantidad corregida')).not.toBeInTheDocument();
-  fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Exact decision' } });
+  fireEvent.change(decisionReason(), { target: { value: 'Exact decision' } });
   expect(review()).toBe(modal);
   expect(within(modal).getByRole('button', { name: 'Cancelar' })).toHaveFocus();
   expect(f.corrections.decide).not.toHaveBeenCalled();
@@ -729,8 +791,8 @@ it.each(['accept', 'reject'] as const)('counterparty %s is exact revision and re
   expect(screen.queryByRole('button', { name: 'Reemplazar propuesta' })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
   fireEvent.click(screen.getByRole('button', { name: `${action === 'accept' ? 'Aceptar' : 'Rechazar'} propuesta` }));
-  fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: '   ' } }); reviewInvalid('Capturar corrección de conteo');
-  fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: '  Decisión conservada  ' } });
+  fireEvent.change(decisionReason(), { target: { value: '   ' } }); reviewInvalid(`${action === 'accept' ? 'Aceptar' : 'Rechazar'} propuesta de conteo`);
+  fireEvent.change(decisionReason(), { target: { value: '  Decisión conservada  ' } });
   const modal = review(); expect(modal).toHaveTextContent('Cantidad corregida: 7 · Revisión: 4 · Base aplicada: 3');
   expect(modal).toHaveTextContent(`Efecto en destino: ${action === 'accept' ? '+2' : '0'}`);
   expect(f.corrections.decide).not.toHaveBeenCalled();
@@ -765,7 +827,7 @@ it('final handler rechecks snapshot even without a rerender', () => {
   render(<TransferCountCorrections {...f.props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
   fireEvent.click(screen.getByRole('button', { name: 'Aceptar propuesta' }));
-  fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Yes' } }); review();
+  fireEvent.change(decisionReason(), { target: { value: 'Yes' } }); review();
   f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), workflow_revision: 5n, proposals: [{ ...proposal(), revision: 5n }] }] };
   fireEvent.click(screen.getByRole('button', { name: 'Confirmar aceptación' }));
   expect(f.corrections.decide).not.toHaveBeenCalled();
@@ -1021,7 +1083,7 @@ it('decision preview preserves the persisted pending base rather than substituti
   render(<TransferCountCorrections {...f.props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
   fireEvent.click(screen.getByRole('button', { name: 'Aceptar propuesta' }));
-  fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Exact pending agreement' } });
+  fireEvent.change(decisionReason(), { target: { value: 'Exact pending agreement' } });
   const modal = review(); expect(modal).toHaveTextContent('Base aplicada: 3'); expect(modal).toHaveTextContent('Revisión: 4');
   expect(modal).toHaveTextContent('Revisión de flujo esperada: 4');
 });

@@ -80,13 +80,14 @@ interface Consultation {
   pending: CountCorrectionLine['proposals'][number];
   workflow: bigint; applied: bigint; currentActual: bigint; currentCredit: bigint;
   credit: bigint; delta: bigint;
+  reasons: { accept: string; reject: string };
 }
-function CounterpartyContext({ pin, reference, battery, sent, proposer, reviewer, destination, unexpected }: {
+function CounterpartyContext({ pin, reference, battery, sent, proposer, reviewer, destination, unexpected, decision = false }: {
   pin: Consultation; reference: string; battery: string; sent: bigint;
-  proposer: string; reviewer: string; destination: string; unexpected: boolean;
+  proposer: string; reviewer: string; destination: string; unexpected: boolean; decision?: boolean;
 }) {
-  return <div className="count-modal-body count-consultation-body">
-    <div><p>{reference} · Propuesta de {proposer}</p><p className="count-review-muted">{reviewer} debe revisar esta propuesta.</p></div>
+  return <div className={decision ? 'count-decision-context' : 'count-modal-body count-consultation-body'}>
+    <div><p>{reference} · Propuesta de {proposer}</p><p className="count-review-muted">{decision ? `Decisión de ${reviewer}` : `${reviewer} debe revisar esta propuesta.`}</p></div>
     <div className="count-review-battery"><div><p className="count-review-label">Batería a corregir</p><strong>{battery}</strong></div><span>Enviadas: {sent.toString()}</span></div>
     <table className="count-review-comparison" aria-label="Comparación de conteo">
       <thead><tr><th scope="col">Concepto</th><th scope="col">Vigente confirmado</th><th scope="col">Propuesto</th></tr></thead>
@@ -94,14 +95,14 @@ function CounterpartyContext({ pin, reference, battery, sent, proposer, reviewer
         <tr><th scope="row">Crédito de esta recepción</th><td>{pin.currentCredit.toString()}</td><td>{pin.credit.toString()}</td></tr></tbody>
     </table>
     <div><p className="count-review-label">Motivo de {proposer}</p><p className="count-evidence count-review-reason">{pin.pending.reason}</p></div>
-    <div className="count-review-warning">
+    {!decision && <><div className="count-review-warning">
       <p><strong>La propuesta pendiente no modifica el stock.</strong></p>
       <p>Si la aceptás, sujeto a validación: Efecto en destino: {signed(pin.delta)} · {destination}. Crédito limitado: {pin.credit.toString()}.</p>
       <p>Rechazar no modifica el conteo ni el stock. La recepción original se conserva.</p>
       <p>Sin restitución al origen, resolución automática de faltantes ni incorporación de excedentes. El crédito no es inventario actual.</p>
       {unexpected && <p>Solo auditoría: crédito y efecto cero. Procedencia e incorporación separadas.</p>}
     </div>
-    <p className="count-review-muted">Ambas opciones requieren un motivo y revisión antes de confirmar.</p>
+    <p className="count-review-muted">Ambas opciones requieren un motivo y revisión antes de confirmar.</p></>}
   </div>;
 }
 interface Review {
@@ -242,7 +243,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
     setConsultation({ variant, trigger, snapshot: snap, pending: { ...pending },
       workflow: line.workflow_revision, applied: line.applied_revision,
       currentActual: line.effective_actual, currentCredit: line.effective_credit,
-      credit, delta: item ? credit - line.effective_credit : 0n });
+      credit, delta: item ? credit - line.effective_credit : 0n, reasons: { accept: '', reject: '' } });
     setDraft(null); setReview(null); setMessage('');
   }
   function open(variant: number, action: CountAction, trigger: HTMLElement) {
@@ -250,13 +251,30 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
     if (!current() || !line || !allowed(line, action) || submitting.current || latest.current.corrections.busy) return;
     if (action !== 'propose' && (!consultation || !consultationCurrent(consultation))) { retire(); return; }
     setMessage(''); setReview(null);
-    setDraft({ variant, action, quantity: action === 'propose' ? '' : line.proposals.find(p => p.state === 'pending')!.actual_quantity.toString(), reason: '', trigger });
+    setDraft({ variant, action, quantity: action === 'propose' ? '' : line.proposals.find(p => p.state === 'pending')!.actual_quantity.toString(), reason: action === 'propose' ? '' : consultation!.reasons[action], trigger });
+  }
+  function backToConsultation() {
+    if (!current() || !draft || draft.action === 'propose' || submitting.current || latest.current.corrections.busy) return;
+    if (!consultation || !consultationCurrent(consultation)) { retire(); return; }
+    setConsultation({ ...consultation, reasons: { ...consultation.reasons, [draft.action]: draft.reason } });
+    setDraft(null); setReview(null); setMessage('');
+  }
+  function decisionAdmitted(value: Draft, line: CountCorrectionLine) {
+    try {
+      normalizeCountDecision({ variant_id: value.variant, reason: value.reason,
+        expected_revision: line.workflow_revision.toString(), operation_key: 'capture_validation' });
+      return true;
+    } catch { return false; }
   }
   function prepare() {
     if (!current() || !draft || submitting.current || latest.current.corrections.busy) return;
     if (draft.action !== 'propose' && (!consultation || !consultationCurrent(consultation))) { retire(); return; }
     const line = lineFor(draft.variant); const snap = latest.current.corrections.snapshot;
     if (!line || !snap || snap.request_id.toString() !== record.id || !allowed(line, draft.action)) return;
+    if (draft.action !== 'propose' && !decisionAdmitted(draft, line)) {
+      setMessage('Ingresá un motivo válido de 1 a 2000 caracteres, sin NUL ni Unicode mal formado.');
+      return;
+    }
     try {
       // Generate once per explicitly reviewed new submission; failure sends nothing.
       const operation_key = newTransferRetryKey();
@@ -334,6 +352,10 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
   const proposalLines = privateLines.filter(line => allowed(line, 'propose'));
   const captureLine = draft && validSnapshot?.lines.find(line => line.variant_id === draft.variant);
   const captureReady = !!captureLine && !corrections.busy && !corrections.error;
+  const decisionCapture = !!draft && draft.action !== 'propose' && !review;
+  const decisionNoun = draft?.action === 'accept' ? 'aceptación' : 'rechazo';
+  const decisionValid = !!draft && !!captureLine && captureReady && allowed(captureLine, draft.action)
+    && decisionAdmitted(draft, captureLine);
   let proposalValid = false;
   if (draft?.action === 'propose' && captureReady && allowed(captureLine!, 'propose')) {
     try {
@@ -419,7 +441,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
             onClick={() => { if (current() && latest.current.corrections.attempts.includes(a)) void run(() => latest.current.corrections.retry(a.payload.variant_id)); }}>Reintentar carga exacta</button>}
         </div>
       </article>)}
-      {modalActive && <div className="count-backdrop"><div ref={dialog} className={`count-modal${consulting ? ' count-consultation' : ''}${draft?.action === 'propose' ? review ? ' count-proposal-review' : ' count-proposal-capture' : ''}`} role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1}
+      {modalActive && <div className="count-backdrop"><div ref={dialog} className={`count-modal${consulting ? ' count-consultation' : ''}${decisionCapture ? ' count-decision-capture' : ''}${draft?.action === 'propose' ? review ? ' count-proposal-review' : ' count-proposal-capture' : ''}`} role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1}
         onKeyDown={e => {
           if (e.key === 'Escape' && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); close(); }
           if (e.key === 'Tab') {
@@ -433,7 +455,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
         {consulting ? <header className="count-consultation-heading">
           <h3 ref={consultationHeading} id={headingID} tabIndex={-1}>Propuesta de corrección de conteo</h3>
           <p className="count-consultation-status" role="status">Pendiente de decisión</p>
-        </header> : <h3 id={headingID}>{visibleReview ? visibleReview.draft.action === 'propose' ? 'Revisar propuesta de conteo' : 'Revisar corrección de conteo' : draft?.action === 'propose' ? 'Corregir conteo' : 'Capturar corrección de conteo'}</h3>}
+        </header> : <h3 id={headingID}>{visibleReview ? visibleReview.draft.action === 'propose' ? 'Revisar propuesta de conteo' : 'Revisar corrección de conteo' : draft?.action === 'propose' ? 'Corregir conteo' : `${actions[draft!.action]} propuesta de conteo`}</h3>}
         {message && <p role="alert">{message}</p>}
         {consulting && validConsultation && <>
           <CounterpartyContext pin={validConsultation} reference={record.reference}
@@ -466,9 +488,12 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
             aria-describedby={quantityHelpID} placeholder="Ingresá la cantidad total correcta"
             value={draft.quantity} onChange={e => setDraft({ ...draft, quantity: e.target.value })} required />
           <p id={quantityHelpID} className="count-capture-help">Es el total recibido de esta variante, no la diferencia.</p>
-        </> : <h3>{actions[draft.action]} · {name(draft.variant)}</h3>}
-        <label htmlFor={reasonID}>Motivo</label><textarea id={reasonID} value={draft.reason}
-          placeholder={draft.action === 'propose' ? 'Explicá por qué debe corregirse el conteo' : undefined}
+        </> : validConsultation && <CounterpartyContext pin={validConsultation} reference={record.reference}
+          battery={name(validConsultation.variant)} sent={record.items.find(i => i.variant_id === validConsultation.variant)?.quantity ?? 0n}
+          proposer={location(validConsultation.pending.initiator_location_id)} reviewer={location(owner!.location)}
+          destination={record.destination_location_name} unexpected={!record.items.some(i => i.variant_id === validConsultation.variant)} decision />}
+        <label htmlFor={reasonID}>{decisionCapture ? `Motivo de ${decisionNoun} (obligatorio)` : 'Motivo'}</label><textarea id={reasonID} value={draft.reason}
+          placeholder={draft.action === 'propose' ? 'Explicá por qué debe corregirse el conteo' : `Explicá por qué ${draft.action === 'accept' ? 'aceptás' : 'rechazás'} esta corrección`}
           onChange={e => setDraft({ ...draft, reason: e.target.value })} required />
         {draft.action === 'propose' && <div className="count-capture-warning">
           <p>Enviar la propuesta no modifica el stock. {location(owner!.location === record.origin_location_id ? record.destination_location_id : record.origin_location_id)} deberá aceptarla para aplicar la corrección.</p>
@@ -476,7 +501,21 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
           <p>Una propuesta nueva o reemplazada requiere un nuevo acuerdo de la contraparte; no conserva el consentimiento anterior.</p>
           {!record.items.some(i => i.variant_id === draft.variant) && <p>Solo auditoría: crédito y efecto en stock cero. La procedencia e incorporación se resuelven por separado.</p>}
         </div>}
-        <div className="count-actions"><button type="submit" disabled={sending || corrections.busy || draft.action === 'propose' && !proposalValid}>Revisar corrección</button><button type="button" disabled={sending || corrections.busy} onClick={close}>Cancelar</button></div>
+        {decisionCapture && validConsultation && <>
+          <p className="count-review-muted">Este motivo quedará registrado junto con tu decisión.</p>
+          <div className="count-review-warning">
+            {draft.action === 'accept' ? <>
+              <p>Todavía no se aplicará ningún cambio.</p>
+              <p>Al confirmar la aceptación, sujeto a validación: Efecto en destino: {signed(validConsultation.delta)} · {record.destination_location_name}. Crédito limitado: {validConsultation.credit.toString()}.</p>
+            </> : <>
+              <p>Rechazar esta propuesta no modifica el conteo efectivo ni el stock.</p>
+              <p>Se mantienen {validConsultation.currentActual.toString()} baterías contabilizadas y {validConsultation.currentCredit.toString()} acreditadas en esta recepción.</p>
+            </>}
+            <p>La recepción original se conserva. Sin restitución al origen, resolución automática de faltantes ni incorporación de excedentes. El crédito no es inventario actual.</p>
+            {!record.items.some(i => i.variant_id === draft.variant) && <p>Solo auditoría: crédito y efecto cero. Procedencia e incorporación separadas.</p>}
+          </div>
+        </>}
+        <div className="count-actions"><button type="submit" disabled={sending || corrections.busy || (draft.action === 'propose' ? !proposalValid : !decisionValid)}>{decisionCapture ? `Revisar ${decisionNoun}` : 'Revisar corrección'}</button><button type="button" disabled={sending || corrections.busy} onClick={decisionCapture ? backToConsultation : close}>{decisionCapture ? 'Volver' : 'Cancelar'}</button></div>
       </form>}
       {visibleReview && <>
         {visibleReview.draft.action === 'propose' ? <div className="count-modal-body count-review-body">
