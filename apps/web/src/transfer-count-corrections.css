@@ -1,4 +1,4 @@
-/* Count-only foundation. Capture/review body fidelity belongs to later units. */
+/* Count-only modal foundation and proposal capture. Other bodies remain separate. */
 .count-corrections .count-backdrop {
   padding: clamp(8px, 3vw, 24px);
 }
@@ -29,4 +29,86 @@
 }
 .count-corrections .count-modal footer button {
   flex: 1 1 160px;
+}
+.count-corrections .count-proposal-capture {
+  width: min(560px, 100%);
+  padding: 20px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.count-corrections .count-proposal-capture > h3 {
+  padding: 0 70px 0 0;
+  border: 0;
+  font-size: 20px;
+}
+.count-corrections .count-proposal-capture > .count-form {
+  padding: 0;
+  gap: 6px;
+  overflow: visible;
+  font-size: 14px;
+}
+.count-corrections .count-capture-subtitle,
+.count-corrections .count-capture-help {
+  color: var(--muted);
+}
+.count-corrections .count-proposal-capture label {
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  font-size: 14px;
+}
+.count-corrections .count-proposal-capture select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: white;
+  color: inherit;
+  font: inherit;
+}
+.count-corrections .count-proposal-capture select:focus-visible {
+  outline: 2px solid var(--wine);
+  outline-offset: 3px;
+}
+.count-corrections .count-capture-context,
+.count-corrections .count-capture-warning {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--page);
+  font-size: 14px;
+}
+.count-corrections .count-capture-context {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.count-corrections .count-proposal-capture textarea {
+  min-height: 80px;
+}
+.count-corrections .count-proposal-capture p {
+  font-size: 14px;
+}
+.count-corrections .count-capture-warning p + p { margin-top: 4px; }
+.count-corrections .count-proposal-capture .count-actions {
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 6px;
+}
+.count-corrections .count-proposal-capture .count-actions button[type="submit"] {
+  order: 1;
+  color: white;
+  background: var(--wine);
+}
+.count-corrections .count-proposal-capture .count-actions button:disabled {
+  color: #595459;
+  background: #efedef;
+}
+@media (max-width: 767px) {
+  .count-corrections .count-proposal-capture { padding: 18px; }
+  .count-corrections .count-capture-context { flex-direction: column; }
 }

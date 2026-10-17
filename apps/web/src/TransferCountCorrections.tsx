@@ -91,6 +91,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
   const [message, setMessage] = useState('');
   const dialog = useRef<HTMLDivElement>(null); const cancelButton = useRef<HTMLButtonElement>(null);
   const headingID = useId(); const quantityID = useId(); const reasonID = useId();
+  const variantID = useId(); const quantityHelpID = useId();
   const snapshot = corrections.snapshot;
   const masked = isMasked(corrections);
   const validSnapshot = !masked && snapshot?.request_id.toString() === record.id ? snapshot : null;
@@ -182,7 +183,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
     setDraft({ variant, action, quantity: action === 'propose' ? '' : line.proposals.find(p => p.state === 'pending')!.actual_quantity.toString(), reason: '', trigger });
   }
   function prepare() {
-    if (!current() || !draft || submitting.current) return;
+    if (!current() || !draft || submitting.current || latest.current.corrections.busy) return;
     const line = lineFor(draft.variant); const snap = latest.current.corrections.snapshot;
     if (!line || !snap || snap.request_id.toString() !== record.id || !allowed(line, draft.action)) return;
     try {
@@ -246,6 +247,19 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
     || !validSnapshot || !!message || attempts.length > 0;
   const privateLines = validSnapshot?.lines.filter(line => record.status === 'received'
     && record.receipt.items.some(i => i.variant_id === line.variant_id)) ?? [];
+  const proposalLines = privateLines.filter(line => allowed(line, 'propose'));
+  const captureLine = draft && validSnapshot?.lines.find(line => line.variant_id === draft.variant);
+  const captureReady = !!captureLine && !corrections.busy && !corrections.error;
+  let proposalValid = false;
+  if (draft?.action === 'propose' && captureReady && allowed(captureLine!, 'propose')) {
+    try {
+      // Admission only: the real immutable input and retry key are created in prepare.
+      normalizeCountProposal({ variant_id: draft.variant, actual_quantity: draft.quantity,
+        reason: draft.reason, expected_revision: captureLine!.workflow_revision.toString(),
+        operation_key: 'capture_validation' });
+      proposalValid = true;
+    } catch { /* Keep review disabled without rewriting captured evidence. */ }
+  }
   return <section className="count-corrections" aria-label="Correcciones de conteo" hidden={!sectionVisible}>
     <h2 ref={contextHeading} tabIndex={-1}>Correcciones de conteo</h2>
     <p hidden={!routineVisible}>La recepción original es inmutable. La solicitud sigue Recibida; estas correcciones conservan su evidencia original.</p>
@@ -322,7 +336,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
             onClick={() => { if (current() && latest.current.corrections.attempts.includes(a)) void run(() => latest.current.corrections.retry(a.payload.variant_id)); }}>Reintentar carga exacta</button>}
         </div>
       </article>)}
-      {modalActive && <div className="count-backdrop"><div ref={dialog} className="count-modal" role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1}
+      {modalActive && <div className="count-backdrop"><div ref={dialog} className={`count-modal${draft?.action === 'propose' && !review ? ' count-proposal-capture' : ''}`} role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1}
         onKeyDown={e => {
           if (e.key === 'Escape' && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); close(); }
           if (e.key === 'Tab') {
@@ -333,14 +347,42 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
             else if (!e.shiftKey && (document.activeElement === last || !controls.includes(document.activeElement as HTMLElement))) { e.preventDefault(); first.focus(); }
           }
         }}>
-        <h3 id={headingID}>{visibleReview ? 'Revisar corrección de conteo' : 'Capturar corrección de conteo'}</h3>
+        <h3 id={headingID}>{visibleReview ? 'Revisar corrección de conteo' : draft?.action === 'propose' ? 'Corregir conteo' : 'Capturar corrección de conteo'}</h3>
         {message && <p role="alert">{message}</p>}
       {draft && !review && <form className="count-form" onSubmit={e => { e.preventDefault(); prepare(); }} aria-label="Editar corrección">
-        <h3>{actions[draft.action]} · {name(draft.variant)}</h3>
-        {draft.action === 'propose' && <><label htmlFor={quantityID}>Cantidad corregida</label><input id={quantityID} type="text" inputMode="numeric"
-          value={draft.quantity} onChange={e => setDraft({ ...draft, quantity: e.target.value })} required /></>}
-        <label htmlFor={reasonID}>Motivo</label><textarea id={reasonID} value={draft.reason} onChange={e => setDraft({ ...draft, reason: e.target.value })} required />
-        <div className="count-actions"><button type="submit" disabled={sending || corrections.busy}>Revisar corrección</button><button type="button" disabled={sending || corrections.busy} onClick={close}>Cancelar</button></div>
+        {draft.action === 'propose' ? <>
+          <p className="count-capture-subtitle">{record.reference} · {location(owner!.location)}</p>
+          <p>Proponé una corrección para una variante de esta recepción.</p>
+          <label htmlFor={variantID}>Batería a corregir</label>
+          <select id={variantID} value={draft.variant} disabled={sending || corrections.busy} onChange={e => {
+            const variant = Number(e.target.value); const line = lineFor(variant);
+            if (!current() || submitting.current || latest.current.corrections.busy || !line || !allowed(line, 'propose')) return;
+            setReview(null); setMessage(''); setDraft({ ...draft, variant, quantity: '', reason: '' });
+          }}>
+            {proposalLines.map(line => <option key={line.variant_id} value={line.variant_id}>{name(line.variant_id)}</option>)}
+          </select>
+          <div className="count-capture-context">
+            <span>Enviadas originalmente: <strong>{record.items.find(i => i.variant_id === draft.variant)?.quantity.toString() ?? '0'}</strong></span>
+            {captureReady ? <>
+              <span>Conteo efectivo confirmado: <strong>{captureLine.effective_actual.toString()}</strong></span>
+              <span>Crédito efectivo de esta recepción: <strong>{captureLine.effective_credit.toString()}</strong></span>
+            </> : <span>Conteo pendiente de verificación.</span>}
+          </div>
+          <label htmlFor={quantityID}>Cantidad corregida</label><input id={quantityID} type="text" inputMode="numeric"
+            aria-describedby={quantityHelpID} placeholder="Ingresá la cantidad total correcta"
+            value={draft.quantity} onChange={e => setDraft({ ...draft, quantity: e.target.value })} required />
+          <p id={quantityHelpID} className="count-capture-help">Es el total recibido de esta variante, no la diferencia.</p>
+        </> : <h3>{actions[draft.action]} · {name(draft.variant)}</h3>}
+        <label htmlFor={reasonID}>Motivo</label><textarea id={reasonID} value={draft.reason}
+          placeholder={draft.action === 'propose' ? 'Explicá por qué debe corregirse el conteo' : undefined}
+          onChange={e => setDraft({ ...draft, reason: e.target.value })} required />
+        {draft.action === 'propose' && <div className="count-capture-warning">
+          <p>Enviar la propuesta no modifica el stock. {location(owner!.location === record.origin_location_id ? record.destination_location_id : record.origin_location_id)} deberá aceptarla para aplicar la corrección.</p>
+          <p>La recepción original se conserva.</p>
+          <p>Una propuesta nueva o reemplazada requiere un nuevo acuerdo de la contraparte; no conserva el consentimiento anterior.</p>
+          {!record.items.some(i => i.variant_id === draft.variant) && <p>Solo auditoría: crédito y efecto en stock cero. La procedencia e incorporación se resuelven por separado.</p>}
+        </div>}
+        <div className="count-actions"><button type="submit" disabled={sending || corrections.busy || draft.action === 'propose' && !proposalValid}>Revisar corrección</button><button type="button" disabled={sending || corrections.busy} onClick={close}>Cancelar</button></div>
       </form>}
       {visibleReview && <>
         <div className="count-modal-body"><p>{name(visibleReview.draft.variant)}</p>

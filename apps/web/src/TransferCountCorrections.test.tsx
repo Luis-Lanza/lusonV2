@@ -51,6 +51,83 @@ function review() { fireEvent.click(screen.getByRole('button', { name: 'Revisar 
 const confirm = () => fireEvent.click(screen.getByRole('button', { name: 'Confirmar propuesta' }));
 afterEach(() => vi.unstubAllGlobals());
 
+it('offers only eligible receipt batteries and clears cross-battery capture before reviewing', () => {
+  const f = fixture();
+  if (f.props.record.status !== 'received') throw new Error('fixture');
+  f.props.record = { ...f.props.record, receipt: { ...f.props.record.receipt, items: [...f.props.record.receipt.items,
+    { variant_id: 999, expected_quantity: 0n, actual_quantity: 2n, available_quantity: 0n }] } };
+  f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [line(), line(999), line(777)] };
+  render(<TransferCountCorrections {...f.props} />);
+  fireEvent.click(screen.getAllByRole('button', { name: 'Proponer corrección' })[0]);
+  const selector = screen.getByLabelText('Batería a corregir');
+  expect(within(selector).getAllByRole('option').map(o => o.getAttribute('value'))).toEqual(['201', '999']);
+  expect(screen.getByLabelText('Cantidad corregida')).toHaveValue('');
+  expect(screen.getByLabelText('Motivo')).toHaveValue('');
+  expect(screen.getByRole('button', { name: 'Revisar corrección' })).toBeDisabled();
+  expect(screen.getByRole('dialog')).toHaveTextContent(`Enviadas originalmente: ${big}`);
+  expect(screen.getByRole('dialog')).toHaveTextContent('Conteo efectivo confirmado: 5');
+  fireEvent.change(screen.getByLabelText('Cantidad corregida'), { target: { value: '7' } });
+  fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: '  Exact reason  ' } });
+  fireEvent.change(selector, { target: { value: '999' } });
+  expect(screen.getByLabelText('Cantidad corregida')).toHaveValue('');
+  expect(screen.getByLabelText('Motivo')).toHaveValue('');
+  expect(screen.getByRole('button', { name: 'Revisar corrección' })).toBeDisabled();
+  expect(screen.getByRole('dialog')).toHaveTextContent('Enviadas originalmente: 0');
+  fireEvent.change(screen.getByLabelText('Cantidad corregida'), { target: { value: '0' } });
+  fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: '  New exact reason  ' } });
+  const modal = review();
+  expect(modal).toHaveTextContent('Variante inesperada 999');
+  expect(modal).toHaveTextContent('Crédito limitado: 0');
+  expect(modal).not.toHaveTextContent('Exact reason');
+  confirm();
+  expect(f.corrections.propose).toHaveBeenCalledWith(expect.objectContaining({ variant_id: 999, actual_quantity: '0', reason: '  New exact reason  ' }));
+});
+it('uses applied effective actual and credit, not original receipt or proposed totals', () => {
+  const f = fixture();
+  f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), effective_actual: 9n,
+    effective_credit: 7n, proposals: [proposal('applied')] }] };
+  render(<TransferCountCorrections {...f.props} />); draft('9223372036854775807', '\t');
+  const modal = screen.getByRole('dialog');
+  expect(modal).toHaveTextContent(`Enviadas originalmente: ${big}`);
+  expect(modal).toHaveTextContent('Conteo efectivo confirmado: 9');
+  expect(modal).toHaveTextContent('Crédito efectivo de esta recepción: 7');
+  expect(screen.getByRole('button', { name: 'Revisar corrección' })).toBeEnabled();
+  expect(review()).toHaveTextContent('9223372036854775807');
+});
+it('excludes counterparty-pending and uncertain options while retaining own replacement', () => {
+  const f = fixture();
+  if (f.props.record.status !== 'received') throw new Error('fixture');
+  f.props.record = { ...f.props.record, receipt: { ...f.props.record.receipt, items: [201, 202, 203].map(variant_id =>
+    ({ variant_id, expected_quantity: 0n, actual_quantity: 0n, available_quantity: 0n })) } };
+  f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [
+    { ...line(), proposals: [proposal()] }, { ...line(202), proposals: [proposal('pending', 3)] }, line(203)] };
+  f.corrections.attempts = [{ ...attempt('uncertain'), payload: { ...attempt('uncertain').payload, variant_id: 203 } }];
+  render(<TransferCountCorrections {...f.props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Reemplazar propuesta' }));
+  expect(within(screen.getByLabelText('Batería a corregir')).getAllByRole('option').map(o => o.getAttribute('value'))).toEqual(['201']);
+  expect(screen.getByRole('dialog')).toHaveTextContent('requiere un nuevo acuerdo');
+});
+it.each(['', '-1', '1.5', '1e2', '01', '9223372036854775808'])('disables proposal review for invalid quantity %j', value => {
+  const f = fixture(); render(<TransferCountCorrections {...f.props} />); draft(value, 'Valid reason');
+  expect(screen.getByRole('button', { name: 'Revisar corrección' })).toBeDisabled();
+  expect(screen.queryByRole('button', { name: 'Confirmar propuesta' })).not.toBeInTheDocument();
+});
+it.each(['', '   ', '\0', 'a'.repeat(2001)])('uses exact reason admission for capture case %#', reason => {
+  const f = fixture(); render(<TransferCountCorrections {...f.props} />); draft('0', reason);
+  expect(screen.getByRole('button', { name: 'Revisar corrección' })).toBeDisabled();
+});
+it.each(['busy', 'incompatible', 'counterparty', 'uncertain'])('cannot review or select an ineligible %s battery', mode => {
+  const f = fixture(); const view = render(<TransferCountCorrections {...f.props} />); draft('0', 'Reason');
+  if (mode === 'busy') f.corrections.busy = true;
+  if (mode === 'incompatible') f.corrections.snapshot = { ...f.corrections.snapshot!, request_id: 2n };
+  if (mode === 'counterparty') f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals: [proposal('pending', 3)] }] };
+  if (mode === 'uncertain') f.corrections.attempts = [attempt('uncertain')];
+  view.rerender(<TransferCountCorrections {...f.props} />);
+  const button = screen.queryByRole('button', { name: 'Revisar corrección' });
+  if (button) expect(button).toBeDisabled();
+  expect(f.corrections.propose).not.toHaveBeenCalled();
+});
+
 it('isolates capture continuously through review and restores prior attributes before focus', async () => {
   const f = fixture();
   const view = render(<><aside data-testid="outside" inert aria-hidden="false" />
@@ -66,9 +143,9 @@ it('isolates capture continuously through review and restores prior attributes b
   });
   trigger.addEventListener('focus', focused);
   draft('7');
-  const modal = screen.getByRole('dialog', { name: 'Capturar corrección de conteo' });
+  const modal = screen.getByRole('dialog', { name: 'Corregir conteo' });
   expect(modal).toHaveAttribute('aria-modal', 'true');
-  expect(screen.getByLabelText('Cantidad corregida')).toHaveFocus();
+  expect(screen.getByLabelText('Batería a corregir')).toHaveFocus();
   expect(other).toHaveAttribute('inert');
   const releases: MutationRecord[] = [];
   const observer = new MutationObserver(records => releases.push(...records));
@@ -93,7 +170,7 @@ it('isolates capture continuously through review and restores prior attributes b
 it('cycles all capture controls, tolerates composition, and ignores backdrop clicks', () => {
   const f = fixture(); render(<TransferCountCorrections {...f.props} />); draft('7');
   const modal = screen.getByRole('dialog');
-  const input = screen.getByLabelText('Cantidad corregida');
+  const input = screen.getByLabelText('Batería a corregir');
   const cancel = within(modal).getByRole('button', { name: 'Cancelar' });
   const close = within(modal).getByRole('button', { name: 'Cerrar corrección' });
   const select = document.createElement('select');
@@ -109,6 +186,7 @@ it('cycles all capture controls, tolerates composition, and ignores backdrop cli
   fireEvent.click(modal.parentElement!); expect(modal).toBeInTheDocument();
   select.remove();
   input.setAttribute('disabled', '');
+  screen.getByLabelText('Cantidad corregida').setAttribute('disabled', '');
   reason.focus(); fireEvent.keyDown(reason, { key: 'Tab', shiftKey: true }); expect(close).toHaveFocus();
   fireEvent.keyDown(close, { key: 'Tab' }); expect(reason).toHaveFocus();
   cancel.focus(); fireEvent.keyDown(cancel, { key: 'Tab' }); expect(cancel).toHaveFocus();
@@ -135,13 +213,13 @@ it('keeps focus inside an empty busy modal and keeps validation accessible insid
   fireEvent.submit(screen.getByRole('form', { name: 'Editar corrección' }));
   const modal = screen.getByRole('dialog');
   expect(within(modal).getByRole('alert')).toHaveTextContent('Ingresá cantidad');
-  for (const control of modal.querySelectorAll('input, textarea, button')) control.setAttribute('disabled', '');
+  for (const control of modal.querySelectorAll('input, select, textarea, button')) control.setAttribute('disabled', '');
   fireEvent.keyDown(modal, { key: 'Tab' }); expect(modal).toHaveFocus();
   fireEvent.keyDown(modal, { key: 'Tab', shiftKey: true }); expect(modal).toHaveFocus();
 });
 it('does not transfer entry focus outside an active capture', () => {
   const f = fixture(); const view = render(<TransferCountCorrections {...f.props} />); draft();
-  const input = screen.getByLabelText('Cantidad corregida');
+  const input = screen.getByLabelText('Batería a corregir');
   view.rerender(<TransferCountCorrections {...f.props} contextVisible entryFocusKey={2} />);
   expect(input).toHaveFocus();
 });
@@ -248,10 +326,10 @@ it.each(['', ' ', '00', '01', '-1', '+1', '1.5', '1e3', '9223372036854775808'])(
     const f = fixture(); render(<TransferCountCorrections {...f.props} />); draft(quantity); reviewInvalid();
     expect(f.corrections.propose).not.toHaveBeenCalled();
   });
-function reviewInvalid() {
+function reviewInvalid(title = 'Corregir conteo') {
   // Exercise the handler's validation too, beyond native required-field gating.
   fireEvent.submit(screen.getByRole('form', { name: 'Editar corrección' }));
-  expect(screen.getByRole('dialog')).toHaveAccessibleName('Capturar corrección de conteo');
+  expect(screen.getByRole('dialog')).toHaveAccessibleName(title);
   expect(screen.queryByRole('button', { name: 'Confirmar propuesta' })).not.toBeInTheDocument();
   expect(screen.getByRole('alert')).toBeInTheDocument();
 }
@@ -401,7 +479,7 @@ it.each(['accept', 'reject'] as const)('counterparty %s is exact revision and re
   render(<TransferCountCorrections {...f.props} />);
   expect(screen.queryByRole('button', { name: 'Reemplazar propuesta' })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: `${action === 'accept' ? 'Aceptar' : 'Rechazar'} revisión 4` }));
-  fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: '   ' } }); reviewInvalid();
+  fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: '   ' } }); reviewInvalid('Capturar corrección de conteo');
   fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: '  Decisión conservada  ' } });
   const modal = review(); expect(modal).toHaveTextContent('Cantidad corregida: 7 · Revisión: 4 · Base aplicada: 3');
   expect(modal).toHaveTextContent(`Efecto en destino: ${action === 'accept' ? '+2' : '0'}`);
