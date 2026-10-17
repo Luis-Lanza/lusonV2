@@ -74,6 +74,36 @@ export default function TransferCountCorrections(props: TransferCountCorrections
 interface Draft {
   variant: number; action: CountAction; quantity: string; reason: string; trigger: HTMLElement;
 }
+interface Consultation {
+  variant: number; trigger: HTMLElement;
+  snapshot: NonNullable<TransferCountCorrectionsProps['corrections']['snapshot']>;
+  pending: CountCorrectionLine['proposals'][number];
+  workflow: bigint; applied: bigint; currentActual: bigint; currentCredit: bigint;
+  credit: bigint; delta: bigint;
+}
+function CounterpartyContext({ pin, reference, battery, sent, proposer, reviewer, destination, unexpected }: {
+  pin: Consultation; reference: string; battery: string; sent: bigint;
+  proposer: string; reviewer: string; destination: string; unexpected: boolean;
+}) {
+  return <div className="count-modal-body count-consultation-body">
+    <div><p>{reference} · Propuesta de {proposer}</p><p className="count-review-muted">{reviewer} debe revisar esta propuesta.</p></div>
+    <div className="count-review-battery"><div><p className="count-review-label">Batería a corregir</p><strong>{battery}</strong></div><span>Enviadas: {sent.toString()}</span></div>
+    <table className="count-review-comparison" aria-label="Comparación de conteo">
+      <thead><tr><th scope="col">Concepto</th><th scope="col">Vigente confirmado</th><th scope="col">Propuesto</th></tr></thead>
+      <tbody><tr><th scope="row">Cantidad recibida</th><td>{pin.currentActual.toString()}</td><td>{pin.pending.actual_quantity.toString()}</td></tr>
+        <tr><th scope="row">Crédito de esta recepción</th><td>{pin.currentCredit.toString()}</td><td>{pin.credit.toString()}</td></tr></tbody>
+    </table>
+    <div><p className="count-review-label">Motivo de {proposer}</p><p className="count-evidence count-review-reason">{pin.pending.reason}</p></div>
+    <div className="count-review-warning">
+      <p><strong>La propuesta pendiente no modifica el stock.</strong></p>
+      <p>Si la aceptás, sujeto a validación: Efecto en destino: {signed(pin.delta)} · {destination}. Crédito limitado: {pin.credit.toString()}.</p>
+      <p>Rechazar no modifica el conteo ni el stock. La recepción original se conserva.</p>
+      <p>Sin restitución al origen, resolución automática de faltantes ni incorporación de excedentes. El crédito no es inventario actual.</p>
+      {unexpected && <p>Solo auditoría: crédito y efecto cero. Procedencia e incorporación separadas.</p>}
+    </div>
+    <p className="count-review-muted">Ambas opciones requieren un motivo y revisión antes de confirmar.</p>
+  </div>;
+}
 interface Review {
   draft: Draft; snapshot: NonNullable<TransferCountCorrectionsProps['corrections']['snapshot']>;
   input: CountProposalInput | CountDecisionInput; actual: bigint; revision: bigint; base: bigint; credit: bigint; delta: bigint;
@@ -88,9 +118,11 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
   const restoreAfterSend = useRef<HTMLElement | null>(null);
   const [sending, setSending] = useState(false);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [consultation, setConsultation] = useState<Consultation | null>(null);
   const [review, setReview] = useState<Review | null>(null);
   const [message, setMessage] = useState('');
   const dialog = useRef<HTMLDivElement>(null); const cancelButton = useRef<HTMLButtonElement>(null);
+  const consultationHeading = useRef<HTMLHeadingElement>(null);
   const headingID = useId(); const quantityID = useId(); const reasonID = useId();
   const variantID = useId(); const quantityHelpID = useId();
   const snapshot = corrections.snapshot;
@@ -129,7 +161,21 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
       : id === record.destination_location_id ? record.destination_location_name : `Ubicación ${id}`;
   }
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  const modalActive = !!draft && !!validSnapshot;
+  function consultationCurrent(pin: Consultation) {
+    const line = lineFor(pin.variant); const pending = line?.proposals.find(p => p.state === 'pending');
+    const original = pin.pending;
+    return latest.current.corrections.snapshot === pin.snapshot && pin.snapshot.request_id.toString() === record.id
+      && !!line && allowed(line, 'accept') && line.workflow_revision === pin.workflow
+      && line.applied_revision === pin.applied && line.effective_actual === pin.currentActual
+      && line.effective_credit === pin.currentCredit && !!pending
+      && pending.revision === original.revision && pending.actual_quantity === original.actual_quantity
+      && pending.reason === original.reason && pending.initiator_location_id === original.initiator_location_id
+      && pending.base_revision === original.base_revision && pending.base_credit === original.base_credit
+      && pending.operation_key === original.operation_key && pending.recorded_at === original.recorded_at;
+  }
+  const validConsultation = consultation && consultationCurrent(consultation) ? consultation : null;
+  const consulting = !!validConsultation && !draft;
+  const modalActive = (!!draft || consulting) && !!validSnapshot && (!consultation || !!validConsultation);
   const focusableControls = () => Array.from(dialog.current?.querySelectorAll<HTMLElement>(
     'input:not([type="hidden"]), select, textarea, button, a[href], details > summary:first-of-type, [tabindex]') ?? [])
     .filter(control => isTransferFocusTarget(control) && control.tabIndex >= 0
@@ -138,7 +184,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
       const closed = control.closest('details:not([open])');
       return !closed || !!closed.querySelector(':scope > summary')?.contains(control);
     });
-  // One isolation lifetime spans capture and review; restore before returning focus.
+  // One isolation lifetime spans consultation, capture and review; restore before returning focus.
   useLayoutEffect(() => {
     const backdrop = dialog.current?.parentElement;
     if (!modalActive || !backdrop) return;
@@ -173,22 +219,42 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
     else if (isTransferFocusTarget(fallback) && !fallback.closest('[hidden], [inert]')) fallback.focus();
   });
   useLayoutEffect(() => {
-    if (modalActive) (visibleReview ? cancelButton.current : focusableControls()[0])?.focus();
-  }, [modalActive, !!visibleReview]);
+    if (modalActive) (consulting ? consultationHeading.current : visibleReview ? cancelButton.current : focusableControls()[0])?.focus();
+  }, [modalActive, consulting, !!visibleReview]);
+  function retire() {
+    restoreAfterSend.current = consultation?.trigger ?? draft?.trigger ?? null;
+    setConsultation(null); setReview(null); setDraft(null);
+    setMessage('El conteo cambió. Revisá nuevamente antes de confirmar.');
+  }
   useEffect(() => {
-    if (review && !visibleReview) { setReview(null); setDraft(null); setMessage('El conteo cambió. Revisá nuevamente antes de confirmar.'); }
-  }, [review, visibleReview]);
+    if (review && !visibleReview || consultation && !validConsultation) retire();
+  }, [review, visibleReview, consultation, validConsultation]);
   // A form is private too: clearing it on a mask cannot resurrect its contents
   // when explicit recovery later unmasks the same authority.
-  useEffect(() => { if (masked) { setDraft(null); setReview(null); setMessage(''); } }, [masked]);
+  useEffect(() => { if (masked) { setConsultation(null); setDraft(null); setReview(null); setMessage(''); } }, [masked]);
+  function consult(variant: number, trigger: HTMLElement) {
+    const line = lineFor(variant); const snap = latest.current.corrections.snapshot;
+    if (!current() || !line || !snap || snap.request_id.toString() !== record.id
+      || !allowed(line, 'accept') || submitting.current || latest.current.corrections.busy) return;
+    const pending = line.proposals.find(p => p.state === 'pending')!;
+    const item = record.items.find(i => i.variant_id === variant);
+    const credit = item ? (pending.actual_quantity < item.quantity ? pending.actual_quantity : item.quantity) : 0n;
+    setConsultation({ variant, trigger, snapshot: snap, pending: { ...pending },
+      workflow: line.workflow_revision, applied: line.applied_revision,
+      currentActual: line.effective_actual, currentCredit: line.effective_credit,
+      credit, delta: item ? credit - line.effective_credit : 0n });
+    setDraft(null); setReview(null); setMessage('');
+  }
   function open(variant: number, action: CountAction, trigger: HTMLElement) {
     const line = lineFor(variant);
-    if (!current() || !line || !allowed(line, action) || submitting.current) return;
+    if (!current() || !line || !allowed(line, action) || submitting.current || latest.current.corrections.busy) return;
+    if (action !== 'propose' && (!consultation || !consultationCurrent(consultation))) { retire(); return; }
     setMessage(''); setReview(null);
     setDraft({ variant, action, quantity: action === 'propose' ? '' : line.proposals.find(p => p.state === 'pending')!.actual_quantity.toString(), reason: '', trigger });
   }
   function prepare() {
     if (!current() || !draft || submitting.current || latest.current.corrections.busy) return;
+    if (draft.action !== 'propose' && (!consultation || !consultationCurrent(consultation))) { retire(); return; }
     const line = lineFor(draft.variant); const snap = latest.current.corrections.snapshot;
     if (!line || !snap || snap.request_id.toString() !== record.id || !allowed(line, draft.action)) return;
     try {
@@ -221,15 +287,16 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
   function submit(captured: Review) {
     const p = latest.current; const line = lineFor(captured.draft.variant);
     if (!current() || submitting.current || p.corrections.busy || p.corrections.snapshot !== captured.snapshot
+      || captured.draft.action !== 'propose' && (!consultation || !consultationCurrent(consultation))
       || review !== captured || !line || !allowed(line, captured.draft.action)
       || line.workflow_revision.toString() !== (captured.draft.action === 'propose'
         ? captured.input.expected_revision : captured.revision.toString())) {
-      if (current()) { setReview(null); setDraft(null); setMessage('El conteo cambió. Revisá nuevamente antes de confirmar.'); }
+      if (current()) retire();
       return;
     }
     restoreAfterSend.current = captured.draft.trigger;
     void run(() => {
-      setReview(null); setDraft(null);
+      setConsultation(null); setReview(null); setDraft(null);
       return captured.draft.action === 'propose' ? p.corrections.propose(captured.input as CountProposalInput)
         : p.corrections.decide(captured.draft.action, captured.input);
     });
@@ -247,8 +314,8 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
   }
   function close() {
     if (!current() || submitting.current || latest.current.corrections.busy) return;
-    restoreAfterSend.current = draft?.trigger ?? null;
-    setReview(null); setDraft(null);
+    restoreAfterSend.current = consultation?.trigger ?? draft?.trigger ?? null;
+    setConsultation(null); setReview(null); setDraft(null);
   }
   const contextHeading = useRef<HTMLHeadingElement>(null);
   const lastEntry = useRef(props.entryFocusKey);
@@ -259,7 +326,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
     }
   }, [props.entryFocusKey, props.contextVisible]);
   // Presentation never participates in the private authority boundary.
-  const routineVisible = props.contextVisible !== false || !!draft || !!review || sending;
+  const routineVisible = props.contextVisible !== false || !!consultation || !!draft || !!review || sending;
   const sectionVisible = routineVisible || masked || corrections.busy || !!corrections.error
     || !validSnapshot || !!message || attempts.length > 0;
   const privateLines = validSnapshot?.lines.filter(line => record.status === 'received'
@@ -308,8 +375,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
           {unexpected && <p>Solo auditoría: crédito y efecto en stock cero. La procedencia e incorporación se resuelven por separado.</p>}
           <div className="count-actions">
             {allowed(line, 'propose') && <button disabled={sending} onClick={e => open(line.variant_id, 'propose', e.currentTarget)}>{pending ? 'Reemplazar propuesta' : 'Proponer corrección'}</button>}
-            {allowed(line, 'accept') && <><button disabled={sending} onClick={e => open(line.variant_id, 'accept', e.currentTarget)}>Aceptar revisión {pending!.revision.toString()}</button>
-              <button disabled={sending} onClick={e => open(line.variant_id, 'reject', e.currentTarget)}>Rechazar revisión {pending!.revision.toString()}</button></>}
+            {allowed(line, 'accept') && <button disabled={sending || corrections.busy} onClick={e => consult(line.variant_id, e.currentTarget)}>Consultar propuesta</button>}
           </div>
           <details className="count-technical">
             <summary>Evidencia técnica del conteo</summary>
@@ -353,7 +419,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
             onClick={() => { if (current() && latest.current.corrections.attempts.includes(a)) void run(() => latest.current.corrections.retry(a.payload.variant_id)); }}>Reintentar carga exacta</button>}
         </div>
       </article>)}
-      {modalActive && <div className="count-backdrop"><div ref={dialog} className={`count-modal${draft?.action === 'propose' ? review ? ' count-proposal-review' : ' count-proposal-capture' : ''}`} role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1}
+      {modalActive && <div className="count-backdrop"><div ref={dialog} className={`count-modal${consulting ? ' count-consultation' : ''}${draft?.action === 'propose' ? review ? ' count-proposal-review' : ' count-proposal-capture' : ''}`} role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1}
         onKeyDown={e => {
           if (e.key === 'Escape' && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); close(); }
           if (e.key === 'Tab') {
@@ -364,8 +430,19 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
             else if (!e.shiftKey && (document.activeElement === last || !controls.includes(document.activeElement as HTMLElement))) { e.preventDefault(); first.focus(); }
           }
         }}>
-        <h3 id={headingID}>{visibleReview ? visibleReview.draft.action === 'propose' ? 'Revisar propuesta de conteo' : 'Revisar corrección de conteo' : draft?.action === 'propose' ? 'Corregir conteo' : 'Capturar corrección de conteo'}</h3>
+        {consulting ? <header className="count-consultation-heading">
+          <h3 ref={consultationHeading} id={headingID} tabIndex={-1}>Propuesta de corrección de conteo</h3>
+          <p className="count-consultation-status" role="status">Pendiente de decisión</p>
+        </header> : <h3 id={headingID}>{visibleReview ? visibleReview.draft.action === 'propose' ? 'Revisar propuesta de conteo' : 'Revisar corrección de conteo' : draft?.action === 'propose' ? 'Corregir conteo' : 'Capturar corrección de conteo'}</h3>}
         {message && <p role="alert">{message}</p>}
+        {consulting && validConsultation && <>
+          <CounterpartyContext pin={validConsultation} reference={record.reference}
+            battery={name(validConsultation.variant)} sent={record.items.find(i => i.variant_id === validConsultation.variant)?.quantity ?? 0n}
+            proposer={location(validConsultation.pending.initiator_location_id)} reviewer={location(owner!.location)}
+            destination={record.destination_location_name} unexpected={!record.items.some(i => i.variant_id === validConsultation.variant)} />
+          <footer><button disabled={sending || corrections.busy} onClick={() => open(validConsultation.variant, 'reject', validConsultation.trigger)}>Rechazar propuesta</button>
+            <button disabled={sending || corrections.busy} onClick={() => open(validConsultation.variant, 'accept', validConsultation.trigger)}>Aceptar propuesta</button></footer>
+        </>}
       {draft && !review && <form className="count-form" onSubmit={e => { e.preventDefault(); prepare(); }} aria-label="Editar corrección">
         {draft.action === 'propose' ? <>
           <p className="count-capture-subtitle">{record.reference} · {location(owner!.location)}</p>

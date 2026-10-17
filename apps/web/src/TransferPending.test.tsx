@@ -127,7 +127,8 @@ async function correctionLoaded(managed = true) {
 }
 function correctionPreview(action: 'propose' | 'accept' | 'reject' = 'propose') {
   fireEvent.click(screen.getAllByRole('button', { name: action === 'propose' ? 'Proponer corrección'
-    : `${action === 'accept' ? 'Aceptar' : 'Rechazar'} revisión 1` })[0]);
+    : 'Consultar propuesta' })[0]);
+  if (action !== 'propose') fireEvent.click(screen.getByRole('button', { name: `${action === 'accept' ? 'Aceptar' : 'Rechazar'} propuesta` }));
   if (action === 'propose') fireEvent.change(screen.getByLabelText('Cantidad corregida'), { target: { value: '5' } });
   fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: '  Recuento exacto  ' } });
   fireEvent.click(screen.getByRole('button', { name: 'Revisar corrección' }));

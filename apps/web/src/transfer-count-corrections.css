@@ -183,6 +183,46 @@
 .count-corrections .count-proposal-review .count-technical { font-size: 14px; }
 .count-corrections .count-proposal-review footer { padding: 8px 0 0; margin-top: 4px; justify-content: space-between; }
 .count-corrections .count-proposal-review footer button { flex: 0 1 auto; }
+/* Consultation has its own geometry; accepted proposal steps remain unchanged. */
+.count-corrections .count-consultation {
+  width: min(580px, 100%);
+  padding: 20px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.count-corrections .count-consultation-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-right: 70px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+.count-corrections .count-consultation-heading h3 {
+  flex: 1 1 240px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 20px;
+}
+.count-corrections .count-consultation-body {
+  padding: 0;
+  gap: 12px;
+  overflow: visible;
+  flex-shrink: 0;
+}
+.count-corrections .count-consultation p { font-size: 14px; line-height: inherit; }
+.count-corrections .count-consultation-status {
+  flex: 0 1 auto;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid #e0bd72;
+  border-radius: 4px;
+  color: #805100;
+  background: #fff9ee;
+}
+.count-corrections .count-consultation footer { padding: 12px 0 0; margin-top: 4px; }
+.count-corrections .count-consultation footer button:last-child { color: white; background: var(--wine); }
 @media (max-width: 767px) {
   .count-corrections .count-proposal-review { padding: 18px; }
   .count-corrections .count-review-comparison th,

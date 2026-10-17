@@ -52,6 +52,144 @@ function review() { fireEvent.click(screen.getByRole('button', { name: 'Revisar 
 const confirm = () => fireEvent.click(screen.getByRole('button', { name: 'Enviar propuesta' }));
 afterEach(() => vi.unstubAllGlobals());
 
+it('starts consultation at its semantic heading and traps keyboard navigation from that target', async () => {
+  const user = userEvent.setup(); const f = fixture(3);
+  f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals: [proposal()] }] };
+  render(<><button>Outside</button><TransferCountCorrections {...f.props} /></>);
+  const trigger = screen.getByRole('button', { name: 'Consultar propuesta' }); fireEvent.click(trigger);
+  const modal = screen.getByRole('dialog');
+  const heading = within(modal).getByRole('heading', { name: 'Propuesta de corrección de conteo', level: 3 });
+  expect(heading).toHaveAttribute('tabindex', '-1'); expect(heading).toHaveFocus();
+  expect(modal).toHaveAttribute('aria-labelledby', heading.id);
+  const close = within(modal).getByRole('button', { name: 'Cerrar corrección' });
+  await user.tab({ shift: true }); expect(close).toHaveFocus();
+  await user.tab(); expect(within(modal).getByRole('button', { name: 'Rechazar propuesta' })).toHaveFocus();
+  await user.tab(); expect(within(modal).getByRole('button', { name: 'Aceptar propuesta' })).toHaveFocus();
+  await user.tab(); expect(close).toHaveFocus();
+  heading.focus(); await user.tab();
+  expect(within(modal).getByRole('button', { name: 'Rechazar propuesta' })).toHaveFocus();
+  expect(screen.getByRole('button', { name: 'Outside' })).toHaveAttribute('inert');
+  await user.keyboard('{Escape}'); expect(trigger).toHaveFocus();
+  expect(trigger.closest('[inert]')).toBeNull(); expect(f.corrections.decide).not.toHaveBeenCalled();
+});
+it.each(['accept', 'reject'] as const)('consults exact pending evidence before %s without interrupting isolation', action => {
+  const f = fixture(3); const reason = '  Original\n\n  proposal  ';
+  f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals: [{ ...proposal(), reason }] }] };
+  render(<><button>Outside</button><TransferCountCorrections {...f.props} /></>);
+  const trigger = screen.getByRole('button', { name: 'Consultar propuesta' }); fireEvent.click(trigger);
+  const modal = screen.getByRole('dialog', { name: 'Propuesta de corrección de conteo' });
+  const heading = within(modal).getByRole('heading', { name: 'Propuesta de corrección de conteo', level: 3 });
+  const header = heading.closest('header'); expect(header).not.toBeNull();
+  expect(modal).toHaveAttribute('aria-labelledby', heading.id);
+  expect(within(header!).getByRole('status')).toHaveTextContent('Pendiente de decisión');
+  expect(within(modal).getAllByRole('status')).toHaveLength(1);
+  expect(modal.querySelector('.count-consultation-body [role="status"]')).toBeNull();
+  expect(modal).toHaveTextContent('TR-001 · Propuesta de Sucursal A');
+  expect(modal).toHaveTextContent('Sucursal B debe revisar');
+  expect(modal).toHaveTextContent('TOYO · Exact · 75.125 Ah · L');
+  expect(modal).toHaveTextContent(`Enviadas: ${big}`);
+  expect(within(modal).getByRole('row', { name: 'Cantidad recibida 5 7' })).toBeInTheDocument();
+  expect(within(modal).getByRole('row', { name: 'Crédito de esta recepción 5 7' })).toBeInTheDocument();
+  expect(modal).toHaveTextContent('Motivo de Sucursal A');
+  expect(modal.querySelector('.count-review-reason')?.textContent).toBe(reason);
+  expect(screen.queryByLabelText('Motivo')).not.toBeInTheDocument();
+  const outside = screen.getByRole('button', { name: 'Outside' }); expect(outside).toHaveAttribute('inert');
+  fireEvent.click(within(modal).getByRole('button', { name: action === 'accept' ? 'Aceptar propuesta' : 'Rechazar propuesta' }));
+  expect(screen.getByRole('dialog')).toBe(modal); expect(outside).toHaveAttribute('inert');
+  expect(screen.getByLabelText('Motivo')).toHaveValue(''); expect(screen.getByLabelText('Motivo')).toHaveFocus();
+  fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: '  Separate decision  ' } });
+  expect(review()).toBe(modal); expect(outside).toHaveAttribute('inert');
+  expect(f.corrections.decide).not.toHaveBeenCalled(); expect(f.corrections.propose).not.toHaveBeenCalled();
+  let inertAtFocus = true; trigger.addEventListener('focus', () => { inertAtFocus = trigger.closest('[inert]') !== null; });
+  fireEvent.keyDown(modal, { key: 'Escape' }); expect(trigger).toHaveFocus(); expect(inertAtFocus).toBe(false);
+});
+it.each(['branch', 'prepare'] as const)('refuses stale consultation evidence at %s', stage => {
+  const mutations = ['snapshot', 'revision', 'quantity', 'reason', 'confirmed', 'owner', 'mask', 'busy', 'uncertain', 'membership'];
+  for (const mutation of mutations) {
+    const f = fixture(3); const pending = proposal(); const confirmed = { ...line(), proposals: [pending] };
+    f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [confirmed] };
+    const view = render(<TransferCountCorrections {...f.props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+    if (stage === 'prepare') {
+      fireEvent.click(screen.getByRole('button', { name: 'Aceptar propuesta' }));
+      fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Private decision' } });
+    }
+    if (mutation === 'snapshot') f.corrections.snapshot = { ...f.corrections.snapshot! };
+    if (mutation === 'revision') { Object.assign(pending, { revision: 5n }); confirmed.workflow_revision = 5n; }
+    if (mutation === 'quantity') Object.assign(pending, { actual_quantity: 8n });
+    if (mutation === 'reason') Object.assign(pending, { reason: 'Replacement' });
+    if (mutation === 'confirmed') confirmed.effective_credit = 4n;
+    if (mutation === 'owner') f.authority.sessionGeneration = 2;
+    if (mutation === 'mask') f.corrections.masked = true;
+    if (mutation === 'busy') f.corrections.busy = true;
+    if (mutation === 'uncertain') f.corrections.attempts = [attempt('uncertain')];
+    if (mutation === 'membership' && f.props.record.status === 'received') Object.assign(f.props.record.receipt, { items: [] });
+    if (stage === 'branch') fireEvent.click(screen.getByRole('button', { name: 'Aceptar propuesta' }));
+    else fireEvent.submit(screen.getByRole('form', { name: 'Editar corrección' }));
+    expect(screen.queryByRole('button', { name: 'Confirmar aceptación' }), mutation).not.toBeInTheDocument();
+    if (stage === 'branch') expect(screen.queryByLabelText('Motivo'), mutation).not.toBeInTheDocument();
+    expect(f.corrections.decide, mutation).not.toHaveBeenCalled(); view.unmount();
+  }
+});
+it.each(['consultation', 'capture', 'review'])('retires %s on replacement render and requires a fresh consultation', stage => {
+  const f = fixture(3); f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals: [proposal()] }] };
+  const view = render(<TransferCountCorrections {...f.props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+  if (stage !== 'consultation') {
+    fireEvent.click(screen.getByRole('button', { name: 'Aceptar propuesta' }));
+    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Retired private decision' } });
+    if (stage === 'review') review();
+  }
+  f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), workflow_revision: 5n,
+    proposals: [{ ...proposal(), revision: 5n, actual_quantity: 9n, reason: 'Fresh replacement' }] }] };
+  view.rerender(<TransferCountCorrections {...f.props} />);
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(screen.queryByDisplayValue('Retired private decision')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+  expect(screen.getByRole('dialog')).toHaveTextContent('Fresh replacement');
+  expect(screen.getByRole('row', { name: 'Cantidad recibida 5 9' })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Aceptar propuesta' }));
+  expect(screen.getByLabelText('Motivo')).toHaveValue('');
+  expect(f.corrections.decide).not.toHaveBeenCalled();
+});
+it.each(['owner', 'mask', 'record', 'request'])('does not resurrect consulted private evidence after %s round trip', mutation => {
+  const f = fixture(3); f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals: [proposal()] }] };
+  const view = render(<TransferCountCorrections {...f.props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+  const original = { ...f.props };
+  if (mutation === 'owner') f.authority.sessionGeneration = 2;
+  if (mutation === 'mask') f.corrections.masked = true;
+  if (mutation === 'record') f.props.record = { ...f.props.record };
+  if (mutation === 'request') f.props.requestID = '2';
+  view.rerender(<TransferCountCorrections {...f.props} />);
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  f.corrections.masked = false; f.authority.sessionGeneration = 1;
+  view.rerender(<TransferCountCorrections {...original} />);
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(f.corrections.decide).not.toHaveBeenCalled();
+});
+it('keeps an unexpected received variant audit-only at consultation', () => {
+  const f = fixture(3); f.props.record.items = [];
+  f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals: [proposal()] }] };
+  render(<TransferCountCorrections {...f.props} />); fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+  const modal = screen.getByRole('dialog');
+  expect(modal).toHaveTextContent('Variante inesperada 201'); expect(modal).toHaveTextContent('Solo auditoría: crédito y efecto cero');
+  expect(modal).toHaveTextContent('Efecto en destino: 0');
+  expect(within(modal).getByRole('row', { name: 'Crédito de esta recepción 5 0' })).toBeInTheDocument();
+  expect(f.corrections.decide).not.toHaveBeenCalled();
+});
+it.each([[0n, 0n, 5n, '-5'], [big + 1n, big, 5n, '+9007199254740988'], [5n, 5n, 5n, '0']])(
+  'consults quantity %s with capped credit %s and conditional delta', (actual, credit, current, delta) => {
+    const f = fixture(3); f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), effective_credit: current,
+      proposals: [{ ...proposal(), actual_quantity: actual }] }] };
+    render(<TransferCountCorrections {...f.props} />); fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+    const modal = screen.getByRole('dialog');
+    expect(within(modal).getByRole('row', { name: `Crédito de esta recepción ${current} ${credit}` })).toBeInTheDocument();
+    expect(modal).toHaveTextContent(`Efecto en destino: ${delta}`);
+    expect(modal).toHaveTextContent('El crédito no es inventario actual');
+    expect(modal).toHaveTextContent('Rechazar no modifica el conteo ni el stock');
+    expect(f.corrections.decide).not.toHaveBeenCalled();
+  });
 it('compares pinned confirmed quantities and preserves exact reason outside closed technical evidence', () => {
   const f = fixture();
   const confirmed = { ...line(), effective_actual: 9n, effective_credit: 7n, applied_revision: 1n };
@@ -307,7 +445,8 @@ it.each(['Aceptar', 'Rechazar'])('%s capture focuses reason and requires separat
   const f = fixture(3);
   f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals: [proposal()] }] };
   render(<TransferCountCorrections {...f.props} />);
-  fireEvent.click(screen.getByRole('button', { name: `${action} revisión 4` }));
+  fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+  fireEvent.click(screen.getByRole('button', { name: `${action} propuesta` }));
   const modal = screen.getByRole('dialog');
   expect(screen.getByLabelText('Motivo')).toHaveFocus();
   expect(screen.queryByLabelText('Cantidad corregida')).not.toBeInTheDocument();
@@ -316,7 +455,7 @@ it.each(['Aceptar', 'Rechazar'])('%s capture focuses reason and requires separat
   expect(within(modal).getByRole('button', { name: 'Cancelar' })).toHaveFocus();
   expect(f.corrections.decide).not.toHaveBeenCalled();
   fireEvent.click(within(modal).getByRole('button', { name: 'Cerrar corrección' }));
-  expect(screen.getByRole('button', { name: `${action} revisión 4` })).toHaveFocus();
+  expect(screen.getByRole('button', { name: 'Consultar propuesta' })).toHaveFocus();
 });
 it('keeps focus inside an empty busy modal and keeps validation accessible inside capture', () => {
   const f = fixture(); render(<TransferCountCorrections {...f.props} />); draft('01');
@@ -574,7 +713,7 @@ it.each(['uncertain', 'conflict', 'failed'] as const)('keeps %s recovery instruc
 it('only pending initiator can replace and replacement obtains a new key and agreement', async () => {
   const f = fixture(); f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals: [proposal()] }] };
   const h = render(<TransferCountCorrections {...f.props} />);
-  expect(screen.queryByRole('button', { name: 'Aceptar revisión 4' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Consultar propuesta' })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole('button', { name: 'Reemplazar propuesta' }));
   fireEvent.change(screen.getByLabelText('Cantidad corregida'), { target: { value: '8' } });
   fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Reemplazo' } });
@@ -588,7 +727,8 @@ it.each(['accept', 'reject'] as const)('counterparty %s is exact revision and re
   const f = fixture(3); f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals: [proposal()] }] };
   render(<TransferCountCorrections {...f.props} />);
   expect(screen.queryByRole('button', { name: 'Reemplazar propuesta' })).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole('button', { name: `${action === 'accept' ? 'Aceptar' : 'Rechazar'} revisión 4` }));
+  fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+  fireEvent.click(screen.getByRole('button', { name: `${action === 'accept' ? 'Aceptar' : 'Rechazar'} propuesta` }));
   fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: '   ' } }); reviewInvalid('Capturar corrección de conteo');
   fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: '  Decisión conservada  ' } });
   const modal = review(); expect(modal).toHaveTextContent('Cantidad corregida: 7 · Revisión: 4 · Base aplicada: 3');
@@ -600,7 +740,7 @@ it.each(['accept', 'reject'] as const)('counterparty %s is exact revision and re
 });
 it('rejects a decision if pending is not the authoritative workflow revision', () => {
   const f = fixture(3); f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), workflow_revision: 5n, proposals: [proposal()] }] };
-  render(<TransferCountCorrections {...f.props} />); expect(screen.queryByRole('button', { name: 'Aceptar revisión 4' })).not.toBeInTheDocument();
+  render(<TransferCountCorrections {...f.props} />); expect(screen.queryByRole('button', { name: 'Consultar propuesta' })).not.toBeInTheDocument();
 });
 it('keeps reviewed values fixed despite later editing events', async () => {
   const f = fixture(); render(<TransferCountCorrections {...f.props} />); draft('8', 'Initial exact reason');
@@ -623,7 +763,8 @@ it('final handler rechecks owner before state flush and refuses stale authority'
 it('final handler rechecks snapshot even without a rerender', () => {
   const f = fixture(3); f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals: [proposal()] }] };
   render(<TransferCountCorrections {...f.props} />);
-  fireEvent.click(screen.getByRole('button', { name: 'Aceptar revisión 4' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Aceptar propuesta' }));
   fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Yes' } }); review();
   f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), workflow_revision: 5n, proposals: [{ ...proposal(), revision: 5n }] }] };
   fireEvent.click(screen.getByRole('button', { name: 'Confirmar aceptación' }));
@@ -878,7 +1019,8 @@ it('replacement preview uses latest applied base, not the pending proposal prede
 it('decision preview preserves the persisted pending base rather than substituting applied head', () => {
   const f = fixture(3); f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), applied_revision: 1n, proposals: [proposal()] }] };
   render(<TransferCountCorrections {...f.props} />);
-  fireEvent.click(screen.getByRole('button', { name: 'Aceptar revisión 4' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Aceptar propuesta' }));
   fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Exact pending agreement' } });
   const modal = review(); expect(modal).toHaveTextContent('Base aplicada: 3'); expect(modal).toHaveTextContent('Revisión: 4');
   expect(modal).toHaveTextContent('Revisión de flujo esperada: 4');
