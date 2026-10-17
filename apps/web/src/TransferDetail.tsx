@@ -81,6 +81,19 @@ function ReceivedDifferences({ quantities }: { quantities: ReceivedQuantities })
       && <span className="received-matched">✓ Sin diferencias de conteo</span>}</>;
 }
 
+function OriginalReceiptOverview({ record }: { record: TransferRecord }) {
+  if (record.status !== 'received') return null;
+  return <section className="transfer-receipt-overview" aria-label="Recepción original">
+    <h2>Recepción original</h2>
+    <section aria-label="Cantidades de la solicitud" className="transfer-outcome-metrics received">
+      <dl><dt>Baterías enviadas</dt><dd>{transferQuantityTotal(record).toString()}</dd></dl>
+      <dl><dt>Recibidas físicamente (original)</dt><dd>{record.receipt.items.reduce((total, line) => total + line.actual_quantity, 0n).toString()}</dd></dl>
+      <dl><dt>Stock acreditado (recepción original)</dt><dd>{record.receipt.items.reduce((total, line) => total + line.available_quantity, 0n).toString()}</dd></dl>
+    </section>
+    <p>Evidencia inmutable de la recepción confirmada. Las correcciones posteriores muestran el conteo efectivo por separado; estos valores no son el stock actual.</p>
+  </section>;
+}
+
 export default function TransferDetail(props: TransferDetailProps) {
   const { controller, ownerTag } = props;
   const fence = detailAuthority(controller);
@@ -281,17 +294,15 @@ export default function TransferDetail(props: TransferDetailProps) {
       </>}
       {props.actions?.(stock)}
     </section>}
-    {record.status === 'received' && <section className="transfer-receipt-overview" aria-label="Recepción original">
-      <h2>Recepción original</h2>
-      <section aria-label="Cantidades de la solicitud" className="transfer-outcome-metrics received">
-        <dl><dt>Baterías enviadas</dt><dd>{transferQuantityTotal(record).toString()}</dd></dl>
-        <dl><dt>Recibidas físicamente (original)</dt><dd>{record.receipt.items.reduce((total, line) => total + line.actual_quantity, 0n).toString()}</dd></dl>
-        <dl><dt>Stock acreditado (recepción original)</dt><dd>{record.receipt.items.reduce((total, line) => total + line.available_quantity, 0n).toString()}</dd></dl>
-      </section>
-      <p>Evidencia inmutable de la recepción confirmada. Las correcciones posteriores muestran el conteo efectivo por separado; estos valores no son el stock actual.</p>
-    </section>}
+    {receivedParticipant && record.status === 'received' ? <footer className="received-original-footer">
+      <details className="received-original" key={historyKey}>
+        <summary>Ver recepción original</summary>
+        <OriginalReceiptOverview record={record} />
+        <ReceiptTable receipt={record.receipt} record={record} detailPresentation />
+      </details>
+    </footer> : <OriginalReceiptOverview record={record} />}
     <div className="transfer-detail-grid"><div>
-      {record.status === 'received' ? <ReceiptTable receipt={record.receipt} record={record} detailPresentation />
+      {record.status === 'received' ? !receivedParticipant && <ReceiptTable receipt={record.receipt} record={record} detailPresentation />
         : <TransferItems record={record} stock={terminal ? undefined : stock} />}
       {props.corrections && <TransferCountCorrections record={record} controller={controller}
         corrections={props.corrections} requestID={props.correctionRequestID ?? null} enabled={props.correctionsEnabled ?? false} />}

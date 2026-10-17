@@ -59,6 +59,21 @@
 .transfer-received-detail > .transfer-detail-grid { display: block; }
 .transfer-received-detail .transfer-detail-outcome:empty { display: none; }
 .transfer-received-detail > .transfer-detail-grid > div { min-width: 0; }
+/* Original evidence is secondary; management and recovery remain outside. */
+.transfer-received-detail > .received-original-footer { border-top: 1px solid #DED7DA; margin-top: 16px; }
+.received-original > summary {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 12px 0;
+  color: #7A1F3D;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.received-original > summary:focus-visible { outline: 2px solid #7A1F3D; outline-offset: 3px; border-radius: 2px; }
+.received-original > .transfer-receipt-overview { margin-bottom: 16px; }
+.received-original .transfer-outcome-metrics { min-width: 0; }
+.received-original .transfer-outcome-metrics :is(dl, dd) { min-width: 0; overflow-wrap: anywhere; }
 /* Normal-flow mobile shell is owned only while this received detail is present.
    Keep every navigation item, account identity and logout control. */
 @media (max-width: 767px) {

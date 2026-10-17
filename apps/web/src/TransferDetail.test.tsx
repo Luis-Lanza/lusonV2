@@ -198,6 +198,58 @@ describe('U4b effective received detail', () => {
       correctionsEnabled={enabled} correctionRequestID={requestID} actions={() => <button>Result sentinel</button>} />;
     return { ...f, record, corrections, element };
   }
+  it('starts original evidence closed without moving focus or enclosing current evidence and workflows', () => {
+    const f = received(); render(f.element());
+    const summary = screen.getByText('Ver recepción original');
+    expect(summary.tagName).toBe('SUMMARY');
+    const disclosure = summary.closest('details')!;
+    expect(disclosure).not.toHaveAttribute('open');
+    expect(document.activeElement).toBe(document.body);
+    const table = disclosure.querySelector('table')!;
+    expect(table).not.toBeVisible();
+    const effective = screen.getByRole('region', { name: 'Conteo efectivo confirmado' });
+    const workflow = screen.getByRole('region', { name: 'Correcciones de conteo' });
+    expect(disclosure).not.toContainElement(effective);
+    expect(disclosure).not.toContainElement(workflow);
+    expect(effective).toBeVisible();
+    expect(workflow).toBeVisible();
+    expect(effective.compareDocumentPosition(disclosure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    summary.focus();
+    expect(summary).toHaveFocus();
+    fireEvent.click(summary);
+    expect(disclosure).toHaveAttribute('open');
+    expect(table).toBeVisible();
+    expect(table).toHaveTextContent('9223372036854775807');
+    expect(disclosure).toHaveTextContent('18446744073709551614');
+    expect(effective).toHaveTextContent('6 baterías contabilizadas');
+    const original = table.outerHTML;
+    fireEvent.click(summary);
+    expect(disclosure).not.toHaveAttribute('open');
+    expect(table).not.toBeVisible();
+    expect(table.outerHTML).toBe(original);
+    expect(screen.getByRole('region', { name: 'Correcciones de conteo' })).toBe(workflow);
+    expect(workflow).toBeVisible();
+    expect(summary).toHaveFocus();
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
+  it('keeps failed consultation and recovery outside the closed original evidence', () => {
+    const f = received();
+    const error = new TransferAPIError('invalid_response', null, false, false, false, false, false, true);
+    const view = render(f.element(true, f.record.id, { ...f.corrections, error }));
+    const disclosure = screen.getByText('Ver recepción original').closest('details')!;
+    const workflow = screen.getByRole('region', { name: 'Correcciones de conteo' });
+    const retry = screen.getByRole('button', { name: 'Reintentar conteo efectivo' });
+    expect(disclosure).not.toHaveAttribute('open');
+    expect(workflow).toBeVisible();
+    expect(disclosure).not.toContainElement(workflow);
+    expect(disclosure).not.toContainElement(retry);
+    fireEvent.click(retry);
+    expect(f.corrections.refresh).toHaveBeenCalledOnce();
+    view.rerender(f.element());
+    expect(screen.getByRole('region', { name: 'Correcciones de conteo' })).toBe(workflow);
+    expect(screen.getByRole('region', { name: 'Conteo efectivo confirmado' })).toBeVisible();
+    expect(disclosure).not.toHaveAttribute('open');
+  });
   it.each([1, 2])('shows effective evidence, separate original and closed persisted history for participant %s', assigned => {
     const f = received(assigned); render(f.element());
     const effective = screen.getByRole('region', { name: 'Conteo efectivo confirmado' });
@@ -206,6 +258,7 @@ describe('U4b effective received detail', () => {
     expect(effective).toHaveTextContent('Crédito efectivo');
     expect(effective).toHaveTextContent('no el stock actual');
     expect(effective).toHaveTextContent('Corrección aplicada · revisión 1');
+    fireEvent.click(screen.getByText('Ver recepción original'));
     const original = screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML;
     expect(original).toContain('9223372036854775807');
     expect(screen.getByRole('button', { name: 'Result sentinel' })).toBeVisible();
@@ -252,6 +305,7 @@ describe('U4b effective received detail', () => {
       render(f.element(mode !== 'disabled', mode === 'selection' ? '1' : f.record.id, evidence));
       expect(screen.getByRole('region', { name: 'Conteo efectivo de recepción' })).toHaveTextContent('Conteo efectivo no disponible');
       expect(screen.queryByRole('table', { name: 'Conteo efectivo' })).toBeNull();
+      fireEvent.click(screen.getByText('Ver recepción original'));
       expect(screen.getByRole('table', { name: 'Detalle de recepción' })).toHaveTextContent('9223372036854775807');
       if (mode === 'missing') {
         fireEvent.click(screen.getByRole('button', { name: 'Reintentar conteo efectivo' }));
@@ -277,12 +331,21 @@ describe('U4b effective received detail', () => {
     expect(effective).toHaveTextContent('No enviada: 9007199254740993');
     expect(effective).toHaveTextContent('Faltante: 9223372036854775807');
     expect(effective).toHaveTextContent('Exceso: 2');
+    fireEvent.click(screen.getByText('Ver recepción original'));
+    const original = screen.getByRole('table', { name: 'Detalle de recepción' });
+    const unexpected = original.querySelector('tr[data-variant-id="99"]')!;
+    expect(unexpected).toHaveTextContent('Variante inesperada 99');
+    expect(unexpected.querySelector('[data-label="Enviadas"]')).toHaveTextContent(/^0$/);
+    expect(unexpected.querySelector('[data-label="Crédito original"]')).toHaveTextContent(/^0$/);
+    expect(unexpected.querySelector('[data-label="Recibidas físicamente"]')).toHaveTextContent(/^1$/);
   });
   it('fences correction getters for nonparticipants and retires evidence after authority changes', () => {
     const f = received(3); const snapshot = Object.getOwnPropertyDescriptor(f.corrections, 'snapshot')!;
     Object.defineProperty(f.corrections, 'snapshot', { configurable: true, get: () => { throw new Error('private evidence'); } });
     const view = render(f.element());
     expect(document.querySelector('.transfer-received-detail')).toBeNull();
+    expect(screen.queryByText('Ver recepción original')).not.toBeInTheDocument();
+    expect(screen.getByRole('table', { name: 'Detalle de recepción' })).toBeVisible();
     view.unmount(); Object.defineProperty(f.corrections, 'snapshot', snapshot);
     const allowed = received(); const owner = transferViewOwner(allowed.env.current)!;
     const element = () => <TransferDetail controller={allowed.controller} ownerTag={owner} record={allowed.record}
@@ -312,6 +375,7 @@ describe('F4a original receipt overview', () => {
         { variant_id: 3, kind: 'unexpected', quantity: '4' },
       ] } }));
     render(f.element(record));
+    fireEvent.click(screen.getByText('Ver recepción original'));
     const overview = screen.getByRole('region', { name: 'Recepción original' });
     const metrics = within(overview);
     expect(metrics.getByText('Baterías enviadas').nextElementSibling).toHaveTextContent(/^10$/);
@@ -346,6 +410,7 @@ describe('W2 direct warehouse history', () => {
           actual_quantity: item.quantity, available_quantity: item.quantity })), exceptions: [] } } : {}) }));
     render(f.element(record));
     expect(document.querySelector('.transfer-received-detail')).toBeNull();
+    expect(screen.queryByText('Ver recepción original')).not.toBeInTheDocument();
     const history = within(screen.getByRole('region', { name: 'Historial de la solicitud' }));
     expect(history.getByRole('heading', { name: 'Envío creado, autorizado y stock reservado' })).toBeVisible();
     expect(history.queryByRole('heading', { name: 'Solicitud aprobada y stock reservado' })).not.toBeInTheDocument();
@@ -417,13 +482,21 @@ describe('R6a optional detail restitution composition', () => {
       receipt: { items: original.items.map(i => ({ variant_id: i.variant_id, expected_quantity: i.quantity, actual_quantity: i.quantity, available_quantity: i.quantity })), exceptions: [] } }));
     const element = (requestID = record.id, enabled = true) => <TransferDetail controller={f.controller} ownerTag={transferViewOwner(f.env.current)!}
       record={record} restitutionRequestID={requestID} restitutionsEnabled={enabled} />;
-    const view = render(element()); const receipt = screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML;
+    const view = render(element());
+    fireEvent.click(screen.getByText('Ver recepción original'));
+    const disclosure = screen.getByText('Ver recepción original').closest('details')!;
+    const receipt = screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML;
     expect(screen.queryByRole('region', { name: 'Restituciones de origen' })).not.toBeInTheDocument(); expect(f.fetch).not.toHaveBeenCalled();
     f.controller.restitutionRecovery = createTransferRestitutionRecovery();
     view.rerender(element('2')); expect(f.fetch).not.toHaveBeenCalled();
     view.rerender(element(record.id, false)); expect(f.fetch).not.toHaveBeenCalled();
     view.rerender(element()); expect(screen.getByRole('region', { name: 'Restituciones de origen' })).toBeVisible();
     await waitFor(() => expect(f.fetch).toHaveBeenCalledTimes(2));
+    const workflow = screen.getByRole('region', { name: 'Restituciones de origen' });
+    expect(disclosure).not.toContainElement(workflow);
+    fireEvent.click(screen.getByText('Ver recepción original'));
+    expect(workflow).toBeVisible();
+    fireEvent.click(screen.getByText('Ver recepción original'));
     expect(screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML).toBe(receipt);
     expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
   });
@@ -440,6 +513,7 @@ describe('C4b optional detail correction composition', () => {
       masked: false, attempts: [], refresh: vi.fn(async () => {}), propose: vi.fn(async () => {}),
       decide: vi.fn(async () => {}), retry: vi.fn(async () => {}), recover: vi.fn(async () => {}) };
     const view = render(f.element(record));
+    fireEvent.click(screen.getByText('Ver recepción original'));
     const originalReceipt = screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML;
     const element = (requestID?: string | null, enabled?: boolean) => <TransferDetail controller={f.controller}
       ownerTag={transferViewOwner(f.env.current)!} record={record} corrections={corrections}
@@ -454,7 +528,9 @@ describe('C4b optional detail correction composition', () => {
     view.rerender(element(record.id, true));
     const section = screen.getByRole('region', { name: 'Correcciones de conteo' });
     expect(section).toHaveClass('count-corrections');
-    expect(section.previousElementSibling?.querySelector('table')?.outerHTML).toBe(originalReceipt);
+    const disclosure = screen.getByText('Ver recepción original').closest('details')!;
+    expect(disclosure).not.toContainElement(section);
+    expect(disclosure.compareDocumentPosition(section) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML).toBe(originalReceipt);
     expect(f.fetch).not.toHaveBeenCalled(); expect(corrections.propose).not.toHaveBeenCalled();
   });
