@@ -51,6 +51,126 @@ function review() { fireEvent.click(screen.getByRole('button', { name: 'Revisar 
 const confirm = () => fireEvent.click(screen.getByRole('button', { name: 'Confirmar propuesta' }));
 afterEach(() => vi.unstubAllGlobals());
 
+it('isolates capture continuously through review and restores prior attributes before focus', async () => {
+  const f = fixture();
+  const view = render(<><aside data-testid="outside" inert aria-hidden="false" />
+    <main><button>Other workflow</button><TransferCountCorrections {...f.props} /></main></>);
+  const outside = screen.getByTestId('outside');
+  outside.setAttribute('inert', 'already');
+  const other = screen.getByRole('button', { name: 'Other workflow' });
+  const trigger = screen.getByRole('button', { name: 'Proponer corrección' });
+  const focused = vi.fn(() => {
+    expect(other).not.toHaveAttribute('inert');
+    expect(outside).toHaveAttribute('inert', 'already');
+    expect(outside).toHaveAttribute('aria-hidden', 'false');
+  });
+  trigger.addEventListener('focus', focused);
+  draft('7');
+  const modal = screen.getByRole('dialog', { name: 'Capturar corrección de conteo' });
+  expect(modal).toHaveAttribute('aria-modal', 'true');
+  expect(screen.getByLabelText('Cantidad corregida')).toHaveFocus();
+  expect(other).toHaveAttribute('inert');
+  const releases: MutationRecord[] = [];
+  const observer = new MutationObserver(records => releases.push(...records));
+  observer.observe(other, { attributes: true, attributeOldValue: true });
+  f.corrections.attempts = [attempt('failed')];
+  view.rerender(<><aside data-testid="outside" inert aria-hidden="false" />
+    <main><button>Other workflow</button><TransferCountCorrections {...f.props} /></main></>);
+  await act(async () => {});
+  const recovery = screen.getByRole('article', { name: 'Recuperación 201' });
+  expect(recovery).toHaveAttribute('inert');
+  expect(review()).toBe(modal);
+  await act(async () => {});
+  expect(releases).toHaveLength(0);
+  expect(focused).not.toHaveBeenCalled();
+  expect(screen.queryByRole('form', { name: 'Editar corrección' })).not.toBeInTheDocument();
+  fireEvent.click(within(modal).getByRole('button', { name: 'Cancelar' }));
+  expect(focused).toHaveBeenCalledTimes(1);
+  expect(recovery).not.toHaveAttribute('inert');
+  expect(within(recovery).getByRole('button', { name: 'Consultar resultado' })).toBeEnabled();
+  observer.disconnect();
+});
+it('cycles all capture controls, tolerates composition, and ignores backdrop clicks', () => {
+  const f = fixture(); render(<TransferCountCorrections {...f.props} />); draft('7');
+  const modal = screen.getByRole('dialog');
+  const input = screen.getByLabelText('Cantidad corregida');
+  const cancel = within(modal).getByRole('button', { name: 'Cancelar' });
+  const close = within(modal).getByRole('button', { name: 'Cerrar corrección' });
+  const select = document.createElement('select');
+  select.append(document.createElement('option')); modal.append(select);
+  fireEvent.keyDown(input, { key: 'Tab', shiftKey: true }); expect(select).toHaveFocus();
+  select.focus(); fireEvent.keyDown(select, { key: 'Tab' }); expect(input).toHaveFocus();
+  input.focus(); fireEvent.keyDown(input, { key: 'Tab' }); expect(input).toHaveFocus();
+  const reason = screen.getByLabelText('Motivo'); reason.focus();
+  fireEvent.keyDown(reason, { key: 'Tab', shiftKey: true }); expect(reason).toHaveFocus();
+  for (const event of [{ key: 'Escape', isComposing: true }, { key: 'Escape', keyCode: 229 }]) {
+    fireEvent.keyDown(reason, event); expect(modal).toBeInTheDocument();
+  }
+  fireEvent.click(modal.parentElement!); expect(modal).toBeInTheDocument();
+  select.remove();
+  input.setAttribute('disabled', '');
+  reason.focus(); fireEvent.keyDown(reason, { key: 'Tab', shiftKey: true }); expect(close).toHaveFocus();
+  fireEvent.keyDown(close, { key: 'Tab' }); expect(reason).toHaveFocus();
+  cancel.focus(); fireEvent.keyDown(cancel, { key: 'Tab' }); expect(cancel).toHaveFocus();
+  fireEvent.keyDown(close, { key: 'Escape' }); expect(modal).not.toBeInTheDocument();
+  expect(f.corrections.propose).not.toHaveBeenCalled();
+});
+it.each(['Aceptar', 'Rechazar'])('%s capture focuses reason and requires separate review before business action', action => {
+  const f = fixture(3);
+  f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals: [proposal()] }] };
+  render(<TransferCountCorrections {...f.props} />);
+  fireEvent.click(screen.getByRole('button', { name: `${action} revisión 4` }));
+  const modal = screen.getByRole('dialog');
+  expect(screen.getByLabelText('Motivo')).toHaveFocus();
+  expect(screen.queryByLabelText('Cantidad corregida')).not.toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Exact decision' } });
+  expect(review()).toBe(modal);
+  expect(within(modal).getByRole('button', { name: 'Cancelar' })).toHaveFocus();
+  expect(f.corrections.decide).not.toHaveBeenCalled();
+  fireEvent.click(within(modal).getByRole('button', { name: 'Cerrar corrección' }));
+  expect(screen.getByRole('button', { name: `${action} revisión 4` })).toHaveFocus();
+});
+it('keeps focus inside an empty busy modal and keeps validation accessible inside capture', () => {
+  const f = fixture(); render(<TransferCountCorrections {...f.props} />); draft('01');
+  fireEvent.submit(screen.getByRole('form', { name: 'Editar corrección' }));
+  const modal = screen.getByRole('dialog');
+  expect(within(modal).getByRole('alert')).toHaveTextContent('Ingresá cantidad');
+  for (const control of modal.querySelectorAll('input, textarea, button')) control.setAttribute('disabled', '');
+  fireEvent.keyDown(modal, { key: 'Tab' }); expect(modal).toHaveFocus();
+  fireEvent.keyDown(modal, { key: 'Tab', shiftKey: true }); expect(modal).toHaveFocus();
+});
+it('does not transfer entry focus outside an active capture', () => {
+  const f = fixture(); const view = render(<TransferCountCorrections {...f.props} />); draft();
+  const input = screen.getByLabelText('Cantidad corregida');
+  view.rerender(<TransferCountCorrections {...f.props} contextVisible entryFocusKey={2} />);
+  expect(input).toHaveFocus();
+});
+it.each(['disabled', 'removed'])('uses a connected heading fallback for a %s trigger', condition => {
+  const f = fixture(); render(<TransferCountCorrections {...f.props} />);
+  const trigger = screen.getByRole('button', { name: 'Proponer corrección' }); draft();
+  if (condition === 'disabled') trigger.setAttribute('disabled', ''); else trigger.remove();
+  fireEvent.click(screen.getByRole('button', { name: 'Cerrar corrección' }));
+  expect(screen.getByRole('heading', { name: 'Correcciones de conteo' })).toHaveFocus();
+});
+it.each(['unmount', 'owner'])('cleans isolation on %s without stealing new focus', mode => {
+  const f = fixture(); const view = render(<><button>New owner</button><TransferCountCorrections {...f.props} /></>);
+  const next = screen.getByRole('button', { name: 'New owner' }); draft();
+  expect(next).toHaveAttribute('inert'); next.focus();
+  if (mode === 'unmount') view.rerender(<button>New owner</button>);
+  else { f.authority.epoch++; act(() => f.hint()); }
+  expect(next).not.toHaveAttribute('inert'); expect(next).toHaveFocus();
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+});
+it('blocks every dismissal and duplicate confirm while busy', () => {
+  const f = fixture(); const view = render(<TransferCountCorrections {...f.props} />); draft(); const modal = review();
+  f.corrections.busy = true; view.rerender(<TransferCountCorrections {...f.props} />);
+  fireEvent.keyDown(modal, { key: 'Escape' });
+  fireEvent.click(within(modal).getByRole('button', { name: 'Cerrar corrección' }));
+  fireEvent.click(within(modal).getByRole('button', { name: 'Cancelar' }));
+  confirm(); confirm(); expect(screen.getByRole('dialog')).toBe(modal);
+  expect(f.corrections.propose).not.toHaveBeenCalled();
+});
+
 it('controls routine context without retiring drafts, review pins or explicit-entry focus', () => {
   const f = fixture(); const view = render(<TransferCountCorrections {...f.props} contextVisible={false} />);
   expect(screen.queryByRole('button', { name: 'Proponer corrección' })).not.toBeInTheDocument();
@@ -131,7 +251,8 @@ it.each(['', ' ', '00', '01', '-1', '+1', '1.5', '1e3', '9223372036854775808'])(
 function reviewInvalid() {
   // Exercise the handler's validation too, beyond native required-field gating.
   fireEvent.submit(screen.getByRole('form', { name: 'Editar corrección' }));
-  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(screen.getByRole('dialog')).toHaveAccessibleName('Capturar corrección de conteo');
+  expect(screen.queryByRole('button', { name: 'Confirmar propuesta' })).not.toBeInTheDocument();
   expect(screen.getByRole('alert')).toBeInTheDocument();
 }
 it.each(['0', '9223372036854775807'])('preserves canonical bounded quantity %s exactly', async actual => {
@@ -361,9 +482,10 @@ it('labels the modal, focuses cancel, wraps Tab/Escape and restores trigger focu
   const f = fixture(); render(<TransferCountCorrections {...f.props} />);
   const trigger = screen.getByRole('button', { name: 'Proponer corrección' }); draft('0'); const modal = review();
   expect(modal).toHaveAttribute('aria-modal', 'true'); expect(modal).toHaveAccessibleName('Revisar corrección de conteo');
-  const cancel = within(modal).getByRole('button', { name: 'Cancelar' }); const yes = within(modal).getByRole('button', { name: 'Confirmar propuesta' });
-  expect(cancel).toHaveFocus(); fireEvent.keyDown(cancel, { key: 'Tab', shiftKey: true }); expect(yes).toHaveFocus();
-  fireEvent.keyDown(yes, { key: 'Tab' }); expect(cancel).toHaveFocus();
+  const cancel = within(modal).getByRole('button', { name: 'Cancelar' });
+  const close = within(modal).getByRole('button', { name: 'Cerrar corrección' });
+  expect(cancel).toHaveFocus(); fireEvent.keyDown(cancel, { key: 'Tab', shiftKey: true }); expect(close).toHaveFocus();
+  fireEvent.keyDown(close, { key: 'Tab' }); expect(cancel).toHaveFocus();
   fireEvent.keyDown(cancel, { key: 'Escape' }); expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); expect(trigger).toHaveFocus();
   expect(f.corrections.propose).not.toHaveBeenCalled();
 });

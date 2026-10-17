@@ -1,4 +1,6 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { isTransferFocusTarget } from './transferModalFocus';
+import './transfer-count-corrections.css';
 import TransferDate from './TransferDate';
 import { newTransferRetryKey, type TransferRecord } from './transferModel';
 import type { TransferController } from './useInventory';
@@ -125,18 +127,51 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
       : id === record.destination_location_id ? record.destination_location_name : `Ubicación ${id}`;
   }
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  useEffect(() => {
-    if (!sending && restoreAfterSend.current && current()) {
-      restoreAfterSend.current.focus(); restoreAfterSend.current = null;
-    }
-  }, [sending]);
+  const modalActive = !!draft && !!validSnapshot;
+  const focusableControls = () => Array.from(dialog.current?.querySelectorAll<HTMLElement>(
+    'input:not([type="hidden"]), select, textarea, button, a[href], [tabindex]') ?? [])
+    .filter(control => isTransferFocusTarget(control) && control.tabIndex >= 0
+      && !control.closest('[hidden], [inert], [aria-hidden="true"]'));
+  // One isolation lifetime spans capture and review; restore before returning focus.
+  useLayoutEffect(() => {
+    const backdrop = dialog.current?.parentElement;
+    if (!modalActive || !backdrop) return;
+    const previous = new Map<Element, string | null>();
+    const isolate = () => {
+      for (let branch: Element | null = backdrop; branch && branch !== document.body; branch = branch.parentElement) {
+        for (const sibling of branch.parentElement?.children ?? []) {
+          if (sibling === branch || previous.has(sibling)) continue;
+          previous.set(sibling, sibling.getAttribute('inert'));
+          if (!sibling.hasAttribute('inert')) sibling.setAttribute('inert', '');
+        }
+      }
+    };
+    isolate();
+    const observer = new MutationObserver(isolate);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      for (const [element, value] of previous) {
+        if (value === null) element.removeAttribute('inert');
+        else element.setAttribute('inert', value);
+      }
+    };
+  }, [modalActive]);
+  useLayoutEffect(() => {
+    const target = restoreAfterSend.current;
+    if (modalActive || sending || !target) return;
+    restoreAfterSend.current = null;
+    if (!current()) return;
+    const fallback = contextHeading.current;
+    if (isTransferFocusTarget(target) && !target.closest('[hidden], [inert]')) target.focus();
+    else if (isTransferFocusTarget(fallback) && !fallback.closest('[hidden], [inert]')) fallback.focus();
+  });
+  useLayoutEffect(() => {
+    if (modalActive) (visibleReview ? cancelButton.current : focusableControls()[0])?.focus();
+  }, [modalActive, !!visibleReview]);
   useEffect(() => {
     if (review && !visibleReview) { setReview(null); setDraft(null); setMessage('El conteo cambió. Revisá nuevamente antes de confirmar.'); }
   }, [review, visibleReview]);
-  useEffect(() => {
-    if (visibleReview) cancelButton.current?.focus();
-    return () => { if (visibleReview && current()) visibleReview.draft.trigger.focus(); };
-  }, [visibleReview]);
   // A form is private too: clearing it on a mask cannot resurrect its contents
   // when explicit recovery later unmasks the same authority.
   useEffect(() => { if (masked) { setDraft(null); setReview(null); setMessage(''); } }, [masked]);
@@ -193,15 +228,16 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
     });
   }
   function close() {
-    if (!current() || submitting.current) return;
-    setReview(null); setDraft(null); draft?.trigger.focus();
+    if (!current() || submitting.current || latest.current.corrections.busy) return;
+    restoreAfterSend.current = draft?.trigger ?? null;
+    setReview(null); setDraft(null);
   }
   const contextHeading = useRef<HTMLHeadingElement>(null);
   const lastEntry = useRef(props.entryFocusKey);
   useEffect(() => {
     if (props.entryFocusKey !== lastEntry.current) {
       lastEntry.current = props.entryFocusKey;
-      if (props.entryFocusKey !== undefined && props.contextVisible !== false) contextHeading.current?.focus();
+      if (props.entryFocusKey !== undefined && props.contextVisible !== false && !modalActive) contextHeading.current?.focus();
     }
   }, [props.entryFocusKey, props.contextVisible]);
   // Presentation never participates in the private authority boundary.
@@ -226,7 +262,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
       {corrections.busy && <p role="status">Consultando o enviando correcciones…</p>}
       {corrections.error && <p role="alert">No se pudo verificar el conteo con el servidor. Consultá el estado antes de enviar.</p>}
       {!validSnapshot && <p role="status">Conteo no disponible.</p>}
-      {message && <p role="alert">{message}</p>}
+      {message && !modalActive && <p role="alert">{message}</p>}
       <div className="workflow-routine" hidden={!routineVisible}>
       {validSnapshot && <h3>Conteo efectivo confirmado</h3>}
       {privateLines.map(line => {
@@ -286,25 +322,27 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
             onClick={() => { if (current() && latest.current.corrections.attempts.includes(a)) void run(() => latest.current.corrections.retry(a.payload.variant_id)); }}>Reintentar carga exacta</button>}
         </div>
       </article>)}
-      {draft && !review && validSnapshot && <form className="count-form" onSubmit={e => { e.preventDefault(); prepare(); }} aria-label="Editar corrección">
+      {modalActive && <div className="count-backdrop"><div ref={dialog} className="count-modal" role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1}
+        onKeyDown={e => {
+          if (e.key === 'Escape' && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); close(); }
+          if (e.key === 'Tab') {
+            const controls = focusableControls();
+            const first = controls[0]; const last = controls.at(-1);
+            if (!first) { e.preventDefault(); dialog.current?.focus(); }
+            else if (e.shiftKey && (document.activeElement === first || !controls.includes(document.activeElement as HTMLElement))) { e.preventDefault(); last?.focus(); }
+            else if (!e.shiftKey && (document.activeElement === last || !controls.includes(document.activeElement as HTMLElement))) { e.preventDefault(); first.focus(); }
+          }
+        }}>
+        <h3 id={headingID}>{visibleReview ? 'Revisar corrección de conteo' : 'Capturar corrección de conteo'}</h3>
+        {message && <p role="alert">{message}</p>}
+      {draft && !review && <form className="count-form" onSubmit={e => { e.preventDefault(); prepare(); }} aria-label="Editar corrección">
         <h3>{actions[draft.action]} · {name(draft.variant)}</h3>
         {draft.action === 'propose' && <><label htmlFor={quantityID}>Cantidad corregida</label><input id={quantityID} type="text" inputMode="numeric"
           value={draft.quantity} onChange={e => setDraft({ ...draft, quantity: e.target.value })} required /></>}
         <label htmlFor={reasonID}>Motivo</label><textarea id={reasonID} value={draft.reason} onChange={e => setDraft({ ...draft, reason: e.target.value })} required />
-        <div className="count-actions"><button type="submit" disabled={sending}>Revisar corrección</button><button type="button" onClick={close}>Cancelar</button></div>
+        <div className="count-actions"><button type="submit" disabled={sending || corrections.busy}>Revisar corrección</button><button type="button" disabled={sending || corrections.busy} onClick={close}>Cancelar</button></div>
       </form>}
-      {visibleReview && <div className="count-backdrop"><div ref={dialog} className="count-modal" role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1}
-        onKeyDown={e => {
-          if (e.key === 'Escape') { e.preventDefault(); close(); }
-          if (e.key === 'Tab') {
-            const controls = Array.from(dialog.current?.querySelectorAll<HTMLElement>('button:not(:disabled)') ?? []);
-            const first = controls[0]; const last = controls.at(-1);
-            if (!first) { e.preventDefault(); dialog.current?.focus(); }
-            else if (e.shiftKey && (document.activeElement === first || document.activeElement === dialog.current)) { e.preventDefault(); last?.focus(); }
-            else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-          }
-        }}>
-        <h3 id={headingID}>Revisar corrección de conteo</h3>
+      {visibleReview && <>
         <div className="count-modal-body"><p>{name(visibleReview.draft.variant)}</p>
           <p>Cantidad corregida: {visibleReview.actual.toString()} · Revisión: {visibleReview.revision.toString()} · Base aplicada: {visibleReview.base.toString()}</p>
           <p>Revisión de flujo esperada: {visibleReview.input.expected_revision}</p>
@@ -314,8 +352,10 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
           {!record.items.some(i => i.variant_id === visibleReview.draft.variant) && <p>Solo auditoría: crédito y efecto cero. Procedencia e incorporación separadas.</p>}
           {visibleReview.draft.action === 'reject' ? <p>Rechazar no tiene efecto en inventario.</p> : <p>Sin restitución al origen, resolución de pérdidas, incorporación de excedentes ni política de entregas posteriores.</p>}
           {visibleReview.draft.action === 'propose' && <p>Una propuesta nueva o reemplazada requiere un nuevo acuerdo de la contraparte; no conserva el consentimiento anterior.</p>}
-        </div><footer><button ref={cancelButton} disabled={sending} onClick={close}>Cancelar</button>
+        </div><footer><button ref={cancelButton} disabled={sending || corrections.busy} onClick={close}>Cancelar</button>
           <button disabled={sending || corrections.busy} onClick={() => submit(visibleReview)}>{visibleReview.draft.action === 'propose' ? 'Confirmar propuesta' : visibleReview.draft.action === 'accept' ? 'Confirmar aceptación' : 'Confirmar rechazo'}</button></footer>
+      </>}
+        <button className="count-modal-close" aria-label="Cerrar corrección" disabled={sending || corrections.busy} onClick={close}>Cerrar</button>
       </div></div>}
     </>}
   </section>;

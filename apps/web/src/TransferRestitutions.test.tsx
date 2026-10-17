@@ -109,12 +109,18 @@ it('keeps collapsed consultation visible but disabled while evidence is loading'
 });
 
 it('keeps consultation mounted and a captured review pinned when its routine context collapses', async () => {
-  const f = fixture();
+  const f = fixture(); const read = f.fetch.getMockImplementation()!;
+  let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  f.fetch.mockImplementation(async (url, init) => { await pending; return read(url, init); });
   const element = (visible: boolean, token?: number) => <TransferRestitutions controller={f.controller}
     record={f.record} requestID={id} enabled contextVisible={visible} entryFocusKey={token} />;
   const view = render(element(false));
   await waitFor(() => expect(f.fetch).toHaveBeenCalledTimes(2));
-  expect(screen.queryByRole('button', { name: 'Consultar para revisar restitución' })).not.toBeInTheDocument();
+  // Starting both reads does not mean their evidence has settled.
+  expect(screen.getByRole('button', { name: 'Consultar para revisar restitución' })).toBeDisabled();
+  await act(async () => { release(); });
+  await waitFor(() => expect(screen.queryByRole('button', { name: 'Consultar para revisar restitución' })).not.toBeInTheDocument());
   view.rerender(element(true, 1));
   expect(screen.getByRole('heading', { name: 'Restituciones de origen' })).toHaveFocus();
   await screen.findByText('Crédito efectivo en destino'); await consult();

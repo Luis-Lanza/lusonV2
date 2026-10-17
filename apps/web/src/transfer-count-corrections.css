@@ -1,0 +1,32 @@
+/* Count-only foundation. Capture/review body fidelity belongs to later units. */
+.count-corrections .count-backdrop {
+  padding: clamp(8px, 3vw, 24px);
+}
+.count-corrections .count-modal {
+  position: relative;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+}
+.count-corrections .count-modal > h3 {
+  padding-right: 100px;
+  flex-shrink: 0;
+  overflow-wrap: anywhere;
+}
+.count-corrections .count-modal > .count-form {
+  border: 0;
+  border-radius: 0;
+  overflow-y: auto;
+}
+.count-corrections .count-modal > .count-modal-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  min-height: 44px;
+}
+.count-corrections .count-modal footer {
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.count-corrections .count-modal footer button {
+  flex: 1 1 160px;
+}
