@@ -40,7 +40,8 @@ function Section(props: TransferRestitutionsProps) {
   const boundOwner = useRef(ownerKey(controller));
   const [variant, setVariant] = useState<number | null>(record.items[0]?.variant_id ?? null);
   const hook = useTransferRestitutions({ controller, recovery: controller.restitutionRecovery!, record,
-    requestID: props.requestID, enabled: eligible(props), variantID: variant, onConfirmation: controller.confirmTransferRestitution });
+    requestID: props.requestID, enabled: eligible(props) && ownerKey(controller) === boundOwner.current,
+    variantID: variant, onConfirmation: controller.confirmTransferRestitution });
   const [draft, setDraft] = useState<Draft | null>(null);
   const [review, setReview] = useState<{ draft: Draft; input: RestitutionProposalInput | RestitutionDecisionInput; snapshot: typeof hook.snapshot } | null>(null);
   const [message, setMessage] = useState('');
@@ -152,6 +153,16 @@ function Section(props: TransferRestitutionsProps) {
       } else normalizeRestitutionDecision(input);
       setReview({ draft: { ...draft }, input, snapshot }); setMessage('');
     } catch { setMessage('Ingresá una cantidad positiva decimal canónica, un motivo válido y confirmá la retención física en origen. No se enviará nada sin una clave segura.'); }
+  }
+  function editProposal(captured: NonNullable<typeof review>) {
+    if (sending.current) return;
+    if (!current() || masked || hook.busy || review !== captured || snapshot !== captured.snapshot
+      || !proposalValid(captured.draft)) {
+      close(); setReview(null); setDraft(null); setMessage('');
+      return;
+    }
+    // Preserve raw capture and original consent, never the prepared transport identity.
+    setDraft({ ...captured.draft }); setReview(null); setMessage('');
   }
   async function run(operation: () => Promise<void>) {
     if (!current() || sending.current) return;
@@ -280,7 +291,9 @@ function Section(props: TransferRestitutionsProps) {
         <p>{visibleReview.draft.action === 'accept' ? `Acredita origen ${record.origin_location_name} una vez. Destino sin cambios. No cambia reservas.` : 'No mueve stock ni cambia reservas.'}</p>
         <p>La falta en destino no prueba retención. Una aplicación, incluso parcial, cierra esta restitución. El despacho y la recepción original son inmutables.</p>
         {visibleReview.draft.action === 'propose' && <p>Confirmaste que estas unidades permanecen físicamente en origen.</p>}
-      </div><footer><button ref={cancel} onClick={close}>Cancelar</button><button onClick={() => {
+      </div><footer><button ref={cancel} onClick={() => {
+        if (visibleReview.draft.action === 'propose') editProposal(visibleReview); else close();
+      }}>{visibleReview.draft.action === 'propose' ? 'Editar datos' : 'Cancelar'}</button><button onClick={() => {
         if (!current() || hook.busy || sending.current || snapshot !== visibleReview.snapshot) return;
         const captured = visibleReview; queueFocus(captured.draft.trigger); setReview(null); setDraft(null);
         void run(() => hook.submit(captured.draft.pin, captured.input));

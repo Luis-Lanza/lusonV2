@@ -212,6 +212,116 @@ it.each(['  físico 🪫  ', '\u00a0', '\t'])('prepares exact cap with model-val
   expect(JSON.parse(String(f.posts()[0][1]?.body))).toMatchObject({ retained_quantity: '1', reason, expected_revision: '0', retained_at_origin: true });
   expect(key).toHaveBeenCalledOnce(); key.mockRestore();
 });
+it.each(['  físico 🪫\u00a0\t\n exacto  ', '\u00a0', '\t'])(
+  'edits raw proposal %j without replacing consent, then sends only a fresh key once', async reason => {
+    const f = fixture(1, false, '9223372036854775807'); render(f.element());
+    await screen.findByText('Crédito efectivo en destino'); await consult();
+    const recovery = f.controller.restitutionRecovery!;
+    const pins = vi.spyOn(recovery, 'review'); const start = vi.spyOn(recovery, 'start');
+    const key = vi.spyOn(crypto, 'getRandomValues').mockImplementation(array => {
+      new Uint8Array(array!.buffer, array!.byteOffset, array!.byteLength).fill(key.mock.calls.length);
+      return array;
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Proponer restitución' }));
+    const originalPin = pins.mock.results.find(result => result.value)?.value;
+    const dialog = screen.getByRole('dialog'); const backdrop = dialog.parentElement;
+    const outside = screen.getByRole('button', { name: 'Proponer restitución' }).closest('.workflow-routine')!;
+    fireEvent.change(within(dialog).getByLabelText(/Cantidad retenida/), { target: { value: '9223372036854775803' } });
+    fireEvent.change(within(dialog).getByLabelText(/Motivo/), { target: { value: reason } });
+    fireEvent.click(within(dialog).getByRole('checkbox'));
+    fireEvent.submit(within(dialog).getByRole('form'));
+    const oldConfirm = within(dialog).getByRole('button', { name: 'Confirmar propuesta' });
+    const edit = within(dialog).getByRole('button', { name: 'Editar datos' }); expect(edit).toHaveFocus();
+    expect(key).toHaveBeenCalledOnce(); const reads = f.fetch.mock.calls.length;
+    const dynamic = document.createElement('button'); dynamic.textContent = 'Dynamic edit sibling';
+    await act(async () => { dialog.closest('section')!.append(dynamic); });
+    expect(dynamic).toHaveAttribute('inert');
+    fireEvent.click(edit);
+    expect(screen.getByRole('dialog', { name: 'Proponer restitución de origen' })).toBe(dialog);
+    expect(dialog.parentElement).toBe(backdrop); expect(outside).toHaveAttribute('inert');
+    expect(dynamic).toHaveAttribute('inert'); expect(within(dialog).getByRole('combobox')).toHaveFocus();
+    expect(within(dialog).getByLabelText(/Cantidad retenida/)).toHaveValue('9223372036854775803');
+    expect(within(dialog).getByLabelText(/Motivo/)).toHaveValue(reason);
+    expect(within(dialog).getByRole('checkbox')).toBeChecked();
+    fireEvent.click(oldConfirm);
+    expect(key).toHaveBeenCalledOnce(); expect(start).not.toHaveBeenCalled();
+    expect(f.fetch).toHaveBeenCalledTimes(reads); expect(f.posts()).toHaveLength(0);
+    fireEvent.submit(within(dialog).getByRole('form')); expect(key).toHaveBeenCalledTimes(2);
+    const confirm = within(dialog).getByRole('button', { name: 'Confirmar propuesta' });
+    fireEvent.click(confirm); fireEvent.click(confirm);
+    await waitFor(() => expect(f.posts()).toHaveLength(1));
+    expect(start).toHaveBeenCalledOnce(); expect(start.mock.calls[0][0]).toBe(originalPin);
+    const input = start.mock.calls[0][1]; expect(Object.isFrozen(input)).toBe(true);
+    expect(input).toEqual({ variant_id: 201, operation_key: '02'.repeat(16), expected_revision: '0',
+      retained_quantity: '9223372036854775803', retained_at_origin: true, reason });
+    expect(JSON.parse(String(f.posts()[0][1]?.body))).toEqual(input);
+    expect(input.operation_key).not.toBe('01'.repeat(16));
+    await waitFor(() => expect(f.controller.confirmTransferRestitution).toHaveBeenCalledOnce());
+    expect(dynamic).not.toHaveAttribute('inert'); key.mockRestore(); pins.mockRestore(); start.mockRestore();
+});
+it.each(['count', 'header', 'restitution'] as const)(
+  'retires edit consent after %s invalidation even with fresh review available', async stream => {
+    const f = fixture(); render(f.element()); await screen.findByText('Crédito efectivo en destino'); await consult();
+    const recovery = f.controller.restitutionRecovery!; const pins = vi.spyOn(recovery, 'review');
+    draft(); const original = pins.mock.results.find(result => result.value)?.value;
+    const dialog = screen.getByRole('dialog'); const edit = within(dialog).getByRole('button', { name: 'Editar datos' });
+    const owner = { epoch: 1, account: 1, location: 1, generation: 1 };
+    const read = f.fetch.getMockImplementation()!;
+    const rest = parseRestitutions(await (await read('/restitutions')).text());
+    const count = parseCountCorrections(await (await read('/count-corrections')).text());
+    const reads = f.fetch.mock.calls.length;
+    const key = vi.spyOn(crypto, 'getRandomValues'); const start = vi.spyOn(recovery, 'start');
+    act(() => {
+      recovery.invalidate(owner, BigInt(id), stream);
+      recovery.observe(owner, rest, true); recovery.observeCount(owner, count, true);
+      expect(recovery.review(owner, f.record, 201, 'propose')).not.toBeNull();
+      expect(recovery.eligibility(owner, original).eligible).toBe(false);
+      fireEvent.click(edit);
+    });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Proponer restitución' }).closest('[inert]')).toBeNull();
+    expect(key).not.toHaveBeenCalled(); expect(start).not.toHaveBeenCalled();
+    expect(f.fetch).toHaveBeenCalledTimes(reads); expect(f.posts()).toHaveLength(0);
+    key.mockRestore(); pins.mockRestore(); start.mockRestore();
+});
+it.each(['ready', 'account', 'location'])(
+  'retires private review on Editar datos after unrendered %s authority drift', async boundary => {
+    const f = fixture(); render(f.element()); await screen.findByText('Crédito efectivo en destino'); await consult(); draft();
+    const edit = within(screen.getByRole('dialog')).getByRole('button', { name: 'Editar datos' });
+    if (!f.authority.session?.authenticated) throw new Error('fixture');
+    if (boundary === 'ready') f.authority.ready = false;
+    else if (boundary === 'account') f.authority.session.identity.account_id = 77;
+    else f.authority.session.identity.location.id = 2;
+    const reads = f.fetch.mock.calls.length; const key = vi.spyOn(crypto, 'getRandomValues');
+    const start = vi.spyOn(f.controller.restitutionRecovery!, 'start');
+    fireEvent.click(edit);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent('exact reason');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(key).not.toHaveBeenCalled(); expect(start).not.toHaveBeenCalled();
+    expect(f.fetch).toHaveBeenCalledTimes(reads); expect(f.posts()).toHaveLength(0);
+    key.mockRestore(); start.mockRestore();
+});
+it.each(['record', 'request', 'session', 'snapshot', 'masked'])(
+  'retires prepared proposal before editing across the %s boundary', async boundary => {
+    const f = fixture(); const view = render(f.element());
+    await screen.findByText('Crédito efectivo en destino'); await consult(); draft();
+    const dialog = screen.getByRole('dialog'); const edit = within(dialog).getByRole('button', { name: 'Editar datos' });
+    const key = vi.spyOn(crypto, 'getRandomValues'); const start = vi.spyOn(f.controller.restitutionRecovery!, 'start');
+    if (boundary === 'record') view.rerender(<TransferRestitutions controller={f.controller} record={{ ...f.record }} enabled requestID={id} />);
+    else if (boundary === 'request') view.rerender(f.element(true, '2'));
+    else if (boundary === 'session') { f.authority.sessionGeneration = 2; view.rerender(f.element()); }
+    else {
+      if (boundary === 'masked') f.mask();
+      act(() => { for (const listener of f.listeners) listener(); });
+    }
+    fireEvent.click(edit);
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(document.body).not.toHaveTextContent('exact reason');
+    expect(key).not.toHaveBeenCalled(); expect(start).not.toHaveBeenCalled(); expect(f.posts()).toHaveLength(0);
+    key.mockRestore(); start.mockRestore();
+});
 it('keeps capture counters and exact cap lossless at the bigint domain edge', async () => {
   const f = fixture(1, false, '9223372036854775807'); render(f.element());
   await screen.findByText('Crédito efectivo en destino'); await consult();
@@ -401,7 +511,7 @@ it('keeps one isolated dialog through capture and review with full-control keybo
   fireEvent(review, tab); expect(tab.defaultPrevented).toBe(false);
   fireEvent.submit(within(dialog).getByRole('form')); // Native form submission keeps the same modal lifetime.
   expect(screen.getByRole('dialog', { name: 'Revisar restitución' })).toBe(dialog);
-  const cancel = within(dialog).getByRole('button', { name: 'Cancelar' }); expect(cancel).toHaveFocus();
+  const cancel = within(dialog).getByRole('button', { name: 'Editar datos' }); expect(cancel).toHaveFocus();
   fireEvent.keyDown(cancel, { key: 'Tab', shiftKey: true });
   expect(within(dialog).getByRole('button', { name: 'Cerrar restitución' })).toHaveFocus();
   fireEvent.keyDown(dialog, { key: 'Escape' }); expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -522,7 +632,10 @@ it.each(['accept', 'reject'])('destination reviews %s with required reason and n
   expect(screen.queryByLabelText('Cantidad retenida')).not.toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('Motivo de restitución'), { target: { value: ' destination reason ' } });
   fireEvent.click(screen.getByRole('button', { name: 'Revisar restitución' }));
-  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: action === 'accept' ? 'Confirmar aceptación' : 'Confirmar rechazo' }));
+  const dialog = screen.getByRole('dialog');
+  expect(within(dialog).getByRole('button', { name: 'Cancelar' })).toHaveFocus();
+  expect(within(dialog).queryByRole('button', { name: 'Editar datos' })).not.toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole('button', { name: action === 'accept' ? 'Confirmar aceptación' : 'Confirmar rechazo' }));
   await waitFor(() => expect(f.controller.confirmTransferRestitution).toHaveBeenCalledOnce());
   expect(Object.keys(JSON.parse(String(f.posts()[0][1]?.body))).sort()).toEqual(['expected_revision', 'operation_key', 'reason', 'variant_id']);
 });
