@@ -55,12 +55,14 @@ export function TransferItems({ record, stock, confirmation = false, reject = fa
 }) {
   const advice = stock && !reject && !approved && !sent;
   const pendingDetail = compact && !confirmation;
-  const proposed = compact && record.kind === 'send_to_warehouse' && (record.status === 'pending' || record.status === 'approved');
+  const closed = compact && (record.status === 'rejected' || record.status === 'cancelled');
+  const proposed = compact && record.kind === 'send_to_warehouse' && (record.status === 'pending' || record.status === 'approved' || closed);
+  const directClosed = closed && record.kind === 'direct_shipment';
   const directApproved = compact && record.kind === 'direct_shipment' && record.status === 'approved';
-  const quantityLabel = directApproved ? 'A despachar' : proposed ? 'Propuestas' : 'Solicitadas';
+  const quantityLabel = directClosed ? 'Previstas' : directApproved ? 'A despachar' : proposed ? 'Propuestas' : 'Solicitadas';
   const reservationLabel = `Reservadas para ${directApproved ? 'este envío' : proposed ? 'esta propuesta' : 'esta solicitud'}`;
   return <div className="table-scroll transfer-detail-items"><table>
-    <caption className="sr-only">{confirmation ? directApproved ? 'Envío completo a confirmar' : proposed ? 'Propuesta completa a confirmar' : 'Solicitud completa a confirmar' : sent ? 'Baterías enviadas' : directApproved ? 'Baterías a despachar' : proposed ? 'Baterías propuestas' : 'Baterías solicitadas'}</caption>
+    <caption className="sr-only">{confirmation ? directApproved ? 'Envío completo a confirmar' : proposed ? 'Propuesta completa a confirmar' : 'Solicitud completa a confirmar' : sent ? 'Baterías enviadas' : directClosed ? 'Baterías previstas' : directApproved ? 'Baterías a despachar' : proposed ? 'Baterías propuestas' : 'Baterías solicitadas'}</caption>
     <thead><tr><th scope="col">{compact && confirmation ? 'Producto' : 'Batería'}</th><th scope="col">Polaridad</th>
       <th scope="col">{sent ? 'Enviadas' : compact && dispatch ? 'A despachar' : compact ? quantityLabel : dispatch ? 'Cantidad a despachar' : (record.status === 'in_transit' || record.status === 'received') ? 'Cantidad enviada' : confirmation && !reject ? 'Cantidad a reservar' : 'Cantidad solicitada'}</th>
       {approved && <th scope="col">{reservationLabel}</th>}
@@ -304,12 +306,19 @@ export default function TransferDetail(props: TransferDetailProps) {
   const pendingProducts = proposal ? 'Productos propuestos' : 'Productos solicitados';
   const approvedParticipant = record.status === 'approved' && session?.authenticated
     && (session.identity.location.id === record.origin_location_id || session.identity.location.id === record.destination_location_id);
-  const approvedProducts = direct ? 'Productos a despachar' : pendingProducts;
+  const closedParticipant = (record.status === 'cancelled' || record.status === 'rejected' && !direct)
+    && session?.authenticated && (session.identity.location.id === record.origin_location_id || session.identity.location.id === record.destination_location_id);
+  const subject = direct ? 'Envío' : proposal ? 'Propuesta' : 'Solicitud';
+  const approvedProducts = direct ? closedParticipant ? 'Productos previstos' : 'Productos a despachar' : pendingProducts;
+  const released = record.status === 'cancelled' && record.decision_location_id !== undefined;
+  const closedImpact = released
+    ? `Se liberó únicamente su reserva en ${record.origin_location_name}; las existencias físicas, otras reservas y el stock del destino no cambian.`
+    : 'No reserva ni mueve stock.';
   const transitParticipant = record.status === 'in_transit' && session?.authenticated
     && (session.identity.location.id === record.origin_location_id || session.identity.location.id === record.destination_location_id);
   const transitHistoryLabel = direct ? 'Historial del envío'
     : record.kind === 'send_to_warehouse' ? 'Historial de la propuesta' : 'Historial de la solicitud';
-  const historyKey = JSON.stringify([fence, record.id]);
+  const historyKey = JSON.stringify([fence, record.id, ...(closedParticipant ? [record.status] : [])]);
   const historyOpen = historyFor === historyKey;
   if (pendingParticipant) return <div className="transfer-detail transfer-pending-detail">
     <header className="transfer-pending-heading">
@@ -341,27 +350,29 @@ export default function TransferDetail(props: TransferDetailProps) {
       </div>
     </section>}
   </div>;
-  if (approvedParticipant) return <div className="transfer-detail transfer-approved-detail">
+  if (approvedParticipant || closedParticipant) return <div className={`transfer-detail ${closedParticipant ? 'transfer-terminal-detail' : 'transfer-approved-detail'}`}>
     <header className="transfer-approved-heading">
-      <div><h1>{record.reference}</h1><span className="pending-status status-approved">{transferStatusLabel(record)}</span></div>
+      <div><h1>{record.reference}</h1><span className={`pending-status status-${record.status}`}>{transferStatusLabel(record)}</span></div>
       <button type="button" aria-expanded={historyOpen} aria-controls="approved-transfer-history"
         onClick={() => setHistoryFor(historyOpen ? null : historyKey)}><svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="12" cy="12" r="9" /><path d="M12 6v6l4 2" /></svg>Ver historial</button>
       <p>{direct ? 'Envío directo de Almacén' : proposal ? 'Propuesta de envío a Almacén' : 'Solicitud de stock'} · <span aria-label="Ruta física">{record.origin_location_name} → {record.destination_location_name}</span></p>
     </header>
     <section className="transfer-approved-products" aria-label={approvedProducts}>
-      <header><h2>{approvedProducts}</h2><span> · {record.items.length} variantes · <span aria-label={direct ? 'Baterías a despachar' : proposal ? 'Baterías propuestas' : 'Baterías solicitadas'}>{transferQuantityTotal(record).toString()}</span> baterías</span></header>
-      <TransferItems record={record} compact approved />
-      <footer><p>Las {transferQuantityTotal(record).toString()} baterías están reservadas en {record.origin_location_name}. Pendiente de despacho.
-        {session.identity.location.id !== record.origin_location_id && <> Pendiente de despacho desde {record.origin_location_name}.</>}</p>
+      <header><h2>{approvedProducts}</h2><span> · {record.items.length} variantes · <span aria-label={direct ? closedParticipant ? 'Baterías previstas' : 'Baterías a despachar' : proposal ? 'Baterías propuestas' : 'Baterías solicitadas'}>{transferQuantityTotal(record).toString()}</span> baterías</span></header>
+      <TransferItems record={record} compact approved={!closedParticipant} />
+      <footer><p>{closedParticipant ? <>{direct ? 'El envío completo fue cancelado' : `La ${subject.toLowerCase()} completa fue ${transferStatusLabel(record).toLowerCase()}`}. {closedImpact}</> : <>Las {transferQuantityTotal(record).toString()} baterías están reservadas en {record.origin_location_name}. Pendiente de despacho.
+        {session.identity.location.id !== record.origin_location_id && <> Pendiente de despacho desde {record.origin_location_name}.</>}</>}</p>
         {props.actions?.(stock)}</footer>
     </section>
-    {historyOpen && <section id="approved-transfer-history" className="transfer-history approved" aria-label={transitHistoryLabel}>
+    {historyOpen && <section id="approved-transfer-history" className={`transfer-history ${record.status}`} aria-label={transitHistoryLabel}>
       <h2>{transitHistoryLabel}</h2>
       <ol>
         <li><h3>{direct ? 'Envío creado, autorizado y stock reservado' : proposal ? 'Propuesta creada' : 'Solicitud creada'}</h3><p>Ubicación: {record.creator_location_name}</p><TransferDate value={record.created_at} /></li>
-        {!direct && <li><h3>{proposal ? 'Propuesta aprobada y stock reservado' : 'Solicitud aprobada y stock reservado'}</h3><p>Ubicación: {record.approver_location_name}</p><TransferDate value={record.decided_at} /></li>}
+        {!direct && record.decision_location_id !== undefined && <li><h3>{record.status === 'rejected' ? `${subject} rechazada` : `${subject} aprobada y stock reservado`}</h3><p>Ubicación: {record.approver_location_name}</p><TransferDate value={record.decided_at} /></li>}
+        {record.status === 'cancelled' && <li><h3>{subject} {direct ? 'cancelado' : 'cancelada'}</h3><p>Ubicación: {record.creator_location_name}</p><TransferDate value={record.cancelled_at} />
+          {released && <p>Reserva propia liberada; existencias físicas sin cambios.</p>}</li>}
       </ol>
-      <p>{direct ? 'El envío completo fue autorizado y reservado al crear' : proposal ? 'La aprobación reserva la propuesta completa' : 'La aprobación reserva la solicitud completa'}; no mueve existencias físicas ni acredita stock al destino.</p>
+      {!closedParticipant && <p>{direct ? 'El envío completo fue autorizado y reservado al crear' : proposal ? 'La aprobación reserva la propuesta completa' : 'La aprobación reserva la solicitud completa'}; no mueve existencias físicas ni acredita stock al destino.</p>}
     </section>}
   </div>;
   if (transitParticipant) return <div className="transfer-detail transfer-transit-detail">

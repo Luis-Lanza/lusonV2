@@ -147,6 +147,58 @@ function pendingHistory(record = receivedWire()) {
       recorded_at: correctionStamp, state: 'pending', decision: null, application: null }] : [] })) };
 }
 
+describe('F6 closed participant detail', () => {
+  const routes = [['request_stock', 1, 3], ['request_stock', 2, 3],
+    ['direct_shipment', 1, 3], ['send_to_warehouse', 2, 1]] as const;
+  const cases = routes.flatMap(([kind, origin, destination]) => (kind === 'direct_shipment'
+    ? [{ status: 'cancelled', reserved: true }]
+    : [{ status: 'rejected', reserved: false }, { status: 'cancelled', reserved: false }, { status: 'cancelled', reserved: true }])
+    .flatMap(outcome => [origin, destination].map(actor => ({ kind, origin, destination, actor, ...outcome }))));
+  it.each(cases)('shows persisted $kind $status reserved=$reserved at $actor without business actions', async ({ kind, origin, destination, actor, status, reserved }) => {
+    const original = wire(origin, destination, '9007199254740993', reserved || status === 'rejected' ? 'approved' : 'pending');
+    const record = { ...original, kind, status, ...(kind === 'direct_shipment' ? {
+      creator_location_id: origin, creator_location_name: locations[origin - 1], decided_at: original.created_at } : {}),
+      ...(status === 'cancelled' ? { cancellation_location_id: kind === 'direct_shipment' ? origin : original.creator_location_id,
+        cancelled_at: correctionStamp } : {}) };
+    const f = fixture(actor, url => url === `/api/transfers/${record.id}` ? Promise.resolve(reply(record)) : undefined);
+    const view = render(f.element({ ownerTag: f.ownerTag, id: record.id }));
+    await screen.findByRole('heading', { name: record.reference });
+    expect(document.querySelector('.transfer-terminal-detail')).not.toBeNull();
+    expect(document.querySelector('.transfer-approved-detail, .transfer-detail-summary')).toBeNull();
+    expect(screen.getByRole('navigation')).toHaveClass('approved-origin-navigation');
+    expect(screen.queryByRole('region', { name: 'Contadores de solicitudes' })).toBeNull();
+    const products = screen.getByRole('region', { name: kind === 'direct_shipment' ? 'Productos previstos' : kind === 'send_to_warehouse' ? 'Productos propuestos' : 'Productos solicitados' });
+    expect(products).toHaveTextContent('18446744073709551614');
+    expect(within(products).getByRole('columnheader', { name: kind === 'direct_shipment' ? 'Previstas' : kind === 'send_to_warehouse' ? 'Propuestas' : 'Solicitadas' })).toBeVisible();
+    expect(within(products).getAllByText('9223372036854775807')).toHaveLength(2);
+    expect(within(products).queryByRole('columnheader', { name: /Reservadas|Disponibles|Enviadas/ })).toBeNull();
+    expect(products).toHaveTextContent(reserved ? `Se liberó únicamente su reserva en ${locations[origin - 1]}` : 'No reserva ni mueve stock');
+    expect(screen.queryByRole('button', { name: /Aprobar|Rechazar|Despachar|Recibir|Cancelar|Gestiones|Actualizar/ })).toBeNull();
+    expect(screen.queryByRole('region', { name: /Historial/ })).toBeNull();
+    const toggle = screen.getByRole('button', { name: 'Ver historial' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false'); fireEvent.click(toggle);
+    const history = screen.getByRole('region', { name: kind === 'direct_shipment' ? 'Historial del envío' : kind === 'send_to_warehouse' ? 'Historial de la propuesta' : 'Historial de la solicitud' });
+    expect(history.querySelectorAll('time')).toHaveLength(status === 'rejected' || !reserved || kind === 'direct_shipment' ? 2 : 3);
+    expect(history).toHaveTextContent(`Ubicación: ${kind === 'direct_shipment' ? locations[origin - 1] : original.creator_location_name}`);
+    if (status === 'rejected') {
+      expect(history).toHaveTextContent(`Ubicación: ${original.approver_location_name}`);
+      expect(history).not.toHaveTextContent(/aprobada|stock reservado|liberada/);
+    } else expect(history.querySelector(`time[datetime="${correctionStamp}"]`)).not.toBeNull();
+    if (kind === 'direct_shipment') {
+      expect(history).toHaveTextContent('Envío creado, autorizado y stock reservado');
+      expect(history).not.toHaveTextContent(/aprobada|aprobación/);
+    } else if (!reserved) expect(history).not.toHaveTextContent(/stock reservado|liberada/);
+    expect(history).not.toHaveTextContent(/Motivo|test-/);
+    expect(f.fetch.mock.calls.every(([url, init]) => (!init?.method || init.method === 'GET') && !String(url).startsWith('/api/inventory'))).toBe(true);
+    f.env.current.ready = false; view.rerender(f.element({ ownerTag: f.ownerTag, id: record.id }));
+    expect(document.body).not.toHaveTextContent(record.reference);
+  });
+  it('keeps direct rejection invalid at the decoder boundary', () => {
+    expect(() => parseTransferRecord(JSON.stringify({ ...wire(1, 3, '99', 'rejected'), kind: 'direct_shipment',
+      creator_location_id: 1, creator_location_name: locations[0] }))).toThrow();
+  });
+});
+
 describe('F4 pending participant chrome', () => {
   it.each([[1, 3, 1], [1, 3, 3], [2, 3, 2], [2, 3, 3], [2, 1, 2], [2, 1, 1]])(
     'keeps compact waiting detail and assigned actions for %s → %s at %s', async (origin, destination, actor) => {
@@ -719,7 +771,8 @@ describe('C2 creator cancellation entry and consultation', () => {
     await screen.findByText('1 solicitud cancelada');
     expect(screen.getByRole('table')).toHaveTextContent('Cancelada');
     await detail();
-    expect(screen.getByRole('heading', { name: 'Solicitud Cancelada' })).toBeVisible();
+    expect(screen.getByText('Cancelada', { selector: '.pending-status' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
     const history = screen.getByRole('region', { name: 'Historial de la solicitud' });
     expect(within(history).getAllByRole('listitem')).toHaveLength(approved ? 3 : 2);
     expect(within(history).getByText('31/12/2027 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', original.created_at);
@@ -730,7 +783,7 @@ describe('C2 creator cancellation entry and consultation', () => {
     else expect(history).not.toHaveTextContent(/aprobada|reservado|Decidida/);
     expect(history).not.toHaveTextContent(/rechazada|despachada|recibida/);
     expect(screen.queryByRole('button', { name: /^(Cancelar|Aprobar|Rechazar|Despachar|Recibir) / })).not.toBeInTheDocument();
-    expect(screen.getByRole('table', { name: 'Baterías solicitadas' })).toHaveTextContent('18446744073709551614');
+    expect(screen.getByRole('region', { name: 'Productos solicitados' })).toHaveTextContent('18446744073709551614');
     expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Volver a canceladas' }));
     expect(screen.getByLabelText('Estado de transferencia')).toHaveValue('cancelled');
@@ -938,8 +991,8 @@ describe('A06b status-specific consultation', () => {
         expect(cards).toHaveTextContent('Ubicación aprobadora: Almacén');
       }
       f.env.record = wire(origin, destination, f.env.record.id, status); await detail();
-      if (status === 'approved') fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
-      expect(within(screen.getByRole('region', { name: status === 'approved' && destination === 1 ? 'Historial de la propuesta' : 'Historial de la solicitud' })).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-02T00:00:00.000000001Z');
+      fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+      expect(within(screen.getByRole('region', { name: destination === 1 ? 'Historial de la propuesta' : 'Historial de la solicitud' })).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-02T00:00:00.000000001Z');
       expect(f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?'))).toHaveLength(0);
       expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true); view.unmount();
     }
@@ -1204,16 +1257,15 @@ describe('A06a real list/detail decision bindings', () => {
       expect(modal).toHaveTextContent('18446744073709551614');
       fireEvent.click(within(modal).getByRole('button', { name: action === 'approve' ? 'Confirmar aprobación' : 'Confirmar rechazo' }));
       await waitFor(() => expect(f.controller.confirmTransferDecision).toHaveBeenCalledOnce());
-      const adapted = action === 'approve';
-      const summary = screen.getByLabelText(adapted ? destination === 1 ? 'Productos propuestos' : 'Productos solicitados' : 'Resumen de solicitud');
-      expect(summary).toHaveTextContent(action === 'approve' ? `${adapted ? 'están reservadas' : 'está reservada'} en ${locations[origin - 1]}` : 'completa fue rechazada');
+      const summary = screen.getByLabelText(destination === 1 ? 'Productos propuestos' : 'Productos solicitados');
+      expect(summary).toHaveTextContent(action === 'approve' ? `están reservadas en ${locations[origin - 1]}` : 'completa fue rechazada');
       fireEvent.click(within(modal).getByRole('button', { name: 'Volver al detalle' }));
-      if (adapted) fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
-      const metadata = adapted ? screen.getByLabelText(destination === 1 ? 'Historial de la propuesta' : 'Historial de la solicitud') : summary;
+      fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+      const metadata = screen.getByLabelText(destination === 1 ? 'Historial de la propuesta' : 'Historial de la solicitud');
       expect(within(metadata).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-02T00:00:00.000000001Z');
       expect(screen.queryByText('Esta solicitud todavía no reserva ni mueve stock.')).not.toBeInTheDocument();
       expect(screen.queryByRole('heading', { name: 'Solicitud Pending' })).not.toBeInTheDocument();
-      expect(screen.getByRole('table', { name: adapted && destination === 1 ? 'Baterías propuestas' : 'Baterías solicitadas' })).toHaveTextContent('9223372036854775807');
+      expect(screen.getByRole('table', { name: destination === 1 ? 'Baterías propuestas' : 'Baterías solicitadas' })).toHaveTextContent('9223372036854775807');
       expect(screen.queryByRole('button', { name: `Aprobar ${noun}` })).not.toBeInTheDocument();
       expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
       await act(async () => held.resolve(reply(wire(origin, destination, '9007199254740993', action === 'approve' ? 'approved' : 'rejected'))));
@@ -1318,11 +1370,11 @@ describe('A05a truthful terminal detail', () => {
       ? Promise.resolve(reply({ ...wire(), status, decision_location_id: 1, decided_at: '2028-01-02T00:00:00.000000001Z' })) : undefined);
     render(f.element({ ownerTag: f.ownerTag, id: '9007199254740993' }));
     expect(await screen.findByText(label, { selector: '.pending-status' })).toBeVisible();
-    expect(screen.getByRole('heading', { name: status === 'approved' ? 'Productos solicitados' : `Solicitud ${label}` })).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Productos solicitados' })).toBeVisible();
     expect(screen.queryByText('Esta solicitud todavía no reserva ni mueve stock.')).not.toBeInTheDocument();
     expect(screen.queryByText(/La aprobación deberá revalidar/)).not.toBeInTheDocument();
-    if (status === 'approved') fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
-    const metadata = screen.getByLabelText(status === 'approved' ? 'Historial de la solicitud' : 'Resumen de solicitud');
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+    const metadata = screen.getByLabelText('Historial de la solicitud');
     expect(within(metadata).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-02T00:00:00.000000001Z');
     for (const name of ['Aprobar', 'Rechazar', 'Confirmar aprobación']) expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
   });

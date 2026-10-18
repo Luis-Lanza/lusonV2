@@ -1,5 +1,5 @@
 /* Approved transfers: both physical participants and origin-only dispatch. */
-.transfer-detail.transfer-approved-detail {
+.transfer-detail:is(.transfer-approved-detail, .transfer-terminal-detail) {
   max-width: 920px;
   color: #242124;
 }
@@ -52,7 +52,7 @@
   align-items: center;
   gap: 8px;
 }
-.transfer-approved-detail button { min-height: 44px; height: auto; white-space: normal; border-radius: 4px; }
+:is(.transfer-approved-detail, .transfer-terminal-detail) button { min-height: 44px; height: auto; white-space: normal; border-radius: 4px; }
 .transfer-approved-products {
   min-width: 0;
   background: white;
@@ -103,10 +103,10 @@
 .transfer-approved-products > footer > .transfer-decision-actions > button.primary + p:not([role]) {
   display: none;
 }
-.transfer-approved-detail > .transfer-history { margin-top: 20px; }
-/* Keep every shell control in normal flow only for mobile approved detail. */
+:is(.transfer-approved-detail, .transfer-terminal-detail) > .transfer-history { margin-top: 20px; }
+/* Keep every shell control in normal flow only for mobile approved or closed detail. */
 @media (max-width: 767px) {
-  .app-shell:has(.transfer-approved-detail) > .sidebar {
+  .app-shell:has(:is(.transfer-approved-detail, .transfer-terminal-detail)) > .sidebar {
     position: static;
     inset: auto;
     width: auto;
@@ -115,7 +115,7 @@
     border-right: 0;
     border-bottom: 1px solid #DED7DA;
   }
-  .app-shell:has(.transfer-approved-detail) > .app-header {
+  .app-shell:has(:is(.transfer-approved-detail, .transfer-terminal-detail)) > .app-header {
     position: static;
     inset: auto;
     height: auto;
@@ -124,7 +124,7 @@
     flex-wrap: wrap;
     gap: 8px;
   }
-  .app-shell:has(.transfer-approved-detail) > .inventory-main {
+  .app-shell:has(:is(.transfer-approved-detail, .transfer-terminal-detail)) > .inventory-main {
     margin-left: 0;
     padding: 16px;
     min-height: auto;

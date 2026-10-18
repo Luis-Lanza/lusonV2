@@ -142,8 +142,7 @@ describe('U2 approved stock request at physical origin', () => {
       creator_location_id: 1, creator_location_name: 'Almacén', decided_at: original.created_at } : original));
     render(f.element(record));
     expect(!!document.querySelector('.transfer-approved-detail')).toBe(context !== 'rejected');
-    if (context !== 'rejected') fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
-    else expect(screen.queryByRole('button', { name: 'Ver historial' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
     expect(screen.getByRole('region', { name: context === 'direct' ? 'Historial del envío' : context === 'send-to-warehouse' ? 'Historial de la propuesta' : 'Historial de la solicitud' })).toBeVisible();
     expect(screen.queryByRole('columnheader', { name: /Reservadas para/ }) !== null).toBe(context !== 'rejected');
     expect(f.fetch).not.toHaveBeenCalled();
@@ -810,8 +809,8 @@ describe('W2 direct warehouse history', () => {
       fireEvent.click(summary);
       expect(screen.getByRole('table', { name: 'Detalle de recepción' })).toBeVisible();
     } else expect(screen.queryByText('Ver recepción original')).not.toBeInTheDocument();
-    const historyLabel = status === 'approved' || status === 'in_transit' || status === 'received' ? 'Historial del envío' : 'Historial de la solicitud';
-    if (status === 'approved' || status === 'in_transit' || status === 'received') {
+    const historyLabel = 'Historial del envío';
+    if (status === 'approved' || status === 'in_transit' || status === 'received' || status === 'cancelled') {
       expect(screen.queryByRole('region', { name: historyLabel })).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
     }
@@ -941,6 +940,15 @@ describe('C4b optional detail correction composition', () => {
 });
 
 describe('A06b persisted outcome and history', () => {
+  it('starts closed-outcome history collapsed even when Pending history was open', async () => {
+    const f = fixture(); const view = render(f.element()); await loaded();
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+    expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toBeVisible();
+    view.rerender(f.element(parseTransferRecord(JSON.stringify(wire(1, 2, 'rejected')))));
+    expect(screen.getByRole('button', { name: 'Ver historial' })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('region', { name: 'Historial de la solicitud' })).toBeNull();
+    expect(f.fetch).toHaveBeenCalledOnce();
+  });
   it.each(['pending', 'approved', 'rejected'])('renders only persisted %s events and request-owned whole quantities', async status => {
     for (const [origin, destination] of [[1, 2], [1, 3], [2, 3], [3, 2], [2, 1], [3, 1]]) {
       for (const assigned of [origin, destination]) {
@@ -950,7 +958,7 @@ describe('A06b persisted outcome and history', () => {
         if (status === 'pending') await loaded();
         const historyToggle = screen.queryByRole('button', { name: 'Ver historial' });
         if (historyToggle) fireEvent.click(historyToggle);
-        const proposal = status !== 'rejected' && destination === 1;
+        const proposal = destination === 1;
         const history = screen.getByRole('region', { name: proposal ? 'Historial de la propuesta' : 'Historial de la solicitud' });
         const events = within(history).getAllByRole('listitem');
         expect(events).toHaveLength(status === 'pending' ? 1 : 2);
@@ -966,16 +974,18 @@ describe('A06b persisted outcome and history', () => {
           expect(history).not.toHaveTextContent(/aprobada|rechazada|reservad/i);
         } else {
           if (record.status !== 'approved' && record.status !== 'rejected') throw new Error('Expected persisted Approved or Rejected decision');
-          expect(events[1]).toHaveTextContent(record.status === 'approved' ? proposal ? 'Propuesta aprobada y stock reservado' : 'Solicitud aprobada y stock reservado' : 'Solicitud rechazada');
+          expect(events[1]).toHaveTextContent(record.status === 'approved' ? proposal ? 'Propuesta aprobada y stock reservado' : 'Solicitud aprobada y stock reservado' : proposal ? 'Propuesta rechazada' : 'Solicitud rechazada');
           expect(events[1]).toHaveTextContent(`Ubicación: ${names[record.decision_location_id - 1]}`);
           expect(events[1].querySelector('time')).toHaveTextContent('01/01/2028 · 20:00 (hora Bolivia)');
           expect(events[1].querySelector('time')).toHaveAttribute('datetime', record.decided_at);
-          if (historyToggle) {
+          if (record.status === 'approved') {
             const reservations = metrics.querySelectorAll(`[data-label="Reservadas para esta ${proposal ? 'propuesta' : 'solicitud'}"]`);
             expect(reservations).toHaveLength(2);
             for (const quantity of reservations) expect(quantity).toHaveTextContent(/^9223372036854775807 uds\.$/);
-          } else expect(within(metrics).getByLabelText('Baterías reservadas en esta solicitud')).toHaveTextContent(
-            record.status === 'approved' ? /^18446744073709551614$/ : /^0$/);
+          } else {
+            expect(within(metrics).queryByRole('columnheader', { name: /Reservadas/ })).toBeNull();
+            expect(metrics).toHaveTextContent('No reserva ni mueve stock.');
+          }
           expect(f.fetch).not.toHaveBeenCalled();
         }
         expect(history).not.toHaveTextContent(/test|Encargado|Empleado|motivo|despacho|recepción|cancel/i);
@@ -986,7 +996,7 @@ describe('A06b persisted outcome and history', () => {
       }
     }
   });
-  it('keeps unknown Pending stock separate from a persisted Rejected zero reservation', async () => {
+  it('keeps unknown Pending stock separate from a persisted Rejected outcome without live stock metrics', async () => {
     const f = fixture(2, 1, 1, async () => catalog(2, 1, 0));
     const view = render(f.element());
     await loaded();
@@ -994,9 +1004,9 @@ describe('A06b persisted outcome and history', () => {
     expect(screen.queryByLabelText('Baterías reservadas en esta solicitud')).not.toBeInTheDocument();
     const rejected = parseTransferRecord(JSON.stringify(wire(2, 1, 'rejected')));
     view.rerender(f.element(rejected));
-    expect(screen.getByLabelText('Baterías reservadas en esta solicitud')).toHaveTextContent(/^0$/);
+    expect(screen.queryByLabelText('Baterías reservadas en esta solicitud')).toBeNull();
     expect(screen.getByRole('table')).not.toHaveTextContent('Disponible');
-    expect(screen.getByLabelText('Resumen de solicitud')).toHaveTextContent('No reserva ni mueve stock');
+    expect(screen.getByLabelText('Productos propuestos')).toHaveTextContent('No reserva ni mueve stock');
     expect(f.fetch).toHaveBeenCalledOnce();
   });
   it.each(['location', 'generation', 'unready'])('removes persisted private history and metrics after %s authority changes', mode => {
