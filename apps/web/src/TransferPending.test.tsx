@@ -317,8 +317,15 @@ describe('C4b App correction settlement with real inventory controller', () => {
     const metrics = screen.getByRole('region', { name: 'Cantidades de la solicitud' });
     fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
     const summary = screen.getByRole('region', { name: 'Historial de la solicitud' });
+    const stableHeader = () => {
+      const clone = screen.getByRole('heading', { name: record.reference }).parentElement!.cloneNode(true) as HTMLElement;
+      // Exclude only admitted result chrome; preserve every other header byte.
+      clone.querySelectorAll(':scope > .received-result-badge, :scope > .received-result-differences')
+        .forEach(node => node.remove());
+      return clone.outerHTML;
+    };
     const original = { receipt: receipt.outerHTML, metrics: metrics.outerHTML,
-      times: [...summary.querySelectorAll('time')].map(time => time.outerHTML), header: screen.getByRole('heading', { name: record.reference }).parentElement!.outerHTML };
+      times: [...summary.querySelectorAll('time')].map(time => time.outerHTML), header: stableHeader() };
     const inventoryBefore = f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?')).length;
     const modal = correctionPreview(action);
     expect(modal).toHaveTextContent('Revisión de flujo esperada: 1');
@@ -334,7 +341,17 @@ describe('C4b App correction settlement with real inventory controller', () => {
     expect(screen.getByRole('region', { name: 'Cantidades de la solicitud' }).outerHTML).toBe(original.metrics);
     expect([...screen.getByRole('region', { name: 'Historial de la solicitud' }).querySelectorAll('time')]
       .map(time => time.outerHTML)).toEqual(original.times);
-    expect(screen.getByRole('heading', { name: record.reference }).parentElement!.outerHTML).toBe(original.header);
+    const header = screen.getByRole('heading', { name: record.reference }).parentElement!;
+    const corrected = header.querySelector(':scope > .received-result-badge');
+    const differences = header.querySelector(':scope > .received-result-differences');
+    if (action === 'accept') {
+      expect(corrected).toHaveTextContent(/^Conteo corregido$/);
+      expect(differences).toHaveTextContent(/^Faltante: 9223372036854775802$/);
+    } else {
+      expect(corrected).toBeNull();
+      expect(differences).toBeNull();
+    }
+    expect(stableHeader()).toBe(original.header);
     await act(async () => {});
     expect(f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?'))).toHaveLength(inventoryBefore + (action === 'accept' ? 1 : 0));
     const inventoryLast = f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?')).at(-1)!;

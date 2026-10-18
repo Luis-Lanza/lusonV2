@@ -145,32 +145,40 @@ function countResultProof(line: CountCorrectionLine, record: TransferRecord) {
     baseline: (p: CountProposal) => baseline(p)! };
 }
 
-function CountCorrectionResults({ record, corrections }: {
-  record: TransferRecord; corrections: TransferCountCorrectionsProps['corrections'];
-}) {
+function projectCountCorrectionResults(record: TransferRecord, corrections: TransferCountCorrectionsProps['corrections']) {
   if (record.status !== 'received' || !corrections.snapshot || corrections.attempts.some(a => a.phase === 'inFlight' || a.phase === 'uncertain'
     || a.phase === 'conflict' || a.phase !== 'confirmed' && a.priorUncertainty)) return null;
   const location = (id: number) => id === record.origin_location_id ? record.origin_location_name : record.destination_location_name;
   const snapshot = corrections.snapshot;
-  const content = record.receipt.items.flatMap(original => {
+  const rows = record.receipt.items.map(original => {
     const line = snapshot.lines.find(item => item.variant_id === original.variant_id)!;
     const proof = countResultProof(line, record);
-    if (!proof) return [];
     const product = record.items.find(item => item.variant_id === line.variant_id);
     const label = product ? product.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]' : `Variante ${line.variant_id}`;
-    return [proof.application, proof.rejected].flatMap(p => {
-      if (!p) return [];
-      const before = proof.baseline(p).actual;
-      const delta = p.application?.delta;
-      return [<p className="count-evidence" key={`${line.variant_id}:${p.revision}`}>
-        {p.state === 'applied' ? 'Corrección aplicada vigente' : 'Propuesta de corrección rechazada'} en {label}: {before.toString()} → {p.actual_quantity.toString()}.
-        {' '}Variante {line.variant_id}{product && <> · {product.brand} {product.model}</>}. Propuesta de {location(p.initiator_location_id)} · {p.state === 'applied' ? 'Aceptada' : 'Rechazada'} por {location(p.decision!.actor_location_id)}.
-        {delta !== undefined ? <> Cambio de crédito registrado en destino: {delta > 0n ? '+' : ''}{delta.toString()}.</>
-          : <> Sin cambios en el conteo ni en el stock por este rechazo.{line.effective_actual < line.expected_quantity && ' El faltante permanece.'}</>}
-      </p>];
-    });
+    const result = (p: CountProposal | undefined) => p && proof ? {
+      proposal: p, before: proof.baseline(p).actual, proposer: location(p.initiator_location_id),
+      decider: location(p.decision!.actor_location_id), delta: p.application?.delta,
+    } : undefined;
+    return { variant_id: line.variant_id, coherent: !!proof, product, label,
+      application: result(proof?.application), rejected: result(proof?.rejected),
+      shortage: line.effective_actual < line.expected_quantity };
   });
-  return content.length ? <section aria-label="Resultados de corrección confirmados">{content}</section> : null;
+  return { rows, corrected: rows.every(row => row.coherent) && rows.some(row => row.application) };
+}
+
+type CountResults = NonNullable<ReturnType<typeof projectCountCorrectionResults>>;
+function CountCorrectionResults({ results }: { results: CountResults | null }) {
+  const content = results?.rows.flatMap(row => [row.application, row.rejected].flatMap(result => {
+    if (!result) return [];
+    const { proposal: p, before, proposer, decider, delta } = result;
+    return [<p className={`count-evidence count-evidence-${p.state}`} key={`${row.variant_id}:${p.revision}`}>
+      <strong>{p.state === 'applied' ? 'Corrección aplicada vigente' : 'Propuesta de corrección rechazada'} en {row.label}: {before.toString()} → {p.actual_quantity.toString()}.</strong>
+      <span>Variante {row.variant_id}{row.product && <> · {row.product.brand} {row.product.model}</>}. Propuesta de {proposer} · {p.state === 'applied' ? 'Aceptada' : 'Rechazada'} por {decider}.
+        {delta !== undefined ? <> Cambio de crédito registrado en destino: {delta > 0n ? '+' : ''}{delta.toString()}.</>
+          : <> Sin cambios en el conteo ni en el stock por este rechazo.{row.shortage && ' El faltante permanece.'}</>}</span>
+    </p>];
+  }));
+  return content?.length ? <section className="received-result-provenance" aria-label="Resultados de corrección confirmados">{content}</section> : null;
 }
 
 function OriginalReceiptOverview({ record }: { record: TransferRecord }) {
@@ -381,9 +389,14 @@ export default function TransferDetail(props: TransferDetailProps) {
   const effective = receivedParticipant ? projectTransferReceived({ record,
     snapshot: corrections?.snapshot ?? null, busy: corrections?.busy ?? false,
     error: corrections?.error ?? null, masked: corrections?.masked ?? false, contextValid: effectiveContext }) : null;
+  const countResults = effective?.status === 'available' && corrections
+    ? projectCountCorrectionResults(record, corrections) : null;
   return <div className={`transfer-detail${receivedParticipant ? ' transfer-received-detail' : ''}`}>
     <header className={receivedParticipant ? 'transfer-received-heading' : 'transfer-detail-heading'}><h1>{record.reference}</h1>
       <span className={`pending-status status-${record.status}`}>{transferStatusLabel(record)}</span>
+      {countResults?.corrected && <span className="received-result-badge">Conteo corregido</span>}
+      {countResults && effective?.status === 'available' && (effective.totals.shortage > 0n || effective.totals.excess > 0n || effective.totals.unexpected > 0n)
+        && <span className="received-result-differences"><ReceivedDifferences quantities={effective.totals} /></span>}
       {receivedParticipant && <button type="button" aria-expanded={historyOpen} aria-controls="received-transfer-history"
         onClick={() => setHistoryFor(historyOpen ? null : historyKey)}><span aria-hidden="true">◷ </span>Ver historial</button>}
       <p>{receivedParticipant ? <>Solicitud de stock · <span aria-label="Ruta física">{record.origin_location_name} → {record.destination_location_name}</span></> : direct ? 'Envío directo de Almacén' : record.kind === 'send_to_warehouse' ? 'Propuesta de envío a Almacén' : record.origin_location_id === 1 ? 'Solicitud a Almacén' : 'Solicitud entre sucursales'}</p>
@@ -407,30 +420,38 @@ export default function TransferDetail(props: TransferDetailProps) {
         {effective.status === 'updating' && <p role="status">Actualizando: evidencia retenida, pendiente de consulta; no confirma el estado más reciente.</p>}
         <div className="received-table"><table><caption className="sr-only">Conteo efectivo</caption>
           <thead><tr>{['Batería', 'Enviadas', 'Recibidas efectivas', 'Crédito efectivo', 'Diferencia'].map(label => <th scope="col" key={label}>{label}</th>)}</tr></thead>
-          <tbody>{effective.rows.map(row => <tr key={row.variant_id} data-variant-id={row.variant_id}
-            className={row.shortage || row.excess || row.unexpected ? 'received-discrepant' : undefined}>
-            <td>{row.product ? <>{row.product.brand} {row.product.model}<small>{row.product.capacity_ah} Ah · {row.product.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</small></>
-              : <>Variante {row.variant_id} · identidad no disponible</>}
-              {row.applied_revision > 0n && <small className="received-corrected">Corrección aplicada · revisión {row.applied_revision.toString()}</small>}</td>
-            <td data-label="Enviadas">{row.expected.toString()}</td><td data-label="Recibidas efectivas">{row.actual.toString()}</td>
-            <td data-label="Crédito efectivo">{row.credit.toString()}</td><td data-label="Diferencia"><ReceivedDifferences quantities={row} /></td>
-          </tr>)}</tbody>
+          <tbody>{effective.rows.map(row => {
+            const application = countResults?.rows.find(result => result.variant_id === row.variant_id)?.application;
+            return <tr key={row.variant_id} data-variant-id={row.variant_id}
+              className={`${row.shortage || row.excess || row.unexpected ? 'received-discrepant' : ''}${application ? ' received-result-applied' : ''}`}>
+              <td>{row.product ? <>{row.product.brand} {row.product.model}<small>{row.product.capacity_ah} Ah · {row.product.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</small></>
+                : <>Variante {row.variant_id} · identidad no disponible</>}
+                {application && <small className="received-corrected">Conteo corregido: {application.before.toString()} → {application.proposal.actual_quantity.toString()}</small>}</td>
+              <td data-label="Enviadas">{row.expected.toString()}</td><td data-label="Recibidas efectivas">{row.actual.toString()}</td>
+              <td data-label="Crédito efectivo">{row.credit.toString()}</td><td data-label="Diferencia"><ReceivedDifferences quantities={row} /></td>
+            </tr>;
+          })}</tbody>
           <tfoot><tr><th scope="row">Total · {effective.rows.length} variantes</th><td data-label="Enviadas">{effective.totals.expected.toString()}</td>
             <td data-label="Recibidas efectivas">{effective.totals.actual.toString()}</td><td data-label="Crédito efectivo">{effective.totals.credit.toString()}</td>
             <td data-label="Diferencia"><ReceivedDifferences quantities={effective.totals} /></td></tr></tfoot>
         </table></div>
         <p className="received-scope"><Icon name="info" />Estas cantidades reflejan el conteo efectivo de esta recepción, no el stock actual de {record.destination_location_name}.</p>
-        <footer>{effective.status === 'available' && corrections && <CountCorrectionResults record={record} corrections={corrections} />}
-          <ReceivedDifferences quantities={effective.totals} />
-          {(effective.totals.shortage > 0n || effective.totals.excess > 0n || effective.totals.unexpected > 0n)
-            && <p>Las diferencias se registran por variante, sin compensarse ni resolverse automáticamente.</p>}</footer>
       </>}
+      <footer className="received-result-band">
+        <div className="received-result-summary"><CountCorrectionResults results={countResults} />
+          {effective.status !== 'unavailable' && <>
+            <ReceivedDifferences quantities={effective.totals} />
+            {(effective.totals.shortage > 0n || effective.totals.excess > 0n || effective.totals.unexpected > 0n)
+              && <p>Las diferencias se registran por variante, sin compensarse ni resolverse automáticamente.</p>}
+          </>}
+        </div>
+        {(countEntry || restitutionEntry) && <ManagementMenu
+          key={managementScope} count={countEntry} restitution={restitutionEntry} onSelect={context => {
+            if (current()) setManagement({ scope: managementScope, context, token: ++entrySerial.current });
+          }} />}
+      </footer>
       {props.actions?.(stock)}
     </section>}
-    {receivedParticipant && (countEntry || restitutionEntry) && <ManagementMenu
-      key={managementScope} count={countEntry} restitution={restitutionEntry} onSelect={context => {
-        if (current()) setManagement({ scope: managementScope, context, token: ++entrySerial.current });
-      }} />}
     {receivedParticipant && record.status === 'received' ? <footer className="received-original-footer">
       <details className="received-original" key={historyKey}>
         <summary>Ver recepción original</summary>

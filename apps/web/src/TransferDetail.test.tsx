@@ -231,17 +231,61 @@ describe('U4b effective received detail', () => {
     return { ...f, record, proposal, line, evidence, element, attempt };
   }
   const results = () => screen.queryByRole('region', { name: 'Resultados de corrección confirmados' });
+  const resultBadges = () => document.querySelectorAll('.received-result-badge, .received-corrected');
+  const correctedHeading = () => document.querySelector('.transfer-received-heading .received-result-badge');
+  it.each([1, 2])('shares admitted application across heading, affected row and provenance for actor %s', assigned => {
+    const f = outcome(assigned);
+    Object.assign(f.evidence, { attempts: [f.attempt('confirmed')] });
+    render(f.element());
+    expect(correctedHeading()).toHaveTextContent('Conteo corregido');
+    const rows = screen.getByRole('table', { name: 'Conteo efectivo' }).querySelectorAll('tbody tr');
+    expect(rows[0]).toHaveClass('received-result-applied');
+    expect(rows[0].querySelector('.received-corrected')).toHaveTextContent('Conteo corregido: 0 → 1');
+    expect(rows[1]).not.toHaveClass('received-result-applied');
+    expect(rows[1].querySelector('.received-corrected')).toBeNull();
+    expect(results()).toHaveClass('received-result-provenance');
+    expect(results()).toHaveTextContent('Cambio de crédito registrado en destino: +1');
+    expect(screen.getByRole('button', { name: 'Gestiones' })).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText('Ver recepción original').closest('details')).not.toHaveAttribute('open');
+  });
+  it.each(['pending', 'rejected'] as const)('retains current application when latest proposal is %s', state => {
+    const f = outcome();
+    const later = { ...f.proposal, revision: 2n, operation_key: 'later_result_proposal', actual_quantity: 99n,
+      base_revision: 1n, base_credit: 1n, state, application: null,
+      decision: state === 'pending' ? null : { ...f.proposal.decision!, operation_key: 'later_result_decision', accepted: false } };
+    f.line.proposals = [later, f.proposal]; f.line.workflow_revision = 2n;
+    render(f.element());
+    expect(correctedHeading()).toHaveTextContent('Conteo corregido');
+    const table = screen.getByRole('table', { name: 'Conteo efectivo' });
+    expect(table.querySelector('.received-corrected')).toHaveTextContent('0 → 1');
+    expect(table).not.toHaveTextContent('99');
+    expect(results()).toHaveTextContent('Cambio de crédito registrado en destino: +1');
+    if (state === 'rejected') {
+      expect(results()).toHaveTextContent('Propuesta de corrección rechazada');
+      expect(results()!.querySelector('.count-evidence-rejected')).not.toHaveTextContent('Cambio de crédito');
+    } else expect(results()).not.toHaveTextContent('99');
+  });
+  it('keeps quantity differences truthful after an admitted partial correction', () => {
+    const f = outcome(2, false, 1n, 0n, 2n); render(f.element());
+    expect(correctedHeading()).toHaveTextContent('Conteo corregido');
+    expect(screen.getByRole('table', { name: 'Conteo efectivo' })).toHaveTextContent('Faltante: 1');
+  });
   it.each([1, 2])('presents persisted applied and rejected provenance for actor %s', assigned => {
     const f = outcome(assigned); const view = render(f.element());
     expect(results()).toHaveTextContent('Corrección aplicada vigente en Izquierda [L]: 0 → 1');
     expect(results()).toHaveTextContent('Propuesta de Sucursal A · Aceptada por Almacén');
     expect(results()).toHaveTextContent('Cambio de crédito registrado en destino: +1');
+    expect(screen.getByRole('button', { name: 'Gestiones' }).closest('footer')).toBe(results()!.closest('footer'));
+    expect(results()!.closest('.transfer-received-products')).not.toBeNull();
     expect(screen.getByRole('table', { name: 'Conteo efectivo' }).querySelector('tbody [data-label="Recibidas efectivas"]')).toHaveTextContent(/^1$/);
     const r = outcome(assigned, true); view.rerender(r.element());
     expect(results()).toHaveTextContent('Propuesta de corrección rechazada en Izquierda [L]: 0 → 1');
     expect(results()).toHaveTextContent('Rechazada por Almacén');
     expect(results()).toHaveTextContent('Sin cambios en el conteo ni en el stock por este rechazo. El faltante permanece.');
     expect(results()).not.toHaveTextContent('Cambio de crédito');
+    expect(screen.getByRole('button', { name: 'Gestiones' }).closest('footer')).toBe(results()!.closest('footer'));
+    expect(resultBadges()).toHaveLength(0);
+    expect(document.querySelector('.transfer-received-heading .received-difference')).toHaveTextContent('Faltante: 1');
   });
   it('shows a persisted rejection independently of acceptance', () => {
     const f = outcome(2, true); render(f.element());
@@ -271,6 +315,7 @@ describe('U4b effective received detail', () => {
     expect(results()).toHaveTextContent('Corrección aplicada vigente en Izquierda [L]: 1 → 0');
     expect(results()).toHaveTextContent('Propuesta de corrección rechazada en Izquierda [L]: 0 → 1');
     expect(results()).toHaveTextContent('Corrección aplicada vigente en Derecha [R]: 1 → 1');
+    expect(correctedHeading()).toHaveTextContent('Conteo corregido');
     expect(results()!.textContent!.indexOf('Izquierda')).toBeLessThan(results()!.textContent!.indexOf('Derecha'));
     const table = screen.getByRole('table', { name: 'Conteo efectivo' });
     expect(table.querySelector('tbody [data-label="Recibidas efectivas"]')).toHaveTextContent(/^0$/);
@@ -312,6 +357,7 @@ describe('U4b effective received detail', () => {
     if (mode === 'original') Object.assign(f.line, { actual_quantity: 1n });
     if (mode === 'rejection-application') Object.assign(p, { application: { effective_credit: 1n, delta: 1n, recorded_at: p.recorded_at } });
     render(f.element()); expect(results()).toBeNull();
+    expect(resultBadges()).toHaveLength(0);
   });
   it.each(['busy', 'error', 'null', 'mask', 'owner', 'request', 'record', 'disabled', 'missing-line', 'duplicate-line',
     'inFlight', 'uncertain', 'conflict', 'failed-uncertain', 'pending', 'superseded'])('suppresses new claims for %s', mode => {
@@ -335,6 +381,12 @@ describe('U4b effective received detail', () => {
     }
     if (prior) prior.rerender(f.element(enabled, request)); else render(f.element(enabled, request));
     expect(results()).toBeNull();
+    expect(resultBadges()).toHaveLength(0);
+    expect(document.querySelector('.received-result-provenance')).toBeNull();
+    expect(document.querySelector('.received-result-applied')).toBeNull();
+    if (mode !== 'pending' && mode !== 'superseded') {
+      expect(document.querySelector('.received-result-differences')).toBeNull();
+    }
   });
   it('allows confirmed historical attempts, keeps rejection shortage conditional and recovery mounted', () => {
     const f = outcome(2, true, 2n, 1n); Object.assign(f.evidence, { attempts: [f.attempt('confirmed')] });
@@ -357,11 +409,15 @@ describe('U4b effective received detail', () => {
     f.line.proposals = []; f.evidence.snapshot.lines = [valid, f.line];
     render(f.element()); expect(results()).not.toHaveTextContent('Izquierda');
     expect(results()).toHaveTextContent('Derecha [R]: 1 → 1');
-    expect(document.body).not.toHaveTextContent('Conteo corregido');
+    expect(correctedHeading()).toBeNull();
+    const rows = screen.getByRole('table', { name: 'Conteo efectivo' }).querySelectorAll('tbody tr');
+    expect(rows[0].querySelector('.received-corrected')).toBeNull();
+    expect(rows[1].querySelector('.received-corrected')).toHaveTextContent('Conteo corregido: 1 → 1');
   });
   it('exposes uncertainty recovery outside the closed original without a result', () => {
     const f = outcome(); Object.assign(f.evidence, { attempts: [f.attempt('uncertain')] }); render(f.element());
     expect(results()).toBeNull(); const recover = screen.getByRole('button', { name: 'Consultar resultado' });
+    expect(screen.getByRole('button', { name: 'Gestiones' }).closest('.transfer-received-products')).not.toBeNull();
     expect(recover).toBeVisible(); fireEvent.click(recover); expect(f.evidence.recover).toHaveBeenCalledWith(1);
     expect(screen.getByText('Ver recepción original').closest('details')).not.toHaveAttribute('open');
   });
@@ -371,6 +427,36 @@ describe('U4b effective received detail', () => {
     f.line.proposals = [later, f.proposal]; f.line.workflow_revision = 2n;
     render(f.element()); expect(results()).toHaveTextContent('0 → 1'); expect(results()).not.toHaveTextContent('99');
     expect(screen.getByRole('table', { name: 'Conteo efectivo' })).not.toHaveTextContent('99');
+  });
+  it('keeps one in-card menu slot across freshness changes while respecting the mask boundary', () => {
+    const f = received(); f.controller.restitutionRecovery = createTransferRestitutionRecovery();
+    const view = render(f.element());
+    const trigger = screen.getByRole('button', { name: 'Gestiones' });
+    expect(trigger.closest('.transfer-received-products')).not.toBeNull();
+    fireEvent.click(trigger); fireEvent.click(screen.getByRole('menuitem', { name: 'Corregir conteo' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Proponer corrección' })[0]);
+    fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Retained across freshness' } });
+    const workflow = screen.getByRole('region', { name: 'Correcciones de conteo' });
+    const workflows = workflow.closest('.transfer-detail-grid');
+    for (const evidence of [{ ...f.corrections, busy: true }, { ...f.corrections,
+      error: new TransferAPIError('invalid_response', null, false, false, false, false, false, true) }, f.corrections]) {
+      view.rerender(f.element(true, f.record.id, evidence));
+      expect(screen.getByRole('button', { name: 'Gestiones' })).toBe(trigger);
+      expect(screen.getByRole('region', { name: 'Correcciones de conteo' })).toBe(workflow);
+      expect(workflow.closest('.transfer-detail-grid')).toBe(workflows);
+      expect(screen.getByLabelText('Motivo')).toHaveValue('Retained across freshness');
+    }
+    fireEvent.click(trigger);
+    view.rerender(f.element(true, f.record.id, { ...f.corrections, masked: true }));
+    expect(screen.getByRole('button', { name: 'Gestiones' })).toBe(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.queryByLabelText('Motivo')).toBeNull();
+    view.rerender(f.element());
+    expect(screen.getByRole('button', { name: 'Gestiones' })).toBe(trigger);
+    expect(screen.getAllByRole('button', { name: 'Gestiones' })).toHaveLength(1);
+    expect(screen.queryByLabelText('Motivo')).toBeNull();
+    expect(screen.getByText('Ver recepción original').closest('details')).not.toHaveAttribute('open');
+    expect(f.fetch).not.toHaveBeenCalled();
   });
   it('routes exactly two management entries by keyboard without losing an active correction', async () => {
     const f = received(); f.controller.restitutionRecovery = createTransferRestitutionRecovery();
@@ -467,7 +553,8 @@ describe('U4b effective received detail', () => {
     expect(within(effective).getByRole('table')).toHaveTextContent('Recibidas efectivas');
     expect(effective).toHaveTextContent('Crédito efectivo');
     expect(effective).toHaveTextContent('no el stock actual');
-    expect(effective).toHaveTextContent('Corrección aplicada · revisión 1');
+    expect(effective).not.toHaveTextContent('Conteo corregido');
+    expect(effective.querySelector('.received-corrected')).toBeNull();
     fireEvent.click(screen.getByText('Ver recepción original'));
     const original = screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML;
     expect(original).toContain('9223372036854775807');
@@ -491,7 +578,8 @@ describe('U4b effective received detail', () => {
     expect(effective).not.toHaveTextContent('99');
     expect(effective.querySelector('tbody [data-label="Recibidas efectivas"]')).toHaveTextContent(/^3$/);
     expect(effective.querySelector('tbody [data-label="Crédito efectivo"]')).toHaveTextContent(/^3$/);
-    expect(effective).toHaveTextContent('Corrección aplicada · revisión 1');
+    expect(effective).not.toHaveTextContent('Conteo corregido');
+    expect(effective.querySelector('.received-corrected')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Gestiones' }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Corregir conteo' }));
     expect(screen.getByRole('region', { name: 'Correcciones de conteo' })).toHaveTextContent(state === 'pending' ? 'Pendiente' : 'Rechazada');
