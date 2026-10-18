@@ -215,7 +215,7 @@ describe('F4 pending participant chrome', () => {
     const approver = actor === f.env.record.approver_location_id;
     expect(within(products).queryByRole('button', { name: /Aprobar/ }) !== null).toBe(approver);
     expect(within(products).queryByRole('button', { name: /Rechazar/ }) !== null).toBe(approver);
-    expect(within(products).queryByRole('button', { name: 'Cancelar solicitud' }) !== null).toBe(!approver);
+    expect(within(products).queryByRole('button', { name: proposal ? 'Cancelar propuesta' : 'Cancelar solicitud' }) !== null).toBe(!approver);
     if (!approver) {
       expect(products).toHaveTextContent(`Pendiente de aprobación de ${locations[f.env.record.approver_location_id - 1]}`);
       const refresh = within(products).getByRole('button', { name: 'Actualizar stock de origen' });
@@ -223,7 +223,7 @@ describe('F4 pending participant chrome', () => {
       fireEvent.click(refresh);
       await waitFor(() => expect(refresh).toBeEnabled());
       expect(within(products).queryByRole('button', { name: /Aprobar|Rechazar/ })).toBeNull();
-      expect(within(products).getByRole('button', { name: 'Cancelar solicitud' })).toBeEnabled();
+      expect(within(products).getByRole('button', { name: proposal ? 'Cancelar propuesta' : 'Cancelar solicitud' })).toBeEnabled();
     }
     fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
     const history = screen.getByRole('region', { name: proposal ? 'Historial de la propuesta' : 'Historial de la solicitud' });
@@ -744,7 +744,7 @@ describe('C2 creator cancellation entry and consultation', () => {
           f.env.record = wire(origin, destination, '9007199254740993', status);
           const view = render(f.element({ ownerTag: f.ownerTag, id: f.env.record.id }));
           await screen.findByRole('heading', { name: f.env.record.reference });
-          const button = screen.queryByRole('button', { name: 'Cancelar solicitud' });
+          const button = screen.queryByRole('button', { name: destination === 1 ? 'Cancelar propuesta' : 'Cancelar solicitud' });
           if (actor === creator) expect(button).toBeEnabled();
           else expect(button).not.toBeInTheDocument();
           expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);

@@ -87,7 +87,7 @@ describe('F5 approved participant detail and dispatch', () => {
     for (const allocation of allocations) expect(allocation).toHaveTextContent(/^9223372036854775807 uds\.$/);
     expect(within(products).queryByRole('columnheader', { name: /Disponibl/ })).toBeNull();
     expect(screen.queryByRole('button', { name: /Aprobar|Rechazar|Actualizar stock/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Cancelar solicitud' }) !== null).toBe(actor === f.env.record.creator_location_id);
+    expect(screen.queryByRole('button', { name: kind === 'direct_shipment' ? 'Cancelar envío' : kind === 'send_to_warehouse' ? 'Cancelar propuesta' : 'Cancelar solicitud' }) !== null).toBe(actor === f.env.record.creator_location_id);
     expect(within(products).queryByRole('button', { name: /Despachar/ }) !== null).toBe(actor === origin);
     if (actor !== origin) expect(products).toHaveTextContent(`Pendiente de despacho desde ${names[origin - 1]}`);
     expect(document.querySelector('.transfer-approved-heading .pending-status')).toHaveTextContent(kind === 'direct_shipment' ? 'Pendiente de despacho' : 'Aprobada');
@@ -256,7 +256,7 @@ describe('U2b approved stock-request dispatch review', () => {
       creator_location_name: 'Almacén', decided_at: f.env.record.created_at };
     render(f.element());
     const trigger = await screen.findByRole('button', { name: 'Despachar envío' });
-    expect(screen.getByRole('button', { name: 'Cancelar solicitud' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Cancelar envío' })).toBeEnabled();
     expect(trigger).toHaveTextContent('Despachar envío'); fireEvent.click(trigger);
     const dialog = screen.getByRole('dialog');
     expect(dialog).toHaveClass('transfer-dispatch-confirmation');

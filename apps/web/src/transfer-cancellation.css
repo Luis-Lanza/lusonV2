@@ -1,0 +1,14 @@
+/* Shared compact confirmation geometry; cancellation owns its destructive action. */
+.transfer-cancellation-confirmation > footer .primary {
+  background: #991515;
+  border-color: #991515;
+}
+.transfer-cancellation-confirmation .transfer-impact {
+  border-left-color: #991515;
+}
+.transfer-cancellation-confirmation .transfer-impact > p {
+  display: block;
+}
+.transfer-cancellation-confirmation .transfer-impact > p + p {
+  margin-top: 8px;
+}

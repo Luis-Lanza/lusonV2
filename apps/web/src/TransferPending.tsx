@@ -183,7 +183,7 @@ export default function TransferPending(props: TransferPendingProps) {
           onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
           renderDetail={dispatchActions => <TransferReceipt controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record} modalFocus={modalFocus}
             onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
-            renderDetail={receiptActions => <TransferCancellation controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record}
+            renderDetail={receiptActions => <TransferCancellation controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record} modalFocus={modalFocus}
               onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
               renderDetail={cancellationActions => record && <TransferDetail controller={props.controller} ownerTag={props.ownerTag} record={record}
                 corrections={corrections} correctionRequestID={correctionRequestID} correctionsEnabled={correctionsEnabled}

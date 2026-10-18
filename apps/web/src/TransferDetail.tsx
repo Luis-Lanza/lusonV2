@@ -50,21 +50,21 @@ function Stock({ stock, variant, compact = false }: { stock: StockAdvice; varian
   return <span className="transfer-stock"><strong>{row.available.toString()} disponibles</strong>
     <small>Existencias: {row.existing.toString()} · Reservadas: {row.reserved.toString()}</small></span>;
 }
-export function TransferItems({ record, stock, confirmation = false, reject = false, dispatch = false, compact = false, approved = false, sent = false }: {
-  record: TransferRecord; stock?: StockAdvice; confirmation?: boolean; reject?: boolean; dispatch?: boolean; compact?: boolean; approved?: boolean; sent?: boolean;
+export function TransferItems({ record, stock, confirmation = false, reject = false, dispatch = false, compact = false, approved = false, sent = false, cancellation = false }: {
+  record: TransferRecord; stock?: StockAdvice; confirmation?: boolean; reject?: boolean; dispatch?: boolean; compact?: boolean; approved?: boolean; sent?: boolean; cancellation?: boolean;
 }) {
-  const advice = stock && !reject && !approved && !sent;
+  const advice = stock && !reject && !approved && !sent && !cancellation;
   const pendingDetail = compact && !confirmation;
   const closed = compact && (record.status === 'rejected' || record.status === 'cancelled');
   const proposed = compact && record.kind === 'send_to_warehouse' && (record.status === 'pending' || record.status === 'approved' || closed);
   const directClosed = closed && record.kind === 'direct_shipment';
   const directApproved = compact && record.kind === 'direct_shipment' && record.status === 'approved';
-  const quantityLabel = directClosed ? 'Previstas' : directApproved ? 'A despachar' : proposed ? 'Propuestas' : 'Solicitadas';
+  const quantityLabel = cancellation ? 'A cancelar' : directClosed ? 'Previstas' : directApproved ? 'A despachar' : proposed ? 'Propuestas' : 'Solicitadas';
   const reservationLabel = `Reservadas para ${directApproved ? 'este envío' : proposed ? 'esta propuesta' : 'esta solicitud'}`;
   return <div className="table-scroll transfer-detail-items"><table>
-    <caption className="sr-only">{confirmation ? directApproved ? 'Envío completo a confirmar' : proposed ? 'Propuesta completa a confirmar' : 'Solicitud completa a confirmar' : sent ? 'Baterías enviadas' : directClosed ? 'Baterías previstas' : directApproved ? 'Baterías a despachar' : proposed ? 'Baterías propuestas' : 'Baterías solicitadas'}</caption>
+    <caption className="sr-only">{cancellation ? `${record.kind === 'direct_shipment' ? 'Envío completo' : record.kind === 'send_to_warehouse' ? 'Propuesta completa' : 'Solicitud completa'} a cancelar` : confirmation ? directApproved ? 'Envío completo a confirmar' : proposed ? 'Propuesta completa a confirmar' : 'Solicitud completa a confirmar' : sent ? 'Baterías enviadas' : directClosed ? 'Baterías previstas' : directApproved ? 'Baterías a despachar' : proposed ? 'Baterías propuestas' : 'Baterías solicitadas'}</caption>
     <thead><tr><th scope="col">{compact && confirmation ? 'Producto' : 'Batería'}</th><th scope="col">Polaridad</th>
-      <th scope="col">{sent ? 'Enviadas' : compact && dispatch ? 'A despachar' : compact ? quantityLabel : dispatch ? 'Cantidad a despachar' : (record.status === 'in_transit' || record.status === 'received') ? 'Cantidad enviada' : confirmation && !reject ? 'Cantidad a reservar' : 'Cantidad solicitada'}</th>
+      <th scope="col">{cancellation ? quantityLabel : sent ? 'Enviadas' : compact && dispatch ? 'A despachar' : compact ? quantityLabel : dispatch ? 'Cantidad a despachar' : (record.status === 'in_transit' || record.status === 'received') ? 'Cantidad enviada' : confirmation && !reject ? 'Cantidad a reservar' : 'Cantidad solicitada'}</th>
       {approved && <th scope="col">{reservationLabel}</th>}
       {advice && <th scope="col">{compact ? 'Disponibles en origen' : `Disponible en ${record.origin_location_name} (orientativo)`}</th>}</tr></thead>
     <tbody>{record.items.map(item => <tr key={item.variant_id} data-variant-id={item.variant_id}>

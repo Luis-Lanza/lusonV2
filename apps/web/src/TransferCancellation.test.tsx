@@ -23,12 +23,12 @@ function deferred() {
   const promise = new Promise<Response>(yes => { resolve = yes; });
   return { promise, resolve };
 }
-function fixture(approved = false, override?: (url: string, init: RequestInit) => Promise<Response> | undefined) {
+function fixture(approved = false, override?: (url: string, init: RequestInit) => Promise<Response> | undefined, actor = 2) {
   const env = { record: original(approved), visible: true };
   const fetch = vi.fn((input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
     const url = String(input); const custom = override?.(url, init); if (custom) return custom;
     if (url === '/api/auth/session') return Promise.resolve(reply({ authenticated: true, csrf_token: 'c'.repeat(43),
-      expires_at: '2030-01-01T00:00:00Z', identity: { account_id: 2, username: 'test', location: { id: 2, name: locations[1] } } }));
+      expires_at: '2030-01-01T00:00:00Z', identity: { account_id: actor, username: 'test', location: { id: actor, name: locations[actor - 1] } } }));
     if (url === '/api/inventory/metadata') return Promise.resolve(reply({ locations: locations.map((name, index) => ({ id: index + 1, name })), brands: ['TOYO'] }));
     if (url.startsWith('/api/inventory?')) {
       const location = Number(new URL(url, 'http://localhost').searchParams.get('location_id'));
@@ -63,6 +63,49 @@ async function open() {
 }
 afterEach(() => vi.unstubAllGlobals());
 
+describe('F7 compact creator cancellation', () => {
+  const contexts = [['request_stock', 1, 2, false], ['request_stock', 2, 3, false],
+    ['send_to_warehouse', 2, 1, false], ['request_stock', 1, 2, true], ['request_stock', 2, 3, true],
+    ['send_to_warehouse', 2, 1, true], ['direct_shipment', 1, 2, true]] as const;
+  it.each(contexts.flatMap(([kind, origin, destination, approved]) => [origin, destination].map(actor => ({ kind, origin, destination, approved, actor }))))(
+    'keeps $kind approved=$approved creator-only review at $actor', async ({ kind, origin, destination, approved, actor }) => {
+    const creator = kind === 'request_stock' ? destination : origin;
+    const approver = kind === 'send_to_warehouse' ? destination : origin;
+    const record = { ...original(approved), kind, creator_location_id: creator, creator_location_name: locations[creator - 1],
+      origin_location_id: origin, origin_location_name: locations[origin - 1], destination_location_id: destination, destination_location_name: locations[destination - 1],
+      approver_location_id: approver, approver_location_name: locations[approver - 1],
+      ...(approved ? { decision_location_id: approver, decided_at: kind === 'direct_shipment' ? original().created_at : original(true).decided_at } : {}) };
+    const f = fixture(approved, url => url === '/api/transfers/1' ? Promise.resolve(reply(record)) : undefined, actor);
+    await screen.findByRole('heading', { name: 'TR-001' });
+    const name = kind === 'request_stock' ? 'Cancelar solicitud' : kind === 'send_to_warehouse' ? 'Cancelar propuesta' : 'Cancelar envío';
+    if (actor !== creator) {
+      expect(screen.queryByRole('button', { name: /^Cancelar/ })).toBeNull();
+      expect(screen.queryByRole('dialog')).toBeNull(); expect(posts(f)).toHaveLength(0); return;
+    }
+    if (!approved) await waitFor(() => expect(screen.getByRole('button', { name: 'Actualizar stock de origen' })).toBeEnabled());
+    const before = f.fetch.mock.calls.length;
+    const nav = screen.getByRole('navigation');
+    const trigger = screen.getByRole('button', { name }); fireEvent.click(trigger);
+    const modal = screen.getByRole('dialog', { name: 'Confirmar cancelación' });
+    expect(modal).toHaveClass('transfer-cancellation-confirmation', 'transfer-pending-confirmation');
+    const table = within(modal).getByRole('table', { name: `${kind === 'request_stock' ? 'Solicitud completa' : kind === 'send_to_warehouse' ? 'Propuesta completa' : 'Envío completo'} a cancelar` });
+    expect(within(table).getAllByRole('columnheader').map(cell => cell.textContent)).toEqual(['Producto', 'Polaridad', 'A cancelar']);
+    expect(table).toHaveTextContent('9223372036854775807'); expect(table).toHaveTextContent('35.5 Ah');
+    expect(modal).toHaveTextContent(`${locations[origin - 1]} → ${locations[destination - 1]}`);
+    expect(modal).toHaveTextContent('El servidor confirma el estado actual');
+    expect(modal).toHaveTextContent('Las existencias físicas, otras reservas y el stock del destino no cambian');
+    expect(modal).toHaveTextContent(kind === 'direct_shipment' ? 'autorizado y reservado al crear' : 'Si ya fue aprobada');
+    if (!approved) expect(modal).toHaveTextContent('Si sigue pendiente, no cambia el inventario');
+    expect(nav).toHaveAttribute('inert'); expect(nav).toHaveAttribute('aria-hidden', 'true');
+    const close = within(modal).getByRole('button', { name: 'Cerrar confirmación de cancelación' });
+    const confirm = within(modal).getByRole('button', { name: 'Confirmar cancelación' });
+    expect(close).toHaveFocus(); fireEvent.keyDown(close, { key: 'Tab', shiftKey: true }); expect(confirm).toHaveFocus();
+    fireEvent.keyDown(confirm, { key: 'Escape' }); expect(trigger).toHaveFocus();
+    expect(nav).not.toHaveAttribute('inert'); expect(nav).not.toHaveAttribute('aria-hidden');
+    expect(f.fetch.mock.calls).toHaveLength(before); expect(posts(f)).toHaveLength(0);
+  });
+});
+
 describe('C2 creator cancellation confirmation through existing UI', () => {
   it.each([false, true])('reviews immutable request before one explicit POST and blocks busy keyboard dismissal (approved=%s)', async approved => {
     const held = deferred();
@@ -91,6 +134,7 @@ describe('C2 creator cancellation confirmation through existing UI', () => {
     expect(time).toHaveAttribute('title', cancelled(approved).cancelled_at);
     expect(screen.queryByRole('button', { name: 'Cancelar solicitud' })).not.toBeInTheDocument();
     expect(posts(f)).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Volver a pendientes' })).toHaveFocus();
   });
   it.each(['rejected', 'in_transit', 'received'] as const)('never offers creator cancellation after %s', async status => {
     const approved = original(true);
@@ -137,7 +181,9 @@ describe('C2 creator cancellation confirmation through existing UI', () => {
       if (recovering && url === '/api/transfers/1') return Promise.resolve(reply(original(true)));
       return undefined;
     });
-    await open(); fireEvent.click(screen.getByRole('button', { name: 'Confirmar cancelación' }));
+    const modal = await open(); fireEvent.click(screen.getByRole('button', { name: 'Confirmar cancelación' }));
+    await within(modal).findByText('Resultado sin confirmar. Usá la recuperación de la cancelación original.');
+    fireEvent.click(within(modal).getByRole('button', { name: 'Volver al detalle' }));
     await screen.findByRole('button', { name: 'Consultar resultado original' });
     f.remount();
     await screen.findByRole('button', { name: 'Consultar resultado original' });
