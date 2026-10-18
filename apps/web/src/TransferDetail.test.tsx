@@ -93,6 +93,14 @@ describe('F4 pending proposal stock and hierarchy', () => {
 });
 
 describe('U2 approved stock request at physical origin', () => {
+  it.each([1, 2])('states the physical-origin dispatch wait once for participant %s', actor => {
+    const f = fixture(1, 2, actor);
+    render(f.element(parseTransferRecord(JSON.stringify(wire(1, 2, 'approved')))));
+    const products = screen.getByRole('region', { name: 'Productos solicitados' });
+    expect(products).toHaveTextContent(`Las 18446744073709551614 baterías están reservadas en Almacén. ${actor === 1 ? 'Pendiente de despacho.' : 'Pendiente de despacho desde Almacén.'}`);
+    expect(products.textContent?.match(/Pendiente de despacho/g)).toHaveLength(1);
+    expect(f.fetch).not.toHaveBeenCalled();
+  });
   it.each([[1, 2], [2, 3]])('shows immutable own reservations and closed audit history at origin %s', (origin, destination) => {
     const f = fixture(origin, destination, origin);
     const record = parseTransferRecord(JSON.stringify(wire(origin, destination, 'approved')));

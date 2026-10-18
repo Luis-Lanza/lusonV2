@@ -386,7 +386,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
   }
   return <section className="count-corrections" aria-label="Correcciones de conteo" hidden={!sectionVisible}>
     <h2 ref={contextHeading} tabIndex={-1}>Correcciones de conteo</h2>
-    <p hidden={!routineVisible}>La recepción original es inmutable. La solicitud sigue Recibida; estas correcciones conservan su evidencia original.</p>
+    <p hidden={!routineVisible}>La recepción original es inmutable. La transferencia sigue Recibida; estas correcciones conservan su evidencia original.</p>
     {masked ? <div className="count-recovery"><p role="status">Correcciones no disponibles para esta sesión.</p>
       <button disabled={sending || corrections.busy || recoveryVariant === undefined} onClick={() => {
         if (!mounted.current || !latest.current.isBoundaryCurrent() || !eligible(latest.current)

@@ -50,6 +50,11 @@ function draft(actual = '9007199254740994', reason = '  Conteo exacto  ') {
 }
 function review() { fireEvent.click(screen.getByRole('button', { name: /^Revisar (corrección|aceptación|rechazo)$/ })); return screen.getByRole('dialog'); }
 const decisionReason = () => screen.getByRole('textbox', { name: /^Motivo de (aceptación|rechazo)/ });
+it('describes the received correction context with a flow-neutral transfer noun', () => {
+  const f = fixture(); render(<TransferCountCorrections {...f.props} />);
+  expect(within(screen.getByRole('region', { name: 'Correcciones de conteo' })).getByText(
+    'La recepción original es inmutable. La transferencia sigue Recibida; estas correcciones conservan su evidencia original.')).toBeVisible();
+});
 it.each(['accept', 'reject'] as const)('captures approved %s evidence, admission and separate reasons within consultation', action => {
   const f = fixture(3); const key = vi.spyOn(crypto, 'getRandomValues');
   const original = '  Original\n  propuesta  '; const raw = ' \u00a0🙂 decisión\t ';

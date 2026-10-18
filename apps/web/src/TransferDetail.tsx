@@ -360,8 +360,7 @@ export default function TransferDetail(props: TransferDetailProps) {
     <section className="transfer-approved-products" aria-label={approvedProducts}>
       <header><h2>{approvedProducts}</h2><span> · {record.items.length} variantes · <span aria-label={direct ? closedParticipant ? 'Baterías previstas' : 'Baterías a despachar' : proposal ? 'Baterías propuestas' : 'Baterías solicitadas'}>{transferQuantityTotal(record).toString()}</span> baterías</span></header>
       <TransferItems record={record} compact approved={!closedParticipant} />
-      <footer><p>{closedParticipant ? <>{direct ? 'El envío completo fue cancelado' : `La ${subject.toLowerCase()} completa fue ${transferStatusLabel(record).toLowerCase()}`}. {closedImpact}</> : <>Las {transferQuantityTotal(record).toString()} baterías están reservadas en {record.origin_location_name}. Pendiente de despacho.
-        {session.identity.location.id !== record.origin_location_id && <> Pendiente de despacho desde {record.origin_location_name}.</>}</>}</p>
+      <footer><p>{closedParticipant ? <>{direct ? 'El envío completo fue cancelado' : `La ${subject.toLowerCase()} completa fue ${transferStatusLabel(record).toLowerCase()}`}. {closedImpact}</> : <>Las {transferQuantityTotal(record).toString()} baterías están reservadas en {record.origin_location_name}. Pendiente de despacho{session.identity.location.id !== record.origin_location_id && <> desde {record.origin_location_name}</>}.</>}</p>
         {props.actions?.(stock)}</footer>
     </section>
     {historyOpen && <section id="approved-transfer-history" className={`transfer-history ${record.status}`} aria-label={transitHistoryLabel}>

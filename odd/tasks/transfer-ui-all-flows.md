@@ -20,8 +20,8 @@ The human authorized completing frontend adaptation today, using approved mockup
 - [x] F5: Approved/dispatch all kinds/both participants; independent604tests/typecheck/diff/decoder/build+24browser PASS. Commit `3cb180ad4a94f455add6057984f6753d1b7e42eb`,244diff8paths; native `review-1c07ee0c8aed576e` approved/acknowledged/authority burned.
 - [x] F6: Rejected/cancelled outcomes all valid participants; independent635tests/typecheck/diff/decoder/build+62browser PASS. Commit `52ee2388ada1584d5808dac00a08c3ff9597484b`,183diff6paths; native `review-be1c8d49707fd035` approved/acknowledged/authority burned.
 - [x] F7: Creator-only compact cancellation; independent649tests/typecheck/diff/decoder/build+42browser PASS. Commit `ac6be76ad8d7ab9c556f8c9837e611d0cb1af2c9`,165diff8paths; native `review-0c9fb11c06c92309` approved/acknowledged/authority burned.
-- [ ] F8 (verified; commit/native closure pending):180diff3paths; independent729tests/typecheck/diff/decoder/build PASS;24destination+6newneighbors/negatives=30unique browser PASS. Explicit consultation, captured raw evidence and distinct effects preserved; pattern-derived.
-- [ ] F9: Verify the full kind/state/participant matrix, responsive and modal behavior, functional suite/typecheck/build and source integrity; record visual residuals honestly.
+- [x] F8: Destination restitution decisions;729tests/typecheck/diff/decoder/build+30unique browser PASS(24+6). Commit `db38819984346108852700a85c34749a86d902cd`,197diff4paths; native `review-4382e63e153a5409` approved/acknowledged/authority burned.
+- [ ] F9 (verified; commit/native closure pending): Full2570tests/36files,typecheck/diff/25group-decoder/privatebuild and150main+9extra browser PASS. Two wording fixes18diff4paths verified in every applicable case; prior exhaustive modal/negative evidence explicitly inherited.
 - [ ] F10: Prepare human handoff and, only with fresh runtime authorization, serve the final verified assets in the preserved local environment.
 
 ## Acceptance
@@ -102,5 +102,29 @@ Use observed RED/GREEN for changed deterministic UI assertions; focused tests/ty
 
 - F8 remaining03PASS6/6=4originneighbors(2validattestedRT4reviews one16bytekeyeach;2blank0key)+2DESTnegatives(passive-only and individuallyvalidDTOheaderJOINmismatch). Both negative actions disabled/no modal-key-submit; actual header guard182–183 blocks both, reject Countfreshness/capacitybypass preserved.6identity/130GET/88API/24font200/zero denied/unmatched/nonGET/externalWS/page/console/errors/failures;8newPNGs/results/summary/reuse/integrity at /tmp/transfer-ui-all-flows-f8-browser-remaining-03. Combined24INHERITED+6NEW=30UNIQUE NOT30rerun;completed-only658GET/448API/120font200/26reviewkeys/30identity,excludingoldfailed-origintraffic. Source/deps/assetsreusePASS;inherited729/typecheck/diff/8preflight/build NOTRERUN. Allcanonical/protected4/docs/cache/dist/HEADindex/inventory/ALLoldroots unchanged/resourcesclosed/freeze released. Parent read actualsummary and direct-accept320reviewPNG. DESTfocus/IME/scroll proved24browser; exactoriginheading/scroll assertions remain executed729unit343/366,notnewneighborhelper. No businesssubmit/stress/opaqueRecovery/F9browserrerun; pattern-derived/originhistoricalRT2RT4residuals retained.
 
+- F8 local commit `db38819984346108852700a85c34749a86d902cd`,exact4paths197diff(+173−24),232with35reserve/baseac6be76 after freshprotected4/branchHEAD/emptyindex/exactstage/whitespace/budget checks. Native `review-4382e63e153a5409` medium/one reliability,target `caefb3ea2528fdd35f568c7ae1cde689155dfb74f96939de83f7c602adbb58ff`,approved/exact acknowledgement authority burned consumed `1378bdb9bd11ac305df4abbc21fa6cd8a2227107a6cc03a17b1da7eb7986997b`. Never query burned4382again. No runtime update.
+
+- F9 wording writer completed exactly two fixes18diff(+15−3)4paths CountCorrections/Detail and tests. RED2/730→732/732GREEN/typecheck/exact4diff PASS. Count context now flow-neutral transferencia; approved observer wait appears once with actual physical origin, origin stock copy unchanged. Parent read complete source/test delta; HEADdb38819/indexempty. Terminal branch/permissions/quantities/protocol unchanged. Assessment again requires independent verification for ambient untracked scope. Full-suite/build/browser acceptance pending, no F9 completion claim.
+
+## Final detail matrix executed — PASS
+Every supported cell means both physical participants at1280/390/320, with actual role-specific action authority; cancellation rows distinguish provenance rather than inventing new API states.
+
+| State / provenance | Stock warehouse→branch | Stock branch→branch | Direct warehouse→branch | Proposal branch→warehouse | Cases |
+| --- | --- | --- | --- | --- | ---: |
+| Pending | Both | Both | N/A | Both | 18 |
+| Approved / awaiting dispatch | Both | Both | Both; creation authorized | Both | 24 |
+| In transit | Both | Both | Both | Both | 24 |
+| Received | Both | Both | Both | Both | 24 |
+| Rejected | Both | Both | N/A | Both | 18 |
+| Cancelled before approval | Both | Both | N/A | Both | 18 |
+| Cancelled after authorization | Both | Both | Both; creation authorized | Both | 24 |
+| Total | | | | | 150 |
+
+## Final independent verification
+- Fresh first full-suite run2570/2570 across36files PASS; typecheck/exact4diff/25group50participant decoder preflight/directpending-rejectednegative/freshprivatebuild PASS. One browser execution on identical newly compiled assets:150/150MAIN above,50each1280/390/320/bothparticipants, plus9/9extra(8modal-family pages+unknown-head503). All24approvedexactonewaitstatement/originoldcopy/observeractualorigin;all24receivedactualGestiones→Countvisibletransferencia phrase/retainedworkflowidentity/noextraGET. Typedrole/action/quantityprovenance/persistedhistory/keyboard/bounds/clipancestors/navidentity verified.
+- Nine extra pages cover pendingApproveReject/directDispatch/proposalCancel/ReceiptcaptureReview/CountcaptureReview/originRestRT2RT4/destAcceptRejectcaptureReview+unknown-head503. Isolation/Tab/Escape/focus/context/bounds/rawreasons exact;unknown evidence notzero/original fallback.159identityreturns;150MAIN0keys,4localreviews one16bytekeyeach.2797GET/1684API/636font200,zero denied/nonGET/externalWS/pageerrors/unexpectedconsole/assertfail;3expected503consoleonlyunknownprobe. No final business submission.
+- Proof /tmp/transfer-ui-all-flows-f9-final/:summary/coverage/results/fixture-proof/source-proof/build-output-manifest/integrity-before/integrity-after/integrity-result/process-readback/commands.json pluslogs/166PNGs. Parent read actualsummary/coverage projection and direct-received320PNG. Canonical/source/deps/cache/dist/taskdocs/protected4/HEADindex/inventory/20oldroots unchanged EXCEPTauthorizedignoredVitestresultsJSON. Ownedresourcesclosed/process[]/port36539noLISTEN;freeze released.
+- Fresh final150-main/9-extra checks are not an exhaustive rerun of every F1–F8modal/negative/stress case; those per-unit proofs remain inherited. No backendE2E/live4323/TLS/login/extremeBigIntbrowser/opaqueRecoverybusinesssimulation. Knownchunkwarning and accepted historicalRT2+5.4%/RT4+11.7%/Countdensity18–20%residuals remain; pattern-derivedkind/participant/mobile views are not universally pixel-approved. Both minor wording flags7302/7328 resolved by verified F9 text-only changes.
+
 ## Next step
-Commit the verified three F8 files plus this tracking document under the batch grant, then native review only that committed slice againstac6be76. F8 remains open until exact acknowledgement. No live runtime update.
+Commit the four verified F9 files plus this tracking document under the batch grant, then native review only that committed slice againstdb38819. F9 remains open until exact acknowledgement. F10 runtime update still requires fresh human authorization; no live changes yet.
