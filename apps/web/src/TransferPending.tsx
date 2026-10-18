@@ -120,15 +120,15 @@ export default function TransferPending(props: TransferPendingProps) {
   const countsBusy = transfers.countsBusy;
   const countsError = transfers.countsError;
   const warehouse = authority.session?.authenticated && authority.session.identity.location.id === 1;
-  const pendingApprover = record?.status === 'pending' && record.kind === 'request_stock'
-    && actor === record.approver_location_id;
+  const pendingParticipant = record?.status === 'pending' && record.kind !== 'direct_shipment'
+    && (actor === record.origin_location_id || actor === record.destination_location_id);
   const approvedOrigin = record?.status === 'approved' && record.kind === 'request_stock'
     && actor === record.origin_location_id;
   const transitParticipant = record?.status === 'in_transit'
     && (actor === record.origin_location_id || actor === record.destination_location_id);
   const receivedParticipant = record?.status === 'received'
     && (actor === record.origin_location_id || actor === record.destination_location_id);
-  const compactDetail = pendingApprover || approvedOrigin || transitParticipant || receivedParticipant;
+  const compactDetail = pendingParticipant || approvedOrigin || transitParticipant || receivedParticipant;
   const queryPage = transfers.query.page ?? 1;
   const size = transfers.query.page_size ?? 25;
   const status = transfers.query.status ?? 'pending';
@@ -150,7 +150,7 @@ export default function TransferPending(props: TransferPendingProps) {
   </section>;
   return <section ref={detailPane} className={'transfer-pending' + (warehouse ? ' pending-warehouse' : '') + (selected ? ' pending-selected' : ' pending-list')}
     aria-labelledby={selected ? undefined : 'pending-title'} aria-label={selected ? 'Detalle de transferencia' : undefined}>
-    {selected ? <nav className={`pending-detail-navigation${pendingApprover ? ' pending-approver-navigation' : approvedOrigin ? ' approved-origin-navigation' : transitParticipant ? ' transit-destination-navigation' : receivedParticipant ? ' received-participant-navigation' : ''}`} aria-label="Navegación de transferencia">
+    {selected ? <nav className={`pending-detail-navigation${pendingParticipant ? ' pending-approver-navigation' : approvedOrigin ? ' approved-origin-navigation' : transitParticipant ? ' transit-destination-navigation' : receivedParticipant ? ' received-participant-navigation' : ''}`} aria-label="Navegación de transferencia">
       <button ref={detailBack} type="button" className="creation-back" onClick={back}>{compactDetail && <Icon name="arrow" />}Volver a {plural}</button>
       {compactDetail && <span aria-hidden="true">·</span>}
       <button type="button" className="creation-back" onClick={inventory}>Volver al inventario</button>

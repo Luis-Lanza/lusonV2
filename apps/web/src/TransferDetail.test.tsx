@@ -60,6 +60,38 @@ describe('U1 pending approver presentation', () => {
   });
 });
 
+describe('F4 pending proposal stock and hierarchy', () => {
+  it.each([1, 2])('preserves loading, unknown, zero and exact stock for participant %s', async actor => {
+    const waiting = deferred();
+    let read = () => waiting.promise;
+    const f = fixture(2, 1, actor, () => read());
+    render(f.element());
+    expect(document.querySelector('.transfer-pending-detail')).not.toBeNull();
+    expect(screen.getByRole('region', { name: 'Productos propuestos' })).toBeVisible();
+    expect(screen.getByRole('columnheader', { name: 'Propuestas' })).toBeVisible();
+    expect(screen.queryByRole('columnheader', { name: /Reservadas/ })).toBeNull();
+    expect(screen.getByRole('table')).toHaveTextContent('Consultando stock…');
+    expect(screen.getByRole('button', { name: 'Actualizar stock de origen' })).toBeDisabled();
+    await act(async () => waiting.reject(new Error('unavailable')));
+    expect(screen.getByRole('table')).toHaveTextContent('Disponibilidad no disponible');
+    expect(screen.getByRole('alert')).toHaveTextContent('La propuesta completa sigue disponible para revisión.');
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+    expect(screen.getByLabelText('Resumen de propuesta')).toHaveTextContent('Requiere aprobación deAlmacén');
+    read = async () => catalog(2, 1, 2, '0');
+    fireEvent.click(screen.getByRole('button', { name: 'Actualizar stock de origen' }));
+    await loaded();
+    expect(screen.getByRole('table')).toHaveTextContent('0 uds.');
+    read = async () => catalog(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Actualizar stock de origen' }));
+    await loaded();
+    expect(screen.getByRole('table')).toHaveTextContent('9223372036854775807 uds.');
+    expect(screen.queryByRole('button', { name: /Aprobar/ })).toBeNull();
+    expect(f.fetch).toHaveBeenCalledTimes(3);
+    expect(f.fetch.mock.calls.every(([url, init]) => String(url).includes('location_id=2')
+      && init?.method === 'GET' && new Headers(init.headers).get('X-Luson-Passive') === '1')).toBe(true);
+  });
+});
+
 describe('U2 approved stock request at physical origin', () => {
   it.each([[1, 2], [2, 3]])('shows immutable own reservations and closed audit history at origin %s', (origin, destination) => {
     const f = fixture(origin, destination, origin);
@@ -916,16 +948,17 @@ describe('A06b persisted outcome and history', () => {
         if (status === 'pending') await loaded();
         const historyToggle = screen.queryByRole('button', { name: 'Ver historial' });
         if (historyToggle) fireEvent.click(historyToggle);
-        const history = screen.getByRole('region', { name: 'Historial de la solicitud' });
+        const proposal = status === 'pending' && destination === 1;
+        const history = screen.getByRole('region', { name: proposal ? 'Historial de la propuesta' : 'Historial de la solicitud' });
         const events = within(history).getAllByRole('listitem');
         expect(events).toHaveLength(status === 'pending' ? 1 : 2);
         expect(within(history).getAllByRole('list')).toHaveLength(1);
-        expect(events[0]).toHaveTextContent('Solicitud creada');
+        expect(events[0]).toHaveTextContent(proposal ? 'Propuesta creada' : 'Solicitud creada');
         expect(events[0]).toHaveTextContent(`Ubicación: ${record.creator_location_name}`);
         expect(events[0].querySelector('time')).toHaveTextContent('31/12/2027 · 20:00 (hora Bolivia)');
         expect(events[0].querySelector('time')).toHaveAttribute('datetime', record.created_at);
-        const metrics = screen.getByRole('region', { name: historyToggle ? 'Productos solicitados' : 'Cantidades de la solicitud' });
-        expect(within(metrics).getByLabelText('Baterías solicitadas')).toHaveTextContent(/^18446744073709551614$/);
+        const metrics = screen.getByRole('region', { name: historyToggle ? proposal ? 'Productos propuestos' : 'Productos solicitados' : 'Cantidades de la solicitud' });
+        expect(within(metrics).getByLabelText(proposal ? 'Baterías propuestas' : 'Baterías solicitadas')).toHaveTextContent(/^18446744073709551614$/);
         if (record.status === 'pending') {
           expect(within(metrics).queryByLabelText('Baterías reservadas en esta solicitud')).not.toBeInTheDocument();
           expect(history).not.toHaveTextContent(/aprobada|rechazada|reservad/i);
@@ -985,7 +1018,7 @@ describe('A06a immutable physical review', () => {
     const f = fixture(origin, destination, assigned);
     render(f.element());
     await loaded();
-    const table = screen.getByRole('table', { name: 'Baterías solicitadas' });
+    const table = screen.getByRole('table', { name: destination === 1 ? 'Baterías propuestas' : 'Baterías solicitadas' });
     expect(document.body).toHaveTextContent('18446744073709551614');
     expect(within(table).getAllByText('9223372036854775807')).toHaveLength(2);
     expect(within(table).getAllByText('75.125 Ah')).toHaveLength(2);
@@ -996,12 +1029,12 @@ describe('A06a immutable physical review', () => {
     expect(document.body).not.toHaveTextContent('LIVE NOT ORIGINAL');
     const historyToggle = screen.queryByRole('button', { name: 'Ver historial' });
     if (historyToggle) fireEvent.click(historyToggle);
-    const metadata = screen.getByLabelText(historyToggle ? 'Historial de la solicitud' : 'Resumen de solicitud');
+    const metadata = screen.getByLabelText(historyToggle ? destination === 1 ? 'Historial de la propuesta' : 'Historial de la solicitud' : 'Resumen de solicitud');
     expect(within(metadata).getByText('31/12/2027 · 20:00 (hora Bolivia)')).toHaveAttribute('title', '2028-01-01T00:00:00.123456789Z');
-    const summary = screen.getByLabelText('Resumen de solicitud');
+    const summary = screen.getByLabelText(destination === 1 ? 'Resumen de propuesta' : 'Resumen de solicitud');
     expect(summary).toHaveTextContent(`Ubicación creadora${names[(destination === 1 ? origin : destination) - 1]}`);
     expect(summary).toHaveTextContent(`Requiere aprobación de${names[(destination === 1 ? 1 : origin) - 1]}`);
-    expect(summary).toHaveTextContent(`solicitud completa en ${names[origin - 1]}`);
+    expect(summary).toHaveTextContent(`${destination === 1 ? 'propuesta' : 'solicitud'} completa en ${names[origin - 1]}`);
     expect(summary).toHaveTextContent('no mueve existencias ni aumenta el stock del destino');
     const url = new URL(String(f.fetch.mock.calls[0][0]), 'http://localhost');
     expect(url.searchParams.get('location_id')).toBe(String(origin));
@@ -1077,8 +1110,8 @@ describe('A06a immutable physical review', () => {
     const f = fixture(1, 2, 2, async () => catalog(1, 1, 2, '0'));
     render(<TransferDetail controller={f.controller} ownerTag={transferViewOwner(f.env.current)!} record={f.record} actions={() => <button>Review sentinel</button>} />);
     await loaded();
-    expect(screen.getByRole('table')).toHaveTextContent('0 disponibles');
-    expect(screen.getByRole('table')).toHaveTextContent('18446744073709551614');
+    expect(screen.getByRole('table')).toHaveTextContent('0 uds.');
+    expect(screen.getByRole('region', { name: 'Productos solicitados' })).toHaveTextContent('18446744073709551614');
     expect(screen.getByRole('button', { name: 'Review sentinel' })).toBeEnabled();
   });
   it('clears stale catalog immediately, coalesces dirty invalidations, and ignores the dirty result', async () => {
@@ -1089,7 +1122,7 @@ describe('A06a immutable physical review', () => {
     next = deferred();
     act(() => { for (const listener of f.listeners) listener(); });
     await waitFor(() => expect(f.fetch).toHaveBeenCalledTimes(2));
-    expect(screen.getByRole('table')).not.toHaveTextContent('9223372036854775807 disponibles');
+    expect(screen.getByRole('table')).not.toHaveTextContent('9223372036854775807 uds.');
     act(() => { for (const listener of f.listeners) { listener(); listener(); } });
     expect(f.fetch).toHaveBeenCalledTimes(2);
     const dirty = next;
@@ -1097,8 +1130,8 @@ describe('A06a immutable physical review', () => {
     await act(async () => dirty.resolve(catalog(1, 1, 2, '17')));
     await waitFor(() => expect(f.fetch).toHaveBeenCalledTimes(3));
     await loaded();
-    expect(screen.getByRole('table')).not.toHaveTextContent('17 disponibles');
-    expect(screen.getByRole('table')).toHaveTextContent('9223372036854775807 disponibles');
+    expect(screen.getByRole('table')).not.toHaveTextContent('17 uds.');
+    expect(screen.getByRole('table')).toHaveTextContent('9223372036854775807 uds.');
     expect(f.fetch.mock.calls.every(([, init]) => new Headers(init?.headers).get('X-Luson-Passive') === '1')).toBe(true);
   });
   it('a failed refresh removes old advisory values, and manual retry remains passive', async () => {
@@ -1109,7 +1142,7 @@ describe('A06a immutable physical review', () => {
     failing = true;
     fireEvent.click(screen.getByRole('button', { name: 'Actualizar stock de origen' }));
     await screen.findByRole('alert');
-    expect(screen.getByRole('table')).not.toHaveTextContent('9223372036854775807 disponibles');
+    expect(screen.getByRole('table')).not.toHaveTextContent('9223372036854775807 uds.');
     failing = false;
     fireEvent.click(screen.getByRole('button', { name: 'Actualizar stock de origen' }));
     await loaded();

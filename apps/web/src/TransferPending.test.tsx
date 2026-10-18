@@ -147,6 +147,41 @@ function pendingHistory(record = receivedWire()) {
       recorded_at: correctionStamp, state: 'pending', decision: null, application: null }] : [] })) };
 }
 
+describe('F4 pending participant chrome', () => {
+  it.each([[1, 3, 1], [1, 3, 3], [2, 3, 2], [2, 3, 3], [2, 1, 2], [2, 1, 1]])(
+    'keeps compact waiting detail and assigned actions for %s → %s at %s', async (origin, destination, actor) => {
+    const f = fixture(actor);
+    f.env.record = wire(origin, destination);
+    const start = vi.spyOn(f.controller.decisionRecovery!, 'start');
+    render(f.element({ ownerTag: f.ownerTag, id: f.env.record.id }));
+    await screen.findByRole('heading', { name: f.env.record.reference });
+    expect(screen.getByRole('navigation')).toHaveClass('pending-approver-navigation');
+    expect(screen.queryByRole('region', { name: 'Contadores de solicitudes' })).toBeNull();
+    const proposal = destination === 1;
+    const products = screen.getByRole('region', { name: proposal ? 'Productos propuestos' : 'Productos solicitados' });
+    expect(products).toHaveTextContent('18446744073709551614');
+    const approver = actor === f.env.record.approver_location_id;
+    expect(within(products).queryByRole('button', { name: /Aprobar/ }) !== null).toBe(approver);
+    expect(within(products).queryByRole('button', { name: /Rechazar/ }) !== null).toBe(approver);
+    expect(within(products).queryByRole('button', { name: 'Cancelar solicitud' }) !== null).toBe(!approver);
+    if (!approver) {
+      expect(products).toHaveTextContent(`Pendiente de aprobación de ${locations[f.env.record.approver_location_id - 1]}`);
+      const refresh = within(products).getByRole('button', { name: 'Actualizar stock de origen' });
+      await waitFor(() => expect(refresh).toBeEnabled());
+      fireEvent.click(refresh);
+      await waitFor(() => expect(refresh).toBeEnabled());
+      expect(within(products).queryByRole('button', { name: /Aprobar|Rechazar/ })).toBeNull();
+      expect(within(products).getByRole('button', { name: 'Cancelar solicitud' })).toBeEnabled();
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+    const history = screen.getByRole('region', { name: proposal ? 'Historial de la propuesta' : 'Historial de la solicitud' });
+    expect(history).toHaveTextContent(`Ubicación: ${f.env.record.creator_location_name}`);
+    expect(history.querySelectorAll('time')).toHaveLength(1);
+    expect(start).not.toHaveBeenCalled();
+    expect(f.fetch.mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true);
+  });
+});
+
 describe('F1 participant transit chrome', () => {
   const routes = [
     ['request_stock', 1, 3], ['request_stock', 2, 3],
@@ -229,8 +264,8 @@ describe('F3 participant received chrome', () => {
 
 describe('U1/U2 context-specific chrome', () => {
   it.each([
-    [1, 1, 2, 'pending', 'pending-approver-navigation'], [2, 1, 2, 'pending', null],
-    [1, 1, 2, 'approved', 'approved-origin-navigation'], [1, 2, 1, 'pending', null],
+    [1, 1, 2, 'pending', 'pending-approver-navigation'], [2, 1, 2, 'pending', 'pending-approver-navigation'],
+    [1, 1, 2, 'approved', 'approved-origin-navigation'], [1, 2, 1, 'pending', 'pending-approver-navigation'],
     [2, 2, 3, 'approved', 'approved-origin-navigation'], [2, 1, 2, 'approved', null],
   ] as const)('scopes chrome for actor %s, route %s → %s, status %s', async (actor, origin, destination, status, adapted) => {
     const f = fixture(actor);
@@ -1379,7 +1414,7 @@ describe('R05-U2 pending header action stack', () => {
     await detail();
     expect(screen.queryByRole('button', { name: 'Nueva transferencia' })).not.toBeInTheDocument();
     expect(screen.queryByText('3 solicitudes pendientes')).not.toBeInTheDocument();
-    expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toHaveAttribute('aria-live', 'polite');
+    expect(screen.queryByRole('region', { name: 'Contadores de solicitudes' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
     expect(await screen.findByText('3 solicitudes pendientes')).toHaveAttribute('aria-live', 'polite');
   });
@@ -1434,23 +1469,17 @@ describe('R04c participant Pending', () => {
   it.each([[1, 2, 'Solicitud a Almacén'], [2, 3, 'Solicitud entre sucursales'], [2, 1, 'Propuesta de envío a Almacén']])('labels physical route %s to %s honestly', async (origin, destination, label) => {
     const f = fixture(2); f.env.record = wire(Number(origin), Number(destination)); render(f.element()); await loaded();
     expect(screen.getByRole('table')).toHaveTextContent(String(label)); await detail();
-    if (origin === 2 && destination === 3) {
-      expect(screen.getByLabelText('Ruta física')).toHaveTextContent('Sucursal A → Sucursal B');
-      expect(screen.getByRole('region', { name: 'Productos solicitados' })).toHaveTextContent('Al aprobar se reservan las cantidades, sin mover stock.');
-    } else {
-      const route = screen.getByRole('region', { name: 'Ruta física' });
-      expect(route.querySelector(':scope > div:first-child strong')).toHaveTextContent(locations[Number(origin) - 1]);
-      expect(route.querySelector(':scope > div:last-child strong')).toHaveTextContent(locations[Number(destination) - 1]);
-      expect(route.querySelector('b')).toHaveTextContent('→');
-      expect(screen.getByLabelText('Resumen de solicitud')).toHaveTextContent('Esta solicitud todavía no reserva ni mueve stock.');
-    }
+    expect(screen.getByLabelText('Ruta física')).toHaveTextContent(`${locations[Number(origin) - 1]} → ${locations[Number(destination) - 1]}`);
+    expect(screen.getByRole('region', { name: destination === 1 ? 'Productos propuestos' : 'Productos solicitados' }))
+      .toHaveTextContent('Al aprobar se reservan las cantidades, sin mover stock.');
   });
   it('keeps exact Ah, nanosecond UTC, quantities and physical creator/approver in detail', async () => {
     const f = fixture(); render(f.element()); await loaded(); await detail();
     const items = screen.getByRole('table', { name: 'Baterías solicitadas' });
     expect(items).toHaveTextContent('75.125 Ah'); expect(items).toHaveTextContent('Izquierda [L]'); expect(items).toHaveTextContent('Derecha [R]');
     expect(within(items).getAllByText('9223372036854775807')).toHaveLength(2);
-    expect(within(screen.getByLabelText('Resumen de solicitud')).getByText('31/12/2027 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-01T00:00:00.123456789Z');
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+    expect(within(screen.getByLabelText('Historial de la solicitud')).getByText('31/12/2027 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-01T00:00:00.123456789Z');
     expect(screen.getByLabelText('Resumen de solicitud')).toHaveTextContent('Ubicación creadoraSucursal A');
     const history = screen.getByRole('region', { name: 'Historial de la solicitud' });
     expect(within(history).getAllByRole('listitem')).toHaveLength(1);

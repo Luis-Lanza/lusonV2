@@ -38,7 +38,7 @@ export default function TransferDecision(props: TransferDecisionProps) {
   const attempt = permitted ? transfers.decision : null;
   const busy = attempt?.phase === 'inFlight';
   const visibleReview = permitted && review?.fence === fence ? review : null;
-  const isolate = visibleReview?.record.kind === 'request_stock';
+  const isolate = !!visibleReview && visibleReview.record.kind !== 'direct_shipment';
   // Register cleanup before the focus-restoration hook; busy/result renders keep isolation.
   useLayoutEffect(() => {
     const backdrop = dialog.current?.parentElement;
@@ -75,7 +75,7 @@ export default function TransferDecision(props: TransferDecisionProps) {
   if (!permitted) return null;
   const record = props.record;
   const assigned = authority.session?.authenticated ? authority.session.identity.location.id : null;
-  const canReview = record?.status === 'pending' && record.approver_location_id === assigned;
+  const canReview = record?.status === 'pending' && record.kind !== 'direct_shipment' && record.approver_location_id === assigned;
   const unresolved = attempt?.phase === 'uncertain' || busy;
   const result = attempt?.result;
   const reviewAttempt = visibleReview && attempt?.action === visibleReview.action
@@ -84,6 +84,7 @@ export default function TransferDecision(props: TransferDecisionProps) {
     && matchesDecisionRecord(reviewAttempt.original, reviewAttempt.result)
     && (reviewAttempt.phase === 'confirmed' || reviewAttempt.phase === 'conflict') ? reviewAttempt.result : null;
   const reviewConfirmed = !!reviewResult && reviewAttempt?.phase === 'confirmed' && satisfiesDecision(reviewAttempt.action, reviewResult);
+  const reviewSubject = visibleReview?.record.kind === 'send_to_warehouse' ? 'Propuesta' : 'Solicitud';
   const failure = transfers.decisionError;
   const error = failure?.code === 'insufficient_stock' ? 'No hay disponibilidad suficiente para aprobar la solicitud completa.'
     : failure?.status === 403 || failure?.status === 404 ? 'La solicitud no está disponible.'
@@ -108,7 +109,7 @@ export default function TransferDecision(props: TransferDecisionProps) {
     finally { pendingCall.current = false; }
   };
   const open = (action: Action, trigger: HTMLElement) => {
-    if (!current() || !record || record.status !== 'pending' || unresolved || pendingCall.current
+    if (!current() || !record || record.status !== 'pending' || record.kind === 'direct_shipment' || unresolved || pendingCall.current
       || latest.current.record?.id !== record.id || latest.current.record.status !== 'pending') return;
     const now = controller.getTransferAuthority();
     if (!now.session?.authenticated || now.session.identity.location.id !== record.approver_location_id) return;
@@ -139,7 +140,7 @@ export default function TransferDecision(props: TransferDecisionProps) {
     </section>}
     {props.renderDetail ? props.renderDetail(actions) : actions}
     {visibleReview && <div className="transfer-decision-backdrop"><section ref={dialog} tabIndex={-1}
-      className={`transfer-decision-modal${visibleReview.record.kind === 'request_stock' && !reviewResult ? ` transfer-pending-confirmation transfer-pending-${visibleReview.action}` : ''}`} role="dialog" aria-modal="true" aria-labelledby="decision-title" aria-busy={busy}
+      className={`transfer-decision-modal${isolate && !reviewResult ? ` transfer-pending-confirmation transfer-pending-${visibleReview.action}` : ''}`} role="dialog" aria-modal="true" aria-labelledby="decision-title" aria-busy={busy}
       onKeyDown={event => {
         if (!current()) return;
         if (event.key === 'Escape') { event.preventDefault(); dismiss(); }
@@ -151,24 +152,24 @@ export default function TransferDecision(props: TransferDecisionProps) {
           else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialog.current)) { event.preventDefault(); first.focus(); }
         }
       }}>
-      <header><div><h2 id="decision-title">{reviewConfirmed ? `Solicitud ${transferStatusLabel(reviewResult)} confirmada` : reviewResult ? `Resultado de la solicitud: ${transferStatusLabel(reviewResult)}` : visibleReview.action === 'approve' ? 'Confirmar aprobación' : 'Confirmar rechazo'}</h2>
+      <header><div><h2 id="decision-title">{reviewConfirmed ? `${reviewSubject} ${transferStatusLabel(reviewResult)} confirmada` : reviewResult ? `Resultado de la ${reviewSubject.toLowerCase()}: ${transferStatusLabel(reviewResult)}` : visibleReview.action === 'approve' ? 'Confirmar aprobación' : 'Confirmar rechazo'}</h2>
         <p>{visibleReview.record.reference} · {visibleReview.record.origin_location_name} → {visibleReview.record.destination_location_name}</p></div>
         <button ref={close} type="button" aria-label="Cerrar confirmación" disabled={busy} onClick={dismiss}>×</button>
       </header>
       <div className="transfer-decision-body">
         <TransferItems record={visibleReview.record}
-          stock={visibleReview.record.kind === 'request_stock' ? undefined : props.stock ?? { catalog: null, busy: false, unavailable: true }}
-          compact={visibleReview.record.kind === 'request_stock'} confirmation reject={visibleReview.action === 'reject'} />
-        <div className="transfer-impact">{visibleReview.record.kind === 'request_stock' && !reviewResult ? <>
+          stock={isolate ? undefined : props.stock ?? { catalog: null, busy: false, unavailable: true }}
+          compact={isolate} confirmation reject={visibleReview.action === 'reject'} />
+        <div className="transfer-impact">{isolate && !reviewResult ? <>
           <p><Icon name="info" /><strong>{visibleReview.action === 'approve' ? 'Al confirmar:' : 'Al rechazar:'}</strong></p>
           <ul>{visibleReview.action === 'approve' ? <>
             <li>Se validará la disponibilidad y se reservarán las {transferQuantityTotal(visibleReview.record).toString()} baterías en {visibleReview.record.origin_location_name}.</li>
             <li className="transfer-impact-warning">Si falta stock de alguna variante, no se aprobará ni reservará ninguna batería.</li>
             <li>No se moverán existencias ni aumentará el stock de {visibleReview.record.destination_location_name}.</li>
           </> : <>
-            <li>Se rechazará la solicitud completa y se conservará el registro.</li>
+            <li>Se rechazará {visibleReview.record.kind === 'send_to_warehouse' ? 'la propuesta' : 'la solicitud'} completa y se conservará el registro.</li>
             <li>No se moverán existencias ni se modificarán reservas.</li>
-            <li className="transfer-impact-warning">Después de confirmar, esta solicitud no podrá aprobarse ni editarse.</li>
+            <li className="transfer-impact-warning">Después de confirmar, esta {visibleReview.record.kind === 'send_to_warehouse' ? 'propuesta' : 'solicitud'} no podrá aprobarse ni editarse.</li>
           </>}</ul>
         </> : <><h3>{reviewResult ? 'Resultado de la decisión' : visibleReview.action === 'approve' ? 'Impacto de la confirmación' : 'Impacto del rechazo'}</h3>
           {reviewResult ? (reviewConfirmed ? <p role="status">{visibleReview.action === 'approve'

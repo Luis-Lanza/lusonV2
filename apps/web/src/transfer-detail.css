@@ -1,4 +1,4 @@
-/* U1 only: pending stock-request approver detail and its decision review. */
+/* Pending stock requests and warehouse proposals: participant detail and decision review. */
 .transfer-detail.transfer-pending-detail {
   max-width: 920px;
   color: #242124;
@@ -228,6 +228,32 @@
 .transfer-pending-confirmation .transfer-detail-items tfoot {
   font-weight: 400;
   color: #6B6267;
+}
+/* Reflow only the pending detail shell; keep navigation, identity and logout. */
+@media (max-width: 767px) {
+  .app-shell:has(.transfer-pending-detail) > .sidebar {
+    position: static;
+    inset: auto;
+    width: auto;
+    padding: 16px;
+    gap: 12px;
+    border-right: 0;
+    border-bottom: 1px solid #DED7DA;
+  }
+  .app-shell:has(.transfer-pending-detail) > .app-header {
+    position: static;
+    inset: auto;
+    height: auto;
+    min-height: 56px;
+    padding: 16px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .app-shell:has(.transfer-pending-detail) > .inventory-main {
+    margin-left: 0;
+    padding: 16px;
+    min-height: auto;
+  }
 }
 @media (max-width: 600px) {
   .transfer-decision-modal.transfer-pending-confirmation > header { padding: 16px 16px 0; }
