@@ -297,8 +297,10 @@ export default function TransferDetail(props: TransferDetailProps) {
     && session?.authenticated && session.identity.location.id === record.approver_location_id;
   const approvedOrigin = record.status === 'approved' && record.kind === 'request_stock'
     && session?.authenticated && session.identity.location.id === record.origin_location_id;
-  const transitDestination = record.status === 'in_transit' && record.kind === 'request_stock'
-    && session?.authenticated && session.identity.location.id === record.destination_location_id;
+  const transitParticipant = record.status === 'in_transit' && session?.authenticated
+    && (session.identity.location.id === record.origin_location_id || session.identity.location.id === record.destination_location_id);
+  const transitHistoryLabel = direct ? 'Historial del envío'
+    : record.kind === 'send_to_warehouse' ? 'Historial de la propuesta' : 'Historial de la solicitud';
   const historyKey = JSON.stringify([fence, record.id]);
   const historyOpen = historyFor === historyKey;
   if (pendingApprover) return <div className="transfer-detail transfer-pending-detail">
@@ -352,12 +354,12 @@ export default function TransferDetail(props: TransferDetailProps) {
       <p>La aprobación reserva la solicitud completa; no mueve existencias físicas ni acredita stock al destino.</p>
     </section>}
   </div>;
-  if (transitDestination) return <div className="transfer-detail transfer-transit-detail">
+  if (transitParticipant) return <div className="transfer-detail transfer-transit-detail">
     <header className="transfer-transit-heading">
       <div><h1>{record.reference}</h1><span className="pending-status status-in_transit">En tránsito</span></div>
       <button type="button" aria-expanded={historyOpen} aria-controls="transit-transfer-history"
         onClick={() => setHistoryFor(historyOpen ? null : historyKey)}><svg aria-hidden="true" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="12" cy="12" r="9" /><path d="M12 6v6l4 2" /></svg>Ver historial</button>
-      <p>Solicitud de stock · <span aria-label="Ruta física">{record.origin_location_name} → {record.destination_location_name}</span></p>
+      <p>{direct ? 'Envío directo de Almacén' : record.kind === 'send_to_warehouse' ? 'Propuesta de envío a Almacén' : 'Solicitud de stock'} · <span aria-label="Ruta física">{record.origin_location_name} → {record.destination_location_name}</span></p>
     </header>
     <section className="transfer-transit-products" aria-label="Productos enviados">
       <header><h2>Productos enviados</h2><span> · {record.items.length} variantes · <span aria-label="Baterías enviadas">{transferQuantityTotal(record).toString()}</span> baterías</span></header>
@@ -365,12 +367,12 @@ export default function TransferDetail(props: TransferDetailProps) {
       <footer><p>Pendiente de recepción en {record.destination_location_name}. El stock todavía no fue acreditado.</p>
         {props.actions?.(stock)}</footer>
     </section>
-    {historyOpen && <section id="transit-transfer-history" className="transfer-history in_transit" aria-label="Historial de la solicitud">
-      <h2>Historial de la solicitud</h2>
+    {historyOpen && <section id="transit-transfer-history" className="transfer-history in_transit" aria-label={transitHistoryLabel}>
+      <h2>{transitHistoryLabel}</h2>
       <ol>
-        <li><h3>Solicitud creada</h3><p>Ubicación: {record.creator_location_name}</p><TransferDate value={record.created_at} /></li>
-        <li><h3>Solicitud aprobada y stock reservado</h3><p>Ubicación: {record.approver_location_name}</p><TransferDate value={record.decided_at} /></li>
-        <li><h3>Solicitud despachada</h3><p>Origen: {record.origin_location_name}</p><TransferDate value={record.dispatched_at} /></li>
+        <li><h3>{direct ? 'Envío creado, autorizado y stock reservado' : record.kind === 'send_to_warehouse' ? 'Propuesta creada' : 'Solicitud creada'}</h3><p>Ubicación: {record.creator_location_name}</p><TransferDate value={record.created_at} /></li>
+        {!direct && <li><h3>{record.kind === 'send_to_warehouse' ? 'Propuesta aprobada y stock reservado' : 'Solicitud aprobada y stock reservado'}</h3><p>Ubicación: {record.approver_location_name}</p><TransferDate value={record.decided_at} /></li>}
+        <li><h3>{record.kind === 'request_stock' ? 'Solicitud despachada' : 'Envío despachado'}</h3><p>Origen: {record.origin_location_name}</p><TransferDate value={record.dispatched_at} /></li>
       </ol>
     </section>}
   </div>;

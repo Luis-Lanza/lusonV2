@@ -147,27 +147,49 @@ function pendingHistory(record = receivedWire()) {
       recorded_at: correctionStamp, state: 'pending', decision: null, application: null }] : [] })) };
 }
 
-describe('U3 destination transit chrome', () => {
-  it('uses adjacent navigation and retains unchanged receipt capture without submitting', async () => {
-    const original = wire(1, 3, '9007199254740993', 'approved');
-    const record = { ...original, status: 'in_transit', dispatch_location_id: 1, dispatched_at: correctionStamp };
-    const f = fixture(3, url => url === `/api/transfers/${record.id}` ? Promise.resolve(reply(record)) : undefined);
+describe('F1 participant transit chrome', () => {
+  const routes = [
+    ['request_stock', 1, 3], ['request_stock', 2, 3],
+    ['direct_shipment', 1, 3], ['send_to_warehouse', 2, 1],
+  ] as const;
+  it.each(routes.flatMap(([kind, origin, destination]) => [origin, destination].map(actor => ({ kind, origin, destination, actor }))))(
+    'keeps compact navigation and destination-only capture for $kind at $actor', async ({ kind, origin, destination, actor }) => {
+    const original = wire(origin, destination, '9007199254740993', 'approved');
+    const record = { ...original, kind, status: 'in_transit', dispatch_location_id: origin, dispatched_at: correctionStamp,
+      ...(kind === 'direct_shipment' ? { creator_location_id: origin, creator_location_name: locations[origin - 1], decided_at: original.created_at } : {}) };
+    const f = fixture(actor, url => url === `/api/transfers/${record.id}` ? Promise.resolve(reply(record)) : undefined);
     f.controller.receiptRecovery = createTransferReceiptRecovery();
+    const start = vi.spyOn(f.controller.receiptRecovery, 'start');
+    const random = vi.spyOn(crypto, 'getRandomValues');
     render(f.element({ ownerTag: f.ownerTag, id: record.id }));
     await screen.findByRole('heading', { name: record.reference });
     const navigation = screen.getByRole('navigation', { name: 'Navegación de transferencia' });
     expect(navigation).toHaveClass('transit-destination-navigation');
     expect(navigation).toHaveTextContent('Volver a pendientes·Volver al inventario');
     expect(screen.queryByRole('region', { name: 'Contadores de solicitudes' })).not.toBeInTheDocument();
-    const receive = within(screen.getByRole('region', { name: 'Productos enviados' })).getByRole('button', { name: 'Recibir solicitud' });
-    fireEvent.click(receive);
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).queryByRole('button', { name: 'Confirmar recepción' })).not.toBeInTheDocument();
-    expect(within(dialog).getByRole('button', { name: 'Revisar recepción' })).toBeDisabled();
-    fireEvent.keyDown(dialog, { key: 'Escape' });
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(receive).toHaveFocus();
-    expect(f.fetch.mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true);
+    const products = screen.getByRole('region', { name: 'Productos enviados' });
+    expect(products).toHaveTextContent(`Pendiente de recepción en ${locations[destination - 1]}`);
+    expect(start).not.toHaveBeenCalled();
+    expect(random).not.toHaveBeenCalled();
+    if (actor === destination) {
+      const receive = within(products).getByRole('button', { name: 'Recibir solicitud' });
+      fireEvent.click(receive);
+      const dialog = screen.getByRole('dialog');
+      expect(within(dialog).queryByRole('button', { name: 'Confirmar recepción' })).not.toBeInTheDocument();
+      expect(within(dialog).getByRole('button', { name: 'Revisar recepción' })).toBeDisabled();
+      fireEvent.keyDown(dialog, { key: 'Escape' });
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(receive).toHaveFocus();
+    } else {
+      expect(screen.queryByRole('button', { name: /Recibir|Revisar|Confirmar/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(start).not.toHaveBeenCalled();
+      expect(random).not.toHaveBeenCalled();
+    }
+    expect(f.fetch.mock.calls.every(([url, init]) => (!init?.method || init.method === 'GET')
+      && (String(url).startsWith('/api/transfers?') || url === '/api/transfers/counts' || url === `/api/transfers/${record.id}`
+        || (actor === destination && String(url).startsWith(`/api/inventory?location_id=${destination}&`))))).toBe(true);
+    random.mockRestore();
   });
 });
 
