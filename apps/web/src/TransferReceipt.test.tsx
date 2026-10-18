@@ -79,6 +79,92 @@ async function capture() {
 const actualInput = () => screen.getByLabelText(/Cantidad recibida.*Expected/);
 afterEach(() => vi.unstubAllGlobals());
 
+const receiptRoutes = [
+  { kind: 'request_stock', origin: 1, destination: 2, creator: 2, approver: 1 },
+  { kind: 'request_stock', origin: 3, destination: 2, creator: 2, approver: 3 },
+  { kind: 'direct_shipment', origin: 1, destination: 2, creator: 1, approver: 1 },
+  { kind: 'send_to_warehouse', origin: 2, destination: 1, creator: 2, approver: 1 },
+];
+function routeRecord(route: typeof receiptRoutes[number]) {
+  return { ...transit, kind: route.kind,
+    creator_location_id: route.creator, creator_location_name: locations[route.creator - 1].name,
+    origin_location_id: route.origin, origin_location_name: locations[route.origin - 1].name,
+    destination_location_id: route.destination, destination_location_name: locations[route.destination - 1].name,
+    approver_location_id: route.approver, approver_location_name: locations[route.approver - 1].name,
+    decision_location_id: route.approver, dispatch_location_id: route.origin,
+    decided_at: route.kind === 'direct_shipment' ? transit.created_at : transit.decided_at,
+  };
+}
+describe('F2 shared receipt across eligible routes', () => {
+  it.each(receiptRoutes)('shares capture/review/edit and destination-only reads for $kind from $origin', async route => {
+    const original = routeRecord(route);
+    const f = fixture(route.destination); f.setRecord(original);
+    const view = render(<App />); await detail();
+    const label = route.kind === 'request_stock' ? 'Recibir solicitud' : 'Registrar recepción';
+    const trigger = screen.getByRole('button', { name: label });
+    if (route.kind !== 'request_stock') expect(screen.queryByRole('button', { name: 'Recibir solicitud' })).toBeNull();
+    const before = f.fetch.mock.calls.length;
+    fireEvent.click(trigger);
+    const dialog = screen.getByRole('dialog', { name: 'Registrar cantidades recibidas' });
+    expect(dialog).toHaveClass('transfer-receipt-modal');
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(dialog).toHaveTextContent(`TR-001 · ${original.origin_location_name} → ${original.destination_location_name}`);
+    expect(dialog).toHaveTextContent('Conteo · Luego revisarás la recepción');
+    expect(view.container.querySelector('.transfer-receipt > .transfer-cancellation')).toHaveAttribute('inert');
+    expect(within(dialog).getByRole('button', { name: 'Cerrar confirmación de recepción' })).toHaveFocus();
+    const table = within(dialog).getByRole('table', { name: 'Cantidades recibidas' });
+    expect(table).toHaveTextContent(sent);
+    expect(table).toHaveTextContent('75.125 Ah'); expect(table).toHaveTextContent('Izquierda [L]');
+    expect(actualInput()).toHaveValue('');
+    expect(actualInput()).toHaveAttribute('aria-describedby', 'receipt-capture-rules');
+    expect(within(dialog).getByRole('button', { name: 'Revisar recepción' })).toBeDisabled();
+    expect(within(dialog).queryByRole('button', { name: 'Confirmar recepción' })).toBeNull();
+    const panel = within(dialog).getByRole('region', { name: '¿Llegó otra variante?' });
+    const selector = within(panel).getByLabelText('Variante inesperada');
+    await waitFor(() => expect(selector).toBeEnabled());
+    expect(within(panel).getByRole('button', { name: 'Agregar variante inesperada' })).toBeDisabled();
+    const afterCatalog = f.fetch.mock.calls.length;
+    fireEvent.change(actualInput(), { target: { value: '00' } });
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Revisá las cantidades');
+    expect(within(dialog).getByRole('button', { name: 'Revisar recepción' })).toBeDisabled();
+    fireEvent.change(actualInput(), { target: { value: sent } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revisar recepción' }));
+    expect(screen.getByRole('dialog', { name: 'Revisar recepción' })).toBe(dialog);
+    expect(dialog).toHaveClass('receipt-expected-review');
+    expect(dialog).toHaveTextContent('Revisión previa a confirmar');
+    const preview = within(dialog).getByRole('table', { name: 'Revisión de cantidades recibidas' });
+    const total = within(preview).getByRole('row', { name: /Total: 1 variantes/ });
+    expect(within(total).getAllByRole('cell').slice(1, 4).map(cell => cell.textContent)).toEqual([sent, sent, sent]);
+    expect(preview).toHaveTextContent('Sin diferencias');
+    expect(dialog).toHaveTextContent(`Se acreditarán ${sent} baterías en ${original.destination_location_name} al confirmar.`);
+    expect(dialog).toHaveTextContent('No es inventario actual.');
+    expect(dialog).toHaveTextContent('Conteo original guardado una sola vez; no se podrá editar.');
+    expect(dialog.querySelector('input, select')).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Editar cantidades' }));
+    expect(screen.getByRole('dialog', { name: 'Registrar cantidades recibidas' })).toBe(dialog);
+    expect(actualInput()).toHaveValue(sent);
+    expect(original.items[0].quantity).toBe(sent);
+    fireEvent.keyDown(actualInput(), { key: 'Escape', isComposing: true }); expect(dialog).toBeInTheDocument();
+    fireEvent.keyDown(actualInput(), { key: 'Escape' }); expect(dialog).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+    expect(view.container.querySelector('.transfer-receipt > .transfer-cancellation')).not.toHaveAttribute('inert');
+    expect(f.fetch.mock.calls).toHaveLength(afterCatalog);
+    const reads = f.fetch.mock.calls.slice(before);
+    expect(reads).toHaveLength(1);
+    expect(String(reads[0][0])).toContain(`location_id=${route.destination}`);
+    expect(String(reads[0][0])).toContain('page_size=50');
+    expect(reads[0][1]?.method ?? 'GET').toBe('GET');
+    expect(posts(f)).toHaveLength(0);
+  });
+  it.each(receiptRoutes)('never offers receipt or loads destination catalog for $kind origin $origin', async route => {
+    const f = fixture(route.origin); f.setRecord(routeRecord(route)); render(<App />); await detail();
+    expect(screen.queryByRole('button', { name: /Recibir solicitud|Registrar recepción/ })).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(f.fetch.mock.calls.filter(([url]) => String(url).includes('page_size=50'))).toHaveLength(0);
+    expect(posts(f)).toHaveLength(0);
+  });
+});
+
 describe('U3d expected receipt review', () => {
   const pair = { ...transit, items: ['L', 'R'].map((polarity, index) => ({
     ...transit.items[0], variant_id: index + 1, polarity, quantity: '1',
@@ -162,13 +248,13 @@ describe('U3e unexpected and mixed receipt preview', () => {
     expect(row).not.toHaveTextContent('Ah'); expect(row).not.toHaveTextContent('Izquierda'); expect(row).not.toHaveTextContent('Derecha');
     expect(row).toHaveTextContent('No enviada: 1');
   });
-  it.each(['request_stock', 'direct_shipment'])('preserves %s per-variant counts and bigint credit without netting', async kind => {
-    const f = fixture();
-    f.setRecord({ ...transit, kind, ...(kind === 'direct_shipment' ? { creator_location_id: 1, creator_location_name: 'Almacén', decided_at: transit.created_at } : {}), items: [1, 3].map((variant_id, index) => ({
+  it.each(receiptRoutes)('preserves $kind from $origin per-variant counts and bigint credit without netting', async route => {
+    const f = fixture(route.destination);
+    f.setRecord({ ...routeRecord(route), items: [1, 3].map((variant_id, index) => ({
       ...transit.items[0], variant_id, polarity: index ? 'R' : 'L', quantity: sent,
     })) });
     render(<App />); await detail();
-    fireEvent.click(await screen.findByRole('button', { name: 'Recibir solicitud' }));
+    fireEvent.click(await screen.findByRole('button', { name: route.kind === 'request_stock' ? 'Recibir solicitud' : 'Registrar recepción' }));
     const dialog = screen.getByRole('dialog');
     const selector = within(dialog).getByLabelText('Variante inesperada');
     await waitFor(() => expect(selector).toBeEnabled());
@@ -178,22 +264,19 @@ describe('U3e unexpected and mixed receipt preview', () => {
     const values = [(BigInt(sent) - 1n).toString(), (BigInt(sent) + 1n).toString(), '1'];
     inputs.forEach((input, index) => fireEvent.change(input, { target: { value: values[index] } }));
     fireEvent.click(screen.getByRole('button', { name: 'Revisar recepción' }));
-    // The accepted request-stock preview is shared; other kinds keep their existing presentation.
-    const table = within(dialog).getByRole('table', { name: kind === 'request_stock' ? 'Revisión de cantidades recibidas' : 'Detalle de recepción' });
+    const table = within(dialog).getByRole('table', { name: 'Revisión de cantidades recibidas' });
     expect(table.querySelectorAll('tbody tr')).toHaveLength(3);
     for (const [id, expected] of [[1, [sent, values[0], values[0]]], [3, [sent, values[1], sent]], [2, ['0', '1', '0']]] as const) {
       const row = table.querySelector(`[data-variant-id="${id}"]`) as HTMLElement;
       expect(within(row).getAllByRole('cell').slice(1, 4).map(cell => cell.textContent)).toEqual(expected);
     }
     expect(table).toHaveTextContent('Faltante: 1'); expect(table).toHaveTextContent('Exceso: 1');
-    if (kind === 'request_stock') {
-      const total = within(table).getByRole('row', { name: /Total: 3 variantes/ });
-      expect(within(total).getAllByRole('cell').slice(1, 4).map(cell => cell.textContent)).toEqual([
-        '18014398509481986', '18014398509481987', '18014398509481985',
-      ]);
-      for (const badge of ['Faltante: 1', 'Exceso: 1', 'No enviada: 1']) expect(total).toHaveTextContent(badge);
-      expect(table.querySelectorAll('.receipt-preview-difference svg')).toHaveLength(3);
-    }
+    const total = within(table).getByRole('row', { name: /Total: 3 variantes/ });
+    expect(within(total).getAllByRole('cell').slice(1, 4).map(cell => cell.textContent)).toEqual([
+      '18014398509481986', '18014398509481987', '18014398509481985',
+    ]);
+    for (const badge of ['Faltante: 1', 'Exceso: 1', 'No enviada: 1']) expect(total).toHaveTextContent(badge);
+    expect(table.querySelectorAll('.receipt-preview-difference svg')).toHaveLength(3);
     expect(dialog.querySelector('input, select')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Editar cantidades' }));
     expect(within(dialog).getAllByRole('textbox').map(input => (input as HTMLInputElement).value)).toEqual(values);
@@ -363,24 +446,7 @@ describe('U3b receipt modal foundation', () => {
       expect(posts(f)).toHaveLength(0);
     } finally { prior.remove(); dynamic.remove(); }
   });
-  it('preserves the default receipt presentation for direct shipments', async () => {
-    const f = fixture();
-    f.setRecord({ ...transit, kind: 'direct_shipment', creator_location_id: 1, creator_location_name: 'Almacén', decided_at: transit.created_at });
-    render(<App />); await detail();
-    fireEvent.click(screen.getByRole('button', { name: 'Recibir solicitud' }));
-    const dialog = screen.getByRole('dialog', { name: 'Confirmar recepción' });
-    expect(dialog).not.toHaveClass('transfer-receipt-modal');
-    expect(within(dialog).queryByRole('table', { name: 'Cantidades recibidas' })).toBeNull();
-    expect(within(dialog).queryByRole('region', { name: '¿Llegó otra variante?' })).toBeNull();
-    expect(dialog).not.toHaveTextContent('Conteo · Luego revisarás la recepción');
-    expect(actualInput()).toHaveValue('');
-    fireEvent.change(actualInput(), { target: { value: sent } });
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Revisar recepción' }));
-    expect(within(dialog).getByRole('table', { name: 'Detalle de recepción' })).toHaveTextContent('Stock disponible acreditado');
-    expect(dialog.querySelector('.receipt-preview')).toBeNull();
-    fireEvent.keyDown(dialog, { key: 'Escape' });
-    expect(posts(f)).toHaveLength(0);
-  });
+
   it('cleans up isolation without returning stale focus after catalog authority loss', async () => {
     let resolve!: (value: Response) => void;
     const job = new Promise<Response>(yes => { resolve = yes; });

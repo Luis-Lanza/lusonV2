@@ -127,7 +127,7 @@ export default function TransferReceipt(props: TransferReceiptProps) {
   const dialog = useRef<HTMLElement>(null); const close = useRef<HTMLButtonElement>(null);
   const current = () => mounted.current && permitted && detailAuthority(controller) === fence;
   const visibleReview = permitted && review?.fence === fence ? review : null;
-  const receiptPresentation = visibleReview?.record.kind === 'request_stock' && visibleReview.record.status === 'in_transit';
+  const receiptPresentation = visibleReview?.record.status === 'in_transit';
   // Cleanup must precede the focus hook's layout-effect restoration.
   useLayoutEffect(() => {
     const backdrop = dialog.current?.parentElement;
@@ -261,7 +261,7 @@ export default function TransferReceipt(props: TransferReceiptProps) {
   const completeInvalidCapture = !input && captureLines.length > 0
     && captureLines.every(line => visibleReview?.values[line.variant_id] !== '');
   const actions = canReceive && !(attempt?.original.id === record.id && result) ? <div className="transfer-decision-actions">
-    <button type="button" className="primary" disabled={!!unresolved} onClick={event => open(event.currentTarget)}>Recibir solicitud</button>
+    <button type="button" className="primary" disabled={!!unresolved} onClick={event => open(event.currentTarget)}>{record.kind === 'request_stock' ? 'Recibir solicitud' : 'Registrar recepción'}</button>
     <p>Registrá las cantidades que llegaron al destino. La recepción se confirma una sola vez.</p>
   </div> : null;
   return <div className="transfer-receipt">
