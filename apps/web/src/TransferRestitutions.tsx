@@ -6,7 +6,7 @@ import { useTransferRestitutions } from './useTransferRestitutions';
 import { decisionOwner } from './transferDecisionRecovery';
 import { newTransferRetryKey, type TransferRecord } from './transferModel';
 import { normalizeRestitutionDecision, normalizeRestitutionProposal, type RestitutionAction,
-  type RestitutionDecisionInput, type RestitutionProposalInput } from './transferRestitutionModel';
+  type RestitutionDecisionInput, type RestitutionProposalInput, type Restitutions, type RestitutionLine } from './transferRestitutionModel';
 import type { RestitutionReviewPin } from './transferRestitutionRecovery';
 import type { TransferController } from './useInventory';
 export interface TransferRestitutionsProps {
@@ -29,7 +29,9 @@ export default function TransferRestitutions(props: TransferRestitutionsProps) {
   if (!eligible(props) || !props.controller.restitutionRecovery) return null;
   return <Section key={`${ownerKey(props.controller)}/${props.requestID}`} {...props} />;
 }
-interface Draft { action: RestitutionAction; pin: RestitutionReviewPin; quantity: string; reason: string; attested: boolean; trigger: HTMLElement }
+interface Draft { action: RestitutionAction; pin: RestitutionReviewPin; quantity: string; reason: string; attested: boolean; trigger: HTMLElement;
+  capture: { record: TransferRecord; snapshot: Restitutions; line: RestitutionLine } }
+const balance = (line: RestitutionLine) => line.expected_quantity - line.effective_credit - line.applied_retained_quantity;
 const labels = { propose: 'Proponer restitución', accept: 'Aceptar restitución', reject: 'Rechazar restitución' };
 const confirms = { propose: 'Confirmar propuesta', accept: 'Confirmar aceptación', reject: 'Confirmar rechazo' };
 const states = { pending: 'Pendiente', superseded: 'Reemplazada', rejected: 'Rechazada', applied: 'Aplicada' };
@@ -117,14 +119,31 @@ function Section(props: TransferRestitutionsProps) {
     }
   }
   function open(action: RestitutionAction, trigger: HTMLElement) {
-    if (!current() || hook.busy || masked || sending.current) return;
+    if (!current() || !line || !snapshot || hook.busy || masked || sending.current) return;
     const pin = hook.review(action); if (!pin) return;
-    setMessage(''); setReview(null); setDraft({ action, pin, quantity: '', reason: '', attested: false, trigger });
+    setMessage(''); setReview(null); setDraft({ action, pin, quantity: '', reason: '', attested: false, trigger,
+      capture: { record, snapshot, line } });
   }
+  function proposalValid(value: Draft) {
+    const captured = value.capture;
+    if (!current() || hook.busy || masked || sending.current || value.action !== 'propose' || !value.attested
+      || decisionOwner(controller.getTransferAuthority())?.account !== record.origin_location_id
+      || record !== captured.record || snapshot !== captured.snapshot || variant !== captured.line.variant_id
+      || !controller.restitutionRecovery!.eligibility(decisionOwner(controller.getTransferAuthority()), value.pin).eligible) return false;
+    try {
+      const normalized = normalizeRestitutionProposal({ operation_key: 'capture_validation', variant_id: captured.line.variant_id,
+        expected_revision: captured.line.workflow_revision.toString(), retained_quantity: value.quantity,
+        reason: value.reason, retained_at_origin: true });
+      return normalized.retained_quantity <= balance(captured.line);
+    } catch { return false; }
+  }
+  const proposalCapture = draft?.action === 'propose' && !review ? draft.capture : null;
+  const proposalReady = !!draft && proposalValid(draft);
   function prepare() {
     if (!current() || !draft || !line || hook.busy || masked || sending.current || !hook.review(draft.action)) return;
     try {
-      if (draft.action === 'propose' && !draft.attested) throw new Error('Attestation required');
+      // Admission uses the original consent token and pure model validation before randomness.
+      if (draft.action === 'propose' && !proposalValid(draft)) return;
       const input = Object.freeze({ variant_id: variant!, operation_key: newTransferRetryKey(), expected_revision: line.workflow_revision.toString(), reason: draft.reason,
         ...(draft.action === 'propose' ? { retained_quantity: draft.quantity, retained_at_origin: true as const } : {}) });
       if (draft.action === 'propose') {
@@ -154,9 +173,9 @@ function Section(props: TransferRestitutionsProps) {
     || !line || hook.attempts.length > 0;
   const actions: RestitutionAction[] = decisionOwner(controller.getTransferAuthority())?.account === record.destination_location_id
     ? ['accept', 'reject'] : decisionOwner(controller.getTransferAuthority())?.account === record.origin_location_id ? ['propose'] : [];
-  const variantSelector = <div><label htmlFor={selectID}>Variante de restitución</label><select id={selectID} value={variant ?? ''} disabled={hook.busy} onChange={e => {
+  const variantSelector = <div><label htmlFor={selectID}>{proposalCapture ? 'Batería a restituir' : 'Variante de restitución'}</label><select id={selectID} value={variant ?? ''} disabled={hook.busy} onChange={e => {
     if (current()) { setDraft(null); setReview(null); setVariant(Number(e.target.value)); }
-  }}>{record.items.map(i => <option key={i.variant_id} value={i.variant_id}>{i.brand} · {i.model} · {i.capacity_ah} Ah · {i.polarity}</option>)}</select></div>;
+  }}>{(proposalCapture?.record ?? record).items.map(i => <option key={i.variant_id} value={i.variant_id}>{i.brand} · {i.model} · {i.capacity_ah} Ah · {i.polarity}</option>)}</select></div>;
   return <section className={`transfer-restitutions${closed ? ' restitution-is-closed' : ''}`} aria-label="Restituciones de origen" hidden={!sectionVisible}>
     <h2 ref={contextHeading} tabIndex={-1}>Restituciones de origen</h2>
     {masked ? <><p role="status">Restituciones no disponibles para esta sesión.</p><button disabled={hook.busy} onClick={() => { if (current()) void run(hook.recover); }}>Consultar recuperación autorizada</button></> : <>
@@ -218,7 +237,7 @@ function Section(props: TransferRestitutionsProps) {
         <div className="restitution-actions"><button disabled={hook.busy} onClick={() => { if (current()) void run(hook.recover); }}>Consultar resultado de restitución</button>
           {(a.phase === 'uncertain' || a.phase === 'conflict') && <button disabled={hook.busy} onClick={() => { if (current()) void run(() => hook.retry(a.payload.variant_id)); }}>Reintentar carga exacta</button>}</div>
       </article>)}
-      {modalActive && <div className="restitution-backdrop"><div ref={modal} className="restitution-modal" role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1} onKeyDown={e => {
+      {modalActive && <div className="restitution-backdrop"><div ref={modal} className={`restitution-modal${proposalCapture ? ' restitution-proposal-capture' : ''}`} role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1} onKeyDown={e => {
         if (e.key === 'Escape' && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); close(); }
         if (e.key === 'Tab') {
           const available = controls(); const first = available[0]; const last = available.at(-1);
@@ -226,12 +245,31 @@ function Section(props: TransferRestitutionsProps) {
           else if (e.shiftKey && (document.activeElement === first || document.activeElement === modal.current)) { e.preventDefault(); last?.focus(); }
           else if (!e.shiftKey && (document.activeElement === last || document.activeElement === modal.current)) { e.preventDefault(); first.focus(); }
         }
-      }}><h3 id={headingID}>{visibleReview ? 'Revisar restitución' : labels[draft.action]}</h3>
-      {draft && !review && <form className="restitution-form" aria-label="Editar restitución" onSubmit={e => { e.preventDefault(); prepare(); }}>
+      }}><h3 id={headingID}>{visibleReview ? 'Revisar restitución' : proposalCapture ? 'Proponer restitución de origen' : labels[draft.action]}</h3>
+      {proposalCapture && <form className="restitution-form" aria-label="Editar restitución" onSubmit={e => { e.preventDefault(); prepare(); }}>
+        <div className="proposal-context"><p>{proposalCapture.record.reference} · {proposalCapture.record.origin_location_name} → revisión de {proposalCapture.record.destination_location_name}</p>
+          <p>Solo para unidades que permanecen físicamente en {proposalCapture.record.origin_location_name}.</p></div>
+        <div className="proposal-battery">{variantSelector}
+          <div className="proposal-counters"><span>Enviadas: <strong>{proposalCapture.line.expected_quantity.toString()}</strong></span>{' '}
+            <span>Crédito efectivo en destino: <strong>{proposalCapture.line.effective_credit.toString()}</strong></span>{' '}
+            <span>Restituido en origen: <strong>{proposalCapture.line.applied_retained_quantity.toString()}</strong></span></div>
+          <p>Máximo a proponer: <strong>{balance(proposalCapture.line).toString()} batería(s)</strong> (según balance de transferencia)</p></div>
+        <div><label htmlFor={quantityID}>Cantidad retenida en origen *</label>
+          <input id={quantityID} inputMode="numeric" required placeholder="Ingresá la cantidad retenida" value={draft.quantity} onChange={e => setDraft({ ...draft, quantity: e.target.value })} />
+          <p>Cantidad positiva, hasta {balance(proposalCapture.line).toString()} batería(s) en este caso.</p></div>
+        <div><label htmlFor={reasonID}>Motivo de restitución (obligatorio) *</label>
+          <textarea id={reasonID} required placeholder="Explicá por qué estas unidades permanecen en origen" value={draft.reason} onChange={e => setDraft({ ...draft, reason: e.target.value })} /></div>
+        <div className="proposal-attestation"><label htmlFor={attestationID}><input id={attestationID} type="checkbox" required checked={draft.attested} onChange={e => setDraft({ ...draft, attested: e.target.checked })} />Confirmo que estas unidades permanecen físicamente en origen</label>
+          <p>El faltante en destino no prueba retención en origen.</p></div>
+        <div className="proposal-effects"><p>Enviar la propuesta no mueve stock ni cambia reservas.</p>
+          <p>Si {proposalCapture.record.destination_location_name} la acepta y se valida, se acreditarán en {proposalCapture.record.origin_location_name} las unidades propuestas; destino y reservas no cambian.</p>
+          <p>Una aplicación, incluso parcial, cierra esta restitución. No resuelve automáticamente faltantes ni conteos. El despacho y la recepción original se conservan.</p></div>
+        {message && <p role="alert">{message}</p>}
+        <footer><button type="button" onClick={close}>Cancelar</button><button type="submit" disabled={!proposalReady}>Revisar restitución</button></footer>
+      </form>}
+      {draft && !review && draft.action !== 'propose' && <form className="restitution-form" aria-label="Editar restitución" onSubmit={e => { e.preventDefault(); prepare(); }}>
         {variantSelector}
         {message && <p role="alert">{message}</p>}
-        {draft.action === 'propose' && <><label htmlFor={quantityID}>Cantidad retenida</label><input id={quantityID} inputMode="numeric" required value={draft.quantity} onChange={e => setDraft({ ...draft, quantity: e.target.value })} />
-          <label htmlFor={attestationID}><input id={attestationID} type="checkbox" required checked={draft.attested} onChange={e => setDraft({ ...draft, attested: e.target.checked })} />Confirmo que estas unidades permanecen físicamente en origen</label></>}
         <label htmlFor={reasonID}>Motivo de restitución</label><textarea id={reasonID} required value={draft.reason} onChange={e => setDraft({ ...draft, reason: e.target.value })} />
         <div className="restitution-actions"><button type="submit">Revisar restitución</button><button type="button" onClick={close}>Cancelar</button></div>
       </form>}
