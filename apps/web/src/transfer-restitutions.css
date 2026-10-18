@@ -1,0 +1,49 @@
+/* Modal foundation only; capture/review body fidelity is a separate work unit. */
+section.transfer-restitutions .restitution-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  background: rgb(0 0 0 / 35%);
+}
+section.transfer-restitutions .restitution-modal {
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: min(720px, 100%);
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 24px;
+  background: #fff;
+  border: 1px solid #ddd5d9;
+  border-radius: 8px;
+  box-shadow: 0 16px 40px rgb(0 0 0 / 20%);
+  overflow-wrap: anywhere;
+}
+section.transfer-restitutions .restitution-modal > h3 { margin: 0 48px 20px 0; padding: 0; }
+section.transfer-restitutions .restitution-modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  min-width: 44px;
+  min-height: 44px;
+}
+section.transfer-restitutions .restitution-modal .restitution-form {
+  margin: 0;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+section.transfer-restitutions .restitution-form > * { min-width: 0; }
+section.transfer-restitutions .restitution-form :is(select, textarea, input:not([type="checkbox"])) {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+section.transfer-restitutions .restitution-modal-body { overflow: visible; }
+section.transfer-restitutions .restitution-modal footer { display: flex; flex-wrap: wrap; gap: 12px; }
+@media (max-width: 480px) {
+  section.transfer-restitutions .restitution-modal { padding: 16px; }
+}

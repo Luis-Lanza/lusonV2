@@ -1,4 +1,6 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { isTransferFocusTarget } from './transferModalFocus';
+import './transfer-restitutions.css';
 import TransferDate from './TransferDate';
 import { useTransferRestitutions } from './useTransferRestitutions';
 import { decisionOwner } from './transferDecisionRecovery';
@@ -42,7 +44,7 @@ function Section(props: TransferRestitutionsProps) {
   const [message, setMessage] = useState('');
   const mounted = useRef(false); const sending = useRef(false);
   const modal = useRef<HTMLDivElement>(null); const cancel = useRef<HTMLButtonElement>(null);
-  const restoreAfterSend = useRef<HTMLElement | null>(null);
+  const restoreAfterSend = useRef<{ target: HTMLElement; record: TransferRecord; variant: number | null } | null>(null);
   const consultation = useRef<HTMLButtonElement>(null);
   const selectID = useId(); const quantityID = useId(); const reasonID = useId(); const attestationID = useId(); const headingID = useId();
   const current = () => mounted.current && eligible(props) && ownerKey(controller) === boundOwner.current;
@@ -56,19 +58,64 @@ function Section(props: TransferRestitutionsProps) {
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => { setDraft(null); setReview(null); setMessage(''); }, [variant, record, masked, hook.busy, snapshot]);
   useEffect(() => { if (review && !visibleReview) { setDraft(null); setReview(null); } }, [review, visibleReview]);
-  useEffect(() => {
-    if (!visibleReview) return;
-    cancel.current?.focus();
-    return () => { if (current()) visibleReview.draft.trigger.focus(); };
-  }, [visibleReview]);
-  useEffect(() => {
-    if (!hook.busy && !masked && current() && restoreAfterSend.current) {
-      const trigger = restoreAfterSend.current;
-      if (trigger instanceof HTMLButtonElement && trigger.disabled) consultation.current?.focus(); else trigger.focus();
-      restoreAfterSend.current = null;
+  const modalActive = !!draft && !!line && !masked && !hook.busy && current() && !!hook.review(draft.action);
+  const focusEligible = (target: HTMLElement | null): target is HTMLElement => {
+    if (!isTransferFocusTarget(target) || target.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+    for (let node: HTMLElement | null = target; node; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
     }
-  }, [hook.busy, masked]);
-  function close() { if (current() && !sending.current) { setReview(null); setDraft(null); draft?.trigger.focus(); } }
+    const closedDetails = target.closest('details:not([open])');
+    return !closedDetails || !!closedDetails.querySelector(':scope > summary')?.contains(target);
+  };
+  const controls = () => Array.from(modal.current?.querySelectorAll<HTMLElement>(
+    'input:not([type="hidden"]), select, textarea, button, a[href], details > summary:first-of-type, [tabindex]') ?? [])
+    .filter(target => focusEligible(target) && target.tabIndex >= 0);
+  // The isolation lifetime spans both steps; cleanup runs before queued focus return.
+  useLayoutEffect(() => {
+    const backdrop = modal.current?.parentElement;
+    if (!modalActive || !backdrop) return;
+    const previous = new Map<Element, string | null>();
+    const isolate = () => {
+      for (let branch: Element | null = backdrop; branch && branch !== document.body; branch = branch.parentElement) {
+        for (const sibling of branch.parentElement?.children ?? []) {
+          if (sibling === branch || previous.has(sibling)) continue;
+          previous.set(sibling, sibling.getAttribute('inert'));
+          if (!sibling.hasAttribute('inert')) sibling.setAttribute('inert', '');
+        }
+      }
+    };
+    isolate();
+    const observer = new MutationObserver(isolate);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      for (const [element, value] of previous) {
+        if (value === null) element.removeAttribute('inert'); else element.setAttribute('inert', value);
+      }
+    };
+  }, [modalActive]);
+  useLayoutEffect(() => {
+    const pending = restoreAfterSend.current;
+    if (!pending) return;
+    if (!current() || masked || pending.record !== record || pending.variant !== variant) {
+      restoreAfterSend.current = null; return;
+    }
+    if (modalActive || hook.busy) return;
+    restoreAfterSend.current = null;
+    if (focusEligible(pending.target)) pending.target.focus();
+    else if (focusEligible(contextHeading.current)) contextHeading.current.focus();
+  });
+  useLayoutEffect(() => {
+    if (modalActive) (visibleReview ? cancel.current : modal.current?.querySelector<HTMLElement>('select, input, textarea'))?.focus();
+  }, [modalActive, !!visibleReview]);
+  function queueFocus(target: HTMLElement) { restoreAfterSend.current = { target, record, variant }; }
+  function close() {
+    if (current() && !sending.current) {
+      if (draft) queueFocus(draft.trigger);
+      setReview(null); setDraft(null);
+    }
+  }
   function open(action: RestitutionAction, trigger: HTMLElement) {
     if (!current() || hook.busy || masked || sending.current) return;
     const pin = hook.review(action); if (!pin) return;
@@ -98,7 +145,7 @@ function Section(props: TransferRestitutionsProps) {
   useEffect(() => {
     if (props.entryFocusKey !== lastEntry.current) {
       lastEntry.current = props.entryFocusKey;
-      if (props.entryFocusKey !== undefined && props.contextVisible !== false) contextHeading.current?.focus();
+      if (props.entryFocusKey !== undefined && props.contextVisible !== false && !modalActive) contextHeading.current?.focus();
     }
   }, [props.entryFocusKey, props.contextVisible]);
   // Keep action triggers available for existing form/review focus restoration.
@@ -107,6 +154,9 @@ function Section(props: TransferRestitutionsProps) {
     || !line || hook.attempts.length > 0;
   const actions: RestitutionAction[] = decisionOwner(controller.getTransferAuthority())?.account === record.destination_location_id
     ? ['accept', 'reject'] : decisionOwner(controller.getTransferAuthority())?.account === record.origin_location_id ? ['propose'] : [];
+  const variantSelector = <div><label htmlFor={selectID}>Variante de restitución</label><select id={selectID} value={variant ?? ''} disabled={hook.busy} onChange={e => {
+    if (current()) { setDraft(null); setReview(null); setVariant(Number(e.target.value)); }
+  }}>{record.items.map(i => <option key={i.variant_id} value={i.variant_id}>{i.brand} · {i.model} · {i.capacity_ah} Ah · {i.polarity}</option>)}</select></div>;
   return <section className={`transfer-restitutions${closed ? ' restitution-is-closed' : ''}`} aria-label="Restituciones de origen" hidden={!sectionVisible}>
     <h2 ref={contextHeading} tabIndex={-1}>Restituciones de origen</h2>
     {masked ? <><p role="status">Restituciones no disponibles para esta sesión.</p><button disabled={hook.busy} onClick={() => { if (current()) void run(hook.recover); }}>Consultar recuperación autorizada</button></> : <>
@@ -126,11 +176,7 @@ function Section(props: TransferRestitutionsProps) {
       </div>
       {/* Consultation is recovery too; it must not depend on routine selection. */}
       <div className="workflow-routine" hidden={!sectionVisible}>
-      <div className="restitution-consultation"><div>
-        <label htmlFor={selectID}>Variante de restitución</label><select id={selectID} value={variant ?? ''} disabled={hook.busy} onChange={e => {
-          if (current()) { setDraft(null); setReview(null); setVariant(Number(e.target.value)); }
-        }}>{record.items.map(i => <option key={i.variant_id} value={i.variant_id}>{i.brand} · {i.model} · {i.capacity_ah} Ah · {i.polarity}</option>)}</select>
-      </div><button ref={consultation} disabled={hook.busy} onClick={() => { if (current()) void run(hook.refresh); }}>Consultar para revisar restitución</button></div>
+      <div className="restitution-consultation">{!draft && variantSelector}<button ref={consultation} disabled={hook.busy} onClick={() => { if (current()) void run(hook.refresh); }}>Consultar para revisar restitución</button></div>
       </div>
       {hook.busy && <p role="status">Consultando o enviando restitución…</p>}
       {hook.error && <p role="alert">No se pudo verificar la restitución. Consultá el estado antes de enviar.</p>}
@@ -172,19 +218,24 @@ function Section(props: TransferRestitutionsProps) {
         <div className="restitution-actions"><button disabled={hook.busy} onClick={() => { if (current()) void run(hook.recover); }}>Consultar resultado de restitución</button>
           {(a.phase === 'uncertain' || a.phase === 'conflict') && <button disabled={hook.busy} onClick={() => { if (current()) void run(() => hook.retry(a.payload.variant_id)); }}>Reintentar carga exacta</button>}</div>
       </article>)}
-      {draft && !review && line && <form className="restitution-form" aria-label="Editar restitución" onSubmit={e => { e.preventDefault(); prepare(); }}>
-        <h3>{labels[draft.action]}</h3>
+      {modalActive && <div className="restitution-backdrop"><div ref={modal} className="restitution-modal" role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1} onKeyDown={e => {
+        if (e.key === 'Escape' && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); close(); }
+        if (e.key === 'Tab') {
+          const available = controls(); const first = available[0]; const last = available.at(-1);
+          if (!first) { e.preventDefault(); modal.current?.focus(); }
+          else if (e.shiftKey && (document.activeElement === first || document.activeElement === modal.current)) { e.preventDefault(); last?.focus(); }
+          else if (!e.shiftKey && (document.activeElement === last || document.activeElement === modal.current)) { e.preventDefault(); first.focus(); }
+        }
+      }}><h3 id={headingID}>{visibleReview ? 'Revisar restitución' : labels[draft.action]}</h3>
+      {draft && !review && <form className="restitution-form" aria-label="Editar restitución" onSubmit={e => { e.preventDefault(); prepare(); }}>
+        {variantSelector}
+        {message && <p role="alert">{message}</p>}
         {draft.action === 'propose' && <><label htmlFor={quantityID}>Cantidad retenida</label><input id={quantityID} inputMode="numeric" required value={draft.quantity} onChange={e => setDraft({ ...draft, quantity: e.target.value })} />
           <label htmlFor={attestationID}><input id={attestationID} type="checkbox" required checked={draft.attested} onChange={e => setDraft({ ...draft, attested: e.target.checked })} />Confirmo que estas unidades permanecen físicamente en origen</label></>}
         <label htmlFor={reasonID}>Motivo de restitución</label><textarea id={reasonID} required value={draft.reason} onChange={e => setDraft({ ...draft, reason: e.target.value })} />
         <div className="restitution-actions"><button type="submit">Revisar restitución</button><button type="button" onClick={close}>Cancelar</button></div>
       </form>}
-      {visibleReview && <div className="restitution-backdrop"><div ref={modal} className="restitution-modal" role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1} onKeyDown={e => {
-        if (e.key === 'Escape') { e.preventDefault(); close(); }
-        if (e.key === 'Tab') { const controls = Array.from(modal.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? []); const first = controls[0]; const last = controls.at(-1);
-          if (e.shiftKey && (document.activeElement === first || document.activeElement === modal.current)) { e.preventDefault(); last?.focus(); }
-          else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); } }
-      }}><h3 id={headingID}>Revisar restitución</h3><div className="restitution-modal-body">
+      {visibleReview && <><div className="restitution-modal-body">
         <p>{labels[visibleReview.draft.action]} · Variante {variant} · Revisión {visibleReview.input.expected_revision}</p>
         <p>Retenidas: {'retained_quantity' in visibleReview.input ? visibleReview.input.retained_quantity : line?.proposals.find(p => p.state === 'pending')?.retained_quantity.toString()}</p>
         <p className="restitution-evidence">Motivo exacto: {visibleReview.input.reason}</p>
@@ -193,9 +244,11 @@ function Section(props: TransferRestitutionsProps) {
         {visibleReview.draft.action === 'propose' && <p>Confirmaste que estas unidades permanecen físicamente en origen.</p>}
       </div><footer><button ref={cancel} onClick={close}>Cancelar</button><button onClick={() => {
         if (!current() || hook.busy || sending.current || snapshot !== visibleReview.snapshot) return;
-        const captured = visibleReview; restoreAfterSend.current = captured.draft.trigger; setReview(null); setDraft(null);
+        const captured = visibleReview; queueFocus(captured.draft.trigger); setReview(null); setDraft(null);
         void run(() => hook.submit(captured.draft.pin, captured.input));
-      }}>{confirms[visibleReview.draft.action]}</button></footer></div></div>}
+      }}>{confirms[visibleReview.draft.action]}</button></footer></>}
+      <button className="restitution-modal-close" aria-label="Cerrar restitución" disabled={sending.current} onClick={close}>×</button>
+      </div></div>}
     </>}
   </section>;
 }

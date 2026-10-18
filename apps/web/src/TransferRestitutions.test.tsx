@@ -152,7 +152,8 @@ it.each(['0', '01', '-1', '1.5', '2', '9223372036854775808'])('does not review i
   fireEvent.change(screen.getByLabelText('Motivo de restitución'), { target: { value: 'reason' } });
   fireEvent.click(screen.getByLabelText('Confirmo que estas unidades permanecen físicamente en origen'));
   fireEvent.click(screen.getByRole('button', { name: 'Revisar restitución' }));
-  expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); expect(f.posts()).toHaveLength(0);
+  expect(screen.getByRole('dialog', { name: 'Proponer restitución' })).toBeVisible();
+  expect(screen.queryByRole('button', { name: 'Confirmar propuesta' })).not.toBeInTheDocument(); expect(f.posts()).toHaveLength(0);
 });
 it('does not grant decision authority to another account assigned to destination', async () => {
   const f = fixture(2, true); if (!f.authority.session?.authenticated) throw new Error('fixture');
@@ -255,6 +256,115 @@ it('does not substitute zero for unavailable evidence and keeps pending safety w
   expect(warning).toBeVisible(); expect(warning.closest('details')).toBeNull();
   expect(screen.getByText(/Una aplicación, incluso parcial/)).toBeVisible();
   view.unmount(); expect(f.posts()).toHaveLength(0);
+});
+it('keeps one isolated dialog through capture and review with full-control keyboard boundaries', async () => {
+  const f = fixture(); render(f.element()); await screen.findByText('Crédito efectivo en destino'); await consult();
+  const trigger = screen.getByRole('button', { name: 'Proponer restitución' }); trigger.focus(); fireEvent.click(trigger);
+  const dialog = screen.getByRole('dialog', { name: 'Proponer restitución' });
+  expect(dialog).toHaveAttribute('aria-modal', 'true');
+  const select = within(dialog).getByLabelText('Variante de restitución'); expect(select).toHaveFocus();
+  const controls = [select, within(dialog).getByLabelText('Cantidad retenida'), within(dialog).getByRole('checkbox'),
+    within(dialog).getByLabelText('Motivo de restitución'), within(dialog).getByRole('button', { name: 'Revisar restitución' }),
+    within(dialog).getByRole('button', { name: 'Cancelar' }), within(dialog).getByRole('button', { name: 'Cerrar restitución' })];
+  for (const control of controls) {
+    control.focus(); expect(control).toHaveFocus();
+    const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    fireEvent(control, event); expect(event.defaultPrevented).toBe(control === controls.at(-1));
+  }
+  expect(select).toHaveFocus();
+  const excluded = document.createElement('div');
+  excluded.innerHTML = '<button disabled>Disabled</button><div hidden><button>Hidden</button></div><details><summary>Native disclosure</summary><button>Closed child</button></details>';
+  dialog.append(excluded);
+  fireEvent.keyDown(select, { key: 'Tab', shiftKey: true }); expect(within(dialog).getByText('Native disclosure')).toHaveFocus();
+  excluded.querySelector('details')!.hidden = true; select.focus();
+  fireEvent.keyDown(select, { key: 'Tab', shiftKey: true }); expect(controls.at(-1)).toHaveFocus();
+  const outside = trigger.closest('.workflow-routine')!; expect(outside).toHaveAttribute('inert');
+  fireEvent.keyDown(dialog, { key: 'Escape', isComposing: true }); expect(dialog).toBeInTheDocument();
+  fireEvent.keyDown(dialog, { key: 'Escape', keyCode: 229 }); expect(dialog).toBeInTheDocument();
+  fireEvent.click(dialog.parentElement!); expect(dialog).toBeInTheDocument();
+  fireEvent.change(controls[1], { target: { value: '1' } }); fireEvent.click(controls[2]);
+  fireEvent.change(controls[3], { target: { value: ' exact reason ' } });
+  fireEvent.submit(within(dialog).getByRole('form')); // Native form submission keeps the same modal lifetime.
+  expect(screen.getByRole('dialog', { name: 'Revisar restitución' })).toBe(dialog);
+  const cancel = within(dialog).getByRole('button', { name: 'Cancelar' }); expect(cancel).toHaveFocus();
+  fireEvent.keyDown(cancel, { key: 'Tab', shiftKey: true });
+  expect(within(dialog).getByRole('button', { name: 'Cerrar restitución' })).toHaveFocus();
+  fireEvent.keyDown(dialog, { key: 'Escape' }); expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(outside).not.toHaveAttribute('inert'); expect(trigger).toHaveFocus(); expect(f.posts()).toHaveLength(0);
+});
+it.each(['close', 'unmount', 'authority'])('restores exact ancestor sibling isolation on %s, including dynamic additions', async ending => {
+  const f = fixture(); const view = render(<><aside ref={node => { node?.setAttribute('inert', 'prior'); }}>Prior isolation</aside>{f.element()}</>);
+  await screen.findByText('Crédito efectivo en destino'); await consult();
+  fireEvent.click(screen.getByRole('button', { name: 'Proponer restitución' }));
+  const dialog = screen.getByRole('dialog'); const prior = screen.getByText('Prior isolation');
+  expect(prior).toHaveAttribute('inert', 'prior');
+  const dynamic = document.createElement('button'); dynamic.textContent = 'Dynamic recovery';
+  await act(async () => { view.container.append(dynamic); }); expect(dynamic).toHaveAttribute('inert');
+  if (ending === 'close') fireEvent.click(within(dialog).getByRole('button', { name: 'Cerrar restitución' }));
+  else if (ending === 'unmount') view.unmount();
+  else { f.authority.ready = false; view.rerender(f.element()); }
+  expect(dynamic).not.toHaveAttribute('inert'); expect(prior).toHaveAttribute('inert', 'prior');
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  if (ending !== 'close') expect(document.activeElement).not.toHaveTextContent(/^Proponer restitución$/);
+  expect(f.posts()).toHaveLength(0);
+});
+it.each(['disabled', 'disconnected', 'hidden'])('uses a visible semantic fallback for a %s trigger', async state => {
+  const f = fixture(); render(f.element()); await screen.findByText('Crédito efectivo en destino'); await consult();
+  const trigger = screen.getByRole('button', { name: 'Proponer restitución' }); fireEvent.click(trigger);
+  const dialog = screen.getByRole('dialog');
+  if (state === 'disabled') trigger.setAttribute('disabled', '');
+  else if (state === 'hidden') trigger.hidden = true;
+  else trigger.remove();
+  fireEvent.keyDown(dialog, { key: 'Escape' });
+  expect(screen.getByRole('heading', { name: 'Restituciones de origen' })).toHaveFocus();
+  expect(f.posts()).toHaveLength(0);
+});
+it.each(['request', 'record', 'session', 'owner', 'snapshot', 'masked', 'variant'])('retires private capture and isolation on %s boundary', async boundary => {
+  const f = fixture(1, false, '5', true); const view = render(f.element());
+  await screen.findByText('Crédito efectivo en destino'); await consult();
+  fireEvent.click(screen.getByRole('button', { name: 'Proponer restitución' }));
+  const dialog = screen.getByRole('dialog'); const trigger = screen.getByRole('button', { name: 'Proponer restitución' });
+  fireEvent.change(within(dialog).getByLabelText('Motivo de restitución'), { target: { value: 'private capture' } });
+  fireEvent.click(within(dialog).getByRole('checkbox'));
+  if (boundary === 'request') view.rerender(f.element(true, '2'));
+  else if (boundary === 'record') view.rerender(<TransferRestitutions controller={f.controller} record={{ ...f.record }} enabled requestID={id} />);
+  else if (boundary === 'snapshot' || boundary === 'masked') {
+    if (boundary === 'masked') f.mask();
+    act(() => { for (const listener of f.listeners) listener(); });
+  }
+  else if (boundary === 'variant') fireEvent.change(within(dialog).getByLabelText('Variante de restitución'), { target: { value: '202' } });
+  else {
+    if (!f.authority.session?.authenticated) throw new Error('fixture');
+    if (boundary === 'owner') f.authority.session.identity.account_id = 77;
+    else f.authority.sessionGeneration = 2;
+    view.rerender(f.element());
+  }
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  expect(document.body).not.toHaveTextContent('private capture'); expect(trigger.closest('[inert]')).toBeNull();
+  expect(f.posts()).toHaveLength(0);
+});
+it('keeps capture focus private when presentation entry changes and exposes busy exact recovery outside the modal', async () => {
+  const f = fixture(); const element = (visible: boolean, entryFocusKey = 0) => <TransferRestitutions controller={f.controller}
+    record={f.record} enabled requestID={id} contextVisible={visible} entryFocusKey={entryFocusKey} />;
+  const view = render(element(true)); await screen.findByText('Crédito efectivo en destino'); await consult();
+  fireEvent.click(screen.getByRole('button', { name: 'Proponer restitución' }));
+  const dialog = screen.getByRole('dialog'); const select = within(dialog).getByRole('combobox');
+  view.rerender(element(true, 1)); expect(select).toHaveFocus(); expect(screen.getByRole('dialog')).toBe(dialog);
+  fireEvent.change(within(dialog).getByLabelText('Cantidad retenida'), { target: { value: '1' } });
+  fireEvent.change(within(dialog).getByLabelText('Motivo de restitución'), { target: { value: ' preserved reason ' } });
+  fireEvent.click(within(dialog).getByRole('checkbox')); fireEvent.submit(within(dialog).getByRole('form'));
+  const read = f.fetch.getMockImplementation()!; let release!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; }); f.fail();
+  f.fetch.mockImplementation(async (url, init) => { if (init?.method === 'POST') await pending; return read(url, init); });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar propuesta' }));
+  view.rerender(element(false, 1));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  const recover = screen.getByRole('button', { name: 'Consultar resultado de restitución' });
+  expect(recover).toBeVisible(); expect(recover).toBeDisabled(); expect(recover.closest('[inert]')).toBeNull();
+  await act(async () => { release(); });
+  expect(await screen.findByRole('button', { name: 'Reintentar carga exacta' })).toBeVisible();
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); expect(f.posts()).toHaveLength(1);
+  expect(JSON.parse(String(f.posts()[0][1]?.body)).reason).toBe(' preserved reason ');
 });
 afterEach(() => vi.unstubAllGlobals());
 async function consult() {
