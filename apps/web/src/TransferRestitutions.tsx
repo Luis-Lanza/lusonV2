@@ -47,6 +47,7 @@ function Section(props: TransferRestitutionsProps) {
   const [message, setMessage] = useState('');
   const mounted = useRef(false); const sending = useRef(false);
   const modal = useRef<HTMLDivElement>(null); const cancel = useRef<HTMLButtonElement>(null);
+  const reviewHeading = useRef<HTMLHeadingElement>(null);
   const restoreAfterSend = useRef<{ target: HTMLElement; record: TransferRecord; variant: number | null } | null>(null);
   const consultation = useRef<HTMLButtonElement>(null);
   const selectID = useId(); const quantityID = useId(); const reasonID = useId(); const attestationID = useId(); const headingID = useId();
@@ -58,6 +59,9 @@ function Section(props: TransferRestitutionsProps) {
   const receipt = record.status === 'received' ? record.receipt.items.find(i => i.variant_id === variant) : null;
   const visibleReview = review && !masked && !hook.busy && review.snapshot === snapshot && current()
     && hook.review(review.draft.action) ? review : null;
+  const proposalReview = visibleReview?.draft.action === 'propose' && 'retained_quantity' in visibleReview.input
+    ? { capture: visibleReview.draft.capture, input: visibleReview.input, attested: visibleReview.draft.attested } : null;
+  const reviewedItem = proposalReview?.capture.record.items.find(i => i.variant_id === proposalReview.capture.line.variant_id);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => { setDraft(null); setReview(null); setMessage(''); }, [variant, record, masked, hook.busy, snapshot]);
   useEffect(() => { if (review && !visibleReview) { setDraft(null); setReview(null); } }, [review, visibleReview]);
@@ -110,7 +114,11 @@ function Section(props: TransferRestitutionsProps) {
     else if (focusEligible(contextHeading.current)) contextHeading.current.focus();
   });
   useLayoutEffect(() => {
-    if (modalActive) (visibleReview ? cancel.current : modal.current?.querySelector<HTMLElement>('select, input, textarea'))?.focus();
+    if (!modalActive) return;
+    if (proposalReview) {
+      reviewHeading.current?.focus({ preventScroll: true });
+      if (modal.current) modal.current.scrollTop = 0;
+    } else (visibleReview ? cancel.current : modal.current?.querySelector<HTMLElement>('select, input, textarea'))?.focus();
   }, [modalActive, !!visibleReview]);
   function queueFocus(target: HTMLElement) { restoreAfterSend.current = { target, record, variant }; }
   function close() {
@@ -248,15 +256,17 @@ function Section(props: TransferRestitutionsProps) {
         <div className="restitution-actions"><button disabled={hook.busy} onClick={() => { if (current()) void run(hook.recover); }}>Consultar resultado de restitución</button>
           {(a.phase === 'uncertain' || a.phase === 'conflict') && <button disabled={hook.busy} onClick={() => { if (current()) void run(() => hook.retry(a.payload.variant_id)); }}>Reintentar carga exacta</button>}</div>
       </article>)}
-      {modalActive && <div className="restitution-backdrop"><div ref={modal} className={`restitution-modal${proposalCapture ? ' restitution-proposal-capture' : ''}`} role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1} onKeyDown={e => {
+      {modalActive && <div className="restitution-backdrop"><div ref={modal} className={`restitution-modal${proposalCapture ? ' restitution-proposal-capture' : proposalReview ? ' restitution-proposal-review' : ''}`} role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1} onKeyDown={e => {
         if (e.key === 'Escape' && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); close(); }
         if (e.key === 'Tab') {
           const available = controls(); const first = available[0]; const last = available.at(-1);
           if (!first) { e.preventDefault(); modal.current?.focus(); }
-          else if (e.shiftKey && (document.activeElement === first || document.activeElement === modal.current)) { e.preventDefault(); last?.focus(); }
-          else if (!e.shiftKey && (document.activeElement === last || document.activeElement === modal.current)) { e.preventDefault(); first.focus(); }
+          else if (e.shiftKey && (document.activeElement === first || document.activeElement === modal.current
+            || (proposalReview && document.activeElement === reviewHeading.current))) { e.preventDefault(); last?.focus(); }
+          else if (!e.shiftKey && (document.activeElement === last || document.activeElement === modal.current
+            || (proposalReview && document.activeElement === reviewHeading.current))) { e.preventDefault(); first.focus(); }
         }
-      }}><h3 id={headingID}>{visibleReview ? 'Revisar restitución' : proposalCapture ? 'Proponer restitución de origen' : labels[draft.action]}</h3>
+      }}><h3 id={headingID} ref={reviewHeading} tabIndex={proposalReview ? -1 : undefined}>{proposalReview ? 'Revisar propuesta de restitución' : visibleReview ? 'Revisar restitución' : proposalCapture ? 'Proponer restitución de origen' : labels[draft.action]}</h3>
       {proposalCapture && <form className="restitution-form" aria-label="Editar restitución" onSubmit={e => { e.preventDefault(); prepare(); }}>
         <div className="proposal-context"><p>{proposalCapture.record.reference} · {proposalCapture.record.origin_location_name} → revisión de {proposalCapture.record.destination_location_name}</p>
           <p>Solo para unidades que permanecen físicamente en {proposalCapture.record.origin_location_name}.</p></div>
@@ -284,20 +294,42 @@ function Section(props: TransferRestitutionsProps) {
         <label htmlFor={reasonID}>Motivo de restitución</label><textarea id={reasonID} required value={draft.reason} onChange={e => setDraft({ ...draft, reason: e.target.value })} />
         <div className="restitution-actions"><button type="submit">Revisar restitución</button><button type="button" onClick={close}>Cancelar</button></div>
       </form>}
-      {visibleReview && <><div className="restitution-modal-body">
+      {proposalReview && <div className="restitution-proposal-review-body">
+        <div className="review-context"><p>{proposalReview.capture.record.reference} · Propuesta de {proposalReview.capture.record.origin_location_name}</p>
+          <p>Revisión a cargo de {proposalReview.capture.record.destination_location_name}</p></div>
+        <section aria-label="Batería a restituir"><h4>Batería a restituir</h4>
+          <div className="review-battery"><p className="review-product">{reviewedItem
+            ? `${reviewedItem.brand} · ${reviewedItem.model} · ${reviewedItem.capacity_ah} Ah · ${reviewedItem.polarity}`
+            : `Variante ${proposalReview.capture.line.variant_id} · Identidad no disponible`}</p>
+            <div className="review-counters"><span>Enviadas: <strong>{proposalReview.capture.line.expected_quantity.toString()}</strong></span>
+              <span>Crédito efectivo en destino: <strong>{proposalReview.capture.line.effective_credit.toString()}</strong></span>
+              <span>Restituido en origen: <strong>{proposalReview.capture.line.applied_retained_quantity.toString()}</strong></span></div>
+            <p className="review-quantity"><span>Cantidad retenida propuesta</span><strong>{proposalReview.input.retained_quantity} batería(s)</strong></p>
+          </div>
+        </section>
+        <section aria-label="Motivo de restitución"><h4>Motivo de restitución</h4>
+          <p className="review-reason">{proposalReview.input.reason}</p></section>
+        {proposalReview.attested && <div className="review-attestation"><span aria-hidden="true">✓</span><div>
+          <p>Confirmaste que estas unidades permanecen físicamente en {proposalReview.capture.record.origin_location_name}.</p>
+          <p>El faltante en destino no prueba retención en origen.</p></div></div>}
+        <div className="review-effects"><p>Enviar la propuesta no mueve stock ni cambia reservas.</p>
+          <p>Si {proposalReview.capture.record.destination_location_name} la acepta y se valida, se acreditarán en {proposalReview.capture.record.origin_location_name} {proposalReview.input.retained_quantity} batería(s). Destino y reservas no cambian.</p>
+          <p>Una aplicación, incluso parcial, cierra esta restitución. No resuelve automáticamente faltantes ni conteos. El despacho y la recepción original son inmutables.</p></div>
+      </div>}
+      {visibleReview && <>{!proposalReview && <div className="restitution-modal-body">
         <p>{labels[visibleReview.draft.action]} · Variante {variant} · Revisión {visibleReview.input.expected_revision}</p>
         <p>Retenidas: {'retained_quantity' in visibleReview.input ? visibleReview.input.retained_quantity : line?.proposals.find(p => p.state === 'pending')?.retained_quantity.toString()}</p>
         <p className="restitution-evidence">Motivo exacto: {visibleReview.input.reason}</p>
         <p>{visibleReview.draft.action === 'accept' ? `Acredita origen ${record.origin_location_name} una vez. Destino sin cambios. No cambia reservas.` : 'No mueve stock ni cambia reservas.'}</p>
         <p>La falta en destino no prueba retención. Una aplicación, incluso parcial, cierra esta restitución. El despacho y la recepción original son inmutables.</p>
         {visibleReview.draft.action === 'propose' && <p>Confirmaste que estas unidades permanecen físicamente en origen.</p>}
-      </div><footer><button ref={cancel} onClick={() => {
+      </div>}<footer><button ref={cancel} onClick={() => {
         if (visibleReview.draft.action === 'propose') editProposal(visibleReview); else close();
       }}>{visibleReview.draft.action === 'propose' ? 'Editar datos' : 'Cancelar'}</button><button onClick={() => {
         if (!current() || hook.busy || sending.current || snapshot !== visibleReview.snapshot) return;
         const captured = visibleReview; queueFocus(captured.draft.trigger); setReview(null); setDraft(null);
         void run(() => hook.submit(captured.draft.pin, captured.input));
-      }}>{confirms[visibleReview.draft.action]}</button></footer></>}
+      }}>{proposalReview ? 'Enviar propuesta' : confirms[visibleReview.draft.action]}</button></footer></>}
       <button className="restitution-modal-close" aria-label="Cerrar restitución" disabled={sending.current} onClick={close}>×</button>
       </div></div>}
     </>}

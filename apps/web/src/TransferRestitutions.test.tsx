@@ -155,7 +155,7 @@ it.each(['0', '01', '-1', '1.5', '2', '9223372036854775808'])('does not review i
   fireEvent.click(screen.getByLabelText('Confirmo que estas unidades permanecen físicamente en origen'));
   fireEvent.click(screen.getByRole('button', { name: 'Revisar restitución' }));
   expect(screen.getByRole('dialog', { name: 'Proponer restitución de origen' })).toBeVisible();
-  expect(screen.queryByRole('button', { name: 'Confirmar propuesta' })).not.toBeInTheDocument(); expect(f.posts()).toHaveLength(0);
+  expect(screen.queryByRole('button', { name: 'Enviar propuesta' })).not.toBeInTheDocument(); expect(f.posts()).toHaveLength(0);
 });
 it('captures RT2 context in order with blank consent and disabled review', async () => {
   const f = fixture(); render(f.element()); await screen.findByText('Crédito efectivo en destino'); await consult();
@@ -190,7 +190,7 @@ it.each([
   if (attested) fireEvent.click(within(dialog).getByRole('checkbox'));
   expect(within(dialog).getByRole('button', { name: 'Revisar restitución' })).toBeDisabled();
   fireEvent.submit(within(dialog).getByRole('form'));
-  expect(screen.queryByRole('button', { name: 'Confirmar propuesta' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Enviar propuesta' })).not.toBeInTheDocument();
   expect(key).not.toHaveBeenCalled(); expect(start).not.toHaveBeenCalled(); expect(f.posts()).toHaveLength(0);
   expect(f.controller.restitutionRecovery!.get({ epoch: 1, account: 1, location: 1, generation: 1 }, BigInt(id))).toHaveLength(0);
   expect(f.fetch).toHaveBeenCalledTimes(reads); key.mockRestore();
@@ -205,9 +205,9 @@ it.each(['  físico 🪫  ', '\u00a0', '\t'])('prepares exact cap with model-val
   fireEvent.click(within(dialog).getByRole('checkbox')); expect(key).not.toHaveBeenCalled();
   expect(within(dialog).getByRole('button', { name: 'Revisar restitución' })).toBeEnabled();
   fireEvent.submit(within(dialog).getByRole('form'));
-  expect(screen.getByRole('dialog', { name: 'Revisar restitución' })).toBe(dialog);
+  expect(screen.getByRole('dialog', { name: 'Revisar propuesta de restitución' })).toBe(dialog);
   expect(key).toHaveBeenCalledOnce(); expect(start).not.toHaveBeenCalled(); expect(f.fetch).toHaveBeenCalledTimes(reads);
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar propuesta' }));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Enviar propuesta' }));
   await waitFor(() => expect(f.posts()).toHaveLength(1));
   expect(JSON.parse(String(f.posts()[0][1]?.body))).toMatchObject({ retained_quantity: '1', reason, expected_revision: '0', retained_at_origin: true });
   expect(key).toHaveBeenCalledOnce(); key.mockRestore();
@@ -230,7 +230,9 @@ it.each(['  físico 🪫\u00a0\t\n exacto  ', '\u00a0', '\t'])(
     fireEvent.change(within(dialog).getByLabelText(/Motivo/), { target: { value: reason } });
     fireEvent.click(within(dialog).getByRole('checkbox'));
     fireEvent.submit(within(dialog).getByRole('form'));
-    const oldConfirm = within(dialog).getByRole('button', { name: 'Confirmar propuesta' });
+    const oldConfirm = within(dialog).getByRole('button', { name: 'Enviar propuesta' });
+    const heading = within(dialog).getByRole('heading', { name: 'Revisar propuesta de restitución' });
+    expect(heading).toHaveFocus(); fireEvent.keyDown(heading, { key: 'Tab' });
     const edit = within(dialog).getByRole('button', { name: 'Editar datos' }); expect(edit).toHaveFocus();
     expect(key).toHaveBeenCalledOnce(); const reads = f.fetch.mock.calls.length;
     const dynamic = document.createElement('button'); dynamic.textContent = 'Dynamic edit sibling';
@@ -247,7 +249,7 @@ it.each(['  físico 🪫\u00a0\t\n exacto  ', '\u00a0', '\t'])(
     expect(key).toHaveBeenCalledOnce(); expect(start).not.toHaveBeenCalled();
     expect(f.fetch).toHaveBeenCalledTimes(reads); expect(f.posts()).toHaveLength(0);
     fireEvent.submit(within(dialog).getByRole('form')); expect(key).toHaveBeenCalledTimes(2);
-    const confirm = within(dialog).getByRole('button', { name: 'Confirmar propuesta' });
+    const confirm = within(dialog).getByRole('button', { name: 'Enviar propuesta' });
     fireEvent.click(confirm); fireEvent.click(confirm);
     await waitFor(() => expect(f.posts()).toHaveLength(1));
     expect(start).toHaveBeenCalledOnce(); expect(start.mock.calls[0][0]).toBe(originalPin);
@@ -322,6 +324,58 @@ it.each(['record', 'request', 'session', 'snapshot', 'masked'])(
     expect(key).not.toHaveBeenCalled(); expect(start).not.toHaveBeenCalled(); expect(f.posts()).toHaveLength(0);
     key.mockRestore(); start.mockRestore();
 });
+it.each(['  físico 🪫\u00a0\t\n exacto  ', `  ${'🪫'.repeat(990)}${'a'.repeat(996)}  `])(
+  'presents captured proposal context and complete prepared reason %j with phase-local focus', async reason => {
+    const f = fixture(1, false, '9223372036854775807');
+    const element = (visible: boolean) => <TransferRestitutions controller={f.controller} record={f.record}
+      enabled requestID={id} contextVisible={visible} />;
+    const view = render(element(true)); await screen.findByText('Crédito efectivo en destino'); await consult();
+    const trigger = screen.getByRole('button', { name: 'Proponer restitución' }); fireEvent.click(trigger);
+    const dialog = screen.getByRole('dialog'); const backdrop = dialog.parentElement;
+    fireEvent.change(within(dialog).getByLabelText(/Cantidad retenida/), { target: { value: '9223372036854775803' } });
+    fireEvent.change(within(dialog).getByLabelText(/Motivo/), { target: { value: reason } });
+    fireEvent.click(within(dialog).getByRole('checkbox')); dialog.scrollTop = 400;
+    const reads = f.fetch.mock.calls.length;
+    fireEvent.submit(within(dialog).getByRole('form'));
+    expect(screen.getByRole('dialog', { name: 'Revisar propuesta de restitución' })).toBe(dialog);
+    expect(dialog).toHaveClass('restitution-proposal-review'); expect(dialog.parentElement).toBe(backdrop);
+    const heading = within(dialog).getByRole('heading', { name: 'Revisar propuesta de restitución' });
+    expect(heading).toHaveAttribute('tabindex', '-1'); expect(heading).toHaveFocus(); expect(dialog.scrollTop).toBe(0);
+    expect(dialog).toHaveTextContent(`TR-${id} · Propuesta de Origin`);
+    expect(dialog).toHaveTextContent('Revisión a cargo de Destination');
+    const battery = within(dialog).getByRole('region', { name: 'Batería a restituir' });
+    expect(battery).toHaveTextContent('B · M · 60 Ah · L');
+    expect(battery).toHaveTextContent('Enviadas: 9223372036854775807');
+    expect(battery).toHaveTextContent('Crédito efectivo en destino: 4');
+    expect(battery).toHaveTextContent('Restituido en origen: 0');
+    expect(within(battery).getByText('Cantidad retenida propuesta').nextElementSibling).toHaveTextContent(/^9223372036854775803 batería\(s\)$/);
+    const evidence = within(dialog).getByRole('region', { name: 'Motivo de restitución' });
+    expect(evidence.querySelector('p')?.textContent).toBe(reason);
+    expect(within(dialog).queryByRole('textbox')).not.toBeInTheDocument();
+    expect(dialog).toHaveTextContent('Confirmaste que estas unidades permanecen físicamente en Origin.');
+    expect(dialog).toHaveTextContent('El faltante en destino no prueba retención en origen.');
+    expect(dialog).toHaveTextContent('Enviar la propuesta no mueve stock ni cambia reservas.');
+    expect(dialog).toHaveTextContent('Si Destination la acepta y se valida, se acreditarán en Origin 9223372036854775803 batería(s).');
+    expect(dialog).toHaveTextContent('Destino y reservas no cambian.');
+    expect(dialog).toHaveTextContent('No resuelve automáticamente faltantes ni conteos.');
+    expect(dialog).toHaveTextContent('El despacho y la recepción original son inmutables.');
+    const edit = within(dialog).getByRole('button', { name: 'Editar datos' });
+    const send = within(dialog).getByRole('button', { name: 'Enviar propuesta' });
+    const close = within(dialog).getByRole('button', { name: 'Cerrar restitución' });
+    expect(edit.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.keyDown(heading, { key: 'Tab' }); expect(edit).toHaveFocus();
+    heading.focus(); fireEvent.keyDown(heading, { key: 'Tab', shiftKey: true }); expect(close).toHaveFocus();
+    view.rerender(element(false)); expect(screen.getByRole('dialog')).toBe(dialog);
+    expect(evidence.querySelector('p')?.textContent).toBe(reason);
+    fireEvent.click(edit); expect(screen.getByRole('dialog')).toBe(dialog);
+    expect(within(dialog).getByRole('combobox')).toHaveFocus();
+    expect(within(dialog).getByLabelText(/Motivo/)).toHaveValue(reason);
+    expect(within(dialog).getByRole('checkbox')).toBeChecked();
+    expect(trigger.closest('[inert]')).not.toBeNull(); expect(f.fetch).toHaveBeenCalledTimes(reads);
+    view.rerender(element(true));
+    fireEvent.keyDown(dialog, { key: 'Escape' }); expect(trigger).toHaveFocus();
+    expect(trigger.closest('[inert]')).toBeNull(); expect(f.posts()).toHaveLength(0);
+});
 it('keeps capture counters and exact cap lossless at the bigint domain edge', async () => {
   const f = fixture(1, false, '9223372036854775807'); render(f.element());
   await screen.findByText('Crédito efectivo en destino'); await consult();
@@ -332,7 +386,7 @@ it('keeps capture counters and exact cap lossless at the bigint domain edge', as
   fireEvent.change(within(dialog).getByRole('textbox', { name: /Cantidad retenida/ }), { target: { value: '9223372036854775803' } });
   fireEvent.change(within(dialog).getByRole('textbox', { name: /Motivo/ }), { target: { value: 'retained' } });
   fireEvent.click(within(dialog).getByRole('checkbox')); fireEvent.submit(within(dialog).getByRole('form'));
-  expect(screen.getByRole('button', { name: 'Confirmar propuesta' })).toBeEnabled(); expect(f.posts()).toHaveLength(0);
+  expect(screen.getByRole('button', { name: 'Enviar propuesta' })).toBeEnabled(); expect(f.posts()).toHaveLength(0);
 });
 it.each(['account', 'location'])('refuses programmatic preparation after unrendered %s authority drift', async field => {
   const f = fixture(); render(f.element()); await screen.findByText('Crédito efectivo en destino'); await consult();
@@ -345,7 +399,7 @@ it.each(['account', 'location'])('refuses programmatic preparation after unrende
   else f.authority.session.identity.location.id = 2;
   const key = vi.spyOn(crypto, 'getRandomValues'); fireEvent.submit(within(dialog).getByRole('form'));
   expect(key).not.toHaveBeenCalled(); expect(f.posts()).toHaveLength(0);
-  expect(screen.queryByRole('button', { name: 'Confirmar propuesta' })).not.toBeInTheDocument(); key.mockRestore();
+  expect(screen.queryByRole('button', { name: 'Enviar propuesta' })).not.toBeInTheDocument(); key.mockRestore();
 });
 it.each(['count', 'header', 'restitution'] as const)('rejects the original %s pin even when fresh review is available', async stream => {
   const f = fixture(); render(f.element()); await screen.findByText('Crédito efectivo en destino'); await consult();
@@ -370,7 +424,7 @@ it.each(['count', 'header', 'restitution'] as const)('rejects the original %s pi
   const key = vi.spyOn(crypto, 'getRandomValues');
   fireEvent.submit(within(dialog).getByRole('form'));
   expect(key).not.toHaveBeenCalled(); expect(f.posts()).toHaveLength(0);
-  expect(screen.queryByRole('button', { name: 'Confirmar propuesta' })).not.toBeInTheDocument(); key.mockRestore();
+  expect(screen.queryByRole('button', { name: 'Enviar propuesta' })).not.toBeInTheDocument(); key.mockRestore();
 });
 it('does not grant decision authority to another account assigned to destination', async () => {
   const f = fixture(2, true); if (!f.authority.session?.authenticated) throw new Error('fixture');
@@ -385,7 +439,7 @@ it('retires private form and hook reads on authority change', async () => {
   // Settle the explicit consultation, including its async event guard, before opening a draft.
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Consultar para revisar restitución' })); });
   expect(screen.getByRole('button', { name: 'Proponer restitución' })).toBeEnabled(); draft();
-  expect(screen.getByRole('dialog', { name: 'Revisar restitución' })).toBeVisible();
+  expect(screen.getByRole('dialog', { name: 'Revisar propuesta de restitución' })).toBeVisible();
   const before = f.fetch.mock.calls.length; f.authority.ready = false; view.rerender(f.element());
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); expect(screen.queryByRole('form', { name: 'Editar restitución' })).not.toBeInTheDocument();
   expect(screen.queryByRole('region')).not.toBeInTheDocument();
@@ -422,7 +476,7 @@ it('owns one selected variant, retires its review and requires another explicit 
   await waitFor(() => expect(screen.getByRole('button', { name: 'Consultar para revisar restitución' })).toBeEnabled());
   expect(screen.getByRole('button', { name: 'Proponer restitución' })).toBeDisabled();
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); expect(f.posts()).toHaveLength(0);
-  await consult(); draft(); fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirmar propuesta' }));
+  await consult(); draft(); fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Enviar propuesta' }));
   await waitFor(() => expect(f.posts()).toHaveLength(1)); expect(JSON.parse(String(f.posts()[0][1]?.body)).variant_id).toBe(202);
 });
 it.each(['5', '6'])('presents applied origin outcome separately from destination credit and closes even partial dispatch %s', async dispatched => {
@@ -510,7 +564,9 @@ it('keeps one isolated dialog through capture and review with full-control keybo
   const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
   fireEvent(review, tab); expect(tab.defaultPrevented).toBe(false);
   fireEvent.submit(within(dialog).getByRole('form')); // Native form submission keeps the same modal lifetime.
-  expect(screen.getByRole('dialog', { name: 'Revisar restitución' })).toBe(dialog);
+  expect(screen.getByRole('dialog', { name: 'Revisar propuesta de restitución' })).toBe(dialog);
+  const heading = within(dialog).getByRole('heading', { name: 'Revisar propuesta de restitución' });
+  expect(heading).toHaveFocus(); fireEvent.keyDown(heading, { key: 'Tab' });
   const cancel = within(dialog).getByRole('button', { name: 'Editar datos' }); expect(cancel).toHaveFocus();
   fireEvent.keyDown(cancel, { key: 'Tab', shiftKey: true });
   expect(within(dialog).getByRole('button', { name: 'Cerrar restitución' })).toHaveFocus();
@@ -581,7 +637,7 @@ it('keeps capture focus private when presentation entry changes and exposes busy
   const read = f.fetch.getMockImplementation()!; let release!: () => void;
   const pending = new Promise<void>(resolve => { release = resolve; }); f.fail();
   f.fetch.mockImplementation(async (url, init) => { if (init?.method === 'POST') await pending; return read(url, init); });
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar propuesta' }));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Enviar propuesta' }));
   view.rerender(element(false, 1));
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   const recover = screen.getByRole('button', { name: 'Consultar resultado de restitución' });
@@ -613,12 +669,12 @@ it('requires explicit consultation and unchecked physical attestation, reviews w
   expect(screen.getByRole('button', { name: 'Proponer restitución' })).toBeDisabled();
   await consult(); draft();
   expect(f.posts()).toHaveLength(0);
-  const dialog = screen.getByRole('dialog', { name: 'Revisar restitución' });
-  expect(dialog).toHaveTextContent('No mueve stock');
-  expect(dialog).toHaveTextContent('permanecen físicamente en origen');
+  const dialog = screen.getByRole('dialog', { name: 'Revisar propuesta de restitución' });
+  expect(dialog).toHaveTextContent('Enviar la propuesta no mueve stock');
+  expect(dialog).toHaveTextContent('permanecen físicamente en Origin');
   expect(dialog).toHaveTextContent('Una aplicación, incluso parcial, cierra esta restitución');
   expect(dialog).toHaveTextContent('El despacho y la recepción original son inmutables');
-  const confirm = within(dialog).getByRole('button', { name: 'Confirmar propuesta' }); fireEvent.click(confirm); fireEvent.click(confirm);
+  const confirm = within(dialog).getByRole('button', { name: 'Enviar propuesta' }); fireEvent.click(confirm); fireEvent.click(confirm);
   await waitFor(() => expect(f.posts()).toHaveLength(1));
   expect(JSON.parse(String(f.posts()[0][1]?.body))).toEqual({ variant_id: 201, operation_key: expect.stringMatching(/^[a-f0-9]{32}$/), expected_revision: '0', retained_quantity: '1', retained_at_origin: true, reason: ' exact reason ' });
   await waitFor(() => expect(f.controller.confirmTransferRestitution).toHaveBeenCalledOnce());
@@ -632,7 +688,10 @@ it.each(['accept', 'reject'])('destination reviews %s with required reason and n
   expect(screen.queryByLabelText('Cantidad retenida')).not.toBeInTheDocument();
   fireEvent.change(screen.getByLabelText('Motivo de restitución'), { target: { value: ' destination reason ' } });
   fireEvent.click(screen.getByRole('button', { name: 'Revisar restitución' }));
-  const dialog = screen.getByRole('dialog');
+  const dialog = screen.getByRole('dialog', { name: 'Revisar restitución' });
+  expect(dialog).not.toHaveClass('restitution-proposal-review');
+  expect(dialog).toHaveTextContent(`Variante 201 · Revisión 1`);
+  expect(dialog).toHaveTextContent('Motivo exacto: destination reason');
   expect(within(dialog).getByRole('button', { name: 'Cancelar' })).toHaveFocus();
   expect(within(dialog).queryByRole('button', { name: 'Editar datos' })).not.toBeInTheDocument();
   fireEvent.click(within(dialog).getByRole('button', { name: action === 'accept' ? 'Confirmar aceptación' : 'Confirmar rechazo' }));
@@ -653,7 +712,7 @@ it('closes review when controller-owned count evidence is retired without replac
 });
 it('preserves controller-owned uncertainty across remount and retries only captured payload', async () => {
   const f = fixture(); f.fail(); const view = render(f.element()); await screen.findByText('Crédito efectivo en destino'); await consult(); draft();
-  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirmar propuesta' }));
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Enviar propuesta' }));
   await screen.findByRole('button', { name: 'Reintentar carga exacta' }); const body = f.posts()[0][1]?.body;
   view.unmount();
   render(<TransferRestitutions controller={f.controller} record={f.record} requestID={id} enabled contextVisible={false} />);
