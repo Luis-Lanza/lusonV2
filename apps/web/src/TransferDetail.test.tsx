@@ -193,11 +193,18 @@ describe('F1 participant transit detail', () => {
 });
 
 describe('U4b effective received detail', () => {
-  function received(assigned = 2) {
-    const f = fixture(1, 2, assigned); const original = wire(1, 2, 'approved');
-    const record = parseTransferRecord(JSON.stringify({ ...original, status: 'received',
-      dispatch_location_id: 1, dispatched_at: '2028-01-03T00:00:00Z',
-      receipt_location_id: 2, received_at: '2028-01-04T00:00:00Z',
+  const routes = [
+    ['request_stock', 1, 2], ['request_stock', 2, 3],
+    ['direct_shipment', 1, 3], ['send_to_warehouse', 2, 1],
+  ] as const;
+  type Route = typeof routes[number];
+  const participants = routes.flatMap(route => [route[1], route[2]].map(actor => ({ route, actor })));
+  function received(assigned = 2, [kind, origin, destination]: Route = routes[0]) {
+    const f = fixture(origin, destination, assigned); const original = wire(origin, destination, 'approved');
+    const record = parseTransferRecord(JSON.stringify({ ...original, kind, status: 'received',
+      ...(kind === 'direct_shipment' ? { creator_location_id: origin, creator_location_name: 'Almacén', decided_at: original.created_at } : {}),
+      dispatch_location_id: origin, dispatched_at: '2028-01-03T00:00:00Z',
+      receipt_location_id: destination, received_at: '2028-01-04T00:00:00Z',
       receipt: { items: original.items.map(i => ({ variant_id: i.variant_id, expected_quantity: i.quantity,
         actual_quantity: i.quantity, available_quantity: i.quantity })), exceptions: [] } }));
     if (record.status !== 'received') throw new Error('received fixture');
@@ -211,15 +218,15 @@ describe('U4b effective received detail', () => {
       correctionsEnabled={enabled} correctionRequestID={requestID} actions={() => <button>Result sentinel</button>} />;
     return { ...f, record, corrections, element };
   }
-  function outcome(assigned = 2, rejected = false, quantity = 1n, original = 0n, expected = 1n) {
-    const f = received(assigned);
+  function outcome(assigned = 2, rejected = false, quantity = 1n, original = 0n, expected = 1n, route: Route = routes[0]) {
+    const f = received(assigned, route);
     const items = f.record.items.map((item, index) => ({ ...item, quantity: index === 0 ? expected : 1n })).filter(item => item.quantity > 0n);
     const record = { ...f.record, items, receipt: previewTransferReceipt({ items: [
       { variant_id: 1, actual_quantity: original.toString() }, { variant_id: 2, actual_quantity: '1' }] }, { items }) };
-    const proposal: CountProposal = { revision: 1n, operation_key: 'result_proposal_key', initiator_location_id: 2,
+    const proposal: CountProposal = { revision: 1n, operation_key: 'result_proposal_key', initiator_location_id: f.record.destination_location_id,
       actual_quantity: quantity, base_revision: 0n, base_credit: original < expected ? original : expected,
       reason: 'Recount', recorded_at: '2028-01-05T00:00:00Z', state: rejected ? 'rejected' : 'applied',
-      decision: { operation_key: 'result_decision_key', actor_location_id: 1, accepted: !rejected,
+      decision: { operation_key: 'result_decision_key', actor_location_id: f.record.origin_location_id, accepted: !rejected,
         reason: 'Verified', recorded_at: '2028-01-06T00:00:00Z' },
       application: rejected ? null : { effective_credit: quantity < expected ? quantity : expected,
         delta: (quantity < expected ? quantity : expected) - (original < expected ? original : expected),
@@ -241,6 +248,42 @@ describe('U4b effective received detail', () => {
         revision: 1n, actual_quantity: quantity, reason: proposal.reason, recorded_at: proposal.recorded_at } : null, failure: null });
     return { ...f, record, proposal, line, evidence, element, attempt };
   }
+  it.each(participants)('shares corrected received presentation for $route at $actor', ({ route, actor }) => {
+    const f = outcome(actor, false, 1n, 0n, 2n, route);
+    f.controller.restitutionRecovery = createTransferRestitutionRecovery();
+    render(<TransferDetail controller={f.controller} ownerTag={transferViewOwner(f.env.current)!}
+      record={f.record} corrections={f.evidence} correctionsEnabled correctionRequestID={f.record.id}
+      restitutionsEnabled restitutionRequestID={f.record.id} />);
+    expect(document.querySelector('.transfer-received-detail')).not.toBeNull();
+    expect(screen.queryByRole('complementary', { name: 'Resumen de solicitud' })).toBeNull();
+    const effective = screen.getByRole('table', { name: 'Conteo efectivo' });
+    expect(effective.querySelector('tbody [data-label="Recibidas efectivas"]')).toHaveTextContent(/^1$/);
+    expect(effective.querySelector('tbody [data-label="Crédito efectivo"]')).toHaveTextContent(/^1$/);
+    expect(effective).toHaveTextContent('Faltante: 1');
+    expect(correctedHeading()).toHaveTextContent('Conteo corregido');
+    expect(results()).toHaveTextContent('0 → 1');
+    expect(results()).toHaveTextContent(f.record.origin_location_name);
+    expect(screen.getByText(/no el stock actual/)).toBeVisible();
+    const disclosure = screen.getByText('Ver recepción original').closest('details')!;
+    expect(disclosure).not.toHaveAttribute('open');
+    const original = disclosure.querySelector('table')!;
+    const immutable = original.outerHTML;
+    fireEvent.click(screen.getByRole('button', { name: 'Gestiones' }));
+    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Corregir conteo', 'Restituciones de origen']);
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    fireEvent.click(screen.getByText('Ver recepción original'));
+    expect(original).toBeVisible();
+    expect(original.querySelector('tbody [data-label="Recibidas físicamente"]')).toHaveTextContent(/^0$/);
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+    const history = screen.getByRole('region', { name: route[0] === 'direct_shipment' ? 'Historial del envío'
+      : route[0] === 'send_to_warehouse' ? 'Historial de la propuesta' : 'Historial de la solicitud' });
+    expect(history).toHaveTextContent(route[0] === 'request_stock' ? 'Solicitud recibida' : 'Envío recibido');
+    expect(history.querySelectorAll('time')).toHaveLength(route[0] === 'direct_shipment' ? 3 : 4);
+    if (route[0] === 'direct_shipment') expect(history).not.toHaveTextContent(/aprob/i);
+    expect(original.outerHTML).toBe(immutable);
+    expect(f.fetch.mock.calls.every(([url, init]) => init?.method === 'GET'
+      && (String(url).endsWith('/restitutions') || String(url).endsWith('/count-corrections')))).toBe(true);
+  });
   const results = () => screen.queryByRole('region', { name: 'Resultados de corrección confirmados' });
   const resultBadges = () => document.querySelectorAll('.received-result-badge, .received-corrected');
   const correctedHeading = () => document.querySelector('.transfer-received-heading .received-result-badge');
@@ -425,8 +468,8 @@ describe('U4b effective received detail', () => {
     expect(rows[0].querySelector('.received-corrected')).toBeNull();
     expect(rows[1].querySelector('.received-corrected')).toHaveTextContent('Conteo corregido: 1 → 1');
   });
-  it('exposes uncertainty recovery outside the closed original without a result', () => {
-    const f = outcome(); Object.assign(f.evidence, { attempts: [f.attempt('uncertain')] }); render(f.element());
+  it.each(participants)('exposes uncertainty recovery outside the closed original for $route at $actor', ({ route, actor }) => {
+    const f = outcome(actor, false, 1n, 0n, 1n, route); Object.assign(f.evidence, { attempts: [f.attempt('uncertain')] }); render(f.element());
     expect(results()).toBeNull(); const recover = screen.getByRole('button', { name: 'Consultar resultado' });
     expect(screen.getByRole('button', { name: 'Gestiones' }).closest('.transfer-received-products')).not.toBeNull();
     expect(recover).toBeVisible(); fireEvent.click(recover); expect(f.evidence.recover).toHaveBeenCalledWith(1);
@@ -469,8 +512,8 @@ describe('U4b effective received detail', () => {
     expect(screen.getByText('Ver recepción original').closest('details')).not.toHaveAttribute('open');
     expect(f.fetch).not.toHaveBeenCalled();
   });
-  it('routes exactly two management entries by keyboard without losing an active correction', async () => {
-    const f = received(); f.controller.restitutionRecovery = createTransferRestitutionRecovery();
+  it.each(participants)('routes two stable management contexts for $route at $actor', async ({ route, actor }) => {
+    const f = received(actor, route); f.controller.restitutionRecovery = createTransferRestitutionRecovery();
     const element = (requestID = f.record.id) => <TransferDetail controller={f.controller}
       ownerTag={transferViewOwner(f.env.current)!} record={f.record} corrections={f.corrections}
       correctionsEnabled correctionRequestID={requestID} restitutionsEnabled restitutionRequestID={f.record.id} />;
@@ -490,7 +533,11 @@ describe('U4b effective received detail', () => {
     expect(screen.getByRole('heading', { name: 'Correcciones de conteo' })).toHaveFocus();
     fireEvent.click(screen.getAllByRole('button', { name: 'Proponer corrección' })[0]);
     fireEvent.change(screen.getByLabelText('Motivo'), { target: { value: 'Keep this draft' } });
+    const form = screen.getByRole('form', { name: 'Editar corrección' });
+    fireEvent.click(screen.getByText('Ver recepción original'));
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
     fireEvent.click(trigger); fireEvent.click(screen.getByRole('menuitem', { name: 'Restituciones de origen' }));
+    expect(screen.getByRole('form', { name: 'Editar corrección' })).toBe(form);
     expect(screen.getByRole('heading', { name: 'Restituciones de origen' })).toHaveFocus();
     expect(screen.getByLabelText('Motivo')).toHaveValue('Keep this draft');
     view.rerender(element('another-request'));
@@ -595,8 +642,8 @@ describe('U4b effective received detail', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Corregir conteo' }));
     expect(screen.getByRole('region', { name: 'Correcciones de conteo' })).toHaveTextContent(state === 'pending' ? 'Pendiente' : 'Rechazada');
   });
-  it('marks retained busy evidence updating without claiming a newly confirmed head', () => {
-    const f = received(); const view = render(f.element());
+  it.each(participants)('marks retained busy evidence updating for $route at $actor', ({ route, actor }) => {
+    const f = received(actor, route); const view = render(f.element());
     view.rerender(f.element(true, f.record.id, { ...f.corrections, busy: true }));
     const effective = screen.getByRole('region', { name: 'Conteo efectivo de recepción' });
     expect(effective).toHaveAttribute('aria-busy', 'true');
@@ -604,9 +651,10 @@ describe('U4b effective received detail', () => {
     expect(effective).not.toHaveTextContent('Conteo efectivo confirmado');
     expect(effective).toHaveTextContent('6 baterías contabilizadas');
   });
-  it.each(['error', 'masked', 'missing', 'duplicate', 'request', 'original', 'disabled', 'selection'])(
-    'makes %s evidence unavailable without presenting original as effective', mode => {
-      const f = received(); const snapshot = f.corrections.snapshot!;
+  it.each(participants.flatMap(context => ['error', 'masked', 'missing', 'duplicate', 'request', 'original', 'disabled', 'selection']
+    .map(mode => ({ ...context, mode }))))(
+    'makes $mode evidence unavailable for $route at $actor without original fallback', ({ route, actor, mode }) => {
+      const f = received(actor, route); const snapshot = f.corrections.snapshot!;
       const evidence = { ...f.corrections,
         error: mode === 'error' ? new TransferAPIError('invalid_response', null, false, false, false, false, false, true) : null,
         masked: mode === 'masked', snapshot: { ...snapshot,
@@ -624,8 +672,8 @@ describe('U4b effective received detail', () => {
       }
       expect(f.fetch).not.toHaveBeenCalled();
     });
-  it('accepts all-zero effective evidence and preserves exact non-netted unexpected quantities', () => {
-    const f = received(); const snapshot = { ...f.corrections.snapshot!,
+  it.each(participants)('preserves exact zero-credit and non-netted quantities for $route at $actor', ({ route, actor }) => {
+    const f = received(actor, route); const snapshot = { ...f.corrections.snapshot!,
       lines: f.corrections.snapshot!.lines.map(line => ({ ...line, effective_actual: 0n, effective_credit: 0n })) };
     const view = render(f.element(true, f.record.id, { ...f.corrections, snapshot }));
     expect(screen.getByRole('region', { name: 'Conteo efectivo confirmado' })).toHaveTextContent('0 baterías contabilizadas');
@@ -640,6 +688,7 @@ describe('U4b effective received detail', () => {
     const effective = screen.getByRole('table', { name: 'Conteo efectivo' });
     expect(effective).toHaveTextContent('Variante 99 · identidad no disponible');
     expect(effective).toHaveTextContent('No enviada: 9007199254740993');
+    expect(effective.querySelector('tr[data-variant-id="99"] [data-label="Crédito efectivo"]')).toHaveTextContent(/^0$/);
     expect(effective).toHaveTextContent('Faltante: 9223372036854775807');
     expect(effective).toHaveTextContent('Exceso: 2');
     fireEvent.click(screen.getByText('Ver recepción original'));
@@ -720,10 +769,15 @@ describe('W2 direct warehouse history', () => {
         receipt: { items: original.items.map(item => ({ variant_id: item.variant_id, expected_quantity: item.quantity,
           actual_quantity: item.quantity, available_quantity: item.quantity })), exceptions: [] } } : {}) }));
     render(f.element(record));
-    expect(document.querySelector('.transfer-received-detail')).toBeNull();
-    expect(screen.queryByText('Ver recepción original')).not.toBeInTheDocument();
-    const historyLabel = status === 'in_transit' ? 'Historial del envío' : 'Historial de la solicitud';
-    if (status === 'in_transit') {
+    expect(!!document.querySelector('.transfer-received-detail')).toBe(status === 'received');
+    if (status === 'received') {
+      const summary = screen.getByText('Ver recepción original');
+      expect(summary.closest('details')).not.toHaveAttribute('open');
+      fireEvent.click(summary);
+      expect(screen.getByRole('table', { name: 'Detalle de recepción' })).toBeVisible();
+    } else expect(screen.queryByText('Ver recepción original')).not.toBeInTheDocument();
+    const historyLabel = status === 'in_transit' || status === 'received' ? 'Historial del envío' : 'Historial de la solicitud';
+    if (status === 'in_transit' || status === 'received') {
       expect(screen.queryByRole('region', { name: historyLabel })).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
     }

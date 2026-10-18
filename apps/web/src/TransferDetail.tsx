@@ -376,7 +376,7 @@ export default function TransferDetail(props: TransferDetailProps) {
       </ol>
     </section>}
   </div>;
-  const receivedParticipant = record.status === 'received' && record.kind === 'request_stock'
+  const receivedParticipant = record.status === 'received'
     && session?.authenticated === true && (session.identity.location.id === record.origin_location_id
       || session.identity.location.id === record.destination_location_id);
   // Do not read private hook evidence until both the mount-bound authority and
@@ -393,6 +393,9 @@ export default function TransferDetail(props: TransferDetailProps) {
     error: corrections?.error ?? null, masked: corrections?.masked ?? false, contextValid: effectiveContext }) : null;
   const countResults = effective?.status === 'available' && corrections
     ? projectCountCorrectionResults(record, corrections) : null;
+  const receivedHistoryLabel = receivedParticipant
+    ? direct ? 'Historial del envío' : record.kind === 'send_to_warehouse' ? 'Historial de la propuesta' : 'Historial de la solicitud'
+    : 'Historial de la solicitud';
   return <div className={`transfer-detail${receivedParticipant ? ' transfer-received-detail' : ''}`}>
     <header className={receivedParticipant ? 'transfer-received-heading' : 'transfer-detail-heading'}><h1>{record.reference}</h1>
       <span className={`pending-status status-${record.status}`}>{transferStatusLabel(record)}</span>
@@ -401,7 +404,7 @@ export default function TransferDetail(props: TransferDetailProps) {
         && <span className="received-result-differences"><ReceivedDifferences quantities={effective.totals} /></span>}
       {receivedParticipant && <button type="button" aria-expanded={historyOpen} aria-controls="received-transfer-history"
         onClick={() => setHistoryFor(historyOpen ? null : historyKey)}><span aria-hidden="true">◷ </span>Ver historial</button>}
-      <p>{receivedParticipant ? <>Solicitud de stock · <span aria-label="Ruta física">{record.origin_location_name} → {record.destination_location_name}</span></> : direct ? 'Envío directo de Almacén' : record.kind === 'send_to_warehouse' ? 'Propuesta de envío a Almacén' : record.origin_location_id === 1 ? 'Solicitud a Almacén' : 'Solicitud entre sucursales'}</p>
+      <p>{receivedParticipant ? <>{direct ? 'Envío directo de Almacén' : record.kind === 'send_to_warehouse' ? 'Propuesta de envío a Almacén' : 'Solicitud de stock'} · <span aria-label="Ruta física">{record.origin_location_name} → {record.destination_location_name}</span></> : direct ? 'Envío directo de Almacén' : record.kind === 'send_to_warehouse' ? 'Propuesta de envío a Almacén' : record.origin_location_id === 1 ? 'Solicitud a Almacén' : 'Solicitud entre sucursales'}</p>
     </header>
     {!receivedParticipant && <section className="transfer-detail-route creation-route" aria-label="Ruta física">
         <div><span>Origen</span><strong>{record.origin_location_name}</strong>
@@ -509,19 +512,19 @@ export default function TransferDetail(props: TransferDetailProps) {
       {record.status === 'cancelled' && <p>Cancelada en {record.creator_location_name}: <TransferDate value={record.cancelled_at} /></p>}
       {props.actions?.(stock)}
     </aside>}
-      {(!receivedParticipant || historyOpen) && <section id={receivedParticipant ? 'received-transfer-history' : undefined} className={`transfer-history ${record.status}`} aria-label="Historial de la solicitud">
-        <h2>Historial de la solicitud</h2>
+      {(!receivedParticipant || historyOpen) && <section id={receivedParticipant ? 'received-transfer-history' : undefined} className={`transfer-history ${record.status}`} aria-label={receivedHistoryLabel}>
+        <h2>{receivedHistoryLabel}</h2>
         <ol>
-          <li><h3>{direct ? 'Envío creado, autorizado y stock reservado' : 'Solicitud creada'}</h3>
+          <li><h3>{direct ? 'Envío creado, autorizado y stock reservado' : receivedParticipant && record.kind === 'send_to_warehouse' ? 'Propuesta creada' : 'Solicitud creada'}</h3>
             <p>Ubicación: {record.creator_location_name}</p>
             <TransferDate value={record.created_at} />
           </li>
-          {terminal && !direct && record.decision_location_id !== undefined && <li><h3>{record.status !== 'rejected' ? 'Solicitud aprobada y stock reservado' : 'Solicitud rechazada'}</h3>
+          {terminal && !direct && record.decision_location_id !== undefined && <li><h3>{record.status !== 'rejected' ? receivedParticipant && record.kind === 'send_to_warehouse' ? 'Propuesta aprobada y stock reservado' : 'Solicitud aprobada y stock reservado' : 'Solicitud rechazada'}</h3>
             {/* The validated decision location is the persisted approver, never the current viewer. */}
             <p>Ubicación: {record.approver_location_name}</p>
             <TransferDate value={record.decided_at} />
           </li>}
-          {(record.status === 'in_transit' || record.status === 'received') && <li><h3>Solicitud despachada</h3>
+          {(record.status === 'in_transit' || record.status === 'received') && <li><h3>{receivedParticipant && record.kind !== 'request_stock' ? 'Envío despachado' : 'Solicitud despachada'}</h3>
             <p>Origen: {record.origin_location_name}</p>
             <TransferDate value={record.dispatched_at} />
             {record.status === 'in_transit' && <p>Pendiente de recepción en {record.destination_location_name}.</p>}
@@ -531,7 +534,7 @@ export default function TransferDetail(props: TransferDetailProps) {
             <TransferDate value={record.cancelled_at} />
             {record.decision_location_id !== undefined && <p>Reserva propia liberada; existencias físicas sin cambios.</p>}
           </li>}
-          {record.status === 'received' && <li><h3>Solicitud recibida</h3>
+          {record.status === 'received' && <li><h3>{receivedParticipant && record.kind !== 'request_stock' ? 'Envío recibido' : 'Solicitud recibida'}</h3>
             <p>Destino: {record.destination_location_name}</p>
             <TransferDate value={record.received_at} />
             <p>Recepción finalizada una sola vez. Discrepancias registradas por separado.</p>

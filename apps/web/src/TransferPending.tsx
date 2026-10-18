@@ -126,7 +126,7 @@ export default function TransferPending(props: TransferPendingProps) {
     && actor === record.origin_location_id;
   const transitParticipant = record?.status === 'in_transit'
     && (actor === record.origin_location_id || actor === record.destination_location_id);
-  const receivedParticipant = record?.status === 'received' && record.kind === 'request_stock'
+  const receivedParticipant = record?.status === 'received'
     && (actor === record.origin_location_id || actor === record.destination_location_id);
   const compactDetail = pendingApprover || approvedOrigin || transitParticipant || receivedParticipant;
   const queryPage = transfers.query.page ?? 1;

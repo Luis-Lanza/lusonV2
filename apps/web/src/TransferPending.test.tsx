@@ -172,7 +172,8 @@ describe('F1 participant transit chrome', () => {
     expect(start).not.toHaveBeenCalled();
     expect(random).not.toHaveBeenCalled();
     if (actor === destination) {
-      const receive = within(products).getByRole('button', { name: 'Recibir solicitud' });
+      const receive = within(products).getByRole('button', { name: kind === 'request_stock' ? 'Recibir solicitud' : 'Registrar recepción' });
+      expect(receive).toBeEnabled();
       fireEvent.click(receive);
       const dialog = screen.getByRole('dialog');
       expect(within(dialog).queryByRole('button', { name: 'Confirmar recepción' })).not.toBeInTheDocument();
@@ -181,7 +182,7 @@ describe('F1 participant transit chrome', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
       expect(receive).toHaveFocus();
     } else {
-      expect(screen.queryByRole('button', { name: /Recibir|Revisar|Confirmar/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Recibir|Registrar recepción|Revisar|Confirmar/ })).not.toBeInTheDocument();
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
       expect(start).not.toHaveBeenCalled();
       expect(random).not.toHaveBeenCalled();
@@ -190,6 +191,39 @@ describe('F1 participant transit chrome', () => {
       && (String(url).startsWith('/api/transfers?') || url === '/api/transfers/counts' || url === `/api/transfers/${record.id}`
         || (actor === destination && String(url).startsWith(`/api/inventory?location_id=${destination}&`))))).toBe(true);
     random.mockRestore();
+  });
+});
+
+describe('F3 participant received chrome', () => {
+  const routes = [
+    ['request_stock', 1, 3], ['request_stock', 2, 3],
+    ['direct_shipment', 1, 3], ['send_to_warehouse', 2, 1],
+  ] as const;
+  it.each(routes.flatMap(([kind, origin, destination]) => [origin, destination].map(actor => ({ kind, origin, destination, actor }))))(
+    'uses effective-first navigation without extra private reads for $kind at $actor', async ({ kind, origin, destination, actor }) => {
+    const original = receivedWire(origin, destination);
+    const record = { ...original, kind, ...(kind === 'direct_shipment'
+      ? { creator_location_id: origin, creator_location_name: locations[origin - 1], decided_at: original.created_at } : {}) };
+    const f = correctionFixture(actor, url => url.endsWith('/restitutions') ? Promise.resolve(reply({
+      request_id: record.id, operations: [], lines: record.receipt.items.map(item => ({ variant_id: item.variant_id,
+        expected_quantity: item.expected_quantity, original_credit: item.available_quantity,
+        workflow_revision: '0', applied_revision: '0', count_generation: '0', count_applied_revision: '0',
+        effective_credit: item.available_quantity, applied_retained_quantity: '0', proposals: [] })),
+    })) : undefined, record);
+    f.controller.restitutionRecovery = createTransferRestitutionRecovery();
+    render(f.element());
+    await screen.findByRole('region', { name: 'Conteo efectivo confirmado' });
+    expect(screen.getByRole('navigation', { name: 'Navegación de transferencia' })).toHaveClass('received-participant-navigation');
+    expect(screen.queryByRole('region', { name: 'Contadores de solicitudes' })).toBeNull();
+    expect(screen.getByText('Ver recepción original').closest('details')).not.toHaveAttribute('open');
+    fireEvent.click(screen.getByRole('button', { name: 'Gestiones' }));
+    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Corregir conteo', 'Restituciones de origen']);
+    // Restitutions also consults count history to fence its effective-credit head.
+    expect(correctionCalls(f)).toHaveLength(2);
+    expect(f.fetch.mock.calls.every(([url, init]) => (!init?.method || init.method === 'GET')
+      && (String(url).startsWith('/api/transfers?') || url === '/api/transfers/counts'
+        || url === `/api/transfers/${record.id}` || url === `/api/transfers/${record.id}/count-corrections`
+        || url === `/api/transfers/${record.id}/restitutions`))).toBe(true);
   });
 });
 
@@ -434,7 +468,7 @@ describe('C4b correction authority and operation boundaries', () => {
       render(f.element());
       if (actor === origin || actor === destination) {
         await screen.findByRole('heading', { name: f.record.reference });
-        await correctionLoaded(f.record.kind === 'request_stock'); expect(correctionCalls(f)).toHaveLength(1);
+        await correctionLoaded(); expect(correctionCalls(f)).toHaveLength(1);
       } else {
         await screen.findByText('No se pudo consultar la solicitud.');
         expect(correctionCalls(f)).toHaveLength(0);
