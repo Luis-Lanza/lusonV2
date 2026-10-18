@@ -63,6 +63,68 @@ function fixture(actor = 1, origin = 1, destination = 2, override?: (url: string
 }
 const posts = (f: ReturnType<typeof fixture>) => f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST');
 afterEach(() => vi.unstubAllGlobals());
+describe('F5 approved participant detail and dispatch', () => {
+  const routes = [['request_stock', 1, 3], ['request_stock', 2, 3],
+    ['direct_shipment', 1, 3], ['send_to_warehouse', 2, 1]] as const;
+  it.each(routes.flatMap(([kind, origin, destination]) => [origin, destination].map(actor => ({ kind, origin, destination, actor }))))(
+    'shares approved hierarchy without changing actions for $kind at $actor', async ({ kind, origin, destination, actor }) => {
+    const f = fixture(actor, origin, destination);
+    f.env.record = { ...f.env.record, kind, ...(kind === 'direct_shipment' ? {
+      creator_location_id: origin, creator_location_name: names[origin - 1], decided_at: f.env.record.created_at } : {}) };
+    const start = vi.spyOn(f.controller.dispatchRecovery!, 'start');
+    const view = render(f.element());
+    await screen.findByRole('heading', { name: f.env.record.reference });
+    expect(screen.getByRole('navigation')).toHaveClass('approved-origin-navigation');
+    expect(screen.queryByRole('region', { name: 'Contadores de solicitudes' })).toBeNull();
+    const productLabel = kind === 'direct_shipment' ? 'Productos a despachar' : kind === 'send_to_warehouse' ? 'Productos propuestos' : 'Productos solicitados';
+    const products = screen.getByRole('region', { name: productLabel });
+    expect(products).toHaveTextContent(`18446744073709551614 baterías están reservadas en ${names[origin - 1]}`);
+    expect(within(products).getByRole('columnheader', { name: kind === 'direct_shipment' ? 'A despachar' : kind === 'send_to_warehouse' ? 'Propuestas' : 'Solicitadas' })).toBeVisible();
+    const reservation = `Reservadas para ${kind === 'request_stock' ? 'esta solicitud' : kind === 'send_to_warehouse' ? 'esta propuesta' : 'este envío'}`;
+    expect(within(products).getByRole('columnheader', { name: reservation })).toBeVisible();
+    const allocations = products.querySelectorAll(`[data-label="${reservation}"]`);
+    expect(allocations).toHaveLength(2);
+    for (const allocation of allocations) expect(allocation).toHaveTextContent(/^9223372036854775807 uds\.$/);
+    expect(within(products).queryByRole('columnheader', { name: /Disponibl/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Aprobar|Rechazar|Actualizar stock/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cancelar solicitud' }) !== null).toBe(actor === f.env.record.creator_location_id);
+    expect(within(products).queryByRole('button', { name: /Despachar/ }) !== null).toBe(actor === origin);
+    if (actor !== origin) expect(products).toHaveTextContent(`Pendiente de despacho desde ${names[origin - 1]}`);
+    expect(document.querySelector('.transfer-approved-heading .pending-status')).toHaveTextContent(kind === 'direct_shipment' ? 'Pendiente de despacho' : 'Aprobada');
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+    const history = screen.getByRole('region', { name: kind === 'direct_shipment' ? 'Historial del envío' : kind === 'send_to_warehouse' ? 'Historial de la propuesta' : 'Historial de la solicitud' });
+    expect(history.querySelectorAll('time')).toHaveLength(kind === 'direct_shipment' ? 1 : 2);
+    expect(history.querySelector('time')).toHaveAttribute('datetime', f.env.record.created_at);
+    expect(history).toHaveTextContent(`Ubicación: ${f.env.record.creator_location_name}`);
+    if (kind === 'direct_shipment') {
+      expect(history).toHaveTextContent('Envío creado, autorizado y stock reservado');
+      expect(history).not.toHaveTextContent(/aprobada|aprobación/);
+    } else expect(history).toHaveTextContent(`Ubicación: ${f.env.record.approver_location_name}`);
+    if (actor === origin) {
+      const trigger = within(products).getByRole('button', { name: kind === 'request_stock' ? 'Despachar solicitud' : 'Despachar envío' });
+      fireEvent.click(trigger);
+      const dialog = screen.getByRole('dialog');
+      expect(dialog).toHaveClass('transfer-dispatch-confirmation');
+      expect(within(dialog).getByRole('table', { name: kind === 'request_stock' ? 'Solicitud completa a confirmar' : kind === 'send_to_warehouse' ? 'Propuesta completa a confirmar' : 'Envío completo a confirmar' })).toHaveTextContent('18446744073709551614');
+      expect(dialog).toHaveTextContent(`${names[origin - 1]} → ${names[destination - 1]}`);
+      expect(within(dialog).getAllByRole('listitem')).toHaveLength(3);
+      expect(dialog.querySelector('input, textarea, select')).toBeNull();
+      expect(document.querySelector('.transfer-receipt')).toHaveAttribute('inert');
+      const confirm = within(dialog).getByRole('button', { name: 'Confirmar despacho' });
+      within(dialog).getByRole('button', { name: 'Cerrar confirmación de despacho' }).focus();
+      fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true }); expect(confirm).toHaveFocus();
+      fireEvent.keyDown(dialog, { key: 'Escape' }); expect(trigger).toHaveFocus();
+      expect(document.querySelector('.transfer-receipt')).not.toHaveAttribute('inert');
+      fireEvent.click(trigger);
+      f.env.authority.ready = false; view.rerender(f.element());
+      expect(screen.queryByRole('dialog')).toBeNull();
+    }
+    expect(start).not.toHaveBeenCalled();
+    expect(posts(f)).toHaveLength(0);
+    expect(f.fetch.mock.calls.some(([url]) => String(url).startsWith('/api/inventory'))).toBe(false);
+  });
+});
+
 describe('R2 latest Received participant history', () => {
   it.each(['approval', 'dispatch'] as const)('latest Received detail outranks cached %s and exposes immutable history/filter', async cached => {
     const f = fixture();
@@ -188,17 +250,17 @@ describe('U2b approved stock-request dispatch review', () => {
       expect(posts(f)).toHaveLength(0);
     } finally { prior.remove(); dynamic.remove(); }
   });
-  it('keeps direct-shipment review and creator cancellation available without the new presentation', async () => {
+  it('keeps direct-shipment review and creator cancellation available in the compact presentation', async () => {
     const f = fixture();
     f.env.record = { ...f.env.record, kind: 'direct_shipment', creator_location_id: 1,
       creator_location_name: 'Almacén', decided_at: f.env.record.created_at };
     render(f.element());
-    const trigger = await screen.findByRole('button', { name: 'Despachar solicitud' });
+    const trigger = await screen.findByRole('button', { name: 'Despachar envío' });
     expect(screen.getByRole('button', { name: 'Cancelar solicitud' })).toBeEnabled();
-    expect(trigger).toHaveTextContent('Despachar solicitud'); fireEvent.click(trigger);
+    expect(trigger).toHaveTextContent('Despachar envío'); fireEvent.click(trigger);
     const dialog = screen.getByRole('dialog');
-    expect(dialog).not.toHaveClass('transfer-dispatch-confirmation');
-    expect(within(dialog).getByRole('columnheader', { name: 'Cantidad a despachar' })).toBeVisible();
+    expect(dialog).toHaveClass('transfer-dispatch-confirmation');
+    expect(within(dialog).getByRole('columnheader', { name: 'A despachar' })).toBeVisible();
     fireEvent.keyDown(dialog, { key: 'Escape' }); expect(trigger).toHaveFocus();
     expect(posts(f)).toHaveLength(0);
   });
@@ -249,17 +311,16 @@ describe('D2 dispatch participant UI', () => {
   });
   it.each([[1, 1, 2], [3, 3, 2], [2, 2, 1]])('only assigned physical origin %s confirms %s → %s in full', async (actor, origin, destination) => {
     const f = fixture(actor, origin, destination); render(f.element());
-    const trigger = await screen.findByRole('button', { name: 'Despachar solicitud' });
+    const trigger = await screen.findByRole('button', { name: destination === 1 ? 'Despachar envío' : 'Despachar solicitud' });
     fireEvent.click(trigger);
     const dialog = screen.getByRole('dialog', { name: 'Confirmar despacho' });
-    expect(within(dialog).getByText(destination === 1 ? 'Cantidad a despachar' : 'A despachar')).toBeInTheDocument();
+    expect(within(dialog).getByText('A despachar')).toBeInTheDocument();
     expect(dialog).toHaveTextContent('18446744073709551614 baterías');
     expect(dialog).toHaveTextContent('reserva propia');
-    if (destination === 1) {
-      expect(dialog).not.toHaveClass('transfer-dispatch-confirmation');
-      expect(within(dialog).getByText('Se descontarán existencias y se consumirá la reserva propia de esta solicitud por las mismas cantidades. La disponibilidad sin reservar no cambia; otras reservas se conservan.')).toBeVisible();
-      expect(within(dialog).getByText('El destino no recibe stock con el despacho. La solicitud quedará En tránsito, pendiente de recepción.')).toBeVisible();
-    } else expect(dialog).toHaveTextContent('recibirá stock solo al confirmar la recepción');
+    expect(dialog).toHaveClass('transfer-dispatch-confirmation');
+    expect(dialog).toHaveTextContent('reserva propia');
+    expect(dialog).toHaveTextContent('disponibilidad libre y las reservas de otras transferencias no cambian');
+    expect(dialog).toHaveTextContent('recibirá stock solo al confirmar la recepción');
     expect(posts(f)).toHaveLength(0);
     fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmar despacho' }));
     await screen.findByRole('heading', { name: 'Despacho confirmado', level: 2 });
@@ -275,16 +336,21 @@ describe('D2 dispatch participant UI', () => {
     expect(posts(f)).toHaveLength(1);
     expect(posts(f)[0]).toMatchObject(['/api/transfers/9007199254740993/dispatch', { body: '{}' }]);
     expect(f.controller.confirmTransferDispatch).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toHaveTextContent('Solicitud aprobada y stock reservado');
-    expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toHaveTextContent('Solicitud despachada');
-    expect(screen.getByRole('complementary', { name: 'Resumen de solicitud' })).toHaveTextContent('Pendiente de recepción');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Volver al detalle' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+    const history = screen.getByRole('region', { name: destination === 1 ? 'Historial de la propuesta' : 'Historial de la solicitud' });
+    expect(history).toHaveTextContent(destination === 1 ? 'Propuesta aprobada y stock reservado' : 'Solicitud aprobada y stock reservado');
+    expect(history).toHaveTextContent(destination === 1 ? 'Envío despachado' : 'Solicitud despachada');
+    expect(history).toHaveTextContent(`Origen: ${names[origin - 1]}`);
+    expect(history.querySelector('time[datetime="2026-04-03T00:00:00.000000002Z"]')).not.toBeNull();
+    expect(screen.getByRole('region', { name: 'Productos enviados' })).toHaveTextContent('Pendiente de recepción');
     expect(screen.queryByRole('button', { name: /Recibir|Cancelar/ })).not.toBeInTheDocument();
     expect(f.fetch.mock.calls.some(([url]) => String(url).startsWith('/api/inventory'))).toBe(false);
   });
   it.each([[2, 1, 2], [1, 2, 1]])('destination %s cannot dispatch approved %s → %s', async (actor, origin, destination) => {
     const f = fixture(actor, origin, destination); render(f.element());
     await screen.findByRole('heading', { name: f.env.record.reference });
-    expect(screen.queryByRole('button', { name: 'Despachar solicitud' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Despachar/ })).not.toBeInTheDocument();
     expect(posts(f)).toHaveLength(0);
   });
   it.each(['lost', '503'] as const)('keeps the open dispatch dialog uncertain after %s and an Approved GET', async mode => {
@@ -351,10 +417,13 @@ describe('D2 dispatch participant UI', () => {
     const token = f.controller.decisionRecovery!.start(pending, 'approve', decisionOwner(f.env.authority)!)!;
     f.controller.decisionRecovery!.finish(token, parseTransferRecord(JSON.stringify(wire())));
     f.env.record = wire(1, 2, 'in_transit'); render(f.element());
-    await waitFor(() => expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toHaveTextContent('Solicitud despachada'));
+    await screen.findByRole('heading', { name: f.env.record.reference });
+    expect(document.querySelector('.transfer-transit-heading')).toHaveTextContent('En tránsito');
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+    expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toHaveTextContent('Solicitud despachada');
     expect(screen.queryByRole('button', { name: 'Despachar solicitud' })).not.toBeInTheDocument();
-    expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toHaveTextContent('Acciones requeridas2');
     fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toHaveTextContent('Acciones requeridas2');
     fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'in_transit' } });
     await screen.findByText('1 solicitud en tránsito');
     expect(screen.getByRole('table', { name: 'Solicitudes en tránsito participantes' })).toHaveTextContent('En tránsito');

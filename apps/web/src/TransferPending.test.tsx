@@ -266,7 +266,7 @@ describe('U1/U2 context-specific chrome', () => {
   it.each([
     [1, 1, 2, 'pending', 'pending-approver-navigation'], [2, 1, 2, 'pending', 'pending-approver-navigation'],
     [1, 1, 2, 'approved', 'approved-origin-navigation'], [1, 2, 1, 'pending', 'pending-approver-navigation'],
-    [2, 2, 3, 'approved', 'approved-origin-navigation'], [2, 1, 2, 'approved', null],
+    [2, 2, 3, 'approved', 'approved-origin-navigation'], [2, 1, 2, 'approved', 'approved-origin-navigation'],
   ] as const)('scopes chrome for actor %s, route %s → %s, status %s', async (actor, origin, destination, status, adapted) => {
     const f = fixture(actor);
     f.env.record = wire(origin, destination, f.env.record.id, status);
@@ -938,7 +938,8 @@ describe('A06b status-specific consultation', () => {
         expect(cards).toHaveTextContent('Ubicación aprobadora: Almacén');
       }
       f.env.record = wire(origin, destination, f.env.record.id, status); await detail();
-      expect(within(screen.getByRole('region', { name: 'Historial de la solicitud' })).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-02T00:00:00.000000001Z');
+      if (status === 'approved') fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+      expect(within(screen.getByRole('region', { name: status === 'approved' && destination === 1 ? 'Historial de la propuesta' : 'Historial de la solicitud' })).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-02T00:00:00.000000001Z');
       expect(f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?'))).toHaveLength(0);
       expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true); view.unmount();
     }
@@ -965,6 +966,7 @@ describe('A06b status-specific consultation', () => {
     act(() => { for (const listener of f.listeners) listener(); });
     await waitFor(() => expect(calls(f, true)).toHaveLength(2));
     expect(screen.getByRole('heading', { name: 'TR-099' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
     expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toBeVisible();
     expect(countCalls(f)).toHaveLength(4);
   });
@@ -1202,16 +1204,16 @@ describe('A06a real list/detail decision bindings', () => {
       expect(modal).toHaveTextContent('18446744073709551614');
       fireEvent.click(within(modal).getByRole('button', { name: action === 'approve' ? 'Confirmar aprobación' : 'Confirmar rechazo' }));
       await waitFor(() => expect(f.controller.confirmTransferDecision).toHaveBeenCalledOnce());
-      const adapted = action === 'approve' && destination !== 1;
-      const summary = screen.getByLabelText(adapted ? 'Productos solicitados' : 'Resumen de solicitud');
+      const adapted = action === 'approve';
+      const summary = screen.getByLabelText(adapted ? destination === 1 ? 'Productos propuestos' : 'Productos solicitados' : 'Resumen de solicitud');
       expect(summary).toHaveTextContent(action === 'approve' ? `${adapted ? 'están reservadas' : 'está reservada'} en ${locations[origin - 1]}` : 'completa fue rechazada');
       fireEvent.click(within(modal).getByRole('button', { name: 'Volver al detalle' }));
       if (adapted) fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
-      const metadata = adapted ? screen.getByLabelText('Historial de la solicitud') : summary;
+      const metadata = adapted ? screen.getByLabelText(destination === 1 ? 'Historial de la propuesta' : 'Historial de la solicitud') : summary;
       expect(within(metadata).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('datetime', '2028-01-02T00:00:00.000000001Z');
       expect(screen.queryByText('Esta solicitud todavía no reserva ni mueve stock.')).not.toBeInTheDocument();
       expect(screen.queryByRole('heading', { name: 'Solicitud Pending' })).not.toBeInTheDocument();
-      expect(screen.getByRole('table', { name: 'Baterías solicitadas' })).toHaveTextContent('9223372036854775807');
+      expect(screen.getByRole('table', { name: adapted && destination === 1 ? 'Baterías propuestas' : 'Baterías solicitadas' })).toHaveTextContent('9223372036854775807');
       expect(screen.queryByRole('button', { name: `Aprobar ${noun}` })).not.toBeInTheDocument();
       expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
       await act(async () => held.resolve(reply(wire(origin, destination, '9007199254740993', action === 'approve' ? 'approved' : 'rejected'))));

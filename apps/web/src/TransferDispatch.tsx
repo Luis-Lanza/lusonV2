@@ -32,7 +32,7 @@ export default function TransferDispatch(props: TransferDispatchProps) {
   const attempt = permitted ? transfers.dispatchAttempt : null;
   const busy = attempt?.phase === 'inFlight';
   const visibleReview = permitted && review?.fence === fence ? review : null;
-  const compactReview = visibleReview?.record.kind === 'request_stock' && visibleReview.record.status === 'approved';
+  const compactReview = visibleReview?.record.status === 'approved';
   // Restore background state before the focus hook returns focus to the detail.
   useLayoutEffect(() => {
     const backdrop = dialog.current?.parentElement;
@@ -107,7 +107,7 @@ export default function TransferDispatch(props: TransferDispatchProps) {
     setReview({ fence, record: captureDecisionRecord(record), trigger });
   };
   const actions = canDispatch && !(result && result.id === record.id) ? <div className="transfer-decision-actions">
-    <button type="button" className="primary" aria-label="Despachar solicitud" disabled={!!unresolved} onClick={event => open(event.currentTarget)}>{record.kind === 'request_stock' ? 'Despachar' : 'Despachar solicitud'}</button>
+    <button type="button" className="primary" aria-label={record.kind === 'request_stock' ? 'Despachar solicitud' : 'Despachar envío'} disabled={!!unresolved} onClick={event => open(event.currentTarget)}>{record.kind === 'request_stock' ? 'Despachar' : 'Despachar envío'}</button>
     <p>El despacho completo requiere confirmación desde el origen físico.</p>
   </div> : null;
   return <div className="transfer-dispatch">
@@ -156,7 +156,7 @@ export default function TransferDispatch(props: TransferDispatchProps) {
           {compactReview ? <>
             <p><Icon name="info" /><strong>Al despachar:</strong></p>
             <ul>
-              <li>Saldrán las {transferQuantityTotal(visibleReview.record).toString()} baterías de {visibleReview.record.origin_location_name} y se consumirá la reserva propia de esta solicitud.</li>
+              <li>Saldrán las {transferQuantityTotal(visibleReview.record).toString()} baterías de {visibleReview.record.origin_location_name} y se consumirá la reserva propia de {visibleReview.record.kind === 'direct_shipment' ? 'este envío' : visibleReview.record.kind === 'send_to_warehouse' ? 'esta propuesta' : 'esta solicitud'}.</li>
               <li>La disponibilidad libre y las reservas de otras transferencias no cambian.</li>
               <li>Quedará En tránsito. {visibleReview.record.destination_location_name} recibirá stock solo al confirmar la recepción.</li>
             </ul>

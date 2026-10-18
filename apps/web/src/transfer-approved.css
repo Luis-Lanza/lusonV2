@@ -1,4 +1,4 @@
-/* U2: approved stock requests viewed at their physical origin only. */
+/* Approved transfers: both physical participants and origin-only dispatch. */
 .transfer-detail.transfer-approved-detail {
   max-width: 920px;
   color: #242124;
@@ -104,6 +104,32 @@
   display: none;
 }
 .transfer-approved-detail > .transfer-history { margin-top: 20px; }
+/* Keep every shell control in normal flow only for mobile approved detail. */
+@media (max-width: 767px) {
+  .app-shell:has(.transfer-approved-detail) > .sidebar {
+    position: static;
+    inset: auto;
+    width: auto;
+    padding: 16px;
+    gap: 12px;
+    border-right: 0;
+    border-bottom: 1px solid #DED7DA;
+  }
+  .app-shell:has(.transfer-approved-detail) > .app-header {
+    position: static;
+    inset: auto;
+    height: auto;
+    min-height: 56px;
+    padding: 16px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .app-shell:has(.transfer-approved-detail) > .inventory-main {
+    margin-left: 0;
+    padding: 16px;
+    min-height: auto;
+  }
+}
 @media (max-width: 600px) {
   .transfer-approved-heading { padding-right: 0; }
   .transfer-approved-heading > button { position: static; }

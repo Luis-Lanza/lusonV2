@@ -134,17 +134,18 @@ describe('U2 approved stock request at physical origin', () => {
     expect(f.fetch).not.toHaveBeenCalled();
   });
 
-  it.each(['destination', 'direct', 'send-to-warehouse', 'rejected'])('does not adapt the %s context', context => {
+  it.each(['destination', 'direct', 'send-to-warehouse', 'rejected'])('scopes approved presentation for the %s context', context => {
     const f = fixture(1, 2, context === 'destination' ? 2 : 1);
     const original = wire(context === 'send-to-warehouse' ? 2 : 1, context === 'send-to-warehouse' ? 1 : 2,
       context === 'rejected' ? 'rejected' : 'approved');
     const record = parseTransferRecord(JSON.stringify(context === 'direct' ? { ...original, kind: 'direct_shipment',
       creator_location_id: 1, creator_location_name: 'Almacén', decided_at: original.created_at } : original));
     render(f.element(record));
-    expect(document.querySelector('.transfer-approved-detail')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Ver historial' })).not.toBeInTheDocument();
-    expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toBeVisible();
-    expect(screen.queryByRole('columnheader', { name: 'Reservadas para esta solicitud' })).not.toBeInTheDocument();
+    expect(!!document.querySelector('.transfer-approved-detail')).toBe(context !== 'rejected');
+    if (context !== 'rejected') fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+    else expect(screen.queryByRole('button', { name: 'Ver historial' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: context === 'direct' ? 'Historial del envío' : context === 'send-to-warehouse' ? 'Historial de la propuesta' : 'Historial de la solicitud' })).toBeVisible();
+    expect(screen.queryByRole('columnheader', { name: /Reservadas para/ }) !== null).toBe(context !== 'rejected');
     expect(f.fetch).not.toHaveBeenCalled();
   });
 });
@@ -219,6 +220,7 @@ describe('F1 participant transit detail', () => {
     render(f.element(record));
     expect(document.querySelector('.transfer-transit-detail')).toBeNull();
     expect(screen.queryByRole('region', { name: 'Productos enviados' })).not.toBeInTheDocument();
+    if (context === 'approved') fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
     expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toBeVisible();
     expect(f.fetch).not.toHaveBeenCalled();
   });
@@ -808,8 +810,8 @@ describe('W2 direct warehouse history', () => {
       fireEvent.click(summary);
       expect(screen.getByRole('table', { name: 'Detalle de recepción' })).toBeVisible();
     } else expect(screen.queryByText('Ver recepción original')).not.toBeInTheDocument();
-    const historyLabel = status === 'in_transit' || status === 'received' ? 'Historial del envío' : 'Historial de la solicitud';
-    if (status === 'in_transit' || status === 'received') {
+    const historyLabel = status === 'approved' || status === 'in_transit' || status === 'received' ? 'Historial del envío' : 'Historial de la solicitud';
+    if (status === 'approved' || status === 'in_transit' || status === 'received') {
       expect(screen.queryByRole('region', { name: historyLabel })).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
     }
@@ -948,7 +950,7 @@ describe('A06b persisted outcome and history', () => {
         if (status === 'pending') await loaded();
         const historyToggle = screen.queryByRole('button', { name: 'Ver historial' });
         if (historyToggle) fireEvent.click(historyToggle);
-        const proposal = status === 'pending' && destination === 1;
+        const proposal = status !== 'rejected' && destination === 1;
         const history = screen.getByRole('region', { name: proposal ? 'Historial de la propuesta' : 'Historial de la solicitud' });
         const events = within(history).getAllByRole('listitem');
         expect(events).toHaveLength(status === 'pending' ? 1 : 2);
@@ -964,12 +966,12 @@ describe('A06b persisted outcome and history', () => {
           expect(history).not.toHaveTextContent(/aprobada|rechazada|reservad/i);
         } else {
           if (record.status !== 'approved' && record.status !== 'rejected') throw new Error('Expected persisted Approved or Rejected decision');
-          expect(events[1]).toHaveTextContent(record.status === 'approved' ? 'Solicitud aprobada y stock reservado' : 'Solicitud rechazada');
+          expect(events[1]).toHaveTextContent(record.status === 'approved' ? proposal ? 'Propuesta aprobada y stock reservado' : 'Solicitud aprobada y stock reservado' : 'Solicitud rechazada');
           expect(events[1]).toHaveTextContent(`Ubicación: ${names[record.decision_location_id - 1]}`);
           expect(events[1].querySelector('time')).toHaveTextContent('01/01/2028 · 20:00 (hora Bolivia)');
           expect(events[1].querySelector('time')).toHaveAttribute('datetime', record.decided_at);
           if (historyToggle) {
-            const reservations = metrics.querySelectorAll('[data-label="Reservadas para esta solicitud"]');
+            const reservations = metrics.querySelectorAll(`[data-label="Reservadas para esta ${proposal ? 'propuesta' : 'solicitud'}"]`);
             expect(reservations).toHaveLength(2);
             for (const quantity of reservations) expect(quantity).toHaveTextContent(/^9223372036854775807 uds\.$/);
           } else expect(within(metrics).getByLabelText('Baterías reservadas en esta solicitud')).toHaveTextContent(
@@ -1001,6 +1003,7 @@ describe('A06b persisted outcome and history', () => {
     const f = fixture(3, 2, 2);
     const record = parseTransferRecord(JSON.stringify(wire(3, 2, 'approved')));
     const view = render(f.element(record));
+    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
     expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toBeVisible();
     if (mode === 'unready') f.env.current.ready = false;
     if (mode === 'generation') f.env.current.sessionGeneration = 2;
@@ -1052,14 +1055,14 @@ describe('A06a immutable physical review', () => {
         expect(f.fetch).not.toHaveBeenCalled();
         const historyToggle = screen.queryByRole('button', { name: 'Ver historial' });
         if (historyToggle) fireEvent.click(historyToggle);
-        const metadata = screen.getByLabelText(historyToggle ? 'Historial de la solicitud' : 'Resumen de solicitud');
+        const metadata = screen.getByLabelText(historyToggle ? destination === 1 ? 'Historial de la propuesta' : 'Historial de la solicitud' : 'Resumen de solicitud');
         expect(within(metadata).getByText('01/01/2028 · 20:00 (hora Bolivia)')).toHaveAttribute('title', '2028-01-02T00:00:00.000000001Z');
         expect(within(metadata).getByText('31/12/2027 · 20:00 (hora Bolivia)')).toHaveAttribute('title', '2028-01-01T00:00:00.123456789Z');
         expect(screen.queryByText('Esta solicitud todavía no reserva ni mueve stock.')).not.toBeInTheDocument();
         expect(screen.queryByRole('button', { name: 'Actualizar stock de origen' })).not.toBeInTheDocument();
-        expect(historyToggle ? screen.getByLabelText('Productos solicitados') : metadata).toHaveTextContent(
+        expect(historyToggle ? screen.getByLabelText(destination === 1 ? 'Productos propuestos' : 'Productos solicitados') : metadata).toHaveTextContent(
           status === 'approved' ? historyToggle ? `baterías están reservadas en ${names[origin - 1]}` : `solicitud completa está reservada en ${names[origin - 1]}` : 'No reserva ni mueve stock');
-        expect(historyToggle ? screen.getByLabelText('Productos solicitados') : screen.getByRole('table')).toHaveTextContent('18446744073709551614');
+        expect(historyToggle ? screen.getByLabelText(destination === 1 ? 'Productos propuestos' : 'Productos solicitados') : screen.getByRole('table')).toHaveTextContent('18446744073709551614');
         expect(screen.getByRole('table')).not.toHaveTextContent('Disponible');
         expect(screen.queryByText(/Encargado|Empleado|usuario/)).not.toBeInTheDocument();
         view.unmount();
