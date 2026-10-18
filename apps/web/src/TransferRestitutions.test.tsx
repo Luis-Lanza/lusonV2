@@ -679,6 +679,81 @@ it('requires explicit consultation and unchecked physical attestation, reviews w
   expect(JSON.parse(String(f.posts()[0][1]?.body))).toEqual({ variant_id: 201, operation_key: expect.stringMatching(/^[a-f0-9]{32}$/), expected_revision: '0', retained_quantity: '1', retained_at_origin: true, reason: ' exact reason ' });
   await waitFor(() => expect(f.controller.confirmTransferRestitution).toHaveBeenCalledOnce());
 });
+it.each([['request_stock', 1, 3], ['request_stock', 2, 3], ['direct_shipment', 1, 3], ['send_to_warehouse', 2, 1]] as const)(
+  'shows captured counterpart evidence for %s %s → %s in both decision steps', async (kind, origin, destination) => {
+  for (const action of ['accept', 'reject'] as const) {
+    const f = fixture(destination, true, '9223372036854775807');
+    const creator = kind === 'request_stock' ? destination : origin;
+    const approver = kind === 'send_to_warehouse' ? destination : origin;
+    const record = parseTransferRecord(JSON.stringify({ ...f.record, kind, origin_location_id: origin, destination_location_id: destination,
+      creator_location_id: creator, creator_location_name: creator === origin ? 'Origin' : 'Destination',
+      approver_location_id: approver, approver_location_name: approver === origin ? 'Origin' : 'Destination',
+      decision_location_id: approver, dispatch_location_id: origin, receipt_location_id: destination },
+      (_key, value) => typeof value === 'bigint' ? value.toString() : value));
+    const rawProposal = '  Retención original 🪫\u00a0\t exacta  '; const rawDecision = '  Decisión distinta 🪫\u00a0\t exacta  ';
+    Object.assign(f.history.lines[0].proposals[0], { initiator_location_id: origin, retained_quantity: '9007199254740993', reason: rawProposal });
+    Object.assign(f.history.operations[0], { actor_location_id: origin, retained_quantity: '9007199254740993', reason: rawProposal });
+    const view = render(<TransferRestitutions controller={f.controller} record={record} requestID={id} enabled />);
+    await screen.findByText('Crédito efectivo en destino');
+    const label = action === 'accept' ? 'Aceptar restitución' : 'Rechazar restitución';
+    expect(screen.getByRole('button', { name: label })).toBeDisabled();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Consultar para revisar restitución' })); });
+    await waitFor(() => expect(screen.getByRole('button', { name: label })).toBeEnabled());
+    const trigger = screen.getByRole('button', { name: label });
+    const random = vi.spyOn(crypto, 'getRandomValues'); const reads = f.fetch.mock.calls.length;
+    fireEvent.click(trigger); const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveClass('restitution-decision-capture');
+    expect(dialog).toHaveTextContent(`TR-${id} · Origin → Destination`);
+    expect(dialog).toHaveTextContent('Propuesta de Origin · Decisión a cargo de Destination');
+    expect(dialog).toHaveTextContent('B · M · 60 Ah · L');
+    expect(dialog).toHaveTextContent('9223372036854775807'); expect(dialog).toHaveTextContent('9007199254740993');
+    expect(within(dialog).getByRole('region', { name: 'Propuesta de origen' }).querySelector('.decision-reason')?.textContent).toBe(rawProposal);
+    expect(within(dialog).queryByRole('checkbox')).toBeNull();
+    expect(within(dialog).getAllByRole('textbox')).toHaveLength(1);
+    const reason = within(dialog).getByRole('textbox', { name: action === 'accept' ? 'Motivo de aceptación (obligatorio)' : 'Motivo de rechazo (obligatorio)' });
+    expect(reason).toHaveValue(''); expect(random).not.toHaveBeenCalled();
+    fireEvent.change(reason, { target: { value: rawDecision } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revisar restitución' }));
+    expect(dialog).toHaveClass('restitution-decision-review'); expect(random).toHaveBeenCalledOnce();
+    expect(within(dialog).getByRole('region', { name: 'Motivo de decisión' }).querySelector('p')?.textContent).toBe(rawDecision);
+    expect(within(dialog).getByRole('region', { name: 'Propuesta de origen' }).querySelector('.decision-reason')?.textContent).toBe(rawProposal);
+    expect(dialog).toHaveTextContent(action === 'accept' ? 'se acreditarán 9007199254740993 batería(s) en Origin' : 'Rechazar no mueve stock ni cambia reservas');
+    expect(dialog).toHaveTextContent('No resuelve automáticamente faltantes ni conteos');
+    expect(dialog).not.toHaveTextContent('Confirmaste que estas unidades');
+    const heading = within(dialog).getByRole('heading', { level: 3 }); expect(heading).toHaveFocus();
+    fireEvent.keyDown(heading, { key: 'Tab', shiftKey: true });
+    expect(within(dialog).getByRole('button', { name: 'Cerrar restitución' })).toHaveFocus();
+    fireEvent.keyDown(dialog, { key: 'Escape', isComposing: true }); expect(dialog).toBeVisible();
+    fireEvent.keyDown(dialog, { key: 'Escape' }); expect(trigger).toHaveFocus(); expect(trigger.closest('[inert]')).toBeNull();
+    expect(f.fetch).toHaveBeenCalledTimes(reads); expect(f.posts()).toHaveLength(0); random.mockRestore(); view.unmount();
+  }
+});
+it.each(['accept', 'reject'])('keeps invalid %s decision errors separate from origin quantity and attestation', async action => {
+  const f = fixture(2, true); render(f.element()); await screen.findByText('Crédito efectivo en destino');
+  const label = action === 'accept' ? 'Aceptar restitución' : 'Rechazar restitución';
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Consultar para revisar restitución' })); });
+  await waitFor(() => expect(screen.getByRole('button', { name: label })).toBeEnabled());
+  fireEvent.click(screen.getByRole('button', { name: label })); const dialog = screen.getByRole('dialog');
+  fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: '\u0000' } });
+  fireEvent.submit(within(dialog).getByRole('form'));
+  expect(dialog).toHaveClass('restitution-decision-capture');
+  expect(within(dialog).getByRole('alert')).toHaveTextContent('Ingresá un motivo válido para la decisión');
+  expect(within(dialog).getByRole('alert')).not.toHaveTextContent(/cantidad|retención física/);
+  expect(f.posts()).toHaveLength(0);
+});
+it.each(['count', 'owner'])('retires captured counterpart review on %s without replay or stale focus', async mode => {
+  const f = fixture(2, true); const view = render(f.element()); await screen.findByText('Crédito efectivo en destino');
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Consultar para revisar restitución' })); });
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Aceptar restitución' })).toBeEnabled());
+  const trigger = screen.getByRole('button', { name: 'Aceptar restitución' }); fireEvent.click(trigger);
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: 'private counterpart reason' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Revisar restitución' }));
+  expect(screen.getByRole('dialog')).toHaveClass('restitution-decision-review');
+  if (mode === 'owner') { f.authority.ready = false; view.rerender(f.element()); }
+  else act(() => { f.controller.restitutionRecovery!.invalidate({ epoch: 1, account: 2, location: 2, generation: 1 }, BigInt(id), 'count'); });
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(document.body).not.toHaveTextContent('private counterpart reason'); expect(trigger).not.toHaveFocus(); expect(f.posts()).toHaveLength(0);
+});
 it.each(['accept', 'reject'])('destination reviews %s with required reason and no quantity or attestation in decision', async action => {
   const f = fixture(2, true); render(f.element()); await screen.findByText('Crédito efectivo en destino');
   const label = action === 'accept' ? 'Aceptar restitución' : 'Rechazar restitución';
@@ -686,13 +761,13 @@ it.each(['accept', 'reject'])('destination reviews %s with required reason and n
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Consultar para revisar restitución' })); });
   await waitFor(() => expect(screen.getByRole('button', { name: label })).toBeEnabled()); fireEvent.click(screen.getByRole('button', { name: label }));
   expect(screen.queryByLabelText('Cantidad retenida')).not.toBeInTheDocument();
-  fireEvent.change(screen.getByLabelText('Motivo de restitución'), { target: { value: ' destination reason ' } });
+  fireEvent.change(screen.getByLabelText(action === 'accept' ? 'Motivo de aceptación (obligatorio)' : 'Motivo de rechazo (obligatorio)'), { target: { value: ' destination reason ' } });
   fireEvent.click(screen.getByRole('button', { name: 'Revisar restitución' }));
-  const dialog = screen.getByRole('dialog', { name: 'Revisar restitución' });
+  const dialog = screen.getByRole('dialog', { name: action === 'accept' ? 'Confirmar aceptación de restitución' : 'Confirmar rechazo de restitución' });
+  expect(dialog).toHaveClass('restitution-decision-review');
   expect(dialog).not.toHaveClass('restitution-proposal-review');
-  expect(dialog).toHaveTextContent(`Variante 201 · Revisión 1`);
-  expect(dialog).toHaveTextContent('Motivo exacto: destination reason');
-  expect(within(dialog).getByRole('button', { name: 'Cancelar' })).toHaveFocus();
+  expect(within(dialog).getByRole('region', { name: 'Motivo de decisión' })).toHaveTextContent('destination reason');
+  expect(within(dialog).getByRole('heading', { name: action === 'accept' ? 'Confirmar aceptación de restitución' : 'Confirmar rechazo de restitución' })).toHaveFocus();
   expect(within(dialog).queryByRole('button', { name: 'Editar datos' })).not.toBeInTheDocument();
   fireEvent.click(within(dialog).getByRole('button', { name: action === 'accept' ? 'Confirmar aceptación' : 'Confirmar rechazo' }));
   await waitFor(() => expect(f.controller.confirmTransferRestitution).toHaveBeenCalledOnce());

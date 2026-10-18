@@ -149,3 +149,40 @@ section.transfer-restitutions .restitution-proposal-review footer button:last-ch
   section.transfer-restitutions .restitution-proposal-review .review-counters { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   section.transfer-restitutions .restitution-proposal-review { padding: 16px; }
 }
+/* Counterpart capture/review is pattern-derived from RT2/RT4, not a dedicated mockup. */
+section.transfer-restitutions .restitution-decision {
+  width: min(580px, 100%);
+  color: #242124;
+  font-size: 14px;
+  line-height: 1.4;
+}
+section.transfer-restitutions .restitution-decision > h3 { margin-bottom: 4px; font-size: 20px; line-height: 1.3; }
+section.transfer-restitutions .restitution-decision :is(.restitution-form, .restitution-decision-body) {
+  display: grid; gap: 16px; padding: 0; border: 0;
+}
+section.transfer-restitutions .restitution-decision p { margin: 0; font-size: 14px; line-height: 1.4; }
+section.transfer-restitutions .restitution-decision :is(h4, label) { display: block; margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+section.transfer-restitutions .restitution-decision h4 { color: #6c656b; text-transform: uppercase; letter-spacing: .035em; }
+section.transfer-restitutions .restitution-decision :is(select, textarea) {
+  width: 100%; min-height: 44px; padding: 8px 12px; border: 1px solid #d9d1d6; border-radius: 4px; font: inherit; color: #242124;
+}
+section.transfer-restitutions .restitution-decision textarea { min-height: 80px; resize: vertical; }
+section.transfer-restitutions .restitution-decision .decision-context { color: #6c656b; }
+section.transfer-restitutions .restitution-decision :is(.decision-battery, .decision-reason, .decision-effects) {
+  min-width: 0; padding: 10px; background: #faf8f9; border: 1px solid #d9d1d6; border-radius: 4px;
+}
+section.transfer-restitutions .restitution-decision .decision-product { font-size: 16px; font-weight: 600; }
+section.transfer-restitutions .restitution-decision .decision-counters {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 10px 0; color: #6c656b;
+}
+section.transfer-restitutions .restitution-decision dd { margin: 0; color: #242124; }
+section.transfer-restitutions .restitution-decision .decision-quantity { padding-top: 8px; border-top: 1px solid #e5dde2; }
+section.transfer-restitutions .restitution-decision .decision-quantity strong { color: #7a1f3d; }
+section.transfer-restitutions .restitution-decision .decision-reason { white-space: pre-wrap; overflow-wrap: anywhere; }
+section.transfer-restitutions .restitution-decision .decision-effects p + p { margin-top: 6px; color: #6c656b; }
+section.transfer-restitutions .restitution-decision footer { justify-content: space-between; margin-top: 20px; padding-top: 12px; border-top: 1px solid #d9d1d6; }
+section.transfer-restitutions .restitution-decision footer button { min-height: 44px; max-width: 100%; padding: 8px 16px; white-space: normal; }
+section.transfer-restitutions .restitution-decision footer button:last-child { background: #7a1f3d; color: #fff; border-color: #7a1f3d; }
+@media (max-width: 480px) {
+  section.transfer-restitutions .restitution-decision .decision-counters { grid-template-columns: minmax(0, 1fr); }
+}

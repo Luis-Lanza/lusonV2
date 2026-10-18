@@ -62,6 +62,12 @@ function Section(props: TransferRestitutionsProps) {
   const proposalReview = visibleReview?.draft.action === 'propose' && 'retained_quantity' in visibleReview.input
     ? { capture: visibleReview.draft.capture, input: visibleReview.input, attested: visibleReview.draft.attested } : null;
   const reviewedItem = proposalReview?.capture.record.items.find(i => i.variant_id === proposalReview.capture.line.variant_id);
+  const decisionDraft = visibleReview ? visibleReview.draft.action !== 'propose' ? visibleReview.draft : null
+    : !review && draft?.action !== 'propose' ? draft : null;
+  const decisionCapture = decisionDraft?.capture;
+  const decisionProposal = decisionCapture?.line.proposals.find(p => p.state === 'pending' && p.revision === decisionCapture.line.workflow_revision);
+  const decisionItem = decisionCapture?.record.items.find(i => i.variant_id === decisionCapture.line.variant_id);
+  const decisionTitle = decisionDraft?.action === 'accept' ? 'Confirmar aceptación de restitución' : 'Confirmar rechazo de restitución';
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => { setDraft(null); setReview(null); setMessage(''); }, [variant, record, masked, hook.busy, snapshot]);
   useEffect(() => { if (review && !visibleReview) { setDraft(null); setReview(null); } }, [review, visibleReview]);
@@ -115,7 +121,7 @@ function Section(props: TransferRestitutionsProps) {
   });
   useLayoutEffect(() => {
     if (!modalActive) return;
-    if (proposalReview) {
+    if (proposalReview || visibleReview && decisionDraft) {
       reviewHeading.current?.focus({ preventScroll: true });
       if (modal.current) modal.current.scrollTop = 0;
     } else (visibleReview ? cancel.current : modal.current?.querySelector<HTMLElement>('select, input, textarea'))?.focus();
@@ -160,7 +166,9 @@ function Section(props: TransferRestitutionsProps) {
         if (normalized.retained_quantity > line.expected_quantity - line.effective_credit - line.applied_retained_quantity) throw new Error('Exceeds outstanding debit');
       } else normalizeRestitutionDecision(input);
       setReview({ draft: { ...draft }, input, snapshot }); setMessage('');
-    } catch { setMessage('Ingresá una cantidad positiva decimal canónica, un motivo válido y confirmá la retención física en origen. No se enviará nada sin una clave segura.'); }
+    } catch { setMessage(draft.action === 'propose'
+      ? 'Ingresá una cantidad positiva decimal canónica, un motivo válido y confirmá la retención física en origen. No se enviará nada sin una clave segura.'
+      : 'Ingresá un motivo válido para la decisión. No se enviará nada sin una clave segura.'); }
   }
   function editProposal(captured: NonNullable<typeof review>) {
     if (sending.current) return;
@@ -192,9 +200,28 @@ function Section(props: TransferRestitutionsProps) {
     || !line || hook.attempts.length > 0;
   const actions: RestitutionAction[] = decisionOwner(controller.getTransferAuthority())?.account === record.destination_location_id
     ? ['accept', 'reject'] : decisionOwner(controller.getTransferAuthority())?.account === record.origin_location_id ? ['propose'] : [];
+  const decisionEvidence = decisionCapture && decisionProposal && <>
+    <div className="decision-context"><p>{decisionCapture.record.reference} · {decisionCapture.record.origin_location_name} → {decisionCapture.record.destination_location_name}</p>
+      <p>Propuesta de {decisionProposal.initiator_location_id === decisionCapture.record.origin_location_id ? decisionCapture.record.origin_location_name : `Ubicación ${decisionProposal.initiator_location_id}`} · Decisión a cargo de {decisionCapture.record.destination_location_name}</p></div>
+    <section aria-label="Propuesta de origen"><h4>Propuesta de origen · Revisión {decisionProposal.revision.toString()}</h4>
+      <div className="decision-battery"><p className="decision-product">{decisionItem
+        ? `${decisionItem.brand} · ${decisionItem.model} · ${decisionItem.capacity_ah} Ah · ${decisionItem.polarity}` : 'Identidad no disponible'}</p>
+        <dl className="decision-counters"><div><dt>Enviadas</dt><dd>{decisionCapture.line.expected_quantity.toString()}</dd></div>
+          <div><dt>Crédito efectivo en destino</dt><dd>{decisionCapture.line.effective_credit.toString()}</dd></div>
+          <div><dt>Restituido en origen</dt><dd>{decisionCapture.line.applied_retained_quantity.toString()}</dd></div>
+          <div><dt>Saldo pendiente</dt><dd>{balance(decisionCapture.line).toString()}</dd></div></dl>
+        <p className="decision-quantity">Cantidad retenida propuesta: <strong>{decisionProposal.retained_quantity.toString()} batería(s)</strong></p>
+        <p>Propuesta registrada: <TransferDate value={decisionProposal.recorded_at} /></p></div>
+      <h4>Motivo original de la propuesta</h4><p className="decision-reason">{decisionProposal.reason}</p>
+    </section>
+  </>;
+  const decisionEffects = decisionCapture && decisionProposal && <div className="decision-effects"><p>{decisionDraft?.action === 'accept'
+      ? `Si el servidor valida la aceptación, se acreditarán ${decisionProposal.retained_quantity.toString()} batería(s) en ${decisionCapture.record.origin_location_name} una sola vez como stock disponible. Una aplicación, incluso parcial, cierra esta restitución.`
+      : 'Rechazar no mueve stock ni cambia reservas; la propuesta no se aplica.'}</p>
+      <p>El stock y el crédito de destino, los conteos y las reservas no cambian. No resuelve automáticamente faltantes ni conteos. El despacho y la recepción original son inmutables.</p></div>;
   const variantSelector = <div><label htmlFor={selectID}>{proposalCapture ? 'Batería a restituir' : 'Variante de restitución'}</label><select id={selectID} value={variant ?? ''} disabled={hook.busy} onChange={e => {
     if (current()) { setDraft(null); setReview(null); setVariant(Number(e.target.value)); }
-  }}>{(proposalCapture?.record ?? record).items.map(i => <option key={i.variant_id} value={i.variant_id}>{i.brand} · {i.model} · {i.capacity_ah} Ah · {i.polarity}</option>)}</select></div>;
+  }}>{(proposalCapture?.record ?? decisionCapture?.record ?? record).items.map(i => <option key={i.variant_id} value={i.variant_id}>{i.brand} · {i.model} · {i.capacity_ah} Ah · {i.polarity}</option>)}</select></div>;
   return <section className={`transfer-restitutions${closed ? ' restitution-is-closed' : ''}`} aria-label="Restituciones de origen" hidden={!sectionVisible}>
     <h2 ref={contextHeading} tabIndex={-1}>Restituciones de origen</h2>
     {masked ? <><p role="status">Restituciones no disponibles para esta sesión.</p><button disabled={hook.busy} onClick={() => { if (current()) void run(hook.recover); }}>Consultar recuperación autorizada</button></> : <>
@@ -256,17 +283,17 @@ function Section(props: TransferRestitutionsProps) {
         <div className="restitution-actions"><button disabled={hook.busy} onClick={() => { if (current()) void run(hook.recover); }}>Consultar resultado de restitución</button>
           {(a.phase === 'uncertain' || a.phase === 'conflict') && <button disabled={hook.busy} onClick={() => { if (current()) void run(() => hook.retry(a.payload.variant_id)); }}>Reintentar carga exacta</button>}</div>
       </article>)}
-      {modalActive && <div className="restitution-backdrop"><div ref={modal} className={`restitution-modal${proposalCapture ? ' restitution-proposal-capture' : proposalReview ? ' restitution-proposal-review' : ''}`} role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1} onKeyDown={e => {
+      {modalActive && <div className="restitution-backdrop"><div ref={modal} className={`restitution-modal${proposalCapture ? ' restitution-proposal-capture' : proposalReview ? ' restitution-proposal-review' : decisionDraft ? ` restitution-decision restitution-decision-${visibleReview ? 'review' : 'capture'}` : ''}`} role="dialog" aria-modal="true" aria-labelledby={headingID} tabIndex={-1} onKeyDown={e => {
         if (e.key === 'Escape' && !e.nativeEvent.isComposing && e.keyCode !== 229) { e.preventDefault(); close(); }
         if (e.key === 'Tab') {
           const available = controls(); const first = available[0]; const last = available.at(-1);
           if (!first) { e.preventDefault(); modal.current?.focus(); }
           else if (e.shiftKey && (document.activeElement === first || document.activeElement === modal.current
-            || (proposalReview && document.activeElement === reviewHeading.current))) { e.preventDefault(); last?.focus(); }
+            || ((proposalReview || decisionDraft) && document.activeElement === reviewHeading.current))) { e.preventDefault(); last?.focus(); }
           else if (!e.shiftKey && (document.activeElement === last || document.activeElement === modal.current
-            || (proposalReview && document.activeElement === reviewHeading.current))) { e.preventDefault(); first.focus(); }
+            || ((proposalReview || decisionDraft) && document.activeElement === reviewHeading.current))) { e.preventDefault(); first.focus(); }
         }
-      }}><h3 id={headingID} ref={reviewHeading} tabIndex={proposalReview ? -1 : undefined}>{proposalReview ? 'Revisar propuesta de restitución' : visibleReview ? 'Revisar restitución' : proposalCapture ? 'Proponer restitución de origen' : labels[draft.action]}</h3>
+      }}><h3 id={headingID} ref={reviewHeading} tabIndex={proposalReview || decisionDraft && visibleReview ? -1 : undefined}>{proposalReview ? 'Revisar propuesta de restitución' : visibleReview ? decisionTitle : proposalCapture ? 'Proponer restitución de origen' : labels[draft.action]}</h3>
       {proposalCapture && <form className="restitution-form" aria-label="Editar restitución" onSubmit={e => { e.preventDefault(); prepare(); }}>
         <div className="proposal-context"><p>{proposalCapture.record.reference} · {proposalCapture.record.origin_location_name} → revisión de {proposalCapture.record.destination_location_name}</p>
           <p>Solo para unidades que permanecen físicamente en {proposalCapture.record.origin_location_name}.</p></div>
@@ -290,9 +317,11 @@ function Section(props: TransferRestitutionsProps) {
       </form>}
       {draft && !review && draft.action !== 'propose' && <form className="restitution-form" aria-label="Editar restitución" onSubmit={e => { e.preventDefault(); prepare(); }}>
         {variantSelector}
+        {decisionEvidence}
         {message && <p role="alert">{message}</p>}
-        <label htmlFor={reasonID}>Motivo de restitución</label><textarea id={reasonID} required value={draft.reason} onChange={e => setDraft({ ...draft, reason: e.target.value })} />
-        <div className="restitution-actions"><button type="submit">Revisar restitución</button><button type="button" onClick={close}>Cancelar</button></div>
+        <label htmlFor={reasonID}>{draft.action === 'accept' ? 'Motivo de aceptación (obligatorio)' : 'Motivo de rechazo (obligatorio)'}</label><textarea id={reasonID} required value={draft.reason} onChange={e => setDraft({ ...draft, reason: e.target.value })} />
+        {decisionEffects}
+        <footer><button type="button" onClick={close}>Cancelar</button><button type="submit">Revisar restitución</button></footer>
       </form>}
       {proposalReview && <div className="restitution-proposal-review-body">
         <div className="review-context"><p>{proposalReview.capture.record.reference} · Propuesta de {proposalReview.capture.record.origin_location_name}</p>
@@ -316,13 +345,10 @@ function Section(props: TransferRestitutionsProps) {
           <p>Si {proposalReview.capture.record.destination_location_name} la acepta y se valida, se acreditarán en {proposalReview.capture.record.origin_location_name} {proposalReview.input.retained_quantity} batería(s). Destino y reservas no cambian.</p>
           <p>Una aplicación, incluso parcial, cierra esta restitución. No resuelve automáticamente faltantes ni conteos. El despacho y la recepción original son inmutables.</p></div>
       </div>}
-      {visibleReview && <>{!proposalReview && <div className="restitution-modal-body">
-        <p>{labels[visibleReview.draft.action]} · Variante {variant} · Revisión {visibleReview.input.expected_revision}</p>
-        <p>Retenidas: {'retained_quantity' in visibleReview.input ? visibleReview.input.retained_quantity : line?.proposals.find(p => p.state === 'pending')?.retained_quantity.toString()}</p>
-        <p className="restitution-evidence">Motivo exacto: {visibleReview.input.reason}</p>
-        <p>{visibleReview.draft.action === 'accept' ? `Acredita origen ${record.origin_location_name} una vez. Destino sin cambios. No cambia reservas.` : 'No mueve stock ni cambia reservas.'}</p>
-        <p>La falta en destino no prueba retención. Una aplicación, incluso parcial, cierra esta restitución. El despacho y la recepción original son inmutables.</p>
-        {visibleReview.draft.action === 'propose' && <p>Confirmaste que estas unidades permanecen físicamente en origen.</p>}
+      {visibleReview && <>{!proposalReview && <div className="restitution-decision-body">
+        {decisionEvidence}
+        <section aria-label="Motivo de decisión"><h4>Motivo de decisión</h4><p className="decision-reason">{visibleReview.input.reason}</p></section>
+        {decisionEffects}
       </div>}<footer><button ref={cancel} onClick={() => {
         if (visibleReview.draft.action === 'propose') editProposal(visibleReview); else close();
       }}>{visibleReview.draft.action === 'propose' ? 'Editar datos' : 'Cancelar'}</button><button onClick={() => {
