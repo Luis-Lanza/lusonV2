@@ -1383,3 +1383,62 @@ describe('R04c guarded success navigation', () => {
     }
   });
 });
+
+
+describe('URL navigation persistence', () => {
+  function routedSetup() {
+    return setup(session, url => {
+      if (url.startsWith('/api/transfers?')) return Promise.resolve(transferResponse({ page: 1, page_size: 25, status: 'pending', total_count: '1', records: [r04cRecord()] }));
+      if (url === '/api/transfers/9007199254740993') return Promise.resolve(transferResponse(r04cRecord()));
+    });
+  }
+  it('restores the transfer list after a fresh application mount', async () => {
+    window.history.replaceState(null, '', '/#/transferencias');
+    routedSetup(); render(<App />);
+    await screen.findByRole('heading', { name: /Transferencias/ });
+    expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
+  });
+  it('restores a detail from its URL without submitting a business action', async () => {
+    window.history.replaceState(null, '', '/#/transferencias/9007199254740993');
+    const mock = routedSetup(); render(<App />);
+    await screen.findByRole('region', { name: 'Detalle de transferencia' });
+    await waitFor(() => expect(mock.mock.calls.some(([url]) => url === '/api/transfers/9007199254740993')).toBe(true));
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+  it('writes navigation to the URL and responds to browser history changes', async () => {
+    routedSetup(); render(<App />); await inventory();
+    fireEvent.click(screen.getByRole('button', { name: /Transferencias/ }));
+    expect(window.location.hash).toBe('#/transferencias');
+    act(() => { window.history.replaceState(null, '', '/#/inventario'); window.dispatchEvent(new PopStateEvent('popstate')); });
+    await inventory();
+    expect(screen.queryByRole('region', { name: 'Detalle de transferencia' })).not.toBeInTheDocument();
+  });
+});
+
+
+describe('URL navigation boundaries', () => {
+  it.each(['#/transferencias/no-es-un-id', '#/transferencias/1/otro', '#/desconocida'])('does not request private detail for malformed route %s', async hash => {
+    window.history.replaceState(null, '', '/' + hash);
+    const mock = setup(session); render(<App />); await inventory();
+    expect(mock.mock.calls.filter(([url]) => String(url).startsWith('/api/transfers/') && url !== '/api/transfers/counts')).toEqual([]);
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+  it('does not request a routed detail before authentication', async () => {
+    window.history.replaceState(null, '', '/#/transferencias/9007199254740993');
+    const mock = setup(); render(<App />);
+    await screen.findByLabelText('Usuario');
+    expect(mock.mock.calls.some(([url]) => String(url).startsWith('/api/transfers'))).toBe(false);
+  });
+  it('keeps a forbidden detail unavailable instead of restoring private cached data', async () => {
+    window.history.replaceState(null, '', '/#/transferencias/9007199254740993');
+    const mock = setup(session, url => {
+      if (url.startsWith('/api/transfers?')) return Promise.resolve(transferResponse({ page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] }));
+      if (url === '/api/transfers/9007199254740993') return Promise.resolve(transferResponse({ error: 'forbidden' }, 403));
+    });
+    render(<App />);
+    await screen.findByRole('region', { name: 'Detalle de transferencia' });
+    await waitFor(() => expect(mock.mock.calls.some(([url]) => url === '/api/transfers/9007199254740993')).toBe(true));
+    expect(screen.queryByText('Real response')).not.toBeInTheDocument();
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+});

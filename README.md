@@ -124,6 +124,16 @@ Transfer mutations use their separate authenticated API contract.
 Compiled public assets are composed outside the API mux; unknown paths never
 become the SPA index. The runtime image contains no frontend development server.
 
+## Browser navigation
+
+Inventory, the transfer list and transfer details use hash URLs:
+`/#/inventario`, `/#/transferencias` and `/#/transferencias/<id>`.
+Refresh and browser Back/Forward restore the selected view. Detail links fetch
+fresh data after authentication and retain the backend's participant checks;
+a URL does not grant access. Signing out clears the current private route.
+Drafts, open dialogs and pending operation recovery remain memory-only and are
+not restored by refreshing. Unknown or malformed routes show Inventory.
+
 ## Authentication API contract (for L03/L04)
 
 All responses are `Cache-Control: no-store`; JSON errors are

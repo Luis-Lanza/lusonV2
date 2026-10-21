@@ -1,3 +1,4 @@
+import { readNavigation, writeNavigation, type NavigationRoute } from './navigation';
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Brand, Icon } from './icons';
@@ -104,8 +105,35 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
     ? counts.action_count.toString() : null;
   const [creationOwner, setCreationOwner] = useState<string | null>(null);
   const creation = creationRequested && creationOwner === ownerTag && ownerTag !== null;
-  const [pane, setPane] = useState<{ ownerTag: string; initialDetail?: { ownerTag: string; id: string } } | null>(null);
-  const pending = ownerTag !== null && pane?.ownerTag === ownerTag;
+  const [route, setRoute] = useState<NavigationRoute>(readNavigation);
+  const routeOwner = useRef(ownerTag);
+  function changeRoute(next: NavigationRoute) {
+    writeNavigation(next); setRoute(next);
+  }
+  useEffect(() => {
+    // An identity change must not carry private navigation into another session.
+    if (routeOwner.current !== null && routeOwner.current !== ownerTag) {
+      const next = { section: 'inventory' } as const;
+      writeNavigation(next, true); setRoute(next);
+    }
+    routeOwner.current = ownerTag;
+  }, [ownerTag]);
+  useEffect(() => {
+    const restore = () => {
+      const latest = transferViewOwner(state.getTransferAuthority());
+      if (!ownerTag || latest !== ownerTag || creation || recovery.getCurrent(state.getTransferAuthority)?.phase === 'inFlight') {
+        writeNavigation(route, true); return;
+      }
+      setRoute(readNavigation());
+    };
+    window.addEventListener('popstate', restore);
+    window.addEventListener('hashchange', restore);
+    return () => {
+      window.removeEventListener('popstate', restore);
+      window.removeEventListener('hashchange', restore);
+    };
+  }, [ownerTag, creation, route, recovery, state.getTransferAuthority]);
+  const pending = ownerTag !== null && route.section === 'transfers';
   const transfers = pending || creation;
   const creationAvailable = !state.authBusy && !!metadata && !!ownerTag
     && recovery.getCurrent(state.getTransferAuthority)?.phase !== 'inFlight';
@@ -121,18 +149,18 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
     const latest = transferViewOwner(state.getTransferAuthority());
     if (!latest || latest !== ownerTag || latest !== creationOwner
       || recovery.getCurrent(state.getTransferAuthority)?.phase === 'inFlight') return;
-    setCreation(false); setPane({ ownerTag: latest });
+    setCreation(false); changeRoute({ section: 'transfers', id: null });
   }
   function navigate(toPending: boolean) {
     const latest = transferViewOwner(state.getTransferAuthority());
     if (!latest || latest !== ownerTag || creation || recovery.getCurrent(state.getTransferAuthority)?.phase === 'inFlight') return;
-    setPane(toPending ? { ownerTag: latest } : null);
+    changeRoute(toPending ? { section: 'transfers', id: null } : { section: 'inventory' });
   }
   function openCreatedDetail(id: string, expectedOwner: string) {
     const latest = transferViewOwner(state.getTransferAuthority());
     if (!latest || latest !== expectedOwner || latest !== ownerTag || recovery.getCurrent(state.getTransferAuthority)?.phase === 'inFlight') return;
     setCreation(false);
-    setPane({ ownerTag: latest, initialDetail: { ownerTag: latest, id } });
+    changeRoute({ section: 'transfers', id });
   }
   const [narrow, setNarrow] = useState(() => window.matchMedia?.('(max-width: 767px)').matches ?? false);
   useEffect(() => {
@@ -153,7 +181,7 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
     <header className="mobile-header" hidden={!mobile}><div><Brand /><button type="button" aria-label="Cerrar sesión" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" /></button></div><div className="mobile-identity"><span><Icon name="warehouse" />{identity.location.name}</span><span>{identity.username}</span></div></header>
     <main id={transfers ? 'transferencias' : 'inventario'} className="inventory-main">
       {creation && metadata ? <TransferCreation controller={state} metadata={metadata} recovery={recovery} onBack={returnToTransfers} onDetail={openCreatedDetail} />
-        : pending && pane ? <TransferPending key={pane.ownerTag} controller={state} ownerTag={pane.ownerTag} initialDetail={pane.initialDetail} onInventory={() => navigate(false)} creationAvailable={creationAvailable} onCreate={openCreation} /> : <>
+        : pending && ownerTag && route.section === 'transfers' ? <TransferPending key={ownerTag} controller={state} ownerTag={ownerTag} routedDetail={route.id} onRouteDetail={id => changeRoute({ section: 'transfers', id })} onInventory={() => navigate(false)} creationAvailable={creationAvailable} onCreate={openCreation} /> : <>
       {recoverable && <section className="creation-recovery" aria-label="Recuperación de solicitud"><p>{recoverable.phase === 'ready' ? 'Tenés una revisión preparada, todavía no enviada.' : 'Tenés un intento pendiente de confirmación.'}</p>
         <button type="button" disabled={!creationAvailable} onClick={openCreation}>{recoverable.phase === 'ready' ? 'Retomar revisión' : 'Retomar misma solicitud'}</button>
         <p>Recargar o cerrar la pestaña pierde esta recuperación en memoria.</p></section>}
@@ -184,5 +212,11 @@ export default function App() {
   // Above every authentication return: independent A/B slots survive child unmounts.
   const [recovery] = useState(createTransferRecovery);
   const state = useInventory();
+  const wasAuthenticated = useRef(false);
+  useEffect(() => {
+    const authenticated = state.session?.authenticated === true;
+    if (wasAuthenticated.current && !authenticated) writeNavigation({ section: 'inventory' }, true);
+    wasAuthenticated.current = authenticated;
+  }, [state.session?.authenticated]);
   return state.session?.authenticated ? <InventoryView state={state} recovery={recovery} /> : <Login state={state} />;
 }

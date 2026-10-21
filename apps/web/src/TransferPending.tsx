@@ -21,6 +21,8 @@ export interface TransferPendingProps {
   controller: DetailController;
   ownerTag: string;
   initialDetail?: { ownerTag: string; id: string };
+  routedDetail?: string | null;
+  onRouteDetail?: (id: string | null) => void;
   onInventory: () => void;
   creationAvailable?: boolean;
   onCreate?: () => void;
@@ -72,6 +74,10 @@ export default function TransferPending(props: TransferPendingProps) {
     consumed.current = true;
     transfers.selectDetail(props.initialDetail.id);
   }, [permitted, props.ownerTag, props.initialDetail, transfers.selectDetail]);
+  useEffect(() => {
+    if (props.routedDetail === undefined || !current()) return;
+    if (transfers.selectedID !== props.routedDetail) transfers.selectDetail(props.routedDetail);
+  }, [permitted, props.ownerTag, props.routedDetail, transfers.selectDetail]);
   // Fence private DTOs and IDs before reading getters, while keeping hooks unconditional.
   const selected = permitted ? transfers.selectedID : null;
   const decision = permitted ? transfers.decision : null;
@@ -136,8 +142,8 @@ export default function TransferPending(props: TransferPendingProps) {
   const status = transfers.query.status ?? 'pending';
   const { plural, singular } = statusOptions.find(option => option.value === status)!;
   const approverLabel = (row: TransferRecord) => row.status === 'pending' ? 'Requiere aprobación de' : 'Ubicación aprobadora';
-  const open = (row: TransferRecord) => { if (current()) { focusScope.current.blocked = true; transfers.selectDetail(row.id); } };
-  const back = () => { if (current()) { focusScope.current.blocked = true; transfers.selectDetail(null); } };
+  const open = (row: TransferRecord) => { if (current()) { focusScope.current.blocked = true; transfers.selectDetail(row.id); props.onRouteDetail?.(row.id); } };
+  const back = () => { if (current()) { focusScope.current.blocked = true; transfers.selectDetail(null); props.onRouteDetail?.(null); } };
   const inventory = () => { if (current()) { focusScope.current.blocked = true; props.onInventory(); } };
   // This is the selected-status participant total, not the independent Pending/action counters.
   const pageCount = <p className="pending-count" aria-live="polite">{page ? `${page.total_count.toString()} ${page.total_count === 1n ? `solicitud ${singular}` : `solicitudes ${plural}`}` : `Consultando solicitudes ${plural}…`}</p>;

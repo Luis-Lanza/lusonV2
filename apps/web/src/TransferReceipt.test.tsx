@@ -488,6 +488,8 @@ describe('U3b receipt modal foundation', () => {
 describe('R2 destination receipt capture/review/once UI', () => {
   it.each(['escape', 'close', 'back'] as const)('restores receipt cancellation/success focus via %s, not during review', async method => {
     for (const confirmed of [false, true]) {
+      // Each focus scenario starts independently; unmount intentionally retains its URL.
+      window.history.replaceState(null, '', '/');
       const f = fixture(); const view = render(<App />); await detail();
       const trigger = screen.getByRole('button', { name: 'Recibir solicitud' });
       const dialog = await capture();
