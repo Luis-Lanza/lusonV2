@@ -1,0 +1,36 @@
+{
+  "projectId": "5192357064021617628",
+  "note": "Fresh get_screen metadata retrieved by parent. Download HTML and PNG; screenshot may lag DOM-only edits. Preserve bytes and hashes, do not execute remote HTML scripts.",
+  "screens": [
+    {
+      "id": "36e9038241de4aa6b9565397632c2777",
+      "title": "TR-014 · Conteo compacto · Iteración 2",
+      "html": "https://contribution.usercontent.google.com/download?c=CgthaWRhX2NvZGVmeBJ7Eh1hcHBfY29tcGFuaW9uX2dlbmVyYXRlZF9maWxlcxpaCiVodG1sXzcyNzNhMmE1ODdlMDRkN2U4MWY4MmM1NWVjZThkODAyEgsSBxCSjYmm1R4YAZIBIwoKcHJvamVjdF9pZBIVQhM1MTkyMzU3MDY0MDIxNjE3NjI4&filename=&opi=96797242",
+      "png": "https://lh3.googleusercontent.com/aida/AEtjO1UbdbD0WFHpqB2tjaOWVpMSMDfHIA4ApmIGVsycQz0b-3p-HgD71-gQDv_glmdSkhSoTaF_p_3Ro-pIN20oTPTw9YEuKZLBc3I-az_QdEgqO-hmN-db7y-UO76TPYpstTet6kCyMcoVurvdXHadPNwJwfj6wGDXuQLO1zvW-pu71xypTQQkYo09TELBKUmu_oa5yl4SDi6vb-icmeVqljD0h7AVKQXF8ixki4NeonWK-XASaJ8ZS_vbKFM"
+    },
+    {
+      "id": "17e5d3fe9cdd4c55ba23567a1a2b8fba",
+      "title": "TR-014 · Conteo compacto · Revisión pendiente",
+      "html": "https://contribution.usercontent.google.com/download?c=CgthaWRhX2NvZGVmeBJ7Eh1hcHBfY29tcGFuaW9uX2dlbmVyYXRlZF9maWxlcxpaCiVodG1sXzBhMWZkMWJmZDM3YjRjMmU4YTU4NjRjZjJmMWFiMDk5EgsSBxCSjYmm1R4YAZIBIwoKcHJvamVjdF9pZBIVQhM1MTkyMzU3MDY0MDIxNjE3NjI4&filename=&opi=96797242",
+      "png": "https://lh3.googleusercontent.com/aida/AEtjO1Wec8dE4obB_7aLWRifPVcOZSAdymtUP5yt64v7AGt_t8nIfRKFskMxB6KV4r12-xRolMQe_46hJ5rUSXzW2shkQw0Stnyoxeb42YcQJ2y9kvPQ1L_xlmXkP-fHgz1HXtLy69h_2NQ_IkSQ5UZ7m480286FnYcxe2ggxncadWlGEwu_bIfhY0BgQnB7CYuqY6Xf3RikEBb1nfv9hhrFtfotRHzdY8b5hoAEDaDOxVgLlq71FATi3Hj7tV8"
+    },
+    {
+      "id": "657e7b01563c47bd838a064988a86a8a",
+      "title": "TR-014 · Conteo compacto · Sucursal esperando revisión",
+      "html": "https://contribution.usercontent.google.com/download?c=CgthaWRhX2NvZGVmeBJ7Eh1hcHBfY29tcGFuaW9uX2dlbmVyYXRlZF9maWxlcxpaCiVodG1sXzExMTVhMTExNGNiMTQxYmI5ODdkNGU3NTA0MGJkYmY4EgsSBxCSjYmm1R4YAZIBIwoKcHJvamVjdF9pZBIVQhM1MTkyMzU3MDY0MDIxNjE3NjI4&filename=&opi=96797242",
+      "png": "https://lh3.googleusercontent.com/aida/AEtjO1VkJTqbsDYD8S6Gb6K6qC_JV-hG_4sT9tJM55c3DmXP2YTzAzmn_8RPcRrQL8F0n7zLVi2AiDW1uw7xVqW82EqngfRSAANJpFQXCurls8mXN02S6Q49ww3OVcyqQKN7zlt1Nl5zsiwG-d03vm1CjksaD1ao-ilW4ExfLnOSch8iEuDV9BYXAonGdTgMSBswWmLKVxwwOO3PzRxubJMI0EXYtZC77BP-uH0QAbiOaNqJgnOTgGCDQv26qg8"
+    },
+    {
+      "id": "430452650a6645cc8eab7afab47897a8",
+      "title": "TR-014 · Conteo compacto · Móvil · Sucursal esperando revisión",
+      "html": "https://contribution.usercontent.google.com/download?c=CgthaWRhX2NvZGVmeBJ7Eh1hcHBfY29tcGFuaW9uX2dlbmVyYXRlZF9maWxlcxpaCiVodG1sXzlhYjFlZmFmMWJiNzQ0YzA5Nzc5NmJlYTU0MDA2Y2VkEgsSBxCSjYmm1R4YAZIBIwoKcHJvamVjdF9pZBIVQhM1MTkyMzU3MDY0MDIxNjE3NjI4&filename=&opi=96797242",
+      "png": "https://lh3.googleusercontent.com/aida/AEtjO1VcBxP8KkaUERQPAFU9I_nYGAepLNoea7fTL3c7Kl0F43RxtZ9AtzPlCKal3XTO7gd2_FqEDwf1CEnA21j3LZhvWZjFMtAPxJJ4nIaGlVxSpWIZsr4rBvM0HR5Rpfl6TKDuvUirm-J0jNLQiyxPRgG0rNu8ZqurZ2ZotzbcmWcKye1_cpnaL1u-l7MR3XSJSYqZapC0ZJTOjGbvktyNSLNcHjeKbHT_8gdsWKCMWTjkKzBE44Eiai4eITw"
+    },
+    {
+      "id": "f107ba64901540099f8743900a51df63",
+      "title": "TR-014 · Conteo compacto · Móvil · Almacén revisa propuesta",
+      "html": "https://contribution.usercontent.google.com/download?c=CgthaWRhX2NvZGVmeBJ7Eh1hcHBfY29tcGFuaW9uX2dlbmVyYXRlZF9maWxlcxpaCiVodG1sXzE3MzVhNGZlYzk1MjRmMTU5YjI1YTllZDk4MTM4ZDhmEgsSBxCSjYmm1R4YAZIBIwoKcHJvamVjdF9pZBIVQhM1MTkyMzU3MDY0MDIxNjE3NjI4&filename=&opi=96797242",
+      "png": "https://lh3.googleusercontent.com/aida/AEtjO1VuldZVfxFBdxGWWTQKulidrFI5nEtyTIcB3iKU_mosNKKQmGjPODWdgERcJPwjj7Q0ucBKEgKO9kkpzw0GzZgYV_AufDktBoSUsULw3VarjLXFdlCq9pmfl2Yc4fniPdHIU9yhycgkJMYN8vnk9xAANxu5OYO8R96vSvxI74DDhsSoLm0aH0D06uVBSKGxjPvM0nZhOzXM_GeWhb2ETm4znW_H3gZSriERcvEbOJ4OXL6ANccAdYNxAYw"
+    }
+  ]
+}

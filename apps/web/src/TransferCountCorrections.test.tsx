@@ -233,6 +233,63 @@ it.each([
     expect(f.corrections.decide).not.toHaveBeenCalled(); view.unmount();
   }
 });
+it('keeps count evidence secondary while exposing the exact pending reason before consultation', () => {
+  const f = fixture(3); const raw = '  Original\n\n  pendiente 🙂  ';
+  Object.assign(f.corrections.snapshot!.lines[0], { proposals: [
+    { ...proposal('applied'), revision: 3n }, { ...proposal(), reason: raw },
+  ] });
+  const before = structuredClone(f.corrections.snapshot);
+  render(<TransferCountCorrections {...f.props} />);
+  const card = screen.getByRole('article', { name: 'TOYO · Exact · 75.125 Ah · L' });
+  const reason = card.querySelector('.count-pending .count-evidence');
+  expect(reason?.textContent).toBe(raw); expect(reason).toBeVisible();
+  const history = within(card).getByText('Historial completo · 2 revisiones').closest('details')!;
+  const effect = within(card).getByText('Efecto aplicado en destino: +2');
+  const technical = within(card).getByText('Evidencia técnica del conteo');
+  expect(effect.closest('.count-history-disclosure')).toBe(history);
+  expect(technical.closest('.count-history-disclosure')).toBe(history);
+  expect(effect).not.toBeVisible(); expect(technical).not.toBeVisible();
+  fireEvent.click(history.firstElementChild!);
+  expect(effect).toBeVisible(); expect(technical).toBeVisible();
+  expect(history).toHaveTextContent('Aplicación: crédito 7 · Efecto +2');
+  expect(history.querySelector('time')).toHaveAttribute('datetime', stamp);
+  expect(f.corrections.snapshot).toEqual(before);
+  for (const method of ['refresh', 'recover', 'retry', 'propose', 'decide'] as const) expect(f.corrections[method]).not.toHaveBeenCalled();
+});
+it.each([2, 3])('summarizes pending count once for endpoint %i without stock inference', actor => {
+  const f = fixture(actor);
+  Object.assign(f.corrections.snapshot!.lines[0], { effective_actual: big, proposals: [proposal()] });
+  const before = structuredClone(f.corrections.snapshot);
+  render(<TransferCountCorrections {...f.props} />);
+  const card = screen.getByRole('article', { name: 'TOYO · Exact · 75.125 Ah · L' });
+  expect(within(card).getByText(`Conteo vigente: ${big} → Propuesto: 7`)).toBeVisible();
+  expect(within(card).getByText('La propuesta pendiente no modifica el conteo ni el stock.')).toBeVisible();
+  expect(within(card).getByText(actor === 2 ? 'Esperando revisión de Sucursal B' : 'Propuesta de Sucursal A · Requiere tu revisión')).toBeVisible();
+  expect(within(card).queryByText(/Efecto aplicado/)).toBeNull();
+  expect(within(card).queryByRole('button', { name: actor === 2 ? 'Consultar propuesta' : 'Reemplazar propuesta' })).toBeNull();
+  expect(f.corrections.snapshot).toEqual(before);
+  for (const method of ['refresh', 'recover', 'retry', 'propose', 'decide'] as const) expect(f.corrections[method]).not.toHaveBeenCalled();
+});
+it('keeps revision results secondary and discloses all original audit evidence locally', () => {
+  const f = fixture();
+  Object.assign(f.corrections.snapshot!.lines[0], { proposals: [{ ...proposal('applied'), revision: 3n }] });
+  render(<TransferCountCorrections {...f.props} />);
+  const summary = screen.getByText('Historial completo · 1 revisión');
+  const history = summary.closest('details')!;
+  expect(history).not.toHaveAttribute('open');
+  expect(within(history).getByText('Aplicada · Revisión 3')).not.toBeVisible();
+  fireEvent.click(summary);
+  expect(within(history).getByText('Aplicada · Revisión 3')).toBeVisible();
+  expect(within(history).getByText('Cantidad 7')).toBeVisible();
+  expect(history).not.toHaveTextContent('5 → 7'); // The persisted base credit is not a before count.
+  const detail = within(history).getByText('Motivos y actores de revisión 3');
+  expect(within(history).getByText('Motivo: Reconteo original')).not.toBeVisible();
+  fireEvent.click(detail);
+  expect(within(history).getByText('Motivo: Reconteo original')).toBeVisible();
+  expect(history).toHaveTextContent('Motivo de decisión: Decisión exacta');
+  expect(history).toHaveTextContent('decision_key_0001');
+  for (const method of ['refresh', 'recover', 'retry', 'propose', 'decide'] as const) expect(f.corrections[method]).not.toHaveBeenCalled();
+});
 const confirm = () => fireEvent.click(screen.getByRole('button', { name: 'Enviar propuesta' }));
 afterEach(() => vi.unstubAllGlobals());
 
@@ -832,14 +889,14 @@ it('shows all history states with exact evidence, Bolivia dates and application 
   expect(screen.getByRole('region')).toHaveTextContent('La recepción original es inmutable');
   expect(screen.getByRole('region')).toHaveTextContent('sigue Recibida');
 });
-it('puts effective quantities and applied effect before closed technical evidence without hiding history context', () => {
+it('keeps effective quantities primary and all applied and technical evidence in secondary history', () => {
   const f = fixture();
   f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...line(), proposals: [
     { ...proposal('applied'), revision: 3n }, proposal(),
   ] }] };
   render(<TransferCountCorrections {...f.props} />);
   const card = screen.getByRole('article', { name: 'TOYO · Exact · 75.125 Ah · L' });
-  const disclosures = Array.from(card.querySelectorAll('details'));
+  const disclosures = Array.from(card.querySelectorAll('details.count-technical'));
   expect(disclosures).toHaveLength(3);
   for (const details of disclosures) {
     expect(details).not.toHaveAttribute('open');
@@ -851,14 +908,17 @@ it('puts effective quantities and applied effect before closed technical evidenc
   expect(metrics).toHaveTextContent('Crédito efectivo de esta recepción5');
   expect(metrics).not.toHaveTextContent('Revisión');
   const effect = within(card).getByText(/Efecto aplicado en destino: \+2/);
-  expect(effect.closest('details')).toBeNull();
+  expect(effect.closest('.count-history-disclosure')).not.toBeNull();
+  expect(effect).not.toBeVisible();
   expect(effect.compareDocumentPosition(disclosures[0])).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   for (const text of ['Pendiente · Revisión 4', 'Iniciador Sucursal A', 'Motivo: Reconteo original',
     'Aceptada por Sucursal B', 'Motivo de decisión: Decisión exacta', 'Aplicación: crédito 7 · Efecto +2']) {
-    for (const element of within(card).getAllByText(text, { exact: false })) expect(element.closest('details')).toBeNull();
+    for (const element of within(card).getAllByText(text, { exact: false })) {
+      expect(element.closest('.count-history-disclosure')).not.toBeNull();
+    }
   }
   for (const time of card.querySelectorAll('time')) {
-    expect(time.closest('details')).toBeNull();
+    expect(time.closest('.count-history-disclosure')).not.toBeNull();
     expect(time).toHaveAttribute('datetime', stamp);
   }
   expect(within(card).getByText('Revisión de flujo').closest('details')).toBe(disclosures[0]);
@@ -874,7 +934,7 @@ it('does not infer an applied effect from pending or historical applications', (
   ] }] };
   render(<TransferCountCorrections {...f.props} />);
   expect(screen.queryByText(/Efecto aplicado en destino:/)).not.toBeInTheDocument();
-  expect(screen.getByText(/Aplicación: crédito 7/).closest('details')).toBeNull();
+  expect(screen.getByText(/Aplicación: crédito 7/).closest('.count-history-disclosure')).not.toBeNull();
 });
 
 it('native evidence disclosure is focusable and expands locally without reads or writes', () => {

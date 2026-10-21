@@ -15,7 +15,12 @@ a consulted inventory location does not change the account's assigned authority.
   receive, or cancel before dispatch where the actor and current state permit.
   Direct shipments are authorized and reserved at creation, not approved later.
 - Record receipt quantities and use the received-line count-correction and
-  restitution workflows, preserving original receipt evidence.
+  restitution workflows, preserving original receipt evidence. Count management
+  shows compact per-product confirmed quantities, a pending current→proposed
+  comparison, and collapsible revision history with reasons, actors and technical
+  evidence. Pending proposals do not change stock; reception credit is not current
+  inventory. Existing capture and counterpart review dialogs remain separate from
+  the summary, including the proposer's authorized replacement action.
 
 See the [inventory API contract](apps/api/docs/inventory-api.md) and
 [transfer API contract](apps/api/docs/transfers-api.md) for backend rules.

@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+
+<html class="h-full bg-surface" lang="es"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>LUSON - TR-014 Detalle de Transferencia</title>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "secondary": "#95445a",
+            "on-surface-variant": "#554245",
+            "on-secondary-fixed-variant": "#782d43",
+            "on-tertiary": "#ffffff",
+            "surface-dim": "#dfd8dc",
+            "outline-variant": "#dac0c4",
+            "background": "#fff7fb",
+            "primary-fixed": "#ffd9df",
+            "on-primary-fixed": "#3f0018",
+            "surface-container-lowest": "#ffffff",
+            "primary-container": "#7a1f3d",
+            "inverse-primary": "#ffb1c2",
+            "primary": "#5c0427",
+            "surface-container": "#f3ecf0",
+            "on-error-container": "#93000a",
+            "surface-variant": "#e8e0e4",
+            "on-error": "#ffffff",
+            "surface-tint": "#9f3c59",
+            "on-surface": "#1d1b1e",
+            "on-secondary": "#ffffff",
+            "on-primary-container": "#ff8ba8",
+            "on-primary": "#ffffff",
+            "on-background": "#1d1b1e",
+            "primary-fixed-dim": "#ffb1c2",
+            "tertiary-fixed-dim": "#cfc3c8",
+            "secondary-fixed-dim": "#ffb1c2",
+            "surface-container-low": "#f9f2f6",
+            "on-tertiary-fixed-variant": "#4d4549",
+            "surface": "#fff7fb",
+            "surface-bright": "#fff7fb",
+            "on-secondary-container": "#782d44",
+            "tertiary-container": "#484044",
+            "inverse-on-surface": "#f6eff3",
+            "error": "#ba1a1a",
+            "on-secondary-fixed": "#3f0018",
+            "secondary-fixed": "#ffd9e0",
+            "on-tertiary-container": "#b7acb1",
+            "inverse-surface": "#332f32",
+            "secondary-container": "#fd99b1",
+            "on-primary-fixed-variant": "#802442",
+            "tertiary": "#312a2e",
+            "outline": "#887275",
+            "surface-container-high": "#ede6ea",
+            "error-container": "#ffdad6",
+            "surface-container-highest": "#e8e0e4",
+            "tertiary-fixed": "#ecdfe4",
+            "on-tertiary-fixed": "#201a1d"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.125rem",
+            "lg": "0.25rem",
+            "xl": "0.5rem",
+            "full": "0.75rem"
+          },
+          "spacing": {
+            "space-xs": "0.25rem",
+            "margin-desktop": "1.5rem",
+            "space-xl": "1.5rem",
+            "space-md": "0.75rem",
+            "margin": "1rem",
+            "gutter-desktop": "1.25rem",
+            "space-lg": "1rem",
+            "gutter": "1rem",
+            "space-sm": "0.5rem"
+          },
+          "fontFamily": {
+            "body-lg": ["Inter"],
+            "headline-sm": ["Inter"],
+            "caption": ["Inter"],
+            "tabular-data": ["Inter"],
+            "headline-md": ["Inter"],
+            "body-md": ["Inter"],
+            "body-sm": ["Inter"],
+            "label-md": ["Inter"],
+            "label-sm": ["Inter"],
+            "headline-lg": ["Inter"]
+          },
+          "fontSize": {
+            "body-lg": ["15px", { "lineHeight": "22px", "fontWeight": "400" }],
+            "headline-sm": ["15px", { "lineHeight": "20px", "letterSpacing": "-0.005em", "fontWeight": "600" }],
+            "caption": ["11px", { "lineHeight": "14px", "letterSpacing": "0.02em", "fontWeight": "500" }],
+            "tabular-data": ["13px", { "lineHeight": "18px", "letterSpacing": "0em", "fontWeight": "400" }],
+            "headline-md": ["18px", { "lineHeight": "24px", "letterSpacing": "-0.01em", "fontWeight": "600" }],
+            "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+            "body-sm": ["13px", { "lineHeight": "18px", "fontWeight": "400" }],
+            "label-md": ["13px", { "lineHeight": "16px", "fontWeight": "500" }],
+            "label-sm": ["12px", { "lineHeight": "16px", "fontWeight": "500" }],
+            "headline-lg": ["22px", { "lineHeight": "28px", "letterSpacing": "-0.015em", "fontWeight": "600" }]
+          }
+        }
+      }
+    }
+  </script>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-surface text-on-surface font-body-md antialiased min-h-screen flex justify-center selection:bg-primary-fixed">
+<!-- Mobile Viewport Container (390px fixed layout frame) -->
+<div class="w-full max-w-[390px] min-h-screen bg-surface flex flex-col relative pb-28 shadow-sm border-x border-outline-variant/40">
+<!-- Mobile Top Bar -->
+<header class="sticky top-0 z-40 bg-surface-container-lowest/95 backdrop-blur-md px-4 py-3 flex items-center justify-between border-b border-outline-variant/40">
+<div class="flex items-center gap-2">
+<span class="font-headline-md text-headline-md font-bold tracking-tight text-primary">LUSON</span>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-surface-container text-on-surface-variant border border-outline-variant/50">
+          Sucursal B
+        </span>
+</div>
+<button aria-label="Cerrar sesión" class="min-h-[44px] min-w-[44px] flex items-center justify-center rounded text-on-surface-variant hover:text-primary transition-colors" type="button">
+<span class="material-symbols-outlined text-[20px]" data-icon="logout">logout</span>
+</button>
+</header>
+<!-- Context Navigation & Actions -->
+<div class="px-4 pt-3 pb-2 flex items-center justify-between text-label-sm font-label-sm">
+<a class="inline-flex items-center gap-1 min-h-[44px] text-primary hover:text-primary-container font-medium" href="#">
+<span class="material-symbols-outlined text-[18px]" data-icon="arrow_back">arrow_back</span>
+<span>Volver a transferencias</span>
+</a>
+<button class="min-h-[44px] px-2.5 inline-flex items-center gap-1 text-on-surface-variant hover:text-on-surface font-medium" type="button">
+<span class="material-symbols-outlined text-[16px]" data-icon="history">history</span>
+<span>Ver historial</span>
+</button>
+</div>
+<!-- Title & Status Header -->
+<section class="px-4 pb-4">
+<div class="flex items-center justify-between gap-2">
+<h1 class="font-headline-lg text-headline-lg font-bold tracking-tight text-on-surface">TR-014</h1>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-[#EDF6F1] text-[#1E5A3E] border border-[#BCDDCB]">
+          Recibida
+        </span>
+</div>
+<p class="font-body-sm text-body-sm text-on-surface-variant mt-0.5">
+        Solicitud de stock · Almacén → Sucursal B
+      </p>
+</section>
+<!-- Section 1: Transfer Products Table -->
+<section class="px-4 mb-5">
+<div class="bg-surface-container-lowest border border-outline-variant/60 rounded-lg p-3">
+<!-- Table Headline -->
+<div class="flex items-start justify-between gap-2 mb-2">
+<div>
+<h2 class="font-headline-sm text-headline-sm font-semibold text-on-surface">Productos de la transferencia</h2>
+<p class="font-caption text-caption text-on-surface-variant mt-0.5">Recepción confirmada · 2 variantes · 2 baterías</p>
+</div>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-[#EDF6F1] text-[#1E5A3E] border border-[#BCDDCB] shrink-0">
+            Sin diferencias
+          </span>
+</div>
+<!-- Table Container with Horizontal Scroll -->
+<div class="overflow-x-auto border border-outline-variant/50 rounded mt-3">
+<table class="w-full text-left border-collapse text-[12px]">
+<thead>
+<tr class="bg-surface-container-low text-on-surface-variant border-b border-outline-variant/50 font-medium">
+<th class="py-2 px-2.5 text-left font-semibold text-[11px] uppercase tracking-wider" scope="col">BATERÍA</th>
+<th class="py-2 px-2 text-right font-semibold text-[11px] uppercase tracking-wider" scope="col">ENV.</th>
+<th class="py-2 px-2 text-right font-semibold text-[11px] uppercase tracking-wider" scope="col">REC.</th>
+<th class="py-2 px-2 text-right font-semibold text-[11px] uppercase tracking-wider" scope="col">CRÉD.</th>
+<th class="py-2 px-2.5 text-center font-semibold text-[11px] uppercase tracking-wider" scope="col">DIF.</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-outline-variant/40 font-tabular-data text-tabular-data">
+<tr class="hover:bg-surface-container-low/60 transition-colors">
+<td class="py-2 px-2.5 font-medium text-on-surface leading-tight">
+                  CAR NS40ZL · 35Ah<br/>
+<span class="text-on-surface-variant text-[11px]">Izquierda [L]</span>
+</td>
+<td class="py-2 px-2 text-right">1</td>
+<td class="py-2 px-2 text-right">1</td>
+<td class="py-2 px-2 text-right">1</td>
+<td class="py-2 px-2.5 text-center">
+<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-[#EDF6F1] text-[#1E5A3E]">
+                    Sin dif.
+                  </span>
+</td>
+</tr>
+<tr class="hover:bg-surface-container-low/60 transition-colors">
+<td class="py-2 px-2.5 font-medium text-on-surface leading-tight">
+                  CAR NS40ZL · 35Ah<br/>
+<span class="text-on-surface-variant text-[11px]">Derecha [R]</span>
+</td>
+<td class="py-2 px-2 text-right">1</td>
+<td class="py-2 px-2 text-right">1</td>
+<td class="py-2 px-2 text-right">1</td>
+<td class="py-2 px-2.5 text-center">
+<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-[#EDF6F1] text-[#1E5A3E]">
+                    Sin dif.
+                  </span>
+</td>
+</tr>
+<tr class="bg-surface-container/60 font-semibold text-on-surface border-t border-outline-variant/60">
+<td class="py-2 px-2.5 text-[11px]">Total (2 var. · 2 bat.)</td>
+<td class="py-2 px-2 text-right">2</td>
+<td class="py-2 px-2 text-right">2</td>
+<td class="py-2 px-2 text-right">2</td>
+<td class="py-2 px-2.5 text-center">
+<span class="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium bg-[#EDF6F1] text-[#1E5A3E]">
+                    Sin dif.
+                  </span>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<!-- Footnote -->
+<p class="font-caption text-caption text-on-surface-variant mt-2.5 leading-tight">
+          Estas cantidades corresponden a los registros de esta transferencia, no al stock físico actual de Sucursal B.
+        </p>
+<!-- Collapsed Link -->
+<button class="mt-2.5 pt-2 border-t border-outline-variant/40 w-full text-left flex items-center justify-between text-label-sm font-label-sm text-on-surface-variant hover:text-on-surface" type="button">
+<span class="flex items-center gap-1 text-[12px]">
+<span class="material-symbols-outlined text-[14px]" data-icon="chevron_right">chevron_right</span>
+<span>Ver recepción original · Registro original conservado sin modificaciones</span>
+</span>
+</button>
+</div>
+</section>
+<!-- Section 2: Gestiones de la transferencia -->
+<section class="px-4 space-y-3">
+<div>
+<h2 class="font-headline-md text-headline-md font-semibold text-on-surface">Gestiones</h2>
+<!-- Switcher / Tabs -->
+<div class="flex gap-2 mt-2">
+<button class="flex-1 min-h-[44px] px-3 rounded-lg bg-primary-container text-white font-label-md text-label-md font-semibold text-center flex items-center justify-center" type="button">
+            Corregir conteo
+          </button>
+<button class="flex-1 min-h-[44px] px-3 rounded-lg bg-surface-container-lowest border border-outline-variant/80 text-on-surface-variant font-label-md text-label-md font-medium text-center flex items-center justify-center hover:bg-surface-container-low transition-colors" type="button">
+            Restituciones de origen
+          </button>
+</div>
+<!-- Single Concise Notice -->
+<div class="mt-2.5 px-3 py-2 bg-surface-container-low rounded border border-outline-variant/50 text-caption font-caption text-on-surface-variant flex items-start gap-1.5">
+<span class="material-symbols-outlined text-[15px] text-on-surface-variant shrink-0 mt-0.5" data-icon="info">info</span>
+<span>La propuesta todavía no modifica el conteo vigente ni las existencias.</span>
+</div>
+</div>
+<!-- Card 1: CAR NS40ZL · 35Ah · Izquierda [L] (Waiting for Almacén) -->
+<article class="bg-surface-container-lowest border border-outline-variant/70 rounded-lg p-3.5 space-y-3">
+<!-- Top Summary -->
+<div class="space-y-1.5">
+<div class="flex items-start justify-between gap-2">
+<h3 class="font-headline-sm text-headline-sm font-semibold text-on-surface leading-tight">
+              CAR NS40ZL · 35Ah · Izquierda [L]
+            </h3>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-[#FEF7ED] text-[#8A5200] border border-[#F5D6A4] shrink-0">
+              Pendiente de revisión
+            </span>
+</div>
+<!-- Metrics summary -->
+<div class="flex flex-wrap items-center gap-x-2 gap-y-1 font-body-sm text-body-sm text-on-surface-variant">
+<span>Conteo vigente: <strong class="text-on-surface font-semibold">1 unidad</strong></span>
+<span>·</span>
+<span>Crédito en destino: <strong class="text-on-surface font-semibold">1 unidad</strong></span>
+</div>
+<!-- Amber subtle indicator box -->
+<div class="p-2.5 rounded bg-[#FEF7ED]/70 border border-[#F5D6A4] flex items-center gap-2 text-label-sm font-label-sm text-[#8A5200]">
+<span class="material-symbols-outlined text-[18px] shrink-0" data-icon="hourglass_empty">hourglass_empty</span>
+<span class="font-medium">Esperando revisión de Almacén</span>
+</div>
+</div>
+<!-- Expanded Pending Proposal Box -->
+<div class="rounded-lg border border-outline-variant/70 bg-surface-container-low/50 p-3 space-y-2.5">
+<!-- Proposal Header -->
+<div>
+<div class="flex items-center gap-1.5 text-label-sm font-label-sm font-semibold text-on-surface">
+<span class="w-1.5 h-1.5 rounded-full bg-secondary"></span>
+<span>Propuesta de corrección enviada · En revisión de Almacén</span>
+</div>
+<p class="font-caption text-caption text-on-surface-variant mt-0.5">
+              Propuesto el 20 Oct 2026 · 20:05 hora Bolivia por Operador de Sucursal B
+            </p>
+</div>
+<!-- CAMBIO SOLICITADO -->
+<div class="p-2.5 rounded bg-surface-container-lowest border border-outline-variant/60">
+<div class="text-[11px] font-semibold text-on-surface-variant uppercase tracking-wider">CAMBIO SOLICITADO</div>
+<div class="font-body-md text-body-md font-medium text-on-surface mt-1">
+              Conteo vigente: 1 → Propuesto: 2
+            </div>
+</div>
+<!-- MOTIVO DECLARADO -->
+<div class="p-2.5 rounded bg-surface-container-lowest border border-outline-variant/60">
+<div class="text-[11px] font-semibold text-on-surface-variant uppercase tracking-wider">MOTIVO DECLARADO</div>
+<p class="font-body-sm text-body-sm italic text-on-surface mt-1">
+              «Llegaron 2, cometí error de conteo»
+            </p>
+</div>
+<!-- Proposal Footer Note -->
+<p class="font-caption text-caption text-on-surface-variant leading-relaxed">
+            La propuesta requiere validación y justificación por parte de Almacén antes de aplicarse. Mientras tanto, el conteo vigente se mantiene en 1 unidad.
+          </p>
+<!-- Collapsed History Disclosure -->
+<button class="pt-2 border-t border-outline-variant/40 w-full text-left flex items-center justify-between text-label-sm font-label-sm text-on-surface-variant hover:text-on-surface" type="button">
+<span class="flex items-center gap-1">
+<span class="material-symbols-outlined text-[14px]" data-icon="chevron_right">chevron_right</span>
+<span>Ver historial previo (2 correcciones aplicadas)</span>
+</span>
+</button>
+</div>
+</article>
+<!-- Card 2: CAR NS40ZL · 35Ah · Derecha [R] (Eligible for count proposal) -->
+<article class="bg-surface-container-lowest border border-outline-variant/70 rounded-lg p-3.5 space-y-3">
+<div class="space-y-1.5">
+<div class="flex items-start justify-between gap-2">
+<h3 class="font-headline-sm text-headline-sm font-semibold text-on-surface leading-tight">
+              CAR NS40ZL · 35Ah · Derecha [R]
+            </h3>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-surface-container text-on-surface-variant border border-outline-variant/50 shrink-0">
+              Sin correcciones
+            </span>
+</div>
+<!-- Metrics summary -->
+<div class="flex flex-wrap items-center gap-x-2 gap-y-1 font-body-sm text-body-sm text-on-surface-variant">
+<span>Conteo vigente: <strong class="text-on-surface font-semibold">1 unidad</strong></span>
+<span>·</span>
+<span>Crédito en destino: <strong class="text-on-surface font-semibold">1 unidad</strong></span>
+</div>
+</div>
+<!-- Action Button Enabled -->
+<button class="w-full min-h-[44px] px-4 rounded bg-surface-container-lowest border border-outline-variant hover:bg-surface-container-low text-on-surface font-label-md text-label-md font-medium flex items-center justify-center gap-2 transition-colors" type="button">
+<span class="material-symbols-outlined text-[16px] text-on-surface-variant" data-icon="edit">edit</span>
+<span>Corregir conteo</span>
+</button>
+</article>
+</section>
+<!-- Mobile Bottom Navigation Bar (Fixed bottom, strictly 2 items) -->
+<nav class="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[390px] h-16 bg-surface-container-lowest border-t border-outline-variant/40 flex items-center justify-around z-50 px-6">
+<!-- Item 1: Inventario -->
+<a class="flex flex-col items-center justify-center min-w-[64px] min-h-[44px] text-on-surface-variant hover:text-on-surface transition-colors" href="#">
+<span class="material-symbols-outlined text-[22px]" data-icon="inventory_2">inventory_2</span>
+<span class="text-caption font-caption mt-0.5">Inventario</span>
+</a>
+<!-- Item 2: Transferencias (Active in brand wine #7A1F3D) -->
+<a class="flex flex-col items-center justify-center min-w-[64px] min-h-[44px] text-primary-container font-semibold transition-colors relative" href="#">
+<span class="material-symbols-outlined text-[22px]" data-icon="sync_alt" style="font-variation-settings: 'FILL' 1;">sync_alt</span>
+<span class="text-caption font-caption mt-0.5">Transferencias</span>
+<!-- Subtle Active Indicator dot/pill -->
+<span class="absolute -bottom-1 w-5 h-0.5 bg-primary-container rounded-full"></span>
+</a>
+</nav>
+</div>
+</body></html>

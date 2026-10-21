@@ -1,0 +1,87 @@
+{
+  "projectId": "5192357064021617628",
+  "archivedAt": "2026-10-21T02:08:36.174556+00:00",
+  "note": "Fresh get_screen metadata retrieved by parent. Download HTML and PNG; screenshot may lag DOM-only edits. Preserve bytes and hashes, do not execute remote HTML scripts.",
+  "screens": [
+    {
+      "id": "36e9038241de4aa6b9565397632c2777",
+      "title": "TR-014 \u00b7 Conteo compacto \u00b7 Iteraci\u00f3n 2",
+      "assets": {
+        "html": {
+          "file": "36e9038241de4aa6b9565397632c2777.html",
+          "bytes": 20894,
+          "sha256": "408b7d3e490ede2ad53f2f36bf9397944ad508f831b0ffc4df0b33423b4e55cb"
+        },
+        "png": {
+          "file": "36e9038241de4aa6b9565397632c2777.png",
+          "bytes": 48126,
+          "sha256": "8f7f9e85f0292aadf8f76c439e2a81358c03a235293942480cf8455ca41c0cfb"
+        }
+      }
+    },
+    {
+      "id": "17e5d3fe9cdd4c55ba23567a1a2b8fba",
+      "title": "TR-014 \u00b7 Conteo compacto \u00b7 Revisi\u00f3n pendiente",
+      "assets": {
+        "html": {
+          "file": "17e5d3fe9cdd4c55ba23567a1a2b8fba.html",
+          "bytes": 20370,
+          "sha256": "514edfe8293041404fc8e7737c4daf4659c72c80d30b761d9b0b9bba0e040e01"
+        },
+        "png": {
+          "file": "17e5d3fe9cdd4c55ba23567a1a2b8fba.png",
+          "bytes": 55186,
+          "sha256": "ac1d50d43f0c8c374dfed518a063c9983273f516875677a7eae2f8d719b58c42"
+        }
+      }
+    },
+    {
+      "id": "657e7b01563c47bd838a064988a86a8a",
+      "title": "TR-014 \u00b7 Conteo compacto \u00b7 Sucursal esperando revisi\u00f3n",
+      "assets": {
+        "html": {
+          "file": "657e7b01563c47bd838a064988a86a8a.html",
+          "bytes": 23312,
+          "sha256": "be928f7bc98488897427a7da435da10152528aea0bb755b7eb05b6b04255e920"
+        },
+        "png": {
+          "file": "657e7b01563c47bd838a064988a86a8a.png",
+          "bytes": 62216,
+          "sha256": "be40b912a6dba13caf6c35dbc4e59d03a384daaa6d105eb5953a16a774363ba6"
+        }
+      }
+    },
+    {
+      "id": "430452650a6645cc8eab7afab47897a8",
+      "title": "TR-014 \u00b7 Conteo compacto \u00b7 M\u00f3vil \u00b7 Sucursal esperando revisi\u00f3n",
+      "assets": {
+        "html": {
+          "file": "430452650a6645cc8eab7afab47897a8.html",
+          "bytes": 18712,
+          "sha256": "a08f72dc87902e71f960e2e4c304be9a1d052d294fc1a23d61a9eaf30bdd849b"
+        },
+        "png": {
+          "file": "430452650a6645cc8eab7afab47897a8.png",
+          "bytes": 34568,
+          "sha256": "4d852768fe93c66f832c76e2d935462f5ad8f684602e3bde04ffe1bbec7a7ae7"
+        }
+      }
+    },
+    {
+      "id": "f107ba64901540099f8743900a51df63",
+      "title": "TR-014 \u00b7 Conteo compacto \u00b7 M\u00f3vil \u00b7 Almac\u00e9n revisa propuesta",
+      "assets": {
+        "html": {
+          "file": "f107ba64901540099f8743900a51df63.html",
+          "bytes": 17798,
+          "sha256": "82ee284dad19dcc32787f68e9f7f961f1e68872a42610b0f5d591d9ef7ac739f"
+        },
+        "png": {
+          "file": "f107ba64901540099f8743900a51df63.png",
+          "bytes": 36494,
+          "sha256": "a945a38f8837aa05d441749802476a8c50135b5bf4ceefb76007f16a9d34ff13"
+        }
+      }
+    }
+  ]
+}

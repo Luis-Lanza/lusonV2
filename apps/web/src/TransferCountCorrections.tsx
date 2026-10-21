@@ -408,28 +408,47 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
         const pending = line.proposals.find(p => p.state === 'pending');
         const applied = line.proposals.find(p => p.revision === line.applied_revision && p.state === 'applied')?.application;
         return <article className="count-card" key={line.variant_id} aria-label={name(line.variant_id)}>
+          <div className="count-overview">
           <h4>{name(line.variant_id)}</h4>
           <dl className="count-metrics"><div><dt>Cantidad efectiva</dt><dd>{line.effective_actual.toString()}</dd></div>
             <div><dt>Crédito efectivo de esta recepción</dt><dd>{line.effective_credit.toString()}</dd></div></dl>
-          {applied && <p className="count-outcome">Efecto aplicado en destino: {signed(applied.delta)}</p>}
-          {unexpected && <p>Solo auditoría: crédito y efecto en stock cero. La procedencia e incorporación se resuelven por separado.</p>}
           <div className="count-actions">
             {allowed(line, 'propose') && <button disabled={sending} onClick={e => open(line.variant_id, 'propose', e.currentTarget)}>{pending ? 'Reemplazar propuesta' : 'Proponer corrección'}</button>}
             {allowed(line, 'accept') && <button disabled={sending || corrections.busy} onClick={e => consult(line.variant_id, e.currentTarget)}>Consultar propuesta</button>}
           </div>
+          </div>
+          {pending && <div className="count-pending">
+            <p className="count-pending-owner">{pending.initiator_location_id === owner?.location
+              ? `Esperando revisión de ${location(owner.location === record.origin_location_id ? record.destination_location_id : record.origin_location_id)}`
+              : `Propuesta de ${location(pending.initiator_location_id)} · Requiere tu revisión`}</p>
+            <p>Conteo vigente: {line.effective_actual.toString()} → Propuesto: {pending.actual_quantity.toString()}</p>
+            <p className="count-review-label">Motivo declarado</p>
+            <p className="count-evidence">{pending.reason}</p>
+            <p>La propuesta pendiente no modifica el conteo ni el stock.</p>
+          </div>}
+          {unexpected && <p>Solo auditoría: crédito y efecto en stock cero. La procedencia e incorporación se resuelven por separado.</p>}
+          <details className="count-history-disclosure">
+          <summary>Historial completo · {line.proposals.length} {line.proposals.length === 1 ? 'revisión' : 'revisiones'}</summary>
+          <p>Resultado de la corrección; no indica movimiento de stock.</p>
+          {applied && <p>Efecto aplicado en destino: {signed(applied.delta)}</p>}
           <details className="count-technical">
             <summary>Evidencia técnica del conteo</summary>
             <dl className="count-revisions"><div><dt>Revisión de flujo</dt><dd>{line.workflow_revision.toString()}</dd></div>
               <div><dt>Revisión aplicada</dt><dd>{line.applied_revision.toString()}</dd></div></dl>
           </details>
-          <h5>Historial completo</h5>
           {!line.proposals.length && <p>Sin correcciones anteriores.</p>}
           <ol className="count-history">{line.proposals.map(p => <li key={p.revision.toString()}>
-            <p><strong>{states[p.state]} · Revisión {p.revision.toString()}</strong> · Cantidad {p.actual_quantity.toString()}</p>
-            <p>Iniciador {location(p.initiator_location_id)} · <TransferDate value={p.recorded_at} /></p>
+            <div className="count-history-overview">
+              <strong>{states[p.state]} · Revisión {p.revision.toString()}</strong>
+              <span>Cantidad {p.actual_quantity.toString()}</span>
+              <TransferDate value={p.recorded_at} />
+            </div>
+            <details className="count-audit"><summary>Motivos y actores de revisión {p.revision.toString()}</summary>
+            <p>Iniciador {location(p.initiator_location_id)}</p>
             <p className="count-evidence">Motivo: {p.reason}</p>
             {p.decision && <><p>{p.decision.accepted ? 'Aceptada' : 'Rechazada'} por {location(p.decision.actor_location_id)} · <TransferDate value={p.decision.recorded_at} /></p>
               <p className="count-evidence">Motivo de decisión: {p.decision.reason}</p></>}
+            </details>
             {p.application && <p>Aplicación: crédito {p.application.effective_credit.toString()} · Efecto {signed(p.application.delta)} · <TransferDate value={p.application.recorded_at} /></p>}
             <details className="count-technical">
               <summary>Evidencia técnica de revisión {p.revision.toString()}</summary>
@@ -438,6 +457,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
               {p.decision && <p>Clave de decisión {p.decision.operation_key}</p>}
             </details>
           </li>)}</ol>
+          </details>
         </article>;
       })}
       </div>

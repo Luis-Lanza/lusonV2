@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+
+<html class="h-full bg-surface" lang="es"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>TR-014 · Conteo compacto · Revisión pendiente</title>
+<!-- Fonts -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS with CDN Plugins -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "on-tertiary-fixed-variant": "#4d4549",
+            "on-tertiary-fixed": "#201a1d",
+            "tertiary-fixed": "#ecdfe4",
+            "outline": "#887275",
+            "on-secondary": "#ffffff",
+            "surface-container-lowest": "#ffffff",
+            "secondary-fixed": "#ffd9e0",
+            "secondary-container": "#fd99b1",
+            "surface-container-high": "#ede6ea",
+            "secondary": "#95445a",
+            "on-secondary-container": "#782d44",
+            "on-error-container": "#93000a",
+            "on-surface": "#1d1b1e",
+            "surface-container-highest": "#e8e0e4",
+            "secondary-fixed-dim": "#ffb1c2",
+            "on-primary-fixed": "#3f0018",
+            "inverse-on-surface": "#f6eff3",
+            "tertiary": "#312a2e",
+            "error-container": "#ffdad6",
+            "on-tertiary-container": "#b7acb1",
+            "tertiary-fixed-dim": "#cfc3c8",
+            "tertiary-container": "#484044",
+            "on-primary-fixed-variant": "#802442",
+            "on-primary-container": "#ff8ba8",
+            "primary-container": "#7a1f3d",
+            "error": "#ba1a1a",
+            "on-surface-variant": "#554245",
+            "primary-fixed-dim": "#ffb1c2",
+            "inverse-primary": "#ffb1c2",
+            "background": "#fff7fb",
+            "surface-bright": "#fff7fb",
+            "on-secondary-fixed-variant": "#782d43",
+            "inverse-surface": "#332f32",
+            "surface": "#fff7fb",
+            "primary": "#5c0427",
+            "outline-variant": "#dac0c4",
+            "on-background": "#1d1b1e",
+            "surface-container": "#f3ecf0",
+            "surface-variant": "#e8e0e4",
+            "surface-container-low": "#f9f2f6",
+            "on-secondary-fixed": "#3f0018",
+            "primary-fixed": "#ffd9df",
+            "on-error": "#ffffff",
+            "surface-dim": "#dfd8dc",
+            "surface-tint": "#9f3c59",
+            "on-tertiary": "#ffffff",
+            "on-primary": "#ffffff"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.125rem",
+            "lg": "0.25rem",
+            "xl": "0.5rem",
+            "full": "0.75rem"
+          },
+          "spacing": {
+            "margin": "1rem",
+            "space-xl": "1.5rem",
+            "gutter": "1rem",
+            "space-sm": "0.5rem",
+            "gutter-desktop": "1.25rem",
+            "space-xs": "0.25rem",
+            "space-md": "0.75rem",
+            "space-lg": "1rem",
+            "margin-desktop": "1.5rem"
+          },
+          "fontFamily": {
+            "body-lg": ["Inter"],
+            "label-sm": ["Inter"],
+            "body-sm": ["Inter"],
+            "headline-md": ["Inter"],
+            "label-md": ["Inter"],
+            "tabular-data": ["Inter"],
+            "headline-sm": ["Inter"],
+            "body-md": ["Inter"],
+            "headline-lg": ["Inter"],
+            "caption": ["Inter"]
+          },
+          "fontSize": {
+            "body-lg": ["15px", { "lineHeight": "22px", "fontWeight": "400" }],
+            "label-sm": ["12px", { "lineHeight": "16px", "fontWeight": "500" }],
+            "body-sm": ["13px", { "lineHeight": "18px", "fontWeight": "400" }],
+            "headline-md": ["18px", { "lineHeight": "24px", "letterSpacing": "-0.01em", "fontWeight": "600" }],
+            "label-md": ["13px", { "lineHeight": "16px", "fontWeight": "500" }],
+            "tabular-data": ["13px", { "lineHeight": "18px", "letterSpacing": "0em", "fontWeight": "400" }],
+            "headline-sm": ["15px", { "lineHeight": "20px", "letterSpacing": "-0.005em", "fontWeight": "600" }],
+            "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+            "headline-lg": ["22px", { "lineHeight": "28px", "letterSpacing": "-0.015em", "fontWeight": "600" }],
+            "caption": ["11px", { "lineHeight": "14px", "letterSpacing": "0.02em", "fontWeight": "500" }]
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="h-full bg-surface text-on-surface font-body-md antialiased overflow-x-hidden">
+<!-- Left Sidebar (Strict 240px width, exactly two navigation tabs) -->
+<aside class="fixed top-0 left-0 h-screen w-60 bg-surface-container-lowest border-r border-surface-dim flex flex-col justify-between py-4 px-3 z-30 select-none">
+<div class="flex flex-col gap-6">
+<!-- Brand Header -->
+<div class="flex items-center gap-3 px-2 pt-1">
+<div class="w-8 h-8 rounded bg-primary-container text-on-primary flex items-center justify-center font-headline-sm font-semibold tracking-tight shadow-none">
+          L
+        </div>
+<div class="flex flex-col">
+<span class="text-headline-sm font-headline-sm tracking-tight font-semibold text-primary">Luson</span>
+<span class="text-caption font-caption text-on-surface-variant">Control de Baterías</span>
+</div>
+</div>
+<!-- Navigation: Strict requirement of ONLY TWO items -->
+<nav class="flex flex-col gap-1">
+<!-- Inventario (Inactive) -->
+<a class="flex items-center gap-3 px-3 py-2 text-on-surface-variant rounded hover:bg-surface-container-low transition-colors duration-150 ease-in-out" href="#">
+<span class="material-symbols-outlined text-lg leading-none" data-icon="inventory_2">inventory_2</span>
+<span class="text-body-sm font-label-md">Inventario</span>
+</a>
+<!-- Transferencias (ACTIVE) -->
+<a class="flex items-center gap-3 px-3 py-2 bg-surface-container-low text-primary-container font-semibold rounded border-l-4 border-primary-container transition-colors duration-150 ease-in-out" href="#" style="background-color: #fceef2;">
+<span class="material-symbols-outlined text-lg leading-none" data-icon="sync_alt">sync_alt</span>
+<span class="text-body-sm font-headline-sm">Transferencias</span>
+</a>
+</nav>
+</div>
+<!-- Bottom User Panel -->
+<div class="border-t border-surface-dim pt-3 px-2 flex flex-col gap-2">
+<div class="flex flex-col"><span class="text-label-md font-label-md text-on-surface truncate">Usuario de Almacén</span><span class="text-caption font-caption text-on-surface-variant">Almacén</span></div>
+<a class="flex items-center gap-2 text-label-sm font-label-sm text-on-surface-variant hover:text-primary transition-colors py-1" href="#">
+<span class="material-symbols-outlined text-base" data-icon="logout">logout</span>
+<span>Cerrar sesión</span>
+</a>
+</div>
+</aside>
+<!-- Top App Bar (Header) -->
+<header class="fixed top-0 left-60 right-0 h-14 bg-surface-container-lowest border-b border-surface-dim px-8 flex items-center justify-between z-20">
+<div class="flex items-center gap-4">
+<h1 class="text-headline-sm font-headline-sm font-semibold text-on-surface">Luson Transferencias</h1>
+</div>
+<div class="flex items-center">
+<div class="inline-flex items-center gap-1.5 px-3 py-1 bg-surface-container text-on-surface-variant rounded text-label-sm font-label-sm border border-surface-dim"><span class="w-1.5 h-1.5 rounded-full bg-primary-container"></span><span>Ubicación asignada: <strong class="font-medium text-on-surface">Almacén</strong></span></div>
+</div>
+</header>
+<!-- Main Scrollable Content Canvas -->
+<main class="ml-60 pt-14 min-h-screen">
+<div class="max-w-5xl mx-auto py-6 px-8">
+<!-- Top breadcrumbs & action -->
+<div class="flex items-center justify-between mb-4">
+<nav class="flex items-center text-body-sm font-body-sm text-on-surface-variant gap-2">
+<a class="hover:text-primary hover:underline transition-colors" href="#">← Volver a transferencias</a>
+<span class="text-surface-dim font-bold">·</span>
+<a class="hover:text-primary hover:underline transition-colors" href="#">Volver al inventario</a>
+</nav>
+<button class="inline-flex items-center justify-center px-3 py-1.5 text-body-sm font-label-md text-on-surface bg-surface-container-lowest border border-surface-dim rounded hover:bg-surface-container-low transition-colors duration-150" type="button">
+          Ver historial
+        </button>
+</div>
+<!-- Page Heading -->
+<div class="mb-6 flex flex-col gap-1">
+<div class="flex items-center gap-3">
+<h1 class="text-headline-lg font-headline-lg text-on-surface tracking-tight">TR-014</h1>
+<span class="inline-flex items-center px-2.5 py-0.5 rounded text-caption font-label-sm font-medium bg-emerald-50 text-emerald-800 border border-emerald-200">
+            Recibida
+          </span>
+</div>
+<p class="text-body-sm font-body-sm text-on-surface-variant">
+          Solicitud de stock · Almacén → Sucursal B
+        </p>
+</div>
+<!-- 3. MAIN TRANSFER PRODUCTS TABLE (Card) -->
+<section class="bg-surface-container-lowest border border-surface-dim rounded-lg p-5 mb-6 shadow-none">
+<!-- Card Header -->
+<div class="flex flex-col sm:flex-row sm:items-start justify-between pb-4 border-b border-surface-dim gap-3">
+<div>
+<h2 class="text-headline-sm font-headline-sm text-on-surface">Productos de la transferencia</h2>
+<p class="text-caption font-caption text-on-surface-variant mt-0.5">
+              Recepción confirmada · 2 variantes · 2 baterías · Cantidades registradas en el comprobante de recepción
+            </p>
+</div>
+<span class="self-start inline-flex items-center px-2.5 py-1 rounded text-caption font-label-sm font-medium border border-emerald-300 text-emerald-800 bg-emerald-50/50 whitespace-nowrap">
+            Sin discrepancias
+          </span>
+</div>
+<!-- Table -->
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="border-b border-surface-dim text-caption font-label-sm text-on-surface-variant uppercase tracking-wider">
+<th class="py-2.5 px-3 font-semibold">BATERÍA</th>
+<th class="py-2.5 px-3 font-semibold text-right">ENVIADAS</th>
+<th class="py-2.5 px-3 font-semibold text-right">RECIBIDAS</th>
+<th class="py-2.5 px-3 font-semibold text-right">CRÉDITO EN DESTINO</th>
+<th class="py-2.5 px-3 font-semibold text-center">DIFERENCIA</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-surface-dim text-body-sm font-body-sm text-on-surface">
+<!-- Row 1 -->
+<tr class="hover:bg-surface-container-low transition-colors duration-150">
+<td class="py-3 px-3 font-medium">CAR NS40ZL · 35Ah · Izquierda [L]</td>
+<td class="py-3 px-3 text-right font-tabular-data text-body-sm">1</td>
+<td class="py-3 px-3 text-right font-tabular-data text-body-sm">1</td>
+<td class="py-3 px-3 text-right font-tabular-data text-body-sm">1</td>
+<td class="py-3 px-3 text-center">
+<span class="inline-flex items-center text-caption font-label-sm font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                    Sin diferencias
+                  </span>
+</td>
+</tr>
+<!-- Row 2 -->
+<tr class="hover:bg-surface-container-low transition-colors duration-150">
+<td class="py-3 px-3 font-medium">CAR NS40ZL · 35Ah · Derecha [R]</td>
+<td class="py-3 px-3 text-right font-tabular-data text-body-sm">1</td>
+<td class="py-3 px-3 text-right font-tabular-data text-body-sm">1</td>
+<td class="py-3 px-3 text-right font-tabular-data text-body-sm">1</td>
+<td class="py-3 px-3 text-center">
+<span class="inline-flex items-center text-caption font-label-sm font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                    Sin diferencias
+                  </span>
+</td>
+</tr>
+</tbody>
+<!-- Total Row -->
+<tfoot>
+<tr class="bg-surface-container-low/60 border-t border-surface-dim font-label-md text-on-surface">
+<td class="py-2.5 px-3 font-semibold">Total (2 variantes · 2 baterías)</td>
+<td class="py-2.5 px-3 text-right font-semibold font-tabular-data text-body-sm">2</td>
+<td class="py-2.5 px-3 text-right font-semibold font-tabular-data text-body-sm">2</td>
+<td class="py-2.5 px-3 text-right font-semibold font-tabular-data text-body-sm">2</td>
+<td class="py-2.5 px-3 text-center">
+<span class="inline-flex items-center text-caption font-label-sm font-medium text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                    Sin diferencias
+                  </span>
+</td>
+</tr>
+</tfoot>
+</table>
+</div>
+<!-- Collapsed disclosure at bottom of card -->
+<div class="mt-4 pt-3 border-t border-surface-dim flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-caption font-caption text-on-surface-variant">
+<button class="text-left text-on-surface-variant hover:text-on-surface flex items-center gap-1 transition-colors" type="button">
+<span>▸</span>
+<span class="underline">Ver recepción original</span>
+<span class="text-outline">· Registro original conservado sin modificaciones</span>
+</button>
+<span class="text-outline">
+            Estas cantidades corresponden a los registros de esta transferencia, no al stock físico actual de Sucursal B.
+          </span>
+</div>
+</section>
+<!-- 4. MANAGEMENT SECTION (GESTIONES) -->
+<section class="space-y-3">
+<!-- Section Header & Toggles -->
+<div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+<h2 class="text-headline-md font-headline-md text-on-surface font-semibold">Gestiones</h2>
+<div class="inline-flex p-0.5 bg-surface-container-high rounded border border-surface-dim">
+<button class="px-3.5 py-1.5 bg-primary-container text-on-primary rounded text-body-sm font-label-md flex items-center gap-2 shadow-none" type="button">
+<span class="material-symbols-outlined text-base leading-none" data-icon="edit_note">edit_note</span>
+<span>Corregir conteo</span>
+</button>
+<button class="px-3.5 py-1.5 text-on-surface-variant hover:text-on-surface text-body-sm font-label-md flex items-center gap-2 transition-colors" type="button">
+<span class="material-symbols-outlined text-base leading-none" data-icon="undo">undo</span>
+<span>Restituciones de origen</span>
+</button>
+</div>
+</div>
+<!-- Concise neutral helper line (No large alert card) -->
+<p class="text-caption font-caption text-on-surface-variant flex items-center gap-1.5 my-2"><span class="material-symbols-outlined text-sm leading-none text-outline" data-icon="info">info</span><span>La propuesta todavía no modifica el conteo vigente ni las existencias.</span></p>
+<!-- 5. COMPACT MANAGEMENT TABLE -->
+<div class="bg-surface-container-lowest border border-surface-dim rounded-lg overflow-hidden shadow-none">
+<div class="overflow-x-auto">
+<table class="w-full text-left border-collapse">
+<thead>
+<tr class="bg-surface-container-low border-b border-surface-dim text-caption font-label-sm text-on-surface-variant uppercase tracking-wider"><th class="py-2.5 px-4 font-semibold">PRODUCTO</th><th class="py-2.5 px-4 font-semibold text-right">CONTEO VIGENTE</th><th class="py-2.5 px-4 font-semibold text-right">CRÉDITO EN DESTINO</th><th class="py-2.5 px-4 font-semibold text-center">ESTADO / HISTORIAL</th><th class="py-2.5 px-4 font-semibold text-right">ACCIÓN</th></tr>
+</thead>
+<tbody class="divide-y divide-surface-dim text-body-sm font-body-sm text-on-surface"><tr class="bg-surface-container-lowest hover:bg-surface-container-low/40 transition-colors"><td class="py-3.5 px-4 font-medium text-on-surface"><div class="font-medium">CAR NS40ZL · 35Ah · Izquierda [L]</div></td><td class="py-3.5 px-4 text-right font-tabular-data"><span class="font-semibold text-on-surface">1 unidad</span></td><td class="py-3.5 px-4 text-right font-tabular-data">1 unidad</td><td class="py-3.5 px-4 text-center"><div class="inline-flex flex-col items-center gap-1"><span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-caption font-label-sm font-medium bg-amber-50 text-amber-800 border border-amber-300"><span class="material-symbols-outlined text-sm leading-none" data-icon="schedule">schedule</span><span>Pendiente de revisión</span></span><span class="text-caption font-caption text-on-surface-variant">Propuesto: <strong class="text-primary font-semibold">2 unidades</strong> (1 → 2)</span></div></td><td class="py-3.5 px-4 text-right"><div class="inline-flex items-center gap-2 justify-end"><button class="inline-flex items-center justify-center px-3.5 py-2 text-label-md font-label-md text-on-primary bg-primary-container rounded hover:bg-primary transition-colors" type="button">Aceptar corrección</button><button class="inline-flex items-center justify-center px-3.5 py-2 text-label-md font-label-md text-on-surface bg-surface-container-lowest border border-outline rounded hover:bg-surface-container-low transition-colors" type="button">Rechazar corrección</button></div></td></tr><tr class="bg-surface-container-low/30"><td class="py-3.5 px-6 border-b border-surface-dim" colspan="5"><div class="bg-surface-container-lowest border border-surface-dim rounded-lg p-4 space-y-3"><div class="flex flex-col sm:flex-row sm:items-center justify-between pb-2 border-b border-surface-dim gap-2"><div class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-amber-500"></span><span class="text-label-md font-label-md font-semibold text-on-surface">Propuesta de corrección recibida · Sucursal B</span></div><span class="text-caption font-caption text-outline">Propuesto el 20 Oct 2026 · 20:05 hora Bolivia por Operador de Sucursal B</span></div><div class="grid grid-cols-1 sm:grid-cols-2 gap-3 py-1 text-body-sm font-body-sm"><div class="bg-surface-container-low/60 rounded p-2.5 border border-surface-dim/60"><div class="text-caption font-label-sm uppercase tracking-wider text-on-surface-variant font-semibold mb-0.5">Cambio solicitado</div><div class="text-on-surface font-tabular-data"><span class="line-through text-outline">1 unidad</span> <span class="text-on-surface-variant">→</span> <span class="font-bold text-primary">2 unidades</span> <span class="text-caption font-medium text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200 ml-1">+1 propuesta</span></div></div><div class="bg-surface-container-low/60 rounded p-2.5 border border-surface-dim/60"><div class="text-caption font-label-sm uppercase tracking-wider text-on-surface-variant font-semibold mb-0.5">Motivo declarado</div><div class="text-on-surface italic">«Llegaron 2, cometí error de conteo»</div></div></div><div class="flex flex-col sm:flex-row sm:items-center justify-between pt-2 border-t border-surface-dim gap-2 text-caption font-caption text-on-surface-variant"><div class="flex items-center gap-1.5 text-outline"><span class="material-symbols-outlined text-sm leading-none" data-icon="info">info</span><span>La aceptación o rechazo requiere justificación antes de confirmar. Esta pantalla no ejecuta cambios directos.</span></div><button class="text-left text-on-surface-variant hover:text-primary flex items-center gap-1 transition-colors self-start sm:self-auto font-medium" type="button"><span>▸</span><span class="underline">Ver historial previo (2 correcciones aplicadas)</span></button></div></div></td></tr><tr class="bg-surface-container-lowest hover:bg-surface-container-low/40 transition-colors"><td class="py-3 px-4 font-medium text-on-surface">CAR NS40ZL · 35Ah · Derecha [R]</td><td class="py-3 px-4 text-right font-tabular-data">1 unidad</td><td class="py-3 px-4 text-right font-tabular-data">1 unidad</td><td class="py-3 px-4 text-center"><span class="text-caption font-caption text-outline italic">Sin correcciones</span></td><td class="py-3 px-4 text-right"><span class="text-caption font-label-sm text-outline italic">Sin propuestas pendientes</span></td></tr></tbody>
+</table>
+</div>
+</div>
+</section>
+<!-- Bottom Spacer to ensure comfortable natural scroll -->
+<div class="h-12"></div>
+</div>
+</main>
+</body></html>
