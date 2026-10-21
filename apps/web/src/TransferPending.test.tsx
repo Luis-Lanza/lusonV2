@@ -476,7 +476,9 @@ describe('C4b App correction settlement with real inventory controller', () => {
     expect(correctionPosts(f)).toHaveLength(0);
     const confirm = screen.getByRole('button', { name: action === 'accept' ? 'Confirmar aceptación' : 'Confirmar rechazo' });
     fireEvent.click(confirm); fireEvent.click(confirm);
-    await screen.findByText(`${action === 'accept' ? 'Aplicada' : 'Rechazada'} · Revisión 1`);
+    await screen.findByText((_, element) => element?.matches('.count-revision-table tr') === true
+      && element.children[0]?.textContent === 'Revisión 1'
+      && element.children[2]?.textContent === (action === 'accept' ? 'Aplicada' : 'Rechazada'));
     expect(correctionPosts(f)).toHaveLength(1);
     const input = JSON.parse(String(correctionPosts(f)[0][1]?.body)) as CountDecisionInput;
     expect(input).toEqual({ variant_id: 1, operation_key: expect.stringMatching(/^[a-f0-9]{32}$/), expected_revision: '1', reason: '  Recuento exacto  ' });
@@ -594,7 +596,9 @@ describe('C4b correction authority and operation boundaries', () => {
     expect(historyListener).toBeTypeOf('function');
     act(() => historyListener());
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(screen.getByText('Pendiente · Revisión 1')).toBeInTheDocument();
+    expect(screen.getByText((_, element) => element?.matches('.count-revision-table tr') === true
+      && element.children[0]?.textContent === 'Revisión 1'
+      && element.children[2]?.textContent === 'Pendiente')).toBeInTheDocument();
     expect(screen.queryByRole('form', { name: 'Editar corrección' })).not.toBeInTheDocument();
     expect(correctionPosts(f)).toHaveLength(0);
     expect(calls(f, true)).toHaveLength(1);
@@ -674,7 +678,7 @@ describe('C4b correction authority and operation boundaries', () => {
     view.unmount(); render(f.element()); await correctionLoaded();
     expect(screen.getByRole('article', { name: 'Recuperación 1' })).toHaveTextContent('Recuento exacto');
     expect(correctionPosts(f)).toHaveLength(1);
-    expect(within(screen.getByRole('article', { name: 'TOYO · Exact-1 · 75.125 Ah · L' })).queryByRole('button', { name: 'Proponer corrección' })).not.toBeInTheDocument();
+    expect(within(screen.getByRole('rowgroup', { name: 'TOYO · Exact-1 · 75.125 Ah · L' })).queryByRole('button', { name: 'Proponer corrección' })).not.toBeInTheDocument();
     fail = false; fireEvent.click(screen.getByRole('button', { name: 'Reintentar carga exacta' }));
     await waitFor(() => expect(f.controller.confirmTransferCountCorrection).toHaveBeenCalledTimes(1));
     expect(correctionPosts(f)).toHaveLength(2); expect(correctionPosts(f)[1][1]?.body).toBe(captured);

@@ -50,6 +50,33 @@ function draft(actual = '9007199254740994', reason = '  Conteo exacto  ') {
 }
 function review() { fireEvent.click(screen.getByRole('button', { name: /^Revisar (corrección|aceptación|rechazo)$/ })); return screen.getByRole('dialog'); }
 const decisionReason = () => screen.getByRole('textbox', { name: /^Motivo de (aceptación|rechazo)/ });
+it('uses one shared management table and plain empty history rather than product cards', () => {
+  const f = fixture(); render(<TransferCountCorrections {...f.props} />);
+  const table = screen.getByRole('table', { name: 'Gestión de conteo' });
+  expect(within(table).getAllByRole('columnheader').map(h => h.textContent)).toEqual([
+    'Producto', 'Conteo vigente', 'Crédito en destino', 'Historial', 'Acción',
+  ]);
+  const row = within(table).getByRole('rowgroup', { name: 'TOYO · Exact · 75.125 Ah · L' });
+  expect(within(row).getByText('Sin correcciones')).toBeVisible();
+  expect(within(row).queryByRole('button', { name: /Historial/ })).toBeNull();
+  expect(row.querySelector('details')).toBeNull();
+  expect(screen.getByRole('heading', { name: 'Conteo efectivo confirmado' })).toHaveClass('sr-only');
+  expect(screen.queryByRole('article')).toBeNull();
+});
+it('shows proven before counts and keeps application evidence behind revision detail', () => {
+  const f = fixture();
+  Object.assign(f.corrections.snapshot!.lines[0], { proposals: [{ ...proposal('applied'), revision: 3n, base_revision: 0n }, proposal()] });
+  render(<TransferCountCorrections {...f.props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Historial completo · 2 revisiones' }));
+  const history = screen.getByRole('table', { name: 'Historial de TOYO · Exact · 75.125 Ah · L' });
+  expect(within(history).getByText(`${big} → 7`)).toBeVisible();
+  expect(within(history).getByText('7 → 7')).toBeVisible();
+  expect(within(history).getByText(/Aplicación: crédito 7/)).not.toBeVisible();
+  fireEvent.click(within(history).getByRole('button', { name: 'Ver detalle de revisión 3' }));
+  expect(within(history).getByText(/Aplicación: crédito 7/)).toBeVisible();
+  expect(within(history).getByText('Motivo de decisión: Decisión exacta')).toBeVisible();
+  for (const method of ['refresh', 'recover', 'retry', 'propose', 'decide'] as const) expect(f.corrections[method]).not.toHaveBeenCalled();
+});
 it('describes the received correction context with a flow-neutral transfer noun', () => {
   const f = fixture(); render(<TransferCountCorrections {...f.props} />);
   expect(within(screen.getByRole('region', { name: 'Correcciones de conteo' })).getByText(
@@ -240,17 +267,20 @@ it('keeps count evidence secondary while exposing the exact pending reason befor
   ] });
   const before = structuredClone(f.corrections.snapshot);
   render(<TransferCountCorrections {...f.props} />);
-  const card = screen.getByRole('article', { name: 'TOYO · Exact · 75.125 Ah · L' });
+  const card = screen.getByRole('rowgroup', { name: 'TOYO · Exact · 75.125 Ah · L' });
   const reason = card.querySelector('.count-pending .count-evidence');
   expect(reason?.textContent).toBe(raw); expect(reason).toBeVisible();
-  const history = within(card).getByText('Historial completo · 2 revisiones').closest('details')!;
+  const historyToggle = within(card).getByRole('button', { name: 'Historial completo · 2 revisiones' });
+  const history = document.getElementById(historyToggle.getAttribute('aria-controls')!)!;
   const effect = within(card).getByText('Efecto aplicado en destino: +2');
   const technical = within(card).getByText('Evidencia técnica del conteo');
   expect(effect.closest('.count-history-disclosure')).toBe(history);
   expect(technical.closest('.count-history-disclosure')).toBe(history);
   expect(effect).not.toBeVisible(); expect(technical).not.toBeVisible();
-  fireEvent.click(history.firstElementChild!);
-  expect(effect).toBeVisible(); expect(technical).toBeVisible();
+  fireEvent.click(historyToggle);
+  expect(effect).not.toBeVisible(); expect(technical).toBeVisible();
+  fireEvent.click(within(card).getByRole('button', { name: 'Ver detalle de revisión 3' }));
+  expect(effect).toBeVisible();
   expect(history).toHaveTextContent('Aplicación: crédito 7 · Efecto +2');
   expect(history.querySelector('time')).toHaveAttribute('datetime', stamp);
   expect(f.corrections.snapshot).toEqual(before);
@@ -261,7 +291,7 @@ it.each([2, 3])('summarizes pending count once for endpoint %i without stock inf
   Object.assign(f.corrections.snapshot!.lines[0], { effective_actual: big, proposals: [proposal()] });
   const before = structuredClone(f.corrections.snapshot);
   render(<TransferCountCorrections {...f.props} />);
-  const card = screen.getByRole('article', { name: 'TOYO · Exact · 75.125 Ah · L' });
+  const card = screen.getByRole('rowgroup', { name: 'TOYO · Exact · 75.125 Ah · L' });
   expect(within(card).getByText(`Conteo vigente: ${big} → Propuesto: 7`)).toBeVisible();
   expect(within(card).getByText('La propuesta pendiente no modifica el conteo ni el stock.')).toBeVisible();
   expect(within(card).getByText(actor === 2 ? 'Esperando revisión de Sucursal B' : 'Propuesta de Sucursal A · Requiere tu revisión')).toBeVisible();
@@ -274,15 +304,16 @@ it('keeps revision results secondary and discloses all original audit evidence l
   const f = fixture();
   Object.assign(f.corrections.snapshot!.lines[0], { proposals: [{ ...proposal('applied'), revision: 3n }] });
   render(<TransferCountCorrections {...f.props} />);
-  const summary = screen.getByText('Historial completo · 1 revisión');
-  const history = summary.closest('details')!;
-  expect(history).not.toHaveAttribute('open');
-  expect(within(history).getByText('Aplicada · Revisión 3')).not.toBeVisible();
+  const summary = screen.getByRole('button', { name: 'Historial completo · 1 revisión' });
+  const history = document.getElementById(summary.getAttribute('aria-controls')!)!;
+  expect(summary).toHaveAttribute('aria-expanded', 'false');
+  expect(within(history).getByText('Revisión 3')).not.toBeVisible();
   fireEvent.click(summary);
-  expect(within(history).getByText('Aplicada · Revisión 3')).toBeVisible();
+  expect(within(history).getByText('Revisión 3')).toBeVisible();
+  expect(within(history).getByText('Aplicada')).toBeVisible();
   expect(within(history).getByText('Cantidad 7')).toBeVisible();
   expect(history).not.toHaveTextContent('5 → 7'); // The persisted base credit is not a before count.
-  const detail = within(history).getByText('Motivos y actores de revisión 3');
+  const detail = within(history).getByRole('button', { name: 'Ver detalle de revisión 3' });
   expect(within(history).getByText('Motivo: Reconteo original')).not.toBeVisible();
   fireEvent.click(detail);
   expect(within(history).getByText('Motivo: Reconteo original')).toBeVisible();
@@ -793,7 +824,7 @@ it('keeps captured recovery and exact retry reachable in a collapsed healthy con
 
 it('allows a matching received line and previews capped credit against latest credit without writing', async () => {
   const f = fixture(); render(<TransferCountCorrections {...f.props} />);
-  expect(screen.getByRole('heading', { name: 'Conteo efectivo confirmado' })).toBeInTheDocument();
+  expect(screen.getByRole('table', { name: 'Gestión de conteo' })).toBeInTheDocument();
   draft(); const modal = review();
   expect(modal).toHaveTextContent('9007199254740994');
   expect(modal).toHaveTextContent('Crédito limitado: 9007199254740993');
@@ -895,7 +926,7 @@ it('keeps effective quantities primary and all applied and technical evidence in
     { ...proposal('applied'), revision: 3n }, proposal(),
   ] }] };
   render(<TransferCountCorrections {...f.props} />);
-  const card = screen.getByRole('article', { name: 'TOYO · Exact · 75.125 Ah · L' });
+  const card = screen.getByRole('rowgroup', { name: 'TOYO · Exact · 75.125 Ah · L' });
   const disclosures = Array.from(card.querySelectorAll('details.count-technical'));
   expect(disclosures).toHaveLength(3);
   for (const details of disclosures) {
@@ -903,17 +934,15 @@ it('keeps effective quantities primary and all applied and technical evidence in
     expect(details.firstElementChild?.tagName).toBe('SUMMARY');
     expect(details.firstElementChild).toHaveTextContent('Evidencia técnica');
   }
-  const metrics = card.querySelector('.count-metrics')!;
-  expect(metrics).toHaveTextContent('Cantidad efectiva5');
-  expect(metrics).toHaveTextContent('Crédito efectivo de esta recepción5');
-  expect(metrics).not.toHaveTextContent('Revisión');
+  expect(card.querySelector('[data-label="Conteo vigente"]')).toHaveTextContent('5');
+  expect(card.querySelector('[data-label="Crédito en destino"]')).toHaveTextContent('5');
   const effect = within(card).getByText(/Efecto aplicado en destino: \+2/);
   expect(effect.closest('.count-history-disclosure')).not.toBeNull();
   expect(effect).not.toBeVisible();
-  expect(effect.compareDocumentPosition(disclosures[0])).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-  for (const text of ['Pendiente · Revisión 4', 'Iniciador Sucursal A', 'Motivo: Reconteo original',
+  expect(disclosures[0].compareDocumentPosition(effect)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  for (const text of ['Pendiente', 'Iniciador Sucursal A', 'Motivo: Reconteo original',
     'Aceptada por Sucursal B', 'Motivo de decisión: Decisión exacta', 'Aplicación: crédito 7 · Efecto +2']) {
-    for (const element of within(card).getAllByText(text, { exact: false })) {
+    for (const element of within(card.querySelector('.count-history-disclosure')! as HTMLElement).getAllByText(text, { exact: false })) {
       expect(element.closest('.count-history-disclosure')).not.toBeNull();
     }
   }

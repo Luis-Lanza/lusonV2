@@ -1,6 +1,18 @@
 # Count-only verification
 
-## Parent-requested correction — final current status: partial
+## S2–S4 table correction — current self-verification complete; visual assessment pending
+
+- Product structure: one shared desktop management table, mobile labeled blocks, plain empty-history state, compact revision/result/date rows, secondary detail/technical evidence. Before counts use original receipt at base 0 or an explicitly applied predecessor; otherwise quantity only. Domain handlers/forms unchanged.
+- Structural RED: exit 1, 2 intended failures /171 passes. Focused correction initially 172/173 (selector matched pending overview too), then exit 0, 173 passed.
+- Integrated `cd apps/web && node ../../odd/design/transfer-count-compact/integrated-probe.mjs`: exit 0 after explicitly authorized Chromium-import correction, one attempt. Actual App, synthetic intercepted GETs only, proposer 2/reviewer 1 at 1280/390. Main table above management and contained without document horizontal overflow; current/proposed separation, empty history, revision details, existing forms/focus/Escape, restitution switching and zero writes passed. Eight collapsed/history screenshots `integrated-*-actor-*-*.png`; request evidence in `integrated-results.json`. No visual acceptance claimed.
+- Product `cd apps/web && npm run build`: exit 0, 73 modules; >500 kB advisory only. Product typecheck passed.
+- First full suite: exit 1, 2580 passed/4 failed. Old selectors in TransferPending.test.tsx expected combined result/revision text and product article roles. Human approved exact selector-only scope extension; no product changes were made to satisfy them.
+- Final `cd apps/web && npm test -- src/TransferCountCorrections.test.tsx src/TransferPending.test.tsx`: exit 0, 409 tests /2 files passed.
+- Final `cd apps/web && npm test`: exit 0, 2584 tests /36 files passed.
+- Final `cd apps/web && npm run typecheck`: exit 0, no diagnostics.
+- Last correction changes only three integration selectors, preserving both result/revision checks and absence of proposal action during uncertainty. Prior successful product build and browser results still apply; product bytes unchanged by this selector-only handoff.
+
+## Earlier parent-requested correction — historical partial status
 
 - Moved count technical evidence and applied-effect text into collapsed history without deleting values/dates. Exposed pending proposal reason verbatim before review, using existing safe wrapping.
 - `cd apps/web && npm test -- src/TransferCountCorrections.test.tsx`: RED exit 1 (missing raw pending reason), 170 previous tests passed; final GREEN exit 0, 171 passed.

@@ -1,54 +1,44 @@
-/* Count overview only: keep the main transfer table and other workflows intact. */
-.count-corrections .count-card {
-  padding: 12px 16px;
-  gap: 8px;
-  font-size: 14px;
-  line-height: 1.5;
-}
-.count-corrections .count-overview {
-  display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 2fr) minmax(150px, 1fr);
-  align-items: center;
-  gap: 16px;
-}
-.count-corrections .count-overview h4 { font-size: 15px; }
-.count-corrections .count-overview .count-metrics {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-.count-corrections .count-overview .count-metrics dt { font-size: 14px; }
-.count-corrections .count-overview .count-metrics dd { font-size: 16px; }
-.count-corrections .count-overview .count-actions { justify-content: flex-end; }
-.count-corrections .count-pending {
-  padding: 10px 12px;
-  border: 1px solid #e0bd72;
-  border-radius: 4px;
-  background: #fff9ee;
-}
+/* One count-only management table; never restyle the main transfer table. */
+.count-corrections { gap: 8px; }
+.count-corrections .count-context-note { font-size: 13px; color: var(--muted); }
+.count-corrections .count-management,
+.count-corrections .count-revision-table { width: 100%; table-layout: fixed; border: 1px solid var(--border); background: white; font-size: 14px; }
+.count-corrections .count-management th,
+.count-corrections .count-management td { height: auto; padding: 8px 10px; white-space: normal; overflow-wrap: anywhere; vertical-align: middle; }
+.count-corrections .count-management > thead th:first-child { width: 28%; }
+.count-corrections .count-management > thead th:last-child { width: 24%; }
+.count-corrections .count-management th[scope="row"] { font-size: 14px; font-weight: 500; text-transform: none; letter-spacing: normal; background: white; color: inherit; }
+.count-corrections .count-product-row { border-top: 1px solid var(--border); }
+.count-corrections .count-product-row > td:nth-child(2),
+.count-corrections .count-product-row > td:nth-child(3) { font-variant-numeric: tabular-nums; font-weight: 600; }
+.count-corrections .count-management button { min-height: 44px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: white; color: var(--wine); font: inherit; cursor: pointer; }
+.count-corrections .count-management .count-actions { gap: 6px; }
+.count-corrections .count-pending { padding: 10px 12px; border: 1px solid #e0bd72; border-radius: 4px; background: #fff9ee; font-size: 14px; }
 .count-corrections .count-pending-owner { color: #805100; font-weight: 600; }
-.count-corrections .count-history-disclosure,
-.count-corrections .count-audit { min-width: 0; }
-.count-corrections .count-history-disclosure > summary,
-.count-corrections .count-audit > summary {
-  min-height: 44px;
-  padding: 10px 0;
-  cursor: pointer;
-  color: var(--wine);
-}
+.count-corrections .count-pending .count-review-label { margin-top: 6px; }
+.count-corrections .count-history-disclosure > td { padding: 8px 12px; background: var(--page); }
+.count-corrections .count-history-disclosure > td > p { font-size: 13px; color: var(--muted); }
+.count-corrections .count-revision-table th,
+.count-corrections .count-revision-table td { font-size: 13px; padding: 6px 8px; }
+.count-corrections .count-revision-table th:nth-child(4) { width: 27%; }
+.count-corrections .count-revision-detail > td { background: var(--page); }
+.count-corrections .count-revision-detail p + p { margin-top: 4px; }
+.count-corrections .count-management [hidden] { display: none; }
 .count-corrections summary:focus-visible { outline: 2px solid var(--wine); outline-offset: 2px; }
-.count-corrections .count-history-disclosure > p { color: var(--muted); }
-.count-corrections .count-history { padding-left: 20px; margin-top: 8px; }
-.count-corrections .count-history-overview {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr);
-  gap: 12px;
-  font-variant-numeric: tabular-nums;
-}
+.count-corrections .count-empty-technical { font-size: 13px; }
 @media (max-width: 767px) {
-  .count-corrections .count-card { padding: 12px; }
-  .count-corrections .count-overview,
-  .count-corrections .count-history-overview { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-  .count-corrections .count-overview .count-actions { display: grid; }
+  .count-corrections .count-management,
+  .count-corrections .count-management tbody,
+  .count-corrections .count-management td,
+  .count-corrections .count-management th[scope="row"] { display: block; width: auto; min-width: 0; }
+  .count-corrections .count-management thead { display: none; }
+  .count-corrections .count-management tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .count-corrections .count-management th[scope="row"],
+  .count-corrections .count-management td[colspan],
+  .count-corrections .count-product-row > td:last-child { grid-column: 1 / -1; }
+  .count-corrections .count-management td[data-label]::before { content: attr(data-label); display: block; font-size: 13px; color: var(--muted); font-weight: 400; margin-bottom: 4px; }
+  .count-corrections .count-management .count-actions { display: grid; }
+  .count-corrections .count-revision-table tr { grid-template-columns: minmax(0, 1fr); }
 }
 /* Count-only modal foundation and proposal steps. Other bodies remain separate. */
 .count-corrections .count-backdrop {

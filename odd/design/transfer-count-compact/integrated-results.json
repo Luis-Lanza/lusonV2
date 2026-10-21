@@ -1,0 +1,194 @@
+[
+  {
+    "width": 1280,
+    "actor": 2,
+    "passed": true,
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory/metadata"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      }
+    ],
+    "screenshot": "integrated-1280-actor-2-collapsed.png"
+  },
+  {
+    "width": 1280,
+    "actor": 1,
+    "passed": true,
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory/metadata"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      }
+    ],
+    "screenshot": "integrated-1280-actor-1-collapsed.png"
+  },
+  {
+    "width": 390,
+    "actor": 2,
+    "passed": true,
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory/metadata"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      }
+    ],
+    "screenshot": "integrated-390-actor-2-collapsed.png"
+  },
+  {
+    "width": 390,
+    "actor": 1,
+    "passed": true,
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory/metadata"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      }
+    ],
+    "screenshot": "integrated-390-actor-1-collapsed.png"
+  }
+]

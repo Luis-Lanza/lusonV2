@@ -71,6 +71,13 @@ export default function TransferCountCorrections(props: TransferCountCorrections
   return <CorrectionSection key={serial} {...props}
     isBoundaryCurrent={() => { synchronize(); return serial === boundary.current.serial; }} />;
 }
+function countRevisions(line: CountCorrectionLine) {
+  return <dl className="count-revisions"><div><dt>Revisión de flujo</dt><dd>{line.workflow_revision.toString()}</dd></div>
+    <div><dt>Revisión aplicada</dt><dd>{line.applied_revision.toString()}</dd></div></dl>;
+}
+function countTechnical(line: CountCorrectionLine) {
+  return <details className="count-technical"><summary>Evidencia técnica del conteo</summary>{countRevisions(line)}</details>;
+}
 interface Draft {
   variant: number; action: CountAction; quantity: string; reason: string; trigger: HTMLElement;
 }
@@ -124,6 +131,9 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
   const [consultation, setConsultation] = useState<Consultation | null>(null);
   const [review, setReview] = useState<Review | null>(null);
   const [message, setMessage] = useState('');
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const disclosureID = useId();
+  const toggle = (key: string) => setExpanded(value => ({ ...value, [key]: !value[key] }));
   const dialog = useRef<HTMLDivElement>(null); const cancelButton = useRef<HTMLButtonElement>(null);
   const consultationHeading = useRef<HTMLHeadingElement>(null);
   const headingID = useId(); const quantityID = useId(); const reasonID = useId();
@@ -386,7 +396,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
   }
   return <section className="count-corrections" aria-label="Correcciones de conteo" hidden={!sectionVisible}>
     <h2 ref={contextHeading} tabIndex={-1}>Correcciones de conteo</h2>
-    <p hidden={!routineVisible}>La recepción original es inmutable. La transferencia sigue Recibida; estas correcciones conservan su evidencia original.</p>
+    <p className="count-context-note sr-only" hidden={!routineVisible}>La recepción original es inmutable. La transferencia sigue Recibida; estas correcciones conservan su evidencia original.</p>
     {masked ? <div className="count-recovery"><p role="status">Correcciones no disponibles para esta sesión.</p>
       <button disabled={sending || corrections.busy || recoveryVariant === undefined} onClick={() => {
         if (!mounted.current || !latest.current.isBoundaryCurrent() || !eligible(latest.current)
@@ -402,64 +412,73 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
       {!validSnapshot && <p role="status">Conteo no disponible.</p>}
       {message && !modalActive && <p role="alert">{message}</p>}
       <div className="workflow-routine" hidden={!routineVisible}>
-      {validSnapshot && <h3>Conteo efectivo confirmado</h3>}
+      {validSnapshot && <h3 className="sr-only">Conteo efectivo confirmado</h3>}
+      {validSnapshot && <table className="count-management" aria-label="Gestión de conteo">
+        <thead><tr>{['Producto', 'Conteo vigente', 'Crédito en destino', 'Historial', 'Acción'].map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
       {privateLines.map(line => {
         const unexpected = !record.items.some(i => i.variant_id === line.variant_id);
         const pending = line.proposals.find(p => p.state === 'pending');
-        const applied = line.proposals.find(p => p.revision === line.applied_revision && p.state === 'applied')?.application;
-        return <article className="count-card" key={line.variant_id} aria-label={name(line.variant_id)}>
-          <div className="count-overview">
-          <h4>{name(line.variant_id)}</h4>
-          <dl className="count-metrics"><div><dt>Cantidad efectiva</dt><dd>{line.effective_actual.toString()}</dd></div>
-            <div><dt>Crédito efectivo de esta recepción</dt><dd>{line.effective_credit.toString()}</dd></div></dl>
-          <div className="count-actions">
-            {allowed(line, 'propose') && <button disabled={sending} onClick={e => open(line.variant_id, 'propose', e.currentTarget)}>{pending ? 'Reemplazar propuesta' : 'Proponer corrección'}</button>}
-            {allowed(line, 'accept') && <button disabled={sending || corrections.busy} onClick={e => consult(line.variant_id, e.currentTarget)}>Consultar propuesta</button>}
-          </div>
-          </div>
-          {pending && <div className="count-pending">
+        const historyKey = `history-${line.variant_id}`;
+        const historyID = `${disclosureID}-${historyKey}`;
+        return <tbody key={line.variant_id} aria-label={name(line.variant_id)}>
+          <tr className="count-product-row">
+            <th scope="row">{name(line.variant_id)}</th>
+            <td data-label="Conteo vigente">{line.effective_actual.toString()}</td>
+            <td data-label="Crédito en destino">{line.effective_credit.toString()}</td>
+            <td data-label="Historial">{line.proposals.length ? <button type="button" aria-expanded={!!expanded[historyKey]} aria-controls={historyID}
+              aria-label={`Historial completo · ${line.proposals.length} ${line.proposals.length === 1 ? 'revisión' : 'revisiones'}`}
+              onClick={() => toggle(historyKey)}>{line.proposals.length} {line.proposals.length === 1 ? 'revisión' : 'revisiones'}</button> : 'Sin correcciones'}</td>
+            <td data-label="Acción"><div className="count-actions">
+              {allowed(line, 'propose') && <button disabled={sending} onClick={e => open(line.variant_id, 'propose', e.currentTarget)}>{pending ? 'Reemplazar propuesta' : 'Proponer corrección'}</button>}
+              {allowed(line, 'accept') && <button disabled={sending || corrections.busy} onClick={e => consult(line.variant_id, e.currentTarget)}>Consultar propuesta</button>}
+            </div></td>
+          </tr>
+          {pending && <tr><td colSpan={5}><div className="count-pending">
             <p className="count-pending-owner">{pending.initiator_location_id === owner?.location
               ? `Esperando revisión de ${location(owner.location === record.origin_location_id ? record.destination_location_id : record.origin_location_id)}`
               : `Propuesta de ${location(pending.initiator_location_id)} · Requiere tu revisión`}</p>
             <p>Conteo vigente: {line.effective_actual.toString()} → Propuesto: {pending.actual_quantity.toString()}</p>
-            <p className="count-review-label">Motivo declarado</p>
-            <p className="count-evidence">{pending.reason}</p>
+            <p className="count-review-label">Motivo declarado</p><p className="count-evidence">{pending.reason}</p>
             <p>La propuesta pendiente no modifica el conteo ni el stock.</p>
-          </div>}
-          {unexpected && <p>Solo auditoría: crédito y efecto en stock cero. La procedencia e incorporación se resuelven por separado.</p>}
-          <details className="count-history-disclosure">
-          <summary>Historial completo · {line.proposals.length} {line.proposals.length === 1 ? 'revisión' : 'revisiones'}</summary>
-          <p>Resultado de la corrección; no indica movimiento de stock.</p>
-          {applied && <p>Efecto aplicado en destino: {signed(applied.delta)}</p>}
-          <details className="count-technical">
-            <summary>Evidencia técnica del conteo</summary>
-            <dl className="count-revisions"><div><dt>Revisión de flujo</dt><dd>{line.workflow_revision.toString()}</dd></div>
-              <div><dt>Revisión aplicada</dt><dd>{line.applied_revision.toString()}</dd></div></dl>
-          </details>
-          {!line.proposals.length && <p>Sin correcciones anteriores.</p>}
-          <ol className="count-history">{line.proposals.map(p => <li key={p.revision.toString()}>
-            <div className="count-history-overview">
-              <strong>{states[p.state]} · Revisión {p.revision.toString()}</strong>
-              <span>Cantidad {p.actual_quantity.toString()}</span>
-              <TransferDate value={p.recorded_at} />
-            </div>
-            <details className="count-audit"><summary>Motivos y actores de revisión {p.revision.toString()}</summary>
-            <p>Iniciador {location(p.initiator_location_id)}</p>
-            <p className="count-evidence">Motivo: {p.reason}</p>
-            {p.decision && <><p>{p.decision.accepted ? 'Aceptada' : 'Rechazada'} por {location(p.decision.actor_location_id)} · <TransferDate value={p.decision.recorded_at} /></p>
-              <p className="count-evidence">Motivo de decisión: {p.decision.reason}</p></>}
-            </details>
-            {p.application && <p>Aplicación: crédito {p.application.effective_credit.toString()} · Efecto {signed(p.application.delta)} · <TransferDate value={p.application.recorded_at} /></p>}
-            <details className="count-technical">
-              <summary>Evidencia técnica de revisión {p.revision.toString()}</summary>
-              <p>Base {p.base_revision.toString()} · Crédito base {p.base_credit.toString()}</p>
-              <p>Clave {p.operation_key}</p>
-              {p.decision && <p>Clave de decisión {p.decision.operation_key}</p>}
-            </details>
-          </li>)}</ol>
-          </details>
-        </article>;
+          </div></td></tr>}
+          {unexpected && <tr><td colSpan={5}>Solo auditoría: crédito y efecto en stock cero. La procedencia e incorporación se resuelven por separado.</td></tr>}
+          {!!line.proposals.length && <tr hidden={!expanded[historyKey]} id={historyID} className="count-history-disclosure"><td colSpan={5}>
+            <p>Resultado de la corrección; no indica movimiento de stock.</p>
+            {countTechnical(line)}
+            <table className="count-revision-table" aria-label={`Historial de ${name(line.variant_id)}`}>
+              <thead><tr>{['Revisión', 'Cambio de conteo', 'Resultado', 'Fecha', 'Detalle'].map(label => <th key={label} scope="col">{label}</th>)}</tr></thead>
+              {line.proposals.map(p => {
+                const base = p.base_revision === 0n && record.status === 'received'
+                  ? record.receipt.items.find(i => i.variant_id === line.variant_id)?.actual_quantity
+                  : line.proposals.find(prior => prior.revision === p.base_revision && prior.revision < p.revision && prior.state === 'applied')?.actual_quantity;
+                const detailKey = `${line.variant_id}-${p.revision}`; const detailID = `${disclosureID}-${detailKey}`;
+                return <tbody key={p.revision.toString()}>
+                  <tr><th scope="row">Revisión {p.revision.toString()}</th>
+                    <td data-label="Cambio de conteo">{base === undefined ? `Cantidad ${p.actual_quantity}` : `${base} → ${p.actual_quantity}`}</td>
+                    <td data-label="Resultado">{states[p.state]}</td><td data-label="Fecha"><TransferDate value={p.recorded_at} /></td>
+                    <td><button type="button" aria-label={`Ver detalle de revisión ${p.revision}`} aria-expanded={!!expanded[detailKey]} aria-controls={detailID} onClick={() => toggle(detailKey)}>Ver detalle</button></td></tr>
+                  <tr hidden={!expanded[detailKey]} id={detailID} className="count-revision-detail"><td colSpan={5}>
+                    <p>Iniciador {location(p.initiator_location_id)}</p><p className="count-evidence">Motivo: {p.reason}</p>
+                    {p.decision && <><p>{p.decision.accepted ? 'Aceptada' : 'Rechazada'} por {location(p.decision.actor_location_id)} · <TransferDate value={p.decision.recorded_at} /></p>
+                      <p className="count-evidence">Motivo de decisión: {p.decision.reason}</p></>}
+                    {p.application && <><p>Aplicación: crédito {p.application.effective_credit.toString()} · Efecto {signed(p.application.delta)} · <TransferDate value={p.application.recorded_at} /></p>
+                      {p.revision === line.applied_revision && p.state === 'applied' && <p>Efecto aplicado en destino: {signed(p.application.delta)}</p>}</>}
+                    <details className="count-technical"><summary>Evidencia técnica de revisión {p.revision.toString()}</summary>
+                      <p>Base {p.base_revision.toString()} · Crédito base {p.base_credit.toString()}</p><p>Clave {p.operation_key}</p>
+                      {p.decision && <p>Clave de decisión {p.decision.operation_key}</p>}
+                    </details>
+                  </td></tr>
+                </tbody>;
+              })}
+            </table>
+          </td></tr>}
+        </tbody>;
       })}
+      </table>}
+      {privateLines.some(line => !line.proposals.length) && <details className="count-technical count-empty-technical">
+        <summary>Evidencia técnica del conteo</summary>
+        {privateLines.filter(line => !line.proposals.length).map(line => <div key={line.variant_id}><p>{name(line.variant_id)}</p>{countRevisions(line)}</div>)}
+      </details>}
       </div>
       {attempts.map(a => <article className="count-recovery" key={a.payload.variant_id} aria-label={`Recuperación ${a.payload.variant_id}`}>
         <h3>{phases[a.phase]} · {name(a.payload.variant_id)}</h3>
