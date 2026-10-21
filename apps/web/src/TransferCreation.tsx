@@ -335,7 +335,13 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
         {stale && visible && <p className="message" role="status">Disponibilidad desactualizada: se conserva la última consulta completa.</p>}
         {error && <p className="message" role="alert">{error}</p>}
         <button id="creation-retry" type="button" className="creation-retry" onClick={() => { if (current()) read.current('manual'); }}>Reintentar catálogo</button>
-        <div className="creation-table"><table><caption className="sr-only">Catálogo de {sourceName}</caption><thead><tr>{['Batería', 'Polaridad', 'Disponible', 'Cantidad', 'Acción'].map(text => <th key={text} scope="col">{text}</th>)}</tr></thead>
+        <div className="creation-table" onFocusCapture={event => {
+          const target = event.target;
+          if ((target instanceof HTMLInputElement || target instanceof HTMLButtonElement)
+            && typeof target.scrollIntoView === 'function') {
+            target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+          }
+        }}><table><caption className="sr-only">Catálogo de {sourceName}</caption><thead><tr>{['Batería', 'Polaridad', 'Disponible', 'Cantidad', 'Acción'].map(text => <th key={text} scope="col">{text}</th>)}</tr></thead>
           {groupItems(pageRows).map(group => <tbody key={group[0].catalog_entry_id} className="creation-model-group" aria-label={`${group[0].brand} · ${group[0].model} · ${group[0].capacity_ah} Ah`}>
           <tr className="creation-model-heading"><td colSpan={5}><strong>{group[0].brand} · {group[0].model}</strong><span>{group[0].capacity_ah} Ah</span><small>{group.length} {group.length === 1 ? 'variante' : 'variantes'}</small></td></tr>
           {group.map(row => {

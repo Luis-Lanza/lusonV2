@@ -187,7 +187,35 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 }
 
 /* Creation workspace only: branch desktop shell and existing inventory stay intact. */
-.transfer-creation { display: flex; flex-direction: column; gap: 16px; max-width: 1400px; width: 100%; margin: 0 auto; }
+.transfer-creation { display: flex; flex-direction: column; gap: 16px; min-width: 0; max-width: 1400px; width: 100%; margin: 0 auto; }
+.transfer-creation > .creation-back,
+.transfer-creation .creation-flow > select,
+.transfer-creation .creation-filters input,
+.transfer-creation .creation-filters > label > select,
+.transfer-creation .creation-catalog > .creation-retry,
+.transfer-creation .creation-table td input,
+.transfer-creation .creation-table td button,
+.transfer-creation .creation-pager > button,
+.transfer-creation .creation-stepper > button,
+.transfer-creation .creation-stepper > input,
+.transfer-creation .creation-cart .creation-remove,
+.transfer-creation .creation-cart > button {
+  box-sizing: border-box;
+  min-width: 44px;
+  min-height: 44px;
+  flex-shrink: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.transfer-creation > .creation-back { max-width: 100%; }
+.transfer-creation > h1, .transfer-creation > p,
+.transfer-creation .creation-workspace { overflow-wrap: anywhere; }
+.transfer-creation .creation-route-controls > *,
+.transfer-creation .creation-filters > label,
+.transfer-creation .creation-catalog,
+.transfer-creation .creation-cart { min-width: 0; }
+.transfer-creation .creation-workspace .creation-cart { overflow-x: auto; }
+.transfer-creation .creation-cart > * { min-width: 180px; }
 .transfer-creation p { font-size: 12px; line-height: 1.6; color: var(--muted); }
 .transfer-creation h2 { font-size: 16px; font-weight: 700; }
 .transfer-creation h3 { font-size: 13px; font-weight: 600; margin: 0; }
@@ -208,7 +236,7 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .transfer-creation .creation-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
 .transfer-creation .creation-catalog, .transfer-creation .creation-cart { background: white; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .transfer-creation .creation-catalog > header { padding: 16px; border-bottom: 1px solid var(--border); }
-.transfer-creation .creation-filters { display: grid; grid-template-columns: 5fr 4fr 3fr; gap: 10px; margin-top: 14px; }
+.transfer-creation .creation-filters { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 4fr) minmax(0, 3fr); gap: 10px; margin-top: 14px; }
 .transfer-creation .creation-filters input, .transfer-creation .creation-filters select { width: 100%; }
 .transfer-creation .creation-table { overflow-x: auto; }
 .transfer-creation .creation-table .creation-model-heading { display: none; }
@@ -219,19 +247,19 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .transfer-creation .creation-table td:nth-child(3), .transfer-creation .creation-table th:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; }
 .transfer-creation .creation-table td input { width: 64px; font-variant-numeric: tabular-nums; }
 .transfer-creation .creation-selected { margin-top: 4px; }
-.transfer-creation .creation-table td:last-child button { white-space: nowrap; }
+.transfer-creation .creation-table td:last-child button { white-space: normal; overflow-wrap: anywhere; }
 .transfer-creation .creation-pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px; background: var(--page); font-size: 11px; }
 .transfer-creation .creation-pager > span:first-child { margin-right: auto; }
-.transfer-creation .creation-retry { margin: 8px 16px; font-size: 12px; }
+.transfer-creation .creation-retry { margin: 8px 16px; max-width: calc(100% - 32px); font-size: 12px; }
 .transfer-creation .creation-cart { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
 .transfer-creation .creation-cart > header { display: flex; gap: 8px; justify-content: space-between; align-items: start; }
 .transfer-creation .creation-cart > header p { background: var(--tint); color: var(--wine); padding: 2px 6px; white-space: nowrap; }
 .transfer-creation .creation-cart article { position: relative; border: 0; border-top: 1px solid var(--border); border-radius: 0; padding: 12px 0 0; display: grid; gap: 4px; }
 .transfer-creation .creation-cart article h3 { padding-right: 54px; }
 .transfer-creation .creation-cart .creation-remove { position: absolute; right: 0; top: 6px; border: 0; background: transparent; color: var(--muted); padding: 6px; font-size: 11px; }
-.transfer-creation .creation-stepper { display: flex; gap: 4px; justify-self: end; margin-top: 4px; max-width: 100%; }
-.transfer-creation .creation-stepper input { width: 84px; min-width: 0; text-align: center; font-variant-numeric: tabular-nums; }
-.transfer-creation .creation-stepper button { min-width: 32px; padding: 6px; }
+.transfer-creation .creation-stepper { display: flex; gap: 4px; justify-self: end; margin-top: 4px; min-width: 180px; }
+.transfer-creation .creation-stepper input { width: 84px; min-width: 84px; flex: 0 0 84px; text-align: center; font-variant-numeric: tabular-nums; }
+.transfer-creation .creation-stepper button { min-width: 44px; flex: 0 0 44px; padding: 6px; }
 .transfer-creation .creation-total { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; border-top: 1px solid var(--border); padding-top: 12px; }
 .transfer-creation .creation-total strong { color: var(--wine); font-size: 18px; overflow-wrap: anywhere; }
 .transfer-creation .creation-draft-notice { padding: 8px; background: var(--page); border: 1px solid var(--border); border-radius: 4px; }
@@ -248,14 +276,15 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .transfer-creation .creation-breadcrumb { display: none; }
   .transfer-creation .creation-route-controls { grid-template-columns: minmax(0, 1fr); gap: 12px; }
   .transfer-creation .creation-route > div { flex: 1; min-width: 0; }
-  .transfer-creation .creation-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .transfer-creation .creation-filters { grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr)); }
   .transfer-creation .creation-filters label:first-child { grid-column: 1 / -1; }
   .transfer-creation .creation-filters select { min-width: 0; }
-  .transfer-creation .creation-table { overflow: visible; padding: 0 12px 12px; }
+  .transfer-creation .creation-table { overflow-x: auto; padding: 0 12px 12px; }
   .transfer-creation .creation-table table, .transfer-creation .creation-table tbody { display: block; width: 100%; min-width: 0; }
+  .transfer-creation .creation-table table { min-width: 264px; }
   .transfer-creation .creation-table thead { display: none; }
   .transfer-creation .creation-table .creation-model-group { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 12px; background: white; }
-  .transfer-creation .creation-table tbody tr { display: grid; grid-template-columns: 48px minmax(0, 1fr) 90px; padding: 10px 0; gap: 6px 8px; border-bottom: 1px solid var(--border); }
+  .transfer-creation .creation-table tbody tr { display: grid; grid-template-columns: 48px minmax(64px, 1fr) 90px; padding: 10px 0; gap: 6px 8px; border-bottom: 1px solid var(--border); }
   .transfer-creation .creation-table tbody tr:last-child { border-bottom: 0; padding-bottom: 0; }
   .transfer-creation .creation-table tbody td { display: block; border: 0; padding: 0; min-width: 0; text-align: left; white-space: normal; overflow-wrap: anywhere; }
   .transfer-creation .creation-table .creation-product { display: none; }
@@ -271,6 +300,45 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .transfer-creation .creation-table td:last-child:not([colspan]) { grid-column: 3; grid-row: 1 / 3; align-self: center; }
   .transfer-creation .creation-table td:last-child button { width: 100%; padding: 6px; }
   .transfer-creation .creation-pager > span:first-child { flex-basis: 100%; }
+}
+
+/* Native creation controls: retain shell geometry and scroll oversized content locally. */
+.transfer-creation .creation-dialog button,
+.transfer-creation > .creation-recovery button,
+.transfer-review.review-presubmit button {
+  min-width: 44px;
+  min-height: 44px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.transfer-creation > .creation-recovery { min-width: 0; overflow-wrap: anywhere; }
+.transfer-creation > .creation-recovery button { max-width: 100%; margin-right: 0; }
+.transfer-creation .creation-dialog button { max-width: 100%; }
+.transfer-creation :is(.creation-workspace, .creation-dialog, .creation-recovery) :is(button, input, select),
+.transfer-creation > .creation-back,
+.transfer-review.review-presubmit button { scroll-margin-block: 80px; }
+.transfer-creation :is(.creation-workspace, .creation-dialog, .creation-recovery) :is(button, input, select):focus-visible,
+.transfer-creation > .creation-back:focus-visible,
+.transfer-review.review-presubmit button:focus-visible { outline-offset: -2px; }
+.transfer-creation .creation-workspace button.primary:focus-visible,
+.transfer-review.review-presubmit button.primary:focus-visible { outline-color: white; }
+.transfer-creation .creation-table { scroll-padding-block: 8px; }
+.transfer-creation .creation-table input,
+.transfer-creation .creation-table button { scroll-margin-inline: 1px; }
+.transfer-creation .creation-table table { min-width: max-content; }
+.transfer-creation .creation-pager > button { max-width: 100%; }
+@media (min-width: 601px) {
+  .transfer-creation .creation-table td:last-child button { max-width: 100%; }
+}
+@media (max-width: 767px) {
+  .warehouse .transfer-creation :is(.creation-workspace, .creation-dialog, .creation-recovery) :is(button, input, select),
+  .warehouse .transfer-creation > .creation-back,
+  .warehouse .transfer-review.review-presubmit button { scroll-margin-bottom: 96px; }
+}
+@media (max-width: 600px) {
+  .transfer-creation .creation-table table { min-width: 264px; }
+  .transfer-creation .creation-table tbody td { height: auto; }
+  .transfer-creation .creation-table td:last-child button { width: 84px; max-width: 100%; }
 }
 
 /* Explicit review only. Approved modal structure, not pixel/browser evidence. */

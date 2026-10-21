@@ -154,6 +154,27 @@ describe('F3 grouped catalog and compact route', () => {
 });
 
 describe('F3 responsive selection contract', () => {
+  it('requests nearest full exposure for focused native table controls', async () => {
+    const h = harness();
+    const loader = vi.fn<typeof loadSourceInventory>(async () => catalog());
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    const button = await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
+    const input = screen.getByLabelText('Cantidad Modelo 1 L');
+    for (const control of [input, button]) {
+      const previous = Object.getOwnPropertyDescriptor(control, 'scrollIntoView');
+      const expose = vi.fn();
+      Object.defineProperty(control, 'scrollIntoView', { configurable: true, value: expose });
+      try {
+        act(() => control.focus());
+        expect(control).toHaveFocus();
+        expect(expose).toHaveBeenCalledExactlyOnceWith({ block: 'nearest', inline: 'nearest' });
+        expect(expose.mock.contexts[0]).toBe(control);
+      } finally {
+        if (previous) Object.defineProperty(control, 'scrollIntoView', previous);
+        else Reflect.deleteProperty(control, 'scrollIntoView');
+      }
+    }
+  });
   it.each([1, 2])('keeps a single editable selection and truthful review for assignment %s', async assigned => {
     const h = harness(authority(assigned));
     const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source, 3, 17n));
