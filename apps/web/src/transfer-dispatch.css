@@ -1,0 +1,73 @@
+/* Approved stock-request review only; other dispatch kinds retain their dialog. */
+.transfer-decision-modal.transfer-dispatch-confirmation {
+  width: min(640px, 100%);
+}
+.transfer-decision-modal.transfer-dispatch-confirmation > header {
+  border-bottom: 0;
+  padding: 24px 24px 0;
+}
+.transfer-decision-modal.transfer-dispatch-confirmation > header h2 {
+  font-size: 20px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.transfer-dispatch-confirmation > header > button {
+  padding: 0;
+  min-width: 44px;
+  border: 0;
+  background: transparent;
+}
+.transfer-dispatch-confirmation .transfer-decision-body {
+  padding: 20px 24px;
+  gap: 16px;
+}
+.transfer-dispatch-confirmation .transfer-detail-items table {
+  min-width: 0;
+  table-layout: fixed;
+}
+.transfer-dispatch-confirmation .transfer-detail-items :is(th, td) {
+  padding: 10px 12px;
+  height: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.transfer-dispatch-confirmation .transfer-detail-items th {
+  text-transform: uppercase;
+  font-size: 11px;
+  padding: 8px 12px;
+  background: #F8F6F4;
+}
+.transfer-dispatch-confirmation th:first-child { width: 43%; }
+.transfer-dispatch-confirmation th:nth-child(2) { width: 32%; }
+.transfer-dispatch-confirmation .transfer-detail-items :is(th, td):last-child { text-align: right; }
+.transfer-dispatch-confirmation .transfer-detail-items tbody td { height: 44px; }
+.transfer-dispatch-confirmation .transfer-detail-items tfoot {
+  font-weight: 400;
+  color: #6B6267;
+}
+.transfer-dispatch-confirmation .transfer-impact {
+  padding: 12px;
+  font-size: 13px;
+  background: #F8F6F4;
+  border-color: #DED7DA;
+  border-left: 3px solid #7A1F3D;
+}
+.transfer-dispatch-confirmation .transfer-impact > p { display: flex; align-items: center; gap: 8px; }
+.transfer-dispatch-confirmation .transfer-impact svg { width: 14px; height: 14px; flex-shrink: 0; color: #7A1F3D; }
+.transfer-dispatch-confirmation .transfer-impact ul { margin-top: 8px; padding-left: 14px; list-style: disc; }
+.transfer-dispatch-confirmation .transfer-impact li + li { margin-top: 4px; }
+.transfer-dispatch-confirmation .transfer-impact li:last-child { color: #6B6267; }
+.transfer-decision-modal.transfer-dispatch-confirmation > footer {
+  background: #F8F6F4;
+  padding: 16px 24px;
+}
+@media (max-width: 600px) {
+  .transfer-decision-modal.transfer-dispatch-confirmation > header { padding: 16px 16px 0; }
+  .transfer-dispatch-confirmation > header > div { flex-basis: 140px; }
+  .transfer-dispatch-confirmation .transfer-decision-body { padding: 16px; }
+  .transfer-dispatch-confirmation .transfer-detail-items :is(th, td) { padding: 8px 6px; }
+  .transfer-dispatch-confirmation .transfer-detail-items th { font-size: 10px; letter-spacing: 0; }
+  .transfer-dispatch-confirmation th:first-child { width: 39%; }
+  .transfer-dispatch-confirmation th:nth-child(2) { width: 27%; }
+  .transfer-decision-modal.transfer-dispatch-confirmation > footer { padding: 16px; }
+}

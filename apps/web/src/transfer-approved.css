@@ -1,0 +1,151 @@
+/* Approved transfers: both physical participants and origin-only dispatch. */
+.transfer-detail:is(.transfer-approved-detail, .transfer-terminal-detail) {
+  max-width: 920px;
+  color: #242124;
+}
+.transfer-pending:has(> .approved-origin-navigation) { gap: 0; }
+.pending-selected > .approved-origin-navigation {
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+  margin-top: -16px;
+  margin-bottom: 0;
+  color: #6B6267;
+}
+.pending-selected > .approved-origin-navigation > .creation-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+.approved-origin-navigation svg { width: 16px; transform: rotate(180deg); }
+.transfer-approved-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 20px;
+  margin-bottom: 16px;
+  position: relative;
+  padding-right: 140px;
+}
+.transfer-approved-heading > div { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.transfer-approved-heading h1 { font-size: 24px; line-height: 32px; overflow-wrap: anywhere; }
+.transfer-approved-detail .transfer-approved-heading .pending-status.status-approved {
+  padding: 3px 10px;
+  border: 1px solid #E7C6D2;
+  border-radius: 20px;
+  background: #F5E8ED;
+  color: #7A1F3D;
+  font-weight: 500;
+}
+.transfer-approved-heading > p { flex-basis: 100%; color: #6B6267; }
+.transfer-approved-heading > p span { color: #242124; }
+.transfer-approved-heading > button {
+  position: absolute;
+  right: 0;
+  top: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+:is(.transfer-approved-detail, .transfer-terminal-detail) button { min-height: 44px; height: auto; white-space: normal; border-radius: 4px; }
+.transfer-approved-products {
+  min-width: 0;
+  background: white;
+  border: 1px solid #DED7DA;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.transfer-approved-products > header { padding: 16px; overflow-wrap: anywhere; }
+.transfer-approved-products h2 { display: inline; font-size: 16px; font-weight: 600; }
+.transfer-approved-products > header span { color: #6B6267; }
+.transfer-approved-products .transfer-detail-items { border-radius: 0; border-width: 1px 0 0; }
+.transfer-approved-products .transfer-detail-items table { min-width: 0; table-layout: fixed; }
+.transfer-approved-products .transfer-detail-items :is(th, td) {
+  height: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  padding: 12px 16px;
+}
+.transfer-approved-products .transfer-detail-items th {
+  padding: 10px 16px;
+  background: #FCFAFB;
+  text-transform: uppercase;
+  font-size: 11px;
+  color: #6B6267;
+}
+.transfer-approved-products th:nth-child(4) { width: 33%; }
+.transfer-approved-products .transfer-detail-items :is(th, td):nth-child(n + 3) { text-align: center; }
+.transfer-approved-products td strong { font-weight: 500; }
+.transfer-approved-products td small { font-size: 12px; }
+.transfer-approved-products > footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border-top: 1px solid #DED7DA;
+}
+.transfer-approved-products > footer > p { flex: 1 1 240px; color: #6B6267; }
+.transfer-approved-products .transfer-decision-actions { min-width: 0; max-width: 100%; }
+.transfer-approved-products .transfer-decision-actions button {
+  width: auto;
+  justify-self: end;
+  padding: 10px 20px;
+}
+/* The initial dispatch dialog already requires confirmation and explains its effects.
+   Target only its plain helper, never cancellation guidance or recovery/status content. */
+.transfer-approved-products > footer > .transfer-decision-actions > button.primary + p:not([role]) {
+  display: none;
+}
+:is(.transfer-approved-detail, .transfer-terminal-detail) > .transfer-history { margin-top: 20px; }
+/* Keep every shell control in normal flow only for mobile approved or closed detail. */
+@media (max-width: 767px) {
+  .app-shell:has(:is(.transfer-approved-detail, .transfer-terminal-detail)) > .sidebar {
+    position: static;
+    inset: auto;
+    width: auto;
+    padding: 16px;
+    gap: 12px;
+    border-right: 0;
+    border-bottom: 1px solid #DED7DA;
+  }
+  .app-shell:has(:is(.transfer-approved-detail, .transfer-terminal-detail)) > .app-header {
+    position: static;
+    inset: auto;
+    height: auto;
+    min-height: 56px;
+    padding: 16px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .app-shell:has(:is(.transfer-approved-detail, .transfer-terminal-detail)) > .inventory-main {
+    margin-left: 0;
+    padding: 16px;
+    min-height: auto;
+  }
+}
+@media (max-width: 600px) {
+  .transfer-approved-heading { padding-right: 0; }
+  .transfer-approved-heading > button { position: static; }
+  .transfer-approved-products .transfer-detail-items { overflow: visible; }
+  .transfer-approved-products .transfer-detail-items table { display: block; width: 100%; }
+  .transfer-approved-products thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .transfer-approved-products tbody { display: block; }
+  .transfer-approved-products tbody tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 12px 16px; gap: 10px 16px; border-bottom: 1px solid #DED7DA; }
+  .transfer-approved-products .transfer-detail-items tbody td { display: block; min-width: 0; padding: 0; border: 0; text-align: left; }
+  .transfer-approved-products tbody td:first-child { grid-column: 1 / -1; }
+  .transfer-approved-products tbody td:last-child { grid-column: 1 / -1; }
+  .transfer-approved-products td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 4px; font-size: 12px; color: #6B6267; }
+}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { TransferController } from './useInventory';
 import type { useTransfers } from './useTransfers';
 import type { TransferRecord } from './transferModel';
@@ -6,11 +6,18 @@ import { captureDecisionRecord } from './transferDecisionRecovery';
 import { detailAuthority, TransferItems, transferStatusLabel } from './TransferDetail';
 import { transferViewOwner } from './TransferPending';
 import { TransferAPIError } from './transferAPI';
+import TransferDate from './TransferDate';
+import { useTransferModalFocus, type TransferModalFocusBinding } from './transferModalFocus';
+import './transfer-cancellation.css';
+
+const cancellationSubject = (record: TransferRecord) => record.kind === 'direct_shipment' ? 'el envío completo'
+  : record.kind === 'send_to_warehouse' ? 'la propuesta completa' : 'la solicitud completa';
 
 export interface TransferCancellationProps {
   controller: TransferController; ownerTag: string; transfers: ReturnType<typeof useTransfers>;
   record?: TransferRecord | null; onPrivateUnavailable?: () => void;
   renderDetail?: (actions: ReactNode) => ReactNode;
+  modalFocus?: TransferModalFocusBinding;
 }
 export default function TransferCancellation(props: TransferCancellationProps) {
   const { controller, ownerTag, transfers } = props;
@@ -25,15 +32,37 @@ export default function TransferCancellation(props: TransferCancellationProps) {
   const busy = attempt?.phase === 'inFlight';
   const unresolved = busy || attempt?.phase === 'uncertain';
   const visibleReview = permitted && review?.fence === fence ? review : null;
+  // Restore background attributes before the shared hook restores detail focus.
+  useLayoutEffect(() => {
+    const backdrop = dialog.current?.parentElement;
+    if (!visibleReview || !backdrop) return;
+    const previous = new Map<Element, { inert: string | null; hidden: string | null }>();
+    const isolateSiblings = () => {
+      for (let branch: Element | null = backdrop; branch && branch !== document.body; branch = branch.parentElement) {
+        for (const sibling of branch.parentElement?.children ?? []) {
+          if (sibling === branch || previous.has(sibling)) continue;
+          previous.set(sibling, { inert: sibling.getAttribute('inert'), hidden: sibling.getAttribute('aria-hidden') });
+          sibling.setAttribute('inert', ''); sibling.setAttribute('aria-hidden', 'true');
+        }
+      }
+    };
+    isolateSiblings();
+    const observer = new MutationObserver(isolateSiblings);
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      for (const [element, value] of previous) {
+        if (value.inert === null) element.removeAttribute('inert'); else element.setAttribute('inert', value.inert);
+        if (value.hidden === null) element.removeAttribute('aria-hidden'); else element.setAttribute('aria-hidden', value.hidden);
+      }
+    };
+  }, [!!visibleReview]);
+  const focus = useTransferModalFocus({ active: !!visibleReview, id: props.record?.id, fence, current, binding: props.modalFocus });
+  const queueFocus = () => { if (visibleReview) focus.queue({ id: visibleReview.record.id, fence: visibleReview.fence, trigger: visibleReview.trigger }); };
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
     if (visibleReview) { if (busy) dialog.current?.focus(); else close.current?.focus(); }
   }, [visibleReview, busy]);
-  useEffect(() => {
-    if (!visibleReview) return;
-    const trigger = visibleReview.trigger;
-    return () => { if (detailAuthority(controller) === visibleReview.fence) trigger.focus(); };
-  }, [visibleReview, controller]);
   if (!permitted) return null;
   const record = props.record;
   const session = controller.getTransferAuthority().session;
@@ -47,14 +76,14 @@ export default function TransferCancellation(props: TransferCancellationProps) {
     : error?.code === 'decision_conflict' ? 'El estado cambió. Consultá el resultado original.'
       : error ? 'No se pudo confirmar la cancelación con el servidor.' : '';
   const dismiss = () => {
-    if (current() && !pendingCall.current && transfers.cancellationAttempt?.phase !== 'inFlight') setReview(null);
+    if (current() && !pendingCall.current && transfers.cancellationAttempt?.phase !== 'inFlight') { queueFocus(); setReview(null); }
   };
   const run = async (operation: () => Promise<TransferRecord>) => {
     if (!current() || pendingCall.current || transfers.cancellationAttempt?.phase === 'inFlight') return;
     pendingCall.current = true;
     try {
       const outcome = await operation();
-      if (current() && outcome.status !== 'pending' && outcome.status !== 'approved') setReview(null);
+      if (current() && outcome.status !== 'pending' && outcome.status !== 'approved') { queueFocus(); setReview(null); }
     } catch (error) {
       if (current() && error instanceof TransferAPIError && (error.status === 403 || error.status === 404)) {
         setReview(null); latest.current.onPrivateUnavailable?.();
@@ -64,31 +93,32 @@ export default function TransferCancellation(props: TransferCancellationProps) {
   const open = (trigger: HTMLElement) => {
     if (!current() || !canCancel || !record || unresolved || pendingCall.current
       || latest.current.record?.id !== record.id || !cancellable(latest.current.record)) return;
+    focus.begin();
     setReview({ fence, record: captureDecisionRecord(record), trigger });
   };
   const actions = canCancel ? <div className="transfer-decision-actions">
-    <button type="button" disabled={!!unresolved} onClick={event => open(event.currentTarget)}>Cancelar solicitud</button>
+    <button type="button" disabled={!!unresolved} onClick={event => open(event.currentTarget)}>Cancelar {record?.kind === 'direct_shipment' ? 'envío' : record?.kind === 'send_to_warehouse' ? 'propuesta' : 'solicitud'}</button>
     <p>Solo la ubicación creadora puede cancelar antes del despacho.</p>
   </div> : null;
   return <div className="transfer-cancellation">
     {attempt && <section className="transfer-decision-recovery" aria-label="Recuperación de cancelación">
       <h3>{unresolved ? 'Cancelación pendiente de confirmación' : 'Resultado confirmado'}</h3>
-      <p>{attempt.original.reference} · Cancelación de la solicitud completa</p>
+      <p>{attempt.original.reference} · Cancelación de {cancellationSubject(attempt.original)}</p>
       {busy ? <p role="status">Consultando o enviando la cancelación…</p> : unresolved ? <>
         <p role="status">El resultado sigue sin confirmar. Una consulta Pendiente o Aprobada no prueba que la cancelación falló.</p>
         <button type="button" onClick={() => void run(transfers.recoverCancellation)}>Consultar resultado original</button>
         <button type="button" onClick={() => void run(transfers.retryCancellation)}>Reintentar misma cancelación</button>
       </> : result && <>
         <p role="status">Estado confirmado: {transferStatusLabel(result)}.</p>
-        {attempt.phase === 'conflict' && <p>La solicitud ya no puede cancelarse. Se muestra el estado real, sin afirmar que fue cancelada.</p>}
-        {result.status === 'cancelled' && <p>Cancelada en {result.creator_location_name} (UTC): <time>{result.cancelled_at}</time></p>}
+        {attempt.phase === 'conflict' && <p>La transferencia original ya no puede cancelarse. Se muestra el estado real, sin afirmar que fue cancelada.</p>}
+        {result.status === 'cancelled' && <p>Cancelada en {result.creator_location_name}: <TransferDate value={result.cancelled_at} /></p>}
       </>}
       {errorText && <p role="alert">{errorText}</p>}
       <p>Cerrar o volver no deshace una cancelación enviada. La recuperación permanece en esta App; recargar o cerrar la pestaña pierde esta memoria.</p>
     </section>}
     {props.renderDetail ? props.renderDetail(actions) : actions}
     {visibleReview && <div className="transfer-decision-backdrop"><section ref={dialog} tabIndex={-1}
-      className="transfer-decision-modal" role="dialog" aria-modal="true" aria-labelledby="cancellation-title" aria-busy={busy}
+      className="transfer-decision-modal transfer-pending-confirmation transfer-cancellation-confirmation" role="dialog" aria-modal="true" aria-labelledby="cancellation-title" aria-busy={busy}
       onKeyDown={event => {
         if (!current()) return;
         if (event.key === 'Escape') { event.preventDefault(); dismiss(); }
@@ -104,11 +134,11 @@ export default function TransferCancellation(props: TransferCancellationProps) {
         <p>{visibleReview.record.reference} · {visibleReview.record.origin_location_name} → {visibleReview.record.destination_location_name}</p></div>
         <button ref={close} type="button" aria-label="Cerrar confirmación de cancelación" disabled={busy} onClick={dismiss}>×</button></header>
       <div className="transfer-decision-body">
-        <TransferItems record={visibleReview.record} />
+        <TransferItems record={visibleReview.record} compact confirmation cancellation />
         <div className="transfer-impact"><h3>Impacto de la cancelación</h3>
-          <p>Se cancelará la solicitud completa antes del despacho. El registro original se conserva y no podrá editarse ni volver a activarse.</p>
-          <p>Si ya fue aprobada, se liberará únicamente su reserva en {visibleReview.record.origin_location_name}. Las existencias físicas, otras reservas y el stock del destino no cambian.</p>
-          <p>Si sigue pendiente, no cambia el inventario. El servidor confirma el estado actual y conserva cualquier aprobación anterior.</p>
+          <p>Se cancelará {cancellationSubject(visibleReview.record)} antes del despacho. El registro original se conserva y no podrá editarse ni volver a activarse.</p>
+          <p>{visibleReview.record.kind === 'direct_shipment' ? 'El envío fue autorizado y reservado al crear; al cancelar se liberará únicamente su reserva' : 'Si ya fue aprobada, se liberará únicamente su reserva'} en {visibleReview.record.origin_location_name}. Las existencias físicas, otras reservas y el stock del destino no cambian.</p>
+          <p>{visibleReview.record.kind !== 'direct_shipment' && 'Si sigue pendiente, no cambia el inventario. '}El servidor confirma el estado actual y conserva cualquier {visibleReview.record.kind === 'direct_shipment' ? 'autorización al crear' : 'aprobación anterior'}.</p>
         </div>
         {busy && <p role="status">Confirmando cancelación…</p>}
         {errorText && <p role="alert">{errorText}</p>}

@@ -1,0 +1,301 @@
+/* Count-only modal foundation and proposal steps. Other bodies remain separate. */
+.count-corrections .count-backdrop {
+  padding: clamp(8px, 3vw, 24px);
+}
+.count-corrections .count-modal {
+  position: relative;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+}
+.count-corrections .count-modal > h3 {
+  padding-right: 100px;
+  flex-shrink: 0;
+  overflow-wrap: anywhere;
+}
+.count-corrections .count-modal > .count-form {
+  border: 0;
+  border-radius: 0;
+  overflow-y: auto;
+}
+.count-corrections .count-modal > .count-modal-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  min-height: 44px;
+}
+.count-corrections .count-modal footer {
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+.count-corrections .count-modal footer button {
+  flex: 1 1 160px;
+}
+.count-corrections .count-proposal-capture {
+  width: min(560px, 100%);
+  padding: 20px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.count-corrections .count-proposal-capture > h3 {
+  padding: 0 70px 0 0;
+  border: 0;
+  font-size: 20px;
+}
+.count-corrections .count-proposal-capture > .count-form {
+  padding: 0;
+  gap: 6px;
+  overflow: visible;
+  font-size: 14px;
+}
+.count-corrections .count-capture-subtitle,
+.count-corrections .count-capture-help {
+  color: var(--muted);
+}
+.count-corrections .count-proposal-capture label {
+  margin-top: 4px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  font-size: 14px;
+}
+.count-corrections .count-proposal-capture select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: white;
+  color: inherit;
+  font: inherit;
+}
+.count-corrections .count-proposal-capture select:focus-visible {
+  outline: 2px solid var(--wine);
+  outline-offset: 3px;
+}
+.count-corrections .count-capture-context,
+.count-corrections .count-capture-warning {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--page);
+  font-size: 14px;
+}
+.count-corrections .count-capture-context {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.count-corrections .count-proposal-capture textarea {
+  min-height: 80px;
+}
+.count-corrections .count-proposal-capture p {
+  font-size: 14px;
+}
+.count-corrections .count-capture-warning p + p { margin-top: 4px; }
+.count-corrections .count-proposal-capture .count-actions {
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-top: 6px;
+}
+.count-corrections .count-proposal-capture .count-actions button[type="submit"] {
+  order: 1;
+  color: white;
+  background: var(--wine);
+}
+.count-corrections .count-proposal-capture .count-actions button:disabled {
+  color: #595459;
+  background: #efedef;
+}
+.count-corrections .count-proposal-review {
+  width: min(580px, 100%);
+  padding: 20px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.count-corrections .count-proposal-review > h3 {
+  padding: 0 70px 8px 0;
+  border: 0;
+  font-size: 20px;
+}
+.count-corrections .count-review-body {
+  padding: 0;
+  gap: 8px;
+  overflow: visible;
+  flex-shrink: 0;
+}
+.count-corrections .count-proposal-review p {
+  font-size: 14px;
+  line-height: inherit;
+}
+.count-corrections .count-review-muted,
+.count-corrections .count-review-label { color: var(--muted); }
+.count-corrections .count-review-label {
+  text-transform: uppercase;
+  letter-spacing: .03em;
+  margin-bottom: 4px;
+}
+.count-corrections .count-review-battery,
+.count-corrections .count-review-reason,
+.count-corrections .count-review-warning {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--page);
+}
+.count-corrections .count-review-battery {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.count-corrections .count-review-battery > span { flex-shrink: 0; }
+.count-corrections .count-review-comparison {
+  table-layout: fixed;
+  border: 1px solid var(--border);
+  font-size: 14px;
+}
+.count-corrections .count-review-comparison th,
+.count-corrections .count-review-comparison td {
+  padding: 8px 10px;
+  height: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
+.count-corrections .count-review-comparison th:first-child { width: 42%; text-align: left; }
+.count-corrections .count-review-comparison th:nth-child(2) { width: 36%; }
+.count-corrections .count-review-comparison thead th { font-size: 12px; }
+.count-corrections .count-review-comparison tbody th {
+  background: white;
+  color: inherit;
+  text-transform: none;
+  font-size: inherit;
+  letter-spacing: normal;
+  font-weight: 400;
+}
+.count-corrections .count-review-comparison td:last-child { color: var(--wine); background: #f5e8ed; font-weight: 600; }
+.count-corrections .count-review-reason { white-space: pre-wrap; overflow-wrap: anywhere; }
+.count-corrections .count-review-warning { background: #fdfbfc; line-height: 1.4; }
+.count-corrections .count-review-warning p + p { margin-top: 4px; }
+.count-corrections .count-proposal-review .count-technical { font-size: 14px; }
+.count-corrections .count-proposal-review footer { padding: 8px 0 0; margin-top: 4px; justify-content: space-between; }
+.count-corrections .count-proposal-review footer button { flex: 0 1 auto; }
+/* Final decision review is independent of accepted capture/consultation geometry. */
+.count-corrections .count-decision-review {
+  width: min(580px, 100%);
+  padding: 20px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.count-corrections .count-decision-review > h3 {
+  padding: 0 70px 8px 0;
+  border: 0;
+  font-size: 20px;
+  font-weight: 600;
+}
+.count-corrections .count-decision-review p { font-size: 14px; line-height: inherit; }
+.count-corrections .count-decision-review .count-review-body { gap: 12px; }
+.count-corrections .count-decision-review .count-decision-reason { border-left: 3px solid var(--wine); }
+.count-corrections .count-decision-review strong { overflow-wrap: anywhere; }
+.count-corrections .count-decision-review .count-review-warning strong { color: var(--wine); }
+.count-corrections .count-decision-review .count-technical { font-size: 14px; }
+.count-corrections .count-decision-review footer {
+  padding: 12px 0 0;
+  margin-top: 4px;
+  justify-content: flex-end;
+}
+.count-corrections .count-decision-review footer button { flex: 0 1 auto; }
+.count-corrections .count-decision-review footer button:last-child { color: white; background: var(--wine); }
+@media (max-width: 767px) {
+  .count-corrections .count-decision-review { padding: 18px; }
+  .count-corrections .count-decision-review footer button { flex: 1 1 160px; }
+}
+/* Decision capture is independent of accepted consultation/proposal geometry. */
+.count-corrections .count-decision-capture {
+  width: min(580px, 100%);
+  padding: 20px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.count-corrections .count-decision-capture > h3 {
+  padding: 0 70px 8px 0;
+  border: 0;
+  font-size: 20px;
+}
+.count-corrections .count-decision-capture > .count-form {
+  padding: 0;
+  gap: 8px;
+  overflow: visible;
+}
+.count-corrections .count-decision-context { display: grid; gap: 12px; min-width: 0; }
+.count-corrections .count-decision-capture p { font-size: 14px; line-height: inherit; }
+.count-corrections .count-decision-capture textarea { min-height: 88px; }
+.count-corrections .count-decision-capture .count-actions {
+  justify-content: flex-end;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  margin-top: 4px;
+}
+.count-corrections .count-decision-capture button[type="submit"] {
+  order: 1;
+  color: white;
+  background: var(--wine);
+}
+.count-corrections .count-decision-capture button[type="submit"]:disabled {
+  color: #595459;
+  background: #efedef;
+}
+/* Consultation has its own geometry; accepted proposal steps remain unchanged. */
+.count-corrections .count-consultation {
+  width: min(580px, 100%);
+  padding: 20px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.count-corrections .count-consultation-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-right: 70px;
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+.count-corrections .count-consultation-heading h3 {
+  flex: 1 1 240px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 20px;
+}
+.count-corrections .count-consultation-body {
+  padding: 0;
+  gap: 12px;
+  overflow: visible;
+  flex-shrink: 0;
+}
+.count-corrections .count-consultation p { font-size: 14px; line-height: inherit; }
+.count-corrections .count-consultation-status {
+  flex: 0 1 auto;
+  max-width: 100%;
+  padding: 2px 8px;
+  border: 1px solid #e0bd72;
+  border-radius: 4px;
+  color: #805100;
+  background: #fff9ee;
+}
+.count-corrections .count-consultation footer { padding: 12px 0 0; margin-top: 4px; }
+.count-corrections .count-consultation footer button:last-child { color: white; background: var(--wine); }
+@media (max-width: 767px) {
+  .count-corrections .count-proposal-review { padding: 18px; }
+  .count-corrections .count-review-comparison th,
+  .count-corrections .count-review-comparison td { padding: 8px 6px; }
+  .count-corrections .count-review-comparison th:first-child { width: 34%; }
+  .count-corrections .count-review-comparison th:nth-child(2) { width: 33%; }
+  .count-corrections .count-review-comparison thead th { text-transform: none; letter-spacing: normal; }
+  .count-corrections .count-proposal-review footer button { flex: 1 1 160px; }
+  .count-corrections .count-proposal-capture { padding: 18px; }
+  .count-corrections .count-capture-context { flex-direction: column; }
+}

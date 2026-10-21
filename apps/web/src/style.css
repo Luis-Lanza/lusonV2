@@ -140,7 +140,7 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .warehouse .title-row { align-items: flex-start; position: relative; display: block; }
   .warehouse h1 { font-size: 20px; font-weight: 700; margin-bottom: 16px; min-height: 32px; display: flex; align-items: center; }
   .warehouse .title-row p { font-size: 12px; line-height: 20px; margin: 0; }
-  .warehouse .transfer-cta { position: absolute; right: 0; top: 0; font-size: 12px; height: 32px; padding: 0 12px; gap: 6px; }
+  .warehouse .inventory-heading .title-row .transfer-cta { position: absolute; right: 0; top: 0; font-size: 12px; height: 32px; padding: 0 12px; gap: 6px; }
   .warehouse .desktop-cta { display: none; }
   .warehouse .mobile-cta { display: inline; }
   .mobile-location { display: flex; flex-direction: column; gap: 8px; background: white; border: 1px solid var(--border); border-radius: 8px; padding: 12px; box-shadow: 0 1px 2px #2421240d; }
@@ -187,46 +187,158 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 }
 
 /* Creation workspace only: branch desktop shell and existing inventory stay intact. */
-.transfer-creation { display: flex; flex-direction: column; gap: 16px; max-width: 1400px; width: 100%; margin: 0 auto; }
+.transfer-creation { display: flex; flex-direction: column; gap: 16px; min-width: 0; max-width: 1400px; width: 100%; margin: 0 auto; }
+.transfer-creation > .creation-back,
+.transfer-creation .creation-flow > select,
+.transfer-creation .creation-filters input,
+.transfer-creation .creation-filters > label > select,
+.transfer-creation .creation-catalog > .creation-retry,
+.transfer-creation .creation-table td input,
+.transfer-creation .creation-table td button,
+.transfer-creation .creation-pager > button,
+.transfer-creation .creation-stepper > button,
+.transfer-creation .creation-stepper > input,
+.transfer-creation .creation-cart .creation-remove,
+.transfer-creation .creation-cart > button {
+  box-sizing: border-box;
+  min-width: 44px;
+  min-height: 44px;
+  flex-shrink: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.transfer-creation > .creation-back { max-width: 100%; }
+.transfer-creation > h1, .transfer-creation > p,
+.transfer-creation .creation-workspace { overflow-wrap: anywhere; }
+.transfer-creation .creation-route-controls > *,
+.transfer-creation .creation-filters > label,
+.transfer-creation .creation-catalog,
+.transfer-creation .creation-cart { min-width: 0; }
+.transfer-creation .creation-workspace .creation-cart { overflow-x: auto; }
+.transfer-creation .creation-cart > * { min-width: 180px; }
 .transfer-creation p { font-size: 12px; line-height: 1.6; color: var(--muted); }
 .transfer-creation h2 { font-size: 16px; font-weight: 700; }
 .transfer-creation h3 { font-size: 13px; font-weight: 600; margin: 0; }
 .transfer-creation .creation-breadcrumb { font-size: 11px; color: var(--wine); }
 .transfer-creation .creation-back { align-self: flex-start; border: 0; background: transparent; color: var(--wine); padding: 0; }
 .transfer-creation label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 12px; }
-.transfer-creation .creation-flow { max-width: 360px; }
-.transfer-creation .creation-route { display: flex; gap: 16px; align-items: center; padding: 16px; background: white; border: 1px solid var(--border); border-radius: 8px; flex-wrap: wrap; }
-.transfer-creation .creation-route > div { display: flex; flex-direction: column; padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--page); }
-.transfer-creation .creation-route > div:last-of-type { background: var(--tint); color: var(--wine); }
+.transfer-creation .creation-route-controls { display: grid; grid-template-columns: minmax(180px, 1fr) 2fr; gap: 16px; padding: 16px; background: white; border: 1px solid var(--border); border-radius: 8px; align-items: start; }
+.transfer-creation .creation-direct-route { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.transfer-creation .creation-fixed-origin { display: grid; gap: 6px; font-size: 12px; color: var(--muted); }
+.transfer-creation .creation-fixed-origin strong { padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--page); color: #242124; font-weight: 500; }
+.transfer-creation .creation-route-notice { font-size: 11px; }
+.transfer-creation .creation-flow select { width: 100%; }
+.transfer-creation .creation-route { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; min-width: 0; }
+.transfer-creation .creation-route > div { display: flex; flex-direction: column; gap: 4px; }
+.transfer-creation .creation-route > div:last-of-type { color: var(--wine); }
 .transfer-creation .creation-route span { text-transform: uppercase; font-size: 10px; color: var(--muted); }
-.transfer-creation .creation-route p { margin-left: auto; padding: 8px; background: var(--page); border-radius: 4px; }
-.transfer-creation .creation-grid { display: grid; grid-template-columns: minmax(0, 1fr) 350px; gap: 20px; align-items: start; }
+.transfer-creation .creation-route p { flex-basis: 100%; font-size: 11px; }
+.transfer-creation .creation-grid { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
 .transfer-creation .creation-catalog, .transfer-creation .creation-cart { background: white; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .transfer-creation .creation-catalog > header { padding: 16px; border-bottom: 1px solid var(--border); }
-.transfer-creation .creation-filters { display: grid; grid-template-columns: 5fr 4fr 3fr; gap: 10px; margin-top: 14px; }
+.transfer-creation .creation-filters { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 4fr) minmax(0, 3fr); gap: 10px; margin-top: 14px; }
 .transfer-creation .creation-filters input, .transfer-creation .creation-filters select { width: 100%; }
 .transfer-creation .creation-table { overflow-x: auto; }
-.transfer-creation th, .transfer-creation td { padding: 10px 12px; }
-.transfer-creation td:first-child { white-space: normal; min-width: 160px; }
-.transfer-creation td small { display: block; color: var(--muted); }
-.transfer-creation td:nth-child(2), .transfer-creation th:nth-child(2) { text-align: center; }
-.transfer-creation td:nth-child(3), .transfer-creation th:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; }
-.transfer-creation td input { width: 120px; font-variant-numeric: tabular-nums; }
+.transfer-creation .creation-table .creation-model-heading { display: none; }
+.transfer-creation .creation-table th, .transfer-creation .creation-table td { padding: 10px 8px; }
+.transfer-creation .creation-table td:first-child { white-space: normal; min-width: 110px; }
+.transfer-creation .creation-table td small { display: block; color: var(--muted); }
+.transfer-creation .creation-table td:nth-child(2), .transfer-creation .creation-table th:nth-child(2) { text-align: center; }
+.transfer-creation .creation-table td:nth-child(3), .transfer-creation .creation-table th:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; }
+.transfer-creation .creation-table td input { width: 64px; font-variant-numeric: tabular-nums; }
+.transfer-creation .creation-selected { margin-top: 4px; }
+.transfer-creation .creation-table td:last-child button { white-space: normal; overflow-wrap: anywhere; }
 .transfer-creation .creation-pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px; background: var(--page); font-size: 11px; }
 .transfer-creation .creation-pager > span:first-child { margin-right: auto; }
-.transfer-creation .creation-retry { margin: 8px 16px; font-size: 12px; }
+.transfer-creation .creation-retry { margin: 8px 16px; max-width: calc(100% - 32px); font-size: 12px; }
 .transfer-creation .creation-cart { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-.transfer-creation .creation-cart article { border: 1px solid var(--border); border-radius: 6px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-.transfer-creation .creation-stepper { display: flex; gap: 6px; }
-.transfer-creation .creation-stepper input { width: 100%; font-variant-numeric: tabular-nums; }
+.transfer-creation .creation-cart > header { display: flex; gap: 8px; justify-content: space-between; align-items: start; }
+.transfer-creation .creation-cart > header p { background: var(--tint); color: var(--wine); padding: 2px 6px; white-space: nowrap; }
+.transfer-creation .creation-cart article { position: relative; border: 0; border-top: 1px solid var(--border); border-radius: 0; padding: 12px 0 0; display: grid; gap: 4px; }
+.transfer-creation .creation-cart article h3 { padding-right: 54px; }
+.transfer-creation .creation-cart .creation-remove { position: absolute; right: 0; top: 6px; border: 0; background: transparent; color: var(--muted); padding: 6px; font-size: 11px; }
+.transfer-creation .creation-stepper { display: flex; gap: 4px; justify-self: end; margin-top: 4px; min-width: 180px; }
+.transfer-creation .creation-stepper input { width: 84px; min-width: 84px; flex: 0 0 84px; text-align: center; font-variant-numeric: tabular-nums; }
+.transfer-creation .creation-stepper button { min-width: 44px; flex: 0 0 44px; padding: 6px; }
+.transfer-creation .creation-total { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; border-top: 1px solid var(--border); padding-top: 12px; }
+.transfer-creation .creation-total strong { color: var(--wine); font-size: 18px; overflow-wrap: anywhere; }
+.transfer-creation .creation-draft-notice { padding: 8px; background: var(--page); border: 1px solid var(--border); border-radius: 4px; }
+.transfer-creation .creation-cart > .primary { width: 100%; }
 .transfer-creation .creation-cart .message, .transfer-creation .message { color: var(--wine); }
 .transfer-creation .creation-dialog-backdrop { position: fixed; inset: 0; z-index: 50; background: #24212466; display: flex; align-items: center; justify-content: center; padding: 24px; }
 .transfer-creation .creation-dialog { background: white; width: 480px; max-width: 100%; padding: 24px; border-radius: 8px; border: 1px solid var(--border); }
 .transfer-creation .creation-dialog p { margin: 16px 0; }
 .transfer-creation .creation-dialog button { margin-right: 8px; }
-@media (max-width: 1150px) {
+@media (max-width: 1050px) {
   .transfer-creation .creation-grid { grid-template-columns: minmax(0, 1fr); }
-  .transfer-creation .creation-filters { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 600px) {
+  .transfer-creation .creation-breadcrumb { display: none; }
+  .transfer-creation .creation-route-controls { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .transfer-creation .creation-route > div { flex: 1; min-width: 0; }
+  .transfer-creation .creation-filters { grid-template-columns: repeat(auto-fit, minmax(min(100%, 120px), 1fr)); }
+  .transfer-creation .creation-filters label:first-child { grid-column: 1 / -1; }
+  .transfer-creation .creation-filters select { min-width: 0; }
+  .transfer-creation .creation-table { overflow-x: auto; padding: 0 12px 12px; }
+  .transfer-creation .creation-table table, .transfer-creation .creation-table tbody { display: block; width: 100%; min-width: 0; }
+  .transfer-creation .creation-table table { min-width: 264px; }
+  .transfer-creation .creation-table thead { display: none; }
+  .transfer-creation .creation-table .creation-model-group { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 12px; background: white; }
+  .transfer-creation .creation-table tbody tr { display: grid; grid-template-columns: 48px minmax(64px, 1fr) 90px; padding: 10px 0; gap: 6px 8px; border-bottom: 1px solid var(--border); }
+  .transfer-creation .creation-table tbody tr:last-child { border-bottom: 0; padding-bottom: 0; }
+  .transfer-creation .creation-table tbody td { display: block; border: 0; padding: 0; min-width: 0; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+  .transfer-creation .creation-table .creation-product { display: none; }
+  .transfer-creation .creation-table .creation-model-heading { display: block; padding: 0 0 8px; }
+  .transfer-creation .creation-table .creation-model-heading td { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+  .transfer-creation .creation-model-heading span { padding: 2px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--page); }
+  .transfer-creation .creation-model-heading small { margin-left: auto; font-size: 11px; }
+  .transfer-creation .creation-table td[data-label]::before { content: attr(data-label); display: block; font-size: 10px; color: var(--muted); margin-bottom: 4px; }
+  .transfer-creation .creation-table td[data-label="Polaridad"] { grid-column: 1; grid-row: 1 / 3; }
+  .transfer-creation .creation-table td[data-label="Disponible"] { grid-column: 2; grid-row: 1; }
+  .transfer-creation .creation-table td[data-label="Cantidad"] { grid-column: 2; grid-row: 2; }
+  .transfer-creation .creation-table td input { width: 64px; max-width: 100%; padding: 6px; }
+  .transfer-creation .creation-table td:last-child:not([colspan]) { grid-column: 3; grid-row: 1 / 3; align-self: center; }
+  .transfer-creation .creation-table td:last-child button { width: 100%; padding: 6px; }
+  .transfer-creation .creation-pager > span:first-child { flex-basis: 100%; }
+}
+
+/* Native creation controls: retain shell geometry and scroll oversized content locally. */
+.transfer-creation .creation-dialog button,
+.transfer-creation > .creation-recovery button,
+.transfer-review.review-presubmit button {
+  min-width: 44px;
+  min-height: 44px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.transfer-creation > .creation-recovery { min-width: 0; overflow-wrap: anywhere; }
+.transfer-creation > .creation-recovery button { max-width: 100%; margin-right: 0; }
+.transfer-creation .creation-dialog button { max-width: 100%; }
+.transfer-creation :is(.creation-workspace, .creation-dialog, .creation-recovery) :is(button, input, select),
+.transfer-creation > .creation-back,
+.transfer-review.review-presubmit button { scroll-margin-block: 80px; }
+.transfer-creation :is(.creation-workspace, .creation-dialog, .creation-recovery) :is(button, input, select):focus-visible,
+.transfer-creation > .creation-back:focus-visible,
+.transfer-review.review-presubmit button:focus-visible { outline-offset: -2px; }
+.transfer-creation .creation-workspace button.primary:focus-visible,
+.transfer-review.review-presubmit button.primary:focus-visible { outline-color: white; }
+.transfer-creation .creation-table { scroll-padding-block: 8px; }
+.transfer-creation .creation-table input,
+.transfer-creation .creation-table button { scroll-margin-inline: 1px; }
+.transfer-creation .creation-table table { min-width: max-content; }
+.transfer-creation .creation-pager > button { max-width: 100%; }
+@media (min-width: 601px) {
+  .transfer-creation .creation-table td:last-child button { max-width: 100%; }
+}
+@media (max-width: 767px) {
+  .warehouse .transfer-creation :is(.creation-workspace, .creation-dialog, .creation-recovery) :is(button, input, select),
+  .warehouse .transfer-creation > .creation-back,
+  .warehouse .transfer-review.review-presubmit button { scroll-margin-bottom: 96px; }
+}
+@media (max-width: 600px) {
+  .transfer-creation .creation-table table { min-width: 264px; }
+  .transfer-creation .creation-table tbody td { height: auto; }
+  .transfer-creation .creation-table td:last-child button { width: 84px; max-width: 100%; }
 }
 
 /* Explicit review only. Approved modal structure, not pixel/browser evidence. */
@@ -255,6 +367,34 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .transfer-review .review-memory { font-size: 11px; }
 .transfer-review > footer { padding: 20px 24px; border-top: 1px solid var(--border); background: var(--page); display: flex; justify-content: flex-end; gap: 12px; }
 
+/* Pre-submit fidelity only: confirmed-result presentation stays independent. */
+.transfer-review.review-presubmit { width: 680px; }
+.review-presubmit .review-route { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+.review-presubmit .review-route > div { min-width: 0; overflow-wrap: anywhere; }
+.review-presubmit .review-table table { min-width: 0; width: 100%; }
+.review-presubmit .review-immutable { padding: 10px 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--page); }
+@media (max-width: 600px) {
+  .review-presubmit-backdrop { padding: 0; align-items: stretch; background: var(--page); }
+  .transfer-review.review-presubmit { width: 100%; max-height: 100%; border: 0; border-radius: 0; box-shadow: none; overflow-y: auto; background: var(--page); }
+  .review-presubmit > header { padding: 20px 16px; border-bottom: 0; }
+  .review-presubmit .review-body { padding: 0 16px 16px; overflow: visible; gap: 16px; }
+  .review-presubmit .review-route { padding: 12px; background: white; border: 1px solid var(--border); border-radius: 8px; gap: 8px; }
+  .review-presubmit .review-route > div { padding: 8px; }
+  .review-presubmit .review-table { overflow: visible; border: 0; }
+  .review-presubmit .review-table table, .review-presubmit .review-table tbody, .review-presubmit .review-table tfoot { display: block; }
+  .review-presubmit .review-table thead { display: none; }
+  .review-presubmit .review-table tbody { display: grid; gap: 12px; }
+  .review-presubmit .review-table tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding: 12px; gap: 10px; background: white; border: 1px solid var(--border); border-radius: 8px; }
+  .review-presubmit .review-table tbody td { display: block; border: 0; padding: 0; min-width: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }
+  .review-presubmit .review-table tbody td:first-child { grid-column: 1 / -1; }
+  .review-presubmit .review-table td[data-label]::before { content: attr(data-label); display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .review-presubmit .review-table tbody td:last-child { text-align: right; font-size: 18px; color: var(--wine); font-weight: 700; }
+  .review-presubmit .review-table tfoot { margin-top: 12px; border: 1px solid var(--border); border-radius: 8px; }
+  .review-presubmit .review-table tfoot tr, .review-presubmit .review-table tfoot td { display: block; white-space: normal; overflow-wrap: anywhere; }
+  .review-presubmit > footer { padding: 16px; flex-direction: column-reverse; gap: 8px; }
+  .review-presubmit > footer button { width: 100%; min-height: 44px; }
+}
+
 /* Participant status views; branches retain the desktop table at every width. */
 .transfer-pending { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .transfer-pending h2 { font-size: 17px; }
@@ -265,6 +405,31 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .pending-heading .pending-heading-actions { display: flex; flex-direction: column; align-items: flex-end; align-self: flex-start; gap: 6px; margin-left: auto; text-align: right; }
 .pending-heading .pending-heading-actions .pending-count { margin: 0; }
 .pending-count { font-weight: 600; font-variant-numeric: tabular-nums; }
+/* List-only hierarchy; detail, creation and inventory retain their own panels. */
+.pending-list > .creation-back { border: 0; background: transparent; padding: 0; font-size: 12px; }
+.pending-list > .pending-heading { padding: 0; background: transparent; border: 0; border-radius: 0; align-items: flex-start; }
+.pending-list > .pending-heading > div:first-child { min-width: 0; }
+.pending-list .pending-heading h1 { margin: 0; }
+.pending-list .pending-heading-actions { min-width: 0; }
+.pending-list .pending-heading-actions .pending-count { font-size: 12px; overflow-wrap: anywhere; }
+.pending-list > .transfer-request-counters { padding: 4px 0; background: transparent; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; }
+.pending-list > .transfer-request-counters dl { gap: 4px 24px; margin-bottom: 0; }
+.pending-list .pending-counter-help { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 16px; }
+.pending-list .pending-counter-help summary { cursor: pointer; width: fit-content; }
+.pending-list .pending-counter-help summary:focus-visible { outline: 2px solid var(--wine); outline-offset: 2px; }
+.pending-list .pending-counter-help small { display: block; margin-top: 4px; }
+.pending-list > .transfer-request-counters dl > div { flex: 0 1 auto; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.pending-list > .transfer-request-counters dd { margin: 0; }
+.pending-list > .transfer-status-toolbar { padding: 10px 12px; gap: 8px; }
+.pending-list > .transfer-status-toolbar select { padding: 7px 10px; font-size: 13px; }
+.pending-list > :is(.transfer-decision, .transfer-dispatch, .transfer-receipt, .transfer-cancellation):empty { display: none; }
+.pending-list .pending-results { min-width: 0; background: white; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.pending-list .pending-results > .pending-table { border: 0; border-radius: 0; }
+.pending-list .pending-results > :is(p, .message) { margin: 16px; }
+.pending-list .pending-results > .pager { flex-wrap: wrap; background: white; }
+.pending-list .pending-results > .pager .page-controls { flex-wrap: wrap; min-width: 0; }
+.pending-list .pending-status.status-received { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+.pending-list #pending-page { width: 72px; }
 .transfer-request-counters { padding: 12px 16px; background: white; border: 1px solid var(--border); border-radius: 8px; }
 .transfer-request-counters dl { display: flex; flex-wrap: wrap; gap: 16px 32px; margin: 0 0 8px; }
 .transfer-request-counters dl > div { flex: 1 1 180px; min-width: 0; }
@@ -304,6 +469,35 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .transfer-status-toolbar { flex-direction: column; align-items: stretch; }
   .warehouse .pending-cards .pending-status { display: block; font-size: 14px; }
   .warehouse .pending-heading, .warehouse .pending-record-heading { flex-direction: column; align-items: flex-start; padding: 16px; }
+  .transfer-pending.pending-list > .pending-heading { flex-direction: row; flex-wrap: wrap; padding: 0; gap: 8px 12px; }
+  .pending-list > .pending-heading > div:first-child { flex: 1 1 180px; }
+  .pending-list .pending-heading h1 { font-size: 20px; min-height: 0; margin: 0; }
+  .pending-list .pending-heading p { font-size: 12px; line-height: 1.5; }
+  .pending-list .pending-heading .pending-heading-actions { flex: 0 1 150px; gap: 8px; }
+  .pending-list .transfer-cta { height: auto; min-height: 36px; padding: 8px 12px; font-size: 12px; white-space: normal; }
+  .pending-list > .transfer-status-toolbar { flex-direction: row; align-items: center; }
+  .pending-list > .transfer-status-toolbar select { flex: 1 1 140px; min-width: 0; }
+  .warehouse .pending-list { gap: 12px; }
+  /* The warehouse shell already supplies keyboard-accessible Inventario navigation. */
+  .warehouse .pending-list > .creation-back { display: none; }
+  .warehouse .pending-list .pending-results { display: grid; gap: 12px; border: 0; background: transparent; overflow: visible; }
+  .warehouse .pending-list .pending-results > :is(p, .message) { margin: 0; }
+  .warehouse .pending-list .pending-results > .pager { margin-top: 0; }
+  .warehouse .pending-list .pending-card-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+  .warehouse .pending-list .pending-card-identity h2 { font-size: 14px; font-weight: 700; margin: 0; overflow-wrap: anywhere; }
+  .warehouse .pending-list .pending-flow { padding: 3px 6px; border-radius: 4px; background: var(--tint); color: var(--wine); font-size: 10px; }
+  .warehouse .pending-list .pending-unit-total { padding: 3px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--page); font-size: 11px; font-weight: 600; text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .warehouse .pending-list .pending-card-route { display: grid; gap: 6px; padding: 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--page); }
+  .warehouse .pending-list .pending-card-route p { font-size: 12px; margin: 0; }
+  .warehouse .pending-list .pending-card-route p > span, .warehouse .pending-list .pending-card-participants { color: var(--muted); }
+  .warehouse .pending-list .pending-card-participants { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; }
+  .warehouse .pending-list .pending-card-participants p { font-size: 11px; }
+  .warehouse .pending-list .pending-card-participants strong { color: #242124; font-weight: 500; }
+  .warehouse .pending-list .pending-card-variants { border-top: 1px solid var(--border); padding-top: 10px; }
+  .warehouse .pending-list .pending-card-variants h3 { margin: 0 0 8px; font-size: 10px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+  .warehouse .pending-list .pending-card-variants ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  .warehouse .pending-list .pending-card-variants li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, auto); gap: 8px; align-items: baseline; overflow-wrap: anywhere; }
+  .warehouse .pending-list .pending-variant-quantity { text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; }
   .warehouse .pending-table { display: none; }
   .warehouse .pending-cards { display: grid; gap: 14px; }
   .warehouse .pending-cards article { display: grid; gap: 10px; background: white; border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
@@ -317,7 +511,25 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 /* Immutable decision review. Shell, inventory and creation styles stay unchanged. */
 .transfer-detail { min-width: 0; }
 .transfer-detail-heading { display: grid; justify-items: start; gap: 8px; margin-bottom: 20px; }
-.transfer-detail-heading h2 { font-size: 24px; }
+.transfer-detail-heading h1 { font-size: 24px; overflow-wrap: anywhere; }
+.pending-detail-navigation { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-bottom: 12px; }
+.pending-selected .pending-detail-navigation .creation-back { margin: 0; width: auto; }
+.pending-selected > .transfer-request-counters { margin-top: 20px; }
+.transfer-detail > .transfer-detail-route { margin-bottom: 16px; }
+.transfer-receipt-overview { display: grid; gap: 12px; margin-bottom: 16px; }
+.transfer-receipt-overview h2 { font-size: 16px; }
+.transfer-receipt-overview p { font-size: 12px; color: var(--muted); }
+.transfer-receipt-overview .transfer-outcome-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.transfer-receipt-overview dl { margin: 0; background: white; }
+.transfer-receipt-overview dt { font-size: 12px; color: var(--muted); }
+.transfer-receipt-overview dd { margin: 6px 0 0; font-size: 24px; font-weight: 700; overflow-wrap: anywhere; }
+.receipt-detail-comparison table { width: 100%; }
+.receipt-detail-comparison caption { padding: 14px; text-align: left; font-weight: 600; }
+.receipt-detail-comparison th, .receipt-detail-comparison td { white-space: normal; overflow-wrap: anywhere; padding: 10px 12px; }
+.receipt-detail-comparison th { overflow-wrap: normal; }
+.receipt-discrepancy { display: inline-block; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; font-size: 12px; }
+.receipt-discrepancy.shortage { background: #fff0f0; border-color: #ffdad6; color: #ba1a1a; }
+.receipt-discrepancy.excess, .receipt-discrepancy.unexpected { background: #fffbef; border-color: #e8cf86; color: #805400; }
 .transfer-detail-heading p { color: var(--muted); }
 .transfer-detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px; align-items: start; }
 .transfer-detail-grid > div { display: grid; gap: 16px; min-width: 0; }
@@ -386,12 +598,23 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .transfer-detail-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 767px) {
-  .pending-warehouse .transfer-detail-heading h2 { font-size: 22px; }
+  .transfer-detail-heading h1 { font-size: 22px; }
+  .transfer-receipt-overview .transfer-outcome-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .transfer-receipt-overview .transfer-outcome-metrics dl:last-child { grid-column: 1 / -1; }
+  .transfer-detail .receipt-detail-comparison { display: block; overflow: visible; border: 0; background: transparent; }
+  .receipt-detail-comparison table { display: block; min-width: 0; }
+  .receipt-detail-comparison caption { display: block; padding: 0 0 12px; }
+  .receipt-detail-comparison thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .receipt-detail-comparison tbody { display: grid; gap: 12px; }
+  .receipt-detail-comparison tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--border); border-radius: 6px; background: white; padding: 14px; gap: 12px; }
+  .receipt-detail-comparison td { display: block; padding: 0; border: 0; min-width: 0; height: auto; text-align: left; white-space: normal; font-weight: 600; }
+  .receipt-detail-comparison td:first-child, .receipt-detail-comparison td:last-child { grid-column: 1 / -1; }
+  .receipt-detail-comparison td:not(:first-child)::before { content: attr(data-label); display: block; color: var(--muted); font-size: 12px; font-weight: 400; margin-bottom: 4px; }
   .pending-warehouse .transfer-detail-grid { gap: 16px; }
   .pending-warehouse .transfer-detail-summary { padding: 16px; }
   .transfer-history { padding: 16px; }
   .transfer-outcome-metrics { grid-template-columns: minmax(0, 1fr); }
-  .pending-warehouse .transfer-detail-grid > div > .transfer-detail-items { display: none; }
+  .pending-warehouse .transfer-detail-grid > div > .transfer-detail-items:not(.receipt-detail-comparison) { display: none; }
   .pending-warehouse .transfer-detail-cards { display: grid; gap: 14px; }
   .pending-warehouse .transfer-detail-cards article { padding: 14px; background: white; border: 1px solid var(--border); border-radius: 6px; display: grid; gap: 8px; }
   .pending-warehouse .transfer-detail-cards h3 { margin: 0; font-size: 15px; }
@@ -402,9 +625,104 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .transfer-decision-modal > footer button { flex: 1 1 160px; }
 }
 
+/* F6a: participant controls only, including disabled activation boxes. */
+.transfer-pending > .creation-back,
+.pending-detail-navigation > button,
+.pending-heading-actions > .transfer-cta,
+.transfer-pending > .transfer-request-counters > .pending-counter-help > summary,
+.transfer-pending > .transfer-status-toolbar > select,
+.pending-results > .message > button, .transfer-pending > .message > button,
+.pending-results > .pending-table > table > tbody > tr > td > button,
+.pending-results > .pending-cards > article > button,
+.pending-results > .pager > .page-controls > :is(button, input, select),
+.transfer-advisory > button,
+.transfer-decision-actions > button,
+.transfer-decision-recovery > button,
+.transfer-decision-modal > header > button,
+.transfer-decision-modal > footer > button,
+.transfer-decision-modal > .transfer-decision-body > :is(button, select),
+.transfer-decision-modal .receipt-quantities > div > :is(input, button) { min-width: 44px; min-height: 44px; max-width: 100%; height: auto; flex-shrink: 0; }
+
+/* Labels grow the activation box instead of overflowing a fixed height. */
+.transfer-pending > .creation-back,
+.pending-detail-navigation > button,
+.pending-heading-actions > .transfer-cta,
+.transfer-pending > .transfer-request-counters > .pending-counter-help > summary,
+.pending-results > .message > button, .transfer-pending > .message > button,
+.pending-results > .pending-table > table > tbody > tr > td > button,
+.pending-results > .pending-cards > article > button,
+.pending-results > .pager > .page-controls > button,
+.transfer-advisory > button,
+.transfer-decision-actions > button,
+.transfer-decision-recovery > button,
+.transfer-decision-modal > header > button,
+.transfer-decision-modal > footer > button,
+.transfer-decision-modal > .transfer-decision-body > button,
+.transfer-decision-modal .receipt-quantities > div > button { white-space: normal; overflow-wrap: anywhere; }
+
+.transfer-pending > .transfer-request-counters > .pending-counter-help > summary { padding: 12px 0; cursor: pointer; }
+.transfer-pending > .transfer-request-counters > .pending-counter-help > summary:focus-visible { outline: 2px solid var(--wine); outline-offset: -2px; }
+
+/* Constrain local layout without creating a workspace scroll container. */
+.transfer-pending { max-width: 100%; }
+.transfer-pending > :is(.pending-heading, .pending-detail-navigation, .transfer-status-toolbar, .transfer-request-counters, .pending-results) { min-width: 0; max-width: 100%; }
+.transfer-detail, .transfer-detail-grid, .transfer-decision, .transfer-dispatch, .transfer-receipt, .transfer-cancellation { min-width: 0; max-width: 100%; }
+.transfer-decision, .transfer-dispatch, .transfer-receipt { grid-template-columns: minmax(0, 1fr); }
+.transfer-pending > .pending-heading { flex-wrap: wrap; }
+.transfer-pending > .pending-heading > div { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.pending-heading .pending-heading-actions { max-width: 100%; }
+.pending-heading-actions > .transfer-cta { padding-top: 10px; padding-bottom: 10px; }
+.pending-detail-navigation, .pending-results > .pager, .pending-results > .pager > .page-controls { flex-wrap: wrap; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.transfer-pending > .transfer-status-toolbar > select { min-width: 44px; }
+.transfer-pending .transfer-detail > .transfer-detail-route { flex-wrap: wrap; }
+.transfer-pending .transfer-detail > .transfer-detail-route > div { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.pending-results > .pending-table, .transfer-detail-grid > div > .transfer-detail-items { min-width: 0; max-width: 100%; overflow-x: auto; }
+.transfer-advisory, .transfer-decision-actions, .transfer-decision-recovery, .transfer-decision-modal > header > div, .transfer-decision-modal > .transfer-decision-body, .transfer-decision-modal .receipt-quantities, .transfer-decision-modal .receipt-quantities > div { min-width: 0; overflow-wrap: anywhere; }
+.transfer-decision-modal > header, .transfer-decision-modal > footer { flex-wrap: wrap; }
+.transfer-decision-modal > header > div { flex: 1 1 180px; }
+.transfer-decision-modal > .transfer-decision-body, .transfer-decision-modal .receipt-quantities > div { grid-template-columns: minmax(0, 1fr); }
+
+/* A narrow branch retains its table; only local panels and controls reflow. */
+@media (max-width: 600px) {
+  .transfer-pending > .transfer-status-toolbar, .pending-results > .pager, .transfer-pending .transfer-detail > .transfer-detail-route, .transfer-detail-grid > .transfer-detail-outcome > .transfer-detail-summary, .transfer-advisory, .transfer-decision-recovery { padding: 8px; }
+  .transfer-pending .transfer-detail > .transfer-detail-route > div { padding: 8px; }
+  .pending-results > .pager > .page-controls > :is(input, select), .transfer-pending > .transfer-status-toolbar > select { padding-left: 2px; padding-right: 2px; }
+  .pending-results > .message, .transfer-pending > .message { padding: 4px; }
+  .pending-list .pending-results > .message > button, .transfer-pending > .message > button { margin-left: 0; }
+}
+
 /* Restitution surfaces are independent of receipt and C4 styling. */
 .transfer-restitutions { display: grid; gap: 16px; min-width: 0; }
 .transfer-restitutions h3, .transfer-restitutions h4 { margin: 0; }
+.transfer-restitutions .restitution-outcome { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 6px; background: white; overflow-wrap: anywhere; }
+.transfer-restitutions .restitution-outcome-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.transfer-restitutions .restitution-closed { padding: 4px 8px; border: 1px solid #a7d9c3; border-radius: 4px; background: #ecfdf5; color: #065f46; font-size: 12px; font-weight: 600; }
+.transfer-restitutions dl.restitution-quantities { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.transfer-restitutions .restitution-quantities > div { display: grid; align-content: start; gap: 6px; padding: 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--page); }
+.transfer-restitutions .restitution-quantities dt { font-size: 13px; }
+.transfer-restitutions .restitution-quantities dd { font-size: 24px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.transfer-restitutions .restitution-outcome p, .transfer-restitutions .restitution-safety p, .transfer-restitutions li p { margin: 0; }
+.transfer-restitutions .restitution-immutable { color: var(--muted); font-size: 13px; }
+.transfer-restitutions .restitution-safety { display: grid; gap: 8px; font-size: 13px; }
+.transfer-restitutions .restitution-technical { min-width: 0; border-top: 1px solid var(--border); font-size: 13px; }
+.transfer-restitutions .restitution-technical summary { padding: 12px 0; cursor: pointer; color: var(--wine); font-weight: 600; }
+.transfer-restitutions .restitution-technical summary:focus-visible { outline: 2px solid var(--wine); outline-offset: 3px; }
+.transfer-restitutions .restitution-technical p { margin: 0 0 8px; }
+.transfer-restitutions .restitution-consultation, .transfer-restitutions .restitution-consultation > div { display: grid; gap: 16px; min-width: 0; }
+.transfer-restitutions .restitution-consultation select { min-width: 0; width: 100%; }
+/* Closed evidence stays fully readable, without repeated identity rows or roomy history stacks. */
+.transfer-restitutions.restitution-is-closed { gap: 10px; }
+.transfer-restitutions.restitution-is-closed .restitution-outcome { gap: 8px; padding: 12px; }
+.transfer-restitutions.restitution-is-closed .restitution-quantities > div { padding: 10px; }
+.transfer-restitutions.restitution-is-closed .restitution-consultation { grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; }
+.transfer-restitutions.restitution-is-closed .restitution-consultation > div { gap: 6px; }
+.transfer-restitutions.restitution-is-closed .restitution-consultation select { min-height: 44px; }
+.transfer-restitutions.restitution-is-closed .restitution-card { padding: 16px; gap: 8px; }
+.transfer-restitutions.restitution-is-closed dl { gap: 6px; }
+.transfer-restitutions.restitution-is-closed ol { margin: 0; padding-left: 16px; }
+.transfer-restitutions.restitution-is-closed :is(ol, li, li section) { gap: 6px; }
+.transfer-restitutions.restitution-is-closed li section { padding: 10px; min-width: 0; }
+.transfer-restitutions.restitution-is-closed .restitution-technical summary { min-height: 44px; padding: 10px 0; }
 .transfer-restitutions .restitution-card, .transfer-restitutions .restitution-form { display: grid; gap: 12px; padding: 20px; border: 1px solid var(--border); border-radius: 6px; background: white; overflow-wrap: anywhere; }
 .transfer-restitutions dl { margin: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 .transfer-restitutions dd { margin: 0; font-weight: 600; }
@@ -424,6 +742,7 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 @media (max-width: 767px) {
   .transfer-restitutions .restitution-card, .transfer-restitutions .restitution-form { padding: 16px; }
   .transfer-restitutions .restitution-actions { display: grid; }
+  .transfer-restitutions.restitution-is-closed .restitution-consultation { grid-template-columns: minmax(0, 1fr); }
   .transfer-restitutions .restitution-backdrop { padding: 12px; }
   .transfer-restitutions .restitution-modal > h3, .transfer-restitutions .restitution-modal-body, .transfer-restitutions .restitution-modal footer { padding: 16px; }
 }
@@ -437,7 +756,14 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .count-recovery { background: var(--page); border-left: 4px solid var(--wine); }
 .count-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0; }
 .count-metrics dt { color: var(--muted); font-size: 13px; }
-.count-metrics dd { margin: 4px 0 0; font-weight: 600; }
+.count-metrics dd { margin: 4px 0 0; font-weight: 600; font-size: 24px; font-variant-numeric: tabular-nums; }
+.count-corrections .count-outcome { padding: 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--page); font-weight: 600; }
+.count-corrections .count-technical { min-width: 0; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+.count-corrections .count-technical summary { padding: 12px 0; min-height: 44px; cursor: pointer; font-weight: 600; }
+.count-corrections .count-technical summary:focus-visible { outline: 2px solid var(--wine); outline-offset: 3px; }
+.count-corrections .count-technical p { margin: 0 0 8px; overflow-wrap: anywhere; }
+.count-corrections .count-revisions { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 0 0 12px; }
+.count-corrections .count-revisions dd { margin: 4px 0 0; font-variant-numeric: tabular-nums; }
 .count-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .count-actions button, .count-recovery > button, .count-modal button { height: auto; min-height: 44px; padding: 10px 16px; border: 1px solid var(--wine); border-radius: 4px; color: var(--wine); background: white; }
 .count-corrections button:disabled { cursor: not-allowed; color: #595459; border-color: #aaa5aa; background: #efedef; }

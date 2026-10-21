@@ -51,14 +51,14 @@ describe('W2 direct warehouse workspace', () => {
     if (destination === 3) { flow('directB'); await waitFor(() => expect(loader).toHaveBeenCalledTimes(2)); }
     expect(loader.mock.calls.every(([source]) => source === 1)).toBe(true);
     fireEvent.change(screen.getByLabelText('Cantidad Modelo 1 L'), { target: { value: '9223372036854775807' } });
-    fireEvent.click(add()); fireEvent.click(screen.getByRole('button', { name: 'Revisar solicitud' }));
-    const dialog = screen.getByRole('dialog');
+    fireEvent.click(add()); fireEvent.click(screen.getByRole('button', { name: 'Revisar envío' }));
+    const dialog = screen.getByRole('dialog', { name: 'Revisar envío' });
     expect(within(dialog).getByText('9223372036854775807')).toBeVisible();
     expect(within(dialog).getByText(/La creación autoriza y reserva/)).toBeVisible();
     expect(within(dialog).queryByText(/pendiente de aprobación/)).not.toBeInTheDocument();
     expect(fetcher).not.toHaveBeenCalled();
     const attempt = recovery.getCurrent(h.controller.getTransferAuthority)!.attempt;
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Enviar solicitud' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Crear envío y reservar' }));
     expect(screen.getByLabelText('Tipo de transferencia')).toBeDisabled();
     expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toEqual({ ...attempt,
       kind: 'direct_shipment', counterparty_location_id: destination, items: [{ variant_id: 1, quantity: '9223372036854775807' }] });
@@ -69,10 +69,140 @@ describe('W2 direct warehouse workspace', () => {
       approver_location_id: 1, approver_location_name: 'Almacén', created_at, decision_location_id: 1, decided_at: created_at,
       items: recordDTO().items.map(item => ({ ...item, quantity: '9223372036854775807' })) }, 201)));
     await screen.findByRole('dialog', { name: 'Solicitud Pendiente de despacho confirmada' });
-    expect(screen.getByText('Autorizada y reservada al crear (UTC):')).toBeVisible();
-    expect(screen.queryByText('Decidida (UTC):')).not.toBeInTheDocument();
+    expect(screen.getByText('Autorizada y reservada al crear:')).toBeVisible();
+    const times = screen.getByRole('region', { name: 'Resultado confirmado' }).querySelectorAll('time');
+    expect(times).toHaveLength(2);
+    for (const time of times) {
+      expect(time).toHaveTextContent('29/02/2028 · 20:00 (hora Bolivia)');
+      expect(time).toHaveAttribute('datetime', created_at);
+    }
+    expect(screen.queryByText('Decidida:')).not.toBeInTheDocument();
     expect(recovery.getCurrent(h.controller.getTransferAuthority)).toBeNull();
     expect(fetcher).toHaveBeenCalledTimes(1); fetcher.mockRestore();
+  });
+});
+
+describe('F3 grouped catalog and compact route', () => {
+  function pairedCatalog() {
+    const source = catalog(1, 3, 17n);
+    return { ...source, rows: source.rows.map((row, index): Item => index === 1
+      ? { ...source.rows[0], variant_id: 2, polarity: 'R', existing: 9n, available: 9n } : row) };
+  }
+  it('groups paired polarities by catalog identity with independent quantities and stock bounds', async () => {
+    const h = harness(authority(1));
+    const loader = vi.fn<typeof loadSourceInventory>(async () => pairedCatalog());
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    const group = await screen.findByRole('rowgroup', { name: 'TOYO · Modelo 1 · 75.125 Ah' });
+    expect(within(group).getByText('2 variantes')).toBeInTheDocument();
+    expect(screen.getAllByLabelText('Cantidad Modelo 1 L')).toHaveLength(1);
+    expect(screen.getAllByLabelText('Cantidad Modelo 1 R')).toHaveLength(1);
+    fireEvent.change(within(group).getByLabelText('Cantidad Modelo 1 L'), { target: { value: '4' } });
+    fireEvent.change(within(group).getByLabelText('Cantidad Modelo 1 R'), { target: { value: '7' } });
+    fireEvent.click(within(group).getByRole('button', { name: 'Añadir Modelo 1 L' }));
+    fireEvent.click(within(group).getByRole('button', { name: 'Añadir Modelo 1 R' }));
+    expect(within(group).getByText('En la selección: 4')).toBeVisible();
+    expect(within(group).getByText('En la selección: 7')).toBeVisible();
+    expect(screen.getByLabelText('Total a transferir')).toHaveTextContent('11 baterías');
+    fireEvent.change(within(group).getByLabelText('Cantidad Modelo 1 R'), { target: { value: '10' } });
+    fireEvent.click(within(group).getByRole('button', { name: 'Añadir Modelo 1 R' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('dentro del disponible');
+    expect(screen.getByLabelText('Total a transferir')).toHaveTextContent('11 baterías');
+    const route = screen.getByRole('region', { name: 'Ruta física' });
+    expect(within(route).getByText('Origen · Fijo')).toBeVisible();
+    expect(within(route).getAllByText('Almacén', { selector: 'strong' })).toHaveLength(1);
+    expect(within(route).queryByText('Sucursal A', { selector: 'strong' })).not.toBeInTheDocument();
+    expect(within(route).getByLabelText('Tipo de transferencia')).toHaveValue('directA');
+  });
+  it('retains unavailable variants without inventing absent or filtered polarities or merging identical labels', async () => {
+    const h = harness(); const original = pairedCatalog();
+    const source = { ...original, rows: original.rows.map((row, index): Item => index === 1
+      ? { ...row, existing: 0n, available: 0n } : index === 2
+        ? { ...original.rows[0], variant_id: 3, catalog_entry_id: 2 } : row) };
+    const loader = vi.fn<typeof loadSourceInventory>(async () => source);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    await screen.findByRole('button', { name: 'Añadir Modelo 1 R' });
+    const groups = screen.getAllByRole('rowgroup', { name: 'TOYO · Modelo 1 · 75.125 Ah' });
+    expect(groups).toHaveLength(2);
+    expect(within(groups[0]).getByRole('button', { name: 'Añadir Modelo 1 R' })).toBeDisabled();
+    expect(within(groups[0]).getByLabelText('Cantidad Modelo 1 R')).toBeDisabled();
+    expect(within(groups[1]).getByText('1 variante')).toBeInTheDocument();
+    expect(within(groups[1]).queryByLabelText('Cantidad Modelo 1 R')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Polaridad'), { target: { value: 'L' } });
+    expect(screen.queryByLabelText('Cantidad Modelo 1 R')).not.toBeInTheDocument();
+    expect(screen.getAllByText('1 variante')).toHaveLength(2);
+    expect(loader).toHaveBeenCalledTimes(1);
+  });
+  it('groups only the displayed page even when a pair crosses its boundary', async () => {
+    const h = harness(); const original = catalog(1, 26, 17n);
+    const source = { ...original, rows: original.rows.map((row, index): Item => index === 25
+      ? { ...original.rows[24], variant_id: 26, polarity: 'R' } : row) };
+    const loader = vi.fn<typeof loadSourceInventory>(async () => source);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    const name = 'TOYO · Modelo 25 · 75.125 Ah';
+    const group = await screen.findByRole('rowgroup', { name });
+    expect(within(group).getByText('1 variante')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Cantidad Modelo 25 R')).not.toBeInTheDocument();
+    fireEvent.click(within(group).getByRole('button', { name: 'Añadir Modelo 25 L' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Página siguiente' }));
+    const next = screen.getByRole('rowgroup', { name });
+    expect(within(next).getByText('1 variante')).toBeInTheDocument();
+    expect(within(next).queryByLabelText('Cantidad Modelo 25 L')).not.toBeInTheDocument();
+    fireEvent.click(within(next).getByRole('button', { name: 'Añadir Modelo 25 R' }));
+    expect(screen.getByLabelText('Total a transferir')).toHaveTextContent('2 baterías');
+    expect(loader).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('F3 responsive selection contract', () => {
+  it('requests nearest full exposure for focused native table controls', async () => {
+    const h = harness();
+    const loader = vi.fn<typeof loadSourceInventory>(async () => catalog());
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    const button = await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
+    const input = screen.getByLabelText('Cantidad Modelo 1 L');
+    for (const control of [input, button]) {
+      const previous = Object.getOwnPropertyDescriptor(control, 'scrollIntoView');
+      const expose = vi.fn();
+      Object.defineProperty(control, 'scrollIntoView', { configurable: true, value: expose });
+      try {
+        act(() => control.focus());
+        expect(control).toHaveFocus();
+        expect(expose).toHaveBeenCalledExactlyOnceWith({ block: 'nearest', inline: 'nearest' });
+        expect(expose.mock.contexts[0]).toBe(control);
+      } finally {
+        if (previous) Object.defineProperty(control, 'scrollIntoView', previous);
+        else Reflect.deleteProperty(control, 'scrollIntoView');
+      }
+    }
+  });
+  it.each([1, 2])('keeps a single editable selection and truthful review for assignment %s', async assigned => {
+    const h = harness(authority(assigned));
+    const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source, 3, 17n));
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
+    expect(screen.getAllByLabelText('Cantidad Modelo 1 L')).toHaveLength(1);
+    fireEvent.change(screen.getByLabelText('Cantidad Modelo 1 L'), { target: { value: '4' } });
+    fireEvent.click(add());
+    expect(add()).toHaveTextContent('Añadir más');
+    expect(screen.getByText('En la selección: 4')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Aumentar Modelo 1' }));
+    expect(screen.getByLabelText('Cantidad seleccionada Modelo 1')).toHaveValue('5');
+    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'Modelo 3' } });
+    expect(screen.queryByLabelText('Cantidad Modelo 1 L')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Cantidad seleccionada Modelo 1')).toHaveValue('5');
+    fireEvent.click(screen.getByRole('button', { name: 'Añadir Modelo 3 L' }));
+    expect(screen.getByLabelText('Total a transferir')).toHaveTextContent('6');
+    fireEvent.click(screen.getByRole('button', { name: assigned === 1 ? 'Revisar envío' : 'Revisar solicitud' }));
+    const dialog = screen.getByRole('dialog', { name: assigned === 1 ? 'Revisar envío' : 'Revisar solicitud' });
+    expect(within(dialog).getByLabelText('Total a transferir')).toHaveTextContent('6');
+    expect(within(dialog).getByText('5', { selector: 'td' })).toBeVisible();
+    expect(within(dialog).getByRole('columnheader', { name: 'Cantidad a transferir' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: assigned === 1 ? 'Crear envío y reservar' : 'Enviar solicitud' })).toBeEnabled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Volver a editar' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Quitar Modelo 1' }));
+    expect(screen.queryByLabelText('Cantidad seleccionada Modelo 1')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Total a transferir')).toHaveTextContent('1');
+    expect(screen.getByText('Este borrador no reserva ni mueve existencias.')).toBeVisible();
   });
 });
 
@@ -184,7 +314,8 @@ describe('R04b2b workspace', () => {
     fireEvent.change(screen.getByLabelText('Cantidad Modelo 1 L'), { target: { value: '9223372036854775807' } }); fireEvent.click(add());
     fireEvent.change(screen.getByLabelText('Cantidad Modelo 3 L'), { target: { value: '9223372036854775807' } });
     fireEvent.click(screen.getByRole('button', { name: 'Añadir Modelo 3 L' }));
-    expect(screen.getByText('2 variantes · 18446744073709551614 baterías')).toBeVisible();
+    expect(within(screen.getByRole('complementary', { name: 'Carrito de transferencia' })).getByText('2 variantes')).toBeVisible();
+    expect(screen.getByLabelText('Total a transferir')).toHaveTextContent('18446744073709551614 baterías');
     expect(screen.getByRole('button', { name: 'Añadir Modelo 2 R' })).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'Modelo 189' } });
     expect(screen.getByRole('button', { name: 'Añadir Modelo 189 L' })).toBeEnabled();
@@ -390,13 +521,16 @@ describe('A05a terminal original creation replay', () => {
 });
 
 describe('R04b2c2 manual lifecycle', () => {
-  it.each([201, 200])('shows only actual parsed %s reference, string ID and exact UTC then returns to Transfers', async status => {
+  it.each([201, 200])('shows actual parsed %s reference, string ID, readable date and exact evidence then returns to Transfers', async status => {
     const h = harness(); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source)); const back = vi.fn();
     const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply(recordDTO(), status));
     render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={back} />);
     await selectAndReview(); fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' }));
     expect(await screen.findByRole('heading', { name: 'TR-1001' })).toBeVisible();
-    expect(screen.getByText('ID: 1001')).toBeVisible(); expect(screen.getByText(recordDTO().created_at)).toBeVisible();
+    expect(screen.getByText('ID: 1001')).toBeVisible();
+    const time = screen.getByText('29/02/2028 · 08:34 (hora Bolivia)');
+    expect(time).toHaveAttribute('datetime', recordDTO().created_at);
+    expect(time).toHaveAttribute('title', recordDTO().created_at);
     expect(screen.getByText(status === 200 ? 'El servidor devolvió la solicitud original.' : 'El servidor creó la solicitud.')).toBeVisible();
     expect(screen.getByRole('button', { name: /Ver detalle/ })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' })); expect(back).toHaveBeenCalledOnce();

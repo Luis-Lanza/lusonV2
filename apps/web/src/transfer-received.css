@@ -1,0 +1,188 @@
+/* U4b: participant stock-request receipts only; original/workflow panes stay mounted. */
+.transfer-detail.transfer-received-detail { max-width: 920px; color: #242124; }
+.transfer-pending:has(> .received-participant-navigation) { gap: 0; }
+.pending-selected > .received-participant-navigation {
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+  margin-top: -16px;
+  margin-bottom: 0;
+  color: #6B6267;
+}
+.received-participant-navigation > .creation-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+.received-participant-navigation svg { width: 16px; transform: rotate(180deg); }
+.transfer-received-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-bottom: 16px;
+  position: relative;
+  padding-right: 140px;
+}
+.transfer-received-heading h1 { font-size: 24px; line-height: 32px; overflow-wrap: anywhere; }
+.transfer-received-heading > button { position: absolute; right: 0; top: 0; }
+.transfer-received-detail .pending-status.status-received { background: #EDF7F0; color: #22633B; border-color: #BDE2C4; }
+.transfer-received-heading > p { flex-basis: 100%; color: #6B6267; }
+.transfer-received-heading > p span { color: #242124; }
+.transfer-received-detail button { min-height: 44px; height: auto; white-space: normal; }
+.transfer-received-products { border: 1px solid #DED7DA; border-radius: 6px; background: white; overflow: hidden; }
+.transfer-received-products > header { padding: 16px; }
+.transfer-received-products h2 { display: inline; font-size: 16px; font-weight: 600; }
+.transfer-received-products > header > span { color: #6B6267; }
+.received-table table { min-width: 0; width: 100%; table-layout: fixed; }
+.received-table :is(th, td) { height: auto; padding: 12px 16px; white-space: normal; overflow-wrap: anywhere; text-align: center; }
+.received-table thead th { padding: 10px 16px; background: #FCFAFB; font-size: 11px; text-transform: uppercase; color: #6B6267; }
+.received-table :is(th, td):first-child { width: 30%; text-align: left; }
+.received-table small { display: block; font-size: 12px; color: #6B6267; }
+.received-table tfoot { background: #FAF7F8; font-weight: 600; }
+.received-table .received-discrepant { background: #FFFDF5; }
+.received-difference, .received-matched { display: block; font-size: 12px; }
+.received-difference { color: #925400; }
+.received-matched { color: #22763B; }
+.received-table .received-corrected { color: #7A1F3D; margin-top: 4px; }
+.received-scope, .transfer-received-products > footer, .received-unavailable,
+.transfer-received-products > p[role], .transfer-received-products > .transfer-decision-actions { padding: 12px 16px; }
+.received-scope { display: flex; align-items: flex-start; gap: 8px; color: #6B6267; border-top: 1px solid #DED7DA; }
+.received-scope svg { flex: 0 0 16px; }
+.transfer-received-products > footer { border-top: 1px solid #DED7DA; }
+.transfer-received-products > footer p { color: #925400; font-size: 12px; }
+/* Confirmed results share one admitted snapshot; quantities keep their own meaning. */
+.transfer-received-heading .received-result-badge,
+.received-table .received-corrected {
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px 8px;
+  border: 1px solid #DED7DA;
+  border-radius: 4px;
+  background: #F4E9EE;
+  color: #7A1F3D;
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.transfer-received-heading .received-result-badge { border-radius: 20px; padding: 6px 12px; }
+.received-table .received-result-applied { background: #FCF7FA; }
+.received-result-differences .received-difference,
+.transfer-received-products:has(.received-result-provenance) .received-table :is(.received-difference, .received-matched) {
+  display: inline-block;
+  max-width: 100%;
+  padding: 3px 6px;
+  border: 1px solid #BDE2C4;
+  border-radius: 4px;
+  background: #EDF7F0;
+}
+.received-result-differences .received-difference,
+.transfer-received-products:has(.received-result-provenance) .received-table .received-difference {
+  border-color: #F1CE75;
+  background: #FFF7D6;
+}
+.transfer-received-products > footer .received-result-provenance .count-evidence {
+  margin: 0 0 12px;
+  padding-left: 12px;
+  border-left: 3px solid #22763B;
+  color: #242124;
+  font-size: 14px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.received-result-provenance .count-evidence strong { display: block; font-weight: 600; }
+.received-result-provenance .count-evidence > span { display: block; color: #6B6267; font-size: 12px; }
+.transfer-received-products > footer .received-result-provenance .count-evidence-rejected { border-left-color: #7A1F3D; }
+.received-result-band { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 16px; }
+.received-result-summary { min-width: 0; }
+.received-result-band > .received-management { margin-top: 0; max-width: 100%; }
+@media (min-width: 768px) {
+  .transfer-received-products:has(.received-result-provenance) .received-table :is(th, td):last-child {
+    width: 24%;
+    padding-inline: 10px;
+  }
+}
+@media (max-width: 767px) {
+  .received-result-band { grid-template-columns: minmax(0, 1fr); }
+}
+.transfer-received-detail > .transfer-receipt-overview { margin-top: 24px; }
+.transfer-received-detail > .transfer-detail-grid { display: block; }
+.transfer-received-detail .transfer-detail-outcome:empty { display: none; }
+.transfer-received-detail > .transfer-detail-grid > div { min-width: 0; }
+/* Original evidence is secondary; management and recovery remain outside. */
+.transfer-received-detail > .received-original-footer { border-top: 1px solid #DED7DA; margin-top: 16px; }
+.received-original > summary {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 44px;
+  padding: 12px 0;
+  color: #7A1F3D;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.received-original > summary:focus-visible { outline: 2px solid #7A1F3D; outline-offset: 3px; border-radius: 2px; }
+.received-original > .transfer-receipt-overview { margin-bottom: 16px; }
+.received-original .transfer-outcome-metrics { min-width: 0; }
+.received-original .transfer-outcome-metrics :is(dl, dd) { min-width: 0; overflow-wrap: anywhere; }
+/* Preserve the workflow grids while routine groups remain mounted. */
+.count-corrections[hidden], .transfer-restitutions[hidden] { display: none; }
+:is(.count-corrections, .transfer-restitutions) > .workflow-routine:not([hidden]) { display: contents; }
+/* The menu occupies blank space below the table, never an overlay. */
+.received-management { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; margin-top: 12px; }
+.received-management > button { color: #7A1F3D; border-color: #7A1F3D; }
+.received-management [role="menu"] {
+  width: min(340px, 100%);
+  padding: 8px;
+  border: 1px solid #DED7DA;
+  border-radius: 6px;
+  background: white;
+  box-shadow: 0 6px 12px #24212414;
+}
+.received-management [role="menuitem"] {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  border: 0;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.received-management [role="menuitem"]:focus-visible { outline: 2px solid #7A1F3D; outline-offset: -2px; }
+/* Normal-flow mobile shell is owned only while this received detail is present.
+   Keep every navigation item, account identity and logout control. */
+@media (max-width: 767px) {
+  .app-shell:has(.transfer-received-detail) > .sidebar {
+    position: static;
+    inset: auto;
+    width: auto;
+    padding: 16px;
+    gap: 12px;
+    border-right: 0;
+    border-bottom: 1px solid #DED7DA;
+  }
+  .app-shell:has(.transfer-received-detail) > .app-header {
+    position: static;
+    inset: auto;
+    height: auto;
+    min-height: 56px;
+    padding: 16px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .app-shell:has(.transfer-received-detail) > .inventory-main { margin-left: 0; padding: 16px; min-height: auto; }
+}
+@media (max-width: 600px) {
+  .transfer-received-heading { padding-right: 0; }
+  .transfer-received-heading > button { position: static; }
+  .transfer-received-products > header > span { display: block; margin-top: 4px; }
+  .received-table table, .received-table tbody, .received-table tfoot { display: block; width: 100%; }
+  .received-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .received-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 16px; gap: 10px 16px; border-top: 1px solid #DED7DA; }
+  .transfer-received-detail .received-table :is(th, td) { display: block; min-width: 0; width: auto; padding: 0; border: 0; text-align: left; }
+  .received-table :is(th, td):first-child { grid-column: 1 / -1; width: auto; }
+  .received-table td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 4px; font-size: 12px; color: #6B6267; }
+  .transfer-received-detail { overflow-wrap: anywhere; }
+}

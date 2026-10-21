@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { TransferAuthority } from './useInventory';
 import { useTransfers } from './useTransfers';
 import { transferQuantityTotal, type TransferRecord } from './transferModel';
 import TransferDetail, { detailAuthority, type DetailController, type StockAdvice } from './TransferDetail';
 import TransferDecision from './TransferDecision';
+import { Icon } from './icons';
 import TransferDispatch from './TransferDispatch';
 import TransferReceipt from './TransferReceipt';
 import TransferCancellation from './TransferCancellation';
 import { useTransferCountCorrections } from './useTransferCountCorrections';
+import { isTransferFocusTarget, type TransferModalFocusBinding } from './transferModalFocus';
 
 // No session or CSRF retained in routing state. Epoch changes invalidate this tag.
 export function transferViewOwner(authority: TransferAuthority): string | null {
@@ -28,23 +30,30 @@ function kindLabel(record: TransferRecord) {
   if (record.kind === 'send_to_warehouse') return 'Propuesta de envío a Almacén';
   return record.origin_location_id === 1 ? 'Solicitud a Almacén' : 'Solicitud entre sucursales';
 }
+function unitsLabel(quantity: bigint) { return `${quantity.toString()} ${quantity === 1n ? 'unidad' : 'unidades'}`; }
 function statusLabel(record: TransferRecord) {
   return record.status === 'pending' ? 'Pendiente de aprobación' : record.status === 'approved' ? record.kind === 'direct_shipment' ? 'Pendiente de despacho' : 'Aprobada' : record.status === 'in_transit' ? 'En tránsito' : record.status === 'received' ? 'Recibida' : record.status === 'cancelled' ? 'Cancelada' : 'Rechazada';
 }
 function Status({ record }: { record: TransferRecord }) { return <span className={`pending-status status-${record.status}`}>{statusLabel(record)}</span>; }
 const statusOptions = [
-  { value: 'pending', label: 'Pendientes', plural: 'pendientes' },
-  { value: 'approved', label: 'Aprobadas', plural: 'aprobadas' },
-  { value: 'rejected', label: 'Rechazadas', plural: 'rechazadas' },
-  { value: 'in_transit', label: 'En tránsito', plural: 'en tránsito' },
-  { value: 'received', label: 'Recibidas', plural: 'recibidas' },
-  { value: 'cancelled', label: 'Canceladas', plural: 'canceladas' },
+  { value: 'pending', label: 'Pendientes', plural: 'pendientes', singular: 'pendiente' },
+  { value: 'approved', label: 'Aprobadas', plural: 'aprobadas', singular: 'aprobada' },
+  { value: 'rejected', label: 'Rechazadas', plural: 'rechazadas', singular: 'rechazada' },
+  { value: 'in_transit', label: 'En tránsito', plural: 'en tránsito', singular: 'en tránsito' },
+  { value: 'received', label: 'Recibidas', plural: 'recibidas', singular: 'recibida' },
+  { value: 'cancelled', label: 'Canceladas', plural: 'canceladas', singular: 'cancelada' },
 ] as const;
 export default function TransferPending(props: TransferPendingProps) {
   const authority = props.controller.getTransferAuthority();
   const permitted = transferViewOwner(authority) === props.ownerTag;
   const transfers = useTransfers({ controller: props.controller, listEnabled: permitted, detailEnabled: permitted, countsEnabled: permitted });
   const consumed = useRef(false);
+  const detailPane = useRef<HTMLElement>(null);
+  const detailBack = useRef<HTMLButtonElement>(null);
+  const focusMounted = useRef(false);
+  const focusScope = useRef({ id: null as string | null, fence: '', blocked: false, token: {} });
+  const focusLatest = useRef({ props, selected: null as string | null, fence: '', available: false });
+  useLayoutEffect(() => { focusMounted.current = true; return () => { focusMounted.current = false; }; }, []);
   const [masked, setMasked] = useState<{ fence: string; id: string } | null>(null);
   const [stock, setStock] = useState<{ fence: string; id: string; advice: StockAdvice } | null>(null);
   const receiveStock = useCallback((advice: StockAdvice, id: string) => {
@@ -79,6 +88,8 @@ export default function TransferPending(props: TransferPendingProps) {
         : detail?.status === 'received' ? detail
     : receiptResult?.id === selected ? receiptResult : dispatchResult?.id === selected ? dispatchResult
       : detail?.status === 'in_transit' ? detail : decision?.result?.id === selected ? decision.result : detail;
+  if (focusScope.current.id !== selected || focusScope.current.fence !== fence) focusScope.current = { id: selected, fence, blocked: false, token: {} };
+  focusLatest.current = { props, selected, fence, available: !!record && record.id === selected && !privateUnavailable && !transfers.detailError };
   // Use the very same authoritative record as the detail, including a just-confirmed receipt.
   const actor = authority.session?.authenticated ? authority.session.identity.location.id : null;
   // Match TransferDetail's mount-bound fence: a retired private pane must not read history.
@@ -88,6 +99,19 @@ export default function TransferPending(props: TransferPendingProps) {
   const correctionRequestID = correctionsEnabled ? record.id : null;
   const corrections = useTransferCountCorrections({ controller: props.controller,
     requestID: correctionRequestID, enabled: correctionsEnabled });
+  const modalFocus: TransferModalFocusBinding = {
+    scope: focusScope.current.token,
+    restore: request => {
+      const now = focusLatest.current;
+      const scope = focusScope.current;
+      if (!focusMounted.current || scope.blocked || scope.token !== request.scope
+        || !now.available || now.selected !== request.id || now.fence !== request.fence) return;
+      if (detailAuthority(now.props.controller) !== request.fence || transferViewOwner(now.props.controller.getTransferAuthority()) !== now.props.ownerTag) return;
+      const target = isTransferFocusTarget(request.trigger) && detailPane.current?.contains(request.trigger)
+        ? request.trigger : detailBack.current;
+      if (isTransferFocusTarget(target) && detailPane.current?.contains(target)) target.focus();
+    },
+  };
   if (!permitted) return <section className="transfer-pending"><p role="status">Verificando acceso a transferencias…</p></section>;
   const page = transfers.page;
   const unavailable = transfers.detailError;
@@ -96,55 +120,76 @@ export default function TransferPending(props: TransferPendingProps) {
   const countsBusy = transfers.countsBusy;
   const countsError = transfers.countsError;
   const warehouse = authority.session?.authenticated && authority.session.identity.location.id === 1;
+  const pendingParticipant = record?.status === 'pending' && record.kind !== 'direct_shipment'
+    && (actor === record.origin_location_id || actor === record.destination_location_id);
+  const approvedParticipant = record?.status === 'approved'
+    && (actor === record.origin_location_id || actor === record.destination_location_id);
+  const transitParticipant = record?.status === 'in_transit'
+    && (actor === record.origin_location_id || actor === record.destination_location_id);
+  const receivedParticipant = record?.status === 'received'
+    && (actor === record.origin_location_id || actor === record.destination_location_id);
+  const closedParticipant = (record?.status === 'cancelled' || record?.status === 'rejected' && record.kind !== 'direct_shipment')
+    && (actor === record.origin_location_id || actor === record.destination_location_id);
+  const compactDetail = pendingParticipant || approvedParticipant || transitParticipant || receivedParticipant || closedParticipant;
   const queryPage = transfers.query.page ?? 1;
   const size = transfers.query.page_size ?? 25;
   const status = transfers.query.status ?? 'pending';
-  const plural = statusOptions.find(option => option.value === status)!.plural;
+  const { plural, singular } = statusOptions.find(option => option.value === status)!;
   const approverLabel = (row: TransferRecord) => row.status === 'pending' ? 'Requiere aprobación de' : 'Ubicación aprobadora';
-  const open = (row: TransferRecord) => { if (current()) transfers.selectDetail(row.id); };
-  const back = () => { if (current()) transfers.selectDetail(null); };
-  const inventory = () => { if (current()) props.onInventory(); };
+  const open = (row: TransferRecord) => { if (current()) { focusScope.current.blocked = true; transfers.selectDetail(row.id); } };
+  const back = () => { if (current()) { focusScope.current.blocked = true; transfers.selectDetail(null); } };
+  const inventory = () => { if (current()) { focusScope.current.blocked = true; props.onInventory(); } };
   // This is the selected-status participant total, not the independent Pending/action counters.
-  const pageCount = <p className="pending-count" aria-live="polite">{page ? `${page.total_count.toString()} solicitudes ${plural}` : `Consultando solicitudes ${plural}…`}</p>;
-  return <section className={'transfer-pending' + (warehouse ? ' pending-warehouse' : '')} aria-labelledby="pending-title">
+  const pageCount = <p className="pending-count" aria-live="polite">{page ? `${page.total_count.toString()} ${page.total_count === 1n ? `solicitud ${singular}` : `solicitudes ${plural}`}` : `Consultando solicitudes ${plural}…`}</p>;
+  const counters = <section className="transfer-request-counters" aria-label="Contadores de solicitudes" aria-live="polite" aria-busy={countsBusy}>
+    {counts && !countsBusy && !countsError ? <dl>
+      <div><dt>Pendientes de tu ubicación</dt><dd>{counts.pending_total.toString()}</dd></div>
+      <div><dt>Acciones requeridas</dt><dd>{counts.action_count.toString()}</dd></div>
+    </dl> : <p>{countsError ? 'Contadores no disponibles.' : 'Consultando contadores…'}</p>}
+    <details className="pending-counter-help"><summary>Sobre los totales</summary>
+      <small>Totales independientes del filtro: pendientes de tu ubicación y acciones asignadas (aprobar, despachar o recibir).</small>
+    </details>
+  </section>;
+  return <section ref={detailPane} className={'transfer-pending' + (warehouse ? ' pending-warehouse' : '') + (selected ? ' pending-selected' : ' pending-list')}
+    aria-labelledby={selected ? undefined : 'pending-title'} aria-label={selected ? 'Detalle de transferencia' : undefined}>
+    {selected ? <nav className={`pending-detail-navigation${pendingParticipant ? ' pending-approver-navigation' : approvedParticipant || closedParticipant ? ' approved-origin-navigation' : transitParticipant ? ' transit-destination-navigation' : receivedParticipant ? ' received-participant-navigation' : ''}`} aria-label="Navegación de transferencia">
+      <button ref={detailBack} type="button" className="creation-back" onClick={back}>{compactDetail && <Icon name="arrow" />}Volver a {plural}</button>
+      {compactDetail && <span aria-hidden="true">·</span>}
+      <button type="button" className="creation-back" onClick={inventory}>Volver al inventario</button>
+    </nav> : <>
     <button type="button" className="creation-back" onClick={inventory}>Volver al inventario</button>
-    <header className="pending-heading"><div><h1 id="pending-title">{selected ? 'Detalle de solicitud' : `Transferencias ${plural}`}</h1>
-      <p>{selected ? 'El detalle muestra el estado actual de la solicitud.' : `Solicitudes ${plural} de tu ubicación asignada.`} La consulta de inventario no cambia los participantes.</p></div>
-      {!selected ? <div className="pending-heading-actions">
+    <header className="pending-heading"><div><h1 id="pending-title" aria-label={`Transferencias ${plural}`}>Transferencias<span className="sr-only"> {plural}</span></h1>
+      <p>Consultá las transferencias de tu ubicación asignada.</p></div>
+      <div className="pending-heading-actions">
         <button type="button" className="primary transfer-cta" disabled={!props.creationAvailable || !props.onCreate} onClick={() => {
           const latest = props.controller.getTransferAuthority();
           if (current() && latest.session?.authenticated && [1, 2, 3].includes(latest.session.identity.location.id)
             && props.creationAvailable) props.onCreate?.();
-        }}>Nueva transferencia</button>
+        }}>{warehouse ? 'Crear envío' : 'Nueva transferencia'}</button>
         {pageCount}
-      </div> : pageCount}
+      </div>
     </header>
-    <section className="transfer-request-counters" aria-label="Contadores de solicitudes" aria-live="polite" aria-busy={countsBusy}>
-      {counts && !countsBusy && !countsError ? <dl>
-        <div><dt>Pendientes de tu ubicación</dt><dd>{counts.pending_total.toString()}</dd></div>
-        <div><dt>Acciones requeridas</dt><dd>{counts.action_count.toString()}</dd></div>
-      </dl> : <p>{countsError ? 'Contadores no disponibles.' : 'Consultando contadores…'}</p>}
-      <small>Pendientes participantes y acciones asignadas: aprobar, despachar o recibir. Consulta independiente del listado.</small>
-    </section>
+    {counters}
+    </>}
     {selected ? <>
-      <button type="button" className="creation-back" onClick={back}>Volver a {plural}</button>
       {transfers.detailBusy && <p role="status">Consultando solicitud…</p>}
       {(unavailable || privateUnavailable) && <div role="alert" className="message"><p>{privateUnavailable || unavailable?.code === 'not_found' || unavailable?.status === 403 ? 'La solicitud no está disponible.' : 'No se pudo consultar la solicitud.'}</p>
         <button type="button" onClick={() => { if (current()) { setMasked(null); transfers.retryDetail(); } }}>Reintentar detalle</button></div>}
-      <TransferDecision controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record}
+      <TransferDecision controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record} modalFocus={modalFocus}
         stock={stock?.fence === fence && stock.id === record?.id ? stock.advice : { catalog: null, busy: false, unavailable: true }}
         onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
         onStockRefresh={() => { if (current()) setStockRefresh(value => value + 1); }}
-        renderDetail={actions => <TransferDispatch controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record}
+        renderDetail={actions => <TransferDispatch controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record} modalFocus={modalFocus}
           onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
-          renderDetail={dispatchActions => <TransferReceipt controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record}
+          renderDetail={dispatchActions => <TransferReceipt controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record} modalFocus={modalFocus}
             onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
-            renderDetail={receiptActions => <TransferCancellation controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record}
+            renderDetail={receiptActions => <TransferCancellation controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record} modalFocus={modalFocus}
               onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
               renderDetail={cancellationActions => record && <TransferDetail controller={props.controller} ownerTag={props.ownerTag} record={record}
                 corrections={corrections} correctionRequestID={correctionRequestID} correctionsEnabled={correctionsEnabled}
                 restitutionRequestID={correctionRequestID} restitutionsEnabled={correctionsEnabled}
                 onStock={receiveStock} stockRefresh={stockRefresh} actions={() => <>{actions}{dispatchActions}{receiptActions}{cancellationActions}</>} />} />} />} />} />
+      {!compactDetail && counters}
     </> : <>
       <div className="transfer-status-toolbar">
         <label htmlFor="transfer-status">Estado de transferencia</label>
@@ -157,6 +202,7 @@ export default function TransferPending(props: TransferPendingProps) {
       <TransferDispatch controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} />
       <TransferReceipt controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} />
       <TransferCancellation controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} />
+      <section className="pending-results" aria-label="Listado de transferencias">
       {transfers.listBusy && <p role="status">Actualizando solicitudes {plural}…</p>}
       {listError && <div role="alert" className="message"><p>{status === 'pending' ? 'No se pudieron consultar las solicitudes.' : `No se pudieron consultar las solicitudes ${plural}.`}</p>
         <button type="button" onClick={() => { if (current()) transfers.retryList(); }}>Reintentar {plural}</button></div>}
@@ -170,14 +216,24 @@ export default function TransferPending(props: TransferPendingProps) {
             <td><button type="button" onClick={() => open(row)} aria-label={`Ver detalle ${row.reference}`}>Ver detalle</button></td></tr>)}</tbody>
         </table></div>
         {warehouse && <div className="pending-cards">{page.records.map(row => <article key={row.id}>
-          <header><h2>{row.reference}</h2><span>{transferQuantityTotal(row).toString()} unidades</span></header><p>{kindLabel(row)}</p><Status record={row} />
-          <p>{row.origin_location_name} → {row.destination_location_name}</p>
-          <p>Ubicación creadora: {row.creator_location_name}</p><p>{approverLabel(row)}: {row.approver_location_name}</p>
-          <ul>{row.items.map(item => <li key={item.variant_id}>{item.brand} · {item.model} · {item.capacity_ah} Ah · {item.polarity} · {item.quantity.toString()} unidades</li>)}</ul>
+          <header><div className="pending-card-identity"><h2>{row.reference}</h2>
+            <span className="pending-flow" title={kindLabel(row)}>{row.kind === 'direct_shipment' ? 'Envío directo' : row.kind === 'send_to_warehouse' ? 'Envío a Almacén' : kindLabel(row)}</span></div>
+            <span className="pending-unit-total">{unitsLabel(transferQuantityTotal(row))}</span></header>
+          <Status record={row} />
+          <div className="pending-card-route"><p><span>Ruta:</span> {row.origin_location_name} → {row.destination_location_name}</p>
+            <div className="pending-card-participants"><p>Ubicación creadora: <strong>{row.creator_location_name}</strong></p>
+              <p>{approverLabel(row)}: <strong>{row.approver_location_name}</strong></p></div>
+          </div>
+          <section className="pending-card-variants"><h3>Detalle del envío ({row.items.length} {row.items.length === 1 ? 'variante' : 'variantes'})</h3>
+            <ul>{row.items.map(item => <li key={item.variant_id}>
+              <span>{item.brand} · {item.model} · {item.capacity_ah} Ah · <span className="polarity">{item.polarity}</span></span>
+              <strong className="pending-variant-quantity">{unitsLabel(item.quantity)}</strong>
+            </li>)}</ul>
+          </section>
           <button type="button" onClick={() => open(row)} aria-label={`Ver detalle móvil ${row.reference}`}>Ver detalle</button>
         </article>)}</div>}
       </>}
-      <footer className="pager"><form className="page-controls" onSubmit={event => {
+      <footer className="pager" aria-label="Paginación de transferencias"><form className="page-controls" onSubmit={event => {
         event.preventDefault();
         if (!current()) return;
         const value = new FormData(event.currentTarget).get('pending-page');
@@ -196,6 +252,7 @@ export default function TransferPending(props: TransferPendingProps) {
         <button type="button" disabled={!page || queryPage >= 1000000 || BigInt(queryPage) * BigInt(size) >= page.total_count}
           onClick={() => { if (current() && page && queryPage < 1000000 && BigInt(queryPage) * BigInt(size) < page.total_count) transfers.changeQuery({ page: queryPage + 1 }); }}>Siguiente {plural}</button>
       </div></footer>
+      </section>
     </>}
   </section>;
 }

@@ -1,19 +1,80 @@
-# Luson login and read-only inventory
+# Luson inventory and transfers
 
-React and Go provide private login and read-only consultation for all three
-locations. L05 provides compiled same-origin assets, private file configuration
-and two-service Compose. Independent local fictional deployment verification is
-**PASS**, including real HTTPS/browser/persistence checks; this is not operational
-acceptance. Transfers and a real stock importer are not implemented.
+Luson combines a Go API and PostgreSQL with a React/TypeScript frontend for
+private login, inventory consultation and transfers across Almacén, Sucursal A
+and Sucursal B. The frontend uses the existing authenticated backend contracts;
+a consulted inventory location does not change the account's assigned authority.
 
-Start with [local deployment](docs/local-deployment.md), then
-[L05 check status](docs/l05-checks.md) and the
-[inventory API contract](apps/api/docs/inventory-api.md). L01–L04 independently
-passed; their PostgreSQL bindings are historical and retired.
+## Implemented workflows
 
-## Current verification status
+- Consult inventory across the three locations, with filters and pagination.
+- Create stock requests (`request_stock`), branch proposals to send stock to the
+  warehouse (`send_to_warehouse`), and direct warehouse shipments to branches
+  (`direct_shipment`).
+- Browse transfer statuses and details; approve or reject proposals, dispatch,
+  receive, or cancel before dispatch where the actor and current state permit.
+  Direct shipments are authorized and reserved at creation, not approved later.
+- Record receipt quantities and use the received-line count-correction and
+  restitution workflows, preserving original receipt evidence.
 
-Verifier `muxiytmn-2n-of93` passed all seven commands: 107 frontend tests with
+See the [inventory API contract](apps/api/docs/inventory-api.md) and
+[transfer API contract](apps/api/docs/transfers-api.md) for backend rules.
+Frontend composition is in [App](apps/web/src/App.tsx) and
+[TransferPending](apps/web/src/TransferPending.tsx), including the reachable
+lifecycle, receipt, count-correction and restitution views. Contract documents
+may retain earlier slice exclusions; frontend composition shows the integrated UI.
+
+## Repository map
+
+| Path | Purpose |
+| --- | --- |
+| `apps/api/` | Go backend, PostgreSQL migrations, fixtures and API contracts |
+| `apps/web/` | React/TypeScript frontend and frontend tests |
+| `docs/` | Operational setup and historical verification documentation |
+| `odd/tasks/` | Feature plans, scope and delivery evidence |
+| `odd/design/` | Optional local design exports; not required to build or verify |
+
+Start with [local deployment](docs/local-deployment.md) for configuration and
+[historical L05 checks](docs/l05-checks.md) for the original deployment evidence.
+The [transfer UI publication task](odd/tasks/publish-transfer-ui.md) records the
+bounded verification and publication work; it is not a general deployment guide.
+
+## Verification and local-test status
+
+Manual acceptance of the integrated transfer flows was reported by the user in
+a local test environment, not a production deployment. The transfer UI
+publication checks separately passed 2,570 frontend tests across 36 files,
+79 focused creation tests, TypeScript checking and a frontend build. These are
+recorded checks for that delivery milestone, not a guarantee for future changes
+or a new automated browser end-to-end run. They do not establish production
+readiness, real-stock reconciliation or operational rollout acceptance.
+
+### Frontend verification quick path
+
+With frontend dependencies already available, run from the repository root:
+
+```sh
+npm --prefix apps/web test
+npm --prefix apps/web run typecheck
+npm --prefix apps/web run build
+```
+
+These commands run Vitest, TypeScript checking, and the compiled frontend build.
+They can write workspace caches and build outputs. By themselves they do not
+update an already-running frozen manual-test environment or its database, nor
+do they deploy the generated assets. Keep verification separate from that
+running environment. Dependency installation, runtime startup and database
+changes require separate instructions; none is part of this quick path.
+
+## Historical L01–L05 verification status
+
+L01–L04 independently passed; their PostgreSQL bindings are historical and
+retired. L05 added compiled same-origin assets, private file configuration and
+two-service Compose. Its independent fictional local deployment verification
+passed real HTTPS/browser/persistence checks, not operational acceptance.
+Transfers and a real-stock importer were outside that historical slice.
+
+The L05 verifier passed all seven commands: 107 frontend tests with
 no skips, Go webui/config and three CLI packages, vet, typecheck, build and the
 real Compose runtime. Acceptance covered exactly app/db, private NSS-trusted
 TLS without host installation or certificate bypass, nine hidden PTY inputs,
@@ -23,8 +84,8 @@ cookie/session**, stock and checksums; bootstrap replay refusal and expiry passe
 
 The parent completed owned test-resource cleanup and retired the manifest.
 Reruns need a newly authorized fixture, not a historical binding. Real stock,
-operator provisioning/certificates, hosting/network rollout and backups remain
-out of scope. No pixel-perfect claim is made.
+operator provisioning/certificates, hosting/network rollout and backups were
+out of scope for L05. No pixel-perfect claim is made.
 
 ## Authentication setup
 
@@ -45,7 +106,7 @@ out of scope. No pixel-perfect claim is made.
    existing complete **or partial** accounts; replay never changes accounts or
    balances. The CLI does not initialize trial data. Production schema-only
    initialization cannot create accounts until legitimate locations exist;
-   there is no operational stock importer in this slice.
+   real-stock importing was outside the historical L01–L05 slice.
 4. Set explicit `LUSON_ORIGIN`, `LUSON_LISTEN` and `LUSON_WEB_DIR` (the compiled
    `apps/web/dist` directory), then run `go run ./cmd/server`.
    For an explicit `local-trial` only, `http://localhost:8080` and
@@ -58,7 +119,8 @@ out of scope. No pixel-perfect claim is made.
 
 The server calls `bootstrap.Initialize(ctx, pool, profile)` once on startup.
 It does not provision accounts, overwrite balances, serve fake business/health
-responses or expose registration, reset, admin or inventory write routes.
+responses or expose registration, reset, admin or direct inventory write routes.
+Transfer mutations use their separate authenticated API contract.
 Compiled public assets are composed outside the API mux; unknown paths never
 become the SPA index. The runtime image contains no frontend development server.
 
@@ -209,9 +271,10 @@ Missing URLs, invalid PostgreSQL URLs, and unsupported/missing profiles are
 rejected. CLI errors deliberately omit driver details because those can expose
 connection data. `check` verifies migration tracking and accepts either a wholly
 empty data schema or a complete initialized dataset; it never repairs or seeds.
-There is no reset, drop, backfill, or real-stock import command.
+The historical foundation workflow above does not cover reset, drop, backfill
+or real-stock import.
 
-For later server integration, `bootstrap.Initialize(ctx, pool, profile)` is the
+For server integration, `bootstrap.Initialize(ctx, pool, profile)` is the
 entry point. `db.Apply` and `bootstrap.Seed` are separate transactional functions.
 Schema application can commit independently of a failed seed; no partial seed
 can commit. Both acquire the same transaction-scoped PostgreSQL advisory lock,
@@ -272,5 +335,5 @@ The tests cover exact source counts/decimals, configuration safety, invalid
 quantities, schema/seed rollback, SQL constraints, migration drift, production
 seed rejection, replay preservation, incomplete-data refusal, and eight
 concurrent initializers. L05 independently passed durable-volume recreation and
-real browser checks for the isolated fictional trial (see current status above).
+real browser checks for the isolated fictional trial (see historical status above).
 The isolated tmpfs test container and named deployment volume are not backups.

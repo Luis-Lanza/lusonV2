@@ -1,0 +1,316 @@
+/* Pending stock requests and warehouse proposals: participant detail and decision review. */
+.transfer-detail.transfer-pending-detail {
+  max-width: 920px;
+  color: #242124;
+}
+.transfer-pending-detail .transfer-pending-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 20px;
+  margin-bottom: 16px;
+  position: relative;
+  padding-right: 140px;
+}
+.transfer-pending-heading > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.transfer-pending-heading h1 {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 32px;
+  overflow-wrap: anywhere;
+}
+.transfer-pending-heading > p {
+  flex-basis: 100%;
+  color: #6B6267;
+}
+.transfer-pending-heading > p span {
+  color: #242124;
+}
+.transfer-pending-heading > button {
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+.transfer-pending-detail button,
+.transfer-pending-advice > p {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.transfer-pending-detail svg { flex-shrink: 0; }
+.transfer-pending-advice > p { display: flex; }
+.transfer-pending-heading .pending-status {
+  padding: 3px 10px;
+  border-radius: 20px;
+  font-weight: 500;
+}
+.transfer-pending:has(> .pending-approver-navigation) { gap: 0; }
+.pending-selected > .pending-approver-navigation {
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+  margin-top: -16px;
+  margin-bottom: 0;
+  color: #6B6267;
+}
+.pending-selected > .pending-approver-navigation > .creation-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+.pending-approver-navigation svg { width: 16px; transform: rotate(180deg); }
+.transfer-pending-detail button,
+.transfer-pending-confirmation button {
+  min-height: 44px;
+  height: auto;
+  border-radius: 4px;
+  white-space: normal;
+}
+.transfer-pending-products {
+  min-width: 0;
+  background: white;
+  border: 1px solid #DED7DA;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.transfer-pending-products > header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 6px 16px;
+}
+.transfer-pending-products h2 {
+  display: inline;
+  font-size: 16px;
+  font-weight: 600;
+}
+.transfer-pending-products > header span {
+  color: #6B6267;
+}
+.transfer-pending-products > header button {
+  color: #7A1F3D;
+  border-color: transparent;
+  background: transparent;
+}
+.transfer-pending-products .transfer-detail-items {
+  border-radius: 0;
+  border-width: 1px 0 0;
+}
+.transfer-pending-products .transfer-detail-items td {
+  padding: 12px 16px;
+  font-size: 14px;
+}
+.transfer-pending-products .transfer-detail-items td strong { font-weight: 500; }
+.transfer-pending-products .transfer-detail-items td small { font-size: 12px; }
+.transfer-pending-products .transfer-detail-items th { height: 36px; padding: 0 16px; }
+.transfer-pending-products .transfer-detail-items th {
+  background: #F8F6F4;
+  text-transform: uppercase;
+  font-size: 12px;
+}
+.transfer-pending-products .transfer-detail-items :is(th, td):nth-child(n + 3) {
+  text-align: center;
+}
+.transfer-pending-products .transfer-detail-items tfoot {
+  font-weight: 400;
+  color: #6B6267;
+}
+.transfer-pending-advice {
+  padding: 7px 16px;
+  border-top: 1px solid #DED7DA;
+  background: #F8F6F4;
+  color: #6B6267;
+}
+.transfer-pending-advice [role="alert"] {
+  margin-top: 8px;
+  color: #991515;
+}
+.transfer-pending-products > footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border-top: 1px solid #DED7DA;
+}
+.transfer-pending-products > footer > p {
+  color: #6B6267;
+  flex: 1 1 240px;
+}
+.transfer-pending-products .transfer-decision-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 12px;
+}
+.transfer-pending-products .transfer-decision-actions button {
+  width: auto;
+  padding: 10px 20px;
+}
+.transfer-pending-products .transfer-decision-actions .primary {
+  order: 2;
+}
+.transfer-pending-products .transfer-decision-actions .transfer-reject {
+  color: #242124;
+  border-color: #DED7DA;
+}
+.transfer-pending-products .transfer-decision-actions p {
+  display: none; /* The confirmation itself describes the effects. */
+}
+.transfer-pending-detail > .transfer-history {
+  margin-top: 20px;
+}
+.transfer-decision-modal.transfer-pending-confirmation {
+  width: min(640px, 100%);
+}
+.transfer-decision-modal.transfer-pending-confirmation > header {
+  border-bottom: 0;
+  padding: 24px 24px 0;
+}
+.transfer-decision-modal.transfer-pending-confirmation > header h2 { font-size: 20px; line-height: 24px; font-weight: 600; }
+.transfer-pending-confirmation > header > button { padding: 0; min-width: 44px; border: 0; background: transparent; }
+.transfer-pending-confirmation .transfer-decision-body { padding: 20px 24px; gap: 16px; }
+.transfer-pending-confirmation .transfer-detail-items table {
+  min-width: 0;
+  table-layout: fixed;
+}
+.transfer-pending-confirmation .transfer-detail-items :is(th, td) {
+  padding: 10px 12px;
+  height: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.transfer-pending-confirmation .transfer-detail-items th {
+  text-transform: uppercase;
+  font-size: 11px;
+  padding: 8px 12px;
+  background: #F8F6F4;
+}
+.transfer-pending-confirmation th:first-child { width: 43%; }
+.transfer-pending-confirmation th:nth-child(2) { width: 32%; }
+.transfer-pending-confirmation .transfer-detail-items :is(th, td):last-child { text-align: right; }
+.transfer-pending-confirmation .transfer-detail-items tbody td { height: 44px; }
+.transfer-pending-confirmation .transfer-impact {
+  padding: 12px;
+  font-size: 13px;
+  background: #F8F6F4;
+  border-color: #DED7DA;
+  border-left: 3px solid #7A1F3D;
+}
+.transfer-pending-confirmation .transfer-impact > p { display: flex; align-items: center; gap: 8px; }
+.transfer-pending-confirmation .transfer-impact svg { width: 14px; height: 14px; flex-shrink: 0; color: #7A1F3D; }
+.transfer-pending-confirmation .transfer-impact ul { margin-top: 8px; padding-left: 14px; list-style: disc; }
+.transfer-pending-confirmation .transfer-impact li + li { margin-top: 4px; }
+.transfer-pending-confirmation .transfer-impact li:last-child { color: #6B6267; }
+.transfer-pending-confirmation .transfer-impact li.transfer-impact-warning { color: #7A1F3D; }
+.transfer-pending-confirmation.transfer-pending-reject .transfer-impact {
+  border-left-color: #991515;
+}
+.transfer-pending-reject .transfer-impact :is(svg, li.transfer-impact-warning) { color: #991515; }
+.transfer-pending-reject > footer .transfer-reject-confirm { background: #991515; border-color: #991515; }
+.transfer-decision-modal.transfer-pending-confirmation > footer {
+  background: #F8F6F4;
+  padding: 16px 24px;
+}
+.transfer-pending-confirmation .transfer-detail-items tfoot {
+  font-weight: 400;
+  color: #6B6267;
+}
+/* Reflow only the pending detail shell; keep navigation, identity and logout. */
+@media (max-width: 767px) {
+  .app-shell:has(.transfer-pending-detail) > .sidebar {
+    position: static;
+    inset: auto;
+    width: auto;
+    padding: 16px;
+    gap: 12px;
+    border-right: 0;
+    border-bottom: 1px solid #DED7DA;
+  }
+  .app-shell:has(.transfer-pending-detail) > .app-header {
+    position: static;
+    inset: auto;
+    height: auto;
+    min-height: 56px;
+    padding: 16px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .app-shell:has(.transfer-pending-detail) > .inventory-main {
+    margin-left: 0;
+    padding: 16px;
+    min-height: auto;
+  }
+}
+@media (max-width: 600px) {
+  .transfer-decision-modal.transfer-pending-confirmation > header { padding: 16px 16px 0; }
+  .transfer-pending-confirmation .transfer-decision-body { padding: 16px; }
+  .transfer-pending-confirmation .transfer-detail-items :is(th, td) { padding: 8px 6px; }
+  .transfer-pending-confirmation .transfer-detail-items th { font-size: 10px; letter-spacing: 0; }
+  .transfer-pending-confirmation th:first-child { width: 39%; }
+  .transfer-pending-confirmation th:nth-child(2) { width: 27%; }
+  .transfer-decision-modal.transfer-pending-confirmation > footer { padding: 16px; }
+  .transfer-pending-confirmation > header > div { flex-basis: 140px; }
+  .transfer-pending-detail .transfer-pending-heading { padding-right: 0; }
+  .transfer-pending-heading > button { position: static; }
+  .transfer-pending-products > header > div { overflow-wrap: anywhere; }
+  .transfer-pending-products .transfer-detail-items { overflow: visible; }
+  .transfer-pending-products .transfer-detail-items table {
+    display: block;
+    min-width: 0;
+    width: 100%;
+  }
+  .transfer-pending-products thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .transfer-pending-products tbody { display: block; }
+  .transfer-pending-products tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    border-bottom: 1px solid #DED7DA;
+  }
+  .transfer-pending-products .transfer-detail-items td {
+    height: auto;
+    min-width: 0;
+    padding: 12px 16px;
+    border: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: left;
+  }
+  .transfer-pending-products td[data-label]::before {
+    content: attr(data-label);
+    display: block;
+    margin-bottom: 4px;
+    color: #6B6267;
+    font-size: 12px;
+  }
+  .transfer-pending-products > footer,
+  .transfer-pending-products .transfer-decision-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .transfer-pending-products > footer > p {
+    flex-basis: auto;
+  }
+  .transfer-pending-products .transfer-decision-actions button {
+    width: 100%;
+  }
+}

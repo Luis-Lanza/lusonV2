@@ -1,0 +1,146 @@
+/* U3: stock requests in transit, assigned destination only. */
+.transfer-detail.transfer-transit-detail {
+  max-width: 920px;
+  color: #242124;
+}
+.transfer-pending:has(> .transit-destination-navigation) { gap: 0; }
+.pending-selected > .transit-destination-navigation {
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+  margin-top: -16px;
+  margin-bottom: 0;
+  color: #6B6267;
+}
+.pending-selected > .transit-destination-navigation > .creation-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+.transit-destination-navigation svg { width: 16px; transform: rotate(180deg); }
+.transfer-transit-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 20px;
+  margin-bottom: 16px;
+  position: relative;
+  padding-right: 140px;
+}
+.transfer-transit-heading > div { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.transfer-transit-heading h1 { font-size: 24px; line-height: 32px; overflow-wrap: anywhere; }
+.transfer-transit-detail .transfer-transit-heading .pending-status.status-in_transit {
+  padding: 3px 10px;
+  border: 1px solid #DDBCC7;
+  border-radius: 20px;
+  background: #F4ECEF;
+  color: #624A53;
+  font-weight: 500;
+}
+.transfer-transit-heading > p { flex-basis: 100%; color: #6B6267; }
+.transfer-transit-heading > p span { color: #242124; }
+.transfer-transit-heading > button {
+  position: absolute;
+  right: 0;
+  top: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.transfer-transit-detail button { min-height: 44px; height: auto; white-space: normal; border-radius: 4px; }
+.transfer-transit-products {
+  min-width: 0;
+  background: white;
+  border: 1px solid #DED7DA;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.transfer-transit-products > header { padding: 16px; overflow-wrap: anywhere; }
+.transfer-transit-products h2 { display: inline; font-size: 16px; font-weight: 600; }
+.transfer-transit-products > header span { color: #6B6267; }
+.transfer-transit-products .transfer-detail-items { border-radius: 0; border-width: 1px 0 0; }
+.transfer-transit-products .transfer-detail-items table { min-width: 0; table-layout: fixed; }
+.transfer-transit-products .transfer-detail-items :is(th, td) {
+  height: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  padding: 12px 16px;
+}
+.transfer-transit-products .transfer-detail-items th {
+  padding: 10px 16px;
+  background: #FCFAFB;
+  text-transform: uppercase;
+  font-size: 11px;
+  color: #6B6267;
+}
+.transfer-transit-products th:first-child { width: 37%; }
+.transfer-transit-products .transfer-detail-items :is(th, td):last-child { text-align: center; }
+.transfer-transit-products td strong { font-weight: 500; }
+.transfer-transit-products td small { font-size: 12px; }
+.transfer-transit-products > footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border-top: 1px solid #DED7DA;
+}
+.transfer-transit-products > footer > p { flex: 1 1 240px; color: #6B6267; }
+.transfer-transit-products .transfer-decision-actions { min-width: 0; max-width: 100%; }
+.transfer-transit-products .transfer-decision-actions button { width: auto; justify-self: end; padding: 10px 20px; }
+/* Only the initial receive helper is redundant with the note and capture dialog.
+   Recovery/status/error siblings and cancellation content are never hidden. */
+.transfer-transit-products > footer > .transfer-decision-actions > button.primary + p:not([role]) { display: none; }
+.transfer-transit-detail > .transfer-history { margin-top: 20px; }
+/* Branch accounts keep the desktop shell by default. Reflow only while this
+   destination-transit detail is present; retain every existing shell control. */
+@media (max-width: 767px) {
+  .app-shell:has(.transfer-transit-detail) > .sidebar {
+    position: static;
+    inset: auto;
+    width: auto;
+    padding: 16px;
+    gap: 12px;
+    border-right: 0;
+    border-bottom: 1px solid #DED7DA;
+  }
+  .app-shell:has(.transfer-transit-detail) > .app-header {
+    position: static;
+    inset: auto;
+    height: auto;
+    min-height: 56px;
+    padding: 16px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .app-shell:has(.transfer-transit-detail) > .inventory-main {
+    margin-left: 0;
+    padding: 16px;
+    min-height: auto;
+  }
+}
+@media (max-width: 600px) {
+  .transfer-transit-heading { padding-right: 0; }
+  .transfer-transit-heading > button { position: static; }
+  .transfer-transit-products > header > span { display: block; margin-top: 4px; }
+  .transfer-transit-products .transfer-detail-items { overflow: visible; }
+  .transfer-transit-products .transfer-detail-items table { display: block; width: 100%; }
+  .transfer-transit-products thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  .transfer-transit-products tbody { display: block; }
+  .transfer-transit-products tbody tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 16px; gap: 10px 16px; border-bottom: 1px solid #DED7DA; }
+  .transfer-transit-products .transfer-detail-items tbody td { display: block; min-width: 0; padding: 0; border: 0; text-align: left; }
+  .transfer-transit-products tbody td:first-child { grid-column: 1 / -1; }
+  .transfer-transit-products td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 4px; font-size: 12px; color: #6B6267; }
+}
