@@ -381,6 +381,17 @@ describe('R6a received detail restitution composition', () => {
     const section = screen.getByRole('region', { name: 'Restituciones de origen' });
     expect(section.previousElementSibling).toBe(correctionSection);
     expect(correctionSection).not.toBeVisible();
+    const management = within(section).getByRole('table', { name: 'Gestión de restituciones' });
+    const transferTable = screen.getByRole('table', { name: 'Conteo efectivo' });
+    const effective = transferTable.outerHTML;
+    expect(transferTable.compareDocumentPosition(management) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(section).getAllByRole('table')).toHaveLength(1);
+    expect(within(section).queryByRole('combobox')).not.toBeInTheDocument();
+    await selectManagement('Corregir conteo');
+    expect(correctionSection).toBeVisible(); expect(section).not.toBeVisible();
+    await selectManagement('Restituciones de origen');
+    expect(screen.getByRole('table', { name: 'Conteo efectivo' }).outerHTML).toBe(effective);
+    expect(screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML).toBe(original);
     expect(f.fetch.mock.calls.filter(([url]) => String(url).endsWith('/restitutions'))).toHaveLength(1);
     fireEvent.click(within(section).getByRole('button', { name: 'Consultar para revisar restitución' }));
     await waitFor(() => expect(f.fetch.mock.calls.filter(([url]) => String(url).endsWith('/restitutions'))).toHaveLength(2));

@@ -1,3 +1,80 @@
+/* One semantic table becomes labeled product blocks, without duplicate controls. */
+section.transfer-restitutions .restitution-management {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+  border-collapse: collapse;
+  background: #fff;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+section.transfer-restitutions .restitution-management :is(th, td) {
+  padding: 10px 8px;
+  border-bottom: 1px solid #ded7da;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+}
+section.transfer-restitutions .restitution-management thead { background: #f8f6f4; }
+section.transfer-restitutions .restitution-management th:first-child { width: 21%; }
+section.transfer-restitutions .restitution-management th:last-child { width: 19%; }
+section.transfer-restitutions .restitution-management td { font-variant-numeric: tabular-nums; }
+section.transfer-restitutions .restitution-management button {
+  min-height: 44px;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+section.transfer-restitutions .restitution-management .restitution-closed { display: block; margin-top: 6px; }
+section.transfer-restitutions .restitution-consultation { gap: 8px; }
+section.transfer-restitutions .restitution-consultation p { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+@media (max-width: 767px) {
+  section.transfer-restitutions .restitution-management { display: block; }
+  section.transfer-restitutions .restitution-management thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+  section.transfer-restitutions .restitution-management tbody { display: block; border: 1px solid #ded7da; margin-bottom: 10px; }
+  section.transfer-restitutions .restitution-management tr { display: block; }
+  section.transfer-restitutions .restitution-management th[scope="row"] { display: block; width: auto; background: #f8f6f4; }
+  section.transfer-restitutions .restitution-management td {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
+  }
+  section.transfer-restitutions .restitution-management td::before { content: attr(data-label); color: #6c656b; }
+}
+section.transfer-restitutions .restitution-helper {
+  margin: 0; padding: 10px 12px; border: 1px solid #ded7da; background: #faf8f9; font-size: 13px;
+}
+section.transfer-restitutions :is(.restitution-pending, .restitution-history) p { margin: 4px 0; }
+section.transfer-restitutions .restitution-pending { background: #fff9ed; }
+section.transfer-restitutions .restitution-pending-title { color: #795018; font-weight: 600; }
+section.transfer-restitutions .restitution-pending .restitution-evidence { padding-left: 10px; border-left: 2px solid #dfc395; }
+section.transfer-restitutions .restitution-history ol { margin: 0; padding-left: 20px; }
+section.transfer-restitutions .restitution-history li { padding: 8px 0; border-bottom: 1px solid #ded7da; gap: 4px; }
+section.transfer-restitutions :is(.restitution-rules, .restitution-originals) { font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+section.transfer-restitutions :is(.restitution-management, .restitution-rules, .restitution-originals) summary {
+  min-height: 44px; box-sizing: border-box; padding: 12px 0; cursor: pointer; color: #7a1f3d;
+}
+section.transfer-restitutions summary:focus-visible { outline: 2px solid #7a1f3d; outline-offset: 2px; }
+section.transfer-restitutions .restitution-management tr[hidden] { display: none; }
+@media (max-width: 767px) {
+  /* Block/grid cells must grow with labels, controls and expanded audit content. */
+  section.transfer-restitutions .restitution-management :is(th, td) {
+    height: auto;
+    min-height: 44px;
+  }
+  section.transfer-restitutions .restitution-management tbody > tr:first-child { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  section.transfer-restitutions .restitution-management th[scope="row"] { grid-column: 1 / -1; }
+  section.transfer-restitutions .restitution-management td { display: block; }
+  section.transfer-restitutions .restitution-management td::before { display: block; margin-bottom: 4px; font-size: 12px; }
+  section.transfer-restitutions .restitution-management :is(td[data-label="Historial"], td[data-label="Acción"]) { grid-column: 1 / -1; }
+  section.transfer-restitutions .restitution-management td[colspan]::before { content: none; }
+}
 /* Modal foundation only; capture/review body fidelity is a separate work unit. */
 section.transfer-restitutions .restitution-backdrop {
   position: fixed;

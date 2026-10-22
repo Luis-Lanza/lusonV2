@@ -21,6 +21,16 @@ a consulted inventory location does not change the account's assigned authority.
   evidence. Pending proposals do not change stock; reception credit is not current
   inventory. Existing capture and counterpart review dialogs remain separate from
   the summary, including the proposer's authorized replacement action.
+  Origin restitution management uses one desktop table and labeled mobile product
+  blocks. Select a product, then explicitly consult before reviewing its permitted
+  actions. The maximum is sent minus effective destination credit minus applied
+  restitution: mathematical capacity, not evidence of physical retention or stock.
+  The transfer table and original receipt remain above management, unchanged.
+  Pending restitutions distinguish the proposed quantity from the applied amount
+  and show the physical-origin declaration and its original reason. Proposal,
+  decision and application audit details expand separately; rules and original
+  selected-product quantities are secondary disclosures. Responsive acceptance
+  remains tracked in `odd/tasks/transfer-origin-restitution-ux.md`.
 
 See the [inventory API contract](apps/api/docs/inventory-api.md) and
 [transfer API contract](apps/api/docs/transfers-api.md) for backend rules.

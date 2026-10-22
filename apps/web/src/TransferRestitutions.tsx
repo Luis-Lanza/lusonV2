@@ -45,6 +45,9 @@ function Section(props: TransferRestitutionsProps) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [review, setReview] = useState<{ draft: Draft; input: RestitutionProposalInput | RestitutionDecisionInput; snapshot: typeof hook.snapshot } | null>(null);
   const [message, setMessage] = useState('');
+  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
+  const disclosureID = useId();
+  const toggleHistory = (id: number) => setExpanded(value => ({ ...value, [id]: !value[id] }));
   const mounted = useRef(false); const sending = useRef(false);
   const modal = useRef<HTMLDivElement>(null); const cancel = useRef<HTMLButtonElement>(null);
   const reviewHeading = useRef<HTMLHeadingElement>(null);
@@ -219,61 +222,95 @@ function Section(props: TransferRestitutionsProps) {
       ? `Si el servidor valida la aceptación, se acreditarán ${decisionProposal.retained_quantity.toString()} batería(s) en ${decisionCapture.record.origin_location_name} una sola vez como stock disponible. Una aplicación, incluso parcial, cierra esta restitución.`
       : 'Rechazar no mueve stock ni cambia reservas; la propuesta no se aplica.'}</p>
       <p>El stock y el crédito de destino, los conteos y las reservas no cambian. No resuelve automáticamente faltantes ni conteos. El despacho y la recepción original son inmutables.</p></div>;
-  const variantSelector = <div><label htmlFor={selectID}>{proposalCapture ? 'Batería a restituir' : 'Variante de restitución'}</label><select id={selectID} value={variant ?? ''} disabled={hook.busy} onChange={e => {
-    if (current()) { setDraft(null); setReview(null); setVariant(Number(e.target.value)); }
-  }}>{(proposalCapture?.record ?? decisionCapture?.record ?? record).items.map(i => <option key={i.variant_id} value={i.variant_id}>{i.brand} · {i.model} · {i.capacity_ah} Ah · {i.polarity}</option>)}</select></div>;
+  function selectVariant(id: number) {
+    if (current()) { setDraft(null); setReview(null); setVariant(id); }
+  }
+  const variantSelector = <div><label htmlFor={selectID}>{proposalCapture ? 'Batería a restituir' : 'Variante de restitución'}</label><select id={selectID} value={variant ?? ''} disabled={hook.busy} onChange={e => selectVariant(Number(e.target.value))}>{(proposalCapture?.record ?? decisionCapture?.record ?? record).items.map(i => <option key={i.variant_id} value={i.variant_id}>{i.brand} · {i.model} · {i.capacity_ah} Ah · {i.polarity}</option>)}</select></div>;
   return <section className={`transfer-restitutions${closed ? ' restitution-is-closed' : ''}`} aria-label="Restituciones de origen" hidden={!sectionVisible}>
     <h2 ref={contextHeading} tabIndex={-1}>Restituciones de origen</h2>
     {masked ? <><p role="status">Restituciones no disponibles para esta sesión.</p><button disabled={hook.busy} onClick={() => { if (current()) void run(hook.recover); }}>Consultar recuperación autorizada</button></> : <>
       <div className="workflow-routine" hidden={!routineVisible}>
-      {line && <section className="restitution-outcome" aria-label="Resultado de restitución de la variante seleccionada">
-        <div className="restitution-outcome-heading"><h3>{selectedItem?.brand} · {selectedItem?.model} · {selectedItem?.capacity_ah} Ah · {selectedItem?.polarity}</h3>
-          {closed && <span className="restitution-closed">Restitución cerrada</span>}</div>
-        <dl className="restitution-quantities"><div><dt>Crédito efectivo en destino</dt><dd>{line.effective_credit.toString()}</dd></div>
-          <div><dt>Restitución aplicada en origen</dt><dd>{line.applied_retained_quantity.toString()}</dd></div></dl>
-        <p>{closed && <><span>Una aplicación, incluso parcial, cierra esta restitución.</span>{' '}</>}
-          <span className="restitution-immutable">El despacho y la recepción original son inmutables.</span></p>
-      </section>}
-      {!closed && <div className="restitution-safety">
-        <p>La falta en destino no prueba retención. Proponer o rechazar no mueve stock. Aceptar acredita existencias en origen una sola vez; destino y reservas no cambian.</p>
-        <p>Una aplicación, incluso parcial, cierra esta restitución. El despacho y la recepción original son inmutables.</p>
-      </div>}
+      <p className="restitution-helper">El faltante no prueba retención. Proponer no mueve stock.</p>
       </div>
       {/* Consultation is recovery too; it must not depend on routine selection. */}
       <div className="workflow-routine" hidden={!sectionVisible}>
-      <div className="restitution-consultation">{!draft && variantSelector}<button ref={consultation} disabled={hook.busy} onClick={() => { if (current()) void run(hook.refresh); }}>Consultar para revisar restitución</button></div>
+      <div className="restitution-consultation"><p>Variante seleccionada: {selectedItem?.brand} · {selectedItem?.model} · {selectedItem?.capacity_ah} Ah · {selectedItem?.polarity}. Seleccioná otro producto en la tabla; después consultá para habilitar su revisión.</p><button ref={consultation} disabled={hook.busy} onClick={() => { if (current()) void run(hook.refresh); }}>Consultar para revisar restitución</button></div>
       </div>
       {hook.busy && <p role="status">Consultando o enviando restitución…</p>}
       {hook.error && <p role="alert">No se pudo verificar la restitución. Consultá el estado antes de enviar.</p>}
       {message && <p role="alert">{message}</p>}
       {!line && !hook.busy && <p role="status">Evidencia de restitución no disponible.</p>}
       <div className="workflow-routine" hidden={!routineVisible}>
-      {line && <article className="restitution-card">
+      {snapshot && <table className="restitution-management" aria-label="Gestión de restituciones">
+        <thead><tr><th scope="col">Producto</th><th scope="col">Enviadas</th>
+          <th scope="col">Crédito efectivo en destino</th><th scope="col">Restitución aplicada en origen</th>
+          <th scope="col">Máximo a proponer</th><th scope="col">Historial</th><th scope="col">Acción</th></tr></thead>
+        {record.items.map(item => {
+          const evidence = !hook.busy ? snapshot.lines.find(l => l.variant_id === item.variant_id) : undefined;
+          const pending = evidence?.proposals.find(p => p.state === 'pending' && p.revision === evidence.workflow_revision);
+          const historyID = `${disclosureID}-${item.variant_id}`;
+          const identity = `${item.brand} · ${item.model} · ${item.capacity_ah} Ah · ${item.polarity}`;
+          const selected = item.variant_id === variant;
+          return <tbody key={item.variant_id} aria-label={identity}><tr>
+            <th scope="row">{identity}{evidence && evidence.applied_revision > 0n && <span className="restitution-closed">Restitución cerrada</span>}</th>
+            <td data-label="Enviadas">{item.quantity.toString()}</td>
+            <td data-label="Crédito efectivo en destino">{evidence?.effective_credit.toString() ?? 'No disponible'}</td>
+            <td data-label="Restitución aplicada en origen">{evidence?.applied_retained_quantity.toString() ?? 'No disponible'}</td>
+            <td data-label="Máximo a proponer">{evidence ? balance(evidence).toString() : 'No disponible'}</td>
+            <td data-label="Historial">{evidence ? evidence.proposals.length ? <button aria-expanded={!!expanded[item.variant_id]} aria-controls={historyID}
+              aria-label={`Historial completo · ${evidence.proposals.length} propuesta(s)`} onClick={() => toggleHistory(item.variant_id)}>{evidence.proposals.length} propuesta(s)</button>
+              : 'Sin propuestas de restitución.' : 'No disponible'}</td>
+            <td data-label="Acción">{selected ? <div className="restitution-actions">{actions.map(action =>
+              <button key={action} disabled={hook.busy || !hook.review(action)} onClick={e => open(action, e.currentTarget)}>{labels[action]}</button>)}</div>
+              : <button disabled={hook.busy} aria-label={`Seleccionar ${identity}`} onClick={() => selectVariant(item.variant_id)}>Seleccionar producto</button>}</td>
+          </tr>
+          {pending && <tr className="restitution-pending"><td colSpan={7}>
+            <p className="restitution-pending-title">{decisionOwner(controller.getTransferAuthority())?.location === record.origin_location_id
+              ? `Esperando revisión de ${record.destination_location_name}`
+              : `Propuesta de ${record.origin_location_name} · Requiere revisión en ${record.destination_location_name}`}</p>
+            <p>Cantidad retenida propuesta: <strong>{pending.retained_quantity.toString()} batería(s)</strong></p>
+            <p>Restitución aplicada en origen: {evidence!.applied_retained_quantity.toString()} batería(s). La propuesta todavía no se aplica.</p>
+            <p>{record.origin_location_name} declara que estas {pending.retained_quantity.toString()} batería(s) permanecen físicamente en origen.</p>
+            <p className="restitution-evidence">{pending.reason}</p>
+          </td></tr>}
+          {!!evidence?.proposals.length && <tr id={historyID} hidden={!expanded[item.variant_id]} className="restitution-history"><td colSpan={7}>
+            <ol>{evidence.proposals.map(p => <li key={p.revision.toString()}>
+              <p>{states[p.state]} · Propuesta {p.revision.toString()} · {p.retained_quantity.toString()} batería(s) · <TransferDate value={p.recorded_at} /></p>
+              <details><summary>Ver detalle de propuesta {p.revision.toString()}</summary>
+                <section aria-label={`Propuesta ${p.revision}`}><h4>{states[p.state]} · Propuesta {p.revision.toString()}</h4>
+                  <p>Retenidas en origen: {p.retained_quantity.toString()} · Retención física atestada explícitamente</p>
+                  <p>Origen: {p.initiator_location_id} · <TransferDate value={p.recorded_at} /></p>
+                  <p className="restitution-evidence">Motivo: {p.reason}</p>
+                  <details className="restitution-technical"><summary>Evidencia técnica</summary>
+                    <p>Clave: {p.operation_key}</p>
+                    <p>Revisión base: {p.base_revision.toString()} · Crédito base: {p.base_credit.toString()} · Restitución base: {p.base_restitution.toString()}</p>
+                    <p>Generación de conteo: {p.count_generation.toString()} · Revisión de conteo aplicada: {p.count_applied_revision.toString()}</p>
+                  </details></section>
+                {p.decision && <section aria-label={`Decisión ${p.revision}`}><h4>{p.decision.accepted ? 'Aceptada' : 'Rechazada'}</h4>
+                  <p>Destino: {p.decision.actor_location_id} · <TransferDate value={p.decision.recorded_at} /></p><p className="restitution-evidence">Motivo de decisión: {p.decision.reason}</p>
+                  <details className="restitution-technical"><summary>Evidencia técnica</summary><p>Clave: {p.decision.operation_key}</p></details></section>}
+                {p.application && <section aria-label={`Aplicación ${p.revision}`}><h4>Aplicación en origen</h4><p>Origen: {p.application.origin_location_id} · Existencias acreditadas: +{p.application.quantity.toString()} · <TransferDate value={p.application.recorded_at} /></p>
+                  <details className="restitution-technical"><summary>Evidencia técnica</summary><p>Clave: {p.application.operation_key}</p>
+                    {snapshot.operations.filter(o => o.operation_key === p.application!.operation_key && o.action === 'accept').map(o => <p key={o.operation_key}>Existencias de origen registradas: {o.source_existing_before?.toString() ?? 'No disponible'} → {o.source_existing_after?.toString() ?? 'No disponible'}</p>)}
+                  </details></section>}
+              </details>
+            </li>)}</ol>
+          </td></tr>}
+          </tbody>;
+        })}
+      </table>}
+      {line && !hook.busy && <details className="restitution-originals"><summary>Registros originales de la variante seleccionada</summary>
         <dl><dt>Despacho original</dt><dd>{line.expected_quantity.toString()}</dd>
-          <dt>Recepción original (cantidad física)</dt><dd>{receipt?.actual_quantity.toString()}</dd>
+          <dt>Recepción original (cantidad física)</dt><dd>{receipt?.actual_quantity.toString() ?? 'No disponible'}</dd>
           <dt>Crédito original en destino</dt><dd>{line.original_credit.toString()}</dd></dl>
-        <div className="restitution-actions">{actions.map(action => <button key={action} disabled={hook.busy || !hook.review(action)} onClick={e => open(action, e.currentTarget)}>{labels[action]}</button>)}</div>
-        <h3>Historial inmutable de restitución</h3>
-        {!line.proposals.length && <p>Sin propuestas de restitución.</p>}
-        <ol>{line.proposals.map(p => <li key={p.revision.toString()}>
-          <section aria-label={`Propuesta ${p.revision}`}><h4>{states[p.state]} · Propuesta {p.revision.toString()}</h4>
-            <p>Retenidas en origen: {p.retained_quantity.toString()} · Retención física atestada explícitamente</p>
-            <p>Origen: {p.initiator_location_id} · <TransferDate value={p.recorded_at} /></p>
-            <p className="restitution-evidence">Motivo: {p.reason}</p>
-            <details className="restitution-technical"><summary>Evidencia técnica</summary>
-              <p>Clave: {p.operation_key}</p>
-              <p>Revisión base: {p.base_revision.toString()} · Crédito base: {p.base_credit.toString()} · Restitución base: {p.base_restitution.toString()}</p>
-              <p>Generación de conteo: {p.count_generation.toString()} · Revisión de conteo aplicada: {p.count_applied_revision.toString()}</p>
-            </details></section>
-          {p.decision && <section aria-label={`Decisión ${p.revision}`}><h4>{p.decision.accepted ? 'Aceptada' : 'Rechazada'}</h4>
-            <p>Destino: {p.decision.actor_location_id} · <TransferDate value={p.decision.recorded_at} /></p><p className="restitution-evidence">Motivo de decisión: {p.decision.reason}</p>
-            <details className="restitution-technical"><summary>Evidencia técnica</summary><p>Clave: {p.decision.operation_key}</p></details></section>}
-          {p.application && <section aria-label={`Aplicación ${p.revision}`}><h4>Aplicación en origen</h4><p>Origen: {p.application.origin_location_id} · Existencias acreditadas: +{p.application.quantity.toString()} · <TransferDate value={p.application.recorded_at} /></p>
-            <details className="restitution-technical"><summary>Evidencia técnica</summary><p>Clave: {p.application.operation_key}</p>
-              {snapshot?.operations.filter(o => o.operation_key === p.application!.operation_key && o.action === 'accept').map(o => <p key={o.operation_key}>Existencias de origen registradas: {o.source_existing_before?.toString()} → {o.source_existing_after?.toString()}</p>)}
-            </details></section>}
-        </li>)}</ol>
-      </article>}
+      </details>}
+      <details className="restitution-rules"><summary>¿Cómo funciona la restitución de origen?</summary>
+        <p>El máximo es capacidad matemática: enviadas menos crédito efectivo en destino menos restitución aplicada. No confirma retención física ni inventario disponible.</p>
+        <p>Proponer o rechazar no mueve stock. Aceptar acredita existencias en origen una sola vez; destino, conteos y reservas no cambian.</p>
+        <p>{record.origin_location_name} debe declarar la retención física; {record.destination_location_name} revisa la propuesta. Las acciones habilitadas abren motivo y revisión, no ejecutan cambios directos.</p>
+        <p>Una consulta no garantiza que una acción esté habilitada: también debe cumplir las condiciones vigentes de la transferencia.</p>
+        <p><span>Una aplicación, incluso parcial, cierra esta restitución.</span>{' '}El despacho y la recepción original son inmutables.</p>
+      </details>
       </div>
       {hook.attempts.map(a => <article className="restitution-card" key={a.payload.operation_key} aria-label={`Recuperación de restitución ${a.payload.variant_id}`}>
         <h3>Operación {a.phase}</h3><p>{labels[a.action]} · Variante {a.payload.variant_id} · Cuenta {a.owner.account} · Revisión {a.payload.expected_revision.toString()} · Clave {a.payload.operation_key}</p>
