@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+
+<html class="h-full bg-surface" lang="es"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport"/>
+<title>TR-015 · Restitución de origen · Móvil · Origen espera revisión</title>
+<!-- Material Symbols Outlined -->
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Inter Google Font -->
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<!-- Tailwind CSS with forms & container queries -->
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+            "surface-container-low": "#f9f2f6",
+            "surface-container-highest": "#e8e0e4",
+            "surface-container-lowest": "#ffffff",
+            "on-secondary-fixed-variant": "#782d43",
+            "secondary-fixed-dim": "#ffb1c2",
+            "primary-fixed": "#ffd9df",
+            "outline": "#887275",
+            "inverse-primary": "#ffb1c2",
+            "secondary-container": "#fd99b1",
+            "on-surface-variant": "#554245",
+            "surface": "#fff7fb",
+            "on-error": "#ffffff",
+            "on-secondary-fixed": "#3f0018",
+            "on-primary-fixed-variant": "#802442",
+            "surface-dim": "#dfd8dc",
+            "surface-container-high": "#ede6ea",
+            "secondary-fixed": "#ffd9e0",
+            "primary": "#5c0427",
+            "on-tertiary-fixed-variant": "#4d4549",
+            "tertiary": "#312a2e",
+            "inverse-surface": "#332f32",
+            "inverse-on-surface": "#f6eff3",
+            "secondary": "#95445a",
+            "on-secondary-container": "#782d44",
+            "on-secondary": "#ffffff",
+            "tertiary-fixed-dim": "#cfc3c8",
+            "error-container": "#ffdad6",
+            "surface-tint": "#9f3c59",
+            "on-background": "#1d1b1e",
+            "tertiary-container": "#484044",
+            "surface-variant": "#e8e0e4",
+            "on-tertiary-fixed": "#201a1d",
+            "on-tertiary-container": "#b7acb1",
+            "surface-bright": "#fff7fb",
+            "on-primary-container": "#ff8ba8",
+            "error": "#ba1a1a",
+            "tertiary-fixed": "#ecdfe4",
+            "background": "#fff7fb",
+            "surface-container": "#f3ecf0",
+            "on-error-container": "#93000a",
+            "primary-fixed-dim": "#ffb1c2",
+            "on-primary": "#ffffff",
+            "on-surface": "#1d1b1e",
+            "primary-container": "#7a1f3d",
+            "outline-variant": "#dac0c4",
+            "on-tertiary": "#ffffff",
+            "on-primary-fixed": "#3f0018"
+          },
+          "borderRadius": {
+            "DEFAULT": "0.125rem",
+            "lg": "0.25rem",
+            "xl": "0.5rem",
+            "full": "0.75rem"
+          },
+          "fontFamily": {
+            "headline-md": ["Inter", "sans-serif"],
+            "body-sm": ["Inter", "sans-serif"],
+            "body-md": ["Inter", "sans-serif"],
+            "label-sm": ["Inter", "sans-serif"],
+            "body-lg": ["Inter", "sans-serif"],
+            "headline-sm": ["Inter", "sans-serif"],
+            "headline-lg": ["Inter", "sans-serif"],
+            "caption": ["Inter", "sans-serif"],
+            "label-md": ["Inter", "sans-serif"],
+            "tabular-data": ["Inter", "sans-serif"]
+          },
+          "fontSize": {
+            "headline-md": ["18px", { "lineHeight": "24px", "letterSpacing": "-0.01em", "fontWeight": "600" }],
+            "body-sm": ["13px", { "lineHeight": "18px", "fontWeight": "400" }],
+            "body-md": ["14px", { "lineHeight": "20px", "fontWeight": "400" }],
+            "label-sm": ["12px", { "lineHeight": "16px", "fontWeight": "500" }],
+            "body-lg": ["15px", { "lineHeight": "22px", "fontWeight": "400" }],
+            "headline-sm": ["15px", { "lineHeight": "20px", "letterSpacing": "-0.005em", "fontWeight": "600" }],
+            "headline-lg": ["22px", { "lineHeight": "28px", "letterSpacing": "-0.015em", "fontWeight": "600" }],
+            "caption": ["11px", { "lineHeight": "14px", "letterSpacing": "0.02em", "fontWeight": "500" }],
+            "label-md": ["13px", { "lineHeight": "16px", "fontWeight": "500" }],
+            "tabular-data": ["13px", { "lineHeight": "18px", "letterSpacing": "0em", "fontWeight": "400" }]
+          }
+        }
+      }
+    }
+  </script>
+<style>
+    /* Compact scrollbar for horizontal mobile table */
+    .table-scrollbar::-webkit-scrollbar {
+      height: 4px;
+    }
+    .table-scrollbar::-webkit-scrollbar-track {
+      background: #f3ecf0;
+    }
+    .table-scrollbar::-webkit-scrollbar-thumb {
+      background: #dac0c4;
+      border-radius: 2px;
+    }
+    /* Touch target min 44px utilities */
+    .touch-target {
+      min-height: 44px;
+      min-width: 44px;
+    }
+  </style>
+<style>
+    body {
+      min-height: max(884px, 100dvh);
+    }
+  </style>
+  </head>
+<body class="bg-[#F8F6F4] text-on-surface antialiased font-body-md flex justify-center selection:bg-primary-container selection:text-white">
+<!-- Mobile Viewport Container (Standard Native Frame: 390px max-w) -->
+<div class="w-full max-w-[390px] min-h-screen bg-[#F8F6F4] relative flex flex-col border-x border-[#DED7DA] shadow-sm pb-24">
+<!-- 1. SHELL MÓVIL LUSON: CABECERA FIJA SUPERIOR -->
+<header class="sticky top-0 z-40 bg-surface-container-lowest border-b border-[#DED7DA] px-4 h-14 flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="text-headline-md font-headline-md tracking-tight font-semibold text-primary-container">LUSON</span>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-[#F5E8ED] text-primary-container border border-[#dac0c4]">
+          Almacén
+        </span>
+</div>
+<div class="flex items-center">
+<!-- Botón Salir / Logout -->
+<button aria-label="Cerrar Sesión" class="touch-target flex items-center justify-center text-on-surface-variant hover:text-primary transition-colors">
+<span class="material-symbols-outlined text-[20px]">logout</span>
+</button>
+</div>
+</header>
+<!-- Subcabecera & Identificador de Transferencia -->
+<section class="px-4 pt-3.5 pb-3 bg-surface-container-lowest border-b border-[#DED7DA]">
+<!-- Breadcrumb / Navegación interna -->
+<div class="flex items-center justify-between text-body-sm font-body-sm text-on-surface-variant mb-2.5">
+<a class="inline-flex items-center gap-1 text-primary-container font-medium hover:underline py-1" href="#">
+<span class="material-symbols-outlined text-[16px]">arrow_back</span>
+<span>Volver a transferencias</span>
+</a>
+<button class="text-on-surface-variant hover:text-primary transition-colors text-label-sm font-label-sm underline decoration-dotted">
+          Ver historial
+        </button>
+</div>
+<!-- Título principal & badges -->
+<div class="flex items-center gap-2 flex-wrap mb-1">
+<h1 class="text-headline-lg font-headline-lg text-[#242124] tracking-tight">TR-015</h1>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-[#EDF6F1] text-[#1E5A3E] border border-[#BCDDCB]">
+          Recibida
+        </span>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-[#FEF7ED] text-[#8A5200] border border-[#F5D6A4]">
+          2 faltantes
+        </span>
+</div>
+<!-- Subtexto operativo -->
+<p class="text-body-sm font-body-sm text-[#6B6267]">
+        Solicitud de stock · <span class="font-medium text-[#242124]">Almacén</span> → <span class="font-medium text-[#242124]">Sucursal A</span>
+</p>
+</section>
+<!-- CONTENIDO PRINCIPAL -->
+<main class="flex-1 px-3.5 py-4 space-y-4">
+<!-- 2. TARJETA PRINCIPAL: PRODUCTOS DE LA TRANSFERENCIA -->
+<section class="bg-surface-container-lowest border border-[#DED7DA] rounded-lg p-3.5 shadow-none">
+<div class="flex items-start justify-between gap-2 mb-1">
+<h2 class="text-headline-sm font-headline-sm text-[#242124]">Productos de la transferencia</h2>
+</div>
+<div class="flex items-center gap-1.5 mb-2.5">
+<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-[#FEF7ED] text-[#8A5200] border border-[#F5D6A4]">
+            Con diferencias (2 faltantes)
+          </span>
+</div>
+<p class="text-caption font-caption text-[#6B6267] mb-2">
+          Recepción confirmada · 2 variantes · 6 baterías enviadas
+        </p>
+<!-- Indicador de desplazamiento horizontal -->
+<div class="flex items-center justify-between text-[11px] font-medium text-[#6B6267] bg-[#F8F6F4] px-2.5 py-1.5 rounded border border-[#DED7DA] mb-2">
+<span class="inline-flex items-center gap-1">
+<span class="material-symbols-outlined text-[14px] text-primary-container">swap_horiz</span>
+            ⇋ Deslizá para ver todas las columnas
+          </span>
+<span class="text-[10px] uppercase tracking-wider text-outline font-semibold">5 col.</span>
+</div>
+<!-- Tabla con scroll horizontal -->
+<div class="overflow-x-auto table-scrollbar border border-[#DED7DA] rounded">
+<table class="min-w-[500px] w-full text-left border-collapse text-tabular-data">
+<thead>
+<tr class="bg-[#F8F6F4] border-b border-[#DED7DA] h-9 text-caption font-caption text-[#6B6267]">
+<th class="py-1.5 px-3 font-semibold uppercase tracking-wider text-left min-w-[190px]">PRODUCTO / BATERÍA</th>
+<th class="py-1.5 px-2 font-semibold uppercase tracking-wider text-right min-w-[75px]">ENVIADAS (ENV.)</th>
+<th class="py-1.5 px-2 font-semibold uppercase tracking-wider text-right min-w-[75px]">RECIBIDAS (REC.)</th>
+<th class="py-1.5 px-2 font-semibold uppercase tracking-wider text-right min-w-[95px]">CRÉDITO EN DESTINO (CRÉD.)</th>
+<th class="py-1.5 px-3 font-semibold uppercase tracking-wider text-center min-w-[95px]">DIFERENCIA (DIF.)</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-[#DED7DA] text-body-sm font-body-sm text-[#242124]">
+<!-- Fila 1: CAR NS40ZL Izquierda -->
+<tr class="hover:bg-[#F8F6F4] transition-colors">
+<td class="py-2.5 px-3">
+<div class="font-medium text-[#242124]">CAR NS40ZL · 35Ah</div>
+<div class="text-[11px] text-[#6B6267]">Izquierda [L]</div>
+</td>
+<td class="py-2.5 px-2 text-right font-medium">5</td>
+<td class="py-2.5 px-2 text-right">3</td>
+<td class="py-2.5 px-2 text-right">3</td>
+<td class="py-2.5 px-3 text-center">
+<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium bg-[#FDF2F2] text-[#9B1C1C] border border-[#F8B4B4]">
+                    Faltante: 2
+                  </span>
+</td>
+</tr>
+<!-- Fila 2: CAR NS40ZL Derecha -->
+<tr class="hover:bg-[#F8F6F4] transition-colors">
+<td class="py-2.5 px-3">
+<div class="font-medium text-[#242124]">CAR NS40ZL · 35Ah</div>
+<div class="text-[11px] text-[#6B6267]">Derecha [R]</div>
+</td>
+<td class="py-2.5 px-2 text-right font-medium">1</td>
+<td class="py-2.5 px-2 text-right">1</td>
+<td class="py-2.5 px-2 text-right">1</td>
+<td class="py-2.5 px-3 text-center">
+<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium bg-[#EDF6F1] text-[#1E5A3E] border border-[#BCDDCB]">
+                    Sin diferencias
+                  </span>
+</td>
+</tr>
+</tbody>
+<!-- Fila de totales en el pie -->
+<tfoot>
+<tr class="bg-[#F8F6F4] border-t-2 border-[#DED7DA] font-semibold text-body-sm text-[#242124]">
+<td class="py-2.5 px-3">
+                  Total (2 variantes · 6 bat.)
+                </td>
+<td class="py-2.5 px-2 text-right">6</td>
+<td class="py-2.5 px-2 text-right">4</td>
+<td class="py-2.5 px-2 text-right">4</td>
+<td class="py-2.5 px-3 text-center">
+<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium bg-[#FEF7ED] text-[#8A5200] border border-[#F5D6A4]">
+                    2 faltantes
+                  </span>
+</td>
+</tr>
+</tfoot>
+</table>
+</div>
+<!-- Texto aclaratorio -->
+<p class="text-[12px] text-[#6B6267] mt-3 leading-relaxed">
+          Estas cantidades corresponden a los registros de esta transferencia, no al stock físico actual de Sucursal A ni de Almacén.
+        </p>
+<!-- Desplegable recepción original -->
+<details class="group mt-2 border-t border-[#DED7DA] pt-2">
+<summary class="flex items-center justify-between cursor-pointer list-none text-[12px] font-medium text-[#6B6267] hover:text-[#242124] py-1 select-none">
+<span class="flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px] text-outline">cloud_upload</span>
+              Ver recepción original · Registro original conservado sin modificaciones
+            </span>
+<span class="material-symbols-outlined text-[16px] transition-transform group-open:rotate-180">expand_more</span>
+</summary>
+<div class="mt-2 p-2.5 bg-[#F8F6F4] rounded border border-[#DED7DA] text-[12px] text-[#554245]">
+            El despacho y la recepción original se conservan sin modificaciones.
+          </div>
+</details>
+</section>
+<!-- 3. SECCIÓN: GESTIONES DE LA TRANSFERENCIA -->
+<section class="space-y-3">
+<div class="flex items-center justify-between">
+<h2 class="text-headline-sm font-headline-sm text-[#242124]">Gestiones de la transferencia</h2>
+</div>
+<!-- Selector de gestión (Mínimo 44px de toque) -->
+<div class="grid grid-cols-2 gap-2">
+<!-- Botón Activo: Restituciones de origen -->
+<button class="touch-target flex items-center justify-center gap-1.5 px-3 py-2 bg-primary-container text-white rounded font-label-md text-label-md shadow-none border border-primary-container">
+<span class="material-symbols-outlined text-[18px]">move_to_inbox</span>
+<span>Restituciones de origen</span>
+</button>
+<!-- Botón Inactivo: Corregir conteo -->
+<button class="touch-target flex items-center justify-center gap-1.5 px-3 py-2 bg-surface-container-lowest text-on-surface rounded font-label-md text-label-md border border-[#DED7DA] hover:bg-[#F8F6F4] transition-colors">
+<span class="material-symbols-outlined text-[18px] text-on-surface-variant">edit_note</span>
+<span>Corregir conteo</span>
+</button>
+</div>
+<!-- Aviso informativo conciso -->
+<div class="p-3 bg-[#F5E8ED] border border-[#dac0c4] rounded flex items-start gap-2.5">
+<span class="material-symbols-outlined text-[18px] text-primary-container shrink-0 mt-0.5">info</span>
+<p class="text-[12px] leading-relaxed text-[#554245]">
+            El faltante en destino no confirma permanencia en origen. Proponer una restitución no mueve stock ni altera reservas.
+          </p>
+</div>
+</section>
+<!-- 4. BLOQUES DE PRODUCTOS ADAPTADOS A MÓVIL (CARDS VERTICALES) -->
+<section class="space-y-3.5">
+<!-- TARJETA VARIANTE 1: Con propuesta pendiente -->
+<article class="bg-surface-container-lowest border border-[#DED7DA] rounded-lg p-3.5 space-y-3">
+<!-- Header Card -->
+<div class="flex items-start justify-between gap-2 border-b border-[#DED7DA] pb-2.5">
+<div>
+<h3 class="text-headline-sm font-headline-sm text-[#242124]">CAR NS40ZL · 35Ah</h3>
+<p class="text-caption font-caption text-[#6B6267]">Izquierda [L]</p>
+</div>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-[#FEF7ED] text-[#8A5200] border border-[#F5D6A4]">
+              Pendiente de revisión
+            </span>
+</div>
+<!-- Métricas Resumen -->
+<div class="grid grid-cols-2 gap-2 text-[12px] bg-[#F8F6F4] p-2.5 rounded border border-[#DED7DA]">
+<div>
+<span class="text-[#6B6267] block text-[11px]">Enviadas:</span>
+<span class="font-semibold text-[#242124]">5 unidades</span>
+</div>
+<div>
+<span class="text-[#6B6267] block text-[11px]">Crédito en destino:</span>
+<span class="font-semibold text-[#242124]">3 unidades</span>
+</div>
+<div>
+<span class="text-[#6B6267] block text-[11px]">Restituido en origen:</span>
+<span class="font-semibold text-[#242124]">0 unidades</span>
+</div>
+<div>
+<span class="text-[#6B6267] block text-[11px]">Máximo a proponer:</span>
+<span class="font-semibold text-[#242124]">2 unidades</span>
+</div>
+</div>
+<!-- PANEL DE PROPUESTA EXPANDIDA -->
+<div class="border border-[#F5D6A4] bg-[#FEF7ED]/40 rounded p-3 space-y-2.5">
+<!-- Estado & Fecha -->
+<div class="flex items-center gap-1.5 text-[12px] font-medium text-[#8A5200]">
+<span class="w-2 h-2 rounded-full bg-[#8A5200] inline-block animate-pulse"></span>
+<span>Propuesta enviada · Esperando revisión de Sucursal A</span>
+</div>
+<div class="text-[11px] text-[#6B6267] pl-3.5">
+              20 Oct 2026 · 22:30 hora Bolivia por Operador de Almacén
+            </div>
+<!-- Recuadro: Cantidad propuesta -->
+<div class="bg-surface-container-lowest p-2.5 rounded border border-[#DED7DA]">
+<span class="block text-[10px] font-semibold text-[#6B6267] uppercase tracking-wide">CANTIDAD PROPUESTA</span>
+<div class="text-[18px] font-bold text-primary-container mt-0.5">2 unidades</div>
+<p class="text-[11px] text-[#6B6267] mt-1">
+                Restituido en origen permanece en 0 unidades hasta su validación.
+              </p>
+</div>
+<!-- Recuadro: Declaración de origen -->
+<div class="bg-surface-container-lowest p-2.5 rounded border border-[#DED7DA] space-y-1">
+<span class="block text-[10px] font-semibold text-[#6B6267] uppercase tracking-wide">DECLARACIÓN DE ORIGEN</span>
+<p class="text-[12px] text-[#242124] font-medium leading-snug">
+                Almacén declara que estas 2 unidades permanecen físicamente en origen.
+              </p>
+<p class="text-[11px] text-[#6B6267] leading-snug">
+                La permanencia física es declarada por origen; no se deduce del faltante.
+              </p>
+</div>
+<!-- Recuadro: Motivo declarado -->
+<div class="bg-surface-container-lowest p-2.5 rounded border border-[#DED7DA]">
+<span class="block text-[10px] font-semibold text-[#6B6267] uppercase tracking-wide">MOTIVO DECLARADO</span>
+<p class="text-[12px] text-[#242124] italic mt-0.5 leading-snug">
+                «Las 2 unidades quedaron en Almacén y no salieron con el envío»
+              </p>
+</div>
+<!-- Nota concisa -->
+<div class="text-[11px] text-[#554245] flex items-center gap-1.5 pt-0.5">
+<span class="material-symbols-outlined text-[14px] text-outline">lock</span>
+<span>La propuesta pendiente no mueve stock ni reservas.</span>
+</div>
+<!-- Desplegable técnico e historial -->
+<details class="group border-t border-[#F5D6A4]/70 pt-2">
+<summary class="flex items-center justify-between cursor-pointer list-none text-[11px] font-medium text-[#8A5200] hover:underline select-none">
+<span>Ver detalle técnico e historial</span>
+<span class="material-symbols-outlined text-[14px] transition-transform group-open:rotate-180">expand_more</span>
+</summary>
+<div class="mt-2 p-2 bg-surface-container-lowest rounded border border-[#DED7DA] text-[11px] text-[#6B6267] space-y-1">
+<div>Registro de evento: Apertura de propuesta por origen</div>
+<div>Estado de validación: En espera de confirmación física por destino</div>
+</div>
+</details>
+<!-- Rol Almacén: Estado neutral sin botones de aceptación/rechazo -->
+<div class="pt-1">
+<div class="w-full touch-target flex items-center justify-center gap-1.5 bg-[#F8F6F4] text-[#6B6267] border border-[#DED7DA] rounded font-label-md text-label-md cursor-not-allowed">
+<span class="material-symbols-outlined text-[16px]">hourglass_top</span>
+<span>Esperando revisión</span>
+</div>
+</div>
+</div>
+</article>
+<!-- TARJETA VARIANTE 2: Sin saldo para restituir -->
+<article class="bg-surface-container-lowest border border-[#DED7DA] rounded-lg p-3.5 space-y-3 opacity-90">
+<div class="flex items-start justify-between gap-2 border-b border-[#DED7DA] pb-2.5">
+<div>
+<h3 class="text-headline-sm font-headline-sm text-[#242124]">CAR NS40ZL · 35Ah</h3>
+<p class="text-caption font-caption text-[#6B6267]">Derecha [R]</p>
+</div>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-[#EDF6F1] text-[#1E5A3E] border border-[#BCDDCB]">
+              Sin propuestas
+            </span>
+</div>
+<!-- Métricas Resumen -->
+<div class="grid grid-cols-2 gap-2 text-[12px] bg-[#F8F6F4] p-2.5 rounded border border-[#DED7DA]">
+<div>
+<span class="text-[#6B6267] block text-[11px]">Enviadas:</span>
+<span class="font-semibold text-[#242124]">1 unidad</span>
+</div>
+<div>
+<span class="text-[#6B6267] block text-[11px]">Crédito en destino:</span>
+<span class="font-semibold text-[#242124]">1 unidad</span>
+</div>
+<div>
+<span class="text-[#6B6267] block text-[11px]">Restituido en origen:</span>
+<span class="font-semibold text-[#242124]">0 unidades</span>
+</div>
+<div>
+<span class="text-[#6B6267] block text-[11px]">Máximo a proponer:</span>
+<span class="font-semibold text-[#242124]">0 unidades</span>
+</div>
+</div>
+<!-- Badge o mensaje neutral de no disponible -->
+<div class="p-2.5 bg-[#F8F6F4] rounded border border-dashed border-[#DED7DA] flex items-center justify-between">
+<span class="text-[12px] text-[#6B6267]">Capacidad de restitución agotada</span>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-[#EDE6EA] text-[#554245] border border-[#DAC0C4]">
+              Sin saldo para restituir
+            </span>
+</div>
+</article>
+</section>
+<!-- 5. ACORDEÓN INFERIOR COLAPSADO: REGLAS DE FUNCIONAMIENTO -->
+<section class="bg-surface-container-lowest border border-[#DED7DA] rounded-lg p-3">
+<details class="group">
+<summary class="flex items-center justify-between cursor-pointer list-none text-headline-sm font-headline-sm text-[#242124] select-none touch-target py-1">
+<span class="flex items-center gap-2">
+<span class="material-symbols-outlined text-[18px] text-primary-container">help_outline</span>
+              ¿Cómo funciona la restitución de origen?
+            </span>
+<span class="material-symbols-outlined text-[20px] text-on-surface-variant transition-transform group-open:rotate-180">expand_more</span>
+</summary>
+<div class="mt-3 pt-3 border-t border-[#DED7DA] text-body-sm font-body-sm text-[#554245] space-y-2.5 leading-relaxed">
+<div class="p-2 bg-[#F8F6F4] rounded border border-[#DED7DA]">
+<strong class="text-[#242124] block text-[12px] mb-0.5">1. Capacidad matemática</strong>
+<p class="text-[11px]">La restitución máxima permitida está limitada al faltante registrado durante la recepción en Sucursal A.</p>
+</div>
+<div class="p-2 bg-[#F8F6F4] rounded border border-[#DED7DA]">
+<strong class="text-[#242124] block text-[12px] mb-0.5">2. Atestación física de origen</strong>
+<p class="text-[11px]">El operador de Almacén formula una declaración formal garantizando que las unidades no despachadas permanecen en sus instalaciones.</p>
+</div>
+<div class="p-2 bg-[#F8F6F4] rounded border border-[#DED7DA]">
+<strong class="text-[#242124] block text-[12px] mb-0.5">3. Validación de contraparte</strong>
+<p class="text-[11px]">Sucursal A debe revisar y validar la propuesta. Hasta que no se complete esta acción, el inventario no registra variaciones contables.</p>
+</div>
+<div class="p-2 bg-[#F8F6F4] rounded border border-[#DED7DA]">
+<strong class="text-[#242124] block text-[12px] mb-0.5">4. Cierre de gestión</strong>
+<p class="text-[11px]">Una vez validada, la restitución se consolida en el kárdex y se da por saldada la discordancia de transporte.</p>
+</div>
+</div>
+</details>
+</section>
+</main>
+<!-- 6. NAVEGACIÓN INFERIOR FIJA (BOTTOM NAVIGATION BAR) -->
+<nav class="fixed bottom-0 left-1/2 -translate-x-1/2 w-full max-w-[390px] h-16 bg-surface-container-lowest border-t border-[#DED7DA] flex items-center justify-around z-50 px-6">
+<!-- Pestaña 1: Inventario (Inactivo) -->
+<a class="touch-target flex flex-col items-center justify-center text-on-surface-variant hover:text-primary transition-colors py-1" href="#">
+<span class="material-symbols-outlined text-[22px]">inventory_2</span>
+<span class="text-label-sm font-label-sm mt-0.5">Inventario</span>
+</a>
+<!-- Pestaña 2: Transferencias (Activo en vino institucional #7a1f3d) -->
+<a class="touch-target flex flex-col items-center justify-center text-primary-container font-semibold py-1" href="#">
+<span class="material-symbols-outlined text-[22px]" style="font-variation-settings: 'FILL' 1;">sync_alt</span>
+<span class="text-label-sm font-label-sm mt-0.5">Transferencias</span>
+</a>
+</nav>
+</div>
+</body></html>

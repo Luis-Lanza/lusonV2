@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+
+<html class="h-full" lang="es"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" name="viewport"/>
+<title>TR-015 · Restitución de origen · Móvil · Destino revisa propuesta</title>
+<link href="https://fonts.googleapis.com" rel="preconnect"/>
+<link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+          },
+          colors: {
+            primary: {
+              DEFAULT: '#7a1f3d',
+              dark: '#5c0427',
+              light: '#9e2d53',
+            },
+            surface: {
+              DEFAULT: '#fff7fb',
+              dim: '#dfd8dc',
+              bright: '#fff7fb',
+              container: {
+                lowest: '#ffffff',
+                low: '#f9f2f6',
+                DEFAULT: '#f3ecf0',
+                high: '#ede6eb',
+                highest: '#e7e0e5'
+              }
+            }
+          }
+        }
+      }
+    }
+  </script>
+<style>
+    body {
+      font-family: 'Inter', sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+    }
+    .material-symbols-outlined.fill {
+      font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+    }
+    .table-scroll-container::-webkit-scrollbar {
+      height: 4px;
+    }
+    .table-scroll-container::-webkit-scrollbar-thumb {
+      background-color: #dfd8dc;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body class="bg-surface text-gray-900 min-h-screen flex flex-col antialiased selection:bg-primary/10 selection:text-primary pb-24 overflow-x-hidden w-full">
+<!-- Shell Header: Mobile header for Sucursal A -->
+<header class="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-gray-200 px-4 h-14 flex items-center justify-between w-full shadow-xs">
+<div class="flex items-center gap-2">
+<span class="text-primary font-bold text-lg tracking-tight">LUSON</span>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-[#7a1f3d]/10 text-primary border border-primary/20">
+        Sucursal A
+      </span>
+</div>
+<button aria-label="Cerrar sesión" class="min-w-[44px] min-h-[44px] flex items-center justify-center text-gray-500 hover:text-gray-800 transition-colors" title="Cerrar sesión">
+<span class="material-symbols-outlined text-[22px]">logout</span>
+</button>
+</header>
+<!-- Main Mobile Content -->
+<main class="w-full flex-1 px-4 py-3.5 space-y-4">
+<!-- Back Navigation & Historical Context -->
+<div class="space-y-2">
+<div class="flex items-center justify-between">
+<a class="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline min-h-[44px] py-1" href="#">
+<span class="material-symbols-outlined text-[20px]">arrow_back</span>
+<span>Volver a transferencias</span>
+</a>
+<button class="min-h-[44px] px-2 text-xs text-gray-500 hover:text-gray-800 underline decoration-dotted flex items-center">
+          Ver historial
+        </button>
+</div>
+<!-- Transfer Header Context -->
+<div class="pt-0.5">
+<div class="flex items-center gap-2 flex-wrap">
+<h1 class="text-2xl font-bold text-gray-900 tracking-tight">TR-015</h1>
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+            Recibida
+          </span>
+<span class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+            2 faltantes
+          </span>
+</div>
+<p class="text-sm text-gray-600 mt-1">
+          Solicitud de stock · <span class="font-medium text-gray-800">Almacén</span> → <span class="font-medium text-gray-800">Sucursal A</span>
+</p>
+</div>
+</div>
+<!-- SECTION: Complete Main Transfer Table -->
+<section class="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-xs">
+<div class="p-3.5 border-b border-gray-100 bg-surface-container-low/60">
+<div class="flex items-center justify-between gap-2">
+<h2 class="text-sm font-bold text-gray-900 leading-tight">Productos de la transferencia</h2>
+<span class="text-[11px] font-semibold text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200 shrink-0">
+            Con diferencias (2 faltantes)
+          </span>
+</div>
+<p class="text-xs text-gray-500 mt-1">
+          Recepción confirmada · 2 variantes · 6 baterías enviadas
+        </p>
+</div>
+<!-- Indicador de desplazamiento horizontal -->
+<div class="px-3.5 py-1.5 bg-gray-50 text-[11px] text-gray-500 flex items-center justify-between border-b border-gray-100">
+<span class="inline-flex items-center gap-1 font-medium">
+<span class="material-symbols-outlined text-[14px]">swipe</span>
+          Deslizá horizontalmente para ver columnas
+        </span>
+<span class="font-semibold text-gray-600 uppercase tracking-wider text-[10px]">5 columnas</span>
+</div>
+<!-- Tabla con scroll horizontal autónomo y primera columna fija -->
+<div class="table-scroll-container overflow-x-auto relative w-full">
+<table class="w-full text-left text-xs border-collapse min-w-[420px]">
+<thead>
+<tr class="bg-gray-50 text-gray-600 font-semibold border-b border-gray-200 uppercase tracking-wider text-[10px]">
+<th class="sticky left-0 bg-gray-50 z-10 py-2.5 px-3 border-r border-gray-200 min-w-[155px] shadow-[1px_0_0_0_#e5e7eb]" scope="col">
+                PRODUCTO / BATERÍA
+              </th>
+<th class="py-2.5 px-2 text-center w-14" scope="col">Env.</th>
+<th class="py-2.5 px-2 text-center w-14" scope="col">Rec.</th>
+<th class="py-2.5 px-2 text-center w-14" scope="col">Créd.</th>
+<th class="py-2.5 px-3 text-right min-w-[95px]" scope="col">Diferencia</th>
+</tr>
+</thead>
+<tbody class="divide-y divide-gray-100 font-medium">
+<!-- Variante L -->
+<tr class="hover:bg-gray-50/50 transition-colors">
+<td class="sticky left-0 bg-white z-10 py-2.5 px-3 border-r border-gray-200 shadow-[1px_0_0_0_#e5e7eb]">
+<div class="font-semibold text-gray-900 text-xs">CAR NS40ZL · 35Ah</div>
+<div class="text-[11px] text-gray-500">Izquierda [L]</div>
+</td>
+<td class="py-2.5 px-2 text-center text-gray-800">5</td>
+<td class="py-2.5 px-2 text-center text-gray-800">3</td>
+<td class="py-2.5 px-2 text-center text-gray-800 font-semibold">3</td>
+<td class="py-2.5 px-3 text-right">
+<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold bg-amber-50 text-amber-800 border border-amber-200 whitespace-nowrap">
+                  Faltante: 2
+                </span>
+</td>
+</tr>
+<!-- Variante R -->
+<tr class="hover:bg-gray-50/50 transition-colors">
+<td class="sticky left-0 bg-white z-10 py-2.5 px-3 border-r border-gray-200 shadow-[1px_0_0_0_#e5e7eb]">
+<div class="font-semibold text-gray-900 text-xs">CAR NS40ZL · 35Ah</div>
+<div class="text-[11px] text-gray-500">Derecha [R]</div>
+</td>
+<td class="py-2.5 px-2 text-center text-gray-800">1</td>
+<td class="py-2.5 px-2 text-center text-gray-800">1</td>
+<td class="py-2.5 px-2 text-center text-gray-800 font-semibold">1</td>
+<td class="py-2.5 px-3 text-right">
+<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 whitespace-nowrap">
+                  Sin dif.
+                </span>
+</td>
+</tr>
+</tbody>
+<tfoot>
+<tr class="bg-gray-50/90 font-bold border-t border-gray-200 text-gray-900">
+<td class="sticky left-0 bg-gray-50/90 z-10 py-2.5 px-3 border-r border-gray-200 text-[11px] shadow-[1px_0_0_0_#e5e7eb]">
+                Total (2 var. · 6 bat.)
+              </td>
+<td class="py-2.5 px-2 text-center">6</td>
+<td class="py-2.5 px-2 text-center">4</td>
+<td class="py-2.5 px-2 text-center">4</td>
+<td class="py-2.5 px-3 text-right">
+<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[11px] font-semibold bg-amber-50 text-amber-800 border border-amber-200 whitespace-nowrap">
+                  2 faltantes
+                </span>
+</td>
+</tr>
+</tfoot>
+</table>
+</div>
+<div class="p-3.5 bg-white text-xs text-gray-500 border-t border-gray-100 space-y-2">
+<p class="leading-relaxed">Estas cantidades corresponden a los registros de esta transferencia, no al stock físico actual de Sucursal A ni de Almacén.</p>
+<details class="group border-t border-gray-100 pt-2">
+<summary class="list-none flex items-center justify-between cursor-pointer text-gray-700 hover:text-gray-900 font-medium py-1 min-h-[44px]">
+<span class="inline-flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[18px] text-gray-400">inventory_2</span>
+<span>Ver recepción original</span>
+</span>
+<span class="material-symbols-outlined text-[18px] text-gray-400 group-open:rotate-180 transition-transform">expand_more</span>
+</summary>
+<div class="pt-1.5 pb-1 text-xs text-gray-600 border-t border-gray-100 mt-1 leading-relaxed">
+            Ver recepción original · Registro original conservado sin modificaciones. El despacho y la recepción original se conservan como registro histórico inmutable.
+          </div>
+</details>
+</div>
+</section>
+<!-- SECTION: Gestiones de la transferencia -->
+<section class="space-y-3 pt-1">
+<h2 class="text-base font-bold text-gray-900 tracking-tight">Gestiones de la transferencia</h2>
+<!-- Tab pills -->
+<div class="grid grid-cols-2 gap-2">
+<button class="min-h-[44px] flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-lg bg-[#7A1F3D] text-white font-medium text-xs shadow-xs">
+<span class="material-symbols-outlined text-[18px]">move_to_inbox</span>
+<span>Restituciones de origen</span>
+</button>
+<button class="min-h-[44px] flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-lg bg-white border border-gray-300 text-gray-700 font-medium text-xs hover:bg-gray-50 transition-colors">
+<span class="material-symbols-outlined text-[18px]">edit_note</span>
+<span>Corregir conteo</span>
+</button>
+</div>
+<!-- Informative notice -->
+<div class="bg-amber-50/80 border border-amber-200/90 rounded-lg p-3 text-xs text-amber-900 flex items-start gap-2.5">
+<span class="material-symbols-outlined text-[18px] text-amber-700 shrink-0 mt-0.5">info</span>
+<p class="leading-relaxed">
+          La aceptación validada acredita origen una sola vez; destino y reservas no cambian.
+        </p>
+</div>
+<!-- Tarjeta Variante 1: CAR NS40ZL · 35Ah Izquierda [L] -->
+<div class="bg-white rounded-xl border-2 border-amber-300 overflow-hidden shadow-xs">
+<!-- Cabecera de variante con status badge -->
+<div class="p-3.5 bg-amber-50/50 border-b border-amber-100 flex items-start justify-between gap-2">
+<div>
+<div class="flex items-center gap-1.5 flex-wrap">
+<h3 class="text-sm font-bold text-gray-900">CAR NS40ZL · 35Ah</h3>
+<span class="text-xs text-gray-600 font-normal">Izquierda [L]</span>
+</div>
+</div>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-semibold bg-amber-100 text-amber-900 border border-amber-300 shrink-0">
+            Pendiente de revisión
+          </span>
+</div>
+<!-- Labeled metrics -->
+<div class="p-3.5 bg-gray-50/70 border-b border-gray-100">
+<div class="grid grid-cols-2 gap-x-4 gap-y-2.5 text-xs">
+<div>
+<span class="text-gray-500 block text-[11px]">Enviadas:</span>
+<span class="font-semibold text-gray-800 text-sm">5 unidades</span>
+</div>
+<div>
+<span class="text-gray-500 block text-[11px]">Crédito en destino:</span>
+<span class="font-semibold text-gray-800 text-sm">3 unidades</span>
+</div>
+<div>
+<span class="text-gray-500 block text-[11px]">Restituido en origen:</span>
+<span class="font-semibold text-gray-800 text-sm">0 unidades</span>
+</div>
+<div>
+<span class="text-gray-500 block text-[11px]">Máximo a proponer:</span>
+<span class="font-bold text-primary text-sm">2 unidades</span>
+</div>
+</div>
+</div>
+<!-- Proposal card from Almacén -->
+<div class="p-3.5 space-y-3.5 bg-white">
+<!-- Header propuesta -->
+<div class="space-y-1 border-b border-gray-100 pb-2.5">
+<div class="flex items-center gap-2 text-xs font-bold text-amber-900">
+<span class="inline-block w-2.5 h-2.5 rounded-full bg-amber-500 shrink-0"></span>
+<span>Propuesta de Almacén · Requiere tu revisión</span>
+</div>
+<div class="text-[11px] text-gray-500 pl-4.5">
+              20 Oct 2026 · 22:30 hora Bolivia por Operador de Almacén
+            </div>
+</div>
+<!-- Cantidad propuesta -->
+<div class="bg-surface-container-low/80 border border-gray-200 rounded-lg p-3">
+<div class="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Cantidad propuesta</div>
+<div class="text-2xl font-bold text-primary mt-0.5">2 unidades</div>
+<div class="text-xs text-gray-500 mt-1">
+              Restituido en origen permanece en 0 unidades hasta su validación.
+            </div>
+</div>
+<!-- Declaración de origen -->
+<div class="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-1">
+<div class="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Declaración de origen</div>
+<p class="text-xs font-semibold text-gray-900 leading-snug">
+              Almacén declara que estas 2 unidades permanecen físicamente en origen.
+            </p>
+<p class="text-xs text-gray-500 leading-normal pt-0.5">
+              La permanencia física es declarada por origen; no se deduce automáticamente del faltante.
+            </p>
+</div>
+<!-- Motivo declarado -->
+<div class="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-1">
+<div class="text-[11px] font-semibold uppercase tracking-wider text-gray-500">Motivo declarado</div>
+<p class="text-xs text-gray-800 italic bg-white p-2.5 rounded border border-gray-100 leading-relaxed">
+              «Las 2 unidades quedaron en Almacén y no salieron con el envío»
+            </p>
+</div>
+<!-- Collapsed disclosure: Ver detalle técnico e historial -->
+<details class="group border border-gray-200 rounded-lg p-2.5">
+<summary class="list-none flex items-center justify-between cursor-pointer text-xs text-gray-600 hover:text-gray-900 font-medium min-h-[44px]">
+<span class="inline-flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[18px] text-gray-400">history</span>
+<span>Ver detalle técnico e historial</span>
+</span>
+<span class="material-symbols-outlined text-[18px] text-gray-400 group-open:rotate-180 transition-transform">expand_more</span>
+</summary>
+<div class="pt-2.5 text-xs text-gray-600 border-t border-gray-100 mt-1 space-y-1.5 leading-relaxed">
+<p><strong>Operación:</strong> Propuesta inicial de restitución.</p>
+<p><strong>Acreditación pendiente:</strong> Almacén (+0 efectivo hasta aprobación).</p>
+<p><strong>Auditoría:</strong> Entrada de propuesta registrada el 20 Oct 2026 22:30.</p>
+</div>
+</details>
+<!-- Decision action buttons BEFORE footer note -->
+<div class="pt-2 space-y-2.5 border-t border-gray-100">
+<!-- Primary solid wine button -->
+<button class="w-full min-h-[44px] flex items-center justify-center gap-2 rounded-lg bg-[#7A1F3D] hover:bg-primary-dark text-white font-semibold text-sm transition-colors shadow-xs">
+<span class="material-symbols-outlined text-[20px]">check</span>
+<span>Aceptar restitución</span>
+</button>
+<!-- Secondary outline button -->
+<button class="w-full min-h-[44px] flex items-center justify-center gap-2 rounded-lg bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 font-semibold text-sm transition-colors">
+<span class="material-symbols-outlined text-[20px]">cancel</span>
+<span>Rechazar restitución</span>
+</button>
+<!-- Helper note -->
+<p class="text-xs text-gray-500 text-center pt-1 leading-normal">
+              Ambas opciones abren instancias obligatorias de motivo y revisión. Esta pantalla no ejecuta cambios directos.
+            </p>
+</div>
+</div>
+</div>
+<!-- Tarjeta Variante 2: CAR NS40ZL · 35Ah Derecha [R] -->
+<div class="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-xs">
+<div class="p-3.5 bg-gray-50/50 border-b border-gray-100 flex items-start justify-between gap-2">
+<div>
+<div class="flex items-center gap-1.5 flex-wrap">
+<h3 class="text-sm font-bold text-gray-900">CAR NS40ZL · 35Ah</h3>
+<span class="text-xs text-gray-600 font-normal">Derecha [R]</span>
+</div>
+</div>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-gray-100 text-gray-700 border border-gray-200 shrink-0">
+            Sin propuestas pendientes
+          </span>
+</div>
+<div class="p-3.5 bg-gray-50/30">
+<div class="grid grid-cols-2 gap-x-4 gap-y-2.5 text-xs">
+<div>
+<span class="text-gray-500 block text-[11px]">Enviadas:</span>
+<span class="font-semibold text-gray-800 text-sm">1 unidad</span>
+</div>
+<div>
+<span class="text-gray-500 block text-[11px]">Crédito en destino:</span>
+<span class="font-semibold text-gray-800 text-sm">1 unidad</span>
+</div>
+<div>
+<span class="text-gray-500 block text-[11px]">Restituido en origen:</span>
+<span class="font-semibold text-gray-800 text-sm">0 unidades</span>
+</div>
+<div>
+<span class="text-gray-500 block text-[11px]">Máximo a proponer:</span>
+<span class="font-semibold text-gray-600 text-sm">0 unidades</span>
+</div>
+</div>
+<div class="mt-3.5 pt-3 border-t border-gray-100 flex items-center justify-between text-xs text-gray-500">
+<span>Capacidad de restitución agotada</span>
+<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-gray-100 text-gray-600 border border-gray-200">
+              Sin saldo para restituir
+            </span>
+</div>
+</div>
+</div>
+<!-- Desplegable "¿Cómo funciona la restitución de origen?" -->
+<details class="bg-white rounded-xl border border-gray-200 p-3.5 text-xs text-gray-700 shadow-xs group">
+<summary class="list-none flex items-center justify-between cursor-pointer font-semibold text-gray-900 min-h-[44px]">
+<span class="inline-flex items-center gap-2">
+<span class="material-symbols-outlined text-primary text-[20px]">help</span>
+<span class="text-sm">¿Cómo funciona la restitución de origen?</span>
+</span>
+<span class="material-symbols-outlined text-[18px] text-gray-400 group-open:rotate-180 transition-transform">expand_more</span>
+</summary>
+<div class="pt-3 border-t border-gray-100 mt-2 space-y-2 text-xs text-gray-600 leading-relaxed">
+<p>• El máximo a proponer representa la capacidad matemática pendiente (enviadas menos crédito en destino menos restituciones previas).</p>
+<p>• Almacén debe atestiguar expresamente que las unidades permanecen retenidas en origen al iniciar la propuesta.</p>
+<p>• Sucursal A debe revisar y validar la propuesta antes de cualquier resolución. No existe devolución automática ni resolución genérica de pérdidas.</p>
+<p>• Si la propuesta es aceptada, se acreditará en Almacén únicamente tras validación; el crédito de destino y las reservas no se modifican.</p>
+<p>• Toda aplicación de restitución, incluso parcial, cierra la gestión para esa variante preservando intacto el despacho original.</p>
+</div>
+</details>
+</section>
+</main>
+<!-- Mobile Bottom Navigation (Fixed at bottom, true mobile) -->
+<nav class="fixed bottom-0 left-0 right-0 w-full bg-white border-t border-gray-200 z-30 h-16 flex items-center justify-around px-4 shadow-lg">
+<a class="min-h-[44px] flex flex-col items-center justify-center flex-1 py-1 text-gray-500 hover:text-gray-900 transition-colors" href="#">
+<span class="material-symbols-outlined text-[22px]">inventory_2</span>
+<span class="text-[11px] font-medium mt-0.5">Inventario</span>
+</a>
+<a class="min-h-[44px] flex flex-col items-center justify-center flex-1 py-1 text-primary transition-colors" href="#">
+<span class="material-symbols-outlined text-[22px] fill">sync_alt</span>
+<span class="text-[11px] font-bold mt-0.5">Transferencias</span>
+</a>
+</nav>
+</body></html>
