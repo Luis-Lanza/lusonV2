@@ -1,0 +1,309 @@
+[
+  {
+    "width": 1280,
+    "actor": 1,
+    "state": "pending",
+    "passed": true,
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory/metadata"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      }
+    ],
+    "screenshots": [
+      "integrated-1280-actor-1-pending-initial.png",
+      "integrated-1280-actor-1-pending-collapsed.png",
+      "integrated-1280-actor-1-pending-history.png",
+      "integrated-1280-actor-1-pending-review.png"
+    ],
+    "businessWrites": 0
+  },
+  {
+    "width": 1280,
+    "actor": 1,
+    "state": "applied",
+    "passed": true,
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory/metadata"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      }
+    ],
+    "screenshots": [
+      "integrated-1280-actor-1-applied-initial.png",
+      "integrated-1280-actor-1-applied-collapsed.png",
+      "integrated-1280-actor-1-applied-history.png"
+    ],
+    "businessWrites": 0
+  },
+  {
+    "width": 1280,
+    "actor": 2,
+    "state": "pending",
+    "passed": true,
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory/metadata"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      }
+    ],
+    "screenshots": [
+      "integrated-1280-actor-2-pending-initial.png",
+      "integrated-1280-actor-2-pending-collapsed.png",
+      "integrated-1280-actor-2-pending-history.png",
+      "integrated-1280-actor-2-pending-review.png",
+      "integrated-1280-actor-2-pending-reject-review.png"
+    ],
+    "businessWrites": 0
+  },
+  {
+    "width": 1280,
+    "actor": 2,
+    "state": "applied",
+    "passed": true,
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory/metadata"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      }
+    ],
+    "screenshots": [
+      "integrated-1280-actor-2-applied-initial.png",
+      "integrated-1280-actor-2-applied-collapsed.png",
+      "integrated-1280-actor-2-applied-history.png"
+    ],
+    "businessWrites": 0
+  },
+  {
+    "width": 390,
+    "actor": 1,
+    "state": "pending",
+    "passed": false,
+    "error": "locator.click: Timeout 10000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('region', { name: 'Restituciones de origen', exact: true }).getByRole('table', { name: 'Gestión de restituciones', exact: true }).getByRole('rowgroup', { name: 'TOYO · Exact-1 · 75.125 Ah · L', exact: true }).getByRole('button', { name: 'Historial completo · 1 propuesta(s)', exact: true })\u001b[22m\n\u001b[2m    - locator resolved to <button aria-expanded=\"false\" aria-controls=\"_r_6_-1\" aria-label=\"Historial completo · 1 propuesta(s)\">1 propuesta(s)</button>\u001b[22m\n\u001b[2m  - attempting click action\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m    - element is visible, enabled and stable\u001b[22m\n\u001b[2m    - scrolling into view if needed\u001b[22m\n\u001b[2m    - done scrolling\u001b[22m\n\u001b[2m    - <td data-label=\"Acción\">…</td> intercepts pointer events\u001b[22m\n\u001b[2m  - retrying click action\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m    - element is visible, enabled and stable\u001b[22m\n\u001b[2m    - scrolling into view if needed\u001b[22m\n\u001b[2m    - done scrolling\u001b[22m\n\u001b[2m    - <span>Inventario</span> from <nav class=\"bottom-nav\" aria-label=\"Navegación móvil\">…</nav> subtree intercepts pointer events\u001b[22m\n\u001b[2m  - retrying click action\u001b[22m\n\u001b[2m    - waiting 20ms\u001b[22m\n\u001b[2m    2 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <td data-label=\"Acción\">…</td> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 100ms\u001b[22m\n\u001b[2m    4 × waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <td data-label=\"Acción\">…</td> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <span>Inventario</span> from <nav class=\"bottom-nav\" aria-label=\"Navegación móvil\">…</nav> subtree intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <td data-label=\"Acción\">…</td> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m      - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m      - element is visible, enabled and stable\u001b[22m\n\u001b[2m      - scrolling into view if needed\u001b[22m\n\u001b[2m      - done scrolling\u001b[22m\n\u001b[2m      - <td data-label=\"Acción\">…</td> intercepts pointer events\u001b[22m\n\u001b[2m    - retrying click action\u001b[22m\n\u001b[2m      - waiting 500ms\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m    - element is visible, enabled and stable\u001b[22m\n\u001b[2m    - scrolling into view if needed\u001b[22m\n\u001b[2m    - done scrolling\u001b[22m\n\u001b[2m    - <td data-label=\"Acción\">…</td> intercepts pointer events\u001b[22m\n\u001b[2m  - retrying click action\u001b[22m\n\u001b[2m    - waiting 500ms\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m    - element is visible, enabled and stable\u001b[22m\n\u001b[2m    - scrolling into view if needed\u001b[22m\n\u001b[2m    - done scrolling\u001b[22m\n\u001b[2m    - <span>Inventario</span> from <nav class=\"bottom-nav\" aria-label=\"Navegación móvil\">…</nav> subtree intercepts pointer events\u001b[22m\n\u001b[2m  - retrying click action\u001b[22m\n\u001b[2m    - waiting 500ms\u001b[22m\n\u001b[2m    - waiting for element to be visible, enabled and stable\u001b[22m\n\u001b[2m    - element is visible, enabled and stable\u001b[22m\n\u001b[2m    - scrolling into view if needed\u001b[22m\n\u001b[2m    - done scrolling\u001b[22m\n\u001b[2m    - <td data-label=\"Acción\">…</td> intercepts pointer events\u001b[22m\n\u001b[2m  - retrying click action\u001b[22m\n\u001b[2m    - waiting 500ms\u001b[22m\n\n    at /home/luis/velay/luson_v2/odd/design/transfer-origin-restitution-ux/integrated-probe.mjs:124:21",
+    "rejected": [],
+    "errors": [],
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory/metadata"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      }
+    ],
+    "screenshots": [
+      "integrated-390-actor-1-pending-initial.png",
+      "integrated-390-actor-1-pending-collapsed.png",
+      "integrated-390-actor-1-pending-failure.png"
+    ]
+  }
+]

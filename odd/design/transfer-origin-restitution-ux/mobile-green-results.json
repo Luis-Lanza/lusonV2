@@ -1,0 +1,333 @@
+[
+  {
+    "width": 390,
+    "actor": 1,
+    "state": "pending",
+    "passed": true,
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory/metadata"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      }
+    ],
+    "screenshots": [
+      "mobile-green-390-actor-1-pending-initial.png",
+      "mobile-green-390-actor-1-pending-collapsed.png",
+      "mobile-green-390-actor-1-pending-history.png",
+      "mobile-green-390-actor-1-pending-review.png"
+    ],
+    "geometry": [
+      {
+        "phase": "collapsed",
+        "rows": 3,
+        "cells": 15,
+        "issues": []
+      },
+      {
+        "phase": "expanded-history",
+        "rows": 4,
+        "cells": 16,
+        "issues": []
+      },
+      {
+        "phase": "after-management-switch",
+        "rows": 3,
+        "cells": 15,
+        "issues": []
+      }
+    ],
+    "businessWrites": 0
+  },
+  {
+    "width": 390,
+    "actor": 1,
+    "state": "applied",
+    "passed": true,
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory/metadata"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      }
+    ],
+    "screenshots": [
+      "mobile-green-390-actor-1-applied-initial.png",
+      "mobile-green-390-actor-1-applied-collapsed.png",
+      "mobile-green-390-actor-1-applied-history.png"
+    ],
+    "geometry": [
+      {
+        "phase": "collapsed",
+        "rows": 2,
+        "cells": 14,
+        "issues": []
+      },
+      {
+        "phase": "expanded-history",
+        "rows": 3,
+        "cells": 15,
+        "issues": []
+      },
+      {
+        "phase": "after-management-switch",
+        "rows": 2,
+        "cells": 14,
+        "issues": []
+      }
+    ],
+    "businessWrites": 0
+  },
+  {
+    "width": 390,
+    "actor": 2,
+    "state": "pending",
+    "passed": true,
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory/metadata"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      }
+    ],
+    "screenshots": [
+      "mobile-green-390-actor-2-pending-initial.png",
+      "mobile-green-390-actor-2-pending-collapsed.png",
+      "mobile-green-390-actor-2-pending-history.png",
+      "mobile-green-390-actor-2-pending-review.png",
+      "mobile-green-390-actor-2-pending-reject-review.png"
+    ],
+    "geometry": [
+      {
+        "phase": "collapsed",
+        "rows": 3,
+        "cells": 15,
+        "issues": []
+      },
+      {
+        "phase": "expanded-history",
+        "rows": 4,
+        "cells": 16,
+        "issues": []
+      },
+      {
+        "phase": "after-management-switch",
+        "rows": 3,
+        "cells": 15,
+        "issues": []
+      }
+    ],
+    "businessWrites": 0
+  },
+  {
+    "width": 390,
+    "actor": 2,
+    "state": "applied",
+    "passed": true,
+    "requests": [
+      {
+        "method": "GET",
+        "path": "/api/auth/session"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/counts"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory/metadata"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001"
+      },
+      {
+        "method": "GET",
+        "path": "/api/inventory"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/restitutions"
+      },
+      {
+        "method": "GET",
+        "path": "/api/transfers/1001/count-corrections"
+      }
+    ],
+    "screenshots": [
+      "mobile-green-390-actor-2-applied-initial.png",
+      "mobile-green-390-actor-2-applied-collapsed.png",
+      "mobile-green-390-actor-2-applied-history.png"
+    ],
+    "geometry": [
+      {
+        "phase": "collapsed",
+        "rows": 2,
+        "cells": 14,
+        "issues": []
+      },
+      {
+        "phase": "expanded-history",
+        "rows": 3,
+        "cells": 15,
+        "issues": []
+      },
+      {
+        "phase": "after-management-switch",
+        "rows": 2,
+        "cells": 14,
+        "issues": []
+      }
+    ],
+    "businessWrites": 0
+  }
+]
