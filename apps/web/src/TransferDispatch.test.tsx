@@ -423,7 +423,7 @@ describe('D2 dispatch participant UI', () => {
     expect(screen.getByRole('region', { name: 'Historial de la solicitud' })).toHaveTextContent('Solicitud despachada');
     expect(screen.queryByRole('button', { name: 'Despachar solicitud' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
-    expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toHaveTextContent('Acciones requeridas2');
+    expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toHaveTextContent('2 transferencias requieren tu atención');
     fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'in_transit' } });
     await screen.findByText('1 solicitud en tránsito');
     expect(screen.getByRole('table', { name: 'Solicitudes en tránsito participantes' })).toHaveTextContent('En tránsito');

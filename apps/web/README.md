@@ -43,7 +43,7 @@ accepted only for `all`; record validation and participant/session fencing remai
 unchanged. This current contract supersedes historical Pending-only list sections
 below. Source checks do not establish deployment or browser acceptance.
 
-## Required-action query foundation (T2, no new UI)
+## Required-action visibility
 
 `TransferQuery.requires_action?: boolean` combines with lifecycle status. The
 serializer omits false to preserve existing URLs; true enters the list query key.
@@ -67,7 +67,28 @@ reasons on every row. API and hook verify filter echo; the hook also checks assi
 actor ownership. Count-review counterpart eligibility remains backend-owned because
 immutable headers do not identify proposal initiators. Existing participant and
 stale-authority fences remain in force. These labels never grant mutation permission.
-Visible summaries, shortcuts and row cues are deferred to T3.
+The attention band shows the assigned location's distinct-transfer total and five
+independent category chips; categories can overlap and are never summed for the
+sidebar badge. **Sobre los totales** retains the independent Pending total. Loading,
+unavailable (with a counts-only retry), true zero and legacy missing breakdowns
+remain distinct. The existing sidebar/bottom-navigation badge is unchanged.
+
+**Ver acciones pendientes** is also available in a compact band above detail. It
+returns to the list with Todas, action-only filtering and page one, so work outside
+the loaded page or lifecycle filter is discoverable. **Solo requieren mi acción**
+toggles that server-side filter while retaining the selected lifecycle status.
+Ordinary pagination and detail/back retain the query. Existing dialogs isolate the
+shortcut as inert background; the shortcut never dismisses a review or sends a write.
+
+**Tu acción** renders only list metadata, including both received-review labels
+when applicable. Explicit empty metadata shows waiting/finished copy; missing
+legacy metadata says the action is unavailable. Physical participants, lifecycle,
+quantities and immutable detail history remain visible. **Ver detalle** stays
+navigation-only: labels are advice, never permission to mutate.
+
+The scoped CSS follows the approved wine/off-white design and wraps chips and
+controls for warehouse mobile cards and branch desktop tables. Source tests do
+not establish browser geometry or visual acceptance; those remain T4 checks.
 
 ## Direct warehouse shipments
 

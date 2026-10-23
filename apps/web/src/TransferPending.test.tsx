@@ -153,6 +153,203 @@ function pendingHistory(record = receivedWire()) {
       recorded_at: correctionStamp, state: 'pending', decision: null, application: null }] : [] })) };
 }
 
+const actionCounts = { pending_total: '2', action_count: '4', actions: {
+  approve: '1', dispatch: '1', receive: '1', review_count: '1', review_restitution: '1',
+} };
+function actionableFixture() {
+  const f = fixture(2, url => {
+    if (url === '/api/transfers/counts') return Promise.resolve(reply(actionCounts));
+    if (!url.startsWith('/api/transfers?')) return undefined;
+    const q = new URL(url, 'http://localhost').searchParams;
+    const page = Number(q.get('page')); const size = Number(q.get('page_size'));
+    const records = Array.from({ length: size }, (_, i) => wire(2, 3, String(100 - i), 'approved'));
+    return Promise.resolve(reply({ page, page_size: size, status: q.get('status'), total_count: '100', records,
+      requires_action: q.get('requires_action') === 'true', required_actions: Object.fromEntries(records.map(r => [r.id, ['dispatch']])) }));
+  });
+  f.env.record = wire(2, 3, '100', 'approved');
+  return f;
+}
+
+describe('T3 location-owned action discovery', () => {
+  it.each([false, true])('shows five categories with overlap=%s, assigned context and server-owned reasons', async overlap => {
+    const received = { ...receivedWire(), id: '4', reference: 'TR-004' };
+    const transit = { ...wire(1, 2, '5', 'in_transit'), dispatch_location_id: 1, dispatched_at: correctionStamp };
+    const records = [wire(2, 3, '7'), wire(2, 3, '6', 'approved'), transit, received,
+      ...(!overlap ? [{ ...received, id: '3', reference: 'TR-003' }] : []), wire(1, 2, '2'), { ...received, id: '1', reference: 'TR-001' }];
+    const total = overlap ? '4' : '5';
+    const f = fixture(2, url => url === '/api/transfers/counts' ? Promise.resolve(reply({ ...actionCounts, action_count: total }))
+      : url.startsWith('/api/transfers?') ? Promise.resolve(reply({ page: 1, page_size: 25, status: 'all', total_count: String(records.length),
+        records, requires_action: false, required_actions: { '7': ['approve'], '6': ['dispatch'], '5': ['receive'],
+          '4': overlap ? ['review_count', 'review_restitution'] : ['review_count'], ...(!overlap ? { '3': ['review_restitution'] } : {}), '2': [], '1': [] } })) : undefined);
+    render(f.element());
+    expect(await screen.findByText(`${total} transferencias requieren tu atención`)).toBeVisible();
+    expect(screen.getByText('Acciones asignadas a Sucursal A')).toBeVisible();
+    const categories = screen.getByLabelText('Tipos de acción pendientes');
+    for (const label of ['Por aprobar', 'Por despachar', 'Por recibir', 'Conteos por revisar', 'Restituciones por revisar']) {
+      expect(within(categories).getByText(label).parentElement).toHaveTextContent(`${label}1`);
+    }
+    expect(screen.getByText('Una transferencia puede aparecer en varios tipos.')).toBeVisible();
+    expect(screen.getByLabelText('Estado de transferencia')).toHaveValue('all');
+    expect(screen.getByRole('checkbox', { name: 'Solo requieren mi acción' })).not.toBeChecked();
+    const table = screen.getByRole('table');
+    expect(within(table).getByRole('columnheader', { name: 'Tu acción' })).toBeVisible();
+    for (const label of ['Aprobar o rechazar', 'Despachar', 'Recibir', 'Revisar conteo', 'Revisar restitución']) expect(table).toHaveTextContent(label);
+    expect(table).toHaveTextContent('Esperando a Almacén'); expect(table).toHaveTextContent('Sin acción pendiente');
+    expect(f.fetch.mock.calls.every(([url, init]) => init?.method === 'GET' && !String(url).includes('corrections') && !String(url).includes('restitutions'))).toBe(true);
+  });
+
+  it('finds all work from filtered high-page detail and retains checkbox, pagination and ordinary Back', async () => {
+    const f = actionableFixture(); const route = vi.fn();
+    render(<TransferPending controller={f.controller} ownerTag={f.ownerTag} onInventory={f.back} onRouteDetail={route} />);
+    await screen.findByText('100 transferencias');
+    fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'approved' } });
+    await screen.findByText('100 solicitudes aprobadas');
+    fireEvent.click(screen.getByRole('button', { name: 'Siguiente aprobadas' }));
+    await waitFor(() => expect(calls(f).at(-1)![0]).toContain('page=2&'));
+    fireEvent.click(screen.getByRole('button', { name: 'Ver detalle TR-100' }));
+    await screen.findByRole('heading', { name: 'TR-100' });
+    expect(screen.getByText('4 transferencias requieren tu atención')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Ver acciones pendientes' }));
+    await screen.findByText('100 transferencias');
+    expect(calls(f).at(-1)![0]).toBe('/api/transfers?page=1&page_size=25&status=all&requires_action=true');
+    expect(route).toHaveBeenLastCalledWith(null);
+    expect(screen.getByRole('checkbox')).toBeChecked();
+    expect(screen.getByLabelText('Estado de transferencia')).toHaveValue('all');
+    fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'approved' } });
+    await screen.findByText('100 solicitudes aprobadas');
+    fireEvent.click(screen.getByRole('button', { name: 'Siguiente aprobadas' }));
+    await waitFor(() => expect(calls(f).at(-1)![0]).toBe('/api/transfers?page=2&page_size=25&status=approved&requires_action=true'));
+    fireEvent.click(screen.getByRole('button', { name: 'Ver detalle TR-100' }));
+    await screen.findByRole('heading', { name: 'TR-100' });
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a aprobadas' }));
+    expect(screen.getByText('Página 2')).toBeVisible(); expect(screen.getByRole('checkbox')).toBeChecked();
+    fireEvent.click(screen.getByRole('checkbox'));
+    await waitFor(() => expect(calls(f).at(-1)![0]).toBe('/api/transfers?page=1&page_size=25&status=approved'));
+    expect(isPassive(calls(f).at(-1)!)).toBe(false);
+    expect(countCalls(f)).toHaveLength(1);
+    expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+  });
+
+  it.each([
+    ['in_transit', ['receive'], 'Recibir'],
+    ['in_transit', [], 'Esperando a Sucursal B'],
+    ['approved', [], 'Esperando a Almacén'],
+  ] as const)('shows server-provided %s metadata %j without quick mutations', async (status, reasons, label) => {
+    const origin = status === 'in_transit' && !reasons.length ? 2 : 1;
+    const record = { ...wire(origin, origin === 2 ? 3 : 2, '1', status),
+      ...(status === 'in_transit' ? { dispatch_location_id: origin, dispatched_at: correctionStamp } : {}) };
+    const f = fixture(2, url => url.startsWith('/api/transfers?') ? Promise.resolve(reply({ page: 1, page_size: 25, status: 'all',
+      total_count: '1', records: [record], requires_action: false, required_actions: { '1': reasons } })) : undefined);
+    render(f.element()); await screen.findByText('1 transferencia');
+    expect(within(screen.getByRole('table')).getByText(label)).toBeVisible();
+    expect(screen.queryByRole('button', { name: /^(Recibir|Despachar|Aprobar)/ })).toBeNull();
+    expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+  });
+
+  it.each([false, true])('distinguishes loading, genuine zero and missing metadata with legacy counts=%s', async legacy => {
+    const pending = deferred();
+    const f = fixture(2, url => url === '/api/transfers/counts' ? pending.promise : undefined);
+    f.env.count = '1'; render(f.element());
+    expect(screen.getByText('Consultando acciones pendientes…')).toBeVisible();
+    expect(screen.queryByText('No tenés acciones pendientes')).toBeNull();
+    await screen.findByText('Acción no disponible');
+    expect(screen.queryByText('Sin acción pendiente')).toBeNull();
+    await act(async () => pending.resolve(reply({ pending_total: '2', action_count: '0', ...(!legacy ? {
+      actions: { approve: '0', dispatch: '0', receive: '0', review_count: '0', review_restitution: '0' },
+    } : {}) })));
+    expect(screen.getByText('No tenés acciones pendientes')).toBeVisible();
+    if (legacy) {
+      expect(screen.getByText('Desglose de acciones no disponible.')).toBeVisible();
+      expect(screen.queryByLabelText('Tipos de acción pendientes')).toBeNull();
+    } else expect(within(screen.getByLabelText('Tipos de acción pendientes')).getAllByText('0')).toHaveLength(5);
+    expect(screen.getByText('Sobre los totales').closest('details')).toHaveTextContent('Pendientes de tu ubicación: 2');
+  });
+
+  it('retries unavailable counts alone without fabricating zero or moving the query', async () => {
+    let failed = true;
+    const f = fixture(2, url => url === '/api/transfers/counts' ? Promise.resolve(failed
+      ? reply({ error: 'PRIVATE' }, 503) : reply(actionCounts)) : undefined);
+    render(f.element()); await loaded();
+    expect(await screen.findByText('Acciones pendientes no disponibles.')).toBeVisible();
+    expect(screen.queryByText('No tenés acciones pendientes')).toBeNull();
+    const before = calls(f).length;
+    const retry = screen.getByRole('button', { name: 'Reintentar acciones pendientes' });
+    f.env.current.ready = false; fireEvent.click(retry);
+    expect(countCalls(f)).toHaveLength(1);
+    f.env.current.ready = true;
+    failed = false; fireEvent.click(retry);
+    await screen.findByText('4 transferencias requieren tu atención');
+    expect(calls(f)).toHaveLength(before); expect(countCalls(f)).toHaveLength(2);
+    expect([...new Headers(countCalls(f).at(-1)![1]?.headers)]).toEqual([]);
+    expect(screen.getByLabelText('Estado de transferencia')).toHaveValue('pending');
+    expect(document.body).not.toHaveTextContent('PRIVATE');
+  });
+
+  it.each(['unready', 'account', 'csrf'])('blocks retained discovery handlers after %s changes', async mode => {
+    const f = actionableFixture(); render(f.element()); await screen.findByText('100 transferencias');
+    const cta = screen.getByRole('button', { name: 'Ver acciones pendientes' });
+    const checkbox = screen.getByRole('checkbox'); const before = f.fetch.mock.calls.length;
+    if (mode === 'unready') f.env.current.ready = false;
+    else f.env.current = authority(mode === 'account' ? 3 : 2, 1, mode === 'csrf' ? 'b'.repeat(43) : 'a'.repeat(43));
+    fireEvent.click(cta); fireEvent.click(checkbox);
+    await act(async () => {}); expect(f.fetch.mock.calls).toHaveLength(before);
+  });
+
+  it.each(['notification', 'confirmed-write'])('refreshes reasons and counts through %s without stealing detail', async source => {
+    let approved = false;
+    const f = fixture(1, (url, init) => {
+      const record = wire(1, 2, '100', approved ? 'approved' : 'pending');
+      if (url === '/api/transfers/counts') return Promise.resolve(reply({ pending_total: approved ? '0' : '1', action_count: '1',
+        actions: { approve: approved ? '0' : '1', dispatch: approved ? '1' : '0', receive: '0', review_count: '0', review_restitution: '0' } }));
+      if (url.startsWith('/api/transfers?')) return Promise.resolve(reply({ page: 1, page_size: 25, status: 'all', total_count: '1',
+        records: [record], requires_action: false, required_actions: { '100': [approved ? 'dispatch' : 'approve'] } }));
+      if (url === '/api/transfers/100') return Promise.resolve(reply(record));
+      if (url === '/api/transfers/100/approve' && init.method === 'POST') {
+        approved = true; return Promise.resolve(reply(wire(1, 2, '100', 'approved')));
+      }
+      return undefined;
+    });
+    render(f.element()); await screen.findByText('1 transferencia requiere tu atención');
+    expect(screen.getByRole('table')).toHaveTextContent('Aprobar o rechazar');
+    expect(document.querySelector('.pending-cards')).toHaveTextContent('Aprobar o rechazar');
+    fireEvent.click(screen.getByRole('button', { name: 'Ver detalle TR-100' }));
+    await screen.findByRole('heading', { name: 'TR-100' });
+    if (source === 'notification') {
+      approved = true; act(() => { for (const listener of f.listeners) listener(); });
+    } else {
+      fireEvent.click(screen.getByRole('button', { name: 'Aprobar solicitud' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Confirmar aprobación' }));
+      await screen.findByRole('heading', { name: 'Solicitud Aprobada confirmada' });
+      fireEvent.click(screen.getByRole('button', { name: 'Volver al detalle' }));
+    }
+    await waitFor(() => expect(countCalls(f)).toHaveLength(2));
+    await screen.findByText('1 transferencia requiere tu atención');
+    expect(screen.getByRole('heading', { name: 'TR-100' })).toBeVisible();
+    expect(screen.queryByLabelText('Estado de transferencia')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
+    await waitFor(() => expect(screen.getByRole('table')).toHaveTextContent('Despachar'));
+    expect(document.querySelector('.pending-cards')).toHaveTextContent('Despachar');
+    const categories = screen.getByLabelText('Tipos de acción pendientes');
+    expect(within(categories).getByText('Por aprobar').parentElement).toHaveTextContent('Por aprobar0');
+    expect(within(categories).getByText('Por despachar').parentElement).toHaveTextContent('Por despachar1');
+    expect(isPassive(calls(f).at(-1)!)).toBe(true);
+    expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(source === 'confirmed-write' ? 1 : 0);
+  });
+
+  it('keeps the shortcut inert during modal review and restores normal discovery after Escape', async () => {
+    const f = fixture(1); render(f.element({ ownerTag: f.ownerTag, id: f.env.record.id }));
+    await screen.findByRole('heading', { name: f.env.record.reference });
+    const cta = screen.getByRole('button', { name: 'Ver acciones pendientes' });
+    const trigger = screen.getByRole('button', { name: 'Aprobar solicitud' }); fireEvent.click(trigger);
+    expect(cta.closest('[inert]')).not.toBeNull();
+    const before = calls(f).length; fireEvent.click(cta);
+    expect(screen.getByRole('dialog')).toBeVisible(); expect(calls(f)).toHaveLength(before);
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(trigger).toHaveFocus(); expect(cta.closest('[inert]')).toBeNull();
+    expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+  });
+});
+
 describe('all transfer filter', () => {
   it('defaults to Todas with mixed rows, preserves detail-back and resets pages on filtering', async () => {
     const f = fixture(2, url => url.includes('status=all') ? Promise.resolve(reply({
@@ -842,8 +1039,8 @@ describe('A06b independent passive counters', () => {
   it('shows exact independent request counters, not rows, selected totals or item units', async () => {
     const f = fixture(); render(f.element()); await loaded();
     const counters = await screen.findByRole('region', { name: 'Contadores de solicitudes' });
-    expect(counters).toHaveTextContent('Pendientes de tu ubicación9007199254740995');
-    expect(counters).toHaveTextContent('Acciones requeridas9007199254740994');
+    expect(counters).toHaveTextContent('Pendientes de tu ubicación: 9007199254740995');
+    expect(counters).toHaveTextContent('9007199254740994 transferencias requieren tu atención');
     expect(counters).not.toHaveTextContent('18446744073709551614');
     expect(counters).not.toHaveTextContent('9007199254740993');
   });
@@ -852,7 +1049,7 @@ describe('A06b independent passive counters', () => {
     const f = fixture(id); if (id === 3) f.env.record = wire(2, 3);
     render(f.element()); await loaded();
     const counters = await screen.findByRole('region', { name: 'Contadores de solicitudes' });
-    await waitFor(() => expect(counters.querySelectorAll('dd')).toHaveLength(2));
+    await waitFor(() => expect(counters).toHaveTextContent('9007199254740994 transferencias requieren tu atención'));
     fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'approved' } });
     await screen.findByText('9007199254740993 solicitudes aprobadas');
     fireEvent.click(screen.getByRole('button', { name: 'Siguiente aprobadas' }));
@@ -876,11 +1073,12 @@ describe('A06b independent passive counters', () => {
       : url.startsWith('/api/transfers?') ? Promise.reject(new Error('PRIVATE list')) : undefined);
     render(f.element());
     const counters = screen.getByRole('region', { name: 'Contadores de solicitudes' });
-    expect(counters).toHaveTextContent('Consultando contadores…');
-    expect(counters.querySelector('dd')).toBeNull();
+    expect(counters).toHaveTextContent('Consultando acciones pendientes…');
+    expect(counters).not.toHaveTextContent('No tenés acciones pendientes');
     await screen.findByText('No se pudieron consultar las transferencias.');
     await act(async () => flight.resolve(reply({ pending_total: '0', action_count: '0' })));
-    expect([...counters.querySelectorAll('dd')].map(value => value.textContent)).toEqual(['0', '0']);
+    expect(counters).toHaveTextContent('No tenés acciones pendientes');
+    expect(counters).toHaveTextContent('Pendientes de tu ubicación: 0');
     expect(counters).not.toHaveTextContent('no disponibles');
     expect(document.body).not.toHaveTextContent('PRIVATE');
   });
@@ -892,8 +1090,9 @@ describe('A06b independent passive counters', () => {
           : reply({ error: 'PRIVATE count id 777' }, Number(mode))) : undefined);
     render(f.element()); await loaded();
     const counters = screen.getByRole('region', { name: 'Contadores de solicitudes' });
-    await waitFor(() => expect(counters).toHaveTextContent('Contadores no disponibles.'));
-    expect(counters.querySelector('dd')).toBeNull();
+    await waitFor(() => expect(counters).toHaveTextContent('Acciones pendientes no disponibles.'));
+    expect(counters).not.toHaveTextContent('No tenés acciones pendientes');
+    expect(counters).not.toHaveTextContent('9007199254740994');
     expect(screen.getByRole('table')).toHaveTextContent('TR-9007199254740993');
     expect(document.body).not.toHaveTextContent('PRIVATE');
     if (mode === '401') await waitFor(() => expect(f.controller.settleUnauthorized).toHaveBeenCalledExactlyOnceWith(1));
@@ -908,23 +1107,25 @@ describe('A06b independent passive counters', () => {
     await waitFor(() => expect(counters).toHaveTextContent('9007199254740994'));
     held = deferred();
     act(() => { for (const listener of f.listeners) listener(); });
-    expect(counters.querySelector('dd')).toBeNull();
-    expect(counters).toHaveTextContent('Consultando contadores…');
+    expect(counters).not.toHaveTextContent('9007199254740994');
+    expect(counters).toHaveTextContent('Consultando acciones pendientes…');
     await waitFor(() => expect(countCalls(f)).toHaveLength(2));
     act(() => { for (const listener of f.listeners) { listener(); listener(); } });
     expect(countCalls(f)).toHaveLength(2);
     const first = held; held = deferred();
     await act(async () => first.resolve(reply({ pending_total: '777', action_count: '666' })));
     await waitFor(() => expect(countCalls(f)).toHaveLength(3));
-    expect(counters.querySelector('dd')).toBeNull();
+    expect(counters).not.toHaveTextContent('666');
+    expect(counters).not.toHaveTextContent('777');
     await act(async () => held!.resolve(reply({ pending_total: '5', action_count: '1' })));
-    expect([...counters.querySelectorAll('dd')].map(value => value.textContent)).toEqual(['5', '1']);
+    expect(counters).toHaveTextContent('Pendientes de tu ubicación: 5');
+    expect(counters).toHaveTextContent('1 transferencia requiere tu atención');
     await act(async () => {}); expect(countCalls(f)).toHaveLength(3);
     held = deferred(); act(() => { for (const listener of f.listeners) listener(); });
-    expect(counters.querySelector('dd')).toBeNull();
+    expect(counters).not.toHaveTextContent('1 transferencia requiere tu atención');
     await act(async () => held!.reject(new Error('PRIVATE refresh')));
-    expect(counters).toHaveTextContent('Contadores no disponibles.');
-    expect(counters.querySelector('dd')).toBeNull();
+    expect(counters).toHaveTextContent('Acciones pendientes no disponibles.');
+    expect(counters).not.toHaveTextContent('Pendientes de tu ubicación: 5');
     expect(document.body).not.toHaveTextContent('PRIVATE');
   });
 
@@ -956,7 +1157,7 @@ describe('A06b independent passive counters', () => {
       expect(document.body).not.toHaveTextContent('9007199254740994');
       expect(document.body).not.toHaveTextContent('PRIVATE');
       const counters = screen.queryByRole('region', { name: 'Contadores de solicitudes' });
-      expect(counters?.querySelector('dd') ?? null).toBeNull();
+      expect(counters?.textContent ?? '').not.toMatch(/777|666|9007199254740994/);
       expect(countCalls(f).every(([, init]) => init?.method === 'GET')).toBe(true);
       view.unmount();
     }
@@ -1437,7 +1638,8 @@ describe('F2 list presentation', () => {
     expect(help).not.toHaveAttribute('open');
     expect(help).toHaveTextContent('Totales independientes del filtro');
     expect(help).toHaveTextContent('aprobar, despachar o recibir');
-    expect(counters.querySelectorAll('dd')).toHaveLength(2);
+    expect(help).toHaveTextContent('Pendientes de tu ubicación: 9007199254740995');
+    expect(counters).toHaveTextContent('9007199254740994 transferencias requieren tu atención');
   });
   it('groups mobile route participants, flow and exact variant quantities', async () => {
     const f = fixture(1); f.env.count = '1'; render(f.element());

@@ -531,5 +531,6 @@ export function useTransfers({ controller, api: injectedAPI, listEnabled = false
     },
     dispatch, retryDispatch, recoverDispatch,
     decide, retryDecision, recoverDecision,
-    changeQuery, selectDetail, retryList: () => list.refresh(false), retryDetail: () => detail.refresh(false), submit };
+    changeQuery, selectDetail, retryCounts: () => counts.refresh(true),
+    retryList: () => list.refresh(false), retryDetail: () => detail.refresh(false), submit };
 }

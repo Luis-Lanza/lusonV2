@@ -1,0 +1,50 @@
+.transfer-pending > .transfer-action-summary {
+  min-width: 0;
+  max-width: 100%;
+  padding: 20px 22px;
+  border: 1px solid #e7d6b7;
+  border-left: 4px solid #c38e32;
+  border-radius: 6px;
+  background: #fff9ef;
+  overflow-wrap: anywhere;
+}
+.transfer-action-summary-top, .transfer-action-summary-copy, .transfer-action-summary-controls {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.transfer-action-summary-top { justify-content: space-between; flex-wrap: wrap; }
+.transfer-action-summary-copy { flex: 1 1 280px; min-width: 0; }
+.transfer-action-summary-controls { flex-wrap: wrap; }
+.transfer-action-summary h2 { margin: 0 0 4px; font-size: 20px; line-height: 1.35; }
+.transfer-action-summary p { margin: 0; color: var(--muted); font-size: 12px; }
+.transfer-action-summary-icon { display: grid; place-items: center; flex: 0 0 36px; height: 36px; border-radius: 50%; color: #91621e; background: #f7ebd4; }
+.transfer-action-summary-controls button { display: inline-flex; align-items: center; justify-content: center; gap: 10px; min-height: 44px; max-width: 100%; white-space: normal; }
+.transfer-action-summary-controls .primary { background: #7a1f3d; border-color: #7a1f3d; color: white; }
+.transfer-action-summary-controls svg { flex-shrink: 0; }
+.transfer-action-categories { display: flex; flex-wrap: wrap; gap: 7px; padding: 0; margin: 18px 0 8px 50px; list-style: none; }
+.transfer-action-categories li { display: flex; align-items: center; gap: 8px; padding: 4px 9px; border: 1px solid #e9ddc9; border-radius: 4px; background: #fffdfa; color: #6d5733; font-size: 11px; }
+.transfer-action-categories b { font-variant-numeric: tabular-nums; }
+.transfer-action-summary .transfer-action-overlap, .transfer-action-help { margin: 8px 0 0 50px; }
+.transfer-action-help { font-size: 12px; color: var(--muted); }
+.transfer-action-help summary { cursor: pointer; padding: 8px 0; }
+.transfer-action-help p + p { margin-top: 6px; }
+.transfer-action-summary button:focus-visible, .transfer-action-help summary:focus-visible { outline: 2px solid #7a1f3d; outline-offset: 3px; }
+.transfer-pending > .transfer-action-summary-compact { padding: 8px 12px; }
+.transfer-action-summary-compact h2 { font-size: 14px; }
+.transfer-pending .transfer-row-actions { display: grid; gap: 4px; color: var(--muted); font-size: 12px; white-space: normal; }
+.transfer-pending .transfer-row-action { color: #7a1f3d; font-weight: 600; }
+.transfer-pending .transfer-row-action::before { content: '•'; margin-right: 6px; }
+.transfer-pending .transfer-row-approver { display: block; margin-top: 6px; color: var(--muted); font-size: 10px; white-space: normal; }
+.transfer-pending .transfer-own-action-filter { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; }
+.transfer-pending .transfer-own-action-filter input { width: 16px; height: 16px; margin: 0; accent-color: #7a1f3d; }
+@media (max-width: 767px) {
+  .transfer-pending > .transfer-action-summary { padding: 14px; }
+  .transfer-action-summary h2 { font-size: 17px; }
+  .transfer-action-summary-copy { flex-basis: 100%; }
+  .transfer-action-summary-controls { width: 100%; }
+  .transfer-action-summary-controls button { flex: 1 1 180px; }
+  .transfer-action-categories, .transfer-action-summary .transfer-action-overlap, .transfer-action-help { margin-left: 0; }
+  .transfer-pending > .transfer-action-summary-compact { padding: 8px 12px; }
+  .transfer-action-summary-compact h2 { font-size: 14px; }
+}

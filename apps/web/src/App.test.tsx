@@ -178,11 +178,11 @@ describe('B4 assigned-participant shell badge', () => {
     await within(await screen.findByRole('region', { name: 'Resultados de inventario' })).findByText('9007199254740993');
     fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
     await screen.findByText('0 transferencias');
-    await waitFor(() => expect(document.querySelector('.transfer-request-counters dd')).toHaveTextContent('9007199254740994'));
+    await waitFor(() => expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toHaveTextContent('Pendientes de tu ubicación: 9007199254740994'));
     expect(shellCount()).toHaveTextContent('Acciones requeridas: 9007199254740993');
     expect(document.querySelector('nav .transfer-action-badge')).toHaveTextContent('9007199254740993');
     await waitFor(() => expect(countCalls(mock)).toHaveLength(2));
-    expect(document.querySelectorAll('.transfer-request-counters dd')[1]).toHaveTextContent('2');
+    expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toHaveTextContent('2 transferencias requieren tu atención');
     fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' }));
     await within(screen.getByRole('region', { name: 'Resultados de inventario' })).findByText('9007199254740993');
     expect(shellCount()).toHaveTextContent('9007199254740993');

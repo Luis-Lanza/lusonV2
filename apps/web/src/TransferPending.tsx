@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { TransferAuthority } from './useInventory';
 import { useTransfers } from './useTransfers';
-import { transferQuantityTotal, type TransferRecord } from './transferModel';
+import { transferQuantityTotal, type TransferActionReason, type TransferRecord } from './transferModel';
+import TransferActionSummary from './TransferActionSummary';
+import { transferActionLabels, transferActionWaiting } from './transferActionView';
 import TransferDetail, { detailAuthority, type DetailController, type StockAdvice } from './TransferDetail';
 import TransferDecision from './TransferDecision';
 import { Icon } from './icons';
@@ -37,6 +39,11 @@ function statusLabel(record: TransferRecord) {
   return record.status === 'pending' ? 'Pendiente de aprobación' : record.status === 'approved' ? record.kind === 'direct_shipment' ? 'Pendiente de despacho' : 'Aprobada' : record.status === 'in_transit' ? 'En tránsito' : record.status === 'received' ? 'Recibida' : record.status === 'cancelled' ? 'Cancelada' : 'Rechazada';
 }
 function Status({ record }: { record: TransferRecord }) { return <span className={`pending-status status-${record.status}`}>{statusLabel(record)}</span>; }
+function RowActions({ record, reasons }: { record: TransferRecord; reasons: readonly TransferActionReason[] | undefined }) {
+  return <div className="transfer-row-actions">{reasons?.length
+    ? reasons.map(reason => <span className="transfer-row-action" key={reason}>{transferActionLabels[reason]}</span>)
+    : <span>{transferActionWaiting(record, reasons)}</span>}</div>;
+}
 const statusOptions = [
   { value: 'all', label: 'Todas', plural: 'transferencias', singular: 'transferencia' },
   { value: 'pending', label: 'Pendientes', plural: 'pendientes', singular: 'pendiente' },
@@ -149,15 +156,14 @@ export default function TransferPending(props: TransferPendingProps) {
   // This is the selected-status participant total, not the independent Pending/action counters.
   const listNoun = status === 'all' ? 'transferencias' : `solicitudes ${plural}`;
   const pageCount = <p className="pending-count" aria-live="polite">{page ? `${page.total_count.toString()} ${status === 'all' ? page.total_count === 1n ? singular : plural : page.total_count === 1n ? `solicitud ${singular}` : `solicitudes ${plural}`}` : `Consultando ${listNoun}…`}</p>;
-  const counters = <section className="transfer-request-counters" aria-label="Contadores de solicitudes" aria-live="polite" aria-busy={countsBusy}>
-    {counts && !countsBusy && !countsError ? <dl>
-      <div><dt>Pendientes de tu ubicación</dt><dd>{counts.pending_total.toString()}</dd></div>
-      <div><dt>Acciones requeridas</dt><dd>{counts.action_count.toString()}</dd></div>
-    </dl> : <p>{countsError ? 'Contadores no disponibles.' : 'Consultando contadores…'}</p>}
-    <details className="pending-counter-help"><summary>Sobre los totales</summary>
-      <small>Totales independientes del filtro: pendientes de tu ubicación y acciones asignadas (aprobar, despachar o recibir).</small>
-    </details>
-  </section>;
+  const showActions = () => {
+    if (!current()) return;
+    back();
+    transfers.changeQuery({ status: 'all', requires_action: true, page: 1 });
+  };
+  const counters = <TransferActionSummary counts={counts} busy={countsBusy} unavailable={!!countsError}
+    location={authority.session?.authenticated ? authority.session.identity.location.name : ''} compact={!!selected}
+    onShow={showActions} onRetry={() => { if (current()) transfers.retryCounts(); }} />;
   return <section ref={detailPane} className={'transfer-pending' + (warehouse ? ' pending-warehouse' : '') + (selected ? ' pending-selected' : ' pending-list')}
     aria-labelledby={selected ? undefined : 'pending-title'} aria-label={selected ? 'Detalle de transferencia' : undefined}>
     {selected ? <nav className={`pending-detail-navigation${pendingParticipant ? ' pending-approver-navigation' : approvedParticipant || closedParticipant ? ' approved-origin-navigation' : transitParticipant ? ' transit-destination-navigation' : receivedParticipant ? ' received-participant-navigation' : ''}`} aria-label="Navegación de transferencia">
@@ -177,8 +183,8 @@ export default function TransferPending(props: TransferPendingProps) {
         {pageCount}
       </div>
     </header>
-    {counters}
     </>}
+    {counters}
     {selected ? <>
       {transfers.detailBusy && <p role="status">Consultando solicitud…</p>}
       {(unavailable || privateUnavailable) && <div role="alert" className="message"><p>{privateUnavailable || unavailable?.code === 'not_found' || unavailable?.status === 403 ? 'La solicitud no está disponible.' : 'No se pudo consultar la solicitud.'}</p>
@@ -197,7 +203,6 @@ export default function TransferPending(props: TransferPendingProps) {
                 corrections={corrections} correctionRequestID={correctionRequestID} correctionsEnabled={correctionsEnabled}
                 restitutionRequestID={correctionRequestID} restitutionsEnabled={correctionsEnabled}
                 onStock={receiveStock} stockRefresh={stockRefresh} actions={() => <>{actions}{dispatchActions}{receiptActions}{cancellationActions}</>} />} />} />} />} />
-      {!compactDetail && counters}
     </> : <>
       <div className="transfer-status-toolbar">
         <label htmlFor="transfer-status">Estado de transferencia</label>
@@ -205,6 +210,8 @@ export default function TransferPending(props: TransferPendingProps) {
           const next = event.target.value;
           if (current() && (next === 'all' || next === 'pending' || next === 'approved' || next === 'rejected' || next === 'in_transit' || next === 'received' || next === 'cancelled')) transfers.changeQuery({ status: next });
         }}>{statusOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+        <label className="transfer-own-action-filter"><input type="checkbox" checked={transfers.query.requires_action ?? false}
+          onChange={event => { if (current() && !event.currentTarget.closest('[inert]')) transfers.changeQuery({ requires_action: event.target.checked }); }} />Solo requieren mi acción</label>
       </div>
       <TransferDecision controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} />
       <TransferDispatch controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} />
@@ -217,10 +224,11 @@ export default function TransferPending(props: TransferPendingProps) {
       {page?.total_count === 0n && <p role="status">No hay {listNoun} para tu ubicación.</p>}
       {page && page.records.length > 0 && <>
         <div className="table-scroll pending-table"><table><caption className="sr-only">{status === 'all' ? 'Transferencias participantes' : `Solicitudes ${plural} participantes`}</caption>
-          <thead><tr>{['Transferencia', 'Origen', 'Destino', 'Estado', 'Unidades', status === 'pending' ? 'Requiere aprobación de' : 'Ubicación aprobadora', 'Detalle'].map(label => <th scope="col" key={label}>{label}</th>)}</tr></thead>
+          <thead><tr>{['Transferencia', 'Origen', 'Destino', 'Estado', 'Unidades', 'Tu acción', 'Detalle'].map(label => <th scope="col" key={label}>{label}</th>)}</tr></thead>
           <tbody>{page.records.map(row => <tr key={row.id}><td><strong>{row.reference}</strong><small>{kindLabel(row)}</small></td>
             <td>{row.origin_location_name}</td><td>{row.destination_location_name}</td><td><Status record={row} /></td>
-            <td>{transferQuantityTotal(row).toString()}</td><td>{row.approver_location_name}</td>
+            <td>{transferQuantityTotal(row).toString()}</td><td><RowActions record={row} reasons={page.required_actions?.[row.id]} />
+              <small className="transfer-row-approver">{approverLabel(row)}: {row.approver_location_name}</small></td>
             <td><button type="button" onClick={() => open(row)} aria-label={`Ver detalle ${row.reference}`}>Ver detalle</button></td></tr>)}</tbody>
         </table></div>
         {warehouse && <div className="pending-cards">{page.records.map(row => <article key={row.id}>
@@ -228,6 +236,7 @@ export default function TransferPending(props: TransferPendingProps) {
             <span className="pending-flow" title={kindLabel(row)}>{row.kind === 'direct_shipment' ? 'Envío directo' : row.kind === 'send_to_warehouse' ? 'Envío a Almacén' : kindLabel(row)}</span></div>
             <span className="pending-unit-total">{unitsLabel(transferQuantityTotal(row))}</span></header>
           <Status record={row} />
+          <div aria-label="Tu acción"><RowActions record={row} reasons={page.required_actions?.[row.id]} /></div>
           <div className="pending-card-route"><p><span>Ruta:</span> {row.origin_location_name} → {row.destination_location_name}</p>
             <div className="pending-card-participants"><p>Ubicación creadora: <strong>{row.creator_location_name}</strong></p>
               <p>{approverLabel(row)}: <strong>{row.approver_location_name}</strong></p></div>
