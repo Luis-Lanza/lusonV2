@@ -408,8 +408,9 @@ actor; frontend account/owner fencing is separate from this backend contract.
 There is one pending proposal per variant. Only its initiator may replace it,
 creating a new revision and fresh consent (never inheriting counterparty consent).
 Rejection closes a revision without stock changes; either endpoint may propose
-again. Lines proceed independently. The transfer remains `received`; existing
-header workflow counts are unchanged.
+again. Lines proceed independently. The transfer remains `received`; a current
+undecided proposal contributes one required review to the counterpart's workflow
+count, irrespective of how many lines need review.
 
 For expected lines, accepted credit is `min(corrected actual, dispatched)`.
 Destination inventory changes by that credit **minus latest effective credit**,
@@ -635,11 +636,20 @@ existing reads. Its exact response has only decimal-string counts:
 `pending_total` counts Pending requests whose physical origin or destination is
 the authenticated assigned location. `action_count` counts one header for:
 Pending at its **persisted approver**, Approved at its **physical origin**, or
-In-transit at its **physical destination**. Received/Rejected/Cancelled contribute no action.
-One request contributes once, regardless of item count/quantities or possible
-buttons. Warehouse assignment is legal. These are not unread events, item totals
-or page counts. `action_count` may exceed `pending_total`, including `0` Pending
-and `1` required dispatch/receipt.
+In-transit at its **physical destination**, or Received needing **counterpart
+count review** or **destination restitution review**. Review uses the latest
+proposal per request/variant only, with no decision. Count initiators never
+review their own proposal. Restitution review requires an expected receipt line;
+stale count pins or pending counts do not hide it because rejection remains valid.
+Rejected/Cancelled and decided/superseded proposals contribute no action.
+
+One request contributes once, even with multiple lines or both review kinds.
+Store category totals count transfers independently and may overlap; they are
+not yet exposed by this two-field HTTP response. Voluntary cancellation,
+proposing and replacement do not count. Warehouse assignment grants no visibility
+outside physical participation. These are not unread events, discrepancy/stock
+quantities or page counts. `action_count` may exceed the independent
+`pending_total`, including `0` Pending and `1` required review.
 
 The domain uses one participant-filtered aggregate in a read-only repeatable-read
 transaction, with a 10-second operation budget and bounded 5-second background

@@ -59,7 +59,11 @@ func TestA04CountsStates(t *testing.T) {
 		in.Kind, in.CounterpartyID, in.RetryKey = flow.kind, flow.counterparty, fmt.Sprintf("a04-count-flow-key-%d", i)
 		pending = append(pending, create(t, ctx, s, 2, in).Request)
 	}
-	check([3]transfers.Totals{{2, 2}, {3, 0}, {1, 1}})
+	check([3]transfers.Totals{
+		{PendingTotal: 2, ActionCount: 2, Actions: transfers.ActionBreakdown{Approve: 2}},
+		{PendingTotal: 3},
+		{PendingTotal: 1, ActionCount: 1, Actions: transfers.ActionBreakdown{Approve: 1}},
+	})
 	approved, err := s.Approve(ctx, actor(1), pending[0].ID)
 	if err != nil {
 		t.Fatal("counts approval setup failed")
@@ -68,21 +72,30 @@ func TestA04CountsStates(t *testing.T) {
 	if err != nil {
 		t.Fatal("counts rejection setup failed")
 	}
-	check([3]transfers.Totals{{1, 2}, {1, 0}, {0, 0}})
+	check([3]transfers.Totals{
+		{PendingTotal: 1, ActionCount: 2, Actions: transfers.ActionBreakdown{Approve: 1, Dispatch: 1}},
+		{PendingTotal: 1}, {},
+	})
 	before := outcomeSnapshot(t, ctx, p)
 	a, ae := s.Approve(ctx, actor(1), pending[0].ID)
 	r, re := s.Reject(ctx, actor(3), pending[1].ID)
 	if ae != nil || re != nil || !reflect.DeepEqual(a, approved) || !reflect.DeepEqual(r, rejected) || outcomeSnapshot(t, ctx, p) != before {
 		t.Fatal("decision retries changed original outcomes or owned state")
 	}
-	check([3]transfers.Totals{{1, 2}, {1, 0}, {0, 0}})
+	check([3]transfers.Totals{
+		{PendingTotal: 1, ActionCount: 2, Actions: transfers.ActionBreakdown{Approve: 1, Dispatch: 1}},
+		{PendingTotal: 1}, {},
+	})
 	for i := 0; i < 51; i++ {
 		in := input()
 		in.RetryKey = fmt.Sprintf("a04-count-many-key-%03d", i)
 		create(t, ctx, s, 3, in)
 	}
 	// Branch A is not a participant in these 51 two-item requests.
-	check([3]transfers.Totals{{52, 53}, {1, 0}, {51, 0}})
+	check([3]transfers.Totals{
+		{PendingTotal: 52, ActionCount: 53, Actions: transfers.ActionBreakdown{Approve: 52, Dispatch: 1}},
+		{PendingTotal: 1}, {PendingTotal: 51},
+	})
 	page, err := s.List(ctx, actor(1), transfers.Query{Page: 1_000_000, PageSize: 10})
 	if err != nil || page.Total != 52 || len(page.Records) != 0 {
 		t.Fatal("counts must not depend on page size or far pages")
@@ -174,7 +187,7 @@ func TestA04CountsSnapshot(t *testing.T) {
 	close(trace.resume)
 	got := <-done
 	joined = true
-	if got.err != nil || got.totals != (transfers.Totals{PendingTotal: 1, ActionCount: 1}) {
+	if got.err != nil || got.totals != (transfers.Totals{PendingTotal: 1, ActionCount: 1, Actions: transfers.ActionBreakdown{Approve: 1}}) {
 		t.Fatal("aggregate observed split or newer counts")
 	}
 	trace.mu.Lock()
@@ -227,7 +240,7 @@ func TestR1CountsReceiptSnapshot(t *testing.T) {
 	close(trace.resume)
 	got := <-done
 	joined = true
-	if got.err != nil || got.totals != (transfers.Totals{PendingTotal: 0, ActionCount: 1}) {
+	if got.err != nil || got.totals != (transfers.Totals{ActionCount: 1, Actions: transfers.ActionBreakdown{Receive: 1}}) {
 		t.Fatal("receipt split the read-only aggregate snapshot", got.err)
 	}
 	trace.mu.Lock()

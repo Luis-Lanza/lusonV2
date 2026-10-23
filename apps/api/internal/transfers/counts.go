@@ -9,10 +9,11 @@ import (
 )
 
 // Totals counts requests, not quantities or possible decision buttons.
-// ActionCount is the location-owned approval, dispatch or receipt obligation.
+// ActionCount counts the union of location-owned lifecycle and review obligations.
 type Totals struct {
 	PendingTotal int64
 	ActionCount  int64
+	Actions      ActionBreakdown
 }
 
 // Counts reads both participant-private totals in one aggregate and one
@@ -44,12 +45,14 @@ func (s *Store) Counts(ctx context.Context, actor auth.Identity) (Totals, error)
 	// Apply participant privacy before aggregating. Each header contributes
 	// exactly once regardless of item count, quantities, or future actions.
 	err = tx.QueryRow(ctx, `SELECT count(*) FILTER (WHERE status='pending'),
- count(*) FILTER (WHERE (status='pending' AND approver_location_id=$1)
- OR (status='approved' AND origin_location_id=$1)
- OR (status='in_transit' AND destination_location_id=$1))
- FROM transfer_requests
- WHERE $1 IN (origin_location_id,destination_location_id)`,
-		actor.AccountID).Scan(&totals.PendingTotal, &totals.ActionCount)
+ count(*) FILTER (WHERE `+anyRequiredActionSQL+`),
+ count(*) FILTER (WHERE approve), count(*) FILTER (WHERE dispatch),
+ count(*) FILTER (WHERE receive), count(*) FILTER (WHERE review_count),
+ count(*) FILTER (WHERE review_restitution)
+ FROM (`+requiredActionsSQL+`) actions`, actor.AccountID).Scan(
+		&totals.PendingTotal, &totals.ActionCount, &totals.Actions.Approve,
+		&totals.Actions.Dispatch, &totals.Actions.Receive,
+		&totals.Actions.ReviewCount, &totals.Actions.ReviewRestitution)
 	if err != nil {
 		return Totals{}, fail(ctx)
 	}

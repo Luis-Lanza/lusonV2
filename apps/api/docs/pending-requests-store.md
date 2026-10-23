@@ -72,14 +72,31 @@ Received retains original request items, participants, approval and dispatch.
 Unexpected-only arrivals record every expected shortage with zero inventory
 credit; no automatic loss, return, discrepancy resolution or cancellation exists.
 
-Counts remain one participant-filtered, read-only REPEATABLE READ aggregate:
-`PendingTotal` counts participant Pending only; `ActionCount` counts Pending at
-persisted approver, Approved at physical origin, In-transit at physical destination.
-Each header contributes once, independent of units/items/pages. Received/Rejected
-are no actions. The two totals share a snapshot, not a separate page request.
-`ActionCount` may exceed `PendingTotal`. R2 must remove D2's outdated decoder
-constraint and approval-only copy; the app remains stopped, with no old-client
-production compatibility or versioned count layer added.
+Counts remain one participant-filtered, read-only REPEATABLE READ aggregate.
+`PendingTotal` counts participant Pending only. `ActionCount` counts the union of:
+
+| Category (`Totals.Actions`) | Location-owned work |
+| --- | --- |
+| `Approve` | Pending at persisted approver |
+| `Dispatch` | Approved at physical origin |
+| `Receive` | In-transit at physical destination |
+| `ReviewCount` | Received with a latest undecided count proposal from the other endpoint |
+| `ReviewRestitution` | Received at destination with a latest undecided restitution proposal on an expected receipt line |
+
+Latest means highest proposal revision per request/variant; a decision closes
+that revision. Superseded, rejected and applied proposals do not create work.
+Stale count pins and pending count proposals do not hide restitution review:
+acceptance can be blocked while rejection remains valid. Discrepancies, stock,
+voluntary cancellation, new proposals and replacement are not required work.
+
+Each header contributes once per category and once to the union, independent of
+line count, quantities and pages. Categories overlap: one transfer awaiting both
+reviews contributes 1 to each review category but only 1 to `ActionCount`.
+`ActionCount` may exceed the independent `PendingTotal`. All totals share one
+snapshot, not a separately fetched page. Reads never alter evidence or inventory;
+failures return zero totals plus an error, not a successful empty workload.
+HTTP still exposes its two existing fields; category DTOs and action-only list
+filtering are a later unit.
 
 Migration 004 inventory and 006 participant status invalidations are unchanged.
 Only positive credit produces inventory movement/hints. Unexpected-only receipts

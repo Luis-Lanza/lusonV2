@@ -110,7 +110,7 @@ func TestW01DirectShipmentLifecycle(t *testing.T) {
 					t.Fatal("direct reservation replaced independent holds")
 				}
 				counts, err := s.Counts(ctx, actor(1))
-				if err != nil || counts != (transfers.Totals{ActionCount: 1}) {
+				if err != nil || counts != (transfers.Totals{ActionCount: 1, Actions: transfers.ActionBreakdown{Dispatch: 1}}) {
 					t.Fatal("direct creation must count as warehouse dispatch, never Pending approval")
 				}
 				for _, id := range []int{destination, 5 - destination} {
@@ -171,7 +171,7 @@ func TestW01DirectShipmentLifecycle(t *testing.T) {
 						t.Fatal("creation replay lost dispatch truth")
 					}
 					counts, err = s.Counts(ctx, actor(destination))
-					if err != nil || counts != (transfers.Totals{ActionCount: 1}) {
+					if err != nil || counts != (transfers.Totals{ActionCount: 1, Actions: transfers.ActionBreakdown{Receive: 1}}) {
 						t.Fatal("receipt action not assigned to destination")
 					}
 					got, err = s.Cancel(ctx, actor(1), initial.ID)
