@@ -7,7 +7,7 @@ import type { DispatchFlight } from './transferDispatchRecovery';
 import type { ReceiptFlight } from './transferReceiptRecovery';
 import { createTransferAPI, TransferAPIError, type TransferCreateResult } from './transferAPI';
 import {
-  matchesReceiptInput, canonicalTransferInput, transferDetailPath, transferListPath,
+  matchesReceiptInput, canonicalTransferInput, transferDetailPath, transferListPath, validateTransferActions,
   type TransferReceiptInput, type TransferCounts, type TransferCreateInput, type TransferPage, type TransferQuery, type TransferRecord,
 } from './transferModel';
 
@@ -123,7 +123,10 @@ export function useTransfers({ controller, api: injectedAPI, listEnabled = false
       const page = await api.list(query, { signal, passive });
       if (page.page !== (query.page ?? 1) || page.page_size !== (query.page_size ?? 25) || page.status !== (query.status ?? 'pending')
         || (page.status !== 'all' && page.records.some(record => record.status !== page.status))) throw new TransferAPIError('invalid_response', 200);
+      if ((page.requires_action ?? false) !== (query.requires_action ?? false)
+        || (query.requires_action && !page.required_actions)) throw new TransferAPIError('invalid_response', 200);
       for (const record of page.records) participant(record, assigned!);
+      validateTransferActions(page, assigned!);
       return page;
     } });
   const detail = useParticipantRead({ controller, epoch, identity, enabled: ready && detailEnabled && !!selectedID, key: identity + (selectedID ?? ''),
@@ -164,7 +167,8 @@ export function useTransfers({ controller, api: injectedAPI, listEnabled = false
     setView(previous => {
       const before = previous.identity === identity ? { ...previous, epoch } : { epoch, identity, query: initialQuery(), id: null };
       const next = { ...before.query, ...captured };
-      if ((captured.page_size !== undefined || captured.status !== undefined) && captured.page === undefined) next.page = 1;
+      if (captured.requires_action !== undefined && captured.requires_action !== (before.query.requires_action ?? false)) next.page = 1;
+      else if ((captured.page_size !== undefined || captured.status !== undefined) && captured.page === undefined) next.page = 1;
       return { ...before, query: Object.freeze(next) };
     });
   }

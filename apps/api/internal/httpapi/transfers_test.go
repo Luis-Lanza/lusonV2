@@ -399,10 +399,10 @@ func transferWireRecord(t *testing.T, w *httptest.ResponseRecorder, status int) 
 func transferWirePage(t *testing.T, w *httptest.ResponseRecorder) (int64, []transferDTO) {
 	t.Helper()
 	obj := transferObject(t, w, 200)
-	if len(obj) != 5 {
+	if len(obj) != 7 {
 		t.Fatal("page whitelist changed")
 	}
-	for _, key := range []string{"page", "page_size", "status", "total_count", "records"} {
+	for _, key := range []string{"page", "page_size", "status", "total_count", "records", "requires_action", "required_actions"} {
 		if obj[key] == nil {
 			t.Fatal("page whitelist incomplete")
 		}

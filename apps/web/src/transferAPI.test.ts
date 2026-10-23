@@ -523,6 +523,31 @@ describe('A05a outcome transport', () => {
   });
 });
 
+describe('required action filter transport', () => {
+  it('captures action selection and verifies exact echo, metadata and pagination', async () => {
+    const page = { page: 1, page_size: 25, status: 'all', total_count: '1', records: [wire], requires_action: true, required_actions: { '1': ['approve'] } };
+    let resolve!: (reply: Response) => void;
+    const fetch = mockFetch().mockReturnValueOnce(new Promise<Response>(yes => { resolve = yes; }));
+    const api = createTransferAPI(fetch);
+    const query = { status: 'all' as const, requires_action: true };
+    const job = api.list(query); query.requires_action = false;
+    resolve(response(page));
+    expect(await job).toMatchObject({ requires_action: true, required_actions: { '1': ['approve'] } });
+    expect(fetch.mock.calls[0][0]).toBe('/api/transfers?page=1&page_size=25&status=all&requires_action=true');
+    for (const patch of [{ requires_action: false }, { requires_action: undefined, required_actions: undefined },
+      { required_actions: undefined }, { required_actions: { '1': [] } }, { page: 2, records: [], required_actions: {} }, { page_size: 10 }]) {
+      fetch.mockResolvedValue(response({ ...page, ...patch }));
+      await expect(api.list({ status: 'all', requires_action: true })).rejects.toMatchObject({ code: 'invalid_response', status: 200 });
+    }
+    fetch.mockResolvedValue(response(page));
+    await expect(api.list({ status: 'all' })).rejects.toMatchObject({ code: 'invalid_response' });
+    fetch.mockResolvedValue(response({ ...page, requires_action: false, required_actions: { '1': [] } }));
+    expect(await api.list({ status: 'all', requires_action: false })).toMatchObject({ requires_action: false });
+    expect(fetch.mock.calls.at(-1)?.[0]).toBe('/api/transfers?page=1&page_size=25&status=all');
+    expect(fetch.mock.calls.every(([, init]) => init?.method === 'GET' && init.body === undefined)).toBe(true);
+  });
+});
+
 describe('all transfer filter', () => {
   it('sends explicit all and requires the exact query echo', async () => {
     const page = { page: 1, page_size: 25, status: 'all', total_count: '1', records: [wire] };

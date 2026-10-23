@@ -10,16 +10,19 @@ import (
 
 // Query has no client-selectable actor or consulted inventory location.
 type Query struct {
-	Page     int64
-	PageSize int
-	Status   string
+	Page           int64
+	PageSize       int
+	Status         string
+	RequiresAction bool
 }
 type Page struct {
-	Records  []Request
-	Total    int64
-	Page     int64
-	PageSize int
-	Status   string
+	Records         []Request
+	Total           int64
+	Page            int64
+	PageSize        int
+	Status          string
+	RequiresAction  bool
+	RequiredActions map[int64][]string
 }
 
 func normalizeQuery(q Query) (Query, error) {
@@ -67,26 +70,35 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q Query) (Page, e
 		defer done()
 		_ = tx.Rollback(cleanup)
 	}()
-	page := Page{Records: make([]Request, 0), Page: q.Page, PageSize: q.PageSize, Status: q.Status}
-	if tx.QueryRow(ctx, `SELECT count(*) FROM transfer_requests
-  WHERE $1 IN (origin_location_id,destination_location_id) AND ($2='all' OR status=$2)`, actor.AccountID, q.Status).Scan(&page.Total) != nil {
+	page := Page{Records: make([]Request, 0), Page: q.Page, PageSize: q.PageSize, Status: q.Status,
+		RequiresAction: q.RequiresAction, RequiredActions: make(map[int64][]string)}
+	projection := ` FROM (` + requiredActionsSQL + `) actions
+  WHERE ($2='all' OR status=$2) AND (NOT $3 OR ` + anyRequiredActionSQL + `)`
+	if tx.QueryRow(ctx, `SELECT count(*)`+projection, actor.AccountID, q.Status, q.RequiresAction).Scan(&page.Total) != nil {
 		return Page{}, fail(ctx)
 	}
 	offset := (q.Page - 1) * int64(q.PageSize)
-	rows, err := tx.Query(ctx, `SELECT id FROM transfer_requests
-  WHERE $1 IN (origin_location_id,destination_location_id) AND ($2='all' OR status=$2)
-  ORDER BY id DESC LIMIT $3 OFFSET $4`, actor.AccountID, q.Status, int64(q.PageSize), offset)
+	rows, err := tx.Query(ctx, `SELECT id,approve,dispatch,receive,review_count,review_restitution`+projection+
+		` ORDER BY id DESC LIMIT $4 OFFSET $5`, actor.AccountID, q.Status, q.RequiresAction, int64(q.PageSize), offset)
 	if err != nil {
 		return Page{}, fail(ctx)
 	}
 	ids := make([]int64, 0, q.PageSize)
 	for rows.Next() {
 		var id int64
-		if rows.Scan(&id) != nil {
+		var flags [5]bool
+		if rows.Scan(&id, &flags[0], &flags[1], &flags[2], &flags[3], &flags[4]) != nil {
 			rows.Close()
 			return Page{}, fail(ctx)
 		}
 		ids = append(ids, id)
+		reasons := make([]string, 0, 5)
+		for i, reason := range []string{"approve", "dispatch", "receive", "review_count", "review_restitution"} {
+			if flags[i] {
+				reasons = append(reasons, reason)
+			}
+		}
+		page.RequiredActions[id] = reasons
 	}
 	err = rows.Err()
 	rows.Close()

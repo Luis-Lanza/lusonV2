@@ -42,16 +42,28 @@ export type TransferRecord = TransferRecordFields & (
   | { status: 'received'; decision_location_id: TransferLocationID; decided_at: string; dispatch_location_id: TransferLocationID; dispatched_at: string; receipt_location_id: TransferLocationID; received_at: string; receipt: TransferReceiptData }
 );
 export type TransferStatusFilter = TransferStatus | 'all';
-export interface TransferQuery { page?: number; page_size?: 10 | 25 | 50; status?: TransferStatusFilter }
-export interface TransferCounts { pending_total: bigint; action_count: bigint }
+export const transferActionReasons = ['approve', 'dispatch', 'receive', 'review_count', 'review_restitution'] as const;
+export type TransferActionReason = typeof transferActionReasons[number];
+export type TransferActionCounts = Record<TransferActionReason, bigint>;
+export interface TransferQuery { page?: number; page_size?: 10 | 25 | 50; status?: TransferStatusFilter; requires_action?: boolean }
+export interface TransferCounts { pending_total: bigint; action_count: bigint; actions?: TransferActionCounts }
 export function parseTransferCounts(raw: string): TransferCounts {
-  const o = object(decode(raw), ['pending_total', 'action_count']);
+  const o = object(decode(raw), ['pending_total', 'action_count', 'actions'], false);
   const pending_total = exact(o.pending_total, true);
   const action_count = exact(o.action_count, true);
-  return { pending_total, action_count };
+  if (!Object.hasOwn(o, 'actions')) return { pending_total, action_count };
+  const categories = object(o.actions, transferActionReasons);
+  const actions = Object.fromEntries(transferActionReasons.map(reason => {
+    const count = exact(categories[reason], true);
+    if (count > action_count) return invalid();
+    return [reason, count];
+  })) as TransferActionCounts;
+  return { pending_total, action_count, actions };
 }
 export interface TransferPage {
   page: number; page_size: 10 | 25 | 50; status: TransferStatusFilter; total_count: bigint; records: TransferRecord[];
+  requires_action?: boolean;
+  required_actions?: Record<string, readonly TransferActionReason[]>;
 }
 const maxInt64 = 9223372036854775807n;
 function invalid(): never { throw new Error('Invalid transfer response'); }
@@ -194,16 +206,17 @@ function status(value: unknown): TransferStatus {
   return value;
 }
 function statusFilter(value: unknown): TransferStatusFilter { return value === 'all' ? value : status(value); }
-function queryValues(query: TransferQuery): { page: number; page_size: 10 | 25 | 50; status: TransferStatusFilter } {
-  const o = object(query, ['page', 'page_size', 'status'], false);
+function queryValues(query: TransferQuery): { page: number; page_size: 10 | 25 | 50; status: TransferStatusFilter; requires_action: boolean } {
+  const o = object(query, ['page', 'page_size', 'status', 'requires_action'], false);
+  if (o.requires_action !== undefined && typeof o.requires_action !== 'boolean') return invalid();
   const page = integer(o.page === undefined ? 1 : o.page, 1, 1000000);
   const size = o.page_size === undefined ? 25 : o.page_size;
   if (size !== 10 && size !== 25 && size !== 50) return invalid();
-  return { page, page_size: size, status: statusFilter(o.status === undefined ? 'pending' : o.status) };
+  return { page, page_size: size, status: statusFilter(o.status === undefined ? 'pending' : o.status), requires_action: o.requires_action === true };
 }
 export function transferListPath(query: TransferQuery = {}): string {
   const q = queryValues(query);
-  return `/api/transfers?page=${q.page}&page_size=${q.page_size}&status=${q.status}`;
+  return `/api/transfers?page=${q.page}&page_size=${q.page_size}&status=${q.status}${q.requires_action ? '&requires_action=true' : ''}`;
 }
 export function transferDetailPath(id: string): string {
   exact(id);
@@ -334,7 +347,8 @@ function record(value: unknown): TransferRecord {
 }
 export function parseTransferRecord(raw: string): TransferRecord { return record(decode(raw)); }
 export function parseTransferPage(raw: string): TransferPage {
-  const o = object(decode(raw), ['page', 'page_size', 'status', 'total_count', 'records']);
+  const o = object(decode(raw), ['page', 'page_size', 'status', 'total_count', 'records', 'requires_action', 'required_actions'], false);
+  for (const key of ['page', 'page_size', 'status', 'total_count', 'records']) if (!Object.hasOwn(o, key)) return invalid();
   if (!Array.isArray(o.records)) return invalid();
   const q = queryValues({ page: o.page as number, page_size: o.page_size as 10 | 25 | 50, status: statusFilter(o.status) });
   const total_count = exact(o.total_count, true);
@@ -344,7 +358,37 @@ export function parseTransferPage(raw: string): TransferPage {
   const remaining = total_count > offset ? total_count - offset : 0n;
   const expected = remaining > BigInt(q.page_size) ? BigInt(q.page_size) : remaining;
   if (BigInt(records.length) !== expected || records.some((r, i) => i > 0 && BigInt(records[i - 1].id) <= BigInt(r.id))) return invalid();
-  return { ...q, total_count, records };
+  const page: TransferPage = { page: q.page, page_size: q.page_size, status: q.status, total_count, records };
+  if (Object.hasOwn(o, 'requires_action') || Object.hasOwn(o, 'required_actions')) {
+    if (typeof o.requires_action !== 'boolean') return invalid();
+    page.requires_action = o.requires_action;
+    page.required_actions = object(o.required_actions, records.map(r => r.id)) as TransferPage['required_actions'];
+  }
+  validateTransferActions(page);
+  return page;
+}
+// List-only advice, never mutation permission. Count proposal initiators are not
+// present in immutable headers: their counterpart eligibility stays server-owned.
+export function validateTransferActions(page: TransferPage, assigned?: number): void {
+  if (page.requires_action === undefined && page.required_actions === undefined) return;
+  if (typeof page.requires_action !== 'boolean') return invalid();
+  const metadata = object(page.required_actions, page.records.map(r => r.id));
+  for (const record of page.records) {
+    exact(record.id);
+    const reasons = metadata[record.id];
+    if (!Array.isArray(reasons) || (page.requires_action && reasons.length === 0)) return invalid();
+    let previous = -1;
+    for (const reason of reasons) {
+      const index = transferActionReasons.indexOf(reason);
+      if (index <= previous) return invalid();
+      previous = index;
+      const expected = reason === 'approve' ? 'pending' : reason === 'dispatch' ? 'approved' : reason === 'receive' ? 'in_transit' : 'received';
+      if (record.status !== expected) return invalid();
+      const owner = reason === 'approve' ? record.approver_location_id : reason === 'dispatch' ? record.origin_location_id
+        : reason === 'review_count' ? assigned : record.destination_location_id;
+      if (assigned !== undefined && owner !== assigned) return invalid();
+    }
+  }
 }
 export function transferQuantityTotal(record: TransferRecord): bigint {
   return record.items.reduce((total, item) => total + item.quantity, 0n);

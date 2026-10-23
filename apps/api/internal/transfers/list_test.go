@@ -245,7 +245,7 @@ func (tr *listSnapshotTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d
 		tr.readonlyRepeatable = strings.Contains(data.SQL, "repeatable read") && strings.Contains(data.SQL, "read only")
 		tr.mu.Unlock()
 	}
-	if strings.HasPrefix(data.SQL, "SELECT count(*) FROM transfer_requests") {
+	if strings.HasPrefix(data.SQL, "SELECT count(*) FROM (") {
 		return context.WithValue(ctx, countTraceKey{}, true)
 	}
 	return ctx

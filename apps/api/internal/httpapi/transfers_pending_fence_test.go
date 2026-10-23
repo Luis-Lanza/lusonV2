@@ -174,7 +174,7 @@ func TestA01bPendingFence(t *testing.T) {
 						}
 						actions = fmt.Sprintf("%q", fmt.Sprint(actionCount))
 					}
-					if len(counts) != 2 || string(counts["pending_total"]) != pendingTotal || string(counts["action_count"]) != actions {
+					if len(counts) != 3 || string(counts["pending_total"]) != pendingTotal || string(counts["action_count"]) != actions {
 						t.Fatal("terminal count or physical participant action semantics incorrect")
 					}
 					check()
@@ -222,7 +222,8 @@ func TestA04CountsHTTP(t *testing.T) {
 		t.Helper()
 		before, sessions := fenceSnapshot(t, f), passiveState(t, f)
 		w := f.request(t, actor, "GET", "/api/transfers/counts", "")
-		if w.Code != 200 || w.Body.String() != fmt.Sprintf("{\"pending_total\":%q,\"action_count\":%q}\n", total, action) || len(w.Header().Values("Set-Cookie")) != 0 || w.Header().Get("Location") != "" {
+		obj := transferObject(t, w, 200)
+		if len(obj) != 3 || string(obj["pending_total"]) != fmt.Sprintf("%q", total) || string(obj["action_count"]) != fmt.Sprintf("%q", action) || len(w.Header().Values("Set-Cookie")) != 0 || w.Header().Get("Location") != "" {
 			t.Fatalf("exact count response mismatch: status=%d", w.Code)
 		}
 		if fenceSnapshot(t, f) != before || passiveState(t, f) != sessions {

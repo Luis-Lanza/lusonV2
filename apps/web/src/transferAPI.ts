@@ -242,10 +242,14 @@ export function createTransferAPI(fetch: typeof globalThis.fetch = globalThis.fe
     async list(query: TransferQuery = {}, options: TransferReadOptions = {}): Promise<TransferPage> {
       const path = local(() => transferListPath(query));
       const selected = query.status ?? 'pending';
+      const requiresAction = query.requires_action ?? false;
+      const selectedPage = query.page ?? 1;
+      const selectedSize = query.page_size ?? 25;
       const reply = await request(path, readInit(options), [200]);
       return checked(() => {
         const page = parseTransferPage(reply.body);
-        if (page.status !== selected) throw new Error();
+        if (page.status !== selected || (page.requires_action ?? false) !== requiresAction
+          || (requiresAction && !page.required_actions) || page.page !== selectedPage || page.page_size !== selectedSize) throw new Error();
         return page;
       }, reply.status);
     },

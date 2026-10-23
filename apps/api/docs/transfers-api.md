@@ -576,13 +576,14 @@ This backend contract is not receipt UI, deployed runtime or human acceptance.
 
 ## Bounded list and lossless responses
 
-GET accepts only `page`, `page_size` and `status`, each at most once:
+GET accepts only `page`, `page_size`, `status` and `requires_action`, each at most once:
 
 | Parameter | Default | Accepted values |
 |---|---|---|
 | `page` | 1 | Canonical ASCII decimal 1–1000000 |
 | `page_size` | 25 | Exact 10, 25, 50 |
 | `status` | pending | Exact `all`, `pending`, `approved`, `rejected`, `in_transit`, `received`, `cancelled` |
+| `requires_action` | false | Exact `true` or `false`; no case, numeric or encoded aliases |
 
 Raw queries are bounded to 4096 bytes. Empty values/components, unknown fields,
 duplicates, encoding aliases and malformed encoding are rejected 400. Parameter
@@ -597,7 +598,9 @@ Explicit `status=all` includes all six lifecycle states and echoes `all` on the
 page, never on individual records. Omitting status still selects `pending` for
 backward compatibility; the Transferencias UI explicitly selects `all` by default.
 Both count and page remain restricted to the authenticated physical origin or
-destination. Independent Pending/action counters are unchanged.
+destination. `requires_action=true` combines with status and filters the complete
+private set **before both total and pagination**, not just the returned page.
+Independent Pending/action counters are not narrowed by this filter.
 
 Only explicit snake_case DTOs are serialized:
 
@@ -612,7 +615,17 @@ Only explicit snake_case DTOs are serialized:
   original decision fields when cancellation followed approval, or always for
   direct shipments authorized at creation.
 - Item: `variant_id`, `brand`, `model`, `capacity_ah`, `polarity`, `quantity`.
-- Page: `page`, `page_size`, `status`, `total_count`, `records`.
+- Page: `page`, `page_size`, `status`, `total_count`, `records`, `requires_action`, `required_actions`.
+
+`requires_action` echoes the normalized boolean. `required_actions` maps exactly
+each returned canonical record ID to an array, including `[]` for no required work.
+Reasons appear once in this order: `approve`, `dispatch`, `receive`, `review_count`,
+`review_restitution`. An action-only row always has at least one reason. Empty
+pages return `{}`. This metadata is list-only: canonical records, detail, creation,
+mutations and recovery retain their existing shapes. Reasons are navigation advice,
+not authorization to mutate. Projection, total, selected IDs/reasons and canonical
+loads share one read-only repeatable-read snapshot; no full proposal histories
+are loaded to produce reasons.
 
 Request IDs, quantities, decimal capacities and total_count are JSON **strings**,
 never floating-point conversions. Bounded location/variant/page values are JSON
@@ -627,10 +640,10 @@ record and `Location: /api/transfers/{id}`; all reads use the same full record D
 
 `GET /api/transfers/counts` accepts no query, including an explicit empty `?`.
 It shares strict path-alias, unique-cookie, identity and privacy guards with
-existing reads. Its exact response has only decimal-string counts:
+existing reads. Its response uses exact decimal-string counts:
 
 ```json
-{"pending_total":"3","action_count":"1"}
+{"pending_total":"3","action_count":"1","actions":{"approve":"1","dispatch":"0","receive":"0","review_count":"0","review_restitution":"0"}}
 ```
 
 `pending_total` counts Pending requests whose physical origin or destination is
@@ -644,8 +657,8 @@ stale count pins or pending counts do not hide it because rejection remains vali
 Rejected/Cancelled and decided/superseded proposals contribute no action.
 
 One request contributes once, even with multiple lines or both review kinds.
-Store category totals count transfers independently and may overlap; they are
-not yet exposed by this two-field HTTP response. Voluntary cancellation,
+The five `actions` category totals count transfers independently and may overlap;
+each is at most `action_count`, but their sum may exceed it. Voluntary cancellation,
 proposing and replacement do not count. Warehouse assignment grants no visibility
 outside physical participation. These are not unread events, discrepancy/stock
 quantities or page counts. `action_count` may exceed the independent

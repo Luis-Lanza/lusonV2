@@ -27,7 +27,7 @@ func TestR1WorkflowCountsHTTP(t *testing.T) {
 						action = `"1"`
 					}
 					got := transferObject(t, f.request(t, actor, "GET", "/api/transfers/counts", ""), 200)
-					if len(got) != 2 || string(got["pending_total"]) != pending || string(got["action_count"]) != action {
+					if len(got) != 3 || string(got["pending_total"]) != pending || string(got["action_count"]) != action {
 						t.Fatalf("%s actor %d: %v", status, actor, got)
 					}
 				}

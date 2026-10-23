@@ -1267,6 +1267,64 @@ describe('A05a independent counts and authority fences', () => {
   });
 });
 
+describe('required action hook', () => {
+  it('resets page on action selection and preserves filter through detail/back', async () => {
+    const h = boundedHarness(false, 1);
+    const fetch = vi.fn<typeof globalThis.fetch>(async input => {
+      const url = String(input);
+      if (!url.includes('?')) return reply(wire(2, '1'));
+      const q = new URL(url, 'http://localhost').searchParams;
+      const page = Number(q.get('page')); const requires_action = q.get('requires_action') === 'true';
+      return reply({ page, page_size: 25, status: 'all', total_count: '1', records: page === 1 ? [wire(2, '1')] : [],
+        requires_action, required_actions: page === 1 ? { '1': ['approve'] } : {} });
+    });
+    const hook = renderHook(() => useTransfers({ controller: h.controller, api: createTransferAPI(fetch), listEnabled: true, detailEnabled: true }));
+    await waitFor(() => expect(hook.result.current.page?.page).toBe(1));
+    expect(hook.result.current.query.status).toBe('all');
+    act(() => hook.result.current.changeQuery({ page: 2 }));
+    await waitFor(() => expect(hook.result.current.page?.page).toBe(2));
+    act(() => hook.result.current.changeQuery({ requires_action: true, page: 99 }));
+    await waitFor(() => expect(hook.result.current.page?.requires_action).toBe(true));
+    expect(hook.result.current.query.page).toBe(1);
+    act(() => hook.result.current.selectDetail('1'));
+    await waitFor(() => expect(hook.result.current.detail?.id).toBe('1'));
+    act(() => hook.result.current.selectDetail(null));
+    expect(hook.result.current.query).toMatchObject({ page: 1, status: 'all', requires_action: true });
+    act(() => hook.result.current.changeQuery({ requires_action: false }));
+    await waitFor(() => expect(hook.result.current.page?.requires_action).toBe(false));
+    expect(fetch.mock.calls.at(-1)?.[0]).toBe('/api/transfers?page=1&page_size=25&status=all');
+    hook.unmount(); h.hook.unmount();
+  });
+  it('rejects fabricated action ownership even when the injected API bypasses parsing', async () => {
+    const h = boundedHarness(false, 2);
+    vi.spyOn(h.api, 'list').mockResolvedValue({ page: 1, page_size: 25, status: 'all', total_count: 1n,
+      records: [parseTransferRecord(JSON.stringify(wire(2, '1')))], requires_action: false, required_actions: { '1': ['approve'] } });
+    const hook = renderHook(() => useTransfers({ controller: h.controller, api: h.api, listEnabled: true }));
+    await waitFor(() => expect(hook.result.current.listError?.code).toBe('invalid_response'));
+    expect(hook.result.current.page).toBeNull();
+    hook.unmount(); h.hook.unmount();
+  });
+  it('discards late actionable data after authority changes, including ignored aborts', async () => {
+    const h = boundedHarness(false, 1);
+    const held = deferred<Response>();
+    const fetch = vi.fn<typeof globalThis.fetch>(async input => String(input).includes('requires_action=true') ? held.promise
+      : reply({ page: 1, page_size: 25, status: 'all', total_count: '0', records: [] }));
+    const hook = renderHook(() => useTransfers({ controller: h.controller, api: createTransferAPI(fetch), listEnabled: true }));
+    await waitFor(() => expect(hook.result.current.page).not.toBeNull());
+    act(() => hook.result.current.changeQuery({ requires_action: true }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    const saved = hook.result.current;
+    h.a.epoch = 2; h.a.session = structuredClone(session(3)); hook.rerender();
+    await act(async () => held.resolve(reply({ page: 1, page_size: 25, status: 'all', total_count: '1', records: [wire(2, '1')],
+      requires_action: true, required_actions: { '1': ['approve'] } })));
+    expect(saved.page).toBeNull();
+    await waitFor(() => expect(hook.result.current.page?.total_count).toBe(0n));
+    expect(hook.result.current.query.requires_action).toBeUndefined();
+    expect(h.controller.settleUnauthorized).not.toHaveBeenCalled();
+    hook.unmount(); h.hook.unmount();
+  });
+});
+
 describe('R04 transfer hook', () => {
   it('has no protected reads while anonymous or disabled, then activates passively', async () => {
     const f = fixture(anonymous); const h = harness(false, false);

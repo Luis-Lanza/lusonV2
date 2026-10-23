@@ -267,6 +267,11 @@ func transferQuery(raw string) (transfers.Query, error) {
 			if n != 10 && n != 25 && n != 50 {
 				err = transfers.ErrInvalid
 			}
+		case "requires_action":
+			if value != "true" && value != "false" {
+				err = transfers.ErrInvalid
+			}
+			q.RequiresAction = value == "true"
 		case "status":
 			if value != "all" && value != "pending" && value != "approved" && value != "rejected" && value != "in_transit" && value != "received" && value != "cancelled" {
 				err = transfers.ErrInvalid
@@ -412,11 +417,13 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 }
 
 type transferPageDTO struct {
-	Page       int64         `json:"page"`
-	PageSize   int           `json:"page_size"`
-	Status     string        `json:"status"`
-	TotalCount string        `json:"total_count"`
-	Records    []transferDTO `json:"records"`
+	Page            int64              `json:"page"`
+	PageSize        int                `json:"page_size"`
+	Status          string             `json:"status"`
+	TotalCount      string             `json:"total_count"`
+	Records         []transferDTO      `json:"records"`
+	RequiresAction  bool               `json:"requires_action"`
+	RequiredActions map[int64][]string `json:"required_actions"`
 }
 
 func transferPage(page transfers.Page) (transferPageDTO, error) {
@@ -428,7 +435,11 @@ func transferPage(page transfers.Page) (transferPageDTO, error) {
 		}
 		records = append(records, dto)
 	}
-	return transferPageDTO{page.Page, page.PageSize, page.Status, strconv.FormatInt(page.Total, 10), records}, nil
+	reasons := page.RequiredActions
+	if reasons == nil {
+		reasons = make(map[int64][]string)
+	}
+	return transferPageDTO{page.Page, page.PageSize, page.Status, strconv.FormatInt(page.Total, 10), records, page.RequiresAction, reasons}, nil
 }
 
 // Counts intentionally has its own exact static route beside numeric detail.
@@ -460,9 +471,16 @@ func (a *API) transferCounts(store *transfers.Store) http.HandlerFunc {
 			return
 		}
 		respond(w, 200, struct {
-			PendingTotal string `json:"pending_total"`
-			ActionCount  string `json:"action_count"`
-		}{strconv.FormatInt(totals.PendingTotal, 10), strconv.FormatInt(totals.ActionCount, 10)})
+			PendingTotal string            `json:"pending_total"`
+			ActionCount  string            `json:"action_count"`
+			Actions      map[string]string `json:"actions"`
+		}{strconv.FormatInt(totals.PendingTotal, 10), strconv.FormatInt(totals.ActionCount, 10), map[string]string{
+			"approve":            strconv.FormatInt(totals.Actions.Approve, 10),
+			"dispatch":           strconv.FormatInt(totals.Actions.Dispatch, 10),
+			"receive":            strconv.FormatInt(totals.Actions.Receive, 10),
+			"review_count":       strconv.FormatInt(totals.Actions.ReviewCount, 10),
+			"review_restitution": strconv.FormatInt(totals.Actions.ReviewRestitution, 10),
+		}})
 	}
 }
 

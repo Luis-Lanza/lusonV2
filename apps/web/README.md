@@ -43,6 +43,32 @@ accepted only for `all`; record validation and participant/session fencing remai
 unchanged. This current contract supersedes historical Pending-only list sections
 below. Source checks do not establish deployment or browser acceptance.
 
+## Required-action query foundation (T2, no new UI)
+
+`TransferQuery.requires_action?: boolean` combines with lifecycle status. The
+serializer omits false to preserve existing URLs; true enters the list query key.
+`useTransfers().changeQuery({ requires_action: true })` resets page one even if a
+page is supplied. `selectDetail(id)` and `selectDetail(null)` preserve that filter.
+Initial screen selection remains Todas; omitted API/model status remains Pending.
+
+`TransferCounts.actions?: TransferActionCounts` contains all five bigint category
+counts when available. Legacy two-field counts omit `actions`, rather than inventing
+zero categories. Each category is bounded by the union `action_count`; overlapping
+reviews can make their sum exceed that badge.
+
+`TransferPage.requires_action?: boolean` and
+`required_actions?: Record<string, readonly TransferActionReason[]>` are list-only.
+The ordered reasons are `approve`, `dispatch`, `receive`, `review_count`,
+`review_restitution`. Every page ID has an array (possibly empty); extra/missing
+IDs, unknown/duplicate/reordered reasons and lifecycle mismatches are rejected.
+Legacy unfiltered pages may omit both metadata fields: undefined means unavailable,
+not an empty action set. Action-only responses require true echo and nonempty
+reasons on every row. API and hook verify filter echo; the hook also checks assigned
+actor ownership. Count-review counterpart eligibility remains backend-owned because
+immutable headers do not identify proposal initiators. Existing participant and
+stale-authority fences remain in force. These labels never grant mutation permission.
+Visible summaries, shortcuts and row cues are deferred to T3.
+
 ## Direct warehouse shipments
 
 Assigned warehouse accounts create `direct_shipment` to Sucursal A or B from either

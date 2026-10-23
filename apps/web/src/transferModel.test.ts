@@ -407,6 +407,40 @@ describe('A05a outcome and count contracts', () => {
   });
 });
 
+describe('required action metadata', () => {
+  const actions = { approve: '0', dispatch: '0', receive: '0', review_count: '9007199254740993', review_restitution: '9007199254740993' };
+  it('decodes overlapping lossless categories without inventing legacy zero categories', () => {
+    const counts = parseTransferCounts(JSON.stringify({ pending_total: '0', action_count: '9007199254740993', actions }));
+    expect(counts).toMatchObject({ actions: { review_count: 9007199254740993n, review_restitution: 9007199254740993n } });
+    expect(parseTransferCounts('{"pending_total":"0","action_count":"0"}')).not.toHaveProperty('actions');
+    for (const patch of [{ approve: '9007199254740994' }, { approve: '01' }, { approve: 0 }, { approve: undefined }, { other: '0' }]) {
+      expect(() => parseTransferCounts(JSON.stringify({ pending_total: '0', action_count: '9007199254740993', actions: { ...actions, ...patch } }))).toThrow();
+    }
+  });
+  it('requires exact page membership, ordered lifecycle-compatible reasons and boolean echo', () => {
+    const record = receiptWire();
+    const page = { page: 1, page_size: 25, status: 'all', total_count: '1', records: [record], requires_action: true,
+      required_actions: { [record.id]: ['review_count', 'review_restitution'] } };
+    expect(parseTransferPage(JSON.stringify(page))).toMatchObject({ requires_action: true, required_actions: page.required_actions });
+    for (const required_actions of [{}, { '01': [] }, { ...page.required_actions, '1': [] }, { [record.id]: [] },
+      { [record.id]: ['unknown'] }, { [record.id]: ['approve'] }, { [record.id]: ['review_count', 'review_count'] },
+      { [record.id]: ['review_restitution', 'review_count'] }, null, undefined]) {
+      expect(() => parseTransferPage(JSON.stringify({ ...page, required_actions }))).toThrow();
+    }
+    for (const requires_action of [undefined, 'true', 1, null]) expect(() => parseTransferPage(JSON.stringify({ ...page, requires_action }))).toThrow();
+    expect(parseTransferPage(JSON.stringify({ ...page, requires_action: false, required_actions: { [record.id]: [] } })))
+      .toMatchObject({ required_actions: { [record.id]: [] } });
+    const legacy = { ...page, requires_action: undefined, required_actions: undefined };
+    expect(parseTransferPage(JSON.stringify(legacy))).not.toHaveProperty('required_actions');
+    expect(() => parseTransferRecord(JSON.stringify({ ...record, required_actions: [] }))).toThrow();
+  });
+  it('omits false without changing defaults and serializes only an exact boolean', () => {
+    expect(transferListPath({ requires_action: false } as never)).toBe(transferListPath());
+    expect(transferListPath({ requires_action: true, status: 'all' } as never)).toBe('/api/transfers?page=1&page_size=25&status=all&requires_action=true');
+    for (const requires_action of ['true', 1, null]) expect(() => transferListPath({ requires_action } as never)).toThrow();
+  });
+});
+
 describe('all transfer filter', () => {
   it('serializes all and admits mixed lifecycle records without weakening record validation', () => {
     expect(transferListPath({ status: 'all' as never })).toBe('/api/transfers?page=1&page_size=25&status=all');

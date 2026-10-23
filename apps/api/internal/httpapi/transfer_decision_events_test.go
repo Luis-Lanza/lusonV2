@@ -88,7 +88,7 @@ func decisionLiveViews(t *testing.T, f *transferHTTPFixture, server *httptest.Se
 			(status == "in_transit" && actor == original.DestinationLocationID) {
 			action = `"1"`
 		}
-		if len(counts) != 2 || string(counts["pending_total"]) != pending || string(counts["action_count"]) != action {
+		if len(counts) != 3 || string(counts["pending_total"]) != pending || string(counts["action_count"]) != action {
 			t.Fatal("Pending/workflow count does not match the persisted location-owned obligation")
 		}
 	}

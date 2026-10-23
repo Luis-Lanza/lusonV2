@@ -95,8 +95,17 @@ reviews contributes 1 to each review category but only 1 to `ActionCount`.
 `ActionCount` may exceed the independent `PendingTotal`. All totals share one
 snapshot, not a separately fetched page. Reads never alter evidence or inventory;
 failures return zero totals plus an error, not a successful empty workload.
-HTTP still exposes its two existing fields; category DTOs and action-only list
-filtering are a later unit.
+HTTP exposes these categories as exact strings in `actions`, alongside the two
+existing totals. `Query.RequiresAction` defaults false and combines with `Status`.
+`List` reuses `requiredActionsSQL` and `anyRequiredActionSQL` for both total and
+ID selection before pagination, with the physical-participant guard outside the
+work OR. One selected-page projection returns ID and all five booleans;
+`Page.RequiresAction` echoes the filter and `Page.RequiredActions map[int64][]string`
+contains exactly page IDs, including empty slices. Reasons have fixed order:
+`approve`, `dispatch`, `receive`, `review_count`, `review_restitution`.
+Count, IDs/reasons and visibility-rechecked canonical loads use the same read-only
+repeatable-read snapshot. Descending IDs, bounded pages and canonical `Request`
+remain unchanged; list metadata adds no full-history per-record queries.
 
 Migration 004 inventory and 006 participant status invalidations are unchanged.
 Only positive credit produces inventory movement/hints. Unexpected-only receipts
