@@ -38,6 +38,7 @@ function statusLabel(record: TransferRecord) {
 }
 function Status({ record }: { record: TransferRecord }) { return <span className={`pending-status status-${record.status}`}>{statusLabel(record)}</span>; }
 const statusOptions = [
+  { value: 'all', label: 'Todas', plural: 'transferencias', singular: 'transferencia' },
   { value: 'pending', label: 'Pendientes', plural: 'pendientes', singular: 'pendiente' },
   { value: 'approved', label: 'Aprobadas', plural: 'aprobadas', singular: 'aprobada' },
   { value: 'rejected', label: 'Rechazadas', plural: 'rechazadas', singular: 'rechazada' },
@@ -139,14 +140,15 @@ export default function TransferPending(props: TransferPendingProps) {
   const compactDetail = pendingParticipant || approvedParticipant || transitParticipant || receivedParticipant || closedParticipant;
   const queryPage = transfers.query.page ?? 1;
   const size = transfers.query.page_size ?? 25;
-  const status = transfers.query.status ?? 'pending';
+  const status = transfers.query.status ?? 'all';
   const { plural, singular } = statusOptions.find(option => option.value === status)!;
   const approverLabel = (row: TransferRecord) => row.status === 'pending' ? 'Requiere aprobación de' : 'Ubicación aprobadora';
   const open = (row: TransferRecord) => { if (current()) { focusScope.current.blocked = true; transfers.selectDetail(row.id); props.onRouteDetail?.(row.id); } };
   const back = () => { if (current()) { focusScope.current.blocked = true; transfers.selectDetail(null); props.onRouteDetail?.(null); } };
   const inventory = () => { if (current()) { focusScope.current.blocked = true; props.onInventory(); } };
   // This is the selected-status participant total, not the independent Pending/action counters.
-  const pageCount = <p className="pending-count" aria-live="polite">{page ? `${page.total_count.toString()} ${page.total_count === 1n ? `solicitud ${singular}` : `solicitudes ${plural}`}` : `Consultando solicitudes ${plural}…`}</p>;
+  const listNoun = status === 'all' ? 'transferencias' : `solicitudes ${plural}`;
+  const pageCount = <p className="pending-count" aria-live="polite">{page ? `${page.total_count.toString()} ${status === 'all' ? page.total_count === 1n ? singular : plural : page.total_count === 1n ? `solicitud ${singular}` : `solicitudes ${plural}`}` : `Consultando ${listNoun}…`}</p>;
   const counters = <section className="transfer-request-counters" aria-label="Contadores de solicitudes" aria-live="polite" aria-busy={countsBusy}>
     {counts && !countsBusy && !countsError ? <dl>
       <div><dt>Pendientes de tu ubicación</dt><dd>{counts.pending_total.toString()}</dd></div>
@@ -164,7 +166,7 @@ export default function TransferPending(props: TransferPendingProps) {
       <button type="button" className="creation-back" onClick={inventory}>Volver al inventario</button>
     </nav> : <>
     <button type="button" className="creation-back" onClick={inventory}>Volver al inventario</button>
-    <header className="pending-heading"><div><h1 id="pending-title" aria-label={`Transferencias ${plural}`}>Transferencias<span className="sr-only"> {plural}</span></h1>
+    <header className="pending-heading"><div><h1 id="pending-title" aria-label={status === 'all' ? 'Transferencias' : `Transferencias ${plural}`}>Transferencias{status !== 'all' && <span className="sr-only"> {plural}</span>}</h1>
       <p>Consultá las transferencias de tu ubicación asignada.</p></div>
       <div className="pending-heading-actions">
         <button type="button" className="primary transfer-cta" disabled={!props.creationAvailable || !props.onCreate} onClick={() => {
@@ -201,7 +203,7 @@ export default function TransferPending(props: TransferPendingProps) {
         <label htmlFor="transfer-status">Estado de transferencia</label>
         <select id="transfer-status" value={status} onChange={event => {
           const next = event.target.value;
-          if (current() && (next === 'pending' || next === 'approved' || next === 'rejected' || next === 'in_transit' || next === 'received' || next === 'cancelled')) transfers.changeQuery({ status: next });
+          if (current() && (next === 'all' || next === 'pending' || next === 'approved' || next === 'rejected' || next === 'in_transit' || next === 'received' || next === 'cancelled')) transfers.changeQuery({ status: next });
         }}>{statusOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
       </div>
       <TransferDecision controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} />
@@ -209,12 +211,12 @@ export default function TransferPending(props: TransferPendingProps) {
       <TransferReceipt controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} />
       <TransferCancellation controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} />
       <section className="pending-results" aria-label="Listado de transferencias">
-      {transfers.listBusy && <p role="status">Actualizando solicitudes {plural}…</p>}
-      {listError && <div role="alert" className="message"><p>{status === 'pending' ? 'No se pudieron consultar las solicitudes.' : `No se pudieron consultar las solicitudes ${plural}.`}</p>
+      {transfers.listBusy && <p role="status">Actualizando {listNoun}…</p>}
+      {listError && <div role="alert" className="message"><p>{status === 'all' ? 'No se pudieron consultar las transferencias.' : status === 'pending' ? 'No se pudieron consultar las solicitudes.' : `No se pudieron consultar las solicitudes ${plural}.`}</p>
         <button type="button" onClick={() => { if (current()) transfers.retryList(); }}>Reintentar {plural}</button></div>}
-      {page?.total_count === 0n && <p role="status">No hay solicitudes {plural} para tu ubicación.</p>}
+      {page?.total_count === 0n && <p role="status">No hay {listNoun} para tu ubicación.</p>}
       {page && page.records.length > 0 && <>
-        <div className="table-scroll pending-table"><table><caption className="sr-only">Solicitudes {plural} participantes</caption>
+        <div className="table-scroll pending-table"><table><caption className="sr-only">{status === 'all' ? 'Transferencias participantes' : `Solicitudes ${plural} participantes`}</caption>
           <thead><tr>{['Transferencia', 'Origen', 'Destino', 'Estado', 'Unidades', status === 'pending' ? 'Requiere aprobación de' : 'Ubicación aprobadora', 'Detalle'].map(label => <th scope="col" key={label}>{label}</th>)}</tr></thead>
           <tbody>{page.records.map(row => <tr key={row.id}><td><strong>{row.reference}</strong><small>{kindLabel(row)}</small></td>
             <td>{row.origin_location_name}</td><td>{row.destination_location_name}</td><td><Status record={row} /></td>

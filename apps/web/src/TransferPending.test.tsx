@@ -63,7 +63,9 @@ function fixture(id = 2, override?: (url: string, init: RequestInit) => Promise<
       const length = remaining <= 0n ? 0 : remaining > BigInt(size) ? size : Number(remaining);
       const records = Array.from({ length }, (_, index) => {
         const recordID = (BigInt(env.record.id) - BigInt(index)).toString();
-        return wire(env.record.origin_location_id, env.record.destination_location_id, recordID, query.get('status') ?? 'pending');
+        return query.get('status') === 'all'
+          ? { ...env.record, id: recordID, reference: `TR-${recordID.padStart(3, '0')}` }
+          : wire(env.record.origin_location_id, env.record.destination_location_id, recordID, query.get('status') ?? 'pending');
       });
       return Promise.resolve(reply({ page, page_size: size, status: query.get('status'), total_count: env.count, records }));
     }
@@ -88,7 +90,11 @@ const calls = (f: ReturnType<typeof fixture>, detail = false) => f.fetch.mock.ca
   ? /^\/api\/transfers\/[1-9][0-9]*$/.test(String(url)) : String(url).startsWith('/api/transfers?'));
 const countCalls = (f: ReturnType<typeof fixture>) => f.fetch.mock.calls.filter(([url]) => url === '/api/transfers/counts');
 const isPassive = (call: [RequestInfo | URL, RequestInit?]) => new Headers(call[1]?.headers).get('X-Luson-Passive') === '1';
-async function loaded() { await screen.findByText('9007199254740993 solicitudes pendientes'); }
+async function loaded() {
+  const selector = screen.getByLabelText('Estado de transferencia');
+  if ((selector as HTMLSelectElement).value === 'all') fireEvent.change(selector, { target: { value: 'pending' } });
+  await screen.findByText('9007199254740993 solicitudes pendientes');
+}
 async function detail() { fireEvent.click(screen.getByRole('button', { name: 'Ver detalle TR-9007199254740993' })); await screen.findByRole('heading', { name: 'TR-9007199254740993' }); }
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -146,6 +152,33 @@ function pendingHistory(record = receivedWire()) {
       actual_quantity: '5', base_revision: '0', base_credit: line.available_quantity, reason: 'Reconteo de origen',
       recorded_at: correctionStamp, state: 'pending', decision: null, application: null }] : [] })) };
 }
+
+describe('all transfer filter', () => {
+  it('defaults to Todas with mixed rows, preserves detail-back and resets pages on filtering', async () => {
+    const f = fixture(2, url => url.includes('status=all') ? Promise.resolve(reply({
+      page: Number(new URL(url, 'http://localhost').searchParams.get('page')), page_size: 25,
+      status: 'all', total_count: '2', records: [wire(), wire(1, 2, '1', 'approved')],
+    })) : undefined);
+    render(f.element());
+    await screen.findByText('2 transferencias');
+    expect(screen.getByLabelText('Estado de transferencia')).toHaveValue('all');
+    expect(calls(f)[0][0]).toBe('/api/transfers?page=1&page_size=25&status=all');
+    expect(screen.getByRole('table')).toHaveTextContent('Pendiente de aprobación');
+    expect(screen.getByRole('table')).toHaveTextContent('Aprobada');
+    await detail();
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
+    expect(screen.getByLabelText('Estado de transferencia')).toHaveValue('all');
+    fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'pending' } });
+    await loaded();
+    fireEvent.click(screen.getByRole('button', { name: 'Siguiente pendientes' }));
+    await waitFor(() => expect(calls(f).at(-1)![0]).toContain('page=2&'));
+    fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'all' } });
+    await screen.findByText('2 transferencias');
+    expect(calls(f).at(-1)![0]).toBe('/api/transfers?page=1&page_size=25&status=all');
+    expect(countCalls(f)).toHaveLength(1);
+    expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+  });
+});
 
 describe('F6 closed participant detail', () => {
   const routes = [['request_stock', 1, 3], ['request_stock', 2, 3],
@@ -252,7 +285,7 @@ describe('F1 participant transit chrome', () => {
     await screen.findByRole('heading', { name: record.reference });
     const navigation = screen.getByRole('navigation', { name: 'Navegación de transferencia' });
     expect(navigation).toHaveClass('transit-destination-navigation');
-    expect(navigation).toHaveTextContent('Volver a pendientes·Volver al inventario');
+    expect(navigation).toHaveTextContent('Volver a transferencias·Volver al inventario');
     expect(screen.queryByRole('region', { name: 'Contadores de solicitudes' })).not.toBeInTheDocument();
     const products = screen.getByRole('region', { name: 'Productos enviados' });
     expect(products).toHaveTextContent(`Pendiente de recepción en ${locations[destination - 1]}`);
@@ -356,7 +389,7 @@ describe('F4a selected chrome', () => {
     expect(screen.getByRole('region', { name: 'Recepción original' }).compareDocumentPosition(lane) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Recibir solicitud' })).not.toBeInTheDocument();
     expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
-    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
     await loaded();
     expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toHaveTextContent('9007199254740995');
     fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' }));
@@ -396,7 +429,7 @@ describe('R6a received detail restitution composition', () => {
     fireEvent.click(within(section).getByRole('button', { name: 'Consultar para revisar restitución' }));
     await waitFor(() => expect(f.fetch.mock.calls.filter(([url]) => String(url).endsWith('/restitutions'))).toHaveLength(2));
     expect(screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML).toBe(original);
-    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
     expect(screen.queryByRole('region', { name: 'Restituciones de origen' })).not.toBeInTheDocument();
     expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
   });
@@ -684,7 +717,7 @@ describe('C4b correction authority and operation boundaries', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Enviar propuesta' }));
     await screen.findByRole('button', { name: 'Reintentar carga exacta' });
     const captured = correctionPosts(f)[0][1]?.body;
-    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
     expect(screen.queryByRole('region', { name: 'Correcciones de conteo' })).not.toBeInTheDocument();
     view.unmount(); render(f.element()); await correctionLoaded();
     expect(screen.getByRole('article', { name: 'Recuperación 1' })).toHaveTextContent('Recuento exacto');
@@ -741,7 +774,7 @@ describe('C4b correction authority and operation boundaries', () => {
     const f = correctionFixture(2, url => url.endsWith('/count-corrections') ? read.promise : undefined);
     render(f.element()); await screen.findByRole('heading', { name: f.record.reference });
     await waitFor(() => expect(correctionCalls(f)).toHaveLength(1));
-    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
     expect(correctionCalls(f)[0][1]?.signal?.aborted).toBe(true);
     await act(async () => read.resolve(reply(correctionHistory(f.record))));
     expect(screen.queryByRole('region', { name: 'Correcciones de conteo' })).not.toBeInTheDocument();
@@ -845,7 +878,7 @@ describe('A06b independent passive counters', () => {
     const counters = screen.getByRole('region', { name: 'Contadores de solicitudes' });
     expect(counters).toHaveTextContent('Consultando contadores…');
     expect(counters.querySelector('dd')).toBeNull();
-    await screen.findByText('No se pudieron consultar las solicitudes.');
+    await screen.findByText('No se pudieron consultar las transferencias.');
     await act(async () => flight.resolve(reply({ pending_total: '0', action_count: '0' })));
     expect([...counters.querySelectorAll('dd')].map(value => value.textContent)).toEqual(['0', '0']);
     expect(counters).not.toHaveTextContent('no disponibles');
@@ -938,7 +971,7 @@ describe('A06b status-specific consultation', () => {
     const f = fixture(); render(f.element()); await loaded();
     const selector = screen.getByRole('combobox', { name: 'Estado de transferencia' });
     expect(selector).toHaveValue('pending');
-    expect(within(selector).getAllByRole('option').map(option => option.getAttribute('value'))).toEqual(['pending', 'approved', 'rejected', 'in_transit', 'received', 'cancelled']);
+    expect(within(selector).getAllByRole('option').map(option => option.getAttribute('value'))).toEqual(['all', 'pending', 'approved', 'rejected', 'in_transit', 'received', 'cancelled']);
     fireEvent.click(screen.getByRole('button', { name: 'Siguiente pendientes' })); await loaded();
     selectStatus(status);
     await screen.findByText(`9007199254740993 solicitudes ${status === 'approved' ? 'aprobadas' : 'rechazadas'}`);
@@ -989,7 +1022,7 @@ describe('A06b status-specific consultation', () => {
   it.each([[1, 2], [1, 3], [2, 3], [3, 2], [2, 1], [3, 1]])('keeps terminal %s → %s routes and persisted participants without pending work', async (origin, destination) => {
     for (const status of ['approved', 'rejected']) {
       const f = fixture(destination === 1 ? 1 : destination); f.env.record = wire(origin, destination); f.env.count = '1';
-      const view = render(f.element()); await screen.findByText('1 solicitud pendiente'); selectStatus(status);
+      const view = render(f.element()); selectStatus('pending'); await screen.findByText('1 solicitud pendiente'); selectStatus(status);
       const plural = status === 'approved' ? 'aprobadas' : 'rechazadas';
       await screen.findByText(`1 solicitud ${status === 'approved' ? 'aprobada' : 'rechazada'}`);
       const table = screen.getByRole('table', { name: `Solicitudes ${plural} participantes` });
@@ -1095,7 +1128,7 @@ describe('A06b status-specific consultation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirmar rechazo' }));
     await screen.findByRole('button', { name: 'Consultar resultado original' });
     fireEvent.click(screen.getByRole('button', { name: 'Volver al detalle' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
     selectStatus('approved'); await screen.findByText('9007199254740993 solicitudes aprobadas');
     recovering = true; fireEvent.click(screen.getByRole('button', { name: 'Consultar resultado original' }));
     await waitFor(() => expect(f.controller.confirmTransferDecision).toHaveBeenCalledExactlyOnceWith(expect.anything(), outcome));
@@ -1116,7 +1149,7 @@ describe('A06b status-specific consultation', () => {
     await screen.findByRole('button', { name: 'Consultar resultado original' });
     const attempt = f.controller.decisionRecovery!.get(decisionOwner(f.env.current));
     fireEvent.click(screen.getByRole('button', { name: 'Volver al detalle' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
     selectStatus('approved'); await screen.findByText('9007199254740993 solicitudes aprobadas');
     selectStatus('rejected'); await screen.findByText('9007199254740993 solicitudes rechazadas');
     expect(f.controller.decisionRecovery!.get(decisionOwner(f.env.current))).toBe(attempt); expect(posts).toBe(1);
@@ -1161,7 +1194,7 @@ describe('F5d1 explicit decision dismissal focus', () => {
       if (method === 'close') fireEvent.click(within(dialog).getByRole('button', { name: 'Cerrar confirmación' }));
       if (method === 'back') fireEvent.click(within(dialog).getByRole('button', { name: 'Volver al detalle' }));
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Volver a pendientes' })).toHaveFocus();
+      expect(screen.getByRole('button', { name: 'Volver a transferencias' })).toHaveFocus();
       await act(async () => {});
       expect(f.fetch.mock.calls).toHaveLength(before);
       expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1);
@@ -1177,7 +1210,7 @@ describe('F5d1 explicit decision dismissal focus', () => {
     const restoration = vi.spyOn(trigger, 'focus');
     if (mode === 'unmount') view.unmount();
     if (mode === 'authority') { f.env.current = authority(1, 2); view.rerender(f.element()); }
-    if (mode === 'list') fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    if (mode === 'list') fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
     await act(async () => {});
     expect(restoration).not.toHaveBeenCalled();
     expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
@@ -1214,7 +1247,7 @@ describe('F5d2 automatic modal teardown focus boundaries', () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Revisar recepción' }));
     }
     await act(async () => {});
-    const back = screen.getByRole('button', { name: 'Volver a pendientes' });
+    const back = screen.getByRole('button', { name: 'Volver a transferencias' });
     const triggerFocus = vi.spyOn(trigger, 'focus');
     const backFocus = vi.spyOn(back, 'focus');
     if (mode === '403' || mode === '404') {
@@ -1229,7 +1262,7 @@ describe('F5d2 automatic modal teardown focus boundaries', () => {
       fireEvent.click(mode === 'inventory' ? screen.getByRole('button', { name: 'Volver al inventario' }) : back);
       if (mode === 'inventory') expect(f.back).toHaveBeenCalledOnce();
       if (mode === 'selection') {
-        await screen.findByRole('heading', { name: 'Transferencias pendientes' });
+        await screen.findByRole('heading', { name: 'Transferencias' });
         fireEvent.click(screen.getByRole('button', { name: `Ver detalle ${next.reference}` }));
         await screen.findByRole('heading', { name: next.reference });
         expect(screen.getByRole('button', { name: lane === 'decision' ? 'Aprobar solicitud' : lane === 'dispatch' ? 'Despachar solicitud' : 'Recibir solicitud' })).toBeEnabled();
@@ -1311,7 +1344,7 @@ describe('A06a real list/detail decision bindings', () => {
     fireEvent.click(screen.getByRole('button', { name: action === 'approve' ? 'Confirmar aprobación' : 'Confirmar rechazo' }));
     await screen.findByRole('button', { name: 'Consultar resultado original' });
     fireEvent.click(screen.getByRole('button', { name: 'Volver al detalle' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
     expect(screen.getByLabelText('Recuperación de decisión')).toHaveTextContent('TR-9007199254740993');
     expect(posts).toBe(1);
     view.unmount();
@@ -1365,7 +1398,7 @@ describe('A06a real list/detail decision bindings', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirmar aprobación' }));
     await screen.findByRole('button', { name: 'Consultar resultado original' });
     fireEvent.click(screen.getByRole('button', { name: 'Volver al detalle' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
     f.env.record = wire(1, 2, '9007199254740992');
     act(() => { for (const listener of f.listeners) listener(); });
     const row = await screen.findByRole('button', { name: 'Ver detalle TR-9007199254740992' });
@@ -1408,6 +1441,7 @@ describe('F2 list presentation', () => {
   });
   it('groups mobile route participants, flow and exact variant quantities', async () => {
     const f = fixture(1); f.env.count = '1'; render(f.element());
+    fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'pending' } });
     await screen.findByText('1 solicitud pendiente');
     const card = document.querySelector('.pending-cards article')!;
     expect(card.querySelector('header .pending-flow')).toHaveTextContent('Solicitud a Almacén');
@@ -1422,6 +1456,7 @@ describe('F2 list presentation', () => {
   });
   it.each(['0', '1'])('keeps pagination within the list region with %s records', async count => {
     const f = fixture(); f.env.count = count; render(f.element());
+    fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'pending' } });
     await screen.findByText(count === '0' ? '0 solicitudes pendientes' : '1 solicitud pendiente');
     const results = screen.getByRole('region', { name: 'Listado de transferencias' });
     expect(within(results).getByLabelText('Ir a página')).toBeInTheDocument();
@@ -1437,7 +1472,7 @@ describe('F2 list presentation', () => {
     const heading = screen.getByRole('heading', { name: 'Transferencias pendientes' });
     expect(heading.firstChild?.textContent).toBe('Transferencias');
     expect(screen.getByText('Consultá las transferencias de tu ubicación asignada.')).toBeVisible();
-    expect(screen.queryByRole('option', { name: 'Todas' })).not.toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Todas' })).toHaveValue('all');
   });
   it.each([
     ['pending', 'pendiente'], ['approved', 'aprobada'], ['rejected', 'rechazada'],
@@ -1453,6 +1488,7 @@ describe('F2 list presentation', () => {
       return Promise.resolve(reply({ page: 1, page_size: 25, status: selectedStatus, total_count: '1', records: [record] }));
     });
     render(f.element());
+    fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'pending' } });
     await screen.findByText('1 solicitud pendiente');
     fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: status } });
     expect(await screen.findByText(`1 solicitud ${singular}`)).toHaveAttribute('aria-live', 'polite');
@@ -1467,6 +1503,7 @@ describe('R05-U2 pending header action stack', () => {
     const f = fixture(id); if (id === 3) f.env.record = wire(2, 3);
     f.env.count = '3';
     render(<TransferPending controller={f.controller} ownerTag={f.ownerTag} onInventory={f.back} creationAvailable onCreate={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'pending' } });
     const count = await screen.findByText('3 solicitudes pendientes');
     const button = screen.getByRole('button', { name: 'Nueva transferencia' });
     const title = screen.getByRole('heading', { name: 'Transferencias pendientes' });
@@ -1531,7 +1568,8 @@ describe('R04c participant Pending', () => {
     expect(table).toHaveTextContent('18446744073709551614');
     expect(table).toHaveTextContent('Pendiente de aprobación');
     expect(table).toHaveTextContent('Requiere aprobación de');
-    expect(calls(f)).toHaveLength(1); expect(isPassive(calls(f)[0])).toBe(true);
+    expect(calls(f)).toHaveLength(2); expect(isPassive(calls(f)[0])).toBe(true);
+    expect(isPassive(calls(f)[1])).toBe(false);
     expect(screen.queryByText('1 solicitud pendiente')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Aprobar|Rechazar|Cancelar|Despachar/ })).not.toBeInTheDocument();
   });
@@ -1573,11 +1611,11 @@ describe('R04c participant Pending', () => {
     item.resolve(reply({ error: 'not_found' }, 404));
     expect(await screen.findByText('La solicitud no está disponible.')).toBeVisible();
     expect(document.body).not.toHaveTextContent('123456789');
-    list.resolve(reply({ page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] }));
+    list.resolve(reply({ page: 1, page_size: 25, status: 'all', total_count: '0', records: [] }));
     expect(screen.queryByText('0 solicitudes pendientes')).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent('123456789');
-    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
-    expect(await screen.findByText('0 solicitudes pendientes')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
+    expect(await screen.findByText('0 transferencias')).toBeVisible();
   });
   it.each(['private-third-account', 'unknown-id'])('uses identical generic 404 presentation for %s', async () => {
     const f = fixture(3, url => url === '/api/transfers/counts' ? undefined
@@ -1589,7 +1627,7 @@ describe('R04c participant Pending', () => {
   });
   it('rejects nonparticipant records instead of constructing private activity', async () => {
     const f = fixture(3); render(f.element());
-    expect(await screen.findByText('No se pudieron consultar las solicitudes.')).toBeVisible();
+    expect(await screen.findByText('No se pudieron consultar las transferencias.')).toBeVisible();
     expect(document.body).not.toHaveTextContent('9007199254740993');
   });
   it.each([10, 25, 50])('uses admitted size %s, manual paging, exact count bounds and detail-back query retention', async size => {
@@ -1611,7 +1649,9 @@ describe('R04c participant Pending', () => {
       const records = page === 1 ? Array.from({ length: 25 }, (_, i) => wire(1, 2, String(100 - i))) : [];
       return Promise.resolve(reply({ page, page_size: 25, status: 'pending', total_count: page === 1 ? '26' : '1', records }));
     });
-    render(f.element()); await screen.findByText('26 solicitudes pendientes');
+    render(f.element());
+    fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'pending' } });
+    await screen.findByText('26 solicitudes pendientes');
     expect(screen.queryByText('No hay solicitudes pendientes para tu ubicación.')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Anterior pendientes' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Siguiente pendientes' })); await screen.findByText('Página 2');
@@ -1636,7 +1676,9 @@ describe('R04c participant Pending', () => {
   it('handles sanitized unknown failures and explicit retry without leaking raw messages', async () => {
     let fails = true;
     const f = fixture(2, () => fails ? Promise.reject(new Error('SECRET requested id 777')) : undefined);
-    render(f.element()); await screen.findByText('No se pudieron consultar las solicitudes.');
+    render(f.element());
+    fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'pending' } });
+    await screen.findByText('No se pudieron consultar las solicitudes.');
     expect(document.body).not.toHaveTextContent('SECRET'); fails = false;
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar pendientes' })); await loaded();
     expect(isPassive(calls(f).at(-1)!)).toBe(false);
@@ -1664,7 +1706,7 @@ describe('R04c participant Pending', () => {
   it('checks initial-detail owner before reading its ID or requesting under a new actor', async () => {
     const f = fixture(3);
     const initial = { ownerTag: '1/2/2', get id(): string { throw new Error('Old owner ID accessed'); } };
-    render(f.element(initial)); await screen.findByText('No se pudieron consultar las solicitudes.');
+    render(f.element(initial)); await screen.findByText('No se pudieron consultar las transferencias.');
     expect(calls(f, true)).toHaveLength(0);
   });
   it.each(['success', 'error'])('ignores late old-owner detail %s after authority switch', async outcome => {

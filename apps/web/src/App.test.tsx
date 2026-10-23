@@ -132,7 +132,7 @@ describe('D2 dispatch shell lifetime', () => {
       if (url.startsWith('/api/transfers?')) {
         const query = new URL(url, 'http://localhost').searchParams;
         const selected = query.get('status'); const record = dispatched ? transit : approved;
-        const records = selected === record.status ? [record] : [];
+        const records = selected === 'all' || selected === record.status ? [record] : [];
         return Promise.resolve(transferResponse({ page: 1, page_size: 25, status: selected, total_count: records.length.toString(), records }));
       }
       if (url === '/api/transfers/1001/dispatch' && init.method === 'POST') {
@@ -171,13 +171,13 @@ describe('B4 assigned-participant shell badge', () => {
     let reads = 0;
     const mock = setup(session, url => {
       if (url === '/api/transfers/counts') return Promise.resolve(countResponse(++reads === 1 ? '9007199254740993' : '2'));
-      if (url.startsWith('/api/transfers?')) return Promise.resolve(transferResponse({ page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] }));
+      if (url.startsWith('/api/transfers?')) return Promise.resolve(transferResponse({ page: 1, page_size: 25, status: 'all', total_count: '0', records: [] }));
       return undefined;
     });
     render(<App />);
     await within(await screen.findByRole('region', { name: 'Resultados de inventario' })).findByText('9007199254740993');
     fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
-    await screen.findByText('0 solicitudes pendientes');
+    await screen.findByText('0 transferencias');
     await waitFor(() => expect(document.querySelector('.transfer-request-counters dd')).toHaveTextContent('9007199254740994'));
     expect(shellCount()).toHaveTextContent('Acciones requeridas: 9007199254740993');
     expect(document.querySelector('nav .transfer-action-badge')).toHaveTextContent('9007199254740993');
@@ -225,7 +225,7 @@ describe('B4 assigned-participant shell badge', () => {
     await waitFor(() => expect(shellCount()).toHaveTextContent('Contador de acciones no disponible.'));
     expect(document.querySelector('nav .transfer-action-badge')).toHaveTextContent('—');
     fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
-    await screen.findByText('No se pudieron consultar las solicitudes.');
+    await screen.findByText('No se pudieron consultar las transferencias.');
     expect(shellCount()).toHaveTextContent('Contador de acciones no disponible.');
     fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' })); await inventory();
     expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false); passiveCounts(mock);
@@ -234,7 +234,7 @@ describe('B4 assigned-participant shell badge', () => {
     const mock = setup(session, url => url === '/api/transfers/counts' ? Promise.resolve(countResponse())
       : url.startsWith('/api/transfers?') ? Promise.resolve(transferResponse({ error: 'service_unavailable' }, 503)) : undefined);
     render(<App />); await inventory(); await waitFor(() => expect(shellCount()).toHaveTextContent('9007199254740993'));
-    fireEvent.click(screen.getByRole('button', { name: 'Transferencias' })); await screen.findByText('No se pudieron consultar las solicitudes.');
+    fireEvent.click(screen.getByRole('button', { name: 'Transferencias' })); await screen.findByText('No se pudieron consultar las transferencias.');
     expect(shellCount()).toHaveTextContent('9007199254740993'); expect(countCalls(mock)).toHaveLength(2);
     expect(screen.getByRole('button', { name: 'Volver al inventario' })).toBeEnabled(); passiveCounts(mock);
   });
@@ -993,7 +993,7 @@ describe('R04b2b App workspace entry', () => {
     }
     expect(screen.getByRole('button', { name: 'Transferencias' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: /Volver a transferencias/ }));
-    await screen.findByRole('heading', { name: 'Transferencias pendientes' });
+    await screen.findByRole('heading', { name: 'Transferencias' });
     fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' })); await inventory();
     expect(screen.getByLabelText('Buscar marca o modelo')).toHaveValue('TOYO');
     expect(screen.getByLabelText('Marca')).toHaveValue('TOYO'); expect(screen.getByLabelText('Polaridad')).toHaveValue('L');
@@ -1027,7 +1027,7 @@ function r04b2c2App() {
     if (url.endsWith('/validate')) return Promise.resolve(response(current.authenticated ? current : { authenticated: false }));
     if (url.endsWith('/logout')) { current = anonymous; return Promise.resolve(new Response(null, { status: 204 })); }
     if (url.endsWith('/login')) { current = next; return Promise.resolve(response(current)); }
-    if (url.startsWith('/api/transfers?')) return Promise.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] }), { headers: { 'Content-Type': 'application/json' } }));
+    if (url.startsWith('/api/transfers?')) return Promise.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, status: 'all', total_count: '0', records: [] }), { headers: { 'Content-Type': 'application/json' } }));
     if (url === '/api/transfers') {
       posts.push(init);
       if (posts.length === 1) return Promise.reject(new Error('lost TEST reply'));
@@ -1092,7 +1092,7 @@ describe('R04b2c2 root lifetime', () => {
     await r04b2c2OpenAndLose(); fireEvent.click(screen.getByRole('button', { name: 'Cerrar revisión' }));
     fireEvent.click(screen.getByRole('button', { name: '← Volver a transferencias' }));
     fireEvent.click(screen.getByRole('button', { name: 'Volver conservando el intento' }));
-    await screen.findByRole('heading', { name: 'Transferencias pendientes' });
+    await screen.findByRole('heading', { name: 'Transferencias' });
     fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' })); await inventory();
     expect(screen.getByLabelText('Buscar marca o modelo')).toHaveValue('kept-query');
     expect(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })).toHaveAttribute('aria-pressed', 'true');
@@ -1114,23 +1114,23 @@ describe('R04c Pending navigation', () => {
     setup(session, url => url.startsWith('/api/transfers?') ? pending.promise : undefined);
     render(<App />); await inventory();
     fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
-    expect(await screen.findByRole('heading', { name: 'Transferencias pendientes' })).toBeVisible();
-    expect(screen.queryByText('0 solicitudes pendientes')).not.toBeInTheDocument();
-    pending.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] }), { headers: { 'Content-Type': 'application/json' } }));
-    expect(await screen.findByText('0 solicitudes pendientes')).toBeVisible();
+    expect(await screen.findByRole('heading', { name: 'Transferencias' })).toBeVisible();
+    expect(screen.queryByText('0 transferencias')).not.toBeInTheDocument();
+    pending.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, status: 'all', total_count: '0', records: [] }), { headers: { 'Content-Type': 'application/json' } }));
+    expect(await screen.findByText('0 transferencias')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' })); await inventory();
   });
   it('keeps the unknown root attempt through Pending and inventory, then retries the exact key and quantities manually', async () => {
     const h = r04b2c2App(); const previous = globalThis.fetch;
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init: RequestInit = {}) => String(input).startsWith('/api/transfers?')
-      ? Promise.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] }), { headers: { 'Content-Type': 'application/json' } })) : previous(input, init)));
+      ? Promise.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, status: 'all', total_count: '0', records: [] }), { headers: { 'Content-Type': 'application/json' } })) : previous(input, init)));
     render(<App />); await inventory(); await r04b2c2OpenAndLose();
     const attempt = JSON.parse(String(h.posts[0].body));
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar revisión' }));
     expect(screen.getByRole('button', { name: 'Transferencias' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: '← Volver a transferencias' }));
     fireEvent.click(screen.getByRole('button', { name: 'Volver conservando el intento' }));
-    await screen.findByText('0 solicitudes pendientes'); expect(h.posts).toHaveLength(1);
+    await screen.findByText('0 transferencias'); expect(h.posts).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' })); await inventory();
     expect(screen.getByRole('region', { name: 'Recuperación de solicitud' })).toHaveTextContent('pendiente de confirmación');
     fireEvent.click(screen.getByRole('button', { name: 'Retomar misma solicitud' }));
@@ -1155,7 +1155,7 @@ function r04cApp(status: number, stalled?: ReturnType<typeof deferred<Response>>
     if (url.startsWith('/api/transfers/')) return Promise.resolve(new Response(JSON.stringify(r04cRecord()), { headers: { 'Content-Type': 'application/json' } }));
     if (url.startsWith('/api/transfers?')) {
       const q = new URL(url, 'http://localhost').searchParams;
-      return Promise.resolve(new Response(JSON.stringify({ page: Number(q.get('page')), page_size: Number(q.get('page_size')), status: 'pending', total_count: '1', records: [{ ...r04cRecord(), creator_location_id: assigned === 3 ? 3 : 2,
+      return Promise.resolve(new Response(JSON.stringify({ page: Number(q.get('page')), page_size: Number(q.get('page_size')), status: q.get('status'), total_count: '1', records: [{ ...r04cRecord(), creator_location_id: assigned === 3 ? 3 : 2,
         creator_location_name: assigned === 3 ? 'Sucursal B' : 'Sucursal A', destination_location_id: assigned === 3 ? 3 : 2,
         destination_location_name: assigned === 3 ? 'Sucursal B' : 'Sucursal A' }] }), { headers: { 'Content-Type': 'application/json' } }));
     }
@@ -1189,18 +1189,18 @@ describe('R05-U1 creation section', () => {
     fireEvent.click(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })); await inventory();
     if (entry !== 'inventory') {
       fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
-      await screen.findByText('1 solicitud pendiente');
+      await screen.findByText('1 transferencia');
     }
     fireEvent.click(screen.getByRole('button', { name: /Nueva transferencia/ }));
     const add = await screen.findByRole('button', { name: 'Añadir Real response L' });
     transfersContext();
-    expect(screen.queryByRole('heading', { name: 'Transferencias pendientes' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Transferencias' })).not.toBeInTheDocument();
     expect(screen.getAllByLabelText('Tipo de transferencia')).toHaveLength(1);
     fireEvent.click(add);
     fireEvent.click(screen.getByRole('button', { name: '← Volver a transferencias' }));
     expect(screen.getByRole('dialog')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: 'Descartar selección' }));
-    await screen.findByRole('heading', { name: 'Transferencias pendientes' });
+    await screen.findByRole('heading', { name: 'Transferencias' });
     expect(screen.getByRole('main')).toHaveAttribute('id', 'transferencias');
     expect(h.posts).toHaveLength(0);
   });
@@ -1208,12 +1208,12 @@ describe('R05-U1 creation section', () => {
     r04cApp(201); render(<App />); await inventory();
     if (entry === 'pending') {
       fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
-      await screen.findByRole('heading', { name: 'Transferencias pendientes' });
+      await screen.findByRole('heading', { name: 'Transferencias' });
     }
     fireEvent.click(screen.getByRole('button', { name: /Nueva transferencia/ }));
     await screen.findByRole('button', { name: 'Añadir Real response L' });
     fireEvent.click(screen.getByRole('button', { name: '← Volver a transferencias' }));
-    await screen.findByRole('heading', { name: 'Transferencias pendientes' });
+    await screen.findByRole('heading', { name: 'Transferencias' });
   });
   it.each([false, true])('preserves warehouse list/detail/inventory at mobile=%s without creation reads or POST', async mobile => {
     vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: mobile, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
@@ -1229,7 +1229,7 @@ describe('R05-U1 creation section', () => {
     expect(catalogReads()).toHaveLength(0);
     expect(screen.queryByLabelText('Tipo de transferencia')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
-    await screen.findByText('1 solicitud pendiente');
+    await screen.findByText('1 transferencia');
     expect(screen.getByRole('button', { name: 'Crear envío' })).toBeEnabled();
     expect(screen.getByRole('main')).toHaveAttribute('id', 'transferencias');
     expect(document.querySelectorAll('nav [aria-current="page"]')).toHaveLength(1);
@@ -1262,8 +1262,8 @@ describe('R05-U1 creation section', () => {
     expect(availableCell).toHaveAttribute('data-label', 'Disponibles en origen');
     expect(availableCell).toHaveTextContent(/^8 uds\.$/);
     expect(screen.queryByLabelText('Tipo de transferencia')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Volver a pendientes' }));
-    await screen.findByRole('heading', { name: 'Transferencias pendientes' });
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
+    await screen.findByRole('heading', { name: 'Transferencias' });
     fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' }));
     await screen.findByText('9007199254740993');
     expect(screen.getByRole('main')).toHaveAttribute('id', 'inventario');
@@ -1275,12 +1275,12 @@ describe('R05-U1 creation section', () => {
     const h = r04cApp(201); render(<App />); await inventory();
     if (entry === 'pending') {
       fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
-      await screen.findByRole('heading', { name: 'Transferencias pendientes' });
+      await screen.findByRole('heading', { name: 'Transferencias' });
     }
     await r04cSend(); await screen.findByRole('heading', { name: 'Solicitud Pending confirmada' });
     transfersContext();
     fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
-    await screen.findByRole('heading', { name: 'Transferencias pendientes' });
+    await screen.findByRole('heading', { name: 'Transferencias' });
     expect(h.posts).toHaveLength(1);
   });
 });
@@ -1293,7 +1293,7 @@ describe('R04c guarded success navigation', () => {
     const fetch = vi.fn((input: RequestInfo | URL, init: RequestInit = {}) => {
       const url = String(input);
       if (url.endsWith('/login')) assigned = 3;
-      if (url.startsWith('/api/transfers?')) return Promise.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, status: 'pending', total_count: '1', records: records() }), { headers: { 'Content-Type': 'application/json' } }));
+      if (url.startsWith('/api/transfers?')) return Promise.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, status: 'all', total_count: '1', records: records() }), { headers: { 'Content-Type': 'application/json' } }));
       if (url === '/api/transfers/counts') return Promise.resolve(response({ pending_total: '1', action_count: '0' }));
       if (/^\/api\/transfers\/[1-9][0-9]*$/.test(url)) return late.promise;
       return previous(input, init);
@@ -1312,17 +1312,17 @@ describe('R04c guarded success navigation', () => {
   it.each([1, 2])('uses assigned role %s at narrow viewport independently of the consulted warehouse', async assigned => {
     vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
     const actor = { ...session, identity: { ...identity, account_id: assigned, location: metadata.locations[assigned - 1] } };
-    setup(actor, url => url.startsWith('/api/transfers?') ? Promise.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, status: 'pending', total_count: '1', records: [r04cRecord()] }), { headers: { 'Content-Type': 'application/json' } })) : undefined);
+    setup(actor, url => url.startsWith('/api/transfers?') ? Promise.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, status: 'all', total_count: '1', records: [r04cRecord()] }), { headers: { 'Content-Type': 'application/json' } })) : undefined);
     render(<App />); if (assigned === 1) await screen.findByText('9007199254740993'); else await inventory();
     if (assigned === 2) { fireEvent.click(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })); await inventory(); }
-    fireEvent.click(screen.getByRole('button', { name: 'Transferencias' })); await screen.findByText('1 solicitud pendiente');
+    fireEvent.click(screen.getByRole('button', { name: 'Transferencias' })); await screen.findByText('1 transferencia');
     expect(document.querySelector('.app-shell')?.classList.contains('warehouse')).toBe(assigned === 1);
     expect(document.querySelector('.pending-cards') !== null).toBe(assigned === 1);
     expect(screen.getByRole('main')).toHaveAttribute('id', 'transferencias');
     expect(document.querySelectorAll('nav [aria-current="page"]')).toHaveLength(1);
     if (assigned === 1) expect(screen.getByRole('button', { name: 'Crear envío' })).toBeEnabled();
     expect(screen.queryByRole('navigation', { name: 'Navegación móvil' }) !== null).toBe(assigned === 1);
-    expect(screen.getByRole('table', { name: 'Solicitudes pendientes participantes' })).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: 'Transferencias participantes' })).toBeInTheDocument();
   });
   it.each([201, 200])('opens only the validated %s record ID and returns to the unchanged inventory query', async status => {
     const h = r04cApp(status); render(<App />); await inventory();
@@ -1357,7 +1357,7 @@ describe('R04c guarded success navigation', () => {
     await screen.findByText('Enviando solicitud… No cambies la selección mientras se resuelve.');
     expect(screen.getByRole('button', { name: 'Transferencias' })).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: 'Transferencias' })); fireEvent.click(screen.getByRole('link', { name: 'Inventario' }));
-    expect(screen.queryByRole('heading', { name: 'Transferencias pendientes' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Transferencias' })).not.toBeInTheDocument();
     pending.resolve(new Response(JSON.stringify(r04cRecord()), { status: 201, headers: { 'Content-Type': 'application/json' } }));
     await screen.findByRole('button', { name: 'Ver detalle' }); expect(h.posts).toHaveLength(1);
   });
@@ -1388,7 +1388,7 @@ describe('R04c guarded success navigation', () => {
 describe('URL navigation persistence', () => {
   function routedSetup() {
     return setup(session, url => {
-      if (url.startsWith('/api/transfers?')) return Promise.resolve(transferResponse({ page: 1, page_size: 25, status: 'pending', total_count: '1', records: [r04cRecord()] }));
+      if (url.startsWith('/api/transfers?')) return Promise.resolve(transferResponse({ page: 1, page_size: 25, status: 'all', total_count: '1', records: [r04cRecord()] }));
       if (url === '/api/transfers/9007199254740993') return Promise.resolve(transferResponse(r04cRecord()));
     });
   }

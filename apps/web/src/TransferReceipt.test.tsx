@@ -50,7 +50,7 @@ function fixture(actor = 2, override?: (url: string, init: RequestInit) => Promi
     if (url === '/api/transfers/counts') return Promise.resolve(reply({ pending_total: '0', action_count: actor === 2 ? '1' : '0' }));
     if (url.startsWith('/api/transfers?')) {
       const status = new URL(url, 'http://localhost').searchParams.get('status');
-      const records = status === Reflect.get(record as object, 'status') ? [record] : [];
+      const records = status === 'all' || status === Reflect.get(record as object, 'status') ? [record] : [];
       return Promise.resolve(reply({ page: 1, page_size: 25, status, total_count: String(records.length), records }));
     }
     if (url === '/api/transfers/1') return Promise.resolve(reply(record));

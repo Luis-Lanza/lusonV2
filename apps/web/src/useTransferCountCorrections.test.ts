@@ -323,7 +323,7 @@ function realFixture() {
     if (path === '/api/auth/session') return reply(session());
     if (path === '/api/inventory/metadata') return reply({ locations, brands: ['TOYO'] });
     if (path.startsWith('/api/inventory?')) return new Response(pageJSON().replace('"location":{"id":1,"name":"Almacén"}', '"location":' + JSON.stringify(locations[1])), { status: 200 });
-    if (path.startsWith('/api/transfers?')) return reply({ page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] });
+    if (path.startsWith('/api/transfers?')) return reply({ page: 1, page_size: 25, status: 'all', total_count: '0', records: [] });
     throw new Error('Unexpected route');
   });
   vi.stubGlobal('fetch', fetch); return fetch;

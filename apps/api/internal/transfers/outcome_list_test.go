@@ -48,7 +48,7 @@ func TestA04OutcomeListFlows(t *testing.T) {
 				before := outcomeSnapshot(t, ctx, p)
 				for participant := 1; participant <= 3; participant++ {
 					visible := participant == original.Origin.ID || participant == original.Destination.ID
-					for _, selected := range []string{"pending", "approved", "rejected"} {
+					for _, selected := range []string{"all", "pending", "approved", "rejected"} {
 						page, err := s.List(ctx, actor(participant), transfers.Query{Status: selected})
 						if err != nil {
 							t.Errorf("%s list rejected: %v", selected, err)
@@ -60,6 +60,9 @@ func TestA04OutcomeListFlows(t *testing.T) {
 						}
 						if visible && selected == "pending" {
 							records = append(records, pending)
+						}
+						if visible && selected == "all" {
+							records = append(records, pending, want)
 						}
 						if page.Status != selected || page.Total != int64(len(records)) || !reflect.DeepEqual(page.Records, records) {
 							t.Error("selected status participant list/count mismatch")
@@ -87,6 +90,7 @@ func TestA04OutcomeListFlows(t *testing.T) {
 
 func TestA04OutcomeListPagination(t *testing.T) {
 	ctx, p, s := fixture(t)
+	allWant := make([]transfers.Request, 0)
 	if _, err := p.Exec(ctx, "UPDATE inventory_balances SET existing=1000 WHERE location_id=1 AND variant_id IN(1,2)"); err != nil {
 		t.Fatal("owned pagination stock setup failed")
 	}
@@ -106,6 +110,7 @@ func TestA04OutcomeListPagination(t *testing.T) {
 				t.Fatal("terminal pagination setup failed")
 			}
 		}
+		allWant = append(want, allWant...)
 		before := outcomeSnapshot(t, ctx, p)
 		for _, tc := range []struct {
 			page              int64
@@ -122,6 +127,20 @@ func TestA04OutcomeListPagination(t *testing.T) {
 			private, err := s.List(ctx, actor(3), transfers.Query{Page: tc.page, PageSize: tc.size, Status: status})
 			if err != nil || private.Total != 0 || private.Records == nil || len(private.Records) != 0 {
 				t.Error("terminal list exposed private count")
+			}
+		}
+		for _, pageNumber := range []int64{1, 2, 3, 1_000_000} {
+			for _, participant := range []int{1, 2, 3} {
+				got, err := s.List(ctx, actor(participant), transfers.Query{Page: pageNumber, PageSize: 50, Status: "all"})
+				visible := allWant
+				if participant == 3 {
+					visible = []transfers.Request{}
+				}
+				first := min(int((pageNumber-1)*50), len(visible))
+				last := min(first+50, len(visible))
+				if err != nil || got.Status != "all" || got.Total != int64(len(visible)) || !reflect.DeepEqual(got.Records, visible[first:last]) {
+					t.Fatal("all pagination exposed private records or changed count/order")
+				}
 			}
 		}
 		if outcomeSnapshot(t, ctx, p) != before {

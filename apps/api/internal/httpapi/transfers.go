@@ -268,7 +268,7 @@ func transferQuery(raw string) (transfers.Query, error) {
 				err = transfers.ErrInvalid
 			}
 		case "status":
-			if value != "pending" && value != "approved" && value != "rejected" && value != "in_transit" && value != "received" && value != "cancelled" {
+			if value != "all" && value != "pending" && value != "approved" && value != "rejected" && value != "in_transit" && value != "received" && value != "cancelled" {
 				err = transfers.ErrInvalid
 			}
 			q.Status = value

@@ -29,6 +29,20 @@ backups remain out of scope; no pixel-perfect claim is made.
 - `lossless-json` 4.3.1 is intentional: default parse produces `LosslessNumber`; raw `toString()` tokens become bounded nonnegative int64 bigint quantities and canonical positive decimal capacity text. Only checked bounded IDs/pages/counts become Number. Server availability is displayed, not recomputed. Zero availability is `Sin disponible`, with no low-stock threshold.
 - Search is literal brand/model text, bounded to 128 UTF-8 bytes. Empty filters are omitted; brand and L/R filters combine with search. Page sizes are 10/25/50.
 
+## Transferencias filters
+
+Transferencias opens with **Todas** selected, explicitly requesting `status=all`.
+It shows all six lifecycle states for the assigned physical participant, never
+another location's private transfers. The six individual status filters remain
+available. Changing status resets page one; detail/back preserves status, page
+and page size. Pending/action counters remain independent of the selected filter.
+
+`all` is a query/page filter, not a record lifecycle status. API/model calls that
+omit status still default to `pending` for compatibility. Mixed-state pages are
+accepted only for `all`; record validation and participant/session fencing remain
+unchanged. This current contract supersedes historical Pending-only list sections
+below. Source checks do not establish deployment or browser acceptance.
+
 ## Direct warehouse shipments
 
 Assigned warehouse accounts create `direct_shipment` to Sucursal A or B from either

@@ -407,6 +407,17 @@ describe('A05a outcome and count contracts', () => {
   });
 });
 
+describe('all transfer filter', () => {
+  it('serializes all and admits mixed lifecycle records without weakening record validation', () => {
+    expect(transferListPath({ status: 'all' as never })).toBe('/api/transfers?page=1&page_size=25&status=all');
+    const records = [wireRecord(), cancellationWire(false, { id: '1', reference: 'TR-001' })];
+    const page = { page: 1, page_size: 25, status: 'all', total_count: '2', records };
+    expect(parseTransferPage(JSON.stringify(page)).records.map(r => r.status)).toEqual(['pending', 'cancelled']);
+    expect(() => parseTransferPage(JSON.stringify({ ...page, status: 'pending' }))).toThrow();
+    expect(() => parse(wireRecord({ status: 'all' }))).toThrow();
+  });
+});
+
 describe('R04 pure transfer model', () => {
   it('keeps wire strings lossless and sums beyond int64', () => {
     const wire = wireRecord();
@@ -482,7 +493,7 @@ describe('R04 pure transfer model', () => {
     expect(transferListPath()).toBe('/api/transfers?page=1&page_size=25&status=pending');
     expect(transferListPath({ page: 1000000, page_size: 50 })).toContain('page=1000000&page_size=50');
     expect(transferDetailPath('9007199254740993')).toBe('/api/transfers/9007199254740993');
-    for (const q of [{ page: 0 }, { page: 1000001 }, { page: 1.5 }, { page_size: 20 }, { status: 'all' }, { search: 'private' }]) {
+    for (const q of [{ page: 0 }, { page: 1000001 }, { page: 1.5 }, { page_size: 20 }, { status: 'ALL' }, { search: 'private' }]) {
       expect(() => transferListPath(q as never)).toThrow();
     }
     for (const id of ['01', '0', '1?x=1', '../1', '9223372036854775808']) expect(() => transferDetailPath(id)).toThrow();
@@ -499,7 +510,7 @@ describe('R04 pure transfer model', () => {
     expect(parseTransferPage(JSON.stringify({ ...page, page: 1000000, total_count: '1' })).records).toEqual([]);
     expect(() => parseTransferPage(JSON.stringify({ ...page, total_count: '25', records: records.reverse() }))).toThrow();
     for (const invalid of [{ total_count: 2 }, { total_count: '01' }, { total_count: '-1' }, { total_count: '9223372036854775808' },
-      { records: null }, { page: 0 }, { page_size: 20 }, { status: 'all' }, { global_count: '1' }, { records: [wireRecord()] }]) {
+      { records: null }, { page: 0 }, { page_size: 20 }, { status: 'ALL' }, { global_count: '1' }, { records: [wireRecord()] }]) {
       expect(() => parseTransferPage(JSON.stringify({ ...page, ...invalid }))).toThrow();
     }
   });

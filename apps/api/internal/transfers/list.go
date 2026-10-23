@@ -32,7 +32,7 @@ func normalizeQuery(q Query) (Query, error) {
 	if q.Status == "" {
 		q.Status = "pending"
 	}
-	if q.Status != "pending" && q.Status != "approved" && q.Status != "rejected" && q.Status != "in_transit" && q.Status != "received" && q.Status != "cancelled" {
+	if q.Status != "all" && q.Status != "pending" && q.Status != "approved" && q.Status != "rejected" && q.Status != "in_transit" && q.Status != "received" && q.Status != "cancelled" {
 		return Query{}, ErrInvalid
 	}
 	if q.Page < 1 || q.Page > 1_000_000 || (q.PageSize != 10 && q.PageSize != 25 && q.PageSize != 50) {
@@ -69,12 +69,12 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q Query) (Page, e
 	}()
 	page := Page{Records: make([]Request, 0), Page: q.Page, PageSize: q.PageSize, Status: q.Status}
 	if tx.QueryRow(ctx, `SELECT count(*) FROM transfer_requests
-  WHERE $1 IN (origin_location_id,destination_location_id) AND status=$2`, actor.AccountID, q.Status).Scan(&page.Total) != nil {
+  WHERE $1 IN (origin_location_id,destination_location_id) AND ($2='all' OR status=$2)`, actor.AccountID, q.Status).Scan(&page.Total) != nil {
 		return Page{}, fail(ctx)
 	}
 	offset := (q.Page - 1) * int64(q.PageSize)
 	rows, err := tx.Query(ctx, `SELECT id FROM transfer_requests
-  WHERE $1 IN (origin_location_id,destination_location_id) AND status=$2
+  WHERE $1 IN (origin_location_id,destination_location_id) AND ($2='all' OR status=$2)
   ORDER BY id DESC LIMIT $3 OFFSET $4`, actor.AccountID, q.Status, int64(q.PageSize), offset)
 	if err != nil {
 		return Page{}, fail(ctx)

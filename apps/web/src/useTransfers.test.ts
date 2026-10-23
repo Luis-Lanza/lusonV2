@@ -61,7 +61,7 @@ function fixture(initial: unknown = session(), override?: (url: string, init: Re
     if (url.startsWith('/api/transfers?')) {
       const q = new URL(url, 'http://localhost').searchParams;
       const page = Number(q.get('page')); const page_size = Number(q.get('page_size'));
-      return Promise.resolve(reply({ page, page_size, status: 'pending', total_count: '1', records: page === 1 ? [wire(branch)] : [] }));
+      return Promise.resolve(reply({ page, page_size, status: q.get('status'), total_count: '1', records: page === 1 ? [wire(branch)] : [] }));
     }
     if (url.startsWith('/api/transfers/')) return Promise.resolve(reply(wire(branch, url.slice('/api/transfers/'.length))));
     if (url === '/api/transfers' && init.method === 'POST') return Promise.resolve(reply({ ...wire(branch),
@@ -110,7 +110,7 @@ function decisionFixture(actor = 1, original = wire(2, '1'), override?: Paramete
   const f = fixture(session(actor), (url, init) => {
     const custom = override?.(url, init); if (custom) return custom;
     if (url === '/api/transfers/counts') return Promise.resolve(reply({ pending_total: '9', action_count: '2' }));
-    if (url.startsWith('/api/transfers?')) return Promise.resolve(reply({ page: 1, page_size: 25, status: 'pending', total_count: '1', records: [original] }));
+    if (url.startsWith('/api/transfers?')) return Promise.resolve(reply({ page: 1, page_size: 25, status: new URL(url, 'http://localhost').searchParams.get('status'), total_count: '1', records: [original] }));
     if (url.startsWith('/api/transfers/')) return Promise.resolve(reply(original));
     if (url.startsWith('/api/inventory?') && new URL(url, 'http://localhost').searchParams.get('page_size') === '50') {
       return Promise.resolve(reply(pageJSON(undefined, 1, 1).replace('"page_size":10', '"page_size":50').replace('"name":"Almacén"', '"name":"Warehouse"')));
@@ -1021,7 +1021,7 @@ describe('A05b real controller decisions', () => {
     delay = false;
     await act(async () => {
       for (const { kind, job, url } of waiting) {
-        const body = kind === 'list' ? { page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] }
+        const body = kind === 'list' ? { page: 1, page_size: 25, status: 'all', total_count: '0', records: [] }
           : kind === 'counts' ? { pending_total: '0', action_count: '0' }
           : kind === 'detail' ? original
           : pageJSON(undefined, 1, 1).replace('"page_size":10', '"page_size":' + new URL(url, 'http://localhost').searchParams.get('page_size'))
@@ -1163,7 +1163,7 @@ describe('A05a independent counts and authority fences', () => {
   it.each(['account', 'csrf', 'assignment', 'expiry'] as const)('masks settled list/detail on same-object %s mutation and fences retained actions', async field => {
     const h = boundedHarness(false);
     const fetch = vi.fn<typeof globalThis.fetch>(async input => String(input).includes('?')
-      ? reply({ page: 1, page_size: 25, status: 'pending', total_count: '1', records: [wire(2, '1')] }) : reply(wire(2, '1')));
+      ? reply({ page: 1, page_size: 25, status: 'all', total_count: '1', records: [wire(2, '1')] }) : reply(wire(2, '1')));
     const api = createTransferAPI(fetch);
     const hook = renderHook(() => useTransfers({ controller: h.controller, api, listEnabled: true, detailEnabled: true }));
     await waitFor(() => expect(hook.result.current.page?.total_count).toBe(1n));
@@ -1216,7 +1216,7 @@ describe('A05a independent counts and authority fences', () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async input => {
       const path = String(input);
       if (path === '/api/transfers/counts') return counts.promise;
-      return path.includes('?') ? reply({ page: 1, page_size: 25, status: 'pending', total_count: '1', records: [wire(2, '1')] }) : reply(wire(2, '1'));
+      return path.includes('?') ? reply({ page: 1, page_size: 25, status: 'all', total_count: '1', records: [wire(2, '1')] }) : reply(wire(2, '1'));
     });
     const api = createTransferAPI(fetch);
     const hook = renderHook(() => useTransfers({ controller: h.controller, api, listEnabled: true, detailEnabled: true, countsEnabled: true }));
@@ -1258,7 +1258,7 @@ describe('A05a independent counts and authority fences', () => {
   });
   it('requires returned selected status even when an injected API bypasses the decoder', async () => {
     const h = boundedHarness(false);
-    const list = vi.spyOn(h.api, 'list').mockResolvedValue({ page: 1, page_size: 25, status: 'pending', total_count: 0n, records: [] });
+    const list = vi.spyOn(h.api, 'list').mockResolvedValue({ page: 1, page_size: 25, status: 'all', total_count: 0n, records: [] });
     const hook = renderHook(() => useTransfers({ controller: h.controller, api: h.api, listEnabled: true }));
     await waitFor(() => expect(hook.result.current.page).not.toBeNull());
     act(() => hook.result.current.changeQuery({ status: 'approved' }));
@@ -1299,14 +1299,14 @@ describe('R04 transfer hook', () => {
   });
   it('preserves authorized counts beyond safe Number precision', async () => {
     const records = Array.from({ length: 25 }, (_, i) => wire(2, String(9007199254740993n - BigInt(i))));
-    fixture(session(), url => url.startsWith('/api/transfers?') ? Promise.resolve(reply({ page: 1, page_size: 25, status: 'pending', total_count: '9007199254740993', records })) : undefined);
+    fixture(session(), url => url.startsWith('/api/transfers?') ? Promise.resolve(reply({ page: 1, page_size: 25, status: 'all', total_count: '9007199254740993', records })) : undefined);
     const { result } = harness();
     await waitFor(() => expect(result.current.transfers.page?.total_count).toBe(9007199254740993n));
     expect(result.current.transfers.page?.records[0].id).toBe('9007199254740993');
   });
   it('keeps zero private counts and inaccessible detail404 sanitized', async () => {
     const f = fixture(session(3), url => url.startsWith('/api/transfers?')
-      ? Promise.resolve(reply({ page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] }))
+      ? Promise.resolve(reply({ page: 1, page_size: 25, status: 'all', total_count: '0', records: [] }))
       : url.startsWith('/api/transfers/') ? Promise.resolve(reply({ error: 'not_found' }, 404)) : undefined);
     const { result } = harness(); await waitFor(() => expect(result.current.transfers.page?.total_count).toBe(0n));
     act(() => result.current.transfers.selectDetail('1'));
@@ -1357,7 +1357,7 @@ describe('R04 transfer hook', () => {
     act(() => result.current.transfers.selectDetail('1')); await waitFor(() => expect(detailCalls(f.fetch)).toHaveLength(1));
     act(() => { for (let i = 0; i < 8; i++) Source.instances[0].emit('transfers'); });
     expect(listCalls(f.fetch)).toHaveLength(1); expect(detailCalls(f.fetch)).toHaveLength(1);
-    await act(async () => { list.resolve(reply({ page: 1, page_size: 25, status: 'pending', total_count: '0', records: [] })); detail.resolve(reply(wire(2, '1'))); });
+    await act(async () => { list.resolve(reply({ page: 1, page_size: 25, status: 'all', total_count: '0', records: [] })); detail.resolve(reply(wire(2, '1'))); });
     await loaded(result); await waitFor(() => expect(result.current.transfers.detail?.id).toBe('1'));
     expect(listCalls(f.fetch)).toHaveLength(2); expect(detailCalls(f.fetch)).toHaveLength(2);
     expect(passive(listCalls(f.fetch)[1])).toBe('1'); expect(passive(detailCalls(f.fetch)[1])).toBe('1');
@@ -1478,7 +1478,7 @@ describe('R04 transfer hook', () => {
   });
   it('rejects foreign returned records and malformed private counts without ghost metrics', async () => {
     const f = fixture(session(3), url => url.startsWith('/api/transfers?')
-      ? Promise.resolve(reply({ page: 1, page_size: 25, status: 'pending', total_count: '1', records: [wire(2)] })) : undefined);
+      ? Promise.resolve(reply({ page: 1, page_size: 25, status: 'all', total_count: '1', records: [wire(2)] })) : undefined);
     const { result } = harness(); await waitFor(() => expect(result.current.transfers.listError?.code).toBe('invalid_response'));
     expect(result.current.transfers.page).toBeNull(); expect(listCalls(f.fetch)).toHaveLength(1);
   });

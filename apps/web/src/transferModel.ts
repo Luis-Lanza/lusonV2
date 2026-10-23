@@ -41,7 +41,8 @@ export type TransferRecord = TransferRecordFields & (
   | { status: 'in_transit'; decision_location_id: TransferLocationID; decided_at: string; dispatch_location_id: TransferLocationID; dispatched_at: string; receipt_location_id?: never; received_at?: never; receipt?: never }
   | { status: 'received'; decision_location_id: TransferLocationID; decided_at: string; dispatch_location_id: TransferLocationID; dispatched_at: string; receipt_location_id: TransferLocationID; received_at: string; receipt: TransferReceiptData }
 );
-export interface TransferQuery { page?: number; page_size?: 10 | 25 | 50; status?: TransferStatus }
+export type TransferStatusFilter = TransferStatus | 'all';
+export interface TransferQuery { page?: number; page_size?: 10 | 25 | 50; status?: TransferStatusFilter }
 export interface TransferCounts { pending_total: bigint; action_count: bigint }
 export function parseTransferCounts(raw: string): TransferCounts {
   const o = object(decode(raw), ['pending_total', 'action_count']);
@@ -50,7 +51,7 @@ export function parseTransferCounts(raw: string): TransferCounts {
   return { pending_total, action_count };
 }
 export interface TransferPage {
-  page: number; page_size: 10 | 25 | 50; status: TransferStatus; total_count: bigint; records: TransferRecord[];
+  page: number; page_size: 10 | 25 | 50; status: TransferStatusFilter; total_count: bigint; records: TransferRecord[];
 }
 const maxInt64 = 9223372036854775807n;
 function invalid(): never { throw new Error('Invalid transfer response'); }
@@ -192,12 +193,13 @@ function status(value: unknown): TransferStatus {
   if (value !== 'pending' && value !== 'approved' && value !== 'rejected' && value !== 'in_transit' && value !== 'received' && value !== 'cancelled') return invalid();
   return value;
 }
-function queryValues(query: TransferQuery): { page: number; page_size: 10 | 25 | 50; status: TransferStatus } {
+function statusFilter(value: unknown): TransferStatusFilter { return value === 'all' ? value : status(value); }
+function queryValues(query: TransferQuery): { page: number; page_size: 10 | 25 | 50; status: TransferStatusFilter } {
   const o = object(query, ['page', 'page_size', 'status'], false);
   const page = integer(o.page === undefined ? 1 : o.page, 1, 1000000);
   const size = o.page_size === undefined ? 25 : o.page_size;
   if (size !== 10 && size !== 25 && size !== 50) return invalid();
-  return { page, page_size: size, status: status(o.status === undefined ? 'pending' : o.status) };
+  return { page, page_size: size, status: statusFilter(o.status === undefined ? 'pending' : o.status) };
 }
 export function transferListPath(query: TransferQuery = {}): string {
   const q = queryValues(query);
@@ -334,10 +336,10 @@ export function parseTransferRecord(raw: string): TransferRecord { return record
 export function parseTransferPage(raw: string): TransferPage {
   const o = object(decode(raw), ['page', 'page_size', 'status', 'total_count', 'records']);
   if (!Array.isArray(o.records)) return invalid();
-  const q = queryValues({ page: o.page as number, page_size: o.page_size as 10 | 25 | 50, status: status(o.status) });
+  const q = queryValues({ page: o.page as number, page_size: o.page_size as 10 | 25 | 50, status: statusFilter(o.status) });
   const total_count = exact(o.total_count, true);
   const records = o.records.map(record);
-  if (records.some(r => r.status !== q.status)) return invalid();
+  if (q.status !== 'all' && records.some(r => r.status !== q.status)) return invalid();
   const offset = BigInt(q.page - 1) * BigInt(q.page_size);
   const remaining = total_count > offset ? total_count - offset : 0n;
   const expected = remaining > BigInt(q.page_size) ? BigInt(q.page_size) : remaining;

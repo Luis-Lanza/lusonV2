@@ -523,6 +523,19 @@ describe('A05a outcome transport', () => {
   });
 });
 
+describe('all transfer filter', () => {
+  it('sends explicit all and requires the exact query echo', async () => {
+    const page = { page: 1, page_size: 25, status: 'all', total_count: '1', records: [wire] };
+    const fetch = mockFetch().mockResolvedValueOnce(response(page))
+      .mockResolvedValueOnce(response({ ...page, status: 'pending' }));
+    const api = createTransferAPI(fetch);
+    expect(await api.list({ status: 'all' })).toMatchObject({ status: 'all', records: [{ status: 'pending' }] });
+    expect(fetch.mock.calls[0][0]).toBe('/api/transfers?page=1&page_size=25&status=all');
+    await expect(api.list({ status: 'all' })).rejects.toMatchObject({ code: 'invalid_response', status: 200 });
+    expect(fetch.mock.calls.every(([, init]) => init?.method === 'GET' && init.body === undefined)).toBe(true);
+  });
+});
+
 describe('R04 pure transfer API', () => {
   it('uses relative private GET paths, same-origin cookies, no-store and immutable passive selection', async () => {
     const fetch = mockFetch();

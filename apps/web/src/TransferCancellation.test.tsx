@@ -134,7 +134,7 @@ describe('C2 creator cancellation confirmation through existing UI', () => {
     expect(time).toHaveAttribute('title', cancelled(approved).cancelled_at);
     expect(screen.queryByRole('button', { name: 'Cancelar solicitud' })).not.toBeInTheDocument();
     expect(posts(f)).toHaveLength(1);
-    expect(screen.getByRole('button', { name: 'Volver a pendientes' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Volver a transferencias' })).toHaveFocus();
   });
   it.each(['rejected', 'in_transit', 'received'] as const)('never offers creator cancellation after %s', async status => {
     const approved = original(true);

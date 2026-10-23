@@ -581,7 +581,7 @@ GET accepts only `page`, `page_size` and `status`, each at most once:
 |---|---|---|
 | `page` | 1 | Canonical ASCII decimal 1–1000000 |
 | `page_size` | 25 | Exact 10, 25, 50 |
-| `status` | pending | Exact `pending`, `approved`, `rejected`, `in_transit`, `received`, `cancelled` |
+| `status` | pending | Exact `all`, `pending`, `approved`, `rejected`, `in_transit`, `received`, `cancelled` |
 
 Raw queries are bounded to 4096 bytes. Empty values/components, unknown fields,
 duplicates, encoding aliases and malformed encoding are rejected 400. Parameter
@@ -592,6 +592,11 @@ IDs descend. Far pages preserve the private total and return `records: []`.
 Separate requests can see newer commits; this is not a frozen pagination cursor.
 Page `status` is the normalized selected status; `total_count` counts only that
 status's physical-participant requests, independently of page size or offset.
+Explicit `status=all` includes all six lifecycle states and echoes `all` on the
+page, never on individual records. Omitting status still selects `pending` for
+backward compatibility; the Transferencias UI explicitly selects `all` by default.
+Both count and page remain restricted to the authenticated physical origin or
+destination. Independent Pending/action counters are unchanged.
 
 Only explicit snake_case DTOs are serialized:
 

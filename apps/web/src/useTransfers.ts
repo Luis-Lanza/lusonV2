@@ -15,7 +15,7 @@ export interface TransferHookOptions {
   controller: TransferController; api?: ReturnType<typeof createTransferAPI>;
   listEnabled?: boolean; detailEnabled?: boolean; countsEnabled?: boolean;
 }
-const initialQuery = (): TransferQuery => Object.freeze({ page: 1, page_size: 25, status: 'pending' });
+const initialQuery = (): TransferQuery => Object.freeze({ page: 1, page_size: 25, status: 'all' });
 function sanitized(error: unknown, creating = false): TransferAPIError {
   return error instanceof TransferAPIError ? error : new TransferAPIError('invalid_response', null, creating);
 }
@@ -122,7 +122,7 @@ export function useTransfers({ controller, api: injectedAPI, listEnabled = false
     read: async (signal, passive) => {
       const page = await api.list(query, { signal, passive });
       if (page.page !== (query.page ?? 1) || page.page_size !== (query.page_size ?? 25) || page.status !== (query.status ?? 'pending')
-        || page.records.some(record => record.status !== page.status)) throw new TransferAPIError('invalid_response', 200);
+        || (page.status !== 'all' && page.records.some(record => record.status !== page.status))) throw new TransferAPIError('invalid_response', 200);
       for (const record of page.records) participant(record, assigned!);
       return page;
     } });
