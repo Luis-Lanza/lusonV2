@@ -245,7 +245,7 @@ const countSnapshotSQL = `SELECT h.status,
  SELECT r.*, COALESCE(latest.revision,0) AS workflow_revision,
  COALESCE(applied.revision,0) AS applied_revision,
  COALESCE(effective.actual_quantity,r.actual_quantity) AS effective_actual,
- COALESCE(applied.effective_credit,r.available_quantity) AS effective_credit,
+ state.credit AS effective_credit,
  COALESCE((SELECT jsonb_agg(to_jsonb(history) ORDER BY revision) FROM (
    SELECT p.*, to_jsonb(d) AS decision, to_jsonb(a) AS application,
    CASE WHEN d.accepted THEN 'applied' WHEN d.accepted=false THEN 'rejected'
@@ -256,6 +256,7 @@ const countSnapshotSQL = `SELECT h.status,
    WHERE p.request_id=r.request_id AND p.variant_id=r.variant_id
  ) history),'[]'::jsonb) AS proposals
  FROM transfer_receipt_lines r
+ CROSS JOIN LATERAL transfer_effective_line(r.request_id,r.variant_id) state
  LEFT JOIN LATERAL (SELECT revision FROM transfer_count_proposals p WHERE p.request_id=r.request_id AND p.variant_id=r.variant_id ORDER BY revision DESC LIMIT 1) latest ON true
  LEFT JOIN LATERAL (SELECT a.* FROM transfer_count_applications a WHERE a.request_id=r.request_id AND a.variant_id=r.variant_id ORDER BY revision DESC LIMIT 1) applied ON true
  LEFT JOIN transfer_count_proposals effective ON (effective.request_id,effective.variant_id,effective.revision)=(applied.request_id,applied.variant_id,applied.revision)

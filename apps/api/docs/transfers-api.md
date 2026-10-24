@@ -550,6 +550,55 @@ not correction payloads. HTTP adds no redundant publication. Reads, replay,
 refusals and rollback emit no new mutation hints. Frontend transport, recovery,
 rendering and manual runtime acceptance remain separate units.
 
+## Dispatch reconciliation: database/private Store slice only
+
+Migration 013 adds `transfer_dispatch_reconcile(request_id, variant_id,
+actor_location_id, operation_key, action, expected_revision, dispatch_quantity,
+reason)`. **No reconciliation HTTP route or public action projection is exposed
+in this slice.** Public DTO/validator and UI integration remain a separate step;
+do not expose this SQL workflow through an ad-hoc HTTP handler.
+
+For one originally expected variant of a Received transfer, either physical
+endpoint may propose; only the opposite endpoint may accept or reject. Only the
+initiator may replace a pending proposal. Each revision requires fresh consent.
+The proposed quantity must equal effective received count and differ from
+effective dispatch. Unexpected variants and variants with applied restitution
+are excluded. No accepted restitution is reversed.
+
+The shared private SQL snapshot derives:
+
+- `D`: latest accepted reconciled dispatch, otherwise original expected quantity.
+- `A`: latest accepted count actual, otherwise original receipt actual.
+- `C`: original receipt credit plus **all** count application deltas plus **all**
+  reconciliation destination deltas, summed with checked numeric intermediates.
+- `R`: applied restitution quantity.
+
+Accepting quantity `Q=A` applies source `D-Q` and destination `Q-C` atomically,
+then effective `D=C=Q`. Starting balances 20/10, original dispatch 5 and receipt
+7 give accounting 15/15; reconciliation to 7 gives 13/17. A subsequent count to
+8 credits zero, then reconciliation to 8 gives 12/18. Alternatively, count 7→6
+debits destination once (13/16); reconciliation to 6 credits only origin (14/16).
+
+Count acceptance now caps credit at effective `D` and subtracts summed `C`.
+Restitution still requires origin attestation and destination consent; its
+capacity/conservation bound uses `D-C-R`. Original receipt/cart/dispatch and all
+previous application quantities retain their historical meanings. Private Store
+history reads use the shared snapshot, including reconciliation without a count
+application. Additional dispatch evidence used to validate restitution history
+stays internal; public original-line arithmetic validators are not relaxed.
+
+All workflow writers share the reservation-integrity advisory lock before header
+and balance locks and require READ COMMITTED, including direct operation inserts.
+Reconciliation locks both balances deterministically and checks existence,
+reservation coverage and bigint bounds before either write. Operations, consent,
+applications and companion predecessor pins are immutable; accepted applications
+must match durable bilateral decisions and actual endpoint effects. Generation
+pins reject stale acceptance even if another workflow changes away and back;
+pre-013 proposals imply reconciliation generation zero. Stale rejection and exact
+authorized operation replay remain available. Only physical participants receive
+transfer hints; changed balances retain existing inventory invalidations. Failed
+statements/commits roll back both effects, evidence and hints together.
+
 ## Full persisted outcomes and original replay
 
 Approved/Rejected records add exactly two fields: `decision_location_id`, a

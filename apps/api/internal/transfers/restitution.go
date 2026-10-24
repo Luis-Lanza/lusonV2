@@ -256,8 +256,8 @@ func (s *Store) GetRestitutions(ctx context.Context, actor auth.Identity, id int
 	defer cancel()
 	var status string
 	var origin, destination int
-	var lines, operations []byte
-	err := s.pool.QueryRow(ctx, restitutionSnapshotSQL, id, actor.Location.ID).Scan(&status, &origin, &destination, &lines, &operations)
+	var lines, operations, dispatchEvidence []byte
+	err := s.pool.QueryRow(ctx, restitutionSnapshotSQL, id, actor.Location.ID).Scan(&status, &origin, &destination, &lines, &operations, &dispatchEvidence)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Restitutions{}, ErrNotFound
 	}
@@ -267,7 +267,7 @@ func (s *Store) GetRestitutions(ctx context.Context, actor auth.Identity, id int
 	if status != "received" {
 		return Restitutions{}, ErrDecisionConflict
 	}
-	return decodeRestitutionHistory(id, origin, destination, lines, operations)
+	return decodeRestitutionHistory(id, origin, destination, lines, operations, dispatchEvidence)
 }
 
 // Reject missing fields as well as malformed JSON. Zero-valued missing pins or
@@ -307,7 +307,15 @@ func completeRestitutionJSON(raw json.RawMessage, typ reflect.Type) bool {
 	}
 	return true
 }
-func decodeRestitutionHistory(id int64, origin, destination int, lines, operations []byte) (Restitutions, error) {
+func decodeRestitutionHistory(id int64, origin, destination int, lines, operations []byte, dispatchEvidence ...[]byte) (Restitutions, error) {
+	var effective map[int64]restitutionDispatchEvidence
+	if len(dispatchEvidence) > 0 {
+		var valid bool
+		effective, valid = decodeRestitutionDispatchEvidence(dispatchEvidence[0])
+		if len(dispatchEvidence) != 1 || !valid {
+			return Restitutions{}, ErrReadUnavailable
+		}
+	}
 	out := Restitutions{RequestID: id}
 	for _, v := range []struct {
 		raw []byte
@@ -355,17 +363,30 @@ func decodeRestitutionHistory(id int64, origin, destination int, lines, operatio
 	var previousVariant int64
 	for i := range out.Lines {
 		l := &out.Lines[i]
-		if l.VariantID <= previousVariant || l.VariantID > math.MaxInt32 || l.ExpectedQuantity <= 0 || l.OriginalCredit < 0 || l.OriginalCredit > l.ExpectedQuantity || l.EffectiveCredit < 0 || l.EffectiveCredit > l.ExpectedQuantity || l.CountGeneration < 0 || l.CountAppliedRevision < 0 || l.CountAppliedRevision > l.CountGeneration || l.WorkflowRevision != int64(len(l.Proposals)) || l.AppliedRetainedQuantity < 0 || l.AppliedRetainedQuantity > l.ExpectedQuantity-l.EffectiveCredit {
+		dispatch := l.ExpectedQuantity
+		var reconciled int64
+		if effective != nil {
+			e, ok := effective[l.VariantID]
+			if !ok || len(e.Proposals) != len(l.Proposals) || (e.ReconciliationRevision == 0 && e.Dispatch != l.ExpectedQuantity) {
+				return Restitutions{}, ErrReadUnavailable
+			}
+			dispatch, reconciled = e.Dispatch, e.ReconciliationRevision
+		}
+		if l.VariantID <= previousVariant || l.VariantID > math.MaxInt32 || l.ExpectedQuantity <= 0 || l.OriginalCredit < 0 || l.OriginalCredit > l.ExpectedQuantity || l.EffectiveCredit < 0 || l.EffectiveCredit > dispatch || l.CountGeneration < 0 || l.CountAppliedRevision < 0 || l.CountAppliedRevision > l.CountGeneration || l.WorkflowRevision != int64(len(l.Proposals)) || l.AppliedRetainedQuantity < 0 || l.AppliedRetainedQuantity > dispatch-l.EffectiveCredit {
 			return Restitutions{}, ErrReadUnavailable
 		}
-		// Without a count application, SQL falls back to original receipt credit.
-		if l.CountAppliedRevision == 0 && l.EffectiveCredit != l.OriginalCredit {
+		// Only a line without either applied workflow must retain original credit.
+		if l.CountAppliedRevision == 0 && reconciled == 0 && l.EffectiveCredit != l.OriginalCredit {
 			return Restitutions{}, ErrReadUnavailable
 		}
 		previousVariant = l.VariantID
 		var applied, quantity int64
 		for j := range l.Proposals {
 			p := &l.Proposals[j]
+			baseDispatch := l.ExpectedQuantity
+			if effective != nil {
+				baseDispatch = effective[l.VariantID].Proposals[j].Dispatch
+			}
 			if applied != 0 {
 				return Restitutions{}, ErrReadUnavailable
 			}
@@ -376,7 +397,7 @@ func decodeRestitutionHistory(id int64, origin, destination int, lines, operatio
 				}
 			}
 			o, ok := ops[p.OperationKey]
-			if !ok || used[p.OperationKey] || o.Action != "propose" || o.VariantID != l.VariantID || p.Revision != int64(j+1) || o.Revision != p.Revision || p.BaseRevision != p.Revision-1 || p.InitiatorLocationID != origin || !p.RetainedAtOrigin || p.RetainedQuantity <= 0 || *o.RetainedQuantity != p.RetainedQuantity || p.Reason != o.Reason || !p.RecordedAt.Equal(o.RecordedAt) || p.CountGeneration < 0 || p.CountGeneration > l.CountGeneration || p.CountAppliedRevision < 0 || p.CountAppliedRevision > p.CountGeneration || p.BaseCredit < 0 || p.BaseCredit > l.ExpectedQuantity || p.BaseRestitution != 0 || p.RetainedQuantity > l.ExpectedQuantity-p.BaseCredit {
+			if !ok || used[p.OperationKey] || o.Action != "propose" || o.VariantID != l.VariantID || p.Revision != int64(j+1) || o.Revision != p.Revision || p.BaseRevision != p.Revision-1 || p.InitiatorLocationID != origin || !p.RetainedAtOrigin || p.RetainedQuantity <= 0 || *o.RetainedQuantity != p.RetainedQuantity || p.Reason != o.Reason || !p.RecordedAt.Equal(o.RecordedAt) || p.CountGeneration < 0 || p.CountGeneration > l.CountGeneration || p.CountAppliedRevision < 0 || p.CountAppliedRevision > p.CountGeneration || p.BaseCredit < 0 || p.BaseCredit > baseDispatch || p.BaseRestitution != 0 || p.RetainedQuantity > baseDispatch-p.BaseCredit {
 				return Restitutions{}, ErrReadUnavailable
 			}
 			// A historical proposal cannot pin a count application from the future.
@@ -425,7 +446,7 @@ func decodeRestitutionHistory(id int64, origin, destination int, lines, operatio
 			return Restitutions{}, ErrReadUnavailable
 		}
 	}
-	if len(used) != len(ops) {
+	if len(used) != len(ops) || (effective != nil && len(effective) != len(out.Lines)) {
 		return Restitutions{}, ErrReadUnavailable
 	}
 	return out, nil
@@ -439,7 +460,7 @@ const restitutionSnapshotSQL = `SELECT h.status,h.origin_location_id,h.destinati
  COALESCE(head.revision,0) AS workflow_revision,COALESCE(applied.revision,0) AS applied_revision,
  (SELECT count(*) FROM transfer_count_operations c WHERE c.request_id=r.request_id AND c.variant_id=r.variant_id) AS count_generation,
  COALESCE(counted.revision,0) AS count_applied_revision,
- COALESCE(counted.effective_credit,r.available_quantity) AS effective_credit,
+ state.credit AS effective_credit,
  COALESCE(applied.quantity,0) AS applied_retained_quantity,
  COALESCE((SELECT jsonb_agg(to_jsonb(history) ORDER BY revision) FROM (
  SELECT p.revision,p.operation_key,p.initiator_location_id,p.retained_quantity,p.retained_at_origin,
@@ -454,10 +475,18 @@ const restitutionSnapshotSQL = `SELECT h.status,h.origin_location_id,h.destinati
  WHERE p.request_id=r.request_id AND p.variant_id=r.variant_id
  ) history),'[]'::jsonb) AS proposals
  FROM transfer_receipt_lines r
+ CROSS JOIN LATERAL transfer_effective_line(r.request_id,r.variant_id) state
  LEFT JOIN LATERAL (SELECT revision FROM transfer_restitution_proposals p WHERE p.request_id=r.request_id AND p.variant_id=r.variant_id ORDER BY revision DESC LIMIT 1) head ON true
  LEFT JOIN transfer_restitution_applications applied ON applied.request_id=r.request_id AND applied.variant_id=r.variant_id
  LEFT JOIN LATERAL (SELECT revision,effective_credit FROM transfer_count_applications c WHERE c.request_id=r.request_id AND c.variant_id=r.variant_id ORDER BY revision DESC LIMIT 1) counted ON true
  WHERE r.request_id=h.id AND r.expected_quantity>0
  ) line),'[]'::jsonb),
- COALESCE((SELECT jsonb_agg(to_jsonb(o) ORDER BY revision,variant_id,recorded_at,operation_key) FROM transfer_restitution_operations o WHERE o.request_id=h.id),'[]'::jsonb)
+ COALESCE((SELECT jsonb_agg(to_jsonb(o) ORDER BY revision,variant_id,recorded_at,operation_key) FROM transfer_restitution_operations o WHERE o.request_id=h.id),'[]'::jsonb),
+ COALESCE((SELECT jsonb_agg(jsonb_build_object('variant_id',r.variant_id,'dispatch',state.dispatch,
+ 'reconciliation_revision',state.reconciliation_revision,'proposals',
+ COALESCE((SELECT jsonb_agg(jsonb_build_object('revision',p.revision,'dispatch',COALESCE(pin.effective_dispatch,r.expected_quantity)) ORDER BY p.revision)
+ FROM transfer_restitution_proposals p LEFT JOIN transfer_restitution_reconciliation_pins pin USING(request_id,variant_id,revision)
+ WHERE p.request_id=r.request_id AND p.variant_id=r.variant_id),'[]'::jsonb)) ORDER BY r.variant_id)
+ FROM transfer_receipt_lines r CROSS JOIN LATERAL transfer_effective_line(r.request_id,r.variant_id) state
+ WHERE r.request_id=h.id AND r.expected_quantity>0),'[]'::jsonb)
  FROM transfer_requests h WHERE h.id=$1 AND $2 IN(h.origin_location_id,h.destination_location_id)`
