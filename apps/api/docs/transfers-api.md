@@ -600,8 +600,9 @@ For original dispatch 5, current dispatch/credit 7 and proposed count 8, preview
 credit is 7 and delta is 0. After count 7→6, budget is 1; after dispatch becomes
 6, budget is 0. Current credit is not reconstructed from the latest count
 application alone. Missing or contradictory reads require explicit consultation.
-Received-table integration and new reconciliation Store/API/UI remain separate
-work. Do not expose this SQL workflow through an ad-hoc HTTP handler.
+Received-table integration, route registration and reconciliation client/UI remain
+separate work. The prepared HTTP contract below is **UNREGISTERED**: normal
+production handlers still return 404 for these paths.
 
 For one originally expected variant of a Received transfer, either physical
 endpoint may propose; only the opposite endpoint may accept or reject. Only the
@@ -644,6 +645,97 @@ pre-013 proposals imply reconciliation generation zero. Stale rejection and exac
 authorized operation replay remain available. Only physical participants receive
 transfer hints; changed balances retain existing inventory invalidations. Failed
 statements/commits roll back both effects, evidence and hints together.
+
+### Prepared HTTP contract — UNREGISTERED
+
+These handlers are implemented and tested through isolated test-only routing.
+They are **not registered** by `NewWithTransfers` or any production router. No
+feature flag or alternate production entrypoint enables them. Do not call them
+from the client until received-display/UI integration authorizes registration.
+
+| Prepared path | Method | Success |
+|---|---|---|
+| `/api/transfers/{id}/dispatch-reconciliations` | GET | 200 coordinated original/current/history snapshot |
+| `/api/transfers/{id}/dispatch-reconciliations/propose` | POST | 200 persisted proposal operation |
+| `/api/transfers/{id}/dispatch-reconciliations/accept` | POST | 200 persisted acceptance operation |
+| `/api/transfers/{id}/dispatch-reconciliations/reject` | POST | 200 persisted rejection operation |
+
+Proposal body (all five fields required):
+
+```json
+{"variant_id":1,"operation_key":"dispatch-propose-0001","expected_revision":"0","dispatch_quantity":"7","reason":"physical dispatch verified"}
+```
+
+Decision body (exactly four fields; no quantity, not even null):
+
+```json
+{"variant_id":1,"operation_key":"dispatch-accept-00001","expected_revision":"1","reason":"counterparty verified"}
+```
+
+`variant_id` is a positive canonical JSON integer through 2147483647.
+`operation_key` uses `[A-Za-z0-9_-]{16,128}`. `expected_revision` is a canonical
+decimal string from `"0"` through `"9223372036854775806"`;
+`dispatch_quantity` admits `"0"` through `"9223372036854775807"`. Admission is
+lossless above 2^53. Reason is a required string without NUL, with 1–2000 Unicode
+characters after checking outer ASCII spaces; accepted text is preserved exactly.
+No actor/account/location, computed arithmetic, timestamps or status are admitted.
+
+Single JSON Content-Type with optional UTF-8 charset, 64 KiB size, valid UTF-8,
+complete single object, required fields and unknown/duplicate rejection follow
+count corrections, including escaped-equivalent duplicate keys. Numeric quantity
+or revision tokens, signs, padding, exponents, fractions and overflow are invalid.
+Decisions do not require proposal-only or acceptance-only arithmetic.
+
+Admission is method → real session identity → optional unique same-origin
+FetchSite → Origin/CSRF for POST → no query (including `?`) → canonical positive
+int64 path ID → lightweight participant/Received access fence → strict body →
+Store mutation. The pre-body fence does not decode history or test current
+eligibility. GET uses the Store's coordinated statement snapshot. Exact path,
+no redirect/encoded alias, no-store/nosniff and private error rules match the
+existing workflows when routed in tests; production remains unregistered.
+
+#### Exact response field sets for strict clients
+
+All fields below are required, including explicit nulls. All request IDs,
+quantities, balances, signed deltas, revisions and generations are decimal
+**strings**, never JSON floating-point numbers. Only variant/location IDs are
+bounded JSON integers. Timestamps are canonical UTC RFC3339Nano strings.
+
+| Object | Exact members |
+|---|---|
+| Snapshot | `request_id`, `lines`, `operations` |
+| Line | `variant_id`, `expected_quantity`, `actual_quantity`, `available_quantity`, `effective_dispatch`, `effective_actual`, `effective_credit`, `applied_retained_quantity`, `workflow_revision`, `applied_revision`, `count_generation`, `count_applied_revision`, `restitution_generation`, `reconciliation_generation`, `proposals` |
+| Proposal | `revision`, `operation_key`, `initiator_location_id`, `dispatch_quantity`, `base_dispatch`, `base_actual`, `base_credit`, `count_generation`, `restitution_generation`, `reconciliation_generation`, `reason`, `recorded_at`, `state`, `decision`, `application` |
+| Decision | `operation_key`, `actor_location_id`, `accepted`, `reason`, `recorded_at` |
+| Application | `operation_key`, `effective_dispatch`, `source_delta`, `destination_delta`, `recorded_at` |
+| Operation (POST and GET) | `operation_key`, `request_id`, `variant_id`, `actor_location_id`, `action`, `expected_revision`, `dispatch_quantity`, `reason`, `revision`, `source_existing_before`, `source_existing_after`, `destination_existing_before`, `destination_existing_after`, `recorded_at` |
+
+`lines`, `proposals`, `operations` are nonnull arrays, including `[]`. Lines are
+expected variants only, sorted by variant; proposals by revision; operations by
+revision, variant, timestamp, key. Line `actual_quantity` and `available_quantity`
+are original receipt actual and credit, not current values. Current credit includes
+both workflows; do not reconstruct it from one ledger. Proposal bases/generations
+are persisted historical consent pins, never recomputed or capped against today.
+Proposal state is `pending`, `superseded`, `rejected` or `applied`. Decision is null
+until decided; application is null unless accepted. `accepted` is boolean.
+Operation action is `propose`, `accept` or `reject`; quantity is string for propose
+and null for decisions. Each of the four endpoint before/after balances is a
+nullable decimal string; zero must remain `"0"`, not null. Never omit a field.
+
+Exact same operation identity/payload returns the original persisted response,
+even after later revisions/count changes. Changed payload is 409 `retry_conflict`.
+Only the counterpart decides; wrong role is 403 `forbidden`. Missing/foreign is
+404 `not_found` even with malformed bodies. Nonreceived/stale/predecessor changed/
+applied restitution conflicts are 409 `decision_conflict`; unexpected variant,
+Q != A or unchanged dispatch is 400 `invalid_request`; stock/reservation/overflow
+failure is 409 `insufficient_stock`. Authentication is 401 `unauthenticated`,
+method mismatch 405 `method_not_allowed` with `Allow`, backend/context failures
+503 `service_unavailable`. Errors are exactly `{"error":"<code>"}` plus newline,
+without SQL/private detail. All refusals leave workflow/inventory/counts unchanged.
+
+Recover uncertainty with explicit participant GET/identical retry, never a new key
+or a retargeted revision. A historical success does not describe today's head.
+No frontend decoder, UI delivery, production exposure or deployment is implied.
 
 ## Full persisted outcomes and original replay
 
