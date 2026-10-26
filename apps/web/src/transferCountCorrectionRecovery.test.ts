@@ -12,7 +12,7 @@ function operation(action: 'propose' | 'accept' | 'reject' = 'propose'): CountOp
     reason: input.reason, revision: 1n, recorded_at: '2026-04-02T00:00:00Z' };
 }
 function snapshot(head = 0n, operations: CountOperation[] = []) {
-  return captureCountCorrections({ request_id: BigInt(id), operations, lines: [{ variant_id: 201, expected_quantity: 6n,
+  return captureCountCorrections({ request_id: BigInt(id), operations, lines: [{ variant_id: 201, expected_quantity: 6n, effective_dispatch: 6n, reconciliation_revision: 0n,
     actual_quantity: 6n, available_quantity: 6n, workflow_revision: head, applied_revision: 0n, effective_actual: 6n,
     effective_credit: 6n, proposals: [] }] });
 }

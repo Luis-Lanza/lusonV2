@@ -69,15 +69,17 @@ type CountProposal struct {
 	Application *CountApplication `json:"application"`
 }
 type CountLineState struct {
-	VariantID        int64           `json:"variant_id"`
-	ExpectedQuantity int64           `json:"expected_quantity"`
-	OriginalActual   int64           `json:"actual_quantity"`
-	OriginalCredit   int64           `json:"available_quantity"`
-	WorkflowRevision int64           `json:"workflow_revision"`
-	AppliedRevision  int64           `json:"applied_revision"`
-	EffectiveActual  int64           `json:"effective_actual"`
-	EffectiveCredit  int64           `json:"effective_credit"`
-	Proposals        []CountProposal `json:"proposals"`
+	EffectiveDispatch      int64           `json:"effective_dispatch"`
+	ReconciliationRevision int64           `json:"reconciliation_revision"`
+	VariantID              int64           `json:"variant_id"`
+	ExpectedQuantity       int64           `json:"expected_quantity"`
+	OriginalActual         int64           `json:"actual_quantity"`
+	OriginalCredit         int64           `json:"available_quantity"`
+	WorkflowRevision       int64           `json:"workflow_revision"`
+	AppliedRevision        int64           `json:"applied_revision"`
+	EffectiveActual        int64           `json:"effective_actual"`
+	EffectiveCredit        int64           `json:"effective_credit"`
+	Proposals              []CountProposal `json:"proposals"`
 }
 type CountCorrections struct {
 	RequestID  int64
@@ -245,7 +247,8 @@ const countSnapshotSQL = `SELECT h.status,
  SELECT r.*, COALESCE(latest.revision,0) AS workflow_revision,
  COALESCE(applied.revision,0) AS applied_revision,
  COALESCE(effective.actual_quantity,r.actual_quantity) AS effective_actual,
- state.credit AS effective_credit,
+ state.credit AS effective_credit, state.dispatch AS effective_dispatch,
+ state.reconciliation_revision AS reconciliation_revision,
  COALESCE((SELECT jsonb_agg(to_jsonb(history) ORDER BY revision) FROM (
    SELECT p.*, to_jsonb(d) AS decision, to_jsonb(a) AS application,
    CASE WHEN d.accepted THEN 'applied' WHEN d.accepted=false THEN 'rejected'

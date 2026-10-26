@@ -42,7 +42,7 @@ function operation(action: 'propose' | 'accept' | 'reject' = 'propose'): Restitu
     source_existing_before: action === 'accept' ? 10n : null, source_existing_after: action === 'accept' ? 11n : null, recorded_at: stamp };
 }
 function count() {
-  return captureCountCorrections({ request_id: BigInt(id), operations: [], lines: [{ variant_id: 201, expected_quantity: 5n,
+  return captureCountCorrections({ request_id: BigInt(id), operations: [], lines: [{ variant_id: 201, expected_quantity: 5n, effective_dispatch: 5n, reconciliation_revision: 0n,
     actual_quantity: 4n, available_quantity: 4n, workflow_revision: 0n, applied_revision: 0n, effective_actual: 4n, effective_credit: 4n, proposals: [] }] });
 }
 function fixture(destination = false) {

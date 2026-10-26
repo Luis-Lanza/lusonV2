@@ -11,7 +11,8 @@ import { TransferAPIError } from './transferAPI';
 const stamp = '2026-04-02T00:00:00.000000001Z';
 const big = 9007199254740993n;
 function line(variant_id = 201): CountCorrectionLine {
-  return { variant_id, expected_quantity: big, actual_quantity: big, available_quantity: big,
+  return { variant_id, expected_quantity: variant_id === 201 ? big : 0n,
+    effective_dispatch: variant_id === 201 ? big : 0n, reconciliation_revision: 0n, actual_quantity: big, available_quantity: big,
     workflow_revision: 4n, applied_revision: 3n, effective_actual: 5n, effective_credit: 5n, proposals: [] };
 }
 function proposal(state: CountProposal['state'] = 'pending', initiator = 2): CountProposal {
@@ -50,6 +51,45 @@ function draft(actual = '9007199254740994', reason = '  Conteo exacto  ') {
 }
 function review() { fireEvent.click(screen.getByRole('button', { name: /^Revisar (corrección|aceptación|rechazo)$/ })); return screen.getByRole('dialog'); }
 const decisionReason = () => screen.getByRole('textbox', { name: /^Motivo de (aceptación|rechazo)/ });
+it.each([['7', '8', '7', '0'], ['6', '8', '6', '-1'], ['0', '8', '0', '-7']] as const)(
+  'T4c caps preview at current dispatch %s, not original five', (dispatch, actual, credit, delta) => {
+    const f = fixture(); f.props.record.items[0].quantity = 5n;
+    Object.assign(f.corrections.snapshot!.lines[0], { expected_quantity: 5n, effective_dispatch: BigInt(dispatch),
+      reconciliation_revision: 1n, effective_actual: 7n, effective_credit: 7n });
+    render(<TransferCountCorrections {...f.props} />); draft(actual); const modal = review();
+    expect(within(modal).getByRole('row', { name: `Crédito de esta recepción 7 ${credit}` })).toBeVisible();
+    expect(modal).toHaveTextContent(`Efecto en destino: ${delta}`);
+    expect(f.corrections.propose).not.toHaveBeenCalled(); expect(f.corrections.decide).not.toHaveBeenCalled();
+  });
+it.each((['propose', 'accept'] as const).flatMap(action => (['effective_dispatch', 'reconciliation_revision'] as const).map(field => ({ action, field }))))(
+  'T4c retires $action review on $field changes without a count revision', ({ action, field }) => {
+  const f = fixture(action === 'accept' ? 3 : 2); const confirmed = f.corrections.snapshot!.lines[0];
+  Object.assign(confirmed, { effective_dispatch: 7n, reconciliation_revision: 1n,
+    proposals: action === 'accept' ? [proposal()] : [] });
+  render(<TransferCountCorrections {...f.props} />);
+  if (action === 'propose') draft('8');
+  else {
+    fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Aceptar propuesta' }));
+    fireEvent.change(decisionReason(), { target: { value: 'checked' } });
+  }
+  const modal = review(); Object.assign(confirmed, { [field]: confirmed[field] + 1n });
+  fireEvent.click(within(modal).getByRole('button', { name: action === 'propose' ? 'Enviar propuesta' : 'Confirmar aceptación' }));
+  expect(f.corrections.propose).not.toHaveBeenCalled(); expect(f.corrections.decide).not.toHaveBeenCalled();
+  expect(screen.getByRole('alert')).toHaveTextContent('El conteo cambió');
+});
+it.each(['effective_dispatch', 'reconciliation_revision'] as const)('T4c permits rejection without acceptance-only %s evidence', async field => {
+  const f = fixture(3); Object.assign(f.corrections.snapshot!.lines[0], { proposals: [proposal()], [field]: undefined });
+  render(<TransferCountCorrections {...f.props} />);
+  fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+  expect(screen.getByRole('button', { name: 'Aceptar propuesta' })).toBeDisabled();
+  expect(screen.getByRole('dialog')).toHaveTextContent('No disponible');
+  fireEvent.click(screen.getByRole('button', { name: 'Rechazar propuesta' }));
+  fireEvent.change(decisionReason(), { target: { value: 'No acuerdo' } }); review();
+  await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Confirmar rechazo' })));
+  expect(f.corrections.decide).toHaveBeenCalledExactlyOnceWith('reject', expect.objectContaining({ reason: 'No acuerdo', expected_revision: '4' }));
+  expect(f.corrections.propose).not.toHaveBeenCalled(); expect(f.corrections.retry).not.toHaveBeenCalled();
+});
 it('uses one shared management table and plain empty history rather than product cards', () => {
   const f = fixture(); render(<TransferCountCorrections {...f.props} />);
   const table = screen.getByRole('table', { name: 'Gestión de conteo' });
@@ -175,7 +215,7 @@ it.each(['accept', 'reject'] as const)('reviews pinned %s evidence and edits raw
   fireEvent.click(trigger); fireEvent.click(screen.getByRole('button', { name: action === 'accept' ? 'Rechazar propuesta' : 'Aceptar propuesta' }));
   expect(decisionReason()).toHaveValue(''); key.mockRestore();
 });
-it.each(['accept', 'reject'] as const)('submits only the freshly prepared %s identity after editing', async action => {
+it.each(['accept', 'reject'] as const)('T4c preserves submitting only the freshly prepared %s identity after editing', async action => {
   const f = fixture(3); Object.assign(f.corrections.snapshot!.lines[0], { proposals: [proposal()] });
   const view = render(<TransferCountCorrections {...f.props} />);
   fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
@@ -239,18 +279,25 @@ it.each((['accept', 'reject'] as const).flatMap(action => [false, true].flatMap(
     }
 });
 it.each([
-  { actual: 1n, credit: 1n, delta: '-4', unexpected: false },
-  { actual: 9n, credit: 2n, delta: '-3', unexpected: false },
+  { actual: 1n, credit: 1n, delta: '-1', unexpected: false },
+  { actual: 9n, credit: 2n, delta: '0', unexpected: false },
   { actual: 9n, credit: 0n, delta: '0', unexpected: true },
 ])('keeps final decision stock/credit semantics for $actual (audit=$unexpected)', ({ actual, credit, delta, unexpected }) => {
   for (const action of ['accept', 'reject'] as const) {
     const f = fixture(3); f.props.record.items = unexpected ? [] : [{ ...f.props.record.items[0], quantity: 2n }];
-    Object.assign(f.corrections.snapshot!.lines[0], { proposals: [{ ...proposal(), actual_quantity: actual }] });
+    const dispatch = unexpected ? 0n : 2n;
+    // An unreconciled dispatch of two cannot have current credit five.
+    const receipt = { variant_id: 201, expected_quantity: dispatch, actual_quantity: 2n, available_quantity: dispatch };
+    if (f.props.record.status !== 'received') throw new Error('received fixture');
+    f.props.record.receipt = { items: [receipt], exceptions: unexpected ? [{ variant_id: 201, kind: 'unexpected', quantity: 2n }] : [] };
+    Object.assign(f.corrections.snapshot!.lines[0], { ...receipt, effective_dispatch: dispatch, reconciliation_revision: 0n,
+      effective_actual: 2n, effective_credit: dispatch,
+      proposals: [{ ...proposal(), actual_quantity: actual, base_credit: dispatch }] });
     const view = render(<TransferCountCorrections {...f.props} />);
     fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
     fireEvent.click(screen.getByRole('button', { name: action === 'accept' ? 'Aceptar propuesta' : 'Rechazar propuesta' }));
     fireEvent.change(decisionReason(), { target: { value: '  Verified reason  ' } }); const modal = review();
-    expect(within(modal).getByRole('row', { name: `Crédito de esta recepción 5 ${credit}` })).toBeInTheDocument();
+    expect(within(modal).getByRole('row', { name: `Crédito de esta recepción ${dispatch} ${credit}` })).toBeInTheDocument();
     expect(modal).toHaveTextContent(`Efecto en destino: ${action === 'reject' ? '0' : delta}`);
     if (action === 'reject') {
       expect(modal).toHaveTextContent('Sin cambios en el conteo efectivo ni en el stock.');
@@ -478,7 +525,7 @@ it.each([[0n, 0n, 5n, '-5'], [big + 1n, big, 5n, '+9007199254740988'], [5n, 5n, 
     expect(modal).toHaveTextContent('Rechazar no modifica el conteo ni el stock');
     expect(f.corrections.decide).not.toHaveBeenCalled();
   });
-it('compares pinned confirmed quantities and preserves exact reason outside closed technical evidence', () => {
+it('T4c preserves pinned confirmed quantities and exact reason outside closed technical evidence', () => {
   const f = fixture();
   const confirmed = { ...line(), effective_actual: 9n, effective_credit: 7n, applied_revision: 1n };
   f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [confirmed] };
@@ -567,7 +614,7 @@ it.each(['owner', 'incompatible', 'mask', 'uncertain', 'busy'])('revalidates %s 
   expect(f.corrections.propose).not.toHaveBeenCalled();
 });
 it.each([['0', '-5'], ['3', '-2'], ['8', '+3'], ['9007199254740994', '+9007199254740988']])(
-  'keeps proposed %s credit effect %s conditional on later acceptance', (quantity, delta) => {
+  'T4c preserves proposed %s credit effect %s conditional on later acceptance', (quantity, delta) => {
     const f = fixture(); render(<TransferCountCorrections {...f.props} />); draft(quantity);
     const modal = review();
     expect(within(modal).getByRole('table', { name: 'Comparación de conteo' })).toHaveTextContent('Crédito de esta recepción');
@@ -885,7 +932,7 @@ it('reports secure random failure and never falls back to a key or write', () =>
   expect(screen.getByRole('alert')).not.toHaveTextContent('private diagnostic');
   expect(f.corrections.propose).not.toHaveBeenCalled();
 });
-it('uses absent original expected membership for audit-only unexpected counts', async () => {
+it('T4c preserves absent original expected membership for audit-only unexpected counts', async () => {
   const f = fixture(); f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [line(202)] };
   if (f.props.record.status !== 'received') throw new Error();
   f.props.record = { ...f.props.record, receipt: { ...f.props.record.receipt, items: [...f.props.record.receipt.items,

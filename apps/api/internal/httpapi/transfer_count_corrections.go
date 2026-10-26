@@ -217,15 +217,17 @@ type countProposalDTO struct {
 	Application         *countApplicationDTO `json:"application"`
 }
 type countLineDTO struct {
-	VariantID        int64              `json:"variant_id"`
-	ExpectedQuantity string             `json:"expected_quantity"`
-	OriginalActual   string             `json:"actual_quantity"`
-	OriginalCredit   string             `json:"available_quantity"`
-	WorkflowRevision string             `json:"workflow_revision"`
-	AppliedRevision  string             `json:"applied_revision"`
-	EffectiveActual  string             `json:"effective_actual"`
-	EffectiveCredit  string             `json:"effective_credit"`
-	Proposals        []countProposalDTO `json:"proposals"`
+	EffectiveDispatch      string             `json:"effective_dispatch"`
+	ReconciliationRevision string             `json:"reconciliation_revision"`
+	VariantID              int64              `json:"variant_id"`
+	ExpectedQuantity       string             `json:"expected_quantity"`
+	OriginalActual         string             `json:"actual_quantity"`
+	OriginalCredit         string             `json:"available_quantity"`
+	WorkflowRevision       string             `json:"workflow_revision"`
+	AppliedRevision        string             `json:"applied_revision"`
+	EffectiveActual        string             `json:"effective_actual"`
+	EffectiveCredit        string             `json:"effective_credit"`
+	Proposals              []countProposalDTO `json:"proposals"`
 }
 type countSnapshotDTO struct {
 	RequestID  string              `json:"request_id"`
@@ -249,7 +251,7 @@ func countSnapshotRecord(snapshot transfers.CountCorrections) countSnapshotDTO {
 		out.Operations = append(out.Operations, countOperationRecord(op))
 	}
 	for _, line := range snapshot.Lines {
-		dto := countLineDTO{line.VariantID, countInt(line.ExpectedQuantity), countInt(line.OriginalActual), countInt(line.OriginalCredit), countInt(line.WorkflowRevision), countInt(line.AppliedRevision), countInt(line.EffectiveActual), countInt(line.EffectiveCredit), []countProposalDTO{}}
+		dto := countLineDTO{countInt(line.EffectiveDispatch), countInt(line.ReconciliationRevision), line.VariantID, countInt(line.ExpectedQuantity), countInt(line.OriginalActual), countInt(line.OriginalCredit), countInt(line.WorkflowRevision), countInt(line.AppliedRevision), countInt(line.EffectiveActual), countInt(line.EffectiveCredit), []countProposalDTO{}}
 		for _, p := range line.Proposals {
 			proposal := countProposalDTO{Revision: countInt(p.Revision), OperationKey: p.OperationKey, InitiatorLocationID: p.InitiatorLocationID, Actual: countInt(p.Actual), BaseRevision: countInt(p.BaseRevision), BaseCredit: countInt(p.BaseCredit), Reason: p.Reason, RecordedAt: countStamp(p.RecordedAt), State: p.State}
 			if p.Decision != nil {

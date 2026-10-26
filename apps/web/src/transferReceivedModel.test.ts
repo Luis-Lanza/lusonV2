@@ -17,7 +17,7 @@ function fixture(): ReceivedProjectionInput {
     dispatch_location_id: 1, dispatched_at: '2026-04-03T00:00:00Z', receipt_location_id: 2,
     received_at: '2026-04-04T00:00:00Z', items, receipt };
   return { record, snapshot: { request_id: 9007199254740993n, operations: [], lines: receipt.items.map(line => ({
-    ...line, workflow_revision: 0n, applied_revision: 0n, effective_actual: line.actual_quantity,
+    ...line, effective_dispatch: line.expected_quantity, reconciliation_revision: 0n, workflow_revision: 0n, applied_revision: 0n, effective_actual: line.actual_quantity,
     effective_credit: line.available_quantity, proposals: [],
   })) }, busy: false, error: null, masked: false, contextValid: true };
 }

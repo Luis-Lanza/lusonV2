@@ -23,7 +23,13 @@ export interface TransferCountCorrectionsProps {
 const states = { pending: 'Pendiente', superseded: 'Reemplazada', rejected: 'Rechazada', applied: 'Aplicada' };
 const actions = { propose: 'Proponer', accept: 'Aceptar', reject: 'Rechazar' };
 const phases = { inFlight: 'En curso', uncertain: 'Resultado incierto', failed: 'Fallo definitivo', conflict: 'Conflicto', confirmed: 'Confirmada' };
-const signed = (n: bigint) => n > 0n ? `+${n}` : n.toString();
+const signed = (n: bigint | null) => n === null ? 'No disponible' : n > 0n ? `+${n}` : n.toString();
+function dispatchKnown(line: CountCorrectionLine) {
+  return typeof line.effective_dispatch === 'bigint' && typeof line.reconciliation_revision === 'bigint'
+    && line.effective_dispatch >= 0n && line.reconciliation_revision >= 0n
+    && (line.reconciliation_revision !== 0n || line.effective_dispatch === line.expected_quantity)
+    && (line.expected_quantity !== 0n || line.effective_dispatch === 0n && line.reconciliation_revision === 0n);
+}
 const isMasked = (corrections: TransferCountCorrectionsProps['corrections']) => corrections.masked
   || corrections.error?.status === 403 || corrections.error?.status === 404;
 const authorityKey = (controller: TransferController) => {
@@ -86,7 +92,8 @@ interface Consultation {
   snapshot: NonNullable<TransferCountCorrectionsProps['corrections']['snapshot']>;
   pending: CountCorrectionLine['proposals'][number];
   workflow: bigint; applied: bigint; currentActual: bigint; currentCredit: bigint;
-  credit: bigint; delta: bigint;
+  dispatch: bigint; reconciliation: bigint;
+  credit: bigint | null; delta: bigint | null;
   reasons: { accept: string; reject: string };
 }
 function CounterpartyContext({ pin, reference, battery, sent, proposer, reviewer, destination, unexpected, decision = false }: {
@@ -99,12 +106,12 @@ function CounterpartyContext({ pin, reference, battery, sent, proposer, reviewer
     <table className="count-review-comparison" aria-label="Comparación de conteo">
       <thead><tr><th scope="col">Concepto</th><th scope="col">Vigente confirmado</th><th scope="col">Propuesto</th></tr></thead>
       <tbody><tr><th scope="row">Cantidad recibida</th><td>{pin.currentActual.toString()}</td><td>{pin.pending.actual_quantity.toString()}</td></tr>
-        <tr><th scope="row">Crédito de esta recepción</th><td>{pin.currentCredit.toString()}</td><td>{pin.credit.toString()}</td></tr></tbody>
+        <tr><th scope="row">Crédito de esta recepción</th><td>{pin.currentCredit.toString()}</td><td>{pin.credit?.toString() ?? 'No disponible'}</td></tr></tbody>
     </table>
     <div><p className="count-review-label">Motivo de {proposer}</p><p className="count-evidence count-review-reason">{pin.pending.reason}</p></div>
     {!decision && <><div className="count-review-warning">
       <p><strong>La propuesta pendiente no modifica el stock.</strong></p>
-      <p>Si la aceptás, sujeto a validación: Efecto en destino: {signed(pin.delta)} · {destination}. Crédito limitado: {pin.credit.toString()}.</p>
+      <p>Si la aceptás, sujeto a validación: Efecto en destino: {signed(pin.delta)} · {destination}. Crédito limitado: {pin.credit?.toString() ?? 'No disponible'}.</p>
       <p>Rechazar no modifica el conteo ni el stock. La recepción original se conserva.</p>
       <p>Sin restitución al origen, resolución automática de faltantes ni incorporación de excedentes. El crédito no es inventario actual.</p>
       {unexpected && <p>Solo auditoría: crédito y efecto cero. Procedencia e incorporación separadas.</p>}
@@ -114,8 +121,8 @@ function CounterpartyContext({ pin, reference, battery, sent, proposer, reviewer
 }
 interface Review {
   draft: Draft; snapshot: NonNullable<TransferCountCorrectionsProps['corrections']['snapshot']>;
-  input: CountProposalInput | CountDecisionInput; actual: bigint; revision: bigint; base: bigint; credit: bigint; delta: bigint;
-  currentActual: bigint; currentCredit: bigint;
+  input: CountProposalInput | CountDecisionInput; actual: bigint; revision: bigint; base: bigint; credit: bigint | null; delta: bigint | null;
+  currentActual: bigint; currentCredit: bigint; dispatch: bigint; reconciliation: bigint;
   decision?: Readonly<{ reference: string; battery: string; sent: bigint; proposer: string; reviewer: string;
     destination: string; origin: string; unexpected: boolean; originalReason: string }>;
 }
@@ -160,6 +167,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
   }
   function allowed(line: CountCorrectionLine, action: CountAction) {
     if (blocked(line.variant_id)) return false;
+    if (action !== 'reject' && !dispatchKnown(line)) return false;
     const pending = line.proposals.find(p => p.state === 'pending');
     const location = decisionOwner(controller.getTransferAuthority())?.location;
     return action === 'propose' ? !pending || pending.initiator_location_id === location
@@ -178,15 +186,18 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
     const line = lineFor(pin.variant); const pending = line?.proposals.find(p => p.state === 'pending');
     const original = pin.pending;
     return latest.current.corrections.snapshot === pin.snapshot && pin.snapshot.request_id.toString() === record.id
-      && !!line && allowed(line, 'accept') && line.workflow_revision === pin.workflow
+      && !!line && allowed(line, 'reject') && line.workflow_revision === pin.workflow
       && line.applied_revision === pin.applied && line.effective_actual === pin.currentActual
-      && line.effective_credit === pin.currentCredit && !!pending
+      && line.effective_credit === pin.currentCredit && line.effective_dispatch === pin.dispatch
+      && line.reconciliation_revision === pin.reconciliation && !!pending
       && pending.revision === original.revision && pending.actual_quantity === original.actual_quantity
       && pending.reason === original.reason && pending.initiator_location_id === original.initiator_location_id
       && pending.base_revision === original.base_revision && pending.base_credit === original.base_credit
       && pending.operation_key === original.operation_key && pending.recorded_at === original.recorded_at;
   }
   function reviewCurrent(captured: Review) {
+    const line = lineFor(captured.draft.variant);
+    if (!line || line.effective_dispatch !== captured.dispatch || line.reconciliation_revision !== captured.reconciliation) return false;
     return captured.draft.action === 'propose' || current() && !submitting.current
       && !latest.current.corrections.busy && !!consultation && consultationCurrent(consultation)
       && latest.current.corrections.snapshot === captured.snapshot;
@@ -253,14 +264,15 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
   function consult(variant: number, trigger: HTMLElement) {
     const line = lineFor(variant); const snap = latest.current.corrections.snapshot;
     if (!current() || !line || !snap || snap.request_id.toString() !== record.id
-      || !allowed(line, 'accept') || submitting.current || latest.current.corrections.busy) return;
+      || !allowed(line, 'reject') || submitting.current || latest.current.corrections.busy) return;
     const pending = line.proposals.find(p => p.state === 'pending')!;
     const item = record.items.find(i => i.variant_id === variant);
-    const credit = item ? (pending.actual_quantity < item.quantity ? pending.actual_quantity : item.quantity) : 0n;
+    const credit = !dispatchKnown(line) ? null : item ? (pending.actual_quantity < line.effective_dispatch ? pending.actual_quantity : line.effective_dispatch) : 0n;
     setConsultation({ variant, trigger, snapshot: snap, pending: { ...pending },
       workflow: line.workflow_revision, applied: line.applied_revision,
+      dispatch: line.effective_dispatch, reconciliation: line.reconciliation_revision,
       currentActual: line.effective_actual, currentCredit: line.effective_credit,
-      credit, delta: item ? credit - line.effective_credit : 0n, reasons: { accept: '', reject: '' } });
+      credit, delta: credit === null ? null : item ? credit - line.effective_credit : 0n, reasons: { accept: '', reject: '' } });
     setDraft(null); setReview(null); setMessage('');
   }
   function open(variant: number, action: CountAction, trigger: HTMLElement) {
@@ -303,12 +315,13 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
       if (draft.action === 'propose') actual = normalizeCountProposal(input as CountProposalInput).actual_quantity;
       else { normalizeCountDecision(input); actual = pending!.actual_quantity; }
       const item = record.items.find(i => i.variant_id === draft.variant);
-      const credit = item ? (actual < item.quantity ? actual : item.quantity) : 0n;
+      const credit = !dispatchKnown(line) ? null : item ? (actual < line.effective_dispatch ? actual : line.effective_dispatch) : 0n;
       setReview({ draft: { ...draft }, snapshot: snap, input, actual,
         revision: draft.action === 'propose' ? line.workflow_revision + 1n : pending!.revision,
         base: draft.action === 'propose' ? line.applied_revision : pending!.base_revision,
         currentActual: line.effective_actual, currentCredit: line.effective_credit,
-        credit, delta: draft.action === 'reject' || !item ? 0n : credit - line.effective_credit,
+        dispatch: line.effective_dispatch, reconciliation: line.reconciliation_revision,
+        credit, delta: draft.action === 'reject' || !item ? 0n : credit === null ? null : credit - line.effective_credit,
         decision: draft.action === 'propose' ? undefined : Object.freeze({ reference: record.reference,
           battery: name(draft.variant), sent: item?.quantity ?? 0n,
           proposer: location(pending!.initiator_location_id), reviewer: location(owner!.location),
@@ -328,7 +341,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
     const p = latest.current; const line = lineFor(captured.draft.variant);
     if (!current() || submitting.current || p.corrections.busy || p.corrections.snapshot !== captured.snapshot
       || captured.draft.action !== 'propose' && (!consultation || !consultationCurrent(consultation))
-      || review !== captured || !line || !allowed(line, captured.draft.action)
+      || review !== captured || !reviewCurrent(captured) || !line || !allowed(line, captured.draft.action)
       || line.workflow_revision.toString() !== (captured.draft.action === 'propose'
         ? captured.input.expected_revision : captured.revision.toString())) {
       if (current()) retire();
@@ -344,7 +357,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
   function editProposal(captured: Review) {
     const p = latest.current; const line = lineFor(captured.draft.variant);
     if (!current() || submitting.current || p.corrections.busy || captured.draft.action !== 'propose') return;
-    if (review !== captured || p.corrections.snapshot !== captured.snapshot || !line
+    if (review !== captured || !reviewCurrent(captured) || p.corrections.snapshot !== captured.snapshot || !line
       || !allowed(line, 'propose') || line.workflow_revision.toString() !== captured.input.expected_revision) {
       setReview(null); setDraft(null); setMessage('El conteo cambió. Revisá nuevamente antes de confirmar.');
       return;
@@ -430,7 +443,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
               onClick={() => toggle(historyKey)}>{line.proposals.length} {line.proposals.length === 1 ? 'revisión' : 'revisiones'}</button> : 'Sin correcciones'}</td>
             <td data-label="Acción"><div className="count-actions">
               {allowed(line, 'propose') && <button disabled={sending} onClick={e => open(line.variant_id, 'propose', e.currentTarget)}>{pending ? 'Reemplazar propuesta' : 'Proponer corrección'}</button>}
-              {allowed(line, 'accept') && <button disabled={sending || corrections.busy} onClick={e => consult(line.variant_id, e.currentTarget)}>Consultar propuesta</button>}
+              {allowed(line, 'reject') && <button disabled={sending || corrections.busy} onClick={e => consult(line.variant_id, e.currentTarget)}>Consultar propuesta</button>}
             </div></td>
           </tr>
           {pending && <tr><td colSpan={5}><div className="count-pending">
@@ -520,7 +533,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
             proposer={location(validConsultation.pending.initiator_location_id)} reviewer={location(owner!.location)}
             destination={record.destination_location_name} unexpected={!record.items.some(i => i.variant_id === validConsultation.variant)} />
           <footer><button disabled={sending || corrections.busy} onClick={() => open(validConsultation.variant, 'reject', validConsultation.trigger)}>Rechazar propuesta</button>
-            <button disabled={sending || corrections.busy} onClick={() => open(validConsultation.variant, 'accept', validConsultation.trigger)}>Aceptar propuesta</button></footer>
+            <button disabled={sending || corrections.busy || !allowed(lineFor(validConsultation.variant)!, 'accept')} onClick={() => open(validConsultation.variant, 'accept', validConsultation.trigger)}>Aceptar propuesta</button></footer>
         </>}
       {draft && !review && <form className="count-form" onSubmit={e => { e.preventDefault(); prepare(); }} aria-label="Editar corrección">
         {draft.action === 'propose' ? <>
@@ -544,7 +557,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
           <label htmlFor={quantityID}>Cantidad corregida</label><input id={quantityID} type="text" inputMode="numeric"
             aria-describedby={quantityHelpID} placeholder="Ingresá la cantidad total correcta"
             value={draft.quantity} onChange={e => setDraft({ ...draft, quantity: e.target.value })} required />
-          <p id={quantityHelpID} className="count-capture-help">Es el total recibido de esta variante, no la diferencia.</p>
+          <p id={quantityHelpID} className="count-capture-help">Es el total recibido de esta variante, no la diferencia. El crédito se limita al despacho vigente confirmado.</p>
         </> : validConsultation && <CounterpartyContext pin={validConsultation} reference={record.reference}
           battery={name(validConsultation.variant)} sent={record.items.find(i => i.variant_id === validConsultation.variant)?.quantity ?? 0n}
           proposer={location(validConsultation.pending.initiator_location_id)} reviewer={location(owner!.location)}
@@ -563,7 +576,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
           <div className="count-review-warning">
             {draft.action === 'accept' ? <>
               <p>Todavía no se aplicará ningún cambio.</p>
-              <p>Al confirmar la aceptación, sujeto a validación: Efecto en destino: {signed(validConsultation.delta)} · {record.destination_location_name}. Crédito limitado: {validConsultation.credit.toString()}.</p>
+              <p>Al confirmar la aceptación, sujeto a validación: Efecto en destino: {signed(validConsultation.delta)} · {record.destination_location_name}. Crédito limitado: {validConsultation.credit?.toString() ?? 'No disponible'}.</p>
             </> : <>
               <p>Rechazar esta propuesta no modifica el conteo efectivo ni el stock.</p>
               <p>Se mantienen {validConsultation.currentActual.toString()} baterías contabilizadas y {validConsultation.currentCredit.toString()} acreditadas en esta recepción.</p>
@@ -584,12 +597,12 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
           <table className="count-review-comparison" aria-label="Comparación de conteo">
             <thead><tr><th scope="col">Concepto</th><th scope="col">Vigente confirmado</th><th scope="col">Propuesto</th></tr></thead>
             <tbody><tr><th scope="row">Cantidad recibida</th><td>{visibleReview.currentActual.toString()}</td><td>{visibleReview.actual.toString()}</td></tr>
-              <tr><th scope="row">Crédito de esta recepción</th><td>{visibleReview.currentCredit.toString()}</td><td>{visibleReview.credit.toString()}</td></tr></tbody>
+              <tr><th scope="row">Crédito de esta recepción</th><td>{visibleReview.currentCredit.toString()}</td><td>{visibleReview.credit?.toString() ?? 'No disponible'}</td></tr></tbody>
           </table>
           <div><p className="count-review-label">Motivo</p><p className="count-evidence count-review-reason">{visibleReview.input.reason}</p></div>
           <div className="count-review-warning">
             <p><strong>Enviar propuesta no modifica stock.</strong></p>
-            <p>Si {location(owner!.location === record.origin_location_id ? record.destination_location_id : record.origin_location_id)} acepta, sujeto a validación: Efecto en destino: {signed(visibleReview.delta)} · {record.destination_location_name}. Crédito limitado: {visibleReview.credit.toString()}.</p>
+            <p>Si {location(owner!.location === record.origin_location_id ? record.destination_location_id : record.origin_location_id)} acepta, sujeto a validación: Efecto en destino: {signed(visibleReview.delta)} · {record.destination_location_name}. Crédito limitado: {visibleReview.credit?.toString() ?? 'No disponible'}.</p>
             <p>La recepción original se conserva. Sin restitución al origen, resolución de pérdidas, incorporación de excedentes ni política de entregas posteriores. El crédito no es inventario actual.</p>
             <p>Una propuesta nueva o reemplazada requiere un nuevo acuerdo de la contraparte; no conserva el consentimiento anterior.</p>
             {!record.items.some(i => i.variant_id === visibleReview.draft.variant) && <p>Solo auditoría: crédito y efecto cero. Procedencia e incorporación separadas.</p>}
@@ -607,7 +620,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
           <table className="count-review-comparison" aria-label="Comparación de conteo">
             <thead><tr><th scope="col">Concepto</th><th scope="col">Vigente confirmado</th><th scope="col">{visibleReview.draft.action === 'accept' ? 'Al aceptar' : 'Propuesto'}</th></tr></thead>
             <tbody><tr><th scope="row">Cantidad recibida</th><td>{visibleReview.currentActual.toString()}</td><td>{visibleReview.actual.toString()}</td></tr>
-              <tr><th scope="row">Crédito de esta recepción</th><td>{visibleReview.currentCredit.toString()}</td><td>{visibleReview.credit.toString()}</td></tr></tbody>
+              <tr><th scope="row">Crédito de esta recepción</th><td>{visibleReview.currentCredit.toString()}</td><td>{visibleReview.credit?.toString() ?? 'No disponible'}</td></tr></tbody>
           </table>
           {visibleReview.draft.action === 'reject' && <p className="count-review-muted">La cantidad propuesta no se aplicará.</p>}
           <div><p className="count-review-label">Motivo de {visibleReview.decision.proposer}</p>
@@ -629,7 +642,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
             <p>Clave {visibleReview.input.operation_key}</p>
             <p>Cantidad corregida: {visibleReview.actual.toString()} · Revisión: {visibleReview.revision.toString()} · Base aplicada: {visibleReview.base.toString()}</p>
             <p>Revisión de flujo esperada: {visibleReview.input.expected_revision}</p>
-            <p>Crédito limitado: {visibleReview.credit.toString()} · Crédito efectivo actual: {visibleReview.currentCredit.toString()}</p>
+            <p>Crédito limitado: {visibleReview.credit?.toString() ?? 'No disponible'} · Crédito efectivo actual: {visibleReview.currentCredit.toString()}</p>
             <p>Efecto en destino: {signed(visibleReview.delta)}</p>
           </details>
         </div>}<footer><button ref={cancelButton} disabled={sending || corrections.busy}

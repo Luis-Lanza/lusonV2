@@ -45,13 +45,43 @@ function fixture(actor = 1, proposed = false, dispatched = '5', multiple = false
         source_existing_before: action === 'accept' ? '10' : null, source_existing_after: action === 'accept' ? '11' : null }), { headers: { 'Content-Type': 'application/json' } });
     }
     return new Response(JSON.stringify(String(url).endsWith('/restitutions') ? history : { request_id: id, operations: [], lines: history.lines.map(l => ({ variant_id: l.variant_id,
-      expected_quantity: dispatched, actual_quantity: '4', available_quantity: '4', workflow_revision: '0', applied_revision: '0', effective_actual: '4', effective_credit: '4', proposals: [] })) }), { headers: { 'Content-Type': 'application/json' } });
+      expected_quantity: dispatched, effective_dispatch: l.effective_dispatch, reconciliation_revision: l.reconciliation_revision, actual_quantity: '4', available_quantity: '4', workflow_revision: '0', applied_revision: '0', effective_actual: '4', effective_credit: '4', proposals: [] })) }), { headers: { 'Content-Type': 'application/json' } });
   });
   vi.stubGlobal('fetch', fetch);
   const element = (enabled = true, requestID: string | null = id) => <TransferRestitutions controller={controller} record={record} enabled={enabled} requestID={requestID} />;
   const posts = () => fetch.mock.calls.filter(([, init]) => init?.method === 'POST');
   return { authority, record, controller, history, listeners, element, fetch, posts, fail: () => { fail = true; }, mask: () => { mask = true; } };
 }
+it('T4c displays effective dispatch capacity without claiming physical retention or writing', async () => {
+  const f = fixture();
+  const header = parseTransferRecord(JSON.stringify({ ...f.record,
+    receipt: { items: [{ variant_id: 201, expected_quantity: '5', actual_quantity: '7', available_quantity: '5' }],
+      exceptions: [{ variant_id: 201, kind: 'excess', quantity: '2' }] } },
+    (_key, value) => typeof value === 'bigint' ? value.toString() : value));
+  Object.assign(f.history.lines[0], { original_credit: '5', effective_dispatch: '7', reconciliation_revision: '1',
+    effective_credit: '6', count_generation: '2', count_applied_revision: '1' });
+  const count = { request_id: id, lines: [{ variant_id: 201, expected_quantity: '5', actual_quantity: '7', available_quantity: '5',
+    effective_dispatch: '7', reconciliation_revision: '1', workflow_revision: '1', applied_revision: '1', effective_actual: '6', effective_credit: '6',
+    proposals: [{ revision: '1', operation_key: 't4c-count-proposal', initiator_location_id: 2, actual_quantity: '6', base_revision: '0',
+      base_credit: '7', reason: 'recount', recorded_at: stamp, state: 'applied',
+      decision: { operation_key: 't4c-count-decision', actor_location_id: 1, accepted: true, reason: 'checked', recorded_at: stamp },
+      application: { effective_credit: '6', delta: '-1', recorded_at: stamp } }] }], operations: [
+    { request_id: id, variant_id: 201, operation_key: 't4c-count-proposal', actor_location_id: 2, action: 'propose', expected_revision: '0',
+      actual_quantity: '6', reason: 'recount', revision: '1', recorded_at: stamp },
+    { request_id: id, variant_id: 201, operation_key: 't4c-count-decision', actor_location_id: 1, action: 'accept', expected_revision: '1',
+      actual_quantity: null, reason: 'checked', revision: '1', recorded_at: stamp }] };
+  const read = f.fetch.getMockImplementation()!;
+  f.fetch.mockImplementation((url, init) => String(url).endsWith('/count-corrections')
+    ? Promise.resolve(new Response(JSON.stringify(count), { headers: { 'Content-Type': 'application/json' } })) : read(url, init));
+  render(<TransferRestitutions controller={f.controller} record={header} enabled requestID={id} />);
+  const table = await screen.findByRole('table', { name: 'Gestión de restituciones' });
+  const group = within(table).getByRole('rowgroup', { name: 'B · M · 60 Ah · L' });
+  expect(within(group).getAllByRole('cell')[3]).toHaveTextContent(/^1$/);
+  expect(screen.getByText('El faltante no prueba retención. Proponer no mueve stock.')).toBeVisible();
+  await consult(); fireEvent.click(screen.getByRole('button', { name: 'Proponer restitución' }));
+  expect(screen.getByRole('dialog')).toHaveTextContent('Máximo a proponer: 1 batería(s)');
+  expect(screen.getByRole('checkbox')).not.toBeChecked(); expect(f.posts()).toHaveLength(0);
+});
 function appliedFixture(dispatched = '5') {
   const f = fixture(2, true, dispatched); const line = f.history.lines[0];
   line.applied_revision = '1'; line.applied_retained_quantity = '1'; const p = line.proposals[0]; p.state = 'applied';
@@ -94,7 +124,7 @@ it('keeps rules and original metadata secondary without losing audit quantities'
   expect(screen.getByText('Sin propuestas de restitución.').closest('details')).toBeNull();
   expect(f.posts()).toHaveLength(0);
 });
-it.each([1, 2])('renders one shared management table with labeled product rows for actor %s', async actor => {
+it.each([1, 2])('T4c preserves one shared management table with labeled product rows for actor %s', async actor => {
   const f = fixture(actor, false, '9223372036854775807', true);
   render(f.element());
   const table = await screen.findByRole('table', { name: 'Gestión de restituciones' });
@@ -131,7 +161,7 @@ it('selects a product row without granting consultation consent or changing stor
   fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' }); expect(trigger).toHaveFocus();
   expect(JSON.stringify(f.history)).toBe(original); expect(f.posts()).toHaveLength(0);
 });
-it('preserves rejection independently of unavailable count evidence in the selected row', async () => {
+it('T4c preserves rejection independently of unavailable count evidence in the selected row', async () => {
   const f = fixture(2, true); const read = f.fetch.getMockImplementation()!;
   f.fetch.mockImplementation((url, init) => String(url).endsWith('/count-corrections')
     ? Promise.resolve(new Response('{}', { status: 503 })) : read(url, init));

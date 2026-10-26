@@ -55,6 +55,8 @@ export interface CountProposal {
   readonly application: CountApplication | null;
 }
 export interface CountCorrectionLine {
+  readonly effective_dispatch: bigint;
+  readonly reconciliation_revision: bigint;
   readonly variant_id: number;
   readonly expected_quantity: bigint;
   readonly actual_quantity: bigint;
@@ -197,8 +199,13 @@ function proposal(value: unknown): CountProposal {
 }
 function line(value: unknown): CountCorrectionLine {
   const o = object(value, ['variant_id', 'expected_quantity', 'actual_quantity', 'available_quantity',
-    'workflow_revision', 'applied_revision', 'effective_actual', 'effective_credit', 'proposals']);
-  return Object.freeze({ variant_id: variant(o.variant_id), expected_quantity: decimal(o.expected_quantity),
+    'workflow_revision', 'applied_revision', 'effective_actual', 'effective_credit', 'proposals', 'effective_dispatch', 'reconciliation_revision']);
+  const expected = decimal(o.expected_quantity);
+  const dispatch = decimal(o.effective_dispatch);
+  const reconciliation = decimal(o.reconciliation_revision);
+  if (reconciliation === 0n && dispatch !== expected || expected === 0n && (dispatch !== 0n || reconciliation !== 0n)) return invalid();
+  return Object.freeze({ variant_id: variant(o.variant_id), expected_quantity: expected,
+    effective_dispatch: dispatch, reconciliation_revision: reconciliation,
     actual_quantity: decimal(o.actual_quantity), available_quantity: decimal(o.available_quantity),
     workflow_revision: decimal(o.workflow_revision), applied_revision: decimal(o.applied_revision),
     effective_actual: decimal(o.effective_actual), effective_credit: decimal(o.effective_credit), proposals: array(o.proposals, proposal) });

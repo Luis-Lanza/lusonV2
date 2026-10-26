@@ -29,7 +29,7 @@ function op(action: 'propose' | 'accept' | 'reject' = 'propose', variant = 201):
 }
 function history(head = 0n, operations: CountOperation[] = []): CountCorrections {
   return captureCountCorrections({ request_id: BigInt(id), operations, lines: [201, 202].map(variant_id => ({ variant_id,
-    expected_quantity: 6n, actual_quantity: 6n, available_quantity: 6n, workflow_revision: head,
+    expected_quantity: 6n, effective_dispatch: 6n, reconciliation_revision: 0n, actual_quantity: 6n, available_quantity: 6n, workflow_revision: head,
     applied_revision: 0n, effective_actual: 6n, effective_credit: 6n, proposals: [] })) });
 }
 function fixture() {

@@ -46,7 +46,7 @@ function history(proposed = true) {
     operations: proposed ? [operation('propose')] : [] });
 }
 function count() {
-  return captureCountCorrections({ request_id: BigInt(id), operations: [], lines: [{ variant_id: 201, expected_quantity: 5n,
+  return captureCountCorrections({ request_id: BigInt(id), operations: [], lines: [{ variant_id: 201, expected_quantity: 5n, effective_dispatch: 5n, reconciliation_revision: 0n,
     actual_quantity: 4n, available_quantity: 4n, workflow_revision: 0n, applied_revision: 0n, effective_actual: 4n, effective_credit: 4n, proposals: [] }] });
 }
 function countOperation(action: 'propose' | 'accept' | 'reject'): CountOperation {

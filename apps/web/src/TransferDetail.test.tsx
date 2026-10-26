@@ -251,7 +251,7 @@ describe('U4b effective received detail', () => {
     if (record.status !== 'received') throw new Error('received fixture');
     const corrections: TransferCountCorrectionsProps['corrections'] = { snapshot: {
       request_id: BigInt(record.id), operations: [], lines: record.receipt.items.map(line => ({ ...line,
-        workflow_revision: 2n, applied_revision: 1n, effective_actual: 3n, effective_credit: 3n, proposals: [] })) },
+        effective_dispatch: line.expected_quantity, reconciliation_revision: 0n, workflow_revision: 2n, applied_revision: 1n, effective_actual: 3n, effective_credit: 3n, proposals: [] })) },
       busy: false, error: null, masked: false, attempts: [], refresh: vi.fn(async () => {}),
       propose: vi.fn(async () => {}), decide: vi.fn(async () => {}), retry: vi.fn(async () => {}), recover: vi.fn(async () => {}) };
     const element = (enabled = true, requestID = record.id, evidence = corrections) => <TransferDetail controller={f.controller}
@@ -272,11 +272,11 @@ describe('U4b effective received detail', () => {
       application: rejected ? null : { effective_credit: quantity < expected ? quantity : expected,
         delta: (quantity < expected ? quantity : expected) - (original < expected ? original : expected),
         recorded_at: '2028-01-06T00:00:00Z' } };
-    const line = { ...record.receipt.items[0], workflow_revision: 1n, applied_revision: rejected ? 0n : 1n,
+    const line = { ...record.receipt.items[0], effective_dispatch: record.receipt.items[0].expected_quantity, reconciliation_revision: 0n, workflow_revision: 1n, applied_revision: rejected ? 0n : 1n,
       effective_actual: rejected ? original : quantity,
       effective_credit: rejected ? proposal.base_credit : proposal.application!.effective_credit, proposals: [proposal] };
     const evidence = { ...f.corrections, snapshot: { request_id: BigInt(record.id), operations: [], lines: [line,
-      { ...record.receipt.items[1], workflow_revision: 0n, applied_revision: 0n,
+      { ...record.receipt.items[1], effective_dispatch: record.receipt.items[1].expected_quantity, reconciliation_revision: 0n, workflow_revision: 0n, applied_revision: 0n,
         effective_actual: 1n, effective_credit: 1n, proposals: [] }] } };
     const owner = transferViewOwner(f.env.current)!;
     const element = (enabled = true, requestID = record.id) => <TransferDetail controller={f.controller}
@@ -722,7 +722,7 @@ describe('U4b effective received detail', () => {
       { variant_id: 99, expected_quantity: 0n, actual_quantity: 1n, available_quantity: 0n }] } };
     const evidence = { ...f.corrections, snapshot: { ...snapshot, lines: [snapshot.lines[0],
       { ...snapshot.lines[1], effective_actual: 9223372036854775809n },
-      { variant_id: 99, expected_quantity: 0n, actual_quantity: 1n, available_quantity: 0n,
+      { variant_id: 99, expected_quantity: 0n, effective_dispatch: 0n, reconciliation_revision: 0n, actual_quantity: 1n, available_quantity: 0n,
         effective_actual: 9007199254740993n, effective_credit: 0n, workflow_revision: 0n, applied_revision: 0n, proposals: [] }] } };
     view.rerender(<TransferDetail controller={f.controller} ownerTag={transferViewOwner(f.env.current)!}
       record={record} corrections={evidence} correctionsEnabled correctionRequestID={record.id} />);

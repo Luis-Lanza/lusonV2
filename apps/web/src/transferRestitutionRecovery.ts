@@ -53,7 +53,7 @@ function matchesReviewedHistory(e: Entry, snapshot: Restitutions): boolean {
     || line.original_credit !== c.receipt.available_quantity) return false;
   // Compare the immutable agreement, not its later decision/state or live count pins.
   const fields = ['revision', 'operation_key', 'initiator_location_id', 'retained_quantity', 'retained_at_origin',
-    'base_revision', 'count_generation', 'count_applied_revision', 'base_credit', 'base_restitution', 'reason', 'recorded_at'] as const;
+    'base_revision', 'count_generation', 'count_applied_revision', 'base_dispatch', 'base_credit', 'base_restitution', 'reason', 'recorded_at'] as const;
   if (fields.some(field => p[field] !== c.proposal[field])
     || snapshot.operations.filter(op => op.variant_id === c.item.variant_id).some(op => op.actor_location_id !==
       (op.action === 'propose' ? c.header.origin_location_id : c.header.destination_location_id))) return false;
@@ -94,7 +94,7 @@ function reconciledCount(history: CountCorrections, line: CountCorrectionLine, o
     const p = line.proposals[i]; const previous = line.proposals[i - 1];
     const op = operations.find(op => op.operation_key === p.operation_key);
     if (previous && !previous.decision && (previous.state !== 'superseded' || previous.initiator_location_id !== p.initiator_location_id)) return false;
-    if (p.revision !== BigInt(i + 1) || p.base_revision !== applied || p.base_credit !== credit
+    if (p.revision !== BigInt(i + 1) || p.base_revision !== applied || line.reconciliation_revision === 0n && p.base_credit !== credit
       || ![origin, destination].includes(p.initiator_location_id) || !op || used.has(op.operation_key) || op.actor_location_id !== p.initiator_location_id
       || op.action !== 'propose' || op.expected_revision !== BigInt(i) || op.revision !== p.revision
       || op.actual_quantity !== p.actual_quantity || op.reason !== p.reason || op.recorded_at !== p.recorded_at) return false;
@@ -108,14 +108,20 @@ function reconciledCount(history: CountCorrections, line: CountCorrectionLine, o
       used.add(decision.operation_key);
       if (d.accepted) {
         const application = p.application;
-        const nextCredit = p.actual_quantity < line.expected_quantity ? p.actual_quantity : line.expected_quantity;
-        if (!application || application.effective_credit !== nextCredit || application.delta !== nextCredit - credit
+        // Count history does not carry historical dispatch pins. Validate its
+        // recorded delta against its own base, never today's dispatch. Only an
+        // unreconciled line can be reconstructed from count applications alone.
+        if (!application || application.effective_credit > p.actual_quantity
+          || application.delta !== application.effective_credit - p.base_credit
+          || line.reconciliation_revision === 0n && application.effective_credit !== (p.actual_quantity < line.expected_quantity ? p.actual_quantity : line.expected_quantity)
           || application.recorded_at !== d.recorded_at) return false;
-        applied = p.revision; credit = nextCredit; actual = p.actual_quantity;
+        applied = p.revision; credit = application.effective_credit; actual = p.actual_quantity;
       }
     } else if (p.state !== (i === line.proposals.length - 1 ? 'pending' : 'superseded')) return false;
   }
-  return used.size === operations.length && line.applied_revision === applied && line.effective_credit === credit
+  return used.size === operations.length && line.applied_revision === applied
+    && (line.reconciliation_revision !== 0n || line.effective_credit === credit)
+    && line.effective_credit === (line.effective_dispatch < actual ? line.effective_dispatch : actual)
     && line.effective_actual === actual && line.available_quantity === originCredit;
 }
 
@@ -194,12 +200,14 @@ export function createTransferRestitutionRecovery() {
     const count = s.count.lines.find(l => l.variant_id === p.variant);
     if (!count || count.expected_quantity !== line.expected_quantity || count.actual_quantity !== receipt.actual_quantity || !reconciledCount(s.count, count, line.original_credit, p.record.origin_location_id, p.record.destination_location_id)
       || count.applied_revision !== line.count_applied_revision || count.effective_credit !== line.effective_credit
+      || count.effective_dispatch !== line.effective_dispatch || count.reconciliation_revision !== line.reconciliation_revision
       || BigInt(s.count.operations.filter(op => op.variant_id === p.variant).length) !== line.count_generation) return blocked('count-mismatch');
     if (count.proposals.at(-1)?.decision === null) return blocked('count-pending');
     if (p.action === 'accept' && proposal && (proposal.base_revision !== line.workflow_revision - 1n
       || proposal.count_generation !== line.count_generation || proposal.count_applied_revision !== line.count_applied_revision
+      || proposal.base_dispatch !== line.effective_dispatch
       || proposal.base_credit !== line.effective_credit || proposal.base_restitution !== line.applied_retained_quantity)) return blocked('predecessor');
-    const capacity = line.expected_quantity - line.effective_credit - line.applied_retained_quantity;
+    const capacity = line.effective_dispatch - line.effective_credit - line.applied_retained_quantity;
     if (capacity <= 0n || p.action === 'accept' && proposal!.retained_quantity > capacity) return blocked('capacity');
     return eligible;
   }
@@ -261,7 +269,7 @@ export function createTransferRestitutionRecovery() {
       const id = BigInt(p.record.id); const line = p.evidence.restitution!.lines.find(l => l.variant_id === p.variant)!;
       if (payload.variant_id !== p.variant || payload.expected_revision !== line.workflow_revision || usedKeys.has(payload.operation_key)
         || p.evidence.restitution!.operations.some(op => op.operation_key === payload.operation_key)) return null;
-      if ('retained_quantity' in payload && payload.retained_quantity > line.expected_quantity - line.effective_credit - line.applied_retained_quantity) return null;
+      if ('retained_quantity' in payload && payload.retained_quantity > line.effective_dispatch - line.effective_credit - line.applied_retained_quantity) return null;
       p.consumed = true; usedKeys.add(payload.operation_key);
       const attempt: RestitutionAttempt = Object.freeze({ owner: p.owner, requestID: id, action: p.action, payload,
         phase: 'inFlight', priorUncertainty: false, result: null, failure: null });

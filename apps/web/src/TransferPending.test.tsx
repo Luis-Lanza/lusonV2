@@ -108,7 +108,7 @@ function receivedWire(origin = 1, destination = 2) {
 }
 function correctionHistory(record = receivedWire()) {
   return { request_id: record.id, operations: [], lines: record.receipt.items.map(item => ({ ...item,
-    workflow_revision: '0', applied_revision: '0', effective_actual: item.actual_quantity,
+    effective_dispatch: item.expected_quantity, reconciliation_revision: '0', workflow_revision: '0', applied_revision: '0', effective_actual: item.actual_quantity,
     effective_credit: item.available_quantity, proposals: [] })) };
 }
 const correctionCalls = (f: ReturnType<typeof fixture>) => f.fetch.mock.calls.filter(([url]) => String(url).includes('/count-corrections'));

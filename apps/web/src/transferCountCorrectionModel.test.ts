@@ -11,7 +11,7 @@ const proposal = (state = 'pending') => ({ revision: '1', operation_key: 'count_
   decision: state === 'applied' || state === 'rejected' ? { operation_key: 'count_decision_0001', actor_location_id: 2,
     accepted: state === 'applied', reason: 'verified', recorded_at: '2026-01-02T12:01:00Z' } : null,
   application: state === 'applied' ? { effective_credit: '0', delta: '-9223372036854775807', recorded_at: '2026-01-02T12:01:00Z' } : null });
-const line = () => ({ variant_id: 201, expected_quantity: '9223372036854775807', actual_quantity: '9223372036854775807',
+const line = () => ({ variant_id: 201, expected_quantity: '9223372036854775807', effective_dispatch: '9223372036854775807', reconciliation_revision: '0', actual_quantity: '9223372036854775807',
   available_quantity: '9223372036854775807', workflow_revision: '4', applied_revision: '1',
   effective_actual: '0', effective_credit: '0', proposals: ['applied', 'superseded', 'rejected', 'pending'].map(proposal) });
 const snapshot = () => ({ request_id: '9007199254740993', lines: [line()], operations: [operation()] });
@@ -70,9 +70,29 @@ describe('count correction operation', () => {
 });
 
 describe('count correction history', () => {
+  it.each(['0', '3', '7', '9007199254740993', '9223372036854775807'])('T4c preserves exact current dispatch %s independently of originals', dispatch => {
+    const value = { ...snapshot(), lines: [{ ...line(), expected_quantity: '5', available_quantity: '5',
+      effective_dispatch: dispatch, reconciliation_revision: '9007199254740993' }] };
+    expect(parseCountCorrections(JSON.stringify(value)).lines[0]).toMatchObject({ expected_quantity: 5n,
+      available_quantity: 5n, effective_dispatch: BigInt(dispatch), reconciliation_revision: 9007199254740993n });
+  });
+  it('T4c requires current evidence and rejects contradictory zero revision and unexpected dispatch', () => {
+    for (const field of ['effective_dispatch', 'reconciliation_revision']) {
+      for (const bad of [undefined, null, 7, '01', '-1', '9223372036854775808']) {
+        expect(() => parseCountCorrections(JSON.stringify({ ...snapshot(), lines: [{ ...line(), [field]: bad }] }))).toThrow();
+      }
+    }
+    for (const patch of [{ effective_dispatch: '7' },
+      { expected_quantity: '0', effective_dispatch: '7', reconciliation_revision: '1' },
+      { expected_quantity: '0', effective_dispatch: '0', reconciliation_revision: '1' }]) {
+      expect(() => parseCountCorrections(JSON.stringify({ ...snapshot(), lines: [{ ...line(), ...patch }] }))).toThrow();
+    }
+    expect(parseCountCorrections(JSON.stringify({ ...snapshot(), lines: [{ ...line(), expected_quantity: '0',
+      available_quantity: '0', effective_dispatch: '0', effective_credit: '0' }] })).lines[0].effective_dispatch).toBe(0n);
+  });
   it.each(['7', '9223372036854775807'])('preserves reconciled credit %s above original dispatch without a count application', credit => {
     const value = { request_id: '9007199254740993', operations: [], lines: [{ variant_id: 201,
-      expected_quantity: '5', actual_quantity: '7', available_quantity: '5', workflow_revision: '0', applied_revision: '0',
+      expected_quantity: '5', effective_dispatch: credit, reconciliation_revision: '1', actual_quantity: '7', available_quantity: '5', workflow_revision: '0', applied_revision: '0',
       effective_actual: credit, effective_credit: credit, proposals: [] }] };
     expect(parseCountCorrections(JSON.stringify(value)).lines[0]).toMatchObject({ expected_quantity: 5n,
       available_quantity: 5n, applied_revision: 0n, effective_actual: BigInt(credit), effective_credit: BigInt(credit) });

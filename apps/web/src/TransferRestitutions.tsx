@@ -31,7 +31,7 @@ export default function TransferRestitutions(props: TransferRestitutionsProps) {
 }
 interface Draft { action: RestitutionAction; pin: RestitutionReviewPin; quantity: string; reason: string; attested: boolean; trigger: HTMLElement;
   capture: { record: TransferRecord; snapshot: Restitutions; line: RestitutionLine } }
-const balance = (line: RestitutionLine) => line.expected_quantity - line.effective_credit - line.applied_retained_quantity;
+const balance = (line: RestitutionLine) => line.effective_dispatch - line.effective_credit - line.applied_retained_quantity;
 const labels = { propose: 'Proponer restitución', accept: 'Aceptar restitución', reject: 'Rechazar restitución' };
 const confirms = { propose: 'Confirmar propuesta', accept: 'Confirmar aceptación', reject: 'Confirmar rechazo' };
 const states = { pending: 'Pendiente', superseded: 'Reemplazada', rejected: 'Rechazada', applied: 'Aplicada' };
@@ -166,7 +166,7 @@ function Section(props: TransferRestitutionsProps) {
         ...(draft.action === 'propose' ? { retained_quantity: draft.quantity, retained_at_origin: true as const } : {}) });
       if (draft.action === 'propose') {
         const normalized = normalizeRestitutionProposal(input as RestitutionProposalInput);
-        if (normalized.retained_quantity > line.expected_quantity - line.effective_credit - line.applied_retained_quantity) throw new Error('Exceeds outstanding debit');
+        if (normalized.retained_quantity > balance(line)) throw new Error('Exceeds outstanding debit');
       } else normalizeRestitutionDecision(input);
       setReview({ draft: { ...draft }, input, snapshot }); setMessage('');
     } catch { setMessage(draft.action === 'propose'
@@ -305,7 +305,7 @@ function Section(props: TransferRestitutionsProps) {
           <dt>Crédito original en destino</dt><dd>{line.original_credit.toString()}</dd></dl>
       </details>}
       <details className="restitution-rules"><summary>¿Cómo funciona la restitución de origen?</summary>
-        <p>El máximo es capacidad matemática: enviadas menos crédito efectivo en destino menos restitución aplicada. No confirma retención física ni inventario disponible.</p>
+        <p>El máximo es capacidad matemática: despacho vigente confirmado menos crédito efectivo en destino menos restitución aplicada. No confirma retención física ni inventario disponible.</p>
         <p>Proponer o rechazar no mueve stock. Aceptar acredita existencias en origen una sola vez; destino, conteos y reservas no cambian.</p>
         <p>{record.origin_location_name} debe declarar la retención física; {record.destination_location_name} revisa la propuesta. Las acciones habilitadas abren motivo y revisión, no ejecutan cambios directos.</p>
         <p>Una consulta no garantiza que una acción esté habilitada: también debe cumplir las condiciones vigentes de la transferencia.</p>

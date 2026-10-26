@@ -38,7 +38,7 @@ function emptyHistory() {
   return captureRestitutions({ ...h, operations: [], lines: [{ ...h.lines[0], workflow_revision: 0n, proposals: [] }] });
 }
 function emptyCount(): CountCorrections {
-  return captureCountCorrections({ request_id: id, operations: [], lines: [{ variant_id: 201, expected_quantity: 5n,
+  return captureCountCorrections({ request_id: id, operations: [], lines: [{ variant_id: 201, expected_quantity: 5n, effective_dispatch: 5n, reconciliation_revision: 0n,
     actual_quantity: 4n, available_quantity: 4n, workflow_revision: 0n, applied_revision: 0n, effective_actual: 4n,
     effective_credit: 4n, proposals: [] }] });
 }
@@ -106,7 +106,7 @@ describe('reviewed acceptance evidence', () => {
     expect(r.finish(retry, operation('accept'))).toBe(true);
     expect(r.consumeConfirmations(owner)).toEqual([operation('accept')]);
   });
-  it.each(['quantity', 'expected', 'original-credit', 'proposal-key', 'proposal-reason', 'predecessor', 'proposal-time', 'origin', 'destination'] as const)(
+  it.each(['quantity', 'expected', 'original-credit', 'proposal-key', 'proposal-reason', 'predecessor', 'proposal-time', 'origin', 'destination', 'dispatch-pin'] as const)(
     'refuses internally valid rewritten historical %s', field => {
       const { r, owner, pin, input } = setup('accept'); const flight = r.start(pin, input)!; r.release(flight);
       const h = structuredClone(decidedHistory('accept')); const line = h.lines[0]; const p = line.proposals[0];
@@ -120,6 +120,7 @@ describe('reviewed acceptance evidence', () => {
         Object.assign(p, { base_dispatch: 6n });
       }
       if (field === 'original-credit') Object.assign(line, { original_credit: 3n, effective_credit: 3n });
+      if (field === 'dispatch-pin') Object.assign(p, { base_dispatch: 6n });
       if (field === 'proposal-key') {
         Object.assign(p, { operation_key: 'rewritten_proposal_01' }); Object.assign(h.operations[0], { operation_key: p.operation_key });
       }
@@ -340,6 +341,64 @@ describe('split evidence dependencies', () => {
 });
 
 describe('cross-workflow reconciliation and conservation', () => {
+  function reconciled() {
+    const h = structuredClone(countedRestitution()); const c = structuredClone(countHistory());
+    Object.assign(h.lines[0], { effective_dispatch: 7n, reconciliation_revision: 1n, effective_credit: 6n });
+    Object.assign(h.lines[0].proposals[0], { base_dispatch: 7n, base_credit: 6n });
+    Object.assign(c.lines[0], { effective_dispatch: 7n, reconciliation_revision: 1n, effective_credit: 6n, effective_actual: 6n });
+    // Reconciliation happened before the third count proposal; the preceding count credit was 4.
+    Object.assign(c.lines[0].proposals[2], { base_credit: 7n, actual_quantity: 6n,
+      application: { effective_credit: 6n, delta: -1n, recorded_at: stamp } });
+    Object.assign(c.operations[3], { actual_quantity: 6n });
+    return { h, c };
+  }
+  it('T4c uses summed cross-workflow credit and current dispatch, preserving exact acceptance retry', () => {
+    const { h, c } = reconciled(); const r = createTransferRestitutionRecovery();
+    r.observe(destination, h, true); r.observeCount(destination, c, true);
+    const pin = r.review(destination, record(), 201, 'accept'); expect(pin).not.toBeNull();
+    const flight = r.start(pin!, decisionInput)!; expect(flight).not.toBeNull(); r.release(flight);
+    r.invalidate(destination, id, 'count');
+    const retry = r.claim(destination, id, 201)!;
+    expect(restitutionRetryPayload(retry.attempt)).toEqual(decisionInput);
+    expect(r.finish(retry, operation('accept'))).toBe(true);
+    expect(r.consumeConfirmations(destination)).toEqual([operation('accept')]);
+    expect(r.consumeConfirmations(destination)).toEqual([]);
+  });
+  it.each(['dispatch', 'reconciliation', 'closed-budget', 'historical-pin'] as const)('T4c blocks %s mismatch without gating rejection', field => {
+    const { h, c } = reconciled(); const r = createTransferRestitutionRecovery();
+    r.observe(destination, h, true); r.observeCount(destination, c, true);
+    expect(r.review(destination, record(), 201, 'accept')).not.toBeNull();
+    if (field === 'dispatch') Object.assign(c.lines[0], { effective_dispatch: 8n });
+    if (field === 'reconciliation') Object.assign(c.lines[0], { reconciliation_revision: 2n });
+    if (field === 'closed-budget') {
+      Object.assign(h.lines[0], { effective_dispatch: 6n, reconciliation_revision: 2n });
+      Object.assign(c.lines[0], { effective_dispatch: 6n, reconciliation_revision: 2n });
+    }
+    if (field === 'historical-pin') Object.assign(h.lines[0].proposals[0], { base_dispatch: 8n });
+    r.observe(destination, h, true); r.observeCount(destination, c, true);
+    expect(r.review(destination, record(), 201, 'accept')).toBeNull();
+    expect(r.get(destination, id)).toEqual([]); expect(r.consumeConfirmations(destination)).toEqual([]);
+    const reject = r.review(destination, record(), 201, 'reject'); expect(reject).not.toBeNull();
+    expect(r.start(reject!, decisionInput)).not.toBeNull();
+  });
+  it.each(['effective_dispatch', 'reconciliation_revision'] as const)('T4c retires prior consent when only %s changes', field => {
+    const { h, c } = reconciled(); const r = createTransferRestitutionRecovery();
+    r.observe(destination, h, true); r.observeCount(destination, c, true);
+    const pin = r.review(destination, record(), 201, 'accept'); expect(pin).not.toBeNull();
+    Object.assign(c.lines[0], { [field]: c.lines[0][field] + 1n }); r.observeCount(destination, c, true);
+    expect(r.start(pin!, decisionInput)).toBeNull(); expect(r.get(destination, id)).toEqual([]);
+  });
+  it('T4c has no restitution budget after reconciliation without a count application', () => {
+    const h = structuredClone(emptyHistory()); const c = structuredClone(emptyCount()); const header = structuredClone(record());
+    Object.assign(header, { receipt: { items: [{ variant_id: 201, expected_quantity: 5n, actual_quantity: 7n, available_quantity: 5n }],
+      exceptions: [{ variant_id: 201, kind: 'excess', quantity: 2n }] } });
+    Object.assign(h.lines[0], { original_credit: 5n, effective_dispatch: 7n, reconciliation_revision: 1n, effective_credit: 7n });
+    Object.assign(c.lines[0], { actual_quantity: 7n, available_quantity: 5n, effective_actual: 7n,
+      effective_dispatch: 7n, reconciliation_revision: 1n, effective_credit: 7n });
+    const r = createTransferRestitutionRecovery(); r.observe(origin, h, true); r.observeCount(origin, c, true);
+    // No remaining budget: reconciliation is not proof of retained stock.
+    expect(r.review(origin, header, 201, 'propose')).toBeNull(); expect(r.get(origin, id)).toEqual([]);
+  });
   it('counts replacement, rejection and zero-delta acceptance as operations, not proposal revisions', () => {
     const r = createTransferRestitutionRecovery(); const history = countedRestitution();
     r.observe(destination, history, true); r.observeCount(destination, countHistory(), true);
@@ -366,7 +425,7 @@ describe('cross-workflow reconciliation and conservation', () => {
     r.observe(destination, h, true); r.observeCount(destination, c, true);
     expect(r.review(destination, record(), 201, 'accept')).not.toBeNull();
     const line = c.lines[0];
-    if (field === 'expected') Object.assign(line, { expected_quantity: 6n });
+    if (field === 'expected') Object.assign(line, { expected_quantity: 6n, effective_dispatch: 6n });
     if (field === 'applied') Object.assign(line, { applied_revision: 2n });
     if (field === 'credit') Object.assign(line, { effective_credit: 3n });
     if (field === 'generation' || field === 'missing-operation') Object.assign(c, { operations: c.operations.slice(1) });
@@ -612,7 +671,7 @@ describe('alternate and historical controls', () => {
       exceptions: [{ variant_id: 201, kind: 'shortage', quantity: 2n }] } });
     const partial = captureRestitutions({ ...h, lines: [{ ...h.lines[0], expected_quantity: 6n, effective_dispatch: 6n,
       proposals: h.lines[0].proposals.map(p => ({ ...p, base_dispatch: 6n })) }] });
-    const count = captureCountCorrections({ ...emptyCount(), lines: [{ ...emptyCount().lines[0], expected_quantity: 6n }] });
+    const count = captureCountCorrections({ ...emptyCount(), lines: [{ ...emptyCount().lines[0], expected_quantity: 6n, effective_dispatch: 6n }] });
     r.observe(origin, partial, true); r.observeCount(origin, count, true);
     expect(partial.lines[0].expected_quantity - partial.lines[0].effective_credit - partial.lines[0].applied_retained_quantity).toBe(1n);
     expect(r.review(origin, header, 201, 'propose')).toBeNull();

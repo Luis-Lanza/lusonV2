@@ -412,7 +412,7 @@ again. Lines proceed independently. The transfer remains `received`; a current
 undecided proposal contributes one required review to the counterpart's workflow
 count, irrespective of how many lines need review.
 
-For expected lines, accepted credit is `min(corrected actual, dispatched)`.
+For expected lines, accepted credit is `min(corrected actual, effective dispatch)`.
 Destination inventory changes by that credit **minus latest effective credit**,
 not minus the original receipt credit repeatedly. Nonnegative stock, reserved
 coverage and int64 overflow remain enforced atomically. Unexpected lines
@@ -491,6 +491,7 @@ snapshot. Original and effective evidence are explicit, not merged into receipt:
   "lines":[{
     "variant_id":1,"expected_quantity":"1","actual_quantity":"1","available_quantity":"1",
     "workflow_revision":"1","applied_revision":"1","effective_actual":"0","effective_credit":"0",
+    "effective_dispatch":"1","reconciliation_revision":"0",
     "proposals":[{
       "revision":"1","operation_key":"count-downward-key-001","initiator_location_id":1,
       "actual_quantity":"0","base_revision":"0","base_credit":"1","reason":"recount",
@@ -510,6 +511,12 @@ Line `actual_quantity` / `available_quantity` are immutable **original** actual 
 credit. `workflow_revision` includes pending/superseded/rejected proposals;
 `applied_revision` tracks latest accepted application, initially `"0"`.
 `effective_actual` / `effective_credit` begin at original receipt values.
+Required `effective_dispatch` and `reconciliation_revision` are canonical int64
+nonnegative decimal strings derived from the same effective-line snapshot as
+credit. Revision `"0"` requires original dispatch; unexpected variants require
+both fields to be `"0"`. Missing evidence is rejected, never defaulted. Original
+`expected_quantity` and `available_quantity` remain unchanged. Reconciliation
+can make current credit exceed original dispatch even with no count application.
 `proposals` contains ordered history with states `pending`, `superseded`,
 `rejected`, `applied`. Proposal `base_revision` / `base_credit` identify the prior
 applied revision/credit. Decision is null until decided; application is null
@@ -581,10 +588,20 @@ For original dispatch/credit 5 and reconciled dispatch/credit 7, the line expose
 Migration 013 adds `transfer_dispatch_reconcile(request_id, variant_id,
 actor_location_id, operation_key, action, expected_revision, dispatch_quantity,
 reason)`. **No reconciliation HTTP route or public action projection is exposed
-in this slice.** The existing restitution GET DTO/strict decoder consumes the
-validated dispatch fields above. Existing recovery and UI previews still assume
-original dispatch and must be adapted before reconciliation mutations become
-reachable. Do not expose this SQL workflow through an ad-hoc HTTP handler.
+in this slice.** Existing count previews use `min(effective_dispatch, proposed
+actual)`; restitution uses the mathematical budget `D-C-R`, not evidence of
+physical retention. Cross-workflow recovery requires matching request, variant,
+count heads, effective credit, dispatch and reconciliation revision. Dispatch-only
+changes retire captured reviews. Rejection does not require acceptance-only
+count evidence. Historical proposal `base_dispatch` remains its original pin;
+today's dispatch never rewrites past consent or exact retry payloads.
+
+For original dispatch 5, current dispatch/credit 7 and proposed count 8, preview
+credit is 7 and delta is 0. After count 7→6, budget is 1; after dispatch becomes
+6, budget is 0. Current credit is not reconstructed from the latest count
+application alone. Missing or contradictory reads require explicit consultation.
+Received-table integration and new reconciliation Store/API/UI remain separate
+work. Do not expose this SQL workflow through an ad-hoc HTTP handler.
 
 For one originally expected variant of a Received transfer, either physical
 endpoint may propose; only the opposite endpoint may accept or reject. Only the
