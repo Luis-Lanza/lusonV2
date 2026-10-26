@@ -18,11 +18,12 @@ const op = (action = 'propose', patch: Record<string, unknown> = {}) => ({
 });
 const proposal = () => ({ revision: '1', operation_key: input().operation_key, initiator_location_id: 1,
   retained_quantity: '1', retained_at_origin: true, base_revision: '0', count_generation: '0', count_applied_revision: '0',
-  base_credit: '4', base_restitution: '0', reason: input().reason, recorded_at: stamp, state: 'applied',
+  base_dispatch: '5', base_credit: '4', base_restitution: '0', reason: input().reason, recorded_at: stamp, state: 'applied',
   decision: { operation_key: 'restitution_dec_001', actor_location_id: 2, accepted: true, reason: '  confirmed  ', recorded_at: stamp },
   application: { operation_key: 'restitution_dec_001', origin_location_id: 1, quantity: '1', recorded_at: stamp },
 });
 const snapshot = () => ({ request_id: '9007199254740993', lines: [{ variant_id: 1, expected_quantity: '5', original_credit: '4',
+  effective_dispatch: '5', reconciliation_revision: '0',
   workflow_revision: '1', applied_revision: '1', count_generation: '0', count_applied_revision: '0', effective_credit: '4',
   applied_retained_quantity: '1', proposals: [proposal()] }], operations: [op(), op('accept')] });
 const parse = (value: unknown) => parseRestitutions(JSON.stringify(value));
@@ -226,6 +227,64 @@ describe('closed lossless wire evidence', () => {
   });
 });
 
+describe('reconciled dispatch contract', () => {
+  const reconciled = (dispatch = '7', revision = '1') => {
+    const s = snapshot();
+    Object.assign(s.lines[0], { original_credit: '5', effective_dispatch: dispatch, reconciliation_revision: revision,
+      effective_credit: dispatch, workflow_revision: '0', applied_revision: '0', applied_retained_quantity: '0', proposals: [] });
+    s.operations = [];
+    return s;
+  };
+  it('accepts repeated upward/downward snapshots without changing original evidence or count pins', () => {
+    for (const [dispatch, revision] of [['7', '1'], ['8', '2'], ['6', '3'], ['0', '4'], ['9223372036854775807', '9223372036854775807']]) {
+      const s = reconciled(dispatch, revision); const before = structuredClone(s);
+      expect(parse(s).lines[0]).toMatchObject({ expected_quantity: 5n, original_credit: 5n,
+        effective_dispatch: BigInt(dispatch), reconciliation_revision: BigInt(revision), effective_credit: BigInt(dispatch), count_applied_revision: 0n });
+      expect(s).toEqual(before);
+    }
+  });
+  it('validates historical capacity against its own dispatch, not current or original dispatch', () => {
+    const s = snapshot(); const l = s.lines[0]; const p = l.proposals[0];
+    Object.assign(l, { effective_dispatch: '6', reconciliation_revision: '2', effective_credit: '6',
+      applied_revision: '0', applied_retained_quantity: '0' });
+    Object.assign(p, { base_dispatch: '7', base_credit: '6', state: 'pending', decision: null, application: null });
+    s.operations.pop();
+    expect(parse(s).lines[0].proposals[0]).toMatchObject({ base_dispatch: 7n, base_credit: 6n, retained_quantity: 1n });
+    p.base_dispatch = '6';
+    const before = structuredClone(s);
+    expect(() => parse(s)).toThrow('Invalid restitution evidence');
+    expect(s).toEqual(before);
+  });
+  it.each([
+    ['zero revision with changed dispatch', { reconciliation_revision: '0' }],
+    ['original credit exceeds original dispatch', { original_credit: '6' }],
+    ['effective credit exceeds effective dispatch', { effective_credit: '8' }],
+    ['restored plus credit exceeds effective dispatch', { applied_retained_quantity: '1' }],
+    ['negative dispatch', { effective_dispatch: '-1' }],
+    ['numeric dispatch', { effective_dispatch: 7 }],
+    ['numeric revision', { reconciliation_revision: 1 }],
+  ])('rejects %s without mutating input', (_name, patch) => {
+    const s = reconciled(); Object.assign(s.lines[0], patch); const before = structuredClone(s);
+    expect(() => parse(s)).toThrow('Invalid restitution evidence'); expect(s).toEqual(before);
+  });
+  it('rejects legacy snapshots missing all new required evidence', () => {
+    const s = snapshot();
+    const l = s.lines[0] as Record<string, unknown>;
+    delete l.effective_dispatch; delete l.reconciliation_revision;
+    delete (s.lines[0].proposals[0] as Record<string, unknown>).base_dispatch;
+    const before = structuredClone(s);
+    expect(() => parse(s)).toThrow('Invalid restitution evidence'); expect(s).toEqual(before);
+  });
+  it('requires each new field even when legacy evidence would otherwise be valid', () => {
+    for (const field of ['effective_dispatch', 'reconciliation_revision', 'base_dispatch']) {
+      const s = snapshot();
+      const target = (field === 'base_dispatch' ? s.lines[0].proposals[0] : s.lines[0]) as Record<string, unknown>;
+      delete target[field]; const before = structuredClone(s);
+      expect(() => parse(s)).toThrow('Invalid restitution evidence'); expect(s).toEqual(before);
+    }
+  });
+});
+
 describe('Store history consistency', () => {
   const mutations: [string, (s: Snapshot) => void][] = [
     ['empty expected lines', s => { s.lines = []; }],
@@ -295,9 +354,9 @@ describe('Store history consistency', () => {
   };
   it('keeps MaxInt64 line conservation and operation-count pins lossless', () => {
     const s = snapshot(); const l = s.lines[0]; const p = l.proposals[0];
-    Object.assign(l, { expected_quantity: '9223372036854775807', original_credit: '9007199254740993',
+    Object.assign(l, { expected_quantity: '9223372036854775807', effective_dispatch: '9223372036854775807', original_credit: '9007199254740993',
       effective_credit: '9007199254740993', count_generation: '9223372036854775807', count_applied_revision: '9007199254740994' });
-    Object.assign(p, { base_credit: '9007199254740993', count_generation: '9007199254740995', count_applied_revision: '9007199254740994' });
+    Object.assign(p, { base_dispatch: '9223372036854775807', base_credit: '9007199254740993', count_generation: '9007199254740995', count_applied_revision: '9007199254740994' });
     expect(parse(s).lines[0]).toMatchObject({ expected_quantity: 9223372036854775807n,
       effective_credit: 9007199254740993n, count_generation: 9223372036854775807n });
     l.effective_credit = '9223372036854775807';

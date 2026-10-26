@@ -38,11 +38,11 @@ function operation(action: 'propose' | 'accept' | 'reject' = 'accept'): Restitut
     source_existing_before: action === 'accept' ? 10n : null, source_existing_after: action === 'accept' ? 11n : null, recorded_at: stamp };
 }
 function history(proposed = true) {
-  return captureRestitutions({ request_id: BigInt(id), lines: [{ variant_id: 201, expected_quantity: 5n, original_credit: 4n,
+  return captureRestitutions({ request_id: BigInt(id), lines: [{ variant_id: 201, expected_quantity: 5n, effective_dispatch: 5n, reconciliation_revision: 0n, original_credit: 4n,
     workflow_revision: proposed ? 1n : 0n, applied_revision: 0n, count_generation: 0n, count_applied_revision: 0n, effective_credit: 4n,
     applied_retained_quantity: 0n, proposals: proposed ? [{ revision: 1n, operation_key: proposalInput.operation_key, initiator_location_id: 1,
       retained_quantity: 1n, retained_at_origin: true, base_revision: 0n, count_generation: 0n, count_applied_revision: 0n,
-      base_credit: 4n, base_restitution: 0n, reason: proposalInput.reason, recorded_at: stamp, state: 'pending', decision: null, application: null }] : [] }],
+      base_dispatch: 5n, base_credit: 4n, base_restitution: 0n, reason: proposalInput.reason, recorded_at: stamp, state: 'pending', decision: null, application: null }] : [] }],
     operations: proposed ? [operation('propose')] : [] });
 }
 function count() {

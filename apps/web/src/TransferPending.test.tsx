@@ -523,7 +523,7 @@ describe('F3 participant received chrome', () => {
       ? { creator_location_id: origin, creator_location_name: locations[origin - 1], decided_at: original.created_at } : {}) };
     const f = correctionFixture(actor, url => url.endsWith('/restitutions') ? Promise.resolve(reply({
       request_id: record.id, operations: [], lines: record.receipt.items.map(item => ({ variant_id: item.variant_id,
-        expected_quantity: item.expected_quantity, original_credit: item.available_quantity,
+        expected_quantity: item.expected_quantity, effective_dispatch: item.expected_quantity, reconciliation_revision: '0', original_credit: item.available_quantity,
         workflow_revision: '0', applied_revision: '0', count_generation: '0', count_applied_revision: '0',
         effective_credit: item.available_quantity, applied_retained_quantity: '0', proposals: [] })),
     })) : undefined, record);
@@ -598,7 +598,7 @@ describe('R6a received detail restitution composition', () => {
   it('mounts one controller-owned restitution lane after C4 and preserves original receipt through Back', async () => {
     const record = receivedWire();
     const f = correctionFixture(2, url => url.endsWith('/restitutions') ? Promise.resolve(reply({ request_id: record.id, operations: [],
-      lines: record.receipt.items.map(i => ({ variant_id: i.variant_id, expected_quantity: i.expected_quantity, original_credit: i.available_quantity,
+      lines: record.receipt.items.map(i => ({ variant_id: i.variant_id, expected_quantity: i.expected_quantity, effective_dispatch: i.expected_quantity, reconciliation_revision: '0', original_credit: i.available_quantity,
         workflow_revision: '0', applied_revision: '0', count_generation: '0', count_applied_revision: '0', effective_credit: i.available_quantity,
         applied_retained_quantity: '0', proposals: [] })) })) : undefined, record);
     f.controller.restitutionRecovery = createTransferRestitutionRecovery();

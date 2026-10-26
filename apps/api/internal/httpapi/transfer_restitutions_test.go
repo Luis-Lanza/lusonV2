@@ -158,6 +158,64 @@ func r4HTTPEffects(t *testing.T, f *transferHTTPFixture) string {
 	return fenceSnapshot(t, f) + countHTTPOriginal(t, f) + got
 }
 
+func TestR4RestitutionDispatchExactDTO(t *testing.T) {
+	s := &r4StoreStub{snapshot: transfers.Restitutions{RequestID: math.MaxInt64, Lines: []transfers.RestitutionLineState{{
+		VariantID: 1, ExpectedQuantity: 5, OriginalCredit: 5, EffectiveDispatch: math.MaxInt64,
+		ReconciliationRevision: math.MaxInt64, EffectiveCredit: 7,
+		Proposals: []transfers.RestitutionProposal{{BaseDispatch: 9007199254740993}},
+	}}}}
+	w := r4Dispatch(s, "", "")
+	root := transferObject(t, w, 200)
+	var lines []map[string]json.RawMessage
+	if err := json.Unmarshal(root["lines"], &lines); err != nil {
+		t.Fatal(err)
+	}
+	for field, want := range map[string]string{"expected_quantity": `"5"`, "original_credit": `"5"`, "effective_credit": `"7"`,
+		"effective_dispatch": `"9223372036854775807"`, "reconciliation_revision": `"9223372036854775807"`, "count_applied_revision": `"0"`} {
+		if string(lines[0][field]) != want {
+			t.Fatalf("lossy wire %s: %s", field, lines[0][field])
+		}
+	}
+	var proposals []map[string]json.RawMessage
+	if err := json.Unmarshal(lines[0]["proposals"], &proposals); err != nil || string(proposals[0]["base_dispatch"]) != `"9007199254740993"` {
+		t.Fatal("historical dispatch replaced or rounded", err)
+	}
+	if !reflect.DeepEqual(s.calls, []string{"get"}) {
+		t.Fatal("GET mutated Store")
+	}
+}
+
+func TestR4RestitutionDispatchContract(t *testing.T) {
+	f := transferFixture(t)
+	received := r4HTTPReceived(t, f)
+	path := "/api/transfers/" + received.ID + "/restitutions"
+	r4HTTPOperation(t, f.request(t, 1, "POST", path+"/propose", r4HTTPBody(1, "t4b-original-proposal", "0", "1", "retained")))
+	before := r4HTTPEffects(t, f)
+	w := f.request(t, 2, "GET", path, "")
+	root := transferObject(t, w, 200)
+	var lines []map[string]json.RawMessage
+	if err := json.Unmarshal(root["lines"], &lines); err != nil {
+		t.Fatal(err)
+	}
+	for field, want := range map[string]string{"expected_quantity": `"5"`, "original_credit": `"4"`, "effective_dispatch": `"5"`, "reconciliation_revision": `"0"`} {
+		if string(lines[0][field]) != want {
+			t.Fatalf("wire %s = %s, want %s", field, lines[0][field], want)
+		}
+	}
+	var proposals []map[string]json.RawMessage
+	if err := json.Unmarshal(lines[0]["proposals"], &proposals); err != nil || len(proposals) != 1 {
+		t.Fatal("proposal wire", err)
+	}
+	if string(proposals[0]["base_dispatch"]) != `"5"` || len(lines[0]) != 12 || len(proposals[0]) != 16 {
+		t.Fatal("required historical dispatch or exact keys missing")
+	}
+	expectTransferError(t, f.request(t, 3, "GET", path, ""), 404, "not_found")
+	expectTransferError(t, f.request(t, 1, "GET", path+"?", ""), 400, "invalid_request")
+	if r4HTTPEffects(t, f) != before {
+		t.Fatal("GET or invalid GET changed stock/history/counters")
+	}
+}
+
 func TestR4RestitutionHTTPAdmission(t *testing.T) {
 	f := transferFixture(t)
 	received := r4HTTPReceived(t, f)

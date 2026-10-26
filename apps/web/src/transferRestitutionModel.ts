@@ -53,6 +53,8 @@ export interface RestitutionApplication {
   readonly recorded_at: string;
 }
 export interface RestitutionProposal {
+  /** Dispatch pinned at proposal time, not the current line dispatch. */
+  readonly base_dispatch: bigint;
   readonly revision: bigint;
   readonly operation_key: string;
   readonly initiator_location_id: TransferLocationID;
@@ -72,6 +74,8 @@ export interface RestitutionProposal {
 export interface RestitutionLine {
   readonly variant_id: number;
   readonly expected_quantity: bigint;
+  readonly effective_dispatch: bigint;
+  readonly reconciliation_revision: bigint;
   readonly original_credit: bigint;
   readonly workflow_revision: bigint;
   readonly applied_revision: bigint;
@@ -204,21 +208,22 @@ function application(value: unknown): RestitutionApplication {
 }
 function proposal(value: unknown): RestitutionProposal {
   const o = object(value, ['revision', 'operation_key', 'initiator_location_id', 'retained_quantity', 'retained_at_origin',
-    'base_revision', 'count_generation', 'count_applied_revision', 'base_credit', 'base_restitution',
+    'base_revision', 'count_generation', 'count_applied_revision', 'base_dispatch', 'base_credit', 'base_restitution',
     'reason', 'recorded_at', 'state', 'decision', 'application']);
   const state = o.state;
   if (!['pending', 'superseded', 'rejected', 'applied'].includes(state as string) || o.retained_at_origin !== true) return invalid();
   return Object.freeze({ revision: decimal(o.revision, 1n), operation_key: key(o.operation_key),
     initiator_location_id: location(o.initiator_location_id), retained_quantity: decimal(o.retained_quantity, 1n), retained_at_origin: true,
     base_revision: decimal(o.base_revision), count_generation: decimal(o.count_generation), count_applied_revision: decimal(o.count_applied_revision),
-    base_credit: decimal(o.base_credit), base_restitution: decimal(o.base_restitution), reason: reason(o.reason),
+    base_dispatch: decimal(o.base_dispatch), base_credit: decimal(o.base_credit), base_restitution: decimal(o.base_restitution), reason: reason(o.reason),
     recorded_at: stamp(o.recorded_at), state: state as RestitutionState,
     decision: o.decision === null ? null : decision(o.decision), application: o.application === null ? null : application(o.application) });
 }
 function line(value: unknown): RestitutionLine {
-  const o = object(value, ['variant_id', 'expected_quantity', 'original_credit', 'workflow_revision', 'applied_revision',
+  const o = object(value, ['variant_id', 'expected_quantity', 'effective_dispatch', 'reconciliation_revision', 'original_credit', 'workflow_revision', 'applied_revision',
     'count_generation', 'count_applied_revision', 'effective_credit', 'applied_retained_quantity', 'proposals']);
   return Object.freeze({ variant_id: variant(o.variant_id), expected_quantity: decimal(o.expected_quantity, 1n),
+    effective_dispatch: decimal(o.effective_dispatch), reconciliation_revision: decimal(o.reconciliation_revision),
     original_credit: decimal(o.original_credit), workflow_revision: decimal(o.workflow_revision), applied_revision: decimal(o.applied_revision),
     count_generation: decimal(o.count_generation), count_applied_revision: decimal(o.count_applied_revision), effective_credit: decimal(o.effective_credit),
     applied_retained_quantity: decimal(o.applied_retained_quantity), proposals: array(o.proposals, proposal) });
@@ -244,10 +249,11 @@ function history(snapshot: Restitutions): void {
   }
   let previousVariant = 0;
   for (const l of snapshot.lines) {
-    if (l.variant_id <= previousVariant || l.original_credit > l.expected_quantity || l.effective_credit > l.expected_quantity
+    if (l.variant_id <= previousVariant || l.original_credit > l.expected_quantity || l.effective_credit > l.effective_dispatch
+      || l.reconciliation_revision === 0n && l.effective_dispatch !== l.expected_quantity
       || l.count_applied_revision > l.count_generation || l.workflow_revision !== BigInt(l.proposals.length)
-      || l.applied_retained_quantity > l.expected_quantity - l.effective_credit
-      || l.count_applied_revision === 0n && l.effective_credit !== l.original_credit) return invalid();
+      || l.applied_retained_quantity > l.effective_dispatch - l.effective_credit
+      || l.count_applied_revision === 0n && l.reconciliation_revision === 0n && l.effective_credit !== l.original_credit) return invalid();
     previousVariant = l.variant_id;
     let applied = 0n;
     let quantity = 0n;
@@ -262,8 +268,8 @@ function history(snapshot: Restitutions): void {
         || p.revision !== BigInt(j + 1) || op.revision !== p.revision || p.base_revision !== p.revision - 1n
         || p.retained_quantity !== op.retained_quantity || p.reason !== op.reason || p.recorded_at !== op.recorded_at
         || p.count_generation > l.count_generation || p.count_applied_revision > p.count_generation
-        || p.count_applied_revision > l.count_applied_revision || p.base_credit > l.expected_quantity
-        || p.base_restitution !== 0n || p.retained_quantity > l.expected_quantity - p.base_credit) return invalid();
+        || p.count_applied_revision > l.count_applied_revision || p.base_credit > p.base_dispatch
+        || p.base_restitution !== 0n || p.retained_quantity > p.base_dispatch - p.base_credit) return invalid();
       participant(p.initiator_location_id, true);
       used.add(p.operation_key);
       let state: RestitutionState = p.revision === l.workflow_revision ? 'pending' : 'superseded';

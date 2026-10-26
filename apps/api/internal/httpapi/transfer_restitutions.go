@@ -223,6 +223,7 @@ type restitutionApplicationDTO struct {
 	RecordedAt       string `json:"recorded_at"`
 }
 type restitutionProposalDTO struct {
+	BaseDispatch         string                     `json:"base_dispatch"`
 	Revision             string                     `json:"revision"`
 	OperationKey         string                     `json:"operation_key"`
 	InitiatorLocationID  int                        `json:"initiator_location_id"`
@@ -240,6 +241,8 @@ type restitutionProposalDTO struct {
 	Application          *restitutionApplicationDTO `json:"application"`
 }
 type restitutionLineDTO struct {
+	EffectiveDispatch       string                   `json:"effective_dispatch"`
+	ReconciliationRevision  string                   `json:"reconciliation_revision"`
 	VariantID               int64                    `json:"variant_id"`
 	ExpectedQuantity        string                   `json:"expected_quantity"`
 	OriginalCredit          string                   `json:"original_credit"`
@@ -288,6 +291,8 @@ func restitutionSnapshotRecord(snapshot transfers.Restitutions) restitutionSnaps
 	}
 	for _, line := range snapshot.Lines {
 		dto := restitutionLineDTO{
+			EffectiveDispatch:       countInt(line.EffectiveDispatch),
+			ReconciliationRevision:  countInt(line.ReconciliationRevision),
 			VariantID:               line.VariantID,
 			ExpectedQuantity:        countInt(line.ExpectedQuantity),
 			OriginalCredit:          countInt(line.OriginalCredit),
@@ -301,6 +306,7 @@ func restitutionSnapshotRecord(snapshot transfers.Restitutions) restitutionSnaps
 		}
 		for _, p := range line.Proposals {
 			proposal := restitutionProposalDTO{
+				BaseDispatch:         countInt(p.BaseDispatch),
 				Revision:             countInt(p.Revision),
 				OperationKey:         p.OperationKey,
 				InitiatorLocationID:  p.InitiatorLocationID,

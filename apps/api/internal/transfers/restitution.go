@@ -67,6 +67,8 @@ type RestitutionApplication struct {
 	RecordedAt       time.Time `json:"recorded_at"`
 }
 type RestitutionProposal struct {
+	// Populated only from validated companion evidence, never the legacy JSON.
+	BaseDispatch         int64                   `json:"-"`
 	Revision             int64                   `json:"revision"`
 	OperationKey         string                  `json:"operation_key"`
 	InitiatorLocationID  int                     `json:"initiator_location_id"`
@@ -84,6 +86,9 @@ type RestitutionProposal struct {
 	Application          *RestitutionApplication `json:"application"`
 }
 type RestitutionLineState struct {
+	// Derived from the same statement's validated private dispatch evidence.
+	EffectiveDispatch       int64                 `json:"-"`
+	ReconciliationRevision  int64                 `json:"-"`
 	VariantID               int64                 `json:"variant_id"`
 	ExpectedQuantity        int64                 `json:"expected_quantity"`
 	OriginalCredit          int64                 `json:"original_credit"`
@@ -297,6 +302,9 @@ func completeRestitutionJSON(raw json.RawMessage, typ reflect.Type) bool {
 		}
 		for i := 0; i < typ.NumField(); i++ {
 			f := typ.Field(i)
+			if f.Tag.Get("json") == "-" {
+				continue // Output-only evidence is validated separately.
+			}
 			v, ok := fields[f.Tag.Get("json")]
 			if !ok || !completeRestitutionJSON(v, f.Type) {
 				return false
@@ -379,6 +387,7 @@ func decodeRestitutionHistory(id int64, origin, destination int, lines, operatio
 		if l.CountAppliedRevision == 0 && reconciled == 0 && l.EffectiveCredit != l.OriginalCredit {
 			return Restitutions{}, ErrReadUnavailable
 		}
+		l.EffectiveDispatch, l.ReconciliationRevision = dispatch, reconciled
 		previousVariant = l.VariantID
 		var applied, quantity int64
 		for j := range l.Proposals {
@@ -404,6 +413,7 @@ func decodeRestitutionHistory(id int64, origin, destination int, lines, operatio
 			if p.CountAppliedRevision > l.CountAppliedRevision {
 				return Restitutions{}, ErrReadUnavailable
 			}
+			p.BaseDispatch = baseDispatch
 			used[p.OperationKey] = true
 			p.RecordedAt = p.RecordedAt.UTC()
 			state := "superseded"

@@ -27,11 +27,11 @@ function record() {
       exceptions: [{ variant_id: 201, kind: 'shortage', quantity: '1' }] } }));
 }
 function history(proposed = false): Restitutions {
-  return captureRestitutions({ request_id: BigInt(id), lines: [{ variant_id: 201, expected_quantity: 5n, original_credit: 4n,
+  return captureRestitutions({ request_id: BigInt(id), lines: [{ variant_id: 201, expected_quantity: 5n, effective_dispatch: 5n, reconciliation_revision: 0n, original_credit: 4n,
     workflow_revision: proposed ? 1n : 0n, applied_revision: 0n, count_generation: 0n, count_applied_revision: 0n, effective_credit: 4n,
     applied_retained_quantity: 0n, proposals: proposed ? [{ revision: 1n, operation_key: input.operation_key, initiator_location_id: 1,
       retained_quantity: 1n, retained_at_origin: true, base_revision: 0n, count_generation: 0n, count_applied_revision: 0n,
-      base_credit: 4n, base_restitution: 0n, reason: input.reason, recorded_at: stamp, state: 'pending', decision: null, application: null }] : [] }],
+      base_dispatch: 5n, base_credit: 4n, base_restitution: 0n, reason: input.reason, recorded_at: stamp, state: 'pending', decision: null, application: null }] : [] }],
     operations: proposed ? [operation()] : [] });
 }
 function operation(action: 'propose' | 'accept' | 'reject' = 'propose'): RestitutionOperation {

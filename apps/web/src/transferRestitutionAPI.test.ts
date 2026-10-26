@@ -12,7 +12,7 @@ const persisted = (action = 'propose') => ({ ...(action === 'propose' ? input() 
   retained_at_origin: action === 'propose' ? true : null, revision: '9007199254740994',
   source_existing_before: action === 'accept' ? '0' : null, source_existing_after: action === 'accept' ? '9223372036854775807' : null,
   recorded_at: '2026-01-02T03:04:05.000000001Z' });
-const empty = () => ({ request_id: id, lines: [{ variant_id: 1, expected_quantity: '5', original_credit: '4', workflow_revision: '0',
+const empty = () => ({ request_id: id, lines: [{ variant_id: 1, expected_quantity: '5', effective_dispatch: '5', reconciliation_revision: '0', original_credit: '4', workflow_revision: '0',
   applied_revision: '0', count_generation: '20', count_applied_revision: '3', effective_credit: '4', applied_retained_quantity: '0', proposals: [] }], operations: [] });
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 const rawResponse = (body: string, status = 200, media = 'application/json') => new Response(body, { status, headers: { 'Content-Type': media } });
@@ -61,7 +61,7 @@ describe('restitution UTF-8 wire admission', () => {
     const snapshot = { ...body, lines: [{ ...body.lines[0], workflow_revision: '1', proposals: [{
       revision: '1', operation_key: input().operation_key, initiator_location_id: 1, retained_quantity: '1',
       retained_at_origin: true, base_revision: '0', count_generation: '20', count_applied_revision: '3',
-      base_credit: '4', base_restitution: '0', reason: malformed ? 'WIRE_REASON' : '\uFFFD', recorded_at: persisted().recorded_at,
+      base_dispatch: '5', base_credit: '4', base_restitution: '0', reason: malformed ? 'WIRE_REASON' : '\uFFFD', recorded_at: persisted().recorded_at,
       state: 'pending', decision: null, application: null,
     }] }], operations: [{ ...persisted(), retained_quantity: '1', expected_revision: '0', revision: '1', reason: '\uFFFD' }] };
     const fetch = mockFetch().mockResolvedValue(wireResponse(snapshot, malformed ? [0xff] : undefined));

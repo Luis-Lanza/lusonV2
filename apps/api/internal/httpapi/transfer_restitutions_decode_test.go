@@ -207,11 +207,11 @@ func TestR4RestitutionDTOExactWire(t *testing.T) {
 	if len(root) != 3 || string(root["lines"]) != "[]" || string(root["operations"]) != "[]" || string(root["request_id"]) != `"9223372036854775807"` {
 		t.Fatal("root empty arrays or bigint wire")
 	}
-	p := transfers.RestitutionProposal{Revision: n, OperationKey: "p", InitiatorLocationID: 1, RetainedQuantity: n, RetainedAtOrigin: true, BaseRevision: n - 1, CountGeneration: n, CountAppliedRevision: n - 1, BaseCredit: n, BaseRestitution: n, Reason: "  evidence  ", RecordedAt: stamp, State: "applied", Decision: &transfers.RestitutionDecision{OperationKey: "d", ActorLocationID: 2, Accepted: true, Reason: "confirmed", RecordedAt: stamp}, Application: &transfers.RestitutionApplication{OperationKey: "d", OriginLocationID: 1, Quantity: n, RecordedAt: stamp}}
-	line := transfers.RestitutionLineState{VariantID: 1, ExpectedQuantity: n, OriginalCredit: n, WorkflowRevision: n, AppliedRevision: n, CountGeneration: n, CountAppliedRevision: n, EffectiveCredit: n, AppliedRetainedQuantity: n, Proposals: []transfers.RestitutionProposal{p}}
+	p := transfers.RestitutionProposal{Revision: n, OperationKey: "p", InitiatorLocationID: 1, RetainedQuantity: n, RetainedAtOrigin: true, BaseRevision: n - 1, CountGeneration: n, CountAppliedRevision: n - 1, BaseCredit: n, BaseRestitution: n, BaseDispatch: n, Reason: "  evidence  ", RecordedAt: stamp, State: "applied", Decision: &transfers.RestitutionDecision{OperationKey: "d", ActorLocationID: 2, Accepted: true, Reason: "confirmed", RecordedAt: stamp}, Application: &transfers.RestitutionApplication{OperationKey: "d", OriginLocationID: 1, Quantity: n, RecordedAt: stamp}}
+	line := transfers.RestitutionLineState{VariantID: 1, ExpectedQuantity: n, OriginalCredit: n, WorkflowRevision: n, AppliedRevision: n, CountGeneration: n, CountAppliedRevision: n, EffectiveCredit: n, EffectiveDispatch: n, ReconciliationRevision: n, AppliedRetainedQuantity: n, Proposals: []transfers.RestitutionProposal{p}}
 	root = r4Wire(t, restitutionSnapshotRecord(transfers.Restitutions{RequestID: n, Lines: []transfers.RestitutionLineState{line}, Operations: []transfers.RestitutionOperation{op}}))
 	var lines []map[string]json.RawMessage
-	if json.Unmarshal(root["lines"], &lines) != nil || len(lines) != 1 || len(lines[0]) != 10 {
+	if json.Unmarshal(root["lines"], &lines) != nil || len(lines) != 1 || len(lines[0]) != 12 {
 		t.Fatal("complete line contract")
 	}
 	for k, v := range lines[0] {
@@ -220,7 +220,7 @@ func TestR4RestitutionDTOExactWire(t *testing.T) {
 		}
 	}
 	var ps []map[string]json.RawMessage
-	if json.Unmarshal(lines[0]["proposals"], &ps) != nil || len(ps[0]) != 15 {
+	if json.Unmarshal(lines[0]["proposals"], &ps) != nil || len(ps[0]) != 16 {
 		t.Fatal("complete proposal contract")
 	}
 	for _, k := range []string{"base_revision", "count_applied_revision"} {
@@ -228,7 +228,7 @@ func TestR4RestitutionDTOExactWire(t *testing.T) {
 			t.Fatal("predecessor pins")
 		}
 	}
-	for _, k := range []string{"revision", "retained_quantity", "count_generation", "base_credit", "base_restitution"} {
+	for _, k := range []string{"revision", "retained_quantity", "count_generation", "base_credit", "base_restitution", "base_dispatch"} {
 		if string(ps[0][k]) != `"9223372036854775807"` {
 			t.Fatal("proposal bigint")
 		}

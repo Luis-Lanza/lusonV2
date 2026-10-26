@@ -550,13 +550,41 @@ not correction payloads. HTTP adds no redundant publication. Reads, replay,
 refusals and rollback emit no new mutation hints. Frontend transport, recovery,
 rendering and manual runtime acceptance remain separate units.
 
-## Dispatch reconciliation: database/private Store slice only
+## Restitution GET dispatch evidence
+
+The existing participant-private `GET /api/transfers/{id}/restitutions` response
+requires these additional canonical decimal-string fields (range `0` through
+`9223372036854775807`, never numeric JSON tokens or null):
+
+| Field | Meaning |
+|---|---|
+| `lines[].effective_dispatch` | Current dispatch from validated reconciliation evidence, otherwise original `expected_quantity` |
+| `lines[].reconciliation_revision` | Latest applied reconciliation revision; `"0"` requires effective dispatch equal to original dispatch |
+| `lines[].proposals[].base_dispatch` | Historical dispatch pinned by that proposal, **not** current dispatch; pre-013 evidence falls back to original dispatch |
+
+`expected_quantity` and `original_credit` remain immutable original evidence;
+original credit cannot exceed original dispatch. Effective credit plus applied
+retained quantity cannot exceed effective dispatch. Without either an applied
+count or reconciliation, effective credit must equal original credit. Historical
+proposal capacity is checked against its own `base_dispatch`. Existing operation
+links, count-generation pins, decisions, applications, nullable fields and
+chronology retain their contracts. Strict clients reject missing/unknown fields;
+no dispatch quantity is inferred from credit.
+
+For original dispatch/credit 5 and reconciled dispatch/credit 7, the line exposes
+`expected_quantity: "5"`, `original_credit: "5"`, `effective_dispatch: "7"`,
+`effective_credit: "7"`, `reconciliation_revision: "1"`, even when
+`count_applied_revision: "0"`. This changes existing read evidence only.
+
+## Dispatch reconciliation: unregistered mutation boundary
 
 Migration 013 adds `transfer_dispatch_reconcile(request_id, variant_id,
 actor_location_id, operation_key, action, expected_revision, dispatch_quantity,
 reason)`. **No reconciliation HTTP route or public action projection is exposed
-in this slice.** Public DTO/validator and UI integration remain a separate step;
-do not expose this SQL workflow through an ad-hoc HTTP handler.
+in this slice.** The existing restitution GET DTO/strict decoder consumes the
+validated dispatch fields above. Existing recovery and UI previews still assume
+original dispatch and must be adapted before reconciliation mutations become
+reachable. Do not expose this SQL workflow through an ad-hoc HTTP handler.
 
 For one originally expected variant of a Received transfer, either physical
 endpoint may propose; only the opposite endpoint may accept or reject. Only the
@@ -584,8 +612,9 @@ Restitution still requires origin attestation and destination consent; its
 capacity/conservation bound uses `D-C-R`. Original receipt/cart/dispatch and all
 previous application quantities retain their historical meanings. Private Store
 history reads use the shared snapshot, including reconciliation without a count
-application. Additional dispatch evidence used to validate restitution history
-stays internal; public original-line arithmetic validators are not relaxed.
+application. Only immediately consumed validated dispatch values are exposed by
+the existing restitution GET; private generation evidence stays internal. Public
+original-line arithmetic validators are not relaxed.
 
 All workflow writers share the reservation-integrity advisory lock before header
 and balance locks and require READ COMMITTED, including direct operation inserts.

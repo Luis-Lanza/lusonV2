@@ -20,11 +20,11 @@ function record() {
       exceptions: [{ variant_id: 201, kind: 'shortage', quantity: '1' }] } }));
 }
 function proposalHistory() {
-  return captureRestitutions({ request_id: id, lines: [{ variant_id: 201, expected_quantity: 5n, original_credit: 4n,
+  return captureRestitutions({ request_id: id, lines: [{ variant_id: 201, expected_quantity: 5n, effective_dispatch: 5n, reconciliation_revision: 0n, original_credit: 4n,
     workflow_revision: 1n, applied_revision: 0n, count_generation: 0n, count_applied_revision: 0n, effective_credit: 4n,
     applied_retained_quantity: 0n, proposals: [{ revision: 1n, operation_key: 'retained_proposal_01', initiator_location_id: 1,
       retained_quantity: 1n, retained_at_origin: true, base_revision: 0n, count_generation: 0n, count_applied_revision: 0n,
-      base_credit: 4n, base_restitution: 0n, reason: ' retained at origin ', recorded_at: stamp, state: 'pending', decision: null, application: null }] }],
+      base_dispatch: 5n, base_credit: 4n, base_restitution: 0n, reason: ' retained at origin ', recorded_at: stamp, state: 'pending', decision: null, application: null }] }],
     operations: [{ operation_key: 'retained_proposal_01', request_id: id, variant_id: 201, actor_location_id: 1, action: 'propose',
       expected_revision: 0n, retained_quantity: 1n, retained_at_origin: true, reason: ' retained at origin ', revision: 1n,
       source_existing_before: null, source_existing_after: null, recorded_at: stamp }] });
@@ -111,11 +111,14 @@ describe('reviewed acceptance evidence', () => {
       const { r, owner, pin, input } = setup('accept'); const flight = r.start(pin, input)!; r.release(flight);
       const h = structuredClone(decidedHistory('accept')); const line = h.lines[0]; const p = line.proposals[0];
       if (field === 'quantity') {
-        Object.assign(line, { expected_quantity: 6n, applied_retained_quantity: 2n });
-        Object.assign(p, { retained_quantity: 2n }); Object.assign(p.application!, { quantity: 2n });
+        Object.assign(line, { expected_quantity: 6n, effective_dispatch: 6n, applied_retained_quantity: 2n });
+        Object.assign(p, { base_dispatch: 6n, retained_quantity: 2n }); Object.assign(p.application!, { quantity: 2n });
         Object.assign(h.operations[0], { retained_quantity: 2n }); Object.assign(h.operations[1], { source_existing_after: 12n });
       }
-      if (field === 'expected') Object.assign(line, { expected_quantity: 6n });
+      if (field === 'expected') {
+        Object.assign(line, { expected_quantity: 6n, effective_dispatch: 6n });
+        Object.assign(p, { base_dispatch: 6n });
+      }
       if (field === 'original-credit') Object.assign(line, { original_credit: 3n, effective_credit: 3n });
       if (field === 'proposal-key') {
         Object.assign(p, { operation_key: 'rewritten_proposal_01' }); Object.assign(h.operations[0], { operation_key: p.operation_key });
@@ -607,7 +610,8 @@ describe('alternate and historical controls', () => {
     header.items[0].quantity = 6n;
     Object.assign(header, { receipt: { items: [{ variant_id: 201, expected_quantity: 6n, actual_quantity: 4n, available_quantity: 4n }],
       exceptions: [{ variant_id: 201, kind: 'shortage', quantity: 2n }] } });
-    const partial = captureRestitutions({ ...h, lines: [{ ...h.lines[0], expected_quantity: 6n }] });
+    const partial = captureRestitutions({ ...h, lines: [{ ...h.lines[0], expected_quantity: 6n, effective_dispatch: 6n,
+      proposals: h.lines[0].proposals.map(p => ({ ...p, base_dispatch: 6n })) }] });
     const count = captureCountCorrections({ ...emptyCount(), lines: [{ ...emptyCount().lines[0], expected_quantity: 6n }] });
     r.observe(origin, partial, true); r.observeCount(origin, count, true);
     expect(partial.lines[0].expected_quantity - partial.lines[0].effective_credit - partial.lines[0].applied_retained_quantity).toBe(1n);

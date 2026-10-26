@@ -70,6 +70,13 @@ describe('count correction operation', () => {
 });
 
 describe('count correction history', () => {
+  it.each(['7', '9223372036854775807'])('preserves reconciled credit %s above original dispatch without a count application', credit => {
+    const value = { request_id: '9007199254740993', operations: [], lines: [{ variant_id: 201,
+      expected_quantity: '5', actual_quantity: '7', available_quantity: '5', workflow_revision: '0', applied_revision: '0',
+      effective_actual: credit, effective_credit: credit, proposals: [] }] };
+    expect(parseCountCorrections(JSON.stringify(value)).lines[0]).toMatchObject({ expected_quantity: 5n,
+      available_quantity: 5n, applied_revision: 0n, effective_actual: BigInt(credit), effective_credit: BigInt(credit) });
+  });
   it('preserves all persisted states, original/effective evidence, signed delta and deep immutability', () => {
     const result = parseCountCorrections(JSON.stringify(snapshot()));
     expect(result.lines[0].proposals.map(p => p.state)).toEqual(['applied', 'superseded', 'rejected', 'pending']);

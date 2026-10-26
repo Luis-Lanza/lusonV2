@@ -27,11 +27,11 @@ function fixture(actor = 1, proposed = false, dispatched = '5', multiple = false
     subscribeTransferInvalidation: l => { listeners.add(l); return () => { listeners.delete(l); }; },
     settleUnauthorized: vi.fn(async () => 'unavailable' as const), restitutionRecovery: createTransferRestitutionRecovery(), confirmTransferRestitution: vi.fn() };
   const proposal = { revision: '1', operation_key: 'retained_proposal_01', initiator_location_id: 1, retained_quantity: '1', retained_at_origin: true,
-    base_revision: '0', count_generation: '0', count_applied_revision: '0', base_credit: '4', base_restitution: '0', reason: ' origin evidence ', recorded_at: stamp,
+    base_revision: '0', count_generation: '0', count_applied_revision: '0', base_dispatch: dispatched, base_credit: '4', base_restitution: '0', reason: ' origin evidence ', recorded_at: stamp,
     state: 'pending', decision: null, application: null };
   const history = { request_id: id, operations: proposed ? [{ request_id: id, variant_id: 201, operation_key: proposal.operation_key, actor_location_id: 1,
     action: 'propose', expected_revision: '0', retained_quantity: '1', retained_at_origin: true, reason: proposal.reason, revision: '1',
-    source_existing_before: null, source_existing_after: null, recorded_at: stamp }] : [], lines: [{ variant_id: 201, expected_quantity: dispatched, original_credit: '4',
+    source_existing_before: null, source_existing_after: null, recorded_at: stamp }] : [], lines: [{ variant_id: 201, expected_quantity: dispatched, effective_dispatch: dispatched, reconciliation_revision: '0', original_credit: '4',
     workflow_revision: proposed ? '1' : '0', applied_revision: '0', count_generation: '0', count_applied_revision: '0', effective_credit: '4', applied_retained_quantity: '0', proposals: proposed ? [proposal] : [] }] };
   if (multiple) history.lines.push({ ...history.lines[0], variant_id: 202, proposals: [] });
   let fail = false; let mask = false;
