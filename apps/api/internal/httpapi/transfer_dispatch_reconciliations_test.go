@@ -11,7 +11,7 @@ import (
 	"luson/api/internal/transfers"
 )
 
-// Only this test mux exposes prepared handlers. Authentication and mutation
+// Only this test mux exposes prepared mutation handlers. Authentication and mutation
 // guards execute inside the real API handler; path admission is production code.
 func dr3Route(f *transferHTTPFixture) {
 	production := f.handler
@@ -44,14 +44,10 @@ func dr3Body(key, revision, quantity string) string {
 	}
 	return body
 }
-func TestDR3HTTPReadPrepared(t *testing.T) {
+func TestDR3HTTPReadRegistered(t *testing.T) {
 	f := transferFixture(t)
 	received := countHTTPReceived(t, f)
 	path := "/api/transfers/" + received.ID + "/dispatch-reconciliations"
-	if w := f.request(t, 2, "GET", path, ""); w.Code != 404 {
-		t.Fatal("production route exposed")
-	}
-	dr3Route(f)
 	w := f.request(t, 2, "GET", path, "")
 	var state dispatchReconciliationSnapshotDTO
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &state) != nil || len(state.Lines) != 2 || state.Operations == nil {

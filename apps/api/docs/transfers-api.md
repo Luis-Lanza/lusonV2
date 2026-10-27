@@ -42,6 +42,7 @@ never registers transfers: those routes remain 404 for legacy callers.
 | `/api/transfers/{id}/receive` | POST | Destination-only current persisted receipt outcome |
 | `/api/transfers/{id}/cancel` | POST | Creator-only persisted Cancelled outcome before dispatch |
 | `/api/transfers/{id}/count-corrections` | GET | Participant-private original/effective/history snapshot |
+| `/api/transfers/{id}/dispatch-reconciliations` | GET | Received participant-private original/current/history snapshot; mutations unavailable |
 | `/api/transfers/{id}/count-corrections/propose` | POST | Immutable persisted proposal operation, 200 first/replay |
 | `/api/transfers/{id}/count-corrections/accept` | POST | Immutable persisted acceptance operation, 200 first/replay |
 | `/api/transfers/{id}/count-corrections/reject` | POST | Immutable persisted rejection operation, 200 first/replay |
@@ -587,8 +588,8 @@ For original dispatch/credit 5 and reconciled dispatch/credit 7, the line expose
 
 Migration 013 adds `transfer_dispatch_reconcile(request_id, variant_id,
 actor_location_id, operation_key, action, expected_revision, dispatch_quantity,
-reason)`. **No reconciliation HTTP route or public action projection is exposed
-in this slice.** Existing count previews use `min(effective_dispatch, proposed
+reason)`. **Only reconciliation GET is registered; mutation routes and public
+action discovery remain unavailable.** Existing count previews use `min(effective_dispatch, proposed
 actual)`; restitution uses the mathematical budget `D-C-R`, not evidence of
 physical retention. Cross-workflow recovery requires matching request, variant,
 count heads, effective credit, dispatch and reconciliation revision. Dispatch-only
@@ -600,9 +601,10 @@ For original dispatch 5, current dispatch/credit 7 and proposed count 8, preview
 credit is 7 and delta is 0. After count 7→6, budget is 1; after dispatch becomes
 6, budget is 0. Current credit is not reconstructed from the latest count
 application alone. Missing or contradictory reads require explicit consultation.
-Received-table integration, route registration and reconciliation client/UI remain
-separate work. The prepared HTTP contract below is **UNREGISTERED**: normal
-production handlers still return 404 for these paths.
+The existing reconciliation client GET can now load this snapshot through the
+production router after shared received-display integration. Mutation registration,
+action discovery and actionable UI integration remain separate work; this read-only
+registration does not establish feature readiness.
 
 For one originally expected variant of a Received transfer, either physical
 endpoint may propose; only the opposite endpoint may accept or reject. Only the
@@ -630,9 +632,9 @@ Restitution still requires origin attestation and destination consent; its
 capacity/conservation bound uses `D-C-R`. Original receipt/cart/dispatch and all
 previous application quantities retain their historical meanings. Private Store
 history reads use the shared snapshot, including reconciliation without a count
-application. Only immediately consumed validated dispatch values are exposed by
-the existing restitution GET; private generation evidence stays internal. Public
-original-line arithmetic validators are not relaxed.
+application. Restitution GET exposes its validated dispatch values; reconciliation
+GET additionally exposes the coordinated generation/history fields listed below.
+Public original-line arithmetic validators are not relaxed.
 
 All workflow writers share the reservation-integrity advisory lock before header
 and balance locks and require READ COMMITTED, including direct operation inserts.
@@ -646,19 +648,27 @@ authorized operation replay remain available. Only physical participants receive
 transfer hints; changed balances retain existing inventory invalidations. Failed
 statements/commits roll back both effects, evidence and hints together.
 
-### Prepared HTTP contract — UNREGISTERED
+### Registered GET and prepared mutations
 
-These handlers are implemented and tested through isolated test-only routing.
-They are **not registered** by `NewWithTransfers` or any production router. No
-feature flag or alternate production entrypoint enables them. Do not call them
-from the client until received-display/UI integration authorizes registration.
+`NewWithTransfers` registers the exact GET through the existing typed handler.
+Both physical participants may read; missing/foreign transfers return 404,
+unauthenticated requests 401, and visible non-Received transfers 409. Canonical
+positive int64 IDs are required; queries (even `?`) are rejected. Unsupported
+methods, including HEAD, return 405 with `Allow: GET`. Every descendant, including
+propose/accept/reject and trailing slashes, returns 404; no generic mutation
+prefix is exposed. Reads retain no-store/nosniff and the existing session/passive
+read policy. They do not change inventory, workflow evidence or action counts.
 
-| Prepared path | Method | Success |
+Mutation handlers remain prepared and tested only through isolated test routing.
+The following POST success contracts describe those handlers, **not available
+production endpoints**. There is no alternate production mutation entrypoint.
+
+| Path | Method | Availability / success |
 |---|---|---|
-| `/api/transfers/{id}/dispatch-reconciliations` | GET | 200 coordinated original/current/history snapshot |
-| `/api/transfers/{id}/dispatch-reconciliations/propose` | POST | 200 persisted proposal operation |
-| `/api/transfers/{id}/dispatch-reconciliations/accept` | POST | 200 persisted acceptance operation |
-| `/api/transfers/{id}/dispatch-reconciliations/reject` | POST | 200 persisted rejection operation |
+| `/api/transfers/{id}/dispatch-reconciliations` | GET | Registered: 200 coordinated original/current/history snapshot |
+| `/api/transfers/{id}/dispatch-reconciliations/propose` | POST | Unregistered: prepared 200 persisted proposal operation |
+| `/api/transfers/{id}/dispatch-reconciliations/accept` | POST | Unregistered: prepared 200 persisted acceptance operation |
+| `/api/transfers/{id}/dispatch-reconciliations/reject` | POST | Unregistered: prepared 200 persisted rejection operation |
 
 Proposal body (all five fields required):
 
@@ -692,7 +702,7 @@ int64 path ID → lightweight participant/Received access fence → strict body 
 Store mutation. The pre-body fence does not decode history or test current
 eligibility. GET uses the Store's coordinated statement snapshot. Exact path,
 no redirect/encoded alias, no-store/nosniff and private error rules match the
-existing workflows when routed in tests; production remains unregistered.
+existing workflows. GET is production-routed; POST remains test-only.
 
 #### Exact response field sets for strict clients
 
@@ -735,7 +745,8 @@ without SQL/private detail. All refusals leave workflow/inventory/counts unchang
 
 Recover uncertainty with explicit participant GET/identical retry, never a new key
 or a retargeted revision. A historical success does not describe today's head.
-No frontend decoder, UI delivery, production exposure or deployment is implied.
+Identical mutation retries remain unavailable in production until separately
+registered. This GET registration does not imply actionable UI delivery or deployment.
 
 ## Full persisted outcomes and original replay
 
