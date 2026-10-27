@@ -1,0 +1,72 @@
+.dispatch-reconciliation {
+  --dispatch-reconciliation-wine: var(--wine, #7a1f3d);
+  --dispatch-reconciliation-border: var(--border, #ded7da);
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+  padding: 20px;
+  color: #242124;
+  background: white;
+  border: 1px solid var(--dispatch-reconciliation-border);
+  border-radius: 4px;
+  overflow-wrap: anywhere;
+}
+.dispatch-reconciliation h2, .dispatch-reconciliation h3, .dispatch-reconciliation p { margin: 0; }
+.dispatch-reconciliation p { line-height: 1.6; }
+.dispatch-reconciliation button, .dispatch-reconciliation input, .dispatch-reconciliation textarea {
+  min-height: 44px;
+  max-width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--dispatch-reconciliation-border);
+  border-radius: 4px;
+  font: inherit;
+  color: inherit;
+  background: white;
+}
+.dispatch-reconciliation button { cursor: pointer; }
+.dispatch-reconciliation button:disabled { opacity: .55; cursor: not-allowed; }
+.dispatch-reconciliation :focus-visible { outline: 2px solid var(--dispatch-reconciliation-wine); outline-offset: 3px; }
+.dispatch-reconciliation table { width: 100%; border-collapse: collapse; text-align: left; }
+.dispatch-reconciliation th, .dispatch-reconciliation td { padding: 14px; border-top: 1px solid var(--dispatch-reconciliation-border); }
+.dispatch-reconciliation thead { background: #f8f6f4; font-size: 12px; }
+.dispatch-reconciliation summary { display: flex; align-items: center; min-height: 44px; cursor: pointer; color: var(--dispatch-reconciliation-wine); }
+.dispatch-reconciliation details { padding-top: 12px; border-top: 1px solid var(--dispatch-reconciliation-border); }
+.dispatch-reconciliation-notice, .dispatch-reconciliation-warning, .dispatch-reconciliation-recovery, .dispatch-reconciliation-history {
+  padding: 14px;
+  border: 1px solid var(--dispatch-reconciliation-border);
+  border-radius: 4px;
+  background: #f8f6f4;
+}
+.dispatch-reconciliation-warning { background: #f5e8ed; border-color: #cfa9b6; }
+.dispatch-reconciliation-evidence { white-space: pre-wrap; overflow-wrap: anywhere; }
+.dispatch-reconciliation-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.dispatch-reconciliation .dispatch-reconciliation-primary { background: var(--dispatch-reconciliation-wine); border-color: var(--dispatch-reconciliation-wine); color: white; font-weight: 600; }
+.dispatch-reconciliation-backdrop { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 16px; background: #24212470; }
+.dispatch-reconciliation-modal {
+  display: grid;
+  gap: 14px;
+  width: min(620px, 100%);
+  max-height: calc(100dvh - 32px);
+  min-width: 0;
+  padding: 24px;
+  overflow-y: auto;
+  background: white;
+  border: 1px solid var(--dispatch-reconciliation-border);
+  border-radius: 8px;
+}
+.dispatch-reconciliation-modal label { font-weight: 600; }
+.dispatch-reconciliation-modal input, .dispatch-reconciliation-modal textarea { width: 100%; min-width: 0; box-sizing: border-box; }
+.dispatch-reconciliation-modal textarea { min-height: 84px; resize: vertical; }
+.dispatch-reconciliation-comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.dispatch-reconciliation-comparison > div { padding: 14px; border: 1px solid var(--dispatch-reconciliation-border); border-radius: 4px; }
+.dispatch-reconciliation-comparison strong { display: block; margin-top: 6px; font-size: 24px; color: var(--dispatch-reconciliation-wine); }
+@media (max-width: 650px) {
+  .dispatch-reconciliation { padding: 16px; }
+  .dispatch-reconciliation thead { display: none; }
+  .dispatch-reconciliation tbody, .dispatch-reconciliation tr, .dispatch-reconciliation th, .dispatch-reconciliation td { display: block; }
+  .dispatch-reconciliation td { border-top: 0; padding: 8px 0; }
+  .dispatch-reconciliation td[data-label]::before { content: attr(data-label); display: inline-block; width: 65%; color: #6b6267; }
+  .dispatch-reconciliation th { padding: 16px 0 8px; }
+  .dispatch-reconciliation-comparison { grid-template-columns: minmax(0, 1fr); }
+  .dispatch-reconciliation-modal { padding: 24px; }
+}
