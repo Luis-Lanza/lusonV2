@@ -475,11 +475,12 @@ func (a *API) transferCounts(store *transfers.Store) http.HandlerFunc {
 			ActionCount  string            `json:"action_count"`
 			Actions      map[string]string `json:"actions"`
 		}{strconv.FormatInt(totals.PendingTotal, 10), strconv.FormatInt(totals.ActionCount, 10), map[string]string{
-			"approve":            strconv.FormatInt(totals.Actions.Approve, 10),
-			"dispatch":           strconv.FormatInt(totals.Actions.Dispatch, 10),
-			"receive":            strconv.FormatInt(totals.Actions.Receive, 10),
-			"review_count":       strconv.FormatInt(totals.Actions.ReviewCount, 10),
-			"review_restitution": strconv.FormatInt(totals.Actions.ReviewRestitution, 10),
+			"approve":                        strconv.FormatInt(totals.Actions.Approve, 10),
+			"dispatch":                       strconv.FormatInt(totals.Actions.Dispatch, 10),
+			"receive":                        strconv.FormatInt(totals.Actions.Receive, 10),
+			"review_count":                   strconv.FormatInt(totals.Actions.ReviewCount, 10),
+			"review_restitution":             strconv.FormatInt(totals.Actions.ReviewRestitution, 10),
+			"review_dispatch_reconciliation": strconv.FormatInt(totals.Actions.ReviewDispatchReconciliation, 10),
 		}})
 	}
 }

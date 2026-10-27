@@ -37,7 +37,7 @@ export default function TransferActionSummary({ counts, busy, unavailable, locat
       </> : <p className="transfer-action-overlap">Desglose de acciones no disponible.</p>)}
       <details className="transfer-action-help"><summary>Sobre los totales</summary>
         {known && <p>Pendientes de tu ubicación: {known.pending_total.toString()}</p>}
-        <p>Totales independientes del filtro. Las acciones incluyen aprobar, despachar o recibir, y revisar conteos o restituciones. Cada transferencia cuenta una sola vez en el total de atención.</p>
+        <p>Totales independientes del filtro. Las acciones incluyen aprobar, despachar o recibir, y revisar conteos, restituciones o regularizaciones de despacho. Las regularizaciones se muestran como aviso de revisión, sin habilitar su decisión desde esta vista. Cada transferencia cuenta una sola vez en el total de atención.</p>
       </details>
     </>}
   </section>;

@@ -82,11 +82,15 @@ Counts remain one participant-filtered, read-only REPEATABLE READ aggregate.
 | `Receive` | In-transit at physical destination |
 | `ReviewCount` | Received with a latest undecided count proposal from the other endpoint |
 | `ReviewRestitution` | Received at destination with a latest undecided restitution proposal on an expected receipt line |
+| `ReviewDispatchReconciliation` | Received with a latest undecided reconciliation proposal from the other physical endpoint on an originally expected receipt line |
 
 Latest means highest proposal revision per request/variant; a decision closes
 that revision. Superseded, rejected and applied proposals do not create work.
 Stale count pins and pending count proposals do not hide restitution review:
-acceptance can be blocked while rejection remains valid. Discrepancies, stock,
+acceptance can be blocked while rejection remains valid. Reconciliation review also
+ignores freshness, effective-count equality, stock and applied restitution: these
+can prohibit acceptance without removing the counterpart's ability to reject.
+Discrepancies, stock,
 voluntary cancellation, new proposals and replacement are not required work.
 
 Each header contributes once per category and once to the union, independent of
@@ -99,10 +103,11 @@ HTTP exposes these categories as exact strings in `actions`, alongside the two
 existing totals. `Query.RequiresAction` defaults false and combines with `Status`.
 `List` reuses `requiredActionsSQL` and `anyRequiredActionSQL` for both total and
 ID selection before pagination, with the physical-participant guard outside the
-work OR. One selected-page projection returns ID and all five booleans;
+work OR. One selected-page projection returns ID and all six booleans;
 `Page.RequiresAction` echoes the filter and `Page.RequiredActions map[int64][]string`
 contains exactly page IDs, including empty slices. Reasons have fixed order:
-`approve`, `dispatch`, `receive`, `review_count`, `review_restitution`.
+`approve`, `dispatch`, `receive`, `review_count`, `review_restitution`,
+`review_dispatch_reconciliation`.
 Count, IDs/reasons and visibility-rechecked canonical loads use the same read-only
 repeatable-read snapshot. Descending IDs, bounded pages and canonical `Request`
 remain unchanged; list metadata adds no full-history per-record queries.

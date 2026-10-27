@@ -3,6 +3,7 @@ import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import TransferPending, { transferViewOwner } from './TransferPending';
 import TransferReview from './TransferReview';
+import { transferActionCategoryLabels, transferActionLabels } from './transferActionView';
 import { parseTransferRecord, transferDirection } from './transferModel';
 import type { RecoverySnapshot } from './transferRecovery';
 import type { TransferAuthority } from './useInventory';
@@ -184,7 +185,7 @@ function pendingHistory(record = receivedWire()) {
 }
 
 const actionCounts = { pending_total: '2', action_count: '4', actions: {
-  approve: '1', dispatch: '1', receive: '1', review_count: '1', review_restitution: '1',
+  approve: '1', dispatch: '1', receive: '1', review_count: '1', review_restitution: '1', review_dispatch_reconciliation: '0',
 } };
 function actionableFixture() {
   const f = fixture(2, url => {
@@ -201,7 +202,7 @@ function actionableFixture() {
 }
 
 describe('T3 location-owned action discovery', () => {
-  it.each([false, true])('shows five categories with overlap=%s, assigned context and server-owned reasons', async overlap => {
+  it.each([false, true])('preserves the original five category memberships with overlap=%s, assigned context and server-owned reasons', async overlap => {
     const received = { ...receivedWire(), id: '4', reference: 'TR-004' };
     const transit = { ...wire(1, 2, '5', 'in_transit'), dispatch_location_id: 1, dispatched_at: correctionStamp };
     const records = [wire(2, 3, '7'), wire(2, 3, '6', 'approved'), transit, received,
@@ -285,13 +286,13 @@ describe('T3 location-owned action discovery', () => {
     await screen.findByText('Acción no disponible');
     expect(screen.queryByText('Sin acción pendiente')).toBeNull();
     await act(async () => pending.resolve(reply({ pending_total: '2', action_count: '0', ...(!legacy ? {
-      actions: { approve: '0', dispatch: '0', receive: '0', review_count: '0', review_restitution: '0' },
+      actions: { approve: '0', dispatch: '0', receive: '0', review_count: '0', review_restitution: '0', review_dispatch_reconciliation: '0' },
     } : {}) })));
     expect(screen.getByText('No tenés acciones pendientes')).toBeVisible();
     if (legacy) {
       expect(screen.getByText('Desglose de acciones no disponible.')).toBeVisible();
       expect(screen.queryByLabelText('Tipos de acción pendientes')).toBeNull();
-    } else expect(within(screen.getByLabelText('Tipos de acción pendientes')).getAllByText('0')).toHaveLength(5);
+    } else expect(within(screen.getByLabelText('Tipos de acción pendientes')).getAllByText('0')).toHaveLength(6);
     expect(screen.getByText('Sobre los totales').closest('details')).toHaveTextContent('Pendientes de tu ubicación: 2');
   });
 
@@ -330,7 +331,7 @@ describe('T3 location-owned action discovery', () => {
     const f = fixture(1, (url, init) => {
       const record = wire(1, 2, '100', approved ? 'approved' : 'pending');
       if (url === '/api/transfers/counts') return Promise.resolve(reply({ pending_total: approved ? '0' : '1', action_count: '1',
-        actions: { approve: approved ? '0' : '1', dispatch: approved ? '1' : '0', receive: '0', review_count: '0', review_restitution: '0' } }));
+        actions: { approve: approved ? '0' : '1', dispatch: approved ? '1' : '0', receive: '0', review_count: '0', review_restitution: '0', review_dispatch_reconciliation: '0' } }));
       if (url.startsWith('/api/transfers?')) return Promise.resolve(reply({ page: 1, page_size: 25, status: 'all', total_count: '1',
         records: [record], requires_action: false, required_actions: { '100': [approved ? 'dispatch' : 'approve'] } }));
       if (url === '/api/transfers/100') return Promise.resolve(reply(record));
@@ -376,6 +377,64 @@ describe('T3 location-owned action discovery', () => {
     expect(screen.getByRole('dialog')).toBeVisible(); expect(calls(f)).toHaveLength(before);
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
     expect(trigger).toHaveFocus(); expect(cta.closest('[inert]')).toBeNull();
+    expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+  });
+});
+
+describe('reconciliation discovery visible advisory work', () => {
+  it('names the advisory category and row independently of decoder admission', () => {
+    expect(Reflect.get(transferActionCategoryLabels, 'review_dispatch_reconciliation')).toBe('Regularizaciones por revisar');
+    expect(Reflect.get(transferActionLabels, 'review_dispatch_reconciliation')).toBe('Revisar regularización');
+  });
+  it.each([1, 2])('shows the sixth category and counterpart row at endpoint %s without mutation controls', async actor => {
+    const record = receivedWire();
+    const reason = 'review_dispatch_reconciliation';
+    const counts = { pending_total: '0', action_count: '1', actions: { approve: '0', dispatch: '0', receive: '0',
+      review_count: '1', review_restitution: '0', [reason]: '1' } };
+    const before = JSON.stringify({ record, counts });
+    const route = vi.fn();
+    const f = correctionFixture(actor, url => {
+      if (url === '/api/transfers/counts') return Promise.resolve(reply(counts));
+      if (!url.startsWith('/api/transfers?')) return undefined;
+      const q = new URL(url, 'http://localhost').searchParams;
+      return Promise.resolve(reply({ page: Number(q.get('page')), page_size: Number(q.get('page_size')),
+        status: q.get('status'), total_count: '1', records: [record], requires_action: q.get('requires_action') === 'true',
+        required_actions: { [record.id]: ['review_count', reason] } }));
+    }, record);
+    render(<TransferPending controller={f.controller} ownerTag={f.ownerTag} onInventory={f.back} onRouteDetail={route} />);
+    await screen.findByText('1 transferencia requiere tu atención');
+    const categories = screen.getByLabelText('Tipos de acción pendientes');
+    expect(within(categories).getByText('Regularizaciones por revisar').parentElement).toHaveTextContent('Regularizaciones por revisar1');
+    expect(within(categories).getByText('Conteos por revisar').parentElement).toHaveTextContent('Conteos por revisar1');
+    expect(categories.children).toHaveLength(6);
+    expect(screen.getByText('Sobre los totales').closest('details')).toHaveTextContent('regularizaciones de despacho');
+    expect(screen.getByText('Sobre los totales').closest('details')).toHaveTextContent('sin habilitar su decisión desde esta vista');
+    expect(screen.getByRole('table')).toHaveTextContent('Revisar regularización');
+    if (actor === 1) expect(document.querySelector('.pending-cards')).toHaveTextContent('Revisar regularización');
+    else expect(document.querySelector('.pending-cards')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Revisar regularización|Regularizar despacho|Proponer regularización|Aceptar propuesta|Rechazar propuesta/ })).toBeNull();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Solo requieren mi acción' }));
+    await waitFor(() => expect(calls(f).at(-1)![0]).toBe('/api/transfers?page=1&page_size=25&status=all&requires_action=true'));
+    await screen.findByText('1 transferencia');
+    fireEvent.click(screen.getByRole('button', { name: `Ver detalle ${record.reference}` }));
+    await screen.findByRole('heading', { name: record.reference });
+    expect(route).toHaveBeenLastCalledWith(record.id);
+    expect(screen.queryByRole('button', { name: /Regularizar despacho|Proponer regularización/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
+    await screen.findByRole('table');
+    expect(screen.getByRole('checkbox', { name: 'Solo requieren mi acción' })).toBeChecked();
+    expect(f.fetch.mock.calls.every(([url, init]) => String(url).startsWith('/api/') && init?.method === 'GET')).toBe(true);
+    expect(JSON.stringify({ record, counts })).toBe(before);
+  });
+  it('keeps the physical participant fence even when a server supplies a counterpart reason', async () => {
+    const record = receivedWire(1, 2);
+    const f = fixture(3, url => url.startsWith('/api/transfers?') ? Promise.resolve(reply({ page: 1, page_size: 25,
+      status: 'all', total_count: '1', records: [record], requires_action: false,
+      required_actions: { [record.id]: ['review_dispatch_reconciliation'] } })) : undefined);
+    render(f.element());
+    await waitFor(() => expect(calls(f)).toHaveLength(1));
+    await act(async () => {});
+    expect(screen.queryByRole('button', { name: `Ver detalle ${record.reference}` })).toBeNull();
     expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
   });
 });

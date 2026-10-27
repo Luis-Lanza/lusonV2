@@ -45,7 +45,7 @@ func TestRequiredActionListHTTP(t *testing.T) {
 	if string(counts["pending_total"]) != `"1"` || string(counts["action_count"]) != `"1"` {
 		t.Fatal("read changed counters")
 	}
-	if string(counts["actions"]) != `{"approve":"1","dispatch":"0","receive":"0","review_count":"0","review_restitution":"0"}` {
+	if string(counts["actions"]) != `{"approve":"1","dispatch":"0","receive":"0","review_count":"0","review_dispatch_reconciliation":"0","review_restitution":"0"}` {
 		t.Fatal("exact category counts differ")
 	}
 }

@@ -818,7 +818,7 @@ Only explicit snake_case DTOs are serialized:
 `requires_action` echoes the normalized boolean. `required_actions` maps exactly
 each returned canonical record ID to an array, including `[]` for no required work.
 Reasons appear once in this order: `approve`, `dispatch`, `receive`, `review_count`,
-`review_restitution`. An action-only row always has at least one reason. Empty
+`review_restitution`, `review_dispatch_reconciliation`. An action-only row always has at least one reason. Empty
 pages return `{}`. This metadata is list-only: canonical records, detail, creation,
 mutations and recovery retain their existing shapes. Reasons are navigation advice,
 not authorization to mutate. Projection, total, selected IDs/reasons and canonical
@@ -841,26 +841,39 @@ It shares strict path-alias, unique-cookie, identity and privacy guards with
 existing reads. Its response uses exact decimal-string counts:
 
 ```json
-{"pending_total":"3","action_count":"1","actions":{"approve":"1","dispatch":"0","receive":"0","review_count":"0","review_restitution":"0"}}
+{"pending_total":"3","action_count":"1","actions":{"approve":"1","dispatch":"0","receive":"0","review_count":"0","review_restitution":"0","review_dispatch_reconciliation":"0"}}
 ```
 
 `pending_total` counts Pending requests whose physical origin or destination is
 the authenticated assigned location. `action_count` counts one header for:
 Pending at its **persisted approver**, Approved at its **physical origin**, or
 In-transit at its **physical destination**, or Received needing **counterpart
-count review** or **destination restitution review**. Review uses the latest
+count review**, **destination restitution review**, or **counterpart dispatch
+reconciliation review** on an originally expected receipt line. Either endpoint
+may propose reconciliation; only the other physical endpoint discovers its review.
+Review uses the latest
 proposal per request/variant only, with no decision. Count initiators never
 review their own proposal. Restitution review requires an expected receipt line;
 stale count pins or pending counts do not hide it because rejection remains valid.
 Rejected/Cancelled and decided/superseded proposals contribute no action.
 
 One request contributes once, even with multiple lines or both review kinds.
-The five `actions` category totals count transfers independently and may overlap;
+Reconciliation review is not gated by freshness, effective-count equality, stock
+or applied restitution, because a stale or otherwise unacceptable proposal can
+still be rejected. Discovery does not register reconciliation POST routes or
+provide decision controls.
+
+The six `actions` category totals count transfers independently and may overlap;
 each is at most `action_count`, but their sum may exceed it. Voluntary cancellation,
 proposing and replacement do not count. Warehouse assignment grants no visibility
 outside physical participation. These are not unread events, discrepancy/stock
 quantities or page counts. `action_count` may exceed the independent
 `pending_total`, including `0` Pending and `1` required review.
+
+The backend and strict frontend must deliver this six-key breakdown together.
+When `actions` is present all six known keys are required; unknown or partial maps
+are rejected. Only absence of the entire breakdown retains legacy compatibility;
+this is not a mixed-version compatibility guarantee or a new deployment policy.
 
 The domain uses one participant-filtered aggregate in a read-only repeatable-read
 transaction, with a 10-second operation budget and bounded 5-second background

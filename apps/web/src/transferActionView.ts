@@ -6,6 +6,7 @@ export const transferActionLabels: Record<TransferActionReason, string> = {
   receive: 'Recibir',
   review_count: 'Revisar conteo',
   review_restitution: 'Revisar restitución',
+  review_dispatch_reconciliation: 'Revisar regularización',
 };
 export const transferActionCategoryLabels: Record<TransferActionReason, string> = {
   approve: 'Por aprobar',
@@ -13,6 +14,7 @@ export const transferActionCategoryLabels: Record<TransferActionReason, string> 
   receive: 'Por recibir',
   review_count: 'Conteos por revisar',
   review_restitution: 'Restituciones por revisar',
+  review_dispatch_reconciliation: 'Regularizaciones por revisar',
 };
 
 // Only an explicit server-owned empty set permits waiting/finished copy.

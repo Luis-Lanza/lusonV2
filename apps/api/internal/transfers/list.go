@@ -78,7 +78,7 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q Query) (Page, e
 		return Page{}, fail(ctx)
 	}
 	offset := (q.Page - 1) * int64(q.PageSize)
-	rows, err := tx.Query(ctx, `SELECT id,approve,dispatch,receive,review_count,review_restitution`+projection+
+	rows, err := tx.Query(ctx, `SELECT id,approve,dispatch,receive,review_count,review_restitution,review_dispatch_reconciliation`+projection+
 		` ORDER BY id DESC LIMIT $4 OFFSET $5`, actor.AccountID, q.Status, q.RequiresAction, int64(q.PageSize), offset)
 	if err != nil {
 		return Page{}, fail(ctx)
@@ -86,14 +86,14 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q Query) (Page, e
 	ids := make([]int64, 0, q.PageSize)
 	for rows.Next() {
 		var id int64
-		var flags [5]bool
-		if rows.Scan(&id, &flags[0], &flags[1], &flags[2], &flags[3], &flags[4]) != nil {
+		var flags [6]bool
+		if rows.Scan(&id, &flags[0], &flags[1], &flags[2], &flags[3], &flags[4], &flags[5]) != nil {
 			rows.Close()
 			return Page{}, fail(ctx)
 		}
 		ids = append(ids, id)
-		reasons := make([]string, 0, 5)
-		for i, reason := range []string{"approve", "dispatch", "receive", "review_count", "review_restitution"} {
+		reasons := make([]string, 0, 6)
+		for i, reason := range []string{"approve", "dispatch", "receive", "review_count", "review_restitution", "review_dispatch_reconciliation"} {
 			if flags[i] {
 				reasons = append(reasons, reason)
 			}

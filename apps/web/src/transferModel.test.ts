@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   canonicalTransferReceiptInput, previewTransferReceipt, canonicalTransferInput, newTransferRetryKey, parseTransferPage, parseTransferRecord, parseTransferCounts,
-  transferDetailPath, transferDirection, transferListPath, transferQuantityTotal,
+  transferDetailPath, transferDirection, transferListPath, transferQuantityTotal, validateTransferActions,
   type TransferCreateInput, type TransferFlow,
 } from './transferModel';
 
@@ -408,7 +408,7 @@ describe('A05a outcome and count contracts', () => {
 });
 
 describe('required action metadata', () => {
-  const actions = { approve: '0', dispatch: '0', receive: '0', review_count: '9007199254740993', review_restitution: '9007199254740993' };
+  const actions = { approve: '0', dispatch: '0', receive: '0', review_count: '9007199254740993', review_restitution: '9007199254740993', review_dispatch_reconciliation: '0' };
   it('decodes overlapping lossless categories without inventing legacy zero categories', () => {
     const counts = parseTransferCounts(JSON.stringify({ pending_total: '0', action_count: '9007199254740993', actions }));
     expect(counts).toMatchObject({ actions: { review_count: 9007199254740993n, review_restitution: 9007199254740993n } });
@@ -438,6 +438,54 @@ describe('required action metadata', () => {
     expect(transferListPath({ requires_action: false } as never)).toBe(transferListPath());
     expect(transferListPath({ requires_action: true, status: 'all' } as never)).toBe('/api/transfers?page=1&page_size=25&status=all&requires_action=true');
     for (const requires_action of ['true', 1, null]) expect(() => transferListPath({ requires_action } as never)).toThrow();
+  });
+});
+
+describe('reconciliation discovery strict metadata', () => {
+  const reason = 'review_dispatch_reconciliation';
+  const actions = { approve: '0', dispatch: '0', receive: '0', review_count: '9007199254740993',
+    review_restitution: '9007199254740993', [reason]: '9007199254740993' };
+  const counts = (categories: unknown) => JSON.stringify({ pending_total: '0', action_count: '9007199254740993', actions: categories });
+  const received = receiptWire();
+  const page = (reasons: string[], record: unknown = received) => JSON.stringify({ page: 1, page_size: 25,
+    status: 'all', total_count: '1', records: [record], requires_action: true, required_actions: { [received.id]: reasons } });
+
+  it('admits all six categories losslessly while counting the overlapping union once', () => {
+    const raw = counts(actions);
+    expect(parseTransferCounts(raw)).toEqual({ pending_total: 0n, action_count: 9007199254740993n,
+      actions: { approve: 0n, dispatch: 0n, receive: 0n, review_count: 9007199254740993n,
+        review_restitution: 9007199254740993n, [reason]: 9007199254740993n } });
+    expect(counts(actions)).toBe(raw);
+    expect(parseTransferCounts('{"pending_total":"0","action_count":"1"}'))
+      .toEqual({ pending_total: 0n, action_count: 1n });
+  });
+  it.each(Object.keys(actions))('requires category %s when the breakdown exists', key => {
+    const incomplete: Record<string, string> = { ...actions }; delete incomplete[key];
+    const raw = counts(incomplete);
+    expect(() => parseTransferCounts(raw)).toThrow('Invalid transfer response');
+    expect(counts(incomplete)).toBe(raw);
+  });
+  it.each(['9007199254740994', '9223372036854775808', '01', '-1', 1, null])('rejects invalid sixth count %s', value => {
+    const raw = counts({ ...actions, [reason]: value });
+    expect(() => parseTransferCounts(raw)).toThrow('Invalid transfer response');
+    expect(counts({ ...actions, [reason]: value })).toBe(raw);
+  });
+  it('still rejects unknown categories', () => {
+    expect(() => parseTransferCounts(counts({ ...actions, unknown: '0' }))).toThrow('Invalid transfer response');
+  });
+  it.each([1, 2])('admits server-owned counterpart eligibility at physical endpoint %s', assigned => {
+    const raw = page(['review_count', reason]);
+    const parsed = parseTransferPage(raw);
+    expect(parsed.required_actions).toEqual({ [received.id]: ['review_count', reason] });
+    expect(() => validateTransferActions(parsed, assigned)).not.toThrow();
+    expect(page(['review_count', reason])).toBe(raw);
+  });
+  it.each([[reason, reason], [reason, 'review_count'], [reason, 'review_restitution'], ['unknown']].map(reasons => ({ reasons })))(
+    'rejects duplicate, out-of-order or unknown reasons $reasons', ({ reasons }) => {
+      expect(() => parseTransferPage(page(reasons))).toThrow('Invalid transfer response');
+    });
+  it.each([wireRecord(), dispatchWire(), cancellationWire()])('rejects reconciliation on a non-Received header', record => {
+    expect(() => parseTransferPage(page([reason], record))).toThrow('Invalid transfer response');
   });
 });
 

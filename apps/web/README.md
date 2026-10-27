@@ -51,27 +51,34 @@ serializer omits false to preserve existing URLs; true enters the list query key
 page is supplied. `selectDetail(id)` and `selectDetail(null)` preserve that filter.
 Initial screen selection remains Todas; omitted API/model status remains Pending.
 
-`TransferCounts.actions?: TransferActionCounts` contains all five bigint category
+`TransferCounts.actions?: TransferActionCounts` contains all six bigint category
 counts when available. Legacy two-field counts omit `actions`, rather than inventing
 zero categories. Each category is bounded by the union `action_count`; overlapping
-reviews can make their sum exceed that badge.
+reviews can make their sum exceed that badge. Backend and frontend must deliver
+the six-key breakdown together: present `actions` requires all six known keys,
+and unknown/partial maps are rejected. Only entire-breakdown absence is legacy
+compatibility; no mixed-version compatibility or new deployment policy is implied.
 
 `TransferPage.requires_action?: boolean` and
 `required_actions?: Record<string, readonly TransferActionReason[]>` are list-only.
 The ordered reasons are `approve`, `dispatch`, `receive`, `review_count`,
-`review_restitution`. Every page ID has an array (possibly empty); extra/missing
+`review_restitution`, `review_dispatch_reconciliation`. Every page ID has an array (possibly empty); extra/missing
 IDs, unknown/duplicate/reordered reasons and lifecycle mismatches are rejected.
 Legacy unfiltered pages may omit both metadata fields: undefined means unavailable,
 not an empty action set. Action-only responses require true echo and nonempty
 reasons on every row. API and hook verify filter echo; the hook also checks assigned
-actor ownership. Count-review counterpart eligibility remains backend-owned because
+actor ownership. Count/reconciliation-review counterpart eligibility remains backend-owned because
 immutable headers do not identify proposal initiators. Existing participant and
 stale-authority fences remain in force. These labels never grant mutation permission.
-The attention band shows the assigned location's distinct-transfer total and five
+The attention band shows the assigned location's distinct-transfer total and six
 independent category chips; categories can overlap and are never summed for the
 sidebar badge. **Sobre los totales** retains the independent Pending total. Loading,
 unavailable (with a counts-only retry), true zero and legacy missing breakdowns
 remain distinct. The existing sidebar/bottom-navigation badge is unchanged.
+`Regularizaciones por revisar` and `Revisar regularización` are advisory labels,
+not decision controls. Latest undecided expected-line proposals remain discoverable
+at either counterpart even when freshness, stock or restitution blocks acceptance.
+Reconciliation action presentation remains unmounted and POST routes unregistered.
 
 **Ver acciones pendientes** is also available in a compact band above detail. It
 returns to the list with Todas, action-only filtering and page one, so work outside
