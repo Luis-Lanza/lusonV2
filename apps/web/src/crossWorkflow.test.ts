@@ -10,6 +10,11 @@ import type { CountOperation } from './transferCountCorrectionModel';
 import { RestitutionAPIError } from './transferAPI';
 import { captureRestitutions, type RestitutionOperation } from './transferRestitutionModel';
 import { parseTransferRecord } from './transferModel';
+import { useTransferDispatchReconciliations } from './useTransferDispatchReconciliations';
+import { appliedSnapshot, fixture as dispatchFixture, decisionKey } from './transferDispatchReconciliationStoreFixtures';
+import { createTransferDispatchReconciliationStore } from './transferDispatchReconciliationStore';
+import type { TransferController } from './useInventory';
+import type { DispatchReconciliationOperation } from './transferDispatchReconciliationModel';
 
 const id = '9007199254740993';
 const stamp = '2026-04-02T00:00:00Z';
@@ -108,6 +113,77 @@ async function review(f: Awaited<ReturnType<typeof setup>>, action: 'propose' | 
   expect(pin).not.toBeNull();
   return pin!;
 }
+it.each(['post', 'recovery'] as const)('dispatch reconciliation exact historical %s confirmation refetches current inventory and both existing readers only once', async mode => {
+  const f = await setup();
+  await act(async () => { f.inventory.result.current.change({ location: 3 }); });
+  await waitFor(() => expect(f.inventory.result.current.data?.location.id).toBe(3));
+  const d = dispatchFixture(true); const applied = appliedSnapshot();
+  const api = { read: vi.fn(async () => d.decode()), propose: vi.fn(), decide: vi.fn(async () => applied.operations[1]) };
+  const store = createTransferDispatchReconciliationStore({ operationKey: () => decisionKey });
+  const pane = renderHook(() => useTransferDispatchReconciliations({ controller: f.controller(), record: d.record, api, store,
+    onConfirmed: (f.controller() as TransferController & { confirmTransferDispatchReconciliation?: (owner: DecisionOwner, op: DispatchReconciliationOperation) => void }).confirmTransferDispatchReconciliation }));
+  await waitFor(() => expect(pane.result.current.snapshot).not.toBeNull());
+  const reads = f.stockReads(); const counts = f.api.countCorrections.mock.calls.length; const rests = f.api.restitutions.mock.calls.length;
+  const before = f.inventory.result.current.data;
+  const freshInventory = deferred<Response>();
+  f.fetcher.mockImplementationOnce(() => freshInventory.promise);
+  act(() => { expect(pane.result.current.begin(1, 'accept')).toBe(true); pane.result.current.setReason(' verified '); expect(pane.result.current.review()).toBe(true); });
+  if (mode === 'recovery') api.decide.mockRejectedValueOnce(new Error('lost response'));
+  else api.read.mockResolvedValue(applied);
+  await act(async () => { await pane.result.current.confirm(); });
+  if (mode === 'recovery') {
+    expect(f.transfer).not.toHaveBeenCalled(); expect(f.source).not.toHaveBeenCalled(); expect(f.stockReads()).toBe(reads);
+    api.read.mockResolvedValue(applied);
+    await act(async () => { await pane.result.current.recover(); });
+  }
+  expect(f.transfer).toHaveBeenCalledTimes(1); expect(f.source).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(f.stockReads()).toBe(reads + 1));
+  expect(f.api.countCorrections.mock.calls.length).toBeGreaterThan(counts);
+  expect(f.api.restitutions.mock.calls.length).toBeGreaterThan(rests);
+  expect(f.inventory.result.current.data).toBe(before); // No historical 13/17 while current GET is pending.
+  await act(async () => { freshInventory.resolve(new Response(JSON.stringify({ location: { id: 3, name: 'Other' },
+    items: [{ variant_id: 1, catalog_entry_id: 1, brand: 'B', model: 'M', capacity_ah: 60, polarity: 'L', existing: 100, reserved: 2, available: 98 }],
+    page: 1, page_size: f.inventory.result.current.query.size, total_variants: 1 }))); });
+  await waitFor(() => expect(f.inventory.result.current.data?.items[0].existing).toBe(100n));
+  expect(f.inventory.result.current.data?.items[0].available).toBe(98n);
+  expect(f.inventory.result.current.query.location).toBe(3);
+  await act(async () => { await pane.result.current.recover(); await pane.result.current.retry(1); });
+  expect(f.transfer).toHaveBeenCalledTimes(1); expect(api.decide).toHaveBeenCalledTimes(1);
+  pane.unmount(); f.pane.unmount(); f.inventory.unmount();
+});
+
+it.each(['propose', 'reject', 'accept'] as const)('dispatch reconciliation %s retires detached consent and never uses audit balances', async action => {
+  const f = await setup(); const pin = await review(f); const owner = decisionOwner(f.controller().getTransferAuthority())!;
+  f.pane.unmount(); const reads = f.stockReads();
+  const op = { ...appliedSnapshot().operations[action === 'propose' ? 0 : 1], request_id: BigInt(id), actor_location_id: 2 as const, action };
+  const before = f.inventory.result.current.data;
+  const observe = vi.fn(() => f.recovery.eligibility(owner, pin).eligible);
+  f.controller().subscribeTransferInvalidation(observe);
+  act(() => f.controller().confirmTransferDispatchReconciliation(owner, op));
+  expect(observe.mock.results[0].value).toBe(false);
+  expect(f.transfer).toHaveBeenCalledTimes(1); expect(f.source).toHaveBeenCalledTimes(action === 'accept' ? 1 : 0);
+  await waitFor(() => expect(f.stockReads()).toBe(reads + (action === 'accept' ? 1 : 0)));
+  expect(f.inventory.result.current.data).toEqual(before);
+  f.inventory.unmount();
+});
+it.each(['csrf', 'account', 'location', 'reentrant'] as const)('dispatch reconciliation confirmation fences %s owner retirement', async change => {
+  const f = await setup(); const owner = decisionOwner(f.controller().getTransferAuthority())!;
+  const reads = f.stockReads(); const data = f.inventory.result.current.data;
+  const retire = () => {
+    const session = f.controller().session; if (!session?.authenticated) throw new Error('Session missing');
+    if (change === 'account') session.identity.account_id = 3;
+    else if (change === 'location') session.identity.location.id = 3;
+    else session.csrf_token = 'n'.repeat(43);
+  };
+  if (change === 'reentrant') f.controller().subscribeTransferInvalidation(retire); else retire();
+  const after = vi.fn(); f.controller().subscribeTransferInvalidation(after);
+  act(() => f.controller().confirmTransferDispatchReconciliation(owner, appliedSnapshot().operations[1]));
+  expect(after).not.toHaveBeenCalled(); expect(f.source).not.toHaveBeenCalled();
+  expect(f.stockReads()).toBe(reads); expect(f.inventory.result.current.data).toBe(data);
+  expect(f.transfer).toHaveBeenCalledTimes(change === 'reentrant' ? 1 : 0);
+  f.pane.unmount(); f.inventory.unmount();
+});
+
 it('real controller restitution acceptance refreshes readers once with both hooks mounted', async () => {
   const f = await setup();
   const pin = await review(f);

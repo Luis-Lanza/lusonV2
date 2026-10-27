@@ -9,7 +9,8 @@ import type { TransferAuthority } from './useInventory';
 import type { DetailController } from './TransferDetail';
 import { createTransferDecisionRecovery, decisionOwner } from './transferDecisionRecovery';
 import { createTransferCountCorrectionRecovery } from './transferCountCorrectionRecovery';
-import type { CountDecisionInput, CountProposalInput } from './transferCountCorrectionModel';
+import { parseCountCorrections, type CountDecisionInput, type CountProposalInput } from './transferCountCorrectionModel';
+import * as countCorrectionHooks from './useTransferCountCorrections';
 import App from './App';
 import { createTransferReceiptRecovery } from './transferReceiptRecovery';
 import { createTransferRestitutionRecovery } from './transferRestitutionRecovery';
@@ -117,12 +118,41 @@ function correctionFixture(actor = 2, override?: (url: string, init: RequestInit
   record = receivedWire()) {
   const f = fixture(actor, (url, init) => override?.(url, init)
     ?? (url === `/api/transfers/${record.id}` ? Promise.resolve(reply(record))
-      : url === `/api/transfers/${record.id}/count-corrections` ? Promise.resolve(reply(correctionHistory(record))) : undefined));
+      : url === `/api/transfers/${record.id}/count-corrections` ? Promise.resolve(reply(correctionHistory(record)))
+        : url === `/api/transfers/${record.id}/dispatch-reconciliations` ? Promise.resolve(reply({ request_id: record.id, operations: [],
+          lines: record.receipt.items.filter(item => item.expected_quantity !== '0').map(item => ({ ...item,
+            effective_dispatch: item.expected_quantity, effective_actual: item.actual_quantity, effective_credit: item.available_quantity,
+            applied_retained_quantity: '0', workflow_revision: '0', applied_revision: '0', count_generation: '0', count_applied_revision: '0',
+            restitution_generation: '0', reconciliation_generation: '0', proposals: [],
+          })) })) : undefined));
   f.controller.countCorrectionRecovery = createTransferCountCorrectionRecovery();
   f.controller.confirmTransferCountCorrection = vi.fn(() => { for (const listener of f.listeners) listener(); });
   const element = () => f.element({ ownerTag: f.ownerTag, id: record.id });
   return { ...f, record, element };
 }
+it('L78 selected received scope owns one reconciliation reader without new action discovery', async () => {
+  const record = receivedWire();
+  const snapshot = { request_id: record.id, operations: [], lines: record.receipt.items.map(item => ({ ...item,
+    effective_dispatch: item.expected_quantity, effective_actual: item.actual_quantity, effective_credit: item.available_quantity,
+    applied_retained_quantity: '0', workflow_revision: '0', applied_revision: '0', count_generation: '0', count_applied_revision: '0',
+    restitution_generation: '0', reconciliation_generation: '0', proposals: [],
+  })) };
+  const f = correctionFixture(2, url => url.endsWith('/dispatch-reconciliations') ? Promise.resolve(reply(snapshot)) : undefined, record);
+  render(f.element());
+  await screen.findByRole('table', { name: 'Conteo efectivo' });
+  const reads = () => f.fetch.mock.calls.filter(([url]) => String(url).endsWith('/dispatch-reconciliations'));
+  expect(reads()).toHaveLength(1); expect(isPassive(reads()[0])).toBe(true);
+  expect(screen.queryByRole('button', { name: /Proponer regularización|Regularizar despacho/ })).toBeNull();
+  await selectManagement('Corregir conteo');
+  expect(screen.getAllByRole('button', { name: 'Proponer corrección' })).toHaveLength(2);
+  expect(reads()).toHaveLength(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
+  await screen.findByRole('heading', { name: 'Transferencias' });
+  act(() => { for (const listener of f.listeners) listener(); });
+  expect(reads()).toHaveLength(1);
+  expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
+});
+
 async function selectManagement(name: 'Corregir conteo' | 'Restituciones de origen') {
   fireEvent.click(await screen.findByRole('button', { name: 'Gestiones' }));
   fireEvent.click(screen.getByRole('menuitem', { name }));
@@ -517,7 +547,7 @@ describe('F3 participant received chrome', () => {
     ['direct_shipment', 1, 3], ['send_to_warehouse', 2, 1],
   ] as const;
   it.each(routes.flatMap(([kind, origin, destination]) => [origin, destination].map(actor => ({ kind, origin, destination, actor }))))(
-    'uses effective-first navigation without extra private reads for $kind at $actor', async ({ kind, origin, destination, actor }) => {
+    'uses effective-first navigation with one selected reconciliation read for $kind at $actor', async ({ kind, origin, destination, actor }) => {
     const original = receivedWire(origin, destination);
     const record = { ...original, kind, ...(kind === 'direct_shipment'
       ? { creator_location_id: origin, creator_location_name: locations[origin - 1], decided_at: original.created_at } : {}) };
@@ -537,10 +567,11 @@ describe('F3 participant received chrome', () => {
     expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Corregir conteo', 'Restituciones de origen']);
     // Restitutions also consults count history to fence its effective-credit head.
     expect(correctionCalls(f)).toHaveLength(2);
+    expect(f.fetch.mock.calls.filter(([url]) => url === `/api/transfers/${record.id}/dispatch-reconciliations`)).toHaveLength(1);
     expect(f.fetch.mock.calls.every(([url, init]) => (!init?.method || init.method === 'GET')
       && (String(url).startsWith('/api/transfers?') || url === '/api/transfers/counts'
         || url === `/api/transfers/${record.id}` || url === `/api/transfers/${record.id}/count-corrections`
-        || url === `/api/transfers/${record.id}/restitutions`))).toBe(true);
+        || url === `/api/transfers/${record.id}/restitutions` || url === `/api/transfers/${record.id}/dispatch-reconciliations`))).toBe(true);
   });
 });
 
@@ -655,7 +686,11 @@ describe('C4b received detail real-hook integration', () => {
 
 describe('C4b App correction settlement with real inventory controller', () => {
   it.each(['accept', 'reject'] as const)('previews %s without POST, settles history and refreshes inventory only for acceptance', async action => {
-    const record = receivedWire(); const originalHistory = pendingHistory(record);
+    const record = receivedWire(); const pending = pendingHistory(record);
+    const proposed = pending.lines[0].proposals[0];
+    const originalHistory = { ...pending, operations: [operationWire({ variant_id: 1,
+      operation_key: proposed.operation_key, expected_revision: '0', actual_quantity: proposed.actual_quantity,
+      reason: proposed.reason }, 1, 'propose')] };
     let nextHistory: unknown = originalHistory;
     let settled = false;
     class Source { addEventListener() {} removeEventListener() {} close() {} }
@@ -677,7 +712,7 @@ describe('C4b App correction settlement with real inventory controller', () => {
         const input = JSON.parse(String(init.body)) as CountDecisionInput;
         settled = true;
         const proposal = originalHistory.lines[0].proposals[0];
-        const snapshot = { ...originalHistory, operations: [operationWire(input, 2, action)], lines: originalHistory.lines.map((line, index) => index ? line : {
+        const snapshot = { ...originalHistory, operations: [...originalHistory.operations, operationWire(input, 2, action)], lines: originalHistory.lines.map((line, index) => index ? line : {
           ...line, applied_revision: action === 'accept' ? '1' : '0', effective_actual: action === 'accept' ? '5' : line.actual_quantity,
           effective_credit: action === 'accept' ? '5' : line.available_quantity, proposals: [{ ...proposal,
             state: action === 'accept' ? 'applied' : 'rejected', decision: { operation_key: input.operation_key,
@@ -687,6 +722,19 @@ describe('C4b App correction settlement with real inventory controller', () => {
         return Promise.resolve(reply(operationWire(input, 2, action)));
       }
       if (url.endsWith('/count-corrections')) return Promise.resolve(reply(settled ? nextHistory : originalHistory));
+      if (url.endsWith('/dispatch-reconciliations')) {
+        // Both GETs describe the same fixture head, including the complete count
+        // operation generation. Original receipt fields remain immutable.
+        const current = parseCountCorrections(JSON.stringify(nextHistory));
+        return Promise.resolve(reply({ request_id: record.id, operations: [], lines: current.lines.map(line => ({
+          variant_id: line.variant_id, expected_quantity: line.expected_quantity.toString(), actual_quantity: line.actual_quantity.toString(),
+          available_quantity: line.available_quantity.toString(), effective_dispatch: line.effective_dispatch.toString(),
+          effective_actual: line.effective_actual.toString(), effective_credit: line.effective_credit.toString(),
+          count_generation: String(current.operations.filter(op => op.variant_id === line.variant_id).length),
+          count_applied_revision: line.applied_revision.toString(), applied_retained_quantity: '0',
+          workflow_revision: '0', applied_revision: '0', restitution_generation: '0', reconciliation_generation: '0', proposals: [],
+        })) }));
+      }
       return undefined;
     });
     render(<App />);
@@ -830,12 +878,20 @@ describe('C4b correction authority and operation boundaries', () => {
     let reads = 0;
     const f = correctionFixture(2, url => url.endsWith('/count-corrections')
       ? Promise.resolve(reply(++reads === 1 ? correctionHistory() : pendingHistory())) : undefined);
-    render(f.element()); await correctionLoaded(); correctionPreview();
-    // The newly enabled parent hook subscribes after the detail's child effect.
-    // Isolate that history lane so the received record retains its object identity.
-    const historyListener = [...f.listeners].at(-1)!;
-    expect(historyListener).toBeTypeOf('function');
-    act(() => historyListener());
+    // Observe the existing public hook result, not subscription insertion order.
+    // Refresh only count history; the selected record is not fetched/replaced.
+    const useCorrections = countCorrectionHooks.useTransferCountCorrections;
+    let refreshCount: (() => Promise<void>) | undefined;
+    const observe = vi.spyOn(countCorrectionHooks, 'useTransferCountCorrections').mockImplementation(options => {
+      const corrections = useCorrections(options);
+      refreshCount = corrections.refresh;
+      return corrections;
+    });
+    try {
+      render(f.element()); await correctionLoaded(); correctionPreview();
+      expect(refreshCount).toBeTypeOf('function');
+      await act(async () => { await refreshCount!(); });
+    } finally { observe.mockRestore(); }
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(screen.getByText((_, element) => element?.matches('.count-revision-table tr') === true
       && element.children[0]?.textContent === 'Revisión 1'

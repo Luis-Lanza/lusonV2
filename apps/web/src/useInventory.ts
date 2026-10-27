@@ -12,6 +12,7 @@ import { createTransferCountCorrectionRecovery, type TransferCountCorrectionReco
 import type { CountOperation } from './transferCountCorrectionModel';
 import { createTransferRestitutionRecovery, type TransferRestitutionRecovery } from './transferRestitutionRecovery';
 import type { RestitutionOperation } from './transferRestitutionModel';
+import type { DispatchReconciliationOperation } from './transferDispatchReconciliationModel';
 
 class HTTPError extends Error {
   constructor(public status: number) { super('HTTP request failed'); }
@@ -55,6 +56,7 @@ export interface TransferController {
   cancellationRecovery?: TransferCancellationRecovery;
   restitutionRecovery?: TransferRestitutionRecovery;
   confirmTransferRestitution?: (owner: DecisionOwner, operation: RestitutionOperation) => void;
+  confirmTransferDispatchReconciliation?: (owner: DecisionOwner, operation: DispatchReconciliationOperation) => void;
   countCorrectionRecovery?: TransferCountCorrectionRecovery;
   confirmTransferCountCorrection?: (owner: DecisionOwner, operation: CountOperation) => void;
   confirmTransferCreation?: (owner: DecisionOwner, record: TransferRecord) => void;
@@ -356,6 +358,22 @@ export function useInventory() {
     }
   };
   const confirmTransferRestitution = useCallback((owner: DecisionOwner, operation: RestitutionOperation) => restitutionEffects.current(owner, operation), []);
+  const reconciliationEffects = useRef<(owner: DecisionOwner, operation: DispatchReconciliationOperation) => void>(() => {});
+  reconciliationEffects.current = (owner, operation) => {
+    if (!decisionIsCurrent(owner) || operation.actor_location_id !== owner.location) return;
+    // Exact historical confirmation invalidates current readers and detached pins.
+    // Operation balances are audit evidence, never a replacement inventory snapshot.
+    restitutionRecovery.invalidate(owner, operation.request_id, 'restitution');
+    if (!decisionIsCurrent(owner)) return;
+    restitutionRecovery.invalidate(owner, operation.request_id, 'count');
+    if (!decisionIsCurrent(owner)) return;
+    notifyTransfers(owner.epoch, owner);
+    if (operation.action === 'accept' && decisionIsCurrent(owner)) {
+      invalidate(false);
+      if (decisionIsCurrent(owner)) notifySourceInventory(owner.epoch, owner);
+    }
+  };
+  const confirmTransferDispatchReconciliation = useCallback((owner: DecisionOwner, operation: DispatchReconciliationOperation) => reconciliationEffects.current(owner, operation), []);
   const realtimeEpoch = authGeneration.current;
   const stopRealtime = useRealtime({ enabled: !!session?.authenticated && !authBusy, epoch: realtimeEpoch,
     resync: () => { invalidate(true); notifyTransfers(realtimeEpoch); notifySourceInventory(realtimeEpoch); },
@@ -484,7 +502,7 @@ export function useInventory() {
   return { session, metadata, data, query, loading, authBusy, formError, resultsError: resultsError || realtimeError, focusLogin,
     login, logout, change, retrySession: () => restore(), retryInventory: () => change({}, true),
     confirmTransferCreation, decisionRecovery, confirmTransferDecision, dispatchRecovery, receiptRecovery, confirmTransferReceipt, cancellationRecovery, confirmTransferCancellation,
-    countCorrectionRecovery, confirmTransferCountCorrection, restitutionRecovery, confirmTransferRestitution,
+    countCorrectionRecovery, confirmTransferCountCorrection, restitutionRecovery, confirmTransferRestitution, confirmTransferDispatchReconciliation,
     confirmTransferDispatch: useCallback((owner: DecisionOwner) => decisionEffects.current(owner, 'in_transit'), []),
     authorityEpoch: authGeneration.current, getTransferAuthority, subscribeTransferInvalidation, subscribeSourceInventoryInvalidation, settleUnauthorized };
 }

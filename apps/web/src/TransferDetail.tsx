@@ -13,6 +13,8 @@ import './transfer-approved.css';
 import './transfer-transit.css';
 import './transfer-received.css';
 import { projectTransferReceived, type ReceivedQuantities } from './transferReceivedModel';
+import type { DispatchReconciliationLine, DispatchReconciliations } from './transferDispatchReconciliationModel';
+import type { useTransferDispatchReconciliations } from './useTransferDispatchReconciliations';
 import type { CountCorrectionLine, CountProposal } from './transferCountCorrectionModel';
 
 export type DetailController = TransferController & Partial<SourceInventoryController>;
@@ -29,6 +31,9 @@ export interface TransferDetailProps {
   correctionsEnabled?: boolean;
   restitutionRequestID?: string | null;
   restitutionsEnabled?: boolean;
+  reconciliations?: ReturnType<typeof useTransferDispatchReconciliations>;
+  reconciliationRequestID?: string | null;
+  reconciliationsEnabled?: boolean;
 }
 
 // Local render/handler fence only. Nothing here becomes a decision/retry identity.
@@ -90,7 +95,7 @@ function ReceivedDifferences({ quantities }: { quantities: ReceivedQuantities })
 
 // Presentation proof only: the effective table remains the GET projection.
 // Revisions are per variant; decisions retain their proposal's revision.
-function countResultProof(line: CountCorrectionLine, record: TransferRecord) {
+function countResultProof(line: CountCorrectionLine, record: TransferRecord, reconciliation?: DispatchReconciliationLine) {
   const quantity = (n: bigint) => n >= 0n && n <= 9223372036854775807n;
   const credit = (n: bigint) => n < line.expected_quantity ? n : line.expected_quantity;
   const participant = (id: number) => id === record.origin_location_id || id === record.destination_location_id;
@@ -117,12 +122,25 @@ function countResultProof(line: CountCorrectionLine, record: TransferRecord) {
   // Strictly decreasing references exclude cycles. Every predecessor must be
   // the latest earlier application, not an arbitrary pending/rejected proposal.
   const verified = new Map<bigint, { actual: bigint; credit: bigint }>();
+  // Generations count operations, NOT proposal revisions. Each decision is a
+  // separate operation; superseded proposals have no decision. Reconciliation
+  // never changes actual count. Its accepted credit can replace the predecessor
+  // only when its pin is after that predecessor's acceptance.
+  const before = (p: CountProposal) => line.proposals.reduce((n, item) =>
+    item.revision < p.revision ? n + 1n + (item.decision ? 1n : 0n) : n, 0n);
+  const reconciledBefore = (generation: bigint) => reconciliation?.proposals.filter(p =>
+    p.state === 'applied' && p.count_generation <= generation).at(-1);
+  const dispatchBefore = (p: CountProposal) => reconciledBefore(before(p))?.dispatch_quantity ?? line.expected_quantity;
   function baseline(p: CountProposal): { actual: bigint; credit: bigint } | null {
     const previous = applied.reduce((max, item) => item.revision < p.revision && item.revision > max ? item.revision : max, 0n);
     if (p.base_revision !== previous || p.base_revision >= p.revision) return null;
     const base = previous === 0n ? { actual: line.actual_quantity, credit: line.available_quantity }
       : proveApplied(proposals.get(previous)!);
-    return base && p.base_credit === base.credit ? base : null;
+    const reconciled = reconciledBefore(before(p));
+    const previousGeneration = previous === 0n ? 0n : before(proposals.get(previous)!) + 2n;
+    const effectiveBase = base && reconciled && reconciled.count_generation >= previousGeneration
+      ? { actual: base.actual, credit: reconciled.dispatch_quantity } : base;
+    return effectiveBase && p.base_credit === effectiveBase.credit ? effectiveBase : null;
   }
   function proveApplied(p: CountProposal): { actual: bigint; credit: bigint } | null {
     const cached = verified.get(p.revision);
@@ -130,7 +148,7 @@ function countResultProof(line: CountCorrectionLine, record: TransferRecord) {
     const base = baseline(p);
     if (!base || p.state !== 'applied' || p.decision?.accepted !== true || !p.application
       || p.application.recorded_at !== p.decision.recorded_at
-      || p.application.effective_credit !== credit(p.actual_quantity)
+      || p.application.effective_credit !== (p.actual_quantity < dispatchBefore(p) ? p.actual_quantity : dispatchBefore(p))
       || p.application.delta !== p.application.effective_credit - base.credit) return null;
     const value = { actual: p.actual_quantity, credit: p.application.effective_credit };
     verified.set(p.revision, value);
@@ -144,21 +162,34 @@ function countResultProof(line: CountCorrectionLine, record: TransferRecord) {
   }
   const current = appliedRevision === 0n ? { actual: line.actual_quantity, credit: line.available_quantity }
     : verified.get(appliedRevision);
-  if (!current || current.actual !== line.effective_actual || current.credit !== line.effective_credit) return null;
+  const latestReconciliation = reconciliation?.proposals.filter(p => p.state === 'applied').at(-1);
+  const lastCountGeneration = appliedRevision === 0n ? 0n : before(proposals.get(appliedRevision)!) + 2n;
+  const currentCredit = latestReconciliation && latestReconciliation.count_generation >= lastCountGeneration
+    ? latestReconciliation.dispatch_quantity : current?.credit;
+  if (!current || current.actual !== line.effective_actual || currentCredit !== line.effective_credit) return null;
+  // Cross-ledger pins must agree with the count history at that operation
+  // generation. A reconciliation between proposal and acceptance would retire
+  // that count consent, so an eventual application cannot straddle it.
+  for (const r of reconciliation?.proposals ?? []) {
+    const earlier = applied.reduce<CountProposal | undefined>((latest, p) => before(p) + 2n <= r.count_generation
+      && (!latest || p.revision > latest.revision) ? p : latest, undefined);
+    const actual = earlier ? earlier.actual_quantity : line.actual_quantity;
+    if (r.base_actual !== actual || applied.some(p => before(p) + 1n === r.count_generation)) return null;
+  }
   const application = proposals.get(appliedRevision);
   const latest = proposals.get(latestRevision);
   return { application, rejected: latest?.state === 'rejected' ? latest : undefined,
     baseline: (p: CountProposal) => baseline(p)! };
 }
 
-function projectCountCorrectionResults(record: TransferRecord, corrections: TransferCountCorrectionsProps['corrections']) {
+function projectCountCorrectionResults(record: TransferRecord, corrections: TransferCountCorrectionsProps['corrections'], reconciliations?: DispatchReconciliations | null) {
   if (record.status !== 'received' || !corrections.snapshot || corrections.attempts.some(a => a.phase === 'inFlight' || a.phase === 'uncertain'
     || a.phase === 'conflict' || a.phase !== 'confirmed' && a.priorUncertainty)) return null;
   const location = (id: number) => id === record.origin_location_id ? record.origin_location_name : record.destination_location_name;
   const snapshot = corrections.snapshot;
   const rows = record.receipt.items.map(original => {
     const line = snapshot.lines.find(item => item.variant_id === original.variant_id)!;
-    const proof = countResultProof(line, record);
+    const proof = countResultProof(line, record, reconciliations?.lines.find(l => l.variant_id === line.variant_id));
     const product = record.items.find(item => item.variant_id === line.variant_id);
     const label = product ? product.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]' : `Variante ${line.variant_id}`;
     const result = (p: CountProposal | undefined) => p && proof ? {
@@ -167,7 +198,7 @@ function projectCountCorrectionResults(record: TransferRecord, corrections: Tran
     } : undefined;
     return { variant_id: line.variant_id, coherent: !!proof, product, label,
       application: result(proof?.application), rejected: result(proof?.rejected),
-      shortage: line.effective_actual < line.expected_quantity };
+      shortage: line.effective_actual < line.effective_dispatch };
   });
   return { rows, corrected: rows.every(row => row.coherent) && rows.some(row => row.application) };
 }
@@ -408,11 +439,17 @@ export default function TransferDetail(props: TransferDetailProps) {
     && props.restitutionRequestID === record.id && !!controller.restitutionRecovery;
   const selected = management?.scope === managementScope ? management : null;
   const corrections = effectiveContext ? props.corrections : undefined;
+  const reconciliationContext = effectiveContext && props.reconciliationsEnabled === true
+    && props.reconciliationRequestID === record.id;
+  const reconciliations = reconciliationContext ? props.reconciliations : undefined;
   const effective = receivedParticipant ? projectTransferReceived({ record,
-    snapshot: corrections?.snapshot ?? null, busy: corrections?.busy ?? false,
-    error: corrections?.error ?? null, masked: corrections?.masked ?? false, contextValid: effectiveContext }) : null;
+    snapshot: corrections?.snapshot ?? null,
+    reconciliations: props.reconciliationsEnabled === undefined ? undefined : reconciliations?.snapshot ?? null,
+    busy: (corrections?.busy ?? false) || (reconciliations?.busy ?? false),
+    error: corrections?.error ?? reconciliations?.error ?? null,
+    masked: (corrections?.masked ?? false) || (reconciliations?.masked ?? false), contextValid: effectiveContext }) : null;
   const countResults = effective?.status === 'available' && corrections
-    ? projectCountCorrectionResults(record, corrections) : null;
+    ? projectCountCorrectionResults(record, corrections, reconciliations?.snapshot) : null;
   const receivedHistoryLabel = receivedParticipant
     ? direct ? 'Historial del envío' : record.kind === 'send_to_warehouse' ? 'Historial de la propuesta' : 'Historial de la solicitud'
     : 'Historial de la solicitud';
@@ -438,7 +475,7 @@ export default function TransferDetail(props: TransferDetailProps) {
         <h2>Conteo efectivo no disponible</h2>
         <p>No se muestran cantidades originales como conteo efectivo. Consultá el estado y los controles de recuperación en Correcciones de conteo.</p>
         {corrections && !corrections.masked && <button type="button" disabled={corrections.busy}
-          onClick={() => { if (current() && effectiveContext) void corrections.refresh(); }}>Reintentar conteo efectivo</button>}
+          onClick={() => { if (current() && effectiveContext) { void corrections.refresh(); void reconciliations?.refresh(); } }}>Reintentar conteo efectivo</button>}
       </div> : <>
         <header><h2>{effective.status === 'updating' ? 'Actualizando conteo efectivo…' : 'Conteo efectivo confirmado'}</h2>
           <span> · {effective.rows.length} variantes · {effective.totals.actual.toString()} {effective.totals.actual === 1n ? 'batería contabilizada' : 'baterías contabilizadas'}</span></header>

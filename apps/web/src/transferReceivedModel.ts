@@ -1,9 +1,12 @@
+import type { DispatchReconciliations } from './transferDispatchReconciliationModel';
 import type { CountCorrections } from './transferCountCorrectionModel';
 import type { TransferItem, TransferRecord } from './transferModel';
 
 export interface ReceivedProjectionInput {
   readonly record: TransferRecord | null;
   readonly snapshot: CountCorrections | null;
+  /** When connected, both independently read ledgers must describe the same head. */
+  readonly reconciliations?: DispatchReconciliations | null;
   readonly busy: boolean;
   readonly error: unknown | null;
   readonly masked: boolean;
@@ -26,7 +29,7 @@ export interface ReceivedRow extends ReceivedQuantities {
   readonly applied_revision: bigint;
 }
 export type ReceivedUnavailableReason = 'context-invalid' | 'masked' | 'error' | 'not-received' | 'absent'
-  | 'request-mismatch' | 'duplicate-variant' | 'missing-variant' | 'extra-variant' | 'original-mismatch';
+  | 'request-mismatch' | 'duplicate-variant' | 'missing-variant' | 'extra-variant' | 'original-mismatch' | 'reconciliation-mismatch';
 export type ReceivedProjection =
   | { readonly status: 'unavailable'; readonly reason: ReceivedUnavailableReason }
   | { readonly status: 'available' | 'updating'; readonly rows: readonly ReceivedRow[]; readonly totals: ReceivedQuantities };
@@ -53,6 +56,21 @@ export function projectTransferReceived(input: ReceivedProjectionInput): Receive
   }
   if (snapshot.lines.some(line => !original.has(line.variant_id))) return unavailable('extra-variant');
   if (record.receipt.items.some(line => !effective.has(line.variant_id))) return unavailable('missing-variant');
+  const reconciliation = input.reconciliations;
+  if (reconciliation !== undefined) {
+    if (!reconciliation || reconciliation.request_id !== snapshot.request_id
+      || reconciliation.lines.length !== record.items.length
+      || new Set(reconciliation.lines.map(l => l.variant_id)).size !== reconciliation.lines.length) return unavailable('reconciliation-mismatch');
+    for (const line of snapshot.lines) {
+      const r = reconciliation.lines.find(l => l.variant_id === line.variant_id);
+      if (line.expected_quantity === 0n) { if (r) return unavailable('reconciliation-mismatch'); continue; }
+      if (!r || r.expected_quantity !== line.expected_quantity || r.actual_quantity !== line.actual_quantity
+        || r.available_quantity !== line.available_quantity || r.effective_dispatch !== line.effective_dispatch
+        || r.effective_actual !== line.effective_actual || r.effective_credit !== line.effective_credit
+        || r.count_generation !== BigInt(snapshot.operations.filter(op => op.variant_id === line.variant_id).length) || r.count_applied_revision !== line.applied_revision
+        || r.applied_revision !== line.reconciliation_revision) return unavailable('reconciliation-mismatch');
+    }
+  }
   const products = new Map(record.items.map(item => [item.variant_id, item]));
   const rows: ReceivedRow[] = [];
   const totals = { expected: 0n, actual: 0n, credit: 0n, shortage: 0n, excess: 0n, unexpected: 0n };
@@ -61,7 +79,7 @@ export function projectTransferReceived(input: ReceivedProjectionInput): Receive
     if (line.expected_quantity !== originalLine.expected_quantity || line.actual_quantity !== originalLine.actual_quantity
       || line.available_quantity !== originalLine.available_quantity) return unavailable('original-mismatch');
     const product = products.get(line.variant_id);
-    const expected = line.expected_quantity;
+    const expected = line.effective_dispatch;
     const actual = line.effective_actual;
     const row: ReceivedRow = Object.freeze({
       variant_id: line.variant_id,

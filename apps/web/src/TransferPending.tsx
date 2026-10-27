@@ -11,6 +11,7 @@ import TransferDispatch from './TransferDispatch';
 import TransferReceipt from './TransferReceipt';
 import TransferCancellation from './TransferCancellation';
 import { useTransferCountCorrections } from './useTransferCountCorrections';
+import { useTransferDispatchReconciliations } from './useTransferDispatchReconciliations';
 import { isTransferFocusTarget, type TransferModalFocusBinding } from './transferModalFocus';
 
 // No session or CSRF retained in routing state. Epoch changes invalidate this tag.
@@ -113,6 +114,9 @@ export default function TransferPending(props: TransferPendingProps) {
   const correctionRequestID = correctionsEnabled ? record.id : null;
   const corrections = useTransferCountCorrections({ controller: props.controller,
     requestID: correctionRequestID, enabled: correctionsEnabled });
+  const reconciliations = useTransferDispatchReconciliations({ controller: props.controller,
+    record: correctionsEnabled ? record : null, enabled: correctionsEnabled,
+    onConfirmed: props.controller.confirmTransferDispatchReconciliation });
   const modalFocus: TransferModalFocusBinding = {
     scope: focusScope.current.token,
     restore: request => {
@@ -201,6 +205,7 @@ export default function TransferPending(props: TransferPendingProps) {
               onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
               renderDetail={cancellationActions => record && <TransferDetail controller={props.controller} ownerTag={props.ownerTag} record={record}
                 corrections={corrections} correctionRequestID={correctionRequestID} correctionsEnabled={correctionsEnabled}
+                reconciliations={reconciliations} reconciliationRequestID={correctionRequestID} reconciliationsEnabled={correctionsEnabled}
                 restitutionRequestID={correctionRequestID} restitutionsEnabled={correctionsEnabled}
                 onStock={receiveStock} stockRefresh={stockRefresh} actions={() => <>{actions}{dispatchActions}{receiptActions}{cancellationActions}</>} />} />} />} />} />
     </> : <>

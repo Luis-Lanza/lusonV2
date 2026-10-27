@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { appliedSnapshot, fixture as dispatchFixture } from './transferDispatchReconciliationStoreFixtures';
 import type { CountCorrectionLine, CountProposal } from './transferCountCorrectionModel';
 import { previewTransferReceipt, type TransferRecord } from './transferModel';
 import { projectTransferReceived, type ReceivedProjectionInput } from './transferReceivedModel';
@@ -41,6 +42,26 @@ function freezeDeep(value: unknown) {
 }
 
 describe('received effective projection', () => {
+  it('joins accepted dispatch evidence by variant without rewriting original quantities', () => {
+    const reconciliations = appliedSnapshot(); const record = dispatchFixture().record;
+    const snapshot = { request_id: 123n, operations: [], lines: reconciliations.lines.map(l => ({
+      variant_id: l.variant_id, expected_quantity: l.expected_quantity, actual_quantity: l.actual_quantity,
+      available_quantity: l.available_quantity, effective_dispatch: l.effective_dispatch, reconciliation_revision: l.applied_revision,
+      workflow_revision: 0n, applied_revision: 0n, effective_actual: l.effective_actual, effective_credit: l.effective_credit, proposals: [],
+    })) };
+    const input = { record, snapshot, reconciliations, busy: false, error: null, masked: false, contextValid: true };
+    const before = structuredClone(input); freezeDeep(input);
+    expect(projectTransferReceived(input)).toMatchObject({ status: 'available', rows: [
+      { expected: 7n, actual: 7n, credit: 7n, excess: 0n }, { expected: 5n, excess: 2n },
+    ] });
+    for (const field of ['effective_dispatch', 'effective_actual', 'effective_credit', 'applied_revision', 'count_generation', 'count_applied_revision'] as const) {
+      const wrong = { ...reconciliations, lines: reconciliations.lines.map((l, i) => i ? l : { ...l, [field]: l[field] + 1n }) };
+      expect(projectTransferReceived({ ...input, reconciliations: wrong })).toEqual({ status: 'unavailable', reason: 'reconciliation-mismatch' });
+    }
+    expect(projectTransferReceived({ ...input, reconciliations: null }).status).toBe('unavailable');
+    expect(projectTransferReceived({ ...input, busy: true }).status).toBe('updating');
+    expect(input).toEqual(before);
+  });
   it('joins by variant, preserves immutable historical metadata and unexpected ID-only identity', () => {
     const input = fixture();
     const result = projectTransferReceived(withLines(input, [...input.snapshot!.lines].reverse()));
