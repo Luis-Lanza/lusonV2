@@ -3,7 +3,6 @@ package httpapi
 import (
 	"encoding/json"
 	"math"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -11,32 +10,6 @@ import (
 	"luson/api/internal/transfers"
 )
 
-// Only this test mux exposes prepared mutation handlers. Authentication and mutation
-// guards execute inside the real API handler; path admission is production code.
-func dr3Route(f *transferHTTPFixture) {
-	production := f.handler
-	api := &API{f.svc, f.cfg}
-	mux := http.NewServeMux()
-	for _, action := range []string{"", "propose", "accept", "reject"} {
-		path := "/api/transfers/{id}/dispatch-reconciliations"
-		if action != "" {
-			path += "/" + action
-		}
-		mux.HandleFunc(path, api.transferDispatchReconciliations(transfers.New(f.p), action))
-	}
-	mux.HandleFunc("/api/transfers/{id}/dispatch-reconciliations/", countCorrectionNotFound)
-	f.handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.Contains(r.URL.Path, "/dispatch-reconciliations") {
-			production.ServeHTTP(w, r)
-			return
-		}
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if transferPath(w, r) {
-			mux.ServeHTTP(w, r)
-		}
-	})
-}
 func dr3Body(key, revision, quantity string) string {
 	body := countHTTPBody(1, key, revision, "", "evidence")
 	if quantity != "" {
@@ -69,7 +42,6 @@ func TestDR3HTTPReadRegistered(t *testing.T) {
 func TestDR3HTTPMutationPrepared(t *testing.T) {
 	f := transferFixture(t)
 	received := countHTTPReceived(t, f)
-	dr3Route(f)
 	path := "/api/transfers/" + received.ID + "/dispatch-reconciliations"
 	// A matching dispatch cannot be reconciled; private access wins over junk.
 	dr3Reject(t, f, path, f.newRequest(2, "POST", path+"/propose", dr3Body("dr3-proposal-key-001", "0", "1")), 400, "invalid_request")

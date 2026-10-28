@@ -27,7 +27,7 @@
 .dispatch-reconciliation button:disabled { opacity: .55; cursor: not-allowed; }
 .dispatch-reconciliation :focus-visible { outline: 2px solid var(--dispatch-reconciliation-wine); outline-offset: 3px; }
 .dispatch-reconciliation table { width: 100%; border-collapse: collapse; text-align: left; }
-.dispatch-reconciliation th, .dispatch-reconciliation td { padding: 14px; border-top: 1px solid var(--dispatch-reconciliation-border); }
+.dispatch-reconciliation th, .dispatch-reconciliation td { padding: 14px; border-top: 1px solid var(--dispatch-reconciliation-border); white-space: normal; }
 .dispatch-reconciliation thead { background: #f8f6f4; font-size: 12px; }
 .dispatch-reconciliation summary { display: flex; align-items: center; min-height: 44px; cursor: pointer; color: var(--dispatch-reconciliation-wine); }
 .dispatch-reconciliation details { padding-top: 12px; border-top: 1px solid var(--dispatch-reconciliation-border); }

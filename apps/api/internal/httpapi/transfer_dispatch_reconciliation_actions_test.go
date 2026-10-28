@@ -11,11 +11,9 @@ func TestDRDiscoveryHTTP(t *testing.T) {
 	for _, proposer := range []int{1, 2} {
 		t.Run(fmt.Sprintf("proposer_%d", proposer), func(t *testing.T) {
 			f := transferFixture(t)
-			production := f.handler
-			detail := dr3Received(t, f) // Installs prepared mutation routes for seeding only.
+			detail := dr3Received(t, f) // Seed through the production mutation routes.
 			path := detail + "/dispatch-reconciliations"
 			dr3Apply(t, f, f.newRequest(proposer, "POST", path+"/propose", dr3Body("discovery-http-proposal", "0", "7")), 0, 0)
-			f.handler = production
 			unchanged := dr3NoChange(t, f, path)
 			defer unchanged()
 			original := dr3Get(t, f, detail)
@@ -60,7 +58,12 @@ func TestDRDiscoveryHTTP(t *testing.T) {
 				}
 			}
 			for _, action := range []string{"propose", "accept", "reject"} {
-				expectTransferError(t, receiptHTTPMutation(f, f.newRequest(3-proposer, "POST", path+"/"+action, dr3Body("discovery-unregistered", "1", ""))), 404, "not_found")
+				// Missing CSRF rejects before decoding or mutating the seeded proposal.
+				// Keep the deferred discovery snapshot assertion genuinely read-only.
+				r := f.newRequest(3-proposer, "POST", path+"/"+action, "")
+				r.Header.Del("X-CSRF-Token")
+				r.Body = dr3UnreadBody{t}
+				expectTransferError(t, receiptHTTPMutation(f, r), 403, "forbidden")
 			}
 			expectTransferError(t, f.request(t, 3, "GET", path, ""), 404, "not_found")
 			expectTransferError(t, f.request(t, 0, "GET", "/api/transfers?status=all&requires_action=true", ""), 401, "unauthenticated")

@@ -119,7 +119,7 @@ func dr3Received(t *testing.T, f *transferHTTPFixture) string {
 		}
 		f.baseline = f.stock(t)
 	}
-	dr3Route(f)
+	// All agreement and guard assertions must traverse the production mux.
 	return path
 }
 func TestDR3HTTPMutationAgreement(t *testing.T) {

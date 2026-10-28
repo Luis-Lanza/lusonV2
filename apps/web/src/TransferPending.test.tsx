@@ -623,7 +623,7 @@ describe('F3 participant received chrome', () => {
     expect(screen.queryByRole('region', { name: 'Contadores de solicitudes' })).toBeNull();
     expect(screen.getByText('Ver recepción original').closest('details')).not.toHaveAttribute('open');
     fireEvent.click(screen.getByRole('button', { name: 'Gestiones' }));
-    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Corregir conteo', 'Restituciones de origen']);
+    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Corregir conteo', 'Restituciones de origen', 'Regularizar despacho']);
     // Restitutions also consults count history to fence its effective-credit head.
     expect(correctionCalls(f)).toHaveLength(2);
     expect(f.fetch.mock.calls.filter(([url]) => url === `/api/transfers/${record.id}/dispatch-reconciliations`)).toHaveLength(1);

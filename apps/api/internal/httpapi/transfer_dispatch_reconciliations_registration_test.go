@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// No dr3Route: every request below traverses NewWithTransfers' production mux.
+// Every request below traverses NewWithTransfers' production mux.
 func TestDR3HTTPReadProductionRouter(t *testing.T) {
 	f := transferFixture(t)
 	received := countHTTPReceived(t, f)
@@ -61,7 +61,10 @@ func TestDR3HTTPReadProductionRouter(t *testing.T) {
 			reject(actor, method, path, 405, "method_not_allowed", "GET")
 		}
 	}
-	for _, suffix := range []string{"/", "/propose", "/accept", "/reject", "/accept/", "/unknown", "/propose/extra"} {
+	for _, action := range []string{"propose", "accept", "reject"} {
+		reject(2, "GET", path+"/"+action, 405, "method_not_allowed", "POST")
+	}
+	for _, suffix := range []string{"/", "/accept/", "/reject/", "/propose/", "/unknown", "/propose/extra"} {
 		for _, method := range []string{"GET", "POST"} {
 			reject(2, method, path+suffix, 404, "not_found", "")
 		}

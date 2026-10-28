@@ -11,6 +11,8 @@ export interface TransferDispatchReconciliationsProps {
   record: TransferRecord | null;
   actorLocation: number | null;
   reconciliations: ReturnType<typeof useTransferDispatchReconciliations>;
+  contextVisible?: boolean;
+  entryFocusKey?: number;
 }
 const actions = { propose: 'Proponer', accept: 'Aceptar', reject: 'Rechazar' };
 const states = { pending: 'Pendiente', superseded: 'Reemplazada', rejected: 'Rechazada', applied: 'Aplicada' };
@@ -35,22 +37,32 @@ export default function TransferDispatchReconciliations(props: TransferDispatchR
     <p role="status">Regularización no disponible para esta sesión.</p>
     {eligible && <button disabled={r.busy} onClick={() => { void r.recover(); }}>Consultar recuperación autorizada</button>}
   </section>;
-  // Remount only local disclosure/focus state when private context becomes unavailable.
-  // No private snapshot, draft, reason, quantity or retry payload is copied into local state.
-  const available = r.snapshot?.request_id.toString() === record.id;
-  return <ReconciliationSection key={`${record.id}:${actorLocation}:${available ? 'ready' : 'empty'}`}
+  return <ReconciliationFocusOwner key={`${record.id}:${record.kind}:${record.origin_location_id}:${record.destination_location_id}:${actorLocation}`}
     {...props} record={record} actorLocation={actorLocation} />;
 }
 
-function ReconciliationSection({ record, actorLocation, reconciliations: r }: TransferDispatchReconciliationsProps & {
-  record: TransferRecord; actorLocation: number;
+type EligibleProps = TransferDispatchReconciliationsProps & { record: TransferRecord; actorLocation: number };
+function ReconciliationFocusOwner(props: EligibleProps) {
+  // This owner is retired by the existing eligibility/privacy and physical-scope fences.
+  // Only focus intent survives snapshot clearing, never private workflow evidence.
+  const [focus] = useState(() => ({ opener: null as HTMLElement | null, restore: false }));
+  const [focusFallback, setFocusFallback] = useState(false);
+  const available = props.reconciliations.snapshot?.request_id.toString() === props.record.id;
+  return <ReconciliationSection key={available ? 'ready' : 'empty'} {...props}
+    focus={focus} focusFallback={focusFallback} setFocusFallback={setFocusFallback} />;
+}
+
+function ReconciliationSection({ record, actorLocation, reconciliations: r, contextVisible = true, entryFocusKey,
+  focus, focusFallback, setFocusFallback }: EligibleProps & {
+  focus: { opener: HTMLElement | null; restore: boolean };
+  focusFallback: boolean;
+  setFocusFallback: (value: boolean) => void;
 }) {
   const snapshot = r.snapshot?.request_id.toString() === record.id ? r.snapshot : null;
   const [consultation, setConsultation] = useState<number | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const modal = useRef<HTMLDivElement>(null);
-  const opener = useRef<HTMLElement | null>(null);
-  const restore = useRef(false);
+  const lastEntry = useRef(entryFocusKey);
   const titleID = useId(); const quantityID = useId(); const reasonID = useId(); const helpID = useId();
   const location = (id: number) => id === record.origin_location_id ? record.origin_location_name : record.destination_location_name;
   const name = (variant: number) => {
@@ -75,11 +87,11 @@ function ReconciliationSection({ record, actorLocation, reconciliations: r }: Tr
   const controls = () => Array.from(modal.current?.querySelectorAll<HTMLElement>('button, input, textarea, [tabindex]') ?? [])
     .filter(el => el.tabIndex >= 0 && isTransferFocusTarget(el) && !el.closest('[inert], [hidden]'));
   function close() {
-    restore.current = true; setConsultation(null); r.cancel();
+    focus.restore = true; setFocusFallback(true); setConsultation(null); r.cancel();
   }
   function begin(variantID: number, next: 'propose' | 'accept' | 'reject', trigger: HTMLElement) {
     if (r.busy || unresolved) return;
-    if (!active) opener.current = trigger;
+    if (!active) focus.opener = trigger;
     r.begin(variantID, next);
   }
   // Match the existing count-correction isolation lifetime, including newly inserted siblings.
@@ -106,19 +118,29 @@ function ReconciliationSection({ record, actorLocation, reconciliations: r }: Tr
     if (active) (controls()[0] ?? modal.current)?.focus();
   }, [active, consulting, !!review, action]);
   useLayoutEffect(() => {
-    if (active || !restore.current) return;
-    restore.current = false;
-    const target = opener.current;
-    if (isTransferFocusTarget(target) && !target.closest('[inert], [hidden]')) target.focus();
-    else heading.current?.focus();
+    if (entryFocusKey !== lastEntry.current) {
+      lastEntry.current = entryFocusKey;
+      if (entryFocusKey !== undefined && contextVisible && !active) heading.current?.focus();
+    }
+  }, [entryFocusKey, contextVisible, active]);
+  useLayoutEffect(() => {
+    if (active || r.busy || !snapshot || !focus.restore) return;
+    const target = focus.opener;
+    const fallback = heading.current;
+    if (isTransferFocusTarget(target) && !target.closest('[inert], [hidden]')) {
+      focus.restore = false; target.focus();
+    } else if (isTransferFocusTarget(fallback) && !fallback.closest('[inert], [hidden]')) {
+      focus.restore = false; fallback.focus();
+    }
   });
-  return <section className="dispatch-reconciliation" aria-label="Regularización de despacho">
-    <button onClick={() => heading.current?.focus()}>Gestiones · Regularizar despacho</button>
+  const sectionVisible = contextVisible || active || unresolved || r.busy || !!r.error || focusFallback;
+  return <section className="dispatch-reconciliation" aria-label="Regularización de despacho" hidden={!sectionVisible}>
     <header><h2 ref={heading} tabIndex={-1}>Regularización de despacho</h2>
       <p>Confirma cuánto salió realmente; no registra otro envío físico.</p></header>
     {r.busy && <p role="status">Consultando o enviando regularizaciones…</p>}
     {r.error && <p role="alert">{Object.hasOwn(errorCopy, r.error.code) ? errorCopy[r.error.code] : 'No se pudo confirmar el resultado. Consultá el estado antes de volver a enviar.'}</p>}
     {!snapshot && <p role="status">Regularización no disponible.</p>}
+    {contextVisible && <div>
     <p className="dispatch-reconciliation-notice">Solo variantes incluidas en el envío. Ambos lugares deben confirmar la procedencia.
       Enviar una propuesta no cambia existencias ni reservas. Cada nueva revisión requiere otro acuerdo.</p>
     {snapshot && <table aria-label="Comparación de despacho"><thead><tr>
@@ -131,7 +153,7 @@ function ReconciliationSection({ record, actorLocation, reconciliations: r }: Tr
         <td data-label="Recibidas efectivas">{l.effective_actual.toString()}</td>
         <td data-label="Crédito efectivo">{l.effective_credit.toString()}</td><td><div className="dispatch-reconciliation-actions">
           {h.propose && !unresolved && <button disabled={r.busy} onClick={e => begin(l.variant_id, 'propose', e.currentTarget)}>{waiting ? 'Reemplazar propuesta' : 'Proponer regularización'}</button>}
-          {h.reject && !unresolved && <button disabled={r.busy} onClick={e => { opener.current = e.currentTarget; setConsultation(l.variant_id); }}>Consultar propuesta</button>}
+          {h.reject && !unresolved && <button disabled={r.busy} onClick={e => { focus.opener = e.currentTarget; setConsultation(l.variant_id); }}>Consultar propuesta</button>}
           {waiting && <><p>{p.initiator_location_id === actorLocation ? `Esperando revisión de ${location(actorLocation === record.origin_location_id ? record.destination_location_id : record.origin_location_id)}` : `Propuesta de ${location(p.initiator_location_id)} · Requiere tu revisión`}</p>
             <p>Propuesto: {p.dispatch_quantity.toString()} · {p.reason}</p>
             <button disabled={r.busy} onClick={() => { void r.recover(); }}>Consultar estado</button></>}
@@ -160,6 +182,7 @@ function ReconciliationSection({ record, actorLocation, reconciliations: r }: Tr
     <details><summary>Ver recepción original</summary>{record.status === 'received' && record.receipt.items.map(i => <p key={i.variant_id}>
       {name(i.variant_id)} · Despacho registrado: {i.expected_quantity.toString()} · Recibidas originalmente: {i.actual_quantity.toString()} · Crédito original: {i.available_quantity.toString()}
     </p>)}<p>Esta evidencia se conserva después de cada regularización.</p></details>
+    </div>}
     {attempts.map(a => <article className="dispatch-reconciliation-recovery" key={a.payload.operation_key}>
       <h3>{phases[a.phase]} · {name(a.payload.variant_id)}</h3>
       <p>{actions[a.action]} · Actor {location(a.actor)}</p>
@@ -169,7 +192,7 @@ function ReconciliationSection({ record, actorLocation, reconciliations: r }: Tr
       {a.phase === 'confirmed' && <p>Operación confirmada mediante evidencia exacta.</p>}
       <div className="dispatch-reconciliation-actions">
         {!['confirmed', 'failed'].includes(a.phase) && <button disabled={r.busy} onClick={() => { void r.recover(); }}>Consultar resultado</button>}
-        {['uncertain', 'conflict'].includes(a.phase) && <button disabled={r.busy} onClick={() => { void r.retry(a.payload.variant_id); }}>Reintentar carga exacta</button>}
+        {['uncertain', 'conflict'].includes(a.phase) && <button disabled={r.busy} onClick={() => { focus.restore = true; setFocusFallback(true); void r.retry(a.payload.variant_id); }}>Reintentar carga exacta</button>}
       </div>
     </article>)}
     {active && line && <div className="dispatch-reconciliation-backdrop"><div ref={modal} className="dispatch-reconciliation-modal"
@@ -205,7 +228,7 @@ function ReconciliationSection({ record, actorLocation, reconciliations: r }: Tr
         {consulting ? <><button disabled={r.busy || unresolved || !hints?.accept} onClick={e => begin(line.variant_id, 'accept', e.currentTarget)}>Aceptar propuesta</button>
           <button disabled={r.busy || unresolved || !hints?.reject} onClick={e => begin(line.variant_id, 'reject', e.currentTarget)}>Rechazar propuesta</button></>
           : review ? <button className="dispatch-reconciliation-primary" disabled={r.busy || unresolved || !hints?.[review.attempt.action]}
-            onClick={() => { restore.current = true; setConsultation(null); void r.confirm(); }}>
+            onClick={() => { focus.restore = true; setFocusFallback(true); setConsultation(null); void r.confirm(); }}>
             {review.attempt.action === 'propose' ? 'Enviar propuesta' : review.attempt.action === 'accept' ? 'Confirmar aceptación' : 'Confirmar rechazo'}</button>
           : <button className="dispatch-reconciliation-primary" disabled={r.busy || unresolved || !draft?.reason.trim()} onClick={() => r.review()}>Ver revisión de propuesta</button>}
         <button onClick={close}>Cerrar</button>

@@ -78,7 +78,27 @@ remain distinct. The existing sidebar/bottom-navigation badge is unchanged.
 `Regularizaciones por revisar` and `Revisar regularización` are advisory labels,
 not decision controls. Latest undecided expected-line proposals remain discoverable
 at either counterpart even when freshness, stock or restitution blocks acceptance.
-Reconciliation action presentation remains unmounted and POST routes unregistered.
+Received participants open **Gestiones → Regularizar despacho**, alongside the
+existing count/restitution contexts. One persistent presentation uses Pending's
+existing owner-held reconciliation hook; changing the visible context does not
+change authorization or create a second reader. Routine comparison/history content
+is hidden in other contexts while still-owned dialogs and uncertain-outcome
+recovery remain accessible. Arrow keys wrap across available menu entries; Home/End
+select the first/last entry, Escape restores the menu trigger, and entry focuses
+the selected context heading. Dialog close restores an eligible opener or visible
+heading fallback, never a hidden/inert target. Physical route, owner or selected
+transfer changes retire the old private context.
+
+The exact propose/accept/reject POST routes are registered. Either endpoint may
+propose Q equal to current effective received count for one originally expected
+variant; only the opposite endpoint decides. No-op proposals and applied-restitution
+variants remain excluded. Every write requires a reason, review and explicit
+confirmation; pending/rejected proposals do not apply stock changes. Unknown writes
+retain their exact operation key/payload across context switches and pane remounts:
+consult or explicitly retry that same intent, never automatically POST or infer
+success from a changed head. Original receipt and immutable revision history remain
+separate. Accepted confirmation invalidates current inventory for a fresh GET;
+operation audit balances are historical evidence, not today's inventory display.
 
 **Ver acciones pendientes** is also available in a compact band above detail. It
 returns to the list with Todas, action-only filtering and page one, so work outside

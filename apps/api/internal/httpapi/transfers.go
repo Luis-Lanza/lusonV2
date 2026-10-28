@@ -486,8 +486,10 @@ func (a *API) transferCounts(store *transfers.Store) http.HandlerFunc {
 }
 
 func (a *API) registerTransfers(mux *http.ServeMux, store *transfers.Store) {
-	// Expose only the prepared read; all descendants remain unavailable.
 	mux.HandleFunc("/api/transfers/{id}/dispatch-reconciliations", a.transferDispatchReconciliations(store, ""))
+	mux.HandleFunc("/api/transfers/{id}/dispatch-reconciliations/propose", a.transferDispatchReconciliations(store, "propose"))
+	mux.HandleFunc("/api/transfers/{id}/dispatch-reconciliations/accept", a.transferDispatchReconciliations(store, "accept"))
+	mux.HandleFunc("/api/transfers/{id}/dispatch-reconciliations/reject", a.transferDispatchReconciliations(store, "reject"))
 	mux.HandleFunc("/api/transfers/{id}/dispatch-reconciliations/", countCorrectionNotFound)
 	mux.HandleFunc("/api/transfers/{id}/cancel", a.transferCancellation(store))
 	mux.HandleFunc("/api/transfers/{id}/receive", a.transferReceive(store))

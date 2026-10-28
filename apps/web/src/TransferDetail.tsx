@@ -6,6 +6,7 @@ import { transferViewOwner } from './TransferPending';
 import { ReceiptTable } from './TransferReceipt';
 import TransferCountCorrections, { type TransferCountCorrectionsProps } from './TransferCountCorrections';
 import TransferRestitutions from './TransferRestitutions';
+import TransferDispatchReconciliations from './TransferDispatchReconciliations';
 import TransferDate from './TransferDate';
 import { Icon } from './icons';
 import './transfer-detail.css';
@@ -231,33 +232,38 @@ function OriginalReceiptOverview({ record }: { record: TransferRecord }) {
   </section>;
 }
 
-type ManagementContext = 'count' | 'restitution';
-function ManagementMenu({ count, restitution, onSelect }: {
-  count: boolean; restitution: boolean; onSelect: (context: ManagementContext) => void;
+type ManagementContext = 'count' | 'restitution' | 'reconciliation';
+function ManagementMenu({ count, restitution, reconciliation, onSelect }: {
+  count: boolean; restitution: boolean; reconciliation: boolean; onSelect: (context: ManagementContext) => void;
 }) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
-  const first = useRef<HTMLButtonElement>(null);
-  const second = useRef<HTMLButtonElement>(null);
-  useEffect(() => { if (open) first.current?.focus(); }, [open]);
+  const menu = useRef<HTMLDivElement>(null);
+  const entries: { context: ManagementContext; label: string }[] = [
+    ...(count ? [{ context: 'count' as const, label: 'Corregir conteo' }] : []),
+    ...(restitution ? [{ context: 'restitution' as const, label: 'Restituciones de origen' }] : []),
+    ...(reconciliation ? [{ context: 'reconciliation' as const, label: 'Regularizar despacho' }] : []),
+  ];
+  useEffect(() => { if (open) menu.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus(); }, [open]);
   return <div className="received-management" onBlur={e => {
     if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false);
   }}>
     <button ref={trigger} type="button" aria-haspopup="menu" aria-expanded={open}
       onClick={() => setOpen(!open)}>Gestiones<span aria-hidden="true"> {open ? '▴' : '▾'}</span></button>
-    {open && <div role="menu" aria-label="Gestiones" onKeyDown={e => {
+    {open && <div ref={menu} role="menu" aria-label="Gestiones" onKeyDown={e => {
       if (e.key === 'Escape') { e.preventDefault(); setOpen(false); trigger.current?.focus(); }
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
         e.preventDefault();
-        (document.activeElement === first.current ? second.current ?? first.current : first.current)?.focus();
+        const visible = Array.from(menu.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []);
+        const index = visible.indexOf(document.activeElement as HTMLButtonElement);
+        const next = e.key === 'Home' ? 0 : e.key === 'End' ? visible.length - 1
+          : (index + (e.key === 'ArrowDown' ? 1 : -1) + visible.length) % visible.length;
+        visible[next]?.focus();
       }
     }}>
-      {count && <button ref={first} type="button" role="menuitem" onClick={() => {
-        setOpen(false); onSelect('count');
-      }}>Corregir conteo</button>}
-      {restitution && <button ref={count ? second : first} type="button" role="menuitem" onClick={() => {
-        setOpen(false); onSelect('restitution');
-      }}>Restituciones de origen</button>}
+      {entries.map(entry => <button key={entry.context} type="button" role="menuitem" onClick={() => {
+        setOpen(false); onSelect(entry.context);
+      }}>{entry.label}</button>)}
     </div>}
   </div>;
 }
@@ -273,8 +279,10 @@ export default function TransferDetail(props: TransferDetailProps) {
   const id = record?.id;
   const pending = record?.status === 'pending';
   const [historyFor, setHistoryFor] = useState<string | null>(null);
-  const managementScope = JSON.stringify([fence, ownerTag, id, record?.status,
-    props.correctionRequestID, props.correctionsEnabled, props.restitutionRequestID, props.restitutionsEnabled]);
+  const managementScope = JSON.stringify([fence, ownerTag, id, record?.status, record?.kind,
+    record?.origin_location_id, record?.destination_location_id,
+    props.correctionRequestID, props.correctionsEnabled, props.restitutionRequestID, props.restitutionsEnabled,
+    props.reconciliationRequestID, props.reconciliationsEnabled]);
   const [management, setManagement] = useState<{ scope: string; context: ManagementContext; token: number } | null>(null);
   const entrySerial = useRef(0);
   useEffect(() => { setManagement(null); }, [managementScope]);
@@ -507,8 +515,8 @@ export default function TransferDetail(props: TransferDetailProps) {
               && <p>Las diferencias se registran por variante, sin compensarse ni resolverse automáticamente.</p>}
           </>}
         </div>
-        {(countEntry || restitutionEntry) && <ManagementMenu
-          key={managementScope} count={countEntry} restitution={restitutionEntry} onSelect={context => {
+        {(countEntry || restitutionEntry || !!reconciliations) && <ManagementMenu
+          key={managementScope} count={countEntry} restitution={restitutionEntry} reconciliation={!!reconciliations} onSelect={context => {
             if (current()) setManagement({ scope: managementScope, context, token: ++entrySerial.current });
           }} />}
       </footer>
@@ -531,6 +539,11 @@ export default function TransferDetail(props: TransferDetailProps) {
       <TransferRestitutions controller={controller} record={record} requestID={props.restitutionRequestID ?? null}
         enabled={props.restitutionsEnabled ?? false} contextVisible={!receivedParticipant || selected?.context === 'restitution'}
         entryFocusKey={selected?.context === 'restitution' ? selected.token : undefined} />
+      {reconciliations && <TransferDispatchReconciliations
+        key={`${fence}:${record.id}:${record.kind}:${record.origin_location_id}:${record.destination_location_id}`}
+        record={record} actorLocation={session?.authenticated ? session.identity.location.id : null}
+        reconciliations={reconciliations} contextVisible={selected?.context === 'reconciliation'}
+        entryFocusKey={selected?.context === 'reconciliation' ? selected.token : undefined} />}
       {!terminal && <div className="transfer-advisory"><p>Stock de origen orientativo, no es una garantía de disponibilidad. El servidor revalida toda la solicitud al aprobar.</p>
         {stock.unavailable && <p role="alert">No se pudo consultar el stock de origen. La solicitud completa sigue disponible para revisión.</p>}
         <button type="button" disabled={stock.busy} onClick={() => { if (current()) refresh.current(); }}>Actualizar stock de origen</button>

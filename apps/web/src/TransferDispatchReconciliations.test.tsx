@@ -49,9 +49,9 @@ function ownAttempt(phase: 'inFlight' | 'uncertain' | 'failed' | 'confirmed') {
 }
 
 describe('controlled dispatch reconciliation presentation', () => {
-  it('opens from Gestiones and reviews controlled Q=A, deltas and reason before explicit confirmation', () => {
+  it('reviews controlled Q=A, deltas and reason before explicit confirmation in the selected context', () => {
     const h = setup(); render(<h.Harness />);
-    click('Gestiones · Regularizar despacho');
+    expect(screen.getByRole('heading', { name: 'Regularización de despacho' })).toBeVisible();
     expect(h.calls.confirm).not.toHaveBeenCalled();
     draft();
     const quantity = screen.getByLabelText('Cantidad total realmente despachada') as HTMLInputElement;

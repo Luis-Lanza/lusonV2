@@ -93,7 +93,7 @@ func decodeDispatchReconciliationMutation(r *http.Request, propose bool) (dispat
 	return in, nil
 }
 
-// registerTransfers exposes only the read (empty action); mutations stay prepared.
+// registerTransfers exposes the read (empty action) and the three exact mutations.
 // Identity and CSRF use the same server guards as the served bilateral workflows.
 func (a *API) transferDispatchReconciliations(store *transfers.Store, action string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
