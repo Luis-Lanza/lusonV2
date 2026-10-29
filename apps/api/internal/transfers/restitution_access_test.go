@@ -38,8 +38,8 @@ func TestR4RestitutionAccessValidation(t *testing.T) {
 		identity auth.Identity
 	}{
 		{"unassigned", actor(0)},
-		{"unknown_account", actor(4)},
-		{"mismatched_assignment", auth.Identity{AccountID: 2, Location: auth.Location{ID: 3}}},
+		{"unknown_account", actor(32768)},
+		{"mismatched_assignment", auth.Identity{AccountID: 1, Location: auth.Location{ID: 3}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := unqueried.CheckRestitutionAccess(ctx, tc.identity, 0); err != transfers.ErrForbidden {
@@ -54,14 +54,17 @@ func TestR4RestitutionAccessValidation(t *testing.T) {
 	}
 }
 
-// Keep only the last statement and a counter, rather than retaining private
-// query logs. The Store fence must issue exactly one bounded header SELECT.
+// Retain only the assignment check and final header metadata, not history.
+// The Store fence reads the actual binding before one participant-only header.
 type r4AccessTrace struct {
-	mu      sync.Mutex
-	count   int
-	sql     string
-	args    []any
-	bounded bool
+	mu                sync.Mutex
+	count             int
+	sql               string
+	args              []any
+	bounded           bool
+	assignmentSQL     string
+	assignmentArgs    []any
+	assignmentBounded bool
 }
 
 func (tr *r4AccessTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx.TraceQueryStartData) context.Context {
@@ -73,6 +76,11 @@ func (tr *r4AccessTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, d pgx
 	deadline, ok := ctx.Deadline()
 	remaining := time.Until(deadline)
 	tr.bounded = ok && remaining > 0 && remaining <= 10*time.Second
+	if tr.count == 1 {
+		tr.assignmentSQL = d.SQL
+		tr.assignmentArgs = append([]any(nil), d.Args...)
+		tr.assignmentBounded = tr.bounded
+	}
 	return ctx
 }
 func (*r4AccessTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
@@ -118,8 +126,11 @@ func TestR4RestitutionAccessParticipantFence(t *testing.T) {
 			trace.mu.Lock()
 			defer trace.mu.Unlock()
 			const header = `SELECT status FROM transfer_requests WHERE id=$1 AND $2 IN(origin_location_id,destination_location_id)`
-			if trace.count != 1 || trace.sql != header || !trace.bounded || !reflect.DeepEqual(trace.args, []any{tc.id, tc.who}) {
-				t.Fatal("access must read only one participant-filtered header within ten seconds")
+			const binding = `SELECT EXISTS(SELECT 1 FROM auth_accounts WHERE id=$1 AND location_id=$2)`
+			if trace.count != 2 || trace.assignmentSQL != binding || !trace.assignmentBounded ||
+				!reflect.DeepEqual(trace.assignmentArgs, []any{tc.who, tc.who}) ||
+				trace.sql != header || !trace.bounded || !reflect.DeepEqual(trace.args, []any{tc.id, tc.who}) {
+				t.Fatal("access must check assignment then read only one participant-filtered header within ten seconds")
 			}
 		})
 	}

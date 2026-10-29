@@ -28,7 +28,7 @@ describe('R04 source catalog', () => {
       expect(init?.body).toBeUndefined();
     });
   });
-  it.each([2, 3] as const)('reads physical branch%s without actor/viewer query parameters', async source => {
+  it.each([2, 3, 4, 32767] as const)('reads physical branch%s without actor/viewer query parameters', async source => {
     const fetcher = replies(page([1], 1, 1, source, 'Sucursal'));
     expect((await loadSourceInventory(source, {}, fetcher)).location.id).toBe(source);
     expect(fetcher.mock.calls[0][0]).toBe(`/api/inventory?location_id=${source}&page=1&page_size=50`);
@@ -124,8 +124,7 @@ describe('R04 source catalog', () => {
   });
   it('rejects unknown requested source without issuing GET', async () => {
     const fetcher = replies(page([]));
-    // @ts-expect-error runtime boundary must also fail closed
-    await expect(loadSourceInventory(4, {}, fetcher)).rejects.toMatchObject({ code: 'invalid_source' });
+    await expect(loadSourceInventory(32768, {}, fetcher)).rejects.toMatchObject({ code: 'invalid_source' });
     expect(fetcher).not.toHaveBeenCalled();
   });
   it('filters a complete catalog locally with literal brand/model search and exact brand/polarity', async () => {

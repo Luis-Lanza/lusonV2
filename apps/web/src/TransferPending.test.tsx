@@ -20,7 +20,7 @@ import { createTransferDispatchRecovery } from './transferDispatchRecovery';
 const locations = ['Almacén', 'Sucursal A', 'Sucursal B'];
 function authority(id = 2, epoch = 1, token = 'a'.repeat(43)): TransferAuthority {
   return { epoch, ready: true, session: { authenticated: true, csrf_token: token,
-    identity: { account_id: id, username: `test-${id}`, location: { id, name: locations[id - 1] } }, expires_at: '2030-01-01T00:00:00Z' } };
+    identity: { account_id: id, username: `test-${id}`, display_name: 'Operador de transferencias', must_change_password: false, location: { id, name: locations[id - 1] } }, expires_at: '2030-01-01T00:00:00Z' } };
 }
 function wire(origin = 1, destination = 2, id = '9007199254740993', status = 'pending') {
   const creator = destination === 1 ? origin : destination;

@@ -1,8 +1,8 @@
 import { parse as parseJSON } from 'lossless-json';
 
 export type TransferKind = 'request_stock' | 'send_to_warehouse' | 'direct_shipment';
-export type TransferFlow = 'requestWarehouse' | 'requestOther' | 'sendWarehouse' | 'directA' | 'directB';
-export type TransferLocationID = 1 | 2 | 3;
+export type TransferFlow = 'requestWarehouse' | 'requestOther' | 'sendWarehouse' | 'directA' | 'directB' | `direct:${number}` | `request:${number}`;
+export type TransferLocationID = number;
 export interface TransferDirection {
   kind: TransferKind; counterparty_location_id: TransferLocationID;
   creator_location_id: TransferLocationID; origin_location_id: TransferLocationID;
@@ -91,7 +91,18 @@ function kind(value: unknown): TransferKind {
   if (value !== 'request_stock' && value !== 'send_to_warehouse' && value !== 'direct_shipment') return invalid();
   return value;
 }
-function location(value: unknown): TransferLocationID { return integer(value, 1, 3) as TransferLocationID; }
+function location(value: unknown): TransferLocationID { return integer(value, 1, 32767); }
+export function validTransferLocation(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= 32767;
+}
+export function transferFlow(assigned: number, kind: TransferKind, counterpart: number): TransferFlow {
+  location(counterpart);
+  if (kind === 'direct_shipment') return counterpart === 2 ? 'directA' : counterpart === 3 ? 'directB' : `direct:${counterpart}`;
+  if (kind === 'send_to_warehouse') return 'sendWarehouse';
+  if (counterpart === 1) return 'requestWarehouse';
+  if ((assigned === 2 && counterpart === 3) || (assigned === 3 && counterpart === 2)) return 'requestOther';
+  return `request:${counterpart}`;
+}
 function capacity(value: unknown): string {
   // catalog.Decimal is normalized: six whole/fraction digits, no trailing zero fraction.
   if (typeof value !== 'string' || !/^(0|[1-9][0-9]{0,5})(\.[0-9]{0,5}[1-9])?$/.test(value) || value === '0') return invalid();
@@ -107,15 +118,19 @@ function createdAt(value: unknown): string {
   return s;
 }
 export function transferDirection(assigned: number, flow: TransferFlow): TransferDirection {
+  location(assigned);
+  const explicit = /^(direct|request):([1-9][0-9]{0,4})$/.exec(flow);
   if (assigned === 1) {
-    if (flow !== 'directA' && flow !== 'directB') return invalid();
-    const destination = flow === 'directA' ? 2 : 3;
+    if (flow !== 'directA' && flow !== 'directB' && explicit?.[1] !== 'direct') return invalid();
+    const destination = location(flow === 'directA' ? 2 : flow === 'directB' ? 3 : Number(explicit![2]));
+    if (destination === 1) return invalid();
     return { kind: 'direct_shipment', counterparty_location_id: destination, creator_location_id: 1,
       origin_location_id: 1, destination_location_id: destination, approver_location_id: 1 };
   }
-  if (assigned !== 2 && assigned !== 3) return invalid();
-  if (!['requestWarehouse', 'requestOther', 'sendWarehouse'].includes(flow)) return invalid();
-  const counterpart = flow === 'requestOther' ? (assigned === 2 ? 3 : 2) : 1;
+  if (!['requestWarehouse', 'requestOther', 'sendWarehouse'].includes(flow) && explicit?.[1] !== 'request') return invalid();
+  if (flow === 'requestOther' && assigned !== 2 && assigned !== 3) return invalid();
+  const counterpart = location(explicit ? Number(explicit[2]) : flow === 'requestOther' ? (assigned === 2 ? 3 : 2) : 1);
+  if (counterpart === assigned) return invalid();
   const send = flow === 'sendWarehouse';
   return { kind: send ? 'send_to_warehouse' : 'request_stock', counterparty_location_id: counterpart,
     creator_location_id: assigned, origin_location_id: send ? assigned : counterpart,
@@ -293,8 +308,7 @@ function record(value: unknown): TransferRecord {
   const origin = location(o.origin_location_id);
   const destination = location(o.destination_location_id);
   const approver = location(o.approver_location_id);
-  const flow = k === 'direct_shipment' ? destination === 2 ? 'directA' : 'directB'
-    : k === 'send_to_warehouse' ? 'sendWarehouse' : origin === 1 ? 'requestWarehouse' : 'requestOther';
+  const flow = transferFlow(creator, k, k === 'direct_shipment' ? destination : k === 'send_to_warehouse' ? 1 : origin);
   const direction = transferDirection(creator, flow);
   if (k !== direction.kind || origin !== direction.origin_location_id || destination !== direction.destination_location_id || approver !== direction.approver_location_id) return invalid();
   if (!Array.isArray(o.items) || o.items.length < 1 || o.items.length > 190) return invalid();

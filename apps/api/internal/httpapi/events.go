@@ -212,7 +212,8 @@ func (a *API) registerEvents(mux *http.ServeMux, broker *realtime.Broker) {
 			eventAuthFailure(w, err)
 			return
 		}
-		if session.Identity.AccountID != session.Identity.Location.ID || session.Identity.Location.ID < 1 || session.Identity.Location.ID > 3 {
+		if session.Identity.AccountID < 1 || session.Identity.Location.ID < 1 || session.Identity.Location.ID > 32767 ||
+			(session.Identity.AccountID == 1) != (session.Identity.Location.ID == 1) {
 			failure(w, 403, "forbidden")
 			return
 		}

@@ -23,6 +23,16 @@ export function createInput(): TransferCreateInput {
 }
 const parse = (o: unknown) => parseTransferRecord(JSON.stringify(o));
 
+it('derives dynamic routes without changing the original three-location routes', () => {
+  expect(transferDirection(1, 'direct:4' as TransferFlow)).toMatchObject({ kind: 'direct_shipment', origin_location_id: 1, destination_location_id: 4 });
+  expect(transferDirection(4, 'request:2' as TransferFlow)).toMatchObject({ kind: 'request_stock', origin_location_id: 2, destination_location_id: 4 });
+  expect(transferDirection(4, 'sendWarehouse')).toMatchObject({ origin_location_id: 4, destination_location_id: 1 });
+  expect(transferDirection(2, 'requestOther').origin_location_id).toBe(3);
+  expect(transferDirection(1, 'directB').destination_location_id).toBe(3);
+  expect(parse(wireRecord({ creator_location_id: 4, destination_location_id: 4 }))).toMatchObject({ creator_location_id: 4, destination_location_id: 4 });
+  for (const flow of ['request:4', 'request:32768', 'direct:1', 'request:02']) expect(() => transferDirection(4, flow as TransferFlow)).toThrow();
+});
+
 export function dispatchWire(overrides: Record<string, unknown> = {}) {
   return wireRecord({ status: 'in_transit', decision_location_id: 1,
     decided_at: '2026-04-03T00:00:00.000000001Z', dispatch_location_id: 1,
@@ -567,7 +577,7 @@ describe('R04 pure transfer model', () => {
     }
   });
   it('refuses warehouse or unknown creation roles and flows', () => {
-    for (const actor of [1, 0, 4, NaN]) expect(() => transferDirection(actor, 'requestWarehouse')).toThrow();
+    for (const actor of [1, 0, 32768, NaN]) expect(() => transferDirection(actor, 'requestWarehouse')).toThrow();
     expect(() => transferDirection(2, 'unknown' as TransferFlow)).toThrow();
     expect(() => parse(wireRecord({ kind: 'send_to_warehouse', origin_location_id: 2, destination_location_id: 3 }))).toThrow();
   });
@@ -607,7 +617,7 @@ describe('R04 pure transfer model', () => {
     expect(Object.isFrozen(canonical)).toBe(true);
     expect(Object.isFrozen(canonical.items[0])).toBe(true);
     expect(JSON.stringify(canonical)).toContain('"quantity":"9007199254740993"');
-    for (const invalid of [{ actor: 2 }, { counterparty_location_id: 4 }, { kind: 'ship' }, { retry_key: 'short' },
+    for (const invalid of [{ actor: 2 }, { counterparty_location_id: 32768 }, { kind: 'ship' }, { retry_key: 'short' },
       { kind: 'send_to_warehouse', counterparty_location_id: 2 }, { retry_key: 'a'.repeat(129) }, { retry_key: 'a'.repeat(15) + '!' }, { items: [] }, { items: [input.items[0], input.items[0]] },
       { items: [{ variant_id: 1, quantity: 2 }] }]) expect(() => canonicalTransferInput({ ...input, ...invalid } as never)).toThrow();
     for (const length of [16, 128]) expect(canonicalTransferInput({ ...input, retry_key: 'a'.repeat(length) }).retry_key).toHaveLength(length);

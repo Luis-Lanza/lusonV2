@@ -7,7 +7,7 @@ import { useInventory } from './useInventory';
 
 const csrf = 'c'.repeat(43);
 const anonymous = { authenticated: false, csrf_token: csrf };
-const identity = { account_id: 1, username: 'component-user', location: { id: 1, name: 'Almacén' } };
+const identity = { account_id: 1, username: 'component-user', display_name: 'Operador', must_change_password: false, location: { id: 1, name: 'Almacén' } };
 const session = { authenticated: true, csrf_token: csrf, identity, expires_at: '2030-01-01T00:00:00Z' };
 const metadata = { locations: [identity.location, { id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }], brands: ['TOYO', 'CAR'] };
 const response = (value: unknown, status = 200) => new Response(typeof value === 'string' ? value : JSON.stringify(value), { status });
@@ -892,15 +892,16 @@ describe('R04b2a source-stock bridge', () => {
     expect(log).not.toHaveBeenCalled(); expect(warn).not.toHaveBeenCalled(); log.mockRestore(); warn.mockRestore();
   });
   it.each(['account', 'assignment', 'csrf', 'anonymous'])('rejects old registrations after %s validation and delivers only to the new ready epoch', async change => {
-    let next: unknown = session;
-    setup(session, url => url === '/api/auth/validate' ? Promise.resolve(response(next)) : undefined);
+    const branchSession = { ...session, identity: { ...identity, account_id: 20, location: metadata.locations[1] } };
+    let next: unknown = branchSession;
+    setup(branchSession, url => url === '/api/auth/validate' ? Promise.resolve(response(next)) : undefined);
     const { result } = renderHook(() => useInventory()); await hookInventory(result);
     const old = vi.fn(); result.current.subscribeSourceInventoryInvalidation(old);
     const epoch = result.current.authorityEpoch;
     next = change === 'anonymous' ? { authenticated: false } : {
-      ...session, csrf_token: change === 'csrf' ? 'd'.repeat(43) : csrf,
-      identity: { ...identity, account_id: change === 'account' ? 2 : 1,
-        location: change === 'assignment' ? metadata.locations[1] : identity.location },
+      ...branchSession, csrf_token: change === 'csrf' ? 'd'.repeat(43) : csrf,
+      identity: { ...branchSession.identity, account_id: change === 'account' ? 21 : 20,
+        location: change === 'assignment' ? metadata.locations[2] : branchSession.identity.location },
     };
     await act(async () => { await result.current.settleUnauthorized(epoch); });
     await waitFor(() => expect(result.current.getTransferAuthority().ready).toBe(true));
@@ -1018,7 +1019,7 @@ describe('R04b2b App workspace entry', () => {
 
 function r04b2c2App() {
   const branch = (id: number, token: string) => ({ ...session, csrf_token: token,
-    identity: { account_id: id, username: `TEST-branch-${id}`, location: metadata.locations[id - 1] } });
+    identity: { account_id: id, username: `TEST-branch-${id}`, display_name: 'Operador', must_change_password: false, location: metadata.locations[id - 1] } });
   let current: typeof session | typeof anonymous = branch(2, 'a'.repeat(43));
   let next = branch(3, 'b'.repeat(43)); let failedSource = false; let stock = 8;
   const posts: RequestInit[] = [];

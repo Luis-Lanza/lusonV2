@@ -28,7 +28,8 @@ function fixture(approved = false, override?: (url: string, init: RequestInit) =
   const fetch = vi.fn((input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
     const url = String(input); const custom = override?.(url, init); if (custom) return custom;
     if (url === '/api/auth/session') return Promise.resolve(reply({ authenticated: true, csrf_token: 'c'.repeat(43),
-      expires_at: '2030-01-01T00:00:00Z', identity: { account_id: actor, username: 'test', location: { id: actor, name: locations[actor - 1] } } }));
+      expires_at: '2030-01-01T00:00:00Z', identity: { account_id: actor, username: 'test', display_name: 'Operador de cancelación', must_change_password: false,
+        location: { id: actor, name: locations[actor - 1] } } }));
     if (url === '/api/inventory/metadata') return Promise.resolve(reply({ locations: locations.map((name, index) => ({ id: index + 1, name })), brands: ['TOYO'] }));
     if (url.startsWith('/api/inventory?')) {
       const location = Number(new URL(url, 'http://localhost').searchParams.get('location_id'));

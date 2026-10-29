@@ -115,7 +115,10 @@ func state(ctx context.Context, tx pgx.Tx, source catalog.Catalog) (bool, error)
 		}
 		return false, nil
 	}
-	for table, want := range map[string]int{"initialization_metadata": 1, "locations": 3, "catalog_entries": 95, "catalog_variants": 190, "inventory_balances": 570} {
+	if counts["locations"] < len(catalog.Locations()) {
+		return false, errors.New("initialized dataset incomplete in locations")
+	}
+	for table, want := range map[string]int{"initialization_metadata": 1, "catalog_entries": 95, "catalog_variants": 190, "inventory_balances": 190 * counts["locations"]} {
 		if counts[table] != want {
 			return false, fmt.Errorf("initialized dataset incomplete in %s", table)
 		}

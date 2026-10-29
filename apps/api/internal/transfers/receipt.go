@@ -67,6 +67,9 @@ func (s *Store) Receive(ctx context.Context, actor auth.Identity, id int64, inpu
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	if err := checkAssignment(ctx, s.pool, actor); err != nil {
+		return Request{}, err
+	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return Request{}, fail(ctx)
@@ -80,7 +83,7 @@ func (s *Store) Receive(ctx context.Context, actor auth.Identity, id int64, inpu
 		return Request{}, fail(ctx)
 	}
 	var destination int
-	err = tx.QueryRow(ctx, `SELECT destination_location_id FROM transfer_requests WHERE id=$1 AND $2 IN (origin_location_id,destination_location_id) FOR UPDATE`, id, actor.AccountID).Scan(&destination)
+	err = tx.QueryRow(ctx, `SELECT destination_location_id FROM transfer_requests WHERE id=$1 AND $2 IN (origin_location_id,destination_location_id) FOR UPDATE`, id, actor.Location.ID).Scan(&destination)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Request{}, ErrNotFound
 	}
@@ -94,7 +97,7 @@ func (s *Store) Receive(ctx context.Context, actor auth.Identity, id int64, inpu
 	if err != nil {
 		return Request{}, err
 	}
-	r, err := load(ctx, tx, actor.AccountID, id)
+	r, err := load(ctx, tx, actor.Location.ID, id)
 	if err != nil {
 		return Request{}, err
 	}
@@ -176,7 +179,7 @@ func (s *Store) Receive(ctx context.Context, actor auth.Identity, id int64, inpu
 	if _, err = tx.Exec(ctx, "UPDATE transfer_requests SET status='received' WHERE id=$1", id); err != nil {
 		return Request{}, fail(ctx)
 	}
-	r, err = load(ctx, tx, actor.AccountID, id)
+	r, err = load(ctx, tx, actor.Location.ID, id)
 	if err != nil {
 		return Request{}, err
 	}

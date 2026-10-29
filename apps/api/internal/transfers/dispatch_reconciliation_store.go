@@ -201,6 +201,9 @@ func (s *Store) GetDispatchReconciliations(ctx context.Context, actor auth.Ident
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	if err := checkAssignment(ctx, s.pool, actor); err != nil {
+		return DispatchReconciliations{}, err
+	}
 	var status string
 	var lines, operations []byte
 	err := s.pool.QueryRow(ctx, dispatchReconciliationSnapshotSQL, id, actor.Location.ID).Scan(&status, &lines, &operations)

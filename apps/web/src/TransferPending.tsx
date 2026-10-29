@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { TransferAuthority } from './useInventory';
 import { useTransfers } from './useTransfers';
-import { transferQuantityTotal, type TransferActionReason, type TransferRecord } from './transferModel';
+import { validTransferLocation, transferQuantityTotal, type TransferActionReason, type TransferRecord } from './transferModel';
 import TransferActionSummary from './TransferActionSummary';
 import { transferActionLabels, transferActionWaiting } from './transferActionView';
 import TransferDetail, { detailAuthority, type DetailController, type StockAdvice } from './TransferDetail';
@@ -17,7 +17,7 @@ import { isTransferFocusTarget, type TransferModalFocusBinding } from './transfe
 // No session or CSRF retained in routing state. Epoch changes invalidate this tag.
 export function transferViewOwner(authority: TransferAuthority): string | null {
   const session = authority.session;
-  return authority.ready && session?.authenticated && [1, 2, 3].includes(session.identity.location.id)
+  return authority.ready && session?.authenticated && session.identity.must_change_password !== true && validTransferLocation(session.identity.location.id)
     ? `${authority.epoch}/${session.identity.account_id}/${session.identity.location.id}` : null;
 }
 export interface TransferPendingProps {
@@ -181,7 +181,7 @@ export default function TransferPending(props: TransferPendingProps) {
       <div className="pending-heading-actions">
         <button type="button" className="primary transfer-cta" disabled={!props.creationAvailable || !props.onCreate} onClick={() => {
           const latest = props.controller.getTransferAuthority();
-          if (current() && latest.session?.authenticated && [1, 2, 3].includes(latest.session.identity.location.id)
+          if (current() && latest.session?.authenticated && validTransferLocation(latest.session.identity.location.id)
             && props.creationAvailable) props.onCreate?.();
         }}>{warehouse ? 'Crear envío' : 'Nueva transferencia'}</button>
         {pageCount}

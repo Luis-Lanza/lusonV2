@@ -4,6 +4,8 @@ package realtime
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -100,7 +102,7 @@ func (b *Broker) Start(ctx context.Context) error {
 // Subscribe takes a server-resolved assigned location, not client authority.
 // Every new subscription begins with a generic resync, never private versions.
 func (b *Broker) Subscribe(location int) (*Subscription, error) {
-	if location < 1 || location > 3 {
+	if location < 1 || location > 32767 {
 		return nil, ErrInvalid
 	}
 	if b == nil {
@@ -110,6 +112,9 @@ func (b *Broker) Subscribe(location int) (*Subscription, error) {
 	defer b.mu.Unlock()
 	if !b.ready || b.stopped || b.ctx == nil || b.ctx.Err() != nil || len(b.subscribers) >= maxSubscribers {
 		return nil, ErrUnavailable
+	}
+	if _, exists := b.versions["transfers:"+strconv.Itoa(location)]; !exists {
+		return nil, ErrInvalid
 	}
 	b.next++
 	queue := make(chan Event, queueSize)
@@ -171,24 +176,29 @@ func (b *Broker) Shutdown(ctx context.Context) error {
 	}
 }
 func parsePayload(payload string) (Event, int, bool) {
-	// Exact tiny grammar: neither arbitrary JSON nor untrusted bytes go public.
-	switch payload {
-	case "inventory:0":
+	// Exact canonical smallint grammar; existence is checked against revisions.
+	if payload == "inventory:0" {
 		return Inventory, 0, true
-	case "transfers:1":
-		return Transfers, 1, true
-	case "transfers:2":
-		return Transfers, 2, true
-	case "transfers:3":
-		return Transfers, 3, true
-	default:
+	}
+	if !strings.HasPrefix(payload, "transfers:") || len(payload) > len("transfers:32767") {
 		return "", 0, false
 	}
+	raw := strings.TrimPrefix(payload, "transfers:")
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 || n > 32767 || strconv.Itoa(n) != raw {
+		return "", 0, false
+	}
+	return Transfers, n, true
 }
 func readRevisions(ctx context.Context, conn *pgx.Conn) (map[string]int64, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	rows, err := conn.Query(ctx, "SELECT scope,revision FROM realtime_revisions ORDER BY scope")
+	rows, err := conn.Query(ctx, `SELECT scope,revision FROM realtime_revisions
+ UNION ALL SELECT '',-1 WHERE EXISTS (
+   (SELECT 'transfers:' || id FROM locations EXCEPT SELECT scope FROM realtime_revisions)
+   UNION ALL
+   (SELECT scope FROM realtime_revisions EXCEPT (SELECT 'inventory' UNION ALL SELECT 'transfers:' || id FROM locations))
+ ) ORDER BY scope`)
 	if err != nil {
 		return nil, ErrUnavailable
 	}
@@ -200,15 +210,17 @@ func readRevisions(ctx context.Context, conn *pgx.Conn) (map[string]int64, error
 		if rows.Scan(&scope, &revision) != nil || revision < 0 {
 			return nil, ErrUnavailable
 		}
-		if scope != "inventory" && scope != "transfers:1" && scope != "transfers:2" && scope != "transfers:3" {
-			return nil, ErrUnavailable
+		if scope != "inventory" {
+			if _, _, valid := parsePayload(scope); !valid {
+				return nil, ErrUnavailable
+			}
 		}
 		if _, exists := versions[scope]; exists {
 			return nil, ErrUnavailable
 		}
 		versions[scope] = revision
 	}
-	if rows.Err() != nil || len(versions) != 4 {
+	if _, exists := versions["inventory"]; rows.Err() != nil || !exists || len(versions) < 4 {
 		return nil, ErrUnavailable
 	}
 	return versions, nil
@@ -219,8 +231,13 @@ func (b *Broker) install(versions map[string]int64, event Event, audience int) b
 	if b.stopped || b.ctx.Err() != nil {
 		return false
 	}
+	if event == Transfers {
+		if _, exists := versions["transfers:"+strconv.Itoa(audience)]; !exists {
+			return false
+		}
+	}
 	for key, old := range b.versions {
-		if versions[key] < old {
+		if current, exists := versions[key]; !exists || current < old {
 			return false
 		}
 	}

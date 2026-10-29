@@ -27,7 +27,7 @@ const locations = [{ id: 1, name: 'Warehouse' }, { id: 2, name: 'Branch A' }, { 
 const csrf = 'c'.repeat(43);
 const anonymous = { authenticated: false, csrf_token: csrf };
 function session(id = 2, token = csrf) {
-  return { authenticated: true, csrf_token: token, identity: { account_id: id, username: `account-${id}`, location: locations[id - 1] }, expires_at: '2030-01-01T00:00:00Z' };
+  return { authenticated: true, csrf_token: token, identity: { account_id: id, username: `account-${id}`, display_name: 'Operador', must_change_password: false, location: locations[id - 1] }, expires_at: '2030-01-01T00:00:00Z' };
 }
 function wire(branch = 2, id = '9007199254740993') {
   return { id, reference: `TR-${id.padStart(3, '0')}`, kind: 'request_stock', status: 'pending', created_at: '2026-04-02T00:00:00Z',
@@ -956,8 +956,9 @@ describe('A05b real controller decisions', () => {
     expect(decisionPosts(h.fetch)).toHaveLength(1); h.view.unmount();
   });
   it.each(['post', 'get'] as const)('a new owner replacement is neither unlocked nor cleared by stale $operation success (%s)', async operation => {
-    const original = wire(2, '1'); const old = deferred<Response>(); const newer = deferred<Response>(); let posts = 0; let recovering = false;
-    const h = decisionFixture(1, original, (url, init) => {
+    const original = { ...wire(2, '1'), origin_location_id: 3, origin_location_name: 'Branch B', approver_location_id: 3, approver_location_name: 'Branch B' };
+    const old = deferred<Response>(); const newer = deferred<Response>(); let posts = 0; let recovering = false;
+    const h = decisionFixture(3, original, (url, init) => {
       if (init.method === 'POST') return ++posts === 1 ? operation === 'post' ? old.promise : Promise.reject(new Error('unknown')) : newer.promise;
       return recovering && url === '/api/transfers/1' ? old.promise : undefined;
     });
@@ -965,14 +966,14 @@ describe('A05b real controller decisions', () => {
     if (operation === 'get') { await act(async () => { await h.lanes[0].decide(h.original, 'approve').catch(() => {}); }); recovering = true; }
     act(() => { pending = (operation === 'post' ? h.lanes[0].decide(h.original, 'approve') : h.lanes[0].recoverDecision()).catch(error => error); });
     const saved = h.lanes[0];
-    h.env.current = { ...session(1), identity: { ...session(1).identity, account_id: 2 } };
+    h.env.current = { ...session(3), identity: { ...session(3).identity, account_id: 20 } };
     act(() => Source.instances[0].emit('error'));
-    await waitFor(() => expect(h.controller.session).toMatchObject({ identity: { account_id: 2 } }));
+    await waitFor(() => expect(h.controller.session).toMatchObject({ identity: { account_id: 20 } }));
     expect(saved.decision).toBeNull();
     recovering = false;
     act(() => { replacement = h.lanes[1].decide(h.original, 'reject'); });
     await act(async () => { old.resolve(reply(decisionOutcome(original, 'approved'))); await pending; });
-    expect(h.lanes[0].decision).toMatchObject({ phase: 'inFlight', action: 'reject', owner: { account: 2 } });
+    expect(h.lanes[0].decision).toMatchObject({ phase: 'inFlight', action: 'reject', owner: { account: 20 } });
     await expect(h.lanes[0].retryDecision()).rejects.toMatchObject({ code: 'invalid_request' });
     await act(async () => { newer.resolve(reply(decisionOutcome(original, 'rejected'))); await replacement; });
     expect(h.lanes[0].decision).toMatchObject({ phase: 'confirmed', result: { status: 'rejected' } }); h.view.unmount();

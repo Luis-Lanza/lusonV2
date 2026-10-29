@@ -24,7 +24,8 @@ function setup(snapshot = appliedSnapshot(), countSnapshot = counts(snapshot)) {
   const f = fixture();
   const authority: TransferAuthority = { epoch: 1, ready: true, sessionGeneration: 1,
     session: parseSession(JSON.stringify({ authenticated: true, csrf_token: 'a'.repeat(43),
-      identity: { account_id: 1, username: 'operator', location: { id: 1, name: 'Warehouse' } }, expires_at: '2030-01-01T00:00:00Z' })) };
+      identity: { account_id: 1, username: 'operator', display_name: 'Operador de almacén', must_change_password: false,
+        location: { id: 1, name: 'Warehouse' } }, expires_at: '2030-01-01T00:00:00Z' })) };
   const listeners = new Set<() => void>();
   const controller: TransferController = { authorityEpoch: 1, getTransferAuthority: () => authority,
     subscribeTransferInvalidation: cb => { listeners.add(cb); return () => { listeners.delete(cb); }; },
@@ -135,7 +136,8 @@ function activationFixture(pending = false, actor = 1) {
   const f = fixture(pending);
   const authority: TransferAuthority = { epoch: 1, ready: true, sessionGeneration: 1,
     session: parseSession(JSON.stringify({ authenticated: true, csrf_token: 'a'.repeat(43),
-      identity: { account_id: actor, username: 'operator', location: { id: actor, name: actor === 1 ? 'Warehouse' : 'Branch' } },
+      identity: { account_id: actor, username: 'operator', display_name: 'Operador de regularización', must_change_password: false,
+        location: { id: actor, name: actor === 1 ? 'Warehouse' : 'Branch' } },
       expires_at: '2030-01-01T00:00:00Z' })) };
   const listeners = new Set<() => void>();
   const confirmed = vi.fn();

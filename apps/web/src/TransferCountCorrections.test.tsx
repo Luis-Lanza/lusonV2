@@ -25,7 +25,8 @@ function proposal(state: CountProposal['state'] = 'pending', initiator = 2): Cou
 function fixture(actor = 2) {
   const authority: TransferAuthority = { ready: true, epoch: 1, sessionGeneration: 1,
     session: parseSession(JSON.stringify({ authenticated: true, csrf_token: 'c'.repeat(43), expires_at: '2030-01-01T00:00:00Z',
-      identity: { account_id: 2, username: 'synthetic', location: { id: actor, name: 'Asignada' } } })) };
+      identity: { account_id: actor === 1 ? 1 : 2, username: 'synthetic', display_name: 'Operador de conteo', must_change_password: false,
+        location: { id: actor, name: 'Asignada' } } })) };
   const listeners = new Set<() => void>();
   const controller: TransferController = { authorityEpoch: 1, getTransferAuthority: () => authority,
     subscribeTransferInvalidation: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; },

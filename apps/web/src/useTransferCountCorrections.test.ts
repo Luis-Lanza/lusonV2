@@ -16,7 +16,7 @@ const input = { variant_id: 201, operation_key: 'stable_count_key_01', expected_
 const stamp = '2026-04-02T00:00:00Z';
 const network = () => new TransferAPIError('network', null, false, false, false, false, false, true);
 function session() {
-  return { authenticated: true, csrf_token: 'c'.repeat(43), identity: { account_id: 2, username: 'account-2', location: locations[1] }, expires_at: '2030-01-01T00:00:00Z' };
+  return { authenticated: true, csrf_token: 'c'.repeat(43), identity: { account_id: 2, username: 'account-2', display_name: 'Operador de conteo', must_change_password: false, location: locations[1] }, expires_at: '2030-01-01T00:00:00Z' };
 }
 function deferred<T>() {
   let resolve!: (value: T) => void; let reject!: (error: unknown) => void;

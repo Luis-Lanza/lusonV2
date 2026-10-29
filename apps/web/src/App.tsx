@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import { Brand, Icon } from './icons';
 import { groupItems } from './model';
+import { validTransferLocation } from './transferModel';
 import type { Item } from './model';
 import { useInventory } from './useInventory';
 import { useTransfers } from './useTransfers';
@@ -141,7 +142,7 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
     const authority = state.getTransferAuthority();
     const latest = transferViewOwner(authority);
     if (!creationAvailable || creation || !latest || latest !== ownerTag || !authority.session?.authenticated
-      || ![1, 2, 3].includes(authority.session.identity.location.id)
+      || !validTransferLocation(authority.session.identity.location.id)
       || recovery.getCurrent(state.getTransferAuthority)?.phase === 'inFlight') return;
     setCreationOwner(latest); setCreation(true);
   }

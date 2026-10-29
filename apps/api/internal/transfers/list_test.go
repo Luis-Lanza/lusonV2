@@ -47,8 +47,8 @@ func TestR02ListDependencies(t *testing.T) {
 		want     error
 	}{
 		{"unassigned", actor(0), transfers.Query{}, transfers.ErrForbidden},
-		{"unknown_actor", actor(4), transfers.Query{}, transfers.ErrForbidden},
-		{"mismatched_account", auth.Identity{AccountID: 2, Location: auth.Location{ID: 3}}, transfers.Query{}, transfers.ErrForbidden},
+		{"unknown_actor", actor(32768), transfers.Query{}, transfers.ErrForbidden},
+		{"mismatched_account", auth.Identity{AccountID: 1, Location: auth.Location{ID: 3}}, transfers.Query{}, transfers.ErrForbidden},
 		{"negative_page", actor(2), transfers.Query{Page: -1}, transfers.ErrInvalid},
 		{"page_bound", actor(2), transfers.Query{Page: 1_000_001}, transfers.ErrInvalid},
 		{"page_overflow", actor(2), transfers.Query{Page: math.MaxInt64}, transfers.ErrInvalid},

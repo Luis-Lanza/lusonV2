@@ -8,7 +8,7 @@ import { TransferAPIError, type TransferCreateResult } from './transferAPI';
 import type { TransferCreateInput } from './transferModel';
 import TransferReview from './TransferReview';
 import type { TransferCart } from './transferCart';
-import { transferDirection } from './transferModel';
+import { transferDirection, transferFlow, validTransferLocation } from './transferModel';
 import type { TransferFlow } from './transferModel';
 import type { SourceInventoryController, TransferAuthority, TransferController } from './useInventory';
 
@@ -22,7 +22,7 @@ export interface TransferCreationProps {
 }
 function owner(authority: TransferAuthority): string | null {
   const session = authority.session;
-  if (!session?.authenticated || ![1, 2, 3].includes(session.identity.location.id)) return null;
+  if (!session?.authenticated || session.identity.must_change_password === true || !validTransferLocation(session.identity.location.id)) return null;
   return `${authority.epoch}/${session.identity.account_id}/${session.identity.location.id}${authority.sessionGeneration === undefined ? '' : `/${authority.sessionGeneration}`}`;
 }
 type Flight = { sequence: number; abort: AbortController; dirty: boolean };
@@ -33,9 +33,7 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
   const recovery = injectedRecovery ?? isolatedRecovery;
   const cachedFlow = () => {
     const snapshot = recovery.getCurrent(controller.getTransferAuthority);
-    if (snapshot) return snapshot.attempt.kind === 'direct_shipment' ? snapshot.attempt.counterparty_location_id === 2 ? 'directA' : 'directB'
-      : snapshot.attempt.kind === 'send_to_warehouse' ? 'sendWarehouse'
-        : snapshot.attempt.counterparty_location_id === 1 ? 'requestWarehouse' : 'requestOther';
+    if (snapshot) return transferFlow(snapshot.direction.creator_location_id, snapshot.attempt.kind, snapshot.attempt.counterparty_location_id);
     const session = controller.getTransferAuthority().session;
     return session?.authenticated && session.identity.location.id === 1 ? 'directA' : 'requestWarehouse';
   };
@@ -163,7 +161,13 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
   const displayedPage = Math.min(page, lastPage);
   const pageRows = rows.slice((displayedPage - 1) * 25, displayedPage * 25);
   const direct = direction.kind === 'direct_shipment';
-  const title = direct ? 'Crear envío' : flow === 'sendWarehouse' ? 'Proponer envío a Almacén' : flow === 'requestOther' ? 'Solicitar a otra sucursal' : 'Solicitar baterías';
+  const title = direct ? 'Crear envío' : flow === 'sendWarehouse' ? 'Proponer envío a Almacén' : direction.origin_location_id !== 1 ? 'Solicitar a otra sucursal' : 'Solicitar baterías';
+  const otherBranches = metadata.locations.filter(l => l.id > 1 && l.id !== assigned);
+  const routes = assigned === 1
+    ? otherBranches.map(l => ({ value: transferFlow(assigned, 'direct_shipment', l.id), label: `Enviar a ${l.name}` }))
+    : [{ value: 'requestWarehouse' as TransferFlow, label: 'Solicitar a Almacén' },
+      ...otherBranches.map(l => ({ value: transferFlow(assigned, 'request_stock', l.id), label: `Solicitar a ${l.name}` })),
+      { value: 'sendWarehouse' as TransferFlow, label: 'Proponer envío a Almacén' }];
 
   function guardedCart() {
     const latest = current();
@@ -311,10 +315,8 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
     <label className="creation-flow">{direct ? 'Destino' : 'Tipo de transferencia'}<select aria-label="Tipo de transferencia" ref={picker} value={flow} onChange={e => {
       if (!current()) return;
       const value = e.target.value;
-      if (assigned === 1 ? value === 'directA' || value === 'directB'
-        : value === 'requestWarehouse' || value === 'requestOther' || value === 'sendWarehouse') changeFlow(value as TransferFlow);
-    }}>{assigned === 1 ? <><option value="directA">Enviar a {location(2)}</option><option value="directB">Enviar a {location(3)}</option></>
-      : <><option value="requestWarehouse">Solicitar a Almacén</option><option value="requestOther">Solicitar a {location(assigned === 2 ? 3 : 2)}</option><option value="sendWarehouse">Proponer envío a Almacén</option></>}</select></label>
+      if (routes.some(route => route.value === value)) changeFlow(value as TransferFlow);
+    }}>{routes.map(route => <option key={route.value} value={route.value}>{route.label}</option>)}</select></label>
     {!direct && <div className="creation-route">
       <div><span>Origen</span><strong>{sourceName}</strong></div><b aria-hidden="true">→</b><div><span>Destino</span><strong>{location(direction.destination_location_id)}</strong></div>
       <p>Requiere aprobación de {location(direction.approver_location_id)} · No genera reserva inmediata de stock</p>

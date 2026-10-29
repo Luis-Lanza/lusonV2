@@ -27,7 +27,7 @@ describe('W2 warehouse recovery fences', () => {
     expect(cache.confirmSuccess(() => owners[2], tokens[2])).toBe(true);
     expect(cache.getCurrent(() => owners[2])).toBeNull();
     for (const a of owners.slice(0, 2)) expect(cache.getCurrent(() => a)?.phase).toBe('inFlight');
-    const replacement = authority(99, 1);
+    const replacement = authority(1, 1, 8);
     cache.capture(() => replacement, reviewed(replacement));
     expect(cache.markUnknown(tokens[2])).toBe(false);
     expect(cache.getCurrent(() => replacement)?.phase).toBe('ready');

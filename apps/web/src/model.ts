@@ -1,7 +1,7 @@
 import { LosslessNumber, parse } from 'lossless-json';
 
 export interface Location { id: number; name: string }
-export interface Identity { account_id: number; username: string; location: Location }
+export interface Identity { account_id: number; username: string; display_name?: string; must_change_password?: boolean; location: Location }
 export type Session = { authenticated: false; csrf_token: string } | {
   authenticated: true; csrf_token: string; identity: Identity; expires_at: string;
 };
@@ -55,7 +55,7 @@ function capacity(v: unknown): string {
 }
 function location(v: unknown): Location {
   const o = object(v);
-  return { id: integer(o.id, 1, 3), name: text(o.name) };
+  return { id: integer(o.id, 1, 32767), name: text(o.name) };
 }
 export function parseSession(raw: string): Session {
   const o = object(decode(raw));
@@ -64,7 +64,11 @@ export function parseSession(raw: string): Session {
   if (o.authenticated === false) return { authenticated: false, csrf_token: csrf };
   if (o.authenticated !== true) return invalid();
   const i = object(o.identity);
-  const identity = { account_id: integer(i.account_id, 1, 3), username: text(i.username), location: location(i.location) };
+  if (typeof i.must_change_password !== 'boolean' || typeof i.display_name !== 'string'
+    || i.display_name.includes('\0') || !i.display_name.isWellFormed()) return invalid();
+  const identity = { account_id: integer(i.account_id, 1, Number.MAX_SAFE_INTEGER), username: text(i.username),
+    display_name: i.display_name, must_change_password: i.must_change_password, location: location(i.location) };
+  if ((identity.account_id === 1) !== (identity.location.id === 1)) return invalid();
   const expiry = text(o.expires_at);
   if (!Number.isFinite(Date.parse(expiry))) return invalid();
   return { authenticated: true, csrf_token: csrf, identity, expires_at: expiry };
@@ -74,7 +78,8 @@ export function parseMetadata(raw: string): Metadata {
   if (!Array.isArray(o.locations) || !Array.isArray(o.brands)) return invalid();
   const locations = o.locations.map(location);
   const brands = o.brands.map(text);
-  if (locations.length !== 3 || new Set(locations.map(l => l.id)).size !== 3 || !brands.length || new Set(brands).size !== brands.length) return invalid();
+  if (locations.length < 3 || new Set(locations.map(l => l.id)).size !== locations.length
+    || ![1, 2, 3].every(id => locations.some(l => l.id === id)) || !brands.length || new Set(brands).size !== brands.length) return invalid();
   return { locations, brands };
 }
 export function parseInventory(raw: string): Inventory {

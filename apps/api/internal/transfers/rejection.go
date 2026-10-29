@@ -24,6 +24,9 @@ func (s *Store) Reject(ctx context.Context, actor auth.Identity, id int64) (Requ
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	if err := checkAssignment(ctx, s.pool, actor); err != nil {
+		return Request{}, err
+	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return Request{}, fail(ctx)
@@ -40,7 +43,7 @@ func (s *Store) Reject(ctx context.Context, actor auth.Identity, id int64) (Requ
 	}
 	var approver int
 	err = tx.QueryRow(ctx, `SELECT approver_location_id FROM transfer_requests
- WHERE id=$1 AND $2 IN (origin_location_id,destination_location_id) FOR UPDATE`, id, actor.AccountID).Scan(&approver)
+ WHERE id=$1 AND $2 IN (origin_location_id,destination_location_id) FOR UPDATE`, id, actor.Location.ID).Scan(&approver)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Request{}, ErrNotFound
 	}
@@ -52,7 +55,7 @@ func (s *Store) Reject(ctx context.Context, actor auth.Identity, id int64) (Requ
 	if approver != actor.Location.ID {
 		return Request{}, ErrForbidden
 	}
-	r, err := load(ctx, tx, actor.AccountID, id)
+	r, err := load(ctx, tx, actor.Location.ID, id)
 	if err != nil {
 		return Request{}, err
 	}
@@ -79,7 +82,7 @@ func (s *Store) Reject(ctx context.Context, actor auth.Identity, id int64) (Requ
 	if err != nil || tag.RowsAffected() != 1 {
 		return Request{}, fail(ctx)
 	}
-	r, err = load(ctx, tx, actor.AccountID, id)
+	r, err = load(ctx, tx, actor.Location.ID, id)
 	if err != nil {
 		return Request{}, err
 	}

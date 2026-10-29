@@ -61,6 +61,9 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q Query) (Page, e
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	if err := checkAssignment(ctx, s.pool, actor); err != nil {
+		return Page{}, err
+	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return Page{}, fail(ctx)
@@ -74,12 +77,12 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q Query) (Page, e
 		RequiresAction: q.RequiresAction, RequiredActions: make(map[int64][]string)}
 	projection := ` FROM (` + requiredActionsSQL + `) actions
   WHERE ($2='all' OR status=$2) AND (NOT $3 OR ` + anyRequiredActionSQL + `)`
-	if tx.QueryRow(ctx, `SELECT count(*)`+projection, actor.AccountID, q.Status, q.RequiresAction).Scan(&page.Total) != nil {
+	if tx.QueryRow(ctx, `SELECT count(*)`+projection, actor.Location.ID, q.Status, q.RequiresAction).Scan(&page.Total) != nil {
 		return Page{}, fail(ctx)
 	}
 	offset := (q.Page - 1) * int64(q.PageSize)
 	rows, err := tx.Query(ctx, `SELECT id,approve,dispatch,receive,review_count,review_restitution,review_dispatch_reconciliation`+projection+
-		` ORDER BY id DESC LIMIT $4 OFFSET $5`, actor.AccountID, q.Status, q.RequiresAction, int64(q.PageSize), offset)
+		` ORDER BY id DESC LIMIT $4 OFFSET $5`, actor.Location.ID, q.Status, q.RequiresAction, int64(q.PageSize), offset)
 	if err != nil {
 		return Page{}, fail(ctx)
 	}
@@ -106,7 +109,7 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q Query) (Page, e
 		return Page{}, fail(ctx)
 	}
 	for _, id := range ids {
-		r, err := load(ctx, tx, actor.AccountID, id)
+		r, err := load(ctx, tx, actor.Location.ID, id)
 		if err != nil {
 			return Page{}, err
 		}

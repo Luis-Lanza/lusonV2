@@ -27,7 +27,7 @@ export function errorMessage(error: unknown): string {
       case 503: return 'Servicio no disponible. Intentá de nuevo más tarde.';
     }
   }
-  return error instanceof Error && error.message.startsWith('Respuesta inválida')
+  return error instanceof Error && (error.message.startsWith('Respuesta inválida') || error.message.startsWith('La cuenta requiere'))
     ? error.message : 'No se pudo conectar con el servidor. Intentá de nuevo.';
 }
 async function request(path: string, init: RequestInit = {}, expected = 200, passive = false): Promise<Response> {
@@ -111,12 +111,12 @@ export function useInventory() {
   const getTransferAuthority = useCallback((): TransferAuthority => {
     const session = authorityState.current.session;
     const fingerprint = session?.authenticated ? JSON.stringify([session.identity.account_id, session.identity.username,
-      session.identity.location.id, session.identity.location.name, session.expires_at, session.csrf_token]) : '';
+      session.identity.location.id, session.identity.location.name, session.identity.must_change_password, session.expires_at, session.csrf_token]) : '';
     if (sessionFence.current.fingerprint !== fingerprint) {
       sessionFence.current = { fingerprint, generation: sessionFence.current.generation + 1 };
     }
     const authority = { epoch: authGeneration.current, session, sessionGeneration: sessionFence.current.generation,
-      ready: mounted.current && !mutation.current && !authorityState.current.authBusy && !!session?.authenticated };
+      ready: mounted.current && !mutation.current && !authorityState.current.authBusy && !!session?.authenticated && session.identity.must_change_password === false };
     restitutionRecovery.synchronize(decisionOwner(authority));
     return authority;
   }, [restitutionRecovery]);
@@ -185,6 +185,11 @@ export function useInventory() {
     return mounted.current && authGeneration.current === auth && (read === undefined || readGeneration.current === read);
   }
   function initial(next: Session) {
+    // Password-change routing belongs to the account UI. Until then, never
+    // bootstrap operational reads, SSE or mutation authority for this session.
+    if (next.authenticated && next.identity.must_change_password !== false) {
+      throw new Error('La cuenta requiere cambiar la contraseña antes de operar.');
+    }
     csrf.current = next.csrf_token; authorityState.current.session = next; setSession(next);
     if (next.authenticated) {
       setQuery(initialQuery(next.identity.location.id));
@@ -265,7 +270,7 @@ export function useInventory() {
       const before = session.identity; const after = next.identity;
       const same = before.account_id === after.account_id && before.username === after.username
         && before.location.id === after.location.id && before.location.name === after.location.name
-        && session.csrf_token === next.csrf_token;
+        && session.csrf_token === next.csrf_token && before.must_change_password === after.must_change_password;
       if (!same) {
         stopRealtime(); authGeneration.current++; clearProtected(); initial(next);
       }

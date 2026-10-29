@@ -35,7 +35,7 @@ func TestR03BrokerContract(t *testing.T) {
 		if s, err := b.Subscribe(2); s != nil || err != ErrUnavailable {
 			t.Fatal("unready subscription accepted")
 		}
-		for _, location := range []int{-1, 0, 4} {
+		for _, location := range []int{-1, 0, 32768} {
 			if s, err := b.Subscribe(location); s != nil || err != ErrInvalid {
 				t.Fatal("invalid location accepted")
 			}
@@ -73,13 +73,14 @@ func TestR03BrokerContract(t *testing.T) {
 			t.Fatal("known metadata rejected")
 		}
 	}
-	for _, payload := range []string{"", "resync:0", "inventory:1", "transfers:0", "transfers:4", "transfers:01", "transfers:+1", "transfers:1\n", " transfers:1", "transfers:1:2", `{"topic":"transfers","audience":1}`, strings.Repeat("x", 8192), "transfers:\xff"} {
+	for _, payload := range []string{"", "resync:0", "inventory:1", "transfers:0", "transfers:32768", "transfers:01", "transfers:+1", "transfers:1\n", " transfers:1", "transfers:1:2", `{"topic":"transfers","audience":1}`, strings.Repeat("x", 8192), "transfers:\xff"} {
 		if _, _, ok := parsePayload(payload); ok {
 			t.Fatal("unknown/oversized/ambiguous metadata accepted")
 		}
 	}
 	ready := func() *Broker {
-		return &Broker{ctx: context.Background(), ready: true, subscribers: make(map[uint64]*Subscription)}
+		return &Broker{ctx: context.Background(), ready: true, subscribers: make(map[uint64]*Subscription),
+			versions: map[string]int64{"inventory": 0, "transfers:1": 0, "transfers:2": 0, "transfers:3": 0}}
 	}
 	t.Run("capacity", func(t *testing.T) {
 		b := ready()
@@ -104,7 +105,7 @@ func TestR03BrokerContract(t *testing.T) {
 		<-slow.Events
 		<-fast.Events
 		for i := 0; i <= queueSize; i++ {
-			if !b.install(map[string]int64{}, Inventory, 0) || <-fast.Events != Inventory {
+			if !b.install(b.versions, Inventory, 0) || <-fast.Events != Inventory {
 				t.Fatal("nonblocking fanout failed")
 			}
 		}
@@ -126,7 +127,7 @@ func TestR03BrokerContract(t *testing.T) {
 			go func() { defer wg.Done(); s.Close(); s.Close() }()
 		}
 		for i := 0; i < 100; i++ {
-			b.install(map[string]int64{}, Inventory, 0)
+			b.install(b.versions, Inventory, 0)
 		}
 		wg.Wait()
 		b.unavailable()
@@ -158,6 +159,9 @@ func brokerFixtureDB(t *testing.T) *brokerFixture {
 	}
 	if bootstrap.Provision(ctx, p, creds) != nil {
 		t.Fatal("broker fixture provisioning failed")
+	}
+	if _, err := p.Exec(ctx, `UPDATE auth_accounts SET must_change_password=false`); err != nil {
+		t.Fatal("broker fixture password completion failed")
 	}
 	svc, err := auth.New(p, nil)
 	if err != nil {

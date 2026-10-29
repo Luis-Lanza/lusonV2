@@ -24,6 +24,9 @@ func (s *Store) Dispatch(ctx context.Context, actor auth.Identity, id int64) (Re
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	if err := checkAssignment(ctx, s.pool, actor); err != nil {
+		return Request{}, err
+	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return Request{}, fail(ctx)
@@ -38,7 +41,7 @@ func (s *Store) Dispatch(ctx context.Context, actor auth.Identity, id int64) (Re
 	}
 	var origin int
 	err = tx.QueryRow(ctx, `SELECT origin_location_id FROM transfer_requests
- WHERE id=$1 AND $2 IN (origin_location_id,destination_location_id) FOR UPDATE`, id, actor.AccountID).Scan(&origin)
+ WHERE id=$1 AND $2 IN (origin_location_id,destination_location_id) FOR UPDATE`, id, actor.Location.ID).Scan(&origin)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Request{}, ErrNotFound
 	}
@@ -50,7 +53,7 @@ func (s *Store) Dispatch(ctx context.Context, actor auth.Identity, id int64) (Re
 	if origin != actor.Location.ID {
 		return Request{}, ErrForbidden
 	}
-	r, err := load(ctx, tx, actor.AccountID, id)
+	r, err := load(ctx, tx, actor.Location.ID, id)
 	if err != nil {
 		return Request{}, err
 	}
@@ -71,7 +74,7 @@ func (s *Store) Dispatch(ctx context.Context, actor auth.Identity, id int64) (Re
 	if err != nil || tag.RowsAffected() != 1 {
 		return Request{}, fail(ctx)
 	}
-	r, err = load(ctx, tx, actor.AccountID, id)
+	r, err = load(ctx, tx, actor.Location.ID, id)
 	if err != nil {
 		return Request{}, err
 	}

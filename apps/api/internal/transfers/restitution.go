@@ -148,6 +148,9 @@ func (s *Store) restitute(ctx context.Context, actor auth.Identity, id, variant 
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	if err := checkAssignment(ctx, s.pool, actor); err != nil {
+		return RestitutionOperation{}, err
+	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return RestitutionOperation{}, fail(ctx)
@@ -220,7 +223,8 @@ func restitutionError(ctx context.Context, err error) error {
 // CheckRestitutionAccess is an HTTP privacy fence before payload decoding, not
 // mutation authorization or freshness/replay authority. Both participants may
 // pass; SQL rechecks action-specific roles and state under its advisory lock.
-// Only the header is read, independently of private history decoding.
+// Assignment and the participant-filtered header are read independently of
+// private history decoding.
 func (s *Store) CheckRestitutionAccess(ctx context.Context, actor auth.Identity, id int64) error {
 	if ctx == nil || s == nil || s.pool == nil {
 		return ErrUnavailable
@@ -233,6 +237,9 @@ func (s *Store) CheckRestitutionAccess(ctx context.Context, actor auth.Identity,
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	if err := checkAssignment(ctx, s.pool, actor); err != nil {
+		return err
+	}
 	var status string
 	err := s.pool.QueryRow(ctx, `SELECT status FROM transfer_requests WHERE id=$1 AND $2 IN(origin_location_id,destination_location_id)`, id, actor.Location.ID).Scan(&status)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -259,6 +266,9 @@ func (s *Store) GetRestitutions(ctx context.Context, actor auth.Identity, id int
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	if err := checkAssignment(ctx, s.pool, actor); err != nil {
+		return Restitutions{}, err
+	}
 	var status string
 	var origin, destination int
 	var lines, operations, dispatchEvidence []byte

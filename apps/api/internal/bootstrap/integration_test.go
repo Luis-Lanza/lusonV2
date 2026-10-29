@@ -2,6 +2,7 @@ package bootstrap_test
 
 import (
 	"context"
+	"io/fs"
 	"sync"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"luson/api/internal/config"
 	"luson/api/internal/db"
 	"luson/api/internal/testpg"
+	"luson/api/migrations"
 )
 
 // These tests require the admitted parent-owned PostgreSQL fixture; no skip path.
@@ -38,7 +40,11 @@ func TestPostgres(t *testing.T) {
 	t.Run("schema_seed_and_preservation", func(t *testing.T) {
 		p := fresh(t)
 		initialize(t, p)
-		for table, want := range map[string]int{"schema_migrations": 13, "locations": 3, "catalog_entries": 95, "catalog_variants": 190, "inventory_balances": 570, "initialization_metadata": 1} {
+		migrationFiles, err := fs.Glob(migrations.Files, "*.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for table, want := range map[string]int{"schema_migrations": len(migrationFiles), "locations": 3, "catalog_entries": 95, "catalog_variants": 190, "inventory_balances": 570, "initialization_metadata": 1} {
 			if n := scalar(t, p, "SELECT count(*) FROM "+table); n != want {
 				t.Fatalf("%s count %d, want %d", table, n, want)
 			}
@@ -96,7 +102,7 @@ func TestPostgres(t *testing.T) {
 			"UPDATE catalog_entries SET capacity_ah=0 WHERE id=1",
 			"UPDATE catalog_entries SET model='changed' WHERE id=1",
 			"DELETE FROM catalog_variants WHERE id=1",
-			"INSERT INTO locations VALUES (4,'Other')",
+			"INSERT INTO locations VALUES (0,'Other')",
 		} {
 			if _, err := p.Exec(ctx, query); err == nil {
 				t.Fatalf("accepted invalid mutation: %s", query)

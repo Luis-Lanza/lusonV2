@@ -1,6 +1,6 @@
 import type { TransferCart } from './transferCart';
 import type { TransferAuthority } from './useInventory';
-import { canonicalTransferInput, transferDirection, type TransferCreateInput, type TransferDirection, type TransferLocationID } from './transferModel';
+import { canonicalTransferInput, transferDirection, transferFlow, validTransferLocation, type TransferCreateInput, type TransferDirection, type TransferLocationID } from './transferModel';
 export interface RecoveryHandle { readonly __recoveryHandle?: never }
 export interface RecoveryFlight { readonly __recoveryFlight?: never }
 export interface RecoveryItem {
@@ -28,9 +28,10 @@ export function createTransferRecovery() {
   function owner(get: AuthorityGetter): Owner | null {
     try {
       const a = get(); const s = a.session;
-      if (!a.ready || !s?.authenticated) return null;
+      if (!a.ready || !s?.authenticated || s.identity.must_change_password === true) return null;
       const account = s.identity.account_id; const assigned = s.identity.location.id;
-      if (!integer(account, 2147483647) || (assigned !== 1 && assigned !== 2 && assigned !== 3)) return null;
+      if (!integer(account, Number.MAX_SAFE_INTEGER) || !validTransferLocation(assigned)
+        || (account === 1) !== (assigned === 1)) return null;
       return { key: `${account}:${assigned}`, account, assigned, epoch: a.epoch, generation: a.sessionGeneration ?? 0 };
     } catch { return null; }
   }
@@ -65,9 +66,7 @@ export function createTransferRecovery() {
         if (cart.epoch !== o.epoch || cart.sessionGeneration !== o.generation || cart.accountID !== o.account || cart.assigned !== o.assigned) return unavailable();
         if (!cart.attempt) return unavailable();
         const attempt = canonicalTransferInput(cart.attempt);
-        const flow = attempt.kind === 'direct_shipment' ? attempt.counterparty_location_id === 2 ? 'directA' : 'directB'
-          : attempt.kind === 'send_to_warehouse' ? 'sendWarehouse'
-          : attempt.counterparty_location_id === 1 ? 'requestWarehouse' : 'requestOther';
+        const flow = transferFlow(o.assigned, attempt.kind, attempt.counterparty_location_id);
         const direction = Object.freeze(transferDirection(o.assigned, flow));
         if (Object.keys(direction).some(k => direction[k as keyof TransferDirection] !== cart.direction[k as keyof TransferDirection])
           || attempt.counterparty_location_id !== direction.counterparty_location_id

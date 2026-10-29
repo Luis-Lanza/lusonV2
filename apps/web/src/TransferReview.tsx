@@ -6,6 +6,7 @@ import type { TransferCreateResult } from './transferAPI';
 import type { TransferAuthority, TransferController } from './useInventory';
 import { useTransfers } from './useTransfers';
 import TransferDate from './TransferDate';
+import { validTransferLocation } from './transferModel';
 
 export interface TransferReviewProps {
   controller: TransferController;
@@ -36,7 +37,7 @@ export default function TransferReview(props: TransferReviewProps) {
   const close = useRef<HTMLButtonElement>(null);
   const authority = props.controller.getTransferAuthority();
   const session = authority.session;
-  const permitted = authority.ready && session?.authenticated && [1, 2, 3].includes(session.identity.location.id)
+  const permitted = authority.ready && session?.authenticated && session.identity.must_change_password !== true && validTransferLocation(session.identity.location.id)
     && props.ownerTag === reviewOwner(authority);
   const blocked = props.busy || (permitted && props.snapshot.epoch === authority.epoch && props.snapshot.phase === 'inFlight');
   useEffect(() => {

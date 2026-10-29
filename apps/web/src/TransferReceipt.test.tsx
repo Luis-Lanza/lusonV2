@@ -35,7 +35,7 @@ class Source {
 function fixture(actor = 2, override?: (url: string, init: RequestInit) => Promise<Response> | undefined) {
   let record: unknown = transit;
   const session = { authenticated: true, csrf_token: 'c'.repeat(43), expires_at: '2030-01-01T00:00:00Z',
-    identity: { account_id: actor, username: `receipt-${actor}`, location: locations[actor - 1] } };
+    identity: { account_id: actor, username: `receipt-${actor}`, display_name: 'Operador de recepción', must_change_password: false, location: locations[actor - 1] } };
   const fetch = vi.fn((input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
     const url = String(input); const custom = override?.(url, init); if (custom) return custom;
     if (url === '/api/auth/session' || url === '/api/auth/validate') return Promise.resolve(reply(session));
@@ -288,7 +288,7 @@ describe('U3e unexpected and mixed receipt preview', () => {
     const job = new Promise<Response>(yes => { resolve = yes; });
     const f = fixture(2, url => reload && url.startsWith('/api/inventory?') ? job : undefined);
     const authority = { ready: true, epoch: 1, session: { authenticated: true,
-      identity: { account_id: 2, username: 'receipt-2', location: locations[1] },
+      identity: { account_id: 2, username: 'receipt-2', display_name: 'Operador de recepción', must_change_password: false, location: locations[1] },
       csrf_token: 'c'.repeat(43), expires_at: '2030-01-01T00:00:00Z' } };
     const props = { ownerTag: '1/2/2', controller: { getTransferAuthority: () => authority },
       transfers: {}, record: parseTransferRecord(JSON.stringify({ ...transit, items: [1, 3].map(variant_id => ({

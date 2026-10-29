@@ -23,7 +23,7 @@ describe('lossless contract', () => {
     for (const raw of ['{', 'null', '[]', pageJSON().replace('"items":[', '"items":null,"discard":['), pageJSON().replace('"page_size":10', '"page_size":11')]) expect(() => parseInventory(raw)).toThrow('Respuesta inválida');
   });
   it('checks bounded IDs, pages/counts, duplicate variants and polarity', () => {
-    for (const raw of [pageJSON().replace('"id":1', '"id":4'), pageJSON().replace('"page":1', '"page":1000001'),
+    for (const raw of [pageJSON().replace('"id":1', '"id":32768'), pageJSON().replace('"page":1', '"page":1000001'),
       pageJSON().replace('"total_variants":190', '"total_variants":9007199254740993'),
       pageJSON(row + ',' + row), pageJSON(row.replace('"L"', '"X"'))]) {
       expect(() => parseInventory(raw)).toThrow();
@@ -33,6 +33,26 @@ describe('lossless contract', () => {
     expect(parseSession('{"authenticated":false,"csrf_token":"' + 'a'.repeat(43) + '"}')).toEqual({ authenticated: false, csrf_token: 'a'.repeat(43) });
     expect(() => parseSession('{"authenticated":true,"csrf_token":"x"}')).toThrow();
     expect(() => parseMetadata('{"locations":[],"brands":[]}')).toThrow();
+  });
+});
+
+describe('dynamic branch sessions', () => {
+  const session = { authenticated: true, csrf_token: 'a'.repeat(43), expires_at: '2030-01-01T00:00:00Z',
+    identity: { account_id: 900, username: 'operator', display_name: 'Operador C', must_change_password: false,
+      location: { id: 4, name: 'Sucursal C' } } };
+  it('decodes independent safe account IDs and explicit password state', () => {
+    expect(parseSession(JSON.stringify(session))).toEqual(session);
+    expect(parseSession(JSON.stringify({ ...session, identity: { ...session.identity, must_change_password: true } }))).toMatchObject({ identity: { must_change_password: true } });
+    for (const value of [undefined, null, 'false']) {
+      expect(() => parseSession(JSON.stringify({ ...session, identity: { ...session.identity, must_change_password: value } }))).toThrow();
+    }
+    for (const account_id of [0, 9007199254740992]) expect(() => parseSession(JSON.stringify({ ...session, identity: { ...session.identity, account_id } }))).toThrow();
+  });
+  it('accepts fourth-branch metadata while preserving unique existing identities', () => {
+    const locations = [{ id: 1, name: 'Almacén' }, { id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }, session.identity.location];
+    expect(parseMetadata(JSON.stringify({ locations, brands: ['TOYO'] })).locations).toEqual(locations);
+    expect(parseMetadata(JSON.stringify({ locations: locations.slice(0, 3), brands: ['TOYO'] })).locations).toHaveLength(3);
+    expect(() => parseMetadata(JSON.stringify({ locations: [...locations, locations[3]], brands: ['TOYO'] }))).toThrow();
   });
 });
 

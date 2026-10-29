@@ -10,7 +10,8 @@ import { appliedSnapshot, decisionKey, deferred, fixture, operationKey, wire } f
 function setup(location = 1, pending = false) {
   const f = fixture(pending);
   const authority: TransferAuthority = { epoch: 1, ready: true, sessionGeneration: 1, session: parseSession(JSON.stringify({ authenticated: true,
-    csrf_token: 'a'.repeat(43), identity: { account_id: 1, username: 'operator', location: { id: location, name: 'Location' } }, expires_at: '2030-01-01T00:00:00Z' })) };
+    csrf_token: 'a'.repeat(43), identity: { account_id: location, username: 'operator', display_name: 'Operador de regularización', must_change_password: false,
+      location: { id: location, name: 'Location' } }, expires_at: '2030-01-01T00:00:00Z' })) };
   const listeners = new Set<() => void>();
   const controller: TransferController = { authorityEpoch: 1, getTransferAuthority: () => authority,
     subscribeTransferInvalidation: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; }, settleUnauthorized: vi.fn(async () => 'unavailable' as const) };

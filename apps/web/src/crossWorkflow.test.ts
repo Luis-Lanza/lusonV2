@@ -69,7 +69,7 @@ async function setup(destination = true) {
   vi.stubGlobal('EventSource', QuietSource);
   const locations = [{ id: 1, name: 'Origin' }, { id: 2, name: 'Destination' }, { id: 3, name: 'Other' }];
   const session = { authenticated: true as const, csrf_token: 'c'.repeat(43), identity: { account_id: destination ? 2 : 1,
-    username: 'participant', location: locations[destination ? 1 : 0] }, expires_at: '2030-01-01T00:00:00Z' };
+    username: 'participant', display_name: 'Operador participante', must_change_password: false, location: locations[destination ? 1 : 0] }, expires_at: '2030-01-01T00:00:00Z' };
   const fetcher = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url === '/api/auth/session') return new Response(JSON.stringify(session));

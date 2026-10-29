@@ -1,5 +1,5 @@
 import { initialQuery, parseInventory, queryURL, validSearch, type Item, type Location } from './model';
-import type { TransferLocationID } from './transferModel';
+import { validTransferLocation, type TransferLocationID } from './transferModel';
 
 export interface SourceCatalog {
   readonly location: Readonly<Location>;
@@ -15,7 +15,7 @@ export class SourceInventoryError extends Error {
 
 // Complete catalog membership, NOT a transaction-wide quantity snapshot.
 export async function loadSourceInventory(source: TransferLocationID, options: SourceInventoryOptions = {}, fetcher: typeof globalThis.fetch = globalThis.fetch): Promise<SourceCatalog> {
-  if (source !== 1 && source !== 2 && source !== 3) throw new SourceInventoryError('invalid_source');
+  if (!validTransferLocation(source)) throw new SourceInventoryError('invalid_source');
   const signal = options.signal;
   const passive = options.reason === 'passive';
   const checkCanceled = () => { if (signal?.aborted) throw new SourceInventoryError('canceled'); };

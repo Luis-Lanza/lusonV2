@@ -19,6 +19,23 @@ function catalog(source = 1, count = 2, available = max): SourceCatalog {
 }
 const cart = () => createTransferCart(authority(), 'requestWarehouse', catalog());
 
+it('restores a dynamic branch route without exposing another same-branch operator archive', () => {
+  const a = authority(4);
+  if (a.session?.authenticated) a.session.identity.account_id = 9007199254740991;
+  const recovery = createTransferRecovery();
+  const selected = reviewCart(addCartItem(createTransferCart(a, 'request:2', catalog(2)), a, 1, 2n), a, key);
+  recovery.capture(() => a, selected);
+  const flight = recovery.begin(() => a, recovery.getCurrent(() => a)!.handle);
+  expect(recovery.markUnknown(flight)).toBe(true);
+  const snapshot = recovery.getCurrent(() => a)!;
+  expect(restoreTransferCart(a, catalog(2), snapshot).direction).toMatchObject({ origin_location_id: 2, destination_location_id: 4 });
+  const other = authority(4);
+  if (other.session?.authenticated) other.session.identity.account_id = 901;
+  expect(recovery.getCurrent(() => other)).toBeNull();
+  if (a.session?.authenticated) a.session.identity.must_change_password = true;
+  expect(recovery.getCurrent(() => a)).toBeNull();
+});
+
 describe('W2 warehouse cart', () => {
   it.each(['directA', 'directB'] as const)('freezes and restores full int64 %s selection from warehouse only', flow => {
     const a = authority(1); const recovery = createTransferRecovery();
@@ -84,7 +101,7 @@ describe('R04b2c-hydration', () => {
     expect(state.catalog.location.id).toBe(1);
   });
   it.each(['stale', 'unready', 'anonymous', 'unsupported-role'] as const)('guards %s before private payload getters', mode => {
-    const current = mode === 'unsupported-role' ? authority(4, 8) : authority(2, 8);
+    const current = mode === 'unsupported-role' ? authority(32768, 8) : authority(2, 8);
     if (mode === 'unready') current.ready = false;
     if (mode === 'anonymous') current.session = { authenticated: false, csrf_token: 'blocked' };
     const payload = vi.fn((): never => { throw new Error('private payload'); });

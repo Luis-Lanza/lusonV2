@@ -51,13 +51,14 @@ func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
 // The actor is resolved by authentication, never supplied by query/body fields.
 func resolved(actor auth.Identity) bool {
-	return actor.AccountID >= 1 && actor.AccountID <= 3 && actor.Location.ID == actor.AccountID
+	return actor.AccountID > 0 && actor.Location.ID >= 1 && actor.Location.ID <= 32767 &&
+		(actor.AccountID == 1) == (actor.Location.ID == 1) && !actor.MustChangePassword
 }
 func textValid(text string, limit int) bool {
 	return len(text) <= limit && utf8.ValidString(text) && !strings.ContainsRune(text, 0)
 }
 func (q Query) Validate() error {
-	if q.LocationID < 1 || q.LocationID > 3 || q.Page < 1 || q.Page > 1000000 || (q.PageSize != 10 && q.PageSize != 25 && q.PageSize != 50) || (q.Polarity != "" && q.Polarity != "L" && q.Polarity != "R") || !textValid(q.Search, 128) || !textValid(q.Brand, 128) {
+	if q.LocationID < 1 || q.LocationID > 32767 || q.Page < 1 || q.Page > 1000000 || (q.PageSize != 10 && q.PageSize != 25 && q.PageSize != 50) || (q.Polarity != "" && q.Polarity != "L" && q.Polarity != "R") || !textValid(q.Search, 128) || !textValid(q.Brand, 128) {
 		return ErrInvalid
 	}
 	return nil

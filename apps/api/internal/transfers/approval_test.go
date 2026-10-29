@@ -60,7 +60,7 @@ func a02Refusals(t *testing.T) {
 		{"canceled", canceled, actor(1), r.ID, context.Canceled},
 		{"deadline", expired, actor(1), r.ID, context.DeadlineExceeded},
 		{"zero_identity", ctx, auth.Identity{}, r.ID, transfers.ErrForbidden},
-		{"unassigned", ctx, actor(4), r.ID, transfers.ErrForbidden},
+		{"unassigned", ctx, actor(32768), r.ID, transfers.ErrForbidden},
 		{"mismatch", ctx, auth.Identity{AccountID: 1, Location: auth.Location{ID: 2}}, r.ID, transfers.ErrForbidden},
 		{"zero_id", ctx, actor(1), 0, transfers.ErrNotFound},
 		{"negative_id", ctx, actor(1), -1, transfers.ErrNotFound},

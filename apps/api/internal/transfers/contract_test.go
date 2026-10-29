@@ -43,7 +43,7 @@ func TestW01DirectShipmentContract(t *testing.T) {
 			t.Fatal("nonwarehouse direct creator admitted")
 		}
 	}
-	for _, destination := range []int{0, 1, 4} {
+	for _, destination := range []int{0, 1, 32768} {
 		in := input()
 		in.Kind, in.CounterpartyID = transfers.DirectShipment, destination
 		if _, err := transfers.Validate(actor(1), in); !errors.Is(err, transfers.ErrInvalid) {
@@ -101,11 +101,11 @@ func TestR01PendingContract(t *testing.T) {
 	}{
 		{"warehouse", actor(1), func(*transfers.CreateInput) {}, transfers.ErrForbidden},
 		{"unassigned", actor(0), func(*transfers.CreateInput) {}, transfers.ErrForbidden},
-		{"unknown_actor", actor(4), func(*transfers.CreateInput) {}, transfers.ErrForbidden},
-		{"mismatched_account", auth.Identity{AccountID: 3, Location: auth.Location{ID: 2}}, func(*transfers.CreateInput) {}, transfers.ErrForbidden},
+		{"unknown_actor", actor(32768), func(*transfers.CreateInput) {}, transfers.ErrForbidden},
+		{"mismatched_account", auth.Identity{AccountID: 1, Location: auth.Location{ID: 2}}, func(*transfers.CreateInput) {}, transfers.ErrForbidden},
 		{"kind", actor(2), func(in *transfers.CreateInput) { in.Kind = "approval" }, transfers.ErrInvalid},
 		{"self", actor(2), func(in *transfers.CreateInput) { in.CounterpartyID = 2 }, transfers.ErrInvalid},
-		{"unknown_counterparty", actor(2), func(in *transfers.CreateInput) { in.CounterpartyID = 4 }, transfers.ErrInvalid},
+		{"unknown_counterparty", actor(2), func(in *transfers.CreateInput) { in.CounterpartyID = 32768 }, transfers.ErrInvalid},
 		{"send_other_branch", actor(2), func(in *transfers.CreateInput) { in.Kind = transfers.SendToWarehouse; in.CounterpartyID = 3 }, transfers.ErrInvalid},
 		{"empty_items", actor(2), func(in *transfers.CreateInput) { in.Items = nil }, transfers.ErrInvalid},
 		{"too_many_items", actor(2), func(in *transfers.CreateInput) { in.Items = make([]transfers.Line, 191) }, transfers.ErrInvalid},

@@ -57,12 +57,15 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 	if _, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", retryLock(n.CreatorID, n.RetryKey)); err != nil {
 		return CreateResult{}, fail(ctx)
 	}
-	var provisioned bool
-	if tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM auth_accounts WHERE location_id=$1)", n.CreatorID).Scan(&provisioned) != nil {
+	if err := checkAssignment(ctx, tx, actor); err != nil {
+		return CreateResult{}, err
+	}
+	var destinationExists bool
+	if tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM locations WHERE id=$1)", n.DestinationID).Scan(&destinationExists) != nil {
 		return CreateResult{}, fail(ctx)
 	}
-	if !provisioned {
-		return CreateResult{}, ErrForbidden
+	if !destinationExists {
+		return CreateResult{}, ErrInvalid
 	}
 	var id int64
 	var fingerprint []byte
@@ -140,7 +143,7 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 	} else {
 		return CreateResult{}, fail(ctx)
 	}
-	r, err := load(ctx, tx, actor.AccountID, id)
+	r, err := load(ctx, tx, actor.Location.ID, id)
 	if err != nil {
 		return CreateResult{}, err
 	}
@@ -164,7 +167,10 @@ func (s *Store) Get(ctx context.Context, actor auth.Identity, id int64) (Request
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	return load(ctx, s.pool, actor.AccountID, id)
+	if err := checkAssignment(ctx, s.pool, actor); err != nil {
+		return Request{}, err
+	}
+	return load(ctx, s.pool, actor.Location.ID, id)
 }
 
 type querier interface {
@@ -223,7 +229,7 @@ func load(ctx context.Context, q querier, participant int, id int64) (Request, e
 	}
 	// Verify completeness/canonical payload as well as SQL constraints. Private
 	// retry material is used only internally, never included in the public record.
-	expected, err := Validate(auth.Identity{AccountID: r.Creator.ID, Location: auth.Location{ID: r.Creator.ID}}, CreateInput{Kind: r.Kind, CounterpartyID: counterparty, RetryKey: retryKey, Items: lines})
+	expected, err := locationIntent(r.Creator.ID, CreateInput{Kind: r.Kind, CounterpartyID: counterparty, RetryKey: retryKey, Items: lines})
 	if err != nil || !bytes.Equal(fingerprint, expected.Fingerprint[:]) ||
 		r.Origin.ID != expected.OriginID || r.Destination.ID != expected.DestinationID || r.Approver.ID != expected.ApproverID {
 		return Request{}, ErrUnavailable

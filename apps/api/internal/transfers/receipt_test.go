@@ -202,7 +202,7 @@ func TestR1ReceiptDependenciesAndStates(t *testing.T) {
 	r := create(t, ctx, s, 2, input()).Request
 	payload := receiptInput(r)
 	before := receiptSnapshot(t, ctx, p)
-	for _, identity := range []auth.Identity{actor(0), actor(4), {AccountID: 2, Location: auth.Location{ID: 1}}} {
+	for _, identity := range []auth.Identity{actor(0), actor(32768), {AccountID: 2, Location: auth.Location{ID: 1}}} {
 		got, err := s.Receive(ctx, identity, r.ID, payload)
 		a02Error(t, got, err, transfers.ErrForbidden)
 	}

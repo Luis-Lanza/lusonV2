@@ -26,7 +26,7 @@ func TestA04CountsDependencies(t *testing.T) {
 			t.Fatal("dependencies must precede identity and return zero")
 		}
 	}
-	for _, identity := range []auth.Identity{actor(0), actor(4), {AccountID: 2, Location: auth.Location{ID: 3}}} {
+	for _, identity := range []auth.Identity{actor(0), actor(32768), {AccountID: 1, Location: auth.Location{ID: 3}}} {
 		got, err := transfers.New(&pgxpool.Pool{}).Counts(context.Background(), identity)
 		if err != transfers.ErrForbidden || got != (transfers.Totals{}) {
 			t.Fatal("invalid assigned identity reached SQL")

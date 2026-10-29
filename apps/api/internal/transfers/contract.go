@@ -86,29 +86,38 @@ type CreateResult struct {
 var retryKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
 
 func assigned(actor auth.Identity) bool {
-	return actor.AccountID == actor.Location.ID && actor.AccountID >= 1 && actor.AccountID <= 3
+	return actor.AccountID > 0 && actor.Location.ID >= 1 && actor.Location.ID <= math.MaxInt16 &&
+		(actor.AccountID == 1) == (actor.Location.ID == 1) && !actor.MustChangePassword
 }
 
 // Validate derives direction only from the trusted authenticated identity. It
 // rejects duplicate variants before sorting a copy, never modifies the cart,
 // and never adds quantities across lines (their sum could overflow int64).
 func Validate(actor auth.Identity, input CreateInput) (Intent, error) {
-	if !assigned(actor) || (actor.AccountID == 1 && input.Kind != DirectShipment) || (actor.AccountID != 1 && input.Kind == DirectShipment) {
+	if !assigned(actor) {
+		return Intent{}, ErrForbidden
+	}
+	return locationIntent(actor.Location.ID, input)
+}
+
+// Canonical persisted payloads identify locations, not historical user accounts.
+func locationIntent(creator int, input CreateInput) (Intent, error) {
+	if creator < 1 || creator > math.MaxInt16 || (creator == 1 && input.Kind != DirectShipment) || (creator != 1 && input.Kind == DirectShipment) {
 		return Intent{}, ErrForbidden
 	}
 	if !retryKeyPattern.MatchString(input.RetryKey) || len(input.Items) == 0 || len(input.Items) > 190 {
 		return Intent{}, ErrInvalid
 	}
-	n := Intent{CreatorID: actor.AccountID, Kind: input.Kind, RetryKey: input.RetryKey}
+	n := Intent{CreatorID: creator, Kind: input.Kind, RetryKey: input.RetryKey}
 	switch input.Kind {
 	case DirectShipment:
-		if input.CounterpartyID != 2 && input.CounterpartyID != 3 {
+		if input.CounterpartyID < 2 || input.CounterpartyID > math.MaxInt16 {
 			return Intent{}, ErrInvalid
 		}
 		n.OriginID, n.ApproverID = 1, 1
 		n.DestinationID = input.CounterpartyID
 	case RequestStock:
-		if input.CounterpartyID < 1 || input.CounterpartyID > 3 || input.CounterpartyID == n.CreatorID {
+		if input.CounterpartyID < 1 || input.CounterpartyID > math.MaxInt16 || input.CounterpartyID == n.CreatorID {
 			return Intent{}, ErrInvalid
 		}
 		n.OriginID = input.CounterpartyID

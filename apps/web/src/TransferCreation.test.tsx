@@ -38,6 +38,20 @@ function harness(initial = authority()) {
 const add = () => screen.getByRole('button', { name: 'Añadir Modelo 1 L' });
 const flow = (value: string) => fireEvent.change(screen.getByLabelText('Tipo de transferencia'), { target: { value } });
 
+it('offers every metadata branch as a destination and preserves its physical source', async () => {
+  const expanded = { ...metadata, locations: [...metadata.locations, { id: 4, name: 'Sucursal C' }] };
+  const h = harness(authority(2, 1, 20));
+  const loader = vi.fn<typeof loadSourceInventory>(async source => ({ ...catalog(1), location: expanded.locations.find(l => l.id === source)! }));
+  render(<TransferCreation controller={h.controller} metadata={expanded} loader={loader} onBack={() => {}} />);
+  await waitFor(() => expect(add()).toBeEnabled());
+  expect(screen.getByRole('option', { name: 'Solicitar a Sucursal B' })).toHaveValue('requestOther');
+  expect(screen.getByRole('option', { name: 'Solicitar a Sucursal C' })).toHaveValue('request:4');
+  expect(screen.queryByRole('option', { name: 'Solicitar a Sucursal A' })).toBeNull();
+  flow('request:4');
+  await waitFor(() => expect(loader).toHaveBeenLastCalledWith(4, expect.any(Object)));
+  expect(screen.getByRole('heading', { name: 'Disponibilidad en Sucursal C' })).toBeVisible();
+});
+
 describe('W2 direct warehouse workspace', () => {
   it.each([2, 3])('creates destination %s only from an explicit immutable warehouse review', async destination => {
     const h = harness(authority(1)); const recovery = createTransferRecovery();

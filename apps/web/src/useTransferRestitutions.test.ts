@@ -48,7 +48,7 @@ function count() {
 function fixture(destination = false) {
   const authority: TransferAuthority = { epoch: 1, ready: true, sessionGeneration: 1, session: parseSession(JSON.stringify({
     authenticated: true, csrf_token: 'c'.repeat(43), identity: { account_id: destination ? 2 : 1, username: 'participant',
-      location: { id: destination ? 2 : 1, name: 'Location' } }, expires_at: '2030-01-01T00:00:00Z' })) };
+      display_name: 'Operador de restitución', must_change_password: false, location: { id: destination ? 2 : 1, name: 'Location' } }, expires_at: '2030-01-01T00:00:00Z' })) };
   const listeners = new Set<() => void>();
   const controller = { getTransferAuthority: () => authority, subscribeTransferInvalidation: (l: () => void) => { listeners.add(l); return () => { listeners.delete(l); }; },
     settleUnauthorized: vi.fn(async () => 'unavailable' as const) };

@@ -7,7 +7,7 @@ import type { DispatchFlight } from './transferDispatchRecovery';
 import type { ReceiptFlight } from './transferReceiptRecovery';
 import { createTransferAPI, TransferAPIError, type TransferCreateResult } from './transferAPI';
 import {
-  matchesReceiptInput, canonicalTransferInput, transferDetailPath, transferListPath, validateTransferActions,
+  validTransferLocation, matchesReceiptInput, canonicalTransferInput, transferDetailPath, transferListPath, validateTransferActions,
   type TransferReceiptInput, type TransferCounts, type TransferCreateInput, type TransferPage, type TransferQuery, type TransferRecord,
 } from './transferModel';
 
@@ -20,10 +20,10 @@ function sanitized(error: unknown, creating = false): TransferAPIError {
   return error instanceof TransferAPIError ? error : new TransferAPIError('invalid_response', null, creating);
 }
 function sessionIdentity(session: Session | null): string {
-  if (!session?.authenticated) return '';
+  if (!session?.authenticated || session.identity.must_change_password === true) return '';
   // Snapshot scalar values, not a mutable session reference. Never expose this tag.
   return JSON.stringify([session.csrf_token, session.identity.account_id, session.identity.username,
-    session.identity.location.id, session.identity.location.name, session.expires_at]);
+    session.identity.location.id, session.identity.location.name, session.identity.must_change_password, session.expires_at]);
 }
 function participant(record: TransferRecord, assigned: number) {
   if (record.origin_location_id !== assigned && record.destination_location_id !== assigned) throw new TransferAPIError('invalid_response', 200);
@@ -182,7 +182,7 @@ export function useTransfers({ controller, api: injectedAPI, listEnabled = false
     const before = controller.getTransferAuthority();
     if (!mounted.current || !before.ready || before.epoch !== epoch || sessionIdentity(before.session) !== identity || !before.session?.authenticated) throw new TransferAPIError('unauthenticated', null);
     const actor = before.session.identity.location.id;
-    if (![1, 2, 3].includes(actor)) throw new TransferAPIError('forbidden', null);
+    if (!validTransferLocation(actor)) throw new TransferAPIError('forbidden', null);
     let canonical: TransferCreateInput;
     try { canonical = canonicalTransferInput(input); } catch { throw new TransferAPIError('invalid_request', null); }
     if ((actor === 1) !== (canonical.kind === 'direct_shipment')) throw new TransferAPIError('forbidden', null);

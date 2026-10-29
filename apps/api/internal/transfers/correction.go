@@ -118,6 +118,9 @@ func (s *Store) correctCount(ctx context.Context, actor auth.Identity, id, varia
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	if err := checkAssignment(ctx, s.pool, actor); err != nil {
+		return CountOperation{}, err
+	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return CountOperation{}, fail(ctx)
@@ -208,6 +211,9 @@ func (s *Store) GetCountCorrections(ctx context.Context, actor auth.Identity, id
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	if err := checkAssignment(ctx, s.pool, actor); err != nil {
+		return CountCorrections{}, err
+	}
 	var lines, operations []byte
 	var status string
 	err := s.pool.QueryRow(ctx, countSnapshotSQL, id, actor.Location.ID).Scan(&status, &lines, &operations)
