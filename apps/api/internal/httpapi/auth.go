@@ -41,6 +41,7 @@ func compose(service *auth.Service, cfg config.Auth, store *inventory.Store, req
 	mux.HandleFunc("/api/auth/session", api.session)
 	mux.HandleFunc("/api/auth/login", api.login)
 	mux.HandleFunc("/api/auth/logout", api.logout)
+	mux.HandleFunc("/api/auth/password", api.password)
 	api.registerInventory(mux, store)
 	if requests != nil {
 		api.registerTransfers(mux, requests)
@@ -60,6 +61,16 @@ func compose(service *auth.Service, cfg config.Auth, store *inventory.Store, req
 		}
 		if broker != nil && !eventsPath(w, r) {
 			return
+		}
+		// Passive preflight restricts temporary sessions without renewing activity.
+		// Keep downstream readiness, invalid-cookie and mutation guards unchanged.
+		if r.URL.Path != "/api/auth/session" && r.URL.Path != "/api/auth/password" && r.URL.Path != "/api/auth/logout" && r.URL.Path != "/api/auth/login" {
+			if token, unique := readCookie(r, sessionCookie); unique && token != "" {
+				if session, _, err := service.Peek(r.Context(), token); err == nil && session.Identity.MustChangePassword {
+					failure(w, 403, "password_change_required")
+					return
+				}
+			}
 		}
 		mux.ServeHTTP(w, r)
 	})
@@ -159,6 +170,9 @@ func (a *API) session(w http.ResponseWriter, r *http.Request) {
 
 // Decode a small flat object explicitly to reject duplicates and unknown keys.
 func credentials(r *http.Request) (string, string, error) {
+	return credentialFields(r, "username", "password", false)
+}
+func credentialFields(r *http.Request, first, second string, required bool) (string, string, error) {
 	kind, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || kind != "application/json" {
 		return "", "", errors.New("invalid content type")
@@ -179,7 +193,7 @@ func credentials(r *http.Request) (string, string, error) {
 			return "", "", err
 		}
 		name, ok := key.(string)
-		if !ok || (name != "username" && name != "password") {
+		if !ok || (name != first && name != second) {
 			return "", "", errors.New("unknown field")
 		}
 		if _, exists := fields[name]; exists {
@@ -201,7 +215,10 @@ func credentials(r *http.Request) (string, string, error) {
 	if _, err := decoder.Token(); err != io.EOF {
 		return "", "", errors.New("trailing input")
 	}
-	return fields["username"], fields["password"], nil
+	if required && len(fields) != 2 {
+		return "", "", errors.New("missing field")
+	}
+	return fields[first], fields[second], nil
 }
 func (a *API) login(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "POST") || !a.GuardMutation(w, r) {
@@ -234,6 +251,36 @@ func (a *API) login(w http.ResponseWriter, r *http.Request) {
 	a.cookie(w, sessionCookie, token, int(auth.AbsoluteTTL.Seconds()), session.ExpiresAt)
 	a.cookie(w, preCookie, "", -1, time.Unix(1, 0))
 	respond(w, 200, map[string]any{"authenticated": true, "identity": session.Identity, "csrf_token": auth.CSRF(token), "expires_at": session.ExpiresAt})
+}
+func (a *API) password(w http.ResponseWriter, r *http.Request) {
+	if !method(w, r, "POST") || !a.GuardMutation(w, r) {
+		return
+	}
+	current, next, err := credentialFields(r, "current_password", "new_password", true)
+	if err != nil {
+		failure(w, 400, "invalid_request")
+		return
+	}
+	token, _ := readCookie(r, sessionCookie)
+	err = a.service.ChangePassword(r.Context(), token, current, next)
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrSession):
+			failure(w, 401, "unauthenticated")
+		case errors.Is(err, auth.ErrCredentials):
+			failure(w, 401, "invalid_credentials")
+		case errors.Is(err, auth.ErrPassword):
+			failure(w, 400, "invalid_request")
+		case errors.Is(err, auth.ErrLimited):
+			w.Header().Set("Retry-After", "60")
+			failure(w, 429, "rate_limited")
+		default:
+			failure(w, 503, "service_unavailable")
+		}
+		return
+	}
+	a.cookie(w, sessionCookie, "", -1, time.Unix(1, 0))
+	w.WriteHeader(204)
 }
 func (a *API) logout(w http.ResponseWriter, r *http.Request) {
 	if !method(w, r, "POST") || !a.GuardMutation(w, r) {

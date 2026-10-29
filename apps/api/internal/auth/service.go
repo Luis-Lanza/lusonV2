@@ -35,9 +35,11 @@ type Location struct {
 	Name string `json:"name"`
 }
 type Identity struct {
-	AccountID int      `json:"account_id"`
-	Username  string   `json:"username"`
-	Location  Location `json:"location"`
+	DisplayName        string   `json:"display_name"`
+	MustChangePassword bool     `json:"must_change_password"`
+	AccountID          int      `json:"account_id"`
+	Username           string   `json:"username"`
+	Location           Location `json:"location"`
 }
 type Session struct {
 	Identity  Identity
@@ -130,8 +132,9 @@ func (s *Service) Login(ctx context.Context, user, password, ip, previous string
 	}
 	var identity Identity
 	var encoded string
-	err := s.pool.QueryRow(ctx, `SELECT a.location_id,a.username,l.id,l.name,a.password_hash
- FROM auth_accounts a JOIN locations l ON l.id=a.location_id WHERE a.username=$1`, user).Scan(&identity.AccountID, &identity.Username, &identity.Location.ID, &identity.Location.Name, &encoded)
+	var version int64
+	err := s.pool.QueryRow(ctx, `SELECT a.id,a.username,l.id,l.name,a.display_name,a.must_change_password,a.password_hash,a.authority_version
+ FROM auth_accounts a JOIN locations l ON l.id=a.location_id WHERE a.username=$1 AND a.enabled`, user).Scan(&identity.AccountID, &identity.Username, &identity.Location.ID, &identity.Location.Name, &identity.DisplayName, &identity.MustChangePassword, &encoded, &version)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, "", err
 	}
@@ -159,6 +162,17 @@ func (s *Service) Login(ctx context.Context, user, password, ip, previous string
 		return Session{}, "", err
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
+	// Serialize against account lifecycle changes after the expensive verification.
+	var latestHash string
+	var latestVersion int64
+	var enabled bool
+	err = tx.QueryRow(ctx, `SELECT password_hash,authority_version,enabled FROM auth_accounts WHERE id=$1 FOR UPDATE`, identity.AccountID).Scan(&latestHash, &latestVersion, &enabled)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (!enabled || latestHash != encoded || latestVersion != version)) {
+		return Session{}, "", ErrCredentials
+	}
+	if err != nil {
+		return Session{}, "", err
+	}
 	if validToken(previous) {
 		if _, err := tx.Exec(ctx, "UPDATE auth_sessions SET revoked_at=$2 WHERE token_hash=$1 AND revoked_at IS NULL", tokenHash(previous), now); err != nil {
 			return Session{}, "", err
@@ -168,7 +182,7 @@ func (s *Service) Login(ctx context.Context, user, password, ip, previous string
 	if _, err := tx.Exec(ctx, `DELETE FROM auth_sessions WHERE token_hash IN (SELECT token_hash FROM auth_sessions WHERE absolute_deadline<$1 ORDER BY absolute_deadline LIMIT 100)`, now.Add(-24*time.Hour)); err != nil {
 		return Session{}, "", err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO auth_sessions(token_hash,account_id,created_at,last_seen_at,absolute_deadline,idle_deadline) VALUES($1,$2,$3,$3,$4,$5)`, tokenHash(token), identity.AccountID, now, now.Add(AbsoluteTTL), now.Add(IdleTTL)); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO auth_sessions(token_hash,account_id,created_at,last_seen_at,absolute_deadline,idle_deadline,authority_version) VALUES($1,$2,$3,$3,$4,$5,$6)`, tokenHash(token), identity.AccountID, now, now.Add(AbsoluteTTL), now.Add(IdleTTL), version); err != nil {
 		return Session{}, "", err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -189,9 +203,10 @@ func (s *Service) Current(ctx context.Context, token string) (Session, error) {
  last_seen_at=CASE WHEN last_seen_at <= $2-$3::interval THEN $2 ELSE last_seen_at END,
  idle_deadline=CASE WHEN last_seen_at <= $2-$3::interval THEN LEAST(absolute_deadline,$2+$4::interval) ELSE idle_deadline END
  WHERE token_hash=$1 AND revoked_at IS NULL AND absolute_deadline>$2 AND idle_deadline>$2
+ AND EXISTS (SELECT 1 FROM auth_accounts a WHERE a.id=auth_sessions.account_id AND a.enabled AND a.authority_version=auth_sessions.authority_version)
  RETURNING account_id,absolute_deadline)
- SELECT a.location_id,a.username,l.id,l.name,live.absolute_deadline FROM live
- JOIN auth_accounts a ON a.location_id=live.account_id JOIN locations l ON l.id=a.location_id`, tokenHash(token), now, "60 seconds", "1800 seconds").Scan(&session.Identity.AccountID, &session.Identity.Username, &session.Identity.Location.ID, &session.Identity.Location.Name, &session.ExpiresAt)
+ SELECT a.id,a.username,l.id,l.name,a.display_name,a.must_change_password,live.absolute_deadline FROM live
+ JOIN auth_accounts a ON a.id=live.account_id JOIN locations l ON l.id=a.location_id`, tokenHash(token), now, "60 seconds", "1800 seconds").Scan(&session.Identity.AccountID, &session.Identity.Username, &session.Identity.Location.ID, &session.Identity.Location.Name, &session.Identity.DisplayName, &session.Identity.MustChangePassword, &session.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, ErrSession
 	}
@@ -215,14 +230,15 @@ func (s *Service) Peek(ctx context.Context, token string) (Session, time.Time, e
 	defer cancel()
 	var session Session
 	var deadline time.Time
-	err := s.pool.QueryRow(ctx, `SELECT a.location_id,a.username,l.id,l.name,
+	err := s.pool.QueryRow(ctx, `SELECT a.id,a.username,l.id,l.name,a.display_name,a.must_change_password,
  s.absolute_deadline,LEAST(s.idle_deadline,s.absolute_deadline)
- FROM auth_sessions s JOIN auth_accounts a ON a.location_id=s.account_id
+ FROM auth_sessions s JOIN auth_accounts a ON a.id=s.account_id
  JOIN locations l ON l.id=a.location_id
  WHERE s.token_hash=$1 AND s.revoked_at IS NULL
+ AND a.enabled AND a.authority_version=s.authority_version
  AND s.absolute_deadline>$2 AND s.idle_deadline>$2`, tokenHash(token), s.now().UTC()).Scan(
 		&session.Identity.AccountID, &session.Identity.Username, &session.Identity.Location.ID,
-		&session.Identity.Location.Name, &session.ExpiresAt, &deadline)
+		&session.Identity.Location.Name, &session.Identity.DisplayName, &session.Identity.MustChangePassword, &session.ExpiresAt, &deadline)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Session{}, time.Time{}, ErrSession
 	}
@@ -266,6 +282,10 @@ func (s *Service) Middleware(next http.Handler) http.Handler {
 			} else {
 				http.Error(w, "service unavailable", 503)
 			}
+			return
+		}
+		if session.Identity.MustChangePassword {
+			http.Error(w, "password change required", http.StatusForbidden)
 			return
 		}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), identityKey{}, session.Identity)))

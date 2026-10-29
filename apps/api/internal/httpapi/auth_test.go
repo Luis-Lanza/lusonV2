@@ -50,6 +50,10 @@ func TestAuthPostgres(t *testing.T) {
 	if err := bootstrap.Provision(ctx, p, credentials); err != nil {
 		t.Fatal(err)
 	}
+	// This legacy suite exercises ordinary operational sessions.
+	if _, err := p.Exec(ctx, `UPDATE auth_accounts SET must_change_password=false`); err != nil {
+		t.Fatal(err)
+	}
 	request := func(h http.Handler, method, path, body, csrf, origin string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(method, path, strings.NewReader(body))

@@ -146,7 +146,11 @@ func eventCapabilities(w http.ResponseWriter) bool {
 func (a *API) eventSession(r *http.Request, token string) (auth.Session, time.Time, error) {
 	ctx, cancel := context.WithTimeout(r.Context(), eventQueryBudget)
 	defer cancel()
-	return a.service.Peek(ctx, token)
+	session, deadline, err := a.service.Peek(ctx, token)
+	if err == nil && session.Identity.MustChangePassword {
+		return auth.Session{}, time.Time{}, auth.ErrSession
+	}
+	return session, deadline, err
 }
 func eventAuthFailure(w http.ResponseWriter, err error) {
 	if errors.Is(err, auth.ErrSession) {

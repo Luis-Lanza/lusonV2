@@ -277,6 +277,10 @@ func transferFixture(t *testing.T) *transferHTTPFixture {
 	if bootstrap.Provision(ctx, p, creds) != nil {
 		t.Fatal("transfer HTTP test provisioning failed")
 	}
+	// These fixtures model operators who completed their initial password change.
+	if _, err := p.Exec(ctx, `UPDATE auth_accounts SET must_change_password=false`); err != nil {
+		t.Fatal("transfer HTTP operational fixture setup failed")
+	}
 	clock := &atomic.Int64{}
 	clock.Store(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC).UnixNano())
 	svc, err := auth.New(p, func() time.Time { return time.Unix(0, clock.Load()).UTC() })

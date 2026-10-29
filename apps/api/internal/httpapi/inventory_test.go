@@ -41,6 +41,10 @@ func TestInventoryHTTPPostgres(t *testing.T) {
 	if bootstrap.Provision(ctx, p, creds) != nil {
 		t.Fatal("private test provisioning")
 	}
+	// Inventory contracts exercise sessions after the mandatory password change.
+	if _, err := p.Exec(ctx, `UPDATE auth_accounts SET must_change_password=false`); err != nil {
+		t.Fatal("inventory operational fixture setup")
+	}
 	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 	svc, err := auth.New(p, func() time.Time { return now })
 	if err != nil {
