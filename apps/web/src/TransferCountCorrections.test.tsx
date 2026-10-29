@@ -234,50 +234,51 @@ it.each(['accept', 'reject'] as const)('T4c preserves submitting only the freshl
     variant_id: 201, expected_revision: '4', operation_key: newKey, reason: raw });
   expect(f.corrections.refresh).not.toHaveBeenCalled();
 });
+const staleReviewMutations = ['owner', 'request', 'record', 'snapshot', 'quantity', 'reason', 'key', 'actual', 'credit', 'workflow', 'applied', 'busy', 'mask', 'uncertain', 'initiator', 'base', 'baseCredit', 'stamp', 'removed', 'requestPin', 'membership'] as const;
+// 2 actions × 2 render modes × 2 operations × 21 mutations = 168 independent cases.
 it.each((['accept', 'reject'] as const).flatMap(action => [false, true].flatMap(rerender =>
-  ['Editar motivo', action === 'accept' ? 'Confirmar aceptación' : 'Confirmar rechazo'].map(operation =>
-    ({ action, rerender, operation })))))('refuses stale $action review (render=$rerender) at $operation', ({ action, rerender, operation }) => {
-    for (const mutation of ['owner', 'request', 'record', 'snapshot', 'quantity', 'reason', 'key', 'actual', 'credit', 'workflow', 'applied', 'busy', 'mask', 'uncertain', 'initiator', 'base', 'baseCredit', 'stamp', 'removed', 'requestPin', 'membership']) {
-      const f = fixture(3); const pending = proposal(); const confirmed = { ...line(), proposals: [pending] };
-      Object.assign(f.corrections.snapshot!, { lines: [confirmed] }); const view = render(<TransferCountCorrections {...f.props} />);
-      fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
-      fireEvent.click(screen.getByRole('button', { name: action === 'accept' ? 'Aceptar propuesta' : 'Rechazar propuesta' }));
-      fireEvent.change(decisionReason(), { target: { value: '  Private raw  ' } }); const modal = review();
-      const button = within(modal).getByRole('button', { name: operation });
-      const key = vi.spyOn(crypto, 'getRandomValues');
-      if (mutation === 'owner') f.authority.sessionGeneration = 2;
-      if (mutation === 'request') Object.assign(f.props.record, { id: '2' });
-      if (mutation === 'record') {
-        if (rerender) f.props.record = { ...f.props.record };
-        else Object.assign(f.props.record, { status: 'approved' });
-      }
-      if (mutation === 'snapshot') f.corrections.snapshot = { ...f.corrections.snapshot! };
-      if (mutation === 'quantity') Object.assign(pending, { actual_quantity: 9n });
-      if (mutation === 'reason') Object.assign(pending, { reason: 'Replacement' });
-      if (mutation === 'key') Object.assign(pending, { operation_key: 'replacement_key' });
-      if (mutation === 'actual') confirmed.effective_actual++;
-      if (mutation === 'credit') confirmed.effective_credit++;
-      if (mutation === 'workflow') confirmed.workflow_revision++;
-      if (mutation === 'applied') confirmed.applied_revision++;
-      if (mutation === 'busy') f.corrections.busy = true;
-      if (mutation === 'mask') f.corrections.masked = true;
-      if (mutation === 'uncertain') f.corrections.attempts = [attempt('uncertain')];
-      if (mutation === 'initiator') Object.assign(pending, { initiator_location_id: 3 });
-      if (mutation === 'base') Object.assign(pending, { base_revision: 2n });
-      if (mutation === 'baseCredit') Object.assign(pending, { base_credit: 4n });
-      if (mutation === 'stamp') Object.assign(pending, { recorded_at: 'changed' });
-      if (mutation === 'removed') confirmed.proposals = [];
-      if (mutation === 'requestPin') Object.assign(f.corrections.snapshot!, { request_id: 2n });
-      if (mutation === 'membership' && f.props.record.status === 'received') Object.assign(f.props.record.receipt, { items: [] });
-      if (rerender) {
-        view.rerender(<TransferCountCorrections {...f.props} />);
-        expect(screen.queryByRole('button', { name: 'Editar motivo' }), mutation).toBeNull();
-        expect(screen.queryByRole('button', { name: /Confirmar (aceptación|rechazo)/ }), mutation).toBeNull();
-      } else fireEvent.click(button);
-      expect(screen.queryByRole('textbox'), mutation).toBeNull();
-      expect(f.corrections.decide, mutation).not.toHaveBeenCalled(); expect(key, mutation).not.toHaveBeenCalled();
-      expect(f.corrections.refresh, mutation).not.toHaveBeenCalled(); key.mockRestore(); view.unmount();
+  ['Editar motivo', action === 'accept' ? 'Confirmar aceptación' : 'Confirmar rechazo'].flatMap(operation =>
+    staleReviewMutations.map(mutation => ({ action, rerender, operation, mutation }))))))(
+  'refuses stale $action review (render=$rerender) at $operation [mutation=$mutation]', ({ action, rerender, operation, mutation }) => {
+    const f = fixture(3); const pending = proposal(); const confirmed = { ...line(), proposals: [pending] };
+    Object.assign(f.corrections.snapshot!, { lines: [confirmed] }); const view = render(<TransferCountCorrections {...f.props} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+    fireEvent.click(screen.getByRole('button', { name: action === 'accept' ? 'Aceptar propuesta' : 'Rechazar propuesta' }));
+    fireEvent.change(decisionReason(), { target: { value: '  Private raw  ' } }); const modal = review();
+    const button = within(modal).getByRole('button', { name: operation });
+    const key = vi.spyOn(crypto, 'getRandomValues');
+    if (mutation === 'owner') f.authority.sessionGeneration = 2;
+    if (mutation === 'request') Object.assign(f.props.record, { id: '2' });
+    if (mutation === 'record') {
+      if (rerender) f.props.record = { ...f.props.record };
+      else Object.assign(f.props.record, { status: 'approved' });
     }
+    if (mutation === 'snapshot') f.corrections.snapshot = { ...f.corrections.snapshot! };
+    if (mutation === 'quantity') Object.assign(pending, { actual_quantity: 9n });
+    if (mutation === 'reason') Object.assign(pending, { reason: 'Replacement' });
+    if (mutation === 'key') Object.assign(pending, { operation_key: 'replacement_key' });
+    if (mutation === 'actual') confirmed.effective_actual++;
+    if (mutation === 'credit') confirmed.effective_credit++;
+    if (mutation === 'workflow') confirmed.workflow_revision++;
+    if (mutation === 'applied') confirmed.applied_revision++;
+    if (mutation === 'busy') f.corrections.busy = true;
+    if (mutation === 'mask') f.corrections.masked = true;
+    if (mutation === 'uncertain') f.corrections.attempts = [attempt('uncertain')];
+    if (mutation === 'initiator') Object.assign(pending, { initiator_location_id: 3 });
+    if (mutation === 'base') Object.assign(pending, { base_revision: 2n });
+    if (mutation === 'baseCredit') Object.assign(pending, { base_credit: 4n });
+    if (mutation === 'stamp') Object.assign(pending, { recorded_at: 'changed' });
+    if (mutation === 'removed') confirmed.proposals = [];
+    if (mutation === 'requestPin') Object.assign(f.corrections.snapshot!, { request_id: 2n });
+    if (mutation === 'membership' && f.props.record.status === 'received') Object.assign(f.props.record.receipt, { items: [] });
+    if (rerender) {
+      view.rerender(<TransferCountCorrections {...f.props} />);
+      expect(screen.queryByRole('button', { name: 'Editar motivo' }), mutation).toBeNull();
+      expect(screen.queryByRole('button', { name: /Confirmar (aceptación|rechazo)/ }), mutation).toBeNull();
+    } else fireEvent.click(button);
+    expect(screen.queryByRole('textbox'), mutation).toBeNull();
+    expect(f.corrections.decide, mutation).not.toHaveBeenCalled(); expect(key, mutation).not.toHaveBeenCalled();
+    expect(f.corrections.refresh, mutation).not.toHaveBeenCalled(); key.mockRestore(); view.unmount();
 });
 it.each([
   { actual: 1n, credit: 1n, delta: '-1', unexpected: false },
