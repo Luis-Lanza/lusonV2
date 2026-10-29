@@ -15,8 +15,8 @@ func TestDR1VerifierMigrationUpgrade(t *testing.T) {
 	defer cancel()
 	p := testpg.Open(t)
 	all, err := versions()
-	if err != nil || len(all) != 13 {
-		t.Fatal("expected thirteen embedded migrations", err)
+	if err != nil || len(all) < 13 || all[12].version != 13 || all[12].name != "013_transfer_dispatch_reconciliation.sql" {
+		t.Fatal("expected reconciliation migration in embedded set", err)
 	}
 	err = Locked(ctx, p, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `CREATE TABLE schema_migrations (
@@ -61,7 +61,7 @@ func TestDR1VerifierMigrationUpgrade(t *testing.T) {
 		t.Fatal("replay changed historical tracking")
 	}
 	var n int
-	if err := p.QueryRow(ctx, "SELECT count(*) FROM schema_migrations").Scan(&n); err != nil || n != 13 {
+	if err := p.QueryRow(ctx, "SELECT count(*) FROM schema_migrations").Scan(&n); err != nil || n != len(all) {
 		t.Fatal("upgrade tracker", n, err)
 	}
 }

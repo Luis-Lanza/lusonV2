@@ -49,7 +49,7 @@ func TestDRDiscoveryHTTP(t *testing.T) {
 						t.Errorf("counterpart page lost canonical header/reason: %s", page)
 					} else {
 						var listed transferDTO
-						if json.Unmarshal(records[0], &listed) != nil || !reflect.DeepEqual(record, listed) {
+						if json.Unmarshal(records[0], &listed) != nil || !transferListDTOsEqual(t, []transferDTO{listed}, []transferDTO{record}) {
 							t.Error("list changed immutable receipt")
 						}
 					}

@@ -12,6 +12,17 @@ separate immutable evidence; loss resolution, complementary deliveries and
 surplus incorporation remain excluded. Direct-shipment UI is a separate unit.
 Cancellation UI and human acceptance remain separate delivery steps.
 
+## Personal authorship
+
+Detail and full-transfer mutation responses may additionally contain `activity`:
+immutable personal actor/name/location/time snapshots for new authenticated
+operations. Lists deliberately omit this growing history. Workflow mutation and
+history DTOs retain their existing exact schemas; their personal attribution is
+available through the participant-private transfer detail. Missing activity means
+no personal evidence, never a user inferred from the current location assignment.
+See [personal transfer activity](personal-transfer-activity.md) for the exact
+schema, action labels, replay, legacy and transaction guarantees.
+
 ## Quick path
 
 1. Establish a session through the existing same-origin authentication API.
@@ -403,8 +414,9 @@ surplus incorporation or unexpected-stock incorporation.
 Either authenticated **assigned physical endpoint** may propose. Proposal records
 initiator consent to that exact revision; only the other physical endpoint may
 accept or reject. Consulted inventory location and client actor fields grant no
-authority. Accounts assigned to the same physical location are the same Store
-actor; frontend account/owner fencing is separate from this backend contract.
+authority. Accounts assigned to the same physical location share physical responsibility
+and durable retry identities, but retain distinct personal authorship in transfer
+`activity`. Frontend account/owner fencing remains separate.
 
 There is one pending proposal per variant. Only its initiator may replace it,
 creating a new revision and fresh consent (never inheriting counterparty consent).
@@ -757,8 +769,9 @@ server decision time encoded as canonical UTC RFC3339Nano. Both keys are omitted
 for Pending, never emitted as null. Original fields, immutable items, exact
 numeric strings and creation timestamps retain their previous encodings.
 
-List, detail and identical original creation replay use the same full DTO, not
-summaries or asymmetric outcomes. Reordered original carts replay with 200 and
+List, detail and identical original creation replay retain the same full business
+fields, not summaries or asymmetric outcomes. Only detail/full-transfer mutation
+responses include optional personal `activity`; lists omit that history. Reordered original carts replay with 200 and
 `Location: /api/transfers/{original-id}`, even after a decision or exhausted
 availability. Detail returns 200 without a Location requirement; new creation
 remains 201. Changed-cart replay remains 409; missing/foreign detail stays 404.
@@ -813,6 +826,8 @@ Only explicit snake_case DTOs are serialized:
 - Cancelled record additionally: `cancellation_location_id`, `cancelled_at`;
   original decision fields when cancellation followed approval, or always for
   direct shipments authorized at creation.
+- Detail/full-transfer mutation response only: optional `activity`, described in
+  [personal transfer activity](personal-transfer-activity.md); omitted if unknown.
 - Item: `variant_id`, `brand`, `model`, `capacity_ah`, `polarity`, `quantity`.
 - Page: `page`, `page_size`, `status`, `total_count`, `records`, `requires_action`, `required_actions`.
 
@@ -830,8 +845,9 @@ Request IDs, quantities, decimal capacities and total_count are JSON **strings**
 never floating-point conversions. Bounded location/variant/page values are JSON
 integer numbers. Timestamps are canonical UTC RFC3339 with only necessary
 fractional precision. Exact catalog model, Ah and L/R data are preserved. Creation retry
-keys, hashes, creation XIDs, account usernames and authentication metadata are
-never transfer-record fields. Correction DTOs separately expose their durable
+keys, hashes, creation XIDs and authentication/session secrets are never
+transfer-record fields. The optional `activity.actor` contains only the immutable
+account ID, username and display-name snapshot, not current account authority. Correction DTOs separately expose their durable
 `operation_key` for participant-private recovery. Pending creation/replay returns the same public
 record and `Location: /api/transfers/{id}`; all reads use the same full record DTO.
 

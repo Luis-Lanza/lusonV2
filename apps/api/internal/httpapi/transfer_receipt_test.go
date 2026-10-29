@@ -54,7 +54,7 @@ func receiptHTTPProof(t *testing.T, f *transferHTTPFixture, transit transferDTO,
 	}
 	return func(w *httptest.ResponseRecorder) {
 		got := transferObject(t, w, 200)
-		if len(got) != 21 || string(got["status"]) != `"received"` {
+		if transferBusinessFieldCount(t, got) != 21 || string(got["status"]) != `"received"` {
 			t.Fatal("incomplete received wire record")
 		}
 		var result transferDTO
@@ -68,7 +68,8 @@ func receiptHTTPProof(t *testing.T, f *transferHTTPFixture, transit transferDTO,
 		}
 		want := transit
 		want.Status, want.ReceiptLocationID, want.ReceivedAt, want.Receipt = "received", result.ReceiptLocationID, result.ReceivedAt, result.Receipt
-		if !reflect.DeepEqual(want, result) {
+		assertTransferActivityAppend(t, transit, result, "receive", transit.DestinationLocationID)
+		if !reflect.DeepEqual(transferBusinessDTO(want), transferBusinessDTO(result)) {
 			t.Fatal("receipt changed original items/decision/dispatch")
 		}
 		gotOriginal, gotAllocations := decisionRows(t, f, transit.ID)
@@ -222,7 +223,7 @@ func TestR1ReceiveHTTP(t *testing.T) {
 			for _, actor := range []int{transit.DestinationLocationID, transit.OriginLocationID} {
 				page := transferObject(t, f.request(t, actor, "GET", "/api/transfers?status=received", ""), 200)
 				var records []map[string]json.RawMessage
-				if json.Unmarshal(page["records"], &records) != nil || string(page["total_count"]) != `"1"` || len(records) != 1 || !reflect.DeepEqual(records[0], want) {
+				if json.Unmarshal(page["records"], &records) != nil || string(page["total_count"]) != `"1"` || len(records) != 1 || !transferListedObjectEqual(t, records[0], want) {
 					t.Fatal("received list differs from detail")
 				}
 			}

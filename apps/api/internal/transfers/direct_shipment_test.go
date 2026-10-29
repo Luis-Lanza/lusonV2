@@ -216,7 +216,7 @@ func TestW01DirectShipmentLifecycle(t *testing.T) {
 						t.Fatal("terminal detail recovery changed history")
 					}
 					page, err := s.List(ctx, actor(id), transfers.Query{Status: terminal})
-					if err != nil || page.Total != 1 || len(page.Records) != 1 || !reflect.DeepEqual(page.Records[0], current) {
+					if err != nil || page.Total != 1 || len(page.Records) != 1 || !t10ListEqual(t, page.Records, []transfers.Request{current}) {
 						t.Fatal("terminal list lost warehouse intent")
 					}
 					counts, err := s.Counts(ctx, actor(id))

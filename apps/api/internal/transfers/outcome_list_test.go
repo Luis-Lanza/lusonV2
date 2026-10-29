@@ -42,7 +42,12 @@ func TestA04OutcomeListFlows(t *testing.T) {
 				}
 				immutable := want
 				immutable.Status, immutable.DecisionLocationID, immutable.DecidedAt = "pending", nil, nil
-				if !reflect.DeepEqual(immutable, original) || want.DecisionLocationID == nil || *want.DecisionLocationID != original.Approver.ID || want.DecidedAt == nil || want.DecidedAt.Before(original.CreatedAt) || len(want.Items) != 2 {
+				action := "approve"
+				if status == "rejected" {
+					action = "reject"
+				}
+				t10ActionAppend(t, original, want, action, original.Approver.ID)
+				if !reflect.DeepEqual(t10BusinessRequest(immutable), t10BusinessRequest(original)) || want.DecisionLocationID == nil || *want.DecisionLocationID != original.Approver.ID || want.DecidedAt == nil || want.DecidedAt.Before(original.CreatedAt) || len(want.Items) != 2 {
 					t.Fatal("outcome lost immutable items/actor/time")
 				}
 				before := outcomeSnapshot(t, ctx, p)
@@ -64,12 +69,12 @@ func TestA04OutcomeListFlows(t *testing.T) {
 						if visible && selected == "all" {
 							records = append(records, pending, want)
 						}
-						if page.Status != selected || page.Total != int64(len(records)) || !reflect.DeepEqual(page.Records, records) {
+						if page.Status != selected || page.Total != int64(len(records)) || !t10ListEqual(t, page.Records, records) {
 							t.Error("selected status participant list/count mismatch")
 						}
 						if visible && selected == status {
 							detail, err := s.Get(ctx, actor(participant), original.ID)
-							if err != nil || !reflect.DeepEqual(detail, page.Records[0]) {
+							if err != nil || !t10ListEqual(t, page.Records, []transfers.Request{detail}) {
 								t.Fatal("list and detail disagree")
 							}
 						}
@@ -121,7 +126,7 @@ func TestA04OutcomeListPagination(t *testing.T) {
 				t.Errorf("terminal paginated list rejected: %v", err)
 				continue
 			}
-			if got.Status != status || got.Total != 51 || got.Page != tc.page || got.PageSize != tc.size || !reflect.DeepEqual(got.Records, want[tc.first:tc.last]) {
+			if got.Status != status || got.Total != 51 || got.Page != tc.page || got.PageSize != tc.size || !t10ListEqual(t, got.Records, want[tc.first:tc.last]) {
 				t.Error("terminal total/order/complete page incorrect")
 			}
 			private, err := s.List(ctx, actor(3), transfers.Query{Page: tc.page, PageSize: tc.size, Status: status})
@@ -138,7 +143,7 @@ func TestA04OutcomeListPagination(t *testing.T) {
 				}
 				first := min(int((pageNumber-1)*50), len(visible))
 				last := min(first+50, len(visible))
-				if err != nil || got.Status != "all" || got.Total != int64(len(visible)) || !reflect.DeepEqual(got.Records, visible[first:last]) {
+				if err != nil || got.Status != "all" || got.Total != int64(len(visible)) || !t10ListEqual(t, got.Records, visible[first:last]) {
 					t.Fatal("all pagination exposed private records or changed count/order")
 				}
 			}
@@ -223,11 +228,11 @@ func TestA04OutcomeListSnapshot(t *testing.T) {
 			close(trace.resume)
 			got := <-done
 			joined = true
-			if got.err != nil || got.page.Total != 1 || !reflect.DeepEqual(got.page.Records, []transfers.Request{want}) {
+			if got.err != nil || got.page.Total != 1 || !t10ListEqual(t, got.page.Records, []transfers.Request{want}) {
 				t.Fatal("terminal count/IDs/load mixed snapshots")
 			}
 			fresh, err := s.List(ctx, actor(1), transfers.Query{Status: status})
-			if err != nil || fresh.Total != 2 || !reflect.DeepEqual(fresh.Records, []transfers.Request{secondOutcome, want}) {
+			if err != nil || fresh.Total != 2 || !t10ListEqual(t, fresh.Records, []transfers.Request{secondOutcome, want}) {
 				t.Fatal("fresh terminal snapshot missed commit")
 			}
 			trace.mu.Lock()

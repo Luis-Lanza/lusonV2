@@ -44,7 +44,8 @@ func TestC01CancellationStore(t *testing.T) {
 				}
 				restored := got
 				restored.Status, restored.CancellationLocationID, restored.CancelledAt = original.Status, nil, nil
-				if !reflect.DeepEqual(restored, original) {
+				t10ActionAppend(t, original, got, "cancel", original.Creator.ID)
+				if !reflect.DeepEqual(t10BusinessRequest(restored), t10BusinessRequest(original)) {
 					t.Fatal("cancellation changed immutable payload or original approval history")
 				}
 				for i := range before {
@@ -74,7 +75,7 @@ func TestC01CancellationStore(t *testing.T) {
 					if visible {
 						want = 1
 					}
-					if err != nil || page.Total != want || int64(len(page.Records)) != want || (visible && !reflect.DeepEqual(page.Records[0], got)) {
+					if err != nil || page.Total != want || int64(len(page.Records)) != want || (visible && !t10ListEqual(t, page.Records, []transfers.Request{got})) {
 						t.Fatal("cancelled filter lost participant-scoped history")
 					}
 					counts, err := s.Counts(ctx, actor(participant))

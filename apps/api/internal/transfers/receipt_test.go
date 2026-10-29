@@ -85,7 +85,8 @@ func TestR1ReceiptStore(t *testing.T) {
 			}
 			want := transit
 			want.Status, want.ReceiptLocationID, want.ReceivedAt, want.Receipt = "received", got.ReceiptLocationID, got.ReceivedAt, wantReceipt
-			if !reflect.DeepEqual(got, want) {
+			t10ActionAppend(t, transit, got, "receive", transit.Destination.ID)
+			if !reflect.DeepEqual(t10BusinessRequest(got), t10BusinessRequest(want)) {
 				t.Fatal("receipt changed immutable items/approval/dispatch")
 			}
 			for i := range stock {
@@ -114,7 +115,7 @@ func TestR1ReceiptStore(t *testing.T) {
 					t.Fatal("participant detail recovery", err)
 				}
 				page, err := s.List(ctx, actor(participant), transfers.Query{Status: "received"})
-				if err != nil || page.Total != 1 || len(page.Records) != 1 || !reflect.DeepEqual(got, page.Records[0]) {
+				if err != nil || page.Total != 1 || len(page.Records) != 1 || !t10ListEqual(t, page.Records, []transfers.Request{got}) {
 					t.Fatal("received page recovery", err)
 				}
 				counts, err := s.Counts(ctx, actor(participant))

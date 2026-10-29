@@ -115,7 +115,7 @@ func TestDR1SuccessiveAgreement(t *testing.T) {
 			if original != r2Original(t, ctx, p) {
 				t.Fatal("reconciliation mutated sealed historical evidence")
 			}
-			if got, err := s.Get(ctx, actor(r.Origin.ID), r.ID); err != nil || !reflect.DeepEqual(got, r) {
+			if got, err := s.Get(ctx, actor(r.Origin.ID), r.ID); err != nil || !t10WorkflowDetailEqual(t, got, r) {
 				t.Fatal("original public detail changed", err)
 			}
 			// Historical exact retries must not recompute stock from today's D/C.

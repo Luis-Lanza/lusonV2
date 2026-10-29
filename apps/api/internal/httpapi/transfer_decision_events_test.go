@@ -74,7 +74,7 @@ func decisionLiveViews(t *testing.T, f *transferHTTPFixture, server *httptest.Se
 			if json.Unmarshal(page["records"], &rows) != nil || json.Unmarshal(page["total_count"], &total) != nil || total != expected || fmt.Sprint(len(rows)) != expected {
 				t.Fatal("participant SSE status-list refetch has incorrect exact total")
 			}
-			if expected == "1" && !reflect.DeepEqual(rows[0], want) {
+			if expected == "1" && !transferListedObjectEqual(t, rows[0], want) {
 				t.Fatal("SSE list did not retain original full immutable payload")
 			}
 		}

@@ -128,7 +128,7 @@ func (s *Store) reconcileDispatch(ctx context.Context, actor auth.Identity, id, 
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.beginPersonal(ctx, actor)
 	if err != nil {
 		return DispatchReconciliationOperation{}, fail(ctx)
 	}

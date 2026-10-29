@@ -109,7 +109,7 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q Query) (Page, e
 		return Page{}, fail(ctx)
 	}
 	for _, id := range ids {
-		r, err := load(ctx, tx, actor.Location.ID, id)
+		r, err := load(ctx, tx, actor.Location.ID, id, false)
 		if err != nil {
 			return Page{}, err
 		}

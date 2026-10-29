@@ -157,7 +157,7 @@ func TestA01bPendingFence(t *testing.T) {
 						check()
 					}
 					total, records := transferWirePage(t, f.request(t, participant, "GET", "/api/transfers", ""))
-					if (visible && (total != 1 || len(records) != 1 || !reflect.DeepEqual(records[0], pending))) || (!visible && (total != 0 || len(records) != 0)) {
+					if (visible && (total != 1 || len(records) != 1 || !transferListDTOsEqual(t, records, []transferDTO{pending}))) || (!visible && (total != 0 || len(records) != 0)) {
 						t.Fatal("terminal included in Pending list/count")
 					}
 					check()
@@ -180,7 +180,7 @@ func TestA01bPendingFence(t *testing.T) {
 					check()
 					page := transferObject(t, f.request(t, participant, "GET", "/api/transfers?status="+status, ""), 200)
 					var terminalRecords []map[string]json.RawMessage
-					if json.Unmarshal(page["records"], &terminalRecords) != nil || terminalRecords == nil || string(page["status"]) != fmt.Sprintf("%q", status) || (visible && (string(page["total_count"]) != `"1"` || len(terminalRecords) != 1 || !reflect.DeepEqual(terminalRecords[0], want))) || (!visible && (string(page["total_count"]) != `"0"` || len(terminalRecords) != 0)) {
+					if json.Unmarshal(page["records"], &terminalRecords) != nil || terminalRecords == nil || string(page["status"]) != fmt.Sprintf("%q", status) || (visible && (string(page["total_count"]) != `"1"` || len(terminalRecords) != 1 || !transferListedObjectEqual(t, terminalRecords[0], want))) || (!visible && (string(page["total_count"]) != `"0"` || len(terminalRecords) != 0)) {
 						t.Fatal("terminal page private total/full record disagrees with detail/replay")
 					}
 					check()

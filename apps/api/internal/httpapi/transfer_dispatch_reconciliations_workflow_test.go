@@ -155,8 +155,24 @@ func TestDR3HTTPMutationAgreement(t *testing.T) {
 	dr3Apply(t, f, f.newRequest(1, "POST", cp+"/accept", countHTTPBody(1, "dr3-count-accept-001", "1", "", "agree")), 0, -1)
 	dr3Apply(t, f, f.newRequest(2, "POST", path+"/propose", dr3Body("dr3-agreement-propose-002", "1", "6")), 0, 0)
 	dr3Apply(t, f, f.newRequest(1, "POST", path+"/accept", dr3Body("dr3-agreement-accept-002", "2", "")), 1, 0)
-	if dr3Get(t, f, detail) != original {
+	var beforeDetail, afterDetail transferDTO
+	if json.Unmarshal([]byte(original), &beforeDetail) != nil || json.Unmarshal([]byte(dr3Get(t, f, detail)), &afterDetail) != nil {
+		t.Fatal("detail activity decode")
+	}
+	if !reflect.DeepEqual(transferBusinessDTO(beforeDetail), transferBusinessDTO(afterDetail)) {
 		t.Fatal("original receipt/cart changed")
+	}
+	if len(afterDetail.Activity) != len(beforeDetail.Activity)+6 || !reflect.DeepEqual(afterDetail.Activity[:len(beforeDetail.Activity)], beforeDetail.Activity) {
+		t.Fatal("workflow changed prior personal evidence")
+	}
+	for i, want := range []struct {
+		category, action string
+		location         int
+	}{{"reconciliation", "propose", 1}, {"reconciliation", "accept", 2}, {"count", "propose", 2}, {"count", "accept", 1}, {"reconciliation", "propose", 2}, {"reconciliation", "accept", 1}} {
+		e := afterDetail.Activity[len(beforeDetail.Activity)+i]
+		if e.Category != want.category || e.Action != want.action || e.LocationID != want.location || e.Actor.AccountID != fmt.Sprint(want.location) || e.Actor.Username == "" || e.RecordedAt.IsZero() || e.VariantID == nil || *e.VariantID != 1 {
+			t.Fatal("workflow personal evidence differs", i, e)
+		}
 	}
 	for _, replay := range []struct {
 		actor        int

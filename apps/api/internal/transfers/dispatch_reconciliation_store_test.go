@@ -189,7 +189,7 @@ func TestDR2StoreEvidenceSuccessive(t *testing.T) {
 	if !reflect.DeepEqual(got, dr2Read(t, ctx, s, r)) || counters != dr2Counts(t, ctx, s) || !reflect.DeepEqual(stock, dr1Inventory(t, ctx, p)) {
 		t.Fatal("retry changed state")
 	}
-	if detail, err := s.Get(ctx, actor(r.Origin.ID), r.ID); err != nil || !reflect.DeepEqual(detail, r) {
+	if detail, err := s.Get(ctx, actor(r.Origin.ID), r.ID); err != nil || !t10WorkflowDetailEqual(t, detail, r) {
 		t.Fatal("original receipt changed", err)
 	}
 }

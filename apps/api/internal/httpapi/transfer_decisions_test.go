@@ -118,10 +118,15 @@ func decisionOriginal(t *testing.T, original, result transferDTO) {
 	if err != nil || stamp.UTC().Format(time.RFC3339Nano) != *result.DecidedAt || !strings.HasSuffix(*result.DecidedAt, "Z") {
 		t.Fatal("decision timestamp not canonical UTC")
 	}
+	action := "approve"
+	if result.Status == "rejected" {
+		action = "reject"
+	}
+	assertTransferActivityAppend(t, original, result, action, original.ApproverLocationID)
 	result.Status = "pending"
 	result.DecisionLocationID = nil
 	result.DecidedAt = nil
-	if !reflect.DeepEqual(result, original) {
+	if !reflect.DeepEqual(transferBusinessDTO(result), transferBusinessDTO(original)) {
 		t.Fatal("decision changed immutable original fields or items")
 	}
 }

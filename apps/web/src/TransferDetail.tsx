@@ -8,6 +8,7 @@ import TransferCountCorrections, { type TransferCountCorrectionsProps } from './
 import TransferRestitutions from './TransferRestitutions';
 import TransferDispatchReconciliations from './TransferDispatchReconciliations';
 import TransferDate from './TransferDate';
+import TransferActivity from './TransferActivity';
 import { Icon } from './icons';
 import './transfer-detail.css';
 import './transfer-approved.css';
@@ -380,6 +381,7 @@ export default function TransferDetail(props: TransferDetailProps) {
     </section>
     {historyOpen && <section id="pending-transfer-history" className="transfer-history pending" aria-label={transitHistoryLabel}>
       <h2>{transitHistoryLabel}</h2>
+      <TransferActivity activity={record.activity} />
       <ol><li><h3>{proposal ? 'Propuesta creada' : 'Solicitud creada'}</h3><p>Ubicación: {record.creator_location_name}</p><TransferDate value={record.created_at} /></li></ol>
       <div aria-label={proposal ? 'Resumen de propuesta' : 'Resumen de solicitud'}>
         <dl><dt>Ubicación creadora</dt><dd>{record.creator_location_name}</dd>
@@ -404,6 +406,7 @@ export default function TransferDetail(props: TransferDetailProps) {
     </section>
     {historyOpen && <section id="approved-transfer-history" className={`transfer-history ${record.status}`} aria-label={transitHistoryLabel}>
       <h2>{transitHistoryLabel}</h2>
+      <TransferActivity activity={record.activity} />
       <ol>
         <li><h3>{direct ? 'Envío creado, autorizado y stock reservado' : proposal ? 'Propuesta creada' : 'Solicitud creada'}</h3><p>Ubicación: {record.creator_location_name}</p><TransferDate value={record.created_at} /></li>
         {!direct && record.decision_location_id !== undefined && <li><h3>{record.status === 'rejected' ? `${subject} rechazada` : `${subject} aprobada y stock reservado`}</h3><p>Ubicación: {record.approver_location_name}</p><TransferDate value={record.decided_at} /></li>}
@@ -428,6 +431,7 @@ export default function TransferDetail(props: TransferDetailProps) {
     </section>
     {historyOpen && <section id="transit-transfer-history" className="transfer-history in_transit" aria-label={transitHistoryLabel}>
       <h2>{transitHistoryLabel}</h2>
+      <TransferActivity activity={record.activity} />
       <ol>
         <li><h3>{direct ? 'Envío creado, autorizado y stock reservado' : record.kind === 'send_to_warehouse' ? 'Propuesta creada' : 'Solicitud creada'}</h3><p>Ubicación: {record.creator_location_name}</p><TransferDate value={record.created_at} /></li>
         {!direct && <li><h3>{record.kind === 'send_to_warehouse' ? 'Propuesta aprobada y stock reservado' : 'Solicitud aprobada y stock reservado'}</h3><p>Ubicación: {record.approver_location_name}</p><TransferDate value={record.decided_at} /></li>}
@@ -584,6 +588,8 @@ export default function TransferDetail(props: TransferDetailProps) {
     </aside>}
       {(!receivedParticipant || historyOpen) && <section id={receivedParticipant ? 'received-transfer-history' : undefined} className={`transfer-history ${record.status}`} aria-label={receivedHistoryLabel}>
         <h2>{receivedHistoryLabel}</h2>
+        {session?.authenticated && (session.identity.location.id === record.origin_location_id
+          || session.identity.location.id === record.destination_location_id) && <TransferActivity activity={record.activity} />}
         <ol>
           <li><h3>{direct ? 'Envío creado, autorizado y stock reservado' : receivedParticipant && record.kind === 'send_to_warehouse' ? 'Propuesta creada' : 'Solicitud creada'}</h3>
             <p>Ubicación: {record.creator_location_name}</p>

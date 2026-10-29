@@ -22,7 +22,15 @@ export interface TransferReceiptInput { items: readonly { readonly variant_id: n
 export interface TransferReceiptLine { readonly variant_id: number; readonly expected_quantity: bigint; readonly actual_quantity: bigint; readonly available_quantity: bigint }
 export interface TransferReceiptException { readonly variant_id: number; readonly kind: 'shortage' | 'excess' | 'unexpected'; readonly quantity: bigint }
 export interface TransferReceiptData { readonly items: readonly TransferReceiptLine[]; readonly exceptions: readonly TransferReceiptException[] }
+export interface TransferActivityEntry {
+  readonly category: 'transfer' | 'count' | 'restitution' | 'reconciliation';
+  readonly action: 'create' | 'approve' | 'reject' | 'dispatch' | 'receive' | 'cancel' | 'propose' | 'accept';
+  readonly actor: { readonly account_id: string; readonly username: string; readonly display_name: string };
+  readonly location_id: number; readonly location_name: string; readonly recorded_at: string;
+  readonly variant_id?: number;
+}
 interface TransferRecordFields {
+  readonly activity?: readonly TransferActivityEntry[];
   id: string; reference: string; kind: TransferKind; created_at: string;
   creator_location_id: TransferLocationID; creator_location_name: string;
   origin_location_id: TransferLocationID; origin_location_name: string;
@@ -295,10 +303,11 @@ function record(value: unknown): TransferRecord {
   const dispatchKeys = [...decisionKeys, 'dispatch_location_id', 'dispatched_at'];
   const receiptKeys = [...dispatchKeys, 'receipt_location_id', 'received_at', 'receipt'];
   const cancellationKeys = [...recordKeys, 'cancellation_location_id', 'cancelled_at'];
-  const candidate = object(value, [...receiptKeys, 'cancellation_location_id', 'cancelled_at'], false);
+  const candidate = object(value, [...receiptKeys, 'cancellation_location_id', 'cancelled_at', 'activity'], false);
+  const baseValue = { ...candidate }; delete baseValue.activity;
   const selected = status(candidate.status);
   const preservedApproval = selected === 'cancelled' && (Object.hasOwn(candidate, 'decision_location_id') || Object.hasOwn(candidate, 'decided_at'));
-  const o = object(value, selected === 'cancelled' ? preservedApproval ? [...cancellationKeys, 'decision_location_id', 'decided_at'] : cancellationKeys
+  const o = object(baseValue, selected === 'cancelled' ? preservedApproval ? [...cancellationKeys, 'decision_location_id', 'decided_at'] : cancellationKeys
     : selected === 'pending' ? recordKeys : selected === 'received' ? receiptKeys : selected === 'in_transit' ? dispatchKeys : decisionKeys);
   exact(o.id);
   const id = o.id as string;
@@ -351,7 +360,28 @@ function record(value: unknown): TransferRecord {
       || (decision && (ordered(decision.decided_at) < ordered(created_at) || ordered(cancelled_at) < ordered(decision.decided_at)))) return invalid();
     return { cancellation_location_id: creator, cancelled_at };
   })() : {};
-  const decoded = { ...outcome, ...receiptFields, ...cancellationFields, id, reference: o.reference as string, kind: k, created_at,
+  const activity = Object.hasOwn(candidate, 'activity') ? (() => {
+    if (!Array.isArray(candidate.activity)) return invalid();
+    return Object.freeze(candidate.activity.map(value => {
+      const e = object(value, ['category', 'action', 'actor', 'location_id', 'location_name', 'recorded_at', 'variant_id'], false);
+      for (const key of ['category', 'action', 'actor', 'location_id', 'location_name', 'recorded_at']) if (!Object.hasOwn(e, key)) return invalid();
+      const actions = e.category === 'transfer' ? ['create', 'approve', 'reject', 'dispatch', 'receive', 'cancel']
+        : ['count', 'restitution', 'reconciliation'].includes(e.category as string) ? ['propose', 'accept', 'reject'] : [];
+      if (!actions.includes(e.action as string)) return invalid();
+      const actor = object(e.actor, ['account_id', 'username', 'display_name']); exact(actor.account_id);
+      if (typeof actor.display_name !== 'string' || actor.display_name.includes('\0') || !actor.display_name.isWellFormed()) return invalid();
+      const location_id = location(e.location_id);
+      if (location_id !== origin && location_id !== destination) return invalid();
+      const recorded_at = createdAt(e.recorded_at);
+      if (ordered(recorded_at) < ordered(created_at)) return invalid();
+      const variant = Object.hasOwn(e, 'variant_id') ? { variant_id: integer(e.variant_id, 1, 2147483647) } : {};
+      if ((e.category === 'transfer') === Object.hasOwn(e, 'variant_id')) return invalid();
+      return Object.freeze({ category: e.category, action: e.action,
+        actor: Object.freeze({ account_id: actor.account_id, username: text(actor.username), display_name: actor.display_name }),
+        location_id, location_name: text(e.location_name), recorded_at, ...variant }) as TransferActivityEntry;
+    }));
+  })() : undefined;
+  const decoded = { ...outcome, ...receiptFields, ...cancellationFields, ...(activity ? { activity } : {}), id, reference: o.reference as string, kind: k, created_at,
     creator_location_id: creator, creator_location_name: text(o.creator_location_name),
     origin_location_id: origin, origin_location_name: text(o.origin_location_name),
     destination_location_id: destination, destination_location_name: text(o.destination_location_name),

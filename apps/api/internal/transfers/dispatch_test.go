@@ -56,7 +56,8 @@ func TestD01DispatchStore(t *testing.T) {
 			}
 			want := approved
 			want.Status, want.DispatchLocationID, want.DispatchedAt = "in_transit", got.DispatchLocationID, got.DispatchedAt
-			if !reflect.DeepEqual(got, want) {
+			t10ActionAppend(t, approved, got, "dispatch", approved.Origin.ID)
+			if !reflect.DeepEqual(t10BusinessRequest(got), t10BusinessRequest(want)) {
 				t.Fatal("immutable payload changed")
 			}
 			wantStock := append([]stockRow(nil), before...)
@@ -91,7 +92,7 @@ func TestD01DispatchStore(t *testing.T) {
 					t.Fatal("detail recovery failed", err)
 				}
 				page, err := s.List(ctx, actor(participant), transfers.Query{Status: "in_transit"})
-				if err != nil || page.Total != 1 || len(page.Records) != 1 || !reflect.DeepEqual(page.Records[0], got) {
+				if err != nil || page.Total != 1 || len(page.Records) != 1 || !t10ListEqual(t, page.Records, []transfers.Request{got}) {
 					t.Fatal("transit list failed", err)
 				}
 			}

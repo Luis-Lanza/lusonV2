@@ -107,7 +107,8 @@ func a02WholeOutcomes(t *testing.T) {
 			}
 			want := original
 			want.Status, want.DecisionLocationID, want.DecidedAt = "approved", &decision, &decided
-			if !reflect.DeepEqual(got, want) || decision != original.Approver.ID || decided.Before(original.CreatedAt) || a01Original(t, ctx, p, original.ID) != immutable {
+			t10ActionAppend(t, original, got, "approve", original.Approver.ID)
+			if !reflect.DeepEqual(t10BusinessRequest(got), t10BusinessRequest(want)) || decision != original.Approver.ID || decided.Before(original.CreatedAt) || a01Original(t, ctx, p, original.ID) != immutable {
 				t.Fatal("approval did not return the complete original payload and persisted decision")
 			}
 			wantStock := append([]stockRow(nil), before...)

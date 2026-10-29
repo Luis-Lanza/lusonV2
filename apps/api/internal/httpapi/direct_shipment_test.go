@@ -135,7 +135,7 @@ func TestW01DirectShipmentHTTPLifecycle(t *testing.T) {
 				}
 				page := transferObject(t, f.request(t, id, "GET", "/api/transfers?status="+terminal, ""), 200)
 				var rows []map[string]json.RawMessage
-				if json.Unmarshal(page["records"], &rows) != nil || len(rows) != 1 || !reflect.DeepEqual(rows[0], want) {
+				if json.Unmarshal(page["records"], &rows) != nil || len(rows) != 1 || !transferListedObjectEqual(t, rows[0], want) {
 					t.Fatal("terminal HTTP list lost direct history")
 				}
 				counts := transferObject(t, f.request(t, id, "GET", "/api/transfers/counts", ""), 200)

@@ -121,7 +121,7 @@ func (s *Store) correctCount(ctx context.Context, actor auth.Identity, id, varia
 	if err := checkAssignment(ctx, s.pool, actor); err != nil {
 		return CountOperation{}, err
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.beginPersonal(ctx, actor)
 	if err != nil {
 		return CountOperation{}, fail(ctx)
 	}

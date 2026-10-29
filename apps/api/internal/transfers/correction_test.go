@@ -131,7 +131,7 @@ func TestC2CorrectionStoreProposal(t *testing.T) {
 			if len(out.Operations) != 14 || out.Lines[1].EffectiveActual != 0 || out.Lines[2].EffectiveCredit != 0 || out.Lines[2].Proposals[0].Application.Delta != 0 {
 				t.Fatal("matching/unexpected", out)
 			}
-			if got, err := s.Get(ctx, actor(r.Origin.ID), r.ID); err != nil || !reflect.DeepEqual(got, original) {
+			if got, err := s.Get(ctx, actor(r.Origin.ID), r.ID); err != nil || !t10WorkflowDetailEqual(t, got, original) {
 				t.Fatal("immutable receipt/header changed", err)
 			}
 			if got, err := s.GetCountCorrections(ctx, actor(r.Origin.ID), r.ID); err != nil || !reflect.DeepEqual(got, out) {

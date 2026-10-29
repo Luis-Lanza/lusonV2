@@ -27,7 +27,7 @@ func (s *Store) Approve(ctx context.Context, actor auth.Identity, id int64) (Req
 	if err := checkAssignment(ctx, s.pool, actor); err != nil {
 		return Request{}, err
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.beginPersonal(ctx, actor)
 	if err != nil {
 		return Request{}, fail(ctx)
 	}

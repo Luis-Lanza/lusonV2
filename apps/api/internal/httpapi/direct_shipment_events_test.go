@@ -29,8 +29,11 @@ func w01HTTPProof(t *testing.T, f *transferHTTPFixture, destination int) func(*h
 	return func(w *httptest.ResponseRecorder) transferDTO {
 		obj := transferObject(t, w, 201)
 		var dto transferDTO
-		if len(obj) != 16 || json.Unmarshal(w.Body.Bytes(), &dto) != nil || dto.Kind != "direct_shipment" || dto.Status != "approved" || dto.CreatorLocationID != 1 || dto.OriginLocationID != 1 || dto.ApproverLocationID != 1 || dto.DestinationLocationID != destination || dto.DecisionLocationID == nil || *dto.DecisionLocationID != 1 || dto.DecidedAt == nil || *dto.DecidedAt != dto.CreatedAt || len(dto.Items) != 2 {
+		if transferBusinessFieldCount(t, obj) != 16 || json.Unmarshal(w.Body.Bytes(), &dto) != nil || dto.Kind != "direct_shipment" || dto.Status != "approved" || dto.CreatorLocationID != 1 || dto.OriginLocationID != 1 || dto.ApproverLocationID != 1 || dto.DestinationLocationID != destination || dto.DecisionLocationID == nil || *dto.DecisionLocationID != 1 || dto.DecidedAt == nil || *dto.DecidedAt != dto.CreatedAt || len(dto.Items) != 2 {
 			t.Fatal("direct initial response does not retain creation authorization")
+		}
+		if len(dto.Activity) != 1 || dto.Activity[0].Action != "create" || dto.Activity[0].Actor.AccountID != "1" || dto.Activity[0].LocationID != 1 {
+			t.Fatal("direct creation actor missing")
 		}
 		if dto.Items[0].VariantID != 1 || dto.Items[0].Quantity != "2" || dto.Items[1].VariantID != 2 || dto.Items[1].Quantity != "1" {
 			t.Fatal("direct live cart changed")

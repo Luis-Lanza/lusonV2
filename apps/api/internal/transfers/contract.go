@@ -61,6 +61,7 @@ type Item struct {
 	Polarity     string
 }
 type Request struct {
+	Activity                               []Activity `json:"activity,omitempty"`
 	ID                                     int64
 	Reference                              string
 	Kind                                   Kind

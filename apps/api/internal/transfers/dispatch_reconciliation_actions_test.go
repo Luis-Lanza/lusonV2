@@ -54,7 +54,7 @@ func discoveryCheck(t *testing.T, ctx context.Context, s *transfers.Store, r tra
 	if page.Total != want || int64(len(page.Records)) != want || int64(len(page.RequiredActions)) != want || !page.RequiresAction {
 		t.Errorf("actor %d filtered page=%+v, want %d header", who, page, want)
 	}
-	if want == 1 && (!reflect.DeepEqual(page.RequiredActions[r.ID], reasons) || len(page.Records) != 1 || !reflect.DeepEqual(page.Records[0], r)) {
+	if want == 1 && (!reflect.DeepEqual(page.RequiredActions[r.ID], reasons) || len(page.Records) != 1 || !t10ListEqual(t, page.Records, []transfers.Request{r})) {
 		t.Errorf("actor %d reasons=%v want=%v; canonical receipt must be retained", who, page.RequiredActions[r.ID], reasons)
 	}
 	counts, err := s.Counts(ctx, actor(who))

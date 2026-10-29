@@ -151,7 +151,7 @@ func (s *Store) restitute(ctx context.Context, actor auth.Identity, id, variant 
 	if err := checkAssignment(ctx, s.pool, actor); err != nil {
 		return RestitutionOperation{}, err
 	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.beginPersonal(ctx, actor)
 	if err != nil {
 		return RestitutionOperation{}, fail(ctx)
 	}

@@ -356,12 +356,16 @@ func transferObject(t *testing.T, w *httptest.ResponseRecorder, status int) map[
 	if w.Code != status || w.Header().Get("Content-Type") != "application/json" || json.Unmarshal(w.Body.Bytes(), &value) != nil {
 		t.Fatalf("transfer JSON response mismatch: status=%d want=%d", w.Code, status)
 	}
+	transferBusinessFieldCount(t, value)
 	return value
 }
 func transferWireRecord(t *testing.T, w *httptest.ResponseRecorder, status int) transferDTO {
 	t.Helper()
 	value := transferObject(t, w, status)
 	want := []string{"id", "reference", "creator_location_id", "creator_location_name", "kind", "origin_location_id", "origin_location_name", "destination_location_id", "destination_location_name", "approver_location_id", "approver_location_name", "status", "created_at", "items"}
+	if value["activity"] != nil {
+		want = append(want, "activity")
+	}
 	if len(value) != len(want) {
 		t.Fatal("record whitelist changed")
 	}
@@ -495,7 +499,7 @@ func testTransferFlows(t *testing.T, f *transferHTTPFixture) {
 				want = append(want, r)
 			}
 		}
-		if total != int64(len(want)) || !reflect.DeepEqual(records, want) {
+		if total != int64(len(want)) || !transferListDTOsEqual(t, records, want) {
 			t.Fatal("list scope/count or descending order leaked")
 		}
 	}
@@ -663,7 +667,7 @@ func testTransferExact(t *testing.T) {
 			t.Fatal("lossless detail differs")
 		}
 		total, records := transferWirePage(t, f.request(t, actor, "GET", "/api/transfers", ""))
-		if total != 1 || len(records) != 1 || !reflect.DeepEqual(records[0], dto) {
+		if total != 1 || len(records) != 1 || !transferListDTOsEqual(t, records, []transferDTO{dto}) {
 			t.Fatal("lossless list differs")
 		}
 	}
@@ -702,7 +706,7 @@ func testTransferPagination(t *testing.T) {
 		for i := tc.last - 1; i >= tc.first; i-- {
 			want = append(want, expected[i])
 		}
-		if total != 26 || page != tc.page || size != tc.size || !reflect.DeepEqual(records, want) {
+		if total != 26 || page != tc.page || size != tc.size || !transferListDTOsEqual(t, records, want) {
 			t.Fatal("bounded pagination/count/order differs")
 		}
 	}

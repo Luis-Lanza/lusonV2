@@ -99,7 +99,7 @@ func TestR02ListPostgres(t *testing.T) {
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				got, err := s.List(ctx, actor(tc.id), transfers.Query{})
-				if err != nil || got.Total != int64(len(tc.want)) || got.Page != 1 || got.PageSize != 25 || !reflect.DeepEqual(got.Records, tc.want) {
+				if err != nil || got.Total != int64(len(tc.want)) || got.Page != 1 || got.PageSize != 25 || !t10ListEqual(t, got.Records, tc.want) {
 					t.Fatal("participant-scoped list/count or complete records incorrect")
 				}
 			})
@@ -184,7 +184,7 @@ func testListPagination(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := s.List(ctx, actor(2), tc.query)
-			if err != nil || got.Total != 51 || got.Page != tc.page || got.PageSize != tc.size || got.Records == nil || !reflect.DeepEqual(got.Records, want[tc.first:tc.last]) {
+			if err != nil || got.Total != 51 || got.Page != tc.page || got.PageSize != tc.size || got.Records == nil || !t10ListEqual(t, got.Records, want[tc.first:tc.last]) {
 				t.Fatal("scoped pagination or descending ordering incorrect")
 			}
 		})
@@ -213,7 +213,7 @@ func testListExact(t *testing.T) {
 	}
 	r := create(t, ctx, s, 2, in)
 	got, err := s.List(ctx, actor(1), transfers.Query{})
-	if err != nil || got.Total != 1 || len(got.Records) != 1 || !reflect.DeepEqual(got.Records[0], r.Request) || got.Records[0].ID != 9007199254740993 {
+	if err != nil || got.Total != 1 || len(got.Records) != 1 || !t10ListEqual(t, got.Records, []transfers.Request{r.Request}) || got.Records[0].ID != 9007199254740993 {
 		t.Fatal("lossless complete request not listed")
 	}
 	fractional := false
@@ -294,7 +294,7 @@ func testListSnapshot(t *testing.T) {
 	second := create(t, ctx, s, 2, in)
 	close(trace.resume)
 	page := <-result
-	if err := <-errs; err != nil || page.Total != 1 || !reflect.DeepEqual(page.Records, []transfers.Request{first.Request}) {
+	if err := <-errs; err != nil || page.Total != 1 || !t10ListEqual(t, page.Records, []transfers.Request{first.Request}) {
 		t.Fatal("count/IDs/load observed mixed snapshots")
 	}
 	trace.mu.Lock()
@@ -304,7 +304,7 @@ func testListSnapshot(t *testing.T) {
 		t.Fatal("list did not begin read-only repeatable-read transaction")
 	}
 	fresh, err := s.List(ctx, actor(2), transfers.Query{})
-	if err != nil || fresh.Total != 2 || !reflect.DeepEqual(fresh.Records, []transfers.Request{second.Request, first.Request}) {
+	if err != nil || fresh.Total != 2 || !t10ListEqual(t, fresh.Records, []transfers.Request{second.Request, first.Request}) {
 		t.Fatal("fresh snapshot did not include committed writer")
 	}
 	unchanged(t, before, stocks(t, ctx, p))

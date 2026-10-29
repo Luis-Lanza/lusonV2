@@ -64,7 +64,7 @@ func TestT4cCountDispatchEvidence(t *testing.T) {
 			if !reflect.DeepEqual(history, c2StoreRead(t, ctx, s, r)) || !reflect.DeepEqual(before, dr1Inventory(t, ctx, p)) || !reflect.DeepEqual(historical, history.Lines[0].Proposals) {
 				t.Fatal("replay changed balances or immutable count history")
 			}
-			if original, err := s.Get(ctx, actor(r.Origin.ID), r.ID); err != nil || !reflect.DeepEqual(original, r) {
+			if original, err := s.Get(ctx, actor(r.Origin.ID), r.ID); err != nil || !t10WorkflowDetailEqual(t, original, r) {
 				t.Fatal("original detail changed", err)
 			}
 		})

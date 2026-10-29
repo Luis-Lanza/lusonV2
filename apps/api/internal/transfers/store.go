@@ -45,7 +45,7 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := s.beginPersonal(ctx, actor)
 	if err != nil {
 		return CreateResult{}, fail(ctx)
 	}
@@ -178,7 +178,7 @@ type querier interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 
-func load(ctx context.Context, q querier, participant int, id int64) (Request, error) {
+func load(ctx context.Context, q querier, participant int, id int64, personal ...bool) (Request, error) {
 	var r Request
 	var retryKey string
 	var fingerprint []byte
@@ -277,6 +277,11 @@ func load(ctx context.Context, q querier, participant int, id int64) (Request, e
 	rows.Close()
 	if err := loadReceipt(ctx, q, &r); err != nil {
 		return Request{}, err
+	}
+	if len(personal) == 0 || personal[0] {
+		if err := loadPersonalActivity(ctx, q, &r); err != nil {
+			return Request{}, err
+		}
 	}
 	r.Reference = fmt.Sprintf("TR-%03d", r.ID)
 	return r, nil

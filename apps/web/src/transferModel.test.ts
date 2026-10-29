@@ -5,6 +5,24 @@ import {
   type TransferCreateInput, type TransferFlow,
 } from './transferModel';
 
+describe('T10 personal activity', () => {
+  const event = { category: 'transfer', action: 'create', actor: { account_id: '20', username: 'ana', display_name: '' },
+    location_id: 2, location_name: 'Sucursal A', recorded_at: '2026-04-02T12:34:56.123456789Z' };
+  it('admits additive immutable actor snapshots and preserves legacy records', () => {
+    const r = parseTransferRecord(JSON.stringify(wireRecord({ activity: [event] })));
+    expect(r).toHaveProperty('activity', [event]);
+    expect(Object.isFrozen(Reflect.get(r, 'activity'))).toBe(true);
+    expect(parseTransferRecord(JSON.stringify(wireRecord()))).not.toHaveProperty('activity');
+  });
+  it('rejects malformed or nonparticipant personal evidence without changing legacy quantities', () => {
+    for (const value of [{ ...event, location_id: 3 }, { ...event, recorded_at: 'yesterday' },
+      { ...event, actor: { ...event.actor, account_id: '0' } }, { ...event, action: 'impersonate' }]) {
+      expect(() => parseTransferRecord(JSON.stringify(wireRecord({ activity: [value] })))).toThrow('Invalid transfer response');
+    }
+    expect(parseTransferRecord(JSON.stringify(wireRecord())).items[0].quantity).toBe(9223372036854775807n);
+  });
+});
+
 // Flat DTO fixture matches httpapi.transferDTO, not the inventory wire format.
 export function wireRecord(overrides: Record<string, unknown> = {}) {
   return {

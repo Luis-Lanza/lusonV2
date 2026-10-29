@@ -119,7 +119,7 @@ func TestA01bOutcomeStore(t *testing.T) {
 				for participant := 1; participant <= 3; participant++ {
 					page, err := s.List(ctx, actor(participant), transfers.Query{Page: 1, PageSize: 25, Status: "pending"})
 					visible := participant == pending.Origin.ID || participant == pending.Destination.ID
-					if err != nil || (visible && (page.Total != 1 || len(page.Records) != 1 || !reflect.DeepEqual(page.Records[0], pending))) || (!visible && (page.Total != 0 || len(page.Records) != 0)) {
+					if err != nil || (visible && (page.Total != 1 || len(page.Records) != 1 || !t10ListEqual(t, page.Records, []transfers.Request{pending}))) || (!visible && (page.Total != 0 || len(page.Records) != 0)) {
 						t.Fatal("mixed outcome list/count is not Pending-only")
 					}
 					checkUnchanged()

@@ -25,9 +25,14 @@ func dispatchProof(t *testing.T, f *transferHTTPFixture, approved transferDTO) f
 	}
 	return func(w *httptest.ResponseRecorder) {
 		got := transferObject(t, w, 200)
-		if len(got) != 18 || string(got["status"]) != `"in_transit"` {
+		if transferBusinessFieldCount(t, got) != 18 || string(got["status"]) != `"in_transit"` {
 			t.Fatal("incomplete dispatch DTO")
 		}
+		var dispatched transferDTO
+		if json.Unmarshal(w.Body.Bytes(), &dispatched) != nil {
+			t.Fatal("dispatch actor decoding")
+		}
+		assertTransferActivityAppend(t, approved, dispatched, "dispatch", approved.OriginLocationID)
 		var consumed bool
 		if f.p.QueryRow(f.ctx, `SELECT count(*)=2 AND bool_and(a.consumed_at=r.dispatched_at)
  FROM transfer_request_allocations a JOIN transfer_requests r ON r.id=a.request_id WHERE r.id=$1`, approved.ID).Scan(&consumed) != nil || !consumed {

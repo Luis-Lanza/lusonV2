@@ -12,6 +12,32 @@ import type { CountProposal } from './transferCountCorrectionModel';
 import { decisionOwner } from './transferDecisionRecovery';
 import type { CountCorrectionAttempt } from './transferCountCorrectionRecovery';
 
+it('T10 shows personal authorship only in participant history and retires it with authority', () => {
+  const f = fixture();
+  const record = parseTransferRecord(JSON.stringify({ ...wire(1, 2, 'approved'), activity: [{
+    category: 'transfer', action: 'create', actor: { account_id: '20', username: 'snapshot', display_name: 'Ana histórica' },
+    location_id: 2, location_name: 'Sucursal A', recorded_at: '2028-01-01T00:00:00.123456789Z',
+  }] }));
+  const view = render(f.element(record));
+  expect(screen.queryByText('Ana histórica')).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
+  expect(screen.getByRole('region', { name: 'Autoría personal' })).toHaveTextContent('Ana histórica');
+  expect(screen.getByRole('region', { name: 'Productos solicitados' })).toHaveTextContent('9223372036854775807');
+  f.env.current = { ...f.env.current, epoch: 2 };
+  view.rerender(f.element(record));
+  expect(screen.queryByText('Ana histórica')).toBeNull();
+});
+
+it('T10 does not render personal evidence for an assigned nonparticipant detail', () => {
+  const f = fixture(1, 2, 3);
+  const record = parseTransferRecord(JSON.stringify({ ...wire(1, 2, 'approved'), activity: [{
+    category: 'transfer', action: 'create', actor: { account_id: '20', username: 'private_actor', display_name: 'Personal privado' },
+    location_id: 2, location_name: 'Sucursal A', recorded_at: '2028-01-01T00:00:00.123456789Z',
+  }] }));
+  render(f.element(record));
+  expect(screen.queryByText('Personal privado')).toBeNull();
+});
+
 describe('U1 pending approver presentation', () => {
   it('keeps unknown stock advisory and recovers with passive refresh for the approver', async () => {
     let failing = true;
@@ -200,10 +226,11 @@ describe('F1 participant transit detail', () => {
     const history = screen.getByRole('region', { name: historyLabel });
     expect(within(history).getByRole('heading', { level: 2, name: historyLabel })).toBeVisible();
     expect(toggle).toHaveAttribute('aria-controls', history.id);
-    expect(within(history).getAllByRole('heading', { level: 3 }).map(heading => heading.textContent)).toEqual(kind === 'direct_shipment'
+    expect(within(history).getAllByRole('heading', { level: 3 }).map(heading => heading.textContent)).toEqual(['Autoría personal', ...(kind === 'direct_shipment'
       ? ['Envío creado, autorizado y stock reservado', 'Envío despachado'] : kind === 'send_to_warehouse'
         ? ['Propuesta creada', 'Propuesta aprobada y stock reservado', 'Envío despachado']
-        : ['Solicitud creada', 'Solicitud aprobada y stock reservado', 'Solicitud despachada']);
+        : ['Solicitud creada', 'Solicitud aprobada y stock reservado', 'Solicitud despachada'])]);
+    expect(within(history).getByRole('region', { name: 'Autoría personal' })).toHaveTextContent('Sin autor personal registrado');
     expect(Array.from(history.querySelectorAll('time')).map(time => time.getAttribute('title'))).toEqual(kind === 'direct_shipment'
       ? [record.created_at, record.dispatched_at] : [record.created_at, record.decided_at, record.dispatched_at]);
     expect(history).toHaveTextContent(`Ubicación: ${record.creator_location_name}`);
