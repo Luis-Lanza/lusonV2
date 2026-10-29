@@ -9,9 +9,9 @@ export default function TransferActionSummary({ counts, busy, unavailable, locat
   compact: boolean; onShow: () => void; onRetry: () => void;
 }) {
   const known = !busy && !unavailable ? counts : null;
+  if (known?.action_count === 0n) return null;
   const title = unavailable ? 'Acciones pendientes no disponibles.' : !known ? 'Consultando acciones pendientes…'
-    : known.action_count === 0n ? 'No tenés acciones pendientes'
-      : `${known.action_count.toString()} ${known.action_count === 1n ? 'transferencia requiere' : 'transferencias requieren'} tu atención`;
+    : `${known.action_count.toString()} ${known.action_count === 1n ? 'transferencia requiere' : 'transferencias requieren'} tu atención`;
   // Existing dialogs own background isolation; also reject synthetic retained clicks.
   const activate = (event: MouseEvent<HTMLButtonElement>, action: () => void) => {
     if (!event.currentTarget.closest('[inert]')) action();

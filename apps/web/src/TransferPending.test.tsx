@@ -288,12 +288,10 @@ describe('T3 location-owned action discovery', () => {
     await act(async () => pending.resolve(reply({ pending_total: '2', action_count: '0', ...(!legacy ? {
       actions: { approve: '0', dispatch: '0', receive: '0', review_count: '0', review_restitution: '0', review_dispatch_reconciliation: '0' },
     } : {}) })));
-    expect(screen.getByText('No tenés acciones pendientes')).toBeVisible();
-    if (legacy) {
-      expect(screen.getByText('Desglose de acciones no disponible.')).toBeVisible();
-      expect(screen.queryByLabelText('Tipos de acción pendientes')).toBeNull();
-    } else expect(within(screen.getByLabelText('Tipos de acción pendientes')).getAllByText('0')).toHaveLength(6);
-    expect(screen.getByText('Sobre los totales').closest('details')).toHaveTextContent('Pendientes de tu ubicación: 2');
+    expect(screen.queryByText('No tenés acciones pendientes')).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Contadores de solicitudes' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Acciones pendientes de tu ubicación' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Ver acciones pendientes' })).toBeNull();
   });
 
   it('retries unavailable counts alone without fabricating zero or moving the query', async () => {
@@ -1192,9 +1190,8 @@ describe('A06b independent passive counters', () => {
     expect(counters).not.toHaveTextContent('No tenés acciones pendientes');
     await screen.findByText('No se pudieron consultar las transferencias.');
     await act(async () => flight.resolve(reply({ pending_total: '0', action_count: '0' })));
-    expect(counters).toHaveTextContent('No tenés acciones pendientes');
-    expect(counters).toHaveTextContent('Pendientes de tu ubicación: 0');
-    expect(counters).not.toHaveTextContent('no disponibles');
+    expect(counters).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Ver acciones pendientes' })).toBeNull();
     expect(document.body).not.toHaveTextContent('PRIVATE');
   });
 

@@ -100,7 +100,9 @@ success from a changed head. Original receipt and immutable revision history rem
 separate. Accepted confirmation invalidates current inventory for a fresh GET;
 operation audit balances are historical evidence, not today's inventory display.
 
-**Ver acciones pendientes** is also available in a compact band above detail. It
+The action summary and its **Ver acciones pendientes** shortcut are hidden when
+successfully loaded counts report zero actions. Loading and unavailable states
+remain visible. The shortcut is also available in a compact band above detail. It
 returns to the list with Todas, action-only filtering and page one, so work outside
 the loaded page or lifecycle filter is discoverable. **Solo requieren mi acción**
 toggles that server-side filter while retaining the selected lifecycle status.
