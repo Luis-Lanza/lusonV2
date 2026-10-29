@@ -39,6 +39,18 @@ Frontend composition is in [App](apps/web/src/App.tsx) and
 lifecycle, receipt, count-correction and restitution views. Contract documents
 may retain earlier slice exclusions; frontend composition shows the integrated UI.
 
+## Personal accounts and passwords
+
+The protected warehouse account manages personal branch accounts and creates
+zero-stock branches from **Administración**. Operators receive a temporary
+password privately and must change it before accessing operational screens.
+Every account, including the administrator, can use **Mi contraseña**; a
+successful change closes all sessions and requires a fresh login.
+
+See [account administration](apps/web/docs/account-administration.md) for the
+UI workflow, private credential handling and current API contracts. The L03/L04
+contract below is historical; account IDs are now independent of location IDs.
+
 ## Repository map
 
 | Path | Purpose |
@@ -134,7 +146,8 @@ out of scope for L05. No pixel-perfect claim is made.
 
 The server calls `bootstrap.Initialize(ctx, pool, profile)` once on startup.
 It does not provision accounts, overwrite balances, serve fake business/health
-responses or expose registration, reset, admin or direct inventory write routes.
+responses or expose public registration, public recovery or direct inventory write routes.
+Protected account administration uses the separate authenticated admin contract.
 Transfer mutations use their separate authenticated API contract.
 Compiled public assets are composed outside the API mux; unknown paths never
 become the SPA index. The runtime image contains no frontend development server.
@@ -143,6 +156,9 @@ become the SPA index. The runtime image contains no frontend development server.
 
 Inventory, the transfer list and transfer details use hash URLs:
 `/#/inventario`, `/#/transferencias` and `/#/transferencias/<id>`.
+Private account screens use `/#/administracion` (warehouse administrator only)
+and `/#/mi-contrasena` (every completed-password account). Mandatory-password
+sessions see only the password gate and logout, regardless of the requested hash.
 Refresh and browser Back/Forward restore the selected view. Detail links fetch
 fresh data after authentication and retain the backend's participant checks;
 a URL does not grant access. Signing out clears the current private route.

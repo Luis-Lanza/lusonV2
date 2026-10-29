@@ -1,0 +1,43 @@
+.account-administration { display: grid; gap: 16px; min-width: 0; max-width: 1600px; width: 100%; }
+.account-administration h1 { margin-top: 8px; }
+.account-administration h2 { font-size: 18px; font-weight: 600; }
+.account-administration h3 { font-size: 14px; font-weight: 600; margin: 0; }
+.account-administration p { line-height: 1.6; color: var(--muted); }
+.account-administration small { color: var(--muted); font-size: 12px; }
+.account-administration header > p { margin-top: 8px; }
+.admin-notice { padding: 16px; border-radius: 4px; background: var(--tint); line-height: 1.6; }
+.admin-tabs, .admin-actions, .admin-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.admin-row { justify-content: space-between; }
+.admin-tabs button[aria-pressed="true"] { color: #fff; background: var(--wine); border-color: var(--wine); }
+.admin-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr); gap: 24px; align-items: start; }
+.admin-panel { background: #fff; border: 1px solid var(--border); border-radius: 4px; padding: 24px; min-width: 0; display: grid; gap: 16px; box-shadow: 0 1px 2px #2421240d; }
+.admin-panel form { display: grid; gap: 16px; }
+.admin-panel label, .admin-filters label { display: grid; gap: 8px; font-size: 12px; min-width: 0; }
+.account-administration input, .account-administration select { width: 100%; min-width: 0; border-color: var(--muted); padding: 10px 12px; }
+.account-administration button { border-color: var(--muted); white-space: normal; overflow-wrap: anywhere; }
+.account-administration button.primary { border-color: var(--wine); }
+.admin-filters { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.admin-filters label:first-child { grid-column: 1 / -1; }
+.admin-table { overflow: auto; }
+.admin-table th, .admin-table td { padding: 16px 12px; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.admin-table td small { display: block; margin-top: 6px; }
+.admin-tag { display: inline-block; background: var(--page); border: 1px solid var(--border); border-radius: 3px; padding: 4px 8px; font-size: 11px; color: var(--wine); }
+.admin-panel ol { margin: 0; padding-left: 24px; }
+.admin-panel li { padding: 16px 0; border-bottom: 1px solid var(--border); line-height: 1.6; }
+.admin-editor form + form { border-top: 1px solid var(--border); padding-top: 16px; }
+.admin-secret { display: grid; gap: 8px; }
+.admin-branches { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 16px; }
+.admin-branches article { padding: 24px; background: var(--page); border: 1px solid var(--border); border-radius: 8px; }
+@media (max-width: 1100px) { .admin-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 767px) {
+  .admin-panel { padding: 16px; border-radius: 8px; }
+  .admin-filters { grid-template-columns: minmax(0, 1fr); }
+  .admin-table th, .admin-table td { padding: 12px; }
+  .private-shell:not(.warehouse) .sidebar { position: static; width: auto; }
+  .private-shell:not(.warehouse) .side-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .private-shell:not(.warehouse) .app-header { position: static; height: auto; padding: 16px; gap: 12px; flex-wrap: wrap; }
+  .private-shell:not(.warehouse) .inventory-main { margin: 0; padding: 16px; min-height: auto; }
+  .private-shell.warehouse { max-width: none; border: 0; }
+  .bottom-nav { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .bottom-nav button { min-width: 0; overflow-wrap: anywhere; }
+}

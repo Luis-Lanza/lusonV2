@@ -66,6 +66,14 @@ export interface TransferController {
   confirmTransferDecision?: (owner: DecisionOwner, status: TransferStatus) => void;
 }
 
+export type PrivateScope = 'admin' | 'password';
+export interface PrivateController {
+  privateOwner: (scope: PrivateScope) => string | null;
+  privateRequest: (owner: string, scope: PrivateScope, path: string, signal: AbortSignal, method?: 'GET' | 'POST' | 'PATCH', body?: object, expected?: number) => Promise<string>;
+  changePassword: (owner: string, current: string, next: string, signal: AbortSignal) => Promise<void>;
+  refreshBranches: (owner: string) => void;
+}
+
 export interface SourceInventoryController {
   authorityEpoch: number;
   getTransferAuthority: () => TransferAuthority;
@@ -93,6 +101,8 @@ export function useInventory() {
   const authGeneration = useRef(0);
   const readGeneration = useRef(0);
   const active = useRef(new Set<AbortController>());
+  const privateActive = useRef(new Set<AbortController>());
+  const [authNotice, setAuthNotice] = useState('');
   const inFlight = useRef<Read | null>(null);
   const csrf = useRef('');
   const mounted = useRef(true);
@@ -177,7 +187,10 @@ export function useInventory() {
   }
   function clearProtected() {
     neutralProbe.current?.cancel(); neutralProbe.current = null;
-    cancelReads(); setMetadata(null); setData(null); setResultsError(''); setRealtimeError(''); setLoading(false);
+    cancelReads();
+    for (const controller of privateActive.current) controller.abort();
+    privateActive.current.clear();
+    setMetadata(null); setData(null); setResultsError(''); setRealtimeError(''); setLoading(false);
     csrf.current = ''; authorityState.current.session = null; setSession(null);
     restitutionRecovery.synchronize(null);
   }
@@ -185,13 +198,8 @@ export function useInventory() {
     return mounted.current && authGeneration.current === auth && (read === undefined || readGeneration.current === read);
   }
   function initial(next: Session) {
-    // Password-change routing belongs to the account UI. Until then, never
-    // bootstrap operational reads, SSE or mutation authority for this session.
-    if (next.authenticated && next.identity.must_change_password !== false) {
-      throw new Error('La cuenta requiere cambiar la contraseña antes de operar.');
-    }
     csrf.current = next.csrf_token; authorityState.current.session = next; setSession(next);
-    if (next.authenticated) {
+    if (next.authenticated && next.identity.must_change_password === false) {
       setQuery(initialQuery(next.identity.location.id));
       setJob(previous => ({ sequence: previous.sequence + 1, reason: 'initial', full: true }));
     }
@@ -380,7 +388,7 @@ export function useInventory() {
   };
   const confirmTransferDispatchReconciliation = useCallback((owner: DecisionOwner, operation: DispatchReconciliationOperation) => reconciliationEffects.current(owner, operation), []);
   const realtimeEpoch = authGeneration.current;
-  const stopRealtime = useRealtime({ enabled: !!session?.authenticated && !authBusy, epoch: realtimeEpoch,
+  const stopRealtime = useRealtime({ enabled: !!session?.authenticated && session.identity.must_change_password === false && !authBusy, epoch: realtimeEpoch,
     resync: () => { invalidate(true); notifyTransfers(realtimeEpoch); notifySourceInventory(realtimeEpoch); },
     inventory: () => { invalidate(false); notifySourceInventory(realtimeEpoch); },
     transfers: () => notifyTransfers(realtimeEpoch), error: validate });
@@ -389,6 +397,8 @@ export function useInventory() {
     mounted.current = true; void restore();
     return () => {
       mounted.current = false; stopRealtime(); authGeneration.current++; cancelReads(); csrf.current = '';
+      for (const controller of privateActive.current) controller.abort();
+      privateActive.current.clear();
       restitutionRecovery.synchronize(null);
       transferListeners.current.clear(); sourceInventoryListeners.current.clear();
       neutralProbe.current?.cancel(); neutralProbe.current = null;
@@ -414,7 +424,7 @@ export function useInventory() {
   }, [session, authBusy]);
 
   useEffect(() => {
-    if (!session?.authenticated || authBusy) return;
+    if (!session?.authenticated || session.identity.must_change_password !== false || authBusy) return;
     const auth = authGeneration.current;
     const read = ++readGeneration.current;
     const pending: Read = { auth, generation: read, dirty: false, full: false };
@@ -472,7 +482,7 @@ export function useInventory() {
     if (authBusy || mutation.current || !csrf.current) return;
     mutation.current = true; stopRealtime(); neutralProbe.current?.cancel(); neutralProbe.current = null;
     const auth = ++authGeneration.current;
-    cancelReads(); setAuthBusy(true); setFormError('');
+    cancelReads(); setAuthBusy(true); setFormError(''); setAuthNotice('');
     try {
       if (!await mutationBarrier() || !current(auth)) return;
       const next = parseSession(await (await request('/api/auth/login', {
@@ -492,7 +502,10 @@ export function useInventory() {
     if (authBusy || mutation.current || !session?.authenticated) return;
     mutation.current = true; stopRealtime(); neutralProbe.current?.cancel(); neutralProbe.current = null;
     const auth = ++authGeneration.current;
-    cancelReads(); setLoading(false); setAuthBusy(true); setResultsError('');
+    cancelReads();
+    for (const controller of privateActive.current) controller.abort();
+    privateActive.current.clear();
+    setLoading(false); setAuthBusy(true); setResultsError('');
     setJob(previous => ({ sequence: previous.sequence + 1, reason: 'event', full: false }));
     try {
       if (!await mutationBarrier() || !current(auth)) return;
@@ -504,7 +517,64 @@ export function useInventory() {
       else setResultsError(errorMessage(error));
     } finally { mutation.current = false; if (current(auth)) setAuthBusy(false); }
   }
-  return { session, metadata, data, query, loading, authBusy, formError, resultsError: resultsError || realtimeError, focusLogin,
+  // Private panes share the authentication coordinator, including forced sessions
+  // which deliberately have no operational transfer authority.
+  function privateOwner(scope: PrivateScope): string | null {
+    const authority = getTransferAuthority();
+    const value = authority.session;
+    if (!mounted.current || mutation.current || authorityState.current.authBusy || !value?.authenticated) return null;
+    if (scope === 'admin' && (!authority.ready || value.identity.account_id !== 1 || value.identity.location.id !== 1)) return null;
+    return JSON.stringify([authority.epoch, authority.sessionGeneration, value.identity.account_id, value.identity.location.id, value.identity.display_name]);
+  }
+  async function privateRequest(owner: string, scope: PrivateScope, path: string, signal: AbortSignal,
+    method: 'GET' | 'POST' | 'PATCH' = 'GET', body?: object, expected = 200): Promise<string> {
+    const allowed = scope === 'password' ? path === '/api/auth/password' && method === 'POST'
+      : /^\/api\/admin\/(accounts(?:\/[1-9]\d*(?:\/password)?)?|branches)$/.test(path);
+    if (!allowed || signal.aborted || privateOwner(scope) !== owner) throw new Error('La sesión cambió. Cerrá esta pantalla.');
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal.addEventListener('abort', abort, { once: true }); privateActive.current.add(controller);
+    const owned = () => !signal.aborted && !controller.signal.aborted && privateOwner(scope) === owner;
+    try {
+      const headers = new Headers();
+      if (method === 'GET') headers.set('X-Luson-Passive', '1');
+      else { headers.set('Content-Type', 'application/json'); headers.set('X-CSRF-Token', csrf.current); }
+      const response = await fetch(path, { method, credentials: 'same-origin', cache: 'no-store', headers,
+        signal: controller.signal, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      if (!owned()) throw new Error('La sesión cambió. Cerrá esta pantalla.');
+      const raw = await response.text();
+      if (!owned()) throw new Error('La sesión cambió. Cerrá esta pantalla.');
+      if (response.status !== expected) {
+        let code = '';
+        try { const value: unknown = JSON.parse(raw); if (value && typeof value === 'object' && 'error' in value && typeof value.error === 'string') code = value.error; } catch { /* Never display untrusted response bodies. */ }
+        if (response.status === 401 && code === 'unauthenticated') {
+          // Only the exact live owner may initiate cookie-writing restoration.
+          if (owned()) await restore(true, 'La sesión venció. Iniciá sesión nuevamente.');
+        }
+        const messages: Record<string, string> = {
+          invalid_credentials: 'La contraseña actual es incorrecta.', invalid_request: 'Solicitud inválida. Revisá los datos.',
+          forbidden: 'No tenés permiso para realizar esta acción.', password_change_required: 'Debés cambiar tu contraseña antes de operar.',
+          conflict: 'El usuario o nombre de sucursal ya existe.', not_found: 'La cuenta o sucursal ya no está disponible.',
+          rate_limited: 'Demasiados intentos. Esperá un minuto.', service_unavailable: 'Servicio no disponible. Intentá más tarde.',
+          unauthenticated: 'La sesión venció. Iniciá sesión nuevamente.',
+        };
+        throw new Error(messages[code] ?? 'Respuesta inválida del servidor.');
+      }
+      if (expected === 204 && raw !== '') throw new Error('Respuesta inválida del servidor.');
+      return raw;
+    } finally { signal.removeEventListener('abort', abort); privateActive.current.delete(controller); }
+  }
+  async function changePassword(owner: string, currentPassword: string, newPassword: string, signal: AbortSignal) {
+    await privateRequest(owner, 'password', '/api/auth/password', signal, 'POST',
+      { current_password: currentPassword, new_password: newPassword }, 204);
+    if (signal.aborted || privateOwner('password') !== owner) return;
+    stopRealtime(); authGeneration.current++; clearProtected();
+    setAuthNotice('Contraseña actualizada. Iniciá sesión nuevamente.');
+    await restore(true);
+  }
+  function refreshBranches(owner: string) { if (privateOwner('admin') === owner) invalidate(true); }
+  return { session, metadata, data, query, loading, authBusy, formError, authNotice, resultsError: resultsError || realtimeError, focusLogin,
+    privateOwner, privateRequest, changePassword, refreshBranches,
     login, logout, change, retrySession: () => restore(), retryInventory: () => change({}, true),
     confirmTransferCreation, decisionRecovery, confirmTransferDecision, dispatchRecovery, receiptRecovery, confirmTransferReceipt, cancellationRecovery, confirmTransferCancellation,
     countCorrectionRecovery, confirmTransferCountCorrection, restitutionRecovery, confirmTransferRestitution, confirmTransferDispatchReconciliation,

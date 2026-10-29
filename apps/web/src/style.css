@@ -795,3 +795,21 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .count-modal footer { flex-wrap: wrap; }
   .count-modal footer button { flex: 1 1 160px; }
 }
+
+/* Narrow operators keep their table renderer and authority; only shell controls reflow. */
+@media (max-width: 767px) {
+  .app-shell:not(.warehouse) .sidebar { position: static; width: auto; }
+  .app-shell:not(.warehouse) .side-nav { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .app-shell:not(.warehouse) .app-header { position: static; height: auto; padding: 16px; gap: 12px; flex-wrap: wrap; }
+  .app-shell:not(.warehouse) .inventory-main { margin: 0; padding: 16px; min-height: auto; }
+  .app-shell:not(.warehouse) .inventory-main > * { min-width: 0; }
+  .app-shell:not(.warehouse) .inventory-heading { padding: 16px; }
+  .app-shell:not(.warehouse) .title-row { flex-wrap: wrap; }
+  .app-shell:not(.warehouse) .filters { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .app-shell:not(.warehouse) .search-field { max-width: none; }
+  .app-shell:not(.warehouse) .filter-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .app-shell:not(.warehouse) .filter-pair > div { display: grid; min-width: 0; }
+  .app-shell:not(.warehouse) .filter-pair select { width: 100%; }
+  .app-shell:not(.warehouse) .pager,
+  .app-shell:not(.warehouse) .page-controls { flex-wrap: wrap; }
+}

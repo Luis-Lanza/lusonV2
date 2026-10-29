@@ -10,6 +10,8 @@ import { useTransfers } from './useTransfers';
 import TransferCreation from './TransferCreation';
 import TransferPending, { transferViewOwner } from './TransferPending';
 import { createTransferRecovery } from './transferRecovery';
+import AccountAdministration from './AccountAdministration';
+import PasswordChange from './PasswordChange';
 
 type Controller = ReturnType<typeof useInventory>;
 function Login({ state }: { state: Controller }) {
@@ -37,6 +39,7 @@ function Login({ state }: { state: Controller }) {
           <div className="password-field"><input id="password" name="password" type={visible ? 'text' : 'password'} autoComplete="current-password" placeholder="Ingresá tu contraseña" required value={password} onChange={e => setPassword(e.target.value)} />
             <button type="button" className="eye" aria-label={visible ? 'Ocultar contraseña' : 'Mostrar contraseña'} aria-pressed={visible} onClick={() => setVisible(v => !v)}><Icon name="eye" /></button></div>
           <div className="login-notice"><Icon name="info" /><p>Tu cuenta tiene una ubicación asignada según el perfil operativo registrado.</p></div>
+          {state.authNotice && <p className="message" role="status">{state.authNotice}</p>}
           {state.formError && <p className="message" role="alert">{state.formError}</p>}
           {state.authBusy && <p className="message" role="status">Verificando sesión…</p>}
           {!state.session && !state.authBusy && <button type="button" className="refresh" onClick={() => void state.retrySession()}>Reintentar conexión</button>}
@@ -76,18 +79,21 @@ function Pager({ state }: { state: Controller }) {
     </div>
   </footer>;
 }
-function Navigation({ mobile = false, transfers, disabled, actionCount, countUnavailable, onInventory, onPending }: {
+function Navigation({ mobile = false, transfers, disabled, actionCount, countUnavailable, onInventory, onPending, privateSection, admin, onAdmin, onPassword }: {
   mobile?: boolean; transfers: boolean; disabled: boolean; actionCount: string | null; countUnavailable: boolean;
-  onInventory: () => void; onPending: () => void;
+  onInventory: () => void; onPending: () => void; privateSection?: string; admin: boolean;
+  onAdmin: () => void; onPassword: () => void;
 }) {
   const statusID = mobile ? 'mobile-transfer-count' : 'desktop-transfer-count';
   const countStatus = actionCount !== null ? `Acciones requeridas: ${actionCount}`
     : countUnavailable ? 'Contador de acciones no disponible.' : 'Consultando acciones requeridas…';
   return <nav className={mobile ? 'bottom-nav' : 'side-nav'} aria-label={mobile ? 'Navegación móvil' : 'Navegación principal'}>
-    <a href="#inventario" aria-current={!transfers ? 'page' : undefined} aria-disabled={disabled} onClick={event => { event.preventDefault(); if (!disabled) onInventory(); }}><Icon name="inventory" /><span>Inventario</span></a>
+    <a href="#inventario" aria-current={!transfers && !privateSection ? 'page' : undefined} aria-disabled={disabled} onClick={event => { event.preventDefault(); if (!disabled) onInventory(); }}><Icon name="inventory" /><span>Inventario</span></a>
     <button type="button" disabled={disabled} aria-current={transfers ? 'page' : undefined} aria-describedby={statusID} onClick={onPending}><Icon name="transfer" /><span>Transferencias</span>
       <span className={'transfer-action-badge' + (actionCount === null ? ' unknown' : actionCount === '0' ? ' zero' : '')} aria-hidden="true">{actionCount ?? (countUnavailable ? '—' : '…')}</span>
     </button>
+    {admin && <button type="button" disabled={disabled} aria-current={privateSection === 'administration' ? 'page' : undefined} onClick={onAdmin}>Administración</button>}
+    <button type="button" disabled={disabled} aria-current={privateSection === 'password' ? 'page' : undefined} onClick={onPassword}>Mi contraseña</button>
     <span id={statusID} className="sr-only" role="status">{countStatus}</span>
   </nav>;
 }
@@ -134,6 +140,11 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
       window.removeEventListener('hashchange', restore);
     };
   }, [ownerTag, creation, route, recovery, state.getTransferAuthority]);
+  const adminOwner = state.privateOwner('admin');
+  const passwordOwner = state.privateOwner('password');
+  const administration = route.section === 'administration' && adminOwner !== null;
+  const password = route.section === 'password' && passwordOwner !== null;
+  const privateSection = administration ? 'administration' : password ? 'password' : undefined;
   const pending = ownerTag !== null && route.section === 'transfers';
   const transfers = pending || creation;
   const creationAvailable = !state.authBusy && !!metadata && !!ownerTag
@@ -175,13 +186,21 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
   const selected = metadata?.locations.find(l => l.id === query.location);
   const recoverable = recovery.getCurrent(state.getTransferAuthority);
   const navDisabled = !ownerTag || creation || recoverable?.phase === 'inFlight';
-  const navigation = { transfers, disabled: navDisabled, actionCount, countUnavailable, onInventory: () => navigate(false), onPending: () => navigate(true) };
-  return <div className={'app-shell' + (warehouse ? ' warehouse' : '')}>
+  function navigatePrivate(section: 'administration' | 'password') {
+    const latest = transferViewOwner(state.getTransferAuthority());
+    if (navDisabled || latest !== ownerTag || !state.privateOwner(section === 'administration' ? 'admin' : 'password')) return;
+    changeRoute({ section });
+  }
+  const navigation = { transfers, disabled: navDisabled, actionCount, countUnavailable, privateSection, admin: adminOwner !== null,
+    onAdmin: () => navigatePrivate('administration'), onPassword: () => navigatePrivate('password'), onInventory: () => navigate(false), onPending: () => navigate(true) };
+  return <div className={'app-shell' + (warehouse ? ' warehouse' : '') + (privateSection ? ' private-shell' : '')}>
     <aside className="sidebar" hidden={mobile}><div><Brand />{!mobile && <Navigation {...navigation} />}</div><div className="sidebar-footer"><div className="identity"><strong>{identity.username}</strong><small className="assigned-location">{identity.location.name}</small></div><button className="logout" type="button" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" />Cerrar sesión</button></div></aside>
-    <header className="app-header" hidden={mobile}><strong>Luson {transfers ? 'Transferencias' : 'Inventario'}</strong><span><Icon name="warehouse" />Ubicación asignada: <b>{identity.location.name}</b></span></header>
+    <header className="app-header" hidden={mobile}><strong>Luson {administration ? 'Administración' : password ? 'Mi contraseña' : transfers ? 'Transferencias' : 'Inventario'}</strong><span><Icon name="warehouse" />Ubicación asignada: <b>{identity.location.name}</b></span></header>
     <header className="mobile-header" hidden={!mobile}><div><Brand /><button type="button" aria-label="Cerrar sesión" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" /></button></div><div className="mobile-identity"><span><Icon name="warehouse" />{identity.location.name}</span><span>{identity.username}</span></div></header>
     <main id={transfers ? 'transferencias' : 'inventario'} className="inventory-main">
-      {creation && metadata ? <TransferCreation controller={state} metadata={metadata} recovery={recovery} onBack={returnToTransfers} onDetail={openCreatedDetail} />
+      {administration && adminOwner ? <AccountAdministration key={adminOwner} controller={state} owner={adminOwner} />
+        : password && passwordOwner ? <PasswordChange key={passwordOwner} controller={state} owner={passwordOwner} onBack={() => navigate(false)} />
+        : creation && metadata ? <TransferCreation controller={state} metadata={metadata} recovery={recovery} onBack={returnToTransfers} onDetail={openCreatedDetail} />
         : pending && ownerTag && route.section === 'transfers' ? <TransferPending key={ownerTag} controller={state} ownerTag={ownerTag} routedDetail={route.id} onRouteDetail={id => changeRoute({ section: 'transfers', id })} onInventory={() => navigate(false)} creationAvailable={creationAvailable} onCreate={openCreation} /> : <>
       {recoverable && <section className="creation-recovery" aria-label="Recuperación de solicitud"><p>{recoverable.phase === 'ready' ? 'Tenés una revisión preparada, todavía no enviada.' : 'Tenés un intento pendiente de confirmación.'}</p>
         <button type="button" disabled={!creationAvailable} onClick={openCreation}>{recoverable.phase === 'ready' ? 'Retomar revisión' : 'Retomar misma solicitud'}</button>
@@ -219,5 +238,11 @@ export default function App() {
     if (wasAuthenticated.current && !authenticated) writeNavigation({ section: 'inventory' }, true);
     wasAuthenticated.current = authenticated;
   }, [state.session?.authenticated]);
-  return state.session?.authenticated ? <InventoryView state={state} recovery={recovery} /> : <Login state={state} />;
+  if (!state.session?.authenticated) return <Login state={state} />;
+  if (state.session.identity.must_change_password !== false) {
+    const owner = state.privateOwner('password');
+    return <div className="password-gate"><header><Brand /><button type="button" disabled={state.authBusy} onClick={() => void state.logout()}>Cerrar sesión</button></header>
+      <main>{owner ? <PasswordChange key={owner} controller={state} owner={owner} forced /> : <p role="status">Verificando sesión…</p>}{state.resultsError && <p role="alert">{state.resultsError}</p>}</main></div>;
+  }
+  return <InventoryView state={state} recovery={recovery} />;
 }

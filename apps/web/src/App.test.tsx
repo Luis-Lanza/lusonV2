@@ -1386,6 +1386,75 @@ describe('R04c guarded success navigation', () => {
 });
 
 
+describe('T6 administration directory', () => {
+  const accounts = [{ id: '1', username: 'almacen', display_name: 'Admin', location_id: 1, enabled: true, must_change_password: false },
+    { id: '4', username: 'personal.c', display_name: '', location_id: 4, enabled: false, must_change_password: true }];
+  const branches = [...metadata.locations, { id: 4, name: 'Sucursal C' }];
+  function directorySetup() {
+    return setup(session, url => url === '/api/admin/accounts' ? Promise.resolve(response(accounts))
+      : url === '/api/admin/branches' ? Promise.resolve(response(branches)) : undefined);
+  }
+  it('opens real account/branch lists, permits blank legacy names and protects only account 1', async () => {
+    const mock = directorySetup(); render(<App />); await inventory();
+    fireEvent.click(screen.getByRole('button', { name: 'Administración' }));
+    await screen.findByRole('heading', { name: 'Usuarios y sucursales' });
+    await screen.findByRole('button', { name: 'Gestionar personal.c' });
+    const reads = mock.mock.calls.filter(([url]) => String(url).startsWith('/api/admin/'));
+    expect(reads.map(([url]) => url).sort()).toEqual(['/api/admin/accounts', '/api/admin/branches']);
+    for (const [, init] of reads) {
+      expect(init?.method).toBe('GET'); expect(init?.credentials).toBe('same-origin');
+      expect(new Headers(init?.headers).get('X-Luson-Passive')).toBe('1'); expect(init?.body).toBeUndefined();
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Gestionar almacen' }));
+    expect(screen.queryByLabelText('Sucursal asignada')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Restablecer contraseña' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar gestión' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Gestionar personal.c' }));
+    expect(screen.getByLabelText('Sucursal asignada')).toHaveValue('4');
+    expect(screen.getByRole('button', { name: 'Restablecer contraseña' })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'PATCH' || init?.method === 'POST')).toBe(false);
+  });
+  it('keeps operators out of administration even at a direct hash', async () => {
+    window.history.replaceState(null, '', '/#/administracion');
+    const mock = setup({ ...session, identity: { ...identity, account_id: 4, location: { id: 4, name: 'Sucursal C' } } }, url =>
+      url.startsWith('/api/inventory?') ? Promise.resolve(response(pageJSON().replace('"location":{"id":1,"name":"Almacén"}', '"location":{"id":4,"name":"Sucursal C"}'))) : undefined);
+    render(<App />); await inventory();
+    expect(screen.queryByRole('button', { name: 'Administración' })).not.toBeInTheDocument();
+    expect(mock.mock.calls.some(([url]) => String(url).startsWith('/api/admin/'))).toBe(false);
+  });
+});
+
+describe('T6 password lifecycle', () => {
+  it.each([1, 20])('gates mandatory-password account %s without operational HTTP or SSE and permits logout', async account => {
+    const restricted = { ...session, identity: { ...identity, account_id: account, must_change_password: true,
+      location: account === 1 ? identity.location : { id: 4, name: 'Sucursal C' } } };
+    const mock = setup(restricted);
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Creá tu contraseña personal' });
+    expect(screen.queryByRole('navigation')).not.toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
+    expect(mock.mock.calls.map(([url]) => url)).toEqual(['/api/auth/session']);
+    expect(AppSource.instances).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }));
+    await screen.findByLabelText('Usuario');
+    expect(mock.mock.calls.map(([url]) => url)).toEqual(['/api/auth/session', '/api/auth/logout', '/api/auth/session']);
+  });
+  it.each([1, 2])('offers own-password change for completed account %s without losing consulted inventory', async account => {
+    const actor = { ...session, identity: { ...identity, account_id: account, location: metadata.locations[account - 1] } };
+    const mock = setup(actor);
+    render(<App />); await inventory();
+    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'kept-password-query' } }); await inventory();
+    fireEvent.click(screen.getByRole('button', { name: 'Mi contraseña' }));
+    await screen.findByRole('heading', { name: 'Cambiar mi contraseña' });
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Volver' }));
+    await inventory();
+    expect(screen.getByLabelText('Buscar marca o modelo')).toHaveValue('kept-password-query');
+    expect(AppSource.instances).toHaveLength(1);
+  });
+});
+
 describe('URL navigation persistence', () => {
   function routedSetup() {
     return setup(session, url => {
