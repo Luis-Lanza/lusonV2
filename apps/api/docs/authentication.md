@@ -1,6 +1,6 @@
 # Authentication and password authority
 
-Authentication uses `auth_accounts.id`; `identity.location` is the assigned operational location, never the account identity. The sole administrator remains account 1 at warehouse location 1. This unit adds no public registration, directory, reset or branch routes. Dynamic operator/branch operations remain gated on T4/T5 integration.
+Authentication uses `auth_accounts.id`; `identity.location` is the assigned operational location, never the account identity. The sole administrator remains account 1 at warehouse location 1. There is no public registration or public recovery. Protected account/branch administration and operator resets are documented in [administration](administration.md); the directory UI and private warehouse recovery CLI remain pending.
 
 Successful login and `GET /api/auth/session` return `authenticated`, `identity`, `csrf_token` and `expires_at`. Identity contains `account_id`, `username`, `display_name`, explicit boolean `must_change_password`, and `location: {id,name}`. No hashes or passwords are returned. Active reads renew idle authority at the existing interval; `X-Luson-Passive: 1` and `Peek` never renew it. Both validate enabled state and equality of session/account authority versions against the live database.
 
@@ -20,8 +20,8 @@ Success atomically replaces the hash, clears `must_change_password`, increments 
 
 Mandatory-change sessions can inspect `/api/auth/session`, change their own password, and logout. Operational composition rejects them with 403 `password_change_required`; standalone auth middleware returns plaintext 403 `password change required`. SSE revalidation stops restricted or stale authority before further event writes. Session inspection continues to expose restricted identity rather than treating it as an invalid login.
 
-## Later account lifecycle integration
+## Administrator lifecycle integration
 
-No speculative exported admin mutation helper is introduced. T5/T7 must implement their own authorized transactions with the same lock order: lock `auth_accounts` by independent ID before touching sessions; mutate lifecycle state, increment `authority_version`, and revoke all unrevoked sessions for that account in that same transaction. Reset must also set `must_change_password=true` and use the existing password policy/hash helpers with bounded admission. Reassignment, deactivation and reactivation must never restore previous authority. Do not update assigned location or credentials without retiring the version. Database constraints protect the singleton administrator; they are not HTTP authorization.
+Administration validates the actual protected account and live completed session, then locks the administrator and target accounts in numeric order before sessions. Reset uses the small package-private `resetAccountCredential` primitive: replace the prevalidated hash, require a password change, increment authority version and retire all sessions in one transaction. Authorization and protected-account policy stay outside that neutral primitive; future private CLI recovery can reuse it without an HTTP override. The existing own-password implementation is unchanged.
 
-This prerequisite does not remove existing fixed-location inventory/transfer/SSE checks or enable multiple operators at runtime. Ordinary operational test fixtures must explicitly set `must_change_password=false`; production defaults remain mandatory.
+Reassignment and enabled-state transitions retire authority atomically; reactivation never restores old sessions. Profile-only and no-op edits preserve sessions. Reset does not enable disabled accounts. Database constraints protect the singleton assignment but never replace live service authorization. Dynamic inventory, transfer and SSE fences continue to apply. Ordinary operational test fixtures explicitly set `must_change_password=false`; production defaults remain mandatory.

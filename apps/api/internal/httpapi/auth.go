@@ -42,6 +42,7 @@ func compose(service *auth.Service, cfg config.Auth, store *inventory.Store, req
 	mux.HandleFunc("/api/auth/login", api.login)
 	mux.HandleFunc("/api/auth/logout", api.logout)
 	mux.HandleFunc("/api/auth/password", api.password)
+	api.registerAdministration(mux)
 	api.registerInventory(mux, store)
 	if requests != nil {
 		api.registerTransfers(mux, requests)

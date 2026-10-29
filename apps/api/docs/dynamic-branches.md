@@ -1,6 +1,6 @@
 # Dynamic branch operations
 
-Warehouse location 1 belongs only to account 1. Every other account is a personal operator assigned to an existing branch. Operators have the branch's full existing capabilities; account IDs are not location IDs and do not grant additional authority.
+Warehouse location 1 belongs only to account 1. Every other account is a personal operator assigned to an existing branch. Operators have the branch's full existing capabilities; account IDs are independent of location IDs and do not grant additional authority. The numbers may coincide; the actual database assignment governs operations.
 
 ## Operational contract
 
@@ -12,9 +12,9 @@ Warehouse location 1 belongs only to account 1. Every other account is a persona
 - A new branch receives zero balances for all 190 catalog variants and a private transfer revision row atomically. Inventory invalidations refresh connected brokers so the new audience becomes subscribable. Unknown audiences and malformed notification framing fail closed.
 - Bootstrap rechecks the complete catalog × current-locations balance matrix without resetting operational quantities or repairing partial datasets. The embedded catalog and three base location identities remain protected.
 
-## Private schema seam
+## Protected administration seam
 
-`create_branch(text)` remains revoked from PUBLIC. It serializes allocation through the existing initialization lock and requires an initialized catalog. It is not an administration endpoint. Branch initialization uses the existing `initialize_branch_inventory` trigger for both stock and realtime state. Migration 015 extends the latest guards; historical migrations are unchanged.
+`POST /api/admin/branches` now calls `create_branch(text)` through the protected administrator service transaction; see [administration](administration.md). The database function remains revoked from PUBLIC. It serializes allocation through the existing initialization lock and requires an initialized catalog. Branch initialization reuses the existing `initialize_branch_inventory` trigger for both stock and realtime state. No schema changes or duplicate initialization logic are introduced by the API.
 
 ## Browser integration
 
