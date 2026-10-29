@@ -47,6 +47,11 @@ password privately and must change it before accessing operational screens.
 Every account, including the administrator, can use **Mi contraseña**; a
 successful change closes all sessions and requires a fresh login.
 
+If the sole warehouse administrator loses access, use the private server command
+`recover-warehouse` with hidden, confirmed temporary-password input. See
+[warehouse recovery](apps/api/docs/warehouse-recovery.md) for configuration,
+policy and mandatory-change steps. There is no public recovery or second admin.
+
 See [account administration](apps/web/docs/account-administration.md) for the
 UI workflow, private credential handling and current API contracts. The L03/L04
 contract below is historical; account IDs are now independent of location IDs.
