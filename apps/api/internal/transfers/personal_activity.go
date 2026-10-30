@@ -26,14 +26,15 @@ type Activity struct {
 	VariantID    *int64        `json:"variant_id,omitempty"`
 }
 
-// Reuse each operation's existing transaction and lock order. The local setting
-// cannot leak through the pool and is not an authorization/session policy.
+// Take the common integrity fence before retry, header or stock locks, including
+// pending creation. Assignment/activity account reads remain MVCC, not row locks.
+// The local setting cannot leak through the pool and is not authorization.
 func (s *Store) beginPersonal(ctx context.Context, actor auth.Identity) (pgx.Tx, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return nil, err
 	}
-	if _, err = tx.Exec(ctx, `SELECT set_config('luson.transfer_account_id',$1,true)`, strconv.Itoa(actor.AccountID)); err != nil {
+	if _, err = tx.Exec(ctx, `SELECT set_config('luson.transfer_account_id',$1,true), pg_advisory_xact_lock(714025,1)`, strconv.Itoa(actor.AccountID)); err != nil {
 		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
 		defer done()
 		_ = tx.Rollback(cleanup)
