@@ -137,7 +137,7 @@ func (s *Service) ListAccounts(ctx context.Context, token string) ([]Account, er
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	result := []Account{}
-	rows, err := tx.Query(ctx, `SELECT id::text,username,display_name,location_id,enabled,must_change_password FROM auth_accounts ORDER BY id`)
+	rows, err := tx.Query(ctx, `SELECT id::text,username,display_name,location_id,enabled,must_change_password FROM auth_accounts WHERE deleted_at IS NULL ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -237,7 +237,10 @@ func (s *Service) UpdateOperator(ctx context.Context, token string, id int64, in
 	var location int
 	var enabled bool
 	var display string
-	if err = tx.QueryRow(ctx, `SELECT location_id,enabled,display_name FROM auth_accounts WHERE id=$1`, id).Scan(&location, &enabled, &display); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT location_id,enabled,display_name FROM auth_accounts WHERE id=$1 AND deleted_at IS NULL`, id).Scan(&location, &enabled, &display); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrAdminNotFound
+		}
 		return err
 	}
 	retire := false
@@ -279,16 +282,58 @@ func (s *Service) ResetOperatorPassword(ctx context.Context, token string, id in
 	if id < 1 || !ValidCredentials("valid", password) {
 		return ErrAdminInvalid
 	}
+	tx, err := s.administrationTx(ctx, token, id)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	var active bool
+	if err = tx.QueryRow(ctx, `SELECT deleted_at IS NULL FROM auth_accounts WHERE id=$1`, id).Scan(&active); err != nil {
+		return err
+	}
+	if !active {
+		return ErrAdminNotFound
+	}
 	replacement, err := s.administrationHash(password)
 	if err != nil {
 		return err
+	}
+	if err = resetAccountCredential(ctx, tx, id, replacement, s.now().UTC()); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// RetireOperator retains identity/history and retires all authority atomically.
+func (s *Service) RetireOperator(ctx context.Context, token string, id int64) error {
+	if err := s.Administrator(ctx, token); err != nil {
+		return err
+	}
+	if id == 1 {
+		return ErrAdminForbidden
+	}
+	if id < 1 {
+		return ErrAdminInvalid
 	}
 	tx, err := s.administrationTx(ctx, token, id)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
-	if err = resetAccountCredential(ctx, tx, id, replacement, s.now().UTC()); err != nil {
+	var active bool
+	if err = tx.QueryRow(ctx, `SELECT deleted_at IS NULL FROM auth_accounts WHERE id=$1`, id).Scan(&active); err != nil {
+		return err
+	}
+	// Do not UPDATE an archived marker or retire its sessions a second time.
+	if !active {
+		return tx.Commit(ctx)
+	}
+	// Ordered account/admin-session locks precede the statement trigger's global
+	// fence. PostgreSQL's transaction timestamp is stable for the marker.
+	if _, err = tx.Exec(ctx, `UPDATE auth_accounts SET enabled=false,deleted_at=CURRENT_TIMESTAMP,authority_version=authority_version+1 WHERE id=$1 AND deleted_at IS NULL`, id); err != nil {
+		return administrationError(err)
+	}
+	if err = retireAccountSessions(ctx, tx, id, s.now().UTC()); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

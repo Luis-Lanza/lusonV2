@@ -294,7 +294,7 @@ func TestT5ProtectedAndStrictPayloads(t *testing.T) {
 		{"PATCH", "/api/admin/accounts/1", `{"enabled":false}`, 403, "forbidden"},
 		{"PATCH", "/api/admin/accounts/1", `{"location_id":2}`, 403, "forbidden"},
 		{"POST", "/api/admin/accounts/1/password", `{"temporary_password":"private-reset-value"}`, 403, "forbidden"},
-		{"DELETE", "/api/admin/accounts/2", "", 405, "method_not_allowed"},
+		{"PUT", "/api/admin/accounts/2", "", 405, "method_not_allowed"},
 		{"POST", "/api/admin/branches", `{"name":"Almacén"}`, 400, "invalid_request"},
 		{"POST", "/api/admin/branches", `{"name":"Otra","kind":"warehouse"}`, 400, "invalid_request"},
 		{"POST", "/api/admin/branches", `{"name":"Otra","role":"admin"}`, 400, "invalid_request"},

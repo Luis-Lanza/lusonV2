@@ -238,8 +238,21 @@ func (a *API) administration(w http.ResponseWriter, r *http.Request) {
 				administrationFailure(w, err)
 				return
 			}
+		} else if r.Method == http.MethodDelete {
+			if !a.GuardMutation(w, r) {
+				return
+			}
+			if err := a.service.RetireOperator(r.Context(), token, id); err != nil {
+				administrationFailure(w, err)
+				return
+			}
 		} else {
-			if !method(w, r, http.MethodPatch) || !a.GuardMutation(w, r) {
+			if r.Method != http.MethodPatch {
+				w.Header().Set("Allow", "PATCH, DELETE")
+				failure(w, 405, "method_not_allowed")
+				return
+			}
+			if !a.GuardMutation(w, r) {
 				return
 			}
 			fields, err := administrationFields(r, "display_name", "location_id", "enabled")

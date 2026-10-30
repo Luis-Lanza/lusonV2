@@ -1,8 +1,9 @@
 # Administrative retirement foundation
 
-Migration 017 adds integrity foundations only. Admin HTTP actions, session revocation,
-filtered directories/selectors and UI confirmations are subsequent D3–D5 work; this
-migration alone does not ship administrative deletion to users.
+Migration 017 supplies integrity foundations. D3 adds personal-user HTTP retirement,
+atomic session revocation and filtered account directories; see [account API](administration.md).
+Branch HTTP retirement, operational filtering/metadata and UI confirmations remain
+D4–D5 work. This is not a claim that the full deletion feature is shipped.
 
 ## Retained records
 
@@ -41,5 +42,10 @@ IDs/names and physical location deletion remain protected.
 New business failures use SQLSTATE `23514`: `active_location_required`,
 `branch_retirement_blocked`, `locations_identity_immutable`, and
 `account_retirement_immutable`. Check constraints are `auth_accounts_retirement_check`
-and `locations_retirement_check`. HTTP mapping and active-user authority enforcement
-remain D3/D4 responsibilities.
+and `locations_retirement_check`. D3's account DELETE uses ordered account/admin-session
+locks before the UPDATE trigger's global fence, retaining rows and incrementing
+version only on first retirement. Existing Login initial/locked enabled checks and
+Current/Peek enabled/version/revocation predicates enforce account authority because
+the constraint requires deleted accounts to be disabled. Realtime uses Peek for
+initial admission and periodic revalidation. Live stream/concurrency verification
+remains D6; branch HTTP mapping and active-location filtering remain D4.
