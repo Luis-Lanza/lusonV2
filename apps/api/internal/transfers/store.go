@@ -122,6 +122,9 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
    (creator_location_id,kind,origin_location_id,destination_location_id,approver_location_id,retry_key,payload_sha256,status)
    VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, n.CreatorID, string(n.Kind), n.OriginID, n.DestinationID, n.ApproverID, n.RetryKey, n.Fingerprint[:], status).Scan(&id)
 		if err != nil {
+			if ctx.Err() == nil && activeLocationRequired(err) {
+				return CreateResult{}, ErrDecisionConflict
+			}
 			return CreateResult{}, fail(ctx)
 		}
 		for _, line := range n.Items {

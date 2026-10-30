@@ -13,6 +13,7 @@ import (
 )
 
 var ErrInvalid = errors.New("invalid inventory request")
+var ErrRetiredLocation = errors.New("retired inventory location")
 
 type Location struct {
 	ID   int    `json:"id"`
@@ -73,7 +74,7 @@ func (s *Store) Metadata(ctx context.Context, actor auth.Identity) (Metadata, er
 		return result, err
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
-	rows, err := tx.Query(ctx, `SELECT id,name FROM locations ORDER BY id`)
+	rows, err := tx.Query(ctx, `SELECT id,name FROM locations WHERE deleted_at IS NULL ORDER BY id`)
 	if err != nil {
 		return result, err
 	}
@@ -132,7 +133,8 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q Query) (Page, e
 		return result, err
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
-	err = tx.QueryRow(ctx, `SELECT id,name FROM locations WHERE id=$1`, q.LocationID).Scan(&result.Location.ID, &result.Location.Name)
+	var retired bool
+	err = tx.QueryRow(ctx, `SELECT id,name,deleted_at IS NOT NULL FROM locations WHERE id=$1`, q.LocationID).Scan(&result.Location.ID, &result.Location.Name, &retired)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return result, ErrInvalid
 	}
@@ -147,6 +149,9 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q Query) (Page, e
 		if !exists {
 			return result, ErrInvalid
 		}
+	}
+	if retired {
+		return result, ErrRetiredLocation
 	}
 	args := []any{q.LocationID, literalPattern(q.Search), q.Brand, q.Polarity}
 	if err = tx.QueryRow(ctx, `SELECT count(*)`+filtered, args...).Scan(&result.TotalVariants); err != nil {

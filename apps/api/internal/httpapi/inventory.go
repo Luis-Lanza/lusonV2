@@ -41,6 +41,8 @@ func (a *API) inventoryIdentity(w http.ResponseWriter, r *http.Request) (auth.Id
 func inventoryFailure(w http.ResponseWriter, err error) {
 	if errors.Is(err, inventory.ErrInvalid) {
 		failure(w, 400, "invalid_request")
+	} else if errors.Is(err, inventory.ErrRetiredLocation) {
+		failure(w, 404, "not_found")
 	} else {
 		failure(w, 503, "service_unavailable")
 	}

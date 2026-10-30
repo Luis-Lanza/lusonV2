@@ -161,12 +161,23 @@ func (s *Store) correctCount(ctx context.Context, actor auth.Identity, id, varia
 	return op, nil
 }
 
+// activeLocationRequired recognizes only migration017's fresh-work rejection.
+// Callers retain cancellation precedence and their existing fallback mappings.
+func activeLocationRequired(err error) bool {
+	var p *pgconn.PgError
+	return errors.As(err, &p) && p.Code == "23514" &&
+		p.ConstraintName == "active_location_required" && p.Message == "New work requires active locations"
+}
+
 // Only known correction failures become domain conflicts. Unknown constraints,
 // isolation mistakes (25000), and operational failures remain unavailable; no
 // SQL text, private reason, or driver details cross the Store boundary.
 func countError(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
+	}
+	if activeLocationRequired(err) {
+		return ErrDecisionConflict
 	}
 	var p *pgconn.PgError
 	if !errors.As(err, &p) {

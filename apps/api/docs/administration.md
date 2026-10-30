@@ -1,6 +1,6 @@
 # Administrator account and branch API
 
-The sole protected warehouse account (account 1, assigned to warehouse 1) manages personal branch operators through `/api/admin/...`. There is no public registration, second administrator, warehouse creation, granular role, invitation or email workflow. Personal-account and branch retirement are available over HTTP; operational metadata/filtering and deletion UI remain pending.
+The sole protected warehouse account (account 1, assigned to warehouse 1) manages personal branch operators through `/api/admin/...`. There is no public registration, second administrator, warehouse creation, granular role, invitation or email workflow. Personal-account and branch retirement are available over HTTP; operational metadata/inventory filtering is implemented; deletion UI remains pending.
 
 ## Routes
 
@@ -55,7 +55,7 @@ The account directory omits retired accounts without changing its DTO. Temporari
 
 DELETE uses the same admin-only, cookie-neutral Origin/CSRF guards. Warehouse 1 returns 403 `forbidden`; unknown IDs return 404 `not_found`; invalid/out-of-smallint IDs return 400 `invalid_request`. Unsupported resource methods return 405 with `Allow: DELETE`. Success and repeated retirement return empty 204. The normal admin branch directory omits retired branches without changing its DTO; warehouse context remains.
 
-Blockers return 409, in precedence: `branch_has_stock` (any nonzero existing/reserved balance), `branch_has_users` (nondeleted assigned users, including disabled users), `branch_has_pending_operations` (unresolved work at either endpoint, including latest undecided received-operation proposals). Resolve blockers before retrying. Retirement retains IDs, names, balances, audiences and historical actor evidence; no purge, restore or reuse is available. Operational metadata/direct inventory filtering and UI confirmations are still pending, not supplied by this endpoint.
+Blockers return 409, in precedence: `branch_has_stock` (any nonzero existing/reserved balance), `branch_has_users` (nondeleted assigned users, including disabled users), `branch_has_pending_operations` (unresolved work at either endpoint, including latest undecided received-operation proposals). Resolve blockers before retrying. Retirement retains IDs, names, balances, audiences and historical actor evidence; no purge, restore or reuse is available. Operational metadata omits retired branches. Direct inventory for a retired branch returns 404 `not_found`; missing/unknown locations and invalid queries retain 400 `invalid_request`. Fresh transfer creation and received count/restitution/reconciliation work involving a retired endpoint return 409 `decision_conflict`. Stored exact retries remain eligible for replay; historical reads retain names and evidence. UI confirmations remain pending.
 
 ## Errors and remaining work
 

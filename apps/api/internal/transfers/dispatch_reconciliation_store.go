@@ -159,6 +159,9 @@ func dispatchReconciliationError(ctx context.Context, err error) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	if activeLocationRequired(err) {
+		return ErrDecisionConflict
+	}
 	var p *pgconn.PgError
 	if !errors.As(err, &p) {
 		return fail(ctx)

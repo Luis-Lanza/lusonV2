@@ -2,8 +2,9 @@
 
 Migration 017 supplies integrity foundations. D3 adds personal-user HTTP retirement,
 atomic session revocation and filtered account directories; see [account API](administration.md).
-D4 slice A adds branch HTTP retirement and admin-directory omission. Operational
-filtering/metadata (slice B) and UI confirmations remain D4–D5 work. This is not a claim that the full deletion feature is shipped.
+D4 slice A adds branch HTTP retirement and admin-directory omission. Slice B adds
+operational metadata/inventory filtering and fresh-work conflict translation.
+UI confirmations remain D5 work; integrated dynamic verification remains D6. This is not a claim that the full deletion feature is shipped.
 
 ## Retained records
 
@@ -48,7 +49,7 @@ version only on first retirement. Existing Login initial/locked enabled checks a
 Current/Peek enabled/version/revocation predicates enforce account authority because
 the constraint requires deleted accounts to be disabled. Realtime uses Peek for
 initial admission and periodic revalidation. Live stream/concurrency verification
-remains D6; active-location filtering remains D4 slice B.
+remains D6.
 
 Branch DELETE acquires `administrationTx(admin target 0)` then explicitly takes
 `pg_advisory_xact_lock(714025,1)` before reading even the idempotent marker.
@@ -57,3 +58,11 @@ Separate READ COMMITTED statements read the marker and call the existing VOLATIL
 operations result maps to the three documented HTTP 409 codes; no pending-work
 predicate is duplicated in Go. The marker UPDATE retains the migration's trigger
 recheck. No account row locks are acquired under the global fence.
+
+Operational metadata selects only nonretired locations; direct inventory for a
+retired target returns 404 `not_found`. Missing/unknown targets and invalid queries
+retain 400 `invalid_request`. The four fresh-write error handlers translate only
+SQLSTATE `23514`, constraint `active_location_required`, exact message
+`New work requires active locations` to 409 `decision_conflict`. Cancellation and
+other SQL error mappings retain precedence/redaction. No active lookup is added
+before stored replay, and historical joins and completeness matrices are unchanged.
