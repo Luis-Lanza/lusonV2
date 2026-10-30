@@ -1394,6 +1394,16 @@ describe('T6 administration directory', () => {
     return setup(session, url => url === '/api/admin/accounts' ? Promise.resolve(response(accounts))
       : url === '/api/admin/branches' ? Promise.resolve(response(branches)) : undefined);
   }
+  it.each(['Administración', 'Mi contraseña'])('renders a matching decorative icon for %s', async name => {
+    directorySetup(); render(<App />); await inventory();
+    const button = screen.getByRole('button', { name });
+    const icon = button.querySelector('svg');
+    expect(icon).not.toBeNull();
+    expect(icon).toHaveAttribute('aria-hidden', 'true');
+    expect(icon).toHaveAttribute('width', '20');
+    expect(icon).toHaveAttribute('height', '20');
+    expect(button.querySelector('span')).toHaveTextContent(name);
+  });
   it('opens real account/branch lists, permits blank legacy names and protects only account 1', async () => {
     const mock = directorySetup(); render(<App />); await inventory();
     fireEvent.click(screen.getByRole('button', { name: 'Administración' }));

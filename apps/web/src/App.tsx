@@ -92,8 +92,8 @@ function Navigation({ mobile = false, transfers, disabled, actionCount, countUna
     <button type="button" disabled={disabled} aria-current={transfers ? 'page' : undefined} aria-describedby={statusID} onClick={onPending}><Icon name="transfer" /><span>Transferencias</span>
       <span className={'transfer-action-badge' + (actionCount === null ? ' unknown' : actionCount === '0' ? ' zero' : '')} aria-hidden="true">{actionCount ?? (countUnavailable ? '—' : '…')}</span>
     </button>
-    {admin && <button type="button" disabled={disabled} aria-current={privateSection === 'administration' ? 'page' : undefined} onClick={onAdmin}>Administración</button>}
-    <button type="button" disabled={disabled} aria-current={privateSection === 'password' ? 'page' : undefined} onClick={onPassword}>Mi contraseña</button>
+    {admin && <button type="button" disabled={disabled} aria-current={privateSection === 'administration' ? 'page' : undefined} onClick={onAdmin}><Icon name="administration" /><span>Administración</span></button>}
+    <button type="button" disabled={disabled} aria-current={privateSection === 'password' ? 'page' : undefined} onClick={onPassword}><Icon name="password" /><span>Mi contraseña</span></button>
     <span id={statusID} className="sr-only" role="status">{countStatus}</span>
   </nav>;
 }
