@@ -15,6 +15,9 @@ var (
 	ErrAdminInvalid   = errors.New("invalid administration input")
 	ErrAdminNotFound  = errors.New("account unavailable")
 	ErrAdminConflict  = errors.New("administration conflict")
+	ErrBranchStock    = errors.New("branch has stock")
+	ErrBranchUsers    = errors.New("branch has users")
+	ErrBranchPending  = errors.New("branch has pending operations")
 )
 
 // Account is directory data only. Credentials and session secrets never enter
@@ -163,7 +166,7 @@ func (s *Service) ListBranches(ctx context.Context, token string) ([]Location, e
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	result := []Location{}
-	rows, err := tx.Query(ctx, `SELECT id,name FROM locations ORDER BY id`)
+	rows, err := tx.Query(ctx, `SELECT id,name FROM locations WHERE deleted_at IS NULL ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -335,6 +338,59 @@ func (s *Service) RetireOperator(ctx context.Context, token string, id int64) er
 	}
 	if err = retireAccountSessions(ctx, tx, id, s.now().UTC()); err != nil {
 		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// RetireBranch retains the complete catalog, balances, audiences and history.
+func (s *Service) RetireBranch(ctx context.Context, token string, id int64) error {
+	if err := s.Administrator(ctx, token); err != nil {
+		return err
+	}
+	if id == 1 {
+		return ErrAdminForbidden
+	}
+	if id < 1 || id > 32767 {
+		return ErrAdminInvalid
+	}
+	tx, err := s.administrationTx(ctx, token, 0)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	// Ordered admin account/session locks precede the common fence. Keep this
+	// separate from reads so READ COMMITTED sees the winner after any wait.
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(714025,1)`); err != nil {
+		return err
+	}
+	var active bool
+	if err = tx.QueryRow(ctx, `SELECT deleted_at IS NULL FROM locations WHERE id=$1`, int16(id)).Scan(&active); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrAdminNotFound
+		}
+		return err
+	}
+	if !active {
+		return tx.Commit(ctx)
+	}
+	var blocker *string
+	if err = tx.QueryRow(ctx, `SELECT branch_retirement_blocker($1::smallint)`, int16(id)).Scan(&blocker); err != nil {
+		return err
+	}
+	if blocker != nil {
+		switch *blocker {
+		case "stock":
+			return ErrBranchStock
+		case "users":
+			return ErrBranchUsers
+		case "operations":
+			return ErrBranchPending
+		default:
+			return ErrAdminConflict
+		}
+	}
+	if _, err = tx.Exec(ctx, `UPDATE locations SET deleted_at=CURRENT_TIMESTAMP WHERE id=$1`, int16(id)); err != nil {
+		return administrationError(err)
 	}
 	return tx.Commit(ctx)
 }

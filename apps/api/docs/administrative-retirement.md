@@ -2,8 +2,8 @@
 
 Migration 017 supplies integrity foundations. D3 adds personal-user HTTP retirement,
 atomic session revocation and filtered account directories; see [account API](administration.md).
-Branch HTTP retirement, operational filtering/metadata and UI confirmations remain
-D4–D5 work. This is not a claim that the full deletion feature is shipped.
+D4 slice A adds branch HTTP retirement and admin-directory omission. Operational
+filtering/metadata (slice B) and UI confirmations remain D4–D5 work. This is not a claim that the full deletion feature is shipped.
 
 ## Retained records
 
@@ -48,4 +48,12 @@ version only on first retirement. Existing Login initial/locked enabled checks a
 Current/Peek enabled/version/revocation predicates enforce account authority because
 the constraint requires deleted accounts to be disabled. Realtime uses Peek for
 initial admission and periodic revalidation. Live stream/concurrency verification
-remains D6; branch HTTP mapping and active-location filtering remain D4.
+remains D6; active-location filtering remains D4 slice B.
+
+Branch DELETE acquires `administrationTx(admin target 0)` then explicitly takes
+`pg_advisory_xact_lock(714025,1)` before reading even the idempotent marker.
+Separate READ COMMITTED statements read the marker and call the existing VOLATILE
+`branch_retirement_blocker($1::smallint)` after any fence wait. Its stock/users/
+operations result maps to the three documented HTTP 409 codes; no pending-work
+predicate is duplicated in Go. The marker UPDATE retains the migration's trigger
+recheck. No account row locks are acquired under the global fence.

@@ -27,6 +27,12 @@ func administrationFailure(w http.ResponseWriter, err error) {
 		failure(w, 400, "invalid_request")
 	case errors.Is(err, auth.ErrAdminNotFound):
 		failure(w, 404, "not_found")
+	case errors.Is(err, auth.ErrBranchStock):
+		failure(w, 409, "branch_has_stock")
+	case errors.Is(err, auth.ErrBranchUsers):
+		failure(w, 409, "branch_has_users")
+	case errors.Is(err, auth.ErrBranchPending):
+		failure(w, 409, "branch_has_pending_operations")
 	case errors.Is(err, auth.ErrAdminConflict):
 		failure(w, 409, "conflict")
 	case errors.Is(err, auth.ErrLimited):
@@ -207,6 +213,22 @@ func (a *API) administration(w http.ResponseWriter, r *http.Request) {
 		respond(w, 201, branch)
 	default:
 		parts := strings.Split(path, "/")
+		if len(parts) == 2 && parts[0] == "branches" {
+			id, ok := administrationID(parts[1])
+			if !ok || id > 32767 {
+				failure(w, 400, "invalid_request")
+				return
+			}
+			if !method(w, r, http.MethodDelete) || !a.GuardMutation(w, r) {
+				return
+			}
+			if err := a.service.RetireBranch(r.Context(), token, id); err != nil {
+				administrationFailure(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if (len(parts) != 2 && len(parts) != 3) || parts[0] != "accounts" || (len(parts) == 3 && parts[2] != "password") {
 			failure(w, 404, "not_found")
 			return
