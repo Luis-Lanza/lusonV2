@@ -78,8 +78,8 @@ export function parseMetadata(raw: string): Metadata {
   if (!Array.isArray(o.locations) || !Array.isArray(o.brands)) return invalid();
   const locations = o.locations.map(location);
   const brands = o.brands.map(text);
-  if (locations.length < 3 || new Set(locations.map(l => l.id)).size !== locations.length
-    || ![1, 2, 3].every(id => locations.some(l => l.id === id)) || !brands.length || new Set(brands).size !== brands.length) return invalid();
+  if (new Set(locations.map(l => l.id)).size !== locations.length
+    || !locations.some(l => l.id === 1) || !brands.length || new Set(brands).size !== brands.length) return invalid();
   return { locations, brands };
 }
 export function parseInventory(raw: string): Inventory {

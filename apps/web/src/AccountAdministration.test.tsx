@@ -47,6 +47,7 @@ async function open() {
   fireEvent.click(screen.getByRole('button', { name: 'Administración' }));
   await screen.findByRole('button', { name: 'Gestionar legacy.c' });
 }
+const deletes = (h: ReturnType<typeof setup>) => writes(h).filter(([, init]) => init?.method === 'DELETE');
 const writes = (h: ReturnType<typeof setup>) => h.fetcher.mock.calls.filter(([url, init]) => String(url).startsWith('/api/admin/') && init?.method !== 'GET');
 function exactWrite(h: ReturnType<typeof setup>, index: number, url: string, method: string, body: unknown) {
   expect(writes(h)[index][0]).toBe(url);
@@ -54,6 +55,85 @@ function exactWrite(h: ReturnType<typeof setup>, index: number, url: string, met
   expect([...new Headers(writes(h)[index][1]?.headers)]).toEqual([['content-type', 'application/json'], ['x-csrf-token', token]]);
 }
 afterEach(() => vi.unstubAllGlobals());
+
+describe('safe retirement administration', () => {
+  function removeUser() { fireEvent.click(screen.getByRole('button', { name: 'Gestionar legacy.c' })); fireEvent.click(screen.getByRole('button', { name: /eliminar usuario/i })); }
+  function confirm() { fireEvent.click(screen.getByRole('button', { name: /confirmar eliminación/i })); }
+  it('requires intent confirmation and removes the user only after canonical empty 204 and refetch', async () => {
+    const h = setup((url, init) => {
+      if (url === '/api/admin/accounts/4' && init.method === 'DELETE') { h.accounts.splice(1, 1); return Promise.resolve(new Response(null, { status: 204 })); }
+    });
+    await open(); removeUser(); expect(deletes(h)).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: /cancelar/i })); expect(deletes(h)).toHaveLength(0);
+    expect(screen.getByRole('button', { name: 'Gestionar legacy.c' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /eliminar usuario/i })); confirm();
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Gestionar legacy.c' })).not.toBeInTheDocument());
+    expect(deletes(h)).toHaveLength(1);
+    const [url, init] = deletes(h)[0]; expect(url).toBe('/api/admin/accounts/4');
+    expect(init).toMatchObject({ method: 'DELETE', credentials: 'same-origin', cache: 'no-store' }); expect(init?.body).toBeUndefined();
+    expect(new Headers(init?.headers).get('X-CSRF-Token')).toBe(token);
+    expect(h.accounts.map(account => account.id)).toEqual(['1']);
+    expect(screen.queryByRole('region', { name: 'Gestión de cuenta' })).not.toBeInTheDocument();
+    expect(localStorage.length).toBe(0); expect(sessionStorage.length).toBe(0);
+    expect(h.fetcher.mock.calls.filter(([url]) => url === '/api/admin/accounts')).toHaveLength(2);
+  });
+  it('protects the unique administrator and warehouse while exposing personal deletion separately from access', async () => {
+    const h = setup(); await open(); fireEvent.click(screen.getByRole('button', { name: 'Gestionar almacen' }));
+    expect(within(screen.getByRole('region', { name: 'Gestión de cuenta' })).queryByRole('button', { name: /eliminar/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar gestión' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Gestionar legacy.c' }));
+    expect(screen.getByLabelText('Acceso')).toHaveValue('disabled'); expect(screen.getByRole('button', { name: /eliminar usuario/i })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Sucursales' }));
+    const warehouse = screen.getByRole('heading', { name: 'Almacén', level: 3 }).closest('article')!;
+    expect(within(warehouse).queryByRole('button', { name: /eliminar/i })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /eliminar sucursal/i }).length).toBeGreaterThan(0); expect(deletes(h)).toHaveLength(0);
+  });
+  it.each([['branch_has_stock', /stock|reservas/i], ['branch_has_users', /usuarios|cuentas/i], ['branch_has_pending_operations', /operaciones|pendientes/i]] as const)
+    ('keeps a rejected branch visible and explains how to resolve %s', async (code, explanation) => {
+    const h = setup((url, init) => url === '/api/admin/branches/4' && init.method === 'DELETE' ? Promise.resolve(json({ error: code }, 409)) : undefined);
+    await open(); fireEvent.click(screen.getByRole('button', { name: 'Sucursales' }));
+    const card = screen.getByRole('heading', { name: 'Sucursal C', level: 3 }).closest('article')!;
+    fireEvent.click(within(card).getByRole('button', { name: /eliminar sucursal/i })); confirm();
+    const alert = await screen.findByRole('alert'); expect(alert).toHaveTextContent(explanation);
+    expect(alert).toHaveTextContent(/retirá|resolvé|reasigná|eliminá|completá|antes/i);
+    expect(screen.getByRole('heading', { name: 'Sucursal C', level: 3 })).toBeInTheDocument(); expect(deletes(h)).toHaveLength(1);
+    expect(h.branches.map(branch => branch.id)).toEqual([1, 2, 3, 4]);
+    expect(h.accounts).toEqual(seed);
+    expect(deletes(h)[0][0]).toBe('/api/admin/branches/4');
+    expect(deletes(h)[0][1]?.body).toBeUndefined();
+    expect(new Headers(deletes(h)[0][1]?.headers).get('X-CSRF-Token')).toBe(token);
+    expect(h.fetcher.mock.calls.filter(([url]) => url === '/api/inventory/metadata')).toHaveLength(1);
+  });
+  it('clears private handoff when its target is deleted', async () => {
+    const h = setup((url, init) => {
+      if (url === '/api/admin/accounts/4' && init.method === 'DELETE') { h.accounts.splice(1, 1); return Promise.resolve(new Response(null, { status: 204 })); }
+    });
+    await open(); fireEvent.click(screen.getByRole('button', { name: 'Gestionar legacy.c' }));
+    fireEvent.change(screen.getByLabelText('Contraseña temporal'), { target: { value: 'test temporary value' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Restablecer contraseña' })); await screen.findByRole('region', { name: 'Entrega privada de contraseña' });
+    removeUser(); confirm(); await waitFor(() => expect(screen.queryByRole('button', { name: 'Gestionar legacy.c' })).not.toBeInTheDocument());
+    expect(screen.queryByRole('region', { name: 'Entrega privada de contraseña' })).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue('test temporary value')).not.toBeInTheDocument(); expect(deletes(h)).toHaveLength(1);
+  });
+  it('sends once while pending and ignores an aborted late outcome after owner retirement', async () => {
+    let resolve!: (value: Response) => void; const held = new Promise<Response>(yes => { resolve = yes; });
+    const h = setup((url, init) => url === '/api/admin/accounts/4' && init.method === 'DELETE' ? held : undefined);
+    await open(); removeUser(); const button = screen.getByRole('button', { name: /confirmar eliminación/i });
+    fireEvent.click(button); fireEvent.click(button); expect(deletes(h)).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' })); await screen.findByLabelText('Usuario');
+    expect(deletes(h)[0][1]?.signal?.aborted).toBe(true);
+    await act(async () => resolve(new Response(null, { status: 204 })));
+    expect(screen.queryByText(/Cuenta actualizada|eliminad[oa]/i)).not.toBeInTheDocument(); expect(deletes(h)).toHaveLength(1);
+    expect(h.fetcher.mock.calls.filter(([url]) => url === '/api/admin/accounts')).toHaveLength(1);
+  });
+  it('does not retry an uncertain deletion or claim success', async () => {
+    const h = setup((url, init) => url === '/api/admin/accounts/4' && init.method === 'DELETE' ? Promise.reject(new Error('private transport detail')) : undefined);
+    await open(); removeUser(); confirm(); await screen.findByRole('alert');
+    expect(screen.getByRole('button', { name: 'Gestionar legacy.c' })).toBeInTheDocument(); expect(deletes(h)).toHaveLength(1);
+    expect(screen.queryByText('private transport detail')).not.toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(/confirmar|consultá|actualizá/i);
+  });
+});
 
 describe('T6 directory real API workflows', () => {
   it('creates a personal branch operator with only API fields and private one-time delivery', async () => {

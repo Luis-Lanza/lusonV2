@@ -1386,6 +1386,36 @@ describe('R04c guarded success navigation', () => {
 });
 
 
+describe('safe retirement inventory selection', () => {
+ it('refreshes operational metadata after branch deletion and falls back from selected branch 4', async () => {
+  let retired = false;
+  const branch = { id: 4, name: 'Sucursal C' }; const locations = () => retired ? metadata.locations : [...metadata.locations, branch];
+  const mock = setup(session, (url, init) => {
+   if (url === '/api/inventory/metadata' || url === '/api/admin/branches') return Promise.resolve(response(url === '/api/admin/branches' ? locations() : { ...metadata, locations: locations() }));
+   if (url === '/api/admin/accounts') return Promise.resolve(response([{ id: '1', username: 'almacen', display_name: 'Admin', location_id: 1, enabled: true, must_change_password: false }]));
+   if (url === '/api/admin/branches/4' && init.method === 'DELETE') { retired = true; return Promise.resolve(new Response(null, { status: 204 })); }
+   if (url.startsWith('/api/inventory?') && new URL(url, 'http://localhost').searchParams.get('location_id') === '4')
+    return Promise.resolve(retired ? response({ error: 'not_found' }, 404) : response(pageJSON().replace('"location":{"id":1,"name":"Almacén"}', '"location":' + JSON.stringify(branch))));
+  });
+  render(<App />); await inventory(); fireEvent.click(screen.getByRole('button', { name: /Sucursal C.*Solo consulta/ }));
+  await waitFor(() => expect(screen.getByRole('button', { name: /Sucursal C.*Solo consulta/ })).toHaveAttribute('aria-pressed', 'true'));
+  await inventory(); fireEvent.click(screen.getByRole('button', { name: 'Administración' }));
+  await screen.findByRole('button', { name: 'Gestionar almacen' }); fireEvent.click(screen.getByRole('button', { name: 'Sucursales' }));
+  const card = screen.getByRole('heading', { name: 'Sucursal C', level: 3 }).closest('article')!;
+  fireEvent.click(within(card).getByRole('button', { name: /eliminar sucursal/i }));
+  expect(mock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(0);
+  fireEvent.click(screen.getByRole('button', { name: /confirmar eliminación/i }));
+  await waitFor(() => expect(mock.mock.calls.filter(([url]) => url === '/api/inventory/metadata')).toHaveLength(2));
+  await waitFor(() => expect(screen.queryByRole('heading', { name: 'Sucursal C', level: 3 })).not.toBeInTheDocument());
+  fireEvent.click(screen.getByRole('link', { name: 'Inventario' })); await inventory();
+  expect(screen.queryByRole('button', { name: /Sucursal C/ })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /Almacén.*Mi ubicación/ })).toHaveAttribute('aria-pressed', 'true');
+  expect(new URL(String(stockCalls(mock).at(-1)![0]), 'http://localhost').searchParams.get('location_id')).toBe('1');
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument(); expect(mock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
+  expect(screen.getByText('Almacén', { selector: '.assigned-location' })).toBeInTheDocument();
+ });
+});
+
 describe('T6 administration directory', () => {
   const accounts = [{ id: '1', username: 'almacen', display_name: 'Admin', location_id: 1, enabled: true, must_change_password: false },
     { id: '4', username: 'personal.c', display_name: '', location_id: 4, enabled: false, must_change_password: true }];
@@ -1428,6 +1458,7 @@ describe('T6 administration directory', () => {
   it('keeps operators out of administration even at a direct hash', async () => {
     window.history.replaceState(null, '', '/#/administracion');
     const mock = setup({ ...session, identity: { ...identity, account_id: 4, location: { id: 4, name: 'Sucursal C' } } }, url =>
+      url === '/api/inventory/metadata' ? Promise.resolve(response({ ...metadata, locations: [...metadata.locations, { id: 4, name: 'Sucursal C' }] })) :
       url.startsWith('/api/inventory?') ? Promise.resolve(response(pageJSON().replace('"location":{"id":1,"name":"Almacén"}', '"location":{"id":4,"name":"Sucursal C"}'))) : undefined);
     render(<App />); await inventory();
     expect(screen.queryByRole('button', { name: 'Administración' })).not.toBeInTheDocument();

@@ -69,7 +69,7 @@ export interface TransferController {
 export type PrivateScope = 'admin' | 'password';
 export interface PrivateController {
   privateOwner: (scope: PrivateScope) => string | null;
-  privateRequest: (owner: string, scope: PrivateScope, path: string, signal: AbortSignal, method?: 'GET' | 'POST' | 'PATCH', body?: object, expected?: number) => Promise<string>;
+  privateRequest: (owner: string, scope: PrivateScope, path: string, signal: AbortSignal, method?: 'GET' | 'POST' | 'PATCH' | 'DELETE', body?: object, expected?: number) => Promise<string>;
   changePassword: (owner: string, current: string, next: string, signal: AbortSignal) => Promise<void>;
   refreshBranches: (owner: string) => void;
 }
@@ -441,8 +441,15 @@ export function useInventory() {
       try {
         const meta = !metadata || job.full
           ? parseMetadata(await (await request('/api/inventory/metadata', { signal: controller.signal }, 200, passive)).text()) : metadata;
-        if (!current(auth, read)) return;
+        if (!current(auth, read) || controller.signal.aborted) return;
         setMetadata(meta);
+        if (!meta.locations.some(location => location.id === query.location)) {
+          // Only the warehouse can switch inventory locations. Reuse the normal
+          // query transition to retire this read, preserve filters and reset page.
+          if (session.identity.location.id !== 1) throw new Error('Respuesta inválida del servidor.');
+          change({ location: session.identity.location.id });
+          return;
+        }
         const next = parseInventory(await (await request(queryURL(query), { signal: controller.signal }, 200, passive)).text());
         if (!current(auth, read)) return;
         if (next.location.id !== query.location || next.page !== query.page || next.page_size !== query.size) throw new Error('Respuesta inválida del servidor.');
@@ -527,8 +534,9 @@ export function useInventory() {
     return JSON.stringify([authority.epoch, authority.sessionGeneration, value.identity.account_id, value.identity.location.id, value.identity.display_name]);
   }
   async function privateRequest(owner: string, scope: PrivateScope, path: string, signal: AbortSignal,
-    method: 'GET' | 'POST' | 'PATCH' = 'GET', body?: object, expected = 200): Promise<string> {
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE' = 'GET', body?: object, expected = 200): Promise<string> {
     const allowed = scope === 'password' ? path === '/api/auth/password' && method === 'POST'
+      : method === 'DELETE' ? /^\/api\/admin\/(accounts|branches)\/[1-9]\d*$/.test(path)
       : /^\/api\/admin\/(accounts(?:\/[1-9]\d*(?:\/password)?)?|branches)$/.test(path);
     if (!allowed || signal.aborted || privateOwner(scope) !== owner) throw new Error('La sesión cambió. Cerrá esta pantalla.');
     const controller = new AbortController();
@@ -557,6 +565,9 @@ export function useInventory() {
           conflict: 'El usuario o nombre de sucursal ya existe.', not_found: 'La cuenta o sucursal ya no está disponible.',
           rate_limited: 'Demasiados intentos. Esperá un minuto.', service_unavailable: 'Servicio no disponible. Intentá más tarde.',
           unauthenticated: 'La sesión venció. Iniciá sesión nuevamente.',
+          branch_has_stock: 'La sucursal tiene stock o reservas. Resolvé el stock y las reservas antes de eliminarla.',
+          branch_has_users: 'La sucursal tiene usuarios asignados, incluso desactivados. Reasignalos o eliminalos antes de eliminarla.',
+          branch_has_pending_operations: 'La sucursal tiene operaciones pendientes. Resolvelas antes de eliminarla.',
         };
         throw new Error(messages[code] ?? 'Respuesta inválida del servidor.');
       }

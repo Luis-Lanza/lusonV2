@@ -37,6 +37,48 @@ function t6Setup(override?: (url: string, init: RequestInit) => Promise<Response
  });
  vi.stubGlobal('fetch', fetcher); return fetcher;
 }
+describe('safe retirement private client', () => {
+ // Reflect.apply deliberately exercises the public runtime interface before its method union grows.
+ const callDelete = (state: ReturnType<typeof useInventory>, path: string, signal = new AbortController().signal) =>
+  Reflect.apply(state.privateRequest, state, [state.privateOwner('admin')!, 'admin', path, signal, 'DELETE', undefined, 204]) as Promise<string>;
+ it('admits canonical item DELETE only and preserves GET POST PATCH controls', async () => {
+  const fetcher = t6Setup((url, init) => url.startsWith('/api/admin/') ? Promise.resolve(init.method === 'GET' ? new Response('[]') : new Response(null, { status: 204 })) : undefined);
+  const { result } = renderHook(() => useInventory()); await waitFor(() => expect(result.current.data).not.toBeNull());
+  const owner = result.current.privateOwner('admin')!;
+  for (const path of ['/api/admin/accounts', '/api/admin/branches', '/api/admin/accounts/4/password', '/api/auth/password', '/api/admin/accounts/04', '/api/admin/branches/0', '/api/admin/branches/4?x=1', '/api/admin/branches/4/']) {
+   const before = fetcher.mock.calls.length; await expect(callDelete(result.current, path)).rejects.toThrow(); expect(fetcher.mock.calls).toHaveLength(before);
+  }
+  for (const path of ['/api/admin/accounts/9007199254740993', '/api/admin/branches/4']) {
+   await expect(callDelete(result.current, path)).resolves.toBe('');
+   expect(fetcher.mock.calls.at(-1)![0]).toBe(path);
+   const init = fetcher.mock.calls.at(-1)![1]!; expect(init.method).toBe('DELETE'); expect(init.body).toBeUndefined();
+   expect(init).toMatchObject({ credentials: 'same-origin', cache: 'no-store' }); expect(new Headers(init.headers).get('X-CSRF-Token')).toBe(t6Session.csrf_token);
+  }
+  await expect(result.current.privateRequest(owner, 'admin', '/api/admin/accounts', new AbortController().signal)).resolves.toBe('[]');
+  for (const [path, method] of [['/api/admin/branches', 'POST'], ['/api/admin/accounts/4', 'PATCH']] as const)
+   await expect(result.current.privateRequest(owner, 'admin', path, new AbortController().signal, method, {}, 204)).resolves.toBe('');
+ });
+ it('rejects nonempty 204 without retrying DELETE', async () => {
+  // A Response-shaped transport is needed: the browser Response constructor forbids a 204 body.
+  const fetcher = t6Setup((url, init) => init.method === 'DELETE' ? Promise.resolve({ status: 204, text: async () => 'unexpected' } as Response) : undefined);
+  const { result } = renderHook(() => useInventory()); await waitFor(() => expect(result.current.data).not.toBeNull());
+  await expect(callDelete(result.current, '/api/admin/branches/4')).rejects.toThrow('Respuesta inválida');
+  expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
+ });
+ it('ignores a stale DELETE 401 without restoring cookies and refuses an already aborted action', async () => {
+  let resolve!: (response: Response) => void; const held = new Promise<Response>(yes => { resolve = yes; });
+  const fetcher = t6Setup((url, init) => init.method === 'DELETE' ? held : undefined);
+  const { result } = renderHook(() => useInventory()); await waitFor(() => expect(result.current.data).not.toBeNull());
+  const abort = new AbortController(); abort.abort(); const before = fetcher.mock.calls.length;
+  await expect(callDelete(result.current, '/api/admin/accounts/4', abort.signal)).rejects.toThrow(); expect(fetcher.mock.calls).toHaveLength(before);
+  const pending = callDelete(result.current, '/api/admin/accounts/4'); const rejected = expect(pending).rejects.toThrow('La sesión cambió');
+  const session = result.current.session as Extract<Session, { authenticated: true }>; session.csrf_token = 'z'.repeat(43);
+  await act(async () => resolve(new Response(JSON.stringify({ error: 'unauthenticated' }), { status: 401 }))); await rejected;
+  expect(fetcher.mock.calls.filter(([url]) => url === '/api/auth/session')).toHaveLength(1);
+  expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
+ });
+});
+
 describe('T6 shared controller private ownership', () => {
  it.each(['account', 'display', 'csrf', 'forced', 'assignment'])('refuses stale admin action after in-place %s change before render', async kind => {
   const fetcher = t6Setup(); const { result } = renderHook(() => useInventory());

@@ -4,7 +4,7 @@ Migration 017 supplies integrity foundations. D3 adds personal-user HTTP retirem
 atomic session revocation and filtered account directories; see [account API](administration.md).
 D4 slice A adds branch HTTP retirement and admin-directory omission. Slice B adds
 operational metadata/inventory filtering and fresh-work conflict translation.
-UI confirmations remain D5 work; integrated dynamic verification remains D6. This is not a claim that the full deletion feature is shipped.
+D5 source adds existing-layout user/branch deletion controls with explicit confirmation/cancel, protected administrator/warehouse omission, blocker explanations and accepted-response directory/metadata refresh. Temporary access deactivation/reactivation remains separate. Controls become available only after verified build/deployment; the running preview is unchanged. D5 functional checks and D6 actual-browser/integrated dynamic verification remain pending. This is not a claim that the full deletion feature is shipped.
 
 ## Retained records
 

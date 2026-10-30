@@ -48,8 +48,21 @@ describe('dynamic branch sessions', () => {
     }
     for (const account_id of [0, 9007199254740992]) expect(() => parseSession(JSON.stringify({ ...session, identity: { ...session.identity, account_id } }))).toThrow();
   });
+  const locations = [{ id: 1, name: 'Almacén' }, { id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }, session.identity.location];
+  it.each([
+    { label: '[1]', activeIDs: [1] },
+    { label: '[1,2]', activeIDs: [1, 2] },
+    { label: '[1,3]', activeIDs: [1, 3] },
+  ])('safe retirement metadata accepts active IDs $label', ({ activeIDs }) => {
+    const activeLocations = locations.filter(location => activeIDs.includes(location.id));
+    const brands = ['TOYO'];
+    const metadata = parseMetadata(JSON.stringify({ locations: activeLocations, brands }));
+
+    expect(metadata.locations).toEqual(activeLocations);
+    expect(metadata.locations[0]).toEqual({ id: 1, name: 'Almacén' });
+    expect(metadata.brands).toEqual(brands);
+  });
   it('accepts fourth-branch metadata while preserving unique existing identities', () => {
-    const locations = [{ id: 1, name: 'Almacén' }, { id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }, session.identity.location];
     expect(parseMetadata(JSON.stringify({ locations, brands: ['TOYO'] })).locations).toEqual(locations);
     expect(parseMetadata(JSON.stringify({ locations: locations.slice(0, 3), brands: ['TOYO'] })).locations).toHaveLength(3);
     expect(() => parseMetadata(JSON.stringify({ locations: [...locations, locations[3]], brands: ['TOYO'] }))).toThrow();
