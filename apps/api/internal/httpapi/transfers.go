@@ -203,7 +203,7 @@ func decodeTransfer(r *http.Request) (transfers.CreateInput, error) {
 			in.Kind = transfers.Kind(value)
 		case "counterparty_location_id":
 			var value int64
-			value, err = transferNumber(d, 3)
+			value, err = transferNumber(d, math.MaxInt16)
 			in.CounterpartyID = int(value)
 		case "retry_key":
 			in.RetryKey, err = transferString(d)
@@ -326,7 +326,7 @@ type transferDTO struct {
 // partially exposed metadata. Pending keeps its exact original field set.
 func transferRecord(r transfers.Request) (transferDTO, error) {
 	if r.Kind == transfers.DirectShipment && (r.Creator.ID != 1 || r.Origin.ID != 1 || r.Approver.ID != 1 ||
-		(r.Destination.ID != 2 && r.Destination.ID != 3) || r.Status == "pending" || r.Status == "rejected" ||
+		(r.Destination.ID < 2 || r.Destination.ID > math.MaxInt16) || r.Status == "pending" || r.Status == "rejected" ||
 		r.DecisionLocationID == nil || *r.DecisionLocationID != 1 || r.DecidedAt == nil || !r.DecidedAt.Equal(r.CreatedAt)) {
 		return transferDTO{}, transfers.ErrUnavailable
 	}
@@ -341,7 +341,7 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 			return transferDTO{}, transfers.ErrUnavailable
 		}
 		if r.DecidedAt != nil {
-			if *r.DecisionLocationID != r.Approver.ID || *r.DecisionLocationID < 1 || *r.DecisionLocationID > 3 ||
+			if *r.DecisionLocationID != r.Approver.ID || *r.DecisionLocationID < 1 || *r.DecisionLocationID > math.MaxInt16 ||
 				r.DecidedAt.IsZero() || r.DecidedAt.Before(r.CreatedAt) {
 				return transferDTO{}, transfers.ErrUnavailable
 			}
@@ -350,7 +350,7 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 		}
 	case "approved", "rejected", "in_transit", "received":
 		if r.DecisionLocationID == nil || r.DecidedAt == nil ||
-			*r.DecisionLocationID < 1 || *r.DecisionLocationID > 3 ||
+			*r.DecisionLocationID < 1 || *r.DecisionLocationID > math.MaxInt16 ||
 			*r.DecisionLocationID != r.Approver.ID || r.DecidedAt.IsZero() ||
 			r.DecidedAt.Before(r.CreatedAt) {
 			return transferDTO{}, transfers.ErrUnavailable
@@ -363,7 +363,7 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 	var cancelledAt *string
 	if r.Status == "cancelled" {
 		if r.CancellationLocationID == nil || *r.CancellationLocationID != r.Creator.ID ||
-			*r.CancellationLocationID < 1 || *r.CancellationLocationID > 3 || r.CancelledAt == nil || r.CancelledAt.IsZero() ||
+			*r.CancellationLocationID < 1 || *r.CancellationLocationID > math.MaxInt16 || r.CancelledAt == nil || r.CancelledAt.IsZero() ||
 			r.CancelledAt.Before(r.CreatedAt) || (r.DecidedAt != nil && r.CancelledAt.Before(*r.DecidedAt)) {
 			return transferDTO{}, transfers.ErrUnavailable
 		}

@@ -134,7 +134,7 @@ func transferMalformedBodies() map[string]string {
 		"id_bound":                 replace(`"variant_id":1`, `"variant_id":2147483648`),
 		"counterparty_float":       replace(`"counterparty_location_id":1`, `"counterparty_location_id":1.0`),
 		"counterparty_string":      replace(`"counterparty_location_id":1`, `"counterparty_location_id":"1"`),
-		"counterparty_bound":       replace(`"counterparty_location_id":1`, `"counterparty_location_id":4`),
+		"counterparty_bound":       replace(`"counterparty_location_id":1`, `"counterparty_location_id":32768`),
 		"bad_enum":                 replace(`"request_stock"`, `"approved"`),
 		"short_key":                replace(`"http-retry-key-00001"`, `"short"`),
 		"long_key":                 replace(`"http-retry-key-00001"`, strconv.Quote(strings.Repeat("a", 129))),
