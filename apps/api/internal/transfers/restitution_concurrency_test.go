@@ -157,7 +157,7 @@ func TestR3RestitutionConcurrencyDecisions(t *testing.T) {
 			dest := c2Revision(t, ctx, p, "transfers:2")
 			other := c2Revision(t, ctx, p, "transfers:3")
 			first, gate, release := a02Gated(t, ctx, p, "FROM transfer_restitute", true)
-			second, waiting, _ := a02Gated(t, ctx, p, "FROM transfer_restitute", false)
+			second, waiting, _ := a02Gated(t, ctx, p, "pg_advisory_xact_lock(714025,1)", false)
 			one := r3bStart(t, ctx, func(work context.Context) r3bReply { return r3bCall(work, first, r, tc.first) })
 			holder := a02Arrived(t, ctx, gate)
 			if before != r2Snapshot(t, ctx, p) || !reflect.DeepEqual(history, r3bHistory(t, ctx, s, r)) {
@@ -254,7 +254,7 @@ func TestR3RestitutionConcurrencyCount(t *testing.T) {
 			other := c2Revision(t, ctx, p, "transfers:3")
 			if countFirst {
 				first, gate, release := a02Gated(t, ctx, p, "FROM transfer_count_correct", true)
-				second, waiting, _ := a02Gated(t, ctx, p, "FROM transfer_restitute", false)
+				second, waiting, _ := a02Gated(t, ctx, p, "pg_advisory_xact_lock(714025,1)", false)
 				one := c2Start(t, ctx, first, r, c2Action{accept: true, who: r.Origin.ID, revision: 1, key: "r3b-count-accept"})
 				holder := a02Arrived(t, ctx, gate)
 				if r2Snapshot(t, ctx, p) != before {
@@ -272,7 +272,7 @@ func TestR3RestitutionConcurrencyCount(t *testing.T) {
 			} else {
 				// No pending count exists: it must queue its proposal behind restitution.
 				first, gate, release := a02Gated(t, ctx, p, "FROM transfer_restitute", true)
-				second, waiting, _ := a02Gated(t, ctx, p, "FROM transfer_count_correct", false)
+				second, waiting, _ := a02Gated(t, ctx, p, "pg_advisory_xact_lock(714025,1)", false)
 				one := r3bStart(t, ctx, func(work context.Context) r3bReply {
 					return r3bCall(work, first, r, r3bAction{accept: true, key: "r3b-count-rest-accept"})
 				})

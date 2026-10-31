@@ -93,7 +93,7 @@ func TestC2CorrectionConcurrencyWorkflow(t *testing.T) {
 			}
 			before := c2StoreRead(t, ctx, s, r)
 			winner, gate, release := a02Gated(t, ctx, p, "FROM transfer_count_correct", true)
-			loser, waiting, _ := a02Gated(t, ctx, p, "FROM transfer_count_correct", false)
+			loser, waiting, _ := a02Gated(t, ctx, p, "pg_advisory_xact_lock(714025,1)", false)
 			one := c2Start(t, ctx, winner, r, first)
 			a02Arrived(t, ctx, gate)
 			// Readers see only the fully committed old generation, even while
@@ -149,7 +149,11 @@ func TestC2CorrectionConcurrencyCancellation(t *testing.T) {
 			before := c2Snapshot(t, ctx, p)
 			work, cancel := context.WithCancel(ctx)
 			defer cancel()
-			gated, gate, release := a02Gated(t, ctx, p, "FROM transfer_count_correct", stage == "after_effect")
+			match := "FROM transfer_count_correct"
+			if stage == "waiting" {
+				match = "pg_advisory_xact_lock(714025,1)"
+			}
+			gated, gate, release := a02Gated(t, ctx, p, match, stage == "after_effect")
 			var unblock func()
 			if stage == "waiting" {
 				block := a01Begin(t, ctx, p)
@@ -203,7 +207,11 @@ func TestC2CorrectionConcurrencyReservation(t *testing.T) {
 			outgoing := create(t, ctx, s, r.Destination.ID, in).Request
 			c2StorePropose(t, ctx, s, r, r.Origin.ID, 1, 0, 0, "reservation-count-01")
 			approve, ag, ar := a02Gated(t, ctx, p, "INSERT INTO transfer_request_allocations", reservationFirst)
-			correct, cg, cr := a02Gated(t, ctx, p, "FROM transfer_count_correct", !reservationFirst)
+			correctionMatch := "FROM transfer_count_correct"
+			if reservationFirst {
+				correctionMatch = "pg_advisory_xact_lock(714025,1)"
+			}
+			correct, cg, cr := a02Gated(t, ctx, p, correctionMatch, !reservationFirst)
 			approvalCtx, cancel := context.WithCancel(ctx)
 			defer cancel()
 			approvalDone := make(chan error, 1)

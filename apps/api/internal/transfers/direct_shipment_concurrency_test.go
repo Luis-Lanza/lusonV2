@@ -48,11 +48,7 @@ func TestW01DirectShipmentConcurrency(t *testing.T) {
 			}
 			before := stocks(t, ctx, p)
 			winner, gate, release := a02Gated(t, ctx, p, "ORDER BY b.variant_id FOR UPDATE OF b", true)
-			lock := "pg_advisory_xact_lock(714025,1)"
-			if mode == "duplicate_key" || mode == "changed_key_payload" {
-				lock = "SELECT pg_advisory_xact_lock($1)"
-			}
-			loser, waiting, _ := a02Gated(t, ctx, p, lock, false)
+			loser, waiting, _ := a02Gated(t, ctx, p, "pg_advisory_xact_lock(714025,1)", false)
 			if mode == "direct_competitors" {
 				other.RetryKey = "w01-competing-direct-02"
 				other.CounterpartyID = 3

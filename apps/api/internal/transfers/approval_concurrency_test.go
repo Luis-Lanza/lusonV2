@@ -279,12 +279,12 @@ func a02CreationFirst(t *testing.T) {
 		created <- err
 	}()
 	a02Arrived(t, ctx, gate)
-	approver, waiting, _ := a02Gated(t, ctx, p, "ORDER BY b.variant_id FOR UPDATE OF b", false)
+	approver, waiting, _ := a02Gated(t, ctx, p, "pg_advisory_xact_lock(714025,1)", false)
 	done := a02Start(ctx, approver, r.ID)
 	pid := a02Arrived(t, ctx, waiting)
-	a01Wait(t, ctx, p, pid, "transactionid")
-	// Creation holds only balance row locks and does not need the integrity
-	// advisory lock held by the waiting approval; releasing it must finish both.
+	a01Wait(t, ctx, p, pid, "advisory")
+	// Creation owns the common integrity fence as well as source balance locks;
+	// approval must queue at that fence before revalidating source availability.
 	release()
 	if <-created != nil || a02Receive(t, ctx, done).err != nil {
 		t.Fatal("creation could not finish while approval waited on its source locks")
@@ -303,7 +303,7 @@ func a02CreationSecond(t *testing.T) {
 	winner, gate, release := a02Gated(t, ctx, p, "ORDER BY b.variant_id FOR UPDATE OF b", true)
 	done := a02Start(ctx, winner, r.ID)
 	a02Arrived(t, ctx, gate)
-	creator, waiting, _ := a02Gated(t, ctx, p, "ORDER BY b.variant_id FOR UPDATE OF b", false)
+	creator, waiting, _ := a02Gated(t, ctx, p, "pg_advisory_xact_lock(714025,1)", false)
 	in.RetryKey = "a02-create-second-key-0002"
 	created := make(chan error, 1)
 	go func() {
@@ -311,7 +311,7 @@ func a02CreationSecond(t *testing.T) {
 		created <- err
 	}()
 	pid := a02Arrived(t, ctx, waiting)
-	a01Wait(t, ctx, p, pid, "transactionid")
+	a01Wait(t, ctx, p, pid, "advisory")
 	release()
 	if a02Receive(t, ctx, done).err != nil || !errors.Is(<-created, transfers.ErrInsufficientStock) {
 		t.Fatal("waiting creation did not revalidate committed source availability")

@@ -681,7 +681,7 @@ func waitStockLock(t *testing.T, ctx context.Context, p *pgxpool.Pool) {
 	}
 }
 func testLockedStock(t *testing.T) {
-	ctx, p, s := fixture(t)
+	ctx, p, _ := fixture(t)
 	before := stocks(t, ctx, p)
 	tx, err := p.Begin(ctx)
 	if err != nil {
@@ -692,13 +692,19 @@ func testLockedStock(t *testing.T) {
 		t.Fatal("locked test stock update failed")
 	}
 	result := make(chan error, 1)
-	go func() { _, err := s.Create(ctx, actor(2), input()); result <- err }()
-	waitStockLock(t, ctx, p)
+	creator, trace, _ := a02Gated(t, ctx, p, "pg_advisory_xact_lock(714025,1)", false)
+	go func() { _, err := creator.Create(ctx, actor(2), input()); result <- err }()
+	// The stock UPDATE owns the common fence before either writer takes stock locks.
+	wait, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	pid := a02Arrived(t, wait, trace)
+	a01Wait(t, wait, p, pid, "advisory")
+	cancel()
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal("test stock mutator commit failed")
 	}
 	if err := <-result; !errors.Is(err, transfers.ErrInsufficientStock) {
-		t.Fatal("source mutation not revalidated under row lock")
+		t.Fatal("source mutation not revalidated after integrity fence release")
 	}
 	expected := append([]stockRow(nil), before...)
 	expected[0].Existing = 0
