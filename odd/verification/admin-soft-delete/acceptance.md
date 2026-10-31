@@ -1,6 +1,6 @@
-# Safe deletion: verification accepted, preview not deployed
+# Safe deletion: verification accepted, preview running
 
-S1–S4 passed implementation verification and the final independent source/evidence review. The persistent preview remains stopped. No push, PR or merge was performed.
+S1–S4 passed implementation verification and the final independent source/evidence review. The explicitly authorized preview update is running; its functional deployment checks and independent D7 delivery review passed. No push, PR or merge was performed.
 
 ## Review result
 
@@ -43,10 +43,18 @@ The three original browser screenshots were inspected: account confirmation at 1
 - `708113b6fca81c512fc0af4564c06ce434c5c0d4`: concurrency observation repairs, preserving effects and original timeouts.
 - `f21fb95abcbfccc8e60b8427b7305bad4aa5279c`: public retirement replay, rollback and overlapping-winner proofs.
 
-Production behavior remains the previously verified feature implementation through `0bbb729`; these closing source units add verification only. Unrelated working-tree changes, raw receipts, private preview files and ignored scratch drivers remain untouched and unpublished.
+Production behavior remains the previously verified feature implementation through `0bbb729`; these closing source units add verification only. Unrelated working-tree changes and original raw receipts remain untouched and unpublished. Private credential configuration was not changed or manually read; the authorized runtime update is described below.
 
-## Needs your decision
+## Local preview: runtime and independent review passed
 
-D7 requires explicit authorization to update and restart the separate preview at `http://127.0.0.1:8080`. Its server was stopped at the user's request. Do not restart it automatically, provision accounts, read human passwords, or reset/delete manual records.
+The user explicitly authorized the existing preview update/restart and then one bounded detector/diagnostic correction after the initial preflight failure. Open `http://127.0.0.1:8080` with the existing accounts. Server **job77** is intentionally persistent, not an unfinished test; it stays running until stopped. No account was provisioned, reset or deleted by deployment.
 
-Risk: items 2 and 4 (authority/session retirement and concurrent transaction ordering).
+- Original job75 failed before installation/startup/migration. Its record and original tooling sources remain intact. The detector excluded legitimate digit-bearing column names; its original native failure details were not captured and are not reconstructed.
+- Corrected job76 passed once (11s): all five offline builds and native readonly preflight passed; four original binaries and the original public tree were backed up. The update retained old immutable assets and installed the accepted frontend build without rebuilding it.
+- Job78 passed once (4s): schema16→17, canonical native schema/catalog check, anonymous root/59 accepted asset responses and MIME/hash checks, exact installed-server loopback listener binding, and before/after equality across all 29 nonsecret public table counts/digests. Existing accounts remained **4→4**; account/location non-NULL deletion markers remained **0→0**.
+- Exact evidence: `/home/luis/.local/share/luson-local-preview/d7-update-84abee3141644eb8/{prepared.json,before.json,after.json,result-459234a1.json}`. Native `readonly-before/after.*` execution receipts are distinct from compiler `d7-snapshot.*` receipts. All original resource identities and the historical setup manifest were unchanged; no container/network/volume was recreated.
+- Preservation checks exclude passwords, credential/session-token hashes, renewable session-touch fields, sequence objects and nonpublic schemas. No secret-byte/session-token-identity or historical asset-digest proof is claimed. No human login or mutating HTTP operation was performed on this manual database.
+
+Independent verifier `mvvsgcdb-2l-4a3c` passed D7-only S1–S4/item5 with no severe blocker. It independently compared 368 source entries and the installed/staged/backed-up binaries, installed61/backed-up59 assets, 59 accepted frontend assets and D6's11 receipt bindings: zero mismatches. Native snapshot hashes/JSON/exits, canonical schema check, private root identity and unchanged historical manifest matched. This was read-only source/receipt review, not repeated runtime or fresh PID/network observation. No native approval is claimed. All seven feature outcomes are verified; the local documentation closure records this result without publishing or replaying workloads.
+
+Risk: items 2, 4 and 5 (authority/session retirement, concurrent transaction ordering, and local environment update).
