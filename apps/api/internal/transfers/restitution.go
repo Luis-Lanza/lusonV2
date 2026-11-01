@@ -275,7 +275,8 @@ func (s *Store) GetRestitutions(ctx context.Context, actor auth.Identity, id int
 	var status string
 	var origin, destination int
 	var lines, operations, dispatchEvidence []byte
-	err := s.pool.QueryRow(ctx, restitutionSnapshotSQL, id, actor.Location.ID).Scan(&status, &origin, &destination, &lines, &operations, &dispatchEvidence)
+	var owned bool
+	err := s.pool.QueryRow(ctx, restitutionSnapshotSQL, id, actor.Location.ID).Scan(&status, &owned, &origin, &destination, &lines, &operations, &dispatchEvidence)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Restitutions{}, ErrNotFound
 	}
@@ -284,6 +285,9 @@ func (s *Store) GetRestitutions(ctx context.Context, actor auth.Identity, id int
 	}
 	if status != "received" {
 		return Restitutions{}, ErrDecisionConflict
+	}
+	if owned {
+		return Restitutions{}, ErrUnifiedReconciliationRequired
 	}
 	return decodeRestitutionHistory(id, origin, destination, lines, operations, dispatchEvidence)
 }
@@ -477,7 +481,7 @@ func decodeRestitutionHistory(id int64, origin, destination int, lines, operatio
 
 // One committed statement snapshot pins both workflows and every immutable
 // recovery identity. Aggregates have deterministic order and never return NULL.
-const restitutionSnapshotSQL = `SELECT h.status,h.origin_location_id,h.destination_location_id,
+const restitutionSnapshotSQL = `SELECT h.status,transfer_unified_owned(h.id),h.origin_location_id,h.destination_location_id,
  COALESCE((SELECT jsonb_agg(to_jsonb(line) ORDER BY variant_id) FROM (
  SELECT r.variant_id,r.expected_quantity,r.available_quantity AS original_credit,
  COALESCE(head.revision,0) AS workflow_revision,COALESCE(applied.revision,0) AS applied_revision,

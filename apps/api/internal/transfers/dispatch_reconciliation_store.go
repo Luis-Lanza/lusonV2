@@ -208,8 +208,9 @@ func (s *Store) GetDispatchReconciliations(ctx context.Context, actor auth.Ident
 		return DispatchReconciliations{}, err
 	}
 	var status string
+	var owned bool
 	var lines, operations []byte
-	err := s.pool.QueryRow(ctx, dispatchReconciliationSnapshotSQL, id, actor.Location.ID).Scan(&status, &lines, &operations)
+	err := s.pool.QueryRow(ctx, dispatchReconciliationSnapshotSQL, id, actor.Location.ID).Scan(&status, &owned, &lines, &operations)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return DispatchReconciliations{}, ErrNotFound
 	}
@@ -219,11 +220,19 @@ func (s *Store) GetDispatchReconciliations(ctx context.Context, actor auth.Ident
 	if status != "received" {
 		return DispatchReconciliations{}, ErrDecisionConflict
 	}
+	if owned {
+		return DispatchReconciliations{}, ErrUnifiedReconciliationRequired
+	}
 	out := DispatchReconciliations{RequestID: id}
 	// Typed int64 decoding rejects overflow/fractional quantities without float64.
 	if json.Unmarshal(lines, &out.Lines) != nil || json.Unmarshal(operations, &out.Operations) != nil {
 		return DispatchReconciliations{}, ErrUnavailable
 	}
+	normalizeDispatchSnapshot(&out)
+	return out, nil
+}
+
+func normalizeDispatchSnapshot(out *DispatchReconciliations) {
 	for i := range out.Operations {
 		out.Operations[i].RecordedAt = out.Operations[i].RecordedAt.UTC()
 	}
@@ -239,10 +248,9 @@ func (s *Store) GetDispatchReconciliations(ctx context.Context, actor auth.Ident
 			}
 		}
 	}
-	return out, nil
 }
 
-const dispatchReconciliationSnapshotSQL = `SELECT h.status,
+const dispatchReconciliationSnapshotSQL = `SELECT h.status,transfer_unified_owned(h.id),
  COALESCE((SELECT jsonb_agg(to_jsonb(line) ORDER BY variant_id) FROM (
  SELECT r.variant_id,r.expected_quantity,r.actual_quantity,r.available_quantity,
  state.dispatch AS effective_dispatch,state.actual AS effective_actual,state.credit AS effective_credit,

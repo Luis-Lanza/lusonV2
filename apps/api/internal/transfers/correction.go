@@ -227,7 +227,8 @@ func (s *Store) GetCountCorrections(ctx context.Context, actor auth.Identity, id
 	}
 	var lines, operations []byte
 	var status string
-	err := s.pool.QueryRow(ctx, countSnapshotSQL, id, actor.Location.ID).Scan(&status, &lines, &operations)
+	var owned bool
+	err := s.pool.QueryRow(ctx, countSnapshotSQL, id, actor.Location.ID).Scan(&status, &owned, &lines, &operations)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CountCorrections{}, ErrNotFound
 	}
@@ -237,10 +238,18 @@ func (s *Store) GetCountCorrections(ctx context.Context, actor auth.Identity, id
 	if status != "received" {
 		return CountCorrections{}, ErrDecisionConflict
 	}
+	if owned {
+		return CountCorrections{}, ErrUnifiedReconciliationRequired
+	}
 	out := CountCorrections{RequestID: id}
 	if json.Unmarshal(lines, &out.Lines) != nil || json.Unmarshal(operations, &out.Operations) != nil {
 		return CountCorrections{}, ErrUnavailable
 	}
+	normalizeCountSnapshot(&out)
+	return out, nil
+}
+
+func normalizeCountSnapshot(out *CountCorrections) {
 	for i := range out.Operations {
 		out.Operations[i].RecordedAt = out.Operations[i].RecordedAt.UTC()
 	}
@@ -256,10 +265,9 @@ func (s *Store) GetCountCorrections(ctx context.Context, actor auth.Identity, id
 			}
 		}
 	}
-	return out, nil
 }
 
-const countSnapshotSQL = `SELECT h.status,
+const countSnapshotSQL = `SELECT h.status,transfer_unified_owned(h.id),
  COALESCE((SELECT jsonb_agg(to_jsonb(line) ORDER BY variant_id) FROM (
  SELECT r.*, COALESCE(latest.revision,0) AS workflow_revision,
  COALESCE(applied.revision,0) AS applied_revision,
