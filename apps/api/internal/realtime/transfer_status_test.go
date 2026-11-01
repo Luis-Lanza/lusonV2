@@ -352,12 +352,10 @@ func TestA04TransferStatusMultirowSortedLocks(t *testing.T) {
 	if err != nil {
 		t.Fatal("complete participant set was not locked ascending", err)
 	}
-	// Actual INSERT with opposite participants can finish while UPDATE waits;
-	// it does not need the reservation advisory lock or inventory revision.
-	f.create(t, 3, f.input(transfers.RequestStock, 2))
-	l.boundary(t, f, "transfers:2", "transfers:3")
-	a04Revisions(t, f, before, 0, 2, 3)
-	before = f.revisions(t)
+	// The blocked UPDATE must remain silent. Create also takes the common
+	// integrity fence, so run the opposite-participant INSERT after it joins.
+	l.boundary(t, f)
+	a04Revisions(t, f, before, 0)
 	if blocker.Commit(f.ctx) != nil {
 		t.Fatal("sorted lock barrier release failed")
 	}
@@ -371,6 +369,11 @@ func TestA04TransferStatusMultirowSortedLocks(t *testing.T) {
 	}
 	l.boundary(t, f, "transfers:1", "transfers:2", "transfers:3")
 	a04Revisions(t, f, before, 0, 3, 2, 1, 2)
+	f.unchanged(t, stock)
+	before = f.revisions(t)
+	f.create(t, 3, f.input(transfers.RequestStock, 2))
+	l.boundary(t, f, "transfers:2", "transfers:3")
+	a04Revisions(t, f, before, 0, 2, 3)
 	f.unchanged(t, stock)
 }
 
@@ -446,7 +449,9 @@ func TestA04TransferStatusProtectedConcurrency(t *testing.T) {
 					t.Fatal("insert PID absent")
 				}
 			}
-			a04Blocked(t, f, tr3.pid.Load(), tr.pid.Load(), "transactionid")
+			// Pending creation takes beginPersonal's integrity fence before
+			// header/revision locks, just like the second protected decision.
+			a04Blocked(t, f, tr3.pid.Load(), tr.pid.Load(), "advisory")
 			l.boundary(t, f)
 			a04Revisions(t, f, before, 0)
 			close(tr.resume)

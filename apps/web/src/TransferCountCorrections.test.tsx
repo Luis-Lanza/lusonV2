@@ -944,8 +944,8 @@ it('reports secure random failure and never falls back to a key or write', () =>
   expect(screen.getByRole('alert')).not.toHaveTextContent('private diagnostic');
   expect(f.corrections.propose).not.toHaveBeenCalled();
 });
-it('T4c preserves absent original expected membership for audit-only unexpected counts', async () => {
-  const f = fixture(); f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [line(202)] };
+it('T4c preserves absent original expected membership for audit-only unexpected counts in historical expected mode', async () => {
+  const f = fixture(); f.props.expectedHistoricalOnly = true; f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [line(202)] };
   if (f.props.record.status !== 'received') throw new Error();
   f.props.record = { ...f.props.record, receipt: { ...f.props.record.receipt, items: [...f.props.record.receipt.items,
     { variant_id: 202, expected_quantity: 0n, actual_quantity: 7n, available_quantity: 0n }] } };
