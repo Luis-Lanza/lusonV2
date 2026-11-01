@@ -73,7 +73,7 @@ func discoveryCheck(t *testing.T, ctx context.Context, s *transfers.Store, r tra
 	if err := json.Unmarshal(raw, &categories); err != nil {
 		t.Fatal(err)
 	}
-	wantCategories := map[string]int64{"Approve": 0, "Dispatch": 0, "Receive": 0, "ReviewCount": 0, "ReviewRestitution": 0, "ReviewDispatchReconciliation": 0}
+	wantCategories := map[string]int64{"Approve": 0, "Dispatch": 0, "Receive": 0, "ReviewCount": 0, "ReviewRestitution": 0, "ReviewDispatchReconciliation": 0, "ReviewUnifiedReconciliation": 0}
 	for _, reason := range reasons {
 		field := map[string]string{"review_count": "ReviewCount", "review_restitution": "ReviewRestitution", discoveryReason: "ReviewDispatchReconciliation"}[reason]
 		wantCategories[field] = 1

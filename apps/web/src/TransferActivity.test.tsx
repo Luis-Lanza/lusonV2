@@ -20,6 +20,19 @@ it('T10 displays Spanish actions, snapshot names, locations and times with escap
   expect(container.textContent).toContain('Sucursal A');
   expect(container.textContent).toContain('Almacén');
 });
+it('renders unified actions distinctly with escaped personal snapshots and variant evidence', () => {
+  const activity = ['propose', 'accept', 'reject'].map(action => ({ category: 'unified', action,
+    actor: { account_id: '20', username: '<peer>', display_name: '' }, location_id: 1,
+    location_name: '<Origin>', recorded_at: '2026-04-02T12:34:56Z', variant_id: 1 })) as unknown as NonNullable<TransferRecord['activity']>;
+  const { container } = render(<TransferActivity activity={activity} />);
+  for (const label of ['Conciliación unificada propuesta', 'Conciliación unificada aceptada', 'Conciliación unificada rechazada']) {
+    expect(screen.getByText(label)).toBeTruthy();
+  }
+  expect(screen.getAllByText('<peer>')).toHaveLength(3);
+  expect(container.querySelector('peer')).toBeNull();
+  expect(container.querySelectorAll('time[datetime]')).toHaveLength(3);
+  expect(container.textContent).toContain('<Origin> · Variante 1');
+});
 it('T10 never invents a personal author for legacy history', () => {
   render(<TransferActivity />);
   expect(screen.getByText('Sin autor personal registrado; la responsabilidad histórica corresponde a la ubicación.')).toBeTruthy();

@@ -175,7 +175,7 @@ func TestD6RetirementOverlappedWinners(t *testing.T) {
 				if json.Unmarshal([]byte(d6Get(t, f, "/api/transfers?status=all")), &list) != nil || list.Total != "1" || len(list.Records) != 1 || path != "/api/transfers/"+list.Records[0].ID {
 					t.Fatal("winning history membership")
 				}
-				t5Exact(t, f.request(f.tokens[0], "GET", "/api/transfers/counts", ""), 200, `{"pending_total":"0","action_count":"`+actions+`","actions":{"approve":"0","dispatch":"`+actions+`","receive":"0","review_count":"0","review_dispatch_reconciliation":"0","review_restitution":"0"}}`+"\n")
+				t5Exact(t, f.request(f.tokens[0], "GET", "/api/transfers/counts", ""), 200, `{"pending_total":"0","action_count":"`+actions+`","actions":{"approve":"0","dispatch":"`+actions+`","receive":"0","review_count":"0","review_dispatch_reconciliation":"0","review_restitution":"0","review_unified_reconciliation":"0"}}`+"\n")
 				t8Stock(t, f, 1, existing, reserved)
 				d6Empty(t, f)
 			})

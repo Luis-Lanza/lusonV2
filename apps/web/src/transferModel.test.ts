@@ -436,7 +436,7 @@ describe('A05a outcome and count contracts', () => {
 });
 
 describe('required action metadata', () => {
-  const actions = { approve: '0', dispatch: '0', receive: '0', review_count: '9007199254740993', review_restitution: '9007199254740993', review_dispatch_reconciliation: '0' };
+  const actions = { approve: '0', dispatch: '0', receive: '0', review_count: '9007199254740993', review_restitution: '9007199254740993', review_dispatch_reconciliation: '0', review_unified_reconciliation: '0' };
   it('decodes overlapping lossless categories without inventing legacy zero categories', () => {
     const counts = parseTransferCounts(JSON.stringify({ pending_total: '0', action_count: '9007199254740993', actions }));
     expect(counts).toMatchObject({ actions: { review_count: 9007199254740993n, review_restitution: 9007199254740993n } });
@@ -472,7 +472,7 @@ describe('required action metadata', () => {
 describe('reconciliation discovery strict metadata', () => {
   const reason = 'review_dispatch_reconciliation';
   const actions = { approve: '0', dispatch: '0', receive: '0', review_count: '9007199254740993',
-    review_restitution: '9007199254740993', [reason]: '9007199254740993' };
+    review_restitution: '9007199254740993', [reason]: '9007199254740993', review_unified_reconciliation: '0' };
   const counts = (categories: unknown) => JSON.stringify({ pending_total: '0', action_count: '9007199254740993', actions: categories });
   const received = receiptWire();
   const page = (reasons: string[], record: unknown = received) => JSON.stringify({ page: 1, page_size: 25,
@@ -482,7 +482,7 @@ describe('reconciliation discovery strict metadata', () => {
     const raw = counts(actions);
     expect(parseTransferCounts(raw)).toEqual({ pending_total: 0n, action_count: 9007199254740993n,
       actions: { approve: 0n, dispatch: 0n, receive: 0n, review_count: 9007199254740993n,
-        review_restitution: 9007199254740993n, [reason]: 9007199254740993n } });
+        review_restitution: 9007199254740993n, [reason]: 9007199254740993n, review_unified_reconciliation: 0n } });
     expect(counts(actions)).toBe(raw);
     expect(parseTransferCounts('{"pending_total":"0","action_count":"1"}'))
       .toEqual({ pending_total: 0n, action_count: 1n });

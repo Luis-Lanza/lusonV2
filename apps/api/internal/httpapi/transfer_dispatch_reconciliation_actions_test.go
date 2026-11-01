@@ -27,7 +27,7 @@ func TestDRDiscoveryHTTP(t *testing.T) {
 				if err := json.Unmarshal(counts["actions"], &categories); err != nil {
 					t.Fatal(err)
 				}
-				expected := map[string]string{"approve": "0", "dispatch": "0", "receive": "0", "review_count": "0", "review_restitution": "0", "review_dispatch_reconciliation": want}
+				expected := map[string]string{"approve": "0", "dispatch": "0", "receive": "0", "review_count": "0", "review_restitution": "0", "review_dispatch_reconciliation": want, "review_unified_reconciliation": "0"}
 				if !reflect.DeepEqual(categories, expected) || string(counts["action_count"]) != `"`+want+`"` || string(counts["pending_total"]) != `"0"` {
 					t.Errorf("actor %d counts=%s want categories=%v union=%s", who, counts, expected, want)
 				}

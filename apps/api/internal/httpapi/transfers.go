@@ -483,6 +483,7 @@ func (a *API) transferCounts(store *transfers.Store) http.HandlerFunc {
 			"review_count":                   strconv.FormatInt(totals.Actions.ReviewCount, 10),
 			"review_restitution":             strconv.FormatInt(totals.Actions.ReviewRestitution, 10),
 			"review_dispatch_reconciliation": strconv.FormatInt(totals.Actions.ReviewDispatchReconciliation, 10),
+			"review_unified_reconciliation":  strconv.FormatInt(totals.Actions.ReviewUnifiedReconciliation, 10),
 		}})
 	}
 }

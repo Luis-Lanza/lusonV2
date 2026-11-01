@@ -52,12 +52,13 @@ func (s *Store) Counts(ctx context.Context, actor auth.Identity) (Totals, error)
  count(*) FILTER (WHERE approve), count(*) FILTER (WHERE dispatch),
  count(*) FILTER (WHERE receive), count(*) FILTER (WHERE review_count),
  count(*) FILTER (WHERE review_restitution),
- count(*) FILTER (WHERE review_dispatch_reconciliation)
+ count(*) FILTER (WHERE review_dispatch_reconciliation),
+ count(*) FILTER (WHERE review_unified_reconciliation)
  FROM (`+requiredActionsSQL+`) actions`, actor.Location.ID).Scan(
 		&totals.PendingTotal, &totals.ActionCount, &totals.Actions.Approve,
 		&totals.Actions.Dispatch, &totals.Actions.Receive,
 		&totals.Actions.ReviewCount, &totals.Actions.ReviewRestitution,
-		&totals.Actions.ReviewDispatchReconciliation)
+		&totals.Actions.ReviewDispatchReconciliation, &totals.Actions.ReviewUnifiedReconciliation)
 	if err != nil {
 		return Totals{}, fail(ctx)
 	}
