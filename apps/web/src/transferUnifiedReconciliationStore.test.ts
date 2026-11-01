@@ -1,0 +1,98 @@
+import { expect, it } from 'vitest';
+import { createTransferUnifiedReconciliationStore } from './transferUnifiedReconciliationStore';
+import { UnifiedReconciliationAPIError } from './transferUnifiedReconciliationAPI';
+import { unifiedAgreement, unifiedFixture, wire } from './transferUnifiedReconciliationFixtures';
+import { parseUnifiedReconciliations } from './transferUnifiedReconciliationModel';
+const owner = { account: 1, location: 1, epoch: 1, generation: 1 };
+function setup() {
+  const f = unifiedFixture(), store = createTransferUnifiedReconciliationStore();
+  store.synchronize(owner); store.select(owner, f.record);
+  const read = store.beginRead(owner, f.record)!;
+  expect(Object.isFrozen(read.original.status === 'received' && read.original.receipt.items[0])).toBe(true);
+  store.finishRead(read, parseUnifiedReconciliations(wire(f.raw), f.record));
+  return { ...f, store };
+}
+const intent = { variant_id: 1, operation_key: 'unified-proposal-0001', expected_revision: '0',
+  dispatch_quantity: '4', arrival_quantity: '3', retained_quantity: '1', retained_at_origin: true, reason: ' verified ' };
+it('prepares without a write, conserves exact intent across uncertain retry and resolves by read only', () => {
+  const f = setup();
+  expect(f.store.prepare(owner, f.record, 'propose', intent)).toBe(true);
+  const prepared = f.store.state(owner, f.record).prepared!;
+  expect(f.store.state(owner, f.record).attempts).toEqual([]);
+  const first = f.store.confirm(owner, f.record)!;
+  expect(first.attempt.payload).toBe(prepared.payload);
+  expect(f.store.confirm(owner, f.record)).toBeNull();
+  f.store.failWrite(first, new UnifiedReconciliationAPIError('network', null, true));
+  const retry = f.store.retry(owner, f.record, 1)!;
+  expect(retry.attempt.payload).toBe(first.attempt.payload);
+  f.store.failWrite(retry, new UnifiedReconciliationAPIError('decision_conflict', 409, false));
+  expect(f.store.state(owner, f.record).attempts[0].phase).toBe('uncertain');
+  expect(f.store.prepare(owner, f.record, 'propose', { ...intent, operation_key: 'replacement-key-0001' })).toBe(false);
+  const absent = f.store.beginRead(owner, f.record, true)!;
+  f.store.finishRead(absent, parseUnifiedReconciliations(wire(f.raw), f.record));
+  expect(f.store.state(owner, f.record).attempts[0].phase).toBe('uncertain');
+  const durable = unifiedAgreement('pending');
+  const read = f.store.beginRead(owner, f.record, true)!;
+  expect(f.store.finishRead(read, parseUnifiedReconciliations(wire(durable.raw), durable.record))).toHaveLength(1);
+  expect(f.store.state(owner, f.record).attempts[0].phase).toBe('confirmed');
+  expect(f.store.retry(owner, f.record, 1)).toBeNull();
+});
+it('fresh refusal permits new work; stale reads, owner changes and record selection cannot adopt tickets', () => {
+  const f = setup();
+  f.store.prepare(owner, f.record, 'propose', intent);
+  const write = f.store.confirm(owner, f.record)!;
+  f.store.failWrite(write, new UnifiedReconciliationAPIError('decision_conflict', 409, false));
+  expect(f.store.state(owner, f.record).attempts[0].phase).toBe('failed');
+  expect(f.store.prepare(owner, f.record, 'propose', { ...intent, operation_key: 'replacement-key-0001' })).toBe(true);
+  const old = f.store.beginRead(owner, f.record)!;
+  const current = f.store.beginRead(owner, f.record)!;
+  expect(f.store.finishRead(old, {})).toEqual([]);
+  f.store.select(owner, null);
+  expect(f.store.state(owner, f.record).snapshot).toBeNull();
+  expect(f.store.finishRead(current, {})).toEqual([]);
+  f.store.synchronize({ ...owner, generation: 2 });
+  f.store.select({ ...owner, generation: 2 }, f.record);
+  expect(f.store.state({ ...owner, generation: 2 }, f.record).attempts).toEqual([]);
+  expect(f.store.finishWrite(write, {})).toBeNull();
+});
+it('privacy refusal masks all private state until explicit read and invalidates prepared confirmation', () => {
+  const f = setup(); f.store.prepare(owner, f.record, 'propose', intent);
+  const read = f.store.beginRead(owner, f.record)!;
+  f.store.failRead(read, new UnifiedReconciliationAPIError('forbidden', 403));
+  expect(f.store.state(owner, f.record)).toMatchObject({ snapshot: null, prepared: null, attempts: [], masked: true });
+  const passive = f.store.beginRead(owner, f.record)!;
+  f.store.finishRead(passive, parseUnifiedReconciliations(wire(f.raw), f.record));
+  expect(f.store.state(owner, f.record).masked).toBe(true);
+  const explicit = f.store.beginRead(owner, f.record, true)!;
+  f.store.finishRead(explicit, parseUnifiedReconciliations(wire(f.raw), f.record));
+  expect(f.store.state(owner, f.record).masked).toBe(false);
+  expect(f.store.confirm(owner, f.record)).toBeNull();
+});
+it.each([1, 2])('both endpoints may initiate; only counterpart accepts with origin retention attestation (initiator %s)', initiator => {
+  const f = unifiedAgreement('pending', '4', '3', '1', initiator), store = createTransferUnifiedReconciliationStore();
+  const actor = initiator === 1 ? 2 : 1, next = { ...owner, account: actor, location: actor };
+  store.synchronize(next); store.select(next, f.record);
+  const read = store.beginRead(next, f.record)!; store.finishRead(read, parseUnifiedReconciliations(wire(f.raw), f.record));
+  const input = { variant_id: 1, operation_key: 'unified-decision-0001', expected_revision: '1', reason: ' agreed ', retained_at_origin: actor === 1 };
+  if (actor === 1) expect(store.prepare(next, f.record, 'accept', { ...input, retained_at_origin: false })).toBe(false);
+  expect(store.prepare(next, f.record, 'accept', input)).toBe(true);
+  const ticket = store.confirm(next, f.record)!;
+  const durable = unifiedAgreement('applied', '4', '3', '1', initiator);
+  const op = parseUnifiedReconciliations(wire(durable.raw), durable.record).operations[1];
+  expect(store.finishWrite(ticket, op)).toEqual(op);
+  expect(store.state(next, f.record).attempts[0]).toMatchObject({ phase: 'confirmed', result: op });
+  expect(store.state(next, f.record).snapshot).toBeNull();
+  expect(store.finishWrite(ticket, op)).toBeNull();
+});
+it('malformed injected results leave intent unresolved, and stale head changes invalidate confirmation', () => {
+  const f = setup(); f.store.prepare(owner, f.record, 'propose', intent);
+  const ticket = f.store.confirm(owner, f.record)!;
+  expect(() => f.store.finishWrite(ticket, { operation_key: intent.operation_key })).toThrow();
+  f.store.failWrite(ticket, new Error('untrusted transport detail'));
+  expect(f.store.state(owner, f.record).attempts[0]).toMatchObject({ phase: 'uncertain', failure: { code: 'invalid_response', status: null } });
+  const next = setup(); next.store.prepare(owner, next.record, 'propose', intent);
+  const durable = unifiedAgreement('pending');
+  const read = next.store.beginRead(owner, next.record)!;
+  next.store.finishRead(read, parseUnifiedReconciliations(wire(durable.raw), durable.record));
+  expect(next.store.state(owner, next.record).prepared).toBeNull(); expect(next.store.confirm(owner, next.record)).toBeNull();
+});
