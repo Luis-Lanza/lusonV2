@@ -24,11 +24,11 @@ function setup(pending = false, location = 1, snapshot?: DispatchReconciliations
       recover: async () => { calls.recover(); }, retry: async variant => { calls.retry(variant); },
       refresh: async () => { calls.refresh(); } };
   };
-  function Harness({ overrides = {} }: { overrides?: Partial<Props['reconciliations']> }) {
+  function Harness({ overrides = {}, historicalOnly = false }: { overrides?: Partial<Props['reconciliations']>; historicalOnly?: boolean }) {
     const [, update] = useState(0);
     useEffect(() => store.subscribe(() => update(n => n + 1)), []);
     return <><button>Fuera de la gestión</button><TransferDispatchReconciliations record={f.record}
-      actorLocation={location} reconciliations={{ ...current(), ...overrides }} /></>;
+      actorLocation={location} historicalOnly={historicalOnly} reconciliations={{ ...current(), ...overrides }} /></>;
   }
   return { ...f, actor, store, calls, current, Harness };
 }
@@ -49,6 +49,14 @@ function ownAttempt(phase: 'inFlight' | 'uncertain' | 'failed' | 'confirmed') {
 }
 
 describe('controlled dispatch reconciliation presentation', () => {
+  it('retains historical rejection without fresh expected proposal or acceptance', () => {
+    const h = setup(true, 2); render(<h.Harness historicalOnly />);
+    expect(screen.queryByRole('button', { name: 'Proponer regularización' })).toBeNull();
+    click('Consultar propuesta');
+    expect(screen.queryByRole('button', { name: 'Aceptar propuesta' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Rechazar propuesta' })).toBeEnabled();
+    expect(h.calls.confirm).not.toHaveBeenCalled();
+  });
   it('reviews controlled Q=A, deltas and reason before explicit confirmation in the selected context', () => {
     const h = setup(); render(<h.Harness />);
     expect(screen.getByRole('heading', { name: 'Regularización de despacho' })).toBeVisible();

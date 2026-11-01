@@ -52,6 +52,16 @@ function fixture(actor = 1, proposed = false, dispatched = '5', multiple = false
   const posts = () => fetch.mock.calls.filter(([, init]) => init?.method === 'POST');
   return { authority, record, controller, history, listeners, element, fetch, posts, fail: () => { fail = true; }, mask: () => { mask = true; } };
 }
+it.each([1, 2])('unified audit at endpoint %s retains historical rejection without fresh expected mutation', async actor => {
+  const f = fixture(actor, true);
+  render(<TransferRestitutions controller={f.controller} record={f.record} enabled requestID={id} historicalOnly />);
+  await screen.findByText('Crédito efectivo en destino');
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Consultar para revisar restitución' })); });
+  expect(screen.queryByRole('button', { name: 'Proponer restitución' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Aceptar restitución' })).toBeNull();
+  if (actor === 2) expect(screen.getByRole('button', { name: 'Rechazar restitución' })).toBeEnabled();
+  expect(f.posts()).toHaveLength(0);
+});
 it('T4c displays effective dispatch capacity without claiming physical retention or writing', async () => {
   const f = fixture();
   const header = parseTransferRecord(JSON.stringify({ ...f.record,

@@ -19,6 +19,7 @@ export interface TransferCountCorrectionsProps {
   enabled?: boolean;
   contextVisible?: boolean;
   entryFocusKey?: number;
+  expectedHistoricalOnly?: boolean;
 }
 const states = { pending: 'Pendiente', superseded: 'Reemplazada', rejected: 'Rechazada', applied: 'Aplicada' };
 const actions = { propose: 'Proponer', accept: 'Aceptar', reject: 'Rechazar' };
@@ -166,6 +167,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
       && (a.phase === 'inFlight' || a.phase !== 'confirmed' && a.priorUncertainty));
   }
   function allowed(line: CountCorrectionLine, action: CountAction) {
+    if (latest.current.expectedHistoricalOnly && line.expected_quantity > 0n && action !== 'reject') return false;
     if (blocked(line.variant_id)) return false;
     if (action !== 'reject' && !dispatchKnown(line)) return false;
     const pending = line.proposals.find(p => p.state === 'pending');
@@ -409,6 +411,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
   }
   return <section className="count-corrections" aria-label="Correcciones de conteo" hidden={!sectionVisible}>
     <h2 ref={contextHeading} tabIndex={-1}>Correcciones de conteo</h2>
+    {props.expectedHistoricalOnly && <p>Auditoría histórica: estas cantidades no sustituyen el estado vigente de la tabla. Las variantes esperadas se concilian en Resolver diferencia; las inesperadas conservan su corrección de conteo.</p>}
     <p className="count-context-note sr-only" hidden={!routineVisible}>La recepción original es inmutable. La transferencia sigue Recibida; estas correcciones conservan su evidencia original.</p>
     {masked ? <div className="count-recovery"><p role="status">Correcciones no disponibles para esta sesión.</p>
       <button disabled={sending || corrections.busy || recoveryVariant === undefined} onClick={() => {
@@ -533,7 +536,7 @@ function CorrectionSection(props: TransferCountCorrectionsProps & { isBoundaryCu
             proposer={location(validConsultation.pending.initiator_location_id)} reviewer={location(owner!.location)}
             destination={record.destination_location_name} unexpected={!record.items.some(i => i.variant_id === validConsultation.variant)} />
           <footer><button disabled={sending || corrections.busy} onClick={() => open(validConsultation.variant, 'reject', validConsultation.trigger)}>Rechazar propuesta</button>
-            <button disabled={sending || corrections.busy || !allowed(lineFor(validConsultation.variant)!, 'accept')} onClick={() => open(validConsultation.variant, 'accept', validConsultation.trigger)}>Aceptar propuesta</button></footer>
+            {(!props.expectedHistoricalOnly || lineFor(validConsultation.variant)!.expected_quantity === 0n) && <button disabled={sending || corrections.busy || !allowed(lineFor(validConsultation.variant)!, 'accept')} onClick={() => open(validConsultation.variant, 'accept', validConsultation.trigger)}>Aceptar propuesta</button>}</footer>
         </>}
       {draft && !review && <form className="count-form" onSubmit={e => { e.preventDefault(); prepare(); }} aria-label="Editar corrección">
         {draft.action === 'propose' ? <>

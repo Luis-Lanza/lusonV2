@@ -91,6 +91,16 @@ it.each(['effective_dispatch', 'reconciliation_revision'] as const)('T4c permits
   expect(f.corrections.decide).toHaveBeenCalledExactlyOnceWith('reject', expect.objectContaining({ reason: 'No acuerdo', expected_revision: '4' }));
   expect(f.corrections.propose).not.toHaveBeenCalled(); expect(f.corrections.retry).not.toHaveBeenCalled();
 });
+it('unified historical expected mode keeps rejection but suppresses fresh expected proposal and acceptance', () => {
+  const f = fixture(); f.props.expectedHistoricalOnly = true;
+  f.corrections.snapshot = { ...f.corrections.snapshot!, lines: [{ ...f.corrections.snapshot!.lines[0], proposals: [proposal('pending', 3)] }] };
+  render(<TransferCountCorrections {...f.props} />);
+  expect(screen.queryByRole('button', { name: 'Proponer corrección' })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Consultar propuesta' }));
+  expect(screen.queryByRole('button', { name: 'Aceptar propuesta' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Rechazar propuesta' })).toBeEnabled();
+  expect(f.corrections.propose).not.toHaveBeenCalled(); expect(f.corrections.decide).not.toHaveBeenCalled();
+});
 it('uses one shared management table and plain empty history rather than product cards', () => {
   const f = fixture(); render(<TransferCountCorrections {...f.props} />);
   const table = screen.getByRole('table', { name: 'Gestión de conteo' });

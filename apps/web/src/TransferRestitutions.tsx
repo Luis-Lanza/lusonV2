@@ -2,7 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { isTransferFocusTarget } from './transferModalFocus';
 import './transfer-restitutions.css';
 import TransferDate from './TransferDate';
-import { useTransferRestitutions } from './useTransferRestitutions';
+import { useTransferRestitutions, type TransferRestitutionsOptions } from './useTransferRestitutions';
 import { decisionOwner } from './transferDecisionRecovery';
 import { newTransferRetryKey, type TransferRecord } from './transferModel';
 import { normalizeRestitutionDecision, normalizeRestitutionProposal, type RestitutionAction,
@@ -13,6 +13,8 @@ export interface TransferRestitutionsProps {
   controller: TransferController; record: TransferRecord; requestID: string | null; enabled: boolean;
   contextVisible?: boolean;
   entryFocusKey?: number;
+  historicalOnly?: boolean;
+  api?: TransferRestitutionsOptions['api'];
 }
 const ownerKey = (c: TransferController) => {
   const authority = c.getTransferAuthority();
@@ -39,7 +41,7 @@ function Section(props: TransferRestitutionsProps) {
   const { controller, record } = props;
   const boundOwner = useRef(ownerKey(controller));
   const [variant, setVariant] = useState<number | null>(record.items[0]?.variant_id ?? null);
-  const hook = useTransferRestitutions({ controller, recovery: controller.restitutionRecovery!, record,
+  const hook = useTransferRestitutions({ controller, recovery: controller.restitutionRecovery!, record, api: props.api,
     requestID: props.requestID, enabled: eligible(props) && ownerKey(controller) === boundOwner.current,
     variantID: variant, onConfirmation: controller.confirmTransferRestitution });
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -202,7 +204,7 @@ function Section(props: TransferRestitutionsProps) {
   const sectionVisible = routineVisible || masked || hook.busy || !!hook.error || !!message
     || !line || hook.attempts.length > 0;
   const actions: RestitutionAction[] = decisionOwner(controller.getTransferAuthority())?.account === record.destination_location_id
-    ? ['accept', 'reject'] : decisionOwner(controller.getTransferAuthority())?.account === record.origin_location_id ? ['propose'] : [];
+    ? props.historicalOnly ? ['reject'] : ['accept', 'reject'] : !props.historicalOnly && decisionOwner(controller.getTransferAuthority())?.account === record.origin_location_id ? ['propose'] : [];
   const decisionEvidence = decisionCapture && decisionProposal && <>
     <div className="decision-context"><p>{decisionCapture.record.reference} · {decisionCapture.record.origin_location_name} → {decisionCapture.record.destination_location_name}</p>
       <p>Propuesta de {decisionProposal.initiator_location_id === decisionCapture.record.origin_location_id ? decisionCapture.record.origin_location_name : `Ubicación ${decisionProposal.initiator_location_id}`} · Decisión a cargo de {decisionCapture.record.destination_location_name}</p></div>
@@ -230,7 +232,7 @@ function Section(props: TransferRestitutionsProps) {
     <h2 ref={contextHeading} tabIndex={-1}>Restituciones de origen</h2>
     {masked ? <><p role="status">Restituciones no disponibles para esta sesión.</p><button disabled={hook.busy} onClick={() => { if (current()) void run(hook.recover); }}>Consultar recuperación autorizada</button></> : <>
       <div className="workflow-routine" hidden={!routineVisible}>
-      <p className="restitution-helper">El faltante no prueba retención. Proponer no mueve stock.</p>
+      <p className="restitution-helper">{props.historicalOnly ? 'Auditoría histórica: no representa el estado vigente de la tabla. Solo rechazo histórico y recuperación exacta; usá Resolver diferencia para un nuevo acuerdo.' : 'El faltante no prueba retención. Proponer no mueve stock.'}</p>
       </div>
       {/* Consultation is recovery too; it must not depend on routine selection. */}
       <div className="workflow-routine" hidden={!sectionVisible}>
