@@ -1,10 +1,117 @@
 package httpapi
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"luson/api/internal/transfers"
 	"math"
+	"mime"
 	"net/http"
+	"strings"
+	"unicode/utf8"
 )
+
+// The body carries intent only. Actor, baselines and decision action are server-owned.
+type unifiedReconciliationMutation struct {
+	VariantID        int64
+	OperationKey     string
+	ExpectedRevision int64
+	DispatchQuantity int64
+	ArrivalQuantity  int64
+	RetainedQuantity int64
+	RetainedAtOrigin bool
+	Reason           string
+}
+
+func decodeUnifiedReconciliationMutation(r *http.Request, propose bool) (unifiedReconciliationMutation, error) {
+	invalid := func() (unifiedReconciliationMutation, error) {
+		return unifiedReconciliationMutation{}, transfers.ErrInvalid
+	}
+	if r == nil || r.Body == nil || len(r.Header.Values("Content-Type")) != 1 {
+		return invalid()
+	}
+	contentType := r.Header.Get("Content-Type")
+	media, params, err := mime.ParseMediaType(contentType)
+	if err != nil || media != "application/json" || len(params) > 1 || strings.Count(contentType, ";") != len(params) {
+		return invalid()
+	}
+	for k, v := range params {
+		if k != "charset" || !strings.EqualFold(v, "utf-8") {
+			return invalid()
+		}
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, (64<<10)+1))
+	if err != nil || len(body) > 64<<10 || !utf8.Valid(body) {
+		return invalid()
+	}
+	d := json.NewDecoder(bytes.NewReader(body))
+	d.UseNumber()
+	if !transferDelimiter(d, '{') {
+		return invalid()
+	}
+	var in unifiedReconciliationMutation
+	seen := map[string]bool{}
+	for d.More() {
+		key, e := transferString(d)
+		if e != nil || seen[key] {
+			return invalid()
+		}
+		seen[key] = true
+		switch key {
+		case "variant_id":
+			in.VariantID, err = transferNumber(d, math.MaxInt32)
+		case "operation_key":
+			in.OperationKey, err = transferString(d)
+		case "expected_revision":
+			in.ExpectedRevision, err = countDecimal(d, math.MaxInt64-1)
+		case "reason":
+			in.Reason, err = transferString(d)
+		case "retained_at_origin":
+			var token any
+			token, err = d.Token()
+			var ok bool
+			in.RetainedAtOrigin, ok = token.(bool)
+			if !ok {
+				return invalid()
+			}
+		case "dispatch_quantity", "arrival_quantity", "retained_quantity":
+			if !propose {
+				return invalid()
+			}
+			var value int64
+			value, err = countDecimal(d, math.MaxInt64)
+			switch key {
+			case "dispatch_quantity":
+				in.DispatchQuantity = value
+			case "arrival_quantity":
+				in.ArrivalQuantity = value
+			case "retained_quantity":
+				in.RetainedQuantity = value
+			}
+		default:
+			return invalid()
+		}
+		if err != nil {
+			return invalid()
+		}
+	}
+	required := 5
+	if propose {
+		required += 3
+	}
+	if len(seen) != required || !transferDelimiter(d, '}') {
+		return invalid()
+	}
+	if _, err = d.Token(); err != io.EOF {
+		return invalid()
+	}
+	length := utf8.RuneCountInString(strings.Trim(in.Reason, " "))
+	if !countOperationKey.MatchString(in.OperationKey) || strings.ContainsRune(in.Reason, 0) || length < 1 || length > 2000 {
+		return invalid()
+	}
+	return in, nil
+}
 
 type UnifiedReconciliationOperationDTO struct {
 	OperationKey              string  `json:"operation_key"`
@@ -260,6 +367,70 @@ func unifiedReconciliationSnapshotRecord(in transfers.UnifiedReconciliations) un
 		out.Operations = append(out.Operations, wireUnifiedReconciliationOperation(v))
 	}
 	return out
+}
+
+type unifiedOperationEnvelopeDTO struct {
+	Schema    string                            `json:"schema"`
+	Operation UnifiedReconciliationOperationDTO `json:"operation"`
+}
+
+func (a *API) transferUnifiedReconciliationMutation(store *transfers.Store, action string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, http.MethodPost) {
+			return
+		}
+		actor, ok := a.inventoryIdentity(w, r)
+		if !ok {
+			return
+		}
+		site := r.Header.Values("Sec-Fetch-Site")
+		if len(site) > 1 || (len(site) == 1 && site[0] != "same-origin") {
+			failure(w, 403, "forbidden")
+			return
+		}
+		if !a.GuardMutation(w, r) {
+			return
+		}
+		if action != "propose" && action != "accept" && action != "reject" {
+			transferFailure(w, transfers.ErrInvalid)
+			return
+		}
+		if r.URL.RawQuery != "" || r.URL.ForceQuery {
+			transferFailure(w, transfers.ErrInvalid)
+			return
+		}
+		id, err := canonicalTransferInteger(r.PathValue("id"), math.MaxInt64)
+		if err != nil {
+			transferFailure(w, err)
+			return
+		}
+		// Private header admission only: never consult today's head before exact retry lookup.
+		if err = store.CheckRestitutionAccess(r.Context(), actor, id); err != nil {
+			transferFailure(w, err)
+			return
+		}
+		in, err := decodeUnifiedReconciliationMutation(r, action == "propose")
+		if err != nil {
+			transferFailure(w, err)
+			return
+		}
+		var op transfers.UnifiedReconciliationOperation
+		if action == "propose" {
+			op, err = store.ProposeUnifiedReconciliation(r.Context(), actor, id, transfers.UnifiedReconciliationProposalInput{
+				VariantID: in.VariantID, OperationKey: in.OperationKey, ExpectedRevision: in.ExpectedRevision,
+				DispatchQuantity: in.DispatchQuantity, ArrivalQuantity: in.ArrivalQuantity, RetainedQuantity: in.RetainedQuantity,
+				RetainedAtOrigin: in.RetainedAtOrigin, Reason: in.Reason})
+		} else {
+			op, err = store.DecideUnifiedReconciliation(r.Context(), actor, id, transfers.UnifiedReconciliationDecisionInput{
+				VariantID: in.VariantID, OperationKey: in.OperationKey, ExpectedRevision: in.ExpectedRevision,
+				Accept: action == "accept", RetainedAtOrigin: in.RetainedAtOrigin, Reason: in.Reason})
+		}
+		if err != nil {
+			transferFailure(w, err)
+			return
+		}
+		respond(w, 200, unifiedOperationEnvelopeDTO{Schema: "luson.transfer-reconciliation-operation/v2", Operation: wireUnifiedReconciliationOperation(op)})
+	}
 }
 
 func (a *API) transferUnifiedReconciliations(store *transfers.Store) http.HandlerFunc {
