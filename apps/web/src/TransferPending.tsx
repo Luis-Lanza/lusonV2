@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { TransferAuthority } from './useInventory';
 import { useTransfers } from './useTransfers';
 import { validTransferLocation, transferQuantityTotal, type TransferActionReason, type TransferRecord } from './transferModel';
@@ -12,6 +12,10 @@ import TransferReceipt from './TransferReceipt';
 import TransferCancellation from './TransferCancellation';
 import { useTransferCountCorrections } from './useTransferCountCorrections';
 import { useTransferDispatchReconciliations } from './useTransferDispatchReconciliations';
+import { useTransferUnifiedReconciliations } from './useTransferUnifiedReconciliations';
+import { createUnifiedReconciliationAPI, UnifiedReconciliationAPIError } from './transferUnifiedReconciliationAPI';
+import { createTransferAPI, TransferAPIError, type TransferReadOptions } from './transferAPI';
+import { createDispatchReconciliationAPI, DispatchReconciliationAPIError } from './transferDispatchReconciliationAPI';
 import { isTransferFocusTarget, type TransferModalFocusBinding } from './transferModalFocus';
 
 // No session or CSRF retained in routing state. Epoch changes invalidate this tag.
@@ -112,10 +116,44 @@ export default function TransferPending(props: TransferPendingProps) {
   const correctionsEnabled = permitted && !!fence && fence === correctionAuthority.current && !privateUnavailable && record?.status === 'received'
     && record.id === selected && (actor === record.origin_location_id || actor === record.destination_location_id);
   const correctionRequestID = correctionsEnabled ? record.id : null;
+  const [unifiedAPI] = useState(createUnifiedReconciliationAPI);
+  const [legacyAPI] = useState(createTransferAPI);
+  const [dispatchAPI] = useState(createDispatchReconciliationAPI);
+  // Preserve legacy recovery engines, but source their audit exclusively from a
+  // coordinated snapshot. No legacy-current GET is issued, even before ownership.
+  const auditAPI = useMemo(() => {
+    const selectedRecord = correctionsEnabled ? record : null;
+    const read = async (options?: TransferReadOptions) => {
+      if (!selectedRecord) throw new TransferAPIError('not_found', 404);
+      try { return await unifiedAPI.read(selectedRecord, options); }
+      catch (error) {
+        if (error instanceof UnifiedReconciliationAPIError) throw new TransferAPIError(error.code, error.status);
+        throw error;
+      }
+    };
+    return {
+      count: { ...legacyAPI, countCorrections: async (_id: string, options?: TransferReadOptions) => (await read(options)).legacy.count },
+      restitution: { ...legacyAPI,
+        countCorrections: async (_id: string, options?: TransferReadOptions) => (await read(options)).legacy.count,
+        restitutions: async (_id: string, options?: TransferReadOptions) => (await read(options)).legacy.restitution },
+      dispatch: { ...dispatchAPI, read: async (_record: TransferRecord, options?: TransferReadOptions) => {
+        try { return (await read(options)).legacy.dispatch; }
+        catch (error) {
+          if (error instanceof TransferAPIError) throw new DispatchReconciliationAPIError(error.code, error.status);
+          throw error;
+        }
+      } },
+    };
+  }, [record, correctionsEnabled, unifiedAPI, legacyAPI, dispatchAPI]);
+  const unified = useTransferUnifiedReconciliations({ controller: props.controller,
+    record: correctionsEnabled ? record : null, enabled: correctionsEnabled, api: unifiedAPI,
+    // The existing confirmation seam accepts this exact operation's shared
+    // identity/balance fields and invalidates inventory, activity and counters.
+    onConfirmed: props.controller.confirmTransferDispatchReconciliation });
   const corrections = useTransferCountCorrections({ controller: props.controller,
-    requestID: correctionRequestID, enabled: correctionsEnabled });
+    requestID: correctionRequestID, enabled: correctionsEnabled, api: auditAPI.count });
   const reconciliations = useTransferDispatchReconciliations({ controller: props.controller,
-    record: correctionsEnabled ? record : null, enabled: correctionsEnabled,
+    record: correctionsEnabled ? record : null, enabled: correctionsEnabled, api: auditAPI.dispatch,
     onConfirmed: props.controller.confirmTransferDispatchReconciliation });
   const modalFocus: TransferModalFocusBinding = {
     scope: focusScope.current.token,
@@ -204,6 +242,7 @@ export default function TransferPending(props: TransferPendingProps) {
             renderDetail={receiptActions => <TransferCancellation controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record} modalFocus={modalFocus}
               onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
               renderDetail={cancellationActions => record && <TransferDetail controller={props.controller} ownerTag={props.ownerTag} record={record}
+                unified={correctionsEnabled ? unified : undefined} modalFocus={modalFocus} restitutionAPI={auditAPI.restitution}
                 corrections={corrections} correctionRequestID={correctionRequestID} correctionsEnabled={correctionsEnabled}
                 reconciliations={reconciliations} reconciliationRequestID={correctionRequestID} reconciliationsEnabled={correctionsEnabled}
                 restitutionRequestID={correctionRequestID} restitutionsEnabled={correctionsEnabled}
