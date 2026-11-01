@@ -488,6 +488,8 @@ func (a *API) transferCounts(store *transfers.Store) http.HandlerFunc {
 }
 
 func (a *API) registerTransfers(mux *http.ServeMux, store *transfers.Store) {
+	mux.HandleFunc("/api/transfers/{id}/unified-reconciliations", a.transferUnifiedReconciliations(store))
+	mux.HandleFunc("/api/transfers/{id}/unified-reconciliations/", countCorrectionNotFound)
 	mux.HandleFunc("/api/transfers/{id}/dispatch-reconciliations", a.transferDispatchReconciliations(store, ""))
 	mux.HandleFunc("/api/transfers/{id}/dispatch-reconciliations/propose", a.transferDispatchReconciliations(store, "propose"))
 	mux.HandleFunc("/api/transfers/{id}/dispatch-reconciliations/accept", a.transferDispatchReconciliations(store, "accept"))
