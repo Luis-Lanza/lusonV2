@@ -27,6 +27,15 @@ import (
 // Initialize would apply018; Provision calls latest-schema Check. Neither can
 // build the historical starting point. Keep their live validators unchanged.
 func urPrefixFixture(t *testing.T) (context.Context, *pgxpool.Pool, *transfers.Store) {
+	t.Helper()
+	ctx, p := urPrefixFixtureAt(t, 18)
+	return ctx, p, transfers.New(p)
+}
+
+// urPrefixFixtureAt installs the contiguous embedded prefix 001..stop-1 with the
+// same lock, exact bytes/checksums and tracking rows db.Apply writes, so the
+// normal runner can apply `stop` later on top of populated historical data.
+func urPrefixFixtureAt(t *testing.T, stop int) (context.Context, *pgxpool.Pool) {
  t.Helper()
  ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
  t.Cleanup(cancel)
@@ -43,7 +52,7 @@ func urPrefixFixture(t *testing.T) (context.Context, *pgxpool.Pool, *transfers.S
    prefix, _, ok := strings.Cut(file.Name(), "_")
    version, err := strconv.Atoi(prefix)
    if !ok || err != nil || version != n+1 { return fmt.Errorf("noncontiguous embedded migration %s", file.Name()) }
-   if version == 18 { break }
+   if version == stop { break }
    body, err := migrations.Files.ReadFile(file.Name())
    if err != nil { return err }
    if _, err := tx.Exec(ctx, string(body)); err != nil { return err }
@@ -51,7 +60,7 @@ func urPrefixFixture(t *testing.T) (context.Context, *pgxpool.Pool, *transfers.S
    if _, err := tx.Exec(ctx, "INSERT INTO schema_migrations(version,name,checksum) VALUES($1,$2,$3)", version, file.Name(), hex.EncodeToString(hash[:])); err != nil { return err }
    n++
   }
-  if n != 17 { return fmt.Errorf("prefix has %d migrations", n) }
+  if n != stop-1 { return fmt.Errorf("prefix has %d migrations", n) }
   return nil
  })
  if err != nil { t.Fatal("install real prefix", err) }
@@ -87,7 +96,145 @@ func urPrefixFixture(t *testing.T) (context.Context, *pgxpool.Pool, *transfers.S
   return nil
  })
  if err != nil { t.Fatal("prefix account provisioning",err) }
- return ctx,p,transfers.New(p)
+ return ctx,p
+}
+
+// urHistoricalReceipt finalizes the receipt the legacy fixtures used: variant 1
+// dispatched with 10 units and 8 arriving. It runs through the public store so
+// the prefix database holds genuine pre-019 history.
+func urHistoricalReceipt(t *testing.T, ctx context.Context, s *transfers.Store) transfers.Request {
+	t.Helper()
+	in := input()
+	in.Items = []transfers.Line{{VariantID: 1, Quantity: 10}}
+	r := receiptDispatch(t, ctx, s, in)
+	got, err := s.Receive(ctx, actor(r.Destination.ID), r.ID, transfers.ReceiptInput{Items: []transfers.Line{{VariantID: 1, Quantity: 8}}})
+	if err != nil {
+		t.Fatal("historical receipt", err)
+	}
+	return got
+}
+
+// urSeedUnexpectedLine installs the undispatched ("unexpected") receipt line a
+// pre-S1 writer could still create: expected 0 for a variant absent from the
+// dispatched payload, uncredited, with its mandatory exception row. The 008
+// admission triggers accept exactly that shape, so only the post-finalization
+// order needs them suspended around the insert.
+func urSeedUnexpectedLine(t *testing.T, ctx context.Context, p *pgxpool.Pool, r transfers.Request, variant int32, actual int64) {
+	t.Helper()
+	switchReceiptAdmission(t, ctx, p, false)
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		t.Fatal("seed historical receipt line", err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	if _, err = tx.Exec(ctx, `INSERT INTO transfer_receipt_lines(request_id,variant_id,expected_quantity,actual_quantity,available_quantity) VALUES($1,$2,0,$3,0)`, r.ID, variant, actual); err != nil {
+		t.Fatal("seed historical receipt line", err)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO transfer_receipt_exceptions(request_id,variant_id,kind,quantity) VALUES($1,$2,'unexpected',$3)`, r.ID, variant, actual); err != nil {
+		t.Fatal("seed historical unexpected exception", err)
+	}
+	// The deferred receipt checks still run at commit: the seeded pair must be
+	// internally exact, exactly as the historical finalization left it.
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal("historical receipt line violates deferred receipt checks", err)
+	}
+	switchReceiptAdmission(t, ctx, p, true)
+}
+
+func switchReceiptAdmission(t *testing.T, ctx context.Context, p *pgxpool.Pool, enable bool) {
+	t.Helper()
+	action := "DISABLE"
+	if enable {
+		action = "ENABLE"
+	}
+	for _, table := range []string{"transfer_receipt_lines:admit_transfer_receipt_line", "transfer_receipt_exceptions:admit_transfer_receipt_exception"} {
+		name, trigger, _ := strings.Cut(table, ":")
+		if _, err := p.Exec(ctx, `ALTER TABLE `+name+` `+action+` TRIGGER `+trigger); err != nil {
+			t.Fatal("receipt admission trigger", action, err)
+		}
+	}
+}
+
+// urSeedCountCorrection records the audit-only correction a pre-S1 count flow
+// could still file against the unexpected line, through the same SQL entrypoint
+// the retired store writer used, so the evidence is historical, not fabricated.
+func urSeedCountCorrection(t *testing.T, ctx context.Context, p *pgxpool.Pool, r transfers.Request, variant int32, actual int64) {
+	t.Helper()
+	if _, err := p.Exec(ctx, `SELECT transfer_count_correct($1,$2::integer,$3::smallint,$4,'propose',0,$5,$6)`,
+		r.ID, variant, int16(r.Origin.ID), "ur2-unexpected-count-proposal", actual, " count verified "); err != nil {
+		t.Fatal("seed historical correction proposal", err)
+	}
+	if _, err := p.Exec(ctx, `SELECT transfer_count_correct($1,$2::integer,$3::smallint,$4,'accept',1,NULL::bigint,$5)`,
+		r.ID, variant, int16(r.Destination.ID), "ur2-unexpected-count-accept", "count confirmed"); err != nil {
+		t.Fatal("seed historical correction acceptance", err)
+	}
+}
+
+// urExpectedPositiveValidated reports pg_constraint.convalidated for the 019
+// constraint, i.e. which apply-time branch the migration took.
+func urExpectedPositiveValidated(t *testing.T, ctx context.Context, p *pgxpool.Pool) bool {
+	t.Helper()
+	var validated bool
+	if err := p.QueryRow(ctx, `SELECT convalidated FROM pg_constraint WHERE conrelid='transfer_receipt_lines'::regclass AND conname='transfer_receipt_lines_expected_positive'`).Scan(&validated); err != nil {
+		t.Fatal("019 constraint missing", err)
+	}
+	return validated
+}
+
+// urAssert019NotValid proves the populated branch of migration 019: historical
+// zero-quantity rows keep the constraint unvalidated, survive the upgrade, and
+// no new zero-quantity line can be written afterwards.
+func urAssert019NotValid(t *testing.T, ctx context.Context, p *pgxpool.Pool, r transfers.Request, variant int32) {
+	t.Helper()
+	if urExpectedPositiveValidated(t, ctx, p) {
+		t.Fatal("019 validated a constraint over historical zero-quantity rows")
+	}
+	t.Logf("019 branch NOT VALID: convalidated=false")
+	historical := func() int {
+		var n int
+		if err := p.QueryRow(ctx, `SELECT count(*) FROM transfer_receipt_lines WHERE request_id=$1 AND variant_id=$2 AND expected_quantity=0`, r.ID, variant).Scan(&n); err != nil {
+			t.Fatal("historical unexpected line unreadable", err)
+		}
+		return n
+	}
+	if historical() != 1 {
+		t.Fatal("upgrade deleted the historical unexpected line")
+	}
+	t.Logf("019 upgrade kept %d historical zero-quantity row(s) readable", historical())
+	// A fresh in-transit transfer admits dispatched lines only, so the insert
+	// below used to be reachable and must now stop at the 019 constraint.
+	in := input()
+	in.RetryKey = "prefix-expected-positive-refusal"
+	in.Items = []transfers.Line{{VariantID: 1, Quantity: 1}}
+	fresh := receiptDispatch(t, ctx, transfers.New(p), in)
+	_, err := p.Exec(ctx, `INSERT INTO transfer_receipt_lines(request_id,variant_id,expected_quantity,actual_quantity,available_quantity) VALUES($1,2,0,1,0)`, fresh.ID)
+	if err == nil || !strings.Contains(err.Error(), "transfer_receipt_lines_expected_positive") {
+		t.Fatal("zero-quantity receipt line was not refused by 019", err)
+	}
+	t.Logf("019 refusal: %v", err)
+	var written int
+	if err := p.QueryRow(ctx, `SELECT count(*) FROM transfer_receipt_lines WHERE request_id=$1`, fresh.ID).Scan(&written); err != nil || written != 0 {
+		t.Fatal("refusal wrote a receipt line", written, err)
+	}
+	if historical() != 1 {
+		t.Fatal("refusal touched the historical unexpected line")
+	}
+}
+
+// TestUR4CleanPrefixUpgradeValidatesConstraint is the clean-table counterpart of
+// the populated branch: with no historical zero row, 019 validates instead.
+func TestUR4CleanPrefixUpgradeValidatesConstraint(t *testing.T) {
+	ctx, p := urPrefixFixtureAt(t, 19)
+	if err := db.Apply(ctx, p); err != nil {
+		t.Fatal("apply019 on a clean transfer_receipt_lines", err)
+	}
+	if !urExpectedPositiveValidated(t, ctx, p) {
+		t.Fatal("clean transfer_receipt_lines must get a validated constraint")
+	}
+	t.Logf("019 branch VALIDATED: convalidated=true on a clean table")
+	if err := db.Check(ctx, p); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func expectedSourceDebit(expected, dispatch, retained int64) int64 {
@@ -105,7 +252,7 @@ func TestUR4PopulatedPrefixUpgrade(t *testing.T) {
    in.Items = []transfers.Line{{VariantID:1,Quantity:expected}}
    r := receiptDispatch(t,ctx,s,in)
    var err error
-   r,err = s.Receive(ctx,actor(r.Destination.ID),r.ID,transfers.ReceiptInput{Items:[]transfers.Line{{VariantID:1,Quantity:arrival},{VariantID:3,Quantity:1}}})
+   r,err = s.Receive(ctx,actor(r.Destination.ID),r.ID,transfers.ReceiptInput{Items:[]transfers.Line{{VariantID:1,Quantity:arrival}}})
    if err != nil { t.Fatal("public historical receipt",err) }
    original,err := s.Get(ctx,actor(r.Origin.ID),r.ID)
    if err != nil { t.Fatal(err) }
@@ -135,9 +282,9 @@ func TestUR4PopulatedPrefixUpgrade(t *testing.T) {
    // starts here: this test does not prove pre/post migration counter equality.
    counts := dr2Counts(t,ctx,s)
    for i, got := range counts {
-    want := transfers.Totals{}
-    if i == r.Origin.ID-1 { want.ActionCount, want.Actions.ReviewCount = 1,1 }
-    if got != want { t.Fatal("post-upgrade historical review counters",i,got,want) }
+    // S7: the pending historical count proposal no longer surfaces as work,
+    // so every participant keeps zero totals after the upgrade.
+    if got != (transfers.Totals{}) { t.Fatal("post-upgrade historical review counters",i,got) }
    }
    if err := db.Check(ctx,p); err != nil { t.Fatal(err) }
    before := urRead(t,ctx,s,r)

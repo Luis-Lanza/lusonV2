@@ -62,15 +62,16 @@ on mount, editing or passive refresh.
 
 ## Pending reviews and personal activity
 
-The existing participant-private list/count projection appends
-`review_unified_reconciliation` after `review_dispatch_reconciliation`. It is
+The existing participant-private list/count projection reports
+`review_unified_reconciliation` as its only review category. It is
 present only for a received transfer with an originally expected variant whose
 latest unified proposal has no decision and was initiated by the other endpoint.
-Either endpoint may initiate. Multiple variants contribute once per transfer;
-overlapping legacy reviews keep their original categories and count once in the
-`action_count` union. `pending_total`, descending ID ordering and pagination keep
-their existing meaning. Counts serialize all seven category values as canonical
-nonnegative decimal strings.
+Either endpoint may initiate. Multiple variants contribute once per transfer and
+count once in the `action_count` union. `pending_total`, descending ID ordering
+and pagination keep their existing meaning. Counts serialize all four category
+values as canonical nonnegative decimal strings. The retired count, restitution
+and dispatch audit flows are history only: their tables, triggers and readers
+stay, but they contribute no category, no union membership and no list reason.
 
 Stale predecessor generations and insufficient stock do not hide a pending
 review: they can block acceptance, but rejection remains an obligation. A

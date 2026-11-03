@@ -115,8 +115,17 @@ func dr1InstallOperation(t *testing.T, ctx context.Context, p *pgxpool.Pool, fil
 }
 
 func TestDR1ZeroDispatchAndProtectedPins(t *testing.T) {
-	ctx, p, r := r2Receipt(t, 5, 0)
-	s := transfers.New(p)
+	// A receipt whose every line is zero is not admissible, so the line this test
+	// pins (variant 1 expected 5, actual 0) travels next to a real dispatched item
+	// that arrived in full. Its zero dispatch is what the zero count still restores.
+	ctx, p, s := fixture(t)
+	in := input()
+	in.Items = []transfers.Line{{VariantID: 1, Quantity: 5}, {VariantID: 2, Quantity: 1}}
+	r := receiptDispatch(t, ctx, s, in)
+	r, err := s.Receive(ctx, actor(r.Destination.ID), r.ID, transfers.ReceiptInput{Items: []transfers.Line{{VariantID: 1, Quantity: 0}, {VariantID: 2, Quantity: 1}}})
+	if err != nil {
+		t.Fatal("synthetic receipt setup", err)
+	}
 	c2StorePropose(t, ctx, s, r, 1, 1, 0, 0, "dr1-zero-count-proposal")
 	c2StoreDecide(t, ctx, s, r, 2, 1, 1, false, "dr1-zero-count-reject")
 	if _, err := s.ProposeRestitution(ctx, actor(1), r.ID, r3Proposal("dr1-zero-rest-proposal", 0, 1)); err != nil {

@@ -34,7 +34,8 @@ func dispatchProof(t *testing.T, f *transferHTTPFixture, approved transferDTO) f
 		}
 		assertTransferActivityAppend(t, approved, dispatched, "dispatch", approved.OriginLocationID)
 		var consumed bool
-		if f.p.QueryRow(f.ctx, `SELECT count(*)=2 AND bool_and(a.consumed_at=r.dispatched_at)
+		// One consumed allocation per dispatched item, all stamped by the header.
+		if f.p.QueryRow(f.ctx, `SELECT count(*)=(SELECT count(*) FROM transfer_request_items WHERE request_id=$1) AND bool_and(a.consumed_at=r.dispatched_at)
  FROM transfer_request_allocations a JOIN transfer_requests r ON r.id=a.request_id WHERE r.id=$1`, approved.ID).Scan(&consumed) != nil || !consumed {
 			t.Fatal("dispatch ownership history missing")
 		}

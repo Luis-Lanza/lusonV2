@@ -141,29 +141,37 @@ func TestAdministrativeRetirementBranchMarker(t *testing.T) {
 	}
 }
 
-// A received shortfall can have no destination stock but still has historical
-// endpoints: retirement must reject new work from the active counterpart too.
+// A received shortfall has no destination credit for the short variant but keeps
+// historical endpoints: retirement must reject new work from the active counterpart too.
+// S3 requires a positive actual on every stored receipt, so the shipped cart also
+// carries an exact line whose single credited unit is drained before retirement.
 func TestAdministrativeRetirementReceivedAdmission(t *testing.T) {
 	ctx, p := retirementSchema(t)
 	retirementExec(t, ctx, p, `SELECT create_branch('Shortfall branch');
  UPDATE inventory_balances SET existing=1,reserved=1 WHERE location_id=1 AND variant_id=1;
+ UPDATE inventory_balances SET reserved=reserved+1 WHERE location_id=1 AND variant_id=2;
  BEGIN;
  INSERT INTO transfer_requests(creator_location_id,kind,origin_location_id,destination_location_id,
  approver_location_id,retry_key,payload_sha256,status)
  VALUES(1,'direct_shipment',1,4,1,'retirement-shortfall',decode(repeat('00',32),'hex'),'approved');
  INSERT INTO transfer_request_items(request_id,variant_id,quantity)
  SELECT id,1,1 FROM transfer_requests WHERE retry_key='retirement-shortfall';
+ INSERT INTO transfer_request_items(request_id,variant_id,quantity)
+ SELECT id,2,1 FROM transfer_requests WHERE retry_key='retirement-shortfall';
  INSERT INTO transfer_request_allocations(request_id,variant_id,quantity)
  SELECT id,1,1 FROM transfer_requests WHERE retry_key='retirement-shortfall';
+ INSERT INTO transfer_request_allocations(request_id,variant_id,quantity)
+ SELECT id,2,1 FROM transfer_requests WHERE retry_key='retirement-shortfall';
  COMMIT;
  UPDATE transfer_requests SET status='in_transit' WHERE retry_key='retirement-shortfall';
  BEGIN;
  INSERT INTO transfer_receipt_lines(request_id,variant_id,expected_quantity,actual_quantity,available_quantity)
  SELECT id,1,1,0,0 FROM transfer_requests WHERE retry_key='retirement-shortfall';
  INSERT INTO transfer_receipt_lines(request_id,variant_id,expected_quantity,actual_quantity,available_quantity)
- SELECT id,2,0,1,0 FROM transfer_requests WHERE retry_key='retirement-shortfall';
+ SELECT id,2,1,1,1 FROM transfer_requests WHERE retry_key='retirement-shortfall';
  UPDATE transfer_requests SET status='received' WHERE retry_key='retirement-shortfall';
  COMMIT;
+ UPDATE inventory_balances SET existing=0 WHERE location_id=4 AND variant_id=2;
  UPDATE locations SET deleted_at=now() WHERE id=4`)
 	for _, sql := range []string{
 		`SELECT transfer_restitute(id,1,1::smallint,'late-restitution','propose',0,1,true,'retained') FROM transfer_requests WHERE retry_key='retirement-shortfall'`,

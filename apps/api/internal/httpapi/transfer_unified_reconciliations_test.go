@@ -25,7 +25,7 @@ func TestURHTTPReadProductionRouter(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 			t.Fatal(err)
 		}
-		if got["schema"] != "luson.transfer-reconciliation/v2" || got["request_id"] != received.ID || len(got["original"].([]any)) != 3 || len(got["current"].([]any)) != 3 || len(got["lines"].([]any)) != 2 {
+		if got["schema"] != "luson.transfer-reconciliation/v2" || got["request_id"] != received.ID || len(got["original"].([]any)) != 3 || len(got["current"].([]any)) != 3 || len(got["lines"].([]any)) != 3 {
 			t.Fatal(w.Body.String())
 		}
 	}

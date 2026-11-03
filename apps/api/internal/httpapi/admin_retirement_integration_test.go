@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -118,120 +119,150 @@ func d6Overlap(t *testing.T, f *t5Fixture, retireFirst bool, route, body string)
 }
 
 const d6Create = `{"kind":"direct_shipment","counterparty_location_id":4,"retry_key":"d6-zero-credit-create","items":[{"variant_id":1,"quantity":"1"}]}`
-const d6Propose = `{"variant_id":1,"operation_key":"d6-recorded-proposal","expected_revision":"0","actual_quantity":"1","reason":"recount"}`
+const d6Return = `{"kind":"send_to_warehouse","counterparty_location_id":1,"retry_key":"d6-return-create-001","items":[{"variant_id":1,"quantity":"1"}]}`
+
+// seedLegacyCount records one historical count operation through the retained SQL
+// writer the retired HTTP handler called. S8 keeps the retirement blocker on the
+// legacy proposal tables, so this is the only surviving way to create that pending
+// evidence. The account setting is transaction-local and mirrors the store writers,
+// so personal activity rows are identical to the retired route's.
+func seedLegacyCount(t *testing.T, f *t5Fixture, id string, account, location int, action, key string, revision int, actual any, reason string) {
+	t.Helper()
+	tx, err := f.p.Begin(f.ctx)
+	if err != nil {
+		t.Fatal("legacy count transaction", err)
+	}
+	defer func() { _ = tx.Rollback(f.ctx) }()
+	if _, err = tx.Exec(f.ctx, `SELECT set_config('luson.transfer_account_id',$1,true), pg_advisory_xact_lock(714025,1)`, strconv.Itoa(account)); err != nil {
+		t.Fatal("legacy count account setting", err)
+	}
+	if err = tx.QueryRow(f.ctx, `SELECT revision FROM transfer_count_correct($1::bigint,1::integer,$2::smallint,$3,$4,$5::bigint,$6::bigint,$7)`,
+		id, location, key, action, revision, actual, reason).Scan(new(int)); err != nil {
+		t.Fatalf("legacy count %s seed: %v", action, err)
+	}
+	if err = tx.Commit(f.ctx); err != nil {
+		t.Fatalf("legacy count %s commit: %v", action, err)
+	}
+}
 
 func TestD6RetirementOverlappedWinners(t *testing.T) {
-	for _, received := range []bool{false, true} {
-		for _, retireFirst := range []bool{true, false} {
-			t.Run(fmt.Sprintf("received_%t/retire_first_%t", received, retireFirst), func(t *testing.T) {
-				f := t5Setup(t)
-				path, route, body := "", "/api/transfers", d6Create
-				existing := int64(18)
-				if received {
-					path, _ = d6Received(t, f)
-					route, body, existing = path+"/count-corrections/propose", d6Propose, 17
-					t5Exact(t, f.request(f.tokens[0], "DELETE", "/api/admin/accounts/2", ""), 204, "")
-				} else {
-					branchRetirementCreate(t, f)
+	// Fresh creation genuinely overlaps retirement: whichever wins, the other is
+	// refused and public evidence stays consistent.
+	for _, retireFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("creation/retire_first_%t", retireFirst), func(t *testing.T) {
+			f := t5Setup(t)
+			branchRetirementCreate(t, f)
+			d6Empty(t, f)
+			t8Stock(t, f, 1, 18, 0)
+			before := d6Observe(t, f, "")
+			retirement, write := d6Overlap(t, f, retireFirst, "/api/transfers", d6Create)
+			if retireFirst {
+				t5Exact(t, retirement, 204, "")
+				t5Error(t, write, 409, "decision_conflict")
+				after := d6Observe(t, f, "")
+				if !reflect.DeepEqual(after[1:], before[1:]) {
+					t.Fatal("losing fresh write created public evidence")
 				}
-				d6Empty(t, f)
-				t8Stock(t, f, 1, existing, 0)
-				before := d6Observe(t, f, path)
-				retirement, write := d6Overlap(t, f, retireFirst, route, body)
-				if retireFirst {
-					t5Exact(t, retirement, 204, "")
-					t5Error(t, write, 409, "decision_conflict")
-					after := d6Observe(t, f, path)
-					if !reflect.DeepEqual(after[1:], before[1:]) {
-						t.Fatal("losing fresh write created public evidence")
-					}
-					if strings.Contains(branchRetirementDirectory(t, f), `"id":4`) {
-						t.Fatal("retired branch remains selectable")
-					}
-					t5Error(t, f.request(f.tokens[0], "GET", "/api/inventory?location_id=4", ""), 404, "not_found")
-					return
+				if strings.Contains(branchRetirementDirectory(t, f), `"id":4`) {
+					t.Fatal("retired branch remains selectable")
 				}
-				t5Error(t, retirement, 409, "branch_has_pending_operations")
-				if !strings.Contains(branchRetirementDirectory(t, f), `"id":4`) {
-					t.Fatal("blocked retirement hid branch")
-				}
-				actions, reserved := "1", int64(1)
-				if received {
-					t5Exact(t, write, 200, d6Operation(t, write, path))
-					actions, reserved = "0", 0
-					d6Pending(t, f, path, write.Body.String(), before[3])
-				} else {
-					r := t8Decode(t, write, 201)
-					if r.Status != "approved" || r.Origin != 1 || r.Destination != 4 || len(r.Activity) != 1 {
-						t.Fatal("winning creation state")
-					}
-					path = "/api/transfers/" + r.ID
-					t5Exact(t, f.request(f.tokens[0], "GET", path, ""), 200, write.Body.String())
-				}
-				var list struct {
-					Total   string     `json:"total_count"`
-					Records []t8Record `json:"records"`
-				}
-				if json.Unmarshal([]byte(d6Get(t, f, "/api/transfers?status=all")), &list) != nil || list.Total != "1" || len(list.Records) != 1 || path != "/api/transfers/"+list.Records[0].ID {
-					t.Fatal("winning history membership")
-				}
-				t5Exact(t, f.request(f.tokens[0], "GET", "/api/transfers/counts", ""), 200, `{"pending_total":"0","action_count":"`+actions+`","actions":{"approve":"0","dispatch":"`+actions+`","receive":"0","review_count":"0","review_dispatch_reconciliation":"0","review_restitution":"0","review_unified_reconciliation":"0"}}`+"\n")
-				t8Stock(t, f, 1, existing, reserved)
-				d6Empty(t, f)
-			})
+				t5Error(t, f.request(f.tokens[0], "GET", "/api/inventory?location_id=4", ""), 404, "not_found")
+				return
+			}
+			t5Error(t, retirement, 409, "branch_has_pending_operations")
+			if !strings.Contains(branchRetirementDirectory(t, f), `"id":4`) {
+				t.Fatal("blocked retirement hid branch")
+			}
+			r := t8Decode(t, write, 201)
+			if r.Status != "approved" || r.Origin != 1 || r.Destination != 4 || len(r.Activity) != 1 {
+				t.Fatal("winning creation state")
+			}
+			path := "/api/transfers/" + r.ID
+			t5Exact(t, f.request(f.tokens[0], "GET", path, ""), 200, write.Body.String())
+			var list struct {
+				Total   string     `json:"total_count"`
+				Records []t8Record `json:"records"`
+			}
+			if json.Unmarshal([]byte(d6Get(t, f, "/api/transfers?status=all")), &list) != nil || list.Total != "1" || len(list.Records) != 1 {
+				t.Fatal("winning history membership")
+			}
+			if path != "/api/transfers/"+list.Records[0].ID {
+				t.Fatal("winning transfer missing from history")
+			}
+			t5Exact(t, f.request(f.tokens[0], "GET", "/api/transfers/counts", ""), 200, `{"pending_total":"0","action_count":"1","actions":{"approve":"0","dispatch":"1","receive":"0","review_unified_reconciliation":"0"}}`+"\n")
+			t8Stock(t, f, 1, 18, 1)
+			d6Empty(t, f)
+		})
+	}
+	// A historical legacy count proposal blocks retirement until it is rejected.
+	// S8 keeps the blocker on the legacy proposal tables while the legacy HTTP
+	// routes are gone, so the pending evidence is recorded with the retained SQL
+	// writer that the retired handler called; nothing is fabricated with INSERT.
+	t.Run("received/legacy_pending_blocks", func(t *testing.T) {
+		f := t5Setup(t)
+		path, _ := d6Received(t, f)
+		t5Exact(t, f.request(f.tokens[0], "DELETE", "/api/admin/accounts/2", ""), 204, "")
+		d6Empty(t, f)
+		t8Stock(t, f, 1, 18, 0)
+		seedLegacyCount(t, f, strings.TrimPrefix(path, "/api/transfers/"), 1, 1, "propose", "d6-recorded-proposal", 0, int64(1), "recount")
+		before := d6Observe(t, f, path)
+		t5Error(t, f.request(f.tokens[0], "DELETE", "/api/admin/branches/4", ""), 409, "branch_has_pending_operations")
+		if !strings.Contains(branchRetirementDirectory(t, f), `"id":4`) {
+			t.Fatal("blocked retirement hid branch")
 		}
-	}
+		if !reflect.DeepEqual(d6Observe(t, f, path), before) {
+			t.Fatal("blocked retirement changed public evidence")
+		}
+		d6Pending(t, f, path, before[3])
+		// S7 removed the legacy categories: pending legacy evidence is history, not work.
+		t5Exact(t, f.request(f.tokens[0], "GET", "/api/transfers/counts", ""), 200, `{"pending_total":"0","action_count":"0","actions":{"approve":"0","dispatch":"0","receive":"0","review_unified_reconciliation":"0"}}`+"\n")
+	})
 }
 
-func d6Operation(t *testing.T, w *httptest.ResponseRecorder, path string) string {
+// d6Pending proves the seeded historical proposal is still pending, applied
+// nothing and is exposed only as legacy evidence inside the unified snapshot.
+func d6Pending(t *testing.T, f *t5Fixture, path, unified string) {
 	t.Helper()
-	var fields map[string]json.RawMessage
-	var op struct {
-		Key      string `json:"operation_key"`
-		Request  string `json:"request_id"`
-		Revision string `json:"revision"`
-		Expected string `json:"expected_revision"`
-		Actual   string `json:"actual_quantity"`
-		Actor    int    `json:"actor_location_id"`
-		Action   string `json:"action"`
+	var snapshot struct {
+		Legacy struct {
+			Count struct {
+				Operations []struct {
+					Key      string  `json:"operation_key"`
+					Request  string  `json:"request_id"`
+					Revision string  `json:"revision"`
+					Expected string  `json:"expected_revision"`
+					Actual   *string `json:"actual_quantity"`
+					Actor    int     `json:"actor_location_id"`
+					Action   string  `json:"action"`
+				} `json:"operations"`
+				Lines []struct {
+					Revision  string `json:"workflow_revision"`
+					Applied   string `json:"applied_revision"`
+					Credit    string `json:"effective_credit"`
+					Proposals []struct {
+						State string `json:"state"`
+					} `json:"proposals"`
+				} `json:"lines"`
+			} `json:"count"`
+		} `json:"legacy"`
 	}
-	if json.Unmarshal(w.Body.Bytes(), &fields) != nil || len(fields) != 10 || json.Unmarshal(w.Body.Bytes(), &op) != nil || op.Key != "d6-recorded-proposal" || path != "/api/transfers/"+op.Request || op.Revision != "1" || op.Expected != "0" || op.Actual != "1" || op.Actor != 1 || op.Action != "propose" {
-		t.Fatal("persisted operation contract")
+	if json.Unmarshal([]byte(unified), &snapshot) != nil {
+		t.Fatal("unified snapshot decode")
 	}
-	return w.Body.String()
-}
-
-func d6Pending(t *testing.T, f *t5Fixture, path, operation, original string) {
-	t.Helper()
-	var workflow struct {
-		Operations []json.RawMessage `json:"operations"`
-		Lines      []struct {
-			Revision  string `json:"workflow_revision"`
-			Applied   string `json:"applied_revision"`
-			Credit    string `json:"effective_credit"`
-			Proposals []struct {
-				State string `json:"state"`
-			} `json:"proposals"`
-		} `json:"lines"`
-	}
-	if json.Unmarshal([]byte(d6Get(t, f, path+"/count-corrections")), &workflow) != nil || len(workflow.Operations) != 1 || len(workflow.Lines) != 2 {
+	count := snapshot.Legacy.Count
+	// The received fixture dispatched, received and returned exactly one variant.
+	if len(count.Operations) != 1 || len(count.Lines) != 1 {
 		t.Fatal("winning proposal membership")
 	}
-	var got, want any
-	if json.Unmarshal(workflow.Operations[0], &got) != nil || json.Unmarshal([]byte(operation), &want) != nil || !reflect.DeepEqual(got, want) {
-		t.Fatal("workflow operation mismatch")
+	op := count.Operations[0]
+	if op.Key != "d6-recorded-proposal" || path != "/api/transfers/"+op.Request || op.Revision != "1" || op.Expected != "0" || op.Actual == nil || *op.Actual != "1" || op.Actor != 1 || op.Action != "propose" {
+		t.Fatal("persisted operation contract")
 	}
-	line := workflow.Lines[0]
-	if line.Revision != "1" || line.Applied != "0" || line.Credit != "0" || len(line.Proposals) != 1 || line.Proposals[0].State != "pending" {
+	line := count.Lines[0]
+	// The pending proposal applies nothing: revision 1 exists, nothing is applied
+	// and the original credit of the received unit is untouched.
+	if line.Revision != "1" || line.Applied != "0" || line.Credit != "1" || len(line.Proposals) != 1 || line.Proposals[0].State != "pending" {
 		t.Fatal("winning proposal must block retirement without credit")
-	}
-	var old t8Record
-	if json.Unmarshal([]byte(original), &old) != nil {
-		t.Fatal("original detail decode")
-	}
-	current := t8Decode(t, f.request(f.tokens[0], "GET", path, ""), 200)
-	if len(current.Activity) != len(old.Activity)+1 || !reflect.DeepEqual(current.Activity[:len(old.Activity)], old.Activity) {
-		t.Fatal("winning proposal lost immutable activity prefix")
 	}
 }
 
@@ -244,7 +275,9 @@ func d6Get(t *testing.T, f *t5Fixture, route string) string {
 	return w.Body.String()
 }
 
-// Same public zero-credit arithmetic as TestRetiredBranchReceivedFreshWork.
+// Same public receipt/return arithmetic as TestRetiredBranchReceivedFreshWork.
+// S1 refuses a receipt line for a variant that was never dispatched, so the
+// received unit is real and returns to the warehouse through the lifecycle.
 func d6Received(t *testing.T, f *t5Fixture) (string, string) {
 	t.Helper()
 	branchRetirementCreate(t, f)
@@ -253,7 +286,7 @@ func d6Received(t *testing.T, f *t5Fixture) (string, string) {
 	r := t8Decode(t, f.request(f.tokens[0], "POST", "/api/transfers", d6Create), 201)
 	path := "/api/transfers/" + r.ID
 	t8Decode(t, f.request(f.tokens[0], "POST", path+"/dispatch", "{}"), 200)
-	r = t8Decode(t, f.request(operator, "POST", path+"/receive", `{"items":[{"variant_id":1,"actual_quantity":"0"},{"variant_id":2,"actual_quantity":"1"}]}`), 200)
+	r = t8Decode(t, f.request(operator, "POST", path+"/receive", `{"items":[{"variant_id":1,"actual_quantity":"1"}]}`), 200)
 	if r.Status != "received" || len(r.Activity) != 3 {
 		t.Fatal("received fixture")
 	}
@@ -261,8 +294,20 @@ func d6Received(t *testing.T, f *t5Fixture) (string, string) {
 	if a.Actor.AccountID != "2" || a.Actor.Username != f.creds[1].Username || a.Actor.DisplayName != "Persona" || a.LocationID != 4 || a.LocationName != "Sucursal Retiro" || a.Action != "receive" {
 		t.Fatal("personal receipt snapshot")
 	}
+	// The credited unit goes back through the real lifecycle: retirement requires
+	// a branch without stock, and nothing here is reset by SQL.
+	returned := t8Decode(t, f.request(operator, "POST", "/api/transfers", d6Return), 201)
+	returnPath := "/api/transfers/" + returned.ID
+	if returned.Status != "pending" || returned.Origin != 4 || returned.Destination != 1 {
+		t.Fatal("return fixture direction/status")
+	}
+	t8Decode(t, f.request(f.tokens[0], "POST", returnPath+"/approve", "{}"), 200)
+	t8Decode(t, f.request(operator, "POST", returnPath+"/dispatch", "{}"), 200)
+	if back := t8Decode(t, f.request(f.tokens[0], "POST", returnPath+"/receive", `{"items":[{"variant_id":1,"actual_quantity":"1"}]}`), 200); back.Status != "received" || len(back.Activity) != 4 {
+		t.Fatal("return receipt fixture")
+	}
 	d6Empty(t, f)
-	t8Stock(t, f, 1, 17, 0)
+	t8Stock(t, f, 1, 18, 0)
 	return path, operator
 }
 
@@ -286,9 +331,10 @@ func d6Observe(t *testing.T, f *t5Fixture, path string) []string {
 	t.Helper()
 	out := []string{f.snapshot(), f.oldInventory(), d6Get(t, f, "/api/transfers?status=all")}
 	if path != "" {
-		for _, suffix := range []string{"", "/count-corrections", "/restitutions", "/dispatch-reconciliations"} {
-			out = append(out, d6Get(t, f, path+suffix))
-		}
+		// The unified snapshot embeds the retired count/restitution/dispatch
+		// evidence and is participant-private, so it is the surviving read that
+		// must not change.
+		out = append(out, d6Get(t, f, path+"/unified-reconciliations"))
 	}
 	return append(out, d6Get(t, f, "/api/transfers/counts"))
 }
@@ -325,16 +371,48 @@ func TestD6RetirementFailureAtomicity(t *testing.T) {
 
 func TestD6RetirementRecordedReplay(t *testing.T) {
 	f := t5Setup(t)
-	path, operator := d6Received(t, f)
-	proposal := f.request(f.tokens[0], "POST", path+"/count-corrections/propose", d6Propose)
-	t5Exact(t, proposal, 200, d6Operation(t, proposal, path))
-	reject := `{"variant_id":1,"operation_key":"d6-counterparty-reject","expected_revision":"1","reason":"not confirmed"}`
-	decision := f.request(operator, "POST", path+"/count-corrections/reject", reject)
-	if decision.Code != 200 || len(decision.Result().Cookies()) != 0 {
-		t.Fatal("counterparty rejection fixture")
-	}
+	path, _ := d6Received(t, f)
+	id := strings.TrimPrefix(path, "/api/transfers/")
+	original := t8Decode(t, f.request(f.tokens[0], "GET", path, ""), 200)
+	// The retirement blocker keeps referencing the legacy proposal tables (S8)
+	// while the legacy routes are gone, so pending legacy evidence is recorded with
+	// the retained SQL writer the retired handler called.
+	seedLegacyCount(t, f, id, 1, 1, "propose", "d6-recorded-proposal", 0, int64(1), "recount")
 	d6Empty(t, f)
+	t8Stock(t, f, 1, 18, 0)
+	// Branch retirement requires a branch without users, so the target account is
+	// retired before the blocked attempt; the pending proposal is what remains.
 	t5Exact(t, f.request(f.tokens[0], "DELETE", "/api/admin/accounts/2", ""), 204, "")
+	pending := d6Observe(t, f, path)
+	d6Pending(t, f, path, pending[3])
+	// One immutable personal activity entry is recorded, after the existing prefix.
+	seeded := t8Decode(t, f.request(f.tokens[0], "GET", path, ""), 200)
+	if len(seeded.Activity) != len(original.Activity)+1 || !reflect.DeepEqual(seeded.Activity[:len(original.Activity)], original.Activity) {
+		t.Fatal("seeded proposal lost immutable activity prefix")
+	}
+	t5Error(t, f.request(f.tokens[0], "DELETE", "/api/admin/branches/4", ""), 409, "branch_has_pending_operations")
+	// Rejection closes the revision without credit; only then may the branch retire.
+	seedLegacyCount(t, f, id, 2, 4, "reject", "d6-counterparty-reject", 1, nil, "not confirmed")
+	d6Empty(t, f)
+	t8Stock(t, f, 1, 18, 0)
+	var recorded struct {
+		Legacy struct {
+			Count struct {
+				Operations []struct {
+					Action string `json:"action"`
+				} `json:"operations"`
+				Lines []struct {
+					Credit    string `json:"effective_credit"`
+					Proposals []struct {
+						State string `json:"state"`
+					} `json:"proposals"`
+				} `json:"lines"`
+			} `json:"count"`
+		} `json:"legacy"`
+	}
+	if json.Unmarshal([]byte(d6Get(t, f, path+"/unified-reconciliations")), &recorded) != nil || len(recorded.Legacy.Count.Operations) != 2 || recorded.Legacy.Count.Operations[0].Action != "propose" || recorded.Legacy.Count.Operations[1].Action != "reject" || len(recorded.Legacy.Count.Lines) != 1 || recorded.Legacy.Count.Lines[0].Credit != "1" || len(recorded.Legacy.Count.Lines[0].Proposals) != 1 || recorded.Legacy.Count.Lines[0].Proposals[0].State != "rejected" {
+		t.Fatal("recorded rejection evidence")
+	}
 	beforeRetire := d6Observe(t, f, path)
 	t5Exact(t, f.request(f.tokens[0], "DELETE", "/api/admin/branches/4", ""), 204, "")
 	before := d6Observe(t, f, path)
@@ -345,8 +423,6 @@ func TestD6RetirementRecordedReplay(t *testing.T) {
 	current := d6Get(t, f, path)
 	// Creation replay returns current request, not the original approved response.
 	t5Exact(t, f.request(f.tokens[0], "POST", "/api/transfers", d6Create), 200, current)
-	// Count replay returns the immutable original operation, not today's head.
-	t5Exact(t, f.request(f.tokens[0], "POST", path+"/count-corrections/propose", d6Propose), 200, proposal.Body.String())
 	if !reflect.DeepEqual(d6Observe(t, f, path), before) {
 		t.Fatal("recorded replay repeated a mutation")
 	}

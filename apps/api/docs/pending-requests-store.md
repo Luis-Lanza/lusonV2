@@ -52,6 +52,8 @@ and statement timestamp, no earlier than dispatch. Consumed allocations survive
 unchanged, and active-only reservation coverage remains enforced. Immutable
 `transfer_receipt_lines` persist expected/actual/available quantities per variant;
 expected equals original sent quantity, or zero for unexpected catalog variants.
+Migration 019 (`expected_quantity > 0`) makes that unexpected-zero case
+unrepresentable, so no receipt line can describe an undispatched variant.
 Available equals `LEAST(expected,actual)` exactly. `transfer_receipt_exceptions`
 separately persist positive typed shortage/excess/unexpected quantities. No
 exceptions become automatically available inventory.
@@ -80,22 +82,23 @@ Counts remain one participant-filtered, read-only REPEATABLE READ aggregate.
 | `Approve` | Pending at persisted approver |
 | `Dispatch` | Approved at physical origin |
 | `Receive` | In-transit at physical destination |
-| `ReviewCount` | Received with a latest undecided count proposal from the other endpoint |
-| `ReviewRestitution` | Received at destination with a latest undecided restitution proposal on an expected receipt line |
-| `ReviewDispatchReconciliation` | Received with a latest undecided reconciliation proposal from the other physical endpoint on an originally expected receipt line |
+| `ReviewUnifiedReconciliation` | Received with a latest undecided unified reconciliation proposal from the other physical endpoint on an originally expected receipt line |
 
 Latest means highest proposal revision per request/variant; a decision closes
 that revision. Superseded, rejected and applied proposals do not create work.
-Stale count pins and pending count proposals do not hide restitution review:
-acceptance can be blocked while rejection remains valid. Reconciliation review also
-ignores freshness, effective-count equality, stock and applied restitution: these
-can prohibit acceptance without removing the counterpart's ability to reject.
+Reconciliation review ignores freshness, effective-count equality, stock and
+applied restitution: these can prohibit acceptance without removing the
+counterpart's ability to reject.
 Discrepancies, stock,
 voluntary cancellation, new proposals and replacement are not required work.
+The retired count, restitution and dispatch audit flows are never required work:
+their proposals stay readable as history but contribute no category, no union
+membership and no list reason.
 
 Each header contributes once per category and once to the union, independent of
-line count, quantities and pages. Categories overlap: one transfer awaiting both
-reviews contributes 1 to each review category but only 1 to `ActionCount`.
+line count, quantities and pages. Categories overlap: one transfer awaiting a
+unified review with a pending decision contributes 1 to each category but only 1
+to `ActionCount`.
 `ActionCount` may exceed the independent `PendingTotal`. All totals share one
 snapshot, not a separately fetched page. Reads never alter evidence or inventory;
 failures return zero totals plus an error, not a successful empty workload.
@@ -103,11 +106,10 @@ HTTP exposes these categories as exact strings in `actions`, alongside the two
 existing totals. `Query.RequiresAction` defaults false and combines with `Status`.
 `List` reuses `requiredActionsSQL` and `anyRequiredActionSQL` for both total and
 ID selection before pagination, with the physical-participant guard outside the
-work OR. One selected-page projection returns ID and all six booleans;
+work OR. One selected-page projection returns ID and all four booleans;
 `Page.RequiresAction` echoes the filter and `Page.RequiredActions map[int64][]string`
 contains exactly page IDs, including empty slices. Reasons have fixed order:
-`approve`, `dispatch`, `receive`, `review_count`, `review_restitution`,
-`review_dispatch_reconciliation`.
+`approve`, `dispatch`, `receive`, `review_unified_reconciliation`.
 Count, IDs/reasons and visibility-rechecked canonical loads use the same read-only
 repeatable-read snapshot. Descending IDs, bounded pages and canonical `Request`
 remain unchanged; list metadata adds no full-history per-record queries.

@@ -3,6 +3,7 @@ package transfers_test
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"luson/api/internal/transfers"
@@ -27,6 +28,26 @@ func TestR1ReceiptSchemaAdmission(t *testing.T) {
 	if scalar(t, ctx, p, "SELECT count(*) FROM transfer_requests WHERE status='received'") != 1 {
 		t.Fatal("receipt not finalized")
 	}
+}
+
+// S3: expected_quantity>0 is a schema floor, so the undispatched ("unexpected")
+// variant that an earlier receipt could record is now impossible to store.
+func TestR1ReceiptLineExpectedQuantityFloor(t *testing.T) {
+	ctx, p, s := fixture(t)
+	r := receiptDispatch(t, ctx, s, input())
+	before := receiptSnapshot(t, ctx, p)
+	// Variant 3 exists in the catalog but is not a dispatched item of this request.
+	_, err := p.Exec(ctx, `INSERT INTO transfer_receipt_lines(request_id,variant_id,expected_quantity,actual_quantity,available_quantity) VALUES($1,3,0,7,0)`, r.ID)
+	if err == nil || !strings.Contains(err.Error(), "transfer_receipt_lines_expected_positive") {
+		t.Fatalf("zero expected quantity admitted: %v", err)
+	}
+	if receiptSnapshot(t, ctx, p) != before {
+		t.Fatal("quantity floor refusal changed receipt state")
+	}
+	// The same line shape with a positive expectation is still admitted.
+	tx := a01Begin(t, ctx, p)
+	defer tx.Rollback(ctx)
+	a01Exec(t, ctx, tx, `INSERT INTO transfer_receipt_lines(request_id,variant_id,expected_quantity,actual_quantity,available_quantity) VALUES($1,2,1,1,1)`, r.ID)
 }
 
 func TestR1ReceiptSchemaGuards(t *testing.T) {
@@ -104,10 +125,17 @@ func TestR1ReceiptSchemaGuards(t *testing.T) {
 	stock := stocks(t, ctx, p)
 	tx := a01Begin(t, ctx, p)
 	defer tx.Rollback(ctx)
-	a01Exec(t, ctx, tx, `INSERT INTO transfer_receipt_lines(request_id,variant_id,expected_quantity,actual_quantity,available_quantity) VALUES($1,1,2,1,1),($1,2,1,3,1),($1,3,0,7,0)`, r.ID)
+	a01Exec(t, ctx, tx, `INSERT INTO transfer_receipt_lines(request_id,variant_id,expected_quantity,actual_quantity,available_quantity) VALUES($1,1,2,1,1),($1,2,1,3,1)`, r.ID)
 	a01Exec(t, ctx, tx, "UPDATE transfer_requests SET status='received' WHERE id=$1", r.ID)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal("valid SQL receipt did not commit")
+	}
+	// S3 removed the undispatched variant, so only derived shortage/excess
+	// evidence can accompany a stored receipt.
+	if scalar(t, ctx, p, "SELECT count(*) FROM transfer_receipt_lines WHERE expected_quantity<=0") != 0 ||
+		scalar(t, ctx, p, `SELECT count(*) FROM transfer_receipt_exceptions WHERE (variant_id,kind,quantity) IN ((1,'shortage',1),(2,'excess',2))`) != 2 ||
+		scalar(t, ctx, p, "SELECT count(*) FROM transfer_receipt_exceptions") != 2 {
+		t.Fatal("receipt evidence diverged from the dispatched expectation")
 	}
 	for i := range stock {
 		if stock[i].Location == 2 && (stock[i].Variant == 1 || stock[i].Variant == 2) {
@@ -128,7 +156,7 @@ func TestR1ReceiptSchemaGuards(t *testing.T) {
 		"DELETE FROM transfer_receipt_lines WHERE request_id=$1",
 		"UPDATE transfer_receipt_exceptions SET quantity=quantity WHERE request_id=$1",
 		"DELETE FROM transfer_receipt_exceptions WHERE request_id=$1",
-		"INSERT INTO transfer_receipt_lines(request_id,variant_id,expected_quantity,actual_quantity,available_quantity) VALUES($1,4,0,1,0)",
+		"INSERT INTO transfer_receipt_lines(request_id,variant_id,expected_quantity,actual_quantity,available_quantity) VALUES($1,4,7,7,7)",
 		"UPDATE transfer_request_allocations SET consumed_at=NULL WHERE request_id=$1",
 	} {
 		if _, err := p.Exec(ctx, query, r.ID); err == nil {

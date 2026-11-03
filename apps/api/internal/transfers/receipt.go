@@ -13,7 +13,9 @@ import (
 )
 
 // ReceiptInput uses quantities per variant, never an aggregate int64 total.
-// Line.Quantity is the observed actual, including explicit expected zeros.
+// Line.Quantity is the observed actual for a dispatched variant. Variants that
+// were never dispatched are not receivable: the business never produces that
+// physical event, so the store rejects them instead of recording an exception.
 type ReceiptInput struct{ Items []Line }
 type ReceiptLine struct {
 	VariantID         int64
@@ -124,7 +126,7 @@ func (s *Store) Receive(ctx context.Context, actor auth.Identity, id int64, inpu
 	ids := make([]int32, len(normalized.Items))
 	actual := make(map[int64]int64, len(normalized.Items))
 	for i, line := range normalized.Items {
-		if expected[line.VariantID] == 0 && line.Quantity == 0 {
+		if _, dispatched := expected[line.VariantID]; !dispatched {
 			return Request{}, ErrInvalid
 		}
 		ids[i] = int32(line.VariantID)

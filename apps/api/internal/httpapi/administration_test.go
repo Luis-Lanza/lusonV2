@@ -418,7 +418,7 @@ func TestT5NewBranch(t *testing.T) {
 		t.Fatalf("new branch transfer: %d %s", w.Code, w.Body.String())
 	}
 	t5Event(t, branch, realtime.Transfers)
-	t5Exact(t, f.request(token, "GET", "/api/transfers/counts", ""), 200, `{"pending_total":"1","action_count":"0","actions":{"approve":"0","dispatch":"0","receive":"0","review_count":"0","review_dispatch_reconciliation":"0","review_restitution":"0","review_unified_reconciliation":"0"}}`+"\n")
+	t5Exact(t, f.request(token, "GET", "/api/transfers/counts", ""), 200, `{"pending_total":"1","action_count":"0","actions":{"approve":"0","dispatch":"0","receive":"0","review_unified_reconciliation":"0"}}`+"\n")
 }
 func (f *t5Fixture) oldInventory() string {
 	f.t.Helper()

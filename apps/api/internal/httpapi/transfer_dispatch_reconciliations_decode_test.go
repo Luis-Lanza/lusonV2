@@ -2,9 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
-	"fmt"
 	"math"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -12,56 +10,9 @@ import (
 	"luson/api/internal/transfers"
 )
 
-func TestDR3HTTPDecodeRejected(t *testing.T) {
-	f := transferFixture(t)
-	detail := dr3Received(t, f)
-	path := detail + "/dispatch-reconciliations"
-	body := dr3Body("dr3-decoder-key-001", "0", "7")
-	bad := map[string]string{"empty": "{}", "null": "null", "array": "[]", "truncated": strings.TrimSuffix(body, "}"), "trailing": body + "{}", "utf8": body + "\xff", "oversized": body + strings.Repeat(" ", 64<<10)}
-	for _, field := range []string{`"variant_id":1,`, `"operation_key":"dr3-decoder-key-001",`, `"expected_revision":"0",`, `,"reason":"evidence"`, `,"dispatch_quantity":"7"`} {
-		bad["missing_"+field] = strings.Replace(body, field, "", 1)
-	}
-	for _, member := range []string{`"actor_location_id":1`, `"account_id":1`, `"location_id":1`, `"effective_credit":"7"`, `"actual_quantity":"7"`, `"request_id":"1"`, `"variant_id":1`, `"variant_\u0069d":1`, `"Reason":"evidence"`} {
-		bad["extra_"+member] = strings.TrimSuffix(body, "}") + "," + member + "}"
-	}
-	for _, field := range []string{"dispatch_quantity", "expected_revision"} {
-		old := `"` + field + `":"7"`
-		if field == "expected_revision" {
-			old = `"expected_revision":"0"`
-		}
-		for _, token := range []string{`"00"`, `"01"`, `"-0"`, `"-1"`, `"+1"`, `"1.0"`, `"1e0"`, `" 1"`, `"1 "`, `"9223372036854775808"`, `1`, `null`, `true`, `[]`, `{}`} {
-			bad[field+token] = strings.Replace(body, old, `"`+field+`":`+token, 1)
-		}
-	}
-	bad["revision_max"] = strings.Replace(body, `"expected_revision":"0"`, `"expected_revision":"9223372036854775807"`, 1)
-	for _, token := range []string{`"1"`, `0`, `-1`, `1.0`, `1e0`, `2147483648`, `null`, `true`} {
-		bad["variant"+token] = strings.Replace(body, `"variant_id":1`, `"variant_id":`+token, 1)
-	}
-	for _, token := range []string{`null`, `1`, `""`, `"   "`, `"\u0000"`, `"` + strings.Repeat("x", 2001) + `"`} {
-		bad["reason"+token] = strings.Replace(body, `"evidence"`, token, 1)
-	}
-	for _, token := range []string{`null`, `1`, `"short"`, `"dr3-decoder-key-001!"`, `"` + strings.Repeat("k", 129) + `"`} {
-		bad["key"+token] = strings.Replace(body, `"dr3-decoder-key-001"`, token, 1)
-	}
-	for name, payload := range bad {
-		t.Run(name, func(t *testing.T) {
-			dr3Reject(t, f, path, f.newRequest(2, "POST", path+"/propose", payload), 400, "invalid_request")
-		})
-	}
-	for i, media := range [][]string{nil, {"text/plain"}, {"application/json;"}, {"application/json; charset=latin1"}, {"application/json; x=y"}, {"application/json; charset=utf-8; charset=utf-8"}, {"application/json", "application/json"}} {
-		t.Run(fmt.Sprintf("media_%d", i), func(t *testing.T) {
-			r := f.newRequest(2, "POST", path+"/propose", body)
-			r.Header.Del("Content-Type")
-			for _, v := range media {
-				r.Header.Add("Content-Type", v)
-			}
-			dr3Reject(t, f, path, r, 400, "invalid_request")
-		})
-	}
-	for _, action := range []string{"accept", "reject"} {
-		dr3Reject(t, f, path, f.newRequest(2, "POST", path+"/"+action, body), 400, "invalid_request")
-	}
-}
+// The dispatch reconciliation decoder is retired with its HTTP surface; this test
+// pins the lossless wire encoding of the historical agreement evidence that the
+// unified reconciliation snapshot still embeds.
 func TestDR3HTTPDecodeExactEvidence(t *testing.T) {
 	max := int64(math.MaxInt64)
 	zero := int64(0)
@@ -95,20 +46,5 @@ func TestDR3HTTPDecodeExactEvidence(t *testing.T) {
 	empty, _ := json.Marshal(dispatchReconciliationSnapshotRecord(transfers.DispatchReconciliations{RequestID: 1}))
 	if string(empty) != `{"request_id":"1","lines":[],"operations":[]}` {
 		t.Fatal("null array")
-	}
-	for _, propose := range []bool{true, false} {
-		quantity := ""
-		if propose {
-			quantity = "9223372036854775807"
-		}
-		body := dr3Body(strings.Repeat("k", 128), "9223372036854775806", quantity)
-		body = strings.Replace(body, `"variant_id":1`, `"variant_id":2147483647`, 1)
-		body = strings.Replace(body, `"evidence"`, `"  `+strings.Repeat("界", 2000)+`  "`, 1)
-		r := httptest.NewRequest("POST", "/", strings.NewReader(body))
-		r.Header.Set("Content-Type", "application/json; charset=UTF-8")
-		in, err := decodeDispatchReconciliationMutation(r, propose)
-		if err != nil || in.ExpectedRevision != max-1 || in.VariantID != math.MaxInt32 || in.Reason != "  "+strings.Repeat("界", 2000)+"  " {
-			t.Fatal("boundary rejected", err)
-		}
 	}
 }

@@ -5,12 +5,21 @@ import (
 	"reflect"
 	"testing"
 
+	"luson/api/internal/db"
 	"luson/api/internal/transfers"
 )
 
 func TestUnifiedReconciliationReaderUnowned(t *testing.T) {
-	ctx, p, r := r2Receipt(t, 10, 8)
+	// The subject is the historical unexpected line, which no writer can create
+	// anymore: seed it on 001-018, upgrade through 019, then read it back.
+	ctx, p := urPrefixFixtureAt(t, 19)
 	s := transfers.New(p)
+	r := urHistoricalReceipt(t, ctx, s)
+	urSeedUnexpectedLine(t, ctx, p, r, 3, 1)
+	if err := db.Apply(ctx, p); err != nil {
+		t.Fatal("apply019 over historical receipt lines", err)
+	}
+	urAssert019NotValid(t, ctx, p, r, 3)
 	before := stocks(t, ctx, p)
 	original := r2Original(t, ctx, p)
 	count, err := s.GetCountCorrections(ctx, actor(r.Origin.ID), r.ID)

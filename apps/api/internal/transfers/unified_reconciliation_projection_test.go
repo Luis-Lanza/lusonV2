@@ -16,7 +16,7 @@ func TestUR1PublicProjectionsRetainProvenance(t *testing.T) {
 		t.Fatal(e)
 	}
 	unowned := urRead(t, ctx, s, r)
-	if unowned.Schema != "luson.transfer-reconciliation/v2" || unowned.OriginLocationID != r.Origin.ID || unowned.DestinationLocationID != r.Destination.ID || unowned.ReceivedAt.IsZero() || len(unowned.Current) != 2 || urCurrent(t, unowned).Source != "legacy" || urCurrent(t, unowned).Owner != "legacy" {
+	if unowned.Schema != "luson.transfer-reconciliation/v2" || unowned.OriginLocationID != r.Origin.ID || unowned.DestinationLocationID != r.Destination.ID || unowned.ReceivedAt.IsZero() || len(unowned.Current) != 1 || urCurrent(t, unowned).Source != "legacy" || urCurrent(t, unowned).Owner != "legacy" {
 		t.Fatal(unowned)
 	}
 	for _, who := range []int{r.Origin.ID, r.Destination.ID} {

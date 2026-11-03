@@ -21,7 +21,7 @@ func TestURHTTPActions(t *testing.T) {
     counts := transferObject(t, f.request(t, who, "GET", "/api/transfers/counts", ""), 200)
     var categories map[string]string
     if json.Unmarshal(counts["actions"], &categories) != nil { t.Fatal("counts") }
-    expected := map[string]string{"approve":"0", "dispatch":"0", "receive":"0", "review_count":"0", "review_restitution":"0", "review_dispatch_reconciliation":"0", "review_unified_reconciliation":want}
+    expected := map[string]string{"approve":"0", "dispatch":"0", "receive":"0", "review_unified_reconciliation":want}
     if !reflect.DeepEqual(categories, expected) || string(counts["action_count"]) != `"`+want+`"` || string(counts["pending_total"]) != `"0"` { t.Errorf("actor %d counts=%s", who, counts) }
     page := transferObject(t, f.request(t, who, "GET", "/api/transfers?status=all&requires_action=true", ""), 200)
     var reasons map[string][]string

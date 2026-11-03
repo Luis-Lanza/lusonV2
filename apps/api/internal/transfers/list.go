@@ -81,7 +81,7 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q Query) (Page, e
 		return Page{}, fail(ctx)
 	}
 	offset := (q.Page - 1) * int64(q.PageSize)
-	rows, err := tx.Query(ctx, `SELECT id,approve,dispatch,receive,review_count,review_restitution,review_dispatch_reconciliation,review_unified_reconciliation`+projection+
+	rows, err := tx.Query(ctx, `SELECT id,approve,dispatch,receive,review_unified_reconciliation`+projection+
 		` ORDER BY id DESC LIMIT $4 OFFSET $5`, actor.Location.ID, q.Status, q.RequiresAction, int64(q.PageSize), offset)
 	if err != nil {
 		return Page{}, fail(ctx)
@@ -89,14 +89,14 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q Query) (Page, e
 	ids := make([]int64, 0, q.PageSize)
 	for rows.Next() {
 		var id int64
-		var flags [7]bool
-		if rows.Scan(&id, &flags[0], &flags[1], &flags[2], &flags[3], &flags[4], &flags[5], &flags[6]) != nil {
+		var flags [4]bool
+		if rows.Scan(&id, &flags[0], &flags[1], &flags[2], &flags[3]) != nil {
 			rows.Close()
 			return Page{}, fail(ctx)
 		}
 		ids = append(ids, id)
-		reasons := make([]string, 0, 7)
-		for i, reason := range []string{"approve", "dispatch", "receive", "review_count", "review_restitution", "review_dispatch_reconciliation", "review_unified_reconciliation"} {
+		reasons := make([]string, 0, 4)
+		for i, reason := range []string{"approve", "dispatch", "receive", "review_unified_reconciliation"} {
 			if flags[i] {
 				reasons = append(reasons, reason)
 			}

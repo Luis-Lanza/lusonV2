@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"testing"
 
+	"luson/api/internal/db"
 	"luson/api/internal/transfers"
 )
 
@@ -242,15 +243,19 @@ func TestUR2RolesRetryAndOwnership(t *testing.T) {
 }
 
 func TestUR2UnexpectedAuditCorrectionPreserved(t *testing.T) {
-	ctx, p, r := r2Receipt(t, 10, 8)
+	// The subject is the historical unexpected line plus its audit-only
+	// correction. Both are seeded on 001-018 as the pre-S1 flows could produce
+	// them, then 019 is applied on top and the evidence must survive intact.
+	ctx, p := urPrefixFixtureAt(t, 19)
 	s := transfers.New(p)
+	r := urHistoricalReceipt(t, ctx, s)
+	urSeedUnexpectedLine(t, ctx, p, r, 3, 1)
 	if _, e := s.ProposeUnifiedReconciliation(ctx, actor(r.Origin.ID), r.ID, urProposal("ur2-expected-ownership")); e != nil {
 		t.Fatal(e)
 	}
 	stock := dr1Inventory(t, ctx, p)
 	expected := urRead(t, ctx, s, r)
-	c2StorePropose(t, ctx, s, r, r.Origin.ID, 3, 0, 2, "ur2-unexpected-count-proposal")
-	c2StoreDecide(t, ctx, s, r, r.Destination.ID, 3, 1, true, "ur2-unexpected-count-accept")
+	urSeedCountCorrection(t, ctx, p, r, 3, 2)
 	after := urRead(t, ctx, s, r)
 	if !reflect.DeepEqual(stock, dr1Inventory(t, ctx, p)) || !reflect.DeepEqual(urCurrent(t, expected), urCurrent(t, after)) || !reflect.DeepEqual(expected.Lines, after.Lines) || !reflect.DeepEqual(expected.Operations, after.Operations) {
 		t.Fatal("unexpected audit-only correction affected expected accounting or inventory")
@@ -267,6 +272,18 @@ func TestUR2UnexpectedAuditCorrectionPreserved(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("unexpected audit history missing")
+	}
+	// 019 keeps refusing new zero-quantity lines without deleting this history.
+	if err := db.Apply(ctx, p); err != nil {
+		t.Fatal("apply019 over historical correction evidence", err)
+	}
+	urAssert019NotValid(t, ctx, p, r, 3)
+	settled := urRead(t, ctx, s, r)
+	if !reflect.DeepEqual(after.Legacy, settled.Legacy) || !reflect.DeepEqual(after.Original, settled.Original) {
+		t.Fatal("upgrade lost historical correction evidence", settled)
+	}
+	if !reflect.DeepEqual(after.Current, settled.Current) {
+		t.Fatal("upgrade changed the projected legacy current line", settled)
 	}
 }
 

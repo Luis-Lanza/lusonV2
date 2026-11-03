@@ -46,7 +46,7 @@ func receiptHTTPRollback(t *testing.T, f *transferHTTPFixture, transit transferD
 }
 
 func TestR1ReceiptEvents(t *testing.T) {
-	for _, mode := range []string{"expected_credit", "unexpected_only"} {
+	for _, mode := range []string{"expected_credit", "undispatched_refused"} {
 		t.Run(mode, func(t *testing.T) {
 			env := eventFixture(t)
 			f := env.f
@@ -64,12 +64,27 @@ func TestR1ReceiptEvents(t *testing.T) {
 				expectHTTPEvent(t, client, "resync")
 			}
 			eventBoundary(t, env, clients, [][]string{nil, nil, nil})
+			if mode == "undispatched_refused" {
+				// S1 refuses a line for a variant that was never dispatched, and the
+				// refusal must precede every write, credit and realtime hint.
+				before, revisions := receiptHTTPState(t, f), decisionRevisions(t, f)
+				undispatched := `{"items":[{"variant_id":1,"actual_quantity":"1"},{"variant_id":2,"actual_quantity":"1"},{"variant_id":3,"actual_quantity":"7"}]}`
+				expectTransferError(t, decisionNetwork(t, f, server, f.newRequest(2, "POST", path+"/receive", undispatched)), 400, "invalid_request")
+				if receiptHTTPState(t, f) != before || decisionRevisions(t, f) != revisions {
+					t.Fatal("undispatched receipt leaked state/revisions")
+				}
+				eventBoundary(t, env, clients, [][]string{nil, nil, nil})
+				if decisionRevisions(t, f) != revisions {
+					t.Fatal("undispatched receipt emitted mutation hints")
+				}
+				for _, client := range clients {
+					client.close()
+				}
+				server.Close()
+				return
+			}
 			body := receiptExactBody
 			credit1, credit2 := int64(1), int64(1)
-			if mode == "unexpected_only" {
-				body = `{"items":[{"variant_id":1,"actual_quantity":"0"},{"variant_id":2,"actual_quantity":"0"},{"variant_id":3,"actual_quantity":"7"}]}`
-				credit1, credit2 = 0, 0
-			}
 			before, revisions := receiptHTTPState(t, f), decisionRevisions(t, f)
 			receiptHTTPRollback(t, f, transit, body)
 			if receiptHTTPState(t, f) != before || decisionRevisions(t, f) != revisions {
@@ -113,9 +128,6 @@ func TestR1ReceiptEvents(t *testing.T) {
 				}
 			}
 			changed := strings.Replace(body, `"actual_quantity":"1"`, `"actual_quantity":"2"`, 1)
-			if mode == "unexpected_only" {
-				changed = strings.Replace(body, `"actual_quantity":"7"`, `"actual_quantity":"8"`, 1)
-			}
 			expectTransferError(t, decisionNetwork(t, f, server, f.newRequest(2, "POST", path+"/receive", changed)), 409, "retry_conflict")
 			expectTransferError(t, decisionNetwork(t, f, server, f.newRequest(1, "POST", path+"/reject", "{}")), 409, "decision_conflict")
 			if receiptHTTPState(t, f) != settled || decisionRevisions(t, f) != revisions {
