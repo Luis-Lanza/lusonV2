@@ -407,11 +407,19 @@ smoke, native approval and commit are separate acceptance steps.
 
 The count-correction, restitution and dispatch-reconciliation HTTP surfaces are
 retired: those routes are unregistered and answer the ordinary unknown-route 404,
-and no handler remains that could mutate through them. Their tables, SQL writers
-and history readers stay as historical evidence, and the unified reconciliation
-snapshot exposes that evidence read-only. The surviving reconciliation contract is
-documented in [unified reconciliation](unified-reconciliation.md), with its
-[HTTP read](unified-reconciliation-http-read.md) and
+and no handler remains that could mutate through them. The Go store mutation API
+is gone with them: no `ProposeCount`, `DecideCount`, `ProposeRestitution`,
+`DecideRestitution`, `ProposeDispatchReconciliation` or
+`DecideDispatchReconciliation` store method is compiled into the product, so no
+product path can write those workflows. Their tables and SQL writers
+(`transfer_count_correct`, `transfer_restitute`, `transfer_dispatch_reconcile`)
+and their history readers stay as historical evidence, and the unified
+reconciliation snapshot exposes that evidence read-only. A test-only simulation
+of the retired writers, `internal/transfers/legacy_writer_test.go`, keeps the
+surviving setups able to produce genuine pre-unified history; being a `_test.go`
+file it is never linked into a product binary. The surviving reconciliation
+contract is documented in [unified reconciliation](unified-reconciliation.md),
+with its [HTTP read](unified-reconciliation-http-read.md) and
 [HTTP write](unified-reconciliation-http-write.md) companions.
 
 ## Full persisted outcomes and original replay
@@ -610,9 +618,11 @@ These backend checks do not establish direct-shipment frontend delivery.
 `TestC3CountDTOExactWire`, `TestR4RestitutionDTOExactWire` and
 `TestDR3HTTPDecodeWire` pin the lossless wire encoding of the historical count,
 restitution and dispatch evidence that the unified snapshot still embeds. The
-retained SQL writers and history readers keep their coverage in the store and
-schema packages. All of them use the parent-admitted isolated PostgreSQL fixture
-without skipping integration.
+retained SQL writers and history readers keep their coverage at the SQL level in
+the schema package; the retired Go store writers are covered only by the
+test-only simulation described above, which is never part of a product build. All
+of them use the parent-admitted isolated PostgreSQL fixture without skipping
+integration.
 
 See [the immutable store contract](pending-requests-store.md) for persistence,
 replay ordering, Pending stock policy and snapshot rationale.

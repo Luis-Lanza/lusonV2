@@ -12,29 +12,12 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"luson/api/internal/auth"
 )
 
 // ErrReadUnavailable shares the existing Store error identity; no database
 // details or malformed private evidence escape through the read boundary.
 var ErrReadUnavailable = ErrUnavailable
-
-type RestitutionProposalInput struct {
-	VariantID        int64
-	OperationKey     string
-	ExpectedRevision int64
-	RetainedQuantity int64
-	RetainedAtOrigin bool
-	Reason           string
-}
-type RestitutionDecisionInput struct {
-	VariantID        int64
-	OperationKey     string
-	ExpectedRevision int64
-	Accept           bool
-	Reason           string
-}
 
 // RestitutionOperation is the immutable committed retry result, including the
 // original source stock snapshots (not today's inventory).
@@ -108,17 +91,6 @@ type Restitutions struct {
 	Operations []RestitutionOperation `json:"operations"`
 }
 
-func (s *Store) ProposeRestitution(ctx context.Context, actor auth.Identity, id int64, in RestitutionProposalInput) (RestitutionOperation, error) {
-	q, att := in.RetainedQuantity, in.RetainedAtOrigin
-	return s.restitute(ctx, actor, id, in.VariantID, in.OperationKey, "propose", in.ExpectedRevision, &q, &att, in.Reason)
-}
-func (s *Store) DecideRestitution(ctx context.Context, actor auth.Identity, id int64, in RestitutionDecisionInput) (RestitutionOperation, error) {
-	action := "reject"
-	if in.Accept {
-		action = "accept"
-	}
-	return s.restitute(ctx, actor, id, in.VariantID, in.OperationKey, action, in.ExpectedRevision, nil, nil, in.Reason)
-}
 func validRestitutionInput(variant int64, key, action string, revision int64, quantity *int64, attested *bool, reason string) bool {
 	if variant <= 0 || variant > math.MaxInt32 || !retryKeyPattern.MatchString(key) || revision < 0 || revision == math.MaxInt64 || !utf8.ValidString(reason) || strings.ContainsRune(reason, 0) {
 		return false
@@ -135,92 +107,6 @@ func validRestitutionInput(variant int64, key, action string, revision int64, qu
 	default:
 		return false
 	}
-}
-func (s *Store) restitute(ctx context.Context, actor auth.Identity, id, variant int64, key, action string, revision int64, quantity *int64, attested *bool, reason string) (RestitutionOperation, error) {
-	if ctx == nil || s == nil || s.pool == nil {
-		return RestitutionOperation{}, ErrUnavailable
-	}
-	if !assigned(actor) {
-		return RestitutionOperation{}, ErrForbidden
-	}
-	if id < 1 {
-		return RestitutionOperation{}, ErrNotFound
-	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := checkAssignment(ctx, s.pool, actor); err != nil {
-		return RestitutionOperation{}, err
-	}
-	tx, err := s.beginPersonal(ctx, actor)
-	if err != nil {
-		return RestitutionOperation{}, fail(ctx)
-	}
-	defer func() {
-		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
-		defer done()
-		_ = tx.Rollback(cleanup)
-	}()
-	// Fence private membership before examining even malformed payloads. SQL
-	// repeats authorization under its lock and owns all eligibility/effects.
-	var status string
-	err = tx.QueryRow(ctx, `SELECT status FROM transfer_requests WHERE id=$1 AND $2 IN(origin_location_id,destination_location_id)`, id, actor.Location.ID).Scan(&status)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return RestitutionOperation{}, ErrNotFound
-	}
-	if err != nil {
-		return RestitutionOperation{}, fail(ctx)
-	}
-	if status != "received" {
-		return RestitutionOperation{}, ErrDecisionConflict
-	}
-	if !validRestitutionInput(variant, key, action, revision, quantity, attested, reason) {
-		return RestitutionOperation{}, ErrInvalid
-	}
-	var op RestitutionOperation
-	err = tx.QueryRow(ctx, `SELECT operation_key,request_id,variant_id,actor_location_id,action,expected_revision,retained_quantity,retained_at_origin,reason,revision,source_existing_before,source_existing_after,recorded_at
- FROM transfer_restitute($1,$2::integer,$3::smallint,$4,$5,$6,$7,$8,$9)`, id, variant, actor.Location.ID, key, action, revision, quantity, attested, reason).Scan(&op.OperationKey, &op.RequestID, &op.VariantID, &op.ActorLocationID, &op.Action, &op.ExpectedRevision, &op.RetainedQuantity, &op.RetainedAtOrigin, &op.Reason, &op.Revision, &op.SourceExistingBefore, &op.SourceExistingAfter, &op.RecordedAt)
-	if err != nil {
-		return RestitutionOperation{}, restitutionError(ctx, err)
-	}
-	// A deferred constraint failure must never return an apparent operation.
-	if err = tx.Commit(ctx); err != nil {
-		return RestitutionOperation{}, fail(ctx)
-	}
-	op.RecordedAt = op.RecordedAt.UTC()
-	return op, nil
-}
-func restitutionError(ctx context.Context, err error) error {
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	if activeLocationRequired(err) {
-		return ErrDecisionConflict
-	}
-	var p *pgconn.PgError
-	if !errors.As(err, &p) {
-		return fail(ctx)
-	}
-	switch p.Code {
-	case "42501":
-		switch p.Message {
-		case "Restitution endpoint unauthorized", "Restitution requires a physical endpoint of a received transfer", "Only origin may attest retained stock", "Only exact destination may decide restitution":
-			return ErrForbidden
-		}
-	case "23505":
-		if p.Message == "Restitution operation identity conflicts" {
-			return ErrRetryConflict
-		}
-	case "23514":
-		switch p.Message {
-		case "Restitution requires an expected received line", "Restitution requires explicit positive retention attestation", "Invalid restitution action":
-			return ErrInvalid
-		case "Stale restitution revision", "Restitution blocked by pending count proposal", "Restitution already applied", "Restitution exceeds outstanding debit", "Restitution decision is terminal or payload invalid", "Restitution predecessor changed":
-			return ErrDecisionConflict
-		case "Restitution requires covered nonoverflowing origin stock":
-			return ErrInsufficientStock
-		}
-	}
-	return fail(ctx)
 }
 
 // CheckRestitutionAccess is an HTTP privacy fence before payload decoding, not
