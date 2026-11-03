@@ -12,12 +12,13 @@ Existing callers that omit `unified` retain the legacy detail projection and con
   `projectUnifiedReceived`; legacy or original quantities are not a fallback.
 - Missing current evidence shows “Conteo efectivo no disponible”.
   “Consultar conciliación” requests a refresh when the hook is not masked.
-- Gestiones offers “Resolver diferencia” for expected variants, opening the
-  existing unified modal. The stable Gestiones button is retained as the opener
-  so Escape can restore focus after the menu item disappears.
-- Legacy sections become historical audit/recovery controls. Unexpected count
-  corrections retain their existing path; this does not incorporate unexpected
-  variants into unified reconciliation.
+- The detail offers the direct “Resolver diferencia” action for expected
+  variants, opening the existing unified modal. There is no management menu: it
+  is the only remaining management flow. The button is retained as the opener so
+  Escape can restore focus after the modal closes.
+- The legacy count-correction, restitution and dispatch audit sections, their
+  hooks and their stylesheets are removed (S5); their parsers and recovery
+  history survive only as evidence read by the unified snapshot.
 - Opening history includes unified history when evidence is not masked.
 - “Ver recepción original” continues to expose immutable receipt evidence.
 

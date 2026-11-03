@@ -17,14 +17,13 @@ import { createTransferReceiptRecovery } from './transferReceiptRecovery';
 import { createTransferRestitutionRecovery } from './transferRestitutionRecovery';
 import { createTransferDispatchRecovery } from './transferDispatchRecovery';
 
-it.each(['escape', 'close', 'return'] as const)('unified caller uses only coordinated audit GETs and returns Gestiones focus through %s without POST', async dismissal => {
+it.each(['escape', 'close', 'return'] as const)('unified caller uses only coordinated audit GETs and returns Resolver diferencia focus through %s without POST', async dismissal => {
   const snapshot = unifiedAgreement();
   const f = correctionFixture(1, url => url.endsWith('/unified-reconciliations')
     ? Promise.resolve(reply(snapshot.raw)) : undefined, JSON.parse(unifiedWire(snapshot.record)));
   render(f.element());
   await screen.findByRole('table', { name: 'Conteo efectivo' });
-  fireEvent.click(screen.getByRole('button', { name: 'Gestiones' }));
-  fireEvent.click(screen.getByRole('menuitem', { name: 'Resolver diferencia' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Resolver diferencia' }));
   expect(screen.getByRole('dialog', { name: 'Resolver diferencia' })).toBeInTheDocument();
   expect(f.fetch.mock.calls.filter(([url]) => /\/(count-corrections|dispatch-reconciliations|restitutions)$/.test(String(url)))).toHaveLength(0);
   expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
@@ -33,7 +32,7 @@ it.each(['escape', 'close', 'return'] as const)('unified caller uses only coordi
     name: dismissal === 'close' ? 'Cerrar y volver al detalle' : 'Volver al detalle',
   }));
   expect(screen.queryByRole('dialog')).toBeNull();
-  expect(screen.getByRole('button', { name: 'Gestiones' })).toHaveFocus();
+  expect(screen.getByRole('button', { name: 'Resolver diferencia' })).toHaveFocus();
   expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
 });
 
@@ -180,28 +179,27 @@ it('L78 selected received scope uses coordinated audit readers without legacy cu
   render(f.element());
   await screen.findByRole('table', { name: 'Conteo efectivo' });
   const reads = () => f.fetch.mock.calls.filter(([url]) => String(url).endsWith('/unified-reconciliations'));
-  await waitFor(() => expect(reads()).toHaveLength(3)); // unified Current plus two existing audit recovery engines
+  await waitFor(() => expect(reads()).toHaveLength(1)); // exactly one coordinated Current read
   expect(reads().every(isPassive)).toBe(true);
-  expect(f.fetch.mock.calls.filter(([url]) => /\/(count-corrections|dispatch-reconciliations)$/.test(String(url)))).toHaveLength(0);
-  fireEvent.click(screen.getByRole('button', { name: 'Gestiones' }));
-  fireEvent.click(screen.getByRole('menuitem', { name: 'Auditoría de conteo e inesperadas' }));
+  expect(f.fetch.mock.calls.filter(([url]) => /\/(count-corrections|dispatch-reconciliations|restitutions)$/.test(String(url)))).toHaveLength(0);
+  // No legacy audit lane and no management menu: only the direct difference action.
+  expect(screen.queryByRole('button', { name: 'Gestiones' })).toBeNull();
+  expect(screen.queryByRole('menu')).toBeNull();
+  expect(screen.queryByRole('region', { name: 'Correcciones de conteo' })).toBeNull();
+  expect(screen.queryByRole('region', { name: 'Restituciones de origen' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Proponer corrección' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Proponer regularización' })).toBeNull();
-  expect(reads()).toHaveLength(3);
+  expect(screen.getByRole('button', { name: 'Resolver diferencia' })).toBeInTheDocument();
+  expect(reads()).toHaveLength(1);
   fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
   await screen.findByRole('heading', { name: 'Transferencias' });
   act(() => { for (const listener of f.listeners) listener(); });
-  expect(reads()).toHaveLength(3);
+  expect(reads()).toHaveLength(1);
   expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
 });
 
-async function selectManagement(name: 'Corregir conteo' | 'Restituciones de origen') {
-  fireEvent.click(await screen.findByRole('button', { name: 'Gestiones' }));
-  fireEvent.click(screen.getByRole('menuitem', { name: name === 'Corregir conteo' ? 'Auditoría de conteo e inesperadas' : 'Auditoría de restituciones' }));
-}
-async function correctionLoaded(managed = true) {
-  if (managed) await selectManagement('Corregir conteo');
-  await screen.findByRole('heading', { name: 'Conteo efectivo confirmado', level: 3 });
+async function correctionLoaded() {
+  await screen.findByRole('table', { name: 'Conteo efectivo' });
 }
 function unifiedFlowFixture(actor = 2, pending = false,
   override?: (url: string, init: RequestInit) => Promise<Response> | undefined) {
@@ -234,8 +232,7 @@ function unifiedFlowFixture(actor = 2, pending = false,
   return { ...f, replaceSnapshot: (next: typeof raw) => { raw = next; } };
 }
 async function unifiedPreview() {
-  fireEvent.click(screen.getByRole('button', { name: 'Gestiones' }));
-  fireEvent.click(screen.getByRole('menuitem', { name: 'Resolver diferencia' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Resolver diferencia' }));
   fireEvent.change(screen.getByLabelText('Salieron realmente'), { target: { value: '4' } });
   fireEvent.change(screen.getByLabelText('Llegaron realmente'), { target: { value: '3' } });
   fireEvent.change(screen.getByLabelText('Quedaron físicamente en origen'), { target: { value: '1' } });
@@ -244,7 +241,7 @@ async function unifiedPreview() {
   return screen.getByRole('dialog');
 }
 const actionCounts = { pending_total: '2', action_count: '4', actions: {
-  approve: '1', dispatch: '1', receive: '1', review_count: '1', review_restitution: '1', review_dispatch_reconciliation: '0', review_unified_reconciliation: '0',
+  approve: '1', dispatch: '1', receive: '1', review_unified_reconciliation: '1',
 } };
 function actionableFixture() {
   const f = fixture(2, url => {
@@ -261,29 +258,33 @@ function actionableFixture() {
 }
 
 describe('T3 location-owned action discovery', () => {
-  it.each([false, true])('preserves the original five category memberships with overlap=%s, assigned context and server-owned reasons', async overlap => {
+  it('preserves the four category memberships with assigned context and server-owned reasons', async () => {
     const received = { ...receivedWire(), id: '4', reference: 'TR-004' };
     const transit = { ...wire(1, 2, '5', 'in_transit'), dispatch_location_id: 1, dispatched_at: correctionStamp };
-    const records = [wire(2, 3, '7'), wire(2, 3, '6', 'approved'), transit, received,
-      ...(!overlap ? [{ ...received, id: '3', reference: 'TR-003' }] : []), wire(1, 2, '2'), { ...received, id: '1', reference: 'TR-001' }];
-    const total = overlap ? '4' : '5';
+    const records = [wire(2, 3, '7'), wire(2, 3, '6', 'approved'), transit, received, wire(1, 2, '2'), { ...received, id: '1', reference: 'TR-001' }];
+    const total = '4';
     const f = fixture(2, url => url === '/api/transfers/counts' ? Promise.resolve(reply({ ...actionCounts, action_count: total }))
       : url.startsWith('/api/transfers?') ? Promise.resolve(reply({ page: 1, page_size: 25, status: 'all', total_count: String(records.length),
         records, requires_action: false, required_actions: { '7': ['approve'], '6': ['dispatch'], '5': ['receive'],
-          '4': overlap ? ['review_count', 'review_restitution'] : ['review_count'], ...(!overlap ? { '3': ['review_restitution'] } : {}), '2': [], '1': [] } })) : undefined);
+          '4': ['review_unified_reconciliation'], '2': [], '1': [] } })) : undefined);
     render(f.element());
     expect(await screen.findByText(`${total} transferencias requieren tu atención`)).toBeVisible();
     expect(screen.getByText('Acciones asignadas a Sucursal A')).toBeVisible();
     const categories = screen.getByLabelText('Tipos de acción pendientes');
-    for (const label of ['Por aprobar', 'Por despachar', 'Por recibir', 'Conteos por revisar', 'Restituciones por revisar']) {
+    for (const label of ['Por aprobar', 'Por despachar', 'Por recibir', 'Conciliaciones unificadas por revisar']) {
       expect(within(categories).getByText(label).parentElement).toHaveTextContent(`${label}1`);
+    }
+    expect(categories.children).toHaveLength(4);
+    for (const retired of ['Conteos por revisar', 'Restituciones por revisar', 'Regularizaciones por revisar']) {
+      expect(within(categories).queryByText(retired)).toBeNull();
     }
     expect(screen.getByText('Una transferencia puede aparecer en varios tipos.')).toBeVisible();
     expect(screen.getByLabelText('Estado de transferencia')).toHaveValue('all');
     expect(screen.getByRole('checkbox', { name: 'Solo requieren mi acción' })).not.toBeChecked();
     const table = screen.getByRole('table');
     expect(within(table).getByRole('columnheader', { name: 'Tu acción' })).toBeVisible();
-    for (const label of ['Aprobar o rechazar', 'Despachar', 'Recibir', 'Revisar conteo', 'Revisar restitución']) expect(table).toHaveTextContent(label);
+    for (const label of ['Aprobar o rechazar', 'Despachar', 'Recibir', 'Revisar conciliación unificada']) expect(table).toHaveTextContent(label);
+    for (const retired of ['Revisar conteo', 'Revisar restitución', 'Revisar regularización']) expect(table).not.toHaveTextContent(retired);
     expect(table).toHaveTextContent('Esperando a Almacén'); expect(table).toHaveTextContent('Sin acción pendiente');
     expect(f.fetch.mock.calls.every(([url, init]) => init?.method === 'GET' && !String(url).includes('corrections') && !String(url).includes('restitutions'))).toBe(true);
   });
@@ -345,7 +346,7 @@ describe('T3 location-owned action discovery', () => {
     await screen.findByText('Acción no disponible');
     expect(screen.queryByText('Sin acción pendiente')).toBeNull();
     await act(async () => pending.resolve(reply({ pending_total: '2', action_count: '0', ...(!legacy ? {
-      actions: { approve: '0', dispatch: '0', receive: '0', review_count: '0', review_restitution: '0', review_dispatch_reconciliation: '0', review_unified_reconciliation: '0' },
+      actions: { approve: '0', dispatch: '0', receive: '0', review_unified_reconciliation: '0' },
     } : {}) })));
     expect(screen.queryByText('No tenés acciones pendientes')).toBeNull();
     expect(screen.queryByRole('region', { name: 'Contadores de solicitudes' })).toBeNull();
@@ -388,7 +389,7 @@ describe('T3 location-owned action discovery', () => {
     const f = fixture(1, (url, init) => {
       const record = wire(1, 2, '100', approved ? 'approved' : 'pending');
       if (url === '/api/transfers/counts') return Promise.resolve(reply({ pending_total: approved ? '0' : '1', action_count: '1',
-        actions: { approve: approved ? '0' : '1', dispatch: approved ? '1' : '0', receive: '0', review_count: '0', review_restitution: '0', review_dispatch_reconciliation: '0', review_unified_reconciliation: '0' } }));
+        actions: { approve: approved ? '0' : '1', dispatch: approved ? '1' : '0', receive: '0', review_unified_reconciliation: '0' } }));
       if (url.startsWith('/api/transfers?')) return Promise.resolve(reply({ page: 1, page_size: 25, status: 'all', total_count: '1',
         records: [record], requires_action: false, required_actions: { '100': [approved ? 'dispatch' : 'approve'] } }));
       if (url === '/api/transfers/100') return Promise.resolve(reply(record));
@@ -438,16 +439,17 @@ describe('T3 location-owned action discovery', () => {
   });
 });
 
-describe('reconciliation discovery visible advisory work', () => {
-  it('names the advisory category and row independently of decoder admission', () => {
-    expect(Reflect.get(transferActionCategoryLabels, 'review_dispatch_reconciliation')).toBe('Regularizaciones por revisar');
-    expect(Reflect.get(transferActionLabels, 'review_dispatch_reconciliation')).toBe('Revisar regularización');
+describe('unified review visible advisory work', () => {
+  it('names no retired audit category or row', () => {
+    for (const retired of ['review_count', 'review_restitution', 'review_dispatch_reconciliation']) {
+      expect(Reflect.get(transferActionCategoryLabels, retired)).toBeUndefined();
+      expect(Reflect.get(transferActionLabels, retired)).toBeUndefined();
+    }
   });
-  it.each([1, 2])('shows the sixth category and counterpart row at endpoint %s without mutation controls', async actor => {
+  it.each([1, 2])('shows the unified category and counterpart row at endpoint %s without mutation controls', async actor => {
     const record = receivedWire();
-    const reason = 'review_dispatch_reconciliation';
-    const counts = { pending_total: '0', action_count: '1', actions: { approve: '0', dispatch: '0', receive: '0',
-      review_count: '1', review_restitution: '0', [reason]: '1', review_unified_reconciliation: '0' } };
+    const reason = 'review_unified_reconciliation';
+    const counts = { pending_total: '0', action_count: '1', actions: { approve: '0', dispatch: '0', receive: '0', [reason]: '1' } };
     const before = JSON.stringify({ record, counts });
     const route = vi.fn();
     const f = correctionFixture(actor, url => {
@@ -456,21 +458,22 @@ describe('reconciliation discovery visible advisory work', () => {
       const q = new URL(url, 'http://localhost').searchParams;
       return Promise.resolve(reply({ page: Number(q.get('page')), page_size: Number(q.get('page_size')),
         status: q.get('status'), total_count: '1', records: [record], requires_action: q.get('requires_action') === 'true',
-        required_actions: { [record.id]: ['review_count', reason] } }));
+        required_actions: { [record.id]: [reason] } }));
     }, record);
     render(<TransferPending controller={f.controller} ownerTag={f.ownerTag} onInventory={f.back} onRouteDetail={route} />);
     await screen.findByText('1 transferencia requiere tu atención');
     const categories = screen.getByLabelText('Tipos de acción pendientes');
-    expect(within(categories).getByText('Regularizaciones por revisar').parentElement).toHaveTextContent('Regularizaciones por revisar1');
-    expect(within(categories).getByText('Conteos por revisar').parentElement).toHaveTextContent('Conteos por revisar1');
-    expect(categories.children).toHaveLength(7);
-    expect(within(categories).getByText('Conciliaciones unificadas por revisar').parentElement).toHaveTextContent('Conciliaciones unificadas por revisar0');
-    expect(screen.getByText('Sobre los totales').closest('details')).toHaveTextContent('regularizaciones de despacho');
+    expect(within(categories).getByText('Conciliaciones unificadas por revisar').parentElement).toHaveTextContent('Conciliaciones unificadas por revisar1');
+    expect(categories.children).toHaveLength(4);
+    for (const retired of ['Conteos por revisar', 'Restituciones por revisar', 'Regularizaciones por revisar']) {
+      expect(within(categories).queryByText(retired)).toBeNull();
+    }
+    expect(screen.getByText('Sobre los totales').closest('details')).toHaveTextContent('revisar la conciliación unificada');
     expect(screen.getByText('Sobre los totales').closest('details')).toHaveTextContent('sin habilitar su decisión desde esta vista');
-    expect(screen.getByRole('table')).toHaveTextContent('Revisar regularización');
-    if (actor === 1) expect(document.querySelector('.pending-cards')).toHaveTextContent('Revisar regularización');
+    expect(screen.getByRole('table')).toHaveTextContent('Revisar conciliación unificada');
+    if (actor === 1) expect(document.querySelector('.pending-cards')).toHaveTextContent('Revisar conciliación unificada');
     else expect(document.querySelector('.pending-cards')).toBeNull();
-    expect(screen.queryByRole('button', { name: /Revisar regularización|Regularizar despacho|Proponer regularización|Aceptar propuesta|Rechazar propuesta/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Revisar conciliación unificada|Aceptar propuesta|Rechazar propuesta|Resolver diferencia/ })).toBeNull();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Solo requieren mi acción' }));
     await waitFor(() => expect(calls(f).at(-1)![0]).toBe('/api/transfers?page=1&page_size=25&status=all&requires_action=true'));
     await screen.findByText('1 transferencia');
@@ -488,7 +491,7 @@ describe('reconciliation discovery visible advisory work', () => {
     const record = receivedWire(1, 2);
     const f = fixture(3, url => url.startsWith('/api/transfers?') ? Promise.resolve(reply({ page: 1, page_size: 25,
       status: 'all', total_count: '1', records: [record], requires_action: false,
-      required_actions: { [record.id]: ['review_dispatch_reconciliation'] } })) : undefined);
+      required_actions: { [record.id]: ['review_unified_reconciliation'] } })) : undefined);
     render(f.element());
     await waitFor(() => expect(calls(f)).toHaveLength(1));
     await act(async () => {});
@@ -680,10 +683,10 @@ describe('F3 participant received chrome', () => {
     expect(screen.getByRole('navigation', { name: 'Navegación de transferencia' })).toHaveClass('received-participant-navigation');
     expect(screen.queryByRole('region', { name: 'Contadores de solicitudes' })).toBeNull();
     expect(screen.getByText('Ver recepción original').closest('details')).not.toHaveAttribute('open');
-    fireEvent.click(screen.getByRole('button', { name: 'Gestiones' }));
-    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['Resolver diferencia', 'Auditoría de conteo e inesperadas', 'Auditoría de restituciones', 'Auditoría de despacho']);
-    // Existing recovery readers consume only coordinated audit snapshots.
-    await waitFor(() => expect(f.fetch.mock.calls.filter(([url]) => url === `/api/transfers/${record.id}/unified-reconciliations`)).toHaveLength(5));
+    expect(screen.queryByRole('button', { name: 'Gestiones' })).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Resolver diferencia' })).toHaveLength(1);
+    // The surviving recovery engine consumes only the coordinated audit snapshot.
+    await waitFor(() => expect(f.fetch.mock.calls.filter(([url]) => url === `/api/transfers/${record.id}/unified-reconciliations`)).toHaveLength(1));
     expect(correctionCalls(f)).toHaveLength(0);
     expect(f.fetch.mock.calls.filter(([url]) => /\/(dispatch-reconciliations|restitutions)$/.test(String(url)))).toHaveLength(0);
     expect(f.fetch.mock.calls.every(([url, init]) => (!init?.method || init.method === 'GET')
@@ -729,9 +732,13 @@ describe('F4a selected chrome', () => {
     const effective = screen.getByRole('region', { name: 'Conteo efectivo confirmado' });
     expect(identity.compareDocumentPosition(effective) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByRole('navigation', { name: 'Navegación de transferencia' })).toHaveClass('received-participant-navigation');
-    const lane = screen.getByRole('region', { name: 'Correcciones de conteo' });
-    expect(screen.getAllByRole('region', { name: 'Correcciones de conteo' })).toHaveLength(1);
-    expect(screen.getByRole('region', { name: 'Recepción original' }).compareDocumentPosition(lane) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Correcciones de conteo' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Restituciones de origen' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Resolver diferencia' })).toBeVisible();
+    const receipt = screen.getByRole('region', { name: 'Recepción original' });
+    expect(receipt).not.toBe(effective);
+    expect(screen.getByRole('region', { name: 'Conteo efectivo confirmado' })).toBe(effective);
+    expect(effective.compareDocumentPosition(receipt) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Recibir solicitud' })).not.toBeInTheDocument();
     expect(f.fetch.mock.calls.every(([, init]) => init?.method === 'GET')).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
@@ -739,66 +746,6 @@ describe('F4a selected chrome', () => {
     expect(screen.getByRole('region', { name: 'Contadores de solicitudes' })).toHaveTextContent('9007199254740995');
     fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' }));
     expect(f.back).toHaveBeenCalledOnce();
-  });
-});
-
-describe('R6a received detail restitution composition', () => {
-  it('mounts one controller-owned restitution lane after C4 and preserves original receipt through Back', async () => {
-    const record = receivedWire();
-    const f = correctionFixture(2, url => url.endsWith('/restitutions') ? Promise.resolve(reply({ request_id: record.id, operations: [],
-      lines: record.receipt.items.map(i => ({ variant_id: i.variant_id, expected_quantity: i.expected_quantity, effective_dispatch: i.expected_quantity, reconciliation_revision: '0', original_credit: i.available_quantity,
-        workflow_revision: '0', applied_revision: '0', count_generation: '0', count_applied_revision: '0', effective_credit: i.available_quantity,
-        applied_retained_quantity: '0', proposals: [] })) })) : undefined, record);
-    f.controller.restitutionRecovery = createTransferRestitutionRecovery();
-    f.controller.confirmTransferRestitution = vi.fn();
-    render(f.element()); await correctionLoaded();
-    const correctionSection = screen.getByRole('region', { name: 'Correcciones de conteo' });
-    await selectManagement('Restituciones de origen');
-    await screen.findByText('Crédito efectivo en destino');
-    const original = screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML;
-    const section = screen.getByRole('region', { name: 'Restituciones de origen' });
-    expect(section.previousElementSibling).toBe(correctionSection);
-    expect(correctionSection).not.toBeVisible();
-    const management = within(section).getByRole('table', { name: 'Gestión de restituciones' });
-    const transferTable = screen.getByRole('table', { name: 'Conteo efectivo' });
-    const effective = transferTable.outerHTML;
-    expect(transferTable.compareDocumentPosition(management) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(within(section).getAllByRole('table')).toHaveLength(1);
-    expect(within(section).queryByRole('combobox')).not.toBeInTheDocument();
-    await selectManagement('Corregir conteo');
-    expect(correctionSection).toBeVisible(); expect(section).not.toBeVisible();
-    await selectManagement('Restituciones de origen');
-    expect(screen.getByRole('table', { name: 'Conteo efectivo' }).outerHTML).toBe(effective);
-    expect(screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML).toBe(original);
-    expect(f.fetch.mock.calls.filter(([url]) => String(url).endsWith('/restitutions'))).toHaveLength(0);
-    const coordinatedReads = () => f.fetch.mock.calls.filter(([url]) => String(url).endsWith('/unified-reconciliations'));
-    await waitFor(() => expect(coordinatedReads()).toHaveLength(5));
-    fireEvent.click(within(section).getByRole('button', { name: 'Consultar para revisar restitución' }));
-    await waitFor(() => expect(coordinatedReads()).toHaveLength(7));
-    expect(screen.getByRole('table', { name: 'Detalle de recepción' }).outerHTML).toBe(original);
-    fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
-    expect(screen.queryByRole('region', { name: 'Restituciones de origen' })).not.toBeInTheDocument();
-    expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
-  });
-});
-
-describe('C4b received detail real-hook integration', () => {
-  it('opens exactly the selected correction lane beside unchanged original receipt evidence', async () => {
-    const record = receivedWire();
-    const f = correctionFixture(2, undefined, record);
-    render(f.element());
-    await screen.findByRole('heading', { name: 'TR-9007199254740993' });
-    await correctionLoaded();
-    expect(correctionCalls(f)).toHaveLength(0);
-    const reads = f.fetch.mock.calls.filter(([url]) => String(url).endsWith('/unified-reconciliations'));
-    expect(reads).toHaveLength(3); expect(reads.every(isPassive)).toBe(true);
-    expect(screen.queryByRole('region', { name: 'Historial de la solicitud' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Ver historial' }));
-    const receivedTime = screen.getByRole('region', { name: 'Historial de la solicitud' }).querySelector(`time[datetime="${record.received_at}"]`);
-    expect(receivedTime).toHaveTextContent('02/01/2028 · 20:00 (hora Bolivia)');
-    expect(receivedTime).toHaveAttribute('datetime', record.received_at);
-    expect(within(screen.getByRole('region', { name: 'Cantidades de la solicitud' })).getByText('Stock acreditado (recepción original)').nextElementSibling).toHaveTextContent('18446744073709551614');
-    expect(f.fetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
   });
 });
 
@@ -877,8 +824,7 @@ describe('C4b App correction settlement with real inventory controller', () => {
     const original = { receipt: receipt.outerHTML, metrics: metrics.outerHTML,
       times: [...summary.querySelectorAll('time')].map(time => time.outerHTML), header: stableHeader() };
     const inventoryBefore = f.fetch.mock.calls.filter(([url]) => String(url).startsWith('/api/inventory?')).length;
-    fireEvent.click(screen.getByRole('button', { name: 'Gestiones' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Resolver diferencia' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Resolver diferencia' }));
     fireEvent.change(screen.getByLabelText('Motivo y evidencia'), { target: { value: '  Recuento exacto  ' } });
     fireEvent.click(screen.getByRole('button', { name: action === 'accept' ? 'Revisar aceptación' : 'Revisar rechazo' }));
     const modal = screen.getByRole('dialog');
@@ -912,7 +858,7 @@ describe('C4b App correction settlement with real inventory controller', () => {
     expect(String(inventoryLast[0])).toContain('location_id=3');
     // Audit and Current refresh from the coordinated endpoint, never legacy current GETs.
     expect(correctionCalls(f).filter(([, init]) => init?.method === 'GET')).toHaveLength(0);
-    expect(unifiedCalls(f).filter(([, init]) => init?.method === 'GET').length).toBeGreaterThan(3);
+    expect(unifiedCalls(f).filter(([, init]) => init?.method === 'GET').length).toBeGreaterThan(1);
   });
 });
 
@@ -938,7 +884,7 @@ describe('C4b correction authority and operation boundaries', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Revisar recepción' }));
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirmar recepción' }));
     await correctionLoaded();
-    expect(correctionCalls(f)).toHaveLength(0); expect(unifiedCalls(f)).toHaveLength(3);
+    expect(correctionCalls(f)).toHaveLength(0); expect(unifiedCalls(f)).toHaveLength(1);
     expect(screen.getByRole('heading', { name: record.reference }).parentElement).toHaveTextContent('Recibida');
     expect(within(screen.getByRole('heading', { name: record.reference }).closest('.transfer-detail') as HTMLElement)
       .getByRole('table', { name: 'Detalle de recepción' })).toHaveTextContent('9223372036854775807');
@@ -946,9 +892,9 @@ describe('C4b correction authority and operation boundaries', () => {
     expect(screen.queryByRole('region', { name: 'Productos enviados' })).not.toBeInTheDocument();
     expect(screen.getByRole('navigation', { name: 'Navegación de transferencia' })).not.toHaveClass('transit-destination-navigation');
     expect(screen.queryByRole('button', { name: 'Recibir solicitud' })).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Conteo efectivo confirmado', level: 3 })).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'Conteo efectivo confirmado' })).toBeVisible();
-    expect(correctionCalls(f)).toHaveLength(0); expect(unifiedCalls(f)).toHaveLength(3); expect(correctionPosts(f)).toHaveLength(0);
+    expect(screen.getByRole('region', { name: 'Conteo efectivo confirmado' })).toBeVisible();
+    expect(correctionCalls(f)).toHaveLength(0); expect(unifiedCalls(f)).toHaveLength(1); expect(correctionPosts(f)).toHaveLength(0);
   });
   it.each(['pending', 'approved', 'rejected', 'in_transit', 'cancelled'])('reads no correction history for %s', async status => {
     const original = wire(1, 2, '9007199254740993', status);
@@ -967,7 +913,7 @@ describe('C4b correction authority and operation boundaries', () => {
       render(f.element());
       if (actor === origin || actor === destination) {
         await screen.findByRole('heading', { name: f.record.reference });
-        await correctionLoaded(); expect(correctionCalls(f)).toHaveLength(0); expect(unifiedCalls(f)).toHaveLength(3);
+        await correctionLoaded(); expect(correctionCalls(f)).toHaveLength(0); expect(unifiedCalls(f)).toHaveLength(1);
       } else {
         await screen.findByText('No se pudo consultar la solicitud.');
         expect(correctionCalls(f)).toHaveLength(0);
@@ -991,7 +937,7 @@ describe('C4b correction authority and operation boundaries', () => {
     act(() => { for (const listener of f.listeners) listener(); });
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(correctionPosts(f)).toHaveLength(0);
-    await waitFor(() => expect(unifiedCalls(f).length).toBeGreaterThan(3));
+    await waitFor(() => expect(unifiedCalls(f).length).toBeGreaterThan(1));
   });
 
   it('cancels a preview when only the correction snapshot changes, without posting the stale revision', async () => {
@@ -1034,12 +980,12 @@ describe('C4b correction authority and operation boundaries', () => {
   it.each([403, 404])('masks correction %s while retaining original receipt, and does not resume on re-render', async status => {
     const f = correctionFixture(2, url => url.endsWith('/unified-reconciliations')
       ? Promise.resolve(reply({ error: status === 403 ? 'forbidden' : 'not_found' }, status)) : undefined);
-    const view = render(f.element()); await screen.findByText('Correcciones no disponibles para esta sesión.');
+    const view = render(f.element()); await screen.findByRole('heading', { name: 'Conteo efectivo no disponible' });
     expect(screen.getByRole('table', { name: 'Detalle de recepción' })).toHaveTextContent('9223372036854775807');
     expect(screen.queryByRole('button', { name: 'Proponer corrección' })).not.toBeInTheDocument();
     expect(document.body).not.toHaveTextContent('PRIVATE');
     view.rerender(f.element()); await act(async () => {});
-    expect(correctionCalls(f)).toHaveLength(0); expect(unifiedCalls(f)).toHaveLength(3); expect(correctionPosts(f)).toHaveLength(0);
+    expect(correctionCalls(f)).toHaveLength(0); expect(unifiedCalls(f)).toHaveLength(1); expect(correctionPosts(f)).toHaveLength(0);
   });
 
   it.each([403, 404])('never opens corrections for an unavailable original detail %s', async status => {
@@ -1090,9 +1036,8 @@ describe('C4b correction authority and operation boundaries', () => {
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
     fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
     expect(screen.queryByRole('region', { name: 'Correcciones de conteo' })).not.toBeInTheDocument();
-    view.unmount(); render(f.element()); await correctionLoaded();
-    fireEvent.click(screen.getByRole('button', { name: 'Gestiones' }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Resolver diferencia' }));
+    view.unmount(); render(f.element());
+    fireEvent.click(await screen.findByRole('button', { name: 'Resolver diferencia' }));
     expect(screen.getByRole('region', { name: 'Estado de operación' })).toHaveTextContent('Recuento exacto');
     expect(posts()).toHaveLength(1);
     expect(screen.getByRole('button', { name: 'Revisar propuesta' })).toBeDisabled();
@@ -1113,11 +1058,11 @@ describe('C4b correction authority and operation boundaries', () => {
     fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'received' } });
     await screen.findByText('1 solicitud recibida'); expect(correctionCalls(f)).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: `Ver detalle ${record.reference}` })); await correctionLoaded();
-    expect(correctionCalls(f)).toHaveLength(0); expect(unifiedCalls(f)).toHaveLength(3);
+    expect(correctionCalls(f)).toHaveLength(0); expect(unifiedCalls(f)).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Volver a recibidas' }));
     expect(screen.queryByRole('region', { name: 'Correcciones de conteo' })).not.toBeInTheDocument();
     expect(screen.getByLabelText('Estado de transferencia')).toHaveValue('received');
-    await act(async () => {}); expect(correctionCalls(f)).toHaveLength(0); expect(unifiedCalls(f)).toHaveLength(3);
+    await act(async () => {}); expect(correctionCalls(f)).toHaveLength(0); expect(unifiedCalls(f)).toHaveLength(1);
   });
 
   it('keeps a privately unavailable receipt masked even if a later GET says received', async () => {
@@ -1146,7 +1091,7 @@ describe('C4b correction authority and operation boundaries', () => {
     const read = deferred();
     const f = correctionFixture(2, url => url.endsWith('/unified-reconciliations') ? read.promise : undefined);
     render(f.element()); await screen.findByRole('heading', { name: f.record.reference });
-    await waitFor(() => expect(unifiedCalls(f)).toHaveLength(3));
+    await waitFor(() => expect(unifiedCalls(f)).toHaveLength(1));
     fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
     expect(unifiedCalls(f).every(([, init]) => init?.signal?.aborted)).toBe(true);
     await act(async () => read.resolve(reply(coordinatedOriginal(f.record))));

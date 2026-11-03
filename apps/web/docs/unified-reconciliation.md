@@ -1,14 +1,16 @@
 # Unified reconciliation
 
-Received participant details mount the unified recovery hook. **Gestiones →
-Resolver diferencia** opens one modal for expected variants over the existing
-detail table. The original receipt remains available unchanged. Nested Legacy
+Received participant details mount the unified recovery hook. The direct
+**Resolver diferencia** action opens one modal for expected variants over the
+existing detail table. It is the only remaining management flow: the legacy
+count, restitution and dispatch audit entries and their menu are gone (S5), so
+the menu was replaced by this single action with the same trigger semantics. The original receipt remains available unchanged. Nested Legacy
 histories remain audit evidence, never a fallback for authoritative Current.
 Independent read-only full-feature source verification assessed S1–S7 within the
 accepted scope and found no concrete production blocker; it executed no workloads.
 The parent observed all eight synthetic browser cases passing on both the main
-candidate and the final delivery tree, with exact Gestiones focus and zero page
-errors. Final focused realtime/HTTP/historical-count checks, typecheck and build
+candidate and the final delivery tree, with exact direct-action focus and zero
+page errors. Final focused realtime/HTTP/historical-count checks, typecheck and build
 also passed on the delivery tree. The historical full API
 run failed; corrected failing selections passed, not a new full-suite run.
 Native ASSESS was unavailable due to untracked scope, not review approval.
@@ -38,12 +40,13 @@ Network uncertainty exposes the exact operation key, explicit GET consultation,
 and an explicitly labeled identical retry. No effect automatically POSTs, generates
 a replacement key, or treats absent evidence as failure. Identity/request changes
 mask the modal; focus restoration uses the existing scope-bound focus binding.
-The Gestiones button is captured before its menu item is removed and carried
+The direct **Resolver diferencia** button is captured on click and carried
 through that binding. Explicit Escape/close/return restores that stable opener;
 automatic scope retirement never queues focus restoration. Capturing
-`document.activeElement` after the menu closes instead loses the opener and
+`document.activeElement` after a dismissal instead loses the opener and
 incorrectly selects the detail Back fallback. The browser runner records the
-actual active element and requires exact Gestiones button identity after Escape;
+actual active element and requires exact `Resolver diferencia` button identity
+after Escape;
 there is no intentional animation-frame restoration delay in the shared helper.
 
 ## Explicit mutation intent
@@ -74,18 +77,19 @@ metadata grant no mutation capability.
 
 ## Existing list/count and personal-history compatibility
 
-The strict transfer model appends `review_unified_reconciliation` after
-`review_dispatch_reconciliation` in ordered list reasons and the exact count
-breakdown. When a breakdown is supplied all seven categories are required;
+The strict transfer model reports `review_unified_reconciliation` as its only
+review reason in ordered list reasons and the exact count
+breakdown. When a breakdown is supplied all four categories are required;
 legacy totals-only responses remain valid without invented categories. Counts
 remain lossless bigint values and overlapping reviews do not sum into the union.
 The server owns counterparty eligibility for either endpoint. Stale predecessor
 generations or insufficient stock must not suppress a rejection obligation.
-Existing participant fences, lifecycle checks, ordering and legacy category
-meanings remain unchanged.
+Existing participant fences, lifecycle checks and ordering remain unchanged. The
+retired count, restitution and dispatch review categories no longer exist in the
+model: their reasons and count keys are rejected as unknown.
 
 Labels distinguish “Revisar conciliación unificada” and “Conciliaciones
-unificadas por revisar” from historical dispatch regularization. Personal
+unificadas por revisar”. Personal
 activity admits the existing `unified` category only with `propose`, `accept`,
 or `reject`, through the same strict actor, endpoint, UTC time and variant
 validators. History renders “Conciliación unificada propuesta/aceptada/rechazada”
@@ -252,7 +256,7 @@ Use foreground, disjoint test-name selections instead of increasing that budget
 or dropping cases. Count correction currently partitions by `^[a-mA-M]`,
 `^[n-pN-P]`, `^[q-rQ-R]` and `^[s-zS-Z]`; restitution partitions by
 `^[a-mA-M]` and `^[n-zN-Z]`. These selections cover every test in those files.
-Caller fixtures must serve the closed coordinated schema, including the seventh
+Caller fixtures must serve the closed coordinated schema, including the fourth
 `review_unified_reconciliation` counter category; separate legacy-current
 responses are deliberately not consumed. Caller settlement checks exercise the
 real App inventory controller, immutable receipt/history and exact recovery.

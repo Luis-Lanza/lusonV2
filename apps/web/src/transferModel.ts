@@ -50,7 +50,7 @@ export type TransferRecord = TransferRecordFields & (
   | { status: 'received'; decision_location_id: TransferLocationID; decided_at: string; dispatch_location_id: TransferLocationID; dispatched_at: string; receipt_location_id: TransferLocationID; received_at: string; receipt: TransferReceiptData }
 );
 export type TransferStatusFilter = TransferStatus | 'all';
-export const transferActionReasons = ['approve', 'dispatch', 'receive', 'review_count', 'review_restitution', 'review_dispatch_reconciliation', 'review_unified_reconciliation'] as const;
+export const transferActionReasons = ['approve', 'dispatch', 'receive', 'review_unified_reconciliation'] as const;
 export type TransferActionReason = typeof transferActionReasons[number];
 export type TransferActionCounts = Record<TransferActionReason, bigint>;
 export interface TransferQuery { page?: number; page_size?: 10 | 25 | 50; status?: TransferStatusFilter; requires_action?: boolean }
@@ -430,7 +430,7 @@ export function validateTransferActions(page: TransferPage, assigned?: number): 
       const expected = reason === 'approve' ? 'pending' : reason === 'dispatch' ? 'approved' : reason === 'receive' ? 'in_transit' : 'received';
       if (record.status !== expected) return invalid();
       const owner = reason === 'approve' ? record.approver_location_id : reason === 'dispatch' ? record.origin_location_id
-        : reason === 'review_count' || reason === 'review_dispatch_reconciliation' || reason === 'review_unified_reconciliation' ? assigned : record.destination_location_id;
+        : reason === 'review_unified_reconciliation' ? assigned : record.destination_location_id;
       if (assigned !== undefined && owner !== assigned) return invalid();
     }
   }

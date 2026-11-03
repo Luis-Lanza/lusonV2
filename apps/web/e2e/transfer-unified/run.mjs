@@ -94,7 +94,8 @@ try {
     await page.setViewportSize({ width, height: record.height });
     const posts = () => page.evaluate(() => window.__UNIFIED.calls.filter(c => c.method === 'POST'));
     const noPost = async label => { check((await posts()).length === 0, `Unexpected POST: ${label}`); record.assertions.push(label); };
-    const open = async () => { await page.getByRole('button', { name: 'Gestiones', exact: true }).click(); check(await page.getByRole('menuitem', { name: 'Resolver diferencia', exact: true }).count() === 1, 'Single unified entry'); for (const name of ['Regularizar despacho', 'Restituir a origen', 'Corregir conteo']) check(await page.getByRole('menuitem', { name, exact: true }).count() === 0, `Legacy entry ${name}`); await page.getByRole('menuitem', { name: 'Resolver diferencia', exact: true }).click(); await page.getByRole('dialog').waitFor(); };
+    // Unified reconciliation is the only management flow: a direct action, no menu.
+    const open = async () => { await page.locator('.received-management > button').click(); check(await page.getByRole('menu').count() === 0 && await page.getByRole('menuitem').count() === 0, 'No management menu'); for (const name of ['Gestiones', 'Regularizar despacho', 'Restituir a origen', 'Corregir conteo']) check(await page.getByRole('button', { name, exact: true }).count() === 0, `Legacy entry ${name}`); await page.getByRole('dialog').waitFor(); };
     try {
       await page.goto(`https://unified.invalid/?actor=${actor}&scene=${scene}`);
       await page.getByRole('table', { name: 'Conteo efectivo', exact: true }).waitFor();
@@ -118,7 +119,7 @@ try {
         text: document.activeElement?.textContent,
         management: document.activeElement === document.querySelector('.received-management > button'),
       }));
-      check(record.escapeFocus.management, 'Escape restores Gestiones focus');
+      check(record.escapeFocus.management, 'Escape restores the direct Resolver diferencia focus');
       await noPost('native focus and Escape cancel'); await open();
       if (scene === 'proposal') {
         if (actor === 1) {

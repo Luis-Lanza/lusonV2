@@ -1,19 +1,43 @@
 # Legacy reconciliation controls
 
-These component seams support unified reconciliation integration without activating it in Pending or Detail.
+The three legacy audit workflows were removed from the product UI in S5/T5. Only
+the unified reconciliation flow is reachable: the received detail offers the
+direct **Resolver diferencia** action and keeps no management menu. What follows
+separates what was deleted from what still exists as read-only historical
+evidence.
 
-| Component | Optional input | Opt-in behavior |
-| --- | --- | --- |
-| `TransferCountCorrections` | `expectedHistoricalOnly` | Hides fresh expected proposals and acceptance; unexpected count mutations remain available. |
-| `TransferRestitutions` | `historicalOnly` | Hides fresh proposals and acceptance. |
-| `TransferDispatchReconciliations` | `historicalOnly` | Hides fresh proposals and acceptance, including controlled non-rejection drafts and reviews. |
+## Removed from the product UI
 
-Omitting these flags preserves legacy callers. Historical evidence, authorized rejection and exact operation recovery remain available under existing authority and uncertainty checks. Historical quantities are not the authoritative current unified table state. These flags do not fabricate revisions, apply inventory effects or emulate atomic agreement with chained legacy commands.
+| Removed surface | What is gone |
+| --- | --- |
+| `TransferCountCorrections` and `useTransferCountCorrections` | Component, hook, `transfer-count-corrections.css` and its tests. No count proposal, decision, preview or recovery control is reachable. |
+| `TransferRestitutions` and `useTransferRestitutions` | Component, hook, `transfer-restitutions.css` and its tests. No restitution proposal, decision or recovery control is reachable. |
+| `TransferDispatchReconciliations` and `useTransferDispatchReconciliations` | Component, hook, `transfer-dispatch-reconciliations.css` and its tests. No dispatch regularisation, proposal or decision control is reachable. |
+| `TransferDetail` legacy composition | The `corrections`, `correctionsEnabled`, `correctionRequestID`, `reconciliations`, `reconciliationRequestID`, `reconciliationsEnabled`, `restitutionRequestID`, `restitutionsEnabled` and `restitutionAPI` inputs, the legacy panes and the "Gestiones" menu. The received detail now renders only the direct unified action. |
+| `TransferPending` legacy mounting | The legacy API adapters and both legacy hooks; `TransferDetail` receives only `unified`, gated by the same mount-bound authority fence. |
 
-`TransferRestitutions.api` forwards the existing hook API option unchanged. An integrating caller can supply its coordinated audit API without replacing hook recovery, ownership or confirmation handling. Omission retains the hook's default API.
+## Kept as read-only historical evidence
+
+| Kept surface | Why it stays |
+| --- | --- |
+| `transferCountCorrectionModel`, `transferRestitutionModel`, `transferDispatchReconciliationModel` | Parsers and decoders for the historical payloads. |
+| `transferUnifiedReconciliationModel`, `transferUnifiedReconciliationView`, `transferUnifiedReconciliationStore`, `useTransferUnifiedReconciliations` | The single remaining flow's decoder, projection and recovery store. |
+| `transferCountCorrectionRecovery`, `transferRestitutionRecovery` and their stores | Recovery and owner-scoped pin utilities the unified snapshot and the inventory controller still consume. |
+| Legacy HTTP routes, SQL readers and tables | Read-only history. `unified_reconciliation_store.go` reads the count, restitution and dispatch evidence through them; no legacy write path is called from the web client. |
+
+These parsers do not fabricate revisions, apply inventory effects or emulate
+atomic agreement with chained legacy commands. Historical quantities are never
+the authoritative current unified table state, and no removed component can be
+re-imported without reintroducing its deleted file.
 
 ## Verification boundary
 
-Four focused historical cases cover expected-count controls, both restitution endpoints and dispatch controls. The parent observed their RED failures before production changes. Existing tests are retained unchanged apart from the dispatch harness's optional flag; default count and restitution scenarios are not converted into historical scenarios.
-
-Parent-owned GREEN, bounded legacy regressions, typecheck and build remain required. These component tests are not browser or backend end-to-end proof. Unexpected-count mutation and exact-recovery preservation follow unchanged code paths and still require parent regression evidence; the new focused cases alone do not prove them.
+There is no legacy component test left to run: the component, hook, stylesheet
+and test files were deleted, and a repository-wide grep finds no importer of any
+deleted module. The surviving evidence is the unified flow's own tests
+(`TransferDetail.unified.test.tsx`, `TransferPending.test.tsx`,
+`useTransferUnifiedReconciliations.test.tsx`, `transferUnifiedReconciliation*.test.ts`)
+plus `crossWorkflow.test.ts`, which keeps the controller's exact-confirmation
+fence and cross-reader refresh assertions. These are not browser or backend
+end-to-end proof; the browser runner under `e2e/transfer-unified/` asserts the
+direct action and the absence of the menu, but was not executed for this change.

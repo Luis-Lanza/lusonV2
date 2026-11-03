@@ -39,10 +39,21 @@ describe('actual Go HTTP → strict TS codec (requires LUSON_UNIFIED_SEAM_STDOUT
         effective_actual: 8n, effective_credit: 8n, source_debit: 9n, retained_quantity: 1n,
         origin_unknown: 0n, transit_unknown: 1n, excess: 0n });
       expect(after.legacy.restitution.lines.find(l => l.variant_id === 1)!.applied_retained_quantity).toBe(prior ? 1n : 0n);
-      const unexpected = after.original.find(l => l.variant_id === 3)!;
-      expect(unexpected).toMatchObject({ expected_quantity: 0n, actual_quantity: 7n, available_quantity: 0n });
+      // Variant 3 is a dispatched line in the current sample, not an unexpected one:
+      // the codec must keep the original receipt quantities exactly, and must invent no
+      // reconciliation work for a variant whose received quantity matches the dispatch.
+      const originalLine = record.receipt.items.find(item => item.variant_id === 3)!;
+      const untouched = after.original.find(l => l.variant_id === 3)!;
+      expect(untouched).toMatchObject({
+        expected_quantity: originalLine.expected_quantity,
+        actual_quantity: originalLine.actual_quantity,
+        available_quantity: originalLine.available_quantity,
+      });
       expect(after.current.find(l => l.variant_id === 3)).toEqual(before.current.find(l => l.variant_id === 3));
-      expect(after.lines.some(l => l.variant_id === 3)).toBe(false);
+      // A dispatched variant whose quantities match carries no reconciliation proposal
+      // and never becomes unified, so the codec must not invent work for it.
+      expect(after.lines.find(l => l.variant_id === 3)!.proposals).toHaveLength(0);
+      expect(after.current.find(l => l.variant_id === 3)!.owner).toBe('legacy');
       expect(after.current.find(l => l.variant_id === 2)).toEqual(before.current.find(l => l.variant_id === 2));
       expect(Object.isFrozen(after)).toBe(true);
       expect(Object.isFrozen(current)).toBe(true);

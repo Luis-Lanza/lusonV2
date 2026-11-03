@@ -51,43 +51,44 @@ serializer omits false to preserve existing URLs; true enters the list query key
 page is supplied. `selectDetail(id)` and `selectDetail(null)` preserve that filter.
 Initial screen selection remains Todas; omitted API/model status remains Pending.
 
-`TransferCounts.actions?: TransferActionCounts` contains all six bigint category
+`TransferCounts.actions?: TransferActionCounts` contains all four bigint category
 counts when available. Legacy two-field counts omit `actions`, rather than inventing
 zero categories. Each category is bounded by the union `action_count`; overlapping
 reviews can make their sum exceed that badge. Backend and frontend must deliver
-the six-key breakdown together: present `actions` requires all six known keys,
+the four-key breakdown together: present `actions` requires all four known keys,
 and unknown/partial maps are rejected. Only entire-breakdown absence is legacy
 compatibility; no mixed-version compatibility or new deployment policy is implied.
 
 `TransferPage.requires_action?: boolean` and
 `required_actions?: Record<string, readonly TransferActionReason[]>` are list-only.
-The ordered reasons are `approve`, `dispatch`, `receive`, `review_count`,
-`review_restitution`, `review_dispatch_reconciliation`. Every page ID has an array (possibly empty); extra/missing
+The ordered reasons are `approve`, `dispatch`, `receive`,
+`review_unified_reconciliation`. Every page ID has an array (possibly empty); extra/missing
 IDs, unknown/duplicate/reordered reasons and lifecycle mismatches are rejected.
 Legacy unfiltered pages may omit both metadata fields: undefined means unavailable,
 not an empty action set. Action-only responses require true echo and nonempty
 reasons on every row. API and hook verify filter echo; the hook also checks assigned
-actor ownership. Count/reconciliation-review counterpart eligibility remains backend-owned because
+actor ownership. Counterpart review eligibility remains backend-owned because
 immutable headers do not identify proposal initiators. Existing participant and
 stale-authority fences remain in force. These labels never grant mutation permission.
-The attention band shows the assigned location's distinct-transfer total and six
+The attention band shows the assigned location's distinct-transfer total and four
 independent category chips; categories can overlap and are never summed for the
 sidebar badge. **Sobre los totales** retains the independent Pending total. Loading,
 unavailable (with a counts-only retry), true zero and legacy missing breakdowns
 remain distinct. The existing sidebar/bottom-navigation badge is unchanged.
-`Regularizaciones por revisar` and `Revisar regularización` are advisory labels,
-not decision controls. Latest undecided expected-line proposals remain discoverable
+`Conciliaciones unificadas por revisar` and `Revisar conciliación unificada` are the
+only advisory review labels; the retired count, restitution and dispatch labels no
+longer exist in either map, so those reasons are rejected by the strict decoder.
+Latest undecided expected-line proposals remain discoverable
 at either counterpart even when freshness, stock or restitution blocks acceptance.
-Received participants open **Gestiones → Regularizar despacho**, alongside the
-existing count/restitution contexts. One persistent presentation uses Pending's
-existing owner-held reconciliation hook; changing the visible context does not
-change authorization or create a second reader. Routine comparison/history content
-is hidden in other contexts while still-owned dialogs and uncertain-outcome
-recovery remain accessible. Arrow keys wrap across available menu entries; Home/End
-select the first/last entry, Escape restores the menu trigger, and entry focuses
-the selected context heading. Dialog close restores an eligible opener or visible
-heading fallback, never a hidden/inert target. Physical route, owner or selected
-transfer changes retire the old private context.
+Received participants get one presentation: the direct **Resolver diferencia**
+action in the result band, mounted on Pending's owner-held unified reconciliation
+hook. The former **Gestiones** menu and its count, restitution and dispatch audit
+entries are removed (S5): unified reconciliation is the only remaining management
+flow, so the menu was replaced by this single action. Clicking the action opens the
+existing unified modal and the same authority fence decides whether it is
+available; Escape/close/return restores that same button, never a hidden/inert
+target. Physical route, owner or selected transfer changes retire the old private
+context, and no second reader is created.
 
 The exact propose/accept/reject POST routes are registered. Either endpoint may
 propose Q equal to current effective received count for one originally expected
@@ -156,6 +157,11 @@ acceptance are separate, not established by frontend tests.
 
 ## C4b received-detail count corrections
 
+> Removed from the product UI in S5/T5. The count-correction component, hook and
+> stylesheet are deleted; `transferCountCorrectionModel`, its recovery stores and
+> the historical SQL are kept because the unified snapshot reads them. The passage
+> below is kept as the historical contract of that retired flow.
+
 `TransferPending` now mounts `useTransferCountCorrections` unconditionally above
 conditional panes, with the stable controller seams and default API. Its history
 lane is enabled only for the same authoritative selected received record shown in
@@ -189,6 +195,11 @@ runtime deployment or human acceptance. Separately authorized C4c browser/manual
 checks remain pending regardless of test/build results.
 
 ## R6a received-transfer restitution
+
+> Removed from the product UI in S5/T5. The restitution detail section, its hook
+> and its stylesheet are deleted; `transferRestitutionModel`, its recovery store and
+> the historical reader stay for the unified snapshot. The passage below is kept as
+> the historical contract of that retired flow.
 
 On an eligible **Received** transfer, the separate “Restituciones de origen” detail
 section shows original dispatch and receipt facts alongside the effective destination

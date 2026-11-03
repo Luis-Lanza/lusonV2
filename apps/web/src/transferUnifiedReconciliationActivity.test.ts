@@ -40,15 +40,15 @@ it('preserves every legacy personal category through the same validator', () => 
   expect(decode([{ ...event, category: 'transfer', action: 'receive', variant_id: undefined }]).activity?.[0].action).toBe('receive');
 });
 it('appends unified review advice in strict order for either participant and keeps lossless union counts', () => {
-  const reasons = ['review_count', 'review_restitution', 'review_dispatch_reconciliation', 'review_unified_reconciliation'];
-  const page = (values = reasons) => JSON.stringify({ page: 1, page_size: 25, status: 'all', total_count: '1', records: [record],
+  const reason = 'review_unified_reconciliation';
+  const page = (values = [reason]) => JSON.stringify({ page: 1, page_size: 25, status: 'all', total_count: '1', records: [record],
     requires_action: true, required_actions: { '1': values } });
   const parsed = parseTransferPage(page());
   expect(() => validateTransferActions(parsed, 2)).not.toThrow();
-  const bilateral = parseTransferPage(page(['review_unified_reconciliation']));
+  const bilateral = parseTransferPage(page([reason]));
   for (const assigned of [1, 2]) expect(() => validateTransferActions(bilateral, assigned)).not.toThrow();
-  for (const values of [[reasons[3], reasons[0]], [reasons[3], reasons[3]], ['unknown']]) expect(() => parseTransferPage(page(values))).toThrow();
-  const actions = Object.fromEntries(['approve', 'dispatch', 'receive', ...reasons].map(key => [key, '9007199254740993']));
+  for (const values of [[reason, 'receive'], [reason, reason], ['review_count'], ['unknown']]) expect(() => parseTransferPage(page(values))).toThrow();
+  const actions = Object.fromEntries(['approve', 'dispatch', 'receive', reason].map(key => [key, '9007199254740993']));
   expect(parseTransferCounts(JSON.stringify({ pending_total: '0', action_count: '9007199254740993', actions })).actions?.review_unified_reconciliation).toBe(9007199254740993n);
   for (const value of ['9007199254740994', '01', 1, undefined]) {
     expect(() => parseTransferCounts(JSON.stringify({ pending_total: '0', action_count: '9007199254740993',

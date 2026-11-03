@@ -48,7 +48,6 @@
 .received-difference, .received-matched { display: block; font-size: 12px; }
 .received-difference { color: #925400; }
 .received-matched { color: #22763B; }
-.received-table .received-corrected { color: #7A1F3D; margin-top: 4px; }
 .received-scope, .transfer-received-products > footer, .received-unavailable,
 .transfer-received-products > p[role], .transfer-received-products > .transfer-decision-actions { padding: 12px 16px; }
 .received-scope { display: flex; align-items: flex-start; gap: 8px; color: #6B6267; border-top: 1px solid #DED7DA; }
@@ -68,57 +67,9 @@
 @media (prefers-reduced-motion: no-preference) {
   .received-skeleton > span { animation: received-skeleton-pulse 1.4s ease-in-out infinite; }
 }
-/* Confirmed results share one admitted snapshot; quantities keep their own meaning. */
-.transfer-received-heading .received-result-badge,
-.received-table .received-corrected {
-  width: fit-content;
-  max-width: 100%;
-  padding: 4px 8px;
-  border: 1px solid #DED7DA;
-  border-radius: 4px;
-  background: #F4E9EE;
-  color: #7A1F3D;
-  font-size: 12px;
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-.transfer-received-heading .received-result-badge { border-radius: 20px; padding: 6px 12px; }
-.received-table .received-result-applied { background: #FCF7FA; }
-.received-result-differences .received-difference,
-.transfer-received-products:has(.received-result-provenance) .received-table :is(.received-difference, .received-matched) {
-  display: inline-block;
-  max-width: 100%;
-  padding: 3px 6px;
-  border: 1px solid #BDE2C4;
-  border-radius: 4px;
-  background: #EDF7F0;
-}
-.received-result-differences .received-difference,
-.transfer-received-products:has(.received-result-provenance) .received-table .received-difference {
-  border-color: #F1CE75;
-  background: #FFF7D6;
-}
-.transfer-received-products > footer .received-result-provenance .count-evidence {
-  margin: 0 0 12px;
-  padding-left: 12px;
-  border-left: 3px solid #22763B;
-  color: #242124;
-  font-size: 14px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-.received-result-provenance .count-evidence strong { display: block; font-weight: 600; }
-.received-result-provenance .count-evidence > span { display: block; color: #6B6267; font-size: 12px; }
-.transfer-received-products > footer .received-result-provenance .count-evidence-rejected { border-left-color: #7A1F3D; }
 .received-result-band { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 16px; }
 .received-result-summary { min-width: 0; }
 .received-result-band > .received-management { margin-top: 0; max-width: 100%; }
-@media (min-width: 768px) {
-  .transfer-received-products:has(.received-result-provenance) .received-table :is(th, td):last-child {
-    width: 24%;
-    padding-inline: 10px;
-  }
-}
 @media (max-width: 767px) {
   .received-result-band { grid-template-columns: minmax(0, 1fr); }
 }
@@ -141,39 +92,9 @@
 .received-original > .transfer-receipt-overview { margin-bottom: 16px; }
 .received-original .transfer-outcome-metrics { min-width: 0; }
 .received-original .transfer-outcome-metrics :is(dl, dd) { min-width: 0; overflow-wrap: anywhere; }
-/* Preserve the workflow grids while routine groups remain mounted. */
-.count-corrections[hidden], .transfer-restitutions[hidden] { display: none; }
-:is(.count-corrections, .transfer-restitutions) > .workflow-routine:not([hidden]) { display: contents; }
-/* The menu overlays the page instead of growing the card. The card only stops
-   clipping while a menu is open, so its closed state keeps rounded corners. */
+/* The single direct difference action sits in the result band. */
 .received-management { position: relative; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; margin-top: 12px; }
 .received-management > button { color: #7A1F3D; border-color: #7A1F3D; }
-.received-management [role="menu"] {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  z-index: 40;
-  /* A percentage width would resolve against the shrunken button container,
-     squeezing the labels; size to content and cap it against the viewport. */
-  width: max-content;
-  min-width: 220px;
-  max-width: min(340px, calc(100vw - 48px));
-  padding: 8px;
-  border: 1px solid #DED7DA;
-  border-radius: 6px;
-  background: white;
-  box-shadow: 0 6px 12px #24212414;
-}
-.transfer-received-products:has(.received-management [role="menu"]) { overflow: visible; }
-.received-management [role="menuitem"] {
-  display: block;
-  width: 100%;
-  padding: 12px;
-  border: 0;
-  text-align: left;
-  overflow-wrap: normal;
-}
-.received-management [role="menuitem"]:focus-visible { outline: 2px solid #7A1F3D; outline-offset: -2px; }
 /* Normal-flow mobile shell is owned only while this received detail is present.
    Keep every navigation item, account identity and logout control. */
 @media (max-width: 767px) {

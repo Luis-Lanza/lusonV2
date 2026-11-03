@@ -6,7 +6,6 @@ import { canonicalTransferReceiptInput, previewTransferReceipt, type TransferRec
 import { captureDecisionRecord } from './transferDecisionRecovery';
 import { detailAuthority } from './TransferDetail';
 import { transferViewOwner } from './TransferPending';
-import { loadSourceInventory, SourceInventoryError, type SourceCatalog } from './sourceInventory';
 import { TransferAPIError } from './transferAPI';
 import { useTransferModalFocus, type TransferModalFocusBinding } from './transferModalFocus';
 
@@ -111,9 +110,7 @@ export interface TransferReceiptProps {
 }
 interface Review {
   fence: string; record: TransferRecord; trigger: HTMLElement;
-  values: Record<number, string>; unexpected: number[]; step: 'capture' | 'review';
-  // Display-only identity and catalog membership captured at selection, never receipt history or payload.
-  identities: Readonly<Record<number, CatalogIdentity>>;
+  values: Record<number, string>; step: 'capture' | 'review';
 }
 export default function TransferReceipt(props: TransferReceiptProps) {
   const { controller, ownerTag, transfers } = props;
@@ -121,8 +118,6 @@ export default function TransferReceipt(props: TransferReceiptProps) {
   const fence = detailAuthority(controller); const boundFence = useRef(fence);
   const permitted = !!fence && fence === boundFence.current && transferViewOwner(controller.getTransferAuthority()) === ownerTag;
   const [review, setReview] = useState<Review | null>(null);
-  const [catalog, setCatalog] = useState<{ fence: string; record: TransferRecord; data: SourceCatalog | null; failed: boolean } | null>(null);
-  const [selectedUnexpected, setSelectedUnexpected] = useState('');
   const mounted = useRef(false); const pendingCall = useRef(false);
   const dialog = useRef<HTMLElement>(null); const close = useRef<HTMLButtonElement>(null);
   const current = () => mounted.current && permitted && detailAuthority(controller) === fence;
@@ -167,20 +162,6 @@ export default function TransferReceipt(props: TransferReceiptProps) {
   useEffect(() => {
     if (visibleReview) { if (busy) dialog.current?.focus(); else close.current?.focus(); }
   }, [visibleReview?.record, visibleReview?.step, busy]);
-  useEffect(() => {
-    const original = visibleReview?.record;
-    if (!original) return;
-    const abort = new AbortController(); let active = true;
-    setCatalog({ fence, record: original, data: null, failed: false });
-    void loadSourceInventory(original.destination_location_id, { signal: abort.signal, reason: 'passive' }).then(data => {
-      if (active && current()) setCatalog({ fence, record: original, data, failed: false });
-    }).catch((error: unknown) => {
-      if (!active || !current()) return;
-      setCatalog({ fence, record: original, data: null, failed: true });
-      if (error instanceof SourceInventoryError && error.status === 401) void controller.settleUnauthorized(controller.getTransferAuthority().epoch);
-    });
-    return () => { active = false; abort.abort(); };
-  }, [visibleReview?.record, controller.getTransferAuthority]);
   if (!permitted) return null;
   const record = props.record;
   const authority = controller.getTransferAuthority();
@@ -209,20 +190,14 @@ export default function TransferReceipt(props: TransferReceiptProps) {
       || latest.current.record.status !== 'in_transit' || (attempt?.original.id === record.id && result)) return;
     const original = captureDecisionRecord(record);
     focus.begin();
-    setSelectedUnexpected('');
-    setReview({ fence, record: original, trigger, values: Object.fromEntries(original.items.map(item => [item.variant_id, ''])), unexpected: [], identities: {}, step: 'capture' });
+    setReview({ fence, record: original, trigger, values: Object.fromEntries(original.items.map(item => [item.variant_id, ''])), step: 'capture' });
   };
-  const source = catalog?.fence === fence && catalog.record === visibleReview?.record ? catalog.data : null;
-  const candidates = source?.rows.filter(row => !visibleReview?.record.items.some(item => item.variant_id === row.variant_id)
-    && !visibleReview?.unexpected.includes(row.variant_id)) ?? [];
   let input: TransferReceiptInput | null = null;
   let preview: TransferReceiptData | null = null;
   if (visibleReview) {
     try {
-      input = canonicalTransferReceiptInput({ items: [...visibleReview.record.items.map(item => item.variant_id), ...visibleReview.unexpected]
-        .map(variant_id => ({ variant_id, actual_quantity: visibleReview.values[variant_id] })) }, visibleReview.record);
-      if (visibleReview.unexpected.some(id => visibleReview.identities[id]?.destinationLocationID !== visibleReview.record.destination_location_id
-        && !source?.rows.some(row => row.variant_id === id))) throw new Error();
+      input = canonicalTransferReceiptInput({ items: visibleReview.record.items
+        .map(item => ({ variant_id: item.variant_id, actual_quantity: visibleReview.values[item.variant_id] })) }, visibleReview.record);
       preview = previewTransferReceipt(input, visibleReview.record);
     } catch { input = null; }
   }
@@ -230,33 +205,7 @@ export default function TransferReceipt(props: TransferReceiptProps) {
     if (!current() || busy || pendingCall.current) return;
     setReview(before => before && before.fence === fence ? { ...before, values: { ...before.values, [variant]: value } } : before);
   };
-  const catalogPicker = <>
-      <select id="receipt-unexpected" value={selectedUnexpected} disabled={!source || busy} onChange={event => setSelectedUnexpected(event.target.value)}>
-        <option value="">Elegir variante del catálogo</option>{candidates.map(row => <option key={row.variant_id} value={row.variant_id}>{row.brand} · {row.model} · {row.capacity_ah} Ah · {row.polarity}</option>)}
-      </select>
-      <button type="button" aria-label="Agregar variante inesperada" disabled={!candidates.some(row => String(row.variant_id) === selectedUnexpected) || busy} onClick={() => {
-        const row = candidates.find(row => String(row.variant_id) === selectedUnexpected);
-        if (!current() || !row || busy) return;
-        setReview(before => before && !before.unexpected.includes(row.variant_id)
-          ? { ...before, unexpected: [...before.unexpected, row.variant_id], values: { ...before.values, [row.variant_id]: '' },
-            identities: { ...before.identities, [row.variant_id]: Object.freeze({
-              brand: row.brand, model: row.model, capacity_ah: String(row.capacity_ah), polarity: row.polarity,
-              destinationLocationID: before.record.destination_location_id,
-            }) } } : before);
-        setSelectedUnexpected('');
-      }}>{receiptPresentation ? 'Agregar variante' : 'Agregar variante inesperada'}</button>
-  </>;
-  const catalogControls = <>
-    <label htmlFor="receipt-unexpected" className={receiptPresentation ? 'sr-only' : undefined}>Variante inesperada</label>
-    {receiptPresentation ? <div className="receipt-catalog-controls">{catalogPicker}</div> : catalogPicker}
-    {catalog?.failed && <p role="alert">Catálogo del destino no disponible. No se pueden agregar variantes inesperadas.</p>}
-    {!source && !catalog?.failed && <p role="status">Consultando catálogo del destino…</p>}
-  </>;
-  const captureLines = visibleReview ? [
-    ...visibleReview.record.items.map(item => ({ ...item, sent: item.quantity, unexpected: false })),
-    ...visibleReview.unexpected.map(variant_id => ({ ...visibleReview.identities[variant_id],
-      variant_id, sent: 0n, unexpected: true })),
-  ] : [];
+  const captureLines = visibleReview ? visibleReview.record.items.map(item => ({ ...item, sent: item.quantity })) : [];
   const previewPresentation = receiptPresentation && visibleReview.step === 'review' && !reviewResult;
   const completeInvalidCapture = !input && captureLines.length > 0
     && captureLines.every(line => visibleReview?.values[line.variant_id] !== '');
@@ -317,47 +266,33 @@ export default function TransferReceipt(props: TransferReceiptProps) {
               const label = line.model ? `${line.brand} · ${line.model}` : `Variante ${line.variant_id}`;
               const polarity = line.polarity === 'L' ? 'Izquierda [L]' : line.polarity === 'R' ? 'Derecha [R]' : 'No disponible';
               return <tr key={line.variant_id}>
-                <td><strong>{label}</strong>{line.capacity_ah !== undefined && <small>{line.capacity_ah} Ah</small>}
-                  {line.unexpected && <small>No enviada · Variante inesperada</small>}</td>
+                <td><strong>{label}</strong>{line.capacity_ah !== undefined && <small>{line.capacity_ah} Ah</small>}</td>
                 <td data-label="Polaridad">{polarity}</td>
                 <td data-label="Enviadas">{line.sent.toString()}</td>
                 <td data-label="Recibidas"><label className="sr-only" htmlFor={`receipt-quantity-${line.variant_id}`}>Cantidad recibida {label} · {polarity}</label>
                   <input id={`receipt-quantity-${line.variant_id}`} type="text" inputMode="numeric" autoComplete="off" placeholder="Cantidad"
                     aria-describedby="receipt-capture-rules" value={visibleReview.values[line.variant_id]} disabled={busy}
-                    onChange={event => editValue(line.variant_id, event.target.value)} />
-                  {line.unexpected && <button type="button" disabled={busy} aria-label={`Quitar variante inesperada ${label}`} onClick={() => {
-                    if (current() && !busy) setReview(before => before ? { ...before, unexpected: before.unexpected.filter(id => id !== line.variant_id) } : before);
-                  }}>Quitar variante</button>}</td>
+                    onChange={event => editValue(line.variant_id, event.target.value)} /></td>
               </tr>;
             })}</tbody>
           </table></div>
-          <section className="receipt-catalog-panel" aria-labelledby="receipt-catalog-title">
-            <h3 id="receipt-catalog-title">¿Llegó otra variante?</h3>
-            <p>Agregala para registrar lo que llegó fuera de lo enviado.</p>
-            {catalogControls}
-          </section>
           <div className="receipt-capture-advisory">
             <p>Todavía no se modifica el stock. Primero revisarás el conteo.</p>
             <p id="receipt-capture-rules">Cantidades enteras, sin negativos. Completá todas las filas; no puede quedar todo en 0.</p>
           </div>
-          {completeInvalidCapture && <p role="alert">Revisá las cantidades: solo enteros sin signos, espacios ni ceros iniciales, hasta 9223372036854775807. Al menos una cantidad debe ser positiva; las variantes inesperadas requieren cantidades positivas.</p>}
+          {completeInvalidCapture && <p role="alert">Revisá las cantidades: solo enteros sin signos, espacios ni ceros iniciales, hasta 9223372036854775807. Al menos una cantidad debe ser positiva.</p>}
         </div> : visibleReview.step === 'capture' ? <>
           <p>Ingresá cada cantidad recibida, incluido 0 si no llegó esa variante. No se limita por disponibilidad del destino.</p>
-          <div className="receipt-quantities">{[...visibleReview.record.items.map(item => ({ id: item.variant_id, label: `${item.brand} · ${item.model}`, sent: item.quantity })),
-            ...visibleReview.unexpected.map(id => ({ id, label: visibleReview.identities[id]?.model ?? `Variante ${id}`, sent: 0n }))].map(line => <div key={line.id}>
+          <div className="receipt-quantities">{visibleReview.record.items.map(item => ({ id: item.variant_id, label: `${item.brand} · ${item.model}`, sent: item.quantity })).map(line => <div key={line.id}>
               <label htmlFor={`receipt-quantity-${line.id}`}>Cantidad recibida {line.label}</label><small>Cantidad enviada: {line.sent.toString()}</small>
               <input id={`receipt-quantity-${line.id}`} type="text" inputMode="numeric" autoComplete="off" value={visibleReview.values[line.id]} disabled={busy}
                 onChange={event => editValue(line.id, event.target.value)} />
-              {visibleReview.unexpected.includes(line.id) && <button type="button" onClick={() => {
-                if (current() && !busy) setReview(before => before ? { ...before, unexpected: before.unexpected.filter(id => id !== line.id) } : before);
-              }}>Quitar variante inesperada {line.label}</button>}
             </div>)}</div>
-          {catalogControls}
-          <p>Solo enteros sin signos, espacios ni ceros iniciales, hasta 9223372036854775807. Las variantes inesperadas requieren cantidades positivas; una recepción totalmente en cero no es válida.</p>
+          <p>Solo enteros sin signos, espacios ni ceros iniciales, hasta 9223372036854775807. Una recepción totalmente en cero no es válida.</p>
         </> : preview && receiptPresentation ?
-          <ReceiptPreview receipt={preview} record={visibleReview.record} identities={visibleReview.identities} /> : preview && <>
+          <ReceiptPreview receipt={preview} record={visibleReview.record} identities={{}} /> : preview && <>
           <ReceiptTable receipt={preview} record={visibleReview.record} />
-          <p>Solo el mínimo entre lo recibido y lo enviado de cada variante esperada se acredita como stock disponible. Faltantes, excesos y variantes inesperadas quedan registrados por separado; no se acreditan ni se resuelven automáticamente.</p>
+          <p>Solo el mínimo entre lo recibido y lo enviado de cada variante esperada se acredita como stock disponible. Faltantes y excesos quedan registrados por separado; no se acreditan ni se resuelven automáticamente.</p>
           <p>Confirmar finaliza la recepción una sola vez. No se podrá modificar después.</p>
         </>}
         {busy && <p role="status">Confirmando recepción…</p>}

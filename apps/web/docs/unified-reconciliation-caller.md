@@ -28,13 +28,13 @@ their existing action composition.
 
 The existing modal focus binding is passed to the detail seam. Its scope, owner,
 request, availability, and mounted checks remain intact. Dismissing reconciliation
-restores the stable Gestiones opener when it remains valid; opening or dismissing
-review does not itself POST a mutation.
+restores the stable direct “Resolver diferencia” opener when it remains valid;
+opening or dismissing review does not itself POST a mutation.
 
 ## Verification boundary
 
-The parameterized caller test checks coordinated audit GETs and Gestiones focus for
-Escape, close, and return dismissal. The parent observed its three expected RED
+The parameterized caller test checks coordinated audit GETs and direct-action focus
+for Escape, close, and return dismissal. The parent observed its three expected RED
 failures against the old caller before this production copy. The parent owns GREEN
 verification of all 260 caller/App scenarios through the four established bounded
 partitions, the detail/modal tests, typecheck, and build. This assembly does not claim
