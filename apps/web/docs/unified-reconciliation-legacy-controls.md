@@ -15,6 +15,8 @@ evidence.
 | `TransferDispatchReconciliations` and `useTransferDispatchReconciliations` | Component, hook, `transfer-dispatch-reconciliations.css` and its tests. No dispatch regularisation, proposal or decision control is reachable. |
 | `TransferDetail` legacy composition | The `corrections`, `correctionsEnabled`, `correctionRequestID`, `reconciliations`, `reconciliationRequestID`, `reconciliationsEnabled`, `restitutionRequestID`, `restitutionsEnabled` and `restitutionAPI` inputs, the legacy panes and the "Gestiones" menu. The received detail now renders only the direct unified action. |
 | `TransferPending` legacy mounting | The legacy API adapters and both legacy hooks; `TransferDetail` receives only `unified`, gated by the same mount-bound authority fence. |
+| `transferDispatchReconciliationAPI`, `transferDispatchReconciliationStore`, `transferDispatchReconciliationRecovery` | The dispatch-reconciliation transport, recovery store and recovery utilities, plus their tests. Nothing outside that island imported them, so the whole closed island is gone; the removed routes have no client caller left. |
+| `transferAPI.proposeCount`, `decideCount`, `proposeRestitution`, `decideRestitution` | The count-correction and restitution proposal/decision POSTs, their private write helpers and their correction-only error decoding. The count-correction and restitution history reads survive unchanged: no legacy write route is called from the web client. |
 
 ## Kept as read-only historical evidence
 
@@ -23,6 +25,7 @@ evidence.
 | `transferCountCorrectionModel`, `transferRestitutionModel`, `transferDispatchReconciliationModel` | Parsers and decoders for the historical payloads. |
 | `transferUnifiedReconciliationModel`, `transferUnifiedReconciliationView`, `transferUnifiedReconciliationStore`, `useTransferUnifiedReconciliations` | The single remaining flow's decoder, projection and recovery store. |
 | `transferCountCorrectionRecovery`, `transferRestitutionRecovery` and their stores | Recovery and owner-scoped pin utilities the unified snapshot and the inventory controller still consume. |
+| `transferDispatchReconciliationStoreFixtures` | Shared record/snapshot fixtures (`crossWorkflow.test.ts`, `transferReceivedModel.test.ts`, `transferUnifiedReconciliationFixtures.ts`) that import only the model, never the deleted store or API. |
 | Legacy HTTP routes, SQL readers and tables | Read-only history. `unified_reconciliation_store.go` reads the count, restitution and dispatch evidence through them; no legacy write path is called from the web client. |
 
 These parsers do not fabricate revisions, apply inventory effects or emulate
@@ -34,7 +37,11 @@ re-imported without reintroducing its deleted file.
 
 There is no legacy component test left to run: the component, hook, stylesheet
 and test files were deleted, and a repository-wide grep finds no importer of any
-deleted module. The surviving evidence is the unified flow's own tests
+deleted module. The dispatch-reconciliation island was closed before deletion: its
+transport, store and recovery modules were imported only by each other and by their
+own tests, while `transferCountCorrectionRecovery` and `transferRestitutionRecovery`
+stay because `useTransferUnifiedReconciliations`, `transferUnifiedReconciliationStore`
+and `useInventory` import them. The surviving evidence is the unified flow's own tests
 (`TransferDetail.unified.test.tsx`, `TransferPending.test.tsx`,
 `useTransferUnifiedReconciliations.test.tsx`, `transferUnifiedReconciliation*.test.ts`)
 plus `crossWorkflow.test.ts`, which keeps the controller's exact-confirmation

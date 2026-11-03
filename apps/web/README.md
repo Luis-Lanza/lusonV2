@@ -157,10 +157,12 @@ acceptance are separate, not established by frontend tests.
 
 ## C4b received-detail count corrections
 
-> Removed from the product UI in S5/T5. The count-correction component, hook and
-> stylesheet are deleted; `transferCountCorrectionModel`, its recovery stores and
-> the historical SQL are kept because the unified snapshot reads them. The passage
-> below is kept as the historical contract of that retired flow.
+> Removed from the product UI in S5/T5 and from the client in T6c. The count-correction
+> component, hook and stylesheet are deleted, and `createTransferAPI` no longer exposes
+> `proposeCount`/`decideCount`, so no count write route has a caller; the surviving
+> `countCorrections` read is unchanged. `transferCountCorrectionModel`, its recovery
+> stores and the historical SQL are kept because the unified snapshot reads them. The
+> passage below is kept as the historical contract of that retired flow.
 
 `TransferPending` now mounts `useTransferCountCorrections` unconditionally above
 conditional panes, with the stable controller seams and default API. Its history
@@ -196,10 +198,13 @@ checks remain pending regardless of test/build results.
 
 ## R6a received-transfer restitution
 
-> Removed from the product UI in S5/T5. The restitution detail section, its hook
-> and its stylesheet are deleted; `transferRestitutionModel`, its recovery store and
-> the historical reader stay for the unified snapshot. The passage below is kept as
-> the historical contract of that retired flow.
+> Removed from the product UI in S5/T5 and from the client in T6c. The restitution
+> detail section, its hook and its stylesheet are deleted, and `createTransferAPI` no
+> longer exposes `proposeRestitution`/`decideRestitution`; the surviving `restitutions`
+> read is unchanged and the dispatch-reconciliation client island (API, recovery
+> store and recovery utilities) is deleted with it. `transferRestitutionModel`, its
+> recovery store and the historical reader stay for the unified snapshot. The passage
+> below is kept as the historical contract of that retired flow.
 
 On an eligible **Received** transfer, the separate “Restituciones de origen” detail
 section shows original dispatch and receipt facts alongside the effective destination

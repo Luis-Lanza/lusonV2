@@ -22,9 +22,9 @@ Existing callers that omit `unified` retain the legacy detail projection and con
 - Opening history includes unified history when evidence is not masked.
 - “Ver recepción original” continues to expose immutable receipt evidence.
 
-Optional `modalFocus` passes the caller's focus binding to the modal.
-Optional `restitutionAPI` passes the existing restitution API seam through;
-this component does not create a new transport or reconciliation coordinator.
+Optional `modalFocus` passes the caller's focus binding to the modal. The retired
+`restitutionAPI` seam is gone with the legacy restitution write client; this
+component does not create a new transport or reconciliation coordinator.
 
 ## Verification boundary
 

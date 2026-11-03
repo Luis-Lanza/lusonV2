@@ -14,13 +14,15 @@ reconciliation reads. The caller retains its owner, selected-request, private-ac
 and mount-bound authority fences, including the just-confirmed receipt path.
 
 The unified hook reads the coordinated snapshot. Legacy count, restitution, and
-dispatch recovery engines retain their existing mutation interfaces, but their audit
-reads use only the coordinated snapshot's corresponding `legacy` evidence. No
-legacy-current GET or historical-current fallback is introduced. Expected-variant
+dispatch audit reads use only the coordinated snapshot's corresponding `legacy`
+evidence, and the legacy write clients are gone: the count-correction and restitution
+proposal/decision POSTs and the dispatch-reconciliation transport no longer exist, so
+no legacy mutation interface remains to call. No legacy-current GET or
+historical-current fallback is introduced. Expected-variant
 current facts are presented through the unified detail seam, not legacy overlays.
 
-Unexpected-variant audit mutations and historical rejection/recovery remain available
-through the existing engines. Confirmation uses the existing controller callback for
+Historical rejection and exact-operation recovery for unexpected variants remain
+readable evidence. Confirmation uses the existing controller callback for
 inventory, activity, and counter invalidation. Pending and in-transit workflows keep
 their existing action composition.
 
