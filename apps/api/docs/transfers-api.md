@@ -422,6 +422,45 @@ contract is documented in [unified reconciliation](unified-reconciliation.md),
 with its [HTTP read](unified-reconciliation-http-read.md) and
 [HTTP write](unified-reconciliation-http-write.md) companions.
 
+## Administrative recovery of a stuck in-transit transfer
+
+`in_transit` has no cancellation path and receipt is its only exit. Since
+migration 019 every receipt line must describe a dispatched variant, so a
+transfer whose physical arrival included a variant that was never dispatched
+cannot be received by any participant and would stay in transit forever.
+
+`cmd/transfer-recovery` is the minimal administrative recovery for that event.
+It is a private CLI, not an HTTP route, not a UI flow and not a general
+inventory adjustment:
+
+- `--request-id` and `--received-at` (RFC3339) name the transfer and the
+  observed arrival, `--receive VARIANT=QUANTITY` carries the ordinary observed
+  actual for every dispatched variant, `--arrival VARIANT=QUANTITY` declares each
+  physically received but never dispatched variant, and `--reason`/`--operator`
+  are mandatory and recorded.
+- Database configuration comes only from the existing private environment-file
+  mechanism; no secret, credential or account is accepted as an argument.
+- The command prints the persisted summary and then requires the typed request
+  reference (`TR-<id>`) before writing. Refusal, a wrong answer or any failure
+  writes nothing.
+
+`transfers.Store.Recover` runs one transaction that requires the transfer to be
+`in_transit`, records one `transfer_recovery_events` row per declared arrival and
+then completes the receipt for the dispatched variants through the ordinary
+receipt path, so the credited quantity is still `min(dispatched,observed)`. The
+undispatched quantity reaches no balance at all. Every existing guard stays in
+force: the participant receipt authorization, the immutable lifecycle
+transition, the payload completeness check and the `expected_quantity > 0`
+constraint of 019. The request's own `received_at` stays server derived;
+`--received-at` is the observed arrival recorded as evidence.
+
+`transfer_recovery_events` is append-only and keyed by `(request_id,variant_id)`
+with `quantity > 0`, the reason, the operator label and the observed timestamp.
+It is deliberately not `transfer_receipt_exceptions`: that table's foreign key to
+`transfer_receipt_lines` would need exactly the zero-expected line 019 forbids.
+Nothing in the table ever changes stock, so repeated or disputed correction still
+belongs to the unified reconciliation workflow, never to this command.
+
 ## Full persisted outcomes and original replay
 
 Approved/Rejected records add exactly two fields: `decision_location_id`, a
