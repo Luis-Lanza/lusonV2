@@ -63,7 +63,7 @@ func TestR1ReceiptStore(t *testing.T) {
 			transit := receiptDispatch(t, ctx, s, in)
 			a01Exec(t, ctx, p, "UPDATE inventory_balances SET reserved=1 WHERE location_id=$1 AND variant_id IN (1,2)", transit.Destination.ID)
 			stock := stocks(t, ctx, p)
-			payload := transfers.ReceiptInput{Items: []transfers.Line{{3, 7}, {2, 4}, {1, 1}}}
+			payload := transfers.ReceiptInput{Items: []transfers.Line{{2, 4}, {1, 1}}}
 			before := receiptSnapshot(t, ctx, p)
 			for _, tc := range []struct {
 				id   int
@@ -79,7 +79,7 @@ func TestR1ReceiptStore(t *testing.T) {
 			if err != nil {
 				t.Fatal("destination receive", err)
 			}
-			wantReceipt := &transfers.Receipt{Items: []transfers.ReceiptLine{{1, 2, 1, 1}, {2, 1, 4, 1}, {3, 0, 7, 0}}, Exceptions: []transfers.ReceiptException{{1, "shortage", 1}, {2, "excess", 3}, {3, "unexpected", 7}}}
+			wantReceipt := &transfers.Receipt{Items: []transfers.ReceiptLine{{1, 2, 1, 1}, {2, 1, 4, 1}}, Exceptions: []transfers.ReceiptException{{1, "shortage", 1}, {2, "excess", 3}}}
 			if got.Status != "received" || got.ReceiptLocationID == nil || *got.ReceiptLocationID != transit.Destination.ID || got.ReceivedAt == nil || got.ReceivedAt.Before(*transit.DispatchedAt) || !reflect.DeepEqual(got.Receipt, wantReceipt) {
 				t.Fatalf("receipt truth mismatch: %+v %v", got.Receipt, err)
 			}
@@ -99,7 +99,7 @@ func TestR1ReceiptStore(t *testing.T) {
 				t.Fatal("expected credit, reserved or exception isolation incorrect")
 			}
 			settled := receiptSnapshot(t, ctx, p)
-			reversed := transfers.ReceiptInput{Items: []transfers.Line{{1, 1}, {2, 4}, {3, 7}}}
+			reversed := transfers.ReceiptInput{Items: []transfers.Line{{1, 1}, {2, 4}}}
 			retry, err := s.Receive(ctx, actor(transit.Destination.ID), got.ID, reversed)
 			if err != nil || !reflect.DeepEqual(got, retry) {
 				t.Fatal("normalized retry differs", err)
@@ -144,17 +144,33 @@ func TestR1ReceiptStore(t *testing.T) {
 	}
 }
 
-func TestR1ReceiptUnexpectedOnly(t *testing.T) {
+func TestR1ReceiptRejectsUndispatchedVariants(t *testing.T) {
 	ctx, p, s := fixture(t)
 	r := receiptDispatch(t, ctx, s, input())
-	stock := stocks(t, ctx, p)
-	got, err := s.Receive(ctx, actor(2), r.ID, transfers.ReceiptInput{Items: []transfers.Line{{1, 0}, {2, 0}, {3, math.MaxInt64}, {4, math.MaxInt64}}})
-	if err != nil {
-		t.Fatal("unexpected-only with aggregate beyond int64 refused", err)
+	before := receiptSnapshot(t, ctx, p)
+	for name, items := range map[string][]transfers.Line{
+		"undispatched_positive":  {{1, 2}, {2, 1}, {3, 5}},
+		"undispatched_only":      {{3, 1}},
+		"undispatched_with_zero": {{1, 2}, {2, 1}, {3, 0}},
+		"undispatched_overflow":  {{1, 2}, {2, 1}, {4, math.MaxInt64}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := s.Receive(ctx, actor(2), r.ID, transfers.ReceiptInput{Items: items})
+			a02Error(t, got, err, transfers.ErrInvalid)
+			if receiptSnapshot(t, ctx, p) != before {
+				t.Fatal("undispatched variant wrote stock/header/lines")
+			}
+		})
 	}
-	want := &transfers.Receipt{Items: []transfers.ReceiptLine{{1, 2, 0, 0}, {2, 1, 0, 0}, {3, 0, math.MaxInt64, 0}, {4, 0, math.MaxInt64, 0}}, Exceptions: []transfers.ReceiptException{{1, "shortage", 2}, {2, "shortage", 1}, {3, "unexpected", math.MaxInt64}, {4, "unexpected", math.MaxInt64}}}
-	if !reflect.DeepEqual(got.Receipt, want) || !reflect.DeepEqual(stock, stocks(t, ctx, p)) {
-		t.Fatal("unexpected-only fabricated inventory or lost missing expected units")
+	// The exact dispatched payload still settles the transfer.
+	got, err := s.Receive(ctx, actor(2), r.ID, receiptInput(r))
+	if err != nil || got.Status != "received" || len(got.Receipt.Items) != 2 {
+		t.Fatal("dispatched payload refused", err)
+	}
+	for _, line := range got.Receipt.Items {
+		if line.ExpectedQuantity < 1 {
+			t.Fatalf("received line without dispatched quantity: %+v", line)
+		}
 	}
 }
 
@@ -257,15 +273,22 @@ func TestR1ReceiptDependenciesAndStates(t *testing.T) {
 	}
 }
 
-func TestR1ReceiptFullCatalogue(t *testing.T) {
-	ctx, _, s := fixture(t)
+func TestR1ReceiptBoundedByDispatchedItems(t *testing.T) {
+	ctx, p, s := fixture(t)
 	r := receiptDispatch(t, ctx, s, input())
+	before := receiptSnapshot(t, ctx, p)
 	payload := transfers.ReceiptInput{Items: make([]transfers.Line, 190)}
 	for i := range payload.Items {
 		payload.Items[i] = transfers.Line{int64(i + 1), 1}
 	}
 	got, err := s.Receive(ctx, actor(2), r.ID, payload)
-	if err != nil || len(got.Receipt.Items) != 190 || len(got.Receipt.Exceptions) != 189 {
-		t.Fatal("full catalogue receipt refused", err)
+	a02Error(t, got, err, transfers.ErrInvalid)
+	if receiptSnapshot(t, ctx, p) != before {
+		t.Fatal("oversized receipt wrote stock/header/lines")
+	}
+	// The dispatched payload is the only admissible line set.
+	got, err = s.Receive(ctx, actor(2), r.ID, receiptInput(r))
+	if err != nil || len(got.Receipt.Items) != len(r.Items) {
+		t.Fatal("dispatched receipt refused", err)
 	}
 }

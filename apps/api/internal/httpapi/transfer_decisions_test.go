@@ -23,7 +23,15 @@ import (
 // Decision tests use the real authenticated HTTP route, never SQL status setup.
 func decisionCreate(t *testing.T, f *transferHTTPFixture, kind string, counterparty int, key string) transferDTO {
 	t.Helper()
-	body := fmt.Sprintf(`{"kind":%q,"counterparty_location_id":%d,"retry_key":%q,"items":[{"variant_id":2,"quantity":"1"},{"variant_id":1,"quantity":"1"}]}`, kind, counterparty, key)
+	return decisionCreateItems(t, f, kind, counterparty, key, `[{"variant_id":2,"quantity":"1"},{"variant_id":1,"quantity":"1"}]`)
+}
+
+// decisionCreateItems dispatches exactly the item set a scenario needs. The
+// receipt API refuses any line for a variant that was never dispatched, so a
+// fixture that needs a third line must dispatch it instead of inventing it.
+func decisionCreateItems(t *testing.T, f *transferHTTPFixture, kind string, counterparty int, key, items string) transferDTO {
+	t.Helper()
+	body := fmt.Sprintf(`{"kind":%q,"counterparty_location_id":%d,"retry_key":%q,"items":%s}`, kind, counterparty, key, items)
 	return transferWireRecord(t, f.request(t, 2, "POST", "/api/transfers", body), 201)
 }
 
@@ -74,8 +82,10 @@ func decisionProof(t *testing.T, f *transferHTTPFixture, original transferDTO) f
 		decisionOriginal(t, original, result)
 		if result.Status == "approved" {
 			var exact bool
+			// The paired NOT EXISTS clauses pin exact item/allocation set equality,
+			// so the owned allocation count follows the dispatched item count.
 			if f.p.QueryRow(f.ctx, `SELECT
- (SELECT count(*) FROM transfer_request_allocations WHERE request_id=$1)=2
+ (SELECT count(*) FROM transfer_request_allocations WHERE request_id=$1)=(SELECT count(*) FROM transfer_request_items WHERE request_id=$1)
  AND NOT EXISTS(SELECT 1 FROM transfer_request_items i
  LEFT JOIN transfer_request_allocations a USING(request_id,variant_id)
  WHERE i.request_id=$1 AND (a.request_id IS NULL OR a.quantity<>i.quantity))

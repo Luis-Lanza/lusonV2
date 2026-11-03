@@ -21,7 +21,7 @@ func c2Receipt(t *testing.T, reverse bool) (context.Context, *pgxpool.Pool, tran
 	r := receiptDispatch(t, ctx, s, in)
 	tx := a01Begin(t, ctx, p)
 	defer tx.Rollback(ctx)
-	a01Exec(t, ctx, tx, `INSERT INTO transfer_receipt_lines(request_id,variant_id,expected_quantity,actual_quantity,available_quantity) VALUES($1,1,2,1,1),($1,2,1,1,1),($1,3,0,7,0)`, r.ID)
+	a01Exec(t, ctx, tx, `INSERT INTO transfer_receipt_lines(request_id,variant_id,expected_quantity,actual_quantity,available_quantity) VALUES($1,1,2,1,1),($1,2,1,1,1)`, r.ID)
 	a01Exec(t, ctx, tx, `UPDATE transfer_requests SET status='received' WHERE id=$1`, r.ID)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
@@ -133,20 +133,18 @@ func TestC2CorrectionAgreement(t *testing.T) {
 				}
 				initiator, other = other, initiator
 			}
-			// Originally matching and unexpected lines are both eligible, independently.
-			c2Do(t, ctx, p, r, 2, r.Destination.ID, "matching", "propose", 0, 0)
-			c2Do(t, ctx, p, r, 3, r.Origin.ID, "unexpected", "propose", 0, 0)
-			c2Do(t, ctx, p, r, 2, r.Origin.ID, "matching-accept", "accept", 1, nil)
-			inventory := c2Revision(t, ctx, p, "inventory")
-			c2Do(t, ctx, p, r, 3, r.Destination.ID, "unexpected-accept", "accept", 1, nil)
-			c2Credit(t, ctx, p, 2, 1, 0, -1)
-			c2Credit(t, ctx, p, 3, 1, 0, 0)
-			c2Do(t, ctx, p, r, 3, r.Destination.ID, "unexpected-up", "propose", 1, 9223372036854775807)
-			c2Do(t, ctx, p, r, 3, r.Origin.ID, "unexpected-up-accept", "accept", 2, nil)
-			c2Credit(t, ctx, p, 3, 2, 0, 0)
-			if c2Revision(t, ctx, p, "inventory") != inventory {
-				t.Fatal("unexpected correction changed inventory")
+			// S3 removes the unexpected line from the schema, so the original receipt
+			// holds dispatched variants only and zero expectations are unrepresentable.
+			if _, err := p.Exec(ctx, `INSERT INTO transfer_receipt_lines(request_id,variant_id,expected_quantity,actual_quantity,available_quantity) VALUES($1,3,0,7,0)`, r.ID); err == nil {
+				t.Fatal("unexpected receipt line admitted")
 			}
+			if scalar(t, ctx, p, fmt.Sprintf("SELECT count(*) FROM transfer_receipt_lines WHERE request_id=%d AND expected_quantity<=0", r.ID)) != 0 {
+				t.Fatal("unexpected receipt evidence persisted")
+			}
+			// Originally matching lines remain independently correctable.
+			c2Do(t, ctx, p, r, 2, r.Destination.ID, "matching", "propose", 0, 0)
+			c2Do(t, ctx, p, r, 2, r.Origin.ID, "matching-accept", "accept", 1, nil)
+			c2Credit(t, ctx, p, 2, 1, 0, -1)
 			for i, row := range stocks(t, ctx, p) {
 				if row.Location == r.Origin.ID && row != original[i] {
 					t.Fatal("origin stock restored")
@@ -446,8 +444,8 @@ func TestC2CorrectionCoverageRollbackAndInvalidation(t *testing.T) {
 	a := c2Revision(t, ctx, p, "transfers:1")
 	b := c2Revision(t, ctx, p, "transfers:2")
 	other := c2Revision(t, ctx, p, "transfers:3")
-	c2Do(t, ctx, p, r, 3, 1, "audit", "propose", 0, 0)
-	c2Do(t, ctx, p, r, 3, 2, "reject", "reject", 1, nil)
+	c2Do(t, ctx, p, r, 2, 1, "audit", "propose", 0, 0)
+	c2Do(t, ctx, p, r, 2, 2, "reject", "reject", 1, nil)
 	if c2Revision(t, ctx, p, "inventory") != inv || c2Revision(t, ctx, p, "transfers:1") != a+2 || c2Revision(t, ctx, p, "transfers:2") != b+2 || c2Revision(t, ctx, p, "transfers:3") != other {
 		t.Fatal("participant-only invalidation mismatch")
 	}
@@ -464,9 +462,9 @@ func TestC2CorrectionCoverageRollbackAndInvalidation(t *testing.T) {
 	if hints["transfers:1"] != 2 || hints["transfers:2"] != 2 || len(hints) != 2 {
 		t.Fatal("incorrect hint audience", hints)
 	}
-	c2Do(t, ctx, p, r, 3, 2, "reject", "reject", 1, nil)
+	c2Do(t, ctx, p, r, 2, 2, "reject", "reject", 1, nil)
 	tx := a01Begin(t, ctx, p)
-	if _, err := tx.Exec(ctx, c2Call, r.ID, 3, 2, "rolled-back", "propose", 1, 7, "reason"); err != nil {
+	if _, err := tx.Exec(ctx, c2Call, r.ID, 2, 2, "rolled-back", "propose", 1, 7, "reason"); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Rollback(ctx); err != nil {

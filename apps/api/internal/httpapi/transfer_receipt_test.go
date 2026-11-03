@@ -26,7 +26,15 @@ func receiptHTTPMutation(f *transferHTTPFixture, r *http.Request) *httptest.Resp
 
 func receiptHTTPDispatch(t *testing.T, f *transferHTTPFixture, kind string, counterparty int) transferDTO {
 	t.Helper()
-	original := decisionCreate(t, f, kind, counterparty, "receipt-http-create-001")
+	return receiptHTTPDispatchItems(t, f, kind, counterparty, "receipt-http-create-001", `[{"variant_id":1,"quantity":"1"},{"variant_id":2,"quantity":"1"}]`)
+}
+
+// receiptHTTPDispatchItems dispatches exactly the items a scenario needs. Every
+// receipt line must describe a dispatched variant, so a fixture that needs a
+// third line dispatches that variant instead of inventing an unexpected one.
+func receiptHTTPDispatchItems(t *testing.T, f *transferHTTPFixture, kind string, counterparty int, key, items string) transferDTO {
+	t.Helper()
+	original := decisionCreateItems(t, f, kind, counterparty, key, items)
 	path := "/api/transfers/" + original.ID
 	w := decisionServe(t, f, f.newRequest(original.ApproverLocationID, "POST", path+"/approve", "{}"), original)
 	var approved transferDTO
@@ -43,13 +51,15 @@ func receiptHTTPDispatch(t *testing.T, f *transferHTTPFixture, kind string, coun
 	return transit
 }
 
-func receiptHTTPProof(t *testing.T, f *transferHTTPFixture, transit transferDTO, credit1, credit2 int64) func(*httptest.ResponseRecorder) {
+// receiptHTTPProof takes one credited quantity per variant, index 0 being
+// variant 1. Only dispatched variants can be credited.
+func receiptHTTPProof(t *testing.T, f *transferHTTPFixture, transit transferDTO, credits ...int64) func(*httptest.ResponseRecorder) {
 	t.Helper()
 	original, allocations := decisionRows(t, f, transit.ID)
 	var expected string
 	if f.p.QueryRow(f.ctx, `SELECT jsonb_agg(to_jsonb(b)||jsonb_build_object(
- 'existing',b.existing+CASE WHEN location_id=$1 AND variant_id=1 THEN $2::bigint WHEN location_id=$1 AND variant_id=2 THEN $3::bigint ELSE 0 END,
- 'available',b.available+CASE WHEN location_id=$1 AND variant_id=1 THEN $2::bigint WHEN location_id=$1 AND variant_id=2 THEN $3::bigint ELSE 0 END) ORDER BY location_id,variant_id)::text FROM inventory_balances b`, transit.DestinationLocationID, credit1, credit2).Scan(&expected) != nil {
+ 'existing',b.existing+CASE WHEN b.location_id=$1 THEN coalesce(($2::bigint[])[b.variant_id],0) ELSE 0 END,
+ 'available',b.available+CASE WHEN b.location_id=$1 THEN coalesce(($2::bigint[])[b.variant_id],0) ELSE 0 END) ORDER BY location_id,variant_id)::text FROM inventory_balances b`, transit.DestinationLocationID, credits).Scan(&expected) != nil {
 		t.Fatal("receipt expected stock construction")
 	}
 	return func(w *httptest.ResponseRecorder) {
@@ -171,7 +181,8 @@ func TestR1ReceiveHTTP(t *testing.T) {
 	}{{"warehouse_request", "request_stock", 1}, {"branch_request", "request_stock", 3}, {"warehouse_proposal", "send_to_warehouse", 1}} {
 		t.Run(flow.name, func(t *testing.T) {
 			f := transferFixture(t)
-			transit := receiptHTTPDispatch(t, f, flow.kind, flow.counterparty)
+			// The third line is a genuine dispatched item, so it can be received.
+			transit := receiptHTTPDispatchItems(t, f, flow.kind, flow.counterparty, "receipt-http-create-001", `[{"variant_id":1,"quantity":"1"},{"variant_id":2,"quantity":"1"},{"variant_id":3,"quantity":"1"}]`)
 			path := "/api/transfers/" + transit.ID
 			before := receiptHTTPState(t, f)
 			for _, tc := range []struct {
@@ -199,12 +210,12 @@ func TestR1ReceiveHTTP(t *testing.T) {
 				t.Fatal("receipt admission leaked writes")
 			}
 			body := `{"items":[{"variant_id":3,"actual_quantity":"7"},{"variant_id":1,"actual_quantity":"0"},{"variant_id":2,"actual_quantity":"3"}]}`
-			proof := receiptHTTPProof(t, f, transit, 0, 1)
+			proof := receiptHTTPProof(t, f, transit, 0, 1, 1)
 			w := receiptHTTPMutation(f, f.newRequest(transit.DestinationLocationID, "POST", path+"/receive", body))
 			proof(w)
 			want := transferObject(t, w, 200)
 			var dto transferDTO
-			if json.Unmarshal(w.Body.Bytes(), &dto) != nil || !reflect.DeepEqual(dto.Receipt, &receiptDTO{Items: []receiptLineDTO{{1, "1", "0", "0"}, {2, "1", "3", "1"}, {3, "0", "7", "0"}}, Exceptions: []receiptExceptionDTO{{1, "shortage", "1"}, {2, "excess", "2"}, {3, "unexpected", "7"}}}) {
+			if json.Unmarshal(w.Body.Bytes(), &dto) != nil || !reflect.DeepEqual(dto.Receipt, &receiptDTO{Items: []receiptLineDTO{{1, "1", "0", "0"}, {2, "1", "3", "1"}, {3, "1", "7", "1"}}, Exceptions: []receiptExceptionDTO{{1, "shortage", "1"}, {2, "excess", "2"}, {3, "excess", "6"}}}) {
 				t.Fatal("wire receipt line/exception truth mismatch")
 			}
 			settled := receiptHTTPState(t, f)
@@ -227,7 +238,7 @@ func TestR1ReceiveHTTP(t *testing.T) {
 					t.Fatal("received list differs from detail")
 				}
 			}
-			replay := fmt.Sprintf(`{"kind":%q,"counterparty_location_id":%d,"retry_key":"receipt-http-create-001","items":[{"variant_id":1,"quantity":"1"},{"variant_id":2,"quantity":"1"}]}`, flow.kind, flow.counterparty)
+			replay := fmt.Sprintf(`{"kind":%q,"counterparty_location_id":%d,"retry_key":"receipt-http-create-001","items":[{"variant_id":1,"quantity":"1"},{"variant_id":2,"quantity":"1"},{"variant_id":3,"quantity":"1"}]}`, flow.kind, flow.counterparty)
 			if !reflect.DeepEqual(transferObject(t, f.request(t, 2, "POST", "/api/transfers", replay), 200), want) {
 				t.Fatal("received creation replay differs")
 			}

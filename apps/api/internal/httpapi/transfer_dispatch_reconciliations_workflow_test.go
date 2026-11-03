@@ -3,16 +3,17 @@ package httpapi
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strings"
 	"testing"
 
 	"luson/api/internal/inventory"
 )
 
+// The dispatch reconciliation HTTP routes are retired. These public-interface
+// helpers stay because the surviving unified reconciliation tests prove their
+// stock, counts and recovery behaviour through them.
 func dr3Get(t *testing.T, f *transferHTTPFixture, path string) string {
 	t.Helper()
 	w := receiptHTTPMutation(f, f.newRequest(2, "GET", path, ""))
@@ -111,7 +112,7 @@ func dr3Received(t *testing.T, f *transferHTTPFixture) string {
 		actor        int
 		action, body string
 	}{
-		{1, "approve", "{}"}, {1, "dispatch", "{}"}, {2, "receive", `{"items":[{"variant_id":1,"actual_quantity":"7"},{"variant_id":2,"actual_quantity":"1"}]}`},
+		{1, "approve", "{}"}, {1, "dispatch", "{}"}, {2, "receive", `{"items":[{"variant_id":1,"actual_quantity":"7"}]}`},
 	} {
 		w = receiptHTTPMutation(f, f.newRequest(step.actor, "POST", path+"/"+step.action, step.body))
 		if w.Code != 200 {
@@ -121,130 +122,4 @@ func dr3Received(t *testing.T, f *transferHTTPFixture) string {
 	}
 	// All agreement and guard assertions must traverse the production mux.
 	return path
-}
-func TestDR3HTTPMutationAgreement(t *testing.T) {
-	f := transferFixture(t)
-	detail := dr3Received(t, f)
-	path := detail + "/dispatch-reconciliations"
-	original := dr3Get(t, f, detail)
-	proposal := dr3Body("dr3-agreement-propose-001", "0", "7")
-	first := dr3Apply(t, f, f.newRequest(1, "POST", path+"/propose", proposal), 0, 0)
-	accept := dr3Body("dr3-agreement-accept-001", "1", "")
-	dr3Reject(t, f, path, f.newRequest(1, "POST", path+"/accept", accept), 403, "forbidden")
-	balances := dr3Inventory(t, f)
-	accepted := dr3Apply(t, f, f.newRequest(2, "POST", path+"/accept", accept), -2, 2)
-	var op dispatchReconciliationOperationDTO
-	if json.Unmarshal(accepted.Body.Bytes(), &op) != nil || op.SourceExistingBefore == nil || op.SourceExistingAfter == nil || op.DestinationExistingBefore == nil || op.DestinationExistingAfter == nil || op.DispatchQuantity != nil {
-		t.Fatal("persisted balances missing")
-	}
-	if *op.SourceExistingBefore != countInt(balances["1/1"].Existing) || *op.SourceExistingAfter != countInt(balances["1/1"].Existing-2) || *op.DestinationExistingBefore != countInt(balances["2/1"].Existing) || *op.DestinationExistingAfter != countInt(balances["2/1"].Existing+2) {
-		t.Fatal("persisted balances differ from public inventory")
-	}
-	var state dispatchReconciliationSnapshotDTO
-	if json.Unmarshal([]byte(dr3Get(t, f, path)), &state) != nil {
-		t.Fatal("snapshot")
-	}
-	line := state.Lines[0]
-	if line.ExpectedQuantity != "5" || line.OriginalActual != "7" || line.OriginalCredit != "5" || line.EffectiveDispatch != "7" || line.EffectiveCredit != "7" || line.Proposals[0].Application.SourceDelta != "-2" || line.Proposals[0].Application.DestinationDelta != "2" {
-		t.Fatal("original/effective evidence", line)
-	}
-	// Count correction changes A and C; a fresh reverse-endpoint agreement must
-	// compensate only source. Current C must include both accounting workflows.
-	cp := detail + "/count-corrections"
-	dr3Apply(t, f, f.newRequest(2, "POST", cp+"/propose", countHTTPBody(1, "dr3-count-propose-001", "0", "6", "recount")), 0, 0)
-	dr3Apply(t, f, f.newRequest(1, "POST", cp+"/accept", countHTTPBody(1, "dr3-count-accept-001", "1", "", "agree")), 0, -1)
-	dr3Apply(t, f, f.newRequest(2, "POST", path+"/propose", dr3Body("dr3-agreement-propose-002", "1", "6")), 0, 0)
-	dr3Apply(t, f, f.newRequest(1, "POST", path+"/accept", dr3Body("dr3-agreement-accept-002", "2", "")), 1, 0)
-	var beforeDetail, afterDetail transferDTO
-	if json.Unmarshal([]byte(original), &beforeDetail) != nil || json.Unmarshal([]byte(dr3Get(t, f, detail)), &afterDetail) != nil {
-		t.Fatal("detail activity decode")
-	}
-	if !reflect.DeepEqual(transferBusinessDTO(beforeDetail), transferBusinessDTO(afterDetail)) {
-		t.Fatal("original receipt/cart changed")
-	}
-	if len(afterDetail.Activity) != len(beforeDetail.Activity)+6 || !reflect.DeepEqual(afterDetail.Activity[:len(beforeDetail.Activity)], beforeDetail.Activity) {
-		t.Fatal("workflow changed prior personal evidence")
-	}
-	for i, want := range []struct {
-		category, action string
-		location         int
-	}{{"reconciliation", "propose", 1}, {"reconciliation", "accept", 2}, {"count", "propose", 2}, {"count", "accept", 1}, {"reconciliation", "propose", 2}, {"reconciliation", "accept", 1}} {
-		e := afterDetail.Activity[len(beforeDetail.Activity)+i]
-		if e.Category != want.category || e.Action != want.action || e.LocationID != want.location || e.Actor.AccountID != fmt.Sprint(want.location) || e.Actor.Username == "" || e.RecordedAt.IsZero() || e.VariantID == nil || *e.VariantID != 1 {
-			t.Fatal("workflow personal evidence differs", i, e)
-		}
-	}
-	for _, replay := range []struct {
-		actor        int
-		action, body string
-		prior        *httptest.ResponseRecorder
-	}{{1, "propose", proposal, first}, {2, "accept", accept, accepted}} {
-		unchanged := dr3NoChange(t, f, path)
-		got := receiptHTTPMutation(f, f.newRequest(replay.actor, "POST", path+"/"+replay.action, replay.body))
-		if got.Code != 200 || got.Body.String() != replay.prior.Body.String() {
-			t.Fatal("historical replay recomputed")
-		}
-		unchanged()
-	}
-	dr3Reject(t, f, path, f.newRequest(1, "POST", path+"/propose", strings.Replace(proposal, "evidence", "changed", 1)), 409, "retry_conflict")
-	dr3Reject(t, f, path, f.newRequest(1, "POST", path+"/propose", dr3Body("dr3-mismatch-key-001", "2", "7")), 400, "invalid_request")
-	dr3Reject(t, f, path, f.newRequest(1, "POST", path+"/propose", strings.Replace(dr3Body("dr3-unexpected-key-001", "0", "1"), `"variant_id":1`, `"variant_id":2`, 1)), 400, "invalid_request")
-	dr3Reject(t, f, path, f.newRequest(1, "POST", path+"/accept", dr3Body("dr3-stale-key-0001", "1", "")), 409, "decision_conflict")
-}
-
-type dr3UnreadBody struct{ t *testing.T }
-
-func (b dr3UnreadBody) Read([]byte) (int, error) {
-	b.t.Error("private/guard rejection read body")
-	return 0, io.EOF
-}
-func (b dr3UnreadBody) Close() error { return nil }
-func TestDR3HTTPMutationGuards(t *testing.T) {
-	f := transferFixture(t)
-	detail := dr3Received(t, f)
-	path := detail + "/dispatch-reconciliations"
-	for _, actor := range []int{0, 3} {
-		r := f.newRequest(actor, "POST", path+"/propose", "")
-		r.Body = dr3UnreadBody{t}
-		status, code := 401, "unauthenticated"
-		if actor == 3 {
-			status, code = 404, "not_found"
-		}
-		dr3Reject(t, f, path, r, status, code)
-	}
-	for _, header := range []string{"Origin", "X-CSRF-Token", "Sec-Fetch-Site"} {
-		for _, duplicate := range []bool{false, true} {
-			r := f.newRequest(2, "POST", path+"/propose", "")
-			r.Body = dr3UnreadBody{t}
-			if duplicate {
-				r.Header.Add(header, r.Header.Get(header))
-			} else {
-				r.Header.Set(header, "wrong")
-			}
-			dr3Reject(t, f, path, r, 403, "forbidden")
-		}
-	}
-	r := f.newRequest(2, "POST", path+"/propose", "")
-	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.tokens[1]})
-	r.Body = dr3UnreadBody{t}
-	dr3Reject(t, f, path, r, 400, "invalid_request")
-	for _, suffix := range []string{"?", "?actor=1"} {
-		dr3Reject(t, f, path, f.newRequest(2, "POST", path+"/propose"+suffix, "junk"), 400, "invalid_request")
-	}
-	for _, action := range []string{"propose", "accept", "reject"} {
-		dr3Reject(t, f, path, f.newRequest(2, "GET", path+"/"+action, ""), 405, "method_not_allowed")
-	}
-	// Session revocation uses the real service, not a forged actor/context.
-	if f.svc.Logout(f.ctx, f.tokens[0]) != nil {
-		t.Fatal("revoke")
-	}
-	r = f.newRequest(1, "POST", path+"/propose", "")
-	r.Body = dr3UnreadBody{t}
-	// Counts for revoked actor cannot be read; capture using remaining endpoint.
-	before, stock := dr3Get(t, f, path), dr3Inventory(t, f)
-	counts := dr3Get(t, f, "/api/transfers/counts")
-	expectTransferError(t, receiptHTTPMutation(f, r), 401, "unauthenticated")
-	if dr3Get(t, f, path) != before || dr3Get(t, f, "/api/transfers/counts") != counts || !reflect.DeepEqual(dr3Inventory(t, f), stock) {
-		t.Fatal("revoked session changed state")
-	}
 }

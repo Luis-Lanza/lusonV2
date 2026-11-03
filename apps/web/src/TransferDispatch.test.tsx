@@ -152,7 +152,16 @@ describe('R2 latest Received participant history', () => {
     expect(history).toHaveTextContent('Solicitud aprobada'); expect(history).toHaveTextContent('Solicitud despachada');
     expect(history.querySelector('time[datetime="2026-04-03T00:00:00.000000003Z"]')).not.toBeNull();
     expect(document.querySelector('.transfer-received-heading')).toHaveTextContent('Recibida');
-    expect(screen.queryByRole('button', { name: /Despachar solicitud|Recibir solicitud|Resolver/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Despachar solicitud|Recibir solicitud/ })).not.toBeInTheDocument();
+    // S4: a received detail keeps no management menu; its only extra control is
+    // the direct unified recovery entry, pinned here so the shape cannot regress.
+    const received = document.querySelector('.transfer-received-products') as HTMLElement;
+    // The unified read settles asynchronously, so pin the stable S4 invariants instead
+    // of a snapshot of the section's buttons: no menu trigger, no menu role, and the
+    // direct recovery entry present.
+    expect(within(received).queryByRole('button', { name: 'Gestiones' })).toBeNull();
+    expect(received.querySelector('[role="menu"], [role="menuitem"]')).toBeNull();
+    expect(within(received).getByRole('button', { name: 'Resolver diferencia' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Volver a transferencias' }));
     fireEvent.change(screen.getByLabelText('Estado de transferencia'), { target: { value: 'received' } });
     await screen.findByText('1 solicitud recibida');

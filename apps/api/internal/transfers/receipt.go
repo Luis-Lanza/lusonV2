@@ -13,7 +13,9 @@ import (
 )
 
 // ReceiptInput uses quantities per variant, never an aggregate int64 total.
-// Line.Quantity is the observed actual, including explicit expected zeros.
+// Line.Quantity is the observed actual for a dispatched variant. Variants that
+// were never dispatched are not receivable: the business never produces that
+// physical event, so the store rejects them instead of recording an exception.
 type ReceiptInput struct{ Items []Line }
 type ReceiptLine struct {
 	VariantID         int64
@@ -117,23 +119,9 @@ func (s *Store) Receive(ctx context.Context, actor auth.Identity, id int64, inpu
 	if r.Status != "in_transit" {
 		return Request{}, ErrDecisionConflict
 	}
-	expected := make(map[int64]int64, len(r.Items))
-	for _, item := range r.Items {
-		expected[item.VariantID] = item.Quantity
-	}
-	ids := make([]int32, len(normalized.Items))
-	actual := make(map[int64]int64, len(normalized.Items))
-	for i, line := range normalized.Items {
-		if expected[line.VariantID] == 0 && line.Quantity == 0 {
-			return Request{}, ErrInvalid
-		}
-		ids[i] = int32(line.VariantID)
-		actual[line.VariantID] = line.Quantity
-	}
-	for variant := range expected {
-		if _, ok := actual[variant]; !ok {
-			return Request{}, ErrInvalid
-		}
+	expected, actual, ids, err := receiptPayload(r, normalized)
+	if err != nil {
+		return Request{}, err
 	}
 	var catalogCount int
 	if tx.QueryRow(ctx, "SELECT count(*) FROM catalog_variants WHERE id=ANY($1::integer[])", ids).Scan(&catalogCount) != nil {
@@ -170,14 +158,8 @@ func (s *Store) Receive(ctx context.Context, actor auth.Identity, id int64, inpu
 			return Request{}, ErrInvalid
 		}
 	}
-	for _, line := range normalized.Items {
-		sent := expected[line.VariantID]
-		if _, err = tx.Exec(ctx, `INSERT INTO transfer_receipt_lines(request_id,variant_id,expected_quantity,actual_quantity,available_quantity) VALUES($1,$2,$3,$4,$5)`, id, int32(line.VariantID), sent, line.Quantity, min(sent, line.Quantity)); err != nil {
-			return Request{}, fail(ctx)
-		}
-	}
-	if _, err = tx.Exec(ctx, "UPDATE transfer_requests SET status='received' WHERE id=$1", id); err != nil {
-		return Request{}, fail(ctx)
+	if err = writeReceipt(ctx, tx, id, normalized, expected); err != nil {
+		return Request{}, err
 	}
 	r, err = load(ctx, tx, actor.Location.ID, id)
 	if err != nil {
@@ -187,6 +169,46 @@ func (s *Store) Receive(ctx context.Context, actor auth.Identity, id int64, inpu
 		return Request{}, fail(ctx)
 	}
 	return r, nil
+}
+
+// receiptPayload admits only the dispatched payload in canonical order and
+// returns the dispatched quantity per variant, the observed actual per variant
+// and the catalog ids to lock. Both receipt entry points share this rule.
+func receiptPayload(r Request, normalized ReceiptInput) (map[int64]int64, map[int64]int64, []int32, error) {
+	expected := make(map[int64]int64, len(r.Items))
+	for _, item := range r.Items {
+		expected[item.VariantID] = item.Quantity
+	}
+	ids := make([]int32, len(normalized.Items))
+	actual := make(map[int64]int64, len(normalized.Items))
+	for i, line := range normalized.Items {
+		if _, dispatched := expected[line.VariantID]; !dispatched {
+			return nil, nil, nil, ErrInvalid
+		}
+		ids[i] = int32(line.VariantID)
+		actual[line.VariantID] = line.Quantity
+	}
+	for variant := range expected {
+		if _, ok := actual[variant]; !ok {
+			return nil, nil, nil, ErrInvalid
+		}
+	}
+	return expected, actual, ids, nil
+}
+
+// writeReceipt inserts the admitted lines and finalizes the header. The guarded
+// transition owns credit, exceptions and immutability for every caller.
+func writeReceipt(ctx context.Context, tx pgx.Tx, id int64, normalized ReceiptInput, dispatched map[int64]int64) error {
+	for _, line := range normalized.Items {
+		sent := dispatched[line.VariantID]
+		if _, err := tx.Exec(ctx, `INSERT INTO transfer_receipt_lines(request_id,variant_id,expected_quantity,actual_quantity,available_quantity) VALUES($1,$2,$3,$4,$5)`, id, int32(line.VariantID), sent, line.Quantity, min(sent, line.Quantity)); err != nil {
+			return fail(ctx)
+		}
+	}
+	if _, err := tx.Exec(ctx, "UPDATE transfer_requests SET status='received' WHERE id=$1", id); err != nil {
+		return fail(ctx)
+	}
+	return nil
 }
 
 func loadReceipt(ctx context.Context, q querier, r *Request) error {

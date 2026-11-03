@@ -80,42 +80,37 @@ func TestRequiredActionListLifecyclePagination(t *testing.T) {
 	}
 }
 
-func TestRequiredActionListReceivedReviews(t *testing.T) {
+// S7 retires the count and restitution audit flows, so their full proposal
+// lifecycle never creates required work or an ordered reason for anyone.
+func TestRetiredAuditReviewsCreateNoListWork(t *testing.T) {
 	ctx, p, r := r2Receipt(t, 5, 2)
 	s := transfers.New(p)
-	check := func(want []string) {
+	check := func() {
 		t.Helper()
 		for who := 1; who <= 3; who++ {
 			page, err := s.List(ctx, actor(who), transfers.Query{Status: "all", RequiresAction: true})
-			total := int64(0)
-			if who == r.Destination.ID && len(want) > 0 {
-				total = 1
-			}
-			if err != nil || page.Total != total || int64(len(page.Records)) != total || int64(len(page.RequiredActions)) != total {
-				t.Fatalf("review privacy/count: %+v %v", page, err)
-			}
-			if total == 1 && !reflect.DeepEqual(page.RequiredActions[r.ID], want) {
-				t.Fatal("ordered reviews differ")
+			if err != nil || page.Total != 0 || len(page.Records) != 0 || len(page.RequiredActions) != 0 || !page.RequiresAction {
+				t.Fatalf("retired review privacy/count: %+v %v", page, err)
 			}
 			counts, err := s.Counts(ctx, actor(who))
-			if err != nil || counts.ActionCount != total {
-				t.Fatal("counts and list disagree")
+			if err != nil || counts != (transfers.Totals{}) {
+				t.Fatalf("retired review counters: %+v %v", counts, err)
 			}
 		}
 	}
-	check(nil)
+	check()
 	if _, err := s.ProposeRestitution(ctx, actor(r.Origin.ID), r.ID, r3Proposal("action-list-restitution-one", 0, 1)); err != nil {
 		t.Fatal(err)
 	}
-	check([]string{"review_restitution"})
+	check()
 	c2StorePropose(t, ctx, s, r, r.Origin.ID, 1, 0, 3, "action-list-count-first")
-	check([]string{"review_count", "review_restitution"})
+	check()
 	c2StorePropose(t, ctx, s, r, r.Origin.ID, 1, 1, 3, "action-list-count-replace")
-	check([]string{"review_count", "review_restitution"})
+	check()
 	c2StoreDecide(t, ctx, s, r, r.Destination.ID, 1, 2, true, "action-list-count-accept")
-	check([]string{"review_restitution"}) // stale count pin still permits rejection
+	check()
 	if _, err := s.DecideRestitution(ctx, actor(r.Destination.ID), r.ID, r3Decision("action-list-restitution-reject", 1, false)); err != nil {
 		t.Fatal(err)
 	}
-	check(nil) // superseded undecided count proposal cannot resurface
+	check()
 }

@@ -7,9 +7,9 @@ creation does **not** reserve or change stock. This read API
 also exposes persisted Approved/Rejected/In-transit/Received/Cancelled outcomes
 and guarded whole-request approval, rejection, origin-only dispatch,
 destination-only receipt and creator-only cancellation before dispatch.
-Received-line count corrections are a narrow joint-confirmation workflow with
-separate immutable evidence; loss resolution, complementary deliveries and
-surplus incorporation remain excluded. Direct-shipment UI is a separate unit.
+Received-line discrepancies are resolved through the unified reconciliation
+workflow. The retired count, restitution and dispatch audit HTTP surfaces stay
+only as historical evidence. Direct-shipment UI is a separate unit.
 Cancellation UI and human acceptance remain separate delivery steps.
 
 ## Personal authorship
@@ -52,11 +52,10 @@ never registers transfers: those routes remain 404 for legacy callers.
 | `/api/transfers/{id}/dispatch` | POST | Origin-only current persisted dispatch outcome |
 | `/api/transfers/{id}/receive` | POST | Destination-only current persisted receipt outcome |
 | `/api/transfers/{id}/cancel` | POST | Creator-only persisted Cancelled outcome before dispatch |
-| `/api/transfers/{id}/count-corrections` | GET | Participant-private original/effective/history snapshot |
-| `/api/transfers/{id}/dispatch-reconciliations` | GET | Received participant-private original/current/history snapshot |
-| `/api/transfers/{id}/count-corrections/propose` | POST | Immutable persisted proposal operation, 200 first/replay |
-| `/api/transfers/{id}/count-corrections/accept` | POST | Immutable persisted acceptance operation, 200 first/replay |
-| `/api/transfers/{id}/count-corrections/reject` | POST | Immutable persisted rejection operation, 200 first/replay |
+| `/api/transfers/{id}/unified-reconciliations` | GET | Participant-private original/current/history reconciliation snapshot |
+| `/api/transfers/{id}/unified-reconciliations/propose` | POST | Immutable persisted reconciliation proposal operation, 200 first/replay |
+| `/api/transfers/{id}/unified-reconciliations/accept` | POST | Immutable persisted reconciliation acceptance operation, 200 first/replay |
+| `/api/transfers/{id}/unified-reconciliations/reject` | POST | Immutable persisted reconciliation rejection operation, 200 first/replay |
 
 Unsupported methods return 405 with exact `Allow: GET, POST` for the collection
 and `Allow: GET` for numeric detail and the exact static counts route. HEAD is
@@ -373,7 +372,8 @@ Received records retain original `items`, approval and dispatch metadata and add
 - `receipt_location_id`: integer physical destination.
 - `received_at`: server-derived UTC RFC3339Nano, not earlier than `dispatched_at`.
 - `receipt.items`: sorted `variant_id` plus decimal-string `expected_quantity`,
-  `actual_quantity`, `available_quantity` (expected zero identifies unexpected).
+  `actual_quantity`, `available_quantity` (historical receipts identified unexpected
+  variants with expected zero; migration 019 rejects `expected_quantity <= 0`).
 - `receipt.exceptions`: sorted `variant_id`, exact `kind` (`shortage`, `excess`,
   `unexpected`) and positive decimal-string `quantity`; empty is `[]`.
 
@@ -403,363 +403,63 @@ admit Received/receipt metadata and update workflow labels. R1 does not inflate
 Pending totals or introduce a versioned compatibility layer. Receipt UI, manual
 smoke, native approval and commit are separate acceptance steps.
 
-## Joint received-line count corrections
+## Retired audit flows
 
-Use count corrections only to amend counting evidence after receipt. Any
-persisted receipt line is eligible, including an originally matching line.
-Original receipt lines/exceptions, received header, dispatch, cart and origin
-stock remain unchanged. This is not loss booking, complementary delivery,
-surplus incorporation or unexpected-stock incorporation.
+The count-correction, restitution and dispatch-reconciliation HTTP surfaces are
+retired: those routes are unregistered and answer the ordinary unknown-route 404,
+and no handler remains that could mutate through them. The Go store mutation API
+is gone with them: no `ProposeCount`, `DecideCount`, `ProposeRestitution`,
+`DecideRestitution`, `ProposeDispatchReconciliation` or
+`DecideDispatchReconciliation` store method is compiled into the product, so no
+product path can write those workflows. Their tables and SQL writers
+(`transfer_count_correct`, `transfer_restitute`, `transfer_dispatch_reconcile`)
+and their history readers stay as historical evidence, and the unified
+reconciliation snapshot exposes that evidence read-only. A test-only simulation
+of the retired writers, `internal/transfers/legacy_writer_test.go`, keeps the
+surviving setups able to produce genuine pre-unified history; being a `_test.go`
+file it is never linked into a product binary. The surviving reconciliation
+contract is documented in [unified reconciliation](unified-reconciliation.md),
+with its [HTTP read](unified-reconciliation-http-read.md) and
+[HTTP write](unified-reconciliation-http-write.md) companions.
 
-Either authenticated **assigned physical endpoint** may propose. Proposal records
-initiator consent to that exact revision; only the other physical endpoint may
-accept or reject. Consulted inventory location and client actor fields grant no
-authority. Accounts assigned to the same physical location share physical responsibility
-and durable retry identities, but retain distinct personal authorship in transfer
-`activity`. Frontend account/owner fencing remains separate.
+## Administrative recovery of a stuck in-transit transfer
 
-There is one pending proposal per variant. Only its initiator may replace it,
-creating a new revision and fresh consent (never inheriting counterparty consent).
-Rejection closes a revision without stock changes; either endpoint may propose
-again. Lines proceed independently. The transfer remains `received`; a current
-undecided proposal contributes one required review to the counterpart's workflow
-count, irrespective of how many lines need review.
+`in_transit` has no cancellation path and receipt is its only exit. Since
+migration 019 every receipt line must describe a dispatched variant, so a
+transfer whose physical arrival included a variant that was never dispatched
+cannot be received by any participant and would stay in transit forever.
 
-For expected lines, accepted credit is `min(corrected actual, effective dispatch)`.
-Destination inventory changes by that credit **minus latest effective credit**,
-not minus the original receipt credit repeatedly. Nonnegative stock, reserved
-coverage and int64 overflow remain enforced atomically. Unexpected lines
-(`expected_quantity: "0"`) are joint audit-only corrections: effective actual may
-change, but credit and inventory delta always remain zero.
+`cmd/transfer-recovery` is the minimal administrative recovery for that event.
+It is a private CLI, not an HTTP route, not a UI flow and not a general
+inventory adjustment:
 
-### Mutation bodies and immutable responses
+- `--request-id` and `--received-at` (RFC3339) name the transfer and the
+  observed arrival, `--receive VARIANT=QUANTITY` carries the ordinary observed
+  actual for every dispatched variant, `--arrival VARIANT=QUANTITY` declares each
+  physically received but never dispatched variant, and `--reason`/`--operator`
+  are mandatory and recorded.
+- Database configuration comes only from the existing private environment-file
+  mechanism; no secret, credential or account is accepted as an argument.
+- The command prints the persisted summary and then requires the typed request
+  reference (`TR-<id>`) before writing. Refusal, a wrong answer or any failure
+  writes nothing.
 
-```http
-POST /api/transfers/123/count-corrections/propose
-Content-Type: application/json
-Origin: <configured same origin>
-X-CSRF-Token: <session-derived token>
+`transfers.Store.Recover` runs one transaction that requires the transfer to be
+`in_transit`, records one `transfer_recovery_events` row per declared arrival and
+then completes the receipt for the dispatched variants through the ordinary
+receipt path, so the credited quantity is still `min(dispatched,observed)`. The
+undispatched quantity reaches no balance at all. Every existing guard stays in
+force: the participant receipt authorization, the immutable lifecycle
+transition, the payload completeness check and the `expected_quantity > 0`
+constraint of 019. The request's own `received_at` stays server derived;
+`--received-at` is the observed arrival recorded as evidence.
 
-{"variant_id":1,"operation_key":"count-proposal-key-0001","expected_revision":"0","actual_quantity":"9007199254740993","reason":"  physical recount  "}
-```
-
-Accept and reject omit actual entirely (not `null` in the request):
-
-```http
-POST /api/transfers/123/count-corrections/accept
-
-{"variant_id":1,"operation_key":"count-accept-key-00001","expected_revision":"1","reason":"counterparty verified"}
-```
-
-```http
-POST /api/transfers/123/count-corrections/reject
-
-{"variant_id":1,"operation_key":"count-reject-key-00001","expected_revision":"1","reason":"counterparty disagrees"}
-```
-
-Both decision examples require the same Content-Type/session/Origin/CSRF headers
-as propose and are alternatives, not sequential decisions on one revision.
-
-| Request field | Exact contract |
-|---|---|
-| `variant_id` | Positive canonical numeric integer token through 2147483647; persisted receipt membership required |
-| `operation_key` | Globally unique opaque ASCII `[A-Za-z0-9_-]{16,128}`; not actor-scoped creation retry key |
-| `expected_revision` | Required canonical decimal string `0` through `9223372036854775806`; current workflow revision for propose, exact pending revision for decisions |
-| `actual_quantity` | Required only for propose; canonical decimal string `0` through `9223372036854775807`, including values above 2^53 |
-| `reason` | Required string, no NUL; 1–2000 Unicode characters after checking outer ASCII spaces; accepted text is preserved exactly, never trimmed |
-
-The request is one UTF-8 JSON object at most 64 KiB. Single JSON Content-Type and
-optional UTF-8 charset follow receipt framing. Unknown/missing/duplicate members,
-escaped-equivalent duplicates, nested substitutes, aliases, numeric quantities,
-null/coerced tokens, signs, padding, exponents and trailing data are 400.
-Actor, computed credit/delta, status and timestamps cannot be supplied.
-
-Admission order: exact method → authenticated identity → unique optional
-same-origin FetchSite → Origin/CSRF → no query (even `?`) → canonical positive
-int64 path ID → strict bounded body → Store. GET authenticates and admits no
-query; no mutation guard is required. Paths are exact; trailing/extra segments
-and encoded aliases cannot invoke an operation. Existing no-store/nosniff and
-sanitized `transferFailure` mappings apply.
-
-Every successful POST returns **200 and the immutable persisted operation**, not
-a current-state transfer or a newly loaded correction head. Example first proposal:
-
-```json
-{"operation_key":"count-proposal-key-0001","request_id":"123","variant_id":1,"actor_location_id":1,"action":"propose","expected_revision":"0","actual_quantity":"9007199254740993","reason":"  physical recount  ","revision":"1","recorded_at":"2026-01-02T12:00:00Z"}
-```
-
-Accept/reject have `action: "accept"` / `"reject"` and `actual_quantity: null`;
-`revision` is the decided proposal revision. All timestamps are server-persisted
-canonical UTC RFC3339Nano strings. Actor locations are numeric 1–3. No account
-identity, SQL metadata or caller timestamp is exposed.
-
-### GET snapshot and lossless field schema
-
-`GET /api/transfers/123/count-corrections` reads one participant-scoped statement
-snapshot. Original and effective evidence are explicit, not merged into receipt:
-
-```json
-{
-  "request_id":"123",
-  "lines":[{
-    "variant_id":1,"expected_quantity":"1","actual_quantity":"1","available_quantity":"1",
-    "workflow_revision":"1","applied_revision":"1","effective_actual":"0","effective_credit":"0",
-    "effective_dispatch":"1","reconciliation_revision":"0",
-    "proposals":[{
-      "revision":"1","operation_key":"count-downward-key-001","initiator_location_id":1,
-      "actual_quantity":"0","base_revision":"0","base_credit":"1","reason":"recount",
-      "recorded_at":"2026-01-02T12:00:00Z","state":"applied",
-      "decision":{"operation_key":"count-down-accept-001","actor_location_id":2,"accepted":true,"reason":"verified","recorded_at":"2026-01-02T12:01:00Z"},
-      "application":{"effective_credit":"0","delta":"-1","recorded_at":"2026-01-02T12:01:00Z"}
-    }]
-  }],
-  "operations":[
-    {"operation_key":"count-downward-key-001","request_id":"123","variant_id":1,"actor_location_id":1,"action":"propose","expected_revision":"0","actual_quantity":"0","reason":"recount","revision":"1","recorded_at":"2026-01-02T12:00:00Z"},
-    {"operation_key":"count-down-accept-001","request_id":"123","variant_id":1,"actor_location_id":2,"action":"accept","expected_revision":"1","actual_quantity":null,"reason":"verified","revision":"1","recorded_at":"2026-01-02T12:01:00Z"}
-  ]
-}
-```
-
-Line `actual_quantity` / `available_quantity` are immutable **original** actual /
-credit. `workflow_revision` includes pending/superseded/rejected proposals;
-`applied_revision` tracks latest accepted application, initially `"0"`.
-`effective_actual` / `effective_credit` begin at original receipt values.
-Required `effective_dispatch` and `reconciliation_revision` are canonical int64
-nonnegative decimal strings derived from the same effective-line snapshot as
-credit. Revision `"0"` requires original dispatch; unexpected variants require
-both fields to be `"0"`. Missing evidence is rejected, never defaulted. Original
-`expected_quantity` and `available_quantity` remain unchanged. Reconciliation
-can make current credit exceed original dispatch even with no count application.
-`proposals` contains ordered history with states `pending`, `superseded`,
-`rejected`, `applied`. Proposal `base_revision` / `base_credit` identify the prior
-applied revision/credit. Decision is null until decided; application is null
-unless applied. Rejected decision has `accepted: false`. Empty history/operations
-are `[]`, never null; nullable evidence fields remain present as null.
-
-Every request ID, revision, quantity, credit and signed application delta is a
-canonical decimal **string**, never a JSON floating-point number. Only variants
-and locations are bounded numeric integers; `accepted` is boolean. Root contains
-exactly `request_id`, `lines`, `operations`. Operations use the exact POST schema.
-
-### Privacy, retries and uncertainty
-
-Missing and nonparticipant GET/POST both return 404, including old operation keys;
-visible wrong physical decision/replacement authority returns 403. Participant
-lookup precedes replay. A non-Received transfer returns 409 `decision_conflict`.
-No foreign history, reason, retry identity or database failure detail leaks.
-
-Same key and exact request/variant/physical actor/action/expected revision/nullable
-actual/**exact reason** return the original operation, even if its proposal is now
-superseded or rejected or newer revisions have been applied. Changed key payload
-is 409 `retry_conflict`; stale/terminal decisions are 409 `decision_conflict`.
-Stock coverage/overflow failure is 409 `insufficient_stock`, without partial
-application. Structural invalidity remains 400. Backend/cancellation failures are
-sanitized 503 `service_unavailable` and can be **ambiguous** about commit.
-
-Retain the complete attempted operation identity and payload for explicit recovery.
-Use authorized GET `operations` to match that identity or explicitly retry the
-same route/key/payload; never invent a new key or silently retarget a newer
-revision. A GET without the operation does not itself prove an in-flight write
-failed. A historical POST success acknowledges that attempted operation, not
-current workflow authority; refetch GET to display latest state.
-
-SQL already emits commit-only participant transfer hints for proposals,
-replacements, rejections and zero-effect acceptances. Nonzero destination deltas
-also emit existing global inventory hints. These are authorized-refetch hints,
-not correction payloads. HTTP adds no redundant publication. Reads, replay,
-refusals and rollback emit no new mutation hints. Frontend transport, recovery,
-rendering and manual runtime acceptance remain separate units.
-
-## Restitution GET dispatch evidence
-
-The existing participant-private `GET /api/transfers/{id}/restitutions` response
-requires these additional canonical decimal-string fields (range `0` through
-`9223372036854775807`, never numeric JSON tokens or null):
-
-| Field | Meaning |
-|---|---|
-| `lines[].effective_dispatch` | Current dispatch from validated reconciliation evidence, otherwise original `expected_quantity` |
-| `lines[].reconciliation_revision` | Latest applied reconciliation revision; `"0"` requires effective dispatch equal to original dispatch |
-| `lines[].proposals[].base_dispatch` | Historical dispatch pinned by that proposal, **not** current dispatch; pre-013 evidence falls back to original dispatch |
-
-`expected_quantity` and `original_credit` remain immutable original evidence;
-original credit cannot exceed original dispatch. Effective credit plus applied
-retained quantity cannot exceed effective dispatch. Without either an applied
-count or reconciliation, effective credit must equal original credit. Historical
-proposal capacity is checked against its own `base_dispatch`. Existing operation
-links, count-generation pins, decisions, applications, nullable fields and
-chronology retain their contracts. Strict clients reject missing/unknown fields;
-no dispatch quantity is inferred from credit.
-
-For original dispatch/credit 5 and reconciled dispatch/credit 7, the line exposes
-`expected_quantity: "5"`, `original_credit: "5"`, `effective_dispatch: "7"`,
-`effective_credit: "7"`, `reconciliation_revision: "1"`, even when
-`count_applied_revision: "0"`. This changes existing read evidence only.
-
-## Dispatch reconciliation: bilateral agreement
-
-Migration 013 adds `transfer_dispatch_reconcile(request_id, variant_id,
-actor_location_id, operation_key, action, expected_revision, dispatch_quantity,
-reason)`. Reconciliation GET, the three exact POST operations and counterpart
-action discovery are registered. Existing count previews use `min(effective_dispatch, proposed
-actual)`; restitution uses the mathematical budget `D-C-R`, not evidence of
-physical retention. Cross-workflow recovery requires matching request, variant,
-count heads, effective credit, dispatch and reconciliation revision. Dispatch-only
-changes retire captured reviews. Rejection does not require acceptance-only
-count evidence. Historical proposal `base_dispatch` remains its original pin;
-today's dispatch never rewrites past consent or exact retry payloads.
-
-For original dispatch 5, current dispatch/credit 7 and proposed count 8, preview
-credit is 7 and delta is 0. After count 7→6, budget is 1; after dispatch becomes
-6, budget is 0. Current credit is not reconstructed from the latest count
-application alone. Missing or contradictory reads require explicit consultation.
-The existing reconciliation client GET can now load this snapshot through the
-production router. The received detail connects the existing owner-held controller
-through Gestiones → Regularizar despacho; discovery is advisory, not authorization.
-
-For one originally expected variant of a Received transfer, either physical
-endpoint may propose; only the opposite endpoint may accept or reject. Only the
-initiator may replace a pending proposal. Each revision requires fresh consent.
-The proposed quantity must equal effective received count and differ from
-effective dispatch. Unexpected variants and variants with applied restitution
-are excluded. No accepted restitution is reversed.
-
-The shared private SQL snapshot derives:
-
-- `D`: latest accepted reconciled dispatch, otherwise original expected quantity.
-- `A`: latest accepted count actual, otherwise original receipt actual.
-- `C`: original receipt credit plus **all** count application deltas plus **all**
-  reconciliation destination deltas, summed with checked numeric intermediates.
-- `R`: applied restitution quantity.
-
-Accepting quantity `Q=A` applies source `D-Q` and destination `Q-C` atomically,
-then effective `D=C=Q`. Starting balances 20/10, original dispatch 5 and receipt
-7 give accounting 15/15; reconciliation to 7 gives 13/17. A subsequent count to
-8 credits zero, then reconciliation to 8 gives 12/18. Alternatively, count 7→6
-debits destination once (13/16); reconciliation to 6 credits only origin (14/16).
-
-Count acceptance now caps credit at effective `D` and subtracts summed `C`.
-Restitution still requires origin attestation and destination consent; its
-capacity/conservation bound uses `D-C-R`. Original receipt/cart/dispatch and all
-previous application quantities retain their historical meanings. Private Store
-history reads use the shared snapshot, including reconciliation without a count
-application. Restitution GET exposes its validated dispatch values; reconciliation
-GET additionally exposes the coordinated generation/history fields listed below.
-Public original-line arithmetic validators are not relaxed.
-
-All workflow writers share the reservation-integrity advisory lock before header
-and balance locks and require READ COMMITTED, including direct operation inserts.
-Reconciliation locks both balances deterministically and checks existence,
-reservation coverage and bigint bounds before either write. Operations, consent,
-applications and companion predecessor pins are immutable; accepted applications
-must match durable bilateral decisions and actual endpoint effects. Generation
-pins reject stale acceptance even if another workflow changes away and back;
-pre-013 proposals imply reconciliation generation zero. Stale rejection and exact
-authorized operation replay remain available. Only physical participants receive
-transfer hints; changed balances retain existing inventory invalidations. Failed
-statements/commits roll back both effects, evidence and hints together.
-
-### Registered GET and exact mutations
-
-`NewWithTransfers` registers the exact GET through the existing typed handler.
-Both physical participants may read; missing/foreign transfers return 404,
-unauthenticated requests 401, and visible non-Received transfers 409. Canonical
-positive int64 IDs are required; queries (even `?`) are rejected. Unsupported
-methods at the snapshot root, including HEAD, return 405 with `Allow: GET`.
-The exact propose/accept/reject paths require POST (GET returns405 with `Allow: POST`).
-Unknown descendants, trailing slashes and extra segments return404; no generic mutation
-prefix is exposed. Reads retain no-store/nosniff and the existing session/passive
-read policy. They do not change inventory, workflow evidence or action counts.
-
-The following POST contracts use production routing with the existing participant,
-CSRF, canonical-path/query, strict-body and exact-operation guards. Visibility of a
-management context does not authorize a write. Unknown outcomes require explicit
-consultation or retry of the captured exact payload, never an automatic new POST.
-
-| Path | Method | Availability / success |
-|---|---|---|
-| `/api/transfers/{id}/dispatch-reconciliations` | GET | Registered: 200 coordinated original/current/history snapshot |
-| `/api/transfers/{id}/dispatch-reconciliations/propose` | POST | Registered: 200 persisted proposal operation |
-| `/api/transfers/{id}/dispatch-reconciliations/accept` | POST | Registered: 200 persisted acceptance operation |
-| `/api/transfers/{id}/dispatch-reconciliations/reject` | POST | Registered: 200 persisted rejection operation |
-
-Proposal body (all five fields required):
-
-```json
-{"variant_id":1,"operation_key":"dispatch-propose-0001","expected_revision":"0","dispatch_quantity":"7","reason":"physical dispatch verified"}
-```
-
-Decision body (exactly four fields; no quantity, not even null):
-
-```json
-{"variant_id":1,"operation_key":"dispatch-accept-00001","expected_revision":"1","reason":"counterparty verified"}
-```
-
-`variant_id` is a positive canonical JSON integer through 2147483647.
-`operation_key` uses `[A-Za-z0-9_-]{16,128}`. `expected_revision` is a canonical
-decimal string from `"0"` through `"9223372036854775806"`;
-`dispatch_quantity` admits `"0"` through `"9223372036854775807"`. Admission is
-lossless above 2^53. Reason is a required string without NUL, with 1–2000 Unicode
-characters after checking outer ASCII spaces; accepted text is preserved exactly.
-No actor/account/location, computed arithmetic, timestamps or status are admitted.
-
-Single JSON Content-Type with optional UTF-8 charset, 64 KiB size, valid UTF-8,
-complete single object, required fields and unknown/duplicate rejection follow
-count corrections, including escaped-equivalent duplicate keys. Numeric quantity
-or revision tokens, signs, padding, exponents, fractions and overflow are invalid.
-Decisions do not require proposal-only or acceptance-only arithmetic.
-
-Admission is method → real session identity → optional unique same-origin
-FetchSite → Origin/CSRF for POST → no query (including `?`) → canonical positive
-int64 path ID → lightweight participant/Received access fence → strict body →
-Store mutation. The pre-body fence does not decode history or test current
-eligibility. GET uses the Store's coordinated statement snapshot. Exact path,
-no redirect/encoded alias, no-store/nosniff and private error rules match the
-existing workflows. GET is production-routed; POST remains test-only.
-
-#### Exact response field sets for strict clients
-
-All fields below are required, including explicit nulls. All request IDs,
-quantities, balances, signed deltas, revisions and generations are decimal
-**strings**, never JSON floating-point numbers. Only variant/location IDs are
-bounded JSON integers. Timestamps are canonical UTC RFC3339Nano strings.
-
-| Object | Exact members |
-|---|---|
-| Snapshot | `request_id`, `lines`, `operations` |
-| Line | `variant_id`, `expected_quantity`, `actual_quantity`, `available_quantity`, `effective_dispatch`, `effective_actual`, `effective_credit`, `applied_retained_quantity`, `workflow_revision`, `applied_revision`, `count_generation`, `count_applied_revision`, `restitution_generation`, `reconciliation_generation`, `proposals` |
-| Proposal | `revision`, `operation_key`, `initiator_location_id`, `dispatch_quantity`, `base_dispatch`, `base_actual`, `base_credit`, `count_generation`, `restitution_generation`, `reconciliation_generation`, `reason`, `recorded_at`, `state`, `decision`, `application` |
-| Decision | `operation_key`, `actor_location_id`, `accepted`, `reason`, `recorded_at` |
-| Application | `operation_key`, `effective_dispatch`, `source_delta`, `destination_delta`, `recorded_at` |
-| Operation (POST and GET) | `operation_key`, `request_id`, `variant_id`, `actor_location_id`, `action`, `expected_revision`, `dispatch_quantity`, `reason`, `revision`, `source_existing_before`, `source_existing_after`, `destination_existing_before`, `destination_existing_after`, `recorded_at` |
-
-`lines`, `proposals`, `operations` are nonnull arrays, including `[]`. Lines are
-expected variants only, sorted by variant; proposals by revision; operations by
-revision, variant, timestamp, key. Line `actual_quantity` and `available_quantity`
-are original receipt actual and credit, not current values. Current credit includes
-both workflows; do not reconstruct it from one ledger. Proposal bases/generations
-are persisted historical consent pins, never recomputed or capped against today.
-Proposal state is `pending`, `superseded`, `rejected` or `applied`. Decision is null
-until decided; application is null unless accepted. `accepted` is boolean.
-Operation action is `propose`, `accept` or `reject`; quantity is string for propose
-and null for decisions. Each of the four endpoint before/after balances is a
-nullable decimal string; zero must remain `"0"`, not null. Never omit a field.
-
-Exact same operation identity/payload returns the original persisted response,
-even after later revisions/count changes. Changed payload is 409 `retry_conflict`.
-Only the counterpart decides; wrong role is 403 `forbidden`. Missing/foreign is
-404 `not_found` even with malformed bodies. Nonreceived/stale/predecessor changed/
-applied restitution conflicts are 409 `decision_conflict`; unexpected variant,
-Q != A or unchanged dispatch is 400 `invalid_request`; stock/reservation/overflow
-failure is 409 `insufficient_stock`. Authentication is 401 `unauthenticated`,
-method mismatch 405 `method_not_allowed` with `Allow`, backend/context failures
-503 `service_unavailable`. Errors are exactly `{"error":"<code>"}` plus newline,
-without SQL/private detail. All refusals leave workflow/inventory/counts unchanged.
-
-Recover uncertainty with explicit participant GET/identical retry, never a new key
-or a retargeted revision. A historical success does not describe today's head.
-Identical mutation retries use the same registered POST path and original payload.
-Registration and UI connection do not imply deployment or live-data verification.
+`transfer_recovery_events` is append-only and keyed by `(request_id,variant_id)`
+with `quantity > 0`, the reason, the operator label and the observed timestamp.
+It is deliberately not `transfer_receipt_exceptions`: that table's foreign key to
+`transfer_receipt_lines` would need exactly the zero-expected line 019 forbids.
+Nothing in the table ever changes stock, so repeated or disputed correction still
+belongs to the unified reconciliation workflow, never to this command.
 
 ## Full persisted outcomes and original replay
 
@@ -833,8 +533,8 @@ Only explicit snake_case DTOs are serialized:
 
 `requires_action` echoes the normalized boolean. `required_actions` maps exactly
 each returned canonical record ID to an array, including `[]` for no required work.
-Reasons appear once in this order: `approve`, `dispatch`, `receive`, `review_count`,
-`review_restitution`, `review_dispatch_reconciliation`. An action-only row always has at least one reason. Empty
+Reasons appear once in this order: `approve`, `dispatch`, `receive`,
+`review_unified_reconciliation`. An action-only row always has at least one reason. Empty
 pages return `{}`. This metadata is list-only: canonical records, detail, creation,
 mutations and recovery retain their existing shapes. Reasons are navigation advice,
 not authorization to mutate. Projection, total, selected IDs/reasons and canonical
@@ -847,7 +547,7 @@ integer numbers. Timestamps are canonical UTC RFC3339 with only necessary
 fractional precision. Exact catalog model, Ah and L/R data are preserved. Creation retry
 keys, hashes, creation XIDs and authentication/session secrets are never
 transfer-record fields. The optional `activity.actor` contains only the immutable
-account ID, username and display-name snapshot, not current account authority. Correction DTOs separately expose their durable
+account ID, username and display-name snapshot, not current account authority. Reconciliation DTOs separately expose their durable
 `operation_key` for participant-private recovery. Pending creation/replay returns the same public
 record and `Location: /api/transfers/{id}`; all reads use the same full record DTO.
 
@@ -858,37 +558,35 @@ It shares strict path-alias, unique-cookie, identity and privacy guards with
 existing reads. Its response uses exact decimal-string counts:
 
 ```json
-{"pending_total":"3","action_count":"1","actions":{"approve":"1","dispatch":"0","receive":"0","review_count":"0","review_restitution":"0","review_dispatch_reconciliation":"0"}}
+{"pending_total":"3","action_count":"1","actions":{"approve":"1","dispatch":"0","receive":"0","review_unified_reconciliation":"0"}}
 ```
 
 `pending_total` counts Pending requests whose physical origin or destination is
 the authenticated assigned location. `action_count` counts one header for:
-Pending at its **persisted approver**, Approved at its **physical origin**, or
+Pending at its **persisted approver**, Approved at its **physical origin**,
 In-transit at its **physical destination**, or Received needing **counterpart
-count review**, **destination restitution review**, or **counterpart dispatch
-reconciliation review** on an originally expected receipt line. Either endpoint
-may propose reconciliation; only the other physical endpoint discovers its review.
-Review uses the latest
-proposal per request/variant only, with no decision. Count initiators never
-review their own proposal. Restitution review requires an expected receipt line;
-stale count pins or pending counts do not hide it because rejection remains valid.
-Rejected/Cancelled and decided/superseded proposals contribute no action.
+unified reconciliation review** on an originally expected receipt line. Either
+endpoint may propose reconciliation; only the other physical endpoint discovers
+its review. Review uses the latest proposal per request/variant only, with no
+decision. Initiators never review their own proposal, and an expected receipt
+line is required. Rejected/Cancelled and decided/superseded proposals contribute
+no action.
 
-One request contributes once, even with multiple lines or both review kinds.
+One request contributes once, even with multiple lines.
 Reconciliation review is not gated by freshness, effective-count equality, stock
 or applied restitution, because a stale or otherwise unacceptable proposal can
 still be rejected. Discovery itself provides no decision controls; the received
-detail's Regularizar despacho context supplies explicit review and confirmation.
+detail's **Resolver diferencia** context supplies explicit review and confirmation.
 
-The six `actions` category totals count transfers independently and may overlap;
+The four `actions` category totals count transfers independently and may overlap;
 each is at most `action_count`, but their sum may exceed it. Voluntary cancellation,
 proposing and replacement do not count. Warehouse assignment grants no visibility
 outside physical participation. These are not unread events, discrepancy/stock
 quantities or page counts. `action_count` may exceed the independent
 `pending_total`, including `0` Pending and `1` required review.
 
-The backend and strict frontend must deliver this six-key breakdown together.
-When `actions` is present all six known keys are required; unknown or partial maps
+The backend and strict frontend must deliver this four-key breakdown together.
+When `actions` is present all four known keys are required; unknown or partial maps
 are rejected. Only absence of the entire breakdown retains legacy compatibility;
 this is not a mixed-version compatibility guarantee or a new deployment policy.
 
@@ -956,11 +654,14 @@ creations/approvals and context waits. HTTP tests cover strict roles, full lifec
 recovery, participant pages/counts and commit-only inventory/transfer hints.
 These backend checks do not establish direct-shipment frontend delivery.
 
-`TestC3Count*` covers the strict correction decoder, bigint/null/UTC DTOs,
-authenticated HTTP authority/privacy, exact stock transformations, unchanged
-original evidence, capped latest-credit application, unexpected audit-only counts,
-historical replay, stock conflicts and participant-only commit hints. These use
-the parent-admitted isolated PostgreSQL fixture without skipping integration.
+`TestC3CountDTOExactWire`, `TestR4RestitutionDTOExactWire` and
+`TestDR3HTTPDecodeWire` pin the lossless wire encoding of the historical count,
+restitution and dispatch evidence that the unified snapshot still embeds. The
+retained SQL writers and history readers keep their coverage at the SQL level in
+the schema package; the retired Go store writers are covered only by the
+test-only simulation described above, which is never part of a product build. All
+of them use the parent-admitted isolated PostgreSQL fixture without skipping
+integration.
 
 See [the immutable store contract](pending-requests-store.md) for persistence,
 replay ordering, Pending stock policy and snapshot rationale.

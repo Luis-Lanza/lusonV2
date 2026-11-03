@@ -4,20 +4,19 @@ import { loadSourceInventory, SourceInventoryError, type SourceCatalog } from '.
 import { transferQuantityTotal, type TransferRecord } from './transferModel';
 import { transferViewOwner } from './TransferPending';
 import { ReceiptTable } from './TransferReceipt';
-import TransferCountCorrections, { type TransferCountCorrectionsProps } from './TransferCountCorrections';
-import TransferRestitutions from './TransferRestitutions';
-import TransferDispatchReconciliations from './TransferDispatchReconciliations';
 import TransferDate from './TransferDate';
+import TransferUnifiedReconciliation from './TransferUnifiedReconciliation';
+import TransferUnifiedReconciliationHistory from './TransferUnifiedReconciliationHistory';
+import type { useTransferUnifiedReconciliations } from './useTransferUnifiedReconciliations';
+import type { TransferModalFocusBinding } from './transferModalFocus';
+import { projectUnifiedReceived } from './transferUnifiedReconciliationView';
 import TransferActivity from './TransferActivity';
 import { Icon } from './icons';
 import './transfer-detail.css';
 import './transfer-approved.css';
 import './transfer-transit.css';
 import './transfer-received.css';
-import { projectTransferReceived, type ReceivedQuantities } from './transferReceivedModel';
-import type { DispatchReconciliationLine, DispatchReconciliations } from './transferDispatchReconciliationModel';
-import type { useTransferDispatchReconciliations } from './useTransferDispatchReconciliations';
-import type { CountCorrectionLine, CountProposal } from './transferCountCorrectionModel';
+import type { ReceivedQuantities } from './transferReceivedModel';
 
 export type DetailController = TransferController & Partial<SourceInventoryController>;
 export interface StockAdvice { catalog: SourceCatalog | null; busy: boolean; unavailable: boolean }
@@ -28,14 +27,8 @@ export interface TransferDetailProps {
   actions?: (stock: StockAdvice) => ReactNode;
   onStock?: (stock: StockAdvice, recordID: string) => void;
   stockRefresh?: number;
-  corrections?: TransferCountCorrectionsProps['corrections'];
-  correctionRequestID?: string | null;
-  correctionsEnabled?: boolean;
-  restitutionRequestID?: string | null;
-  restitutionsEnabled?: boolean;
-  reconciliations?: ReturnType<typeof useTransferDispatchReconciliations>;
-  reconciliationRequestID?: string | null;
-  reconciliationsEnabled?: boolean;
+  unified?: ReturnType<typeof useTransferUnifiedReconciliations>;
+  modalFocus?: TransferModalFocusBinding;
 }
 
 // Local render/handler fence only. Nothing here becomes a decision/retry identity.
@@ -95,131 +88,6 @@ function ReceivedDifferences({ quantities }: { quantities: ReceivedQuantities })
       && <span className="received-matched">✓ Sin diferencias de conteo</span>}</>;
 }
 
-// Presentation proof only: the effective table remains the GET projection.
-// Revisions are per variant; decisions retain their proposal's revision.
-function countResultProof(line: CountCorrectionLine, record: TransferRecord, reconciliation?: DispatchReconciliationLine) {
-  const quantity = (n: bigint) => n >= 0n && n <= 9223372036854775807n;
-  const credit = (n: bigint) => n < line.expected_quantity ? n : line.expected_quantity;
-  const participant = (id: number) => id === record.origin_location_id || id === record.destination_location_id;
-  const proposals = new Map<bigint, CountProposal>();
-  const keys = new Set<string>();
-  if (![line.expected_quantity, line.actual_quantity, line.available_quantity, line.effective_actual,
-    line.effective_credit, line.workflow_revision, line.applied_revision].every(quantity)
-    || line.available_quantity !== credit(line.actual_quantity)) return null;
-  for (const p of line.proposals) {
-    if (!quantity(p.revision) || p.revision === 0n || proposals.has(p.revision)
-      || !quantity(p.actual_quantity) || !quantity(p.base_revision) || !quantity(p.base_credit)
-      || !participant(p.initiator_location_id) || keys.has(p.operation_key)) return null;
-    proposals.set(p.revision, p); keys.add(p.operation_key);
-    if (p.decision) {
-      if (!participant(p.decision.actor_location_id) || p.decision.actor_location_id === p.initiator_location_id
-        || keys.has(p.decision.operation_key)) return null;
-      keys.add(p.decision.operation_key);
-    }
-  }
-  const applied = line.proposals.filter(p => p.state === 'applied');
-  const latestRevision = line.proposals.reduce((max, p) => p.revision > max ? p.revision : max, 0n);
-  const appliedRevision = applied.reduce((max, p) => p.revision > max ? p.revision : max, 0n);
-  if (line.workflow_revision !== latestRevision || line.applied_revision !== appliedRevision) return null;
-  // Strictly decreasing references exclude cycles. Every predecessor must be
-  // the latest earlier application, not an arbitrary pending/rejected proposal.
-  const verified = new Map<bigint, { actual: bigint; credit: bigint }>();
-  // Generations count operations, NOT proposal revisions. Each decision is a
-  // separate operation; superseded proposals have no decision. Reconciliation
-  // never changes actual count. Its accepted credit can replace the predecessor
-  // only when its pin is after that predecessor's acceptance.
-  const before = (p: CountProposal) => line.proposals.reduce((n, item) =>
-    item.revision < p.revision ? n + 1n + (item.decision ? 1n : 0n) : n, 0n);
-  const reconciledBefore = (generation: bigint) => reconciliation?.proposals.filter(p =>
-    p.state === 'applied' && p.count_generation <= generation).at(-1);
-  const dispatchBefore = (p: CountProposal) => reconciledBefore(before(p))?.dispatch_quantity ?? line.expected_quantity;
-  function baseline(p: CountProposal): { actual: bigint; credit: bigint } | null {
-    const previous = applied.reduce((max, item) => item.revision < p.revision && item.revision > max ? item.revision : max, 0n);
-    if (p.base_revision !== previous || p.base_revision >= p.revision) return null;
-    const base = previous === 0n ? { actual: line.actual_quantity, credit: line.available_quantity }
-      : proveApplied(proposals.get(previous)!);
-    const reconciled = reconciledBefore(before(p));
-    const previousGeneration = previous === 0n ? 0n : before(proposals.get(previous)!) + 2n;
-    const effectiveBase = base && reconciled && reconciled.count_generation >= previousGeneration
-      ? { actual: base.actual, credit: reconciled.dispatch_quantity } : base;
-    return effectiveBase && p.base_credit === effectiveBase.credit ? effectiveBase : null;
-  }
-  function proveApplied(p: CountProposal): { actual: bigint; credit: bigint } | null {
-    const cached = verified.get(p.revision);
-    if (cached) return cached;
-    const base = baseline(p);
-    if (!base || p.state !== 'applied' || p.decision?.accepted !== true || !p.application
-      || p.application.recorded_at !== p.decision.recorded_at
-      || p.application.effective_credit !== (p.actual_quantity < dispatchBefore(p) ? p.actual_quantity : dispatchBefore(p))
-      || p.application.delta !== p.application.effective_credit - base.credit) return null;
-    const value = { actual: p.actual_quantity, credit: p.application.effective_credit };
-    verified.set(p.revision, value);
-    return value;
-  }
-  for (const p of line.proposals) {
-    if (p.state === 'applied') { if (!proveApplied(p)) return null; }
-    else if (!baseline(p) || p.application !== null
-      || (p.state === 'rejected' ? p.decision?.accepted !== false
-        : p.decision !== null || p.state !== (p.revision === latestRevision ? 'pending' : 'superseded'))) return null;
-  }
-  const current = appliedRevision === 0n ? { actual: line.actual_quantity, credit: line.available_quantity }
-    : verified.get(appliedRevision);
-  const latestReconciliation = reconciliation?.proposals.filter(p => p.state === 'applied').at(-1);
-  const lastCountGeneration = appliedRevision === 0n ? 0n : before(proposals.get(appliedRevision)!) + 2n;
-  const currentCredit = latestReconciliation && latestReconciliation.count_generation >= lastCountGeneration
-    ? latestReconciliation.dispatch_quantity : current?.credit;
-  if (!current || current.actual !== line.effective_actual || currentCredit !== line.effective_credit) return null;
-  // Cross-ledger pins must agree with the count history at that operation
-  // generation. A reconciliation between proposal and acceptance would retire
-  // that count consent, so an eventual application cannot straddle it.
-  for (const r of reconciliation?.proposals ?? []) {
-    const earlier = applied.reduce<CountProposal | undefined>((latest, p) => before(p) + 2n <= r.count_generation
-      && (!latest || p.revision > latest.revision) ? p : latest, undefined);
-    const actual = earlier ? earlier.actual_quantity : line.actual_quantity;
-    if (r.base_actual !== actual || applied.some(p => before(p) + 1n === r.count_generation)) return null;
-  }
-  const application = proposals.get(appliedRevision);
-  const latest = proposals.get(latestRevision);
-  return { application, rejected: latest?.state === 'rejected' ? latest : undefined,
-    baseline: (p: CountProposal) => baseline(p)! };
-}
-
-function projectCountCorrectionResults(record: TransferRecord, corrections: TransferCountCorrectionsProps['corrections'], reconciliations?: DispatchReconciliations | null) {
-  if (record.status !== 'received' || !corrections.snapshot || corrections.attempts.some(a => a.phase === 'inFlight' || a.phase === 'uncertain'
-    || a.phase === 'conflict' || a.phase !== 'confirmed' && a.priorUncertainty)) return null;
-  const location = (id: number) => id === record.origin_location_id ? record.origin_location_name : record.destination_location_name;
-  const snapshot = corrections.snapshot;
-  const rows = record.receipt.items.map(original => {
-    const line = snapshot.lines.find(item => item.variant_id === original.variant_id)!;
-    const proof = countResultProof(line, record, reconciliations?.lines.find(l => l.variant_id === line.variant_id));
-    const product = record.items.find(item => item.variant_id === line.variant_id);
-    const label = product ? product.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]' : `Variante ${line.variant_id}`;
-    const result = (p: CountProposal | undefined) => p && proof ? {
-      proposal: p, before: proof.baseline(p).actual, proposer: location(p.initiator_location_id),
-      decider: location(p.decision!.actor_location_id), delta: p.application?.delta,
-    } : undefined;
-    return { variant_id: line.variant_id, coherent: !!proof, product, label,
-      application: result(proof?.application), rejected: result(proof?.rejected),
-      shortage: line.effective_actual < line.effective_dispatch };
-  });
-  return { rows, corrected: rows.every(row => row.coherent) && rows.some(row => row.application) };
-}
-
-type CountResults = NonNullable<ReturnType<typeof projectCountCorrectionResults>>;
-function CountCorrectionResults({ results }: { results: CountResults | null }) {
-  const content = results?.rows.flatMap(row => [row.application, row.rejected].flatMap(result => {
-    if (!result) return [];
-    const { proposal: p, before, proposer, decider, delta } = result;
-    return [<p className={`count-evidence count-evidence-${p.state}`} key={`${row.variant_id}:${p.revision}`}>
-      <strong>{p.state === 'applied' ? 'Corrección aplicada vigente' : 'Propuesta de corrección rechazada'} en {row.label}: {before.toString()} → {p.actual_quantity.toString()}.</strong>
-      <span>Variante {row.variant_id}{row.product && <> · {row.product.brand} {row.product.model}</>}. Propuesta de {proposer} · {p.state === 'applied' ? 'Aceptada' : 'Rechazada'} por {decider}.
-        {delta !== undefined ? <> Cambio de crédito registrado en destino: {delta > 0n ? '+' : ''}{delta.toString()}.</>
-          : <> Sin cambios en el conteo ni en el stock por este rechazo.{row.shortage && ' El faltante permanece.'}</>}</span>
-    </p>];
-  }));
-  return content?.length ? <section className="received-result-provenance" aria-label="Resultados de corrección confirmados">{content}</section> : null;
-}
-
 function OriginalReceiptOverview({ record }: { record: TransferRecord }) {
   if (record.status !== 'received') return null;
   return <section className="transfer-receipt-overview" aria-label="Recepción original">
@@ -233,39 +101,12 @@ function OriginalReceiptOverview({ record }: { record: TransferRecord }) {
   </section>;
 }
 
-type ManagementContext = 'count' | 'restitution' | 'reconciliation';
-function ManagementMenu({ count, restitution, reconciliation, onSelect }: {
-  count: boolean; restitution: boolean; reconciliation: boolean; onSelect: (context: ManagementContext) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const trigger = useRef<HTMLButtonElement>(null);
-  const menu = useRef<HTMLDivElement>(null);
-  const entries: { context: ManagementContext; label: string }[] = [
-    ...(count ? [{ context: 'count' as const, label: 'Corregir conteo' }] : []),
-    ...(restitution ? [{ context: 'restitution' as const, label: 'Restituciones de origen' }] : []),
-    ...(reconciliation ? [{ context: 'reconciliation' as const, label: 'Regularizar despacho' }] : []),
-  ];
-  useEffect(() => { if (open) menu.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus(); }, [open]);
-  return <div className="received-management" onBlur={e => {
-    if (!e.currentTarget.contains(e.relatedTarget)) setOpen(false);
-  }}>
-    <button ref={trigger} type="button" aria-haspopup="menu" aria-expanded={open}
-      onClick={() => setOpen(!open)}>Gestiones<span aria-hidden="true"> {open ? '▴' : '▾'}</span></button>
-    {open && <div ref={menu} role="menu" aria-label="Gestiones" onKeyDown={e => {
-      if (e.key === 'Escape') { e.preventDefault(); setOpen(false); trigger.current?.focus(); }
-      if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
-        e.preventDefault();
-        const visible = Array.from(menu.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? []);
-        const index = visible.indexOf(document.activeElement as HTMLButtonElement);
-        const next = e.key === 'Home' ? 0 : e.key === 'End' ? visible.length - 1
-          : (index + (e.key === 'ArrowDown' ? 1 : -1) + visible.length) % visible.length;
-        visible[next]?.focus();
-      }
-    }}>
-      {entries.map(entry => <button key={entry.context} type="button" role="menuitem" onClick={() => {
-        setOpen(false); onSelect(entry.context);
-      }}>{entry.label}</button>)}
-    </div>}
+// Unified reconciliation is the only surviving management flow, so its entry is a
+// direct action. The trigger stays the stable element: it is captured on click and
+// handed to the modal as the exact focus-restore target behind the same fence.
+function ResolveDifferenceAction({ masked, onSelect }: { masked: boolean; onSelect: (trigger: HTMLElement) => void }) {
+  return <div className="received-management">
+    <button type="button" disabled={masked} onClick={event => onSelect(event.currentTarget)}>Resolver diferencia</button>
   </div>;
 }
 
@@ -281,10 +122,8 @@ export default function TransferDetail(props: TransferDetailProps) {
   const pending = record?.status === 'pending';
   const [historyFor, setHistoryFor] = useState<string | null>(null);
   const managementScope = JSON.stringify([fence, ownerTag, id, record?.status, record?.kind,
-    record?.origin_location_id, record?.destination_location_id,
-    props.correctionRequestID, props.correctionsEnabled, props.restitutionRequestID, props.restitutionsEnabled,
-    props.reconciliationRequestID, props.reconciliationsEnabled]);
-  const [management, setManagement] = useState<{ scope: string; context: ManagementContext; token: number } | null>(null);
+    record?.origin_location_id, record?.destination_location_id]);
+  const [management, setManagement] = useState<{ scope: string; token: number; trigger: HTMLElement } | null>(null);
   const entrySerial = useRef(0);
   useEffect(() => { setManagement(null); }, [managementScope]);
   const [state, setState] = useState<{ fence: string; id: string; stock: StockAdvice } | null>(null);
@@ -444,33 +283,17 @@ export default function TransferDetail(props: TransferDetailProps) {
       || session.identity.location.id === record.destination_location_id);
   // Do not read private hook evidence until both the mount-bound authority and
   // the caller's selected-record enablement agree. The hook owns head freshness.
-  const effectiveContext = receivedParticipant && props.correctionsEnabled === true
-    && props.correctionRequestID === record.id;
-  const countEntry = effectiveContext && !!props.corrections;
-  const restitutionEntry = receivedParticipant && props.restitutionsEnabled === true
-    && props.restitutionRequestID === record.id && !!controller.restitutionRecovery;
   const selected = management?.scope === managementScope ? management : null;
-  const corrections = effectiveContext ? props.corrections : undefined;
-  const reconciliationContext = effectiveContext && props.reconciliationsEnabled === true
-    && props.reconciliationRequestID === record.id;
-  const reconciliations = reconciliationContext ? props.reconciliations : undefined;
-  const effective = receivedParticipant ? projectTransferReceived({ record,
-    snapshot: corrections?.snapshot ?? null,
-    reconciliations: props.reconciliationsEnabled === undefined ? undefined : reconciliations?.snapshot ?? null,
-    busy: (corrections?.busy ?? false) || (reconciliations?.busy ?? false),
-    error: corrections?.error ?? reconciliations?.error ?? null,
-    masked: (corrections?.masked ?? false) || (reconciliations?.masked ?? false), contextValid: effectiveContext }) : null;
-  const countResults = effective?.status === 'available' && corrections
-    ? projectCountCorrectionResults(record, corrections, reconciliations?.snapshot) : null;
+  // The unified snapshot is the only effective-count source; no legacy reader is consulted.
+  const unified = receivedParticipant ? props.unified : undefined;
+  const effective = receivedParticipant && unified
+    ? projectUnifiedReceived(record, unified.snapshot, unified.busy, unified.error, unified.masked) : null;
   const receivedHistoryLabel = receivedParticipant
     ? direct ? 'Historial del envío' : record.kind === 'send_to_warehouse' ? 'Historial de la propuesta' : 'Historial de la solicitud'
     : 'Historial de la solicitud';
   return <div className={`transfer-detail${receivedParticipant ? ' transfer-received-detail' : ''}`}>
     <header className={receivedParticipant ? 'transfer-received-heading' : 'transfer-detail-heading'}><h1>{record.reference}</h1>
       <span className={`pending-status status-${record.status}`}>{transferStatusLabel(record)}</span>
-      {countResults?.corrected && <span className="received-result-badge">Conteo corregido</span>}
-      {countResults && effective?.status === 'available' && (effective.totals.shortage > 0n || effective.totals.excess > 0n || effective.totals.unexpected > 0n)
-        && <span className="received-result-differences"><ReceivedDifferences quantities={effective.totals} /></span>}
       {receivedParticipant && <button type="button" aria-expanded={historyOpen} aria-controls="received-transfer-history"
         onClick={() => setHistoryFor(historyOpen ? null : historyKey)}><span aria-hidden="true">◷ </span>Ver historial</button>}
       <p>{receivedParticipant ? <>{direct ? 'Envío directo de Almacén' : record.kind === 'send_to_warehouse' ? 'Propuesta de envío a Almacén' : 'Solicitud de stock'} · <span aria-label="Ruta física">{record.origin_location_name} → {record.destination_location_name}</span></> : direct ? 'Envío directo de Almacén' : record.kind === 'send_to_warehouse' ? 'Propuesta de envío a Almacén' : record.origin_location_id === 1 ? 'Solicitud a Almacén' : 'Solicitud entre sucursales'}</p>
@@ -481,30 +304,31 @@ export default function TransferDetail(props: TransferDetailProps) {
         <b aria-hidden="true">→</b><div><span>Destino</span><strong>{record.destination_location_name}</strong>
           <small>{direct ? 'Receptor · no requiere aprobación' : record.kind === 'send_to_warehouse' ? 'Receptor · requiere aprobación' : 'Ubicación solicitante'}</small></div>
     </section>}
-    {receivedParticipant && effective && <section className="transfer-received-products" aria-busy={effective.status === 'updating'}
+    {receivedParticipant && effective && <section className="transfer-received-products"
+      aria-busy={effective.status === 'loading' || effective.status === 'updating'}
       aria-label={effective.status === 'available' ? 'Conteo efectivo confirmado' : 'Conteo efectivo de recepción'}>
-      {effective.status === 'unavailable' ? <div className="received-unavailable" data-reason={effective.reason}>
+      {effective.status === 'loading' ? <div className="received-loading">
+        <header><h2>Cargando conteo efectivo…</h2></header>
+        <div className="received-skeleton" aria-hidden="true"><span /><span /><span /><span /></div>
+        <p role="status">Consultando el conteo efectivo de esta recepción.</p>
+      </div> : effective.status === 'unavailable' ? <div className="received-unavailable" data-reason={effective.reason}>
         <h2>Conteo efectivo no disponible</h2>
-        <p>No se muestran cantidades originales como conteo efectivo. Consultá el estado y los controles de recuperación en Correcciones de conteo.</p>
-        {corrections && !corrections.masked && <button type="button" disabled={corrections.busy}
-          onClick={() => { if (current() && effectiveContext) { void corrections.refresh(); void reconciliations?.refresh(); } }}>Reintentar conteo efectivo</button>}
+        <p>No se muestran cantidades originales como conteo efectivo. Consultá el estado y los controles de recuperación en Resolver diferencia.</p>
+        {unified && !unified.masked && <button disabled={unified.busy} onClick={() => { if (current()) void unified.refresh(); }}>Consultar conciliación</button>}
       </div> : <>
         <header><h2>{effective.status === 'updating' ? 'Actualizando conteo efectivo…' : 'Conteo efectivo confirmado'}</h2>
           <span> · {effective.rows.length} variantes · {effective.totals.actual.toString()} {effective.totals.actual === 1n ? 'batería contabilizada' : 'baterías contabilizadas'}</span></header>
         {effective.status === 'updating' && <p role="status">Actualizando: evidencia retenida, pendiente de consulta; no confirma el estado más reciente.</p>}
         <div className="received-table"><table><caption className="sr-only">Conteo efectivo</caption>
           <thead><tr>{['Batería', 'Enviadas', 'Recibidas efectivas', 'Crédito efectivo', 'Diferencia'].map(label => <th scope="col" key={label}>{label}</th>)}</tr></thead>
-          <tbody>{effective.rows.map(row => {
-            const application = countResults?.rows.find(result => result.variant_id === row.variant_id)?.application;
-            return <tr key={row.variant_id} data-variant-id={row.variant_id}
-              className={`${row.shortage || row.excess || row.unexpected ? 'received-discrepant' : ''}${application ? ' received-result-applied' : ''}`}>
+          <tbody>{effective.rows.map(row =>
+            <tr key={row.variant_id} data-variant-id={row.variant_id}
+              className={row.shortage || row.excess || row.unexpected ? 'received-discrepant' : ''}>
               <td>{row.product ? <>{row.product.brand} {row.product.model}<small>{row.product.capacity_ah} Ah · {row.product.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</small></>
-                : <>Variante {row.variant_id} · identidad no disponible</>}
-                {application && <small className="received-corrected">Conteo corregido: {application.before.toString()} → {application.proposal.actual_quantity.toString()}</small>}</td>
+                : <>Variante {row.variant_id} · identidad no disponible</>}</td>
               <td data-label="Enviadas">{row.expected.toString()}</td><td data-label="Recibidas efectivas">{row.actual.toString()}</td>
               <td data-label="Crédito efectivo">{row.credit.toString()}</td><td data-label="Diferencia"><ReceivedDifferences quantities={row} /></td>
-            </tr>;
-          })}</tbody>
+            </tr>)}</tbody>
           <tfoot><tr><th scope="row">Total · {effective.rows.length} variantes</th><td data-label="Enviadas">{effective.totals.expected.toString()}</td>
             <td data-label="Recibidas efectivas">{effective.totals.actual.toString()}</td><td data-label="Crédito efectivo">{effective.totals.credit.toString()}</td>
             <td data-label="Diferencia"><ReceivedDifferences quantities={effective.totals} /></td></tr></tfoot>
@@ -512,17 +336,16 @@ export default function TransferDetail(props: TransferDetailProps) {
         <p className="received-scope"><Icon name="info" />Estas cantidades reflejan el conteo efectivo de esta recepción, no el stock actual de {record.destination_location_name}.</p>
       </>}
       <footer className="received-result-band">
-        <div className="received-result-summary"><CountCorrectionResults results={countResults} />
-          {effective.status !== 'unavailable' && <>
+        <div className="received-result-summary">
+          {effective.status !== 'unavailable' && effective.status !== 'loading' && <>
             <ReceivedDifferences quantities={effective.totals} />
             {(effective.totals.shortage > 0n || effective.totals.excess > 0n || effective.totals.unexpected > 0n)
               && <p>Las diferencias se registran por variante, sin compensarse ni resolverse automáticamente.</p>}
           </>}
         </div>
-        {(countEntry || restitutionEntry || !!reconciliations) && <ManagementMenu
-          key={managementScope} count={countEntry} restitution={restitutionEntry} reconciliation={!!reconciliations} onSelect={context => {
-            if (current()) setManagement({ scope: managementScope, context, token: ++entrySerial.current });
-          }} />}
+        {unified && <ResolveDifferenceAction key={managementScope} masked={unified.masked} onSelect={trigger => {
+          if (current()) setManagement({ scope: managementScope, token: ++entrySerial.current, trigger });
+        }} />}
       </footer>
       {props.actions?.(stock)}
     </section>}
@@ -533,21 +356,13 @@ export default function TransferDetail(props: TransferDetailProps) {
         <ReceiptTable receipt={record.receipt} record={record} detailPresentation />
       </details>
     </footer> : <OriginalReceiptOverview record={record} />}
+    {unified && <TransferUnifiedReconciliation key={`${fence}:${record.id}`} controller={controller} record={record}
+      reconciliations={unified} modalFocus={props.modalFocus} showEntry={false}
+      entryFocusKey={selected?.token} entryTrigger={selected?.trigger} />}
+    {unified && historyOpen && !unified.masked && <TransferUnifiedReconciliationHistory snapshot={unified.snapshot} />}
     <div className="transfer-detail-grid"><div>
       {record.status === 'received' ? !receivedParticipant && <ReceiptTable receipt={record.receipt} record={record} detailPresentation />
         : <TransferItems record={record} stock={terminal ? undefined : stock} />}
-      {props.corrections && <TransferCountCorrections record={record} controller={controller}
-        corrections={props.corrections} requestID={props.correctionRequestID ?? null} enabled={props.correctionsEnabled ?? false}
-        contextVisible={!receivedParticipant || selected?.context === 'count'}
-        entryFocusKey={selected?.context === 'count' ? selected.token : undefined} />}
-      <TransferRestitutions controller={controller} record={record} requestID={props.restitutionRequestID ?? null}
-        enabled={props.restitutionsEnabled ?? false} contextVisible={!receivedParticipant || selected?.context === 'restitution'}
-        entryFocusKey={selected?.context === 'restitution' ? selected.token : undefined} />
-      {reconciliations && <TransferDispatchReconciliations
-        key={`${fence}:${record.id}:${record.kind}:${record.origin_location_id}:${record.destination_location_id}`}
-        record={record} actorLocation={session?.authenticated ? session.identity.location.id : null}
-        reconciliations={reconciliations} contextVisible={selected?.context === 'reconciliation'}
-        entryFocusKey={selected?.context === 'reconciliation' ? selected.token : undefined} />}
       {!terminal && <div className="transfer-advisory"><p>Stock de origen orientativo, no es una garantía de disponibilidad. El servidor revalida toda la solicitud al aprobar.</p>
         {stock.unavailable && <p role="alert">No se pudo consultar el stock de origen. La solicitud completa sigue disponible para revisión.</p>}
         <button type="button" disabled={stock.busy} onClick={() => { if (current()) refresh.current(); }}>Actualizar stock de origen</button>

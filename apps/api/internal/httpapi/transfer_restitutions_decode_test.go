@@ -2,10 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
-	"errors"
-	"io"
 	"math"
-	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -14,158 +11,9 @@ import (
 	"luson/api/internal/transfers"
 )
 
-const r4Proposal = `{"variant_id":1,"operation_key":"restitution-test-001","expected_revision":"0","retained_quantity":"1","retained_at_origin":true,"reason":"  retained ☃  "}`
-const r4Decision = `{"variant_id":1,"operation_key":"restitution-test-002","expected_revision":"1","reason":"confirmed"}`
-
-func r4Decode(body string, propose bool) (restitutionMutation, error) {
-	r := httptest.NewRequest("POST", "/", strings.NewReader(body))
-	r.Header.Set("Content-Type", "application/json")
-	return decodeRestitutionMutation(r, propose)
-}
-
-type r4ReadError struct{}
-
-func (r4ReadError) Read([]byte) (int, error) { return 0, errors.New("private body failure") }
-func (r4ReadError) Close() error             { return nil }
-
-func TestR4RestitutionDecoder(t *testing.T) {
-	t.Run("mandatory proposal preserves evidence", func(t *testing.T) {
-		in, err := r4Decode(r4Proposal, true)
-		if err != nil || in.VariantID != 1 || in.ExpectedRevision != 0 || in.RetainedQuantity != 1 || !in.RetainedAtOrigin || in.Reason != "  retained ☃  " {
-			t.Fatal("valid explicit proposal rejected or changed")
-		}
-	})
-	t.Run("mandatory decision", func(t *testing.T) {
-		in, err := r4Decode(r4Decision, false)
-		if err != nil || in.ExpectedRevision != 1 || in.RetainedQuantity != 0 || in.RetainedAtOrigin {
-			t.Fatal("valid decision rejected or invented retention")
-		}
-	})
-	for _, propose := range []bool{true, false} {
-		body := r4Decision
-		if propose {
-			body = r4Proposal
-		}
-		var fields map[string]json.RawMessage
-		if json.Unmarshal([]byte(body), &fields) != nil {
-			t.Fatal("fixture")
-		}
-		for key := range fields {
-			for _, null := range []bool{false, true} {
-				copy := make(map[string]json.RawMessage)
-				for k, v := range fields {
-					copy[k] = v
-				}
-				if null {
-					copy[key] = json.RawMessage("null")
-				} else {
-					delete(copy, key)
-				}
-				b, _ := json.Marshal(copy)
-				if _, err := r4Decode(string(b), propose); !errors.Is(err, transfers.ErrInvalid) {
-					t.Fatalf("missing/null %s admitted", key)
-				}
-			}
-		}
-	}
-	cases := []string{
-		"null", "[]", "true", "{}", r4Proposal + " {}", r4Proposal + "x",
-		strings.Replace(r4Proposal, `"variant_id":1`, `"variant_id":1.0`, 1),
-		strings.Replace(r4Proposal, `"variant_id":1`, `"variant_id":1e0`, 1),
-		strings.Replace(r4Proposal, `"variant_id":1`, `"variant_id":"1"`, 1),
-		strings.Replace(r4Proposal, `"variant_id":1`, `"variant_id":2147483648`, 1),
-		strings.Replace(r4Proposal, `"variant_id":1`, `"variant_id":0`, 1),
-		strings.Replace(r4Proposal, `"expected_revision":"0"`, `"expected_revision":0`, 1),
-		strings.Replace(r4Proposal, `"expected_revision":"0"`, `"expected_revision":"00"`, 1),
-		strings.Replace(r4Proposal, `"expected_revision":"0"`, `"expected_revision":"9223372036854775807"`, 1),
-		strings.Replace(r4Proposal, `"retained_quantity":"1"`, `"retained_quantity":"0"`, 1),
-		strings.Replace(r4Proposal, `"retained_quantity":"1"`, `"retained_quantity":"01"`, 1),
-		strings.Replace(r4Proposal, `"retained_quantity":"1"`, `"retained_quantity":1`, 1),
-		strings.Replace(r4Proposal, `"retained_quantity":"1"`, `"retained_quantity":"9223372036854775808"`, 1),
-		strings.Replace(r4Proposal, `"retained_at_origin":true`, `"retained_at_origin":false`, 1),
-		strings.Replace(r4Proposal, `"retained_at_origin":true`, `"retained_at_origin":"true"`, 1),
-		strings.Replace(r4Proposal, `"reason":"  retained ☃  "`, `"reason":"   "`, 1),
-		strings.Replace(r4Proposal, `"reason":"  retained ☃  "`, `"reason":"\u0000"`, 1),
-		strings.Replace(r4Proposal, `"reason":"  retained ☃  "`, `"reason":true`, 1),
-		strings.Replace(r4Proposal, `"reason":"  retained ☃  "`, `"reason":"`+strings.Repeat("☃", 2001)+`"`, 1),
-		strings.Replace(r4Proposal, "☃", string([]byte{0xff}), 1),
-		strings.Replace(r4Proposal, `"variant_id":1`, `"variant_id":1,"variant\u005fid":1`, 1),
-	}
-	for _, value := range []string{`"-1"`, `"+1"`, `"1.0"`, `"1e0"`, `" 1"`, `"1 "`, `""`, `true`, `[]`, `{}`} {
-		cases = append(cases, strings.Replace(r4Proposal, `"retained_quantity":"1"`, `"retained_quantity":`+value, 1))
-		cases = append(cases, strings.Replace(r4Proposal, `"expected_revision":"0"`, `"expected_revision":`+value, 1))
-	}
-	for _, key := range []string{strings.Repeat("a", 15), strings.Repeat("a", 129), "restitution key 001", "  restitution-key-001", "restitution-key-001 "} {
-		value, _ := json.Marshal(key)
-		cases = append(cases, strings.Replace(r4Proposal, `"restitution-test-001"`, string(value), 1))
-	}
-	for _, field := range []string{"actor_location_id", "action", "accept", "retained", "revision", "source_existing_after", "unknown"} {
-		cases = append(cases, strings.TrimSuffix(r4Proposal, "}")+`,"`+field+`":true}`)
-	}
-	for i, body := range cases {
-		if _, err := r4Decode(body, true); !errors.Is(err, transfers.ErrInvalid) {
-			t.Fatalf("invalid case %d admitted", i)
-		}
-	}
-	for _, field := range []string{`,"retained_quantity":"1"`, `,"retained_at_origin":true`, `,"action":"accept"`} {
-		if _, err := r4Decode(strings.TrimSuffix(r4Decision, "}")+field+"}", false); err == nil {
-			t.Fatal("decision expansion admitted")
-		}
-	}
-	for _, typ := range []string{"", "text/json", "application/json; charset=latin1", "application/json; a=b", "application/json; charset=utf-8; charset=utf-8"} {
-		r := httptest.NewRequest("POST", "/", strings.NewReader(r4Proposal))
-		r.Header.Set("Content-Type", typ)
-		if _, err := decodeRestitutionMutation(r, true); err == nil {
-			t.Fatal("bad content type admitted")
-		}
-	}
-	r := httptest.NewRequest("POST", "/", strings.NewReader(r4Proposal))
-	r.Header.Add("Content-Type", "application/json")
-	r.Header.Add("Content-Type", "application/json")
-	if _, err := decodeRestitutionMutation(r, true); err == nil {
-		t.Fatal("duplicate content type")
-	}
-	for _, typ := range []string{"application/json", "application/json; charset=UTF-8"} {
-		r := httptest.NewRequest("POST", "/", strings.NewReader(r4Proposal))
-		r.Header.Set("Content-Type", typ)
-		if _, err := decodeRestitutionMutation(r, true); err != nil {
-			t.Fatal("valid content type rejected")
-		}
-	}
-	for _, size := range []int{64 << 10, (64 << 10) + 1} {
-		body := r4Proposal + strings.Repeat(" ", size-len(r4Proposal))
-		_, err := r4Decode(body, true)
-		if (err == nil) != (size == 64<<10) {
-			t.Fatal("body byte bound")
-		}
-	}
-	r = httptest.NewRequest("POST", "/", nil)
-	r.Header.Set("Content-Type", "application/json")
-	r.Body = r4ReadError{}
-	if _, err := decodeRestitutionMutation(r, true); err == nil {
-		t.Fatal("read error admitted")
-	}
-	r.Body = io.NopCloser(strings.NewReader(""))
-	if _, err := decodeRestitutionMutation(r, true); err == nil {
-		t.Fatal("empty body admitted")
-	}
-	if _, err := decodeRestitutionMutation(nil, true); err == nil {
-		t.Fatal("nil request admitted")
-	}
-	max := strings.Replace(r4Proposal, `"expected_revision":"0"`, `"expected_revision":"9223372036854775806"`, 1)
-	max = strings.Replace(max, `"retained_quantity":"1"`, `"retained_quantity":"9223372036854775807"`, 1)
-	if in, err := r4Decode(max, true); err != nil || in.RetainedQuantity != math.MaxInt64 || in.ExpectedRevision != math.MaxInt64-1 {
-		t.Fatal("bigint bounds rejected")
-	}
-	for _, reason := range []string{"\t", "\u00a0", strings.Repeat("☃", 2000)} {
-		b, _ := json.Marshal(reason)
-		body := strings.Replace(r4Proposal, `"  retained ☃  "`, string(b), 1)
-		if in, err := r4Decode(body, true); err != nil || in.Reason != reason {
-			t.Fatal("reason validation broadened")
-		}
-	}
-}
-
+// The restitution decoder is retired with its HTTP surface; this test pins the
+// lossless wire encoding of the historical restitution evidence that the unified
+// reconciliation snapshot still embeds.
 func r4Wire(t *testing.T, v any) map[string]json.RawMessage {
 	t.Helper()
 	b, err := json.Marshal(v)

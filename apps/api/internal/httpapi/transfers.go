@@ -477,34 +477,22 @@ func (a *API) transferCounts(store *transfers.Store) http.HandlerFunc {
 			ActionCount  string            `json:"action_count"`
 			Actions      map[string]string `json:"actions"`
 		}{strconv.FormatInt(totals.PendingTotal, 10), strconv.FormatInt(totals.ActionCount, 10), map[string]string{
-			"approve":                        strconv.FormatInt(totals.Actions.Approve, 10),
-			"dispatch":                       strconv.FormatInt(totals.Actions.Dispatch, 10),
-			"receive":                        strconv.FormatInt(totals.Actions.Receive, 10),
-			"review_count":                   strconv.FormatInt(totals.Actions.ReviewCount, 10),
-			"review_restitution":             strconv.FormatInt(totals.Actions.ReviewRestitution, 10),
-			"review_dispatch_reconciliation": strconv.FormatInt(totals.Actions.ReviewDispatchReconciliation, 10),
+			"approve":                       strconv.FormatInt(totals.Actions.Approve, 10),
+			"dispatch":                      strconv.FormatInt(totals.Actions.Dispatch, 10),
+			"receive":                       strconv.FormatInt(totals.Actions.Receive, 10),
+			"review_unified_reconciliation": strconv.FormatInt(totals.Actions.ReviewUnifiedReconciliation, 10),
 		}})
 	}
 }
 
 func (a *API) registerTransfers(mux *http.ServeMux, store *transfers.Store) {
-	mux.HandleFunc("/api/transfers/{id}/dispatch-reconciliations", a.transferDispatchReconciliations(store, ""))
-	mux.HandleFunc("/api/transfers/{id}/dispatch-reconciliations/propose", a.transferDispatchReconciliations(store, "propose"))
-	mux.HandleFunc("/api/transfers/{id}/dispatch-reconciliations/accept", a.transferDispatchReconciliations(store, "accept"))
-	mux.HandleFunc("/api/transfers/{id}/dispatch-reconciliations/reject", a.transferDispatchReconciliations(store, "reject"))
-	mux.HandleFunc("/api/transfers/{id}/dispatch-reconciliations/", countCorrectionNotFound)
+	mux.HandleFunc("/api/transfers/{id}/unified-reconciliations", a.transferUnifiedReconciliations(store))
+	mux.HandleFunc("/api/transfers/{id}/unified-reconciliations/", countCorrectionNotFound)
+	mux.HandleFunc("/api/transfers/{id}/unified-reconciliations/propose", a.transferUnifiedReconciliationMutation(store, "propose"))
+	mux.HandleFunc("/api/transfers/{id}/unified-reconciliations/accept", a.transferUnifiedReconciliationMutation(store, "accept"))
+	mux.HandleFunc("/api/transfers/{id}/unified-reconciliations/reject", a.transferUnifiedReconciliationMutation(store, "reject"))
 	mux.HandleFunc("/api/transfers/{id}/cancel", a.transferCancellation(store))
 	mux.HandleFunc("/api/transfers/{id}/receive", a.transferReceive(store))
-	mux.HandleFunc("/api/transfers/{id}/count-corrections", a.transferCountCorrections(store, ""))
-	mux.HandleFunc("/api/transfers/{id}/count-corrections/", countCorrectionNotFound)
-	mux.HandleFunc("/api/transfers/{id}/count-corrections/propose", a.transferCountCorrections(store, "propose"))
-	mux.HandleFunc("/api/transfers/{id}/count-corrections/accept", a.transferCountCorrections(store, "accept"))
-	mux.HandleFunc("/api/transfers/{id}/count-corrections/reject", a.transferCountCorrections(store, "reject"))
-	mux.HandleFunc("/api/transfers/{id}/restitutions", a.transferRestitutions(store, ""))
-	mux.HandleFunc("/api/transfers/{id}/restitutions/", restitutionNotFound)
-	mux.HandleFunc("/api/transfers/{id}/restitutions/propose", a.transferRestitutions(store, "propose"))
-	mux.HandleFunc("/api/transfers/{id}/restitutions/accept", a.transferRestitutions(store, "accept"))
-	mux.HandleFunc("/api/transfers/{id}/restitutions/reject", a.transferRestitutions(store, "reject"))
 	mux.HandleFunc("/api/transfers/{id}/dispatch", a.transferDispatch(store))
 	mux.HandleFunc("/api/transfers/{id}/approve", a.transferDecision(store, true))
 	mux.HandleFunc("/api/transfers/{id}/reject", a.transferDecision(store, false))

@@ -7,25 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"luson/api/internal/auth"
 )
-
-// Inputs contain intent only. Identity and all accounting pins are server owned.
-type DispatchReconciliationProposalInput struct {
-	VariantID        int64
-	OperationKey     string
-	ExpectedRevision int64
-	DispatchQuantity int64
-	Reason           string
-}
-type DispatchReconciliationDecisionInput struct {
-	VariantID        int64
-	OperationKey     string
-	ExpectedRevision int64
-	Accept           bool
-	Reason           string
-}
 
 // Operations retain the original committed balances, even on historical replay.
 type DispatchReconciliationOperation struct {
@@ -98,97 +81,6 @@ type DispatchReconciliations struct {
 	Operations []DispatchReconciliationOperation `json:"operations"`
 }
 
-// CheckDispatchReconciliationAccess fences HTTP body decoding without reading
-// history or evaluating today's eligibility. SQL remains the replay authority.
-func (s *Store) CheckDispatchReconciliationAccess(ctx context.Context, actor auth.Identity, id int64) error {
-	return s.CheckRestitutionAccess(ctx, actor, id)
-}
-
-func (s *Store) ProposeDispatchReconciliation(ctx context.Context, actor auth.Identity, id int64, in DispatchReconciliationProposalInput) (DispatchReconciliationOperation, error) {
-	q := in.DispatchQuantity
-	return s.reconcileDispatch(ctx, actor, id, in.VariantID, in.OperationKey, "propose", in.ExpectedRevision, &q, in.Reason)
-}
-
-func (s *Store) DecideDispatchReconciliation(ctx context.Context, actor auth.Identity, id int64, in DispatchReconciliationDecisionInput) (DispatchReconciliationOperation, error) {
-	action := "reject"
-	if in.Accept {
-		action = "accept"
-	}
-	return s.reconcileDispatch(ctx, actor, id, in.VariantID, in.OperationKey, action, in.ExpectedRevision, nil, in.Reason)
-}
-
-func (s *Store) reconcileDispatch(ctx context.Context, actor auth.Identity, id, variant int64, key, action string, revision int64, quantity *int64, reason string) (DispatchReconciliationOperation, error) {
-	if err := s.CheckDispatchReconciliationAccess(ctx, actor, id); err != nil {
-		return DispatchReconciliationOperation{}, err
-	}
-	// Identical integer/key/reason semantics to count corrections. Do not check
-	// Q against today's count: an exact old operation must still be replayable.
-	if !validCountInput(variant, key, revision, quantity, reason) {
-		return DispatchReconciliationOperation{}, ErrInvalid
-	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	tx, err := s.beginPersonal(ctx, actor)
-	if err != nil {
-		return DispatchReconciliationOperation{}, fail(ctx)
-	}
-	defer func() {
-		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
-		defer done()
-		_ = tx.Rollback(cleanup)
-	}()
-	var raw []byte
-	err = tx.QueryRow(ctx, `SELECT to_jsonb(o) FROM transfer_dispatch_reconcile($1,$2::integer,$3::smallint,$4,$5,$6,$7,$8) o`, id, variant, actor.Location.ID, key, action, revision, quantity, reason).Scan(&raw)
-	if err != nil {
-		return DispatchReconciliationOperation{}, dispatchReconciliationError(ctx, err)
-	}
-	var op DispatchReconciliationOperation
-	if json.Unmarshal(raw, &op) != nil {
-		return DispatchReconciliationOperation{}, ErrUnavailable
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return DispatchReconciliationOperation{}, fail(ctx)
-	}
-	op.RecordedAt = op.RecordedAt.UTC()
-	return op, nil
-}
-
-// Match only entrypoint/operation errors intentionally owned by this workflow.
-// Unknown constraints, driver failures and isolation errors remain redacted.
-func dispatchReconciliationError(ctx context.Context, err error) error {
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	if activeLocationRequired(err) {
-		return ErrDecisionConflict
-	}
-	var p *pgconn.PgError
-	if !errors.As(err, &p) {
-		return fail(ctx)
-	}
-	switch p.Code {
-	case "42501":
-		switch p.Message {
-		case "Reconciliation endpoint unauthorized", "Reconciliation requires a physical endpoint of a received transfer", "Only initiator may replace a pending reconciliation", "Only exact reconciliation counterparty may decide":
-			return ErrForbidden
-		}
-	case "23505":
-		if p.Message == "Reconciliation operation identity conflicts" {
-			return ErrRetryConflict
-		}
-	case "23514":
-		switch p.Message {
-		case "Reconciliation requires an originally expected variant", "Reconciled dispatch must equal effective received count and change dispatch", "Invalid reconciliation action":
-			return ErrInvalid
-		case "Stale reconciliation revision", "Reconciliation excluded after restitution", "Reconciliation decision is terminal or payload invalid", "Reconciliation predecessor changed":
-			return ErrDecisionConflict
-		case "Reconciliation requires covered nonoverflowing endpoint stock", "Reconciliation requires both endpoint balances":
-			return ErrInsufficientStock
-		}
-	}
-	return fail(ctx)
-}
-
 // GetDispatchReconciliations reads one committed statement snapshot. Historical
 // pins and balances come directly from immutable evidence, never today's D/C.
 // The effective-line function owns summed credit across both accounting ledgers.
@@ -208,8 +100,9 @@ func (s *Store) GetDispatchReconciliations(ctx context.Context, actor auth.Ident
 		return DispatchReconciliations{}, err
 	}
 	var status string
+	var owned bool
 	var lines, operations []byte
-	err := s.pool.QueryRow(ctx, dispatchReconciliationSnapshotSQL, id, actor.Location.ID).Scan(&status, &lines, &operations)
+	err := s.pool.QueryRow(ctx, dispatchReconciliationSnapshotSQL, id, actor.Location.ID).Scan(&status, &owned, &lines, &operations)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return DispatchReconciliations{}, ErrNotFound
 	}
@@ -219,11 +112,19 @@ func (s *Store) GetDispatchReconciliations(ctx context.Context, actor auth.Ident
 	if status != "received" {
 		return DispatchReconciliations{}, ErrDecisionConflict
 	}
+	if owned {
+		return DispatchReconciliations{}, ErrUnifiedReconciliationRequired
+	}
 	out := DispatchReconciliations{RequestID: id}
 	// Typed int64 decoding rejects overflow/fractional quantities without float64.
 	if json.Unmarshal(lines, &out.Lines) != nil || json.Unmarshal(operations, &out.Operations) != nil {
 		return DispatchReconciliations{}, ErrUnavailable
 	}
+	normalizeDispatchSnapshot(&out)
+	return out, nil
+}
+
+func normalizeDispatchSnapshot(out *DispatchReconciliations) {
 	for i := range out.Operations {
 		out.Operations[i].RecordedAt = out.Operations[i].RecordedAt.UTC()
 	}
@@ -239,10 +140,9 @@ func (s *Store) GetDispatchReconciliations(ctx context.Context, actor auth.Ident
 			}
 		}
 	}
-	return out, nil
 }
 
-const dispatchReconciliationSnapshotSQL = `SELECT h.status,
+const dispatchReconciliationSnapshotSQL = `SELECT h.status,transfer_unified_owned(h.id),
  COALESCE((SELECT jsonb_agg(to_jsonb(line) ORDER BY variant_id) FROM (
  SELECT r.variant_id,r.expected_quantity,r.actual_quantity,r.available_quantity,
  state.dispatch AS effective_dispatch,state.actual AS effective_actual,state.credit AS effective_credit,

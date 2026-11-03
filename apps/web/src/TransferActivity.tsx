@@ -6,6 +6,7 @@ const labels: Record<string, Record<string, string>> = {
   count: { propose: 'Corrección de conteo propuesta', accept: 'Corrección de conteo aceptada', reject: 'Corrección de conteo rechazada' },
   restitution: { propose: 'Restitución propuesta', accept: 'Restitución aceptada', reject: 'Restitución rechazada' },
   reconciliation: { propose: 'Regularización de despacho propuesta', accept: 'Regularización de despacho aceptada', reject: 'Regularización de despacho rechazada' },
+  unified: { propose: 'Conciliación unificada propuesta', accept: 'Conciliación unificada aceptada', reject: 'Conciliación unificada rechazada' },
 };
 
 // Rendered inside the detail's existing mount-bound participant/history fence.

@@ -10,8 +10,8 @@ import { Icon } from './icons';
 import TransferDispatch from './TransferDispatch';
 import TransferReceipt from './TransferReceipt';
 import TransferCancellation from './TransferCancellation';
-import { useTransferCountCorrections } from './useTransferCountCorrections';
-import { useTransferDispatchReconciliations } from './useTransferDispatchReconciliations';
+import { useTransferUnifiedReconciliations } from './useTransferUnifiedReconciliations';
+import { createUnifiedReconciliationAPI } from './transferUnifiedReconciliationAPI';
 import { isTransferFocusTarget, type TransferModalFocusBinding } from './transferModalFocus';
 
 // No session or CSRF retained in routing state. Epoch changes invalidate this tag.
@@ -108,14 +108,14 @@ export default function TransferPending(props: TransferPendingProps) {
   // Use the very same authoritative record as the detail, including a just-confirmed receipt.
   const actor = authority.session?.authenticated ? authority.session.identity.location.id : null;
   // Match TransferDetail's mount-bound fence: a retired private pane must not read history.
-  const correctionAuthority = useRef(fence);
-  const correctionsEnabled = permitted && !!fence && fence === correctionAuthority.current && !privateUnavailable && record?.status === 'received'
+  const reconciliationAuthority = useRef(fence);
+  const reconciliationEnabled = permitted && !!fence && fence === reconciliationAuthority.current && !privateUnavailable && record?.status === 'received'
     && record.id === selected && (actor === record.origin_location_id || actor === record.destination_location_id);
-  const correctionRequestID = correctionsEnabled ? record.id : null;
-  const corrections = useTransferCountCorrections({ controller: props.controller,
-    requestID: correctionRequestID, enabled: correctionsEnabled });
-  const reconciliations = useTransferDispatchReconciliations({ controller: props.controller,
-    record: correctionsEnabled ? record : null, enabled: correctionsEnabled,
+  const [unifiedAPI] = useState(createUnifiedReconciliationAPI);
+  const unified = useTransferUnifiedReconciliations({ controller: props.controller,
+    record: reconciliationEnabled ? record : null, enabled: reconciliationEnabled, api: unifiedAPI,
+    // The existing confirmation seam accepts this exact operation's shared
+    // identity/balance fields and invalidates inventory, activity and counters.
     onConfirmed: props.controller.confirmTransferDispatchReconciliation });
   const modalFocus: TransferModalFocusBinding = {
     scope: focusScope.current.token,
@@ -204,9 +204,7 @@ export default function TransferPending(props: TransferPendingProps) {
             renderDetail={receiptActions => <TransferCancellation controller={props.controller} ownerTag={props.ownerTag} transfers={transfers} record={record} modalFocus={modalFocus}
               onPrivateUnavailable={() => { if (current() && selected) setMasked({ fence, id: selected }); }}
               renderDetail={cancellationActions => record && <TransferDetail controller={props.controller} ownerTag={props.ownerTag} record={record}
-                corrections={corrections} correctionRequestID={correctionRequestID} correctionsEnabled={correctionsEnabled}
-                reconciliations={reconciliations} reconciliationRequestID={correctionRequestID} reconciliationsEnabled={correctionsEnabled}
-                restitutionRequestID={correctionRequestID} restitutionsEnabled={correctionsEnabled}
+                unified={reconciliationEnabled ? unified : undefined} modalFocus={modalFocus}
                 onStock={receiveStock} stockRefresh={stockRefresh} actions={() => <>{actions}{dispatchActions}{receiptActions}{cancellationActions}</>} />} />} />} />} />
     </> : <>
       <div className="transfer-status-toolbar">

@@ -14,22 +14,6 @@ import (
 	"luson/api/internal/auth"
 )
 
-// Count inputs never contain an actor or client-computed credit. OperationKey is
-// a global durable identity: retain the entire input for uncertain-write retries.
-type CountProposalInput struct {
-	VariantID        int64
-	OperationKey     string
-	ExpectedRevision int64
-	Actual           int64
-	Reason           string
-}
-type CountDecisionInput struct {
-	VariantID        int64
-	OperationKey     string
-	ExpectedRevision int64
-	Accept           bool
-	Reason           string
-}
 type CountOperation struct {
 	OperationKey     string    `json:"operation_key"`
 	RequestID        int64     `json:"request_id"`
@@ -87,78 +71,11 @@ type CountCorrections struct {
 	Operations []CountOperation
 }
 
-func (s *Store) ProposeCount(ctx context.Context, actor auth.Identity, id int64, in CountProposalInput) (CountOperation, error) {
-	actual := in.Actual // Copy caller input; do not trim accepted reason semantics.
-	return s.correctCount(ctx, actor, id, in.VariantID, in.OperationKey, "propose", in.ExpectedRevision, &actual, in.Reason)
-}
-func (s *Store) DecideCount(ctx context.Context, actor auth.Identity, id int64, in CountDecisionInput) (CountOperation, error) {
-	action := "reject"
-	if in.Accept {
-		action = "accept"
-	}
-	return s.correctCount(ctx, actor, id, in.VariantID, in.OperationKey, action, in.ExpectedRevision, nil, in.Reason)
-}
-
 func validCountInput(variant int64, key string, revision int64, actual *int64, reason string) bool {
 	return variant > 0 && variant <= math.MaxInt32 && retryKeyPattern.MatchString(key) &&
 		revision >= 0 && revision < math.MaxInt64 && (actual == nil || *actual >= 0) &&
 		utf8.ValidString(reason) && !strings.ContainsRune(reason, 0) &&
 		utf8.RuneCountInString(strings.Trim(reason, " ")) >= 1 && utf8.RuneCountInString(strings.Trim(reason, " ")) <= 2000
-}
-
-func (s *Store) correctCount(ctx context.Context, actor auth.Identity, id, variant int64, key, action string, revision int64, actual *int64, reason string) (CountOperation, error) {
-	if ctx == nil || s == nil || s.pool == nil {
-		return CountOperation{}, ErrUnavailable
-	}
-	if !assigned(actor) {
-		return CountOperation{}, ErrForbidden
-	}
-	if id < 1 {
-		return CountOperation{}, ErrNotFound
-	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if err := checkAssignment(ctx, s.pool, actor); err != nil {
-		return CountOperation{}, err
-	}
-	tx, err := s.beginPersonal(ctx, actor)
-	if err != nil {
-		return CountOperation{}, fail(ctx)
-	}
-	defer func() {
-		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
-		defer done()
-		_ = tx.Rollback(cleanup)
-	}()
-	// Authorize physical participation before even validating retry identity.
-	// The SQL entrypoint repeats authorization under its shared lock, owns all
-	// effects, and keeps database owners' administrative authority explicit.
-	var status string
-	err = tx.QueryRow(ctx, `SELECT status FROM transfer_requests WHERE id=$1 AND $2 IN (origin_location_id,destination_location_id)`, id, actor.Location.ID).Scan(&status)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return CountOperation{}, ErrNotFound
-	}
-	if err != nil {
-		return CountOperation{}, fail(ctx)
-	}
-	if status != "received" {
-		return CountOperation{}, ErrDecisionConflict
-	}
-	if !validCountInput(variant, key, revision, actual, reason) {
-		return CountOperation{}, ErrInvalid
-	}
-	var op CountOperation
-	err = tx.QueryRow(ctx, `SELECT operation_key,request_id,variant_id,actor_location_id,action,expected_revision,actual_quantity,reason,revision,recorded_at
- FROM transfer_count_correct($1,$2::integer,$3::smallint,$4,$5,$6,$7,$8)`, id, variant, actor.Location.ID, key, action, revision, actual, reason).Scan(
-		&op.OperationKey, &op.RequestID, &op.VariantID, &op.ActorLocationID, &op.Action, &op.ExpectedRevision, &op.Actual, &op.Reason, &op.Revision, &op.RecordedAt)
-	if err != nil {
-		return CountOperation{}, countError(ctx, err)
-	}
-	if err = tx.Commit(ctx); err != nil {
-		return CountOperation{}, fail(ctx)
-	}
-	op.RecordedAt = op.RecordedAt.UTC()
-	return op, nil
 }
 
 // activeLocationRequired recognizes only migration017's fresh-work rejection.
@@ -167,44 +84,6 @@ func activeLocationRequired(err error) bool {
 	var p *pgconn.PgError
 	return errors.As(err, &p) && p.Code == "23514" &&
 		p.ConstraintName == "active_location_required" && p.Message == "New work requires active locations"
-}
-
-// Only known correction failures become domain conflicts. Unknown constraints,
-// isolation mistakes (25000), and operational failures remain unavailable; no
-// SQL text, private reason, or driver details cross the Store boundary.
-func countError(ctx context.Context, err error) error {
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	if activeLocationRequired(err) {
-		return ErrDecisionConflict
-	}
-	var p *pgconn.PgError
-	if !errors.As(err, &p) {
-		return fail(ctx)
-	}
-	switch p.Code {
-	case "42501":
-		if p.Message == "Correction endpoint unauthorized" || p.Message == "Correction requires a physical endpoint of a received transfer" || p.Message == "Only initiator may replace a pending proposal" || p.Message == "Only exact counterparty may decide" {
-			return ErrForbidden
-		}
-	case "23505":
-		if p.Message == "Correction operation identity conflicts" {
-			return ErrRetryConflict
-		}
-	case "23514":
-		switch p.Message {
-		case "Correction requires persisted receipt membership", "Corrected count must be nonnegative", "Invalid correction action":
-			return ErrInvalid
-		case "Stale correction revision", "Decision revision is terminal or payload invalid", "Correction predecessor changed", "Correction exceeds debit after restitution":
-			return ErrDecisionConflict
-		case "Correction requires covered nonoverflowing destination stock":
-			return ErrInsufficientStock
-		}
-	case "25000":
-		return ErrUnavailable
-	}
-	return fail(ctx)
 }
 
 // GetCountCorrections uses one statement snapshot, not several READ COMMITTED
@@ -227,7 +106,8 @@ func (s *Store) GetCountCorrections(ctx context.Context, actor auth.Identity, id
 	}
 	var lines, operations []byte
 	var status string
-	err := s.pool.QueryRow(ctx, countSnapshotSQL, id, actor.Location.ID).Scan(&status, &lines, &operations)
+	var owned bool
+	err := s.pool.QueryRow(ctx, countSnapshotSQL, id, actor.Location.ID).Scan(&status, &owned, &lines, &operations)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CountCorrections{}, ErrNotFound
 	}
@@ -237,10 +117,18 @@ func (s *Store) GetCountCorrections(ctx context.Context, actor auth.Identity, id
 	if status != "received" {
 		return CountCorrections{}, ErrDecisionConflict
 	}
+	if owned {
+		return CountCorrections{}, ErrUnifiedReconciliationRequired
+	}
 	out := CountCorrections{RequestID: id}
 	if json.Unmarshal(lines, &out.Lines) != nil || json.Unmarshal(operations, &out.Operations) != nil {
 		return CountCorrections{}, ErrUnavailable
 	}
+	normalizeCountSnapshot(&out)
+	return out, nil
+}
+
+func normalizeCountSnapshot(out *CountCorrections) {
 	for i := range out.Operations {
 		out.Operations[i].RecordedAt = out.Operations[i].RecordedAt.UTC()
 	}
@@ -256,10 +144,9 @@ func (s *Store) GetCountCorrections(ctx context.Context, actor auth.Identity, id
 			}
 		}
 	}
-	return out, nil
 }
 
-const countSnapshotSQL = `SELECT h.status,
+const countSnapshotSQL = `SELECT h.status,transfer_unified_owned(h.id),
  COALESCE((SELECT jsonb_agg(to_jsonb(line) ORDER BY variant_id) FROM (
  SELECT r.*, COALESCE(latest.revision,0) AS workflow_revision,
  COALESCE(applied.revision,0) AS applied_revision,

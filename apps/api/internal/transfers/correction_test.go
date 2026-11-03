@@ -42,6 +42,9 @@ func c2BranchReceipt(t *testing.T) (context.Context, *pgxpool.Pool, transfers.Re
 	ctx, p, s := fixture(t)
 	in := input()
 	in.CounterpartyID = 3
+	// Every receipt line must describe a dispatched variant, so the third line
+	// this fixture needs is a real item of the branch transfer, not an unexpected one.
+	in.Items = append(in.Items, transfers.Line{VariantID: 3, Quantity: 1})
 	r := create(t, ctx, s, 2, in).Request
 	var err error
 	if r, err = s.Approve(ctx, actor(3), r.ID); err != nil {
@@ -50,7 +53,7 @@ func c2BranchReceipt(t *testing.T) (context.Context, *pgxpool.Pool, transfers.Re
 	if r, err = s.Dispatch(ctx, actor(3), r.ID); err != nil {
 		t.Fatal(err)
 	}
-	if r, err = s.Receive(ctx, actor(2), r.ID, transfers.ReceiptInput{Items: []transfers.Line{{VariantID: 1, Quantity: 1}, {VariantID: 2, Quantity: 1}, {VariantID: 3, Quantity: 7}}}); err != nil {
+	if r, err = s.Receive(ctx, actor(2), r.ID, transfers.ReceiptInput{Items: []transfers.Line{{VariantID: 1, Quantity: 1}, {VariantID: 2, Quantity: 1}, {VariantID: 3, Quantity: 1}}}); err != nil {
 		t.Fatal(err)
 	}
 	return ctx, p, r
@@ -66,7 +69,8 @@ func TestC2CorrectionStoreProposal(t *testing.T) {
 				t.Fatal(err)
 			}
 			initial := c2StoreRead(t, ctx, s, r)
-			if len(initial.Lines) != 3 || len(initial.Operations) != 0 || initial.Lines[0].EffectiveActual != 1 || initial.Lines[0].WorkflowRevision != 0 {
+			// c2Receipt stores dispatched variants only: variant 1 (shortage) and 2.
+			if len(initial.Lines) != 2 || len(initial.Operations) != 0 || initial.Lines[0].EffectiveActual != 1 || initial.Lines[0].WorkflowRevision != 0 {
 				t.Fatal("initial receipt state", initial)
 			}
 			initiator, other := r.Origin.ID, r.Destination.ID
@@ -116,20 +120,20 @@ func TestC2CorrectionStoreProposal(t *testing.T) {
 			if old := c2StoreDecide(t, ctx, s, r, r.Destination.ID, 1, 1, true, "store-decision-00"); old.Revision != 1 {
 				t.Fatal("historical decision retry")
 			}
-			for _, variant := range []int64{2, 3} {
-				c2StorePropose(t, ctx, s, r, r.Destination.ID, variant, 0, 0, fmt.Sprintf("store-extra-proposal-%d", variant))
-				c2StoreDecide(t, ctx, s, r, r.Origin.ID, variant, 1, true, fmt.Sprintf("store-extra-decision-%d", variant))
+			c2StorePropose(t, ctx, s, r, r.Destination.ID, 2, 0, 0, "store-extra-proposal-2")
+			c2StoreDecide(t, ctx, s, r, r.Origin.ID, 2, 1, true, "store-extra-decision-2")
+			// S1/S3: variant 3 was never dispatched, so it has no receipt line and its
+			// correction is refused instead of being stored as an unexpected line.
+			refused := c2Snapshot(t, ctx, p)
+			if op, err := s.ProposeCount(ctx, actor(r.Origin.ID), r.ID, transfers.CountProposalInput{VariantID: 3, OperationKey: "store-unexpected-max", Actual: math.MaxInt64, Reason: "count verified"}); !errors.Is(err, transfers.ErrInvalid) || !reflect.DeepEqual(op, transfers.CountOperation{}) {
+				t.Fatal("undispatched variant correction admitted", err)
 			}
-			// Unexpected lines accept the full nonnegative bigint range without
-			// any stock incorporation, even after a previous zero correction.
-			c2StorePropose(t, ctx, s, r, r.Origin.ID, 3, 1, math.MaxInt64, "store-unexpected-max")
-			c2StoreDecide(t, ctx, s, r, r.Destination.ID, 3, 2, true, "store-unexpected-max-decision")
+			if c2Snapshot(t, ctx, p) != refused {
+				t.Fatal("refused correction left evidence")
+			}
 			out := c2StoreRead(t, ctx, s, r)
-			if out.Lines[2].EffectiveActual != math.MaxInt64 {
-				t.Fatal("maximum audit actual")
-			}
-			if len(out.Operations) != 14 || out.Lines[1].EffectiveActual != 0 || out.Lines[2].EffectiveCredit != 0 || out.Lines[2].Proposals[0].Application.Delta != 0 {
-				t.Fatal("matching/unexpected", out)
+			if len(out.Operations) != 10 || out.Lines[1].EffectiveActual != 0 || out.Lines[1].EffectiveCredit != 0 {
+				t.Fatal("matching correction state", out)
 			}
 			if got, err := s.Get(ctx, actor(r.Origin.ID), r.ID); err != nil || !t10WorkflowDetailEqual(t, got, original) {
 				t.Fatal("immutable receipt/header changed", err)

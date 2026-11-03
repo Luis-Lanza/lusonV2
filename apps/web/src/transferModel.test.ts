@@ -436,11 +436,14 @@ describe('A05a outcome and count contracts', () => {
 });
 
 describe('required action metadata', () => {
-  const actions = { approve: '0', dispatch: '0', receive: '0', review_count: '9007199254740993', review_restitution: '9007199254740993', review_dispatch_reconciliation: '0' };
-  it('decodes overlapping lossless categories without inventing legacy zero categories', () => {
+  const actions = { approve: '0', dispatch: '0', receive: '0', review_unified_reconciliation: '9007199254740993' };
+  it('decodes the four lossless categories without admitting a retired review category', () => {
     const counts = parseTransferCounts(JSON.stringify({ pending_total: '0', action_count: '9007199254740993', actions }));
-    expect(counts).toMatchObject({ actions: { review_count: 9007199254740993n, review_restitution: 9007199254740993n } });
+    expect(counts.actions).toEqual({ approve: 0n, dispatch: 0n, receive: 0n, review_unified_reconciliation: 9007199254740993n });
     expect(parseTransferCounts('{"pending_total":"0","action_count":"0"}')).not.toHaveProperty('actions');
+    for (const retired of [{ review_count: '0' }, { review_restitution: '0' }, { review_dispatch_reconciliation: '0' }]) {
+      expect(() => parseTransferCounts(JSON.stringify({ pending_total: '0', action_count: '0', actions: { ...actions, ...retired } }))).toThrow();
+    }
     for (const patch of [{ approve: '9007199254740994' }, { approve: '01' }, { approve: 0 }, { approve: undefined }, { other: '0' }]) {
       expect(() => parseTransferCounts(JSON.stringify({ pending_total: '0', action_count: '9007199254740993', actions: { ...actions, ...patch } }))).toThrow();
     }
@@ -448,11 +451,12 @@ describe('required action metadata', () => {
   it('requires exact page membership, ordered lifecycle-compatible reasons and boolean echo', () => {
     const record = receiptWire();
     const page = { page: 1, page_size: 25, status: 'all', total_count: '1', records: [record], requires_action: true,
-      required_actions: { [record.id]: ['review_count', 'review_restitution'] } };
+      required_actions: { [record.id]: ['review_unified_reconciliation'] } };
     expect(parseTransferPage(JSON.stringify(page))).toMatchObject({ requires_action: true, required_actions: page.required_actions });
     for (const required_actions of [{}, { '01': [] }, { ...page.required_actions, '1': [] }, { [record.id]: [] },
-      { [record.id]: ['unknown'] }, { [record.id]: ['approve'] }, { [record.id]: ['review_count', 'review_count'] },
-      { [record.id]: ['review_restitution', 'review_count'] }, null, undefined]) {
+      { [record.id]: ['unknown'] }, { [record.id]: ['approve'] }, { [record.id]: ['review_count'] },
+      { [record.id]: ['review_unified_reconciliation', 'review_unified_reconciliation'] },
+      { [record.id]: ['review_unified_reconciliation', 'receive'] }, null, undefined]) {
       expect(() => parseTransferPage(JSON.stringify({ ...page, required_actions }))).toThrow();
     }
     for (const requires_action of [undefined, 'true', 1, null]) expect(() => parseTransferPage(JSON.stringify({ ...page, requires_action }))).toThrow();
@@ -469,20 +473,18 @@ describe('required action metadata', () => {
   });
 });
 
-describe('reconciliation discovery strict metadata', () => {
-  const reason = 'review_dispatch_reconciliation';
-  const actions = { approve: '0', dispatch: '0', receive: '0', review_count: '9007199254740993',
-    review_restitution: '9007199254740993', [reason]: '9007199254740993' };
+describe('unified reconciliation review strict metadata', () => {
+  const reason = 'review_unified_reconciliation';
+  const actions = { approve: '0', dispatch: '0', receive: '0', [reason]: '9007199254740993' };
   const counts = (categories: unknown) => JSON.stringify({ pending_total: '0', action_count: '9007199254740993', actions: categories });
   const received = receiptWire();
   const page = (reasons: string[], record: unknown = received) => JSON.stringify({ page: 1, page_size: 25,
     status: 'all', total_count: '1', records: [record], requires_action: true, required_actions: { [received.id]: reasons } });
 
-  it('admits all six categories losslessly while counting the overlapping union once', () => {
+  it('admits all four categories losslessly while counting the overlapping union once', () => {
     const raw = counts(actions);
     expect(parseTransferCounts(raw)).toEqual({ pending_total: 0n, action_count: 9007199254740993n,
-      actions: { approve: 0n, dispatch: 0n, receive: 0n, review_count: 9007199254740993n,
-        review_restitution: 9007199254740993n, [reason]: 9007199254740993n } });
+      actions: { approve: 0n, dispatch: 0n, receive: 0n, [reason]: 9007199254740993n } });
     expect(counts(actions)).toBe(raw);
     expect(parseTransferCounts('{"pending_total":"0","action_count":"1"}'))
       .toEqual({ pending_total: 0n, action_count: 1n });
@@ -493,23 +495,26 @@ describe('reconciliation discovery strict metadata', () => {
     expect(() => parseTransferCounts(raw)).toThrow('Invalid transfer response');
     expect(counts(incomplete)).toBe(raw);
   });
-  it.each(['9007199254740994', '9223372036854775808', '01', '-1', 1, null])('rejects invalid sixth count %s', value => {
+  it.each(['9007199254740994', '9223372036854775808', '01', '-1', 1, null])('rejects invalid fourth count %s', value => {
     const raw = counts({ ...actions, [reason]: value });
     expect(() => parseTransferCounts(raw)).toThrow('Invalid transfer response');
     expect(counts({ ...actions, [reason]: value })).toBe(raw);
   });
-  it('still rejects unknown categories', () => {
+  it('still rejects unknown and retired categories', () => {
     expect(() => parseTransferCounts(counts({ ...actions, unknown: '0' }))).toThrow('Invalid transfer response');
+    for (const retired of ['review_count', 'review_restitution', 'review_dispatch_reconciliation']) {
+      expect(() => parseTransferCounts(counts({ ...actions, [retired]: '0' }))).toThrow('Invalid transfer response');
+    }
   });
   it.each([1, 2])('admits server-owned counterpart eligibility at physical endpoint %s', assigned => {
-    const raw = page(['review_count', reason]);
+    const raw = page([reason]);
     const parsed = parseTransferPage(raw);
-    expect(parsed.required_actions).toEqual({ [received.id]: ['review_count', reason] });
+    expect(parsed.required_actions).toEqual({ [received.id]: [reason] });
     expect(() => validateTransferActions(parsed, assigned)).not.toThrow();
-    expect(page(['review_count', reason])).toBe(raw);
+    expect(page([reason])).toBe(raw);
   });
-  it.each([[reason, reason], [reason, 'review_count'], [reason, 'review_restitution'], ['unknown']].map(reasons => ({ reasons })))(
-    'rejects duplicate, out-of-order or unknown reasons $reasons', ({ reasons }) => {
+  it.each([[reason, reason], [reason, 'receive'], ['review_count'], ['review_restitution'], ['unknown']].map(reasons => ({ reasons })))(
+    'rejects duplicate, out-of-order, retired or unknown reasons $reasons', ({ reasons }) => {
       expect(() => parseTransferPage(page(reasons))).toThrow('Invalid transfer response');
     });
   it.each([wireRecord(), dispatchWire(), cancellationWire()])('rejects reconciliation on a non-Received header', record => {

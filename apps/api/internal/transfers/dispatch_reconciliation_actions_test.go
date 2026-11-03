@@ -11,8 +11,6 @@ import (
 	"luson/api/internal/transfers"
 )
 
-const discoveryReason = "review_dispatch_reconciliation"
-
 // Observe only public reads, including immutable receipt and reconciliation history.
 func discoveryUnchanged(t *testing.T, ctx context.Context, p *pgxpool.Pool, s *transfers.Store, r transfers.Request) func() {
 	t.Helper()
@@ -41,30 +39,25 @@ func discoveryUnchanged(t *testing.T, ctx context.Context, p *pgxpool.Pool, s *t
 	}
 }
 
-func discoveryCheck(t *testing.T, ctx context.Context, s *transfers.Store, r transfers.Request, who int, reasons []string) {
+// S7 retires the dispatch audit flow: a proposal must create no list work, no
+// count work and no ordered reason, while every category remains serialized.
+func discoveryCheck(t *testing.T, ctx context.Context, s *transfers.Store, r transfers.Request, who int) {
 	t.Helper()
-	want := int64(0)
-	if len(reasons) != 0 {
-		want = 1
-	}
 	page, err := s.List(ctx, actor(who), transfers.Query{Status: "all", RequiresAction: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if page.Total != want || int64(len(page.Records)) != want || int64(len(page.RequiredActions)) != want || !page.RequiresAction {
-		t.Errorf("actor %d filtered page=%+v, want %d header", who, page, want)
-	}
-	if want == 1 && (!reflect.DeepEqual(page.RequiredActions[r.ID], reasons) || len(page.Records) != 1 || !t10ListEqual(t, page.Records, []transfers.Request{r})) {
-		t.Errorf("actor %d reasons=%v want=%v; canonical receipt must be retained", who, page.RequiredActions[r.ID], reasons)
+	if page.Total != 0 || len(page.Records) != 0 || len(page.RequiredActions) != 0 || !page.RequiresAction {
+		t.Errorf("actor %d filtered page=%+v, want no retired audit work", who, page)
 	}
 	counts, err := s.Counts(ctx, actor(who))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if counts.PendingTotal != 0 || counts.ActionCount != want {
-		t.Errorf("actor %d counts=%+v, want pending=0 union=%d", who, counts, want)
+	if counts != (transfers.Totals{}) {
+		t.Errorf("actor %d counts=%+v, want zero pending total and zero union", who, counts)
 	}
-	// JSON over the exported public value avoids referring to a not-yet-added field.
+	// JSON over the exported public value pins the four-category contract.
 	raw, err := json.Marshal(counts.Actions)
 	if err != nil {
 		t.Fatal(err)
@@ -73,11 +66,7 @@ func discoveryCheck(t *testing.T, ctx context.Context, s *transfers.Store, r tra
 	if err := json.Unmarshal(raw, &categories); err != nil {
 		t.Fatal(err)
 	}
-	wantCategories := map[string]int64{"Approve": 0, "Dispatch": 0, "Receive": 0, "ReviewCount": 0, "ReviewRestitution": 0, "ReviewDispatchReconciliation": 0}
-	for _, reason := range reasons {
-		field := map[string]string{"review_count": "ReviewCount", "review_restitution": "ReviewRestitution", discoveryReason: "ReviewDispatchReconciliation"}[reason]
-		wantCategories[field] = 1
-	}
+	wantCategories := map[string]int64{"Approve": 0, "Dispatch": 0, "Receive": 0, "ReviewUnifiedReconciliation": 0}
 	if !reflect.DeepEqual(categories, wantCategories) {
 		t.Errorf("actor %d categories=%v want=%v", who, categories, wantCategories)
 	}
@@ -89,9 +78,9 @@ func TestDRDiscoveryStoreCounterpart(t *testing.T) {
 			ctx, p, s, r := dr2Fixture(t)
 			dr2Propose(t, ctx, s, r, proposer, 0, 7, "discovery-counterpart")
 			defer discoveryUnchanged(t, ctx, p, s, r)()
-			discoveryCheck(t, ctx, s, r, 3-proposer, []string{discoveryReason})
-			discoveryCheck(t, ctx, s, r, proposer, nil)
-			discoveryCheck(t, ctx, s, r, 3, nil)
+			discoveryCheck(t, ctx, s, r, 3-proposer)
+			discoveryCheck(t, ctx, s, r, proposer)
+			discoveryCheck(t, ctx, s, r, 3)
 			for _, who := range []int{0, 4} {
 				if _, err := s.List(ctx, actor(who), transfers.Query{Status: "all", RequiresAction: true}); err != transfers.ErrForbidden {
 					t.Errorf("unassigned list: %v", err)
@@ -123,7 +112,7 @@ func TestDRDiscoveryStoreStaleOverlap(t *testing.T) {
 			t.Fatal(err)
 		}
 		unchanged := discoveryUnchanged(t, ctx, p, s, r)
-		discoveryCheck(t, ctx, s, r, 2, []string{discoveryReason})
+		discoveryCheck(t, ctx, s, r, 2)
 		if _, err := s.DecideDispatchReconciliation(ctx, actor(2), r.ID, transfers.DispatchReconciliationDecisionInput{VariantID: 1, OperationKey: "discovery-stale-accept", ExpectedRevision: 1, Accept: true, Reason: "stale"}); err != transfers.ErrDecisionConflict {
 			t.Errorf("stale accept: %v", err)
 		}
@@ -131,7 +120,7 @@ func TestDRDiscoveryStoreStaleOverlap(t *testing.T) {
 		if _, err := s.DecideDispatchReconciliation(ctx, actor(2), r.ID, transfers.DispatchReconciliationDecisionInput{VariantID: 1, OperationKey: "discovery-stale-reject", ExpectedRevision: 1, Reason: "declined"}); err != nil {
 			t.Fatal(err)
 		}
-		discoveryCheck(t, ctx, s, r, 2, nil)
+		discoveryCheck(t, ctx, s, r, 2)
 	})
 	t.Run("reserved_stock_does_not_hide_rejectable_work", func(t *testing.T) {
 		ctx, p, s, r := dr2Fixture(t)
@@ -144,7 +133,7 @@ func TestDRDiscoveryStoreStaleOverlap(t *testing.T) {
 			t.Fatal(err)
 		}
 		unchanged := discoveryUnchanged(t, ctx, p, s, r)
-		discoveryCheck(t, ctx, s, r, 2, []string{discoveryReason})
+		discoveryCheck(t, ctx, s, r, 2)
 		if _, err := s.DecideDispatchReconciliation(ctx, actor(2), r.ID, transfers.DispatchReconciliationDecisionInput{VariantID: 1, OperationKey: "discovery-stock-accept", ExpectedRevision: 1, Accept: true, Reason: "reserved"}); err != transfers.ErrInsufficientStock {
 			t.Errorf("reserved stock accept: %v", err)
 		}
@@ -152,9 +141,9 @@ func TestDRDiscoveryStoreStaleOverlap(t *testing.T) {
 		if _, err := s.DecideDispatchReconciliation(ctx, actor(2), r.ID, transfers.DispatchReconciliationDecisionInput{VariantID: 1, OperationKey: "discovery-stock-reject", ExpectedRevision: 1, Reason: "declined"}); err != nil {
 			t.Fatal(err)
 		}
-		discoveryCheck(t, ctx, s, r, 2, nil)
+		discoveryCheck(t, ctx, s, r, 2)
 	})
-	t.Run("multiple_lines_and_overlapping_categories_count_one_header", func(t *testing.T) {
+	t.Run("multiple_lines_never_create_retired_work", func(t *testing.T) {
 		ctx, p, s := fixture(t)
 		in := input()
 		in.Items = []transfers.Line{{VariantID: 1, Quantity: 2}, {VariantID: 2, Quantity: 2}}
@@ -173,8 +162,8 @@ func TestDRDiscoveryStoreStaleOverlap(t *testing.T) {
 		}
 		c2StorePropose(t, ctx, s, r, 1, 1, 0, 0, "discovery-overlap-count")
 		defer discoveryUnchanged(t, ctx, p, s, r)()
-		discoveryCheck(t, ctx, s, r, 2, []string{"review_count", "review_restitution", discoveryReason})
-		discoveryCheck(t, ctx, s, r, 1, nil)
+		discoveryCheck(t, ctx, s, r, 2)
+		discoveryCheck(t, ctx, s, r, 1)
 	})
 }
 
@@ -190,12 +179,9 @@ func TestDRDiscoveryStoreLatestPagination(t *testing.T) {
 				}
 			}
 			// Latest ownership, not any historical undecided proposal, controls membership.
-			want := []string{discoveryReason}
-			if decided {
-				want = nil
-			}
-			discoveryCheck(t, ctx, s, r, 2, want)
-			discoveryCheck(t, ctx, s, r, 1, nil)
+			// S7: neither state may create required work any more.
+			discoveryCheck(t, ctx, s, r, 2)
+			discoveryCheck(t, ctx, s, r, 1)
 			for i := 0; i < 11; i++ {
 				in := input()
 				in.RetryKey = fmt.Sprintf("discovery-newer-%03d", i)
@@ -204,15 +190,8 @@ func TestDRDiscoveryStoreLatestPagination(t *testing.T) {
 			defer discoveryUnchanged(t, ctx, p, s, r)()
 			for _, pageNumber := range []int64{1, 2} {
 				page, err := s.List(ctx, actor(2), transfers.Query{Status: "all", RequiresAction: true, Page: pageNumber, PageSize: 10})
-				total, rows := int64(1), 1
-				if decided {
-					total = 0
-				}
-				if decided || pageNumber == 2 {
-					rows = 0
-				}
-				if err != nil || page.Total != total || len(page.Records) != rows || len(page.RequiredActions) != rows {
-					t.Errorf("filtered pagination: %+v error=%v want total=%d rows=%d", page, err, total, rows)
+				if err != nil || page.Total != 0 || len(page.Records) != 0 || len(page.RequiredActions) != 0 {
+					t.Errorf("filtered pagination: %+v error=%v want no retired audit work", page, err)
 				}
 			}
 		})

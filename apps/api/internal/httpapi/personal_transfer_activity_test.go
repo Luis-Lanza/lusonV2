@@ -134,8 +134,22 @@ func TestT10PersonalTransferHTTP(t *testing.T) {
 		expectTransferError(t, f.request(t, 2, "POST", "/api/transfers", body), 400, "invalid_request")
 	}
 	expectTransferError(t, f.request(t, 3, "GET", path, ""), 404, "not_found")
-	for _, suffix := range []string{"/count-corrections", "/restitutions", "/dispatch-reconciliations"} {
-		expectTransferError(t, f.request(t, 3, "GET", path+suffix, ""), 404, "not_found")
+	// The legacy audit endpoints are unregistered: every actor, including the two
+	// private participants that used to read them, gets the ordinary unknown-route
+	// 404 with no JSON envelope and no legacy payload. Nothing about the transfer
+	// itself leaks through them.
+	for _, subtree := range []string{"/count-corrections", "/restitutions", "/dispatch-reconciliations"} {
+		for _, suffix := range []string{"", "/propose", "/accept", "/reject", "/"} {
+			for _, actor := range []int{1, 2, 3} {
+				w := f.request(t, actor, "GET", path+subtree+suffix, "")
+				if w.Code != 404 || w.Body.String() != "404 page not found\n" || w.Header().Get("Content-Type") != "text/plain; charset=utf-8" || len(w.Result().Cookies()) != 0 {
+					t.Fatalf("retired %s%s actor %d: %d %q", subtree, suffix, actor, w.Code, w.Body.String())
+				}
+				if json.Valid(w.Body.Bytes()) || strings.Contains(w.Body.String(), original.ID) {
+					t.Fatalf("retired %s%s leaked a JSON error or transfer evidence", subtree, suffix)
+				}
+			}
+		}
 	}
 	if fenceSnapshot(t, f) != before {
 		t.Fatal("spoof/privacy rejection changed public business state")

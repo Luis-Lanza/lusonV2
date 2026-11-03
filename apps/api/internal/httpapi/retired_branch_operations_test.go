@@ -82,9 +82,9 @@ func TestRetiredBranchReceivedFreshWork(t *testing.T) {
 		t.Fatal("dispatch fixture")
 	}
 	t8Stock(t, f, 1, 17, 0)
-	// Positive unexpected actual satisfies receipt admission but credits zero:
-	// expected variant1 actual0, unexpected variant2 expected0 actual1.
-	receivedResponse := f.request(operator, "POST", path+"/receive", `{"items":[{"variant_id":1,"actual_quantity":"0"},{"variant_id":2,"actual_quantity":"1"}]}`)
+	// S1 refuses every receipt line for a variant that was never dispatched, so
+	// the dispatched unit is received as itself and credits exactly one.
+	receivedResponse := f.request(operator, "POST", path+"/receive", `{"items":[{"variant_id":1,"actual_quantity":"1"}]}`)
 	received := t8Decode(t, receivedResponse, 200)
 	if received.Status != "received" || len(received.Activity) != 3 {
 		t.Fatal("received fixture")
@@ -103,15 +103,13 @@ func TestRetiredBranchReceivedFreshWork(t *testing.T) {
 			} `json:"items"`
 		} `json:"receipt"`
 	}
-	if json.Unmarshal(receivedResponse.Body.Bytes(), &receipt) != nil || len(receipt.Receipt.Lines) != 2 {
+	if json.Unmarshal(receivedResponse.Body.Bytes(), &receipt) != nil || len(receipt.Receipt.Lines) != 1 {
 		t.Fatal("receipt lines unavailable")
 	}
-	for i, line := range receipt.Receipt.Lines {
-		if line.Variant != i+1 || line.Credit != "0" || (i == 0 && (line.Expected != "1" || line.Actual != "0")) || (i == 1 && (line.Expected != "0" || line.Actual != "1")) {
-			t.Fatal("zero-credit receipt arithmetic")
-		}
+	if line := receipt.Receipt.Lines[0]; line.Variant != 1 || line.Expected != "1" || line.Actual != "1" || line.Credit != "1" {
+		t.Fatal("dispatched receipt arithmetic")
 	}
-	// All pages, not just variant1: destination has no credited stock.
+	// All pages, not just variant1: the destination holds exactly the credited unit.
 	for page := 1; page <= 4; page++ {
 		query := []string{"1", "2", "3", "4"}[page-1]
 		w := f.request(f.tokens[0], "GET", "/api/inventory?location_id=4&page_size=50&page="+query, "")
@@ -120,15 +118,33 @@ func TestRetiredBranchReceivedFreshWork(t *testing.T) {
 			t.Fatal("destination inventory fixture")
 		}
 		for _, row := range p.Items {
-			if row.Existing != 0 || row.Reserved != 0 || row.Available != 0 {
-				t.Fatal("destination must remain empty")
+			want := int64(0)
+			if row.VariantID == 1 {
+				want = 1
+			}
+			if int64(row.Existing) != want || row.Reserved != 0 || int64(row.Available) != want {
+				t.Fatal("destination credited exactly the received unit")
 			}
 		}
 	}
+	// Retirement needs a branch without stock, so the credited unit returns to the
+	// warehouse through the real lifecycle instead of being reset by SQL.
+	returned := t8Decode(t, f.request(operator, "POST", "/api/transfers", `{"kind":"send_to_warehouse","counterparty_location_id":1,"retry_key":"retired-return-01","items":[{"variant_id":1,"quantity":"1"}]}`), 201)
+	returnPath := "/api/transfers/" + returned.ID
+	t8Decode(t, f.request(f.tokens[0], "POST", returnPath+"/approve", "{}"), 200)
+	t8Decode(t, f.request(operator, "POST", returnPath+"/dispatch", "{}"), 200)
+	if back := t8Decode(t, f.request(f.tokens[0], "POST", returnPath+"/receive", `{"items":[{"variant_id":1,"actual_quantity":"1"}]}`), 200); back.Status != "received" {
+		t.Fatal("return fixture")
+	}
+	t8Stock(t, f, 4, 0, 0)
+	t8Stock(t, f, 1, 18, 0)
 	t5Exact(t, f.request(f.tokens[0], "DELETE", "/api/admin/accounts/2", ""), 204, "")
-	t5Exact(t, f.request(f.tokens[0], "DELETE", "/api/admin/branches/4", ""), 204, "")
-	// Full historical detail includes retired location and personal actor names.
-	t5Exact(t, f.request(f.tokens[0], "GET", path, ""), 200, receivedResponse.Body.String())
+	// The legacy audit routes are retired, so their pending historical evidence is
+	// recorded with the retained SQL writer the retired handler called. S8 keeps the
+	// retirement blocker on the legacy proposal tables, so the branch may only retire
+	// once that pending proposal is rejected.
+	id := strings.TrimPrefix(path, "/api/transfers/")
+	seedLegacyCount(t, f, id, 1, 1, "propose", "retired-fresh-count-01", 0, int64(1), "recount")
 	get := func(route string) string {
 		t.Helper()
 		w := f.request(f.tokens[0], "GET", route, "")
@@ -137,7 +153,8 @@ func TestRetiredBranchReceivedFreshWork(t *testing.T) {
 		}
 		return w.Body.String()
 	}
-	routes := []string{path, path + "/count-corrections", path + "/restitutions", path + "/dispatch-reconciliations", "/api/transfers?status=received"}
+	// The unified snapshot is the surviving read of the retired workflows' history.
+	routes := []string{path, path + "/unified-reconciliations", "/api/transfers?status=received"}
 	observe := func() []string {
 		state := []string{f.snapshot(), f.oldInventory()}
 		for _, route := range routes {
@@ -145,22 +162,18 @@ func TestRetiredBranchReceivedFreshWork(t *testing.T) {
 		}
 		return state
 	}
-	before := observe()
-	// Each workflow has independent revision0; no pending proposal, applied
-	// restitution or reconciliation. Origin may propose all three, including
-	// count1, retained1, dispatch0 (= effective actual0, different from debit1).
-	for _, tc := range []struct{ name, route, body string }{
-		{"count", "/count-corrections/propose", `{"variant_id":1,"operation_key":"retired-fresh-count-01","expected_revision":"0","actual_quantity":"1","reason":"recount"}`},
-		{"restitution", "/restitutions/propose", `{"variant_id":1,"operation_key":"retired-fresh-restitution-01","expected_revision":"0","retained_quantity":"1","retained_at_origin":true,"reason":"retained at origin"}`},
-		{"reconciliation", "/dispatch-reconciliations/propose", `{"variant_id":1,"operation_key":"retired-fresh-dispatch-01","expected_revision":"0","dispatch_quantity":"0","reason":"dispatch correction"}`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			w := f.request(f.tokens[0], "POST", path+tc.route, tc.body)
-			// Check observations even on the expected baseline wrong error status.
-			if !reflect.DeepEqual(observe(), before) {
-				t.Fatal("rejected fresh work changed public detail/activity/workflows/inventory/counters")
-			}
-			t5Error(t, w, 409, "decision_conflict")
-		})
+	beforeRetire := observe()
+	// A pending legacy proposal blocks retirement and changes nothing else.
+	t5Error(t, f.request(f.tokens[0], "DELETE", "/api/admin/branches/4", ""), 409, "branch_has_pending_operations")
+	if !reflect.DeepEqual(observe(), beforeRetire) {
+		t.Fatal("blocked retirement changed public detail/activity/workflows/inventory/counters")
+	}
+	seedLegacyCount(t, f, id, 2, 4, "reject", "retired-fresh-count-reject-1", 1, nil, "not confirmed")
+	// Evidence recorded by the rejection is legitimate history; retirement must
+	// preserve exactly that state, including the retired location and actor names.
+	settled := observe()
+	t5Exact(t, f.request(f.tokens[0], "DELETE", "/api/admin/branches/4", ""), 204, "")
+	if after := observe(); !reflect.DeepEqual(after[2:], settled[2:]) {
+		t.Fatal("retirement rewrote history or unified evidence")
 	}
 }

@@ -4,17 +4,13 @@ export const transferActionLabels: Record<TransferActionReason, string> = {
   approve: 'Aprobar o rechazar',
   dispatch: 'Despachar',
   receive: 'Recibir',
-  review_count: 'Revisar conteo',
-  review_restitution: 'Revisar restitución',
-  review_dispatch_reconciliation: 'Revisar regularización',
+  review_unified_reconciliation: 'Revisar conciliación unificada',
 };
 export const transferActionCategoryLabels: Record<TransferActionReason, string> = {
   approve: 'Por aprobar',
   dispatch: 'Por despachar',
   receive: 'Por recibir',
-  review_count: 'Conteos por revisar',
-  review_restitution: 'Restituciones por revisar',
-  review_dispatch_reconciliation: 'Regularizaciones por revisar',
+  review_unified_reconciliation: 'Conciliaciones unificadas por revisar',
 };
 
 // Only an explicit server-owned empty set permits waiting/finished copy.

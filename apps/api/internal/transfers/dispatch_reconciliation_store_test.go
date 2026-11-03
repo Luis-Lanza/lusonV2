@@ -18,7 +18,7 @@ func dr2Fixture(t *testing.T) (context.Context, *pgxpool.Pool, *transfers.Store,
 	in := input()
 	in.Items = []transfers.Line{{VariantID: 1, Quantity: 5}}
 	r := receiptDispatch(t, ctx, s, in)
-	r, err := s.Receive(ctx, actor(r.Destination.ID), r.ID, transfers.ReceiptInput{Items: []transfers.Line{{VariantID: 1, Quantity: 7}, {VariantID: 2, Quantity: 1}}})
+	r, err := s.Receive(ctx, actor(r.Destination.ID), r.ID, transfers.ReceiptInput{Items: []transfers.Line{{VariantID: 1, Quantity: 7}}})
 	if err != nil {
 		t.Fatal(err)
 	}

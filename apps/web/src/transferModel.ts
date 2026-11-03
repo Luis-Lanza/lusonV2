@@ -23,7 +23,7 @@ export interface TransferReceiptLine { readonly variant_id: number; readonly exp
 export interface TransferReceiptException { readonly variant_id: number; readonly kind: 'shortage' | 'excess' | 'unexpected'; readonly quantity: bigint }
 export interface TransferReceiptData { readonly items: readonly TransferReceiptLine[]; readonly exceptions: readonly TransferReceiptException[] }
 export interface TransferActivityEntry {
-  readonly category: 'transfer' | 'count' | 'restitution' | 'reconciliation';
+  readonly category: 'transfer' | 'count' | 'restitution' | 'reconciliation' | 'unified';
   readonly action: 'create' | 'approve' | 'reject' | 'dispatch' | 'receive' | 'cancel' | 'propose' | 'accept';
   readonly actor: { readonly account_id: string; readonly username: string; readonly display_name: string };
   readonly location_id: number; readonly location_name: string; readonly recorded_at: string;
@@ -50,7 +50,7 @@ export type TransferRecord = TransferRecordFields & (
   | { status: 'received'; decision_location_id: TransferLocationID; decided_at: string; dispatch_location_id: TransferLocationID; dispatched_at: string; receipt_location_id: TransferLocationID; received_at: string; receipt: TransferReceiptData }
 );
 export type TransferStatusFilter = TransferStatus | 'all';
-export const transferActionReasons = ['approve', 'dispatch', 'receive', 'review_count', 'review_restitution', 'review_dispatch_reconciliation'] as const;
+export const transferActionReasons = ['approve', 'dispatch', 'receive', 'review_unified_reconciliation'] as const;
 export type TransferActionReason = typeof transferActionReasons[number];
 export type TransferActionCounts = Record<TransferActionReason, bigint>;
 export interface TransferQuery { page?: number; page_size?: 10 | 25 | 50; status?: TransferStatusFilter; requires_action?: boolean }
@@ -366,7 +366,7 @@ function record(value: unknown): TransferRecord {
       const e = object(value, ['category', 'action', 'actor', 'location_id', 'location_name', 'recorded_at', 'variant_id'], false);
       for (const key of ['category', 'action', 'actor', 'location_id', 'location_name', 'recorded_at']) if (!Object.hasOwn(e, key)) return invalid();
       const actions = e.category === 'transfer' ? ['create', 'approve', 'reject', 'dispatch', 'receive', 'cancel']
-        : ['count', 'restitution', 'reconciliation'].includes(e.category as string) ? ['propose', 'accept', 'reject'] : [];
+        : ['count', 'restitution', 'reconciliation', 'unified'].includes(e.category as string) ? ['propose', 'accept', 'reject'] : [];
       if (!actions.includes(e.action as string)) return invalid();
       const actor = object(e.actor, ['account_id', 'username', 'display_name']); exact(actor.account_id);
       if (typeof actor.display_name !== 'string' || actor.display_name.includes('\0') || !actor.display_name.isWellFormed()) return invalid();
@@ -430,7 +430,7 @@ export function validateTransferActions(page: TransferPage, assigned?: number): 
       const expected = reason === 'approve' ? 'pending' : reason === 'dispatch' ? 'approved' : reason === 'receive' ? 'in_transit' : 'received';
       if (record.status !== expected) return invalid();
       const owner = reason === 'approve' ? record.approver_location_id : reason === 'dispatch' ? record.origin_location_id
-        : reason === 'review_count' || reason === 'review_dispatch_reconciliation' ? assigned : record.destination_location_id;
+        : reason === 'review_unified_reconciliation' ? assigned : record.destination_location_id;
       if (assigned !== undefined && owner !== assigned) return invalid();
     }
   }

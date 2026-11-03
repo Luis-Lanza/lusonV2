@@ -19,7 +19,7 @@ func r2Receipt(t *testing.T, debit, credit int64) (context.Context, *pgxpool.Poo
 	in := input()
 	in.Items = []transfers.Line{{VariantID: 1, Quantity: debit}}
 	r := receiptDispatch(t, ctx, s, in)
-	if _, err := s.Receive(ctx, actor(r.Destination.ID), r.ID, transfers.ReceiptInput{Items: []transfers.Line{{VariantID: 1, Quantity: credit}, {VariantID: 3, Quantity: 1}}}); err != nil {
+	if _, err := s.Receive(ctx, actor(r.Destination.ID), r.ID, transfers.ReceiptInput{Items: []transfers.Line{{VariantID: 1, Quantity: credit}}}); err != nil {
 		t.Fatal("synthetic receipt setup", err)
 	}
 	return ctx, p, r
