@@ -1,7 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import { parseUnifiedReconciliations } from './transferUnifiedReconciliationModel';
 import { unifiedAgreement, unifiedFixture, wire } from './transferUnifiedReconciliationFixtures';
-import { reconciliationEffects, reconciliationCurrentRows } from './transferUnifiedReconciliationView';
+import { projectUnifiedReceived, reconciliationEffects, reconciliationCurrentRows } from './transferUnifiedReconciliationView';
+
+describe('coordinated received projection states', () => {
+  it('reports a first read in flight as loading, never as unavailable', () => {
+    const f = unifiedAgreement();
+    expect(projectUnifiedReceived(f.record, null, true, null, false)).toEqual({ status: 'loading' });
+    // Settled without evidence is still unavailability: loading must not mask it.
+    expect(projectUnifiedReceived(f.record, null, false, null, false)).toEqual({ status: 'unavailable', reason: 'absent' });
+  });
+  it('keeps masked and failed reads unavailable even while busy', () => {
+    const f = unifiedAgreement();
+    expect(projectUnifiedReceived(f.record, null, true, null, true)).toEqual({ status: 'unavailable', reason: 'masked' });
+    expect(projectUnifiedReceived(f.record, null, true, new Error('offline'), false)).toEqual({ status: 'unavailable', reason: 'error' });
+  });
+  it('keeps retained evidence updating instead of dropping it during a refresh', () => {
+    const f = unifiedAgreement();
+    const snapshot = parseUnifiedReconciliations(wire(f.raw), f.record);
+    expect(projectUnifiedReceived(f.record, snapshot, true, null, false).status).toBe('updating');
+    expect(projectUnifiedReceived(f.record, snapshot, false, null, false).status).toBe('available');
+  });
+});
 
 describe('unified reconciliation presentation rules', () => {
   it('projects authoritative Current without using nested Legacy as current', () => {

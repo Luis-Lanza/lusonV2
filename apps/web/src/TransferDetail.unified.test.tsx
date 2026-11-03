@@ -34,3 +34,24 @@ it('uses coordinated Current in the existing table and a single expected-variant
   expect(screen.queryByRole('table', { name: 'Conteo efectivo' })).toBeNull();
   expect(screen.getByRole('heading', { name: 'Conteo efectivo no disponible' })).toBeInTheDocument();
 });
+it('shows a pending table instead of recovery copy while the first coordinated read is in flight', () => {
+  const f = unifiedAgreement();
+  const authority: TransferAuthority = { ready: true, epoch: 1, sessionGeneration: 1, session: parseSession(JSON.stringify({
+    authenticated: true, csrf_token: 'a'.repeat(43), expires_at: '2030-01-01T00:00:00Z',
+    identity: { account_id: 1, username: 'operator', display_name: 'Operator', must_change_password: false, location: { id: 1, name: 'Origin' } } })) };
+  const controller: TransferController = { authorityEpoch: 1, getTransferAuthority: () => authority,
+    subscribeTransferInvalidation: () => () => {}, settleUnauthorized: vi.fn(async () => 'unavailable' as const) };
+  const hook: ReturnType<typeof useTransferUnifiedReconciliations> = { snapshot: null,
+    busy: true, masked: false, error: null, attempts: [], prepared: null, prepare: vi.fn(() => false), cancel: vi.fn(),
+    confirm: vi.fn(async () => {}), refresh: vi.fn(async () => {}), recover: vi.fn(async () => {}), retry: vi.fn(async () => {}) };
+  render(<TransferDetail controller={controller} ownerTag={transferViewOwner(authority)!} record={f.record} unified={hook} />);
+  const section = screen.getByRole('region', { name: 'Conteo efectivo de recepción' });
+  expect(section).toHaveAttribute('aria-busy', 'true');
+  expect(within(section).getByRole('heading', { name: 'Cargando conteo efectivo…' })).toBeInTheDocument();
+  expect(screen.queryByRole('heading', { name: 'Conteo efectivo no disponible' })).toBeNull();
+  // No recovery action may be offered for evidence that is still arriving.
+  expect(screen.queryByRole('button', { name: 'Consultar conciliación' })).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Reintentar conteo efectivo' })).toBeNull();
+  // Navigation to the audit contexts stays reachable, as it does for any freshness state.
+  expect(screen.getByRole('button', { name: 'Gestiones' })).toBeInTheDocument();
+});

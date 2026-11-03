@@ -33,6 +33,8 @@ export type ReceivedUnavailableReason = 'context-invalid' | 'masked' | 'error' |
 export type ReceivedProjection =
   | { readonly status: 'unavailable'; readonly reason: ReceivedUnavailableReason }
   | { readonly status: 'available' | 'updating'; readonly rows: readonly ReceivedRow[]; readonly totals: ReceivedQuantities };
+/** Coordinated projection adds an explicit first-read state: nothing is known yet. */
+export type UnifiedReceivedProjection = ReceivedProjection | { readonly status: 'loading' };
 
 /**
  * Joins parsed domain evidence, not raw DTOs. Availability is not proof of head

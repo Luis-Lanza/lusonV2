@@ -55,6 +55,19 @@
 .received-scope svg { flex: 0 0 16px; }
 .transfer-received-products > footer { border-top: 1px solid #DED7DA; }
 .transfer-received-products > footer p { color: #925400; font-size: 12px; }
+/* First read in flight: shape the pending table instead of reporting it missing. */
+.received-loading > header { padding: 16px 16px 0; }
+.received-skeleton { display: grid; gap: 12px; padding: 16px; }
+.received-skeleton > span { display: block; height: 12px; border-radius: 4px; background: #F2EEF0; }
+.received-skeleton > span:nth-child(1) { width: 42%; }
+.received-skeleton > span:nth-child(2),
+.received-skeleton > span:nth-child(3) { width: 100%; height: 30px; }
+.received-skeleton > span:nth-child(4) { width: 64%; }
+.received-loading > p[role="status"] { padding: 0 16px 16px; color: #6B6267; font-size: 12px; }
+@keyframes received-skeleton-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+@media (prefers-reduced-motion: no-preference) {
+  .received-skeleton > span { animation: received-skeleton-pulse 1.4s ease-in-out infinite; }
+}
 /* Confirmed results share one admitted snapshot; quantities keep their own meaning. */
 .transfer-received-heading .received-result-badge,
 .received-table .received-corrected {
@@ -131,24 +144,34 @@
 /* Preserve the workflow grids while routine groups remain mounted. */
 .count-corrections[hidden], .transfer-restitutions[hidden] { display: none; }
 :is(.count-corrections, .transfer-restitutions) > .workflow-routine:not([hidden]) { display: contents; }
-/* The menu occupies blank space below the table, never an overlay. */
-.received-management { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; margin-top: 12px; }
+/* The menu overlays the page instead of growing the card. The card only stops
+   clipping while a menu is open, so its closed state keeps rounded corners. */
+.received-management { position: relative; display: flex; flex-direction: column; align-items: flex-end; gap: 8px; margin-top: 12px; }
 .received-management > button { color: #7A1F3D; border-color: #7A1F3D; }
 .received-management [role="menu"] {
-  width: min(340px, 100%);
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
+  /* A percentage width would resolve against the shrunken button container,
+     squeezing the labels; size to content and cap it against the viewport. */
+  width: max-content;
+  min-width: 220px;
+  max-width: min(340px, calc(100vw - 48px));
   padding: 8px;
   border: 1px solid #DED7DA;
   border-radius: 6px;
   background: white;
   box-shadow: 0 6px 12px #24212414;
 }
+.transfer-received-products:has(.received-management [role="menu"]) { overflow: visible; }
 .received-management [role="menuitem"] {
   display: block;
   width: 100%;
   padding: 12px;
   border: 0;
   text-align: left;
-  overflow-wrap: anywhere;
+  overflow-wrap: normal;
 }
 .received-management [role="menuitem"]:focus-visible { outline: 2px solid #7A1F3D; outline-offset: -2px; }
 /* Normal-flow mobile shell is owned only while this received detail is present.

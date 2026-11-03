@@ -471,6 +471,10 @@ export default function TransferDetail(props: TransferDetailProps) {
     busy: (corrections?.busy ?? false) || (reconciliations?.busy ?? false),
     error: corrections?.error ?? reconciliations?.error ?? null,
     masked: (corrections?.masked ?? false) || (reconciliations?.masked ?? false), contextValid: effectiveContext }) : null;
+  // While the first unified read is in flight the legacy audit panes stay unmounted:
+  // they force themselves visible on busy and print recovery copy for evidence that
+  // has not arrived, which is what made entry look broken.
+  const receivedLoading = effective?.status === 'loading';
   const countResults = !unified && effective?.status === 'available' && corrections
     ? projectCountCorrectionResults(record, corrections, reconciliations?.snapshot) : null;
   const receivedHistoryLabel = receivedParticipant
@@ -492,9 +496,14 @@ export default function TransferDetail(props: TransferDetailProps) {
         <b aria-hidden="true">→</b><div><span>Destino</span><strong>{record.destination_location_name}</strong>
           <small>{direct ? 'Receptor · no requiere aprobación' : record.kind === 'send_to_warehouse' ? 'Receptor · requiere aprobación' : 'Ubicación solicitante'}</small></div>
     </section>}
-    {receivedParticipant && effective && <section className="transfer-received-products" aria-busy={effective.status === 'updating'}
+    {receivedParticipant && effective && <section className="transfer-received-products"
+      aria-busy={effective.status === 'loading' || effective.status === 'updating'}
       aria-label={effective.status === 'available' ? 'Conteo efectivo confirmado' : 'Conteo efectivo de recepción'}>
-      {effective.status === 'unavailable' ? <div className="received-unavailable" data-reason={effective.reason}>
+      {effective.status === 'loading' ? <div className="received-loading">
+        <header><h2>Cargando conteo efectivo…</h2></header>
+        <div className="received-skeleton" aria-hidden="true"><span /><span /><span /><span /></div>
+        <p role="status">Consultando el conteo efectivo de esta recepción.</p>
+      </div> : effective.status === 'unavailable' ? <div className="received-unavailable" data-reason={effective.reason}>
         <h2>Conteo efectivo no disponible</h2>
         <p>No se muestran cantidades originales como conteo efectivo. Consultá el estado y los controles de recuperación en {unified ? 'Resolver diferencia' : 'Correcciones de conteo'}.</p>
         {unified && !unified.masked && <button disabled={unified.busy} onClick={() => { if (current()) void unified.refresh(); }}>Consultar conciliación</button>}
@@ -525,7 +534,7 @@ export default function TransferDetail(props: TransferDetailProps) {
       </>}
       <footer className="received-result-band">
         <div className="received-result-summary"><CountCorrectionResults results={countResults} />
-          {effective.status !== 'unavailable' && <>
+          {effective.status !== 'unavailable' && effective.status !== 'loading' && <>
             <ReceivedDifferences quantities={effective.totals} />
             {(effective.totals.shortage > 0n || effective.totals.excess > 0n || effective.totals.unexpected > 0n)
               && <p>Las diferencias se registran por variante, sin compensarse ni resolverse automáticamente.</p>}
@@ -553,15 +562,15 @@ export default function TransferDetail(props: TransferDetailProps) {
     <div className="transfer-detail-grid"><div>
       {record.status === 'received' ? !receivedParticipant && <ReceiptTable receipt={record.receipt} record={record} detailPresentation />
         : <TransferItems record={record} stock={terminal ? undefined : stock} />}
-      {props.corrections && <TransferCountCorrections record={record} controller={controller} expectedHistoricalOnly={!!unified}
+      {!receivedLoading && props.corrections && <TransferCountCorrections record={record} controller={controller} expectedHistoricalOnly={!!unified}
         corrections={props.corrections} requestID={props.correctionRequestID ?? null} enabled={props.correctionsEnabled ?? false}
         contextVisible={!receivedParticipant || selected?.context === 'count'}
         entryFocusKey={selected?.context === 'count' ? selected.token : undefined} />}
-      <TransferRestitutions controller={controller} record={record} requestID={props.restitutionRequestID ?? null}
+      {!receivedLoading && <TransferRestitutions controller={controller} record={record} requestID={props.restitutionRequestID ?? null}
         api={props.restitutionAPI} historicalOnly={!!unified}
         enabled={props.restitutionsEnabled ?? false} contextVisible={!receivedParticipant || selected?.context === 'restitution'}
-        entryFocusKey={selected?.context === 'restitution' ? selected.token : undefined} />
-      {reconciliations && <TransferDispatchReconciliations
+        entryFocusKey={selected?.context === 'restitution' ? selected.token : undefined} />}
+      {!receivedLoading && reconciliations && <TransferDispatchReconciliations
         key={`${fence}:${record.id}:${record.kind}:${record.origin_location_id}:${record.destination_location_id}`}
         record={record} historicalOnly={!!unified} actorLocation={session?.authenticated ? session.identity.location.id : null}
         reconciliations={reconciliations} contextVisible={selected?.context === 'reconciliation'}

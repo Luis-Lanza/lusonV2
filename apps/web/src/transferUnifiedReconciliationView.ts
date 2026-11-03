@@ -1,13 +1,17 @@
 import type { UnifiedReconciliations } from './transferUnifiedReconciliationModel';
 import type { TransferRecord } from './transferModel';
-import type { ReceivedProjection, ReceivedQuantities, ReceivedRow } from './transferReceivedModel';
+import type { ReceivedQuantities, ReceivedRow, UnifiedReceivedProjection } from './transferReceivedModel';
 
 export function projectUnifiedReceived(record: TransferRecord, snapshot: UnifiedReconciliations | null,
-  busy: boolean, error: unknown, masked: boolean): ReceivedProjection {
-  if (masked || error || !snapshot || record.status !== 'received'
-    || snapshot.request_id.toString() !== record.id || snapshot.origin_location_id !== record.origin_location_id
+  busy: boolean, error: unknown, masked: boolean): UnifiedReceivedProjection {
+  if (masked || error) return { status: 'unavailable', reason: masked ? 'masked' : 'error' };
+  if (record.status !== 'received') return { status: 'unavailable', reason: 'absent' };
+  // No snapshot while a read is in flight is loading, never unavailability: the
+  // first paint must not offer recovery actions for evidence that is still arriving.
+  if (!snapshot) return busy ? { status: 'loading' } : { status: 'unavailable', reason: 'absent' };
+  if (snapshot.request_id.toString() !== record.id || snapshot.origin_location_id !== record.origin_location_id
     || snapshot.destination_location_id !== record.destination_location_id || snapshot.received_at !== record.received_at) {
-    return { status: 'unavailable', reason: masked ? 'masked' : error ? 'error' : 'absent' };
+    return { status: 'unavailable', reason: 'absent' };
   }
   const totals: ReceivedQuantities = { expected: 0n, actual: 0n, credit: 0n, shortage: 0n, excess: 0n, unexpected: 0n };
   const rows: ReceivedRow[] = snapshot.current.map(c => {
