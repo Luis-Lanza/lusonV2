@@ -30,7 +30,7 @@ func NewWithRealtime(service *auth.Service, cfg config.Auth, stock *inventory.St
 	if _, err := NewWithTransfers(service, cfg, stock, requests); err != nil {
 		return nil, err
 	}
-	return compose(service, cfg, stock, requests, nil, broker), nil
+	return compose(service, cfg, stock, requests, nil, nil, broker), nil
 }
 
 // Only GET recognizes this selector. Mutation methods keep Current/CSRF policy.

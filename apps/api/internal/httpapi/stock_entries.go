@@ -17,6 +17,7 @@ import (
 	"luson/api/internal/config"
 	"luson/api/internal/inventory"
 	"luson/api/internal/realtime"
+	"luson/api/internal/stockadjustments"
 	"luson/api/internal/stockentries"
 	"luson/api/internal/transfers"
 )
@@ -34,16 +35,27 @@ const (
 )
 
 // NewWithStockEntries opts in to warehouse stock ingress. Dependencies must be
-// initialized except the realtime broker, which only adds the event stream.
-func NewWithStockEntries(service *auth.Service, cfg config.Auth, stock *inventory.Store, requests *transfers.Store, entries *stockentries.Store, broker *realtime.Broker) (http.Handler, error) {
-	if service == nil || stock == nil || requests == nil || entries == nil {
+// initialized except the realtime broker, which only adds the event stream, and
+// the optional adjustment store, which adds the physical-count contract beside
+// ingress. At most one adjustment store is admitted; without it the adjustment
+// routes stay unregistered, exactly like ingress on the legacy factories.
+func NewWithStockEntries(service *auth.Service, cfg config.Auth, stock *inventory.Store, requests *transfers.Store, entries *stockentries.Store, broker *realtime.Broker, adjustments ...*stockadjustments.Store) (http.Handler, error) {
+	if service == nil || stock == nil || requests == nil || entries == nil || len(adjustments) > 1 {
 		return nil, stockentries.ErrUnavailable
+	}
+	var adjustmentStore *stockadjustments.Store
+	if len(adjustments) == 1 {
+		adjustmentStore = adjustments[0]
 	}
 	parsed, err := config.ParseAuth(config.LocalTrial, cfg.Origin, cfg.Listen, cfg.TLSCert, cfg.TLSKey)
 	if err != nil || parsed != cfg {
 		return nil, stockentries.ErrUnavailable
 	}
-	return stockEntryPathSafety(compose(service, cfg, stock, requests, entries, broker)), nil
+	handler := compose(service, cfg, stock, requests, entries, adjustmentStore, broker)
+	if adjustmentStore != nil {
+		handler = stockAdjustmentPathSafety(handler)
+	}
+	return stockEntryPathSafety(handler), nil
 }
 
 // stockEntryPathSafety refuses an ambiguous ingress path before compose can set
