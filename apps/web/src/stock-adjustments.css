@@ -1,0 +1,84 @@
+/* Warehouse adjustment section: layout only. Colors, radii, spacing, focus ring and
+   the 44px touch targets reuse the tokens and values already declared in style.css
+   (and the received/shortage status pairs used by the transfer surfaces). The panel,
+   table, tag, pager and modal treatments are the ones stock-entry.css already
+   declares, so no new component shape enters the app. */
+.stock-adjustment { display: grid; gap: 16px; min-width: 0; max-width: 1600px; width: 100%; }
+.adjustment-heading { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.adjustment-heading .primary { min-height: 44px; padding: 10px 16px; white-space: normal; overflow-wrap: anywhere; }
+
+/* A document badge is the only place the applied / reversed / counter state is
+   told apart, reusing the received and shortage status pairs of the app. */
+.adjustment-tag { display: inline-block; flex-shrink: 0; padding: 4px 8px; border: 1px solid var(--border);
+  border-radius: 3px; background: var(--page); color: var(--muted); font-size: 11px; }
+.adjustment-tag.applied { background: #ECFDF5; border-color: #A7F3D0; color: #047857; font-weight: 600; }
+.adjustment-tag.reversed { background: #FFF0F0; border-color: #FFDAD6; color: #991515; font-weight: 600; }
+.adjustment-tag.counter { background: var(--tint); border-color: var(--border); color: var(--wine); font-weight: 600; }
+
+/* The history is the main screen: a document row opens its own lines in place. */
+.adjustment-table td:nth-child(n+4) { font-variant-numeric: tabular-nums; }
+.adjustment-row { cursor: pointer; }
+.adjustment-row:hover { background: var(--page); }
+.adjustment-row[data-expanded="true"] { background: var(--tint); }
+.adjustment-disclosure { min-width: 44px; min-height: 44px; padding: 4px 8px; background: transparent;
+  border: 0; color: var(--wine); }
+.adjustment-disclosure:hover { background: transparent; text-decoration: underline; }
+.adjustment-disclosure strong { overflow-wrap: anywhere; }
+.adjustment-detail-row td { height: auto; padding: 0; background: var(--page); }
+.adjustment-lines { display: grid; gap: 16px; padding: 8px 24px 24px; }
+.adjustment-lines .stock-table { background: #fff; border: 1px solid var(--border); }
+.adjustment-summary { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 0; padding: 12px;
+  background: #fff; border: 1px solid var(--border); border-radius: 4px; }
+.adjustment-summary dt { color: var(--muted); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.adjustment-summary dd { margin: 2px 0 0; font-size: 16px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.adjustment-line-table td:nth-child(n+4) { font-variant-numeric: tabular-nums; }
+/* A gain and a loss are never the same color: these are the received and reject
+   inks the transfer surfaces already use for their own signed differences. */
+.adjustment-delta { font-variant-numeric: tabular-nums; font-weight: 600; }
+.adjustment-delta.positive { color: #047857; }
+.adjustment-delta.negative { color: #991515; }
+.adjustment-reverse { min-width: 44px; min-height: 44px; border-color: var(--muted); color: var(--wine);
+  white-space: normal; overflow-wrap: anywhere; }
+.adjustment-lines .stock-message button { min-width: 44px; min-height: 44px; border-color: var(--muted); }
+
+/* The blind capture is a side panel over the history, never a second screen. */
+.adjustment-drawer-backdrop { position: fixed; inset: 0; z-index: 60; display: flex; justify-content: flex-end;
+  background: rgb(36 33 36 / 45%); }
+.adjustment-drawer { display: flex; flex-direction: column; gap: 16px; width: min(520px, 100vw); height: 100%;
+  padding: 24px; background: #fff; border-left: 1px solid var(--border); box-shadow: 0 20px 50px #24212433;
+  overflow-y: auto; }
+.adjustment-drawer:focus { outline: 2px solid var(--wine); outline-offset: 2px; }
+.adjustment-drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.adjustment-drawer-head h2 { font-size: 22px; overflow-wrap: anywhere; }
+.adjustment-drawer-head p { margin-top: 4px; }
+.adjustment-drawer-head button { min-width: 44px; min-height: 44px; font-size: 22px; }
+/* The blind note is the only place the capture explains why nothing is shown. */
+.adjustment-blind { padding: 16px; background: var(--tint); border: 1px solid var(--border);
+  border-left: 2px solid var(--wine); border-radius: 4px; }
+.adjustment-blind strong { color: var(--wine); }
+.adjustment-blind p { margin-top: 6px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.adjustment-capture td:nth-child(4) { text-align: right; }
+.adjustment-reason { display: grid; gap: 8px; color: var(--muted); font-size: 12px; }
+.adjustment-reason select { width: 100%; min-height: 44px; padding: 10px 12px; border-color: var(--muted);
+  color: #242124; font-size: 13px; }
+.adjustment-reason option { color: #242124; }
+.adjustment-drawer-actions { display: flex; flex-wrap: wrap; gap: 12px; justify-content: flex-end; }
+.adjustment-drawer-actions button { min-height: 44px; padding: 10px 16px; white-space: normal; overflow-wrap: anywhere; }
+
+/* The counter-entry keeps the shared decision dialog and only lays out its body. */
+.adjustment-reversal-modal { width: min(560px, 100%); }
+.adjustment-reversal-body { display: grid; gap: 16px; padding: 24px; overflow-y: auto; }
+.adjustment-reversal-body .stock-status { min-height: 0; }
+
+.stock-adjustment :is(button, input, select):focus-visible { outline: 2px solid var(--wine); outline-offset: 3px; }
+
+@media (max-width: 767px) {
+  .adjustment-heading .primary { width: 100%; }
+  .adjustment-lines { padding: 8px 16px 16px; }
+  .adjustment-drawer { width: 100%; padding: 16px; }
+  .adjustment-reversal-body { padding: 16px; }
+  .adjustment-drawer-actions button { flex: 1 1 140px; }
+}
+@media (max-width: 600px) {
+  .adjustment-capture td:nth-child(4) { text-align: left; }
+}

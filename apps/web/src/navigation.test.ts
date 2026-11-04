@@ -5,6 +5,13 @@ describe('T6 private navigation and existing transfer paths', () => {
   it.each([['administration', '#/administracion'], ['password', '#/mi-contrasena'], ['inventory', '#/inventario'], ['stock', '#/ingresos']] as const)('roundtrips %s without private data in the URL', (section, hash) => {
     writeNavigation({ section }); expect(window.location.hash).toBe(hash); expect(readNavigation()).toEqual({ section });
   });
+  it('routes the warehouse adjustment history without private data in the URL', () => {
+    writeNavigation({ section: 'adjustments' });
+    expect(window.location.hash).toBe('#/ajustes');
+    expect(readNavigation()).toEqual({ section: 'adjustments' });
+    window.history.replaceState(null, '', '/#/ajustes');
+    expect(readNavigation()).toEqual({ section: 'adjustments' });
+  });
   it('preserves list/detail navigation and malformed-path refusal', () => {
     expect(navigationHash({ section: 'transfers', id: null })).toBe('#/transferencias');
     writeNavigation({ section: 'transfers', id: '9007199254740993' });
