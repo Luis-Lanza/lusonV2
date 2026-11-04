@@ -26,14 +26,14 @@ import (
 	"luson/api/internal/transfers"
 )
 
-const validBranchPriceJSON = `{"variant_id":1,"min_price":"85000","suggested_price":"96000","warranty_months":6,"branch_ids":[2,3]}`
+const validBranchPriceJSON = `{"catalog_entry_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[2,3]}`
 
 func branchPriceCart(n int) string {
 	ids := make([]string, n)
 	for i := range ids {
 		ids[i] = strconv.Itoa(i + 2)
 	}
-	return `{"variant_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[` + strings.Join(ids, ",") + `]}`
+	return `{"catalog_entry_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[` + strings.Join(ids, ",") + `]}`
 }
 
 func TestBranchPriceDecoder(t *testing.T) {
@@ -42,18 +42,17 @@ func TestBranchPriceDecoder(t *testing.T) {
 		for _, body := range []string{
 			validBranchPriceJSON,
 			" \n" + validBranchPriceJSON + " \n",
-			`{"variant_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[2]}`,
-			`{"branch_ids":[2],"suggested_price":"96000.50","min_price":"85000.00","variant_id":1}`,
-			`{"variant_id":1,"min_price":"85000","suggested_price":"85000","branch_ids":[2,3,4]}`,
-			`{"variant_id":2147483647,"min_price":"0.01","suggested_price":"0.01","branch_ids":[32767]}`,
-			`{"variant_id":1,"min_price":"85000","suggested_price":"96000","warranty_months":120,"branch_ids":[2]}`,
-			`{"variant_id":1,"min_price":"85000","suggested_price":"96000","warranty_months":1,"branch_ids":[3,2]}`,
+			`{"catalog_entry_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[2]}`,
+			`{"branch_ids":[2],"suggested_price":"96000.50","min_price":"85000.00","catalog_entry_id":1}`,
+			`{"catalog_entry_id":1,"min_price":"85000","suggested_price":"85000","branch_ids":[2,3,4]}`,
+			`{"catalog_entry_id":2147483647,"min_price":"0.01","suggested_price":"0.01","branch_ids":[32767]}`,
+			`{"catalog_entry_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[3,2]}`,
 			branchPriceCart(pricing.MaxBranches),
 		} {
 			r := httptest.NewRequest("PUT", "/api/catalog/prices", strings.NewReader(body))
 			r.Header.Set("Content-Type", "application/json; charset=UTF-8")
 			got, err := decodeBranchPrices(r)
-			if err != nil || got.VariantID < 1 || len(got.BranchIDs) == 0 || got.MinPrice == "" {
+			if err != nil || got.CatalogEntryID < 1 || len(got.BranchIDs) == 0 || got.MinPrice == "" {
 				t.Fatalf("valid framing rejected: %v", err)
 			}
 		}
@@ -72,23 +71,27 @@ func TestBranchPriceDecoder(t *testing.T) {
 		"trailing":            validBranchPriceJSON + `{}`,
 		"trailing_scalar":     validBranchPriceJSON + `true`,
 		"oversized":           validBranchPriceJSON + strings.Repeat(" ", branchPriceBodyLimit),
-		"unknown_key":         replace(`"variant_id":1`, `"actor_id":1,"variant_id":1`),
-		"location_key":        replace(`"variant_id":1`, `"location_id":1,"variant_id":1`),
+		"unknown_key":         replace(`"catalog_entry_id":1`, `"actor_id":1,"catalog_entry_id":1`),
+		"warranty_key":        replace(`"branch_ids"`, `"warranty_months":6,"branch_ids"`),
+		"location_key":        replace(`"catalog_entry_id":1`, `"location_id":1,"catalog_entry_id":1`),
 		"casefold":            replace(`"min_price":`, `"Min_price":`),
 		"duplicate":           replace(`"min_price":`, `"min_price":"1","min_price":`),
 		"escaped_duplicate":   replace(`"min_price":`, `"\u006din_price":"1","min_price":`),
 		"duplicate_branch_id": replace(`"branch_ids":[2,3]`, `"branch_ids":[2,2]`),
-		"missing_variant":     replace(`"variant_id":1,`, ``),
+		"missing_battery":     replace(`"catalog_entry_id":1,`, ``),
 		"missing_min":         replace(`"min_price":"85000",`, ``),
 		"missing_suggested":   replace(`"suggested_price":"96000",`, ``),
 		"missing_branches":    replace(`,"branch_ids":[2,3]`, ``),
-		"null_variant":        replace(`"variant_id":1`, `"variant_id":null`),
-		"string_variant":      replace(`"variant_id":1`, `"variant_id":"1"`),
-		"float_variant":       replace(`"variant_id":1`, `"variant_id":1.0`),
-		"zero_variant":        replace(`"variant_id":1`, `"variant_id":0`),
-		"padded_variant":      replace(`"variant_id":1`, `"variant_id":01`),
-		"negative_variant":    replace(`"variant_id":1`, `"variant_id":-1`),
-		"variant_bound":       replace(`"variant_id":1`, `"variant_id":2147483648`),
+		"null_battery":        replace(`"catalog_entry_id":1`, `"catalog_entry_id":null`),
+		"string_battery":      replace(`"catalog_entry_id":1`, `"catalog_entry_id":"1"`),
+		"float_battery":       replace(`"catalog_entry_id":1`, `"catalog_entry_id":1.0`),
+		"zero_battery":        replace(`"catalog_entry_id":1`, `"catalog_entry_id":0`),
+		"padded_battery":      replace(`"catalog_entry_id":1`, `"catalog_entry_id":01`),
+		"negative_battery":    replace(`"catalog_entry_id":1`, `"catalog_entry_id":-1`),
+		"battery_bound":       replace(`"catalog_entry_id":1`, `"catalog_entry_id":2147483648`),
+		// A removed field is an unknown field: the variant is no longer the price key.
+		"variant_key":         replace(`"catalog_entry_id":1`, `"variant_id":1,"catalog_entry_id":1`),
+		"variant_only_body":   `{"variant_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[2,3]}`,
 		"numeric_min":         replace(`"85000"`, `85000`),
 		"null_min":            replace(`"min_price":"85000"`, `"min_price":null`),
 		"empty_min":           replace(`"85000"`, `""`),
@@ -97,18 +100,13 @@ func TestBranchPriceDecoder(t *testing.T) {
 		"precision_min":       replace(`"85000"`, `"85000.001"`),
 		"exponent_min":        replace(`"85000"`, `"8.5e4"`),
 		"precision_suggested": replace(`"96000"`, `"96000.999"`),
-		"null_warranty":       replace(`"warranty_months":6`, `"warranty_months":null`),
-		"string_warranty":     replace(`"warranty_months":6`, `"warranty_months":"6"`),
-		"zero_warranty":       replace(`"warranty_months":6`, `"warranty_months":0`),
-		"bound_warranty":      replace(`"warranty_months":6`, `"warranty_months":121`),
-		"padded_warranty":     replace(`"warranty_months":6`, `"warranty_months":06`),
 		"null_branches":       replace(`[2,3]`, `null`),
 		"empty_branches":      replace(`[2,3]`, `[]`),
 		"string_branch":       replace(`[2,3]`, `["2",3]`),
 		"zero_branch":         replace(`[2,3]`, `[0,3]`),
 		"negative_branch":     replace(`[2,3]`, `[-2,3]`),
 		"branch_bound":        replace(`[2,3]`, `[2,32768]`),
-		"too_many_branches":   `{"variant_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[` + strings.Repeat("2,", pricing.MaxBranches) + `2]}`,
+		"too_many_branches":   `{"catalog_entry_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[` + strings.Repeat("2,", pricing.MaxBranches) + `2]}`,
 		"invalid_utf8":        replace("85000", "85000-\xff"),
 	}
 	for name, body := range invalid {
@@ -148,31 +146,33 @@ func TestBranchPriceQuery(t *testing.T) {
 		want pricing.BranchQuery
 		ok   bool
 	}{
-		"defaults":      {"", pricing.BranchQuery{Page: 1, PageSize: 10}, true},
-		"all":           {"search=ns60&brand=TOYO&capacity=45&polarity=L&page=2&page_size=25", pricing.BranchQuery{Search: "ns60", Brand: "TOYO", Capacity: "45", Polarity: "L", Page: 2, PageSize: 25}, true},
-		"capacity_dec":  {"capacity=6.5", pricing.BranchQuery{Capacity: "6.5", Page: 1, PageSize: 10}, true},
-		"decoded_text":  {"search=TOYO%20MOTO", pricing.BranchQuery{Search: "TOYO MOTO", Page: 1, PageSize: 10}, true},
-		"plus_text":     {"search=TOYO+MOTO", pricing.BranchQuery{Search: "TOYO MOTO", Page: 1, PageSize: 10}, true},
-		"fifty":         {"page_size=50&page=3", pricing.BranchQuery{Page: 3, PageSize: 50}, true},
-		"blank_search":  {"search=", pricing.BranchQuery{}, false},
-		"blank_brand":   {"brand=", pricing.BranchQuery{}, false},
-		"polarity":      {"polarity=X", pricing.BranchQuery{}, false},
-		"lowercase":     {"polarity=l", pricing.BranchQuery{}, false},
-		"capacity":      {"capacity=6,5", pricing.BranchQuery{}, false},
-		"unknown":       {"status=all", pricing.BranchQuery{}, false},
-		"duplicate":     {"search=a&search=a", pricing.BranchQuery{}, false},
-		"encoded_page":  {"page=%31", pricing.BranchQuery{}, false},
-		"padded_page":   {"page=01", pricing.BranchQuery{}, false},
-		"page_size":     {"page_size=20", pricing.BranchQuery{}, false},
-		"page_zero":     {"page=0", pricing.BranchQuery{}, false},
-		"page_bound":    {"page=1000001", pricing.BranchQuery{}, false},
-		"long_search":   {"search=" + strings.Repeat("a", 129), pricing.BranchQuery{}, false},
-		"long_brand":    {"brand=" + strings.Repeat("a", 129), pricing.BranchQuery{}, false},
-		"bad_escape":    {"search=%ZZ", pricing.BranchQuery{}, false},
-		"nul":           {"search=a%00b", pricing.BranchQuery{}, false},
-		"no_equals":     {"search", pricing.BranchQuery{}, false},
-		"trailing":      {"search=a&", pricing.BranchQuery{}, false},
-		"empty_section": {"&&", pricing.BranchQuery{}, false},
+		"defaults":     {"", pricing.BranchQuery{Page: 1, PageSize: 10}, true},
+		"all":          {"search=ns60&brand=TOYO&capacity=45&page=2&page_size=25", pricing.BranchQuery{Search: "ns60", Brand: "TOYO", Capacity: "45", Page: 2, PageSize: 25}, true},
+		"capacity_dec": {"capacity=6.5", pricing.BranchQuery{Capacity: "6.5", Page: 1, PageSize: 10}, true},
+		"decoded_text": {"search=TOYO%20MOTO", pricing.BranchQuery{Search: "TOYO MOTO", Page: 1, PageSize: 10}, true},
+		"plus_text":    {"search=TOYO+MOTO", pricing.BranchQuery{Search: "TOYO MOTO", Page: 1, PageSize: 10}, true},
+		"fifty":        {"page_size=50&page=3", pricing.BranchQuery{Page: 3, PageSize: 50}, true},
+		"blank_search": {"search=", pricing.BranchQuery{}, false},
+		"blank_brand":  {"brand=", pricing.BranchQuery{}, false},
+		// The price belongs to the battery, so a polarity filter is not part of this
+		// contract any more.
+		"polarity_gone":  {"polarity=L", pricing.BranchQuery{}, false},
+		"battery_filter": {"catalog_entry_id=1", pricing.BranchQuery{}, false},
+		"capacity":       {"capacity=6,5", pricing.BranchQuery{}, false},
+		"unknown":        {"status=all", pricing.BranchQuery{}, false},
+		"duplicate":      {"search=a&search=a", pricing.BranchQuery{}, false},
+		"encoded_page":   {"page=%31", pricing.BranchQuery{}, false},
+		"padded_page":    {"page=01", pricing.BranchQuery{}, false},
+		"page_size":      {"page_size=20", pricing.BranchQuery{}, false},
+		"page_zero":      {"page=0", pricing.BranchQuery{}, false},
+		"page_bound":     {"page=1000001", pricing.BranchQuery{}, false},
+		"long_search":    {"search=" + strings.Repeat("a", 129), pricing.BranchQuery{}, false},
+		"long_brand":     {"brand=" + strings.Repeat("a", 129), pricing.BranchQuery{}, false},
+		"bad_escape":     {"search=%ZZ", pricing.BranchQuery{}, false},
+		"nul":            {"search=a%00b", pricing.BranchQuery{}, false},
+		"no_equals":      {"search", pricing.BranchQuery{}, false},
+		"trailing":       {"search=a&", pricing.BranchQuery{}, false},
+		"empty_section":  {"&&", pricing.BranchQuery{}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := branchPriceQuery(tc.raw)
@@ -223,36 +223,33 @@ func TestBranchPriceFailureMapping(t *testing.T) {
 }
 
 func branchPriceWriteResult() pricing.WriteResult {
-	months := 6
 	return pricing.WriteResult{
-		VariantID:      1,
+		CatalogEntryID: 1,
 		BranchIDs:      []int64{2, 3},
 		MinPrice:       "85000.00",
 		SuggestedPrice: "96000.00",
-		WarrantyMonths: &months,
 	}
 }
 
 func branchPriceMatrixValue() pricing.Matrix {
-	months := 6
 	written := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
 	return pricing.Matrix{
 		Branches: []pricing.Branch{{ID: 2, Name: "Sucursal A"}, {ID: 3, Name: "Sucursal B"}},
-		Variants: []pricing.VariantPrice{
+		Batteries: []pricing.Battery{
 			{
-				VariantID: 1, CatalogEntryID: 1, Brand: "CAR", Model: "NS40ZL", Capacity: "35", Polarity: "L",
-				Cells: []string{"B5", "C5", "D5"}, WarrantyMonths: &months, WarrantyAt: &written,
+				CatalogEntryID: 1, Brand: "CAR", Model: "NS40ZL", Capacity: "35",
+				Polarities: []string{"L", "R"}, Cells: []string{"B5", "C5", "D5"},
 				Prices: []pricing.Price{{
 					BranchLocationID: 2, MinPrice: "85000.00", SuggestedPrice: "96000.00", UpdatedAt: written,
 					UpdatedByAccountID: 1, UpdatedByDisplayName: "Almacén",
 				}},
 			},
 			{
-				VariantID: 2, CatalogEntryID: 1, Brand: "CAR", Model: "NS40ZL", Capacity: "35", Polarity: "R",
-				Cells: []string{"B5", "C5", "D5"}, Prices: []pricing.Price{},
+				CatalogEntryID: 2, Brand: "CAR", Model: "NS40ZR", Capacity: "35",
+				Polarities: []string{"L", "R"}, Cells: []string{"B5", "C5", "D5"}, Prices: []pricing.Price{},
 			},
 		},
-		Page: 1, PageSize: 10, TotalVariants: 190,
+		Page: 1, PageSize: 10, TotalBatteries: 95,
 	}
 }
 
@@ -261,9 +258,8 @@ func TestBranchPriceWriteRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a complete applied assignment must be described: %v", err)
 	}
-	if record.VariantID != 1 || record.Written != 2 || len(record.BranchIDs) != 2 ||
-		record.MinPrice != "85000.00" || record.SuggestedPrice != "96000.00" ||
-		record.WarrantyMonths == nil || *record.WarrantyMonths != 6 {
+	if record.CatalogEntryID != 1 || record.Written != 2 || len(record.BranchIDs) != 2 ||
+		record.MinPrice != "85000.00" || record.SuggestedPrice != "96000.00" {
 		t.Fatalf("write record does not match the frozen contract: %+v", record)
 	}
 	mutate := func(change func(*pricing.WriteResult)) pricing.WriteResult {
@@ -271,9 +267,8 @@ func TestBranchPriceWriteRecord(t *testing.T) {
 		change(&value)
 		return value
 	}
-	months := func(value int) *int { return &value }
 	for name, result := range map[string]pricing.WriteResult{
-		"zero_variant":     mutate(func(v *pricing.WriteResult) { v.VariantID = 0 }),
+		"zero_battery":     mutate(func(v *pricing.WriteResult) { v.CatalogEntryID = 0 }),
 		"no_branches":      mutate(func(v *pricing.WriteResult) { v.BranchIDs = []int64{} }),
 		"warehouse_branch": mutate(func(v *pricing.WriteResult) { v.BranchIDs = []int64{1, 2} }),
 		"unordered_branch": mutate(func(v *pricing.WriteResult) { v.BranchIDs = []int64{3, 2} }),
@@ -288,10 +283,6 @@ func TestBranchPriceWriteRecord(t *testing.T) {
 		"money_digits":  mutate(func(v *pricing.WriteResult) { v.MinPrice = "85000" }),
 		"money_float":   mutate(func(v *pricing.WriteResult) { v.MinPrice = "85000.5" }),
 		"below_minimum": mutate(func(v *pricing.WriteResult) { v.SuggestedPrice = "84000.00" }),
-		"warranty_zero": mutate(func(v *pricing.WriteResult) { v.WarrantyMonths = months(0) }),
-		"warranty_bound": mutate(func(v *pricing.WriteResult) {
-			v.WarrantyMonths = months(121)
-		}),
 	} {
 		if _, err := branchPriceRecord(result); !errors.Is(err, pricing.ErrUnavailable) {
 			t.Fatalf("%s must fail closed", name)
@@ -304,53 +295,51 @@ func TestBranchPriceMatrixRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a complete matrix page must be described: %v", err)
 	}
-	if len(record.Branches) != 2 || len(record.Variants) != 2 || record.TotalVariants != 190 {
+	if len(record.Branches) != 2 || len(record.Batteries) != 2 || record.TotalBatteries != 95 {
 		t.Fatalf("matrix record does not match the frozen contract: %+v", record)
 	}
-	first, second := record.Variants[0], record.Variants[1]
+	first, second := record.Batteries[0], record.Batteries[1]
 	if first.Cells == nil || len(first.Cells) != 3 || first.Capacity != "35" ||
-		first.WarrantyMonths == nil || *first.WarrantyMonths != 6 || first.WarrantyUpdatedAt == nil ||
-		*first.WarrantyUpdatedAt != "2026-11-04T10:00:00Z" {
-		t.Fatalf("variant row does not match the frozen contract: %+v", first)
+		len(first.Polarities) != 2 || first.Polarities[0] != "L" || first.Polarities[1] != "R" {
+		t.Fatalf("battery row does not match the frozen contract: %+v", first)
 	}
 	if len(first.Prices) != 1 || first.Prices[0].MinPrice != "85000.00" ||
 		first.Prices[0].SuggestedPrice != "96000.00" || first.Prices[0].UpdatedAt != "2026-11-04T10:00:00Z" ||
 		first.Prices[0].UpdatedByDisplayName != "Almacén" {
 		t.Fatalf("price row does not match the frozen contract: %+v", first.Prices)
 	}
-	if second.WarrantyMonths != nil || second.WarrantyUpdatedAt != nil || second.Prices == nil || len(second.Prices) != 0 {
-		t.Fatalf("a variant without a term or prices must report null and empty: %+v", second)
+	if second.Prices == nil || len(second.Prices) != 0 {
+		t.Fatalf("a battery without prices must report an empty list: %+v", second)
 	}
 	mutate := func(change func(*pricing.Matrix)) pricing.Matrix {
 		value := branchPriceMatrixValue()
 		change(&value)
 		return value
 	}
-	months := func(value int) *int { return &value }
 	for name, matrix := range map[string]pricing.Matrix{
 		"bad_page":         mutate(func(m *pricing.Matrix) { m.Page = 0 }),
 		"bad_size":         mutate(func(m *pricing.Matrix) { m.PageSize = 15 }),
-		"negative_total":   mutate(func(m *pricing.Matrix) { m.TotalVariants = -1 }),
-		"page_overflow":    mutate(func(m *pricing.Matrix) { m.TotalVariants = 1 }),
+		"negative_total":   mutate(func(m *pricing.Matrix) { m.TotalBatteries = -1 }),
+		"page_overflow":    mutate(func(m *pricing.Matrix) { m.TotalBatteries = 1 }),
 		"warehouse_branch": mutate(func(m *pricing.Matrix) { m.Branches[0].ID = 1 }),
 		"unordered_branch": mutate(func(m *pricing.Matrix) { m.Branches[1].ID = 2 }),
 		"empty_branch":     mutate(func(m *pricing.Matrix) { m.Branches[0].Name = "" }),
-		"variant_zero":     mutate(func(m *pricing.Matrix) { m.Variants[0].VariantID = 0 }),
-		"variant_order":    mutate(func(m *pricing.Matrix) { m.Variants[1].VariantID = 1 }),
-		"polarity":         mutate(func(m *pricing.Matrix) { m.Variants[0].Polarity = "X" }),
-		"cells":            mutate(func(m *pricing.Matrix) { m.Variants[0].Cells = []string{"B5", "C5"} }),
-		"cells_empty":      mutate(func(m *pricing.Matrix) { m.Variants[0].Cells = []string{"", "C5", "D5"} }),
-		"capacity":         mutate(func(m *pricing.Matrix) { m.Variants[0].Capacity = "0" }),
-		"warranty_bound":   mutate(func(m *pricing.Matrix) { m.Variants[0].WarrantyMonths = months(121) }),
-		"warranty_unpaired": mutate(func(m *pricing.Matrix) {
-			m.Variants[0].WarrantyAt = nil
-		}),
-		"price_digits":  mutate(func(m *pricing.Matrix) { m.Variants[0].Prices[0].MinPrice = "85000" }),
-		"price_minimum": mutate(func(m *pricing.Matrix) { m.Variants[0].Prices[0].SuggestedPrice = "84000.00" }),
-		"price_branch":  mutate(func(m *pricing.Matrix) { m.Variants[0].Prices[0].BranchLocationID = 4 }),
-		"price_retired": mutate(func(m *pricing.Matrix) { m.Variants[0].Prices[0].BranchLocationID = 1 }),
-		"price_updated": mutate(func(m *pricing.Matrix) { m.Variants[0].Prices[0].UpdatedAt = time.Time{} }),
-		"price_account": mutate(func(m *pricing.Matrix) { m.Variants[0].Prices[0].UpdatedByAccountID = 0 }),
+		"battery_zero":     mutate(func(m *pricing.Matrix) { m.Batteries[0].CatalogEntryID = 0 }),
+		"battery_order":    mutate(func(m *pricing.Matrix) { m.Batteries[1].CatalogEntryID = 1 }),
+		"polarity":         mutate(func(m *pricing.Matrix) { m.Batteries[0].Polarities = []string{"X"} }),
+		"polarity_order":   mutate(func(m *pricing.Matrix) { m.Batteries[0].Polarities = []string{"R", "L"} }),
+		"polarity_repeat":  mutate(func(m *pricing.Matrix) { m.Batteries[0].Polarities = []string{"L", "L"} }),
+		"polarity_empty":   mutate(func(m *pricing.Matrix) { m.Batteries[0].Polarities = []string{} }),
+		"polarity_triple":  mutate(func(m *pricing.Matrix) { m.Batteries[0].Polarities = []string{"L", "L", "R"} }),
+		"cells":            mutate(func(m *pricing.Matrix) { m.Batteries[0].Cells = []string{"B5", "C5"} }),
+		"cells_empty":      mutate(func(m *pricing.Matrix) { m.Batteries[0].Cells = []string{"", "C5", "D5"} }),
+		"capacity":         mutate(func(m *pricing.Matrix) { m.Batteries[0].Capacity = "0" }),
+		"price_digits":     mutate(func(m *pricing.Matrix) { m.Batteries[0].Prices[0].MinPrice = "85000" }),
+		"price_minimum":    mutate(func(m *pricing.Matrix) { m.Batteries[0].Prices[0].SuggestedPrice = "84000.00" }),
+		"price_branch":     mutate(func(m *pricing.Matrix) { m.Batteries[0].Prices[0].BranchLocationID = 4 }),
+		"price_retired":    mutate(func(m *pricing.Matrix) { m.Batteries[0].Prices[0].BranchLocationID = 1 }),
+		"price_updated":    mutate(func(m *pricing.Matrix) { m.Batteries[0].Prices[0].UpdatedAt = time.Time{} }),
+		"price_account":    mutate(func(m *pricing.Matrix) { m.Batteries[0].Prices[0].UpdatedByAccountID = 0 }),
 	} {
 		if _, err := branchPriceMatrixRecord(matrix); !errors.Is(err, pricing.ErrUnavailable) {
 			t.Fatalf("%s must fail closed", name)
@@ -504,13 +493,15 @@ func branchPriceFixture(t *testing.T) *branchPriceHTTPFixture {
 	return f
 }
 
-// snapshot captures every table this domain owns, so a rejected request is proven to
-// leave nothing behind.
+// snapshot captures every table this domain writes, so a rejected request is proven
+// to leave nothing behind. The warranty table of migration 024 is snapshotted as
+// well: this domain no longer writes it, and a write that reappeared would fail
+// every rejection below.
 func (f *branchPriceHTTPFixture) snapshot(t *testing.T) string {
 	t.Helper()
 	var data string
 	err := f.p.QueryRow(f.ctx, `SELECT jsonb_build_object(
-  'prices',(SELECT coalesce(jsonb_agg(to_jsonb(bp) ORDER BY bp.branch_location_id,bp.variant_id),'[]'::jsonb) FROM branch_prices bp),
+  'prices',(SELECT coalesce(jsonb_agg(to_jsonb(bp) ORDER BY bp.branch_location_id,bp.catalog_entry_id),'[]'::jsonb) FROM branch_prices bp),
   'warranties',(SELECT coalesce(jsonb_agg(to_jsonb(w) ORDER BY w.variant_id),'[]'::jsonb) FROM variant_warranties w))::text`).Scan(&data)
 	if err != nil {
 		t.Fatal("branch price snapshot failed")
@@ -518,22 +509,15 @@ func (f *branchPriceHTTPFixture) snapshot(t *testing.T) string {
 	return data
 }
 
-func (f *branchPriceHTTPFixture) storedPrice(t *testing.T, branchID, variantID int64) (min, suggested string) {
+// storedPrice reads the durable pair of one (branch, battery): there is exactly one
+// row per pair, because the battery and not the polarity is the key.
+func (f *branchPriceHTTPFixture) storedPrice(t *testing.T, branchID, entryID int64) (min, suggested string) {
 	t.Helper()
 	if f.p.QueryRow(f.ctx, `SELECT min_price::text,suggested_price::text FROM branch_prices
- WHERE branch_location_id=$1 AND variant_id=$2`, int16(branchID), int32(variantID)).Scan(&min, &suggested) != nil {
+ WHERE branch_location_id=$1 AND catalog_entry_id=$2`, int16(branchID), int32(entryID)).Scan(&min, &suggested) != nil {
 		t.Fatal("persisted price read failed")
 	}
 	return min, suggested
-}
-
-func (f *branchPriceHTTPFixture) storedWarranty(t *testing.T, variantID int64) *int {
-	t.Helper()
-	var months *int
-	if f.p.QueryRow(f.ctx, "SELECT warranty_months FROM variant_warranties WHERE variant_id=$1", int32(variantID)).Scan(&months) != nil {
-		t.Fatal("persisted warranty read failed")
-	}
-	return months
 }
 
 func (f *branchPriceHTTPFixture) createBranch(t *testing.T, name string) int64 {
@@ -586,8 +570,8 @@ func (f *branchPriceHTTPFixture) rejected(t *testing.T, r *http.Request, status 
 	}
 }
 
-// branchPriceMatrixWire admits only the frozen matrix shape: five page keys, ten
-// variant keys, six price keys and two branch keys, with canonical amounts.
+// branchPriceMatrixWire admits only the frozen matrix shape: five page keys, seven
+// battery keys, six price keys and two branch keys, with canonical amounts.
 func branchPriceMatrixWire(t *testing.T, w *httptest.ResponseRecorder) branchPriceMatrixDTO {
 	t.Helper()
 	if w.Code != 200 || w.Header().Get("Content-Type") != "application/json" {
@@ -597,7 +581,7 @@ func branchPriceMatrixWire(t *testing.T, w *httptest.ResponseRecorder) branchPri
 	if json.Unmarshal(w.Body.Bytes(), &top) != nil || len(top) != 5 {
 		t.Fatal("matrix whitelist changed")
 	}
-	for _, key := range []string{"branches", "variants", "page", "page_size", "total_variants"} {
+	for _, key := range []string{"branches", "batteries", "page", "page_size", "total_batteries"} {
 		if _, ok := top[key]; !ok {
 			t.Fatalf("matrix whitelist incomplete: %s", key)
 		}
@@ -616,20 +600,27 @@ func branchPriceMatrixWire(t *testing.T, w *httptest.ResponseRecorder) branchPri
 			}
 		}
 	}
-	var variants []map[string]json.RawMessage
-	if json.Unmarshal(top["variants"], &variants) != nil {
-		t.Fatal("matrix variants are not an array")
+	var batteries []map[string]json.RawMessage
+	if json.Unmarshal(top["batteries"], &batteries) != nil {
+		t.Fatal("matrix batteries are not an array")
 	}
 	money := regexp.MustCompile(`^"[0-9]+\.[0-9]{2}"$`)
-	for _, item := range variants {
-		if len(item) != 10 {
-			t.Fatal("variant whitelist changed")
+	for _, item := range batteries {
+		if len(item) != 7 {
+			t.Fatal("battery whitelist changed")
 		}
-		for _, key := range []string{"variant_id", "catalog_entry_id", "brand", "model", "capacity_ah", "polarity",
-			"cells", "warranty_months", "warranty_updated_at", "prices"} {
+		for _, key := range []string{"catalog_entry_id", "brand", "model", "capacity_ah",
+			"polarities", "cells", "prices"} {
 			if _, ok := item[key]; !ok {
-				t.Fatalf("variant whitelist incomplete: %s", key)
+				t.Fatalf("battery whitelist incomplete: %s", key)
 			}
+		}
+		// One row per battery carries both polarities, ascending: the two polarities
+		// never appear as separate rows with prices of their own.
+		var polarities []string
+		if json.Unmarshal(item["polarities"], &polarities) != nil || len(polarities) != 2 ||
+			polarities[0] != "L" || polarities[1] != "R" {
+			t.Fatalf("polarities must be the battery's, ascending: %s", item["polarities"])
 		}
 		var cells []string
 		if json.Unmarshal(item["cells"], &cells) != nil || len(cells) != 3 {
@@ -637,10 +628,6 @@ func branchPriceMatrixWire(t *testing.T, w *httptest.ResponseRecorder) branchPri
 		}
 		if !regexp.MustCompile(`^"[1-9][0-9]*(\.[0-9]*[1-9])?"$`).MatchString(string(item["capacity_ah"])) {
 			t.Fatal("capacity_ah must be the canonical decimal as a string")
-		}
-		// The term and the moment it was written are present exactly together.
-		if (string(item["warranty_months"]) == "null") != (string(item["warranty_updated_at"]) == "null") {
-			t.Fatal("warranty_updated_at must be null exactly when warranty_months is null")
 		}
 		var prices []map[string]json.RawMessage
 		if json.Unmarshal(item["prices"], &prices) != nil || prices == nil {
@@ -665,13 +652,13 @@ func branchPriceMatrixWire(t *testing.T, w *httptest.ResponseRecorder) branchPri
 		}
 	}
 	var matrix branchPriceMatrixDTO
-	if json.Unmarshal(w.Body.Bytes(), &matrix) != nil || len(matrix.Variants) != len(variants) {
+	if json.Unmarshal(w.Body.Bytes(), &matrix) != nil || len(matrix.Batteries) != len(batteries) {
 		t.Fatal("matrix response is not decodable")
 	}
 	return matrix
 }
 
-// branchPriceWriteWire admits only the frozen write shape: exactly six keys with
+// branchPriceWriteWire admits only the frozen write shape: exactly five keys with
 // canonical amounts and the branches in ascending order.
 func branchPriceWriteWire(t *testing.T, w *httptest.ResponseRecorder) branchPriceWriteDTO {
 	t.Helper()
@@ -679,10 +666,10 @@ func branchPriceWriteWire(t *testing.T, w *httptest.ResponseRecorder) branchPric
 		t.Fatalf("write response mismatch: status=%d want=200", w.Code)
 	}
 	var top map[string]json.RawMessage
-	if json.Unmarshal(w.Body.Bytes(), &top) != nil || len(top) != 6 {
+	if json.Unmarshal(w.Body.Bytes(), &top) != nil || len(top) != 5 {
 		t.Fatal("write whitelist changed")
 	}
-	for _, key := range []string{"variant_id", "written", "branch_ids", "min_price", "suggested_price", "warranty_months"} {
+	for _, key := range []string{"catalog_entry_id", "written", "branch_ids", "min_price", "suggested_price"} {
 		if _, ok := top[key]; !ok {
 			t.Fatalf("write whitelist incomplete: %s", key)
 		}
@@ -708,26 +695,26 @@ func TestBranchPriceHTTPMatrix(t *testing.T) {
 	f := branchPriceFixture(t)
 	w := f.serve(t, f.request(1, "GET", "/api/catalog/prices?page=1&page_size=10", ""))
 	empty := branchPriceMatrixWire(t, w)
-	if empty.Page != 1 || empty.PageSize != 10 || empty.TotalVariants != 190 || len(empty.Variants) != 10 {
+	if empty.Page != 1 || empty.PageSize != 10 || empty.TotalBatteries != 95 || len(empty.Batteries) != 10 {
 		t.Fatalf("an empty price list must still describe the whole catalogue: %+v", empty)
 	}
 	if len(empty.Branches) != 2 || empty.Branches[0].ID != 2 || empty.Branches[1].ID != 3 {
 		t.Fatalf("branches must be the active branches in id order: %+v", empty.Branches)
 	}
-	for _, variant := range empty.Variants {
-		if variant.WarrantyMonths != nil || variant.WarrantyUpdatedAt != nil || len(variant.Prices) != 0 {
-			t.Fatalf("a variant without a term or prices must report null and empty: %+v", variant)
+	for _, battery := range empty.Batteries {
+		if len(battery.Prices) != 0 {
+			t.Fatalf("a battery without prices must report an empty list: %+v", battery)
 		}
 	}
-	// One written pair and one written term are read back canonically.
+	// One written pair per chosen branch is read back canonically.
 	if w := f.serve(t, f.request(1, "PUT", "/api/catalog/prices",
-		`{"variant_id":1,"min_price":"85000","suggested_price":"96000.5","warranty_months":6,"branch_ids":[3,2]}`)); w.Code != 200 {
+		`{"catalog_entry_id":1,"min_price":"85000","suggested_price":"96000.5","branch_ids":[3,2]}`)); w.Code != 200 {
 		t.Fatalf("matrix fixture write failed: %d %s", w.Code, w.Body.String())
 	}
 	matrix := branchPriceMatrixWire(t, f.serve(t, f.request(1, "GET", "/api/catalog/prices?page=1&page_size=10", "")))
-	first := matrix.Variants[0]
-	if first.VariantID != 1 || first.WarrantyMonths == nil || *first.WarrantyMonths != 6 || first.WarrantyUpdatedAt == nil {
-		t.Fatalf("the written term is not read back: %+v", first)
+	first := matrix.Batteries[0]
+	if first.CatalogEntryID != 1 {
+		t.Fatalf("the written battery is not read back: %+v", first)
 	}
 	if len(first.Prices) != 2 || first.Prices[0].BranchLocationID != 2 || first.Prices[1].BranchLocationID != 3 ||
 		first.Prices[0].MinPrice != "85000.00" || first.Prices[0].SuggestedPrice != "96000.50" ||
@@ -739,7 +726,7 @@ func TestBranchPriceHTTPMatrix(t *testing.T) {
 	// A retired branch leaves the list and its persisted pair is not advertised.
 	retired := f.createBranch(t, "Sucursal C")
 	if w := f.serve(t, f.request(1, "PUT", "/api/catalog/prices",
-		fmt.Sprintf(`{"variant_id":2,"min_price":"1000","suggested_price":"1200","branch_ids":[%d]}`, retired))); w.Code != 200 {
+		fmt.Sprintf(`{"catalog_entry_id":2,"min_price":"1000","suggested_price":"1200","branch_ids":[%d]}`, retired))); w.Code != 200 {
 		t.Fatalf("retirement fixture write failed: %d %s", w.Code, w.Body.String())
 	}
 	f.retireBranch(t, retired)
@@ -749,7 +736,7 @@ func TestBranchPriceHTTPMatrix(t *testing.T) {
 			t.Fatal("a retired branch must not be listed")
 		}
 	}
-	second := after.Variants[1]
+	second := after.Batteries[1]
 	if len(second.Prices) != 0 {
 		t.Fatalf("a price of a retired branch is not a sale price: %+v", second.Prices)
 	}
@@ -760,10 +747,9 @@ func TestBranchPriceHTTPWrite(t *testing.T) {
 	// A block assignment writes every chosen branch in one operation.
 	w := f.serve(t, f.request(1, "PUT", "/api/catalog/prices", validBranchPriceJSON))
 	written := branchPriceWriteWire(t, w)
-	if written.VariantID != 1 || written.Written != 2 || len(written.BranchIDs) != 2 ||
+	if written.CatalogEntryID != 1 || written.Written != 2 || len(written.BranchIDs) != 2 ||
 		written.BranchIDs[0] != 2 || written.BranchIDs[1] != 3 ||
-		written.MinPrice != "85000.00" || written.SuggestedPrice != "96000.00" ||
-		written.WarrantyMonths == nil || *written.WarrantyMonths != 6 {
+		written.MinPrice != "85000.00" || written.SuggestedPrice != "96000.00" {
 		t.Fatalf("applied write does not match the frozen contract: %+v", written)
 	}
 	for _, branchID := range []int64{2, 3} {
@@ -771,12 +757,9 @@ func TestBranchPriceHTTPWrite(t *testing.T) {
 			t.Fatalf("branch %d did not receive the pair: %s/%s", branchID, min, suggested)
 		}
 	}
-	if months := f.storedWarranty(t, 1); months == nil || *months != 6 {
-		t.Fatal("the warranty term must be persisted with the prices")
-	}
 	// An individual assignment touches only its own branch.
 	if w := f.serve(t, f.request(1, "PUT", "/api/catalog/prices",
-		`{"variant_id":1,"min_price":"90000","suggested_price":"99000","branch_ids":[3]}`)); w.Code != 200 {
+		`{"catalog_entry_id":1,"min_price":"90000","suggested_price":"99000","branch_ids":[3]}`)); w.Code != 200 {
 		t.Fatalf("individual write failed: %d %s", w.Code, w.Body.String())
 	}
 	if min, _ := f.storedPrice(t, 2, 1); min != "85000.00" {
@@ -785,18 +768,9 @@ func TestBranchPriceHTTPWrite(t *testing.T) {
 	if min, suggested := f.storedPrice(t, 3, 1); min != "90000.00" || suggested != "99000.00" {
 		t.Fatalf("the individual branch was not written: %s/%s", min, suggested)
 	}
-	// An omitted term preserves the stored one.
-	preserved := branchPriceWriteWire(t, f.serve(t, f.request(1, "PUT", "/api/catalog/prices",
-		`{"variant_id":1,"min_price":"91000","suggested_price":"99000","branch_ids":[3]}`)))
-	if preserved.WarrantyMonths == nil || *preserved.WarrantyMonths != 6 {
-		t.Fatalf("an omitted term must preserve the stored one: %+v", preserved)
-	}
-	if months := f.storedWarranty(t, 1); months == nil || *months != 6 {
-		t.Fatal("an omitted term must not erase the stored one")
-	}
 	// A branch session never writes, and nothing is written by the attempt.
 	f.rejected(t, f.request(2, "PUT", "/api/catalog/prices",
-		`{"variant_id":1,"min_price":"1","suggested_price":"1","branch_ids":[2]}`), 403, "forbidden")
+		`{"catalog_entry_id":1,"min_price":"1","suggested_price":"1","branch_ids":[2]}`), 403, "forbidden")
 	if min, _ := f.storedPrice(t, 2, 1); min != "85000.00" {
 		t.Fatalf("a forbidden write changed a stored pair: %s", min)
 	}
@@ -805,24 +779,25 @@ func TestBranchPriceHTTPWrite(t *testing.T) {
 func TestBranchPriceHTTPRejections(t *testing.T) {
 	f := branchPriceFixture(t)
 	if w := f.serve(t, f.request(1, "PUT", "/api/catalog/prices",
-		`{"variant_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[2]}`)); w.Code != 200 {
+		`{"catalog_entry_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[2]}`)); w.Code != 200 {
 		t.Fatalf("baseline write failed: %d %s", w.Code, w.Body.String())
 	}
 	for name, body := range map[string]string{
-		"suggested_below_min": `{"variant_id":1,"min_price":"96000","suggested_price":"85000","branch_ids":[2]}`,
-		"over_precision_min":  `{"variant_id":1,"min_price":"85000.001","suggested_price":"96000","branch_ids":[2]}`,
-		"over_precision_sug":  `{"variant_id":1,"min_price":"85000","suggested_price":"96000.999","branch_ids":[2]}`,
-		"negative_money":      `{"variant_id":1,"min_price":"-85000","suggested_price":"96000","branch_ids":[2]}`,
-		"empty_money":         `{"variant_id":1,"min_price":"","suggested_price":"96000","branch_ids":[2]}`,
-		"empty_branches":      `{"variant_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[]}`,
-		"duplicate_branches":  `{"variant_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[2,2]}`,
-		"warehouse_branch":    `{"variant_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[1]}`,
-		"warehouse_and_valid": `{"variant_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[1,2]}`,
-		"unknown_variant":     `{"variant_id":300,"min_price":"85000","suggested_price":"96000","branch_ids":[2]}`,
-		"unknown_branch":      `{"variant_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[2,99]}`,
-		"warranty_zero":       `{"variant_id":1,"min_price":"85000","suggested_price":"96000","warranty_months":0,"branch_ids":[2]}`,
-		"warranty_bound":      `{"variant_id":1,"min_price":"85000","suggested_price":"96000","warranty_months":121,"branch_ids":[2]}`,
-		"unknown_key":         `{"variant_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[2],"actor_id":1}`,
+		"suggested_below_min": `{"catalog_entry_id":1,"min_price":"96000","suggested_price":"85000","branch_ids":[2]}`,
+		"over_precision_min":  `{"catalog_entry_id":1,"min_price":"85000.001","suggested_price":"96000","branch_ids":[2]}`,
+		"over_precision_sug":  `{"catalog_entry_id":1,"min_price":"85000","suggested_price":"96000.999","branch_ids":[2]}`,
+		"negative_money":      `{"catalog_entry_id":1,"min_price":"-85000","suggested_price":"96000","branch_ids":[2]}`,
+		"empty_money":         `{"catalog_entry_id":1,"min_price":"","suggested_price":"96000","branch_ids":[2]}`,
+		"empty_branches":      `{"catalog_entry_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[]}`,
+		"duplicate_branches":  `{"catalog_entry_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[2,2]}`,
+		"warehouse_branch":    `{"catalog_entry_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[1]}`,
+		"warehouse_and_valid": `{"catalog_entry_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[1,2]}`,
+		"unknown_battery":     `{"catalog_entry_id":300,"min_price":"85000","suggested_price":"96000","branch_ids":[2]}`,
+		"removed_variant":     `{"variant_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[2]}`,
+		"removed_warranty":    `{"catalog_entry_id":1,"min_price":"85000","suggested_price":"96000","warranty_months":6,"branch_ids":[2]}`,
+		"unknown_branch":      `{"catalog_entry_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[2,99]}`,
+		"warranty_months":     `{"catalog_entry_id":1,"min_price":"85000","suggested_price":"96000","warranty_months":6,"branch_ids":[2]}`,
+		"unknown_key":         `{"catalog_entry_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[2],"actor_id":1}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			f.rejected(t, f.request(1, "PUT", "/api/catalog/prices", body), 400, "invalid_request")
@@ -833,7 +808,7 @@ func TestBranchPriceHTTPRejections(t *testing.T) {
 	f.retireBranch(t, retired)
 	before := f.snapshot(t)
 	w := f.serve(t, f.request(1, "PUT", "/api/catalog/prices",
-		fmt.Sprintf(`{"variant_id":1,"min_price":"2000","suggested_price":"2500","branch_ids":[2,%d]}`, retired)))
+		fmt.Sprintf(`{"catalog_entry_id":1,"min_price":"2000","suggested_price":"2500","branch_ids":[2,%d]}`, retired)))
 	var body map[string]json.RawMessage
 	if w.Code != 400 || json.Unmarshal(w.Body.Bytes(), &body) != nil || len(body) != 2 ||
 		string(body["error"]) != `"retired_branch"` || string(body["branch_id"]) != strconv.FormatInt(retired, 10) {

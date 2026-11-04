@@ -19,7 +19,7 @@ import (
 )
 
 // branchPriceBodyLimit bounds decoding work well below any admitted payload: fifty
-// branch ids, two amounts and one term.
+// branch ids and two amounts.
 const branchPriceBodyLimit = 4 << 10
 
 const (
@@ -148,7 +148,8 @@ func branchPriceBranchIDs(d *json.Decoder) ([]int64, error) {
 // decodeBranchPrices reads tokens rather than structs: exact names, presence, types
 // and duplicate keys (including escaped-equivalent keys) are enforced at every object
 // level, and the terminal EOF rejects trailing input. The actor is never part of the
-// body, and the amounts are canonical decimal strings, never JSON numbers.
+// body, the value of the assignment is the battery (catalog_entry_id) and the amounts
+// are canonical decimal strings, never JSON numbers.
 func decodeBranchPrices(r *http.Request) (pricing.WriteInput, error) {
 	var in pricing.WriteInput
 	if r == nil || r.Body == nil || len(r.Header.Values("Content-Type")) != 1 {
@@ -183,19 +184,12 @@ func decodeBranchPrices(r *http.Request) (pricing.WriteInput, error) {
 		}
 		seen[key] = true
 		switch key {
-		case "variant_id":
-			in.VariantID, err = branchPriceNumber(d, math.MaxInt32)
+		case "catalog_entry_id":
+			in.CatalogEntryID, err = branchPriceNumber(d, math.MaxInt32)
 		case "min_price":
 			in.MinPrice, err = branchPriceMoney(d)
 		case "suggested_price":
 			in.SuggestedPrice, err = branchPriceMoney(d)
-		case "warranty_months":
-			var months int64
-			months, err = branchPriceNumber(d, pricing.MaxWarrantyMonths)
-			if err == nil {
-				value := int(months)
-				in.WarrantyMonths = &value
-			}
 		case "branch_ids":
 			in.BranchIDs, err = branchPriceBranchIDs(d)
 		default:
@@ -205,8 +199,8 @@ func decodeBranchPrices(r *http.Request) (pricing.WriteInput, error) {
 			return pricing.WriteInput{}, pricing.ErrInvalid
 		}
 	}
-	if !seen["variant_id"] || !seen["min_price"] || !seen["suggested_price"] || !seen["branch_ids"] ||
-		len(seen) > 5 || !transferDelimiter(d, '}') {
+	if !seen["catalog_entry_id"] || !seen["min_price"] || !seen["suggested_price"] || !seen["branch_ids"] ||
+		len(seen) > 4 || !transferDelimiter(d, '}') {
 		return pricing.WriteInput{}, pricing.ErrInvalid
 	}
 	if _, err := d.Token(); err != io.EOF {
@@ -256,11 +250,6 @@ func branchPriceQuery(raw string) (pricing.BranchQuery, error) {
 				return query, pricing.ErrInvalid
 			}
 			query.Capacity = capacity
-		case "polarity":
-			if value.decoded != "L" && value.decoded != "R" {
-				return query, pricing.ErrInvalid
-			}
-			query.Polarity = value.decoded
 		case "page":
 			n, err := canonicalAdjustmentInteger(value.raw, pricing.MaxPage)
 			if err != nil {
@@ -300,40 +289,37 @@ type branchPriceDTO struct {
 	UpdatedByDisplayName string `json:"updated_by_display_name"`
 }
 
-// branchPriceVariantDTO is one row of the matrix. The warranty term is a product
-// datum: it is null when the variant has none, never defaulted.
-type branchPriceVariantDTO struct {
-	VariantID         int64            `json:"variant_id"`
-	CatalogEntryID    int64            `json:"catalog_entry_id"`
-	Brand             string           `json:"brand"`
-	Model             string           `json:"model"`
-	Capacity          string           `json:"capacity_ah"`
-	Polarity          string           `json:"polarity"`
-	Cells             []string         `json:"cells"`
-	WarrantyMonths    *int             `json:"warranty_months"`
-	WarrantyUpdatedAt *string          `json:"warranty_updated_at"`
-	Prices            []branchPriceDTO `json:"prices"`
+// branchPriceBatteryDTO is one row of the matrix: the catalogue identity of a battery,
+// the polarities that exist for it and the prices the listed active branches hold. One
+// row per battery, so both polarities always show the same pair.
+type branchPriceBatteryDTO struct {
+	CatalogEntryID int64            `json:"catalog_entry_id"`
+	Brand          string           `json:"brand"`
+	Model          string           `json:"model"`
+	Capacity       string           `json:"capacity_ah"`
+	Polarities     []string         `json:"polarities"`
+	Cells          []string         `json:"cells"`
+	Prices         []branchPriceDTO `json:"prices"`
 }
 
 // branchPriceMatrixDTO is the frozen read response: the active branches, one page of
-// variants with their prices and the total of matching variants.
+// batteries with their prices and the total of matching batteries.
 type branchPriceMatrixDTO struct {
-	Branches      []branchPriceBranchDTO  `json:"branches"`
-	Variants      []branchPriceVariantDTO `json:"variants"`
-	Page          int                     `json:"page"`
-	PageSize      int                     `json:"page_size"`
-	TotalVariants int64                   `json:"total_variants"`
+	Branches       []branchPriceBranchDTO  `json:"branches"`
+	Batteries      []branchPriceBatteryDTO `json:"batteries"`
+	Page           int                     `json:"page"`
+	PageSize       int                     `json:"page_size"`
+	TotalBatteries int64                   `json:"total_batteries"`
 }
 
-// branchPriceWriteDTO is the frozen write response: the variant, how many pairs were
-// written, the branches in ascending order, the canonical pair and the term in force.
+// branchPriceWriteDTO is the frozen write response: the battery, how many pairs were
+// written, the branches in ascending order and the canonical pair.
 type branchPriceWriteDTO struct {
-	VariantID      int64   `json:"variant_id"`
+	CatalogEntryID int64   `json:"catalog_entry_id"`
 	Written        int     `json:"written"`
 	BranchIDs      []int64 `json:"branch_ids"`
 	MinPrice       string  `json:"min_price"`
 	SuggestedPrice string  `json:"suggested_price"`
-	WarrantyMonths *int    `json:"warranty_months"`
 }
 
 // validBranchPriceText admits the optional display text of the matrix.
@@ -351,11 +337,6 @@ func canonicalBranchPrice(money pricing.Money) (pricing.Money, bool) {
 	return canonical, true
 }
 
-// branchPriceWarranty admits the optional term: inside its bound, or absent.
-func branchPriceWarranty(months *int) bool {
-	return months == nil || (*months >= pricing.MinWarrantyMonths && *months <= pricing.MaxWarrantyMonths)
-}
-
 // branchPriceRecord admits only a complete applied assignment.
 func branchPriceRecord(result pricing.WriteResult) (branchPriceWriteDTO, error) {
 	unavailable := func() (branchPriceWriteDTO, error) {
@@ -366,10 +347,10 @@ func branchPriceRecord(result pricing.WriteResult) (branchPriceWriteDTO, error) 
 		return unavailable()
 	}
 	suggested, ok := canonicalBranchPrice(result.SuggestedPrice)
-	if !ok || !suggested.AtLeast(min) || !branchPriceWarranty(result.WarrantyMonths) {
+	if !ok || !suggested.AtLeast(min) {
 		return unavailable()
 	}
-	if result.VariantID < 1 || result.VariantID > math.MaxInt32 ||
+	if result.CatalogEntryID < 1 || result.CatalogEntryID > math.MaxInt32 ||
 		len(result.BranchIDs) < 1 || len(result.BranchIDs) > branchPriceMaxBranches {
 		return unavailable()
 	}
@@ -383,28 +364,27 @@ func branchPriceRecord(result pricing.WriteResult) (branchPriceWriteDTO, error) 
 		branches = append(branches, id)
 	}
 	return branchPriceWriteDTO{
-		VariantID:      result.VariantID,
+		CatalogEntryID: result.CatalogEntryID,
 		Written:        len(branches),
 		BranchIDs:      branches,
 		MinPrice:       string(min),
 		SuggestedPrice: string(suggested),
-		WarrantyMonths: result.WarrantyMonths,
 	}, nil
 }
 
 // branchPriceMatrixRecord admits only a complete matrix page: the branches it is read
-// against, the catalogue identity of every variant, its null term when it has none
-// and the canonical pairs of the active branches.
+// against, the catalogue identity of every battery with its polarities and the
+// canonical pairs of the active branches.
 func branchPriceMatrixRecord(matrix pricing.Matrix) (branchPriceMatrixDTO, error) {
 	unavailable := func() (branchPriceMatrixDTO, error) {
 		return branchPriceMatrixDTO{}, pricing.ErrUnavailable
 	}
-	if !pricing.ValidPage(matrix.Page, matrix.PageSize) || matrix.TotalVariants < 0 ||
-		len(matrix.Variants) > matrix.PageSize ||
+	if !pricing.ValidPage(matrix.Page, matrix.PageSize) || matrix.TotalBatteries < 0 ||
+		len(matrix.Batteries) > matrix.PageSize ||
 		// A page beyond the last one is legitimately empty; a page with rows must
 		// still fit inside the reported total.
-		(len(matrix.Variants) > 0 &&
-			int64(matrix.Page-1)*int64(matrix.PageSize)+int64(len(matrix.Variants)) > matrix.TotalVariants) {
+		(len(matrix.Batteries) > 0 &&
+			int64(matrix.Page-1)*int64(matrix.PageSize)+int64(len(matrix.Batteries)) > matrix.TotalBatteries) {
 		return unavailable()
 	}
 	branches := make([]branchPriceBranchDTO, 0, len(matrix.Branches))
@@ -418,13 +398,14 @@ func branchPriceMatrixRecord(matrix pricing.Matrix) (branchPriceMatrixDTO, error
 		active[item.ID] = true
 		branches = append(branches, branchPriceBranchDTO{ID: item.ID, Name: item.Name})
 	}
-	var previousVariant int64
-	variants := make([]branchPriceVariantDTO, 0, len(matrix.Variants))
-	for _, item := range matrix.Variants {
-		if item.VariantID < 1 || item.VariantID > math.MaxInt32 || item.VariantID <= previousVariant ||
-			item.CatalogEntryID < 1 || !validBranchPriceText(item.Brand) || item.Brand == "" ||
+	var previousBattery int64
+	batteries := make([]branchPriceBatteryDTO, 0, len(matrix.Batteries))
+	for _, item := range matrix.Batteries {
+		if item.CatalogEntryID < 1 || item.CatalogEntryID > math.MaxInt32 ||
+			item.CatalogEntryID <= previousBattery ||
+			!validBranchPriceText(item.Brand) || item.Brand == "" ||
 			!validBranchPriceText(item.Model) || item.Model == "" ||
-			(item.Polarity != "L" && item.Polarity != "R") || len(item.Cells) != 3 {
+			len(item.Cells) != 3 || !validBranchPricePolarities(item.Polarities) {
 			return unavailable()
 		}
 		capacity, err := catalog.ParseDecimal(string(item.Capacity))
@@ -435,21 +416,6 @@ func branchPriceMatrixRecord(matrix pricing.Matrix) (branchPriceMatrixDTO, error
 			if cell == "" || !validBranchPriceText(cell) {
 				return unavailable()
 			}
-		}
-		if !branchPriceWarranty(item.WarrantyMonths) {
-			return unavailable()
-		}
-		// The term and the moment it was written are present exactly together.
-		if (item.WarrantyMonths == nil) != (item.WarrantyAt == nil) {
-			return unavailable()
-		}
-		var warrantyAt *string
-		if item.WarrantyAt != nil {
-			if item.WarrantyAt.IsZero() {
-				return unavailable()
-			}
-			formatted := item.WarrantyAt.UTC().Format(time.RFC3339)
-			warrantyAt = &formatted
 		}
 		prices := make([]branchPriceDTO, 0, len(item.Prices))
 		var previousPrice int64
@@ -479,33 +445,47 @@ func branchPriceMatrixRecord(matrix pricing.Matrix) (branchPriceMatrixDTO, error
 				UpdatedByDisplayName: price.UpdatedByDisplayName,
 			})
 		}
-		previousVariant = item.VariantID
-		variants = append(variants, branchPriceVariantDTO{
-			VariantID:         item.VariantID,
-			CatalogEntryID:    item.CatalogEntryID,
-			Brand:             item.Brand,
-			Model:             item.Model,
-			Capacity:          string(capacity),
-			Polarity:          item.Polarity,
-			Cells:             item.Cells,
-			WarrantyMonths:    item.WarrantyMonths,
-			WarrantyUpdatedAt: warrantyAt,
-			Prices:            prices,
+		previousBattery = item.CatalogEntryID
+		batteries = append(batteries, branchPriceBatteryDTO{
+			CatalogEntryID: item.CatalogEntryID,
+			Brand:          item.Brand,
+			Model:          item.Model,
+			Capacity:       string(capacity),
+			Polarities:     item.Polarities,
+			Cells:          item.Cells,
+			Prices:         prices,
 		})
 	}
 	return branchPriceMatrixDTO{
-		Branches:      branches,
-		Variants:      variants,
-		Page:          matrix.Page,
-		PageSize:      matrix.PageSize,
-		TotalVariants: matrix.TotalVariants,
+		Branches:       branches,
+		Batteries:      batteries,
+		Page:           matrix.Page,
+		PageSize:       matrix.PageSize,
+		TotalBatteries: matrix.TotalBatteries,
 	}, nil
 }
 
+// validBranchPricePolarities admits only the polarities that exist for one battery:
+// one or both of L and R, distinct and ascending, exactly like the store validates
+// them.
+func validBranchPricePolarities(polarities []string) bool {
+	if len(polarities) < 1 || len(polarities) > 2 {
+		return false
+	}
+	previous := ""
+	for _, polarity := range polarities {
+		if (polarity != "L" && polarity != "R") || polarity <= previous {
+			return false
+		}
+		previous = polarity
+	}
+	return true
+}
+
 // branchPrices serves the catalogue price list and its write. The read is the
-// administrator's matrix; the write replaces the pair of every chosen branch and the
-// warranty term in one transaction. Only the warehouse administrator is admitted and
-// the store is the final authority for both.
+// administrator's matrix of batteries; the write replaces the pair of every chosen
+// branch in one transaction. Only the warehouse administrator is admitted and the store is the
+// final authority for both.
 func (a *API) branchPrices(store *pricing.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Anything below the collection is an unknown route answered as JSON, never a

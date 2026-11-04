@@ -45,12 +45,12 @@ func checkAssignment(ctx context.Context, q querier, actor auth.Identity) error 
 }
 
 // Matrix reads one page of the price list: the active branches, the catalogue
-// identity of every admitted variant, its warranty term when it has one and the
-// prices the active branches hold. The actor guard and the provisioned-account
+// identity of every admitted battery together with the polarities that exist for it,
+// and the prices the active branches hold. The actor guard and the provisioned-account
 // binding are the write's, and the page is one count plus one page statement, so the
 // total is the database's own number.
 func (s *Store) Matrix(ctx context.Context, actor auth.Identity, q BranchQuery) (Matrix, error) {
-	result := Matrix{Page: q.Page, PageSize: q.PageSize, Branches: []Branch{}, Variants: []VariantPrice{}}
+	result := Matrix{Page: q.Page, PageSize: q.PageSize, Branches: []Branch{}, Batteries: []Battery{}}
 	if ctx == nil || s == nil || s.pool == nil {
 		return Matrix{}, ErrUnavailable
 	}
@@ -80,28 +80,32 @@ func (s *Store) Matrix(ctx context.Context, actor auth.Identity, q BranchQuery) 
 		return Matrix{}, err
 	}
 	result.Branches = branches
-	args := []any{literalPattern(q.Search), q.Brand, capacityArg(q.Capacity), q.Polarity}
-	if tx.QueryRow(ctx, "SELECT count(*)"+matrixFilter, args...).Scan(&result.TotalVariants) != nil {
+	args := []any{literalPattern(q.Search), q.Brand, capacityArg(q.Capacity)}
+	if tx.QueryRow(ctx, "SELECT count(*)"+matrixFilter, args...).Scan(&result.TotalBatteries) != nil {
 		return Matrix{}, fail(ctx)
 	}
 	args = append(args, int64(q.PageSize), int64(q.Page-1)*int64(q.PageSize))
-	rows, err := tx.Query(ctx, `SELECT v.id,e.id,e.brand,e.model,e.capacity_ah::text,v.polarity`+matrixFilter+
-		` ORDER BY v.id LIMIT $5 OFFSET $6`, args...)
+	// The polarities of a battery are aggregated in ascending order, so one matrix row
+	// carries every polarity the battery exists in instead of one row per polarity.
+	rows, err := tx.Query(ctx, `SELECT e.id,e.brand,e.model,e.capacity_ah::text,
+  (SELECT array_agg(v.polarity ORDER BY v.polarity) FROM catalog_variants v WHERE v.catalog_entry_id=e.id)`+
+		matrixFilter+` ORDER BY e.id LIMIT $4 OFFSET $5`, args...)
 	if err != nil {
 		return Matrix{}, fail(ctx)
 	}
-	variants := make([]VariantPrice, 0, q.PageSize)
+	batteries := make([]Battery, 0, q.PageSize)
 	ids := make([]int32, 0, q.PageSize)
 	for rows.Next() {
-		var item VariantPrice
+		var item Battery
 		var capacity string
-		if rows.Scan(&item.VariantID, &item.CatalogEntryID, &item.Brand, &item.Model, &capacity, &item.Polarity) != nil {
+		if rows.Scan(&item.CatalogEntryID, &item.Brand, &item.Model, &capacity,
+			&item.Polarities) != nil {
 			rows.Close()
 			return Matrix{}, fail(ctx)
 		}
-		if item.VariantID < 1 || item.CatalogEntryID < 1 || item.Brand == "" || item.Model == "" ||
-			(item.Polarity != "L" && item.Polarity != "R") ||
-			(len(variants) > 0 && item.VariantID <= variants[len(variants)-1].VariantID) {
+		if item.CatalogEntryID < 1 || item.Brand == "" || item.Model == "" ||
+			!validPolarities(item.Polarities) ||
+			(len(batteries) > 0 && item.CatalogEntryID <= batteries[len(batteries)-1].CatalogEntryID) {
 			rows.Close()
 			return Matrix{}, ErrUnavailable
 		}
@@ -114,8 +118,8 @@ func (s *Store) Matrix(ctx context.Context, actor auth.Identity, q BranchQuery) 
 			return Matrix{}, err
 		}
 		item.Prices = []Price{}
-		variants = append(variants, item)
-		ids = append(ids, int32(item.VariantID))
+		batteries = append(batteries, item)
+		ids = append(ids, int32(item.CatalogEntryID))
 	}
 	if rows.Err() != nil {
 		rows.Close()
@@ -123,28 +127,40 @@ func (s *Store) Matrix(ctx context.Context, actor auth.Identity, q BranchQuery) 
 	}
 	rows.Close()
 	if len(ids) > 0 {
-		if err := loadPrices(ctx, tx, branches, ids, variants); err != nil {
-			return Matrix{}, err
-		}
-		if err := loadWarranties(ctx, tx, ids, variants); err != nil {
+		if err := loadPrices(ctx, tx, branches, ids, batteries); err != nil {
 			return Matrix{}, err
 		}
 	}
-	result.Variants = variants
+	result.Batteries = batteries
 	if tx.Commit(ctx) != nil {
 		return Matrix{}, fail(ctx)
 	}
 	return result, nil
 }
 
-// matrixFilter is shared by the count and the page, so both answer the same
-// question. The capacity is a nullable numeric parameter: an absent filter never
-// casts an empty string.
-const matrixFilter = ` FROM catalog_variants v
- JOIN catalog_entries e ON e.id=v.catalog_entry_id
+// validPolarities admits the aggregated polarities of one battery: at least one, at
+// most both, each of them L or R and in ascending order, so the client never has to
+// sort or de-duplicate them.
+func validPolarities(polarities []string) bool {
+	if len(polarities) < 1 || len(polarities) > 2 {
+		return false
+	}
+	previous := ""
+	for _, polarity := range polarities {
+		if (polarity != "L" && polarity != "R") || polarity <= previous {
+			return false
+		}
+		previous = polarity
+	}
+	return true
+}
+
+// matrixFilter is shared by the count and the page, so both answer the same question.
+// The capacity is a nullable numeric parameter: an absent filter never casts an empty
+// string. The matrix is a list of batteries, so the filter never looks at a polarity.
+const matrixFilter = ` FROM catalog_entries e
  WHERE ($1='' OR e.brand ILIKE $1 ESCAPE '\' OR e.model ILIKE $1 ESCAPE '\')
- AND ($2='' OR e.brand=$2) AND ($3::numeric IS NULL OR e.capacity_ah=$3::numeric)
- AND ($4='' OR v.polarity=$4)`
+ AND ($2='' OR e.brand=$2) AND ($3::numeric IS NULL OR e.capacity_ah=$3::numeric)`
 
 // loadBranches reads the active branches of the matrix in id order. The warehouse is
 // not a sale branch and a retired branch has no sale prices, so neither is listed.
@@ -172,36 +188,36 @@ func loadBranches(ctx context.Context, q querier) ([]Branch, error) {
 	return branches, nil
 }
 
-// loadPrices attaches the persisted pairs of one page to its variants. Only the
+// loadPrices attaches the persisted pairs of one page to its batteries. Only the
 // listed active branches are read: a price of a retired branch is still persisted
 // (prices are never deleted) but it is no longer a sale price of this matrix.
-func loadPrices(ctx context.Context, q querier, branches []Branch, ids []int32, variants []VariantPrice) error {
-	index := make(map[int64]int, len(variants))
-	for i, item := range variants {
-		index[item.VariantID] = i
+func loadPrices(ctx context.Context, q querier, branches []Branch, ids []int32, batteries []Battery) error {
+	index := make(map[int64]int, len(batteries))
+	for i, item := range batteries {
+		index[item.CatalogEntryID] = i
 	}
 	active := make(map[int64]bool, len(branches))
 	for _, item := range branches {
 		active[item.ID] = true
 	}
-	rows, err := q.Query(ctx, `SELECT p.variant_id,p.branch_location_id,p.min_price::text,p.suggested_price::text,
+	rows, err := q.Query(ctx, `SELECT p.catalog_entry_id,p.branch_location_id,p.min_price::text,p.suggested_price::text,
   p.updated_at,p.updated_by_account_id,a.display_name
  FROM branch_prices p
  JOIN locations l ON l.id=p.branch_location_id AND l.deleted_at IS NULL
  JOIN auth_accounts a ON a.id=p.updated_by_account_id
- WHERE p.variant_id = ANY($1::integer[])
- ORDER BY p.variant_id,p.branch_location_id`, ids)
+ WHERE p.catalog_entry_id = ANY($1::integer[])
+ ORDER BY p.catalog_entry_id,p.branch_location_id`, ids)
 	if err != nil {
 		return fail(ctx)
 	}
 	defer rows.Close()
-	var previousVariant int64
+	var previousEntry int64
 	var previousBranch int64
 	for rows.Next() {
-		var variantID int64
+		var entryID int64
 		var price Price
 		var min, suggested string
-		if rows.Scan(&variantID, &price.BranchLocationID, &min, &suggested, &price.UpdatedAt,
+		if rows.Scan(&entryID, &price.BranchLocationID, &min, &suggested, &price.UpdatedAt,
 			&price.UpdatedByAccountID, &price.UpdatedByDisplayName) != nil {
 			return fail(ctx)
 		}
@@ -215,49 +231,14 @@ func loadPrices(ctx context.Context, q querier, branches []Branch, ids []int32, 
 			return ErrUnavailable
 		}
 		price.SuggestedPrice = money
-		position, known := index[variantID]
+		position, known := index[entryID]
 		if !known || !active[price.BranchLocationID] || price.BranchLocationID < firstBranchID ||
 			price.UpdatedAt.IsZero() || price.UpdatedByAccountID < 1 ||
-			(variantID == previousVariant && price.BranchLocationID <= previousBranch) {
+			(entryID == previousEntry && price.BranchLocationID <= previousBranch) {
 			return ErrUnavailable
 		}
-		previousVariant, previousBranch = variantID, price.BranchLocationID
-		variants[position].Prices = append(variants[position].Prices, price)
-	}
-	if rows.Err() != nil {
-		return fail(ctx)
-	}
-	return nil
-}
-
-// loadWarranties attaches the warranty term of one page to its variants. A variant
-// without a term keeps nil, so the client shows no term instead of a default.
-func loadWarranties(ctx context.Context, q querier, ids []int32, variants []VariantPrice) error {
-	index := make(map[int64]int, len(variants))
-	for i, item := range variants {
-		index[item.VariantID] = i
-	}
-	rows, err := q.Query(ctx, `SELECT variant_id,warranty_months,updated_at FROM variant_warranties
- WHERE variant_id = ANY($1::integer[]) ORDER BY variant_id`, ids)
-	if err != nil {
-		return fail(ctx)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var variantID int64
-		var months int
-		var updatedAt time.Time
-		if rows.Scan(&variantID, &months, &updatedAt) != nil {
-			return fail(ctx)
-		}
-		position, known := index[variantID]
-		if !known || months < MinWarrantyMonths || months > MaxWarrantyMonths || updatedAt.IsZero() ||
-			variants[position].WarrantyMonths != nil {
-			return ErrUnavailable
-		}
-		value := months
-		variants[position].WarrantyMonths = &value
-		variants[position].WarrantyAt = &updatedAt
+		previousEntry, previousBranch = entryID, price.BranchLocationID
+		batteries[position].Prices = append(batteries[position].Prices, price)
 	}
 	if rows.Err() != nil {
 		return fail(ctx)
@@ -266,10 +247,10 @@ func loadWarranties(ctx context.Context, q querier, ids []int32, variants []Vari
 }
 
 // Write applies one price assignment atomically: every chosen branch receives the
-// pair and the warranty term is written with it, or nothing is written at all. The
-// warehouse administrator is the only admitted actor and the writing account is the
-// session identity, never a value from the request. Rows are written in ascending
-// branch order, which is the database's own lock order.
+// pair, or nothing is written at all. The warehouse administrator is the only
+// admitted actor and the writing account is the session identity, never a value from
+// the request. Rows are written in ascending branch order, which is the database's
+// own lock order.
 func (s *Store) Write(ctx context.Context, actor auth.Identity, input WriteInput) (WriteResult, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return WriteResult{}, ErrUnavailable
@@ -295,7 +276,7 @@ func (s *Store) Write(ctx context.Context, actor auth.Identity, input WriteInput
 	if err := checkAssignment(ctx, tx, actor); err != nil {
 		return WriteResult{}, err
 	}
-	known, err := variantExists(ctx, tx, canonical.VariantID)
+	known, err := entryExists(ctx, tx, canonical.CatalogEntryID)
 	if err != nil {
 		return WriteResult{}, err
 	}
@@ -306,49 +287,34 @@ func (s *Store) Write(ctx context.Context, actor auth.Identity, input WriteInput
 		return WriteResult{}, err
 	}
 	for _, branchID := range canonical.BranchIDs {
-		if _, err := tx.Exec(ctx, `INSERT INTO branch_prices(branch_location_id,variant_id,min_price,suggested_price,updated_by_account_id,updated_at)
+		// The key is the battery, so one row per (branch, battery) is written and a
+		// second write replaces it: the two polarities of the battery can never diverge.
+		if _, err := tx.Exec(ctx, `INSERT INTO branch_prices(branch_location_id,catalog_entry_id,min_price,suggested_price,updated_by_account_id,updated_at)
  VALUES($1,$2,$3,$4,$5,now())
- ON CONFLICT (branch_location_id,variant_id) DO UPDATE
+ ON CONFLICT (branch_location_id,catalog_entry_id) DO UPDATE
  SET min_price=EXCLUDED.min_price,suggested_price=EXCLUDED.suggested_price,
      updated_by_account_id=EXCLUDED.updated_by_account_id,updated_at=EXCLUDED.updated_at`,
-			int16(branchID), int32(canonical.VariantID), string(canonical.MinPrice),
+			int16(branchID), int32(canonical.CatalogEntryID), string(canonical.MinPrice),
 			string(canonical.SuggestedPrice), int64(actor.AccountID)); err != nil {
 			return WriteResult{}, mapFailure(ctx, err)
 		}
-	}
-	if canonical.WarrantyMonths != nil {
-		if _, err := tx.Exec(ctx, `INSERT INTO variant_warranties(variant_id,warranty_months,updated_by_account_id,updated_at)
- VALUES($1,$2,$3,now())
- ON CONFLICT (variant_id) DO UPDATE
- SET warranty_months=EXCLUDED.warranty_months,updated_by_account_id=EXCLUDED.updated_by_account_id,
-     updated_at=EXCLUDED.updated_at`,
-			int32(canonical.VariantID), int16(*canonical.WarrantyMonths), int64(actor.AccountID)); err != nil {
-			return WriteResult{}, mapFailure(ctx, err)
-		}
-	}
-	// The term in force is read back from the database, so an omitted term reports
-	// exactly what is stored instead of a value invented here.
-	months, err := storedWarranty(ctx, tx, canonical.VariantID)
-	if err != nil {
-		return WriteResult{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return WriteResult{}, mapFailure(ctx, err)
 	}
 	return WriteResult{
-		VariantID:      canonical.VariantID,
+		CatalogEntryID: canonical.CatalogEntryID,
 		BranchIDs:      canonical.BranchIDs,
 		MinPrice:       canonical.MinPrice,
 		SuggestedPrice: canonical.SuggestedPrice,
-		WarrantyMonths: months,
 	}, nil
 }
 
-// variantExists refuses an unknown variant before any pair is written: an unknown
-// id is a request error, and one assignment is applied completely or not at all.
-func variantExists(ctx context.Context, q querier, variantID int64) (bool, error) {
+// entryExists refuses an unknown battery before any pair is written: an unknown id is
+// a request error, and one assignment is applied completely or not at all.
+func entryExists(ctx context.Context, q querier, entryID int64) (bool, error) {
 	var known bool
-	if err := q.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM catalog_variants WHERE id=$1)", int32(variantID)).Scan(&known); err != nil {
+	if err := q.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM catalog_entries WHERE id=$1)", int32(entryID)).Scan(&known); err != nil {
 		return false, fail(ctx)
 	}
 	return known, nil
@@ -393,22 +359,6 @@ func checkBranches(ctx context.Context, q querier, ids []int64) error {
 		}
 	}
 	return nil
-}
-
-// storedWarranty reads the term in force, or nil when the variant has none.
-func storedWarranty(ctx context.Context, q querier, variantID int64) (*int, error) {
-	var months *int
-	err := q.QueryRow(ctx, "SELECT warranty_months FROM variant_warranties WHERE variant_id=$1", int32(variantID)).Scan(&months)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fail(ctx)
-	}
-	if months != nil && (*months < MinWarrantyMonths || *months > MaxWarrantyMonths) {
-		return nil, ErrUnavailable
-	}
-	return months, nil
 }
 
 // capacityArg turns the optional capacity filter into a nullable numeric parameter,
@@ -478,7 +428,7 @@ func mapFailure(ctx context.Context, err error) error {
 	if errors.As(err, &pg) {
 		switch pg.Code {
 		// LP00N: the sale scope guard and the replace-not-delete guard. A refused
-		// amount, an unknown variant or an inactive branch is the same public
+		// amount, an unknown battery or an inactive branch is the same public
 		// refusal, because the database decides it and the client cannot act on a
 		// different answer.
 		case "LP00N", "23503", "23514", "22003":

@@ -1,9 +1,12 @@
 // Package pricing owns the branch price list: the minimum and suggested sale
-// price the warehouse administers for one variant in one branch, and the warranty
-// term of the variant itself. Money is a canonical decimal string with exactly two
-// decimals and is never a binary float, so no rounding is invented between the
-// database and the client. Only the warehouse administrator writes prices and only
-// active branches keep them; a retired pair is replaced, never deleted.
+// price the warehouse administers for one battery in one branch. A battery is a
+// catalogue entry (brand + model + capacity), so its pair covers both polarities of
+// that battery at once: L and R can never hold different prices, because there is one
+// price per battery. Money is a canonical decimal string with exactly two decimals
+// and is never a binary float, so no rounding is invented between the database and the
+// client. Only the warehouse administrator writes prices and only active branches keep
+// them; a retired pair is replaced, never deleted. The warranty term of a sale is not
+// part of this catalogue: the seller chooses it when the sale is made.
 package pricing
 
 import (
@@ -45,11 +48,9 @@ const (
 	warehouseLocationID = 1
 	// The warehouse never keeps a sale price: branches start at id 2.
 	firstBranchID = 2
-	// MaxBranches, MinWarrantyMonths, MaxWarrantyMonths, MaxPage and
-	// DefaultPageSize are the frozen bounds of this contract.
+	// MaxBranches, MaxPage and DefaultPageSize are the frozen bounds of this
+	// contract.
 	MaxBranches         = 50
-	MinWarrantyMonths   = 1
-	MaxWarrantyMonths   = 120
 	MaxPage             = 1_000_000
 	DefaultPageSize     = 10
 	maxBranchLocationID = math.MaxInt16
@@ -129,8 +130,8 @@ type Branch struct {
 	Name string `json:"name"`
 }
 
-// Price is the persisted pair of one (branch, variant) with the account that wrote
-// it last. Amounts are canonical two-decimal text.
+// Price is the persisted pair of one (branch, battery) with the account that wrote it
+// last. Amounts are canonical two-decimal text.
 type Price struct {
 	BranchLocationID     int64     `json:"branch_location_id"`
 	MinPrice             Money     `json:"min_price"`
@@ -140,63 +141,58 @@ type Price struct {
 	UpdatedByDisplayName string    `json:"updated_by_display_name"`
 }
 
-// VariantPrice is one row of the matrix: the catalogue identity of a variant, its
-// warranty term when it has one, and the prices of the active branches. Warranty is
-// a product datum, so a variant without a term reports nil and the client shows no
-// term at all instead of inventing a default.
-type VariantPrice struct {
-	VariantID      int64
+// Battery is one row of the matrix: the catalogue identity of a battery, the
+// polarities that exist for it and the prices of the active branches. There is one
+// row per battery, never one per polarity, so the two polarities of a battery always
+// show the same pair.
+type Battery struct {
 	CatalogEntryID int64
 	Brand          string
 	Model          string
 	Capacity       catalog.Decimal
-	Polarity       string
+	Polarities     []string
 	Cells          []string
-	WarrantyMonths *int
-	WarrantyAt     *time.Time
 	Prices         []Price
 }
 
 // Matrix is one page of the price list together with the active branches it is read
 // against.
 type Matrix struct {
-	Branches      []Branch
-	Variants      []VariantPrice
-	Page          int
-	PageSize      int
-	TotalVariants int64
+	Branches       []Branch
+	Batteries      []Battery
+	Page           int
+	PageSize       int
+	TotalBatteries int64
 }
 
 // BranchQuery is the frozen read filter. Capacity is a canonical catalogue decimal
-// and an empty value means no capacity filter.
+// and an empty value means no capacity filter. There is no polarity filter: a price
+// belongs to the battery, so the matrix lists both polarities in one row.
 type BranchQuery struct {
 	Search   string
 	Brand    string
 	Capacity catalog.Decimal
-	Polarity string
 	Page     int
 	PageSize int
 }
 
-// WriteInput is one price assignment: the pair of amounts, an optional warranty term
-// and the branches that receive the pair. A nil warranty leaves the stored term
-// untouched; a present one is written with the same transaction.
+// WriteInput is one price assignment: the pair of amounts and the branches that
+// receive the pair. The value of the operation is the battery, so the same pair always
+// covers both of its polarities.
 type WriteInput struct {
-	VariantID      int64
+	CatalogEntryID int64
 	MinPrice       Money
 	SuggestedPrice Money
-	WarrantyMonths *int
 	BranchIDs      []int64
 }
 
-// WriteResult is the applied assignment: the canonical pair, the branches that
-// received it in ascending order and the warranty term in force afterwards.
+// WriteResult is the applied assignment: the canonical pair and the branches that
+// received it in ascending order.
 type WriteResult struct {
-	VariantID      int64
+	CatalogEntryID int64
 	BranchIDs      []int64
 	MinPrice       Money
 	SuggestedPrice Money
-	WarrantyMonths *int
 }
 
 // warehouseAdmin admits only the completed warehouse administrator identity.
@@ -229,9 +225,6 @@ func ValidQuery(q BranchQuery) bool {
 	if !ValidPage(q.Page, q.PageSize) || !validText(q.Search) || !validText(q.Brand) {
 		return false
 	}
-	if q.Polarity != "" && q.Polarity != "L" && q.Polarity != "R" {
-		return false
-	}
 	if q.Capacity != "" {
 		if _, err := catalog.ParseDecimal(string(q.Capacity)); err != nil {
 			return false
@@ -245,7 +238,7 @@ func ValidQuery(q BranchQuery) bool {
 // (which is also the database's lock order) and the caller's slice is never
 // modified.
 func ValidateWrite(input WriteInput) (WriteInput, error) {
-	if input.VariantID < 1 || input.VariantID > math.MaxInt32 {
+	if input.CatalogEntryID < 1 || input.CatalogEntryID > math.MaxInt32 {
 		return WriteInput{}, ErrInvalid
 	}
 	min, err := ParseMoney(string(input.MinPrice))
@@ -261,10 +254,6 @@ func ValidateWrite(input WriteInput) (WriteInput, error) {
 	// The suggested price is never below the minimum: the minimum is the floor the
 	// point of sale is blocked under.
 	if !suggested.AtLeast(min) {
-		return WriteInput{}, ErrInvalid
-	}
-	warranty := input.WarrantyMonths
-	if warranty != nil && (*warranty < MinWarrantyMonths || *warranty > MaxWarrantyMonths) {
 		return WriteInput{}, ErrInvalid
 	}
 	if len(input.BranchIDs) < 1 || len(input.BranchIDs) > MaxBranches {
@@ -283,10 +272,9 @@ func ValidateWrite(input WriteInput) (WriteInput, error) {
 	}
 	sort.Slice(branches, func(i, j int) bool { return branches[i] < branches[j] })
 	return WriteInput{
-		VariantID:      input.VariantID,
+		CatalogEntryID: input.CatalogEntryID,
 		MinPrice:       min,
 		SuggestedPrice: suggested,
-		WarrantyMonths: warranty,
 		BranchIDs:      branches,
 	}, nil
 }
