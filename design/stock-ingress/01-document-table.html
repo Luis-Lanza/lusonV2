@@ -1,15 +1,361 @@
-<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Documento y tabla · Ingreso de stock · Luson</title><style>*{box-sizing:border-box}:root{font-family:sans-serif;color:#242124;background:#F8F6F4;font-size:14px;--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;--ok-bg:#ECFDF5;--ok-ink:#047857;--ok-border:#A7F3D0;--warn-bg:#FFFBEF;--warn-ink:#805400;--warn-border:#E8CF86}body{margin:0}h1,h2,h3,p,dl,dd,dt{margin:0}h1{font-size:22px}h2{font-size:18px}h3{font-size:14px}p{line-height:1.6}small,.muted{color:var(--muted);font-size:12px}button,input,select{font:inherit;color:inherit}button{cursor:pointer;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;padding:10px 12px;min-height:44px}button:hover{background:var(--tint)}button.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF}button.primary:hover{background:var(--hover)}button.quiet{border:1px solid var(--border);color:var(--muted);min-height:0;padding:6px 10px}:focus-visible{outline:2px solid var(--wine);outline-offset:3px}input,select{padding:10px 12px;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;width:100%;min-height:44px}label{display:grid;gap:8px;font-size:12px}aside{position:fixed;width:240px;inset:0 auto 0 0;background:#FFFFFF;border-right:1px solid var(--border);padding:12px;display:flex;flex-direction:column;justify-content:space-between}.brand{display:flex;gap:10px;align-items:center;padding:4px 8px 16px;border-bottom:1px solid var(--border)}.logo{background:var(--wine);color:#FFFFFF;border-radius:4px;padding:8px;font-weight:700;font-size:18px}.brand strong{color:var(--wine);font-size:18px}.brand small{display:block}nav{display:grid;gap:4px;margin-top:12px}nav button{text-align:left;border:0;padding:12px}nav .active{background:var(--tint);color:var(--wine);border-left:2px solid var(--wine);font-weight:600}.identity{padding:12px;background:var(--page);border:1px solid var(--border)}.identity small{display:block;margin-top:6px}.top{margin-left:240px;height:56px;background:#FFFFFF;border-bottom:1px solid var(--border);padding:16px 24px;display:flex;justify-content:space-between}main{margin-left:240px;padding:32px;max-width:1600px}.heading,.row{display:flex;align-items:center;justify-content:space-between;gap:16px}.heading{margin-bottom:24px}.heading p{color:var(--muted);margin-top:8px}.panel{background:#FFFFFF;border:1px solid var(--border);border-radius:4px;padding:24px;margin-bottom:16px}.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:24px;align-items:start}.tag{display:inline-block;border:1px solid var(--border);background:var(--page);padding:4px 8px;border-radius:3px;font-size:11px}.tag.wine{background:var(--tint);color:var(--wine);border-color:var(--border)}.tag.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-border)}.tag.warn{background:var(--warn-bg);color:var(--warn-ink);border-color:var(--warn-border)}table{border-collapse:collapse;width:100%;font-size:13px}th{text-align:left;background:var(--page);color:var(--muted);font-size:11px;text-transform:uppercase}th,td{padding:14px 12px;border-bottom:1px solid var(--border);vertical-align:middle}td small{display:block;margin-top:4px}.tablewrap{overflow:auto;margin-top:16px}.search{margin-top:16px}.note{margin-top:16px}.qty{width:96px;text-align:right;font-variant-numeric:tabular-nums}.num{font-variant-numeric:tabular-nums;font-weight:600}.add{min-height:0;padding:8px 12px}.empty td{color:var(--muted);text-align:center;padding:32px 12px}.totalbar{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-top:16px;padding-top:16px;border-top:1px solid var(--border);flex-wrap:wrap}.totalbar dl{display:flex;gap:24px}.totalbar dt{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}.totalbar dd{font-size:20px;font-variant-numeric:tabular-nums;margin-top:2px}.status{color:var(--wine);min-height:24px;margin-top:12px}.impact{margin-top:12px}footer{color:var(--muted);font-size:12px;padding:16px 0}.skip{position:fixed;top:-100px;background:#FFFFFF;color:var(--wine);padding:12px;z-index:10}.skip:focus{top:8px}@media(max-width:767px){aside{position:static;width:auto}.brand{padding:8px}aside nav{grid-template-columns:repeat(2,1fr)}aside .identity{display:none}.top,main{margin-left:0}.top{height:auto;gap:12px}main{padding:16px}.grid{grid-template-columns:1fr}.heading{align-items:flex-start;flex-wrap:wrap}.panel{padding:16px}.row{flex-wrap:wrap}.totalbar dl{gap:16px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}</style><body><a class="skip" href="#main">Ir al contenido</a><aside aria-label="Barra lateral"><div><div class="brand"><span class="logo">L</span><div><strong>Luson</strong><small>Gestión de inventario</small></div></div><nav aria-label="Navegación principal"><button type="button" data-demo>▦ Inventario</button><button type="button" data-demo>⇄ Transferencias</button><button type="button" class="active" aria-current="page">⇩ Ingresos</button><button type="button" data-demo>⚙ Administración</button></nav></div><div class="identity"><strong>almacen</strong><small>Almacén · Administrador único</small></div></aside><header class="top"><strong>Ingresos</strong><span>Almacén <small>/ Ingreso de stock</small></span></header><main id="main"><div class="heading"><div><small>ALMACÉN / INGRESOS</small><h1 style="margin-top:8px">Nuevo ingreso de stock</h1><p>Registrá la mercadería que entra al depósito. El stock se aplica recién al confirmar.</p></div><span class="tag">Prototipo · sin datos reales</span></div><div class="grid"><section class="panel" aria-labelledby="cat-h"><div class="row"><h2 id="cat-h">Catálogo</h2><span class="tag">95 productos</span></div><label class="search">Buscar marca, modelo o capacidad<input type="search" value="NS40" data-search placeholder="NS40ZL, TOYO, 45 Ah"></label><div class="tablewrap"><table><caption class="muted" data-caption>Resultados para “NS40” · 4 variantes</caption><thead><tr><th>Producto</th><th>Stock actual</th><th><span class="muted">Agregar</span></th></tr></thead><tbody data-results></tbody></table></div><p class="muted impact">El stock que ves acá es el actual del Almacén. Suma unidades del documento y se vuelve a consultar al confirmar.</p></section><section class="panel" aria-labelledby="doc-h"><div class="row"><div><h2 id="doc-h">Documento de ingreso</h2><p class="muted">Se numera al confirmar · hoy 14:20</p></div><span class="tag wine">Borrador local</span></div><label class="note">Nota del documento (opcional)<input placeholder="Remito 0002-00045871 · Proveedor del norte" data-note></label><div class="tablewrap"><table><caption class="muted">Líneas que se aplican al stock</caption><thead><tr><th>Producto</th><th>Cantidad</th><th>Quitar</th></tr></thead><tbody data-lines></tbody></table></div><div class="totalbar"><dl><div><dt>Variantes</dt><dd data-variants>0</dd></div><div><dt>Unidades</dt><dd data-units>0</dd></div></dl><button class="primary" data-confirm>Confirmar ingreso</button></div><p role="status" class="status" data-status></p><p class="muted">Todo o nada: si una línea es inválida no se aplica ninguna. Una vez confirmado, el documento no se edita ni se borra: se corrige con un contra-asiento que deja ambos registros.</p></section></div><footer>Demostración local del prototipo. No guarda datos ni llama a la API. Las cantidades y el stock son ilustrativos.</footer></main><script>
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documento y tabla · Ingreso de stock · Luson</title>
+<style>
+*{box-sizing:border-box}
+:root{font-family:sans-serif;
+color:#242124;
+background:#F8F6F4;
+font-size:14px;
+--wine:#7A1F3D;
+--hover:#5B162D;
+--tint:#F5E8ED;
+--page:#F8F6F4;
+--border:#DED7DA;
+--muted:#6B6267;
+--ok-bg:#ECFDF5;
+--ok-ink:#047857;
+--ok-border:#A7F3D0;
+--warn-bg:#FFFBEF;
+--warn-ink:#805400;
+--warn-border:#E8CF86}
+body{margin:0}
+h1,h2,h3,p,dl,dd,dt{margin:0}
+h1{font-size:22px}
+h2{font-size:18px}
+h3{font-size:14px}
+p{line-height:1.6}
+small,.muted{color:var(--muted);
+font-size:12px}
+button,input,select{font:inherit;
+color:inherit}
+button{cursor:pointer;
+background:#FFFFFF;
+border:1px solid var(--muted);
+border-radius:4px;
+padding:10px 12px;
+min-height:44px}
+button:hover{background:var(--tint)}
+button.primary{background:var(--wine);
+border-color:var(--wine);
+color:#FFFFFF}
+button.primary:hover{background:var(--hover)}
+button.quiet{border:1px solid var(--border);
+color:var(--muted);
+min-height:0;
+padding:6px 10px}
+:focus-visible{outline:2px solid var(--wine);
+outline-offset:3px}
+input,select{padding:10px 12px;
+background:#FFFFFF;
+border:1px solid var(--muted);
+border-radius:4px;
+width:100%;
+min-height:44px}
+label{display:grid;
+gap:8px;
+font-size:12px}
+aside{position:fixed;
+width:240px;
+inset:0 auto 0 0;
+background:#FFFFFF;
+border-right:1px solid var(--border);
+padding:12px;
+display:flex;
+flex-direction:column;
+justify-content:space-between}
+.brand{display:flex;
+gap:10px;
+align-items:center;
+padding:4px 8px 16px;
+border-bottom:1px solid var(--border)}
+.logo{background:var(--wine);
+color:#FFFFFF;
+border-radius:4px;
+padding:8px;
+font-weight:700;
+font-size:18px}
+.brand strong{color:var(--wine);
+font-size:18px}
+.brand small{display:block}
+nav{display:grid;
+gap:4px;
+margin-top:12px}
+nav button{text-align:left;
+border:0;
+padding:12px}
+nav .active{background:var(--tint);
+color:var(--wine);
+border-left:2px solid var(--wine);
+font-weight:600}
+.identity{padding:12px;
+background:var(--page);
+border:1px solid var(--border)}
+.identity small{display:block;
+margin-top:6px}
+.top{margin-left:240px;
+height:56px;
+background:#FFFFFF;
+border-bottom:1px solid var(--border);
+padding:16px 24px;
+display:flex;
+justify-content:space-between}
+main{margin-left:240px;
+padding:32px;
+max-width:1600px}
+.heading,.row{display:flex;
+align-items:center;
+justify-content:space-between;
+gap:16px}
+.heading{margin-bottom:24px}
+.heading p{color:var(--muted);
+margin-top:8px}
+.panel{background:#FFFFFF;
+border:1px solid var(--border);
+border-radius:4px;
+padding:24px;
+margin-bottom:16px}
+.grid{display:grid;
+grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);
+gap:24px;
+align-items:start}
+.tag{display:inline-block;
+border:1px solid var(--border);
+background:var(--page);
+padding:4px 8px;
+border-radius:3px;
+font-size:11px}
+.tag.wine{background:var(--tint);
+color:var(--wine);
+border-color:var(--border)}
+.tag.ok{background:var(--ok-bg);
+color:var(--ok-ink);
+border-color:var(--ok-border)}
+.tag.warn{background:var(--warn-bg);
+color:var(--warn-ink);
+border-color:var(--warn-border)}
+table{border-collapse:collapse;
+width:100%;
+font-size:13px}
+th{text-align:left;
+background:var(--page);
+color:var(--muted);
+font-size:11px;
+text-transform:uppercase}
+th,td{padding:14px 12px;
+border-bottom:1px solid var(--border);
+vertical-align:middle}
+td small{display:block;
+margin-top:4px}
+.tablewrap{overflow:auto;
+margin-top:16px}
+.search{margin-top:16px}
+.note{margin-top:16px}
+.qty{width:96px;
+text-align:right;
+font-variant-numeric:tabular-nums}
+.num{font-variant-numeric:tabular-nums;
+font-weight:600}
+.add{min-height:0;
+padding:8px 12px}
+.empty td{color:var(--muted);
+text-align:center;
+padding:32px 12px}
+.totalbar{display:flex;
+justify-content:space-between;
+align-items:center;
+gap:16px;
+margin-top:16px;
+padding-top:16px;
+border-top:1px solid var(--border);
+flex-wrap:wrap}
+.totalbar dl{display:flex;
+gap:24px}
+.totalbar dt{font-size:11px;
+letter-spacing:.04em;
+text-transform:uppercase;
+color:var(--muted)}
+.totalbar dd{font-size:20px;
+font-variant-numeric:tabular-nums;
+margin-top:2px}
+.status{color:var(--wine);
+min-height:24px;
+margin-top:12px}
+.impact{margin-top:12px}
+footer{color:var(--muted);
+font-size:12px;
+padding:16px 0}
+.skip{position:fixed;
+top:-100px;
+background:#FFFFFF;
+color:var(--wine);
+padding:12px;
+z-index:10}
+.skip:focus{top:8px}
+@media(max-width:767px){aside{position:static;
+width:auto}
+.brand{padding:8px}
+aside nav{grid-template-columns:repeat(2,1fr)}
+aside .identity{display:none}
+.top,main{margin-left:0}
+.top{height:auto;
+gap:12px}
+main{padding:16px}
+.grid{grid-template-columns:1fr}
+.heading{align-items:flex-start;
+flex-wrap:wrap}
+.panel{padding:16px}
+.row{flex-wrap:wrap}
+.totalbar dl{gap:16px}
+}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}
+}
+</style>
+<body>
+<a class="skip" href="#main">Ir al contenido</a>
+<aside aria-label="Barra lateral">
+<div>
+<div class="brand">
+<span class="logo">L</span>
+<div>
+<strong>Luson</strong>
+<small>Gestión de inventario</small>
+</div>
+</div>
+<nav aria-label="Navegación principal">
+<button type="button" data-demo>▦ Inventario</button>
+<button type="button" data-demo>⇄ Transferencias</button>
+<button type="button" class="active" aria-current="page">⇩ Ingresos</button>
+<button type="button" data-demo>⚙ Administración</button>
+</nav>
+</div>
+<div class="identity">
+<strong>almacen</strong>
+<small>Almacén · Administrador único</small>
+</div>
+</aside>
+<header class="top">
+<strong>Ingresos</strong>
+<span>Almacén <small>/ Ingreso de stock</small>
+</span>
+</header>
+<main id="main">
+<div class="heading">
+<div>
+<small>ALMACÉN / INGRESOS</small>
+<h1 style="margin-top:8px">Nuevo ingreso de stock</h1>
+<p>Registrá la mercadería que entra al depósito. El stock se aplica recién al confirmar.</p>
+</div>
+<span class="tag">Prototipo · sin datos reales</span>
+</div>
+<div class="grid">
+<section class="panel" aria-labelledby="cat-h">
+<div class="row">
+<h2 id="cat-h">Catálogo</h2>
+<span class="tag">95 productos</span>
+</div>
+<label class="search">Buscar marca, modelo o capacidad<input type="search" value="NS40" data-search placeholder="NS40ZL, TOYO, 45 Ah">
+</label>
+<div class="tablewrap">
+<table>
+<caption class="muted" data-caption>Resultados para “NS40” · 4 variantes</caption>
+<thead>
+<tr>
+<th>Producto</th>
+<th>Stock actual</th>
+<th>
+<span class="muted">Agregar</span>
+</th>
+</tr>
+</thead>
+<tbody data-results>
+</tbody>
+</table>
+</div>
+<p class="muted impact">El stock que ves acá es el actual del Almacén. Suma unidades del documento y se vuelve a consultar al confirmar.</p>
+</section>
+<section class="panel" aria-labelledby="doc-h">
+<div class="row">
+<div>
+<h2 id="doc-h">Documento de ingreso</h2>
+<p class="muted">Se numera al confirmar · hoy 14:20</p>
+</div>
+<span class="tag wine">Borrador local</span>
+</div>
+<label class="note">Nota del documento (opcional)<input placeholder="Remito 0002-00045871 · Proveedor del norte" data-note>
+</label>
+<div class="tablewrap">
+<table>
+<caption class="muted">Líneas que se aplican al stock</caption>
+<thead>
+<tr>
+<th>Producto</th>
+<th>Cantidad</th>
+<th>Quitar</th>
+</tr>
+</thead>
+<tbody data-lines>
+</tbody>
+</table>
+</div>
+<div class="totalbar">
+<dl>
+<div>
+<dt>Variantes</dt>
+<dd data-variants>0</dd>
+</div>
+<div>
+<dt>Unidades</dt>
+<dd data-units>0</dd>
+</div>
+</dl>
+<button class="primary" data-confirm>Confirmar ingreso</button>
+</div>
+<p role="status" class="status" data-status>
+</p>
+<p class="muted">Todo o nada: si una línea es inválida no se aplica ninguna. Una vez confirmado, el documento no se edita ni se borra: se corrige con un contra-asiento que deja ambos registros.</p>
+</section>
+</div>
+<footer>Demostración local del prototipo. No guarda datos ni llama a la API. Las cantidades y el stock son ilustrativos.</footer>
+</main>
+<script>
 const stock=[{id:1,brand:'CAR',model:'NS40ZL',cap:'35 Ah',pol:'L',existing:14},{id:2,brand:'TOYO',model:'NS40ZL',cap:'35 Ah',pol:'L',existing:9},{id:4,brand:'VOLTA',model:'NS40ZL',cap:'35 Ah',pol:'R',existing:3},{id:6,brand:'TOYO',model:'NS60L',cap:'45 Ah',pol:'L',existing:22}];
 let lines=[{id:1,qty:24},{id:6,qty:18}];
 const results=document.querySelector('[data-results]'),tb=document.querySelector('[data-lines]'),status=document.querySelector('[data-status]');
 const label=s=>`${s.brand} · ${s.model}`;
 function renderResults(){const q=document.querySelector('[data-search]').value.trim().toUpperCase();const hits=stock.filter(s=>!q||(s.brand+' '+s.model+' '+s.cap+' '+s.pol).toUpperCase().includes(q));
 document.querySelector('[data-caption]').textContent=`Resultados para “${q||'todo'}” · ${hits.length} variante${hits.length===1?'':'s'}`;
-results.innerHTML=hits.length?hits.map(s=>`<tr><td><strong>${label(s)}</strong><small>${s.cap} · Polaridad ${s.pol}</small></td><td class="num">${s.existing}</td><td><button class="add" data-add="${s.id}">Agregar</button></td></tr>`).join(''):'<tr class="empty"><td colspan="3">Sin coincidencias en el catálogo.</td></tr>';
+results.innerHTML=hits.length?hits.map(s=>`<tr>
+<td>
+<strong>${label(s)}</strong>
+<small>${s.cap} · Polaridad ${s.pol}</small>
+</td>
+<td class="num">${s.existing}</td>
+<td>
+<button class="add" data-add="${s.id}">Agregar</button>
+</td>
+</tr>`).join(''):'<tr class="empty">
+<td colspan="3">Sin coincidencias en el catálogo.</td>
+</tr>';
 results.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>add(Number(b.dataset.add)));}
 function find(id){return stock.find(s=>s.id===id)}
 function add(id){const l=lines.find(x=>x.id===id);if(l){l.qty+=1;status.textContent=`${label(find(id))} ya estaba en el documento: ahora ${l.qty} unidades.`}else lines.push({id,qty:12});render();}
-function render(){tb.innerHTML=lines.map(l=>`<tr><td><strong>${label(find(l.id))}</strong><small>${find(l.id).cap} · Polaridad ${find(l.id).pol}</small></td><td><input class="qty" type="number" min="1" step="1" value="${l.qty}" data-qty="${l.id}" aria-label="Cantidad de ${label(find(l.id))}"></td><td><button class="quiet" data-del="${l.id}">Quitar</button></td></tr>`).join('')||'<tr class="empty"><td colspan="3">Todavía no agregaste líneas.</td></tr>';
+function render(){tb.innerHTML=lines.map(l=>`<tr>
+<td>
+<strong>${label(find(l.id))}</strong>
+<small>${find(l.id).cap} · Polaridad ${find(l.id).pol}</small>
+</td>
+<td>
+<input class="qty" type="number" min="1" step="1" value="${l.qty}" data-qty="${l.id}" aria-label="Cantidad de ${label(find(l.id))}">
+</td>
+<td>
+<button class="quiet" data-del="${l.id}">Quitar</button>
+</td>
+</tr>`).join('')||'<tr class="empty">
+<td colspan="3">Todavía no agregaste líneas.</td>
+</tr>';
 document.querySelector('[data-variants]').textContent=lines.length;document.querySelector('[data-units]').textContent=lines.reduce((a,l)=>a+l.qty,0);
 tb.querySelectorAll('[data-qty]').forEach(i=>i.oninput=()=>{const l=lines.find(x=>x.id===Number(i.dataset.qty));l.qty=Math.max(1,Number(i.value)||1);document.querySelector('[data-units]').textContent=lines.reduce((a,x)=>a+x.qty,0)});
 tb.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{lines=lines.filter(x=>x.id!==Number(b.dataset.del));status.textContent='';render()});}
@@ -17,4 +363,6 @@ document.querySelector('[data-search]').oninput=renderResults;
 document.querySelector('[data-confirm]').onclick=()=>{if(!lines.length){status.textContent='Agregá al menos una línea antes de confirmar.';return}status.textContent=`Ingreso confirmado en esta demostración: ${lines.length} variantes, ${lines.reduce((a,l)=>a+l.qty,0)} unidades. El stock real sumaría esas unidades.`};
 document.querySelectorAll('[data-demo]').forEach(b=>b.onclick=()=>{status.textContent='Esa sección pertenece a la app existente; el prototipo se limita a Ingresos.'});
 renderResults();render();
-</script></body></html>
+</script>
+</body>
+</html>
