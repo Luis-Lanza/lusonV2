@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   branchTag, catalogAmountCents, catalogAmountEntry, catalogPriceAmountMessage, catalogPriceBranchMessage,
-  catalogPriceOrderMessage, catalogPricesPath, catalogPriceWarrantyMessage, formatCatalogMoney,
+  catalogPriceOrderMessage, catalogPricesPath, formatCatalogMoney,
   matchesCatalogPriceInput, parseCatalogPrices, parseCatalogPricesError, parseCatalogPricesWriteError,
   validCatalogPricesQuery, validateCatalogPriceDraft, type CatalogPriceInput,
 } from './catalogPricesModel';
@@ -76,6 +76,21 @@ describe('catalog prices read mapping', () => {
     expect(parsed.variants[0].warranty_months).toBeNull();
     expect(parsed.variants[0].prices).toEqual([]);
     expect(parsed.variants[0].cells).toEqual([]);
+  });
+
+  it('admits a persisted writer whose account has no display name', () => {
+    // The preview database holds writers without a display name: the row they wrote
+    // is still evidence about the catalogue and must render.
+    const parsed = parseCatalogPrices(page({
+      branches: Array.from({ length: 5 }, (_, index) => branch(index + 2, `Sucursal ${index + 1}`)),
+      variants: [variant({ prices: [
+        price({ branch_location_id: 2, updated_by_display_name: '' }),
+        price({ branch_location_id: 3, updated_by_display_name: '', updated_at: '2026-11-04T23:14:07.123456Z' }),
+      ] })],
+    }));
+    expect(parsed.branches).toHaveLength(5);
+    expect(parsed.variants[0].prices.map(entry => entry.updated_by_display_name)).toEqual(['', '']);
+    expect(parsed.variants[0].prices[1].updated_at).toBe('2026-11-04T23:14:07.123456Z');
   });
 
   it('admits a JSON number capacity, which the inventory read already serves', () => {
@@ -193,11 +208,13 @@ describe('catalog price draft validation', () => {
     } });
   });
 
-  it('sends the warranty term only when the variant has none yet', () => {
-    const validation = validateCatalogPriceDraft(1, draft({ warranty_months: 6 }));
-    expect(validation.valid && Object.hasOwn(validation.input, 'warranty_months')).toBe(true);
-    const existing = validateCatalogPriceDraft(1, draft());
-    expect(existing.valid && Object.hasOwn(existing.input, 'warranty_months')).toBe(false);
+  it('sends no product term, whatever the draft carried', () => {
+    // The catalogue manages prices only: a draft that still holds a product term
+    // fails closed instead of leaking it into the payload.
+    expect(validateCatalogPriceDraft(1, draft({ warranty_months: 6 } as never)).valid).toBe(false);
+    const clean = validateCatalogPriceDraft(1, draft());
+    expect(clean.valid && Object.keys(clean.input).sort())
+      .toEqual(['branch_ids', 'min_price', 'suggested_price', 'variant_id']);
   });
 
   it.each([
@@ -232,25 +249,24 @@ describe('catalog price draft validation', () => {
   });
 
   it.each([[0], [121], [1.5], [Number.NaN], ['6']])('rejects the warranty term %s', warranty_months => {
-    expect(validateCatalogPriceDraft(1, draft({ warranty_months } as never)))
-      .toEqual({ valid: false, message: catalogPriceWarrantyMessage });
+    expect(validateCatalogPriceDraft(1, draft({ warranty_months } as never)).valid).toBe(false);
   });
 });
 
 describe('catalog price write evidence', () => {
-  const input: CatalogPriceInput = { variant_id: 1, min_price: '85000', suggested_price: '96000', warranty_months: 6, branch_ids: [2, 3] };
+  const input: CatalogPriceInput = { variant_id: 1, min_price: '85000', suggested_price: '96000', branch_ids: [2, 3] };
   const response = (overrides: Record<string, unknown> = {}) => ({
     variant_id: 1, written: 2, branch_ids: [2, 3], min_price: '85000.00', suggested_price: '96000.00',
     warranty_months: 6, ...overrides,
   });
 
   it('accepts a reply that repeats the exact payload', () => {
-    expect(matchesCatalogPriceInput(input, 6, response())).toBe(true);
+    expect(matchesCatalogPriceInput(input, response())).toBe(true);
   });
 
-  it('accepts a reply for a variant whose term was already set', () => {
-    const withoutTerm: CatalogPriceInput = { variant_id: 1, min_price: '85000', suggested_price: '96000', branch_ids: [2] };
-    expect(matchesCatalogPriceInput(withoutTerm, 12, response({ written: 1, branch_ids: [2], warranty_months: 12 }))).toBe(true);
+  it('never compares the product term the reply still reports', () => {
+    expect(matchesCatalogPriceInput(input, response({ warranty_months: 12 }))).toBe(true);
+    expect(matchesCatalogPriceInput(input, response({ warranty_months: null }))).toBe(true);
   });
 
   it.each([
@@ -259,9 +275,8 @@ describe('catalog price write evidence', () => {
     ['another written count', response({ written: 1 })],
     ['another minimum', response({ min_price: '86000.00' })],
     ['another suggested price', response({ suggested_price: '97000.00' })],
-    ['another warranty term', response({ warranty_months: 12 })],
     ['a suggested price below the minimum', response({ suggested_price: '80000.00' })],
   ])('refuses a reply that reports %s', (_, reply) => {
-    expect(matchesCatalogPriceInput(input, 6, reply)).toBe(false);
+    expect(matchesCatalogPriceInput(input, reply)).toBe(false);
   });
 });

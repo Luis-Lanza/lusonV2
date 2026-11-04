@@ -15,6 +15,7 @@ import PasswordChange from './PasswordChange';
 import StockEntry from './StockEntry';
 import StockAdjustment from './StockAdjustment';
 import CatalogPrices from './CatalogPrices';
+import CatalogSectionBoundary from './CatalogSectionBoundary';
 
 type Controller = ReturnType<typeof useInventory>;
 function Login({ state }: { state: Controller }) {
@@ -239,7 +240,7 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
         : stock ? <p role="status">Verificando la sesión del Almacén…</p>
         : adjustments && adminOwner ? <StockAdjustment key={adminOwner} csrf={csrf} realtime={state} />
         : adjustments ? <p role="status">Verificando la sesión del Almacén…</p>
-        : catalog && adminOwner ? <CatalogPrices key={adminOwner} csrf={csrf} brands={metadata?.brands ?? []} />
+        : catalog && adminOwner ? <CatalogSectionBoundary key={adminOwner}><CatalogPrices key={adminOwner} csrf={csrf} brands={metadata?.brands ?? []} /></CatalogSectionBoundary>
         : catalog ? <p role="status">Verificando la sesión del Almacén…</p>
         : <>
       {recoverable && <section className="creation-recovery" aria-label="Recuperación de solicitud"><p>{recoverable.phase === 'ready' ? 'Tenés una revisión preparada, todavía no enviada.' : 'Tenés un intento pendiente de confirmación.'}</p>

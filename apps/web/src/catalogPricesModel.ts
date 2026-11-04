@@ -29,21 +29,25 @@ export interface CatalogPricesQuery {
 }
 /**
  * One block write: a single variant, one minimum/suggested pair and the branches
- * it applies to. `warranty_months` travels only when the variant has no term yet.
+ * it applies to. The catalogue manages prices only, so the payload carries no
+ * product term of any kind.
  */
 export interface CatalogPriceInput {
   readonly variant_id: number; readonly min_price: string; readonly suggested_price: string;
-  readonly warranty_months?: number; readonly branch_ids: readonly number[];
+  readonly branch_ids: readonly number[];
 }
-/** The persisted result the server echoes back for the write. */
+/**
+ * The persisted result the server echoes back for the write. The reply still
+ * carries the product term of the row, which this section neither shows nor
+ * compares: it is admitted as evidence of shape and then dropped.
+ */
 export interface CatalogPriceResult {
   readonly variant_id: number; readonly written: number; readonly branch_ids: readonly number[];
-  readonly min_price: string; readonly suggested_price: string; readonly warranty_months: number | null;
+  readonly min_price: string; readonly suggested_price: string;
 }
 /** The draft as the form holds it, before validation: strings and checkboxes. */
 export interface CatalogPriceDraft {
   readonly min_price: string; readonly suggested_price: string; readonly branch_ids: readonly number[];
-  readonly warranty_months?: number;
 }
 export type CatalogPriceValidation =
   | { readonly valid: true; readonly input: CatalogPriceInput }
@@ -78,7 +82,6 @@ export const catalogPricesErrorMessages: Record<CatalogPricesErrorCode, string> 
 export const catalogPriceAmountMessage = 'El mínimo y el sugerido deben ser montos positivos, con hasta dos decimales.';
 export const catalogPriceOrderMessage = 'El precio sugerido no puede ser menor que el precio mínimo de venta.';
 export const catalogPriceBranchMessage = 'Elegí al menos una sucursal a la que aplicar el precio.';
-export const catalogPriceWarrantyMessage = 'El plazo de garantía debe ser un entero entre 1 y 120 meses.';
 export const catalogPriceVariantMessage = 'La variante elegida no es válida. Actualizá la lista e intentá de nuevo.';
 
 /** Admitted error envelope per HTTP status; nothing else may reach the UI. */
@@ -109,6 +112,10 @@ function text(value: unknown): string {
   if (typeof value !== 'string' || !value || value.includes('\0') || !value.isWellFormed()) return invalidResponse();
   return value;
 }
+/**
+ * A display name is free text a real account may not have set: the preview
+ * database bootstraps it empty, and an empty one is still a legitimate label.
+ */
 function label(value: unknown): string {
   if (typeof value !== 'string' || value.includes('\0') || !value.isWellFormed()) return invalidResponse();
   return value;
@@ -253,7 +260,7 @@ export function parseCatalogPrices(raw: string): CatalogPricesPage {
       return Object.freeze({ branch_location_id, min_price, suggested_price,
         updated_at: timestamp(price.updated_at),
         updated_by_account_id: integer(price.updated_by_account_id, 1, Number.MAX_SAFE_INTEGER),
-        updated_by_display_name: text(price.updated_by_display_name) });
+        updated_by_display_name: label(price.updated_by_display_name) });
     });
     return Object.freeze({ variant_id, catalog_entry_id: integer(row.catalog_entry_id, 1, Number.MAX_SAFE_INTEGER),
       brand: text(row.brand), model: text(row.model), capacity_ah: capacity(row.capacity_ah),
@@ -311,25 +318,18 @@ function branchesOf(value: unknown): readonly number[] {
 
 /**
  * Admits one draft against the rules the server also enforces and freezes the
- * exact payload that will be sent: sorted unique branches, the flexible entry
- * amount and the warranty term only when the variant still has none.
+ * exact payload that will be sent: sorted unique branches and the flexible
+ * entry amount. Any other key is refused, so no product term can travel.
  */
 export function canonicalCatalogPriceInput(input: CatalogPriceInput): CatalogPriceInput {
-  const record = fields(input, ['variant_id', 'min_price', 'suggested_price', 'warranty_months', 'branch_ids'], false);
+  const record = fields(input, ['variant_id', 'min_price', 'suggested_price', 'branch_ids'], false);
   const variant_id = typeof record.variant_id === 'number' && Number.isInteger(record.variant_id)
     && record.variant_id >= 1 && record.variant_id <= catalogPricesMaxVariantID ? record.variant_id : invalidDraft();
   const min_price = entryMoney(record.min_price);
   const suggested_price = entryMoney(record.suggested_price);
   if (catalogAmountCents(suggested_price) < catalogAmountCents(min_price)) return invalidDraft();
-  let warranty_months: number | undefined;
-  if (record.warranty_months !== undefined) {
-    const raw = record.warranty_months;
-    warranty_months = typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw <= catalogPricesMaxWarrantyMonths
-      ? raw : invalidDraft();
-  }
   const branch_ids = branchesOf(record.branch_ids);
-  return Object.freeze({ variant_id, min_price, suggested_price,
-    ...(warranty_months === undefined ? {} : { warranty_months }), branch_ids });
+  return Object.freeze({ variant_id, min_price, suggested_price, branch_ids });
 }
 
 function draftProblem(draft: CatalogPriceDraft): string | null {
@@ -341,12 +341,6 @@ function draftProblem(draft: CatalogPriceDraft): string | null {
     suggested = entryMoney(record.suggested_price);
   } catch { return catalogPriceAmountMessage; }
   if (catalogAmountCents(suggested) < catalogAmountCents(min)) return catalogPriceOrderMessage;
-  if (record.warranty_months !== undefined) {
-    const raw = record.warranty_months;
-    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1 || raw > catalogPricesMaxWarrantyMonths) {
-      return catalogPriceWarrantyMessage;
-    }
-  }
   try { branchesOf(record.branch_ids); } catch { return catalogPriceBranchMessage; }
   return null;
 }
@@ -364,11 +358,9 @@ export function validateCatalogPriceDraft(variantID: number, draft: CatalogPrice
 
 /**
  * The reply is evidence only if it reports the exact write this client sent: the
- * same variant, the same branch set, the same pair in cents and the term that is
- * now persisted (the one sent, or the one the variant already had).
+ * same variant, the same branch set and the same pair in cents.
  */
-export function matchesCatalogPriceInput(input: CatalogPriceInput, expectedWarranty: number | null,
-  result: CatalogPriceResult): boolean {
+export function matchesCatalogPriceInput(input: CatalogPriceInput, result: CatalogPriceResult): boolean {
   let expected: CatalogPriceInput;
   try { expected = canonicalCatalogPriceInput(input); } catch { return false; }
   if (result.variant_id !== expected.variant_id) return false;
@@ -378,13 +370,13 @@ export function matchesCatalogPriceInput(input: CatalogPriceInput, expectedWarra
   if (expected.branch_ids.some((id, index) => written[index] !== id)) return false;
   if (catalogAmountCents(result.min_price) !== catalogAmountCents(expected.min_price)) return false;
   if (catalogAmountCents(result.suggested_price) !== catalogAmountCents(expected.suggested_price)) return false;
-  if (catalogAmountCents(result.suggested_price) < catalogAmountCents(result.min_price)) return false;
-  return result.warranty_months === (expected.warranty_months ?? expectedWarranty);
+  return catalogAmountCents(result.suggested_price) >= catalogAmountCents(result.min_price);
 }
 
 /**
  * Parses the reply of one applied block: the exact flat echo of the payload the
- * client sent, with the persisted canonical amounts.
+ * client sent, with the persisted canonical amounts. The product term the server
+ * still reports is validated and then dropped: this section never shows it.
  */
 export function parseCatalogPriceResult(raw: string): CatalogPriceResult {
   const record = fields(decode(raw), ['variant_id', 'written', 'branch_ids', 'min_price', 'suggested_price', 'warranty_months']);
@@ -401,9 +393,8 @@ export function parseCatalogPriceResult(raw: string): CatalogPriceResult {
   const min_price = money(record.min_price);
   const suggested_price = money(record.suggested_price);
   if (catalogAmountCents(suggested_price) < catalogAmountCents(min_price)) return invalidResponse();
-  const warranty_months = record.warranty_months === null
-    ? null : integer(record.warranty_months, 1, catalogPricesMaxWarrantyMonths);
-  return Object.freeze({ variant_id, written, branch_ids: Object.freeze(branch_ids), min_price, suggested_price, warranty_months });
+  if (record.warranty_months !== null) integer(record.warranty_months, 1, catalogPricesMaxWarrantyMonths);
+  return Object.freeze({ variant_id, written, branch_ids: Object.freeze(branch_ids), min_price, suggested_price });
 }
 
 function admittedError<C extends string>(raw: string, status: number, table: ReadonlyMap<number, readonly C[]>): C {

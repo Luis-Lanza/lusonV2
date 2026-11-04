@@ -5,7 +5,7 @@ import type { CatalogPriceInput, CatalogPricesQuery } from './catalogPricesModel
 const csrf = 'c'.repeat(43);
 const query: CatalogPricesQuery = { search: 'NS40ZL', brand: 'CAR', capacity: '35', polarity: 'L', page: 1, page_size: 10 };
 const draft = (): CatalogPriceInput => ({
-  variant_id: 1, min_price: '85000', suggested_price: '96000', warranty_months: 6, branch_ids: [2, 3],
+  variant_id: 1, min_price: '85000', suggested_price: '96000', branch_ids: [2, 3],
 });
 const json = (body: string, status = 200) => new Response(body, { status, headers: { 'Content-Type': 'application/json' } });
 const mockFetch = () => vi.fn<typeof fetch>();
@@ -88,19 +88,20 @@ describe('catalog prices read transport', () => {
 describe('catalog prices write transport', () => {
   it('puts the exact block payload to the frozen path with the session CSRF header', async () => {
     const fetch = mockFetch().mockResolvedValue(json(resultBody()));
-    const result = await createCatalogPricesAPI(fetch).apply(draft(), 6, csrf);
-    expect(result).toMatchObject({ variant_id: 1, written: 2, warranty_months: 6 });
+    const result = await createCatalogPricesAPI(fetch).apply(draft(), csrf);
+    expect(result).toMatchObject({ variant_id: 1, written: 2, branch_ids: [2, 3], min_price: '85000.00' });
+    expect(result).not.toHaveProperty('warranty_months');
     expect(fetch.mock.calls[0]).toEqual(['/api/catalog/prices', {
       method: 'PUT', credentials: 'same-origin', cache: 'no-store', signal: undefined,
       headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
-      body: '{"variant_id":1,"min_price":"85000","suggested_price":"96000","warranty_months":6,"branch_ids":[2,3]}',
+      body: '{"variant_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[2,3]}',
     }]);
   });
 
-  it('omits the warranty term when the variant already has one', async () => {
+  it('admits a reply that still reports a product term without exposing it', async () => {
     const fetch = mockFetch().mockResolvedValue(json(resultBody({ warranty_months: 12 })));
-    const result = await createCatalogPricesAPI(fetch).apply({ ...draft(), warranty_months: undefined }, 12, csrf);
-    expect(result.warranty_months).toBe(12);
+    const result = await createCatalogPricesAPI(fetch).apply(draft(), csrf);
+    expect(result).not.toHaveProperty('warranty_months');
     expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({
       variant_id: 1, min_price: '85000', suggested_price: '96000', branch_ids: [2, 3],
     });
@@ -110,28 +111,28 @@ describe('catalog prices write transport', () => {
     let resolve!: (value: Response) => void;
     const fetch = mockFetch().mockReturnValue(new Promise<Response>(yes => { resolve = yes; }));
     const input = draft() as { variant_id: number; min_price: string; suggested_price: string;
-      warranty_months?: number; branch_ids: number[] };
+      branch_ids: number[] };
     const controller = new AbortController();
-    const job = createCatalogPricesAPI(fetch).apply(input, 6, csrf, controller.signal);
+    const job = createCatalogPricesAPI(fetch).apply(input, csrf, controller.signal);
     input.min_price = '1';
     input.branch_ids.pop();
     resolve(json(resultBody()));
     await job;
     expect(fetch.mock.calls[0][1]?.signal).toBe(controller.signal);
     expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({
-      variant_id: 1, min_price: '85000', suggested_price: '96000', warranty_months: 6, branch_ids: [2, 3],
+      variant_id: 1, min_price: '85000', suggested_price: '96000', branch_ids: [2, 3],
     });
   });
 
   it.each([[400, 'invalid_request'], [401, 'unauthenticated'], [403, 'forbidden'], [404, 'not_found'], [503, 'service_unavailable']])(
     'reports the admitted %s %s with its status', async (status, code) => {
       const fetch = mockFetch().mockResolvedValue(json(`{"error":"${code}"}`, status));
-      await expect(createCatalogPricesAPI(fetch).apply(draft(), 6, csrf)).rejects.toMatchObject({ code, status, branchId: null });
+      await expect(createCatalogPricesAPI(fetch).apply(draft(), csrf)).rejects.toMatchObject({ code, status, branchId: null });
     });
 
   it('carries the id of a retired branch so the caller can name it', async () => {
     const fetch = mockFetch().mockResolvedValue(json('{"error":"retired_branch","branch_id":4}', 400));
-    await expect(createCatalogPricesAPI(fetch).apply(draft(), 6, csrf))
+    await expect(createCatalogPricesAPI(fetch).apply(draft(), csrf))
       .rejects.toMatchObject({ code: 'retired_branch', status: 400, branchId: 4 });
   });
 
@@ -141,35 +142,34 @@ describe('catalog prices write transport', () => {
     ['another branch set', json(resultBody({ branch_ids: [2, 4] }))],
     ['another written count', json(resultBody({ written: 1 }))],
     ['another minimum', json(resultBody({ min_price: '86000.00' }))],
-    ['another warranty term', json(resultBody({ warranty_months: 12 }))],
     ['an unadmitted success status', json(resultBody(), 201)],
     ['an uninterpretable error code', json('{"error":"forbidden"}', 409)],
   ])('refuses to interpret %s', async (_, reply) => {
     const fetch = mockFetch().mockResolvedValue(reply);
-    await expect(createCatalogPricesAPI(fetch).apply(draft(), 6, csrf))
+    await expect(createCatalogPricesAPI(fetch).apply(draft(), csrf))
       .rejects.toMatchObject({ code: 'invalid_response' });
   });
 
   it.each([
-    ['a suggested price below the minimum', { ...draft(), suggested_price: '80000' }, 6, csrf],
-    ['no branch', { ...draft(), branch_ids: [] }, 6, csrf],
-    ['a minimum with three decimals', { ...draft(), min_price: '85000.123' }, 6, csrf],
-    ['a missing CSRF token', draft(), 6, ''],
-    ['a CSRF token with forbidden characters', draft(), 6, 'not a token'],
-  ])('fails closed on %s without any network call', async (_, input, warranty, token) => {
+    ['a suggested price below the minimum', { ...draft(), suggested_price: '80000' }, csrf],
+    ['no branch', { ...draft(), branch_ids: [] }, csrf],
+    ['a minimum with three decimals', { ...draft(), min_price: '85000.123' }, csrf],
+    ['a missing CSRF token', draft(), ''],
+    ['a CSRF token with forbidden characters', draft(), 'not a token'],
+  ])('fails closed on %s without any network call', async (_, input, token) => {
     const fetch = mockFetch();
-    await expect(createCatalogPricesAPI(fetch).apply(input as CatalogPriceInput, warranty as number, token as string))
+    await expect(createCatalogPricesAPI(fetch).apply(input as CatalogPriceInput, token as string))
       .rejects.toMatchObject({ code: 'invalid_request', status: null });
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it('distinguishes a lost connection from an aborted write', async () => {
     const network = mockFetch().mockRejectedValue(new TypeError('Failed to fetch'));
-    await expect(createCatalogPricesAPI(network).apply(draft(), 6, csrf)).rejects.toMatchObject({ code: 'network', status: null });
+    await expect(createCatalogPricesAPI(network).apply(draft(), csrf)).rejects.toMatchObject({ code: 'network', status: null });
     const controller = new AbortController();
     controller.abort();
     const aborted = mockFetch().mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' }));
-    await expect(createCatalogPricesAPI(aborted).apply(draft(), 6, csrf, controller.signal))
+    await expect(createCatalogPricesAPI(aborted).apply(draft(), csrf, controller.signal))
       .rejects.toMatchObject({ code: 'aborted', status: null });
   });
 });

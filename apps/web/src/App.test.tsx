@@ -2,6 +2,7 @@ import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@te
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
+import { catalogSectionFailureMessage } from './CatalogSectionBoundary';
 import { pageJSON } from './test-fixtures';
 import { useInventory } from './useInventory';
 
@@ -1649,8 +1650,7 @@ describe('warehouse catalogue section', () => {
     expect(mock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false);
   });
 
-  it('restores a typed #/catalogo hash for the warehouse identity without any write', async () => {
-    window.history.replaceState(null, '', '/#/catalogo');
+  it('restores a typed #/catalogo hash for the warehouse identity without any write', async () => {    window.history.replaceState(null, '', '/#/catalogo');
     const mock = setup(session, url => url.startsWith('/api/catalog/prices?')
       ? Promise.resolve(new Response(catalogPage, { status: 200, headers: { 'Content-Type': 'application/json' } }))
       : undefined);
@@ -1659,5 +1659,31 @@ describe('warehouse catalogue section', () => {
     expect(screen.getByRole('button', { name: 'Catálogo' })).toHaveAttribute('aria-current', 'page');
     expect(screen.getByRole('link', { name: 'Inventario' })).not.toHaveAttribute('aria-current');
     expect(mock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false);
+  });
+
+  it('contains a failing catalogue section without taking the shell down', async () => {
+    const mock = setup(session, url => url.startsWith('/api/catalog/prices?')
+      ? Promise.resolve(new Response(catalogPage, { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      : undefined);
+    render(<App />); await inventory();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // A rendering failure inside the section: the shell must survive it.
+    const clock = vi.spyOn(Intl, 'DateTimeFormat')
+      .mockImplementation((() => { throw new Error('formato no disponible'); }) as never);
+    try {
+      fireEvent.click(within(screen.getByRole('navigation', { name: 'Navegación principal' }))
+        .getByRole('button', { name: 'Catálogo' }));
+      expect(await screen.findByRole('alert')).toHaveTextContent(catalogSectionFailureMessage);
+      expect(screen.queryByRole('heading', { name: 'Catálogo de precios' })).not.toBeInTheDocument();
+      expect(screen.getByRole('navigation', { name: 'Navegación principal' })).toBeInTheDocument();
+      expect(catalogMock(mock).length).toBeGreaterThan(0);
+      clock.mockRestore();
+      // The retry remounts the section, which reads and renders the matrix again.
+      fireEvent.click(screen.getByRole('button', { name: 'Reintentar catálogo' }));
+      expect(await screen.findByText('CAR NS40ZL')).toBeInTheDocument();
+      expect(screen.queryByText(catalogSectionFailureMessage)).not.toBeInTheDocument();
+    } finally {
+      clock.mockRestore(); errors.mockRestore();
+    }
   });
 });

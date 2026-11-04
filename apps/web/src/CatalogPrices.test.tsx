@@ -63,7 +63,7 @@ describe('catalogue matrix', () => {
     const h = harness();
     await ready(h);
     const car = pickRow('CAR NS40ZL');
-    expect(within(car).getByText('35 Ah · Polaridad L · 6 meses de garantía')).toBeInTheDocument();
+    expect(within(car).getByText('35 Ah · Polaridad L')).toBeInTheDocument();
     expect(within(car).getByText('A')).toBeInTheDocument();
     expect(within(car).getByText('B')).toBeInTheDocument();
     expect(within(car).getByText('C sin precio')).toBeInTheDocument();
@@ -71,7 +71,9 @@ describe('catalogue matrix', () => {
     expect(car).toHaveAttribute('aria-expanded', 'false');
     expect(car).toHaveAttribute('tabindex', '0');
     expect(within(car).getByText('Almacén')).toBeInTheDocument();
-    expect(within(pickRow('TOYO NS60L')).getByText('45 Ah · Polaridad R · sin plazo de garantía')).toBeInTheDocument();
+    expect(within(pickRow('TOYO NS60L')).getByText('45 Ah · Polaridad R')).toBeInTheDocument();
+    // The payload still carries a product term; the catalogue never shows it.
+    expect(screen.queryByText(/garantía/i)).not.toBeInTheDocument();
     expect(h.reads()[0].url).toBe('/api/catalog/prices?page=1&page_size=10');
     expect(h.reads()[0].init).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
   });
@@ -148,15 +150,14 @@ describe('catalogue unfolding', () => {
 });
 
 describe('catalogue detail form', () => {
-  it('shows the pair, the read-only term, the per-branch values and the replaced-prices notice', async () => {
+  it('shows the pair, the per-branch values and the replaced-prices notice, with no product term', async () => {
     const h = harness();
     await ready(h);
     const detail = openRow('CAR NS40ZL');
     expect(amount(detail, 'Precio mínimo de venta')).toHaveValue('85000');
     expect(amount(detail, 'Precio sugerido de venta')).toHaveValue('96000');
-    const term = within(detail).getByRole('textbox', { name: 'Plazo de garantía de la variante' });
-    expect(term).toHaveValue('6 meses');
-    expect(term).toHaveAttribute('readonly');
+    expect(within(detail).queryByRole('textbox', { name: /garantía/i })).toBeNull();
+    expect(within(detail).queryByText(/garantía/i)).toBeNull();
     const a = within(detail).getByRole('checkbox', { name: 'Aplicar a Sucursal A' });
     const b = within(detail).getByRole('checkbox', { name: 'Aplicar a Sucursal B' });
     const c = within(detail).getByRole('checkbox', { name: 'Aplicar a Sucursal C' });
@@ -232,22 +233,66 @@ describe('catalogue detail form', () => {
     expect(amount(detail, 'Precio mínimo de venta')).toHaveValue('86000');
   });
 
-  it('asks for the term only when the variant has none and sends it with the block', async () => {
-    const h = harness({ write: () => json(resultBody({ variant_id: 3, written: 1, branch_ids: [2], warranty_months: 6 })) });
+  it('writes only prices and branches, even when the variant has no product term', async () => {
+    const h = harness({ write: () => json(resultBody({ variant_id: 3, written: 1, branch_ids: [2], warranty_months: null })) });
     await ready(h);
     const detail = openRow('TOYO NS60L');
-    const term = within(detail).getByRole('textbox', { name: 'Plazo de garantía de la variante' });
-    expect(term).not.toHaveAttribute('readonly');
-    expect(term).toHaveValue('');
+    expect(within(detail).queryByRole('textbox', { name: /garantía/i })).toBeNull();
     fireEvent.change(amount(detail, 'Precio mínimo de venta'), { target: { value: '78000' } });
     fireEvent.change(amount(detail, 'Precio sugerido de venta'), { target: { value: '89000' } });
-    fireEvent.change(term, { target: { value: '6' } });
     fireEvent.click(within(detail).getByRole('checkbox', { name: 'Aplicar a Sucursal A' }));
     fireEvent.click(within(detail).getByRole('button', { name: 'Aplicar a 1 sucursal' }));
     await waitFor(() => expect(h.writes()).toHaveLength(1));
     expect(JSON.parse(String(h.writes()[0].init.body))).toEqual({
-      variant_id: 3, min_price: '78000', suggested_price: '89000', warranty_months: 6, branch_ids: [2],
+      variant_id: 3, min_price: '78000', suggested_price: '89000', branch_ids: [2],
     });
+  });
+});
+
+describe('catalogue with the persisted preview shape', () => {
+  // Five active branches, as the warehouse really has, and a persisted writer whose
+  // account has no display name: the row still has to render.
+  const previewBranches = [
+    { id: 2, name: 'Sucursal La Paz' }, { id: 3, name: 'Sucursal El Alto' },
+    { id: 4, name: 'Sucursal Cochabamba' }, { id: 5, name: 'Sucursal Santa Cruz' }, { id: 6, name: 'Sucursal Oruro' },
+  ];
+  const persisted = (branch: number, updatedAt = '2026-11-04T23:14:07Z') => ({
+    branch_location_id: branch, min_price: '100.00', suggested_price: '120.50',
+    updated_at: updatedAt, updated_by_account_id: 1, updated_by_display_name: '',
+  });
+  const previewVariant = {
+    variant_id: 1, catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L',
+    cells: ['B5'], warranty_months: 6, warranty_updated_at: '2026-11-04T23:14:07Z',
+    prices: [persisted(2), persisted(3, '2026-11-04T23:14:07.123456Z')],
+  };
+  const previewPage = () => json(JSON.stringify({
+    branches: previewBranches, variants: [previewVariant], page: 1, page_size: 10, total_variants: 190,
+  }));
+
+  it('re-reads and renders the matrix after a write', async () => {
+    const h = harness({
+      page: previewPage,
+      write: () => json(resultBody({ min_price: '100.00', suggested_price: '120.50' })),
+    });
+    render(<CatalogPrices csrf={csrf} brands={['CAR']} fetcher={h.fetcher} />);
+    await screen.findByRole('table');
+    const detail = openRow('CAR NS40ZL');
+    expect(amount(detail, 'Precio mínimo de venta')).toHaveValue('100');
+    fireEvent.click(within(detail).getByRole('button', { name: 'Aplicar a 2 sucursales' }));
+    await waitFor(() => expect(h.writes()).toHaveLength(1));
+    // The section re-reads the matrix after the write, exactly like setRevision does.
+    await waitFor(() => expect(h.reads()).toHaveLength(2));
+    expect(await screen.findByText(/Precios aplicados: CAR · NS40ZL · mínimo \$ 100 · sugerido \$ 120,50 en 2 sucursales\./))
+      .toBeInTheDocument();
+    expect(screen.queryByText(catalogPricesListUnavailable)).not.toBeInTheDocument();
+    const row = pickRow('CAR NS40ZL');
+    const updated = row.querySelector('[data-label="Última actualización"]')!;
+    expect(updated.querySelector('time')).not.toBeNull();
+    // An account with no display name contributes no line at all.
+    expect(updated.querySelector('small')).toBeNull();
+    // Five branches, two of them priced: the other three stay visibly unpriced.
+    expect(within(row).getAllByText(/ sin precio/)).toHaveLength(3);
+    expect(within(row).queryByText(/garantía/i)).toBeNull();
   });
 });
 

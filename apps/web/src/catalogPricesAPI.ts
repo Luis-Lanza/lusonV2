@@ -51,10 +51,10 @@ export function createCatalogPricesAPI(fetch: typeof globalThis.fetch = globalTh
     },
 
     /**
-     * Writes one block. `expectedWarranty` is the term the variant already carries,
-     * so a reply that echoes another term is refused as evidence.
+     * Writes one block. The payload carries prices and branches only: the reply is
+     * admitted when it repeats exactly that write.
      */
-    async apply(input: CatalogPriceInput, expectedWarranty: number | null, csrf: string,
+    async apply(input: CatalogPriceInput, csrf: string,
       signal?: AbortSignal): Promise<CatalogPriceResult> {
       // Capture the exact payload and the token before any await: callers cannot
       // reclassify an in-flight write by mutating their draft object.
@@ -86,7 +86,7 @@ export function createCatalogPricesAPI(fetch: typeof globalThis.fetch = globalTh
       let result: CatalogPriceResult;
       try { result = parseCatalogPriceResult(raw); } catch { throw malformed(); }
       // The reply must repeat the exact write this client sent.
-      if (!matchesCatalogPriceInput(sent, expectedWarranty, result)) throw malformed();
+      if (!matchesCatalogPriceInput(sent, result)) throw malformed();
       return result;
     },
   };

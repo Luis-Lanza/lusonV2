@@ -44,11 +44,9 @@
 .catalog-detail-inner > header p { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .catalog-form { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 24px; align-items: start; }
 .catalog-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.catalog-pair label, .catalog-warranty { display: grid; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }
-.catalog-pair input, .catalog-warranty input { width: 100%; min-height: 44px; padding: 10px 12px;
+.catalog-pair label { display: grid; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }
+.catalog-pair input { width: 100%; min-height: 44px; padding: 10px 12px;
   border-color: var(--muted); color: #242124; font-size: 13px; font-variant-numeric: tabular-nums; }
-.catalog-warranty { margin-top: 16px; }
-.catalog-warranty-value[readonly] { border-style: dashed; color: var(--muted); }
 .catalog-pair label + .catalog-hint { margin-top: 8px; }
 .catalog-branches { border: 0; padding: 0; margin: 0; min-width: 0; }
 .catalog-branches legend { padding: 0; margin-bottom: 8px; color: var(--muted); font-size: 12px; }

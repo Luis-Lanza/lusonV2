@@ -12,7 +12,7 @@ interface PricesState { readonly phase: 'loading' | 'ready' | 'error'; readonly 
 /** The unfolded row: which variant, and the draft its form currently holds. */
 interface OpenRow { readonly variantId: number; readonly draft: Draft }
 interface Draft {
-  readonly min: string; readonly suggested: string; readonly warranty: string; readonly checked: readonly number[];
+  readonly min: string; readonly suggested: string; readonly checked: readonly number[];
 }
 
 export interface CatalogPricesProps {
@@ -24,7 +24,6 @@ export interface CatalogPricesProps {
 }
 
 const productLabel = (row: { brand: string; model: string }) => `${row.brand} · ${row.model}`;
-const warrantyText = (months: number | null) => months === null ? 'sin plazo de garantía' : `${months} ${months === 1 ? 'mes' : 'meses'} de garantía`;
 const branchWord = (count: number) => count === 1 ? 'sucursal' : 'sucursales';
 
 export default function CatalogPrices({ csrf, brands = [], fetcher = globalThis.fetch }: CatalogPricesProps) {
@@ -96,7 +95,6 @@ export default function CatalogPrices({ csrf, brands = [], fetcher = globalThis.
     return {
       min: first ? catalogAmountEntry(first.min_price) : '',
       suggested: first ? catalogAmountEntry(first.suggested_price) : '',
-      warranty: variant.warranty_months === null ? '' : String(variant.warranty_months),
       checked: priced.map(price => price.branch_location_id),
     };
   }
@@ -127,14 +125,12 @@ export default function CatalogPrices({ csrf, brands = [], fetcher = globalThis.
     if (busy || pending.current || !open || open.variantId !== variant.variant_id) return;
     const validation = validateCatalogPriceDraft(variant.variant_id, {
       min_price: open.draft.min, suggested_price: open.draft.suggested, branch_ids: open.draft.checked,
-      // The term travels only while the variant has none: afterwards it is product data.
-      ...(variant.warranty_months === null ? { warranty_months: Number(open.draft.warranty) } : {}),
     });
     setNotice('');
     if (!validation.valid) { setProblem(validation.message); return; }
     pending.current = true; setBusy(true); setProblem('');
     try {
-      const result = await api.apply(validation.input, variant.warranty_months, csrf, lifetime.current.signal);
+      const result = await api.apply(validation.input, csrf, lifetime.current.signal);
       if (!mounted.current || lifetime.current.signal.aborted) return;
       setOpen(null);
       // The matrix is re-read so the chips and the per-branch values show what was written.
@@ -225,7 +221,7 @@ export default function CatalogPrices({ csrf, brands = [], fetcher = globalThis.
                   event.preventDefault(); toggle(variant);
                 }}>
                 <td data-label="Batería"><strong>{variant.brand} {variant.model}</strong>
-                  <small>{variant.capacity_ah} Ah · Polaridad {variant.polarity} · {warrantyText(variant.warranty_months)}</small></td>
+                  <small>{variant.capacity_ah} Ah · Polaridad {variant.polarity}</small></td>
                 <td data-label="Sucursales con precio"><div className="catalog-chips">{branches.map(branch_ => {
                   const price = variant.prices.find(entry => entry.branch_location_id === branch_.id);
                   return price
@@ -233,7 +229,8 @@ export default function CatalogPrices({ csrf, brands = [], fetcher = globalThis.
                     : <span key={branch_.id} className="catalog-chip short" title={`${branch_.name}: sin precio`}>{branchTag(branch_.name)} sin precio</span>;
                 })}</div></td>
                 <td data-label="Última actualización">{updated
-                  ? <><TransferDate value={updated.updated_at} /><small>{updated.updated_by_display_name}</small></>
+                  ? <><TransferDate value={updated.updated_at} />{updated.updated_by_display_name !== ''
+                    && <small>{updated.updated_by_display_name}</small>}</>
                   : <small>Sin precio cargado</small>}</td>
                 <td data-label="Acción"><span className="catalog-openaction">{expanded ? 'Cerrar −' : 'Desplegar +'}</span></td>
               </tr>,
@@ -263,15 +260,6 @@ export default function CatalogPrices({ csrf, brands = [], fetcher = globalThis.
                           </label>
                         </div>
                         <p id={`catalog-amounts-${variant.variant_id}`} className="catalog-hint">Montos con dos decimales. El sugerido nunca puede quedar por debajo del mínimo: por debajo del mínimo la sucursal no puede vender.</p>
-                        <label className="catalog-warranty" htmlFor={`catalog-warranty-${variant.variant_id}`}>Plazo de garantía de la variante
-                          <input id={`catalog-warranty-${variant.variant_id}`} className="catalog-warranty-value"
-                            value={variant.warranty_months === null ? open.draft.warranty : `${variant.warranty_months} ${variant.warranty_months === 1 ? 'mes' : 'meses'}`}
-                            readOnly={variant.warranty_months !== null} disabled={busy} inputMode="numeric"
-                            onChange={event => edit({ warranty: event.target.value })} />
-                        </label>
-                        <p className="catalog-hint">{variant.warranty_months === null
-                          ? 'La variante todavía no tiene plazo: se define una sola vez, junto con el primer precio.'
-                          : 'Dato del producto, no del vendedor: lo administra el Almacén y el punto de venta lo muestra sin permitir cambios.'}</p>
                       </div>
                       <div>
                         <fieldset className="catalog-branches">
