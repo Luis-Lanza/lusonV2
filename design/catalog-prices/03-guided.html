@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alta guiada · Catálogo de precios · Luson</title>
+<style>
+*{box-sizing:border-box}
+:root{font-family:sans-serif;color:#242124;background:#F8F6F4;font-size:14px;
+--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;
+--ok-bg:#ECFDF5;--ok-ink:#047857;--ok-border:#A7F3D0;
+--warn-bg:#FFFBEF;--warn-ink:#805400;--warn-border:#E8CF86;
+--short-bg:#FFF0F0;--short-ink:#991515;--short-border:#FFDAD6}
+body{margin:0}
+h1,h2,h3,p,dl,dd,dt,ol,ul{margin:0}
+h1{font-size:22px}
+h2{font-size:18px}
+h3{font-size:14px}
+p{line-height:1.6}
+ul,ol{list-style:none;padding:0}
+small,.muted{color:var(--muted);font-size:12px}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;padding:10px 12px;min-height:44px}
+button:hover{background:var(--tint)}
+button.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF}
+button.primary:hover{background:var(--hover)}
+button.quiet{border:1px solid var(--border);color:var(--muted);min-height:0;padding:6px 10px}
+button[disabled]{color:#595459;border-color:#AAA5AA;background:#EFEDEF;cursor:not-allowed}
+:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+input,select{padding:10px 12px;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;width:100%;min-height:44px}
+input[readonly]{background:var(--page);border-style:dashed;color:var(--muted)}
+label{display:grid;gap:8px;font-size:12px}
+fieldset{border:0;padding:0;margin:0}
+legend{font-size:12px;color:var(--muted);margin-bottom:8px}
+aside.nav{position:fixed;width:240px;inset:0 auto 0 0;background:#FFFFFF;border-right:1px solid var(--border);padding:12px;display:flex;flex-direction:column;justify-content:space-between}
+.brand{display:flex;gap:10px;align-items:center;padding:4px 8px 16px;border-bottom:1px solid var(--border)}
+.logo{background:var(--wine);color:#FFFFFF;border-radius:4px;padding:8px;font-weight:700;font-size:18px}
+.brand strong{color:var(--wine);font-size:18px}
+.brand small{display:block}
+nav{display:grid;gap:4px;margin-top:12px}
+nav button{text-align:left;border:0;padding:12px}
+nav .active{background:var(--tint);color:var(--wine);border-left:2px solid var(--wine);font-weight:600}
+.identity{padding:12px;background:var(--page);border:1px solid var(--border)}
+.identity small{display:block;margin-top:6px}
+.top{margin-left:240px;height:56px;background:#FFFFFF;border-bottom:1px solid var(--border);padding:16px 24px;display:flex;justify-content:space-between;align-items:center}
+main{margin-left:240px;padding:32px;max-width:1400px}
+.heading{margin-bottom:24px}
+.heading p{color:var(--muted);margin-top:8px;max-width:70ch}
+.panel{background:#FFFFFF;border:1px solid var(--border);border-radius:4px;padding:24px;margin-bottom:16px}
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin-bottom:24px;border:1px solid var(--border);border-radius:4px;overflow:hidden;background:#FFFFFF}
+.step{padding:14px 16px;display:grid;gap:4px;border-right:1px solid var(--border);font-size:13px}
+.step:last-child{border-right:0}
+.step .n{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.step.done{background:var(--ok-bg);color:var(--ok-ink)}
+.step.done .n{color:var(--ok-ink)}
+.step.now{background:var(--tint);box-shadow:inset 0 -2px 0 var(--wine);font-weight:600;color:var(--wine)}
+.step.now .n{color:var(--wine)}
+.layout{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(320px,1fr);gap:16px;align-items:start}
+.tag{display:inline-block;border:1px solid var(--border);background:var(--page);padding:3px 7px;border-radius:3px;font-size:11px}
+.tag.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-border)}
+.tag.warn{background:var(--warn-bg);color:var(--warn-ink);border-color:var(--warn-border)}
+.tag.short{background:var(--short-bg);color:var(--short-ink);border-color:var(--short-border)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.writes{display:grid;gap:8px;margin-top:12px}
+.write{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;border:1px solid var(--border);border-left:2px solid var(--wine);border-radius:4px;padding:12px;background:#FFFFFF}
+.write .vals{font-variant-numeric:tabular-nums;text-align:right;font-size:13px}
+.write .vals b{display:block}
+.write.unchanged{opacity:.65;border-left-color:var(--border)}
+.branchpick{display:grid;gap:8px;margin-top:12px}
+.branchpick label{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;border:1px solid var(--border);border-radius:4px;padding:12px;font-size:13px}
+.branchpick input[type=checkbox]{width:18px;height:18px;min-height:0;margin:0;accent-color:var(--wine)}
+.branchpick label.off{color:#595459;border-style:dashed}
+.impact{background:var(--tint);border-left:2px solid var(--wine);padding:12px;margin-top:16px;font-size:13px}
+.actions{display:flex;gap:12px;justify-content:flex-end;margin-top:20px;padding-top:16px;border-top:1px solid var(--border)}
+.status{color:var(--wine);min-height:24px;margin-top:12px;font-size:13px}
+.skip{position:fixed;top:-100px;background:#FFFFFF;color:var(--wine);padding:12px;z-index:10}
+.skip:focus{top:8px}
+footer{color:var(--muted);font-size:12px;padding:16px 0}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+@media(max-width:1023px){.layout{grid-template-columns:1fr}
+.steps{grid-template-columns:1fr 1fr}}
+@media(max-width:767px){aside.nav{position:static;width:auto}
+aside.nav .identity{display:none}
+.top,main{margin-left:0}
+.top{height:auto}
+main{padding:16px}
+.panel{padding:16px}}
+</style>
+<body>
+<a class="skip" href="#main">Ir al contenido</a>
+<aside class="nav" aria-label="Barra lateral">
+  <div>
+    <div class="brand"><span class="logo">L</span><div><strong>Luson</strong><small>Gestión de inventario</small></div></div>
+    <nav aria-label="Navegación principal">
+      <button type="button" data-demo>▦ Inventario</button>
+      <button type="button" data-demo>⇄ Transferencias</button>
+      <button type="button" data-demo>⇩ Ingresos</button>
+      <button type="button" data-demo>± Ajustes</button>
+      <button type="button" class="active" aria-current="page">$ Catálogo</button>
+      <button type="button" data-demo>⚙ Administración</button>
+    </nav>
+  </div>
+  <div class="identity"><strong>almacen</strong><small>Almacén · Administrador único</small></div>
+</aside>
+<header class="top"><strong>Catálogo de precios</strong><span>Almacén <small>/ Nueva asignación</small></span></header>
+<main id="main">
+  <div class="heading">
+    <h1>Asignar precios</h1>
+    <p>Cuatro pasos, sin sorpresas: batería, valores, sucursales y confirmación. Nada se escribe hasta el último paso.</p>
+  </div>
+
+  <ol class="steps" aria-label="Pasos de la asignación">
+    <li class="step done"><span class="n">Paso 1</span><strong>Batería</strong><span class="muted">CAR NS40ZL · 35 Ah · L</span></li>
+    <li class="step done"><span class="n">Paso 2</span><strong>Valores</strong><span class="muted">mín $ 88.000 · sug $ 99.000</span></li>
+    <li class="step now" aria-current="step"><span class="n">Paso 3</span><strong>Sucursales</strong><span class="muted">Elegí a quién se aplica</span></li>
+    <li class="step"><span class="n">Paso 4</span><strong>Confirmar</strong><span class="muted">Revisión de las escrituras</span></li>
+  </ol>
+
+  <div class="layout">
+    <section class="panel" aria-labelledby="paso3">
+      <h2 id="paso3">¿A qué sucursales se les aplica?</h2>
+      <p class="muted" style="margin-top:6px">El mismo par mínimo/sugerido se escribe en cada sucursal elegida, en una sola operación. Las sucursales sin tildar conservan sus valores actuales.</p>
+      <div class="branchpick" style="margin-top:16px">
+        <label><input type="checkbox" checked><span><strong>Sucursal A</strong><small>activo · 3 variantes sin precio</small></span><span class="tag ok">mín $ 85.000 · sug $ 96.000</span></label>
+        <label><input type="checkbox" checked><span><strong>Sucursal B</strong><small>activo · 11 variantes sin precio</small></span><span class="tag ok">mín $ 88.000 · sug $ 99.000</span></label>
+        <label class="off"><input type="checkbox" disabled><span><strong>Sucursal C</strong><small>retirada el 29/10/2026 · no admite precios</small></span><span class="tag short">no disponible</span></label>
+      </div>
+      <div class="impact"><strong>El servidor escribe 2 filas o ninguna.</strong> Si una sucursal deja de estar activa mientras confirmás, la operación se rechaza completa y te dice cuál falló.</div>
+      <div class="actions">
+        <button type="button" class="quiet" data-demo>Atrás</button>
+        <button type="button" class="primary" data-demo>Revisar 2 escrituras</button>
+      </div>
+      <div class="status" role="status" aria-live="polite"></div>
+    </section>
+
+    <aside class="panel" aria-labelledby="resumen">
+      <h2 id="resumen">Batería elegida</h2>
+      <p class="muted">CAR NS40ZL · 35 Ah · Polaridad L</p>
+      <div class="grid2">
+        <label>Precio mínimo<input readonly value="$ 88.000"></label>
+        <label>Precio sugerido<input readonly value="$ 99.000"></label>
+      </div>
+      <label style="margin-top:12px">Garantía de la variante<input readonly value="6 meses"></label>
+      <h3 style="margin-top:20px;margin-bottom:6px">Escrituras que se van a aplicar</h3>
+      <div class="writes">
+        <div class="write">
+          <span class="tag">A</span>
+          <span><strong>Sucursal A</strong><small>reemplaza mín $ 85.000 · sug $ 96.000</small></span>
+          <span class="vals"><b>$ 88.000</b><small class="muted">$ 99.000</small></span>
+        </div>
+        <div class="write">
+          <span class="tag">B</span>
+          <span><strong>Sucursal B</strong><small>reemplaza mín $ 88.000 · sug $ 99.000</small></span>
+          <span class="vals"><b>$ 88.000</b><small class="muted">$ 99.000</small></span>
+        </div>
+        <div class="write unchanged">
+          <span class="tag short">C</span>
+          <span><strong>Sucursal C</strong><small>sin cambios · retirada</small></span>
+          <span class="vals"><b class="muted">—</b></span>
+        </div>
+      </div>
+      <p class="muted" style="margin-top:12px">Al confirmar queda registrado quién aplicó los precios y cuándo, por sucursal.</p>
+    </aside>
+  </div>
+  <footer>Dirección 03 · Alta guiada. Cada escritura se revisa antes de aplicarse a varias sucursales.</footer>
+</main>
+<script>
+document.querySelectorAll('[data-demo]').forEach(function(button){
+  button.addEventListener('click',function(){
+    var status=document.querySelector('.status');
+    if(status){status.textContent='Acción de demostración: '+button.textContent.trim();}
+  });
+});
+</script>
+</html>

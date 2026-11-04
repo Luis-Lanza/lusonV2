@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "chosen": "01-variant-first.html",
+  "handoffs": {
+    "01-variant-first.html": {
+      "status": "implemented",
+      "queued": false,
+      "sentAt": "2026-11-04T20:55:02.815Z",
+      "startedAt": "2026-11-04T20:55:30.092Z",
+      "implementedAt": "2026-11-04T21:20:31.775Z",
+      "feature": "odd/tasks/punto-de-venta.md",
+      "note": "Sección Catálogo implementada: precios por sucursal con formulario desplegable, backend verificado contra PostgreSQL real y preview servido con la migración 024",
+      "previewUrl": "http://127.0.0.1:8080/"
+    }
+  }
+}

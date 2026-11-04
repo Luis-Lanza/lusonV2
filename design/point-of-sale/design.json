@@ -1,0 +1,10 @@
+{
+  "title": "Punto de venta de sucursal con garantía PDF",
+  "brief": "Punto de venta para una sucursal de Luson: sólo baterías con precio cargado son vendibles, el precio mínimo es un piso, el carrito descuenta stock del local y cada venta emite una garantía numerada descargable en PDF.",
+  "feature": "odd/tasks/punto-de-venta.md",
+  "artboards": [
+    { "file": "01-counter-cart.html", "title": "Mostrador con carrito", "tradeoff": "Carrito y cobro siempre visibles junto al catálogo vendible; el carrito fijo ocupa ancho que un mostrador angosto no tiene.", "width": 1440, "height": 900 },
+    { "file": "02-search-first.html", "title": "Búsqueda al teclado", "tradeoff": "Cobrar rápido sin mouse con atajos y total fijo abajo; menos información visual por producto.", "width": 1440, "height": 900 },
+    { "file": "03-warranty-first.html", "title": "Garantía primero", "tradeoff": "La garantía emitida es el centro y se ve tal como sale en el PDF; vender exige abrir un diálogo.", "width": 1440, "height": 900 }
+  ]
+}

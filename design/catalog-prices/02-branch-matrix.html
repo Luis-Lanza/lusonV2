@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Matriz por sucursal · Catálogo de precios · Luson</title>
+<style>
+*{box-sizing:border-box}
+:root{font-family:sans-serif;color:#242124;background:#F8F6F4;font-size:14px;
+--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;
+--ok-bg:#ECFDF5;--ok-ink:#047857;--ok-border:#A7F3D0;
+--warn-bg:#FFFBEF;--warn-ink:#805400;--warn-border:#E8CF86;
+--short-bg:#FFF0F0;--short-ink:#991515;--short-border:#FFDAD6}
+body{margin:0}
+h1,h2,h3,p,dl,dd,dt,ul{margin:0}
+h1{font-size:22px}
+h2{font-size:18px}
+h3{font-size:14px}
+p{line-height:1.6}
+ul{list-style:none;padding:0}
+small,.muted{color:var(--muted);font-size:12px}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;padding:10px 12px;min-height:44px}
+button:hover{background:var(--tint)}
+button.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF}
+button.primary:hover{background:var(--hover)}
+button.quiet{border:1px solid var(--border);color:var(--muted);min-height:0;padding:6px 10px}
+button[disabled]{color:#595459;border-color:#AAA5AA;background:#EFEDEF;cursor:not-allowed}
+:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+input,select{padding:8px 10px;background:#FFFFFF;border:1px solid var(--border);border-radius:4px;width:100%;min-height:38px}
+label{display:grid;gap:8px;font-size:12px}
+fieldset{border:0;padding:0;margin:0}
+legend{font-size:12px;color:var(--muted);margin-bottom:8px}
+aside.nav{position:fixed;width:240px;inset:0 auto 0 0;background:#FFFFFF;border-right:1px solid var(--border);padding:12px;display:flex;flex-direction:column;justify-content:space-between}
+.brand{display:flex;gap:10px;align-items:center;padding:4px 8px 16px;border-bottom:1px solid var(--border)}
+.logo{background:var(--wine);color:#FFFFFF;border-radius:4px;padding:8px;font-weight:700;font-size:18px}
+.brand strong{color:var(--wine);font-size:18px}
+.brand small{display:block}
+nav{display:grid;gap:4px;margin-top:12px}
+nav button{text-align:left;border:0;padding:12px}
+nav .active{background:var(--tint);color:var(--wine);border-left:2px solid var(--wine);font-weight:600}
+.identity{padding:12px;background:var(--page);border:1px solid var(--border)}
+.identity small{display:block;margin-top:6px}
+.top{margin-left:240px;height:56px;background:#FFFFFF;border-bottom:1px solid var(--border);padding:16px 24px;display:flex;justify-content:space-between;align-items:center}
+main{margin-left:240px;padding:32px 32px 120px;max-width:1800px}
+.heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px;flex-wrap:wrap}
+.heading p{color:var(--muted);margin-top:8px;max-width:64ch}
+.panel{background:#FFFFFF;border:1px solid var(--border);border-radius:4px;padding:24px}
+.filters{display:grid;grid-template-columns:1.4fr .8fr .8fr .8fr auto;gap:12px;margin-bottom:16px}
+.tag{display:inline-block;border:1px solid var(--border);background:var(--page);padding:3px 7px;border-radius:3px;font-size:11px}
+.tag.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-border)}
+.tag.short{background:var(--short-bg);color:var(--short-ink);border-color:var(--short-border)}
+.tablewrap{overflow:auto}
+table{border-collapse:collapse;width:100%;font-size:13px;min-width:900px}
+th{text-align:left;background:var(--page);color:var(--muted);font-size:11px;text-transform:uppercase;position:sticky;top:0}
+th,td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+td small{display:block;margin-top:4px}
+.num{font-variant-numeric:tabular-nums;font-weight:600}
+tr.on{background:var(--tint)}
+input[type=checkbox]{width:18px;height:18px;min-height:0;border:1px solid var(--muted);accent-color:var(--wine)}
+.cell{display:grid;gap:6px}
+.cell .line{display:grid;grid-template-columns:auto 1fr;gap:8px;align-items:center}
+.cell .line span{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.02em}
+.cell input{font-variant-numeric:tabular-nums;text-align:right;min-height:34px;padding:6px 8px}
+.cell input.changed{border-color:var(--wine);background:var(--tint)}
+.bulkbar{position:fixed;inset:auto 0 0 240px;background:#FFFFFF;border-top:1px solid var(--border);box-shadow:0 -4px 16px #2421240D;padding:16px 24px;display:grid;grid-template-columns:auto auto 1fr auto auto;gap:16px;align-items:end}
+.bulkbar h3{margin-bottom:2px}
+.bulkbar .field{display:grid;gap:4px;font-size:11px;color:var(--muted)}
+.bulkbar .field input{min-height:38px;width:140px;font-variant-numeric:tabular-nums;text-align:right}
+.bulkbar .targets{display:flex;gap:8px;align-items:center;padding-bottom:8px}
+.bulkbar .targets label{display:flex;gap:6px;align-items:center;font-size:12px;border:1px solid var(--border);border-radius:4px;padding:6px 10px}
+.bulkbar .targets label.off{color:#595459;border-style:dashed}
+.status{color:var(--wine);min-height:24px;margin-top:12px;font-size:13px}
+.skip{position:fixed;top:-100px;background:#FFFFFF;color:var(--wine);padding:12px;z-index:10}
+.skip:focus{top:8px}
+footer{color:var(--muted);font-size:12px;padding:16px 0}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+@media(max-width:1023px){.filters{grid-template-columns:1fr 1fr}
+.bulkbar{inset:auto 0 0 0;grid-template-columns:1fr 1fr;position:static;margin-top:16px;box-shadow:none}}
+@media(max-width:767px){aside.nav{position:static;width:auto}
+aside.nav .identity{display:none}
+.top,main{margin-left:0}
+.top{height:auto}
+main{padding:16px}}
+</style>
+<body>
+<a class="skip" href="#main">Ir al contenido</a>
+<aside class="nav" aria-label="Barra lateral">
+  <div>
+    <div class="brand"><span class="logo">L</span><div><strong>Luson</strong><small>Gestión de inventario</small></div></div>
+    <nav aria-label="Navegación principal">
+      <button type="button" data-demo>▦ Inventario</button>
+      <button type="button" data-demo>⇄ Transferencias</button>
+      <button type="button" data-demo>⇩ Ingresos</button>
+      <button type="button" data-demo>± Ajustes</button>
+      <button type="button" class="active" aria-current="page">$ Catálogo</button>
+      <button type="button" data-demo>⚙ Administración</button>
+    </nav>
+  </div>
+  <div class="identity"><strong>almacen</strong><small>Almacén · Administrador único</small></div>
+</aside>
+<header class="top"><strong>Catálogo de precios</strong><span>Almacén <small>/ Precios por sucursal</small></span></header>
+<main id="main">
+  <div class="heading">
+    <div>
+      <h1>Precios por sucursal</h1>
+      <p>Una fila por batería, una columna por sucursal. Editá una celda o seleccioná baterías y aplicá el mismo precio a las sucursales que elijas.</p>
+    </div>
+    <span class="tag">190 variantes · 3 sucursales</span>
+  </div>
+
+  <section class="panel" aria-labelledby="grilla">
+    <h2 id="grilla" class="muted" style="text-transform:uppercase;font-size:11px;letter-spacing:.04em">Matriz mín / sugerido</h2>
+    <div class="filters" style="margin-top:12px">
+      <label>Buscar<input type="search" placeholder="Marca o modelo"></label>
+      <label>Marca<select><option>Todas</option><option>CAR</option><option>TOYO</option><option>HYBRID</option><option>VOLTA</option></select></label>
+      <label>Capacidad<select><option>Todas</option><option>35 Ah</option><option>45 Ah</option><option>54 Ah</option></select></label>
+      <label>Faltantes<select><option>Todas</option><option>Sólo sin precio</option></select></label>
+      <button type="button" class="quiet" data-demo>Limpiar</button>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <caption class="muted" style="text-align:left;padding-bottom:8px">Precios en pesos. Las celdas vacías marcan variantes no vendibles en esa sucursal.</caption>
+        <thead>
+          <tr>
+            <th scope="col"><span class="muted">Sel.</span></th>
+            <th scope="col">Batería</th>
+            <th scope="col">Sucursal A</th>
+            <th scope="col">Sucursal B</th>
+            <th scope="col">Sucursal C</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr class="on">
+            <td><input type="checkbox" checked aria-label="Seleccionar CAR NS40ZL 35 Ah L"></td>
+            <td><strong>CAR NS40ZL</strong><small>35 Ah · L · 6 meses</small></td>
+            <td><div class="cell">
+              <div class="line"><span>mín</span><input value="85000" aria-label="Mínimo Sucursal A CAR NS40ZL"></div>
+              <div class="line"><span>sug</span><input value="96000" aria-label="Sugerido Sucursal A CAR NS40ZL"></div>
+            </div></td>
+            <td><div class="cell">
+              <div class="line"><span>mín</span><input class="changed" value="88000" aria-label="Mínimo Sucursal B CAR NS40ZL"></div>
+              <div class="line"><span>sug</span><input class="changed" value="99000" aria-label="Sugerido Sucursal B CAR NS40ZL"></div>
+            </div></td>
+            <td><div class="cell">
+              <div class="line"><span>mín</span><input value="" placeholder="—" aria-label="Mínimo Sucursal C CAR NS40ZL"></div>
+              <div class="line"><span>sug</span><input value="" placeholder="—" aria-label="Sugerido Sucursal C CAR NS40ZL"></div>
+              <small class="tag short">no vendible</small>
+            </div></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" aria-label="Seleccionar TOYO NS40ZL 35 Ah L"></td>
+            <td><strong>TOYO NS40ZL</strong><small>35 Ah · L · 6 meses</small></td>
+            <td><div class="cell">
+              <div class="line"><span>mín</span><input value="78000" aria-label="Mínimo Sucursal A TOYO NS40ZL"></div>
+              <div class="line"><span>sug</span><input value="89000" aria-label="Sugerido Sucursal A TOYO NS40ZL"></div>
+            </div></td>
+            <td><div class="cell">
+              <div class="line"><span>mín</span><input value="78000" aria-label="Mínimo Sucursal B TOYO NS40ZL"></div>
+              <div class="line"><span>sug</span><input value="89000" aria-label="Sugerido Sucursal B TOYO NS40ZL"></div>
+            </div></td>
+            <td><div class="cell">
+              <div class="line"><span>mín</span><input value="82000" aria-label="Mínimo Sucursal C TOYO NS40ZL"></div>
+              <div class="line"><span>sug</span><input value="92000" aria-label="Sugerido Sucursal C TOYO NS40ZL"></div>
+            </div></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" checked aria-label="Seleccionar HYBRID BT54L 54 Ah L"></td>
+            <td><strong>HYBRID BT54L</strong><small>54 Ah · L · 12 meses</small></td>
+            <td><div class="cell">
+              <div class="line"><span>mín</span><input value="132000" aria-label="Mínimo Sucursal A HYBRID BT54L"></div>
+              <div class="line"><span>sug</span><input value="148000" aria-label="Sugerido Sucursal A HYBRID BT54L"></div>
+            </div></td>
+            <td><div class="cell">
+              <div class="line"><span>mín</span><input value="" placeholder="—" aria-label="Mínimo Sucursal B HYBRID BT54L"></div>
+              <div class="line"><span>sug</span><input value="" placeholder="—" aria-label="Sugerido Sucursal B HYBRID BT54L"></div>
+              <small class="tag short">no vendible</small>
+            </div></td>
+            <td><div class="cell">
+              <div class="line"><span>mín</span><input value="" placeholder="—" aria-label="Mínimo Sucursal C HYBRID BT54L"></div>
+              <div class="line"><span>sug</span><input value="" placeholder="—" aria-label="Sugerido Sucursal C HYBRID BT54L"></div>
+              <small class="tag short">no vendible</small>
+            </div></td>
+          </tr>
+          <tr>
+            <td><input type="checkbox" aria-label="Seleccionar VOLTA N120 120 Ah R"></td>
+            <td><strong>VOLTA N120</strong><small>120 Ah · R · 18 meses</small></td>
+            <td><div class="cell">
+              <div class="line"><span>mín</span><input value="305000" aria-label="Mínimo Sucursal A VOLTA N120"></div>
+              <div class="line"><span>sug</span><input value="338000" aria-label="Sugerido Sucursal A VOLTA N120"></div>
+            </div></td>
+            <td><div class="cell">
+              <div class="line"><span>mín</span><input value="312000" aria-label="Mínimo Sucursal B VOLTA N120"></div>
+              <div class="line"><span>sug</span><input value="346000" aria-label="Sugerido Sucursal B VOLTA N120"></div>
+            </div></td>
+            <td><div class="cell">
+              <div class="line"><span>mín</span><input value="" placeholder="—" aria-label="Mínimo Sucursal C VOLTA N120"></div>
+              <div class="line"><span>sug</span><input value="" placeholder="—" aria-label="Sugerido Sucursal C VOLTA N120"></div>
+              <small class="tag short">no vendible</small>
+            </div></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="status" role="status" aria-live="polite">2 baterías seleccionadas · 1 celda editada sin guardar</div>
+  </section>
+  <footer>Dirección 02 · Matriz por sucursal. Todo comparable de un vistazo, con una barra de asignación en bloque.</footer>
+</main>
+
+<section class="bulkbar" aria-labelledby="bulk">
+  <div><h3 id="bulk">Aplicar a sucursales</h3><small class="muted">2 baterías seleccionadas</small></div>
+  <div class="field">Mínimo<input inputmode="decimal" value="88000" aria-label="Mínimo a aplicar"></div>
+  <div class="field">Sugerido<input inputmode="decimal" value="99000" aria-label="Sugerido a aplicar"></div>
+  <div class="targets">
+    <span class="muted">Aplicar a</span>
+    <label><input type="checkbox" checked> Sucursal A</label>
+    <label><input type="checkbox" checked> Sucursal B</label>
+    <label class="off"><input type="checkbox" disabled> Sucursal C</label>
+  </div>
+  <button type="button" class="primary" data-demo>Aplicar 4 precios</button>
+</section>
+<script>
+document.querySelectorAll('[data-demo]').forEach(function(button){
+  button.addEventListener('click',function(){
+    var status=document.querySelector('.status');
+    if(status){status.textContent='Acción de demostración: '+button.textContent.trim();}
+  });
+});
+</script>
+</html>

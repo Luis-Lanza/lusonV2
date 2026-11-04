@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Batería primero · Catálogo de precios · Luson</title>
+<style>
+*{box-sizing:border-box}
+:root{font-family:sans-serif;color:#242124;background:#F8F6F4;font-size:14px;
+--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;
+--ok-bg:#ECFDF5;--ok-ink:#047857;--ok-border:#A7F3D0;
+--warn-bg:#FFFBEF;--warn-ink:#805400;--warn-border:#E8CF86;
+--short-bg:#FFF0F0;--short-ink:#991515;--short-border:#FFDAD6}
+body{margin:0}
+h1,h2,h3,p,dl,dd,dt,ul{margin:0}
+h1{font-size:22px}
+h2{font-size:18px}
+h3{font-size:14px}
+p{line-height:1.6}
+ul{list-style:none;padding:0}
+small,.muted{color:var(--muted);font-size:12px}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;padding:10px 12px;min-height:44px}
+button:hover{background:var(--tint)}
+button.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF;font-weight:600}
+button.primary:hover{background:var(--hover)}
+button.quiet{border:1px solid var(--border);color:var(--muted);min-height:0;padding:6px 10px}
+button[disabled]{color:#595459;border-color:#AAA5AA;background:#EFEDEF;cursor:not-allowed}
+:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+input,select{padding:10px 12px;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;width:100%;min-height:44px}
+input[readonly]{background:#FFFFFF;border-style:dashed;color:var(--muted)}
+label{display:grid;gap:8px;font-size:12px}
+fieldset{border:0;padding:0;margin:0}
+legend{font-size:12px;color:var(--muted);margin-bottom:8px}
+aside.nav{position:fixed;width:240px;inset:0 auto 0 0;background:#FFFFFF;border-right:1px solid var(--border);padding:12px;display:flex;flex-direction:column;justify-content:space-between}
+.brand{display:flex;gap:10px;align-items:center;padding:4px 8px 16px;border-bottom:1px solid var(--border)}
+.logo{background:var(--wine);color:#FFFFFF;border-radius:4px;padding:8px;font-weight:700;font-size:18px}
+.brand strong{color:var(--wine);font-size:18px}
+.brand small{display:block}
+nav{display:grid;gap:4px;margin-top:12px}
+nav button{text-align:left;border:0;padding:12px}
+nav .active{background:var(--tint);color:var(--wine);border-left:2px solid var(--wine);font-weight:600}
+.identity{padding:12px;background:var(--page);border:1px solid var(--border)}
+.identity small{display:block;margin-top:6px}
+.top{margin-left:240px;height:56px;background:#FFFFFF;border-bottom:1px solid var(--border);padding:16px 24px;display:flex;justify-content:space-between;align-items:center}
+main{margin-left:240px;padding:32px;max-width:1600px}
+.heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px;flex-wrap:wrap}
+.heading p{color:var(--muted);margin-top:8px;max-width:66ch}
+.panel{background:#FFFFFF;border:1px solid var(--border);border-radius:4px;padding:24px}
+.panel h2{margin-bottom:4px}
+.filters{display:grid;grid-template-columns:1.4fr .8fr .8fr .8fr;gap:12px;margin:16px 0}
+.tag{display:inline-block;border:1px solid var(--border);background:var(--page);padding:4px 8px;border-radius:3px;font-size:11px}
+.tag.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-border)}
+.tag.warn{background:var(--warn-bg);color:var(--warn-ink);border-color:var(--warn-border)}
+.tag.short{background:var(--short-bg);color:var(--short-ink);border-color:var(--short-border)}
+.tablewrap{overflow:auto}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{text-align:left;background:var(--page);color:var(--muted);font-size:11px;text-transform:uppercase}
+th,td{padding:14px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+td small{display:block;margin-top:4px}
+tr.pick{cursor:pointer}
+tr.pick:hover{background:var(--page)}
+tr.pick[aria-expanded="true"]{background:var(--tint);box-shadow:inset 2px 0 0 var(--wine)}
+tr.pick .open{font-size:11px;color:var(--wine);font-weight:600}
+tr.detail>td{background:var(--page);padding:0;border-bottom:1px solid var(--border)}
+tr.detail .inner{padding:20px 24px 24px}
+tr.detail .inner>header{display:flex;justify-content:space-between;gap:16px;align-items:start;margin-bottom:16px}
+tr.detail .inner>header h3{font-size:16px}
+tr.detail .inner>header p{margin-top:4px}
+.form{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:24px;align-items:start}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.hint{margin-top:8px}
+.branches{display:grid;gap:8px;margin-top:12px}
+.branch{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;border:1px solid var(--border);border-radius:4px;padding:12px;background:#FFFFFF}
+.branch input[type=checkbox]{width:18px;height:18px;min-height:0;margin:0;accent-color:var(--wine)}
+.branch strong{font-size:13px}
+.branch .vals{font-variant-numeric:tabular-nums;font-size:12px;color:var(--muted);text-align:right;line-height:1.6}
+.note{background:var(--tint);border-left:2px solid var(--wine);padding:12px;margin-top:16px;font-size:13px}
+.actions{display:flex;gap:12px;justify-content:flex-end;margin-top:16px;padding-top:16px;border-top:1px solid var(--border)}
+.status{color:var(--wine);min-height:24px;margin-top:12px;font-size:13px}
+.skip{position:fixed;top:-100px;background:#FFFFFF;color:var(--wine);padding:12px;z-index:10}
+.skip:focus{top:8px}
+footer{color:var(--muted);font-size:12px;padding:16px 0}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+@media(max-width:1023px){.form{grid-template-columns:1fr}
+.filters{grid-template-columns:1fr 1fr}}
+@media(max-width:767px){aside.nav{position:static;width:auto}
+aside.nav .identity{display:none}
+.top,main{margin-left:0}
+.top{height:auto}
+main{padding:16px}
+.panel{padding:16px}
+tr.detail .inner{padding:16px}}
+</style>
+<body>
+<a class="skip" href="#main">Ir al contenido</a>
+<aside class="nav" aria-label="Barra lateral">
+  <div>
+    <div class="brand"><span class="logo">L</span><div><strong>Luson</strong><small>Gestión de inventario</small></div></div>
+    <nav aria-label="Navegación principal">
+      <button type="button" data-demo>▦ Inventario</button>
+      <button type="button" data-demo>⇄ Transferencias</button>
+      <button type="button" data-demo>⇩ Ingresos</button>
+      <button type="button" data-demo>± Ajustes</button>
+      <button type="button" class="active" aria-current="page">$ Catálogo</button>
+      <button type="button" data-demo>⚙ Administración</button>
+    </nav>
+  </div>
+  <div class="identity"><strong>almacen</strong><small>Almacén · Administrador único</small></div>
+</aside>
+<header class="top"><strong>Catálogo de precios</strong><span>Almacén <small>/ Precios por sucursal</small></span></header>
+<main id="main">
+  <div class="heading">
+    <div>
+      <h1>Catálogo de precios</h1>
+      <p>El Almacén define el precio mínimo y el sugerido de cada batería y elige a qué sucursales se les aplica. Cada sucursal mantiene sus propios valores.</p>
+    </div>
+    <button type="button" data-demo>⊞ Nueva batería en catálogo</button>
+  </div>
+
+  <section class="panel" aria-labelledby="listado">
+    <h2 id="listado">Baterías</h2>
+    <p class="muted" style="margin-top:4px">95 modelos · 190 variantes · desplegá una batería para cargar o cambiar sus precios</p>
+    <div class="filters">
+      <label>Buscar<input type="search" placeholder="Marca o modelo"></label>
+      <label>Marca<select><option>Todas</option><option>CAR</option><option>TOYO</option><option>HYBRID</option><option>VOLTA</option></select></label>
+      <label>Capacidad<select><option>Todas</option><option>35 Ah</option><option>45 Ah</option><option>54 Ah</option><option>120 Ah</option><option>150 Ah</option></select></label>
+      <label>Polaridad<select><option>Todas</option><option>L</option><option>R</option></select></label>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <caption class="muted" style="text-align:left;padding-bottom:8px">Una fila por batería. El formulario de precios se despliega debajo de la fila elegida.</caption>
+        <thead><tr><th scope="col">Batería</th><th scope="col">Sucursales con precio</th><th scope="col">Última actualización</th><th scope="col"><span class="muted">Acción</span></th></tr></thead>
+        <tbody>
+          <tr class="pick" aria-expanded="true" aria-controls="detalle-1" tabindex="0" data-row="1">
+            <td><strong>CAR NS40ZL</strong><small>35 Ah · Polaridad L · 6 meses de garantía</small></td>
+            <td><span class="tag ok">A</span> <span class="tag ok">B</span> <span class="tag short">C sin precio</span></td>
+            <td><small>04/11/2026 · almacen</small></td>
+            <td><span class="open">Cerrar −</span></td>
+          </tr>
+          <tr class="detail" id="detalle-1">
+            <td colspan="4">
+              <div class="inner">
+                <header>
+                  <div>
+                    <h3>Precios de CAR NS40ZL</h3>
+                    <p class="muted">35 Ah · Polaridad L · 3 celdas de origen (B5, C5, D5)</p>
+                  </div>
+                  <span class="tag">Mínimo y sugerido por sucursal</span>
+                </header>
+                <div class="form">
+                  <div>
+                    <div class="grid2">
+                      <label>Precio mínimo de venta<input inputmode="decimal" value="85000"></label>
+                      <label>Precio sugerido de venta<input inputmode="decimal" value="96000"></label>
+                    </div>
+                    <p class="muted hint">Montos con dos decimales. El sugerido nunca puede quedar por debajo del mínimo: por debajo del mínimo la sucursal no puede vender.</p>
+                    <label style="margin-top:16px">Plazo de garantía de la variante<input readonly value="6 meses"></label>
+                    <p class="muted hint">Dato del producto, no del vendedor: lo administra el Almacén y el punto de venta lo muestra sin permitir cambios.</p>
+                  </div>
+
+                  <div>
+                    <fieldset>
+                      <legend>Sucursales a las que se aplica este precio</legend>
+                      <div class="branches">
+                        <label class="branch"><input type="checkbox" checked aria-label="Aplicar a Sucursal A"><span><strong>Sucursal A</strong><small>activo</small></span><span class="vals">mín $ 85.000<br>sug $ 96.000</span></label>
+                        <label class="branch"><input type="checkbox" checked aria-label="Aplicar a Sucursal B"><span><strong>Sucursal B</strong><small>activo</small></span><span class="vals">mín $ 88.000<br>sug $ 99.000</span></label>
+                        <label class="branch"><input type="checkbox" aria-label="Aplicar a Sucursal C"><span><strong>Sucursal C</strong><small>activo</small></span><span class="vals">sin precio</span></label>
+                      </div>
+                    </fieldset>
+                    <div class="note"><strong>Se van a reemplazar 2 precios existentes.</strong> Sucursal B hoy vende a $ 99.000 y quedará en $ 96.000. Las sucursales sin tildar no se tocan.</div>
+                    <div class="actions">
+                      <button type="button" class="quiet" data-close="1">Cancelar</button>
+                      <button type="button" class="primary" data-demo>Aplicar a 2 sucursales</button>
+                    </div>
+                    <div class="status" role="status" aria-live="polite"></div>
+                  </div>
+                </div>
+              </div>
+            </td>
+          </tr>
+
+          <tr class="pick" aria-expanded="false" aria-controls="detalle-2" tabindex="0" data-row="2">
+            <td><strong>TOYO NS40ZL</strong><small>35 Ah · Polaridad L · 6 meses de garantía</small></td>
+            <td><span class="tag ok">A</span> <span class="tag ok">B</span> <span class="tag ok">C</span></td>
+            <td><small>02/11/2026 · almacen</small></td>
+            <td><span class="open">Desplegar +</span></td>
+          </tr>
+          <tr class="detail" id="detalle-2" hidden>
+            <td colspan="4">
+              <div class="inner">
+                <header>
+                  <div><h3>Precios de TOYO NS40ZL</h3><p class="muted">35 Ah · Polaridad L · 3 celdas de origen (F5, G5, H5)</p></div>
+                  <span class="tag">Mínimo y sugerido por sucursal</span>
+                </header>
+                <div class="form">
+                  <div>
+                    <div class="grid2">
+                      <label>Precio mínimo de venta<input inputmode="decimal" value="78000"></label>
+                      <label>Precio sugerido de venta<input inputmode="decimal" value="89000"></label>
+                    </div>
+                    <p class="muted hint">Montos con dos decimales. El sugerido nunca puede quedar por debajo del mínimo: por debajo del mínimo la sucursal no puede vender.</p>
+                    <label style="margin-top:16px">Plazo de garantía de la variante<input readonly value="6 meses"></label>
+                    <p class="muted hint">Dato del producto, no del vendedor: lo administra el Almacén y el punto de venta lo muestra sin permitir cambios.</p>
+                  </div>
+                  <div>
+                    <fieldset>
+                      <legend>Sucursales a las que se aplica este precio</legend>
+                      <div class="branches">
+                        <label class="branch"><input type="checkbox" checked aria-label="Aplicar a Sucursal A"><span><strong>Sucursal A</strong><small>activo</small></span><span class="vals">mín $ 78.000<br>sug $ 89.000</span></label>
+                        <label class="branch"><input type="checkbox" checked aria-label="Aplicar a Sucursal B"><span><strong>Sucursal B</strong><small>activo</small></span><span class="vals">mín $ 78.000<br>sug $ 89.000</span></label>
+                        <label class="branch"><input type="checkbox" checked aria-label="Aplicar a Sucursal C"><span><strong>Sucursal C</strong><small>activo</small></span><span class="vals">mín $ 82.000<br>sug $ 92.000</span></label>
+                      </div>
+                    </fieldset>
+                    <div class="note"><strong>Se van a reemplazar 3 precios existentes.</strong> Las tres sucursales quedan con el mismo par mínimo/sugerido.</div>
+                    <div class="actions">
+                      <button type="button" class="quiet" data-close="2">Cancelar</button>
+                      <button type="button" class="primary" data-demo>Aplicar a 3 sucursales</button>
+                    </div>
+                    <div class="status" role="status" aria-live="polite"></div>
+                  </div>
+                </div>
+              </div>
+            </td>
+          </tr>
+
+          <tr class="pick" aria-expanded="false" aria-controls="detalle-3" tabindex="0" data-row="3">
+            <td><strong>HYBRID BT54L</strong><small>54 Ah · Polaridad L · 12 meses de garantía</small></td>
+            <td><span class="tag ok">A</span> <span class="tag short">B sin precio</span> <span class="tag short">C sin precio</span></td>
+            <td><small>31/10/2026 · almacen</small></td>
+            <td><span class="open">Desplegar +</span></td>
+          </tr>
+          <tr class="detail" id="detalle-3" hidden>
+            <td colspan="4">
+              <div class="inner">
+                <header>
+                  <div><h3>Precios de HYBRID BT54L</h3><p class="muted">54 Ah · Polaridad L · 3 celdas de origen (J7, K7, L7)</p></div>
+                  <span class="tag">Mínimo y sugerido por sucursal</span>
+                </header>
+                <div class="form">
+                  <div>
+                    <div class="grid2">
+                      <label>Precio mínimo de venta<input inputmode="decimal" value="132000"></label>
+                      <label>Precio sugerido de venta<input inputmode="decimal" value="148000"></label>
+                    </div>
+                    <p class="muted hint">Montos con dos decimales. El sugerido nunca puede quedar por debajo del mínimo: por debajo del mínimo la sucursal no puede vender.</p>
+                    <label style="margin-top:16px">Plazo de garantía de la variante<input readonly value="12 meses"></label>
+                    <p class="muted hint">Dato del producto, no del vendedor: lo administra el Almacén y el punto de venta lo muestra sin permitir cambios.</p>
+                  </div>
+                  <div>
+                    <fieldset>
+                      <legend>Sucursales a las que se aplica este precio</legend>
+                      <div class="branches">
+                        <label class="branch"><input type="checkbox" checked aria-label="Aplicar a Sucursal A"><span><strong>Sucursal A</strong><small>activo</small></span><span class="vals">mín $ 132.000<br>sug $ 148.000</span></label>
+                        <label class="branch"><input type="checkbox" aria-label="Aplicar a Sucursal B"><span><strong>Sucursal B</strong><small>activo</small></span><span class="vals">sin precio</span></label>
+                        <label class="branch"><input type="checkbox" aria-label="Aplicar a Sucursal C"><span><strong>Sucursal C</strong><small>activo</small></span><span class="vals">sin precio</span></label>
+                      </div>
+                    </fieldset>
+                    <div class="note"><strong>Sucursal B y C todavía no pueden vender esta batería.</strong> Al aplicar, el par mínimo/sugerido se escribe en las sucursales tildadas y la variante pasa a ser vendible ahí.</div>
+                    <div class="actions">
+                      <button type="button" class="quiet" data-close="3">Cancelar</button>
+                      <button type="button" class="primary" data-demo>Aplicar a 1 sucursal</button>
+                    </div>
+                    <div class="status" role="status" aria-live="polite"></div>
+                  </div>
+                </div>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="status" role="status" aria-live="polite" data-page-status></div>
+  </section>
+  <footer>Dirección 01 · Batería primero. La operación nace en la batería, se despliega en su fila y termina eligiendo sucursales.</footer>
+</main>
+<script>
+function setOpen(row,open){
+  var detail=document.getElementById(row.getAttribute('aria-controls'));
+  row.setAttribute('aria-expanded',open?'true':'false');
+  detail.hidden=!open;
+  row.querySelector('.open').textContent=open?'Cerrar −':'Desplegar +';
+}
+document.querySelectorAll('tr.pick').forEach(function(row){
+  function toggle(){setOpen(row,row.getAttribute('aria-expanded')!=='true');}
+  row.addEventListener('click',toggle);
+  row.addEventListener('keydown',function(event){
+    if(event.key==='Enter'||event.key===' '){event.preventDefault();toggle();}
+  });
+});
+document.querySelectorAll('[data-close]').forEach(function(button){
+  button.addEventListener('click',function(){
+    var row=document.querySelector('tr.pick[data-row="'+button.getAttribute('data-close')+'"]');
+    if(row){setOpen(row,false);row.focus();}
+  });
+});
+document.querySelectorAll('[data-demo]').forEach(function(button){
+  button.addEventListener('click',function(){
+    var status=button.closest('.inner').querySelector('.status');
+    if(status){status.textContent='Acción de demostración: '+button.textContent.trim();}
+  });
+});
+</script>
+</body>
+</html>
