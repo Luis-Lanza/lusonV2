@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Garantía en A4 · Punto de venta · Luson</title>
+<style>
+*{box-sizing:border-box}
+:root{font-family:sans-serif;color:#242124;background:#F8F6F4;font-size:14px;
+--wine:#7A1F3D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;--ink:#242124;--surface:#FFFFFF}
+body{margin:0;padding:32px 16px 48px;display:grid;justify-items:center;gap:16px}
+h1,h2,p{margin:0}
+ul{margin:0;padding:0;list-style:none}
+.caption{max-width:210mm;width:100%;color:var(--muted);font-size:12px;line-height:1.6}
+.caption strong{color:var(--ink)}
+.sheet{width:210mm;min-height:297mm;background:var(--surface);border:1px solid var(--border);
+padding:18mm 16mm;display:flex;flex-direction:column;gap:20px;box-shadow:0 20px 50px #24212433}
+.head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;
+padding-bottom:16px;border-bottom:1px solid var(--border)}
+.brand{display:flex;gap:10px;align-items:center}
+.logo{background:var(--wine);color:var(--surface);border-radius:4px;padding:8px 10px;font-weight:700;font-size:18px;line-height:1}
+.brand strong{display:block;color:var(--wine);font-size:18px;line-height:1.2}
+.brand small{display:block;color:var(--muted);font-size:11px;margin-top:2px}
+.doctype{text-align:right}
+.doctype span{display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.number{font-size:22px;font-weight:700;color:var(--wine);font-variant-numeric:tabular-nums;margin-top:4px;display:block}
+.meta{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.meta div{border:1px solid var(--border);border-radius:4px;padding:10px 12px}
+.meta dt{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.meta dd{margin:4px 0 0;font-size:13px;font-weight:600}
+.client{background:var(--tint);border:1px solid #D9B3C1;border-radius:4px;padding:12px 14px}
+.client h2{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--wine);margin-bottom:8px}
+.client dl{margin:0;display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.client dt{font-size:11px;color:var(--muted)}
+.client dd{margin:2px 0 0;font-size:13px;font-weight:600}
+table{width:100%;border-collapse:collapse;font-size:12px}
+caption{text-align:left;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);padding-bottom:8px}
+th{text-align:left;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);
+border-bottom:1px solid var(--border);padding:0 8px 8px 0;font-weight:600}
+td{padding:10px 8px 10px 0;border-bottom:1px solid var(--border);vertical-align:top}
+th.num,td.num{text-align:right;font-variant-numeric:tabular-nums;padding-right:0}
+td strong{display:block;font-size:13px}
+td small{color:var(--muted);font-size:11px}
+.total{display:flex;justify-content:flex-end;align-items:baseline;gap:16px;padding-top:4px}
+.total span{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.total strong{font-size:22px;color:var(--wine);font-variant-numeric:tabular-nums}
+footer{margin-top:auto;padding-top:16px;border-top:1px solid var(--border);display:grid;gap:8px}
+footer p{font-size:11px;line-height:1.7;color:var(--muted)}
+.sign{display:grid;grid-template-columns:1fr 1fr;gap:32px;margin-top:24px}
+.sign div{border-top:1px solid var(--muted);padding-top:6px;font-size:11px;color:var(--muted)}
+@media print{body{padding:0;background:var(--surface)}
+.caption{display:none}
+.sheet{border:0;box-shadow:none;width:auto;min-height:auto;padding:0}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+<body>
+<p class="caption">Garantía emitida por la sucursal, tal como sale del servidor: se descarga como
+<strong>garantia-2-000126.pdf</strong> y se imprime en una hoja A4. Los importes salen congelados del documento de venta,
+nunca recalculados al imprimir.</p>
+
+<article class="sheet" aria-labelledby="titulo">
+  <header class="head">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">L</span>
+      <div><strong>Luson</strong><small>Gestión de inventario</small></div>
+    </div>
+    <div class="doctype">
+      <span id="titulo">Comprobante de garantía</span>
+      <strong class="number">2-000126</strong>
+    </div>
+  </header>
+
+  <dl class="meta">
+    <div><dt>Sucursal</dt><dd>Sucursal A</dd></div>
+    <div><dt>Fecha y hora</dt><dd>04/11/2026 · 17:42</dd></div>
+    <div><dt>Forma de pago</dt><dd>Efectivo</dd></div>
+  </dl>
+
+  <section class="client" aria-labelledby="cliente">
+    <h2 id="cliente">Cliente</h2>
+    <dl>
+      <div><dt>Nombre</dt><dd>Marta Giménez</dd></div>
+      <div><dt>Teléfono</dt><dd>381 555 0198</dd></div>
+      <div><dt>Documento</dt><dd>27.884.310</dd></div>
+    </dl>
+  </section>
+
+  <table>
+    <caption>Productos cubiertos</caption>
+    <thead>
+      <tr>
+        <th scope="col">Cant.</th>
+        <th scope="col">Batería</th>
+        <th scope="col">Capacidad</th>
+        <th scope="col">Polaridad</th>
+        <th scope="col">Garantía</th>
+        <th scope="col" class="num">Precio unit.</th>
+        <th scope="col" class="num">Subtotal</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="num">2</td>
+        <td><strong>CAR NS40ZL</strong><small>CAR</small></td>
+        <td>35 Ah</td>
+        <td>L</td>
+        <td>6 meses</td>
+        <td class="num">Bs 96.000,00</td>
+        <td class="num">Bs 192.000,00</td>
+      </tr>
+      <tr>
+        <td class="num">1</td>
+        <td><strong>TOYO NS60L</strong><small>TOYO</small></td>
+        <td>45 Ah</td>
+        <td>L</td>
+        <td>12 meses</td>
+        <td class="num">Bs 112.000,00</td>
+        <td class="num">Bs 112.000,00</td>
+      </tr>
+      <tr>
+        <td class="num">1</td>
+        <td><strong>VOLTA N120</strong><small>VOLTA</small></td>
+        <td>120 Ah</td>
+        <td>R</td>
+        <td>18 meses</td>
+        <td class="num">Bs 130.000,00</td>
+        <td class="num">Bs 130.000,00</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p class="total"><span>Total</span><strong>Bs 434.000,00</strong></p>
+
+  <footer>
+    <p>El plazo de garantía de cada línea es el que el vendedor indicó al momento de la venta y quedó congelado en este
+    comprobante. El plazo corre desde la fecha de venta indicada arriba.</p>
+    <p>Conserve este comprobante: su número identifica la venta en la sucursal. Este documento no es una factura fiscal.</p>
+    <div class="sign">
+      <div>Firma del vendedor</div>
+      <div>Firma del cliente</div>
+    </div>
+  </footer>
+</article>
+</body>
+</html>

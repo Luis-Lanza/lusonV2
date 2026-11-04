@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "chosen": "01-counter-cart.html",
+  "handoffs": {
+    "01-counter-cart.html": {
+      "status": "sent",
+      "queued": false,
+      "sentAt": "2026-11-04T23:18:54.672Z",
+      "startedAt": null,
+      "implementedAt": null,
+      "feature": "odd/tasks/punto-de-venta.md"
+    }
+  }
+}
