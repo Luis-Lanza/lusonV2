@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Planilla de conteo · Ajuste de stock · Luson</title>
+<style>
+*{box-sizing:border-box}
+:root{font-family:sans-serif;color:#242124;background:#F8F6F4;font-size:14px;
+--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;
+--ok-bg:#ECFDF5;--ok-ink:#047857;--ok-border:#A7F3D0;
+--warn-bg:#FFFBEF;--warn-ink:#805400;--warn-border:#E8CF86;
+--short-bg:#FFF0F0;--short-ink:#991515;--short-border:#FFDAD6}
+body{margin:0}
+h1,h2,h3,p,dl,dd,dt{margin:0}
+h1{font-size:22px}
+h2{font-size:18px}
+h3{font-size:14px}
+p{line-height:1.6}
+small,.muted{color:var(--muted);font-size:12px}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;padding:10px 12px;min-height:44px}
+button:hover{background:var(--tint)}
+button.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF}
+button.primary:hover{background:var(--hover)}
+button.quiet{border:1px solid var(--border);color:var(--muted);min-height:0;padding:6px 10px}
+:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+input,select{padding:10px 12px;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;width:100%;min-height:44px}
+label{display:grid;gap:8px;font-size:12px}
+aside{position:fixed;width:240px;inset:0 auto 0 0;background:#FFFFFF;border-right:1px solid var(--border);padding:12px;display:flex;flex-direction:column;justify-content:space-between}
+.brand{display:flex;gap:10px;align-items:center;padding:4px 8px 16px;border-bottom:1px solid var(--border)}
+.logo{background:var(--wine);color:#FFFFFF;border-radius:4px;padding:8px;font-weight:700;font-size:18px}
+.brand strong{color:var(--wine);font-size:18px}
+.brand small{display:block}
+nav{display:grid;gap:4px;margin-top:12px}
+nav button{text-align:left;border:0;padding:12px}
+nav .active{background:var(--tint);color:var(--wine);border-left:2px solid var(--wine);font-weight:600}
+.identity{padding:12px;background:var(--page);border:1px solid var(--border)}
+.identity small{display:block;margin-top:6px}
+.top{margin-left:240px;height:56px;background:#FFFFFF;border-bottom:1px solid var(--border);padding:16px 24px;display:flex;justify-content:space-between}
+main{margin-left:240px;padding:32px;max-width:1500px}
+.heading,.row{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.heading{margin-bottom:16px}
+.heading p{color:var(--muted);margin-top:8px}
+.panel{background:#FFFFFF;border:1px solid var(--border);border-radius:4px;padding:0;margin-bottom:16px}
+.panel-head{padding:20px 24px;border-bottom:1px solid var(--border);display:flex;gap:16px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.filters{display:flex;gap:8px;flex-wrap:wrap}
+.chip{border:1px solid var(--border);background:var(--page);color:var(--muted);border-radius:3px;min-height:0;padding:6px 10px;font-size:12px}
+.chip[aria-pressed="true"]{background:var(--tint);color:var(--wine);border-color:var(--border);font-weight:600}
+.tag{display:inline-block;border:1px solid var(--border);background:var(--page);padding:4px 8px;border-radius:3px;font-size:11px}
+.tag.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-border)}
+.tag.short{background:var(--short-bg);color:var(--short-ink);border-color:var(--short-border)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{text-align:left;background:var(--page);color:var(--muted);font-size:11px;text-transform:uppercase;position:sticky;top:0;z-index:1}
+th,td{padding:12px;border-bottom:1px solid var(--border);vertical-align:middle}
+td small{display:block;margin-top:4px}
+.group th{background:#FFFFFF;color:var(--wine);font-size:11px;letter-spacing:.06em;padding-top:20px;border-bottom:1px solid var(--border);position:static}
+.tablewrap{overflow:auto;max-height:none}
+.qty{width:110px;text-align:right;font-variant-numeric:tabular-nums}
+.qty:focus{background:var(--tint)}
+.num{font-variant-numeric:tabular-nums;font-weight:600}
+.delta-pos{color:var(--ok-ink);font-weight:600;font-variant-numeric:tabular-nums}
+.delta-neg{color:var(--short-ink);font-weight:600;font-variant-numeric:tabular-nums}
+.pending{color:var(--muted);font-size:12px;font-style:italic}
+.bar{position:sticky;bottom:0;background:#FFFFFF;border-top:1px solid var(--border);padding:16px 24px;display:flex;gap:24px;align-items:center;justify-content:space-between;flex-wrap:wrap;box-shadow:0 -4px 12px #2421240D}
+.bar dl{display:flex;gap:24px}
+.bar dt{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.bar dd{font-size:20px;font-variant-numeric:tabular-nums;margin-top:2px}
+.status{color:var(--wine);min-height:24px;padding:0 24px 16px}
+.reveal{border:1px solid var(--ok-border);background:var(--ok-bg);padding:24px;margin-top:16px}
+.reveal h2{color:var(--ok-ink)}
+.reveal table{margin-top:16px;background:#FFFFFF}
+footer{color:var(--muted);font-size:12px;padding:16px 0}
+.skip{position:fixed;top:-100px;background:#FFFFFF;color:var(--wine);padding:12px;z-index:10}
+.skip:focus{top:8px}
+@media(max-width:767px){aside{position:static;width:auto}
+.brand{padding:8px}
+aside nav{grid-template-columns:repeat(2,1fr)}
+aside .identity{display:none}
+.top,main{margin-left:0}
+.top{height:auto;gap:12px}
+main{padding:16px}
+.heading{align-items:flex-start;flex-wrap:wrap}
+.bar{position:static;padding:16px}
+.bar dl{gap:16px}
+}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+</style>
+<body>
+<a class="skip" href="#main">Ir al contenido</a>
+<aside aria-label="Barra lateral">
+<div>
+<div class="brand">
+<span class="logo">L</span>
+<div><strong>Luson</strong><small>Gestión de inventario</small></div>
+</div>
+<nav aria-label="Navegación principal">
+<button type="button" data-demo>▦ Inventario</button>
+<button type="button" data-demo>⇄ Transferencias</button>
+<button type="button" data-demo>⇩ Ingresos</button>
+<button type="button" class="active" aria-current="page">± Ajustes</button>
+<button type="button" data-demo>⚙ Administración</button>
+</nav>
+</div>
+<div class="identity"><strong>almacen</strong><small>Almacén · Administrador único</small></div>
+</aside>
+<header class="top">
+<strong>Ajustes de stock</strong>
+<span>Almacén <small>/ Planilla de conteo</small></span>
+</header>
+<main id="main">
+<div class="heading">
+<div>
+<small>ALMACÉN / AJUSTES / NUEVO</small>
+<h1 style="margin-top:8px">Planilla de conteo</h1>
+<p>Recorré la planilla y cargá sólo lo que contaste. Las variantes que dejes vacías no se tocan.</p>
+</div>
+<span class="tag">Conteo ciego</span>
+</div>
+
+<section class="panel" aria-labelledby="sheet-h">
+<div class="panel-head">
+<h2 id="sheet-h">Almacén · catálogo completo</h2>
+<div class="filters" role="group" aria-label="Filtrar por marca">
+<button class="chip" aria-pressed="true" data-brand="">Todas</button>
+<button class="chip" aria-pressed="false" data-brand="CAR">CAR</button>
+<button class="chip" aria-pressed="false" data-brand="TOYO">TOYO</button>
+<button class="chip" aria-pressed="false" data-brand="VOLTA">VOLTA</button>
+</div>
+</div>
+<div style="padding:16px 24px 0">
+<label>Buscar variante
+<input type="search" placeholder="NS40ZL, 45 Ah, polaridad R" data-search>
+</label>
+</div>
+<div class="tablewrap">
+<table>
+<caption class="muted" style="text-align:left;padding:12px 24px">Sin columna de stock esperado: el operador cuenta y escribe. <span data-counted-note></span></caption>
+<thead>
+<tr><th>Producto</th><th>Contado</th><th>Estado</th></tr>
+</thead>
+<tbody data-rows></tbody>
+</table>
+</div>
+<div class="bar">
+<dl>
+<div><dt>Variantes contadas</dt><dd data-counted>0</dd></div>
+<div><dt>Unidades contadas</dt><dd data-units>0</dd></div>
+<div><dt>Sin contar</dt><dd data-missing>0</dd></div>
+</dl>
+<div style="display:flex;gap:12px;flex-wrap:wrap">
+<label style="min-width:220px">Motivo del ajuste
+<select data-reason>
+<option>Conteo físico periódico</option>
+<option>Merma o rotura</option>
+<option>Diferencia detectada en preparación</option>
+<option>Otro</option>
+</select>
+</label>
+<button class="primary" data-apply>Aplicar ajuste</button>
+</div>
+</div>
+<p role="status" class="status" data-status></p>
+</section>
+
+<section class="reveal" hidden data-reveal aria-labelledby="rev-h">
+<h2 id="rev-h">Ajuste aplicado</h2>
+<p class="muted">Recién ahora se conoce el impacto: esperado, contado y diferencia por variante contada.</p>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Producto</th><th>Esperado</th><th>Contado</th><th>Diferencia</th></tr></thead>
+<tbody data-reveal-body></tbody>
+</table>
+</div>
+</section>
+
+<footer>Demostración local del prototipo. No guarda datos ni llama a la API. Las cantidades son ilustrativas. Enter pasa a la fila siguiente; las variantes vacías no se envían.</footer>
+</main>
+
+<script>
+const stock=[
+{id:1,brand:'CAR',model:'NS40ZL',cap:'35 Ah',pol:'L',existing:14},
+{id:2,brand:'TOYO',model:'NS40ZL',cap:'35 Ah',pol:'L',existing:9},
+{id:3,brand:'CAR',model:'NS60L',cap:'45 Ah',pol:'L',existing:31},
+{id:4,brand:'VOLTA',model:'NS40ZL',cap:'35 Ah',pol:'R',existing:3},
+{id:5,brand:'VOLTA',model:'NS60L',cap:'45 Ah',pol:'R',existing:17},
+{id:6,brand:'TOYO',model:'NS60L',cap:'45 Ah',pol:'L',existing:22}];
+const counted=new Map([[1,11],[6,25]]);
+let brand='';
+const rows=document.querySelector('[data-rows]'),status=document.querySelector('[data-status]');
+const label=s=>`${s.brand} · ${s.model}`;
+function visible(){
+const q=document.querySelector('[data-search]').value.trim().toUpperCase();
+return stock.filter(s=>(!brand||s.brand===brand)&&(!q||(s.brand+' '+s.model+' '+s.cap+' '+s.pol).toUpperCase().includes(q)));
+}
+function render(){
+const hits=visible();let last='';
+rows.innerHTML=hits.map(s=>{
+let head='';
+if(s.brand!==last){last=s.brand;head=`<tr class="group"><th colspan="3" scope="colgroup">${s.brand}</th></tr>`}
+const v=counted.get(s.id);
+return head+`<tr>
+<td><strong>${s.model}</strong><small>${s.cap} · Polaridad ${s.pol}</small></td>
+<td><input class="qty" type="number" min="0" step="1" value="${v===undefined?'':v}" placeholder="—" data-qty="${s.id}" aria-label="Contado de ${label(s)} ${s.cap} polaridad ${s.pol}"></td>
+<td>${v===undefined?'<span class="pending">Sin contar</span>':'<span class="tag ok">Contada</span>'}</td>
+</tr>`}).join('')||'<tr><td colspan="3" class="pending" style="padding:32px;text-align:center">Sin variantes para ese filtro.</td></tr>';
+rows.querySelectorAll('[data-qty]').forEach(i=>{
+i.oninput=()=>{
+const id=Number(i.dataset.qty),raw=i.value.trim();
+if(raw==='')counted.delete(id);else counted.set(id,Math.max(0,Number(raw)||0));
+totals();
+const st=i.closest('tr').lastElementChild;
+st.innerHTML=counted.has(id)?'<span class="tag ok">Contada</span>':'<span class="pending">Sin contar</span>';
+};
+i.onkeydown=e=>{
+if(e.key!=='Enter')return;
+e.preventDefault();
+const all=[...rows.querySelectorAll('[data-qty]')];
+const next=all[all.indexOf(i)+1];
+if(next)next.focus();
+};
+});
+totals();
+}
+function totals(){
+const values=[...counted.values()];
+document.querySelector('[data-counted]').textContent=counted.size;
+document.querySelector('[data-units]').textContent=values.reduce((a,b)=>a+b,0);
+document.querySelector('[data-missing]').textContent=stock.length-counted.size;
+document.querySelector('[data-counted-note]').textContent=counted.size?`${counted.size} de ${stock.length} variantes contadas.`:'Ninguna variante contada todavía.';
+}
+document.querySelector('[data-search]').oninput=render;
+document.querySelectorAll('[data-brand]').forEach(b=>b.onclick=()=>{
+brand=b.dataset.brand;
+document.querySelectorAll('[data-brand]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));
+render();
+});
+document.querySelector('[data-apply]').onclick=()=>{
+if(!counted.size){status.textContent='Cargá al menos una variante contada antes de aplicar.';return}
+const body=document.querySelector('[data-reveal-body]');
+body.innerHTML=[...counted.entries()].map(([id,v])=>{
+const s=stock.find(x=>x.id===id),d=v-s.existing;
+return `<tr><td><strong>${label(s)}</strong><small>${s.cap} · Polaridad ${s.pol}</small></td>
+<td class="num">${s.existing}</td><td class="num">${v}</td>
+<td class="${d>0?'delta-pos':d<0?'delta-neg':'num'}">${d>0?'+':''}${d}</td></tr>`;
+}).join('');
+document.querySelector('[data-reveal]').hidden=false;
+status.textContent=`Ajuste aplicado en esta demostración: ${counted.size} variante(s). Las variantes sin contar quedaron intactas.`;
+document.querySelector('[data-reveal]').scrollIntoView({behavior:'smooth',block:'center'});
+};
+document.querySelectorAll('[data-demo]').forEach(b=>b.onclick=()=>{status.textContent='Esa sección pertenece a la app existente; el prototipo se limita a Ajustes.'});
+render();
+</script>
+</body>
+</html>

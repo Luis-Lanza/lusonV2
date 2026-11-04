@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Historial primero · Ajuste de stock · Luson</title>
+<style>
+*{box-sizing:border-box}
+:root{font-family:sans-serif;color:#242124;background:#F8F6F4;font-size:14px;
+--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;
+--ok-bg:#ECFDF5;--ok-ink:#047857;--ok-border:#A7F3D0;
+--warn-bg:#FFFBEF;--warn-ink:#805400;--warn-border:#E8CF86;
+--short-bg:#FFF0F0;--short-ink:#991515;--short-border:#FFDAD6}
+body{margin:0}
+h1,h2,h3,p,dl,dd,dt{margin:0}
+h1{font-size:22px}
+h2{font-size:18px}
+h3{font-size:14px}
+p{line-height:1.6}
+small,.muted{color:var(--muted);font-size:12px}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;padding:10px 12px;min-height:44px}
+button:hover{background:var(--tint)}
+button.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF}
+button.primary:hover{background:var(--hover)}
+button.quiet{border:1px solid var(--border);color:var(--muted);min-height:0;padding:6px 10px}
+:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+input,select{padding:10px 12px;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;width:100%;min-height:44px}
+label{display:grid;gap:8px;font-size:12px}
+aside.nav{position:fixed;width:240px;inset:0 auto 0 0;background:#FFFFFF;border-right:1px solid var(--border);padding:12px;display:flex;flex-direction:column;justify-content:space-between}
+.brand{display:flex;gap:10px;align-items:center;padding:4px 8px 16px;border-bottom:1px solid var(--border)}
+.logo{background:var(--wine);color:#FFFFFF;border-radius:4px;padding:8px;font-weight:700;font-size:18px}
+.brand strong{color:var(--wine);font-size:18px}
+.brand small{display:block}
+nav{display:grid;gap:4px;margin-top:12px}
+nav button{text-align:left;border:0;padding:12px}
+nav .active{background:var(--tint);color:var(--wine);border-left:2px solid var(--wine);font-weight:600}
+.identity{padding:12px;background:var(--page);border:1px solid var(--border)}
+.identity small{display:block;margin-top:6px}
+.top{margin-left:240px;height:56px;background:#FFFFFF;border-bottom:1px solid var(--border);padding:16px 24px;display:flex;justify-content:space-between}
+main{margin-left:240px;padding:32px;max-width:1600px}
+.heading,.row{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.heading{margin-bottom:24px;flex-wrap:wrap}
+.heading p{color:var(--muted);margin-top:8px}
+.panel{background:#FFFFFF;border:1px solid var(--border);border-radius:4px;padding:24px;margin-bottom:16px}
+.tag{display:inline-block;border:1px solid var(--border);background:var(--page);padding:4px 8px;border-radius:3px;font-size:11px}
+.tag.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-border)}
+.tag.warn{background:var(--warn-bg);color:var(--warn-ink);border-color:var(--warn-border)}
+.tag.short{background:var(--short-bg);color:var(--short-ink);border-color:var(--short-border)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{text-align:left;background:var(--page);color:var(--muted);font-size:11px;text-transform:uppercase}
+th,td{padding:14px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+td small{display:block;margin-top:4px}
+.num{font-variant-numeric:tabular-nums;font-weight:600}
+.delta-pos{color:var(--ok-ink);font-weight:600;font-variant-numeric:tabular-nums}
+.delta-neg{color:var(--short-ink);font-weight:600;font-variant-numeric:tabular-nums}
+.tablewrap{overflow:auto;margin-top:16px}
+tr.doc{cursor:pointer}
+tr.doc:hover{background:var(--page)}
+tr.doc[aria-expanded="true"]{background:var(--tint)}
+tr.detail td{background:var(--page);padding:0}
+tr.detail .inner{padding:8px 24px 24px}
+tr.detail table{background:#FFFFFF;border:1px solid var(--border)}
+.status{color:var(--wine);min-height:24px;margin-top:12px}
+footer{color:var(--muted);font-size:12px;padding:16px 0}
+.skip{position:fixed;top:-100px;background:#FFFFFF;color:var(--wine);padding:12px;z-index:10}
+.skip:focus{top:8px}
+.drawer{position:fixed;inset:0 0 0 auto;width:min(520px,94vw);background:#FFFFFF;border-left:1px solid var(--border);box-shadow:0 -4px 24px #24212433;padding:24px;overflow:auto;transform:translateX(100%);transition:transform .18s ease-out;z-index:20}
+.drawer[open]{transform:none}
+.drawer h2{margin-bottom:8px}
+.drawer .blind{background:var(--tint);border:1px solid var(--border);border-left:2px solid var(--wine);padding:16px;margin:16px 0}
+.drawer .blind strong{color:var(--wine)}
+.drawer .blind p{margin-top:6px;color:var(--muted);font-size:13px}
+.drawer-actions{display:flex;gap:12px;justify-content:flex-end;padding-top:16px;border-top:1px solid var(--border);margin-top:16px}
+.qty{width:100px;text-align:right;font-variant-numeric:tabular-nums}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+@media(max-width:767px){aside.nav{position:static;width:auto}
+.brand{padding:8px}
+aside.nav nav{grid-template-columns:repeat(2,1fr)}
+aside.nav .identity{display:none}
+.top,main{margin-left:0}
+.top{height:auto;gap:12px}
+main{padding:16px}
+.heading{align-items:flex-start}
+.panel{padding:16px}
+.drawer{width:100%}
+}
+</style>
+<body>
+<a class="skip" href="#main">Ir al contenido</a>
+<aside class="nav" aria-label="Barra lateral">
+<div>
+<div class="brand">
+<span class="logo">L</span>
+<div><strong>Luson</strong><small>Gestión de inventario</small></div>
+</div>
+<nav aria-label="Navegación principal">
+<button type="button" data-demo>▦ Inventario</button>
+<button type="button" data-demo>⇄ Transferencias</button>
+<button type="button" data-demo>⇩ Ingresos</button>
+<button type="button" class="active" aria-current="page">± Ajustes</button>
+<button type="button" data-demo>⚙ Administración</button>
+</nav>
+</div>
+<div class="identity"><strong>almacen</strong><small>Almacén · Administrador único</small></div>
+</aside>
+<header class="top">
+<strong>Ajustes de stock</strong>
+<span>Almacén <small>/ Historial</small></span>
+</header>
+<main id="main">
+<div class="heading">
+<div>
+<small>ALMACÉN / AJUSTES</small>
+<h1 style="margin-top:8px">Historial de ajustes</h1>
+<p>Cada ajuste es un documento inmutable con el esperado, lo contado y la diferencia. Las correcciones son contra-asientos.</p>
+</div>
+<button class="primary" data-open>Nuevo ajuste</button>
+</div>
+
+<section class="panel" aria-labelledby="hist-h">
+<div class="row">
+<h2 id="hist-h">Documentos</h2>
+<span class="tag">Prototipo · sin datos reales</span>
+</div>
+<div class="tablewrap">
+<table>
+<caption class="muted" style="text-align:left;padding-bottom:8px">Abrí un documento para ver sus líneas con esperado, contado y diferencia.</caption>
+<thead>
+<tr><th>Documento</th><th>Motivo</th><th>Variantes</th><th>Unidades</th><th>Estado</th></tr>
+</thead>
+<tbody data-docs></tbody>
+</table>
+</div>
+<p role="status" class="status" data-status></p>
+</section>
+
+<footer>Demostración local del prototipo. No guarda datos ni llama a la API. Las cantidades son ilustrativas.</footer>
+</main>
+
+<aside class="drawer" data-drawer aria-labelledby="drawer-h" aria-hidden="true">
+<h2 id="drawer-h">Nuevo ajuste</h2>
+<p class="muted">Almacén · hoy 14:20</p>
+<div class="blind" role="note">
+<strong>Conteo ciego.</strong>
+<p>No se muestra el stock esperado. Cargá lo que contaste; la diferencia se conoce al aplicar.</p>
+</div>
+<label>Buscar variante
+<input type="search" placeholder="NS40ZL, TOYO, 45 Ah" data-search>
+</label>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Producto</th><th>Contado</th><th></th></tr></thead>
+<tbody data-lines></tbody>
+</table>
+</div>
+<label style="margin-top:16px">Motivo del ajuste
+<select data-reason>
+<option>Conteo físico periódico</option>
+<option>Merma o rotura</option>
+<option>Diferencia detectada en preparación</option>
+<option>Otro</option>
+</select>
+</label>
+<div class="drawer-actions">
+<button type="button" data-close>Cancelar</button>
+<button type="button" class="primary" data-apply>Aplicar ajuste</button>
+</div>
+</aside>
+
+<script>
+const stock=[
+{id:1,brand:'CAR',model:'NS40ZL',cap:'35 Ah',pol:'L',existing:14},
+{id:2,brand:'TOYO',model:'NS40ZL',cap:'35 Ah',pol:'L',existing:9},
+{id:4,brand:'VOLTA',model:'NS40ZL',cap:'35 Ah',pol:'R',existing:3},
+{id:6,brand:'TOYO',model:'NS60L',cap:'45 Ah',pol:'L',existing:22}];
+const label=s=>`${s.brand} · ${s.model}`;
+let docs=[
+{id:6,date:'02/11 09:12',reason:'Conteo físico periódico',state:'revertido',lines:[{id:2,expected:9,counted:7},{id:4,expected:3,counted:5}],reversal:{id:7,reason:'Cantidad mal tipeada en la variante VOLTA'}},
+{id:5,date:'28/10 18:40',reason:'Merma o rotura',state:'aplicado',lines:[{id:1,expected:15,counted:14}]}];
+let picked=[{id:1,counted:11},{id:6,counted:25}];
+const docsBody=document.querySelector('[data-docs]'),linesBody=document.querySelector('[data-lines]'),
+drawer=document.querySelector('[data-drawer]'),status=document.querySelector('[data-status]');
+function deltaClass(d){return d>0?'delta-pos':d<0?'delta-neg':'num'}
+function sign(d){return d>0?'+'+d:String(d)}
+function renderDocs(){
+docsBody.innerHTML=docs.map(d=>{
+const units=d.lines.reduce((a,l)=>a+l.counted,0);
+return `<tr class="doc" data-doc="${d.id}" tabindex="0" aria-expanded="false">
+<td><strong>Nº ${d.id}</strong><small>${d.date} · ${d.lines.length} línea${d.lines.length===1?'':'s'}</small></td>
+<td>${d.reason}</td>
+<td class="num">${d.lines.length}</td>
+<td class="num">${units}</td>
+<td>${d.state==='aplicado'?'<span class="tag ok">Aplicado</span>':'<span class="tag short">Revertido</span>'}</td>
+</tr>`;
+}).join('');
+docsBody.querySelectorAll('[data-doc]').forEach(row=>{
+const open=()=>toggle(Number(row.dataset.doc),row);
+row.onclick=open;
+row.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();open()}};
+});
+}
+function toggle(id,row){
+const next=row.nextElementSibling;
+if(next&&next.classList.contains('detail')){next.remove();row.setAttribute('aria-expanded','false');return}
+const d=docs.find(x=>x.id===id);
+const tr=document.createElement('tr');
+tr.className='detail';
+tr.innerHTML=`<td colspan="5"><div class="inner">
+<table><thead><tr><th>Producto</th><th>Esperado</th><th>Contado</th><th>Diferencia</th></tr></thead>
+<tbody>${d.lines.map(l=>{const s=stock.find(x=>x.id===l.id),dl=l.counted-l.expected;
+return `<tr><td><strong>${label(s)}</strong><small>${s.cap} · Polaridad ${s.pol}</small></td>
+<td class="num">${l.expected}</td><td class="num">${l.counted}</td>
+<td class="${deltaClass(dl)}">${sign(dl)}</td></tr>`}).join('')}</tbody></table>
+${d.reversal?`<p class="muted" style="margin-top:16px">Contra-asiento Nº ${d.reversal.id} · motivo: “${d.reversal.reason}”. Ambos documentos quedan visibles.</p>`:''}
+<p class="muted" style="margin-top:8px">Estado actual del stock ≠ esperado del documento: el esperado es la foto del momento del ajuste.</p>
+</div></td>`;
+row.after(tr);
+row.setAttribute('aria-expanded','true');
+}
+document.querySelector('[data-open]').onclick=()=>{
+drawer.setAttribute('open','');
+drawer.setAttribute('aria-hidden','false');
+document.querySelector('[data-search]').focus();
+};
+document.querySelector('[data-close]').onclick=()=>{
+drawer.removeAttribute('open');
+drawer.setAttribute('aria-hidden','true');
+};
+function renderLines(){
+const q=document.querySelector('[data-search]').value.trim().toUpperCase();
+const hits=stock.filter(s=>!q||(s.brand+' '+s.model+' '+s.cap+' '+s.pol).toUpperCase().includes(q));
+linesBody.innerHTML=hits.map(s=>{
+const l=picked.find(x=>x.id===s.id);
+return `<tr><td><strong>${label(s)}</strong><small>${s.cap} · Polaridad ${s.pol}</small></td>
+<td><input class="qty" type="number" min="0" step="1" value="${l?l.counted:''}" placeholder="—" data-qty="${s.id}" aria-label="Contado de ${label(s)}"></td>
+<td>${l?'<button class="quiet" data-del="'+s.id+'">Quitar</button>':'<button class="quiet" data-add="'+s.id+'">Agregar</button>'}</td></tr>`;
+}).join('')||'<tr><td colspan="3" class="muted" style="padding:24px;text-align:center">Sin variantes para esa búsqueda.</td></tr>';
+linesBody.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>{picked.push({id:Number(b.dataset.add),counted:0});renderLines()});
+linesBody.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{picked=picked.filter(x=>x.id!==Number(b.dataset.del));renderLines()});
+linesBody.querySelectorAll('[data-qty]').forEach(i=>i.oninput=()=>{
+const id=Number(i.dataset.qty),raw=i.value.trim();
+const l=picked.find(x=>x.id===id);
+if(!l)return;
+if(raw==='')l.counted=0;else l.counted=Math.max(0,Number(raw)||0);
+});
+}
+document.querySelector('[data-search]').oninput=renderLines;
+document.querySelector('[data-apply]').onclick=()=>{
+if(!picked.length){status.textContent='Agregá al menos una variante contada.';return}
+const id=Math.max(...docs.map(d=>d.id))+1;
+docs=[{id,date:'hoy 14:20',reason:document.querySelector('[data-reason]').value,state:'aplicado',
+lines:picked.map(l=>({id:l.id,expected:stock.find(s=>s.id===l.id).existing,counted:l.counted}))},...docs];
+picked=[];renderLines();renderDocs();
+drawer.removeAttribute('open');drawer.setAttribute('aria-hidden','true');
+status.textContent=`Ajuste Nº ${id} aplicado en esta demostración. Abrí el documento para ver esperado, contado y diferencia.`;
+const first=docsBody.querySelector('[data-doc]');
+if(first){toggle(id,first);first.focus()}
+};
+document.querySelectorAll('[data-demo]').forEach(b=>b.onclick=()=>{status.textContent='Esa sección pertenece a la app existente; el prototipo se limita a Ajustes.'});
+renderDocs();renderLines();
+</script>
+</body>
+</html>

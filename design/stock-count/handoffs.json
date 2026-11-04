@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "chosen": "03-history-first.html",
+  "handoffs": {
+    "03-history-first.html": {
+      "status": "in_progress",
+      "queued": false,
+      "sentAt": "2026-11-04T17:50:44.668Z",
+      "startedAt": "2026-11-04T17:50:57.754Z",
+      "implementedAt": null,
+      "feature": "odd/tasks/conteo-fisico-ajuste-stock.md",
+      "note": "Implementando historial primero: captura ciega en panel lateral, historial con detalle expandible y contra-asiento. Rama feat/stock-adjustments."
+    }
+  }
+}
