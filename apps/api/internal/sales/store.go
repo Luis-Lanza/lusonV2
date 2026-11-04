@@ -100,8 +100,11 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 	}
 	for _, line := range payload.Lines {
 		// The frozen floor and the subtotal are omitted on purpose: the line trigger
-		// writes them from the branch's stored pair and the sold quantity. The warranty
-		// term is the seller's own input of this sale and is stored as stated.
+		// writes them from the branch's stored pair of the sold variant's battery (brand
+		// + model + capacity), so both polarities of one battery are sold at the same
+		// pair, and it derives the subtotal from the sold quantity. The line keeps the
+		// polarity it sells: the warranty term is the seller's own input of this sale
+		// and is stored as stated.
 		if _, err := tx.Exec(ctx, `INSERT INTO sale_lines(sale_id,variant_id,quantity,unit_price,warranty_months)
  VALUES($1,$2,$3,$4,$5)`, id, int32(line.VariantID), line.Quantity, string(line.UnitPrice),
 			int16(line.WarrantyMonths)); err != nil {
@@ -380,9 +383,11 @@ const listFilter = ` FROM sales s
 
 // Sellable reads the point-of-sale catalogue of the actor's own branch: only the
 // variants the branch can actually sell, each with the suggested price the counter
-// starts from and the minimum it can never go under. A variant without a price in this
-// branch, or in a retired branch, is simply absent, so the counter cannot offer it. The
-// warranty term is not read here: the seller states it on the sale.
+// starts from and the minimum it can never go under. The pair belongs to the battery of
+// the variant, so the two polarities of one battery are offered together at the same
+// pair. A battery without a price in this branch, or in a retired branch, is simply
+// absent, so the counter cannot offer its polarities. The warranty term is not read
+// here: the seller states it on the sale.
 func (s *Store) Sellable(ctx context.Context, actor auth.Identity, q SellableQuery) (SellablePage, error) {
 	result := SellablePage{Page: q.Page, PageSize: q.PageSize, Items: []SellableItem{}}
 	if ctx == nil || s == nil || s.pool == nil {
@@ -452,10 +457,13 @@ func (s *Store) Sellable(ctx context.Context, actor auth.Identity, q SellableQue
 }
 
 // sellableFilter is shared by the count and the page. The branch price pair is the
-// sellability rule: a variant without a pair in this branch has no row here at all.
-const sellableFilter = ` FROM branch_prices p
- JOIN catalog_variants v ON v.id=p.variant_id
- JOIN catalog_entries e ON e.id=v.catalog_entry_id
+// sellability rule, and it is the battery's pair: a battery without a pair in this
+// branch has no row here at all, so both of its polarities are absent together. One
+// row per sellable variant is produced by joining the price through the battery, never
+// through the variant.
+const sellableFilter = ` FROM catalog_entries e
+ JOIN catalog_variants v ON v.catalog_entry_id=e.id
+ JOIN branch_prices p ON p.catalog_entry_id=e.id
  JOIN locations l ON l.id=p.branch_location_id AND l.deleted_at IS NULL
  WHERE p.branch_location_id=$1
  AND ($2='' OR e.brand ILIKE $2 ESCAPE '\' OR e.model ILIKE $2 ESCAPE '\')

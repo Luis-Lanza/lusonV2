@@ -58,18 +58,56 @@ func clerk(location int) auth.Identity {
 }
 
 // price writes one branch pair, reusing the price store so the fixture writes exactly
-// what the Catálogo writes. No product warranty term is written: the term is the
-// seller's at the counter, so the sale must not need one stored anywhere.
-func (e *env) price(t *testing.T, variantID int64, min, suggested string, branches ...int64) {
+// what the Catálogo writes. The value of the write is the battery, so this prices the
+// catalogue entry and therefore both of its polarities. No product warranty term is
+// written: the term is the seller's at the counter, so the sale must not need one
+// stored anywhere.
+func (e *env) price(t *testing.T, entryID int64, min, suggested string, branches ...int64) {
 	t.Helper()
 	if _, err := e.prices.Write(e.ctx, warehouse(), pricing.WriteInput{
-		VariantID:      variantID,
+		CatalogEntryID: entryID,
 		MinPrice:       pricing.Money(min),
 		SuggestedPrice: pricing.Money(suggested),
 		BranchIDs:      branches,
 	}); err != nil {
-		t.Fatalf("price fixture for variant %d failed: %v", variantID, err)
+		t.Fatalf("price fixture for battery %d failed: %v", entryID, err)
 	}
+}
+
+// entryOf reads the battery of a seed variant from the catalogue, so a test never
+// guesses which entry a polarity belongs to.
+func (e *env) entryOf(t *testing.T, variantID int64) int64 {
+	t.Helper()
+	var entry int64
+	if e.pool.QueryRow(e.ctx, "SELECT catalog_entry_id FROM catalog_variants WHERE id=$1",
+		int32(variantID)).Scan(&entry) != nil {
+		t.Fatal("catalogue entry read failed")
+	}
+	return entry
+}
+
+// polaritiesOf reads the polarities of one battery, so the L/R assertions below are
+// derived from the catalogue instead of being hardcoded.
+func (e *env) polaritiesOf(t *testing.T, entryID int64) []string {
+	t.Helper()
+	rows, err := e.pool.Query(e.ctx, "SELECT polarity FROM catalog_variants WHERE catalog_entry_id=$1 ORDER BY polarity",
+		int32(entryID))
+	if err != nil {
+		t.Fatal("polarity read failed")
+	}
+	defer rows.Close()
+	result := []string{}
+	for rows.Next() {
+		var polarity string
+		if rows.Scan(&polarity) != nil {
+			t.Fatal("polarity read failed")
+		}
+		result = append(result, polarity)
+	}
+	if rows.Err() != nil {
+		t.Fatal("polarity read failed")
+	}
+	return result
 }
 
 // stock reads the branch's own balance row straight from the database.
@@ -335,7 +373,7 @@ func TestSaleValidQueries(t *testing.T) {
 // call writes anything.
 func TestSaleStoreGuards(t *testing.T) {
 	e := fixture(t)
-	e.price(t, 1, "85000", "96000", 2)
+	e.price(t, e.entryOf(t, 1), "85000", "96000", 2)
 	in := sale(1, 1, "85000.00")
 	list := sales.ListQuery{Page: 1, PageSize: 25}
 	catalogue := sales.SellableQuery{Page: 1, PageSize: 25}
@@ -423,12 +461,18 @@ func TestSaleStoreGuards(t *testing.T) {
 // branch is not sellable, and nothing is written.
 func TestSaleVariantWithoutPrice(t *testing.T) {
 	e := fixture(t)
-	e.price(t, 2, "85000", "96000", 2)
+	// Only the battery of variant 1 is priced in branch 2, so variant 3 (another
+	// battery) is not sellable while both polarities of variant 1's battery are.
+	e.price(t, e.entryOf(t, 1), "85000", "96000", 2)
+	unpriced := e.entryOf(t, 3)
+	if priced := e.entryOf(t, 1); priced == unpriced {
+		t.Fatal("the fixture needs two different batteries")
+	}
 	before := e.snapshot(t)
-	_, err := e.store.Create(e.ctx, clerk(2), sale(1, 1, "85000.00"))
+	_, err := e.store.Create(e.ctx, clerk(2), sale(3, 1, "85000.00"))
 	var refused *sales.NotSellable
-	if !errors.As(err, &refused) || refused.VariantID != 1 {
-		t.Fatalf("a variant without a branch price must be named as not sellable: %v", err)
+	if !errors.As(err, &refused) || refused.VariantID != 3 {
+		t.Fatalf("a polarity of an unpriced battery must be named as not sellable: %v", err)
 	}
 	if !errors.Is(err, sales.ErrNotSellable) {
 		t.Fatal("a variant without a price is not sellable")
@@ -436,14 +480,104 @@ func TestSaleVariantWithoutPrice(t *testing.T) {
 	if e.snapshot(t) != before {
 		t.Fatal("a not sellable variant must not write a sale nor touch stock")
 	}
-	// The sellable catalogue of the branch lists only the priced variant, so the
-	// blocked row never reaches the counter.
+	// The sellable catalogue of the branch lists both polarities of the priced battery
+	// and nothing of the unpriced one, so the blocked row never reaches the counter.
 	page, err := e.store.Sellable(e.ctx, clerk(2), sales.SellableQuery{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("catalogue read failed: %v", err)
 	}
-	if page.TotalVariants != 1 || len(page.Items) != 1 || page.Items[0].VariantID != 2 {
-		t.Fatalf("the catalogue must expose only sellable variants: %+v", page)
+	if page.TotalVariants != 2 || len(page.Items) != 2 ||
+		page.Items[0].VariantID != 1 || page.Items[1].VariantID != 2 {
+		t.Fatalf("the catalogue must expose only the sellable battery: %+v", page)
+	}
+	for _, item := range page.Items {
+		if item.CatalogEntryID != e.entryOf(t, 1) || item.SuggestedPrice != "96000.00" ||
+			item.MinPrice != "85000.00" {
+			t.Fatalf("both polarities must be offered at the battery pair: %+v", item)
+		}
+	}
+	// Both polarities of the priced battery are sellable, one by one.
+	for _, variant := range []int64{1, 2} {
+		if _, err := e.store.Create(e.ctx, clerk(2), sale(variant, 1, "85000.00")); err != nil {
+			t.Fatalf("polarity %d of the priced battery must be sellable: %v", variant, err)
+		}
+	}
+}
+
+// TestSalePriceIsPerBattery proves S2 on the counter: the battery's pair covers both of
+// its polarities, so a sale of the L variant and a sale of the R variant of the same
+// battery use the same price and the same floor, and a price change of the battery
+// applies to both at once.
+func TestSalePriceIsPerBattery(t *testing.T) {
+	e := fixture(t)
+	entry := e.entryOf(t, 1)
+	polarities := e.polaritiesOf(t, entry)
+	if len(polarities) != 2 || polarities[0] != "L" || polarities[1] != "R" {
+		t.Fatalf("the fixture battery must have both polarities: %v", polarities)
+	}
+	left, right := int64(1), int64(2)
+	e.price(t, entry, "85000", "96000", 2)
+	// One write is one row per (branch, battery): never one row per polarity.
+	if n := e.scalar(t, "SELECT count(*) FROM branch_prices WHERE branch_location_id=2 AND catalog_entry_id=$1", int32(entry)); n != 1 {
+		t.Fatalf("the battery must hold exactly one pair, got %d rows", n)
+	}
+	// The L variant and the R variant are both sold at the battery's price and frozen
+	// against the battery's floor.
+	for _, variant := range []int64{left, right} {
+		sold, err := e.store.Create(e.ctx, clerk(2), sale(variant, 1, "96000.00"))
+		if err != nil {
+			t.Fatalf("the polarity %d of the battery must be sellable: %v", variant, err)
+		}
+		if sold.Lines[0].UnitPrice != "96000.00" || sold.Lines[0].MinPrice != "85000.00" ||
+			sold.Lines[0].VariantID != variant {
+			t.Fatalf("the polarity %d must freeze the battery's pair: %+v", variant, sold.Lines[0])
+		}
+	}
+	// Under the battery floor both polarities are refused, and the refusal names the
+	// polarity the counter tried to sell.
+	for _, variant := range []int64{left, right} {
+		before := e.snapshot(t)
+		_, err := e.store.Create(e.ctx, clerk(2), sale(variant, 1, "84999.99"))
+		var refused *sales.BelowMinimum
+		if !errors.As(err, &refused) || refused.VariantID != variant {
+			t.Fatalf("the polarity %d must be refused under the battery floor: %v", variant, err)
+		}
+		if e.snapshot(t) != before {
+			t.Fatalf("a refused polarity %d must not write anything", variant)
+		}
+	}
+	// A price change of the battery applies to both polarities: the new floor is the
+	// one the other polarity is judged against without any second write.
+	e.price(t, entry, "95000", "99000", 2)
+	if n := e.scalar(t, "SELECT count(*) FROM branch_prices WHERE branch_location_id=2 AND catalog_entry_id=$1", int32(entry)); n != 1 {
+		t.Fatalf("a price change must replace the single battery row, got %d", n)
+	}
+	for _, variant := range []int64{left, right} {
+		before := e.snapshot(t)
+		_, err := e.store.Create(e.ctx, clerk(2), sale(variant, 1, "94000.00"))
+		var refused *sales.BelowMinimum
+		if !errors.As(err, &refused) || refused.VariantID != variant {
+			t.Fatalf("the changed floor must cover the polarity %d: %v", variant, err)
+		}
+		if e.snapshot(t) != before {
+			t.Fatalf("the refused polarity %d must not write anything", variant)
+		}
+		if _, err := e.store.Create(e.ctx, clerk(2), sale(variant, 1, "95000.00")); err != nil {
+			t.Fatalf("the changed floor must admit the polarity %d at the new minimum: %v", variant, err)
+		}
+	}
+	// Both polarities share the same pair in the counter catalogue.
+	page, err := e.store.Sellable(e.ctx, clerk(2), sales.SellableQuery{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("catalogue read failed: %v", err)
+	}
+	if page.TotalVariants != 2 || len(page.Items) != 2 {
+		t.Fatalf("both polarities of the battery must be sellable: %+v", page)
+	}
+	for _, item := range page.Items {
+		if item.MinPrice != "95000.00" || item.SuggestedPrice != "99000.00" {
+			t.Fatalf("both polarities must carry the same battery pair: %+v", item)
+		}
 	}
 }
 
@@ -452,7 +586,7 @@ func TestSaleVariantWithoutPrice(t *testing.T) {
 // warranty table.
 func TestSaleWarrantyTermIsSoldData(t *testing.T) {
 	e := fixture(t)
-	e.price(t, 3, "85000", "96000", 2)
+	e.price(t, e.entryOf(t, 3), "85000", "96000", 2)
 	if n := e.scalar(t, "SELECT count(*) FROM variant_warranties"); n != 0 {
 		t.Fatalf("the fixture must not store a product term, got %d", n)
 	}
@@ -482,14 +616,19 @@ func TestSaleWarrantyTermIsSoldData(t *testing.T) {
 		t.Fatalf("the read path must return the seller's term: %+v %v", detail, err)
 	}
 	// Two lines of one sale may state different terms, because each one is a datum of
-	// its own line.
-	e.price(t, 4, "10000", "12000", 2)
+	// its own line. Each line is a different battery, because the price of a battery is
+	// shared by its two polarities.
+	other := e.entryOf(t, 5)
+	if other == e.entryOf(t, 3) {
+		t.Fatal("the fixture needs two different batteries")
+	}
+	e.price(t, other, "10000", "12000", 2)
 	mixed := sales.CreateInput{
 		PaymentMethod: sales.PaymentCash,
 		Customer:      sales.Customer{Name: "Cliente"},
 		Lines: []sales.LineInput{
 			{VariantID: 3, Quantity: 1, UnitPrice: "85000.00", WarrantyMonths: 1},
-			{VariantID: 4, Quantity: 1, UnitPrice: "12000.00", WarrantyMonths: sales.MaxWarrantyMonths},
+			{VariantID: 5, Quantity: 1, UnitPrice: "12000.00", WarrantyMonths: sales.MaxWarrantyMonths},
 		},
 	}
 	mixedSale, err := e.store.Create(e.ctx, clerk(2), mixed)
@@ -509,7 +648,7 @@ func TestSaleWarrantyTermIsSoldData(t *testing.T) {
 // enforces, and a line under it writes nothing and decrements nothing.
 func TestSaleBelowMinimum(t *testing.T) {
 	e := fixture(t)
-	e.price(t, 3, "85000", "96000", 2)
+	e.price(t, e.entryOf(t, 3), "85000", "96000", 2)
 	existing, reserved := e.stock(t, 2, 3)
 	if existing < 2 {
 		t.Fatalf("fixture expects stock to sell, got %d", existing)
@@ -543,22 +682,25 @@ func TestSaleBelowMinimum(t *testing.T) {
 // the sale tables exactly as they were, so a sale is applied completely or not at all.
 func TestSaleTwoLinesOneInvalidIsAtomic(t *testing.T) {
 	e := fixture(t)
-	e.price(t, 3, "85000", "96000", 2)
-	e.price(t, 4, "10000", "12000", 2)
+	if e.entryOf(t, 4) == e.entryOf(t, 5) {
+		t.Fatal("the two lines must belong to different batteries")
+	}
+	e.price(t, e.entryOf(t, 3), "85000", "96000", 2)
+	e.price(t, e.entryOf(t, 5), "10000", "12000", 2)
 	before := e.snapshot(t)
 	input := sales.CreateInput{
 		PaymentMethod: sales.PaymentCard,
 		Customer:      sales.Customer{Name: "Cliente"},
 		Lines: []sales.LineInput{
 			{VariantID: 3, Quantity: 1, UnitPrice: "85000.00", WarrantyMonths: 6},
-			{VariantID: 4, Quantity: 1, UnitPrice: "10000.00", WarrantyMonths: 6},
+			{VariantID: 5, Quantity: 1, UnitPrice: "10000.00", WarrantyMonths: 6},
 		},
 	}
 	// The second line is under its floor while the first one is perfectly valid.
 	input.Lines[1].UnitPrice = "9999.99"
 	_, err := e.store.Create(e.ctx, clerk(2), input)
 	var refused *sales.BelowMinimum
-	if !errors.As(err, &refused) || refused.VariantID != 4 {
+	if !errors.As(err, &refused) || refused.VariantID != 5 {
 		t.Fatalf("the invalid line must name its variant: %v", err)
 	}
 	if e.snapshot(t) != before {
@@ -568,9 +710,9 @@ func TestSaleTwoLinesOneInvalidIsAtomic(t *testing.T) {
 		t.Fatal("a refused sale must not persist a header")
 	}
 	// An uncovered line mid-document behaves the same way.
-	input.Lines[1] = sales.LineInput{VariantID: 4, Quantity: 200, UnitPrice: "10000.00", WarrantyMonths: 6}
+	input.Lines[1] = sales.LineInput{VariantID: 5, Quantity: 200, UnitPrice: "10000.00", WarrantyMonths: 6}
 	var shortage *sales.InsufficientStock
-	if _, err := e.store.Create(e.ctx, clerk(2), input); !errors.As(err, &shortage) || shortage.VariantID != 4 {
+	if _, err := e.store.Create(e.ctx, clerk(2), input); !errors.As(err, &shortage) || shortage.VariantID != 5 {
 		t.Fatalf("the second line must hit the stock bound: %v", err)
 	}
 	if e.snapshot(t) != before {
@@ -592,7 +734,7 @@ func TestSaleTwoLinesOneInvalidIsAtomic(t *testing.T) {
 // selling branch's existing stock only, never reserved, and never another branch.
 func TestSaleDecrementsOnlyItsBranch(t *testing.T) {
 	e := fixture(t)
-	e.price(t, 3, "85000", "96000", 2, 3)
+	e.price(t, e.entryOf(t, 3), "85000", "96000", 2, 3)
 	e.setStock(t, 2, 3, 20, 4)
 	siblingExisting, siblingReserved := e.stock(t, 3, 3)
 	result, err := e.store.Create(e.ctx, clerk(2), sale(3, 5, "85000.00"))
@@ -632,7 +774,7 @@ func TestSaleDecrementsOnlyItsBranch(t *testing.T) {
 func TestSaleExhaustedStock(t *testing.T) {
 	e := fixture(t)
 	empty := e.zeroStockVariant(t, 2)
-	e.price(t, empty, "85000", "96000", 2)
+	e.price(t, e.entryOf(t, empty), "85000", "96000", 2)
 	before := e.snapshot(t)
 	_, err := e.store.Create(e.ctx, clerk(2), sale(empty, 1, "85000.00"))
 	var refused *sales.InsufficientStock
@@ -659,7 +801,7 @@ func TestSaleExhaustedStock(t *testing.T) {
 // correlative and its own warranty number, and no two sales of a branch share either.
 func TestSaleNumbersArePerBranch(t *testing.T) {
 	e := fixture(t)
-	e.price(t, 1, "1000", "1200", 2, 3)
+	e.price(t, e.entryOf(t, 1), "1000", "1200", 2, 3)
 	first, err := e.store.Create(e.ctx, clerk(2), sale(1, 1, "1000.00"))
 	if err != nil {
 		t.Fatalf("the first sale failed: %v", err)
@@ -695,7 +837,7 @@ func TestSaleNumbersArePerBranch(t *testing.T) {
 // it states is stored exactly as an input of the sale.
 func TestSaleFreezesDocumentInDatabase(t *testing.T) {
 	e := fixture(t)
-	e.price(t, 5, "85000", "96000", 2)
+	e.price(t, e.entryOf(t, 5), "85000", "96000", 2)
 	tx, err := e.pool.Begin(e.ctx)
 	if err != nil {
 		t.Fatal("fixture transaction failed")
@@ -739,13 +881,13 @@ func TestSaleFreezesDocumentInDatabase(t *testing.T) {
 // TestSaleKeepsFrozenFacts pins S9: a later price change never edits an emitted sale.
 func TestSaleKeepsFrozenFacts(t *testing.T) {
 	e := fixture(t)
-	e.price(t, 3, "85000", "96000", 2)
+	e.price(t, e.entryOf(t, 3), "85000", "96000", 2)
 	emitted, err := e.store.Create(e.ctx, clerk(2), sale(3, 2, "90000.00"))
 	if err != nil {
 		t.Fatalf("the sale failed: %v", err)
 	}
-	// The Catálogo changes both the floor and the term afterwards.
-	e.price(t, 3, "95000", "99000", 2)
+	// The Catálogo changes the battery's pair afterwards.
+	e.price(t, e.entryOf(t, 3), "95000", "99000", 2)
 	detail, err := e.store.Read(e.ctx, clerk(2), emitted.ID)
 	if err != nil {
 		t.Fatalf("the emitted sale must stay readable: %v", err)
@@ -767,7 +909,7 @@ func TestSaleKeepsFrozenFacts(t *testing.T) {
 // found and never appears in the other branch's history.
 func TestSaleReadAndListAreBranchScoped(t *testing.T) {
 	e := fixture(t)
-	e.price(t, 1, "1000", "1200", 2, 3)
+	e.price(t, e.entryOf(t, 1), "1000", "1200", 2, 3)
 	first, err := e.store.Create(e.ctx, clerk(2), sale(1, 1, "1000.00"))
 	if err != nil {
 		t.Fatalf("the sale failed: %v", err)
@@ -838,7 +980,7 @@ func TestSaleReadAndListAreBranchScoped(t *testing.T) {
 // truncate.
 func TestSaleDocumentIsImmutable(t *testing.T) {
 	e := fixture(t)
-	e.price(t, 1, "1000", "1200", 2)
+	e.price(t, e.entryOf(t, 1), "1000", "1200", 2)
 	if _, err := e.store.Create(e.ctx, clerk(2), sale(1, 1, "1000.00")); err != nil {
 		t.Fatalf("the sale failed: %v", err)
 	}
@@ -860,18 +1002,20 @@ func TestSaleDocumentIsImmutable(t *testing.T) {
 }
 
 // TestSaleSellableCatalogue pins the counter catalogue: only the variants the branch
-// can sell, with the suggested price and the minimum it can never go under. The
-// warranty term is deliberately absent: the seller states it on the sale.
+// can sell, with the suggested price and the minimum it can never go under. The price
+// is the battery's, so the three priced batteries expose their six polarities at the
+// price of their battery. The warranty term is deliberately absent: the seller states
+// it on the sale.
 func TestSaleSellableCatalogue(t *testing.T) {
 	e := fixture(t)
-	e.price(t, 1, "85000", "96000.5", 2, 3)
-	e.price(t, 2, "10000", "12000", 2)
-	e.price(t, 3, "5000", "6000", 2)
+	e.price(t, e.entryOf(t, 1), "85000", "96000.5", 2, 3)
+	e.price(t, e.entryOf(t, 3), "10000", "12000", 2)
+	e.price(t, e.entryOf(t, 5), "5000", "6000", 2)
 	page, err := e.store.Sellable(e.ctx, clerk(2), sales.SellableQuery{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("catalogue read failed: %v", err)
 	}
-	if page.Page != 1 || page.PageSize != 10 || page.TotalVariants != 3 || len(page.Items) != 3 {
+	if page.Page != 1 || page.PageSize != 10 || page.TotalVariants != 6 || len(page.Items) != 6 {
 		t.Fatalf("the catalogue must expose the sellable variants in order: %+v", page)
 	}
 	first := page.Items[0]
@@ -882,18 +1026,21 @@ func TestSaleSellableCatalogue(t *testing.T) {
 	if first.SuggestedPrice != "96000.50" || first.MinPrice != "85000.00" {
 		t.Fatalf("the item must carry the prices in force: %+v", first)
 	}
-	// Branch 3 only carries variant 1.
+	// Branch 3 only carries the battery of variant 1, so it offers both its polarities.
 	other, err := e.store.Sellable(e.ctx, clerk(3), sales.SellableQuery{Page: 1, PageSize: 10})
-	if err != nil || other.TotalVariants != 1 || len(other.Items) != 1 || other.Items[0].VariantID != 1 {
+	if err != nil || other.TotalVariants != 2 || len(other.Items) != 2 ||
+		other.Items[0].VariantID != 1 || other.Items[1].VariantID != 2 {
 		t.Fatalf("each branch must expose only its own sellable variants: %+v %v", other, err)
 	}
+	// The sellable variants of this fixture are the six polarities of the three priced
+	// batteries.
+	priced := []int64{1, 2, 3, 4, 5, 6}
 	source, err := catalog.Load()
 	if err != nil {
 		t.Fatal("catalogue source load failed")
 	}
-	// The priced variants of this fixture are the only sellable ones, so every filter
-	// expectation is derived from the source catalogue instead of being guessed.
-	priced := []int64{1, 2, 3}
+	// The priced batteries are the only sellable ones, so every filter expectation is
+	// derived from the source catalogue instead of being guessed.
 	matches := func(q sales.SellableQuery, entry catalog.Entry, variantID int64) bool {
 		polarity := "R"
 		if variantID%2 == 1 {
@@ -950,12 +1097,15 @@ func TestSaleSellableCatalogue(t *testing.T) {
 // instead of colliding on the per-branch unique constraints.
 func TestSaleConcurrentSalesGetDistinctCorrelatives(t *testing.T) {
 	e := fixture(t)
-	e.price(t, 1, "1000", "1200", 2)
-	e.price(t, 2, "1000", "1200", 2)
+	// The two concurrent sales must be two documents, so they sell two different
+	// batteries: the same battery sold twice would share one pair, which is a different
+	// guarantee.
+	e.price(t, e.entryOf(t, 1), "1000", "1200", 2)
+	e.price(t, e.entryOf(t, 3), "1000", "1200", 2)
 	results := make([]sales.Sale, 2)
 	failures := make([]error, 2)
 	var wg sync.WaitGroup
-	for i, variant := range []int64{1, 2} {
+	for i, variant := range []int64{1, 3} {
 		wg.Add(1)
 		go func(index int, variantID int64) {
 			defer wg.Done()
