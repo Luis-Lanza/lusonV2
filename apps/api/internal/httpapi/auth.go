@@ -10,6 +10,7 @@ import (
 	"luson/api/internal/config"
 	"luson/api/internal/inventory"
 	"luson/api/internal/realtime"
+	"luson/api/internal/stockentries"
 	"luson/api/internal/transfers"
 	"mime"
 	"net"
@@ -33,9 +34,9 @@ func New(service *auth.Service, cfg config.Auth, stores ...*inventory.Store) htt
 	if len(stores) > 0 {
 		store = stores[0]
 	}
-	return compose(service, cfg, store, nil)
+	return compose(service, cfg, store, nil, nil)
 }
-func compose(service *auth.Service, cfg config.Auth, store *inventory.Store, requests *transfers.Store, brokers ...*realtime.Broker) http.Handler {
+func compose(service *auth.Service, cfg config.Auth, store *inventory.Store, requests *transfers.Store, entries *stockentries.Store, brokers ...*realtime.Broker) http.Handler {
 	api := &API{service, cfg}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/auth/session", api.session)
@@ -46,6 +47,9 @@ func compose(service *auth.Service, cfg config.Auth, store *inventory.Store, req
 	api.registerInventory(mux, store)
 	if requests != nil {
 		api.registerTransfers(mux, requests)
+	}
+	if entries != nil {
+		api.registerStockEntries(mux, entries)
 	}
 	var broker *realtime.Broker
 	if len(brokers) > 0 {

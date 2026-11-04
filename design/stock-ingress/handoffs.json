@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "chosen": "01-document-table.html",
+  "handoffs": {
+    "01-document-table.html": {
+      "status": "in_progress",
+      "queued": false,
+      "sentAt": "2026-11-04T01:42:49.691Z",
+      "startedAt": "2026-11-04T01:43:16.024Z",
+      "implementedAt": null,
+      "feature": "odd/tasks/stock-ingresos-almacen.md",
+      "note": "Implementando la pantalla de nuevo ingreso: migración 021, store Go atómico, POST /api/stock-entries y sección #/ingresos en la web."
+    }
+  }
+}

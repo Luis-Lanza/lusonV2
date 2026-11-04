@@ -30,7 +30,7 @@ func NewWithTransfers(service *auth.Service, cfg config.Auth, stock *inventory.S
 	if err != nil || parsed != cfg {
 		return nil, transfers.ErrUnavailable
 	}
-	return compose(service, cfg, stock, requests), nil
+	return compose(service, cfg, stock, requests, nil), nil
 }
 
 // Prevent ServeMux cleaning/redirects and encoded aliases on these new routes,

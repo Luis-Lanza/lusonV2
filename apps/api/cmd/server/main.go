@@ -13,6 +13,7 @@ import (
 	"luson/api/internal/httpapi"
 	"luson/api/internal/inventory"
 	"luson/api/internal/realtime"
+	"luson/api/internal/stockentries"
 	"luson/api/internal/transfers"
 	"luson/api/internal/webui"
 	"net"
@@ -97,7 +98,7 @@ func run() (result error) {
 		finishReady()
 		return errors.New("realtime startup unavailable")
 	}
-	api, err := httpapi.NewWithRealtime(service, httpCfg, inventory.New(pool), transfers.New(pool), broker)
+	api, err := httpapi.NewWithStockEntries(service, httpCfg, inventory.New(pool), transfers.New(pool), stockentries.New(pool), broker)
 	if err != nil {
 		return errors.New("API initialization failed")
 	}
