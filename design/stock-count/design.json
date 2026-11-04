@@ -1,0 +1,28 @@
+{
+  "title": "Ajuste de stock por conteo · Almacén",
+  "brief": "Vertical nueva: corregir el stock del Almacén contra un conteo físico real. Solo la cuenta 1 (Almacén) ajusta y solo su propio stock; las sucursales quedan fuera de esta vertical. Flujo elegido: documento de ajuste puntual, con conteo ciego (la captura no muestra el stock esperado y el cliente nunca envía la diferencia; el servidor toma el esperado y la calcula). Documento inmutable, aplicado atómico, corregido sólo por contra-asiento con motivo. Mismo shell, paleta vino y tokens de design/system.md que Ingresos y Administración.",
+  "feature": "odd/tasks/conteo-fisico-ajuste-stock.md",
+  "artboards": [
+    {
+      "file": "01-blind-document.html",
+      "title": "Carga a ciegas con documento",
+      "tradeoff": "Protege el conteo de punta a punta y conserva el patrón de Ingresos; el operador no ve el impacto hasta aplicar, y un error de tipeo se corrige con un contra-asiento.",
+      "width": 1440,
+      "height": 1100
+    },
+    {
+      "file": "02-blind-worksheet.html",
+      "title": "Planilla de conteo",
+      "tradeoff": "Carga muchas variantes sin salir de la tabla y con teclado; es la más densa y la más fácil de saltear una fila por error.",
+      "width": 1440,
+      "height": 1100
+    },
+    {
+      "file": "03-history-first.html",
+      "title": "Historial primero",
+      "tradeoff": "Auditoría y contra-asientos siempre a la vista; cargar exige abrir un panel lateral y perder el contexto del historial.",
+      "width": 1440,
+      "height": 1100
+    }
+  ]
+}

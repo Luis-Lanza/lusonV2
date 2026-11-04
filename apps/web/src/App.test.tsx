@@ -1584,3 +1584,24 @@ describe('stock ingress section', () => {
     expect(mock.mock.calls.some(([url]) => String(url) === '/api/stock-entries')).toBe(false);
   });
 });
+
+describe('warehouse adjustment section', () => {
+  const adjustmentRow = { id: 6, reason: 'Merma o rotura', detail: '', created_at: '2026-11-02T09:12:00Z',
+    lines: 1, total_difference: 0, reverses_adjustment_id: null, reversed_by: null };
+  it('reaches the adjustment history from the shell without reading stock for the capture', async () => {
+    const mock = setup(session, url => url.startsWith('/api/stock-adjustments?')
+      ? Promise.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, total_adjustments: 1,
+        adjustments: [adjustmentRow] }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      : undefined);
+    render(<App />);
+    await inventory();
+    const navigation = await screen.findByRole('navigation', { name: 'Navegación principal' });
+    fireEvent.click(within(navigation).getByRole('button', { name: 'Ajustes' }));
+    expect(window.location.hash).toBe('#/ajustes');
+    const history = await screen.findByRole('region', { name: 'Documentos' });
+    expect(await within(history).findByText('#6')).toBeInTheDocument();
+    expect(mock.mock.calls.some(([url]) => String(url).startsWith('/api/stock-adjustments/catalog?'))).toBe(false);
+    passiveCounts(mock);
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+});

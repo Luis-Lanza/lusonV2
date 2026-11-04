@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "chosen": "03-history-first.html",
+  "handoffs": {
+    "03-history-first.html": {
+      "status": "implemented",
+      "queued": false,
+      "sentAt": "2026-11-04T17:50:44.668Z",
+      "startedAt": "2026-11-04T17:50:57.754Z",
+      "implementedAt": "2026-11-04T19:48:51.678Z",
+      "feature": "odd/tasks/conteo-fisico-ajuste-stock.md",
+      "note": "Aceptado por el humano en el preview real: historial con detalle expandible, captura ciega sin números de stock, diferencia revelada al aplicar y contra-asiento con motivo visible en el documento revertido.",
+      "previewUrl": "http://127.0.0.1:8080/"
+    }
+  }
+}

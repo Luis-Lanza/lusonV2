@@ -3,13 +3,13 @@
   "chosen": "01-document-table.html",
   "handoffs": {
     "01-document-table.html": {
-      "status": "in_progress",
+      "status": "implemented",
       "queued": false,
       "sentAt": "2026-11-04T01:42:49.691Z",
       "startedAt": "2026-11-04T01:43:16.024Z",
-      "implementedAt": null,
+      "implementedAt": "2026-11-04T17:42:38.902Z",
       "feature": "odd/tasks/stock-ingresos-almacen.md",
-      "note": "Implementando la pantalla de nuevo ingreso: migración 021, store Go atómico, POST /api/stock-entries y sección #/ingresos en la web."
+      "note": "Implementado en React/Go/PostgreSQL y mergeado a master: sección #/ingresos con catálogo, documento, historial paginado, anulación con contra-asiento y modal de detalle. Sin preview corriendo en esta sesión."
     }
   }
 }

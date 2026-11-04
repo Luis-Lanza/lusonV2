@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carga a ciegas con documento · Ajuste de stock · Luson</title>
+<style>
+*{box-sizing:border-box}
+:root{font-family:sans-serif;color:#242124;background:#F8F6F4;font-size:14px;
+--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;
+--ok-bg:#ECFDF5;--ok-ink:#047857;--ok-border:#A7F3D0;
+--warn-bg:#FFFBEF;--warn-ink:#805400;--warn-border:#E8CF86;
+--short-bg:#FFF0F0;--short-ink:#991515;--short-border:#FFDAD6}
+body{margin:0}
+h1,h2,h3,p,dl,dd,dt{margin:0}
+h1{font-size:22px}
+h2{font-size:18px}
+h3{font-size:14px}
+p{line-height:1.6}
+small,.muted{color:var(--muted);font-size:12px}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;padding:10px 12px;min-height:44px}
+button:hover{background:var(--tint)}
+button.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF}
+button.primary:hover{background:var(--hover)}
+button.quiet{border:1px solid var(--border);color:var(--muted);min-height:0;padding:6px 10px}
+:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+input,select{padding:10px 12px;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;width:100%;min-height:44px}
+label{display:grid;gap:8px;font-size:12px}
+aside{position:fixed;width:240px;inset:0 auto 0 0;background:#FFFFFF;border-right:1px solid var(--border);padding:12px;display:flex;flex-direction:column;justify-content:space-between}
+.brand{display:flex;gap:10px;align-items:center;padding:4px 8px 16px;border-bottom:1px solid var(--border)}
+.logo{background:var(--wine);color:#FFFFFF;border-radius:4px;padding:8px;font-weight:700;font-size:18px}
+.brand strong{color:var(--wine);font-size:18px}
+.brand small{display:block}
+nav{display:grid;gap:4px;margin-top:12px}
+nav button{text-align:left;border:0;padding:12px}
+nav .active{background:var(--tint);color:var(--wine);border-left:2px solid var(--wine);font-weight:600}
+.identity{padding:12px;background:var(--page);border:1px solid var(--border)}
+.identity small{display:block;margin-top:6px}
+.top{margin-left:240px;height:56px;background:#FFFFFF;border-bottom:1px solid var(--border);padding:16px 24px;display:flex;justify-content:space-between}
+main{margin-left:240px;padding:32px;max-width:1600px}
+.heading,.row{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.heading{margin-bottom:24px}
+.heading p{color:var(--muted);margin-top:8px}
+.panel{background:#FFFFFF;border:1px solid var(--border);border-radius:4px;padding:24px;margin-bottom:16px}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:24px;align-items:start}
+.tag{display:inline-block;border:1px solid var(--border);background:var(--page);padding:4px 8px;border-radius:3px;font-size:11px}
+.tag.wine{background:var(--tint);color:var(--wine);border-color:var(--border)}
+.tag.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-border)}
+.tag.warn{background:var(--warn-bg);color:var(--warn-ink);border-color:var(--warn-border)}
+.tag.short{background:var(--short-bg);color:var(--short-ink);border-color:var(--short-border)}
+.blind{background:var(--tint);border:1px solid var(--border);border-left:2px solid var(--wine);padding:16px;margin-bottom:24px}
+.blind strong{color:var(--wine)}
+.blind p{margin-top:6px;color:var(--muted);font-size:13px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{text-align:left;background:var(--page);color:var(--muted);font-size:11px;text-transform:uppercase}
+th,td{padding:14px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+td small{display:block;margin-top:4px}
+.tablewrap{overflow:auto;margin-top:16px}
+.search{margin-top:16px}
+.qty{width:110px;text-align:right;font-variant-numeric:tabular-nums}
+.num{font-variant-numeric:tabular-nums;font-weight:600}
+.delta-pos{color:var(--ok-ink);font-weight:600;font-variant-numeric:tabular-nums}
+.delta-neg{color:var(--short-ink);font-weight:600;font-variant-numeric:tabular-nums}
+.add{min-height:0;padding:8px 12px}
+.empty td{color:var(--muted);text-align:center;padding:32px 12px}
+.totalbar{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-top:16px;padding-top:16px;border-top:1px solid var(--border);flex-wrap:wrap}
+.totalbar dl{display:flex;gap:24px}
+.totalbar dt{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.totalbar dd{font-size:20px;font-variant-numeric:tabular-nums;margin-top:2px}
+.status{color:var(--wine);min-height:24px;margin-top:12px}
+footer{color:var(--muted);font-size:12px;padding:16px 0}
+.skip{position:fixed;top:-100px;background:#FFFFFF;color:var(--wine);padding:12px;z-index:10}
+.skip:focus{top:8px}
+dialog{border:1px solid var(--border);border-radius:4px;padding:0;width:min(560px,92vw);background:#FFFFFF;color:inherit}
+dialog::backdrop{background:#24212473}
+.dialog-body{padding:24px}
+.dialog-body h2{margin-bottom:8px}
+.dialog-body ul{margin:16px 0 0;padding-left:20px;line-height:1.8}
+.dialog-actions{display:flex;gap:12px;justify-content:flex-end;padding:16px 24px;border-top:1px solid var(--border);background:var(--page)}
+.reveal{border:1px solid var(--ok-border);background:var(--ok-bg);padding:24px;margin-top:16px}
+.reveal h2{color:var(--ok-ink)}
+.reveal table{margin-top:16px}
+@media(max-width:767px){aside{position:static;width:auto}
+.brand{padding:8px}
+aside nav{grid-template-columns:repeat(2,1fr)}
+aside .identity{display:none}
+.top,main{margin-left:0}
+.top{height:auto;gap:12px}
+main{padding:16px}
+.grid{grid-template-columns:1fr}
+.heading{align-items:flex-start;flex-wrap:wrap}
+.panel{padding:16px}
+.row{flex-wrap:wrap}
+.totalbar dl{gap:16px}
+}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+</style>
+<body>
+<a class="skip" href="#main">Ir al contenido</a>
+<aside aria-label="Barra lateral">
+<div>
+<div class="brand">
+<span class="logo">L</span>
+<div><strong>Luson</strong><small>Gestión de inventario</small></div>
+</div>
+<nav aria-label="Navegación principal">
+<button type="button" data-demo>▦ Inventario</button>
+<button type="button" data-demo>⇄ Transferencias</button>
+<button type="button" data-demo>⇩ Ingresos</button>
+<button type="button" class="active" aria-current="page">± Ajustes</button>
+<button type="button" data-demo>⚙ Administración</button>
+</nav>
+</div>
+<div class="identity"><strong>almacen</strong><small>Almacén · Administrador único</small></div>
+</aside>
+<header class="top">
+<strong>Ajustes de stock</strong>
+<span>Almacén <small>/ Ajuste por conteo</small></span>
+</header>
+<main id="main">
+<div class="heading">
+<div>
+<small>ALMACÉN / AJUSTES</small>
+<h1 style="margin-top:8px">Nuevo ajuste de stock</h1>
+<p>Cargá lo que contaste físicamente. El sistema calcula la diferencia y aplica el ajuste recién al confirmar.</p>
+</div>
+<span class="tag">Prototipo · sin datos reales</span>
+</div>
+
+<div class="blind" role="note">
+<strong>Conteo ciego.</strong>
+<p>Esta pantalla no muestra el stock esperado. Escribí la cantidad real contada; la diferencia se calcula en el servidor y se revela sólo después de aplicar.</p>
+</div>
+
+<div class="grid">
+<section class="panel" aria-labelledby="cat-h">
+<div class="row">
+<h2 id="cat-h">Catálogo</h2>
+<span class="tag">95 productos</span>
+</div>
+<label class="search">Buscar marca, modelo o capacidad
+<input type="search" value="NS40" data-search placeholder="NS40ZL, TOYO, 45 Ah">
+</label>
+<div class="tablewrap">
+<table>
+<caption class="muted" data-caption>Resultados para “NS40” · 4 variantes</caption>
+<thead>
+<tr><th>Producto</th><th><span class="muted">Agregar al ajuste</span></th></tr>
+</thead>
+<tbody data-results></tbody>
+</table>
+</div>
+<p class="muted" style="margin-top:16px">El catálogo tampoco muestra el stock: el operador que cuenta no debe ver el número del sistema.</p>
+</section>
+
+<section class="panel" aria-labelledby="doc-h">
+<div class="row">
+<div>
+<h2 id="doc-h">Documento de ajuste</h2>
+<p class="muted">Se numera al aplicar · hoy 14:20</p>
+</div>
+<span class="tag wine">Borrador local</span>
+</div>
+<label style="margin-top:16px">Motivo del ajuste
+<select data-reason>
+<option>Conteo físico periódico</option>
+<option>Merma o rotura</option>
+<option>Diferencia detectada en preparación</option>
+<option>Otro</option>
+</select>
+</label>
+<label style="margin-top:16px">Detalle (opcional)
+<input placeholder="Recuento de góndola 3 · turno mañana" data-note>
+</label>
+<div class="tablewrap">
+<table>
+<caption class="muted">Cantidades contadas que se aplican al stock</caption>
+<thead>
+<tr><th>Producto</th><th>Contado</th><th>Quitar</th></tr>
+</thead>
+<tbody data-lines></tbody>
+</table>
+</div>
+<div class="totalbar">
+<dl>
+<div><dt>Variantes</dt><dd data-variants>0</dd></div>
+<div><dt>Unidades contadas</dt><dd data-units>0</dd></div>
+</dl>
+<button class="primary" data-apply>Aplicar ajuste</button>
+</div>
+<p role="status" class="status" data-status></p>
+<p class="muted">Todo o nada: si una línea es inválida no se aplica ninguna. Aplicado el ajuste, el documento no se edita ni se borra: se corrige con un contra-asiento que deja ambos registros.</p>
+</section>
+</div>
+
+<section class="reveal" hidden data-reveal aria-labelledby="rev-h">
+<h2 id="rev-h">Ajuste Nº 7 aplicado</h2>
+<p class="muted">Ahora sí se revela el impacto: el esperado al momento de aplicar y la diferencia por variante.</p>
+<div class="tablewrap">
+<table>
+<thead><tr><th>Producto</th><th>Esperado</th><th>Contado</th><th>Diferencia</th></tr></thead>
+<tbody data-reveal-body></tbody>
+</table>
+</div>
+</section>
+
+<footer>Demostración local del prototipo. No guarda datos ni llama a la API. Las cantidades son ilustrativas.</footer>
+</main>
+
+<dialog data-dialog aria-labelledby="conf-h">
+<div class="dialog-body">
+<h2 id="conf-h">Confirmar ajuste</h2>
+<p class="muted">Vas a cargar estas cantidades contadas. No se muestra el esperado ni la diferencia para no influir en el conteo.</p>
+<ul data-confirm-list></ul>
+</div>
+<div class="dialog-actions">
+<button type="button" data-cancel>Volver al documento</button>
+<button type="button" class="primary" data-confirm>Confirmar y aplicar</button>
+</div>
+</dialog>
+
+<script>
+const stock=[
+{id:1,brand:'CAR',model:'NS40ZL',cap:'35 Ah',pol:'L',existing:14},
+{id:2,brand:'TOYO',model:'NS40ZL',cap:'35 Ah',pol:'L',existing:9},
+{id:4,brand:'VOLTA',model:'NS40ZL',cap:'35 Ah',pol:'R',existing:3},
+{id:6,brand:'TOYO',model:'NS60L',cap:'45 Ah',pol:'L',existing:22}];
+let lines=[{id:1,counted:11},{id:6,counted:25}];
+const results=document.querySelector('[data-results]'),tb=document.querySelector('[data-lines]'),
+status=document.querySelector('[data-status]'),dialog=document.querySelector('[data-dialog]');
+const label=s=>`${s.brand} · ${s.model}`;
+const find=id=>stock.find(s=>s.id===id);
+function renderResults(){
+const q=document.querySelector('[data-search]').value.trim().toUpperCase();
+const hits=stock.filter(s=>!q||(s.brand+' '+s.model+' '+s.cap+' '+s.pol).toUpperCase().includes(q));
+document.querySelector('[data-caption]').textContent=`Resultados para “${q||'todo'}” · ${hits.length} variante${hits.length===1?'':'s'}`;
+results.innerHTML=hits.length?hits.map(s=>`<tr>
+<td><strong>${label(s)}</strong><small>${s.cap} · Polaridad ${s.pol}</small></td>
+<td><button class="add" data-add="${s.id}">Agregar</button></td>
+</tr>`).join(''):'<tr class="empty"><td colspan="2">Sin coincidencias en el catálogo.</td></tr>';
+results.querySelectorAll('[data-add]').forEach(b=>b.onclick=()=>add(Number(b.dataset.add)));
+}
+function add(id){
+const l=lines.find(x=>x.id===id);
+if(l){l.counted+=1;status.textContent=`${label(find(id))} ya estaba: contado ahora ${l.counted}.`}
+else lines.push({id,counted:0});
+render();
+}
+function render(){
+tb.innerHTML=lines.map(l=>`<tr>
+<td><strong>${label(find(l.id))}</strong><small>${find(l.id).cap} · Polaridad ${find(l.id).pol}</small></td>
+<td><input class="qty" type="number" min="0" step="1" value="${l.counted}" data-qty="${l.id}" aria-label="Cantidad contada de ${label(find(l.id))}"></td>
+<td><button class="quiet" data-del="${l.id}">Quitar</button></td>
+</tr>`).join('')||'<tr class="empty"><td colspan="3">Todavía no agregaste variantes.</td></tr>';
+document.querySelector('[data-variants]').textContent=lines.length;
+document.querySelector('[data-units]').textContent=lines.reduce((a,l)=>a+l.counted,0);
+tb.querySelectorAll('[data-qty]').forEach(i=>i.oninput=()=>{
+const l=lines.find(x=>x.id===Number(i.dataset.qty));
+l.counted=Math.max(0,Number(i.value)||0);
+document.querySelector('[data-units]').textContent=lines.reduce((a,x)=>a+x.counted,0);
+});
+tb.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{lines=lines.filter(x=>x.id!==Number(b.dataset.del));status.textContent='';render()});
+}
+document.querySelector('[data-search]').oninput=renderResults;
+document.querySelector('[data-apply]').onclick=()=>{
+if(!lines.length){status.textContent='Agregá al menos una variante antes de aplicar.';return}
+document.querySelector('[data-confirm-list]').innerHTML=lines.map(l=>`<li><strong>${label(find(l.id))}</strong> — contado: ${l.counted}</li>`).join('');
+dialog.showModal();
+};
+document.querySelector('[data-cancel]').onclick=()=>dialog.close();
+document.querySelector('[data-confirm]').onclick=()=>{
+dialog.close();
+const body=document.querySelector('[data-reveal-body]');
+body.innerHTML=lines.map(l=>{const s=find(l.id),d=l.counted-s.existing;
+return `<tr><td><strong>${label(s)}</strong><small>${s.cap} · Polaridad ${s.pol}</small></td>
+<td class="num">${s.existing}</td><td class="num">${l.counted}</td>
+<td class="${d>0?'delta-pos':d<0?'delta-neg':'num'}">${d>0?'+':''}${d}</td></tr>`}).join('');
+document.querySelector('[data-reveal]').hidden=false;
+status.textContent='Ajuste aplicado en esta demostración. Si una cantidad fue mal tipeada, se corrige con un contra-asiento.';
+document.querySelector('[data-reveal]').scrollIntoView({behavior:'smooth',block:'center'});
+};
+document.querySelectorAll('[data-demo]').forEach(b=>b.onclick=()=>{status.textContent='Esa sección pertenece a la app existente; el prototipo se limita a Ajustes.'});
+renderResults();render();
+</script>
+</body>
+</html>
