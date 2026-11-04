@@ -21,19 +21,23 @@ route.
 |---|---|---|
 | `/api/stock-entries` | POST | 201 on creation, 200 on an exact idempotent replay |
 | `/api/stock-entries` | GET | 200 with one newest-first page of documents |
+| `/api/stock-entries/{id}` | GET | 200 with the full detail of one document |
 | `/api/stock-entries/{id}/reverse` | POST | 201 on the counter-entry, 200 on an exact idempotent replay |
 
 No other method and no other path is served by this contract (`405
-method_not_allowed`, `Allow: GET, POST` for the collection and `Allow: POST` for
-the counter-entry). Mutations require the usual same-origin session cookie,
-`Origin`, `Sec-Fetch-Site` and `X-CSRF-Token`; the read requires the session only.
-A query string on either POST is rejected.
+method_not_allowed`, `Allow: GET, POST` for the collection, `Allow: GET` for the
+document detail and `Allow: POST` for the counter-entry). Mutations require the
+usual same-origin session cookie, `Origin`, `Sec-Fetch-Site` and `X-CSRF-Token`;
+every read requires the session only. A query string on either POST or on the
+document detail is rejected.
 
-Any other path below `/api/stock-entries/` is `404 not_found` as JSON, and an
-ambiguous path is refused before it can be cleaned or redirected: a doubled
-slash, a `.` or `..` segment, a backslash, a NUL, or an encoded alias
-(`%31` for `1`, `%2F` for `/`) is `404 not_found`. A trailing slash is
-`404 not_found`, never a redirect.
+Any other path below `/api/stock-entries/` is `404 not_found` as JSON: a document
+detail is exactly one segment, so a path with more segments is an unknown route,
+and a single segment that is not a canonical document id is `400
+invalid_request` (see below). An ambiguous path is refused before it can be
+cleaned or redirected: a doubled slash, a `.` or `..` segment, a backslash, a
+NUL, or an encoded alias (`%31` for `1`, `%2F` for `/`) is `404 not_found`. A
+trailing slash is `404 not_found`, never a redirect.
 
 ### Request
 
@@ -119,6 +123,75 @@ Per-line detail never appears in this list: the document detail is a separate
 contract. Because a document is never edited, the history only ever grows; a
 correction adds the counter-entry beside the original and neither row is
 rewritten.
+
+## Document detail
+
+The full document is read one document at a time, with the catalogue identity of
+every line:
+
+```
+GET /api/stock-entries/{id}
+```
+
+### Path
+
+`{id}` is the decimal id of a document and only a canonical positive integer is
+admitted: no leading zeros, no sign, no whitespace. An aliased spelling (`01`,
+`+1`, `0`, `abc`, an integer above `bigint`) is `400 invalid_request`, and an
+ambiguous path is `404 not_found` (see above). Neither is cleaned, truncated or
+redirected. A query string is not part of this contract: `?page=1` and a bare
+`?` are `400 invalid_request`.
+
+### Success
+
+```json
+{"id":6,"location_id":1,"note":"Remito 0002-00045871","created_at":"2026-11-04T14:20:00Z",
+ "created_by_account_id":1,"reverses_entry_id":null,"reversed_by":null,"reason":"",
+ "lines":[{"variant_id":7,"brand":"TOYO","model":"NS60L","capacity_ah":"45","polarity":"L","quantity":18}],
+ "total_units":18}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | Document number |
+| `location_id` | Always `1`: the warehouse |
+| `note` | Header note; empty string when absent |
+| `created_at` | RFC3339 in UTC |
+| `created_by_account_id` | The warehouse administrator that confirmed the document |
+| `reverses_entry_id` | The original document when this one is a counter-entry, otherwise `null` |
+| `reversed_by` | The counter-entry that reverses this document, otherwise `null` |
+| `reason` | The counter-entry motive; empty string for an original document |
+| `lines` | The document lines, ordered by `variant_id` ascending |
+| `total_units` | Exact signed sum of the line quantities |
+
+Each line carries the catalogue identity of its variant — `brand`, `model`,
+`capacity_ah` and `polarity` — plus the signed `quantity` of that line.
+`capacity_ah` is the canonical decimal **text** of the inventory read (`"45"`,
+`"6.5"`), so no float rounding and no trailing zeros reach the client.
+
+### Signed quantities
+
+`quantity` keeps the sign the document was persisted with: an ingress document
+has only positive lines and a positive `total_units`, and a counter-entry has only
+negative lines and a negative `total_units` equal to the exact negation of the
+original total. The sign is never derived, normalized or hidden by this route.
+
+### Reversal cross-references
+
+`reverses_entry_id` and `reversed_by` are the two directions of the same
+correction, so a detail read answers both without a second request:
+
+* An original document has `reverses_entry_id: null`, `reason: ""` and, once it
+  has been corrected, `reversed_by: <counter-entry id>`.
+* The counter-entry has `reverses_entry_id: <original id>`, the persisted
+  `reason` and `reversed_by: null`.
+
+Nothing here is inferred from the client: a document of another location, an
+unknown id and an aliased id are all `not_found`, exactly like the counter-entry
+route. Only the warehouse administrator is admitted (`401 unauthenticated`,
+`403 forbidden`), and the store verifies the `auth_accounts` binding before it
+touches a document. The response carries no stored column outside the table above:
+no operation key, no cost, no catalogue entry id and no account detail.
 
 ## Counter-entry (contra-asiento)
 
@@ -227,9 +300,11 @@ Every failure returns exactly `{"error":"<code>"}`.
 | 503 | `service_unavailable` | Pool, database, or any unmapped failure |
 
 Failures never leak driver, SQL, or configuration details; only the database's
-own rejection is trusted. The counter-entry route adds `401 unauthenticated`,
-`404 not_found` and `409 decision_conflict` to this vocabulary; its own table is
-above.
+own rejection is trusted. The detail read adds `401 unauthenticated` and `404
+not_found` to this vocabulary, and `400 invalid_request` covers a non-canonical
+`{id}` or a query string; its own section is above. The counter-entry route adds
+`401 unauthenticated`, `404 not_found` and `409 decision_conflict` to this
+vocabulary; its own table is above.
 
 ## Database invariants
 

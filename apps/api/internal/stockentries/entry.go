@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"luson/api/internal/auth"
+	"luson/api/internal/catalog"
 )
 
 var (
@@ -69,6 +70,35 @@ type Entry struct {
 	// document. It is never part of the wire shape: it only tells the boundary
 	// which sign rule the derived lines must obey.
 	ReversesEntryID *int64 `json:"-"`
+}
+
+// DetailLine is one persisted line of a document together with the catalogue
+// identity of its variant. Quantity keeps the document's sign: negative for a
+// counter-entry.
+type DetailLine struct {
+	VariantID int64           `json:"variant_id"`
+	Brand     string          `json:"brand"`
+	Model     string          `json:"model"`
+	Capacity  catalog.Decimal `json:"capacity_ah"`
+	Polarity  string          `json:"polarity"`
+	Quantity  int64           `json:"quantity"`
+}
+
+// EntryDetail is one persisted document with its catalogue-resolved lines and its
+// reversal cross-references: the full detail read, never a summary. The reversal
+// target is the original document when this one is a counter-entry, and ReversedBy
+// is the counter-entry that reverses this document, if any.
+type EntryDetail struct {
+	ID                 int64
+	LocationID         int
+	Note               string
+	CreatedAt          time.Time
+	CreatedByAccountID int64
+	ReversesEntryID    *int64
+	ReversedBy         *int64
+	Reason             string
+	Lines              []DetailLine
+	TotalUnits         int64
 }
 
 // EntrySummary is one row of the read-only ingress history. The per-line detail

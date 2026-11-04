@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/auth"
 	"luson/api/internal/bootstrap"
+	"luson/api/internal/catalog"
 	"luson/api/internal/config"
 	"luson/api/internal/inventory"
 	"luson/api/internal/stockentries"
@@ -1022,7 +1023,10 @@ func TestStockEntryHTTPReversalRejections(t *testing.T) {
 		"encoded_dot":       "/api/stock-entries/%2E/" + strconv.FormatInt(original.ID, 10) + "/reverse",
 		"encoded_backslash": "/api/stock-entries/" + strconv.FormatInt(original.ID, 10) + "/reverse%5C",
 		"unknown_action":    "/api/stock-entries/" + strconv.FormatInt(original.ID, 10) + "/borrar",
-		"unknown_route":     "/api/stock-entries/" + strconv.FormatInt(original.ID, 10),
+		// A single document is a served read route now, so its POST is
+		// method_not_allowed (covered by the detail contract); only a route below
+		// it stays unknown here.
+		"unknown_route": "/api/stock-entries/" + strconv.FormatInt(original.ID, 10) + "/detalle",
 	} {
 		t.Run(name, func(t *testing.T) {
 			f.rejected(t, f.request(1, "POST", alias, validStockEntryReversalJSON), 404, "not_found")
@@ -1066,5 +1070,247 @@ func TestStockEntryHTTPReversalRejectsUncoveredStock(t *testing.T) {
 	var reversedBy *int64
 	if f.p.QueryRow(f.ctx, "SELECT (SELECT id FROM stock_entries WHERE reverses_entry_id=$1)", original.ID).Scan(&reversedBy) != nil || reversedBy != nil {
 		t.Fatal("a refused reversal must not persist a counter-entry")
+	}
+}
+
+// stockEntryDetailWire admits only the frozen detail shape: ten header keys and
+// six line keys, with no operation key, cost, account or stored column outside
+// the contract.
+func stockEntryDetailWire(t *testing.T, w *httptest.ResponseRecorder) stockEntryDetailDTO {
+	t.Helper()
+	if w.Code != 200 || w.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("detail response mismatch: status=%d want=200", w.Code)
+	}
+	var top map[string]json.RawMessage
+	if json.Unmarshal(w.Body.Bytes(), &top) != nil || len(top) != 10 {
+		t.Fatal("detail whitelist changed")
+	}
+	for _, key := range []string{"id", "location_id", "note", "created_at", "created_by_account_id",
+		"reverses_entry_id", "reversed_by", "reason", "lines", "total_units"} {
+		if _, ok := top[key]; !ok {
+			t.Fatalf("detail whitelist incomplete: %s", key)
+		}
+	}
+	var lines []map[string]json.RawMessage
+	if json.Unmarshal(top["lines"], &lines) != nil || len(lines) == 0 {
+		t.Fatal("detail lines are not an array")
+	}
+	for _, line := range lines {
+		if len(line) != 6 {
+			t.Fatal("detail line whitelist changed")
+		}
+		for _, key := range []string{"variant_id", "brand", "model", "capacity_ah", "polarity", "quantity"} {
+			if _, ok := line[key]; !ok {
+				t.Fatalf("detail line whitelist incomplete: %s", key)
+			}
+		}
+		// Capacity is the canonical decimal text of the contract, and the quantity is
+		// a plain signed integer: neither is ever a float or a padded number.
+		if !regexp.MustCompile(`^"[1-9][0-9]*(\.[0-9]*[1-9])?"$`).MatchString(string(line["capacity_ah"])) {
+			t.Fatal("capacity_ah must be the canonical decimal as a string")
+		}
+		if !regexp.MustCompile(`^-?(0|[1-9][0-9]*)$`).MatchString(string(line["quantity"])) {
+			t.Fatal("quantity must be a canonical integer")
+		}
+	}
+	var detail stockEntryDetailDTO
+	if json.Unmarshal(w.Body.Bytes(), &detail) != nil {
+		t.Fatal("detail response is not decodable")
+	}
+	if len(detail.Lines) != len(lines) {
+		t.Fatal("detail lines are inconsistent")
+	}
+	return detail
+}
+
+// catalogueOfVariant is the catalogue identity of one variant exactly as the
+// inventory read renders it: capacity is normalized from the numeric column.
+func catalogueOfVariant(t *testing.T, f *stockEntryHTTPFixture, variant int64) (brand, model string, capacity catalog.Decimal, polarity string) {
+	t.Helper()
+	var raw string
+	err := f.p.QueryRow(f.ctx, `SELECT e.brand,e.model,e.capacity_ah::text,v.polarity
+ FROM catalog_variants v JOIN catalog_entries e ON e.id=v.catalog_entry_id WHERE v.id=$1`, int32(variant)).Scan(&brand, &model, &raw, &polarity)
+	if err != nil {
+		t.Fatal("catalogue identity read failed")
+	}
+	if capacity, err = catalog.ParseDecimal(raw); err != nil {
+		t.Fatal("catalogue capacity is not a canonical decimal")
+	}
+	return brand, model, capacity, polarity
+}
+
+// foreignDocument persists a document of another location with the admission and
+// balance triggers disabled for the shortest possible window: only the database
+// may refuse such a document in normal operation, and this fixture needs one to
+// prove the detail route never crosses the warehouse boundary.
+func (f *stockEntryHTTPFixture) foreignDocument(t *testing.T) int64 {
+	t.Helper()
+	enable := func() {
+		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
+		defer done()
+		for _, statement := range []string{
+			"ALTER TABLE stock_entry_lines ENABLE TRIGGER USER",
+			"ALTER TABLE stock_entries ENABLE TRIGGER USER",
+		} {
+			_, _ = f.p.Exec(cleanup, statement)
+		}
+	}
+	t.Cleanup(enable)
+	for _, statement := range []string{
+		"ALTER TABLE stock_entry_lines DISABLE TRIGGER USER",
+		"ALTER TABLE stock_entries DISABLE TRIGGER USER",
+	} {
+		if _, err := f.p.Exec(f.ctx, statement); err != nil {
+			t.Fatal("foreign document fixture setup failed")
+		}
+	}
+	var id int64
+	if err := f.p.QueryRow(f.ctx, `INSERT INTO stock_entries(operation_key,location_id,note,created_by_account_id)
+ VALUES('http-foreign-detail-01',2,'sucursal',1) RETURNING id`).Scan(&id); err != nil {
+		enable()
+		t.Fatal("foreign document insert failed")
+	}
+	if _, err := f.p.Exec(f.ctx, "INSERT INTO stock_entry_lines(entry_id,variant_id,quantity) VALUES($1,$2,$3)", id, int32(1), int64(1)); err != nil {
+		enable()
+		t.Fatal("foreign document line insert failed")
+	}
+	enable()
+	return id
+}
+
+func detailPath(id any) string { return fmt.Sprintf("/api/stock-entries/%v", id) }
+
+func TestStockEntryHTTPDetail(t *testing.T) {
+	f := stockEntryFixture(t)
+	original := f.create(t, `{"operation_key":"http-detail-original-1","note":"Remito 0002-00045871","lines":[{"variant_id":9,"quantity":15},{"variant_id":4,"quantity":3}]}`)
+	w := f.serve(t, f.request(1, "GET", detailPath(original.ID), ""))
+	detail := stockEntryDetailWire(t, w)
+	if detail.ID != original.ID || detail.LocationID != 1 || detail.CreatedByAccountID != 1 ||
+		detail.Note != "Remito 0002-00045871" || detail.ReversesEntryID != nil || detail.ReversedBy != nil ||
+		detail.Reason != "" || detail.TotalUnits != 18 || len(detail.Lines) != 2 {
+		t.Fatal("detail does not match the frozen contract")
+	}
+	if stamp, err := time.Parse(time.RFC3339, detail.CreatedAt); err != nil || stamp.UTC().Format(time.RFC3339) != detail.CreatedAt {
+		t.Fatal("detail created_at is not RFC3339")
+	}
+	// Lines are ordered by variant id and carry the catalogue identity of each
+	// variant exactly as the inventory read renders it.
+	if detail.Lines[0].VariantID != 4 || detail.Lines[0].Quantity != 3 ||
+		detail.Lines[1].VariantID != 9 || detail.Lines[1].Quantity != 15 {
+		t.Fatal("detail lines are not the variant-ordered persisted lines")
+	}
+	for _, line := range detail.Lines {
+		brand, model, capacity, polarity := catalogueOfVariant(t, f, line.VariantID)
+		if line.Brand != brand || line.Model != model || line.Capacity != string(capacity) || line.Polarity != polarity {
+			t.Fatalf("line %d does not carry its catalogue identity", line.VariantID)
+		}
+	}
+	// The rendered capacity is the inventory contract's, not the column's text.
+	var rawCapacity string
+	if f.p.QueryRow(f.ctx, `SELECT e.capacity_ah::text FROM catalog_variants v
+ JOIN catalog_entries e ON e.id=v.catalog_entry_id WHERE v.id=9`).Scan(&rawCapacity) != nil {
+		t.Fatal("capacity read failed")
+	}
+	if normalized, err := catalog.ParseDecimal(rawCapacity); err != nil || detail.Lines[1].Capacity != string(normalized) {
+		t.Fatal("capacity is not rendered like the inventory read")
+	}
+	// Nothing stored outside the contract reaches the wire.
+	body := w.Body.String()
+	for _, leaked := range []string{"operation_key", "cost", "supplier", "username", "display_name", "updated_at", "location_name"} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("detail leaked a stored field: %s", leaked)
+		}
+	}
+	// The original reports its counter-entry once it exists, and the counter-entry
+	// reports the original it reverses, its motive and its negative lines.
+	w = f.serve(t, f.request(1, "POST", reversalPath(original.ID), validStockEntryReversalJSON))
+	stockEntryObject(t, w, 201)
+	var counter stockEntryDTO
+	if json.Unmarshal(w.Body.Bytes(), &counter) != nil {
+		t.Fatal("counter-entry is not decodable")
+	}
+	counterDetail := stockEntryDetailWire(t, f.serve(t, f.request(1, "GET", detailPath(counter.ID), "")))
+	if counterDetail.ID != counter.ID || counterDetail.ReversesEntryID == nil || *counterDetail.ReversesEntryID != original.ID ||
+		counterDetail.ReversedBy != nil || counterDetail.Reason != "error de carga" || counterDetail.Note != "" ||
+		counterDetail.TotalUnits != -18 {
+		t.Fatal("counter-entry detail does not match the frozen contract")
+	}
+	if len(counterDetail.Lines) != 2 || counterDetail.Lines[0].VariantID != 4 || counterDetail.Lines[0].Quantity != -3 ||
+		counterDetail.Lines[1].VariantID != 9 || counterDetail.Lines[1].Quantity != -15 {
+		t.Fatal("counter-entry detail does not carry the exact negative lines")
+	}
+	for _, line := range counterDetail.Lines {
+		if line.Brand == "" || line.Model == "" || line.Capacity == "" || (line.Polarity != "L" && line.Polarity != "R") {
+			t.Fatalf("counter-entry line %d has no catalogue identity", line.VariantID)
+		}
+	}
+	reversed := stockEntryDetailWire(t, f.serve(t, f.request(1, "GET", detailPath(original.ID), "")))
+	if reversed.ReversedBy == nil || *reversed.ReversedBy != counter.ID || reversed.ReversesEntryID != nil ||
+		reversed.Reason != "" || reversed.TotalUnits != 18 {
+		t.Fatal("a reversed document must expose its counter-entry and keep its own header")
+	}
+	// The collection routes are untouched by the detail route.
+	history := stockEntryHistoryWire(t, f.serve(t, f.request(1, "GET", "/api/stock-entries", "")))
+	if history.TotalEntries != 2 || len(history.Entries) != 2 {
+		t.Fatal("the history route must keep answering after the detail route")
+	}
+}
+
+func TestStockEntryHTTPDetailRejections(t *testing.T) {
+	f := stockEntryFixture(t)
+	original := f.create(t, `{"operation_key":"http-detail-refusal-1","lines":[{"variant_id":1,"quantity":2}]}`)
+	path := detailPath(original.ID)
+	foreign := f.foreignDocument(t)
+	f.rejected(t, f.request(0, "GET", path, ""), 401, "unauthenticated")
+	f.rejected(t, f.request(2, "GET", path, ""), 403, "forbidden")
+	f.rejected(t, f.request(3, "GET", path, ""), 403, "forbidden")
+	for _, verb := range []string{"POST", "PUT", "PATCH", "DELETE"} {
+		w := f.serve(t, f.request(1, verb, path, ""))
+		if w.Code != 405 || w.Header().Get("Allow") != "GET" || w.Body.String() != "{\"error\":\"method_not_allowed\"}\n" {
+			t.Fatalf("%s must be method_not_allowed", verb)
+		}
+	}
+	// An unknown document and a document of another location are the same answer.
+	f.rejected(t, f.request(1, "GET", detailPath(999999999), ""), 404, "not_found")
+	f.rejected(t, f.request(1, "GET", detailPath(foreign), ""), 404, "not_found")
+	// A non-canonical id segment is a malformed request, never a cleaned id.
+	for name, segment := range map[string]string{
+		"zero":     "0",
+		"padded":   "0" + strconv.FormatInt(original.ID, 10),
+		"sign":     "+" + strconv.FormatInt(original.ID, 10),
+		"word":     "abc",
+		"fraction": strconv.FormatInt(original.ID, 10) + ".0",
+		"huge":     "9223372036854775808",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f.rejected(t, f.request(1, "GET", detailPath(segment), ""), 400, "invalid_request")
+		})
+	}
+	// A query string is not part of the detail contract.
+	t.Run("query_string", func(t *testing.T) {
+		f.rejected(t, f.request(1, "GET", path+"?page=1", ""), 400, "invalid_request")
+	})
+	t.Run("bare_query", func(t *testing.T) {
+		f.rejected(t, f.request(1, "GET", path+"?", ""), 400, "invalid_request")
+	})
+	// Path aliases are refused before ServeMux can clean or redirect them.
+	for name, alias := range map[string]string{
+		"doubled_slash":     "/api/stock-entries//" + strconv.FormatInt(original.ID, 10),
+		"dot_segment":       "/api/stock-entries/./" + strconv.FormatInt(original.ID, 10),
+		"dot_dot_segment":   "/api/stock-entries/../" + strconv.FormatInt(original.ID, 10),
+		"trailing_slash":    path + "/",
+		"encoded_slash":     path + "%2F",
+		"encoded_dot":       "/api/stock-entries/%2E/" + strconv.FormatInt(original.ID, 10),
+		"encoded_backslash": path + "%5C",
+		"unknown_action":    path + "/detalle",
+		"reverse_trailing":  path + "/reverse/",
+		"empty_segment":     "/api/stock-entries/",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f.rejected(t, f.request(1, "GET", alias, ""), 404, "not_found")
+		})
+	}
+	if n := f.count(t, "stock_entries"); n != 2 {
+		t.Fatal("a rejected detail read must not create a document")
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"luson/api/internal/auth"
+	"luson/api/internal/catalog"
 	"luson/api/internal/config"
 	"luson/api/internal/inventory"
 	"luson/api/internal/realtime"
@@ -27,8 +28,9 @@ const stockEntryBodyLimit = 16 << 10
 const (
 	// stockEntryMaxLines and stockEntryMaxUnits are the document bounds, reused as
 	// the summary bounds so a history row never advertises an impossible total.
-	stockEntryMaxLines = 190
-	stockEntryMaxUnits = stockEntryMaxLines * 1_000_000
+	stockEntryMaxLines     = 190
+	stockEntryMaxLineUnits = 1_000_000
+	stockEntryMaxUnits     = stockEntryMaxLines * stockEntryMaxLineUnits
 )
 
 // NewWithStockEntries opts in to warehouse stock ingress. Dependencies must be
@@ -406,6 +408,114 @@ func stockEntryRecord(entry stockentries.Entry) (stockEntryDTO, error) {
 	}, nil
 }
 
+type stockEntryDetailLineDTO struct {
+	VariantID int64  `json:"variant_id"`
+	Brand     string `json:"brand"`
+	Model     string `json:"model"`
+	// Capacity is the inventory read's canonical rendering of capacity_ah as the
+	// frozen detail contract spells it: the exact decimal text, never a binary float.
+	Capacity string `json:"capacity_ah"`
+	Polarity string `json:"polarity"`
+	Quantity int64  `json:"quantity"`
+}
+
+// stockEntryDetailDTO is the frozen per-document detail: the header, the catalogue
+// identity of every line and the reversal cross-references. No stored column
+// outside this shape reaches the wire.
+type stockEntryDetailDTO struct {
+	ID                 int64                     `json:"id"`
+	LocationID         int                       `json:"location_id"`
+	Note               string                    `json:"note"`
+	CreatedAt          string                    `json:"created_at"`
+	CreatedByAccountID int64                     `json:"created_by_account_id"`
+	ReversesEntryID    *int64                    `json:"reverses_entry_id"`
+	ReversedBy         *int64                    `json:"reversed_by"`
+	Reason             string                    `json:"reason"`
+	Lines              []stockEntryDetailLineDTO `json:"lines"`
+	TotalUnits         int64                     `json:"total_units"`
+}
+
+// validStockEntryCatalogueText is the catalogue identity bound of a line: the
+// brand and the model are persisted non-empty text, so a blank, NUL or malformed
+// one never reaches the wire.
+func validStockEntryCatalogueText(value string) bool {
+	return value != "" && utf8.ValidString(value) && !strings.ContainsRune(value, 0)
+}
+
+// stockEntryDetailRecord admits only a complete persisted document detail: the
+// lines are catalogue-identified and canonical, the total is the exact signed sum
+// and the reversal cross-references are consistent. A counter-entry states its
+// motive and negates its original; an ingress document has no motive and adds
+// units. Anything else is a stored shape this domain never wrote.
+func stockEntryDetailRecord(entry stockentries.EntryDetail) (stockEntryDetailDTO, error) {
+	unavailable := func() (stockEntryDetailDTO, error) { return stockEntryDetailDTO{}, stockentries.ErrUnavailable }
+	if entry.ID < 1 || entry.LocationID != 1 || entry.CreatedByAccountID < 1 || entry.CreatedAt.IsZero() ||
+		len(entry.Lines) == 0 || len(entry.Lines) > stockEntryMaxLines || !validStockEntryNote(entry.Note) {
+		return unavailable()
+	}
+	counter := entry.ReversesEntryID != nil
+	if counter {
+		reason, valid := stockentries.CanonicalReason(entry.Reason)
+		if *entry.ReversesEntryID < 1 || *entry.ReversesEntryID >= entry.ID || !valid || reason != entry.Reason {
+			return unavailable()
+		}
+	} else if entry.Reason != "" {
+		return unavailable()
+	}
+	// A document is only ever reversed by a later document of this warehouse.
+	if entry.ReversedBy != nil && (*entry.ReversedBy < 1 || *entry.ReversedBy <= entry.ID) {
+		return unavailable()
+	}
+	lines := make([]stockEntryDetailLineDTO, 0, len(entry.Lines))
+	var previous int64
+	var total int64
+	for _, line := range entry.Lines {
+		if line.VariantID < 1 || line.VariantID <= previous ||
+			(counter && line.Quantity > -1) || (!counter && line.Quantity < 1) ||
+			line.Quantity > stockEntryMaxLineUnits || line.Quantity < -stockEntryMaxLineUnits ||
+			!validStockEntryCatalogueText(line.Brand) || !validStockEntryCatalogueText(line.Model) ||
+			(line.Polarity != "L" && line.Polarity != "R") {
+			return unavailable()
+		}
+		capacity, err := catalog.ParseDecimal(string(line.Capacity))
+		if err != nil {
+			return unavailable()
+		}
+		if (line.Quantity > 0 && total > math.MaxInt64-line.Quantity) ||
+			(line.Quantity < 0 && total < math.MinInt64-line.Quantity) {
+			return unavailable()
+		}
+		previous = line.VariantID
+		total += line.Quantity
+		lines = append(lines, stockEntryDetailLineDTO{VariantID: line.VariantID, Brand: line.Brand, Model: line.Model,
+			Capacity: string(capacity), Polarity: line.Polarity, Quantity: line.Quantity})
+	}
+	if total != entry.TotalUnits || (counter && total > -1) || (!counter && total < 1) {
+		return unavailable()
+	}
+	var reverses, reversedBy *int64
+	if entry.ReversesEntryID != nil {
+		target := *entry.ReversesEntryID
+		reverses = &target
+	}
+	if entry.ReversedBy != nil {
+		counterID := *entry.ReversedBy
+		reversedBy = &counterID
+	}
+	return stockEntryDetailDTO{
+		ID:                 entry.ID,
+		LocationID:         entry.LocationID,
+		Note:               entry.Note,
+		CreatedAt:          entry.CreatedAt.UTC().Format(time.RFC3339),
+		CreatedByAccountID: entry.CreatedByAccountID,
+		ReversesEntryID:    reverses,
+		ReversedBy:         reversedBy,
+		Reason:             entry.Reason,
+		Lines:              lines,
+		TotalUnits:         entry.TotalUnits,
+	}, nil
+}
+
 type stockEntrySummaryDTO struct {
 	ID         int64  `json:"id"`
 	Note       string `json:"note"`
@@ -465,6 +575,7 @@ func stockEntryPage(page stockentries.EntryPage) (stockEntryPageDTO, error) {
 // unknown route answered as JSON, never a cleaned or redirected path.
 func (a *API) registerStockEntries(mux *http.ServeMux, store *stockentries.Store) {
 	mux.HandleFunc("/api/stock-entries/{id}/reverse", a.stockEntryReverse(store))
+	mux.HandleFunc("/api/stock-entries/{id}", a.stockEntryDetail(store))
 	mux.HandleFunc("/api/stock-entries/", func(w http.ResponseWriter, r *http.Request) {
 		failure(w, 404, "not_found")
 	})
@@ -535,6 +646,44 @@ func (a *API) registerStockEntries(mux *http.ServeMux, store *stockentries.Store
 		}
 		respond(w, status, record)
 	})
+}
+
+// stockEntryDetail serves the per-document read: the header, the catalogue identity
+// of every line and the reversal cross-references. The guard order is the history
+// read's: method, identity, then no query string, and only a canonical positive id
+// reaches the document lookup. An ambiguous path never gets here.
+func (a *API) stockEntryDetail(store *stockentries.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, http.MethodGet) {
+			return
+		}
+		actor, ok := a.inventoryIdentity(w, r)
+		if !ok {
+			return
+		}
+		// A query string is not part of this contract: it is a framing error, never
+		// a silently ignored parameter.
+		if r.URL.RawQuery != "" || r.URL.ForceQuery {
+			failure(w, 400, "invalid_request")
+			return
+		}
+		id, err := stockCanonicalInteger(r.PathValue("id"), math.MaxInt64)
+		if err != nil {
+			stockEntryFailure(w, err)
+			return
+		}
+		detail, err := store.ReadEntry(r.Context(), actor, id)
+		if err != nil {
+			stockEntryFailure(w, err)
+			return
+		}
+		record, err := stockEntryDetailRecord(detail)
+		if err != nil {
+			stockEntryFailure(w, err)
+			return
+		}
+		respond(w, 200, record)
+	}
 }
 
 // stockEntryReverse serves the counter-entry contract. The target document is in

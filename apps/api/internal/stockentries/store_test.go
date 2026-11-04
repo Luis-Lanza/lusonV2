@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/auth"
 	"luson/api/internal/bootstrap"
+	"luson/api/internal/catalog"
 	"luson/api/internal/config"
 	"luson/api/internal/stockentries"
 	"luson/api/internal/testpg"
@@ -834,5 +835,223 @@ func TestReverseEntryRejectsInvalidInputWithoutWriting(t *testing.T) {
 	}
 	if snapshot(t, ctx, p) != before {
 		t.Fatal("an invalid reversal must not change any stored value")
+	}
+}
+
+// readDetail is the warehouse detail read of one persisted document.
+func readDetail(t *testing.T, ctx context.Context, s *stockentries.Store, id int64) stockentries.EntryDetail {
+	t.Helper()
+	detail, err := s.ReadEntry(ctx, warehouse(), id)
+	if err != nil {
+		t.Fatalf("document detail read failed: %v", err)
+	}
+	return detail
+}
+
+// catalogueOf is the catalogue identity of one variant as the inventory read
+// exposes it: brand, model, capacity normalized from the numeric column and the
+// polarity of the variant itself.
+func catalogueOf(t *testing.T, ctx context.Context, p *pgxpool.Pool, variant int64) (brand, model string, capacity catalog.Decimal, polarity string) {
+	t.Helper()
+	var raw string
+	err := p.QueryRow(ctx, `SELECT e.brand,e.model,e.capacity_ah::text,v.polarity
+ FROM catalog_variants v JOIN catalog_entries e ON e.id=v.catalog_entry_id WHERE v.id=$1`, int32(variant)).Scan(&brand, &model, &raw, &polarity)
+	if err != nil {
+		t.Fatal("catalogue identity read failed")
+	}
+	capacity, err = catalog.ParseDecimal(raw)
+	if err != nil {
+		t.Fatal("catalogue capacity is not a canonical decimal")
+	}
+	return brand, model, capacity, polarity
+}
+
+func TestReadEntryDetail(t *testing.T) {
+	ctx, p, s := fixture(t)
+	entry, _, err := s.CreateEntry(ctx, warehouse(), stockentries.CreateInput{
+		OperationKey: "detail-key-000000000001", Note: "Remito 0002-00045871",
+		Lines: []stockentries.Line{{VariantID: 9, Quantity: 15}, {VariantID: 4, Quantity: 3}},
+	})
+	if err != nil {
+		t.Fatal("document for the detail read was not created")
+	}
+	detail := readDetail(t, ctx, s, entry.ID)
+	if detail.ID != entry.ID || detail.LocationID != 1 || detail.CreatedByAccountID != 1 ||
+		detail.Note != "Remito 0002-00045871" || detail.CreatedAt.IsZero() ||
+		detail.ReversesEntryID != nil || detail.ReversedBy != nil || detail.Reason != "" {
+		t.Fatal("detail header does not match the persisted document")
+	}
+	if len(detail.Lines) != 2 || detail.TotalUnits != 18 {
+		t.Fatal("detail must carry every line and the exact signed total")
+	}
+	// Lines are ordered by variant id, never by insertion order.
+	if detail.Lines[0].VariantID != 4 || detail.Lines[0].Quantity != 3 ||
+		detail.Lines[1].VariantID != 9 || detail.Lines[1].Quantity != 15 {
+		t.Fatal("detail lines are not the persisted variant-ordered lines")
+	}
+	for _, line := range detail.Lines {
+		brand, model, capacity, polarity := catalogueOf(t, ctx, p, line.VariantID)
+		if line.Brand != brand || line.Model != model || line.Capacity != capacity || line.Polarity != polarity {
+			t.Fatalf("line %d does not carry its catalogue identity", line.VariantID)
+		}
+		if line.Brand == "" || line.Model == "" || (line.Polarity != "L" && line.Polarity != "R") {
+			t.Fatalf("line %d has an incomplete catalogue identity", line.VariantID)
+		}
+	}
+}
+
+func TestReadEntryDetailCounterEntry(t *testing.T) {
+	ctx, _, s := fixture(t)
+	original, _, err := s.CreateEntry(ctx, warehouse(), input("detail-counter-key-0001",
+		stockentries.Line{VariantID: 1, Quantity: 2}, stockentries.Line{VariantID: 2, Quantity: 3}))
+	if err != nil {
+		t.Fatal("original document was not created")
+	}
+	counter, _, err := s.ReverseEntry(ctx, warehouse(), original.ID, "detail-counter-key-0002", "error de carga")
+	if err != nil {
+		t.Fatal("counter-entry was not created")
+	}
+	reversed := readDetail(t, ctx, s, original.ID)
+	if reversed.ReversesEntryID != nil || reversed.ReversedBy == nil || *reversed.ReversedBy != counter.ID ||
+		reversed.Reason != "" || reversed.TotalUnits != 5 {
+		t.Fatal("a reversed document must expose its counter-entry and keep its own header")
+	}
+	if len(reversed.Lines) != 2 || reversed.Lines[0].Quantity != 2 || reversed.Lines[1].Quantity != 3 {
+		t.Fatal("a reversed document keeps its positive lines")
+	}
+	detail := readDetail(t, ctx, s, counter.ID)
+	if detail.ReversesEntryID == nil || *detail.ReversesEntryID != original.ID || detail.ReversedBy != nil ||
+		detail.Reason != "error de carga" || detail.Note != "" || detail.TotalUnits != -5 {
+		t.Fatal("a counter-entry detail must expose its target and its motive")
+	}
+	if len(detail.Lines) != 2 || detail.Lines[0].VariantID != 1 || detail.Lines[0].Quantity != -2 ||
+		detail.Lines[1].VariantID != 2 || detail.Lines[1].Quantity != -3 {
+		t.Fatal("a counter-entry detail must carry the exact negative lines")
+	}
+	for _, line := range detail.Lines {
+		if line.Brand == "" || line.Model == "" || line.Capacity == "" || (line.Polarity != "L" && line.Polarity != "R") {
+			t.Fatalf("counter-entry line %d has no catalogue identity", line.VariantID)
+		}
+	}
+}
+
+// foreignDocument persists a document of another location. Only the database may
+// refuse one in normal operation, so the isolated fixture writes it with the
+// admission and balance triggers disabled, then re-enables them immediately.
+func foreignDocument(t *testing.T, ctx context.Context, p *pgxpool.Pool) int64 {
+	t.Helper()
+	disable := func() {
+		for _, statement := range []string{
+			"ALTER TABLE stock_entry_lines DISABLE TRIGGER USER",
+			"ALTER TABLE stock_entries DISABLE TRIGGER USER",
+		} {
+			if _, err := p.Exec(ctx, statement); err != nil {
+				t.Fatal("foreign document fixture setup failed")
+			}
+		}
+	}
+	enable := func() {
+		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
+		defer done()
+		for _, statement := range []string{
+			"ALTER TABLE stock_entry_lines ENABLE TRIGGER USER",
+			"ALTER TABLE stock_entries ENABLE TRIGGER USER",
+		} {
+			_, _ = p.Exec(cleanup, statement)
+		}
+	}
+	disable()
+	defer enable()
+	t.Cleanup(enable)
+	var id int64
+	if err := p.QueryRow(ctx, `INSERT INTO stock_entries(operation_key,location_id,note,created_by_account_id)
+ VALUES('foreign-detail-key-0001',2,'sucursal',1) RETURNING id`).Scan(&id); err != nil {
+		t.Fatal("foreign document insert failed")
+	}
+	if _, err := p.Exec(ctx, "INSERT INTO stock_entry_lines(entry_id,variant_id,quantity) VALUES($1,$2,$3)", id, int32(1), int64(1)); err != nil {
+		t.Fatal("foreign document line insert failed")
+	}
+	return id
+}
+
+func TestReadEntryDetailNotFound(t *testing.T) {
+	ctx, p, s := fixture(t)
+	entry, _, err := s.CreateEntry(ctx, warehouse(), input("detail-missing-key-0001", stockentries.Line{VariantID: 1, Quantity: 1}))
+	if err != nil {
+		t.Fatal("document for the detail read was not created")
+	}
+	foreign := foreignDocument(t, ctx, p)
+	before := snapshot(t, ctx, p)
+	for name, id := range map[string]int64{
+		"unknown":  math.MaxInt64,
+		"zero":     0,
+		"negative": -1,
+		"foreign":  foreign,
+	} {
+		if _, err := s.ReadEntry(ctx, warehouse(), id); !errors.Is(err, stockentries.ErrNotFound) {
+			t.Fatalf("%s id must not be found", name)
+		}
+	}
+	if snapshot(t, ctx, p) != before {
+		t.Fatal("a document outside this warehouse must not change any stored value")
+	}
+	// The warehouse document is still readable: only other locations are hidden.
+	if detail := readDetail(t, ctx, s, entry.ID); detail.ID != entry.ID {
+		t.Fatal("the warehouse detail read must keep answering its own documents")
+	}
+}
+
+func TestReadEntryDetailActorBoundary(t *testing.T) {
+	ctx, p, s := fixture(t)
+	entry, _, err := s.CreateEntry(ctx, warehouse(), input("detail-actor-key-000001", stockentries.Line{VariantID: 1, Quantity: 1}))
+	if err != nil {
+		t.Fatal("document for the detail read was not created")
+	}
+	before := snapshot(t, ctx, p)
+	pending := warehouse()
+	pending.MustChangePassword = true
+	for name, actor := range map[string]auth.Identity{
+		"branch":          branch(),
+		"warehouse_label": {AccountID: 1, Location: auth.Location{ID: 2}},
+		"clerk":           {AccountID: 2, Location: auth.Location{ID: 1}},
+		"unassigned":      {},
+		"password_change": pending,
+	} {
+		if _, err := s.ReadEntry(ctx, actor, entry.ID); !errors.Is(err, stockentries.ErrForbidden) {
+			t.Fatalf("%s must be forbidden", name)
+		}
+	}
+	if snapshot(t, ctx, p) != before {
+		t.Fatal("a forbidden detail read must not change any stored value")
+	}
+}
+
+func TestReadEntryDetailGuards(t *testing.T) {
+	ctx, p, _ := fixture(t)
+	if _, err := stockentries.New(nil).ReadEntry(context.Background(), warehouse(), 1); !errors.Is(err, stockentries.ErrUnavailable) {
+		t.Fatal("unavailable pool must fail the detail read closed")
+	}
+	if _, err := stockentries.New(nil).ReadEntry(nil, warehouse(), 1); !errors.Is(err, stockentries.ErrUnavailable) {
+		t.Fatal("missing context must fail the detail read closed")
+	}
+	var nilStore *stockentries.Store
+	if _, err := nilStore.ReadEntry(context.Background(), warehouse(), 1); !errors.Is(err, stockentries.ErrUnavailable) {
+		t.Fatal("nil store must fail the detail read closed")
+	}
+	dead, err := pgxpool.NewWithConfig(ctx, p.Config())
+	if err != nil {
+		t.Fatal("closed-pool fixture failed")
+	}
+	dead.Close()
+	closed := stockentries.New(dead)
+	// An inadmissible id is refused before the database, exactly like the reversal route.
+	for _, id := range []int64{0, -1} {
+		if _, err := closed.ReadEntry(ctx, warehouse(), id); !errors.Is(err, stockentries.ErrNotFound) {
+			t.Fatal("an inadmissible id must not reach the database")
+		}
+	}
+	// The same closed pool proves an admitted id does reach it and fails closed.
+	if _, err := closed.ReadEntry(ctx, warehouse(), 1); !errors.Is(err, stockentries.ErrUnavailable) {
+		t.Fatal("an admitted id must reach the database and fail closed")
 	}
 }

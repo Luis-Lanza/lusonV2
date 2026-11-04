@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/auth"
+	"luson/api/internal/catalog"
 )
 
 type Store struct{ pool *pgxpool.Pool }
@@ -348,6 +349,117 @@ func (s *Store) ListEntries(ctx context.Context, actor auth.Identity, page, page
 		return EntryPage{}, fail(ctx)
 	}
 	return result, nil
+}
+
+// ReadEntry reads one persisted document with its lines joined to the catalogue:
+// the actor guard and the provisioned-account binding are creation's, the snapshot
+// is the history read's (RepeatableRead, read-only), and the document is resolved
+// by one header statement plus one variant-ordered line statement, so the
+// catalogue identity of a line is never an N+1 lookup. Capacity is rendered by the
+// same `::text` + catalog.ParseDecimal pair the inventory read uses, and a document
+// of another location is not part of this warehouse's ledger: it is not found.
+func (s *Store) ReadEntry(ctx context.Context, actor auth.Identity, id int64) (EntryDetail, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return EntryDetail{}, ErrUnavailable
+	}
+	if !warehouseAdmin(actor) {
+		return EntryDetail{}, ErrForbidden
+	}
+	// Only a positive document id reaches the database; an aliased or impossible one
+	// stays not found exactly like an unknown document.
+	if id < 1 {
+		return EntryDetail{}, ErrNotFound
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := checkAssignment(ctx, s.pool, actor); err != nil {
+		return EntryDetail{}, err
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return EntryDetail{}, fail(ctx)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = tx.Rollback(cleanup)
+	}()
+	var detail EntryDetail
+	err = tx.QueryRow(ctx, `SELECT e.id,e.location_id,e.note,e.created_by_account_id,e.created_at,e.reverses_entry_id,e.reason,
+  (SELECT counter.id FROM stock_entries counter WHERE counter.reverses_entry_id=e.id)
+ FROM stock_entries e WHERE e.id=$1 AND e.location_id=$2`, id, warehouseLocationID).Scan(
+		&detail.ID, &detail.LocationID, &detail.Note, &detail.CreatedByAccountID, &detail.CreatedAt,
+		&detail.ReversesEntryID, &detail.Reason, &detail.ReversedBy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return EntryDetail{}, ErrNotFound
+	}
+	if err != nil {
+		return EntryDetail{}, fail(ctx)
+	}
+	rows, err := tx.Query(ctx, `SELECT l.variant_id,e.brand,e.model,e.capacity_ah::text,v.polarity,l.quantity
+ FROM stock_entry_lines l
+ JOIN catalog_variants v ON v.id=l.variant_id
+ JOIN catalog_entries e ON e.id=v.catalog_entry_id
+ WHERE l.entry_id=$1 ORDER BY l.variant_id`, id)
+	if err != nil {
+		return EntryDetail{}, fail(ctx)
+	}
+	defer rows.Close()
+	lines := make([]DetailLine, 0, 8)
+	var total int64
+	for rows.Next() {
+		var line DetailLine
+		var capacity string
+		if rows.Scan(&line.VariantID, &line.Brand, &line.Model, &capacity, &line.Polarity, &line.Quantity) != nil {
+			return EntryDetail{}, fail(ctx)
+		}
+		// A persisted line outside the admitted bounds means the ledger is not what
+		// this domain wrote, so the read fails closed instead of describing it.
+		if line.VariantID < 1 || line.VariantID > math.MaxInt32 || line.Brand == "" || line.Model == "" ||
+			(line.Polarity != "L" && line.Polarity != "R") || line.Quantity == 0 ||
+			line.Quantity > maxQuantity || line.Quantity < -maxQuantity ||
+			(len(lines) > 0 && line.VariantID <= lines[len(lines)-1].VariantID) {
+			return EntryDetail{}, ErrUnavailable
+		}
+		if line.Capacity, err = catalog.ParseDecimal(capacity); err != nil {
+			return EntryDetail{}, ErrUnavailable
+		}
+		if (line.Quantity > 0 && total > math.MaxInt64-line.Quantity) ||
+			(line.Quantity < 0 && total < math.MinInt64-line.Quantity) {
+			return EntryDetail{}, ErrUnavailable
+		}
+		total += line.Quantity
+		lines = append(lines, line)
+		if len(lines) > maxLines {
+			return EntryDetail{}, ErrUnavailable
+		}
+	}
+	if rows.Err() != nil {
+		return EntryDetail{}, fail(ctx)
+	}
+	if len(lines) == 0 {
+		return EntryDetail{}, ErrUnavailable
+	}
+	// A counter-entry negates its original and always states why; an ingress
+	// document has no motive of its own and only ever adds units.
+	if detail.ReversesEntryID != nil {
+		reason, valid := CanonicalReason(detail.Reason)
+		if *detail.ReversesEntryID < 1 || *detail.ReversesEntryID >= detail.ID || !valid || reason != detail.Reason || total > -1 {
+			return EntryDetail{}, ErrUnavailable
+		}
+	} else if detail.Reason != "" || total < 1 {
+		return EntryDetail{}, ErrUnavailable
+	}
+	// A document can only be reversed by a later document of this warehouse.
+	if detail.ReversedBy != nil && (*detail.ReversedBy < 1 || *detail.ReversedBy <= detail.ID) {
+		return EntryDetail{}, ErrUnavailable
+	}
+	detail.Lines = lines
+	detail.TotalUnits = total
+	if tx.Commit(ctx) != nil {
+		return EntryDetail{}, fail(ctx)
+	}
+	return detail, nil
 }
 
 // loadEntry reads the durable document: lines ordered by variant id and the
