@@ -11,6 +11,17 @@
       "status": "resolved",
       "sentAt": "2026-11-04T23:44:07.758Z",
       "resolvedAt": "2026-11-04T23:44:25.969Z"
+    },
+    {
+      "id": "tb2xzg2m",
+      "file": "01-counter-cart.html",
+      "selector": "#main > div:nth-of-type(2) > section > div:nth-of-type(2)",
+      "excerpt": "Ventas de hoy Tres ventas emitidas · total Bs 331.000,00 · cada una con su garantía descargable.",
+      "comment": "Esto de ventas de hoy va ir a otra pantalla! \nque sera historial de ventas! aqui no va",
+      "createdAt": "2026-11-04T23:46:53.158Z",
+      "status": "open",
+      "sentAt": "2026-11-04T23:46:53.318Z",
+      "resolvedAt": null
     }
   ]
 }

@@ -30,6 +30,13 @@
       "tradeoff": "Especifica el documento impreso y no una pantalla: manda lo que se descarga como PDF, no el contenedor que lo muestra.",
       "width": 1440,
       "height": 1100
+    },
+    {
+      "file": "05-historial-ventas.html",
+      "title": "Historial de ventas",
+      "tradeoff": "El historial vive en su propia pantalla, con filtros y paginación; el mostrador queda solo para vender.",
+      "width": 1440,
+      "height": 900
     }
   ]
 }

@@ -109,6 +109,7 @@ main{padding:16px}}
       <button type="button" data-demo>▦ Inventario</button>
       <button type="button" data-demo>⇄ Transferencias</button>
       <button type="button" class="active" aria-current="page">🛒 Punto de venta</button>
+      <button type="button">▤ Historial de ventas</button>
     </nav>
   </div>
   <div class="identity"><strong>sucursala</strong><small>Sucursal A · Encargado</small></div>
@@ -120,12 +121,12 @@ main{padding:16px}}
       <h1>Nueva venta</h1>
       <p>Sólo las baterías con precio cargado en Sucursal A se pueden vender. El precio mínimo es un piso: por debajo de él la venta se rechaza.</p>
     </div>
-    <a href="#historial" class="tag">Historial de ventas de hoy</a>
+    <a href="05-historial-ventas.html" class="tag">Historial de ventas</a>
   </div>
 
   <div class="layout">
     <section aria-labelledby="productos">
-      <div class="panel" style="margin-bottom:16px">
+      <div class="panel">
         <h2 id="productos" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.04em">Baterías disponibles</h2>
         <div class="search" style="margin-top:12px">
           <label>Buscar batería<input type="search" placeholder="Marca, modelo o capacidad"></label>
@@ -160,10 +161,6 @@ main{padding:16px}}
             <button type="button" disabled>Agregar a la venta</button>
           </article>
         </div>
-      </div>
-      <div class="panel">
-        <h2>Ventas de hoy</h2>
-        <p class="muted" style="margin-top:6px">Tres ventas emitidas · total Bs 331.000,00 · cada una con su garantía descargable.</p>
       </div>
     </section>
 
