@@ -40,9 +40,15 @@ td{padding:10px 8px 10px 0;border-bottom:1px solid var(--border);vertical-align:
 th.num,td.num{text-align:right;font-variant-numeric:tabular-nums;padding-right:0}
 td strong{display:block;font-size:13px}
 td small{color:var(--muted);font-size:11px}
-.total{display:flex;justify-content:flex-end;align-items:baseline;gap:16px;padding-top:4px}
-.total span{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
-.total strong{font-size:22px;color:var(--wine);font-variant-numeric:tabular-nums}
+.settle{margin-left:auto;width:60%;min-width:280px}
+.settle h2{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.settle dl{margin:0;display:grid;gap:4px}
+.settle dl div{display:flex;justify-content:space-between;gap:16px;font-size:12px;font-variant-numeric:tabular-nums}
+.settle dt{color:var(--muted)}
+.settle dd{margin:0;font-weight:600}
+.settle-total{border-top:1px solid var(--border);padding-top:8px;margin-top:6px;align-items:baseline}
+.settle-total dt{color:var(--ink);font-weight:600;font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+.settle-total dd{font-size:20px;color:var(--wine)}
 footer{margin-top:auto;padding-top:16px;border-top:1px solid var(--border);display:grid;gap:8px}
 footer p{font-size:11px;line-height:1.7;color:var(--muted)}
 .sign{display:grid;grid-template-columns:1fr 1fr;gap:32px;margin-top:24px}
@@ -55,7 +61,8 @@ footer p{font-size:11px;line-height:1.7;color:var(--muted)}
 <body>
 <p class="caption">Garantía emitida por la sucursal, tal como sale del servidor: se descarga como
 <strong>garantia-2-000126.pdf</strong> y se imprime en una hoja A4. Los importes salen congelados del documento de venta,
-nunca recalculados al imprimir.</p>
+nunca recalculados al imprimir, y el bloque de formas de pago imprime una fila por método con su monto sin volver a
+sumarlos: el total es el que quedó guardado en la venta.</p>
 
 <article class="sheet" aria-labelledby="titulo">
   <header class="head">
@@ -72,7 +79,7 @@ nunca recalculados al imprimir.</p>
   <dl class="meta">
     <div><dt>Sucursal</dt><dd>Sucursal A</dd></div>
     <div><dt>Fecha y hora</dt><dd>04/11/2026 · 17:42</dd></div>
-    <div><dt>Forma de pago</dt><dd>Efectivo</dd></div>
+    <div><dt>Forma de pago</dt><dd>Mixto</dd></div>
   </dl>
 
   <section class="client" aria-labelledby="cliente">
@@ -128,7 +135,14 @@ nunca recalculados al imprimir.</p>
     </tbody>
   </table>
 
-  <p class="total"><span>Total</span><strong>Bs 434.000,00</strong></p>
+  <section class="settle" aria-labelledby="pagos">
+    <h2 id="pagos">Formas de pago</h2>
+    <dl>
+      <div><dt>Efectivo</dt><dd>Bs 234.000,00</dd></div>
+      <div><dt>Transferencia</dt><dd>Bs 200.000,00</dd></div>
+      <div class="settle-total"><dt>Total</dt><dd>Bs 434.000,00</dd></div>
+    </dl>
+  </section>
 
   <footer>
     <p>El plazo de garantía de cada línea es el que el vendedor indicó al momento de la venta y quedó congelado en este
