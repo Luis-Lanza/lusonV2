@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createStockEntryAPI, StockEntryAPIError } from './stockEntryAPI';
+import { createStockEntryAPI, StockEntryAPIError, StockEntryReversalAPIError } from './stockEntryAPI';
 import type { StockEntryInput } from './stockEntryModel';
 
 const csrf = 'c'.repeat(43);
@@ -171,5 +171,101 @@ describe('stock ingress history transport', () => {
     const fetch = mockFetch();
     await expect(createStockEntryAPI(fetch).history(page, size)).rejects.toMatchObject({ code: 'invalid_request', status: null });
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('stock counter-entry transport', () => {
+  const listed = (overrides: Record<string, unknown> = {}) => ({
+    id: 7, note: 'Remito 0002', created_at: '2026-05-01T14:20:00Z',
+    lines: 2, total_units: 18, reversed_by: null, ...overrides });
+  const reversal = { operation_key: 'warehouse_reverse_01', reason: ' error de carga ' };
+  const counterBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+    id: 9, location_id: 1, note: '', created_by_account_id: 1, created_at: '2026-05-01T14:21:00Z',
+    lines: [{ variant_id: 1, quantity: -4 }, { variant_id: 2, quantity: -14 }], total_units: -18, ...overrides,
+  });
+  const counterResponse = (body = counterBody(), status = 201) => json(body, status);
+
+  it.each([[201, false], [200, true]])('posts the canonical reason to the frozen path (%s)', async (status, replayed) => {
+    const fetch = mockFetch().mockResolvedValue(counterResponse(counterBody(), status));
+    const result = await createStockEntryAPI(fetch).reverse(listed(), reversal, csrf);
+    expect(result.replayed).toBe(replayed);
+    expect(result.record).toMatchObject({ id: 9, note: '', total_units: -18 });
+    expect(fetch.mock.calls[0]).toEqual(['/api/stock-entries/7/reverse', {
+      method: 'POST', credentials: 'same-origin', cache: 'no-store', signal: undefined,
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
+      body: '{"operation_key":"warehouse_reverse_01","reason":"error de carga"}',
+    }]);
+  });
+
+  it('captures the exact payload before awaiting and sends the abort signal it was given', async () => {
+    let resolve!: (value: Response) => void;
+    const fetch = mockFetch().mockReturnValue(new Promise<Response>(yes => { resolve = yes; }));
+    const input = { operation_key: 'warehouse_reverse_01', reason: 'error de carga' };
+    const controller = new AbortController();
+    const job = createStockEntryAPI(fetch).reverse(listed(), input, csrf, controller.signal);
+    input.reason = 'mutado';
+    resolve(counterResponse());
+    await job;
+    expect(fetch.mock.calls[0][1]?.signal).toBe(controller.signal);
+    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({
+      operation_key: 'warehouse_reverse_01', reason: 'error de carga' });
+  });
+
+  it.each([
+    ['a document that already has a counter-entry', listed({ reversed_by: 9 })],
+    ['a counter-entry', listed({ total_units: -18 })],
+  ])('refuses to send a reversal of %s', async (_, row) => {
+    const fetch = mockFetch();
+    await expect(createStockEntryAPI(fetch).reverse(row, reversal, csrf)).rejects.toMatchObject({ code: 'invalid_request', status: null });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an empty reason', { operation_key: 'warehouse_reverse_01', reason: '  ' }],
+    ['an invalid target', { operation_key: 'warehouse_reverse_01', reason: 'error de carga' }, { ...listed(), id: 0 }],
+    ['a missing CSRF token', { operation_key: 'warehouse_reverse_01', reason: 'error de carga' }, listed(), ''],
+  ])('fails closed on %s without any network call', async (_, input, row = listed(), token = csrf) => {
+    const fetch = mockFetch();
+    await expect(createStockEntryAPI(fetch).reverse(row, input, token))
+      .rejects.toMatchObject({ code: 'invalid_request', status: null });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [400, 'invalid_request'], [401, 'unauthenticated'], [403, 'forbidden'], [404, 'not_found'],
+    [409, 'decision_conflict'], [409, 'retry_conflict'], [409, 'insufficient_stock'], [503, 'service_unavailable'],
+  ])('reports the admitted %s %s code with its status', async (status, code) => {
+    const fetch = mockFetch().mockResolvedValue(json(`{"error":"${code}"}`, status));
+    const failure = await createStockEntryAPI(fetch).reverse(listed(), reversal, csrf).catch(error => error);
+    expect(failure).toBeInstanceOf(StockEntryReversalAPIError);
+    expect(failure).toMatchObject({ code, status });
+  });
+
+  it.each([
+    ['a text/html body', new Response(counterBody(), { status: 201, headers: { 'Content-Type': 'text/html' } })],
+    ['an unparseable record', json('not json')],
+    ['a record that is not the negation', counterResponse(counterBody({ total_units: -17 }))],
+    ['a record with another line count', counterResponse(counterBody({ lines: [{ variant_id: 1, quantity: -18 }] }))],
+    ['a positive record', counterResponse(counterBody({ lines: [{ variant_id: 1, quantity: 4 }, { variant_id: 2, quantity: -22 }], total_units: -18 }))],
+    ['a record with a note', counterResponse(counterBody({ note: 'Remito 0002' }))],
+    ['a record outside the warehouse', counterResponse(counterBody({ location_id: 2 }))],
+    ['an unadmitted success status', counterResponse(counterBody(), 202)],
+    ['an error envelope with extra keys', json('{"error":"forbidden","detail":"x"}', 403)],
+    ['an unlisted failure status', json('{"error":"invalid_request"}', 500)],
+  ])('refuses to interpret %s', async (_, reply) => {
+    const fetch = mockFetch().mockResolvedValue(reply);
+    await expect(createStockEntryAPI(fetch).reverse(listed(), reversal, csrf))
+      .rejects.toMatchObject({ code: 'invalid_response' });
+  });
+
+  it('distinguishes a lost connection from an aborted attempt', async () => {
+    const network = mockFetch().mockRejectedValue(new TypeError('Failed to fetch'));
+    await expect(createStockEntryAPI(network).reverse(listed(), reversal, csrf))
+      .rejects.toMatchObject({ code: 'network', status: null });
+    const controller = new AbortController();
+    controller.abort();
+    const aborted = mockFetch().mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    await expect(createStockEntryAPI(aborted).reverse(listed(), reversal, csrf, controller.signal))
+      .rejects.toMatchObject({ code: 'aborted', status: null });
   });
 });

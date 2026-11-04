@@ -72,3 +72,21 @@
   .stock-lines td:nth-child(2) { text-align: left; }
   .stock-quantity { width: 100%; }
 }
+/* Counter-entry: the history row action and the confirmation dialog. The dialog
+   reuses the shared backdrop/modal classes, so only its own body is laid out
+   here, with the same tokens and 44px targets as the rest of the section. */
+.stock-history .stock-reverse { min-width: 44px; min-height: 44px; border-color: var(--muted);
+  white-space: normal; overflow-wrap: anywhere; }
+.stock-reversal-modal { width: min(600px, 100%); }
+.stock-reversal-body { display: grid; gap: 16px; padding: 24px; overflow-y: auto; }
+.stock-reversal-summary { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 0; padding: 12px;
+  background: var(--page); border: 1px solid var(--border); border-radius: 4px; }
+.stock-reversal-summary dt { color: var(--muted); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.stock-reversal-summary dd { margin: 2px 0 0; font-size: 16px; font-variant-numeric: tabular-nums; }
+.stock-reversal-reason { display: grid; gap: 8px; color: var(--muted); font-size: 12px; }
+.stock-reversal-reason textarea { width: 100%; min-height: 96px; padding: 10px 12px; border-color: var(--muted);
+  border-radius: 4px; color: #242124; font-family: inherit; font-size: 13px; line-height: 1.6; resize: vertical; }
+.stock-reversal-body .stock-status { min-height: 0; }
+@media (max-width: 767px) {
+  .stock-reversal-body { padding: 16px; }
+}

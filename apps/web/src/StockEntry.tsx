@@ -2,12 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Item } from './model';
 import { validSearch } from './model';
 import TransferDate from './TransferDate';
-import { createStockEntryAPI, StockEntryAPIError } from './stockEntryAPI';
+import { createStockEntryAPI, StockEntryAPIError, StockEntryReversalAPIError } from './stockEntryAPI';
 import {
-  canonicalStockEntryInput, newStockEntryOperationKey, parseStockCatalog, stockCatalogPath, stockEntryErrorMessages,
+  canonicalStockEntryInput, canonicalStockEntryReversalInput, canonicalStockEntryReversalReason,
+  newStockEntryOperationKey, parseStockCatalog, stockCatalogPath, stockEntryErrorMessages,
   stockEntryFailureIsDefinite, stockEntryHistoryDefaultPageSize, stockEntryHistoryMaxPage, stockEntryHistoryPageSizes,
-  stockEntryHistoryUnavailable, stockEntryMaxNote, stockEntryMaxQuantity, validStockQuantity,
-  type StockEntryErrorCode, type StockEntryHistoryPage, type StockEntryInput,
+  stockEntryHistoryUnavailable, stockEntryMaxNote, stockEntryMaxQuantity, stockEntryMaxReason,
+  stockEntryReversalErrorMessages, stockEntryReversalFailureIsDefinite, stockEntryReversible, validStockQuantity,
+  type StockEntryErrorCode, type StockEntryHistoryPage, type StockEntryHistoryRow, type StockEntryInput,
+  type StockEntryReversalErrorCode, type StockEntryReversalInput,
 } from './stockEntryModel';
 import './stock-entry.css';
 
@@ -50,6 +53,18 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
   const pending = useRef(false);
   // One key per unchanged draft: an uncertain retry replays exactly, an edit becomes a new document.
   const operationKey = useRef<string | null>(null);
+  // The counter-entry dialog: one row at a time, its own reason and its own key.
+  const [reversal, setReversal] = useState<{ row: StockEntryHistoryRow; trigger: HTMLButtonElement } | null>(null);
+  const [reversalReason, setReversalReason] = useState('');
+  const [reversalProblem, setReversalProblem] = useState('');
+  const [reversalNotice, setReversalNotice] = useState('');
+  const [reversalBusy, setReversalBusy] = useState(false);
+  const reversalDialog = useRef<HTMLElement>(null);
+  const reversalReasonField = useRef<HTMLTextAreaElement>(null);
+  const reversalNoticeArea = useRef<HTMLParagraphElement>(null);
+  // One key per (target, canonical reason): an uncertain retry replays exactly,
+  // and a different motive becomes a different counter-entry intent.
+  const reversalAttempt = useRef<{ target: number; reason: string; key: string } | null>(null);
   useEffect(() => {
     const flight = lifetime.current;
     mounted.current = true;
@@ -157,6 +172,87 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
     }
   }
 
+  // ---- counter-entry ----------------------------------------------------------
+  const focusableInDialog = () => Array.from(reversalDialog.current?.querySelectorAll<HTMLElement>(
+    'button:not(:disabled), textarea:not(:disabled), input:not(:disabled), select:not(:disabled), a[href]') ?? []);
+
+  function openReversal(row: StockEntryHistoryRow, trigger: HTMLButtonElement) {
+    if (reversal || reversalBusy || !stockEntryReversible(row)) return;
+    reversalAttempt.current = null;
+    setReversal({ row, trigger });
+    setReversalReason('');
+    setReversalProblem('');
+    setReversalNotice('');
+  }
+  function closeReversal() {
+    if (reversalBusy) return;
+    const trigger = reversal?.trigger;
+    setReversal(null);
+    setReversalReason('');
+    setReversalProblem('');
+    if (trigger?.isConnected) trigger.focus();
+  }
+  // Focus moves into the dialog as soon as it exists, so keyboard and screen
+  // reader users are never left behind on the history table.
+  useEffect(() => {
+    if (reversal) reversalReasonField.current?.focus();
+    // The row that triggered the dialog may no longer offer the action, so the
+    // announced result is the focus target once the dialog is gone.
+    else if (reversalNotice) reversalNoticeArea.current?.focus();
+  }, [reversal, reversalNotice]);
+
+  async function confirmReversal() {
+    const open = reversal;
+    if (!open || reversalBusy || pending.current) return;
+    let canonicalReason: string;
+    try { canonicalReason = canonicalStockEntryReversalReason(reversalReason); }
+    catch { setReversalProblem('El motivo es obligatorio: escribí entre 1 y 500 caracteres.'); return; }
+    if (reversalAttempt.current === null || reversalAttempt.current.target !== open.row.id
+      || reversalAttempt.current.reason !== canonicalReason) {
+      try {
+        reversalAttempt.current = { target: open.row.id, reason: canonicalReason, key: newStockEntryOperationKey() };
+      } catch {
+        setReversalProblem('No se pudo generar una clave segura para este contra-asiento. No se envió nada.');
+        return;
+      }
+    }
+    const attempt = reversalAttempt.current;
+    let input: StockEntryReversalInput;
+    try { input = canonicalStockEntryReversalInput({ operation_key: attempt.key, reason: canonicalReason }); }
+    catch { setReversalProblem('El motivo del contra-asiento no es válido. Revisá el texto e intentá de nuevo.'); return; }
+    pending.current = true; setReversalBusy(true); setReversalProblem(''); setReversalNotice('');
+    try {
+      const result = await api.reverse(open.row, input, csrf, lifetime.current.signal);
+      if (!mounted.current || lifetime.current.signal.aborted) return;
+      reversalAttempt.current = null;
+      const units = result.record.total_units;
+      const counter = result.record.id;
+      const replayed = result.replayed;
+      setReversal(null); setReversalReason('');
+      // The counter-entry is the newest document, so the ledger restarts at page
+      // one; the catalog is refreshed because the balances moved.
+      setHistoryPage(1); setHistoryRevision(value => value + 1); setRevision(value => value + 1);
+      setReversalNotice(`Contra-asiento registrado: documento ${counter} · ${units} ${units === -1 ? 'unidad' : 'unidades'}${replayed ? ' (reintento sin duplicar)' : ''}.`);
+    } catch (failure) {
+      if (!mounted.current || lifetime.current.signal.aborted) return;
+      const code: StockEntryReversalErrorCode = failure instanceof StockEntryReversalAPIError ? failure.code : 'invalid_response';
+      // A definite rejection wrote nothing: the next attempt is a new intent.
+      if (stockEntryReversalFailureIsDefinite(code)) reversalAttempt.current = null;
+      // A stale row is not a reason to keep a dialog open on a document the
+      // server already resolved; the history is reloaded instead.
+      if (code === 'not_found' || code === 'decision_conflict') {
+        setReversal(null); setReversalReason('');
+        setHistoryRevision(value => value + 1);
+        setReversalNotice(stockEntryReversalErrorMessages[code]);
+      } else {
+        setReversalProblem(stockEntryReversalErrorMessages[code]);
+      }
+    } finally {
+      pending.current = false;
+      if (mounted.current) setReversalBusy(false);
+    }
+  }
+
   const catalogCount = `${catalog.items.length} ${catalog.items.length === 1 ? 'variante' : 'variantes'}`;
   const historyRows = history.phase === 'ready' && history.page ? history.page.entries : [];
   const historyTotal = history.page ? history.page.total_entries : 0;
@@ -244,7 +340,7 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
       {historyRows.length > 0 && <div className="stock-table-wrap">
         <table className="stock-table stock-history-table">
           <caption className="sr-only">Historial de ingresos del Almacén</caption>
-          <thead><tr><th scope="col">Documento</th><th scope="col">Fecha</th><th scope="col">Nota</th><th scope="col">Líneas</th><th scope="col">Unidades</th><th scope="col">Estado</th></tr></thead>
+          <thead><tr><th scope="col">Documento</th><th scope="col">Fecha</th><th scope="col">Nota</th><th scope="col">Líneas</th><th scope="col">Unidades</th><th scope="col">Estado</th><th scope="col">Acción</th></tr></thead>
           <tbody>{historyRows.map(row => <tr key={row.id} data-entry-id={row.id}>
             <td data-label="Documento"><strong>#{row.id}</strong></td>
             <td data-label="Fecha"><TransferDate value={row.created_at} /></td>
@@ -254,9 +350,14 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
             <td data-label="Estado">{row.reversed_by === null
               ? <span className="stock-tag">Aplicado</span>
               : <span className="stock-tag reversed">Anulado por contra-asiento</span>}</td>
+            <td data-label="Acción">{stockEntryReversible(row)
+              ? <button type="button" className="stock-reverse" aria-label={`Anular ingreso #${row.id}`} disabled={reversalBusy}
+                onClick={event => openReversal(row, event.currentTarget)}>Anular</button>
+              : '—'}</td>
           </tr>)}</tbody>
         </table>
       </div>}
+      {reversalNotice && <p className="stock-status" role="status" tabIndex={-1} ref={reversalNoticeArea}>{reversalNotice}</p>}
       {history.phase === 'loading' && <p className="stock-message" role="status">Consultando el historial de ingresos…</p>}
       {history.phase === 'error' && <p className="stock-message" role="alert">{history.problem}
         <button type="button" onClick={() => setHistoryRevision(value => value + 1)}>Reintentar historial</button></p>}
@@ -273,5 +374,44 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
           onClick={nextHistoryPage}>Siguiente página</button>
       </div></footer>
     </section>
+    {reversal && <div className="transfer-decision-backdrop"><section ref={reversalDialog} tabIndex={-1}
+      className="transfer-decision-modal stock-reversal-modal" role="dialog" aria-modal="true"
+      aria-labelledby="stock-reversal-title" aria-describedby="stock-reversal-notice" aria-busy={reversalBusy}
+      onKeyDown={event => {
+        if (event.key === 'Escape') { event.preventDefault(); closeReversal(); return; }
+        if (event.key !== 'Tab') return;
+        // Focus never escapes the dialog: Tab and Shift+Tab cycle its own controls.
+        const focusable = focusableInDialog();
+        if (!focusable.length) { event.preventDefault(); return; }
+        const first = focusable[0]; const last = focusable[focusable.length - 1];
+        if (event.shiftKey && (document.activeElement === first || document.activeElement === reversalDialog.current)) {
+          event.preventDefault(); last.focus();
+        } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === reversalDialog.current)) {
+          event.preventDefault(); first.focus();
+        }
+      }}>
+      <header><div><h2 id="stock-reversal-title">Registrar contra-asiento</h2>
+        <p>Documento #{reversal.row.id} · <TransferDate value={reversal.row.created_at} /> · {reversal.row.note || 'sin nota'}</p></div>
+        <button type="button" aria-label="Cerrar contra-asiento" disabled={reversalBusy} onClick={closeReversal}>×</button></header>
+      <div className="stock-reversal-body">
+        <dl className="stock-reversal-summary">
+          <div><dt>Líneas</dt><dd>{reversal.row.lines}</dd></div>
+          <div><dt>Unidades del original</dt><dd>{reversal.row.total_units}</dd></div>
+          <div><dt>Unidades del contra-asiento</dt><dd>{-reversal.row.total_units}</dd></div>
+        </dl>
+        <p id="stock-reversal-notice" className="stock-hint">Se registra un documento nuevo con las mismas líneas en negativo y este motivo.
+          El original nunca cambia: queda Aplicado en el historial y el contra-asiento aparece como documento aparte.</p>
+        <label className="stock-reversal-reason" htmlFor="stock-reversal-reason">Motivo del contra-asiento
+          <textarea id="stock-reversal-reason" ref={reversalReasonField} required maxLength={stockEntryMaxReason}
+            aria-describedby="stock-reversal-required" value={reversalReason}
+            onChange={event => setReversalReason(event.target.value)} />
+        </label>
+        <p id="stock-reversal-required" className="stock-hint">Obligatorio: entre 1 y {stockEntryMaxReason} caracteres. {Array.from(reversalReason).length}/{stockEntryMaxReason}</p>
+        {reversalBusy && <p role="status" className="stock-status">Registrando contra-asiento…</p>}
+        {reversalProblem && <p role="alert" className="stock-status">{reversalProblem}</p>}
+      </div>
+      <footer><button type="button" disabled={reversalBusy} onClick={closeReversal}>Cancelar</button>
+        <button type="button" className="primary" disabled={reversalBusy} onClick={() => void confirmReversal()}>Confirmar contra-asiento</button></footer>
+    </section></div>}
   </section>;
 }

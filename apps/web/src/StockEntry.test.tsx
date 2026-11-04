@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import StockEntry from './StockEntry';
-import { stockEntryErrorMessages } from './stockEntryModel';
+import { stockEntryErrorMessages, stockEntryReversalErrorMessages } from './stockEntryModel';
 
 const csrf = 'c'.repeat(43);
 const row = (variant_id: number, model: string, existing = 14, capacity = 35) => JSON.stringify({
@@ -30,6 +30,7 @@ function harness(options: {
   catalog?: (search: string) => Response;
   create?: (body: string) => Response | Promise<Response>;
   history?: (query: URLSearchParams) => Response | Promise<Response>;
+  reverse?: (target: string, body: string) => Response | Promise<Response>;
 } = {}) {
   const calls: { url: string; init: RequestInit }[] = [];
   const fetcher = vi.fn<typeof fetch>(async (input, init = {}) => {
@@ -43,12 +44,28 @@ function harness(options: {
       return options.history?.(new URL(url, 'http://localhost').searchParams) ?? historyReply(defaultHistoryRows);
     }
     if (url === '/api/stock-entries') return options.create?.(String(init.body)) ?? entryReply();
+    const reversal = /^\/api\/stock-entries\/([^/]+)\/reverse$/.exec(url);
+    if (reversal) return options.reverse?.(reversal[1], String(init.body)) ?? counterReply();
     throw new Error('Unexpected mocked URL: ' + url);
   });
   return { fetcher, calls, catalogs: () => calls.filter(call => call.url.startsWith('/api/inventory?')),
     posts: () => calls.filter(call => call.url === '/api/stock-entries'),
-    histories: () => calls.filter(call => call.url.startsWith('/api/stock-entries?')) };
+    histories: () => calls.filter(call => call.url.startsWith('/api/stock-entries?')),
+    reversals: () => calls.filter(call => call.url.endsWith('/reverse')) };
 }
+
+// The counter-entry of `historyRow(6, ..., 2, 18)`: the same lines, negated.
+const counterReply = (overrides: Record<string, unknown> = {}) => new Response(JSON.stringify({
+  id: 10, location_id: 1, note: '', created_by_account_id: 1, created_at: '2026-05-01T14:25:00Z',
+  lines: [{ variant_id: 4, quantity: -3 }, { variant_id: 9, quantity: -15 }], total_units: -18, ...overrides,
+}), { status: 201, headers: { 'Content-Type': 'application/json' } });
+const counterBody = (id: number) => JSON.stringify({
+  id, location_id: 1, note: '', created_by_account_id: 1, created_at: '2026-05-01T14:25:00Z',
+  lines: [{ variant_id: 4, quantity: -3 }, { variant_id: 9, quantity: -15 }], total_units: -18 });
+const openReversal = async (historial: HTMLElement) => {
+  fireEvent.click(within(historial).getByRole('button', { name: 'Anular ingreso #6' }));
+  return screen.getByRole('dialog', { name: 'Registrar contra-asiento' });
+};
 const sections = () => ({
   catalogo: screen.getByRole('region', { name: 'Catálogo' }),
   documento: screen.getByRole('region', { name: 'Documento de ingreso' }),
@@ -289,5 +306,153 @@ describe('stock ingress history', () => {
     expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL')).toHaveValue(1);
     expect(within(documento).getByLabelText('Nota del documento (opcional)')).toHaveValue('Remito 0002');
     expect(totalFor('Unidades')).toHaveTextContent(/Unidades\s*1/);
+  });
+});
+
+describe('stock counter-entry', () => {
+  const historial = () => sections().historial;
+  const rowsWithAction = () => [
+    historyRow(9, 'Remito 0003', 1, 4),
+    historyRow(8, 'Remito 0002', 2, 18, 10),
+    historyRow(7, '', 1, -3),
+    historyRow(6, 'Remito 0002', 2, 18),
+  ];
+  const reasonBox = (dialog: HTMLElement) => within(dialog).getByLabelText('Motivo del contra-asiento') as HTMLTextAreaElement;
+  const confirm = (dialog: HTMLElement) => within(dialog).getByRole('button', { name: 'Confirmar contra-asiento' });
+
+  it('offers the action only on rows that have no counter-entry yet', async () => {
+    const h = harness({ history: () => historyReply(rowsWithAction()) });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#6');
+    expect(within(historial()).getAllByRole('button', { name: /^Anular ingreso/ }).map(button => button.getAttribute('aria-label')))
+      .toEqual(['Anular ingreso #9', 'Anular ingreso #6']);
+    expect(within(historial()).queryByRole('button', { name: 'Anular ingreso #8' })).not.toBeInTheDocument();
+    // A counter-entry (negative units) is never reversible.
+    expect(within(historial()).queryByRole('button', { name: 'Anular ingreso #7' })).not.toBeInTheDocument();
+  });
+
+  it('opens an accessible dialog that explains the immutable original and moves focus', async () => {
+    const h = harness({ history: () => historyReply(rowsWithAction()) });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#6');
+    const dialog = await openReversal(historial());
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(within(dialog).getByText(/documento nuevo con las mismas líneas en negativo/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/El original nunca cambia/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/#6/)).toBeInTheDocument();
+    expect(reasonBox(dialog)).toHaveFocus();
+    expect(reasonBox(dialog)).toHaveAttribute('maxlength', '500');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(within(historial()).getByRole('button', { name: 'Anular ingreso #6' })).toHaveFocus();
+  });
+
+  it('refuses a blank reason without sending anything', async () => {
+    const h = harness({ history: () => historyReply(rowsWithAction()) });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#6');
+    const dialog = await openReversal(historial());
+    fireEvent.change(reasonBox(dialog), { target: { value: '   ' } });
+    fireEvent.click(confirm(dialog));
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('El motivo es obligatorio');
+    expect(h.reversals()).toHaveLength(0);
+  });
+
+  it('sends the exact payload to the frozen path and shows the counter-entry', async () => {
+    let reversed = false;
+    const h = harness({
+      history: () => historyReply(reversed
+        ? [historyRow(10, '', 2, -18), historyRow(6, 'Remito 0002', 2, 18, 10)]
+        : [historyRow(6, 'Remito 0002', 2, 18)]),
+      reverse: () => { reversed = true; return counterReply(); },
+    });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#6');
+    const dialog = await openReversal(historial());
+    fireEvent.change(reasonBox(dialog), { target: { value: '  error de carga  ' } });
+    fireEvent.click(confirm(dialog));
+    await waitFor(() => expect(h.reversals()).toHaveLength(1));
+    const post = h.reversals()[0];
+    expect(post.url).toBe('/api/stock-entries/6/reverse');
+    expect(post.init).toMatchObject({ method: 'POST', credentials: 'same-origin', cache: 'no-store' });
+    expect(post.init.headers).toMatchObject({ 'Content-Type': 'application/json', 'X-CSRF-Token': csrf });
+    expect(JSON.parse(String(post.init.body))).toEqual({
+      operation_key: expect.stringMatching(/^[A-Za-z0-9_-]{16,128}$/), reason: 'error de carga',
+    });
+    // The dialog closes, the history is refreshed and the result is announced.
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(await within(historial()).findByText(/Contra-asiento registrado: documento 10 · -18 unidades/)).toBeInTheDocument();
+    expect(h.histories().length).toBeGreaterThan(1);
+    const rows = within(historial()).getAllByRole('row').slice(1);
+    expect(rows.map(row => within(row).getAllByRole('cell')[0].textContent)).toEqual(['#10', '#6']);
+    expect(within(historial()).queryByRole('button', { name: 'Anular ingreso #6' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the typed reason and the dialog open when the stock no longer covers the reversal', async () => {
+    const h = harness({ history: () => historyReply(rowsWithAction()),
+      reverse: () => errorReply('insufficient_stock', 409) });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#6');
+    const dialog = await openReversal(historial());
+    fireEvent.change(reasonBox(dialog), { target: { value: 'error de carga' } });
+    fireEvent.click(confirm(dialog));
+    await waitFor(() => expect(within(dialog).getByRole('alert'))
+      .toHaveTextContent(stockEntryReversalErrorMessages.insufficient_stock));
+    expect(screen.getByRole('dialog', { name: 'Registrar contra-asiento' })).toBeInTheDocument();
+    expect(reasonBox(dialog)).toHaveValue('error de carga');
+    expect(within(dialog).getByRole('button', { name: 'Confirmar contra-asiento' })).toBeEnabled();
+  });
+
+  it('reuses the same operation key when the outcome is uncertain and a fresh one after a rejection', async () => {
+    let calls = 0;
+    const h = harness({ history: () => historyReply(rowsWithAction()),
+      reverse: () => { calls += 1; return calls === 1 ? errorReply('service_unavailable', 503) : counterReply(); } });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#6');
+    const dialog = await openReversal(historial());
+    fireEvent.change(reasonBox(dialog), { target: { value: 'error de carga' } });
+    fireEvent.click(confirm(dialog));
+    await waitFor(() => expect(within(dialog).getByRole('alert')).toHaveTextContent(stockEntryReversalErrorMessages.service_unavailable));
+    expect(reasonBox(dialog)).toHaveValue('error de carga');
+    fireEvent.click(confirm(dialog));
+    await waitFor(() => expect(h.reversals()).toHaveLength(2));
+    const first = JSON.parse(String(h.reversals()[0].init.body)) as { operation_key: string; reason: string };
+    const second = JSON.parse(String(h.reversals()[1].init.body)) as { operation_key: string; reason: string };
+    expect(second.operation_key).toBe(first.operation_key);
+    expect(second.reason).toBe('error de carga');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('closes the dialog and refreshes the history when the document is already reversed', async () => {
+    let stale = true;
+    const h = harness({
+      history: () => historyReply(stale ? [historyRow(6, 'Remito 0002', 2, 18)] : [historyRow(10, '', 2, -18), historyRow(6, 'Remito 0002', 2, 18, 10)]),
+      reverse: () => { stale = false; return errorReply('decision_conflict', 409); },
+    });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#6');
+    const dialog = await openReversal(historial());
+    fireEvent.change(reasonBox(dialog), { target: { value: 'error de carga' } });
+    fireEvent.click(confirm(dialog));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(await within(historial()).findByText(stockEntryReversalErrorMessages.decision_conflict)).toBeInTheDocument();
+    await within(historial()).findByText('#10');
+  });
+
+  it('disables the action while the reversal is in flight', async () => {
+    let resolve!: (value: Response) => void;
+    const h = harness({ history: () => historyReply(rowsWithAction()),
+      reverse: () => new Promise<Response>(yes => { resolve = yes; }) });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#6');
+    const dialog = await openReversal(historial());
+    fireEvent.change(reasonBox(dialog), { target: { value: 'error de carga' } });
+    fireEvent.click(confirm(dialog));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'Confirmar contra-asiento' })).toBeDisabled());
+    expect(within(dialog).getByRole('button', { name: 'Cancelar' })).toBeDisabled();
+    fireEvent.click(confirm(dialog));
+    expect(h.reversals()).toHaveLength(1);
+    resolve(counterReply());
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 });

@@ -16,6 +16,12 @@ export interface StockEntryRecord {
 export type StockEntryErrorCode = 'invalid_request' | 'forbidden' | 'retry_conflict'
   | 'insufficient_stock' | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
 
+/** One counter-entry request: the target is in the path, the reason is mandatory. */
+export interface StockEntryReversalInput { readonly operation_key: string; readonly reason: string }
+export type StockEntryReversalErrorCode = 'invalid_request' | 'unauthenticated' | 'forbidden' | 'not_found'
+  | 'decision_conflict' | 'retry_conflict' | 'insufficient_stock' | 'service_unavailable'
+  | 'invalid_response' | 'network' | 'aborted';
+
 /** One row of the read-only history: a document summary, never its lines. */
 export interface StockEntryHistoryRow {
   readonly id: number; readonly note: string; readonly created_at: string;
@@ -30,6 +36,7 @@ export interface StockEntryHistoryPage {
 export const stockEntryMaxLines = 190;
 export const stockEntryMaxQuantity = 1_000_000;
 export const stockEntryMaxNote = 500;
+export const stockEntryMaxReason = 500;
 export const stockEntryMaxVariantID = 2_147_483_647;
 export const stockEntryMaxDocumentUnits = stockEntryMaxLines * stockEntryMaxQuantity;
 export const stockCatalogLocationID = 1;
@@ -48,6 +55,16 @@ export const stockEntryAdmittedErrors: ReadonlyMap<number, readonly StockEntryEr
   [503, ['service_unavailable']],
 ]);
 
+/** The counter-entry route adds the identity and target failures of its own contract. */
+export const stockEntryReversalAdmittedErrors: ReadonlyMap<number, readonly StockEntryReversalErrorCode[]> = new Map([
+  [400, ['invalid_request']],
+  [401, ['unauthenticated']],
+  [403, ['forbidden']],
+  [404, ['not_found']],
+  [409, ['decision_conflict', 'retry_conflict', 'insufficient_stock']],
+  [503, ['service_unavailable']],
+]);
+
 /** Spanish user-facing message for every code, including transport failures. */
 export const stockEntryErrorMessages: Record<StockEntryErrorCode, string> = {
   invalid_request: 'El documento no es válido. Revisá las líneas y la nota, y volvé a intentar.',
@@ -60,8 +77,24 @@ export const stockEntryErrorMessages: Record<StockEntryErrorCode, string> = {
   aborted: 'La confirmación se interrumpió. Conservamos el documento para reintentar el mismo ingreso.',
 };
 
+/** Spanish message for every counter-entry failure, including transport ones. */
+export const stockEntryReversalErrorMessages: Record<StockEntryReversalErrorCode, string> = {
+  invalid_request: 'El motivo del contra-asiento no es válido: escribí entre 1 y 500 caracteres y volvé a intentar. No se registró ningún documento.',
+  unauthenticated: 'La sesión no está activa. Volvé a iniciar sesión: no se registró ningún contra-asiento.',
+  forbidden: 'No tenés permiso para anular ingresos en este almacén. No se aplicó ningún cambio.',
+  not_found: 'El documento ya no existe en el Almacén. Actualizamos el historial: no se registró ningún contra-asiento.',
+  decision_conflict: 'Este documento ya tiene un contra-asiento, o es un contra-asiento: no se registró otro. Actualizamos el historial.',
+  retry_conflict: 'La clave de este contra-asiento ya se usó con otro motivo. No se aplicó ningún cambio: revisá el motivo.',
+  insufficient_stock: 'El stock actual no alcanza: el stock ya no cubre esta anulación y el contra-asiento dejaría existencias por debajo de lo reservado. No se aplicó ningún cambio.',
+  service_unavailable: 'El servicio no está disponible. No pudimos confirmar el contra-asiento: conservamos el motivo para reintentar.',
+  invalid_response: 'La respuesta del servidor no es válida. No pudimos confirmar el contra-asiento: conservamos el motivo.',
+  network: 'No se pudo conectar con el servidor. Conservamos el motivo para reintentar el mismo contra-asiento.',
+  aborted: 'La confirmación se interrumpió. Conservamos el motivo para reintentar el mismo contra-asiento.',
+};
+
 function invalidResponse(): never { throw new Error('Respuesta inválida del servidor.'); }
 function invalidInput(): never { throw new Error('Documento de ingreso inválido.'); }
+function invalidReversal(): never { throw new Error('Contra-asiento inválido.'); }
 
 function decode(raw: string): unknown {
   try {
@@ -152,6 +185,15 @@ export function newStockEntryOperationKey(source: Pick<Crypto, 'getRandomValues'
 }
 
 export function parseStockEntryRecord(raw: string): StockEntryRecord {
+  return parseEntryRecord(raw, 'ingress');
+}
+
+/** A counter-entry carries the exact negation of the original lines. */
+export function parseStockEntryReversalRecord(raw: string): StockEntryRecord {
+  return parseEntryRecord(raw, 'counter');
+}
+
+function parseEntryRecord(raw: string, sign: 'ingress' | 'counter'): StockEntryRecord {
   const record = fields(decode(raw), ['id', 'location_id', 'note', 'created_by_account_id', 'created_at', 'lines', 'total_units']);
   const id = integer(record.id, 1, Number.MAX_SAFE_INTEGER);
   const location_id = integer(record.location_id, 1, 32767);
@@ -162,23 +204,39 @@ export function parseStockEntryRecord(raw: string): StockEntryRecord {
   const lines = record.lines.map(value => {
     const line = fields(value, ['variant_id', 'quantity']);
     const variant_id = integer(line.variant_id, 1, stockEntryMaxVariantID);
-    const quantity = integer(line.quantity, 1, stockEntryMaxQuantity);
+    const quantity = sign === 'ingress'
+      ? integer(line.quantity, 1, stockEntryMaxQuantity)
+      : signedInteger(line.quantity, -stockEntryMaxQuantity, -1);
     if (seen.has(variant_id)) return invalidResponse();
     seen.add(variant_id);
     return Object.freeze({ variant_id, quantity });
   });
-  const total_units = integer(record.total_units, 1, stockEntryMaxLines * stockEntryMaxQuantity);
-  return Object.freeze({ id, location_id, note: note(record.note), created_by_account_id, created_at,
+  const total_units = sign === 'ingress'
+    ? integer(record.total_units, 1, stockEntryMaxLines * stockEntryMaxQuantity)
+    : signedInteger(record.total_units, -stockEntryMaxLines * stockEntryMaxQuantity, -1);
+  // A counter-entry has no note of its own and its lines always add up to its
+  // total, so a shape the database cannot have written never crosses the wire.
+  const documentNote = sign === 'ingress' ? note(record.note) : record.note === '' ? '' : invalidResponse();
+  if (sign === 'counter' && lines.reduce((sum, line) => sum + line.quantity, 0) !== total_units) return invalidResponse();
+  return Object.freeze({ id, location_id, note: documentNote, created_by_account_id, created_at,
     lines: Object.freeze(lines), total_units });
 }
 
-export function parseStockEntryError(raw: string, status: number): StockEntryErrorCode {
-  const admitted = stockEntryAdmittedErrors.get(status);
+function admittedError<C extends string>(raw: string, status: number, table: ReadonlyMap<number, readonly C[]>): C {
+  const admitted = table.get(status);
   if (!admitted) return invalidResponse();
   const envelope = fields(decode(raw), ['error']);
   const code = envelope.error;
-  if (typeof code !== 'string' || !admitted.includes(code as StockEntryErrorCode)) return invalidResponse();
-  return code as StockEntryErrorCode;
+  if (typeof code !== 'string' || !admitted.includes(code as C)) return invalidResponse();
+  return code as C;
+}
+
+export function parseStockEntryError(raw: string, status: number): StockEntryErrorCode {
+  return admittedError(raw, status, stockEntryAdmittedErrors);
+}
+
+export function parseStockEntryReversalError(raw: string, status: number): StockEntryReversalErrorCode {
+  return admittedError(raw, status, stockEntryReversalAdmittedErrors);
 }
 
 /** A definite rejection proves nothing was written; every other failure stays uncertain. */
@@ -248,4 +306,62 @@ export function parseStockEntryHistory(raw: string): StockEntryHistoryPage {
     return Object.freeze({ id, note: note(row.note), created_at: timestamp(row.created_at), lines, total_units, reversed_by });
   });
   return Object.freeze({ page, page_size, total_entries, entries: Object.freeze(entries) });
+}
+
+/**
+ * A document is reversible only while it has no counter-entry of its own. A
+ * counter-entry is never reversible: its lines are already negative, which is
+ * exactly what `total_units > 0` proves here.
+ */
+export function stockEntryReversible(row: StockEntryHistoryRow): boolean {
+  return row.reversed_by === null && row.total_units > 0;
+}
+
+/**
+ * Admits the mandatory counter-entry reason and returns the exact text that is
+ * sent, compared on a retry and persisted: trimmed, non-empty, at most 500
+ * characters, no NUL and well-formed UTF-16.
+ */
+export function canonicalStockEntryReversalReason(reason: string): string {
+  if (typeof reason !== 'string' || !validNote(reason)) return invalidReversal();
+  const trimmed = reason.trim();
+  if (trimmed === '') return invalidReversal();
+  return trimmed;
+}
+
+/** Validates and freezes the exact counter-entry payload that will be sent. */
+export function canonicalStockEntryReversalInput(input: StockEntryReversalInput): StockEntryReversalInput {
+  try {
+    const record = fields(input, ['operation_key', 'reason']);
+    const operation_key = record.operation_key;
+    if (typeof operation_key !== 'string' || !/^[A-Za-z0-9_-]{16,128}$/.test(operation_key)) return invalidReversal();
+    return Object.freeze({ operation_key, reason: canonicalStockEntryReversalReason(record.reason as string) });
+  } catch { return invalidReversal(); }
+}
+
+/** The frozen counter-entry path; only a canonical positive target id is admitted. */
+export function stockEntryReversalPath(id: number): string {
+  if (!Number.isSafeInteger(id) || id < 1) return invalidReversal();
+  return `/api/stock-entries/${id}/reverse`;
+}
+
+/**
+ * The response is evidence only if it is the exact negation of the listed
+ * document: same line count, same unit total with the opposite sign, and every
+ * line negative. Nothing about the original is cached, so this is the only
+ * proof the client can demand.
+ */
+export function matchesStockEntryReversal(row: StockEntryHistoryRow, record: StockEntryRecord): boolean {
+  if (record.location_id !== stockCatalogLocationID || record.note !== '') return false;
+  if (!stockEntryReversible(row)) return false;
+  if (record.lines.length !== row.lines) return false;
+  const total = record.lines.reduce((sum, line) => sum + line.quantity, 0);
+  if (record.lines.some(line => line.quantity >= 0)) return false;
+  return total === record.total_units && total === -row.total_units;
+}
+
+/** A definite rejection proves nothing was written; every other failure stays uncertain. */
+export function stockEntryReversalFailureIsDefinite(code: StockEntryReversalErrorCode): boolean {
+  return code === 'invalid_request' || code === 'unauthenticated' || code === 'forbidden' || code === 'not_found'
+    || code === 'decision_conflict' || code === 'retry_conflict' || code === 'insufficient_stock';
 }

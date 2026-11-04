@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
-  canonicalStockEntryInput, matchesStockEntryInput, newStockEntryOperationKey, parseStockCatalog, parseStockEntryError,
-  parseStockEntryHistory, parseStockEntryRecord, stockCatalogPath, stockEntryAdmittedErrors, stockEntryErrorMessages,
-  stockEntryFailureIsDefinite, stockEntryHistoryPath, stockEntryHistoryPageSizes, validStockEntryHistoryQuery,
-  validStockQuantity, type StockEntryInput,
+  canonicalStockEntryInput, canonicalStockEntryReversalInput, canonicalStockEntryReversalReason, matchesStockEntryInput,
+  matchesStockEntryReversal, newStockEntryOperationKey, parseStockCatalog, parseStockEntryError, parseStockEntryHistory,
+  parseStockEntryRecord, parseStockEntryReversalError, parseStockEntryReversalRecord, stockCatalogPath,
+  stockEntryAdmittedErrors, stockEntryErrorMessages, stockEntryFailureIsDefinite, stockEntryHistoryPath,
+  stockEntryHistoryPageSizes, stockEntryReversalAdmittedErrors, stockEntryReversalErrorMessages,
+  stockEntryReversalFailureIsDefinite, stockEntryReversalPath, stockEntryReversible, validStockEntryHistoryQuery,
+  validStockQuantity, type StockEntryHistoryRow, type StockEntryInput, type StockEntryReversalInput,
 } from './stockEntryModel';
 
 const key = 'warehouse_key_0001';
@@ -272,5 +275,121 @@ describe('stock catalog read contract', () => {
     expect(() => parseStockCatalog(catalogJSON({ location: { id: 2, name: 'Sucursal A' } }))).toThrow('Respuesta inválida del servidor.');
     expect(() => parseStockCatalog(catalogJSON({ page: 2 }))).toThrow('Respuesta inválida del servidor.');
     expect(() => parseStockCatalog(catalogJSON({ page_size: 10 }))).toThrow('Respuesta inválida del servidor.');
+  });
+});
+
+describe('stock counter-entry contract', () => {
+  const reversible = (overrides: Partial<StockEntryHistoryRow> = {}): StockEntryHistoryRow => ({
+    id: 7, note: 'Remito 0002', created_at: '2026-11-04T14:20:00Z', lines: 2, total_units: 18,
+    reversed_by: null, ...overrides });
+  const counterJSON = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+    id: 9, location_id: 1, note: '', created_by_account_id: 1, created_at: '2026-11-04T14:21:00Z',
+    lines: [{ variant_id: 1, quantity: -4 }, { variant_id: 2, quantity: -14 }], total_units: -18, ...overrides });
+
+  it('canonicalizes the mandatory reason and keeps the exact payload', () => {
+    expect(canonicalStockEntryReversalInput({ operation_key: 'warehouse_key_0001', reason: '  error de carga  ' }))
+      .toEqual({ operation_key: 'warehouse_key_0001', reason: 'error de carga' });
+    expect(JSON.stringify(canonicalStockEntryReversalInput({ operation_key: 'warehouse_key_0001', reason: ' error de carga ' })))
+      .toBe('{"operation_key":"warehouse_key_0001","reason":"error de carga"}');
+    expect(canonicalStockEntryReversalReason('ñ'.repeat(500))).toBe('ñ'.repeat(500));
+  });
+
+  it.each([
+    ['an empty reason', { operation_key: 'warehouse_key_0001', reason: '' }],
+    ['a blank reason', { operation_key: 'warehouse_key_0001', reason: '   \n' }],
+    ['a reason over 500 characters', { operation_key: 'warehouse_key_0001', reason: 'ñ'.repeat(501) }],
+    ['a reason with NUL', { operation_key: 'warehouse_key_0001', reason: 'a\u0000b' }],
+    ['a short operation key', { operation_key: 'k'.repeat(15), reason: 'motivo' }],
+    ['an operation key outside the alphabet', { operation_key: 'k'.repeat(30) + '.bad', reason: 'motivo' }],
+    ['an unknown field', { operation_key: 'warehouse_key_0001', reason: 'motivo', lines: [] }],
+  ])('rejects %s', (_, input) => {
+    expect(() => canonicalStockEntryReversalInput(input as unknown as StockEntryReversalInput))
+      .toThrow('Contra-asiento inválido.');
+  });
+
+  it('builds the frozen reversal path and admits only a canonical target id', () => {
+    expect(stockEntryReversalPath(7)).toBe('/api/stock-entries/7/reverse');
+    expect(stockEntryReversalPath(9007199254740991)).toBe('/api/stock-entries/9007199254740991/reverse');
+    for (const id of [0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => stockEntryReversalPath(id)).toThrow('Contra-asiento inválido.');
+    }
+  });
+
+  it('parses a counter-entry with negative lines and a negative total', () => {
+    const record = parseStockEntryReversalRecord(counterJSON());
+    expect(record).toEqual({ id: 9, location_id: 1, note: '', created_by_account_id: 1,
+      created_at: '2026-11-04T14:21:00Z',
+      lines: [{ variant_id: 1, quantity: -4 }, { variant_id: 2, quantity: -14 }], total_units: -18 });
+    expect(Object.isFrozen(record)).toBe(true);
+    expect(Object.isFrozen(record.lines)).toBe(true);
+  });
+
+  it.each([
+    ['a positive line', counterJSON({ lines: [{ variant_id: 1, quantity: 4 }, { variant_id: 2, quantity: -14 }] })],
+    ['a zero line', counterJSON({ lines: [{ variant_id: 1, quantity: 0 }, { variant_id: 2, quantity: -18 }] })],
+    ['a positive total', counterJSON({ total_units: 18 })],
+    ['a zero total', counterJSON({ total_units: 0 })],
+    ['a total that does not add up', counterJSON({ total_units: -9 })],
+    ['an extra field', counterJSON({ reason: 'error de carga' })],
+    ['a note', counterJSON({ note: 'Remito 0002' })],
+    ['a duplicated JSON key', '{"id":9,"id":10,"location_id":1,"note":"","created_by_account_id":1,"created_at":"2026-11-04T14:21:00Z","lines":[{"variant_id":1,"quantity":-1}],"total_units":-1}'],
+  ])('rejects a counter-entry with %s', (_, raw) => {
+    expect(() => parseStockEntryReversalRecord(raw)).toThrow('Respuesta inválida del servidor.');
+  });
+
+  it('proves the counter-entry is the exact negation of the listed document', () => {
+    const record = parseStockEntryReversalRecord(counterJSON());
+    expect(matchesStockEntryReversal(reversible(), record)).toBe(true);
+    expect(matchesStockEntryReversal(reversible({ lines: 1 }), record)).toBe(false);
+    expect(matchesStockEntryReversal(reversible({ total_units: 9 }), record)).toBe(false);
+    expect(matchesStockEntryReversal(reversible({ total_units: -18 }), record)).toBe(false);
+    expect(matchesStockEntryReversal(reversible(), parseStockEntryReversalRecord(counterJSON({ location_id: 2 })))).toBe(false);
+  });
+
+  it('offers the action only on documents that have no counter-entry yet', () => {
+    expect(stockEntryReversible(reversible())).toBe(true);
+    expect(stockEntryReversible(reversible({ reversed_by: 9 }))).toBe(false);
+    // A counter-entry is never reversible: its own lines are already negative.
+    expect(stockEntryReversible(reversible({ total_units: -18 }))).toBe(false);
+  });
+
+  it('admits only the exact reversal error code for each status', () => {
+    expect(parseStockEntryReversalError('{"error":"invalid_request"}', 400)).toBe('invalid_request');
+    expect(parseStockEntryReversalError('{"error":"unauthenticated"}', 401)).toBe('unauthenticated');
+    expect(parseStockEntryReversalError('{"error":"forbidden"}', 403)).toBe('forbidden');
+    expect(parseStockEntryReversalError('{"error":"not_found"}', 404)).toBe('not_found');
+    expect(parseStockEntryReversalError('{"error":"decision_conflict"}', 409)).toBe('decision_conflict');
+    expect(parseStockEntryReversalError('{"error":"retry_conflict"}', 409)).toBe('retry_conflict');
+    expect(parseStockEntryReversalError('{"error":"insufficient_stock"}', 409)).toBe('insufficient_stock');
+    expect(parseStockEntryReversalError('{"error":"service_unavailable"}', 503)).toBe('service_unavailable');
+  });
+
+  it.each([
+    ['the creation code set on a reversal status', '{"error":"retry_conflict"}', 403],
+    ['a reversal code on the creation status', '{"error":"unauthenticated"}', 400],
+    ['an unknown code', '{"error":"stale"}', 409],
+    ['an unlisted status', '{"error":"not_found"}', 200],
+    ['an envelope with more than one key', '{"error":"forbidden","detail":"x"}', 403],
+    ['a non JSON body', '<html>proxy</html>', 503],
+  ])('rejects %s', (_, raw, status) => {
+    expect(() => parseStockEntryReversalError(raw, status)).toThrow('Respuesta inválida del servidor.');
+  });
+
+  it('maps every reversal code to a clear Spanish message and names the stock cause', () => {
+    for (const codes of stockEntryReversalAdmittedErrors.values()) {
+      for (const code of codes) expect(stockEntryReversalErrorMessages[code]).toMatch(/[áéíóúñ¿]/i);
+    }
+    expect(stockEntryReversalErrorMessages.insufficient_stock).toContain('el stock');
+    expect(stockEntryReversalErrorMessages.insufficient_stock).toContain('no alcanza');
+    expect(stockEntryReversalErrorMessages.decision_conflict).toContain('contra-asiento');
+    expect(stockEntryReversalErrorMessages.not_found).toContain('no existe');
+    expect(stockEntryReversalErrorMessages.network).toContain('No se pudo conectar');
+    for (const code of ['invalid_request', 'unauthenticated', 'forbidden', 'not_found', 'decision_conflict',
+      'retry_conflict', 'insufficient_stock'] as const) {
+      expect(stockEntryReversalFailureIsDefinite(code)).toBe(true);
+    }
+    for (const code of ['service_unavailable', 'invalid_response', 'network', 'aborted'] as const) {
+      expect(stockEntryReversalFailureIsDefinite(code)).toBe(false);
+    }
   });
 });
