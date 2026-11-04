@@ -53,9 +53,10 @@ func resolveBranch(ctx context.Context, q querier, actor auth.Identity) (int16, 
 
 // Create applies one immutable sale atomically in the actor's own branch: the header,
 // every line and the stock decrement are one transaction, so a refused line leaves the
-// ledger exactly as it was. The client supplies the method, the client and the lines;
-// the branch, the actor, the per-branch correlative, the warranty number, the frozen
-// minimum, the frozen warranty term and the subtotal are the database's own.
+// ledger exactly as it was. The client supplies how the total was settled, the client and
+// the lines; the branch, the actor, the per-branch correlative, the warranty number, the
+// frozen minimum, the frozen warranty term, the subtotal and the payment label are the
+// database's own.
 //
 // Lines are inserted in ascending variant order, which is the database's balance-row
 // lock order, and the document completeness plus its total are deferred triggers, so a
@@ -87,14 +88,18 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 		return Sale{}, err
 	}
 	var id int64
-	// The branch correlative and the warranty number are omitted on purpose: the
-	// admission trigger allocates both inside the branch. created_by_account_id is the
-	// session identity, never a value from the request.
-	err = tx.QueryRow(ctx, `INSERT INTO sales(branch_location_id,payment_method,customer_name,customer_phone,
-  customer_document,total,created_by_account_id)
- VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-		branch, string(payload.PaymentMethod), payload.Customer.Name, payload.Customer.Phone,
-		payload.Customer.Document, string(payload.Total), int64(actor.AccountID)).Scan(&id)
+	// The branch correlative, the warranty number and the payment label are omitted on
+	// purpose: the admission trigger allocates the first two and the third is a generated
+	// column. created_by_account_id is the session identity, never a value from the
+	// request, and each amount is written under its own method so the database can judge
+	// the sum.
+	cash, card, transfer := amountsOf(payload.Payments)
+	err = tx.QueryRow(ctx, `INSERT INTO sales(branch_location_id,cash_amount,card_amount,transfer_amount,
+  customer_name,customer_phone,customer_document,total,created_by_account_id)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+		branch, string(cash), string(card), string(transfer), payload.Customer.Name,
+		payload.Customer.Phone, payload.Customer.Document, string(payload.Total),
+		int64(actor.AccountID)).Scan(&id)
 	if err != nil {
 		return Sale{}, mapFailure(ctx, err)
 	}
@@ -172,10 +177,12 @@ func loadSale(ctx context.Context, q querier, id int64) (Sale, error) {
 }
 
 // readHeader reads one sale header. A non-zero branch is the read scope: a sale of
-// another branch is not found, exactly like an unknown document.
+// another branch is not found, exactly like an unknown document. The three amount columns
+// are read back as canonical text and rebuilt into the frozen-order payments, and the
+// label is the generated column the database derived from them.
 func readHeader(ctx context.Context, q querier, id, branch int64) (Sale, error) {
 	var sale Sale
-	var method, total string
+	var method, cash, card, transfer, total string
 	scope := ""
 	args := []any{id}
 	if branch != 0 {
@@ -183,20 +190,29 @@ func readHeader(ctx context.Context, q querier, id, branch int64) (Sale, error) 
 		args = append(args, branch)
 	}
 	err := q.QueryRow(ctx, `SELECT s.id,s.branch_location_id,s.branch_sequence,s.warranty_number,
-  s.payment_method,s.customer_name,s.customer_phone,s.customer_document,s.total::text,
+  s.payment_method,s.cash_amount::text,s.card_amount::text,s.transfer_amount::text,
+  s.customer_name,s.customer_phone,s.customer_document,s.total::text,
   s.created_by_account_id,s.created_at FROM sales s WHERE s.id=$1`+scope, args...).Scan(
 		&sale.ID, &sale.BranchLocationID, &sale.BranchSequence, &sale.WarrantyNumber, &method,
-		&sale.Customer.Name, &sale.Customer.Phone, &sale.Customer.Document, &total,
-		&sale.CreatedByAccountID, &sale.CreatedAt)
+		&cash, &card, &transfer, &sale.Customer.Name, &sale.Customer.Phone,
+		&sale.Customer.Document, &total, &sale.CreatedByAccountID, &sale.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Sale{}, ErrNotFound
 	}
 	if err != nil {
 		return Sale{}, fail(ctx)
 	}
+	payments, paid, ok := paymentsOf(cash, card, transfer)
 	sale.PaymentMethod = PaymentMethod(method)
+	sale.Payments = payments
 	sale.Total = Money(total)
-	if !sale.PaymentMethod.Valid() || sale.Total.String() != total ||
+	totalCents, canonical := centsOf(sale.Total)
+	// A persisted sale always carries one to three payments that close against its total,
+	// and its derived label agrees with them: a record outside that shape is not what this
+	// domain wrote, so the read fails closed instead of describing it.
+	if !ok || !canonical || sale.Total.String() != total || len(payments) < 1 ||
+		paid != totalCents || !sale.PaymentMethod.Recorded() ||
+		(len(payments) > 1) != (sale.PaymentMethod == PaymentMixed) ||
 		sale.BranchLocationID <= warehouseLocationID ||
 		sale.BranchSequence < 1 || sale.WarrantyNumber == "" ||
 		sale.CreatedByAccountID < 1 || sale.CreatedAt.IsZero() {
@@ -244,8 +260,8 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
 	detail := Detail{
 		ID: sale.ID, BranchLocationID: sale.BranchLocationID, BranchSequence: sale.BranchSequence,
 		WarrantyNumber: sale.WarrantyNumber, PaymentMethod: sale.PaymentMethod,
-		Customer: sale.Customer, Total: sale.Total, CreatedByAccountID: sale.CreatedByAccountID,
-		CreatedAt: sale.CreatedAt,
+		Payments: sale.Payments, Customer: sale.Customer, Total: sale.Total,
+		CreatedByAccountID: sale.CreatedByAccountID, CreatedAt: sale.CreatedAt,
 	}
 	rows, err := tx.Query(ctx, `SELECT l.variant_id,l.quantity,l.unit_price::text,l.min_price::text,
   l.warranty_months,l.subtotal::text,e.id,e.brand,e.model,e.capacity_ah::text,v.polarity
@@ -354,8 +370,9 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q ListQuery) (Pag
 		}
 		summary.PaymentMethod = PaymentMethod(method)
 		summary.Total = Money(total)
-		// A persisted sale always has between one and MaxLines lines.
-		if !summary.PaymentMethod.Valid() || summary.Total.String() != total ||
+		// A persisted sale always has between one and MaxLines lines, and its label is one
+		// the database derived from its own amounts.
+		if !summary.PaymentMethod.Recorded() || summary.Total.String() != total ||
 			summary.BranchSequence < 1 || summary.WarrantyNumber == "" ||
 			summary.CreatedAt.IsZero() || lines < 1 || lines > MaxLines ||
 			(len(result.Sales) > 0 && summary.ID >= result.Sales[len(result.Sales)-1].ID) {
