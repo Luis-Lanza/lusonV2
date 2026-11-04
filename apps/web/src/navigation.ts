@@ -1,6 +1,6 @@
 import { transferDetailPath } from './transferModel';
 
-export type NavigationRoute = { section: 'inventory' } | { section: 'administration' } | { section: 'password' } | { section: 'stock' } | { section: 'adjustments' } | { section: 'transfers'; id: string | null };
+export type NavigationRoute = { section: 'inventory' } | { section: 'administration' } | { section: 'password' } | { section: 'stock' } | { section: 'adjustments' } | { section: 'catalog' } | { section: 'transfers'; id: string | null };
 
 export function readNavigation(): NavigationRoute {
   const hash = window.location.hash;
@@ -8,6 +8,7 @@ export function readNavigation(): NavigationRoute {
   if (hash === '#/mi-contrasena') return { section: 'password' };
   if (hash === '#/ingresos') return { section: 'stock' };
   if (hash === '#/ajustes') return { section: 'adjustments' };
+  if (hash === '#/catalogo') return { section: 'catalog' };
   if (hash === '#/transferencias') return { section: 'transfers', id: null };
   const match = /^#\/transferencias\/([^/]+)$/.exec(hash);
   if (match) {
@@ -25,6 +26,7 @@ export function navigationHash(route: NavigationRoute): string {
   if (route.section === 'inventory') return '#/inventario';
   if (route.section === 'stock') return '#/ingresos';
   if (route.section === 'adjustments') return '#/ajustes';
+  if (route.section === 'catalog') return '#/catalogo';
   return '#/transferencias' + (route.id === null ? '' : '/' + route.id);
 }
 

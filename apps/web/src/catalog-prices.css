@@ -1,0 +1,107 @@
+/* Catalogue price section: layout only. Colours, radii, shadows, spacing, focus
+   ring and 44px touch targets reuse the tokens and values already declared in
+   style.css, so no new colour value enters the application. */
+.catalog-prices { display: grid; gap: 16px; min-width: 0; max-width: 1600px; width: 100%; }
+.catalog-heading { display: grid; gap: 8px; }
+.catalog-heading small { color: var(--muted); font-size: 11px; letter-spacing: .04em; }
+.catalog-heading h1 { margin: 0; }
+.catalog-heading p { color: var(--muted); font-size: 13px; line-height: 1.6; max-width: 74ch; }
+.catalog-panel { display: grid; gap: 16px; min-width: 0; padding: 24px; background: #fff;
+  border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 1px 2px #2421240d; }
+.catalog-panel-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 16px; min-width: 0; }
+.catalog-panel-head h2 { font-size: 18px; font-weight: 600; }
+.catalog-panel .catalog-hint, .catalog-panel-head .catalog-hint { margin-top: 4px; }
+.catalog-tag { display: inline-block; flex-shrink: 0; padding: 4px 8px; background: var(--page);
+  border: 1px solid var(--border); border-radius: 3px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.catalog-hint { color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.catalog-filters { display: grid; grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, .8fr)); gap: 12px; }
+.catalog-filters label { display: grid; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }
+.catalog-filters input, .catalog-filters select { width: 100%; min-height: 44px; padding: 10px 12px;
+  border-color: var(--muted); color: #242124; font-size: 13px; }
+.catalog-table-wrap { overflow-x: auto; }
+.catalog-table { width: 100%; }
+.catalog-table caption { text-align: left; }
+.catalog-table th, .catalog-table td { height: auto; padding: 12px; vertical-align: middle; text-align: left;
+  white-space: normal; overflow-wrap: anywhere; }
+.catalog-table th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .03em; background: var(--page); }
+.catalog-table th:nth-child(n+2), .catalog-table td:nth-child(n+2) { text-align: left; }
+.catalog-table td small { display: block; margin-top: 4px; color: var(--muted); }
+/* The unfolded row keeps the tint and the wine marker the existing tables use. */
+.catalog-row { cursor: pointer; }
+.catalog-row:hover { background: var(--page); }
+.catalog-row[aria-expanded="true"] { background: var(--tint); box-shadow: inset 2px 0 0 var(--wine); }
+.catalog-openaction { color: var(--wine); font-size: 12px; font-weight: 600; }
+.catalog-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.catalog-chip { display: inline-block; padding: 3px 7px; border: 1px solid var(--border); border-radius: 3px;
+  background: var(--page); color: var(--muted); font-size: 11px; }
+.catalog-chip.ok { background: var(--tint); border-color: var(--border); color: var(--wine); font-weight: 600; }
+.catalog-chip.short { border-style: dashed; }
+/* The detail row: the price form unfolds under its own row, never in a dialog. */
+.catalog-table tr.catalog-detail > td { padding: 0; background: var(--page); border-bottom: 1px solid var(--border); }
+.catalog-detail-inner { display: grid; gap: 16px; padding: 20px 24px 24px; }
+.catalog-detail-inner > header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.catalog-detail-inner h3 { margin: 0; font-size: 16px; }
+.catalog-detail-inner > header p { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.catalog-form { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 24px; align-items: start; }
+.catalog-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.catalog-pair label, .catalog-warranty { display: grid; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }
+.catalog-pair input, .catalog-warranty input { width: 100%; min-height: 44px; padding: 10px 12px;
+  border-color: var(--muted); color: #242124; font-size: 13px; font-variant-numeric: tabular-nums; }
+.catalog-warranty { margin-top: 16px; }
+.catalog-warranty-value[readonly] { border-style: dashed; color: var(--muted); }
+.catalog-pair label + .catalog-hint { margin-top: 8px; }
+.catalog-branches { border: 0; padding: 0; margin: 0; min-width: 0; }
+.catalog-branches legend { padding: 0; margin-bottom: 8px; color: var(--muted); font-size: 12px; }
+.catalog-branch { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 12px; align-items: center;
+  padding: 12px; margin-bottom: 8px; background: #fff; border: 1px solid var(--border); border-radius: 4px; }
+.catalog-branch input[type="checkbox"] { width: 18px; height: 18px; min-height: 0; margin: 0; accent-color: var(--wine); }
+.catalog-branch strong { font-size: 13px; }
+.catalog-branch small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+.catalog-branch-values { display: grid; gap: 2px; text-align: right; color: var(--muted);
+  font-size: 12px; line-height: 1.6; font-variant-numeric: tabular-nums; }
+.catalog-note { margin-top: 16px; padding: 12px; background: var(--tint); border-left: 2px solid var(--wine);
+  font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.catalog-note strong { color: var(--wine); }
+.catalog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 12px; margin-top: 16px;
+  padding-top: 16px; border-top: 1px solid var(--border); }
+.catalog-actions button { min-width: 44px; min-height: 44px; white-space: normal; overflow-wrap: anywhere; }
+.catalog-actions .catalog-cancel { border-color: var(--border); color: var(--muted); }
+.catalog-status { min-height: 24px; margin-top: 12px; color: var(--wine); font-size: 13px; line-height: 1.6;
+  overflow-wrap: anywhere; }
+.catalog-message { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; color: var(--muted);
+  font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.catalog-message button { min-width: 44px; min-height: 44px; border-color: var(--muted); }
+.catalog-notice { min-height: 24px; color: var(--wine); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.catalog-panel .pager { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px;
+  background: var(--page); border: 1px solid var(--border); border-radius: 4px; }
+.catalog-panel .page-controls { flex-wrap: wrap; }
+.catalog-panel .page-controls :is(button, select) { min-height: 44px; }
+.catalog-prices :is(button, input, select):focus-visible { outline: 2px solid var(--wine); outline-offset: 3px; }
+
+@media (max-width: 1050px) {
+  .catalog-form { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 767px) {
+  .catalog-panel { padding: 16px; border-radius: 8px; }
+  .catalog-panel-head h2 { font-size: 16px; }
+  .catalog-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .catalog-filters label:first-child { grid-column: 1 / -1; }
+  .catalog-detail-inner { padding: 16px; }
+  .catalog-actions { justify-content: stretch; }
+  .catalog-actions button { flex: 1 1 100%; }
+  .catalog-pair { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 600px) {
+  .catalog-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .catalog-table, .catalog-table tbody { display: block; width: 100%; min-width: 0; }
+  .catalog-table tr.catalog-row { display: grid; gap: 8px; padding: 12px; margin-bottom: 12px;
+    background: #fff; border: 1px solid var(--border); border-radius: 8px; }
+  .catalog-table tr.catalog-detail { display: block; margin: -8px 0 12px; border: 1px solid var(--border);
+    border-radius: 8px; overflow: hidden; }
+  .catalog-table td { display: block; padding: 0; border: 0; }
+  .catalog-table tr.catalog-detail > td { display: block; }
+  .catalog-table td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 4px;
+    color: var(--muted); font-size: 11px; letter-spacing: .03em; text-transform: uppercase; }
+  .catalog-branch { grid-template-columns: auto minmax(0, 1fr); }
+  .catalog-branch-values { grid-column: 1 / -1; text-align: left; }
+}
