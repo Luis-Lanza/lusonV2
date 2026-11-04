@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "comments": [
+    {
+      "id": "qg6pos2i",
+      "file": "01-variant-first.html",
+      "selector": "#main > div:nth-of-type(2) > section:nth-of-type(2)",
+      "excerpt": "CAR NS40ZL 35 Ah · Polaridad L · 3 celdas de origen (B5, C5, D5) Precio mínimo de venta Precio sugerido de venta Montos sin decimales ocultos: dos decimales. El sugerido nunca puede quedar por debajo del mínimo. Por debajo del mínimo la sucursal no puede vender. Plazo de garantía de la variante Dato",
+      "comment": "me gusta este estilo!, pero me gustaria que esta seccion aparezca asi como hicimos en ingresos! que se despliegue\ncachas?",
+      "createdAt": "2026-11-04T20:51:08.938Z",
+      "status": "resolved",
+      "sentAt": "2026-11-04T20:51:09.068Z",
+      "resolvedAt": "2026-11-04T20:52:04.442Z"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "title": "Catálogo de precios por sucursal",
+  "brief": "El Almacén define precio mínimo y sugerido por variante y elige a qué sucursales se aplica, con asignación en bloque a varias sucursales. Luson, español rioplatense, tono de mostrador administrativo.",
+  "feature": "odd/tasks/punto-de-venta.md",
+  "artboards": [
+    { "file": "01-variant-first.html", "title": "Batería primero", "tradeoff": "La operación nace en la batería y el formulario se despliega en su fila, sin columna lateral fija; comparar sucursales exige desplegar cada batería.", "width": 1440, "height": 900 },
+    { "file": "02-branch-matrix.html", "title": "Matriz por sucursal", "tradeoff": "Todo comparable de un vistazo y barra de asignación en bloque; más densidad y más riesgo de editar la celda equivocada.", "width": 1440, "height": 900 },
+    { "file": "03-guided.html", "title": "Alta guiada", "tradeoff": "Cada escritura se revisa antes de aplicar a varias sucursales; cargar muchas baterías cuesta más clics.", "width": 1440, "height": 900 }
+  ]
+}

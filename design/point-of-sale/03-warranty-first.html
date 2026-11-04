@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Garantía primero · Punto de venta · Luson</title>
+<style>
+*{box-sizing:border-box}
+:root{font-family:sans-serif;color:#242124;background:#F8F6F4;font-size:14px;
+--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;
+--ok-bg:#ECFDF5;--ok-ink:#047857;--ok-border:#A7F3D0;
+--warn-bg:#FFFBEF;--warn-ink:#805400;--warn-border:#E8CF86;
+--short-bg:#FFF0F0;--short-ink:#991515;--short-border:#FFDAD6}
+body{margin:0}
+h1,h2,h3,p,ul,dl,dd,dt{margin:0}
+h1{font-size:22px}
+h2{font-size:18px}
+h3{font-size:14px}
+p{line-height:1.6}
+ul{list-style:none;padding:0}
+small,.muted{color:var(--muted);font-size:12px}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;padding:10px 12px;min-height:44px}
+button:hover{background:var(--tint)}
+button.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF;font-weight:600}
+button.primary:hover{background:var(--hover)}
+button.quiet{border:1px solid var(--border);color:var(--muted);min-height:0;padding:6px 10px}
+button[disabled]{color:#595459;border-color:#AAA5AA;background:#EFEDEF;cursor:not-allowed}
+:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+input,select{padding:10px 12px;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;width:100%;min-height:44px}
+label{display:grid;gap:8px;font-size:12px}
+aside.nav{position:fixed;width:240px;inset:0 auto 0 0;background:#FFFFFF;border-right:1px solid var(--border);padding:12px;display:flex;flex-direction:column;justify-content:space-between}
+.brand{display:flex;gap:10px;align-items:center;padding:4px 8px 16px;border-bottom:1px solid var(--border)}
+.logo{background:var(--wine);color:#FFFFFF;border-radius:4px;padding:8px;font-weight:700;font-size:18px}
+.brand strong{color:var(--wine);font-size:18px}
+.brand small{display:block}
+nav{display:grid;gap:4px;margin-top:12px}
+nav button{text-align:left;border:0;padding:12px}
+nav .active{background:var(--tint);color:var(--wine);border-left:2px solid var(--wine);font-weight:600}
+.identity{padding:12px;background:var(--page);border:1px solid var(--border)}
+.identity small{display:block;margin-top:6px}
+.top{margin-left:240px;height:56px;background:#FFFFFF;border-bottom:1px solid var(--border);padding:16px 24px;display:flex;justify-content:space-between;align-items:center}
+main{margin-left:240px;padding:32px;max-width:1700px}
+.heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px;flex-wrap:wrap}
+.heading p{color:var(--muted);margin-top:6px;max-width:62ch}
+.layout{display:grid;grid-template-columns:minmax(300px,.85fr) minmax(0,1fr);gap:16px;align-items:start}
+.panel{background:#FFFFFF;border:1px solid var(--border);border-radius:4px;padding:20px}
+.sales{display:grid;gap:8px;margin-top:12px}
+.sale{display:grid;grid-template-columns:1fr auto;gap:8px;border:1px solid var(--border);border-radius:4px;padding:12px;cursor:pointer;text-align:left;background:#FFFFFF;min-height:0}
+.sale:hover{background:var(--page)}
+.sale[aria-current="true"]{background:var(--tint);border-color:var(--wine);box-shadow:inset 2px 0 0 var(--wine)}
+.sale .n{font-variant-numeric:tabular-nums;font-weight:600}
+.sale .amt{font-variant-numeric:tabular-nums;font-weight:700;text-align:right}
+.sale small{display:block;margin-top:4px}
+.tag{display:inline-block;border:1px solid var(--border);background:var(--page);padding:2px 6px;border-radius:3px;font-size:10px;text-transform:uppercase;letter-spacing:.03em}
+.tag.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-border)}
+.wrap{display:grid;gap:16px}
+.toolbar{display:flex;gap:12px;justify-content:space-between;align-items:center;flex-wrap:wrap}
+.toolbar .acts{display:flex;gap:8px}
+.paper{background:#FFFFFF;border:1px solid var(--border);border-radius:3px;box-shadow:0 1px 2px #2421240D;padding:32px 36px;max-width:760px;margin:0 auto}
+.paper .doc-head{display:grid;grid-template-columns:1fr auto;gap:16px;align-items:start;border-bottom:2px solid var(--wine);padding-bottom:16px}
+.paper .doc-head strong{color:var(--wine);font-size:20px;letter-spacing:.01em}
+.paper .doc-head .num{text-align:right;font-variant-numeric:tabular-nums}
+.paper .doc-head .num b{display:block;font-size:20px;color:var(--wine)}
+.paper h2{font-size:15px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin:20px 0 8px}
+.paper dl{display:grid;grid-template-columns:auto 1fr;gap:6px 16px;font-size:13px}
+.paper dt{color:var(--muted)}
+.paper dd{font-weight:600}
+.paper table{border-collapse:collapse;width:100%;font-size:12px;margin-top:8px}
+.paper th{text-align:left;background:var(--page);color:var(--muted);font-size:10px;text-transform:uppercase;padding:8px 10px}
+.paper td{padding:10px;border-bottom:1px solid var(--border);vertical-align:top}
+.paper .num{font-variant-numeric:tabular-nums;text-align:right}
+.paper .total{display:flex;justify-content:space-between;align-items:baseline;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+.paper .total b{font-size:20px;color:var(--wine);font-variant-numeric:tabular-nums}
+.paper .terms{margin-top:20px;font-size:11px;color:var(--muted);line-height:1.7;border-top:1px dashed var(--border);padding-top:12px}
+.paper .sign{display:grid;grid-template-columns:1fr 1fr;gap:32px;margin-top:32px}
+.paper .sign div{border-top:1px solid var(--muted);padding-top:6px;font-size:11px;color:var(--muted);text-align:center}
+dialog{border:1px solid var(--border);border-radius:8px;padding:0;width:min(720px,96vw);box-shadow:0 20px 50px #24212433}
+dialog::backdrop{background:#24212466}
+dialog .dlg-head{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+dialog .dlg-body{padding:20px;display:grid;gap:14px}
+dialog .dlg-foot{padding:16px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:12px}
+dialog .line{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:end}
+dialog .line .q{width:90px}
+dialog .line input{min-height:40px;font-variant-numeric:tabular-nums;text-align:right}
+.status{color:var(--wine);min-height:20px;font-size:12px}
+.skip{position:fixed;top:-100px;background:#FFFFFF;color:var(--wine);padding:12px;z-index:10}
+.skip:focus{top:8px}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+@media(max-width:1100px){.layout{grid-template-columns:1fr}}
+@media(max-width:767px){aside.nav{position:static;width:auto}
+aside.nav .identity{display:none}
+.top,main{margin-left:0}
+.top{height:auto}
+main{padding:16px}
+.paper{padding:20px}}
+</style>
+<body>
+<a class="skip" href="#main">Ir al contenido</a>
+<aside class="nav" aria-label="Barra lateral">
+  <div>
+    <div class="brand"><span class="logo">L</span><div><strong>Luson</strong><small>Gestión de inventario</small></div></div>
+    <nav aria-label="Navegación principal">
+      <button type="button" data-demo>▦ Inventario</button>
+      <button type="button" data-demo>⇄ Transferencias</button>
+      <button type="button" class="active" aria-current="page">🛒 Punto de venta</button>
+    </nav>
+  </div>
+  <div class="identity"><strong>sucursala</strong><small>Sucursal A · Encargado</small></div>
+</aside>
+<header class="top"><strong>Punto de venta</strong><span>Sucursal A <small>/ Ventas y garantías</small></span></header>
+<main id="main">
+  <div class="heading">
+    <div>
+      <h1>Ventas y garantías</h1>
+      <p>Cada venta de Sucursal A y su garantía emitida. La numeración es propia de la sucursal: Sucursal B lleva la suya.</p>
+    </div>
+    <button type="button" class="primary" data-open-dialog>+ Nueva venta</button>
+  </div>
+
+  <div class="layout">
+    <section class="panel" aria-labelledby="hoy">
+      <h2 id="hoy">Hoy · 4 ventas</h2>
+      <p class="muted" style="margin-top:4px">Total $ 1.012.000 · 6 baterías</p>
+      <div class="sales">
+        <button class="sale" type="button" aria-current="true">
+          <span><span class="n">V-000127 · G-000127</span><small>10:24 · Marta Giménez · 2 × CAR NS40ZL + 1 × TOYO NS60L</small></span>
+          <span class="amt">$ 304.000</span>
+        </button>
+        <button class="sale" type="button">
+          <span><span class="n">V-000126 · G-000126</span><small>09:58 · Rubén Ocampo · 1 × CAR NS40ZL</small></span>
+          <span class="amt">$ 96.000</span>
+        </button>
+        <button class="sale" type="button">
+          <span><span class="n">V-000125 · G-000125</span><small>09:12 · Sandra Peralta · 1 × TOYO NS60L</small></span>
+          <span class="amt">$ 118.000</span>
+        </button>
+        <button class="sale" type="button">
+          <span><span class="n">V-000124 · G-000124</span><small>08:40 · Efectivo · 2 × CAR N120</small></span>
+          <span class="amt">$ 494.000</span>
+        </button>
+      </div>
+      <p class="muted" style="margin-top:12px">Las ventas emitidas no se editan ni se borran: el stock ya se descontó y la garantía está en manos del cliente.</p>
+    </section>
+
+    <div class="wrap">
+      <div class="toolbar">
+        <div><h2>Garantía G-000127</h2><small class="muted">Emitida el 04/11/2026 a las 10:24 · Sucursal A</small></div>
+        <div class="acts">
+          <button type="button" class="quiet" data-demo>Ver venta</button>
+          <button type="button" class="primary" data-demo>Descargar PDF</button>
+        </div>
+      </div>
+
+      <article class="paper" aria-labelledby="doc">
+        <div class="doc-head">
+          <div>
+            <strong>LUSON</strong>
+            <small style="display:block;margin-top:4px">Baterías y servicio · Sucursal A</small>
+            <small style="display:block">Av. Siempreviva 742 · Sucursal A</small>
+          </div>
+          <div class="num">
+            <span class="tag ok">garantía</span>
+            <b>G-000127</b>
+            <small>Venta V-000127</small>
+          </div>
+        </div>
+
+        <h2 id="doc">Comprobante de garantía</h2>
+        <dl>
+          <dt>Cliente</dt><dd>Marta Giménez</dd>
+          <dt>Teléfono</dt><dd>381 555 0198</dd>
+          <dt>Documento</dt><dd>DNI 27.884.310</dd>
+          <dt>Fecha y hora</dt><dd>04/11/2026 · 10:24</dd>
+          <dt>Sucursal</dt><dd>Sucursal A (id 2)</dd>
+          <dt>Forma de pago</dt><dd>Efectivo</dd>
+        </dl>
+
+        <h2>Productos cubiertos</h2>
+        <table>
+          <thead><tr><th scope="col">Marca</th><th scope="col">Modelo</th><th scope="col">Capacidad</th><th scope="col">Pol.</th><th scope="col" class="num">Cant.</th><th scope="col" class="num">Precio</th><th scope="col" class="num">Garantía</th></tr></thead>
+          <tbody>
+            <tr><td>CAR</td><td>NS40ZL</td><td>35 Ah</td><td>L</td><td class="num">2</td><td class="num">$ 96.000</td><td class="num">6 meses</td></tr>
+            <tr><td>TOYO</td><td>NS60L</td><td>45 Ah</td><td>L</td><td class="num">1</td><td class="num">$ 112.000</td><td class="num">12 meses</td></tr>
+          </tbody>
+        </table>
+        <div class="total"><span>Total de la venta</span><b>$ 304.000</b></div>
+
+        <p class="terms">La garantía cubre defectos de fabricación desde la fecha de venta y hasta el plazo indicado por producto. Se acredita con este comprobante o con su número. No cubre daños por mal uso, sobrecarga, instalación incorrecta ni accidentes. Los plazos por producto fueron definidos por el Almacén y quedan congelados en esta emisión.</p>
+        <div class="sign"><div>Firma del vendedor</div><div>Firma del cliente</div></div>
+      </article>
+      <div class="status" role="status" aria-live="polite">Garantía G-000127 · PDF de una página con estos mismos datos</div>
+    </div>
+  </div>
+</main>
+
+<dialog id="venta" aria-labelledby="ventatitulo">
+  <form method="dialog">
+    <div class="dlg-head"><h2 id="ventatitulo">Nueva venta · Sucursal A</h2><button type="button" class="quiet" data-close>✕</button></div>
+    <div class="dlg-body">
+      <label>Buscar batería<input type="search" placeholder="CAR NS40ZL"></label>
+      <div class="line">
+        <div><strong>CAR NS40ZL</strong><small class="muted">$ 96.000 · mínimo $ 85.000 · 12 disponibles · 6 meses</small></div>
+        <label class="q">Cantidad<input value="2"></label>
+        <label>Precio<input value="96000"></label>
+      </div>
+      <p class="muted">Las baterías sin precio en esta sucursal no aparecen en la búsqueda: no son vendibles.</p>
+      <label>Cliente<input value="Marta Giménez · 381 555 0198 · DNI 27.884.310"></label>
+      <label>Forma de pago<select><option>Efectivo</option><option>Tarjeta</option><option>Transferencia</option></select></label>
+    </div>
+    <div class="dlg-foot"><button type="button" class="quiet" data-close>Cancelar</button><button type="button" class="primary" data-close>Cobrar $ 192.000 y emitir garantía</button></div>
+  </form>
+</dialog>
+
+<script>
+var dialog=document.getElementById('venta');
+document.querySelectorAll('[data-open-dialog]').forEach(function(button){button.addEventListener('click',function(){dialog.showModal();});});
+document.querySelectorAll('[data-close]').forEach(function(button){button.addEventListener('click',function(){dialog.close();});});
+document.querySelectorAll('[data-demo]').forEach(function(button){
+  button.addEventListener('click',function(){
+    var status=document.querySelector('.status');
+    if(status){status.textContent='Acción de demostración: '+button.textContent.trim();}
+  });
+});
+document.querySelectorAll('.sale').forEach(function(row){
+  row.addEventListener('click',function(){
+    document.querySelectorAll('.sale').forEach(function(other){other.setAttribute('aria-current','false')});
+    row.setAttribute('aria-current','true');
+  });
+});
+</script>
+</body>
+</html>

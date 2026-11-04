@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Búsqueda al teclado · Punto de venta · Luson</title>
+<style>
+*{box-sizing:border-box}
+:root{font-family:sans-serif;color:#242124;background:#F8F6F4;font-size:14px;
+--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;
+--ok-bg:#ECFDF5;--ok-ink:#047857;--ok-border:#A7F3D0;
+--warn-bg:#FFFBEF;--warn-ink:#805400;--warn-border:#E8CF86;
+--short-bg:#FFF0F0;--short-ink:#991515;--short-border:#FFDAD6}
+body{margin:0}
+h1,h2,h3,p,ul{margin:0}
+h1{font-size:20px}
+h2{font-size:16px}
+h3{font-size:13px}
+p{line-height:1.6}
+ul{list-style:none;padding:0}
+small,.muted{color:var(--muted);font-size:12px}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;padding:10px 12px;min-height:44px}
+button:hover{background:var(--tint)}
+button.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF;font-weight:600}
+button.primary:hover{background:var(--hover)}
+button.quiet{border:1px solid var(--border);color:var(--muted);min-height:0;padding:6px 10px}
+button[disabled]{color:#595459;border-color:#AAA5AA;background:#EFEDEF;cursor:not-allowed}
+:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+input,select{padding:10px 12px;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;width:100%;min-height:44px}
+label{display:grid;gap:8px;font-size:12px}
+kbd{font-family:sans-serif;font-size:11px;border:1px solid var(--border);border-bottom-width:2px;border-radius:3px;padding:2px 6px;background:#FFFFFF;color:var(--muted)}
+aside.nav{position:fixed;width:240px;inset:0 auto 0 0;background:#FFFFFF;border-right:1px solid var(--border);padding:12px;display:flex;flex-direction:column;justify-content:space-between}
+.brand{display:flex;gap:10px;align-items:center;padding:4px 8px 16px;border-bottom:1px solid var(--border)}
+.logo{background:var(--wine);color:#FFFFFF;border-radius:4px;padding:8px;font-weight:700;font-size:18px}
+.brand strong{color:var(--wine);font-size:18px}
+.brand small{display:block}
+nav{display:grid;gap:4px;margin-top:12px}
+nav button{text-align:left;border:0;padding:12px}
+nav .active{background:var(--tint);color:var(--wine);border-left:2px solid var(--wine);font-weight:600}
+.identity{padding:12px;background:var(--page);border:1px solid var(--border)}
+.identity small{display:block;margin-top:6px}
+.top{margin-left:240px;height:56px;background:#FFFFFF;border-bottom:1px solid var(--border);padding:16px 24px;display:flex;justify-content:space-between;align-items:center}
+main{margin-left:240px;padding:24px 24px 140px;max-width:1100px}
+.commander{background:#FFFFFF;border:1px solid var(--wine);border-radius:8px;box-shadow:0 20px 50px #24212433;padding:16px;margin-bottom:16px}
+.commander .row{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center}
+.commander input{border:0;font-size:18px;padding:8px 4px;min-height:40px}
+.commander input:focus{outline:none}
+.hint{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--muted);padding-top:10px;border-top:1px solid var(--border);margin-top:8px}
+.results{border:1px solid var(--border);border-radius:4px;overflow:hidden;background:#FFFFFF}
+.results li{display:grid;grid-template-columns:auto 1fr auto auto;gap:14px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--border);cursor:pointer}
+.results li:last-child{border-bottom:0}
+.results li:hover,.results li.on{background:var(--tint)}
+.results li[aria-disabled="true"]{cursor:not-allowed;background:var(--page);color:var(--muted)}
+.results .nm{font-weight:600}
+.results .pp{font-variant-numeric:tabular-nums;font-weight:700}
+.results .st{font-variant-numeric:tabular-nums;font-size:12px;color:var(--muted);text-align:right}
+.results .st b{display:block;color:#242124}
+.tag{display:inline-block;border:1px solid var(--border);background:var(--page);padding:2px 6px;border-radius:3px;font-size:10px;text-transform:uppercase;letter-spacing:.03em}
+.tag.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-border)}
+.tag.short{background:var(--short-bg);color:var(--short-ink);border-color:var(--short-border)}
+.ticket{background:#FFFFFF;border:1px solid var(--border);border-radius:4px;margin-top:16px}
+.ticket header{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}
+.ticket table{border-collapse:collapse;width:100%;font-size:13px}
+.ticket th{text-align:left;background:var(--page);color:var(--muted);font-size:10px;text-transform:uppercase;padding:8px 16px}
+.ticket td{padding:10px 16px;border-bottom:1px solid var(--border);vertical-align:middle}
+.ticket .num{font-variant-numeric:tabular-nums;text-align:right}
+.ticket .qty{display:flex;align-items:center;gap:6px}
+.ticket .qty button{min-height:30px;padding:2px 9px;line-height:1}
+.ticket .qty input{width:52px;min-height:30px;text-align:center;padding:2px;font-variant-numeric:tabular-nums}
+.ticket tfoot td{border-bottom:0;padding:12px 16px}
+.ticket .grand{font-size:22px;font-weight:700;color:var(--wine);font-variant-numeric:tabular-nums}
+.paystrip{position:fixed;inset:auto 0 0 240px;background:#FFFFFF;border-top:1px solid var(--border);padding:16px 24px;display:grid;grid-template-columns:1fr auto auto auto;gap:16px;align-items:end;box-shadow:0 -4px 16px #2421240D}
+.paystrip .field{display:grid;gap:4px;font-size:11px;color:var(--muted)}
+.paystrip .field input{min-height:40px}
+.paystrip .field.client input{width:320px}
+.paystrip .total{text-align:right;font-variant-numeric:tabular-nums}
+.paystrip .total small{display:block}
+.paystrip .total b{font-size:22px;color:var(--wine)}
+.status{color:var(--wine);min-height:20px;font-size:12px;padding:0 16px 12px}
+.skip{position:fixed;top:-100px;background:#FFFFFF;color:var(--wine);padding:12px;z-index:10}
+.skip:focus{top:8px}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+@media(max-width:1023px){.paystrip{position:static;inset:auto;margin-left:0;grid-template-columns:1fr 1fr}}
+@media(max-width:767px){aside.nav{position:static;width:auto}
+aside.nav .identity{display:none}
+.top,main{margin-left:0}
+.top{height:auto}
+main{padding:16px}}
+</style>
+<body>
+<a class="skip" href="#main">Ir al contenido</a>
+<aside class="nav" aria-label="Barra lateral">
+  <div>
+    <div class="brand"><span class="logo">L</span><div><strong>Luson</strong><small>Gestión de inventario</small></div></div>
+    <nav aria-label="Navegación principal">
+      <button type="button" data-demo>▦ Inventario</button>
+      <button type="button" data-demo>⇄ Transferencias</button>
+      <button type="button" class="active" aria-current="page">🛒 Punto de venta</button>
+    </nav>
+  </div>
+  <div class="identity"><strong>sucursala</strong><small>Sucursal A · Encargado</small></div>
+</aside>
+<header class="top"><strong>Punto de venta</strong><span>Sucursal A <small>/ Mostrador</small></span></header>
+<main id="main">
+  <div class="commander">
+    <div class="row">
+      <input type="search" value="car" aria-label="Buscar batería para vender" autofocus>
+      <button type="button" class="primary" data-demo>Agregar <kbd>↵</kbd></button>
+    </div>
+    <div class="hint"><span><kbd>F2</kbd> buscar</span><span><kbd>↑</kbd><kbd>↓</kbd> elegir</span><span><kbd>↵</kbd> agregar</span><span><kbd>F4</kbd> cobrar</span><span class="muted">3 resultados · escribí la marca, el modelo o los amperios</span></div>
+  </div>
+
+  <ul class="results" aria-label="Resultados">
+    <li class="on" tabindex="0">
+      <span class="nm">CAR NS40ZL</span>
+      <span class="muted">35 Ah · L · garantía 6 meses</span>
+      <span class="pp">$ 96.000</span>
+      <span class="st"><b>12 disp.</b><span class="tag ok">vendible</span></span>
+    </li>
+    <li tabindex="0">
+      <span class="nm">CAR N120</span>
+      <span class="muted">120 Ah · R · garantía 18 meses</span>
+      <span class="pp">$ 338.000</span>
+      <span class="st"><b>2 disp.</b><span class="tag ok">vendible</span></span>
+    </li>
+    <li aria-disabled="true">
+      <span class="nm">HYBRID BT54L</span>
+      <span class="muted">54 Ah · L · garantía 12 meses</span>
+      <span class="pp">$ —</span>
+      <span class="st"><b>4 disp.</b><span class="tag short">sin precio · no vendible</span></span>
+    </li>
+  </ul>
+
+  <section class="ticket" aria-labelledby="venta">
+    <header><h2 id="venta">Venta en curso</h2><span class="muted">2 líneas · Sucursal A</span></header>
+    <table>
+      <caption class="muted" style="text-align:left;padding:12px 16px 0">El precio unitario no puede bajar del mínimo autorizado de la sucursal.</caption>
+      <thead><tr><th scope="col">Batería</th><th scope="col">Cantidad</th><th scope="col">Precio</th><th scope="col">Mínimo</th><th scope="col" class="num">Subtotal</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>CAR NS40ZL</strong><small>35 Ah · L · 6 meses</small></td>
+          <td><div class="qty"><button type="button" data-demo aria-label="Restar">−</button><input value="2" aria-label="Cantidad CAR NS40ZL"><button type="button" data-demo aria-label="Sumar">+</button></div></td>
+          <td><input value="96000" aria-label="Precio CAR NS40ZL" style="min-height:34px;text-align:right;font-variant-numeric:tabular-nums"></td>
+          <td class="muted">$ 85.000</td>
+          <td class="num">$ 192.000</td>
+        </tr>
+        <tr>
+          <td><strong>TOYO NS60L</strong><small>45 Ah · L · 12 meses</small></td>
+          <td><div class="qty"><button type="button" data-demo aria-label="Restar">−</button><input value="1" aria-label="Cantidad TOYO NS60L"><button type="button" data-demo aria-label="Sumar">+</button></div></td>
+          <td><input value="112000" aria-label="Precio TOYO NS60L" style="min-height:34px;text-align:right;font-variant-numeric:tabular-nums"></td>
+          <td class="muted">$ 100.000</td>
+          <td class="num">$ 112.000</td>
+        </tr>
+      </tbody>
+      <tfoot><tr><td colspan="4" class="muted">Total de la venta</td><td class="num grand">$ 304.000</td></tr></tfoot>
+    </table>
+    <div class="status" role="status" aria-live="polite">1 precio ajustado a mano dentro del mínimo autorizado</div>
+  </section>
+</main>
+
+<section class="paystrip" aria-label="Cobro">
+  <div class="field client">Cliente para la garantía<input value="Marta Giménez · 381 555 0198 · DNI 27.884.310"></div>
+  <div class="field" style="gap:6px"><span>Forma de pago</span><select style="width:170px"><option>Efectivo</option><option>Tarjeta</option><option>Transferencia</option></select></div>
+  <div class="total"><small class="muted">Total</small><b>$ 304.000</b></div>
+  <button type="button" class="primary" data-demo>Cobrar y emitir garantía <kbd>F4</kbd></button>
+</section>
+<script>
+document.querySelectorAll('[data-demo]').forEach(function(button){
+  button.addEventListener('click',function(){
+    var status=document.querySelector('.status');
+    if(status){status.textContent='Acción de demostración: '+button.textContent.trim();}
+  });
+});
+document.querySelectorAll('.results li').forEach(function(row){
+  row.addEventListener('click',function(){
+    if(row.getAttribute('aria-disabled')==='true') return;
+    document.querySelectorAll('.results li').forEach(function(other){other.classList.remove('on')});
+    row.classList.add('on');
+  });
+});
+</script>
+</html>

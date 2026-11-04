@@ -2,6 +2,7 @@ import { act, fireEvent, render, renderHook, screen, waitFor, within } from '@te
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
+import { catalogSectionFailureMessage } from './CatalogSectionBoundary';
 import { pageJSON } from './test-fixtures';
 import { useInventory } from './useInventory';
 
@@ -1603,5 +1604,86 @@ describe('warehouse adjustment section', () => {
     expect(mock.mock.calls.some(([url]) => String(url).startsWith('/api/stock-adjustments/catalog?'))).toBe(false);
     passiveCounts(mock);
     expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+});
+
+describe('warehouse catalogue section', () => {
+  const catalogBranches = [{ id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }];
+  const catalogPage = JSON.stringify({
+    branches: catalogBranches,
+    batteries: [{ catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarities: ['L', 'R'],
+      cells: ['B5', 'C5'],
+      prices: [{ branch_location_id: 2, min_price: '85000.00', suggested_price: '96000.00',
+        updated_at: '2026-11-04T10:00:00Z', updated_by_account_id: 1, updated_by_display_name: 'Almacén' }] }],
+    page: 1, page_size: 10, total_batteries: 1,
+  });
+  const catalogMock = (mock: ReturnType<typeof setup>) =>
+    mock.mock.calls.filter(([url]) => String(url).startsWith('/api/catalog/prices'));
+
+  it('offers Catálogo to the warehouse identity and opens the real section', async () => {
+    const mock = setup(session, url => url.startsWith('/api/catalog/prices?')
+      ? Promise.resolve(new Response(catalogPage, { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      : undefined);
+    render(<App />); await inventory();
+    const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
+    fireEvent.click(within(navigation).getByRole('button', { name: 'Catálogo' }));
+    await screen.findByRole('heading', { name: 'Catálogo de precios' });
+    expect(window.location.hash).toBe('#/catalogo');
+    expect(screen.getByText('Luson Catálogo')).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
+    expect(await screen.findByText('CAR NS40ZL')).toBeInTheDocument();
+    expect(catalogMock(mock)).toHaveLength(1);
+    expect(catalogMock(mock)[0][1]).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Catálogo' })).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('hides Catálogo from a branch identity and falls back from a typed hash to inventory', async () => {
+    window.history.replaceState(null, '', '/#/catalogo');
+    const mock = setup({ ...session, identity: { ...identity, account_id: 2, location: metadata.locations[1] } });
+    render(<App />); await inventory();
+    expect(screen.queryByRole('button', { name: 'Catálogo' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Catálogo de precios' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Resultados de inventario' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Inventario' })).toHaveAttribute('aria-current', 'page');
+    expect(catalogMock(mock)).toHaveLength(0);
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false);
+  });
+
+  it('restores a typed #/catalogo hash for the warehouse identity without any write', async () => {    window.history.replaceState(null, '', '/#/catalogo');
+    const mock = setup(session, url => url.startsWith('/api/catalog/prices?')
+      ? Promise.resolve(new Response(catalogPage, { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      : undefined);
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Catálogo de precios' });
+    expect(screen.getByRole('button', { name: 'Catálogo' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: 'Inventario' })).not.toHaveAttribute('aria-current');
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false);
+  });
+
+  it('contains a failing catalogue section without taking the shell down', async () => {
+    const mock = setup(session, url => url.startsWith('/api/catalog/prices?')
+      ? Promise.resolve(new Response(catalogPage, { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      : undefined);
+    render(<App />); await inventory();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // A rendering failure inside the section: the shell must survive it.
+    const clock = vi.spyOn(Intl, 'DateTimeFormat')
+      .mockImplementation((() => { throw new Error('formato no disponible'); }) as never);
+    try {
+      fireEvent.click(within(screen.getByRole('navigation', { name: 'Navegación principal' }))
+        .getByRole('button', { name: 'Catálogo' }));
+      expect(await screen.findByRole('alert')).toHaveTextContent(catalogSectionFailureMessage);
+      expect(screen.queryByRole('heading', { name: 'Catálogo de precios' })).not.toBeInTheDocument();
+      expect(screen.getByRole('navigation', { name: 'Navegación principal' })).toBeInTheDocument();
+      expect(catalogMock(mock).length).toBeGreaterThan(0);
+      clock.mockRestore();
+      // The retry remounts the section, which reads and renders the matrix again.
+      fireEvent.click(screen.getByRole('button', { name: 'Reintentar catálogo' }));
+      expect(await screen.findByText('CAR NS40ZL')).toBeInTheDocument();
+      expect(screen.queryByText(catalogSectionFailureMessage)).not.toBeInTheDocument();
+    } finally {
+      clock.mockRestore(); errors.mockRestore();
+    }
   });
 });
