@@ -7,9 +7,9 @@
       "queued": false,
       "sentAt": "2026-11-04T17:50:44.668Z",
       "startedAt": "2026-11-04T17:50:57.754Z",
-      "implementedAt": "2026-11-04T18:49:24.754Z",
+      "implementedAt": "2026-11-04T19:48:51.678Z",
       "feature": "odd/tasks/conteo-fisico-ajuste-stock.md",
-      "note": "Implementado en React/Go/PostgreSQL: historial #/ajustes con detalle expandible (esperado/contado/diferencia), captura ciega en panel lateral sin stock, contra-asiento con motivo y motivo del contra-asiento visible en el documento revertido. Verificado con suites Go contra PostgreSQL real, 183 tests de la sección, tsc y build.",
+      "note": "Aceptado por el humano en el preview real: historial con detalle expandible, captura ciega sin números de stock, diferencia revelada al aplicar y contra-asiento con motivo visible en el documento revertido.",
       "previewUrl": "http://127.0.0.1:8080/"
     }
   }
