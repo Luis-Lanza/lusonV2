@@ -12,6 +12,7 @@ import TransferPending, { transferViewOwner } from './TransferPending';
 import { createTransferRecovery } from './transferRecovery';
 import AccountAdministration from './AccountAdministration';
 import PasswordChange from './PasswordChange';
+import StockEntry from './StockEntry';
 
 type Controller = ReturnType<typeof useInventory>;
 function Login({ state }: { state: Controller }) {
@@ -79,19 +80,20 @@ function Pager({ state }: { state: Controller }) {
     </div>
   </footer>;
 }
-function Navigation({ mobile = false, transfers, disabled, actionCount, countUnavailable, onInventory, onPending, privateSection, admin, onAdmin, onPassword }: {
+function Navigation({ mobile = false, transfers, disabled, actionCount, countUnavailable, onInventory, onPending, privateSection, admin, onAdmin, onPassword, stock, stockActive, onStock }: {
   mobile?: boolean; transfers: boolean; disabled: boolean; actionCount: string | null; countUnavailable: boolean;
   onInventory: () => void; onPending: () => void; privateSection?: string; admin: boolean;
-  onAdmin: () => void; onPassword: () => void;
+  onAdmin: () => void; onPassword: () => void; stock: boolean; stockActive: boolean; onStock: () => void;
 }) {
   const statusID = mobile ? 'mobile-transfer-count' : 'desktop-transfer-count';
   const countStatus = actionCount !== null ? `Acciones requeridas: ${actionCount}`
     : countUnavailable ? 'Contador de acciones no disponible.' : 'Consultando acciones requeridas…';
   return <nav className={mobile ? 'bottom-nav' : 'side-nav'} aria-label={mobile ? 'Navegación móvil' : 'Navegación principal'}>
-    <a href="#inventario" aria-current={!transfers && !privateSection ? 'page' : undefined} aria-disabled={disabled} onClick={event => { event.preventDefault(); if (!disabled) onInventory(); }}><Icon name="inventory" /><span>Inventario</span></a>
+    <a href="#inventario" aria-current={!transfers && !privateSection && !stockActive ? 'page' : undefined} aria-disabled={disabled} onClick={event => { event.preventDefault(); if (!disabled) onInventory(); }}><Icon name="inventory" /><span>Inventario</span></a>
     <button type="button" disabled={disabled} aria-current={transfers ? 'page' : undefined} aria-describedby={statusID} onClick={onPending}><Icon name="transfer" /><span>Transferencias</span>
       <span className={'transfer-action-badge' + (actionCount === null ? ' unknown' : actionCount === '0' ? ' zero' : '')} aria-hidden="true">{actionCount ?? (countUnavailable ? '—' : '…')}</span>
     </button>
+    {stock && <button type="button" disabled={disabled} aria-current={stockActive ? 'page' : undefined} onClick={onStock}><Icon name="warehouse" /><span>Ingresos</span></button>}
     {admin && <button type="button" disabled={disabled} aria-current={privateSection === 'administration' ? 'page' : undefined} onClick={onAdmin}><Icon name="administration" /><span>Administración</span></button>}
     <button type="button" disabled={disabled} aria-current={privateSection === 'password' ? 'page' : undefined} onClick={onPassword}><Icon name="password" /><span>Mi contraseña</span></button>
     <span id={statusID} className="sr-only" role="status">{countStatus}</span>
@@ -142,6 +144,10 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
   }, [ownerTag, creation, route, recovery, state.getTransferAuthority]);
   const adminOwner = state.privateOwner('admin');
   const passwordOwner = state.privateOwner('password');
+  // Ingress is a warehouse-only surface: account 1 is the only identity assigned to location 1.
+  const stock = warehouse && route.section === 'stock';
+  const session = state.session;
+  const csrf = session !== null && session.authenticated ? session.csrf_token : '';
   const administration = route.section === 'administration' && adminOwner !== null;
   const password = route.section === 'password' && passwordOwner !== null;
   const privateSection = administration ? 'administration' : password ? 'password' : undefined;
@@ -191,17 +197,26 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
     if (navDisabled || latest !== ownerTag || !state.privateOwner(section === 'administration' ? 'admin' : 'password')) return;
     changeRoute({ section });
   }
+  function navigateStock() {
+    const latest = transferViewOwner(state.getTransferAuthority());
+    if (navDisabled || stock || latest !== ownerTag) return;
+    changeRoute({ section: 'stock' });
+  }
   const navigation = { transfers, disabled: navDisabled, actionCount, countUnavailable, privateSection, admin: adminOwner !== null,
+    stock: warehouse, stockActive: stock, onStock: navigateStock,
     onAdmin: () => navigatePrivate('administration'), onPassword: () => navigatePrivate('password'), onInventory: () => navigate(false), onPending: () => navigate(true) };
   return <div className={'app-shell' + (warehouse ? ' warehouse' : '') + (privateSection ? ' private-shell' : '')}>
     <aside className="sidebar" hidden={mobile}><div><Brand />{!mobile && <Navigation {...navigation} />}</div><div className="sidebar-footer"><div className="identity"><strong>{identity.username}</strong><small className="assigned-location">{identity.location.name}</small></div><button className="logout" type="button" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" />Cerrar sesión</button></div></aside>
-    <header className="app-header" hidden={mobile}><strong>Luson {administration ? 'Administración' : password ? 'Mi contraseña' : transfers ? 'Transferencias' : 'Inventario'}</strong><span><Icon name="warehouse" />Ubicación asignada: <b>{identity.location.name}</b></span></header>
+    <header className="app-header" hidden={mobile}><strong>Luson {administration ? 'Administración' : password ? 'Mi contraseña' : stock ? 'Ingresos' : transfers ? 'Transferencias' : 'Inventario'}</strong><span><Icon name="warehouse" />Ubicación asignada: <b>{identity.location.name}</b></span></header>
     <header className="mobile-header" hidden={!mobile}><div><Brand /><button type="button" aria-label="Cerrar sesión" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" /></button></div><div className="mobile-identity"><span><Icon name="warehouse" />{identity.location.name}</span><span>{identity.username}</span></div></header>
-    <main id={transfers ? 'transferencias' : 'inventario'} className="inventory-main">
+    <main id={transfers ? 'transferencias' : stock ? 'ingresos' : 'inventario'} className="inventory-main">
       {administration && adminOwner ? <AccountAdministration key={adminOwner} controller={state} owner={adminOwner} />
         : password && passwordOwner ? <PasswordChange key={passwordOwner} controller={state} owner={passwordOwner} onBack={() => navigate(false)} />
         : creation && metadata ? <TransferCreation controller={state} metadata={metadata} recovery={recovery} onBack={returnToTransfers} onDetail={openCreatedDetail} />
-        : pending && ownerTag && route.section === 'transfers' ? <TransferPending key={ownerTag} controller={state} ownerTag={ownerTag} routedDetail={route.id} onRouteDetail={id => changeRoute({ section: 'transfers', id })} onInventory={() => navigate(false)} creationAvailable={creationAvailable} onCreate={openCreation} /> : <>
+        : pending && ownerTag && route.section === 'transfers' ? <TransferPending key={ownerTag} controller={state} ownerTag={ownerTag} routedDetail={route.id} onRouteDetail={id => changeRoute({ section: 'transfers', id })} onInventory={() => navigate(false)} creationAvailable={creationAvailable} onCreate={openCreation} />
+        : stock && adminOwner ? <StockEntry key={adminOwner} csrf={csrf} />
+        : stock ? <p role="status">Verificando la sesión del Almacén…</p>
+        : <>
       {recoverable && <section className="creation-recovery" aria-label="Recuperación de solicitud"><p>{recoverable.phase === 'ready' ? 'Tenés una revisión preparada, todavía no enviada.' : 'Tenés un intento pendiente de confirmación.'}</p>
         <button type="button" disabled={!creationAvailable} onClick={openCreation}>{recoverable.phase === 'ready' ? 'Retomar revisión' : 'Retomar misma solicitud'}</button>
         <p>Recargar o cerrar la pestaña pierde esta recuperación en memoria.</p></section>}

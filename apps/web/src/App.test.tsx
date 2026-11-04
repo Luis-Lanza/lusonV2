@@ -1553,3 +1553,34 @@ describe('URL navigation boundaries', () => {
     expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   });
 });
+
+describe('stock ingress section', () => {
+  it('offers Ingresos to the warehouse identity and opens the real section', async () => {
+    const mock = setup(session); render(<App />); await inventory();
+    fireEvent.click(screen.getByRole('button', { name: 'Ingresos' }));
+    await screen.findByRole('heading', { name: 'Nuevo ingreso de stock' });
+    expect(window.location.hash).toBe('#/ingresos');
+    expect(screen.getByText('Luson Ingresos')).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
+    await waitFor(() => expect(mock.mock.calls.some(([url]) => String(url).includes('page_size=50') && String(url).includes('location_id=1'))).toBe(true));
+    expect(mock.mock.calls.some(([url]) => String(url) === '/api/stock-entries')).toBe(false);
+  });
+  it('hides Ingresos from a branch identity and falls back from a typed hash to inventory', async () => {
+    window.history.replaceState(null, '', '/#/ingresos');
+    const mock = setup({ ...session, identity: { ...identity, account_id: 2, location: metadata.locations[1] } });
+    render(<App />); await inventory();
+    expect(screen.queryByRole('button', { name: 'Ingresos' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Nuevo ingreso de stock' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Resultados de inventario' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Inventario' })).toHaveAttribute('aria-current', 'page');
+    expect(mock.mock.calls.some(([url]) => String(url) === '/api/stock-entries')).toBe(false);
+  });
+  it('restores a typed #/ingresos hash for the warehouse identity without any write', async () => {
+    window.history.replaceState(null, '', '/#/ingresos');
+    const mock = setup(session); render(<App />);
+    await screen.findByRole('heading', { name: 'Nuevo ingreso de stock' });
+    expect(screen.getByRole('button', { name: 'Ingresos' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: 'Inventario' })).not.toHaveAttribute('aria-current');
+    expect(mock.mock.calls.some(([url]) => String(url) === '/api/stock-entries')).toBe(false);
+  });
+});

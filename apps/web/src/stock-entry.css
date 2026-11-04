@@ -1,0 +1,65 @@
+/* Stock ingress section: layout only. Colors, radii, spacing, focus ring and the
+   44px touch targets reuse the tokens and values already declared in style.css. */
+.stock-entry { display: grid; gap: 16px; min-width: 0; max-width: 1600px; width: 100%; }
+.stock-entry-heading { display: grid; gap: 8px; }
+.stock-entry-heading small { color: var(--muted); font-size: 11px; letter-spacing: .04em; }
+.stock-entry-heading h1 { margin: 0; }
+.stock-entry-heading p { color: var(--muted); font-size: 13px; line-height: 1.6; }
+.stock-entry-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 16px; align-items: start; }
+.stock-entry-panel { display: grid; gap: 16px; min-width: 0; padding: 24px; background: #fff;
+  border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 1px 2px #2421240d; }
+.stock-panel-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 16px; min-width: 0; }
+.stock-panel-head h2 { font-size: 18px; font-weight: 600; }
+.stock-panel-head p { margin-top: 4px; }
+.stock-tag { display: inline-block; flex-shrink: 0; padding: 4px 8px; background: var(--page);
+  border: 1px solid var(--border); border-radius: 3px; color: var(--muted); font-size: 11px; }
+.stock-tag.wine { background: var(--tint); border-color: var(--border); color: var(--wine); font-weight: 600; }
+.stock-search, .stock-note { display: grid; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }
+.stock-search input, .stock-note input { width: 100%; min-height: 44px; padding: 10px 12px; border-color: var(--muted); color: #242124; font-size: 13px; }
+.stock-table-wrap { overflow-x: auto; }
+.stock-table { width: 100%; }
+.stock-table th, .stock-table td { height: auto; padding: 12px; vertical-align: middle; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.stock-table th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .03em; background: var(--page); }
+.stock-table th:nth-child(n+5), .stock-table td:nth-child(n+5) { text-align: left; }
+.stock-table td small { display: block; margin-top: 4px; color: var(--muted); }
+.stock-lines td:nth-child(2) { text-align: right; }
+.stock-quantity { width: 96px; min-height: 44px; text-align: right; font-variant-numeric: tabular-nums; }
+.stock-add, .stock-remove, .stock-message button { min-width: 44px; min-height: 44px; border-color: var(--muted); white-space: normal; overflow-wrap: anywhere; }
+.stock-remove { border-color: var(--border); color: var(--muted); }
+.stock-message { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; color: var(--muted); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.stock-hint, .stock-notices { color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.stock-totalbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px;
+  padding-top: 16px; border-top: 1px solid var(--border); }
+.stock-totals { display: flex; flex-wrap: wrap; gap: 24px; margin: 0; }
+.stock-totals dt { color: var(--muted); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.stock-totals dd { margin: 2px 0 0; font-size: 20px; font-variant-numeric: tabular-nums; }
+.stock-totalbar button.primary { min-height: 44px; padding: 10px 16px; white-space: normal; overflow-wrap: anywhere; }
+.stock-status { min-height: 24px; color: var(--wine); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.stock-entry :is(button, input, select):focus-visible { outline: 2px solid var(--wine); outline-offset: 3px; }
+
+@media (max-width: 1050px) {
+  .stock-entry-grid { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 767px) {
+  .stock-entry-panel { padding: 16px; border-radius: 8px; }
+  .stock-panel-head h2 { font-size: 16px; }
+  .stock-totalbar { align-items: stretch; }
+  .stock-totalbar button.primary { width: 100%; }
+  .stock-totals { gap: 16px; }
+  /* The warehouse bottom bar gains a third destination; it must not slice a label. */
+  .warehouse .bottom-nav { grid-template-columns: repeat(3, minmax(0, 1fr)); height: auto; min-height: 64px; }
+  .warehouse .bottom-nav a, .warehouse .bottom-nav button { min-height: 56px; padding: 6px 4px; }
+  .warehouse:has(.bottom-nav) { padding-bottom: 140px; }
+}
+@media (max-width: 600px) {
+  .stock-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .stock-table, .stock-table tbody { display: block; width: 100%; min-width: 0; }
+  .stock-table tr { display: grid; gap: 8px; margin-bottom: 12px; padding: 12px;
+    background: #fff; border: 1px solid var(--border); border-radius: 8px; }
+  .stock-table tr:last-child { margin-bottom: 0; }
+  .stock-table td { display: block; padding: 0; border: 0; }
+  .stock-table td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 4px;
+    color: var(--muted); font-size: 11px; letter-spacing: .03em; text-transform: uppercase; }
+  .stock-lines td:nth-child(2) { text-align: left; }
+  .stock-quantity { width: 100%; }
+}

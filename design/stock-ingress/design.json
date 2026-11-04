@@ -1,0 +1,28 @@
+{
+  "title": "Ingreso de stock al Almacén",
+  "brief": "Sección nueva para registrar mercadería que entra al depósito: un documento con varias líneas (variante + cantidad), aplicado atómico, sin datos extra por línea. Solo el Almacén (cuenta 1) registra; confirmado no se edita ni se borra, se corrige con contra-asiento inmutable con motivo obligatorio. Respeta la sidebar de 240px, el header de 56px, la paleta vino y los tokens de apps/web/src/style.css.",
+  "feature": "odd/tasks/stock-ingresos-almacen.md",
+  "artboards": [
+    {
+      "file": "01-document-table.html",
+      "title": "Documento y tabla",
+      "tradeoff": "Carga familiar y verificable línea por línea, con catálogo siempre visible; consume ancho y obliga a ir y volver entre dos paneles.",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "file": "02-fast-entry.html",
+      "title": "Carga rápida con teclado",
+      "tradeoff": "Máxima velocidad para descargar un remito completo sin soltar el teclado; menos exploración visual del catálogo y del historial.",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "file": "03-history-led.html",
+      "title": "Historial primero con panel de alta",
+      "tradeoff": "Auditoría y contra-asientos siempre a la vista; cargar exige abrir un panel lateral y perder el contexto del historial.",
+      "width": 1440,
+      "height": 1000
+    }
+  ]
+}

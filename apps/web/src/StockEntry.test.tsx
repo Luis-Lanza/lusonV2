@@ -1,0 +1,183 @@
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import StockEntry from './StockEntry';
+import { stockEntryErrorMessages } from './stockEntryModel';
+
+const csrf = 'c'.repeat(43);
+const row = (variant_id: number, model: string, existing = 14, capacity = 35) => JSON.stringify({
+  variant_id, catalog_entry_id: 1, brand: 'TOYO', model, capacity_ah: capacity, polarity: 'L', existing, reserved: 0, available: existing,
+});
+const catalogPage = (items: readonly string[]) =>
+  `{"location":{"id":1,"name":"Almacén"},"items":[${items.join(',')}],"page":1,"page_size":50,"total_variants":${items.length}}`;
+const catalogReply = (search: string) => new Response(
+  catalogPage(search === 'NS60' ? [row(9, 'NS60L', 9, 45)] : search === 'nada' ? [] : [row(4, 'NS40ZL'), row(9, 'NS60L', 9, 45)]),
+  { status: 200, headers: { 'Content-Type': 'application/json' } });
+const entryReply = () => new Response(JSON.stringify({
+  id: 7, location_id: 1, note: 'Remito 0002', created_by_account_id: 1, created_at: '2026-05-01T14:20:00Z',
+  lines: [{ variant_id: 4, quantity: 3 }], total_units: 3,
+}), { status: 201, headers: { 'Content-Type': 'application/json' } });
+const errorReply = (code: string, status: number) => new Response(JSON.stringify({ error: code }),
+  { status, headers: { 'Content-Type': 'application/json' } });
+
+function harness(options: {
+  catalog?: (search: string) => Response;
+  create?: (body: string) => Response | Promise<Response>;
+} = {}) {
+  const calls: { url: string; init: RequestInit }[] = [];
+  const fetcher = vi.fn<typeof fetch>(async (input, init = {}) => {
+    const url = String(input);
+    calls.push({ url, init });
+    if (url.startsWith('/api/inventory?')) {
+      const search = new URL(url, 'http://localhost').searchParams.get('search') ?? '';
+      return options.catalog?.(search) ?? catalogReply(search);
+    }
+    if (url === '/api/stock-entries') return options.create?.(String(init.body)) ?? entryReply();
+    throw new Error('Unexpected mocked URL: ' + url);
+  });
+  return { fetcher, calls, catalogs: () => calls.filter(call => call.url.startsWith('/api/inventory?')),
+    posts: () => calls.filter(call => call.url === '/api/stock-entries') };
+}
+const sections = () => ({
+  catalogo: screen.getByRole('region', { name: 'Catálogo' }),
+  documento: screen.getByRole('region', { name: 'Documento de ingreso' }),
+});
+const totalFor = (label: string) => within(sections().documento).getByText(label).closest('div');
+const addButton = (model: string) => within(sections().catalogo).getByRole('button', { name: `Agregar TOYO · ${model}` });
+async function ready(h: ReturnType<typeof harness>) {
+  render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+  await within(sections().catalogo).findByRole('button', { name: 'Agregar TOYO · NS40ZL' });
+}
+
+describe('stock entry catalog', () => {
+  it('reads the warehouse catalog once, then again for the typed search', async () => {
+    const h = harness();
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    const { catalogo } = sections();
+    expect(within(catalogo).getByRole('status')).toHaveTextContent('Consultando catálogo del almacén');
+    await within(catalogo).findByText('TOYO · NS40ZL');
+    expect(within(catalogo).getByText('35 Ah')).toBeInTheDocument();
+    expect(within(catalogo).getByText('14')).toBeInTheDocument();
+    expect(h.catalogs()[0].url).toBe('/api/inventory?location_id=1&page=1&page_size=50');
+    expect(h.catalogs()[0].init).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+    fireEvent.change(within(catalogo).getByLabelText('Buscar marca, modelo o capacidad'), { target: { value: 'NS60' } });
+    await within(catalogo).findByRole('button', { name: 'Agregar TOYO · NS60L' });
+    expect(h.catalogs().at(-1)?.url).toBe('/api/inventory?location_id=1&page=1&page_size=50&search=NS60');
+    expect(within(catalogo).queryByRole('button', { name: 'Agregar TOYO · NS40ZL' })).not.toBeInTheDocument();
+    fireEvent.change(within(catalogo).getByLabelText('Buscar marca, modelo o capacidad'), { target: { value: 'nada' } });
+    await within(catalogo).findByText('Sin coincidencias en el catálogo.');
+  });
+
+  it('reports an unavailable catalog and reads it again on demand', async () => {
+    let failing = true;
+    const h = harness({ catalog: search => failing ? errorReply('service_unavailable', 503) : catalogReply(search) });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    const { catalogo } = sections();
+    expect(await within(catalogo).findByRole('alert')).toHaveTextContent('No se pudo consultar el catálogo del Almacén');
+    failing = false;
+    fireEvent.click(within(catalogo).getByRole('button', { name: 'Reintentar catálogo' }));
+    await within(catalogo).findByRole('button', { name: 'Agregar TOYO · NS40ZL' });
+    expect(h.catalogs()).toHaveLength(2);
+  });
+});
+
+describe('stock entry document', () => {
+  it('adds a variant once and increments it instead of duplicating the line', async () => {
+    const h = harness();
+    await ready(h);
+    const { documento } = sections();
+    expect(within(documento).getByText('Todavía no agregaste líneas.')).toBeInTheDocument();
+    fireEvent.click(addButton('NS40ZL'));
+    fireEvent.click(addButton('NS40ZL'));
+    expect(within(documento).getAllByLabelText(/^Cantidad de /)).toHaveLength(1);
+    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL')).toHaveValue(2);
+    expect(totalFor('Variantes')).toHaveTextContent(/Variantes\s*1/);
+    expect(totalFor('Unidades')).toHaveTextContent(/Unidades\s*2/);
+    expect(within(documento).getByRole('status')).toHaveTextContent('TOYO · NS40ZL ya estaba en el documento: ahora 2 unidades.');
+  });
+
+  it('updates the totals when a quantity is edited or a line is removed', async () => {
+    const h = harness();
+    await ready(h);
+    const { documento } = sections();
+    fireEvent.click(addButton('NS40ZL'));
+    fireEvent.click(addButton('NS60L'));
+    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL'), { target: { value: '5' } });
+    expect(totalFor('Variantes')).toHaveTextContent(/Variantes\s*2/);
+    expect(totalFor('Unidades')).toHaveTextContent(/Unidades\s*6/);
+    fireEvent.click(within(documento).getByRole('button', { name: 'Quitar TOYO · NS60L' }));
+    expect(within(documento).queryByLabelText('Cantidad de TOYO · NS60L')).not.toBeInTheDocument();
+    expect(totalFor('Variantes')).toHaveTextContent(/Variantes\s*1/);
+    expect(totalFor('Unidades')).toHaveTextContent(/Unidades\s*5/);
+  });
+
+  it('refuses an invalid quantity without sending anything', async () => {
+    const h = harness();
+    await ready(h);
+    const { documento } = sections();
+    fireEvent.click(addButton('NS40ZL'));
+    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL'), { target: { value: '0' } });
+    fireEvent.click(within(documento).getByRole('button', { name: 'Confirmar ingreso' }));
+    expect(within(documento).getByRole('status')).toHaveTextContent('Cantidad inválida: ingresá un entero entre 1 y 1.000.000 en cada línea.');
+    expect(h.posts()).toHaveLength(0);
+  });
+
+  it('confirms the exact payload, shows the new document number and clears the draft', async () => {
+    const h = harness();
+    await ready(h);
+    const { documento } = sections();
+    const before = h.catalogs().length;
+    fireEvent.click(addButton('NS40ZL'));
+    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL'), { target: { value: '3' } });
+    fireEvent.change(within(documento).getByLabelText('Nota del documento (opcional)'), { target: { value: 'Remito 0002' } });
+    fireEvent.click(within(documento).getByRole('button', { name: 'Confirmar ingreso' }));
+    await waitFor(() => expect(h.posts()).toHaveLength(1));
+    const post = h.posts()[0];
+    expect(post.init).toMatchObject({ method: 'POST', credentials: 'same-origin', cache: 'no-store' });
+    expect(post.init.headers).toMatchObject({ 'Content-Type': 'application/json', 'X-CSRF-Token': csrf });
+    expect(JSON.parse(String(post.init.body))).toEqual({
+      operation_key: expect.stringMatching(/^[A-Za-z0-9_-]{16,128}$/), note: 'Remito 0002', lines: [{ variant_id: 4, quantity: 3 }],
+    });
+    expect(await within(documento).findByText(/Ingreso confirmado: documento 7/)).toBeInTheDocument();
+    expect(within(documento).getByRole('status')).toHaveTextContent('Ingreso confirmado: documento 7 · 3 unidades.');
+    expect(within(documento).getByLabelText('Nota del documento (opcional)')).toHaveValue('');
+    expect(totalFor('Variantes')).toHaveTextContent(/Variantes\s*0/);
+    expect(totalFor('Unidades')).toHaveTextContent(/Unidades\s*0/);
+    await waitFor(() => expect(h.catalogs().length).toBeGreaterThan(before));
+    expect(h.catalogs().at(-1)?.url).toBe('/api/inventory?location_id=1&page=1&page_size=50');
+  });
+
+  it('keeps the typed document and the same operation key when the outcome is uncertain', async () => {
+    const h = harness({ create: () => errorReply('service_unavailable', 503) });
+    await ready(h);
+    const { documento } = sections();
+    fireEvent.click(addButton('NS40ZL'));
+    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL'), { target: { value: '3' } });
+    fireEvent.change(within(documento).getByLabelText('Nota del documento (opcional)'), { target: { value: 'Remito 0002' } });
+    fireEvent.click(within(documento).getByRole('button', { name: 'Confirmar ingreso' }));
+    await waitFor(() => expect(within(documento).getByRole('status')).toHaveTextContent(stockEntryErrorMessages.service_unavailable));
+    expect(within(documento).queryByText(/Ingreso confirmado/)).not.toBeInTheDocument();
+    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL')).toHaveValue(3);
+    expect(within(documento).getByLabelText('Nota del documento (opcional)')).toHaveValue('Remito 0002');
+    fireEvent.click(within(documento).getByRole('button', { name: 'Confirmar ingreso' }));
+    await waitFor(() => expect(h.posts()).toHaveLength(2));
+    expect(h.posts()[1].init.body).toBe(h.posts()[0].init.body);
+  });
+
+  it('disables the confirmation while the request is in flight', async () => {
+    let resolve!: (value: Response) => void;
+    const h = harness({ create: () => new Promise<Response>(yes => { resolve = yes; }) });
+    await ready(h);
+    const { documento } = sections();
+    fireEvent.click(addButton('NS40ZL'));
+    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL'), { target: { value: '3' } });
+    const confirm = within(documento).getByRole('button', { name: 'Confirmar ingreso' });
+    fireEvent.click(confirm);
+    await waitFor(() => expect(within(documento).getByRole('button', { name: 'Confirmar ingreso' })).toBeDisabled());
+    expect(within(documento).getByRole('status')).toHaveTextContent('Confirmando ingreso…');
+    fireEvent.click(within(documento).getByRole('button', { name: 'Confirmar ingreso' }));
+    expect(h.posts()).toHaveLength(1);
+    resolve(entryReply());
+    await within(documento).findByText(/Ingreso confirmado: documento 7/);
+    expect(within(documento).getByRole('button', { name: 'Confirmar ingreso' })).toBeEnabled();
+  });
+});
