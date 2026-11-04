@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -555,5 +556,283 @@ func TestStockEntriesAreAppendOnly(t *testing.T) {
 	}
 	if snapshot(t, ctx, p) != before {
 		t.Fatal("append-only documents must not change")
+	}
+}
+
+// originalRows returns the persisted bytes of one document, so a counter-entry
+// can be proven to leave the original untouched.
+func originalRows(t *testing.T, ctx context.Context, p *pgxpool.Pool, id int64) string {
+	t.Helper()
+	var data string
+	err := p.QueryRow(ctx, `SELECT jsonb_build_object(
+  'header',(SELECT to_jsonb(e) FROM stock_entries e WHERE e.id=$1),
+  'lines',(SELECT coalesce(jsonb_agg(to_jsonb(l) ORDER BY l.variant_id),'[]'::jsonb) FROM stock_entry_lines l WHERE l.entry_id=$1))::text`, id).Scan(&data)
+	if err != nil {
+		t.Fatal("original document read failed")
+	}
+	return data
+}
+
+// counterOf is the persisted counter-entry of one original document.
+func counterOf(t *testing.T, ctx context.Context, p *pgxpool.Pool, original int64) (id int64, reason string) {
+	t.Helper()
+	if p.QueryRow(ctx, "SELECT id,reason FROM stock_entries WHERE reverses_entry_id=$1", original).Scan(&id, &reason) != nil {
+		t.Fatal("counter-entry read failed")
+	}
+	return id, reason
+}
+
+func TestCanonicalReason(t *testing.T) {
+	for name, tc := range map[string]struct {
+		reason string
+		want   string
+		ok     bool
+	}{
+		"exact":         {"error de carga", "error de carga", true},
+		"padded":        {"  error de carga \n", "error de carga", true},
+		"unicode":       {"ñandú descargado dos veces", "ñandú descargado dos veces", true},
+		"bound":         {strings.Repeat("ñ", 500), strings.Repeat("ñ", 500), true},
+		"empty":         {"", "", false},
+		"spaces":        {"   \t\n", "", false},
+		"too_long":      {strings.Repeat("ñ", 501), "", false},
+		"nul":           {"error\x00de carga", "", false},
+		"invalid_utf8":  {"error-\xff", "", false},
+		"kept_inner":    {"cuenta   mal", "cuenta   mal", true},
+		"no_trim_ascii": {"\u00a0motivo\u00a0", "motivo", true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, ok := stockentries.CanonicalReason(tc.reason)
+			if ok != tc.ok || got != tc.want {
+				t.Fatalf("canonical reason mismatch: %q %v", got, ok)
+			}
+		})
+	}
+}
+
+func TestReverseEntryGuards(t *testing.T) {
+	if _, _, err := stockentries.New(nil).ReverseEntry(context.Background(), warehouse(), 1, "guard-reverse-key-0001", "motivo"); !errors.Is(err, stockentries.ErrUnavailable) {
+		t.Fatal("unavailable pool must fail the reversal closed")
+	}
+	if _, _, err := stockentries.New(nil).ReverseEntry(nil, warehouse(), 1, "guard-reverse-key-0002", "motivo"); !errors.Is(err, stockentries.ErrUnavailable) {
+		t.Fatal("missing context must fail the reversal closed")
+	}
+	var nilStore *stockentries.Store
+	if _, _, err := nilStore.ReverseEntry(context.Background(), warehouse(), 1, "guard-reverse-key-0003", "motivo"); !errors.Is(err, stockentries.ErrUnavailable) {
+		t.Fatal("nil store must fail the reversal closed")
+	}
+}
+
+func TestReverseEntryDerivesAndRestores(t *testing.T) {
+	ctx, p, s := fixture(t)
+	existingOne, reservedOne := balances(t, ctx, p, 1, 1)
+	existingTwo, reservedTwo := balances(t, ctx, p, 1, 2)
+	original, _, err := s.CreateEntry(ctx, warehouse(), input("derive-key-0000000001",
+		stockentries.Line{VariantID: 2, Quantity: 4}, stockentries.Line{VariantID: 1, Quantity: 3}))
+	if err != nil {
+		t.Fatal("ingress before reversal failed")
+	}
+	before := originalRows(t, ctx, p, original.ID)
+	counter, replayed, err := s.ReverseEntry(ctx, warehouse(), original.ID, "derive-counter-key-0001", "  error de carga  ")
+	if err != nil || replayed {
+		t.Fatalf("reversal was not created: %v", err)
+	}
+	if counter.ID <= original.ID || counter.LocationID != 1 || counter.CreatedByAccountID != 1 ||
+		counter.Note != "" || counter.CreatedAt.IsZero() || counter.ReversesEntryID == nil ||
+		*counter.ReversesEntryID != original.ID {
+		t.Fatal("counter-entry header does not match the frozen contract")
+	}
+	// The derived lines are exactly the negation of the original ones.
+	if len(counter.Lines) != len(original.Lines) || counter.TotalUnits != -original.TotalUnits {
+		t.Fatal("counter-entry does not mirror the original document")
+	}
+	for i, line := range original.Lines {
+		if counter.Lines[i].VariantID != line.VariantID || counter.Lines[i].Quantity != -line.Quantity {
+			t.Fatal("counter-entry line is not the exact negation of the original line")
+		}
+	}
+	if got, reserved := balances(t, ctx, p, 1, 1); got != existingOne || reserved != reservedOne {
+		t.Fatal("reversal must restore the first line")
+	}
+	if got, reserved := balances(t, ctx, p, 1, 2); got != existingTwo || reserved != reservedTwo {
+		t.Fatal("reversal must restore the second line")
+	}
+	storedID, reason := counterOf(t, ctx, p, original.ID)
+	if storedID != counter.ID || reason != "error de carga" {
+		t.Fatal("the trimmed reason must be persisted verbatim")
+	}
+	if originalRows(t, ctx, p, original.ID) != before {
+		t.Fatal("the original document must not change")
+	}
+	if n := scalar(t, ctx, p, "SELECT count(*) FROM stock_entries"); n != 2 {
+		t.Fatal("the original and its counter-entry must both stay visible")
+	}
+}
+
+func TestReverseEntryReplayIsIdempotent(t *testing.T) {
+	ctx, p, s := fixture(t)
+	original, _, err := s.CreateEntry(ctx, warehouse(), input("reverse-replay-key-0001", stockentries.Line{VariantID: 1, Quantity: 2}))
+	if err != nil {
+		t.Fatal("ingress before reversal failed")
+	}
+	first, replayed, err := s.ReverseEntry(ctx, warehouse(), original.ID, "reverse-replay-counter-1", "error de carga")
+	if err != nil || replayed {
+		t.Fatal("first reversal failed")
+	}
+	before := snapshot(t, ctx, p)
+	second, replayed, err := s.ReverseEntry(ctx, warehouse(), original.ID, "reverse-replay-counter-1", " error de carga ")
+	if err != nil || !replayed {
+		t.Fatal("an identical reversal replay must be a replay")
+	}
+	if second.ID != first.ID || second.TotalUnits != first.TotalUnits || len(second.Lines) != len(first.Lines) {
+		t.Fatal("replay must return the persisted counter-entry")
+	}
+	if snapshot(t, ctx, p) != before {
+		t.Fatal("a reversal replay must not change any stored value")
+	}
+	if n := scalar(t, ctx, p, "SELECT count(*) FROM stock_entries"); n != 2 {
+		t.Fatal("a reversal replay must not create a second counter-entry")
+	}
+}
+
+func TestReverseEntryReplayConflict(t *testing.T) {
+	ctx, p, s := fixture(t)
+	first, _, err := s.CreateEntry(ctx, warehouse(), input("reverse-conflict-key-01", stockentries.Line{VariantID: 1, Quantity: 2}))
+	if err != nil {
+		t.Fatal("first ingress failed")
+	}
+	second, _, err := s.CreateEntry(ctx, warehouse(), input("reverse-conflict-key-02", stockentries.Line{VariantID: 1, Quantity: 5}))
+	if err != nil {
+		t.Fatal("second ingress failed")
+	}
+	if _, _, err := s.ReverseEntry(ctx, warehouse(), first.ID, "reverse-conflict-counter1", "error de carga"); err != nil {
+		t.Fatal("first reversal failed")
+	}
+	before := snapshot(t, ctx, p)
+	for name, call := range map[string]struct {
+		target int64
+		key    string
+		reason string
+	}{
+		"another_reason": {first.ID, "reverse-conflict-counter1", "otro motivo"},
+		"another_target": {second.ID, "reverse-conflict-counter1", "error de carga"},
+		// A creation key is not a reversal key, even for the same document.
+		"creation_key": {second.ID, "reverse-conflict-key-02", "error de carga"},
+	} {
+		if _, _, err := s.ReverseEntry(ctx, warehouse(), call.target, call.key, call.reason); !errors.Is(err, stockentries.ErrRetryConflict) {
+			t.Fatalf("%s conflict was not reported as a retry conflict", name)
+		}
+	}
+	if snapshot(t, ctx, p) != before {
+		t.Fatal("a conflicting reversal must not change any stored value")
+	}
+}
+
+func TestReverseEntryRefusesInadmissibleTarget(t *testing.T) {
+	ctx, p, s := fixture(t)
+	original, _, err := s.CreateEntry(ctx, warehouse(), input("target-key-0000000001", stockentries.Line{VariantID: 1, Quantity: 2}))
+	if err != nil {
+		t.Fatal("ingress before reversal failed")
+	}
+	for name, target := range map[string]int64{"zero": 0, "negative": -1, "missing": math.MaxInt64} {
+		if _, _, err := s.ReverseEntry(ctx, warehouse(), target, "target-counter-key-0001", "error de carga"); !errors.Is(err, stockentries.ErrNotFound) {
+			t.Fatalf("%s target must be not found", name)
+		}
+	}
+	counter, _, err := s.ReverseEntry(ctx, warehouse(), original.ID, "target-counter-key-0002", "error de carga")
+	if err != nil {
+		t.Fatal("reversal failed")
+	}
+	before := snapshot(t, ctx, p)
+	// The original already has a counter-entry and the counter-entry is itself a
+	// reversal: neither can be reversed again.
+	if _, _, err := s.ReverseEntry(ctx, warehouse(), original.ID, "target-counter-key-0003", "error de carga"); !errors.Is(err, stockentries.ErrDecisionConflict) {
+		t.Fatal("an already reversed document must be a decision conflict")
+	}
+	if _, _, err := s.ReverseEntry(ctx, warehouse(), counter.ID, "target-counter-key-0004", "error de carga"); !errors.Is(err, stockentries.ErrDecisionConflict) {
+		t.Fatal("a reversal of a reversal must be a decision conflict")
+	}
+	if snapshot(t, ctx, p) != before {
+		t.Fatal("a refused target must not change any stored value")
+	}
+}
+
+func TestReverseEntryRejectsUncoveredStock(t *testing.T) {
+	ctx, p, s := fixture(t)
+	original, _, err := s.CreateEntry(ctx, warehouse(), input("uncovered-key-00000001",
+		stockentries.Line{VariantID: 1, Quantity: 3}, stockentries.Line{VariantID: 2, Quantity: 2}))
+	if err != nil {
+		t.Fatal("ingress before reversal failed")
+	}
+	// The stock of the second line was consumed after the ingress.
+	if _, err := p.Exec(ctx, "UPDATE inventory_balances SET existing=reserved WHERE location_id=1 AND variant_id=2"); err != nil {
+		t.Fatal("consumption setup failed")
+	}
+	before := snapshot(t, ctx, p)
+	beforeOriginal := originalRows(t, ctx, p, original.ID)
+	if _, _, err := s.ReverseEntry(ctx, warehouse(), original.ID, "uncovered-counter-key-01", "devolucion"); !errors.Is(err, stockentries.ErrInsufficientStock) {
+		t.Fatal("a reversal that would leave existing below reserved must be insufficient stock")
+	}
+	if snapshot(t, ctx, p) != before {
+		t.Fatal("the whole reversal must be rejected without a partial write")
+	}
+	if originalRows(t, ctx, p, original.ID) != beforeOriginal {
+		t.Fatal("a rejected reversal must not change the original document")
+	}
+	if n := scalar(t, ctx, p, "SELECT count(*) FROM stock_entries WHERE reverses_entry_id=$1", original.ID); n != 0 {
+		t.Fatal("a rejected reversal must not persist a counter-entry")
+	}
+}
+
+func TestReverseEntryActorBoundary(t *testing.T) {
+	ctx, p, s := fixture(t)
+	original, _, err := s.CreateEntry(ctx, warehouse(), input("reverse-actor-key-0001", stockentries.Line{VariantID: 1, Quantity: 1}))
+	if err != nil {
+		t.Fatal("ingress before reversal failed")
+	}
+	before := snapshot(t, ctx, p)
+	pending := warehouse()
+	pending.MustChangePassword = true
+	for name, actor := range map[string]auth.Identity{
+		"branch":          branch(),
+		"warehouse_label": {AccountID: 1, Location: auth.Location{ID: 2}},
+		"clerk":           {AccountID: 2, Location: auth.Location{ID: 1}},
+		"unassigned":      {},
+		"password_change": pending,
+	} {
+		if _, _, err := s.ReverseEntry(ctx, actor, original.ID, "reverse-actor-counter-1", "error de carga"); !errors.Is(err, stockentries.ErrForbidden) {
+			t.Fatalf("%s must be forbidden", name)
+		}
+	}
+	if snapshot(t, ctx, p) != before {
+		t.Fatal("a forbidden actor must not change any stored value")
+	}
+}
+
+func TestReverseEntryRejectsInvalidInputWithoutWriting(t *testing.T) {
+	ctx, p, s := fixture(t)
+	original, _, err := s.CreateEntry(ctx, warehouse(), input("reverse-invalid-key-001", stockentries.Line{VariantID: 1, Quantity: 1}))
+	if err != nil {
+		t.Fatal("ingress before reversal failed")
+	}
+	before := snapshot(t, ctx, p)
+	for name, call := range map[string]struct {
+		key    string
+		reason string
+	}{
+		"empty_reason":   {"reverse-invalid-counter1", ""},
+		"blank_reason":   {"reverse-invalid-counter2", "   \t\n"},
+		"long_reason":    {"reverse-invalid-counter3", strings.Repeat("ñ", 501)},
+		"nul_reason":     {"reverse-invalid-counter4", "error\x00de carga"},
+		"invalid_utf8":   {"reverse-invalid-counter5", "error-\xff"},
+		"short_key":      {"short", "error de carga"},
+		"key_with_space": {"reverse invalid counter", "error de carga"},
+		"key_over_128":   {strings.Repeat("a", 129), "error de carga"},
+	} {
+		if _, _, err := s.ReverseEntry(ctx, warehouse(), original.ID, call.key, call.reason); !errors.Is(err, stockentries.ErrInvalid) {
+			t.Fatalf("%s must be invalid", name)
+		}
+	}
+	if snapshot(t, ctx, p) != before {
+		t.Fatal("an invalid reversal must not change any stored value")
 	}
 }

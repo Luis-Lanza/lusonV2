@@ -125,6 +125,154 @@ func (s *Store) CreateEntry(ctx context.Context, actor auth.Identity, input Crea
 	return entry, false, nil
 }
 
+// ReverseEntry appends the immutable counter-entry of one original document. The
+// client never supplies lines: they are derived from the persisted original, so a
+// partial reversal is impossible by construction, and the whole reversal is
+// refused when it would leave any line below its reserved quantity.
+//
+// The operation key is serialized first, so an identical concurrent submission
+// resolves to a replay instead of a unique violation. A pure request shape is
+// rejected before the transaction; everything the database decides (reversal
+// mirror, single counter-entry, covered stock) is trusted only through its
+// SQLSTATE.
+func (s *Store) ReverseEntry(ctx context.Context, actor auth.Identity, targetID int64, operationKey, reason string) (Entry, bool, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return Entry{}, false, ErrUnavailable
+	}
+	if !warehouseAdmin(actor) {
+		return Entry{}, false, ErrForbidden
+	}
+	if targetID < 1 {
+		return Entry{}, false, ErrNotFound
+	}
+	if !ValidOperationKey(operationKey) {
+		return Entry{}, false, ErrInvalid
+	}
+	canonicalReason, valid := CanonicalReason(reason)
+	if !valid {
+		return Entry{}, false, ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return Entry{}, false, fail(ctx)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = tx.Rollback(cleanup)
+	}()
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", entryLock(operationKey)); err != nil {
+		return Entry{}, false, fail(ctx)
+	}
+	if err := checkAssignment(ctx, tx, actor); err != nil {
+		return Entry{}, false, err
+	}
+	// An existing operation key is resolved before the target is touched: the
+	// same key with the same target and reason is a replay, anything else is a
+	// conflict and never a second counter-entry.
+	var existingID int64
+	var existingTarget *int64
+	var existingReason string
+	err = tx.QueryRow(ctx, "SELECT id,reverses_entry_id,reason FROM stock_entries WHERE operation_key=$1", operationKey).Scan(&existingID, &existingTarget, &existingReason)
+	if err == nil {
+		entry, loadErr := loadEntry(ctx, tx, existingID)
+		if loadErr != nil {
+			return Entry{}, false, loadErr
+		}
+		if existingTarget == nil || *existingTarget != targetID || existingReason != canonicalReason {
+			return Entry{}, false, ErrRetryConflict
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return Entry{}, false, fail(ctx)
+		}
+		return entry, true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return Entry{}, false, fail(ctx)
+	}
+	// The target row is locked before it is judged, so a concurrent reversal of
+	// the same document cannot slip between the check and the insert.
+	var location int
+	var targetReverses *int64
+	var alreadyReversed bool
+	err = tx.QueryRow(ctx, `SELECT e.location_id,e.reverses_entry_id,
+  EXISTS(SELECT 1 FROM stock_entries counter WHERE counter.reverses_entry_id=e.id)
+ FROM stock_entries e WHERE e.id=$1 FOR UPDATE`, targetID).Scan(&location, &targetReverses, &alreadyReversed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Entry{}, false, ErrNotFound
+	}
+	if err != nil {
+		return Entry{}, false, fail(ctx)
+	}
+	// A document of another location is not part of this warehouse's ledger.
+	if location != warehouseLocationID {
+		return Entry{}, false, ErrNotFound
+	}
+	if targetReverses != nil || alreadyReversed {
+		return Entry{}, false, ErrDecisionConflict
+	}
+	derived, err := derivedLines(ctx, tx, targetID)
+	if err != nil {
+		return Entry{}, false, err
+	}
+	var id int64
+	err = tx.QueryRow(ctx, `INSERT INTO stock_entries(operation_key,location_id,note,reverses_entry_id,reason,created_by_account_id)
+ VALUES($1,$2,'',$3,$4,$5) RETURNING id`, operationKey, warehouseLocationID, targetID, canonicalReason, actor.AccountID).Scan(&id)
+	if err != nil {
+		return Entry{}, false, mapFailure(ctx, err)
+	}
+	// Ascending variant order is the database's balance-row lock order.
+	for _, line := range derived {
+		if _, err := tx.Exec(ctx, "INSERT INTO stock_entry_lines(entry_id,variant_id,quantity) VALUES($1,$2,$3)", id, int32(line.VariantID), line.Quantity); err != nil {
+			return Entry{}, false, mapFailure(ctx, err)
+		}
+	}
+	entry, err := loadEntry(ctx, tx, id)
+	if err != nil {
+		return Entry{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Entry{}, false, mapFailure(ctx, err)
+	}
+	return entry, false, nil
+}
+
+// derivedLines mirrors the persisted original: every line is negated, in the
+// original's ascending variant order. A persisted line outside the admitted
+// ingress bounds means the ledger is not what this domain wrote, so it fails
+// closed instead of deriving a document the database would reject.
+func derivedLines(ctx context.Context, q querier, targetID int64) ([]Line, error) {
+	rows, err := q.Query(ctx, "SELECT variant_id,quantity FROM stock_entry_lines WHERE entry_id=$1 ORDER BY variant_id", targetID)
+	if err != nil {
+		return nil, fail(ctx)
+	}
+	defer rows.Close()
+	lines := make([]Line, 0)
+	for rows.Next() {
+		var line Line
+		if rows.Scan(&line.VariantID, &line.Quantity) != nil {
+			return nil, fail(ctx)
+		}
+		if line.VariantID < 1 || line.VariantID > math.MaxInt32 || line.Quantity < 1 || line.Quantity > maxQuantity {
+			return nil, ErrUnavailable
+		}
+		line.Quantity = -line.Quantity
+		lines = append(lines, line)
+		if len(lines) > maxLines {
+			return nil, ErrUnavailable
+		}
+	}
+	if rows.Err() != nil {
+		return nil, fail(ctx)
+	}
+	if len(lines) == 0 {
+		return nil, ErrUnavailable
+	}
+	return lines, nil
+}
+
 // ListEntries reads one newest-first page of persisted documents for the
 // warehouse. The actor guard and the provisioned-account binding are creation's,
 // and the page is one statement plus one total: line counts and unit totals are
@@ -203,12 +351,13 @@ func (s *Store) ListEntries(ctx context.Context, actor auth.Identity, page, page
 }
 
 // loadEntry reads the durable document: lines ordered by variant id and the
-// total computed only after an exact int64 bound check on every line.
+// total computed only after an exact int64 bound check on every line. The
+// reversal target is internal only; it never reaches the wire.
 func loadEntry(ctx context.Context, q querier, id int64) (Entry, error) {
 	var entry Entry
-	err := q.QueryRow(ctx, `SELECT id,location_id,note,created_by_account_id,created_at
+	err := q.QueryRow(ctx, `SELECT id,location_id,note,created_by_account_id,created_at,reverses_entry_id
  FROM stock_entries WHERE id=$1 AND location_id=$2`, id, warehouseLocationID).Scan(
-		&entry.ID, &entry.LocationID, &entry.Note, &entry.CreatedByAccountID, &entry.CreatedAt)
+		&entry.ID, &entry.LocationID, &entry.Note, &entry.CreatedByAccountID, &entry.CreatedAt, &entry.ReversesEntryID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Entry{}, ErrUnavailable
 	}

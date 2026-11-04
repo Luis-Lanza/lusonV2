@@ -41,7 +41,41 @@ func NewWithStockEntries(service *auth.Service, cfg config.Auth, stock *inventor
 	if err != nil || parsed != cfg {
 		return nil, stockentries.ErrUnavailable
 	}
-	return compose(service, cfg, stock, requests, entries, broker), nil
+	return stockEntryPathSafety(compose(service, cfg, stock, requests, entries, broker)), nil
+}
+
+// stockEntryPathSafety refuses an ambiguous ingress path before compose can set
+// its response headers, so the two unconditional headers are repeated here.
+func stockEntryPathSafety(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if !stockEntryPath(r) {
+			failure(w, 404, "not_found")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// stockEntryPath refuses ambiguous ingress paths before ServeMux can clean or
+// redirect them, exactly like the transfer routes: a doubled slash, a dot
+// segment, a backslash, a NUL or an encoded alias is not_found, never a silent
+// redirect to a different document.
+func stockEntryPath(r *http.Request) bool {
+	p := r.URL.Path
+	if p != "/api/stock-entries" && !strings.HasPrefix(p, "/api/stock-entries/") {
+		return true
+	}
+	if strings.Contains(p, "//") || strings.ContainsAny(p, "\\\x00") {
+		return false
+	}
+	for _, part := range strings.Split(p, "/") {
+		if part == "." || part == ".." {
+			return false
+		}
+	}
+	return r.URL.EscapedPath() == p
 }
 
 func stockEntryFailure(w http.ResponseWriter, err error) {
@@ -50,6 +84,10 @@ func stockEntryFailure(w http.ResponseWriter, err error) {
 		failure(w, 400, "invalid_request")
 	case errors.Is(err, stockentries.ErrForbidden):
 		failure(w, 403, "forbidden")
+	case errors.Is(err, stockentries.ErrNotFound):
+		failure(w, 404, "not_found")
+	case errors.Is(err, stockentries.ErrDecisionConflict):
+		failure(w, 409, "decision_conflict")
 	case errors.Is(err, stockentries.ErrInsufficientStock):
 		failure(w, 409, "insufficient_stock")
 	case errors.Is(err, stockentries.ErrRetryConflict):
@@ -191,6 +229,67 @@ func decodeStockEntry(r *http.Request) (stockentries.CreateInput, error) {
 	return in, nil
 }
 
+// decodeStockEntryReversal reads exactly the two admitted tokens of the frozen
+// reversal contract: the operation key and the mandatory reason. Lines,
+// quantities and the target are never accepted from the client, so a partial or
+// invented reversal cannot even be expressed. The canonical reason is computed
+// once here and revalidated by the store.
+func decodeStockEntryReversal(r *http.Request) (string, string, error) {
+	if r == nil || r.Body == nil || len(r.Header.Values("Content-Type")) != 1 {
+		return "", "", stockentries.ErrInvalid
+	}
+	contentType := r.Header.Get("Content-Type")
+	media, params, err := mime.ParseMediaType(contentType)
+	if err != nil || media != "application/json" || len(params) > 1 || strings.Count(contentType, ";") != len(params) {
+		return "", "", stockentries.ErrInvalid
+	}
+	for key, value := range params {
+		if key != "charset" || !strings.EqualFold(value, "utf-8") {
+			return "", "", stockentries.ErrInvalid
+		}
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, stockEntryBodyLimit+1))
+	if err != nil || len(body) > stockEntryBodyLimit || !utf8.Valid(body) {
+		return "", "", stockentries.ErrInvalid
+	}
+	d := json.NewDecoder(bytes.NewReader(body))
+	d.UseNumber()
+	if !stockDelimiter(d, '{') {
+		return "", "", stockentries.ErrInvalid
+	}
+	var operationKey, reason string
+	seen := map[string]bool{}
+	for d.More() {
+		key, err := stockString(d)
+		if err != nil || seen[key] {
+			return "", "", stockentries.ErrInvalid
+		}
+		seen[key] = true
+		switch key {
+		case "operation_key":
+			operationKey, err = stockString(d)
+		case "reason":
+			reason, err = stockString(d)
+		default:
+			return "", "", stockentries.ErrInvalid
+		}
+		if err != nil {
+			return "", "", stockentries.ErrInvalid
+		}
+	}
+	if !seen["operation_key"] || !seen["reason"] || !stockDelimiter(d, '}') {
+		return "", "", stockentries.ErrInvalid
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return "", "", stockentries.ErrInvalid
+	}
+	canonicalReason, valid := stockentries.CanonicalReason(reason)
+	if !stockentries.ValidOperationKey(operationKey) || !valid {
+		return "", "", stockentries.ErrInvalid
+	}
+	return operationKey, canonicalReason, nil
+}
+
 // stockCanonicalInteger is the same strict reader the transfer query uses; only
 // the domain error is restated.
 func stockCanonicalInteger(value string, max int64) (int64, error) {
@@ -265,27 +364,35 @@ func validStockEntryNote(note string) bool {
 }
 
 // stockEntryRecord admits only a complete persisted ingress document: lines are
-// canonical, the total is exact and no rejected shape reaches the wire.
+// canonical, the total is exact and no rejected shape reaches the wire. A
+// counter-entry carries the exact negation of the original lines, so its sign
+// rule is the mirror of an ingress document's and its target is always an
+// earlier document of this warehouse.
 func stockEntryRecord(entry stockentries.Entry) (stockEntryDTO, error) {
 	if entry.ID < 1 || entry.LocationID != 1 || entry.CreatedByAccountID < 1 || entry.CreatedAt.IsZero() ||
 		len(entry.Lines) == 0 || len(entry.Lines) > stockEntryMaxLines || !validStockEntryNote(entry.Note) {
+		return stockEntryDTO{}, stockentries.ErrUnavailable
+	}
+	reversal := entry.ReversesEntryID != nil
+	if reversal && (*entry.ReversesEntryID < 1 || *entry.ReversesEntryID >= entry.ID) {
 		return stockEntryDTO{}, stockentries.ErrUnavailable
 	}
 	lines := make([]stockEntryLineDTO, 0, len(entry.Lines))
 	var previous int64
 	var total int64
 	for _, line := range entry.Lines {
-		if line.VariantID < 1 || line.Quantity < 1 || line.VariantID <= previous {
+		if line.VariantID < 1 || line.VariantID <= previous || (reversal && line.Quantity > -1) || (!reversal && line.Quantity < 1) {
 			return stockEntryDTO{}, stockentries.ErrUnavailable
 		}
-		if line.Quantity > math.MaxInt64-total {
+		if (line.Quantity > 0 && total > math.MaxInt64-line.Quantity) ||
+			(line.Quantity < 0 && total < math.MinInt64-line.Quantity) {
 			return stockEntryDTO{}, stockentries.ErrUnavailable
 		}
 		previous = line.VariantID
 		total += line.Quantity
 		lines = append(lines, stockEntryLineDTO{VariantID: line.VariantID, Quantity: line.Quantity})
 	}
-	if total != entry.TotalUnits {
+	if total != entry.TotalUnits || (reversal && total > -1) {
 		return stockEntryDTO{}, stockentries.ErrUnavailable
 	}
 	return stockEntryDTO{
@@ -352,10 +459,15 @@ func stockEntryPage(page stockentries.EntryPage) (stockEntryPageDTO, error) {
 	return stockEntryPageDTO{Page: page.Page, PageSize: page.PageSize, TotalEntries: page.TotalEntries, Entries: entries}, nil
 }
 
-// registerStockEntries exposes exactly one route with two methods: the warehouse
-// administrator reads the newest-first history and creates documents. Only that
-// administrator is admitted and the store is the final authority for both.
+// registerStockEntries exposes the warehouse administrator's history, creation and
+// counter-entry routes. Only that administrator is admitted and the store is the
+// final authority for every one of them. Anything else below the collection is an
+// unknown route answered as JSON, never a cleaned or redirected path.
 func (a *API) registerStockEntries(mux *http.ServeMux, store *stockentries.Store) {
+	mux.HandleFunc("/api/stock-entries/{id}/reverse", a.stockEntryReverse(store))
+	mux.HandleFunc("/api/stock-entries/", func(w http.ResponseWriter, r *http.Request) {
+		failure(w, 404, "not_found")
+	})
 	mux.HandleFunc("/api/stock-entries", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {
 			w.Header().Set("Allow", "GET, POST")
@@ -423,4 +535,59 @@ func (a *API) registerStockEntries(mux *http.ServeMux, store *stockentries.Store
 		}
 		respond(w, status, record)
 	})
+}
+
+// stockEntryReverse serves the counter-entry contract. The target document is in
+// the path, the body is only the operation key and the mandatory reason, and
+// every line is derived by the store from the persisted original. The guard order
+// is creation's: method, identity, Sec-Fetch-Site, CSRF, then no query string.
+func (a *API) stockEntryReverse(store *stockentries.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, http.MethodPost) {
+			return
+		}
+		actor, ok := a.inventoryIdentity(w, r)
+		if !ok {
+			return
+		}
+		site := r.Header.Values("Sec-Fetch-Site")
+		if len(site) > 1 || (len(site) == 1 && site[0] != "same-origin") {
+			failure(w, 403, "forbidden")
+			return
+		}
+		if !a.GuardMutation(w, r) {
+			return
+		}
+		if r.URL.RawQuery != "" || r.URL.ForceQuery {
+			failure(w, 400, "invalid_request")
+			return
+		}
+		// Only a canonical positive id reaches the document lookup; an aliased
+		// spelling is a malformed request, never a cleaned path.
+		id, err := stockCanonicalInteger(r.PathValue("id"), math.MaxInt64)
+		if err != nil {
+			stockEntryFailure(w, err)
+			return
+		}
+		operationKey, reason, err := decodeStockEntryReversal(r)
+		if err != nil {
+			stockEntryFailure(w, err)
+			return
+		}
+		entry, replayed, err := store.ReverseEntry(r.Context(), actor, id, operationKey, reason)
+		if err != nil {
+			stockEntryFailure(w, err)
+			return
+		}
+		record, err := stockEntryRecord(entry)
+		if err != nil {
+			stockEntryFailure(w, err)
+			return
+		}
+		status := 201
+		if replayed {
+			status = 200
+		}
+		respond(w, status, record)
+	}
 }

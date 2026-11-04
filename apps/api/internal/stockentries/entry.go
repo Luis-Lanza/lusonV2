@@ -16,6 +16,8 @@ import (
 var (
 	ErrInvalid           = errors.New("invalid stock entry")
 	ErrForbidden         = errors.New("stock entry forbidden")
+	ErrNotFound          = errors.New("stock entry not found")
+	ErrDecisionConflict  = errors.New("stock entry decision conflict")
 	ErrRetryConflict     = errors.New("stock entry retry conflict")
 	ErrInsufficientStock = errors.New("insufficient stock entry")
 	ErrUnavailable       = errors.New("stock entry store unavailable")
@@ -28,6 +30,7 @@ const (
 	maxLines            = 190
 	maxQuantity         = 1_000_000
 	maxNote             = 500
+	maxReason           = 500
 )
 
 const (
@@ -62,6 +65,10 @@ type Entry struct {
 	CreatedAt          time.Time   `json:"created_at"`
 	Lines              []EntryLine `json:"lines"`
 	TotalUnits         int64       `json:"total_units"`
+	// ReversesEntryID is the document this one counters, or nil for an ingress
+	// document. It is never part of the wire shape: it only tells the boundary
+	// which sign rule the derived lines must obey.
+	ReversesEntryID *int64 `json:"-"`
 }
 
 // EntrySummary is one row of the read-only ingress history. The per-line detail
@@ -100,6 +107,20 @@ func warehouseAdmin(actor auth.Identity) bool {
 
 // ValidOperationKey is the database regex, checked before any database work.
 func ValidOperationKey(key string) bool { return operationKeyPattern.MatchString(key) }
+
+// CanonicalReason admits the mandatory counter-entry reason and returns the exact
+// text that is persisted and compared on a replay: valid UTF-8, no NUL, at most
+// 500 characters, and never blank once trimmed.
+func CanonicalReason(reason string) (string, bool) {
+	if !utf8.ValidString(reason) || strings.ContainsRune(reason, 0) || utf8.RuneCountInString(reason) > maxReason {
+		return "", false
+	}
+	trimmed := strings.TrimSpace(reason)
+	if trimmed == "" {
+		return "", false
+	}
+	return trimmed, true
+}
 
 // validNote matches the database bound in characters and refuses bytes that a
 // JSON or SQL text column cannot represent faithfully.

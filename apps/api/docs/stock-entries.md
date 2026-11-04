@@ -21,11 +21,19 @@ route.
 |---|---|---|
 | `/api/stock-entries` | POST | 201 on creation, 200 on an exact idempotent replay |
 | `/api/stock-entries` | GET | 200 with one newest-first page of documents |
+| `/api/stock-entries/{id}/reverse` | POST | 201 on the counter-entry, 200 on an exact idempotent replay |
 
 No other method and no other path is served by this contract (`405
-method_not_allowed`, `Allow: GET, POST`). Mutations require the usual same-origin
-session cookie, `Origin`, `Sec-Fetch-Site` and `X-CSRF-Token`; the read requires
-the session only. A query string on the POST is rejected.
+method_not_allowed`, `Allow: GET, POST` for the collection and `Allow: POST` for
+the counter-entry). Mutations require the usual same-origin session cookie,
+`Origin`, `Sec-Fetch-Site` and `X-CSRF-Token`; the read requires the session only.
+A query string on either POST is rejected.
+
+Any other path below `/api/stock-entries/` is `404 not_found` as JSON, and an
+ambiguous path is refused before it can be cleaned or redirected: a doubled
+slash, a `.` or `..` segment, a backslash, a NUL, or an encoded alias
+(`%31` for `1`, `%2F` for `/`) is `404 not_found`. A trailing slash is
+`404 not_found`, never a redirect.
 
 ### Request
 
@@ -112,6 +120,100 @@ contract. Because a document is never edited, the history only ever grows; a
 correction adds the counter-entry beside the original and neither row is
 rewritten.
 
+## Counter-entry (contra-asiento)
+
+A confirmed document is never edited and never deleted. The only correction is a
+new document that negates it:
+
+```
+POST /api/stock-entries/{id}/reverse
+```
+
+### Path
+
+`{id}` is the decimal id of the **original** document and only a canonical
+positive integer is admitted: no leading zeros, no sign, no whitespace. An
+aliased spelling (`01`, `+1`, `0`, `abc`, an integer above `bigint`) is
+`400 invalid_request`, and an aliased or ambiguous path is `404 not_found`
+(see above). Neither is cleaned, truncated or redirected.
+
+### Request
+
+```json
+{"operation_key":"[A-Za-z0-9_-]{16,128}","reason":"1..500 characters"}
+```
+
+Exactly these two fields, each once, both strings, nothing else. `reason` is
+mandatory: valid UTF-8 without NUL, at most 500 characters, and never blank once
+trimmed. The admitted reason is persisted trimmed, so an exact replay with
+different padding is still the same reason.
+
+**The client never sends quantities or lines.** The server derives them from the
+persisted original, so a partial reversal, a reversal of another document's
+lines, or an invented quantity cannot be expressed through this contract.
+
+### Derived lines
+
+The counter-entry has exactly one line per original line, in ascending
+`variant_id` order, with `quantity = -original.quantity`. Its `total_units` is
+therefore the exact negation of the original total, and the original document is
+never touched: both documents stay visible forever, and the original reports its
+counter-entry through `reversed_by` in the history.
+
+One counter-entry per document: the partial unique index on
+`reverses_entry_id` admits at most one, a counter-entry is not itself a reversal
+target, and a document is never its own target.
+
+### Success
+
+```json
+{"id":2,"location_id":1,"note":"","created_by_account_id":1,
+ "created_at":"2026-02-03T04:06:11Z",
+ "lines":[{"variant_id":1,"quantity":-2},{"variant_id":2,"quantity":-3}],
+ "total_units":-5}
+```
+
+The shape is exactly the creation shape. The counter-entry has no note of its
+own (`note` is always the empty string) and its lines and total are negative.
+
+### Idempotency
+
+The `operation_key` identifies one correction intent, serialized by the same
+`pg_advisory_xact_lock` scheme as creation. Resending the same key with the same
+target and the same canonical reason returns `200` with the persisted
+counter-entry and changes nothing. The same key with another target or another
+reason is `409 retry_conflict` and writes nothing.
+
+### Failure semantics
+
+The counter-entry is applied whole or not at all. If any line would leave
+`existing < reserved` after the reversal, the entire reversal is rejected with
+`409 insufficient_stock`: nothing is written, no partial counter-entry exists,
+and the original document, its lines and `inventory_balances` are unchanged.
+Stock is never invented and never compensated automatically.
+
+| Status | Code | Meaning |
+|---|---|---|
+| 400 | `invalid_request` | Malformed body, bad or missing `reason`, bad operation key, or a non-canonical `{id}` |
+| 401 | `unauthenticated` | No session |
+| 403 | `forbidden` | The caller is not the warehouse administrator |
+| 404 | `not_found` | No such document in this warehouse, or an aliased path |
+| 409 | `decision_conflict` | The target is itself a counter-entry, or it already has one |
+| 409 | `retry_conflict` | The operation key is bound to another target or reason |
+| 409 | `insufficient_stock` | The reversal would leave `existing < reserved` |
+| 503 | `service_unavailable` | Pool, database, or any unmapped failure |
+
+### Counters and totals
+
+`inventory_balances` is the only stock state, and a counter-entry subtracts
+exactly what the original added, so applying a document and then its
+counter-entry leaves `existing` and `reserved` as they were before the ingress.
+In the history, `total_entries` counts documents, not ingress or corrections, so
+the original and its counter-entry are two rows; the counter-entry contributes
+the negative number of units it removes, which is why `total_units` is signed.
+Summing `total_units` over a whole history therefore yields the net units still
+registered by this domain.
+
 ## Errors
 
 Every failure returns exactly `{"error":"<code>"}`.
@@ -125,7 +227,9 @@ Every failure returns exactly `{"error":"<code>"}`.
 | 503 | `service_unavailable` | Pool, database, or any unmapped failure |
 
 Failures never leak driver, SQL, or configuration details; only the database's
-own rejection is trusted.
+own rejection is trusted. The counter-entry route adds `401 unauthenticated`,
+`404 not_found` and `409 decision_conflict` to this vocabulary; its own table is
+above.
 
 ## Database invariants
 
@@ -155,9 +259,10 @@ A reversal is another document with `reverses_entry_id` set and a mandatory
 unique index admits at most one reversal per original document, `reverses_entry_id
 <> id` prevents self-reversal, and a reversal of a reversal is rejected. The
 original document keeps its bytes: both documents stay visible and the original
-is corrected, never rewritten. This HTTP contract exposes creation and the
-read-only history; a reversal route is a separate contract, but the invariants
-above already hold for any writer.
+is corrected, never rewritten. The frozen route above derives those lines from the
+persisted original inside one transaction; the database still decides the
+outcome, and the trigger rejections (`LS001`, `LS002`, `LS003`, `LS006`) are
+reported through the public codes in the table above.
 
 ## Realtime
 
