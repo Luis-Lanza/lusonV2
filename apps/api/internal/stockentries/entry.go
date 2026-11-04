@@ -30,6 +30,12 @@ const (
 	maxNote             = 500
 )
 
+const (
+	// MaxPage and the admitted page sizes are the frozen read contract.
+	MaxPage         = 1_000_000
+	DefaultPageSize = 25
+)
+
 type Line struct {
 	VariantID int64 `json:"variant_id"`
 	Quantity  int64 `json:"quantity"`
@@ -56,6 +62,33 @@ type Entry struct {
 	CreatedAt          time.Time   `json:"created_at"`
 	Lines              []EntryLine `json:"lines"`
 	TotalUnits         int64       `json:"total_units"`
+}
+
+// EntrySummary is one row of the read-only ingress history. The per-line detail
+// stays out of this projection; only the line count and the exact unit total are
+// exposed.
+type EntrySummary struct {
+	ID         int64
+	Note       string
+	CreatedAt  time.Time
+	Lines      int
+	TotalUnits int64
+	// ReversedBy is the counter-entry that reverses this document, or nil.
+	ReversedBy *int64
+}
+
+// EntryPage is one newest-first page of persisted documents plus the total.
+type EntryPage struct {
+	Page         int
+	PageSize     int
+	TotalEntries int64
+	Entries      []EntrySummary
+}
+
+// ValidPage admits only the page and page size of the frozen read contract, so
+// every other value is refused before the database is touched.
+func ValidPage(page, pageSize int) bool {
+	return page >= 1 && page <= MaxPage && (pageSize == 10 || pageSize == DefaultPageSize || pageSize == 50)
 }
 
 var operationKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)

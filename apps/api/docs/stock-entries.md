@@ -20,10 +20,12 @@ route.
 | Route | Method | Result |
 |---|---|---|
 | `/api/stock-entries` | POST | 201 on creation, 200 on an exact idempotent replay |
+| `/api/stock-entries` | GET | 200 with one newest-first page of documents |
 
 No other method and no other path is served by this contract (`405
-method_not_allowed`). Mutations require the usual same-origin session cookie,
-`Origin`, `Sec-Fetch-Site` and `X-CSRF-Token`. A query string is rejected.
+method_not_allowed`, `Allow: GET, POST`). Mutations require the usual same-origin
+session cookie, `Origin`, `Sec-Fetch-Site` and `X-CSRF-Token`; the read requires
+the session only. A query string on the POST is rejected.
 
 ### Request
 
@@ -62,13 +64,61 @@ already the truth. Only the operation key is serialized
 (`pg_advisory_xact_lock`), so a concurrent duplicate submission resolves to a
 replay instead of a unique violation.
 
+## History
+
+The read is the warehouse's own ledger of documents, with the per-line detail
+left out:
+
+```
+GET /api/stock-entries?page=1&page_size=25
+```
+
+* `page` is a canonical integer from 1 to 1000000 and defaults to 1.
+* `page_size` is one of `10`, `25`, `50` and defaults to 25.
+* The query is token-exact: repeated parameters, unknown keys, empty values, a
+  bare `?` and non-canonical integers (`01`, `+1`, `1e3`, `1.0`) are all
+  `400 invalid_request`. Parameter order is irrelevant.
+
+```json
+{"page":1,"page_size":25,"total_entries":3,
+ "entries":[{"id":6,"note":"Remito 0002-00045871","created_at":"2026-11-04T14:20:00Z",
+  "lines":2,"total_units":18,"reversed_by":null}]}
+```
+
+`entries` is ordered by `id` descending, so the newest document is always first
+and paging with a stable `page_size` never repeats or skips a document.
+`total_entries` counts every document of the warehouse, independent of the
+requested page, which makes an empty page beyond the last one harmless.
+
+Each row is a summary of exactly six fields:
+
+| Field | Meaning |
+|---|---|
+| `id` | Document number |
+| `note` | Header note; empty string when absent |
+| `created_at` | RFC3339 in UTC |
+| `lines` | Number of lines in the document |
+| `total_units` | Exact sum of the line quantities |
+| `reversed_by` | Id of the counter-entry that reverses this document, or `null` |
+
+`lines` and `total_units` are computed by the database in `bigint`/`numeric` and
+come back as one page statement plus one total statement, never by summing every
+line in the application. A counter-entry is itself a document, so it appears in
+the history with its own negative `total_units`, and the document it reverses
+reports its `id` in `reversed_by`.
+
+Per-line detail never appears in this list: the document detail is a separate
+contract. Because a document is never edited, the history only ever grows; a
+correction adds the counter-entry beside the original and neither row is
+rewritten.
+
 ## Errors
 
 Every failure returns exactly `{"error":"<code>"}`.
 
 | Status | Code | Meaning |
 |---|---|---|
-| 400 | `invalid_request` | Malformed body, bad field, duplicate variant, or an exceeded limit |
+| 400 | `invalid_request` | Malformed body, bad field, duplicate variant, an exceeded limit, or an inadmissible `page`/`page_size` |
 | 403 | `forbidden` | The caller is not the warehouse administrator |
 | 409 | `insufficient_stock` | The line would leave `existing < reserved` |
 | 409 | `retry_conflict` | The operation key is bound to a different payload |
@@ -105,9 +155,9 @@ A reversal is another document with `reverses_entry_id` set and a mandatory
 unique index admits at most one reversal per original document, `reverses_entry_id
 <> id` prevents self-reversal, and a reversal of a reversal is rejected. The
 original document keeps its bytes: both documents stay visible and the original
-is corrected, never rewritten. This HTTP contract exposes creation only; a
-reversal route is a separate contract, but the invariants above already hold for
-any writer.
+is corrected, never rewritten. This HTTP contract exposes creation and the
+read-only history; a reversal route is a separate contract, but the invariants
+above already hold for any writer.
 
 ## Realtime
 

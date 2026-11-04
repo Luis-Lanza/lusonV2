@@ -125,6 +125,180 @@ func TestStoreGuards(t *testing.T) {
 	if _, _, err := nilStore.CreateEntry(context.Background(), warehouse(), input("guard-key-0000000003", stockentries.Line{VariantID: 1, Quantity: 1})); !errors.Is(err, stockentries.ErrUnavailable) {
 		t.Fatal("nil store must fail closed")
 	}
+	if _, err := stockentries.New(nil).ListEntries(context.Background(), warehouse(), 1, 25); !errors.Is(err, stockentries.ErrUnavailable) {
+		t.Fatal("unavailable pool must fail the history read closed")
+	}
+	if _, err := stockentries.New(nil).ListEntries(nil, warehouse(), 1, 25); !errors.Is(err, stockentries.ErrUnavailable) {
+		t.Fatal("missing context must fail the history read closed")
+	}
+	if _, err := nilStore.ListEntries(context.Background(), warehouse(), 1, 25); !errors.Is(err, stockentries.ErrUnavailable) {
+		t.Fatal("nil store must fail the history read closed")
+	}
+}
+
+func listWarehouse(t *testing.T, ctx context.Context, s *stockentries.Store, page, pageSize int) stockentries.EntryPage {
+	t.Helper()
+	result, err := s.ListEntries(ctx, warehouse(), page, pageSize)
+	if err != nil {
+		t.Fatal("warehouse history read failed")
+	}
+	return result
+}
+
+func TestListEntriesNewestFirst(t *testing.T) {
+	ctx, _, s := fixture(t)
+	empty := listWarehouse(t, ctx, s, 1, 25)
+	if empty.Page != 1 || empty.PageSize != 25 || empty.TotalEntries != 0 || len(empty.Entries) != 0 {
+		t.Fatal("an empty history must report one empty page")
+	}
+	ids := make([]int64, 0, 3)
+	for i, in := range []stockentries.CreateInput{
+		input("history-key-0000000001", stockentries.Line{VariantID: 1, Quantity: 3}),
+		{OperationKey: "history-key-0000000002", Note: "Remito 0002-00045871", Lines: []stockentries.Line{{VariantID: 2, Quantity: 14}, {VariantID: 1, Quantity: 4}}},
+		{OperationKey: "history-key-0000000003", Lines: []stockentries.Line{{VariantID: 3, Quantity: 1}}},
+	} {
+		entry, _, err := s.CreateEntry(ctx, warehouse(), in)
+		if err != nil {
+			t.Fatalf("document %d was not created", i)
+		}
+		ids = append(ids, entry.ID)
+	}
+	page := listWarehouse(t, ctx, s, 1, 25)
+	if page.TotalEntries != 3 || len(page.Entries) != 3 {
+		t.Fatal("every persisted document must be listed once")
+	}
+	if page.Entries[0].ID != ids[2] || page.Entries[1].ID != ids[1] || page.Entries[2].ID != ids[0] {
+		t.Fatal("history must be ordered newest first")
+	}
+	second := page.Entries[1]
+	if second.Note != "Remito 0002-00045871" || second.Lines != 2 || second.TotalUnits != 18 ||
+		second.ReversedBy != nil || second.CreatedAt.IsZero() {
+		t.Fatal("summary does not match the persisted document")
+	}
+	if page.Entries[0].Note != "" || page.Entries[0].Lines != 1 || page.Entries[0].TotalUnits != 1 {
+		t.Fatal("an empty note and a single line must be summarized exactly")
+	}
+}
+
+func TestListEntriesPagination(t *testing.T) {
+	ctx, _, s := fixture(t)
+	ids := make([]int64, 0, 12)
+	for i := 1; i <= 12; i++ {
+		entry, _, err := s.CreateEntry(ctx, warehouse(), input(fmt.Sprintf("page-key-%016d", i), stockentries.Line{VariantID: 1, Quantity: 1}))
+		if err != nil {
+			t.Fatalf("document %d was not created", i)
+		}
+		ids = append(ids, entry.ID)
+	}
+	first := listWarehouse(t, ctx, s, 1, 10)
+	if first.Page != 1 || first.PageSize != 10 || first.TotalEntries != 12 || len(first.Entries) != 10 {
+		t.Fatal("the first page must hold ten of twelve documents")
+	}
+	if first.Entries[0].ID != ids[11] || first.Entries[9].ID != ids[2] {
+		t.Fatal("the first page must hold the ten newest documents")
+	}
+	second := listWarehouse(t, ctx, s, 2, 10)
+	if second.Page != 2 || second.TotalEntries != 12 || len(second.Entries) != 2 {
+		t.Fatal("the second page must hold the two oldest documents")
+	}
+	if second.Entries[0].ID != ids[1] || second.Entries[1].ID != ids[0] {
+		t.Fatal("the last page must continue the newest-first order")
+	}
+	beyond := listWarehouse(t, ctx, s, 3, 10)
+	if len(beyond.Entries) != 0 || beyond.TotalEntries != 12 || beyond.Page != 3 {
+		t.Fatal("a page beyond the last one must be empty and keep the total")
+	}
+	all := listWarehouse(t, ctx, s, 1, 25)
+	if len(all.Entries) != 12 || all.PageSize != 25 || all.TotalEntries != 12 {
+		t.Fatal("every document must fit on one page of twenty-five")
+	}
+}
+
+func TestListEntriesReversedBy(t *testing.T) {
+	ctx, p, s := fixture(t)
+	entry, _, err := s.CreateEntry(ctx, warehouse(), input("history-reversal-key-01",
+		stockentries.Line{VariantID: 1, Quantity: 2}, stockentries.Line{VariantID: 2, Quantity: 3}))
+	if err != nil {
+		t.Fatal("original document was not created")
+	}
+	if err := reverse(t, ctx, p, entry.ID, "history-counter-00000001", "error de carga",
+		stockentries.Line{VariantID: 1, Quantity: -2}, stockentries.Line{VariantID: 2, Quantity: -3}); err != nil {
+		t.Fatalf("counter-entry was not created: %v", sqlState(err))
+	}
+	var counterID int64
+	if p.QueryRow(ctx, "SELECT id FROM stock_entries WHERE reverses_entry_id=$1", entry.ID).Scan(&counterID) != nil {
+		t.Fatal("counter-entry read failed")
+	}
+	page := listWarehouse(t, ctx, s, 1, 25)
+	if page.TotalEntries != 2 || len(page.Entries) != 2 {
+		t.Fatal("the original document and its counter-entry must both be listed")
+	}
+	counter := page.Entries[0]
+	if counter.ID != counterID || counter.Lines != 2 || counter.TotalUnits != -5 || counter.ReversedBy != nil {
+		t.Fatal("the counter-entry must be listed with its own negative total")
+	}
+	original := page.Entries[1]
+	if original.ID != entry.ID || original.TotalUnits != 5 || original.ReversedBy == nil || *original.ReversedBy != counterID {
+		t.Fatal("a reversed document must expose its counter-entry and keep its total")
+	}
+}
+
+func TestListEntriesRejectsInvalidQueryBeforeSQL(t *testing.T) {
+	ctx, p, _ := fixture(t)
+	dead, err := pgxpool.NewWithConfig(ctx, p.Config())
+	if err != nil {
+		t.Fatal("closed-pool fixture failed")
+	}
+	dead.Close()
+	s := stockentries.New(dead)
+	for name, query := range map[string][2]int{
+		"zero_page":         {0, 25},
+		"negative_page":     {-1, 10},
+		"page_above_bound":  {1000001, 25},
+		"zero_size":         {1, 0},
+		"size_not_admitted": {1, 15},
+		"size_above_bound":  {1, 100},
+		"negative_size":     {1, -25},
+	} {
+		if _, err := s.ListEntries(ctx, warehouse(), query[0], query[1]); !errors.Is(err, stockentries.ErrInvalid) {
+			t.Fatalf("%s must be refused before the database", name)
+		}
+	}
+	// The same closed pool proves a valid query does reach the database.
+	if _, err := s.ListEntries(ctx, warehouse(), 1, 25); !errors.Is(err, stockentries.ErrUnavailable) {
+		t.Fatal("a valid query must reach the database and fail closed")
+	}
+	for _, valid := range [][2]int{{1, 10}, {1, 25}, {1, 50}, {1000000, 25}} {
+		if !stockentries.ValidPage(valid[0], valid[1]) {
+			t.Fatal("an admitted page was refused")
+		}
+	}
+	for _, invalid := range [][2]int{{1000001, 25}, {1, 20}, {0, 25}} {
+		if stockentries.ValidPage(invalid[0], invalid[1]) {
+			t.Fatal("a page outside the contract was admitted")
+		}
+	}
+}
+
+func TestListEntriesActorBoundary(t *testing.T) {
+	ctx, p, s := fixture(t)
+	before := snapshot(t, ctx, p)
+	pending := warehouse()
+	pending.MustChangePassword = true
+	for name, actor := range map[string]auth.Identity{
+		"branch":          branch(),
+		"warehouse_label": {AccountID: 1, Location: auth.Location{ID: 2}},
+		"clerk":           {AccountID: 2, Location: auth.Location{ID: 1}},
+		"unassigned":      {},
+		"password_change": pending,
+	} {
+		if _, err := s.ListEntries(ctx, actor, 1, 25); !errors.Is(err, stockentries.ErrForbidden) {
+			t.Fatalf("%s must be forbidden", name)
+		}
+	}
+	if snapshot(t, ctx, p) != before {
+		t.Fatal("a forbidden history read must not change any stored value")
+	}
 }
 
 func TestCreateEntryAppliesBalance(t *testing.T) {

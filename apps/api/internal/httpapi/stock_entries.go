@@ -24,6 +24,13 @@ import (
 // 190 lines of maximum variant/quantity plus a 500-character note.
 const stockEntryBodyLimit = 16 << 10
 
+const (
+	// stockEntryMaxLines and stockEntryMaxUnits are the document bounds, reused as
+	// the summary bounds so a history row never advertises an impossible total.
+	stockEntryMaxLines = 190
+	stockEntryMaxUnits = stockEntryMaxLines * 1_000_000
+)
+
 // NewWithStockEntries opts in to warehouse stock ingress. Dependencies must be
 // initialized except the realtime broker, which only adds the event stream.
 func NewWithStockEntries(service *auth.Service, cfg config.Auth, stock *inventory.Store, requests *transfers.Store, entries *stockentries.Store, broker *realtime.Broker) (http.Handler, error) {
@@ -78,7 +85,7 @@ func stockLines(d *json.Decoder) ([]stockentries.Line, error) {
 	}
 	lines := make([]stockentries.Line, 0)
 	for d.More() {
-		if len(lines) >= 190 || !stockDelimiter(d, '{') {
+		if len(lines) >= stockEntryMaxLines || !stockDelimiter(d, '{') {
 			return nil, stockentries.ErrInvalid
 		}
 		var line stockentries.Line
@@ -184,6 +191,58 @@ func decodeStockEntry(r *http.Request) (stockentries.CreateInput, error) {
 	return in, nil
 }
 
+// stockCanonicalInteger is the same strict reader the transfer query uses; only
+// the domain error is restated.
+func stockCanonicalInteger(value string, max int64) (int64, error) {
+	if n, err := canonicalTransferInteger(value, max); err == nil {
+		return n, nil
+	}
+	return 0, stockentries.ErrInvalid
+}
+
+// stockEntryQuery reads the frozen history query: only page and page_size, each
+// exactly once, as a canonical integer. Order is irrelevant; duplicates, empty
+// values, unknown keys and encoding aliases are rejections, never defaults.
+func stockEntryQuery(raw string) (page, pageSize int, err error) {
+	page, pageSize = 1, stockentries.DefaultPageSize
+	if raw == "" {
+		return page, pageSize, nil
+	}
+	if len(raw) > 4096 {
+		return 0, 0, stockentries.ErrInvalid
+	}
+	seen := map[string]bool{}
+	for _, part := range strings.Split(raw, "&") {
+		key, value, ok := strings.Cut(part, "=")
+		if !ok || value == "" || seen[key] {
+			return 0, 0, stockentries.ErrInvalid
+		}
+		seen[key] = true
+		var n int64
+		var read error
+		switch key {
+		case "page":
+			n, read = stockCanonicalInteger(value, stockentries.MaxPage)
+			page = int(n)
+		case "page_size":
+			n, read = stockCanonicalInteger(value, 50)
+			pageSize = int(n)
+			if n != 10 && n != stockentries.DefaultPageSize && n != 50 {
+				read = stockentries.ErrInvalid
+			}
+		default:
+			return 0, 0, stockentries.ErrInvalid
+		}
+		if read != nil {
+			return 0, 0, stockentries.ErrInvalid
+		}
+	}
+	if !stockentries.ValidPage(page, pageSize) {
+		return 0, 0, stockentries.ErrInvalid
+	}
+	return page, pageSize, nil
+}
+
 type stockEntryLineDTO struct {
 	VariantID int64 `json:"variant_id"`
 	Quantity  int64 `json:"quantity"`
@@ -199,12 +258,17 @@ type stockEntryDTO struct {
 	TotalUnits         int64               `json:"total_units"`
 }
 
+// validStockEntryNote is the note bound of the contract, shared by the created
+// document and by every history row.
+func validStockEntryNote(note string) bool {
+	return utf8.ValidString(note) && !strings.ContainsRune(note, 0) && utf8.RuneCountInString(note) <= 500
+}
+
 // stockEntryRecord admits only a complete persisted ingress document: lines are
 // canonical, the total is exact and no rejected shape reaches the wire.
 func stockEntryRecord(entry stockentries.Entry) (stockEntryDTO, error) {
 	if entry.ID < 1 || entry.LocationID != 1 || entry.CreatedByAccountID < 1 || entry.CreatedAt.IsZero() ||
-		len(entry.Lines) == 0 || len(entry.Lines) > 190 || utf8.RuneCountInString(entry.Note) > 500 ||
-		!utf8.ValidString(entry.Note) || strings.ContainsRune(entry.Note, 0) {
+		len(entry.Lines) == 0 || len(entry.Lines) > stockEntryMaxLines || !validStockEntryNote(entry.Note) {
 		return stockEntryDTO{}, stockentries.ErrUnavailable
 	}
 	lines := make([]stockEntryLineDTO, 0, len(entry.Lines))
@@ -235,15 +299,95 @@ func stockEntryRecord(entry stockentries.Entry) (stockEntryDTO, error) {
 	}, nil
 }
 
-// registerStockEntries exposes exactly one route and one method. Only the
-// warehouse administrator is admitted; the store is the final authority.
+type stockEntrySummaryDTO struct {
+	ID         int64  `json:"id"`
+	Note       string `json:"note"`
+	CreatedAt  string `json:"created_at"`
+	Lines      int    `json:"lines"`
+	TotalUnits int64  `json:"total_units"`
+	ReversedBy *int64 `json:"reversed_by"`
+}
+
+type stockEntryPageDTO struct {
+	Page         int                    `json:"page"`
+	PageSize     int                    `json:"page_size"`
+	TotalEntries int64                  `json:"total_entries"`
+	Entries      []stockEntrySummaryDTO `json:"entries"`
+}
+
+// stockEntryPage admits only a complete persisted page: shape, newest-first
+// order, counts and totals are the frozen contract, and a counter-entry is
+// always a later document than the one it reverses.
+func stockEntryPage(page stockentries.EntryPage) (stockEntryPageDTO, error) {
+	if !stockentries.ValidPage(page.Page, page.PageSize) || page.TotalEntries < 0 ||
+		len(page.Entries) > page.PageSize ||
+		// A page beyond the last one is legitimately empty; a page with rows must
+		// still fit inside the reported total.
+		(len(page.Entries) > 0 &&
+			int64(page.Page-1)*int64(page.PageSize)+int64(len(page.Entries)) > page.TotalEntries) {
+		return stockEntryPageDTO{}, stockentries.ErrUnavailable
+	}
+	entries := make([]stockEntrySummaryDTO, 0, len(page.Entries))
+	previous := int64(math.MaxInt64)
+	for _, entry := range page.Entries {
+		if entry.ID < 1 || entry.ID >= previous || entry.CreatedAt.IsZero() ||
+			entry.Lines < 1 || entry.Lines > stockEntryMaxLines ||
+			entry.TotalUnits > stockEntryMaxUnits || entry.TotalUnits < -stockEntryMaxUnits ||
+			!validStockEntryNote(entry.Note) {
+			return stockEntryPageDTO{}, stockentries.ErrUnavailable
+		}
+		previous = entry.ID
+		var reversedBy *int64
+		if entry.ReversedBy != nil {
+			if *entry.ReversedBy <= entry.ID {
+				return stockEntryPageDTO{}, stockentries.ErrUnavailable
+			}
+			counter := *entry.ReversedBy
+			reversedBy = &counter
+		}
+		entries = append(entries, stockEntrySummaryDTO{ID: entry.ID, Note: entry.Note,
+			CreatedAt: entry.CreatedAt.UTC().Format(time.RFC3339), Lines: entry.Lines,
+			TotalUnits: entry.TotalUnits, ReversedBy: reversedBy})
+	}
+	return stockEntryPageDTO{Page: page.Page, PageSize: page.PageSize, TotalEntries: page.TotalEntries, Entries: entries}, nil
+}
+
+// registerStockEntries exposes exactly one route with two methods: the warehouse
+// administrator reads the newest-first history and creates documents. Only that
+// administrator is admitted and the store is the final authority for both.
 func (a *API) registerStockEntries(mux *http.ServeMux, store *stockentries.Store) {
 	mux.HandleFunc("/api/stock-entries", func(w http.ResponseWriter, r *http.Request) {
-		if !method(w, r, http.MethodPost) {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			w.Header().Set("Allow", "GET, POST")
+			failure(w, 405, "method_not_allowed")
 			return
 		}
 		actor, ok := a.inventoryIdentity(w, r)
 		if !ok {
+			return
+		}
+		if r.Method == http.MethodGet {
+			// A bare separator is an ambiguous framing, not the default page.
+			if r.URL.RawQuery == "" && r.URL.ForceQuery {
+				failure(w, 400, "invalid_request")
+				return
+			}
+			page, pageSize, err := stockEntryQuery(r.URL.RawQuery)
+			if err != nil {
+				stockEntryFailure(w, err)
+				return
+			}
+			result, err := store.ListEntries(r.Context(), actor, page, pageSize)
+			if err != nil {
+				stockEntryFailure(w, err)
+				return
+			}
+			record, err := stockEntryPage(result)
+			if err != nil {
+				stockEntryFailure(w, err)
+				return
+			}
+			respond(w, 200, record)
 			return
 		}
 		site := r.Header.Values("Sec-Fetch-Site")

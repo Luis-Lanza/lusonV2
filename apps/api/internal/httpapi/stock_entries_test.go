@@ -3,15 +3,18 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/auth"
 	"luson/api/internal/bootstrap"
@@ -416,9 +419,9 @@ func TestStockEntryHTTPRejections(t *testing.T) {
 	f.rejected(t, f.request(0, "POST", "/api/stock-entries", validStockEntryJSON), 401, "unauthenticated")
 	f.rejected(t, f.request(2, "POST", "/api/stock-entries", validStockEntryJSON), 403, "forbidden")
 	f.rejected(t, f.request(3, "POST", "/api/stock-entries", validStockEntryJSON), 403, "forbidden")
-	for _, verb := range []string{"GET", "PUT", "PATCH", "DELETE"} {
+	for _, verb := range []string{"PUT", "PATCH", "DELETE"} {
 		w := f.serve(t, f.request(1, verb, "/api/stock-entries", ""))
-		if w.Code != 405 || w.Header().Get("Allow") != "POST" || w.Body.String() != "{\"error\":\"method_not_allowed\"}\n" {
+		if w.Code != 405 || w.Header().Get("Allow") != "GET, POST" || w.Body.String() != "{\"error\":\"method_not_allowed\"}\n" {
 			t.Fatalf("%s must be method_not_allowed", verb)
 		}
 	}
@@ -467,6 +470,301 @@ func TestStockEntryHTTPReplayConflict(t *testing.T) {
 	}
 	if n := f.count(t, "stock_entries"); n != 1 {
 		t.Fatal("a conflict must not create a second document")
+	}
+}
+
+// stockEntryHistoryWire admits only the frozen history shape: four page keys and
+// six summary keys per row, with no per-line detail anywhere.
+func stockEntryHistoryWire(t *testing.T, w *httptest.ResponseRecorder) stockEntryHistoryWireDTO {
+	t.Helper()
+	if w.Code != 200 || w.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("history response mismatch: status=%d want=200", w.Code)
+	}
+	var top map[string]json.RawMessage
+	if json.Unmarshal(w.Body.Bytes(), &top) != nil || len(top) != 4 {
+		t.Fatal("history whitelist changed")
+	}
+	for _, key := range []string{"page", "page_size", "total_entries", "entries"} {
+		if _, ok := top[key]; !ok {
+			t.Fatalf("history whitelist incomplete: %s", key)
+		}
+	}
+	var rows []map[string]json.RawMessage
+	if json.Unmarshal(top["entries"], &rows) != nil {
+		t.Fatal("history entries are not an array")
+	}
+	canonical := regexp.MustCompile(`^[1-9][0-9]*$`)
+	for _, row := range rows {
+		if len(row) != 6 {
+			t.Fatal("history row whitelist changed")
+		}
+		for _, key := range []string{"id", "note", "created_at", "lines", "total_units", "reversed_by"} {
+			if _, ok := row[key]; !ok {
+				t.Fatalf("history row whitelist incomplete: %s", key)
+			}
+		}
+		if reversed := string(row["reversed_by"]); reversed != "null" && !canonical.MatchString(reversed) {
+			t.Fatal("reversed_by must be null or a canonical id")
+		}
+	}
+	var page stockEntryHistoryWireDTO
+	if json.Unmarshal(w.Body.Bytes(), &page) != nil {
+		t.Fatal("history response is not decodable")
+	}
+	if len(page.Entries) != len(rows) {
+		t.Fatal("history rows are inconsistent")
+	}
+	return page
+}
+
+type stockEntryHistoryWireDTO struct {
+	Page         int                           `json:"page"`
+	PageSize     int                           `json:"page_size"`
+	TotalEntries int                           `json:"total_entries"`
+	Entries      []stockEntryHistoryRowWireDTO `json:"entries"`
+}
+
+type stockEntryHistoryRowWireDTO struct {
+	ID         int64  `json:"id"`
+	Note       string `json:"note"`
+	CreatedAt  string `json:"created_at"`
+	Lines      int    `json:"lines"`
+	TotalUnits int64  `json:"total_units"`
+	ReversedBy *int64 `json:"reversed_by"`
+}
+
+// reverse persists a counter-entry exactly like the correction screen will, so
+// the history can be proven to expose it without a reversal route.
+func (f *stockEntryHTTPFixture) reverse(t *testing.T, original int64, key, reason string, lines ...stockentries.Line) int64 {
+	t.Helper()
+	tx, err := f.p.BeginTx(f.ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatal("counter-entry transaction failed")
+	}
+	defer tx.Rollback(context.WithoutCancel(f.ctx))
+	var id int64
+	if err := tx.QueryRow(f.ctx, `INSERT INTO stock_entries(operation_key,location_id,note,reverses_entry_id,reason,created_by_account_id)
+ VALUES($1,1,'',$2,$3,1) RETURNING id`, key, original, reason).Scan(&id); err != nil {
+		t.Fatalf("counter-entry insert failed: %v", err)
+	}
+	for _, line := range lines {
+		if _, err := tx.Exec(f.ctx, "INSERT INTO stock_entry_lines(entry_id,variant_id,quantity) VALUES($1,$2,$3)", id, int32(line.VariantID), line.Quantity); err != nil {
+			t.Fatalf("counter-entry line failed: %v", err)
+		}
+	}
+	if err := tx.Commit(f.ctx); err != nil {
+		t.Fatalf("counter-entry commit failed: %v", err)
+	}
+	return id
+}
+
+func TestStockEntryHTTPHistory(t *testing.T) {
+	f := stockEntryFixture(t)
+	empty := stockEntryHistoryWire(t, f.serve(t, f.request(1, "GET", "/api/stock-entries", "")))
+	if empty.Page != 1 || empty.PageSize != 25 || empty.TotalEntries != 0 || len(empty.Entries) != 0 {
+		t.Fatal("an empty history must report one empty page")
+	}
+	if explicit := stockEntryHistoryWire(t, f.serve(t, f.request(1, "GET", "/api/stock-entries?page=1&page_size=25", ""))); explicit.TotalEntries != 0 {
+		t.Fatal("the explicit defaults must answer exactly like the bare route")
+	}
+	ids := make([]int64, 0, 3)
+	for i, body := range []string{
+		`{"operation_key":"http-history-key-0001","note":"Remito 0001","lines":[{"variant_id":1,"quantity":3}]}`,
+		`{"operation_key":"http-history-key-0002","note":"Remito 0002-00045871","lines":[{"variant_id":2,"quantity":14},{"variant_id":1,"quantity":4}]}`,
+		`{"operation_key":"http-history-key-0003","lines":[{"variant_id":2,"quantity":1}]}`,
+	} {
+		w := f.serve(t, f.request(1, "POST", "/api/stock-entries", body))
+		var document stockEntryDTO
+		if w.Code != 201 || json.Unmarshal(w.Body.Bytes(), &document) != nil {
+			t.Fatalf("document %d was not created", i)
+		}
+		ids = append(ids, document.ID)
+	}
+	page := stockEntryHistoryWire(t, f.serve(t, f.request(1, "GET", "/api/stock-entries", "")))
+	if page.TotalEntries != 3 || len(page.Entries) != 3 {
+		t.Fatal("every persisted document must be listed once")
+	}
+	if page.Entries[0].ID != ids[2] || page.Entries[1].ID != ids[1] || page.Entries[2].ID != ids[0] {
+		t.Fatal("history must be ordered newest first")
+	}
+	second := page.Entries[1]
+	if second.Note != "Remito 0002-00045871" || second.Lines != 2 || second.TotalUnits != 18 || second.ReversedBy != nil {
+		t.Fatal("summary does not match the frozen contract")
+	}
+	if stamp, err := time.Parse(time.RFC3339, second.CreatedAt); err != nil || stamp.UTC().Format(time.RFC3339) != second.CreatedAt {
+		t.Fatal("created_at is not RFC3339")
+	}
+	if page.Entries[2].Note != "Remito 0001" || page.Entries[2].Lines != 1 {
+		t.Fatal("the oldest document must be summarized exactly")
+	}
+	if page.Entries[0].Note != "" || page.Entries[0].Lines != 1 || page.Entries[0].TotalUnits != 1 {
+		t.Fatal("an empty note and a single line must be summarized exactly")
+	}
+	// The list is a summary: a document's lines never appear here.
+	if body := f.serve(t, f.request(1, "GET", "/api/stock-entries", "")).Body.String(); strings.Contains(body, "variant_id") || strings.Contains(body, "location_id") {
+		t.Fatal("the history must never expose per-line or header detail")
+	}
+	counter := f.reverse(t, ids[0], "http-history-counter-01", "error de carga", stockentries.Line{VariantID: 1, Quantity: -3})
+	after := stockEntryHistoryWire(t, f.serve(t, f.request(1, "GET", "/api/stock-entries", "")))
+	if after.TotalEntries != 4 || len(after.Entries) != 4 {
+		t.Fatal("the original document and its counter-entry must both be listed")
+	}
+	if after.Entries[0].ID != counter || after.Entries[0].TotalUnits != -3 || after.Entries[0].Lines != 1 || after.Entries[0].ReversedBy != nil {
+		t.Fatal("the counter-entry must be listed first with its own negative total")
+	}
+	var original *stockEntryHistoryRowWireDTO
+	for i, row := range after.Entries {
+		if row.ID == ids[0] {
+			original = &after.Entries[i]
+		}
+	}
+	if original == nil || original.TotalUnits != 3 || original.ReversedBy == nil || *original.ReversedBy != counter {
+		t.Fatal("a reversed document must expose its counter-entry and keep its total")
+	}
+	first := stockEntryHistoryWire(t, f.serve(t, f.request(1, "GET", "/api/stock-entries?page=1&page_size=10", "")))
+	if first.Page != 1 || first.PageSize != 10 || first.TotalEntries != 4 || len(first.Entries) != 4 {
+		t.Fatal("a ten-row page must report its own size and the total")
+	}
+	last := stockEntryHistoryWire(t, f.serve(t, f.request(1, "GET", "/api/stock-entries?page=1&page_size=50", "")))
+	if last.PageSize != 50 || len(last.Entries) != 4 {
+		t.Fatal("a fifty-row page must answer the same documents")
+	}
+	beyond := stockEntryHistoryWire(t, f.serve(t, f.request(1, "GET", "/api/stock-entries?page=1000000&page_size=50", "")))
+	if len(beyond.Entries) != 0 || beyond.TotalEntries != 4 {
+		t.Fatal("a page beyond the last one must be empty and keep the total")
+	}
+}
+
+func TestStockEntryHTTPHistoryRejections(t *testing.T) {
+	f := stockEntryFixture(t)
+	f.rejected(t, f.request(0, "GET", "/api/stock-entries", ""), 401, "unauthenticated")
+	f.rejected(t, f.request(2, "GET", "/api/stock-entries", ""), 403, "forbidden")
+	f.rejected(t, f.request(3, "GET", "/api/stock-entries", ""), 403, "forbidden")
+	for name, query := range map[string]string{
+		"zero_page":          "?page=0",
+		"padded_page":        "?page=01",
+		"page_above_bound":   "?page=1000001",
+		"word_page":          "?page=abc",
+		"empty_page":         "?page=",
+		"negative_page":      "?page=-1",
+		"exponent_page":      "?page=1e3",
+		"duplicate_page":     "?page=1&page=1",
+		"duplicate_size":     "?page_size=25&page_size=25",
+		"unknown_key":        "?operation_key=x",
+		"size_not_admitted":  "?page_size=15",
+		"zero_size":          "?page_size=0",
+		"empty_size":         "?page_size=",
+		"trailing_separator": "?page=1&",
+		"empty_query":        "?",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f.rejected(t, f.request(1, "GET", "/api/stock-entries"+query, ""), 400, "invalid_request")
+		})
+	}
+	for _, verb := range []string{"PUT", "PATCH", "DELETE"} {
+		w := f.serve(t, f.request(1, verb, "/api/stock-entries", ""))
+		if w.Code != 405 || w.Header().Get("Allow") != "GET, POST" || w.Body.String() != "{\"error\":\"method_not_allowed\"}\n" {
+			t.Fatalf("%s must be method_not_allowed", verb)
+		}
+	}
+}
+
+func TestStockEntryQuery(t *testing.T) {
+	for name, tc := range map[string]struct {
+		raw        string
+		page, size int
+		ok         bool
+	}{
+		"defaults":       {"", 1, 25, true},
+		"explicit":       {"page=1&page_size=25", 1, 25, true},
+		"bound":          {"page=1000000", 1000000, 25, true},
+		"ten":            {"page_size=10", 1, 10, true},
+		"fifty_reversed": {"page_size=50&page=3", 3, 50, true},
+		"zero_page":      {"page=0", 0, 0, false},
+		"page_bound":     {"page=1000001", 0, 0, false},
+		"padded":         {"page=01", 0, 0, false},
+		"signed":         {"page=+1", 0, 0, false},
+		"fraction":       {"page=1.0", 0, 0, false},
+		"empty":          {"page=", 0, 0, false},
+		"duplicate":      {"page=1&page=1", 0, 0, false},
+		"unknown":        {"page=1&status=all", 0, 0, false},
+		"size":           {"page_size=20", 0, 0, false},
+		"no_equals":      {"page", 0, 0, false},
+		"trailing":       {"page=1&", 0, 0, false},
+		"oversized":      {"?" + strings.Repeat("a", 5000) + "=1", 0, 0, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			page, size, err := stockEntryQuery(tc.raw)
+			if tc.ok {
+				if err != nil || page != tc.page || size != tc.size {
+					t.Fatal("an admitted query was refused")
+				}
+				return
+			}
+			if !errors.Is(err, stockentries.ErrInvalid) {
+				t.Fatal("an inadmissible query was accepted")
+			}
+		})
+	}
+}
+
+func TestStockEntryPage(t *testing.T) {
+	counter := int64(9)
+	stamp := time.Date(2026, 11, 4, 14, 20, 0, 0, time.UTC)
+	valid := stockentries.EntryPage{Page: 1, PageSize: 25, TotalEntries: 2, Entries: []stockentries.EntrySummary{
+		{ID: 9, Note: "", CreatedAt: stamp, Lines: 1, TotalUnits: -2},
+		{ID: 7, Note: "Remito 0002", CreatedAt: stamp, Lines: 2, TotalUnits: 18, ReversedBy: &counter},
+	}}
+	dto, err := stockEntryPage(valid)
+	if err != nil {
+		t.Fatal("a persisted page was rejected")
+	}
+	if dto.Page != 1 || dto.PageSize != 25 || dto.TotalEntries != 2 || len(dto.Entries) != 2 {
+		t.Fatal("page does not match the frozen contract")
+	}
+	if dto.Entries[0].ID != 9 || dto.Entries[0].TotalUnits != -2 || dto.Entries[0].ReversedBy != nil ||
+		dto.Entries[0].CreatedAt != "2026-11-04T14:20:00Z" {
+		t.Fatal("a counter-entry row changed shape")
+	}
+	if dto.Entries[1].ReversedBy == nil || *dto.Entries[1].ReversedBy != 9 || dto.Entries[1].Lines != 2 {
+		t.Fatal("a reversed row changed shape")
+	}
+	clone := func() stockentries.EntryPage {
+		page := valid
+		page.Entries = append([]stockentries.EntrySummary(nil), valid.Entries...)
+		return page
+	}
+	for name, change := range map[string]func(*stockentries.EntryPage){
+		"zero_page":         func(p *stockentries.EntryPage) { p.Page = 0 },
+		"page_above_bound":  func(p *stockentries.EntryPage) { p.Page = 1000001 },
+		"size_not_admitted": func(p *stockentries.EntryPage) { p.PageSize = 20 },
+		"negative_total":    func(p *stockentries.EntryPage) { p.TotalEntries = -1 },
+		"total_below_page":  func(p *stockentries.EntryPage) { p.Page = 2; p.TotalEntries = 5; p.Entries = p.Entries[:1] },
+		"zero_id":           func(p *stockentries.EntryPage) { p.Entries[0].ID = 0 },
+		"zero_time":         func(p *stockentries.EntryPage) { p.Entries[0].CreatedAt = time.Time{} },
+		"no_lines":          func(p *stockentries.EntryPage) { p.Entries[0].Lines = 0 },
+		"too_many_lines":    func(p *stockentries.EntryPage) { p.Entries[0].Lines = 191 },
+		"units_above_bound": func(p *stockentries.EntryPage) { p.Entries[0].TotalUnits = 190_000_001 },
+		"units_below_bound": func(p *stockentries.EntryPage) { p.Entries[0].TotalUnits = -190_000_001 },
+		"long_note":         func(p *stockentries.EntryPage) { p.Entries[0].Note = strings.Repeat("a", 501) },
+		"nul_note":          func(p *stockentries.EntryPage) { p.Entries[0].Note = "a\x00b" },
+		"unsorted":          func(p *stockentries.EntryPage) { p.Entries[0], p.Entries[1] = p.Entries[1], p.Entries[0] },
+		"self_reversal":     func(p *stockentries.EntryPage) { p.Entries[0].ReversedBy = &p.Entries[0].ID },
+		"stale_reversal":    func(p *stockentries.EntryPage) { stale := int64(3); p.Entries[0].ReversedBy = &stale },
+	} {
+		page := clone()
+		change(&page)
+		if _, err := stockEntryPage(page); !errors.Is(err, stockentries.ErrUnavailable) {
+			t.Fatalf("%s must not reach the wire", name)
+		}
+	}
+	overflowing := stockentries.EntryPage{Page: 1, PageSize: 10, TotalEntries: 11}
+	for i := 11; i >= 1; i-- {
+		overflowing.Entries = append(overflowing.Entries,
+			stockentries.EntrySummary{ID: int64(i), CreatedAt: stamp, Lines: 1, TotalUnits: 1})
+	}
+	if _, err := stockEntryPage(overflowing); !errors.Is(err, stockentries.ErrUnavailable) {
+		t.Fatal("a page with more rows than its size must not reach the wire")
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -122,6 +123,83 @@ func (s *Store) CreateEntry(ctx context.Context, actor auth.Identity, input Crea
 		return Entry{}, false, mapFailure(ctx, err)
 	}
 	return entry, false, nil
+}
+
+// ListEntries reads one newest-first page of persisted documents for the
+// warehouse. The actor guard and the provisioned-account binding are creation's,
+// and the page is one statement plus one total: line counts and unit totals are
+// summed by the database, never by a Go loop over every line. The unit total is
+// cast to text before it becomes an int64, so an out-of-range sum fails closed
+// instead of wrapping.
+func (s *Store) ListEntries(ctx context.Context, actor auth.Identity, page, pageSize int) (EntryPage, error) {
+	result := EntryPage{Page: page, PageSize: pageSize, Entries: []EntrySummary{}}
+	if ctx == nil || s == nil || s.pool == nil {
+		return EntryPage{}, ErrUnavailable
+	}
+	if !warehouseAdmin(actor) {
+		return EntryPage{}, ErrForbidden
+	}
+	// Every rejected page or size stops here, before the first statement.
+	if !ValidPage(page, pageSize) {
+		return EntryPage{}, ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := checkAssignment(ctx, s.pool, actor); err != nil {
+		return EntryPage{}, err
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return EntryPage{}, fail(ctx)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = tx.Rollback(cleanup)
+	}()
+	if tx.QueryRow(ctx, "SELECT count(*) FROM stock_entries WHERE location_id=$1", warehouseLocationID).Scan(&result.TotalEntries) != nil {
+		return EntryPage{}, fail(ctx)
+	}
+	rows, err := tx.Query(ctx, `SELECT e.id,e.note,e.created_at,
+  count(l.variant_id)::bigint,
+  coalesce(sum(l.quantity),0)::text,
+  (SELECT counter.id FROM stock_entries counter WHERE counter.reverses_entry_id=e.id)
+ FROM stock_entries e
+ LEFT JOIN stock_entry_lines l ON l.entry_id=e.id
+ WHERE e.location_id=$1
+ GROUP BY e.id
+ ORDER BY e.id DESC
+ LIMIT $2 OFFSET $3`, warehouseLocationID, int64(pageSize), int64(page-1)*int64(pageSize))
+	if err != nil {
+		return EntryPage{}, fail(ctx)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var summary EntrySummary
+		var lines int64
+		var units string
+		if rows.Scan(&summary.ID, &summary.Note, &summary.CreatedAt, &lines, &units, &summary.ReversedBy) != nil {
+			return EntryPage{}, fail(ctx)
+		}
+		// A persisted document always has between one and maxLines lines.
+		if lines < 1 || lines > maxLines {
+			return EntryPage{}, ErrUnavailable
+		}
+		total, err := strconv.ParseInt(units, 10, 64)
+		if err != nil || total > maxLines*maxQuantity || total < -(maxLines*maxQuantity) {
+			return EntryPage{}, ErrUnavailable
+		}
+		summary.Lines = int(lines)
+		summary.TotalUnits = total
+		result.Entries = append(result.Entries, summary)
+	}
+	if rows.Err() != nil {
+		return EntryPage{}, fail(ctx)
+	}
+	if tx.Commit(ctx) != nil {
+		return EntryPage{}, fail(ctx)
+	}
+	return result, nil
 }
 
 // loadEntry reads the durable document: lines ordered by variant id and the
