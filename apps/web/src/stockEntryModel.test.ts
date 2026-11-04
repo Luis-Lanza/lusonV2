@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   canonicalStockEntryInput, matchesStockEntryInput, newStockEntryOperationKey, parseStockCatalog, parseStockEntryError,
-  parseStockEntryRecord, stockCatalogPath, stockEntryAdmittedErrors, stockEntryErrorMessages, stockEntryFailureIsDefinite,
+  parseStockEntryHistory, parseStockEntryRecord, stockCatalogPath, stockEntryAdmittedErrors, stockEntryErrorMessages,
+  stockEntryFailureIsDefinite, stockEntryHistoryPath, stockEntryHistoryPageSizes, validStockEntryHistoryQuery,
   validStockQuantity, type StockEntryInput,
 } from './stockEntryModel';
 
@@ -171,6 +172,89 @@ describe('stock entry payload evidence', () => {
     expect(matchesStockEntryInput(draft({ lines: [{ variant_id: 4, quantity: 2 }, { variant_id: 9, quantity: 1 }] }),
       parseStockEntryRecord(recordJSON({ lines: [{ variant_id: 4, quantity: 2 }, { variant_id: 9, quantity: 1 }], total_units: 9 })))).toBe(false);
     expect(matchesStockEntryInput(draft(), parseStockEntryRecord(recordJSON({ location_id: 2 })))).toBe(false);
+  });
+});
+
+describe('stock ingress history read contract', () => {
+  const historyRow = (overrides: Record<string, unknown> = {}) => ({
+    id: 7, note: 'Remito 0002', created_at: '2026-11-04T14:20:00Z',
+    lines: 2, total_units: 18, reversed_by: null, ...overrides });
+  const historyJSON = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+    page: 1, page_size: 25, total_entries: 1, entries: [historyRow()], ...overrides });
+
+  it('builds the frozen query and admits only canonical pages and sizes', () => {
+    expect(stockEntryHistoryPath(1, 25)).toBe('/api/stock-entries?page=1&page_size=25');
+    expect(stockEntryHistoryPath(3, 50)).toBe('/api/stock-entries?page=3&page_size=50');
+    expect([...stockEntryHistoryPageSizes]).toEqual([10, 25, 50]);
+    for (const size of stockEntryHistoryPageSizes) {
+      expect(validStockEntryHistoryQuery(1, size)).toBe(true);
+    }
+    expect(validStockEntryHistoryQuery(1000000, 25)).toBe(true);
+    for (const page of [0, -1, 1.5, 1000001, Number.NaN]) {
+      expect(validStockEntryHistoryQuery(page, 25)).toBe(false);
+    }
+    for (const size of [0, 5, 15, 100, 25.5]) {
+      expect(validStockEntryHistoryQuery(1, size)).toBe(false);
+    }
+  });
+
+  it('keeps every number lossless and freezes the page and its rows', () => {
+    const page = parseStockEntryHistory(JSON.stringify({
+      page: 2, page_size: 10, total_entries: 12,
+      entries: [historyRow({ id: 9007199254740990, total_units: -3, reversed_by: 9007199254740991, note: '' }),
+        historyRow({ id: 8, lines: 1, total_units: 1 })],
+    }));
+    expect(page).toEqual({ page: 2, page_size: 10, total_entries: 12, entries: [
+      { id: 9007199254740990, note: '', created_at: '2026-11-04T14:20:00Z', lines: 2, total_units: -3, reversed_by: 9007199254740991 },
+      { id: 8, note: 'Remito 0002', created_at: '2026-11-04T14:20:00Z', lines: 1, total_units: 1, reversed_by: null },
+    ] });
+    expect(Object.isFrozen(page)).toBe(true);
+    expect(Object.isFrozen(page.entries)).toBe(true);
+    expect(Object.isFrozen(page.entries[0])).toBe(true);
+  });
+
+  it('parses an empty page beyond the last one', () => {
+    const page = parseStockEntryHistory(historyJSON({ page: 1000000, page_size: 50, total_entries: 3, entries: [] }));
+    expect(page.entries).toEqual([]);
+    expect(page.total_entries).toBe(3);
+  });
+
+  it.each([
+    ['an extra page field', historyJSON({ extra: 1 })],
+    ['a missing page field', JSON.stringify({ page_size: 25, total_entries: 1, entries: [historyRow()] })],
+    ['a zero page', historyJSON({ page: 0 })],
+    ['a page above the bound', historyJSON({ page: 1000001 })],
+    ['a padded page', '{"page":01,"page_size":25,"total_entries":1,"entries":[]}'],
+    ['a page size outside the contract', historyJSON({ page_size: 15 })],
+    ['a negative total', historyJSON({ total_entries: -1 })],
+    ['entries that are not an array', historyJSON({ entries: {} })],
+    ['more rows than the page size', historyJSON({ page_size: 10, total_entries: 11,
+      entries: [historyRow({ id: 20 }), historyRow({ id: 19 }), historyRow({ id: 18 }), historyRow({ id: 17 }), historyRow({ id: 16 }),
+        historyRow({ id: 15 }), historyRow({ id: 14 }), historyRow({ id: 13 }), historyRow({ id: 12 }), historyRow({ id: 11 }),
+        historyRow({ id: 10 })] })],
+    ['a page whose rows exceed the total', historyJSON({ page: 2, page_size: 10, total_entries: 5, entries: [historyRow({ id: 3 })] })],
+    ['an extra row field', historyJSON({ entries: [historyRow({ variant_id: 4 })] })],
+    ['a missing row field', historyJSON({ entries: [{ id: 7, created_at: '2026-11-04T14:20:00Z', lines: 2, total_units: 18, reversed_by: null }] })],
+    ['an unsafe id', historyJSON({ entries: [historyRow({ id: 9007199254740992 })] })],
+    ['a zero id', historyJSON({ entries: [historyRow({ id: 0 })] })],
+    ['rows out of order', historyJSON({ total_entries: 2, entries: [historyRow({ id: 7 }), historyRow({ id: 9 })] })],
+    ['a repeated row', historyJSON({ total_entries: 2, entries: [historyRow({ id: 7 }), historyRow({ id: 7 })] })],
+    ['zero lines', historyJSON({ entries: [historyRow({ lines: 0 })] })],
+    ['more lines than a document admits', historyJSON({ entries: [historyRow({ lines: 191 })] })],
+    ['a fractional quantity total', historyJSON({ entries: [historyRow({ total_units: 1.5 })] })],
+    ['an exponent total', '{"page":1,"page_size":25,"total_entries":1,"entries":[{"id":7,"note":"","created_at":"2026-11-04T14:20:00Z","lines":1,"total_units":1e3,"reversed_by":null}]}'],
+    ['a total above one document', historyJSON({ entries: [historyRow({ total_units: 190000001 })] })],
+    ['a total below one document', historyJSON({ entries: [historyRow({ total_units: -190000001 })] })],
+    ['a reversal that is not later', historyJSON({ entries: [historyRow({ id: 7, reversed_by: 7 })] })],
+    ['a zero reversal id', historyJSON({ entries: [historyRow({ id: 7, reversed_by: 0 })] })],
+    ['a string reversal id', historyJSON({ entries: [historyRow({ id: 7, reversed_by: '9' })] })],
+    ['an impossible date', historyJSON({ entries: [historyRow({ created_at: '2026-02-31T00:00:00Z' })] })],
+    ['a note with NUL', historyJSON({ entries: [historyRow({ note: 'a\u0000b' })] })],
+    ['a note over 500 characters', historyJSON({ entries: [historyRow({ note: 'n'.repeat(501) })] })],
+    ['a duplicated JSON key', '{"page":1,"page":2,"page_size":25,"total_entries":0,"entries":[]}'],
+    ['a non JSON body', '<html>proxy</html>'],
+  ])('rejects %s', (_, raw) => {
+    expect(() => parseStockEntryHistory(raw)).toThrow('Respuesta inválida del servidor.');
   });
 });
 

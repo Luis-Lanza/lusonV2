@@ -16,12 +16,29 @@ export interface StockEntryRecord {
 export type StockEntryErrorCode = 'invalid_request' | 'forbidden' | 'retry_conflict'
   | 'insufficient_stock' | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
 
+/** One row of the read-only history: a document summary, never its lines. */
+export interface StockEntryHistoryRow {
+  readonly id: number; readonly note: string; readonly created_at: string;
+  readonly lines: number; readonly total_units: number; readonly reversed_by: number | null;
+}
+/** One newest-first page of persisted ingress documents plus the exact total. */
+export interface StockEntryHistoryPage {
+  readonly page: number; readonly page_size: number; readonly total_entries: number;
+  readonly entries: readonly StockEntryHistoryRow[];
+}
+
 export const stockEntryMaxLines = 190;
 export const stockEntryMaxQuantity = 1_000_000;
 export const stockEntryMaxNote = 500;
 export const stockEntryMaxVariantID = 2_147_483_647;
+export const stockEntryMaxDocumentUnits = stockEntryMaxLines * stockEntryMaxQuantity;
 export const stockCatalogLocationID = 1;
 export const stockCatalogPageSize = 50;
+export const stockEntryHistoryPageSizes: readonly number[] = [10, 25, 50];
+export const stockEntryHistoryDefaultPageSize = 25;
+export const stockEntryHistoryMaxPage = 1_000_000;
+export const stockEntryHistoryUnavailable =
+  'No se pudo consultar el historial de ingresos. Revisá la conexión e intentá de nuevo.';
 
 /** Admitted error envelope per HTTP status; nothing else may reach the UI. */
 export const stockEntryAdmittedErrors: ReadonlyMap<number, readonly StockEntryErrorCode[]> = new Map([
@@ -70,6 +87,14 @@ function numeric(value: unknown): string {
 function integer(value: unknown, min: number, max: number): number {
   const raw = numeric(value);
   if (!/^(0|[1-9]\d*)$/.test(raw)) return invalidResponse();
+  const exact = BigInt(raw);
+  if (exact < BigInt(min) || exact > BigInt(max)) return invalidResponse();
+  return Number(exact);
+}
+/** A document total may be negative when the document is a counter-entry. */
+function signedInteger(value: unknown, min: number, max: number): number {
+  const raw = numeric(value);
+  if (!/^(0|-?[1-9]\d*)$/.test(raw)) return invalidResponse();
   const exact = BigInt(raw);
   if (exact < BigInt(min) || exact > BigInt(max)) return invalidResponse();
   return Number(exact);
@@ -183,4 +208,44 @@ export function parseStockCatalog(raw: string): readonly Item[] {
   const page = parseInventory(raw);
   if (page.location.id !== stockCatalogLocationID || page.page !== 1 || page.page_size !== stockCatalogPageSize) return invalidResponse();
   return Object.freeze(page.items);
+}
+
+/** Only the frozen page and page sizes are ever requested. */
+export function validStockEntryHistoryQuery(page: number, pageSize: number): boolean {
+  return Number.isInteger(page) && page >= 1 && page <= stockEntryHistoryMaxPage
+    && Number.isInteger(pageSize) && stockEntryHistoryPageSizes.includes(pageSize);
+}
+
+export function stockEntryHistoryPath(page: number, pageSize: number): string {
+  return `/api/stock-entries?page=${page}&page_size=${pageSize}`;
+}
+
+/**
+ * Parses one history page strictly: exact keys, lossless numbers, newest-first
+ * rows with counts that fit the page and the document bounds. A counter-entry is
+ * always a later document than the one it reverses.
+ */
+export function parseStockEntryHistory(raw: string): StockEntryHistoryPage {
+  const record = fields(decode(raw), ['page', 'page_size', 'total_entries', 'entries']);
+  const page = integer(record.page, 1, stockEntryHistoryMaxPage);
+  const page_size = integer(record.page_size, 10, 50);
+  if (!stockEntryHistoryPageSizes.includes(page_size)) return invalidResponse();
+  const total_entries = integer(record.total_entries, 0, Number.MAX_SAFE_INTEGER);
+  if (!Array.isArray(record.entries) || record.entries.length > page_size) return invalidResponse();
+  // A page beyond the last one is legitimately empty; a page with rows must fit
+  // inside the total it was served with.
+  if (record.entries.length > 0 && (page - 1) * page_size + record.entries.length > total_entries) return invalidResponse();
+  let previous = Number.POSITIVE_INFINITY;
+  const entries = record.entries.map(value => {
+    const row = fields(value, ['id', 'note', 'created_at', 'lines', 'total_units', 'reversed_by']);
+    const id = integer(row.id, 1, Number.MAX_SAFE_INTEGER);
+    if (id >= previous) return invalidResponse();
+    previous = id;
+    const lines = integer(row.lines, 1, stockEntryMaxLines);
+    const total_units = signedInteger(row.total_units, -stockEntryMaxDocumentUnits, stockEntryMaxDocumentUnits);
+    const reversed_by = row.reversed_by === null ? null : integer(row.reversed_by, 1, Number.MAX_SAFE_INTEGER);
+    if (reversed_by !== null && reversed_by <= id) return invalidResponse();
+    return Object.freeze({ id, note: note(row.note), created_at: timestamp(row.created_at), lines, total_units, reversed_by });
+  });
+  return Object.freeze({ page, page_size, total_entries, entries: Object.freeze(entries) });
 }

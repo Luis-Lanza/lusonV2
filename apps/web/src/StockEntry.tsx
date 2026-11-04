@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Item } from './model';
 import { validSearch } from './model';
+import TransferDate from './TransferDate';
 import { createStockEntryAPI, StockEntryAPIError } from './stockEntryAPI';
 import {
   canonicalStockEntryInput, newStockEntryOperationKey, parseStockCatalog, stockCatalogPath, stockEntryErrorMessages,
-  stockEntryFailureIsDefinite, stockEntryMaxNote, stockEntryMaxQuantity, validStockQuantity,
-  type StockEntryErrorCode, type StockEntryInput,
+  stockEntryFailureIsDefinite, stockEntryHistoryDefaultPageSize, stockEntryHistoryMaxPage, stockEntryHistoryPageSizes,
+  stockEntryHistoryUnavailable, stockEntryMaxNote, stockEntryMaxQuantity, validStockQuantity,
+  type StockEntryErrorCode, type StockEntryHistoryPage, type StockEntryInput,
 } from './stockEntryModel';
 import './stock-entry.css';
 
@@ -14,6 +16,12 @@ interface DocumentLine {
   readonly capacity_ah: string; readonly polarity: 'L' | 'R'; readonly quantity: string;
 }
 interface CatalogState { readonly phase: 'loading' | 'ready' | 'error'; readonly items: readonly Item[]; readonly problem: string }
+// The history is its own state: a failed read never touches the draft document.
+interface HistoryState {
+  readonly phase: 'loading' | 'ready' | 'error';
+  readonly page: StockEntryHistoryPage | null;
+  readonly problem: string;
+}
 
 export interface StockEntryProps {
   // The parent remounts this section per session fence, so a rotated session or
@@ -33,6 +41,10 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
   const [note, setNote] = useState('');
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historySize, setHistorySize] = useState(stockEntryHistoryDefaultPageSize);
+  const [historyRevision, setHistoryRevision] = useState(0);
+  const [history, setHistory] = useState<HistoryState>({ phase: 'loading', page: null, problem: stockEntryHistoryUnavailable });
   const lifetime = useRef(new AbortController());
   const mounted = useRef(true);
   const pending = useRef(false);
@@ -66,6 +78,22 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
     })();
     return () => controller.abort();
   }, [search, revision, fetcher]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const alive = () => mounted.current && !controller.signal.aborted && !lifetime.current.signal.aborted;
+    setHistory(current => ({ phase: 'loading', page: current.page, problem: stockEntryHistoryUnavailable }));
+    void (async () => {
+      try {
+        const page = await api.history(historyPage, historySize, controller.signal);
+        if (!alive()) return;
+        setHistory({ phase: 'ready', page, problem: '' });
+      } catch {
+        if (alive()) setHistory(current => ({ ...current, phase: 'error', problem: stockEntryHistoryUnavailable }));
+      }
+    })();
+    return () => controller.abort();
+  }, [api, historyPage, historySize, historyRevision]);
 
   function forgetAttempt() { operationKey.current = null; }
   function add(row: Item) {
@@ -113,6 +141,9 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
       if (!mounted.current || lifetime.current.signal.aborted) return;
       const units = result.record.total_units;
       setLines([]); setNote(''); forgetAttempt(); setRevision(value => value + 1);
+      // The new document has the newest id, so the history restarts at page one
+      // and refetches before the confirmation message is read.
+      setHistoryPage(1); setHistoryRevision(value => value + 1);
       setStatus(`Ingreso confirmado: documento ${result.record.id} · ${units} ${units === 1 ? 'unidad' : 'unidades'}${result.replayed ? ' (reintento sin duplicar)' : ''}.`);
     } catch (failure) {
       if (!mounted.current || lifetime.current.signal.aborted) return;
@@ -127,6 +158,15 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
   }
 
   const catalogCount = `${catalog.items.length} ${catalog.items.length === 1 ? 'variante' : 'variantes'}`;
+  const historyRows = history.phase === 'ready' && history.page ? history.page.entries : [];
+  const historyTotal = history.page ? history.page.total_entries : 0;
+  const historyCount = history.phase === 'ready'
+    ? `${historyTotal} ${historyTotal === 1 ? 'ingreso' : 'ingresos'}` : 'Almacén';
+  const nextHistoryPage = () => {
+    if (history.page && historyPage < stockEntryHistoryMaxPage && historyPage * historySize < history.page.total_entries) {
+      setHistoryPage(historyPage + 1);
+    }
+  };
   return <section className="stock-entry" aria-labelledby="stock-entry-title">
     <header className="stock-entry-heading">
       <small>ALMACÉN / INGRESOS</small>
@@ -195,5 +235,43 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
         <p className="stock-notices">Todo o nada: si una línea es inválida no se aplica ninguna. Una vez confirmado, el documento no se edita ni se borra: se corrige con un contra-asiento que deja ambos registros.</p>
       </section>
     </div>
+    <section className="stock-entry-panel stock-history" aria-labelledby="stock-history-title" aria-busy={history.phase === 'loading'}>
+      <div className="stock-panel-head">
+        <div><h2 id="stock-history-title">Historial de ingresos</h2>
+          <p className="stock-hint">Los documentos confirmados no se editan ni se borran: se corrigen con un contra-asiento.</p></div>
+        <span className="stock-tag">{historyCount}</span>
+      </div>
+      {historyRows.length > 0 && <div className="stock-table-wrap">
+        <table className="stock-table stock-history-table">
+          <caption className="sr-only">Historial de ingresos del Almacén</caption>
+          <thead><tr><th scope="col">Documento</th><th scope="col">Fecha</th><th scope="col">Nota</th><th scope="col">Líneas</th><th scope="col">Unidades</th><th scope="col">Estado</th></tr></thead>
+          <tbody>{historyRows.map(row => <tr key={row.id} data-entry-id={row.id}>
+            <td data-label="Documento"><strong>#{row.id}</strong></td>
+            <td data-label="Fecha"><TransferDate value={row.created_at} /></td>
+            <td data-label="Nota">{row.note || '—'}</td>
+            <td data-label="Líneas">{row.lines}</td>
+            <td data-label="Unidades">{row.total_units}</td>
+            <td data-label="Estado">{row.reversed_by === null
+              ? <span className="stock-tag">Aplicado</span>
+              : <span className="stock-tag reversed">Anulado por contra-asiento</span>}</td>
+          </tr>)}</tbody>
+        </table>
+      </div>}
+      {history.phase === 'loading' && <p className="stock-message" role="status">Consultando el historial de ingresos…</p>}
+      {history.phase === 'error' && <p className="stock-message" role="alert">{history.problem}
+        <button type="button" onClick={() => setHistoryRevision(value => value + 1)}>Reintentar historial</button></p>}
+      {history.phase === 'ready' && historyRows.length === 0 && <p className="stock-message">Todavía no hay ingresos registrados.</p>}
+      <footer className="pager" aria-label="Paginación del historial de ingresos"><div className="page-controls">
+        <label htmlFor="stock-history-size">Ingresos por página</label>
+        <select id="stock-history-size" value={historySize} onChange={event => {
+          const next = Number(event.target.value);
+          if (stockEntryHistoryPageSizes.includes(next)) { setHistoryPage(1); setHistorySize(next); }
+        }}>{stockEntryHistoryPageSizes.map(value => <option key={value}>{value}</option>)}</select>
+        <button type="button" disabled={historyPage <= 1} onClick={() => { if (historyPage > 1) setHistoryPage(historyPage - 1); }}>Anterior página</button>
+        <span aria-current="page">Página {historyPage}</span>
+        <button type="button" disabled={historyPage >= stockEntryHistoryMaxPage || historyPage * historySize >= historyTotal}
+          onClick={nextHistoryPage}>Siguiente página</button>
+      </div></footer>
+    </section>
   </section>;
 }

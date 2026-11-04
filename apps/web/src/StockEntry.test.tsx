@@ -18,10 +18,18 @@ const entryReply = () => new Response(JSON.stringify({
 }), { status: 201, headers: { 'Content-Type': 'application/json' } });
 const errorReply = (code: string, status: number) => new Response(JSON.stringify({ error: code }),
   { status, headers: { 'Content-Type': 'application/json' } });
+const historyRow = (id: number, note: string, lines: number, units: number, reversedBy: number | null = null) =>
+  JSON.stringify({ id, note, created_at: '2026-05-01T14:20:00Z', lines, total_units: units, reversed_by: reversedBy });
+const historyReply = (rows: readonly string[], page = 1, pageSize = 25, total = rows.length) => new Response(
+  JSON.stringify({ page, page_size: pageSize, total_entries: total,
+    entries: rows.map(row => JSON.parse(row) as unknown) }),
+  { status: 200, headers: { 'Content-Type': 'application/json' } });
+const defaultHistoryRows = [historyRow(6, 'Remito 0002', 2, 18), historyRow(5, '', 1, 3)];
 
 function harness(options: {
   catalog?: (search: string) => Response;
   create?: (body: string) => Response | Promise<Response>;
+  history?: (query: URLSearchParams) => Response | Promise<Response>;
 } = {}) {
   const calls: { url: string; init: RequestInit }[] = [];
   const fetcher = vi.fn<typeof fetch>(async (input, init = {}) => {
@@ -31,15 +39,20 @@ function harness(options: {
       const search = new URL(url, 'http://localhost').searchParams.get('search') ?? '';
       return options.catalog?.(search) ?? catalogReply(search);
     }
+    if (url.startsWith('/api/stock-entries?')) {
+      return options.history?.(new URL(url, 'http://localhost').searchParams) ?? historyReply(defaultHistoryRows);
+    }
     if (url === '/api/stock-entries') return options.create?.(String(init.body)) ?? entryReply();
     throw new Error('Unexpected mocked URL: ' + url);
   });
   return { fetcher, calls, catalogs: () => calls.filter(call => call.url.startsWith('/api/inventory?')),
-    posts: () => calls.filter(call => call.url === '/api/stock-entries') };
+    posts: () => calls.filter(call => call.url === '/api/stock-entries'),
+    histories: () => calls.filter(call => call.url.startsWith('/api/stock-entries?')) };
 }
 const sections = () => ({
   catalogo: screen.getByRole('region', { name: 'Catálogo' }),
   documento: screen.getByRole('region', { name: 'Documento de ingreso' }),
+  historial: screen.getByRole('region', { name: 'Historial de ingresos' }),
 });
 const totalFor = (label: string) => within(sections().documento).getByText(label).closest('div');
 const addButton = (model: string) => within(sections().catalogo).getByRole('button', { name: `Agregar TOYO · ${model}` });
@@ -179,5 +192,102 @@ describe('stock entry document', () => {
     resolve(entryReply());
     await within(documento).findByText(/Ingreso confirmado: documento 7/);
     expect(within(documento).getByRole('button', { name: 'Confirmar ingreso' })).toBeEnabled();
+  });
+});
+
+describe('stock ingress history', () => {
+  const historySections = () => sections().historial;
+  const cellsOf = (row: HTMLElement) => within(row).getAllByRole('cell').map(cell => cell.textContent);
+
+  it('lists the newest documents first with the applied and reversed tags', async () => {
+    const h = harness({ history: () => historyReply([
+      historyRow(9, 'Remito 0003', 1, 4),
+      historyRow(7, 'Remito 0002-00045871', 2, 18, 9),
+      historyRow(6, '', 3, 6),
+    ]) });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    const historial = historySections();
+    expect(within(historial).getByRole('status')).toHaveTextContent('Consultando el historial de ingresos');
+    await within(historial).findByText('#9');
+    const rows = within(historial).getAllByRole('row').slice(1);
+    expect(rows.map(row => cellsOf(row)[0])).toEqual(['#9', '#7', '#6']);
+    expect(cellsOf(rows[0])).toMatchObject({ 1: expect.stringContaining('2026'), 3: '1', 4: '4', 5: 'Aplicado' });
+    expect(cellsOf(rows[1])[2]).toBe('Remito 0002-00045871');
+    expect(cellsOf(rows[1])[3]).toBe('2');
+    expect(cellsOf(rows[1])[4]).toBe('18');
+    expect(cellsOf(rows[1])[5]).toBe('Anulado por contra-asiento');
+    expect(cellsOf(rows[2])[5]).toBe('Aplicado');
+    expect(within(historial).getByRole('table', { name: /Historial/ })).toBeInTheDocument();
+    expect(h.histories()[0].url).toBe('/api/stock-entries?page=1&page_size=25');
+    expect(h.histories()[0].init).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+  });
+
+  it('shows an empty history without rows', async () => {
+    const h = harness({ history: () => historyReply([]) });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    const historial = historySections();
+    expect(await within(historial).findByText('Todavía no hay ingresos registrados.')).toBeInTheDocument();
+    expect(within(historial).queryByRole('table')).not.toBeInTheDocument();
+  });
+
+  it('reports an unavailable history and reads it again on retry', async () => {
+    let failing = true;
+    const h = harness({ history: () => failing ? errorReply('service_unavailable', 503) : historyReply(defaultHistoryRows) });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    const historial = historySections();
+    expect(await within(historial).findByRole('alert')).toHaveTextContent('No se pudo consultar el historial de ingresos');
+    expect(within(historial).queryByRole('table')).not.toBeInTheDocument();
+    failing = false;
+    fireEvent.click(within(historial).getByRole('button', { name: 'Reintentar historial' }));
+    await within(historial).findByText('#6');
+    expect(h.histories()).toHaveLength(2);
+  });
+
+  it('asks for the next page and for another page size', async () => {
+    const h = harness({ history: query => historyReply(defaultHistoryRows, Number(query.get('page')),
+      Number(query.get('page_size')), 60) });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    const historial = historySections();
+    await within(historial).findByText('#6');
+    expect(h.histories()[0].url).toBe('/api/stock-entries?page=1&page_size=25');
+    fireEvent.click(within(historial).getByRole('button', { name: 'Siguiente página' }));
+    await waitFor(() => expect(h.histories().at(-1)?.url).toBe('/api/stock-entries?page=2&page_size=25'));
+    expect(within(historial).getByText('Página 2')).toBeInTheDocument();
+    fireEvent.change(within(historial).getByLabelText('Ingresos por página'), { target: { value: '50' } });
+    await waitFor(() => expect(h.histories().at(-1)?.url).toBe('/api/stock-entries?page=1&page_size=50'));
+    expect(within(historial).getByRole('button', { name: 'Anterior página' })).toBeDisabled();
+  });
+
+  it('refetches the history after a confirmed ingress so the new document appears', async () => {
+    let confirmed = false;
+    const h = harness({
+      history: () => historyReply(confirmed
+        ? [historyRow(7, 'Remito 0002', 1, 3), historyRow(6, 'Remito 0002', 2, 18)]
+        : [historyRow(6, 'Remito 0002', 2, 18)]),
+      create: () => { confirmed = true; return entryReply(); },
+    });
+    await ready(h);
+    const { documento, historial } = sections();
+    await within(historial).findByText('#6');
+    expect(within(historial).queryByText('#7')).not.toBeInTheDocument();
+    fireEvent.click(addButton('NS40ZL'));
+    fireEvent.change(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL'), { target: { value: '3' } });
+    fireEvent.click(within(documento).getByRole('button', { name: 'Confirmar ingreso' }));
+    await within(historial).findByText('#7');
+    expect(h.histories().length).toBeGreaterThan(1);
+    const rows = within(historial).getAllByRole('row').slice(1);
+    expect(rows.map(row => cellsOf(row)[0])).toEqual(['#7', '#6']);
+  });
+
+  it('keeps the typed document when the history read fails', async () => {
+    const h = harness({ history: () => errorReply('service_unavailable', 503) });
+    await ready(h);
+    const { documento, historial } = sections();
+    fireEvent.click(addButton('NS40ZL'));
+    fireEvent.change(within(documento).getByLabelText('Nota del documento (opcional)'), { target: { value: 'Remito 0002' } });
+    expect(await within(historial).findByRole('alert')).toHaveTextContent('No se pudo consultar el historial de ingresos');
+    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL')).toHaveValue(1);
+    expect(within(documento).getByLabelText('Nota del documento (opcional)')).toHaveValue('Remito 0002');
+    expect(totalFor('Unidades')).toHaveTextContent(/Unidades\s*1/);
   });
 });

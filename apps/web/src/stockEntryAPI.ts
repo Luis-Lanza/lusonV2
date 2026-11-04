@@ -1,5 +1,6 @@
-import { canonicalStockEntryInput, matchesStockEntryInput, parseStockEntryError, parseStockEntryRecord,
-  type StockEntryErrorCode, type StockEntryInput, type StockEntryRecord } from './stockEntryModel';
+import { canonicalStockEntryInput, matchesStockEntryInput, parseStockEntryError, parseStockEntryHistory,
+  parseStockEntryRecord, stockEntryHistoryPath, validStockEntryHistoryQuery,
+  type StockEntryErrorCode, type StockEntryHistoryPage, type StockEntryInput, type StockEntryRecord } from './stockEntryModel';
 
 export class StockEntryAPIError extends Error {
   constructor(public readonly code: StockEntryErrorCode, public readonly status: number | null) {
@@ -43,6 +44,30 @@ export function createStockEntryAPI(fetch: typeof globalThis.fetch = globalThis.
       try { record = parseStockEntryRecord(raw); } catch { throw malformed(); }
       if (!matchesStockEntryInput(sent, record)) throw malformed();
       return { record, replayed: reply.status === 200 };
+    },
+
+    async history(page: number, pageSize: number, signal?: AbortSignal): Promise<StockEntryHistoryPage> {
+      // The page and size are the frozen read contract: a bad one never leaves here.
+      if (!validStockEntryHistoryQuery(page, pageSize)) throw new StockEntryAPIError('invalid_request', null);
+      let reply: Response;
+      let raw: string;
+      try {
+        reply = await fetch(stockEntryHistoryPath(page, pageSize), {
+          method: 'GET', credentials: 'same-origin', cache: 'no-store', signal });
+        raw = await reply.text();
+      } catch (error) {
+        const aborted = signal?.aborted === true
+          || (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError');
+        throw new StockEntryAPIError(aborted ? 'aborted' : 'network', null);
+      }
+      const malformed = () => new StockEntryAPIError('invalid_response', reply.status);
+      if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(reply.headers.get('Content-Type') ?? '')) throw malformed();
+      if (reply.status !== 200) {
+        let code: StockEntryErrorCode;
+        try { code = parseStockEntryError(raw, reply.status); } catch { throw malformed(); }
+        throw new StockEntryAPIError(code, reply.status);
+      }
+      try { return parseStockEntryHistory(raw); } catch { throw malformed(); }
     },
   };
 }

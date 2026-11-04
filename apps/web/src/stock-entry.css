@@ -14,6 +14,7 @@
 .stock-tag { display: inline-block; flex-shrink: 0; padding: 4px 8px; background: var(--page);
   border: 1px solid var(--border); border-radius: 3px; color: var(--muted); font-size: 11px; }
 .stock-tag.wine { background: var(--tint); border-color: var(--border); color: var(--wine); font-weight: 600; }
+.stock-tag.reversed { border-color: var(--wine); color: var(--wine); font-weight: 600; }
 .stock-search, .stock-note { display: grid; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }
 .stock-search input, .stock-note input { width: 100%; min-height: 44px; padding: 10px 12px; border-color: var(--muted); color: #242124; font-size: 13px; }
 .stock-table-wrap { overflow-x: auto; }
@@ -36,6 +37,14 @@
 .stock-totalbar button.primary { min-height: 44px; padding: 10px 16px; white-space: normal; overflow-wrap: anywhere; }
 .stock-status { min-height: 24px; color: var(--wine); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .stock-entry :is(button, input, select):focus-visible { outline: 2px solid var(--wine); outline-offset: 3px; }
+/* History: a full-width ledger below the two document panels, reusing the same
+   table, tag and pager treatments so no new colour enters the section. */
+.stock-history { gap: 16px; }
+.stock-history-table td:nth-child(n+4) { font-variant-numeric: tabular-nums; }
+.stock-history .pager { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px;
+  background: var(--page); border: 1px solid var(--border); border-radius: 4px; }
+.stock-history .page-controls { flex-wrap: wrap; }
+.stock-history .page-controls :is(button, select) { min-height: 44px; }
 
 @media (max-width: 1050px) {
   .stock-entry-grid { grid-template-columns: minmax(0, 1fr); }
