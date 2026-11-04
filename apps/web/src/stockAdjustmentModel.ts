@@ -43,6 +43,8 @@ export interface StockAdjustmentDetail {
   readonly id: number; readonly location_id: number; readonly reason: string; readonly detail: string;
   readonly created_at: string; readonly created_by_account_id: number;
   readonly reverses_adjustment_id: number | null; readonly reversed_by: number | null;
+  /** The motive of the counter-entry named by `reversed_by`; empty when this document is not reversed. */
+  readonly reversed_by_reason: string;
   readonly lines: readonly StockAdjustmentDetailLine[]; readonly total_difference: number;
 }
 /**
@@ -315,6 +317,17 @@ function reference(value: unknown, documentID: number, later: boolean): number |
   if (later ? id <= documentID : id >= documentID) return invalidResponse();
   return id;
 }
+/**
+ * The counter-entry's own motive is present exactly when the document is reversed:
+ * a reversed document carries the canonical motive of its counter-entry, and a
+ * document that is not reversed always carries the empty string.
+ */
+function counterMotive(value: unknown, reversedBy: number | null): string {
+  if (value === '' && reversedBy === null) return '';
+  const motive = reason(value);
+  if (reversedBy === null) return invalidResponse();
+  return motive;
+}
 
 function parseDocumentLines(value: unknown): readonly StockAdjustmentLine[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > stockAdjustmentMaxLines) return invalidResponse();
@@ -436,7 +449,7 @@ export function parseStockAdjustmentHistory(raw: string): StockAdjustmentPage {
  */
 export function parseStockAdjustmentDetail(raw: string): StockAdjustmentDetail {
   const record = fields(decode(raw), ['id', 'location_id', 'reason', 'detail', 'created_at',
-    'created_by_account_id', 'reverses_adjustment_id', 'reversed_by', 'lines', 'total_difference']);
+    'created_by_account_id', 'reverses_adjustment_id', 'reversed_by', 'reversed_by_reason', 'lines', 'total_difference']);
   const id = integer(record.id, 1, Number.MAX_SAFE_INTEGER);
   if (integer(record.location_id, 1, 32767) !== stockAdjustmentLocationID) return invalidResponse();
   if (!Array.isArray(record.lines) || record.lines.length < 1 || record.lines.length > stockAdjustmentMaxLines) return invalidResponse();
@@ -460,11 +473,13 @@ export function parseStockAdjustmentDetail(raw: string): StockAdjustmentDetail {
   });
   const total_difference = signedInteger(record.total_difference, -stockAdjustmentMaxTotal, stockAdjustmentMaxTotal);
   if (total !== total_difference) return invalidResponse();
+  const reversed_by = reference(record.reversed_by, id, true);
   return Object.freeze({ id, location_id: stockAdjustmentLocationID, reason: reason(record.reason),
     detail: detailText(record.detail), created_at: timestamp(record.created_at),
     created_by_account_id: integer(record.created_by_account_id, 1, Number.MAX_SAFE_INTEGER),
     reverses_adjustment_id: reference(record.reverses_adjustment_id, id, false),
-    reversed_by: reference(record.reversed_by, id, true),
+    reversed_by,
+    reversed_by_reason: counterMotive(record.reversed_by_reason, reversed_by),
     lines: Object.freeze(lines), total_difference });
 }
 

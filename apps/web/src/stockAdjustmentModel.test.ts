@@ -34,7 +34,7 @@ const detailLine = (overrides: Record<string, unknown> = {}) => ({
 });
 const detailBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   id: 6, location_id: 1, reason: motive, detail: 'pasillo 2', created_at: '2026-11-04T14:20:00Z',
-  created_by_account_id: 1, reverses_adjustment_id: null, reversed_by: null,
+  created_by_account_id: 1, reverses_adjustment_id: null, reversed_by: null, reversed_by_reason: '',
   lines: [detailLine()], total_difference: -6, ...overrides,
 });
 const recordBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
@@ -190,9 +190,13 @@ describe('adjustment document parsing', () => {
       lines: [detailLine({ expected_quantity: 12, counted_quantity: 18, difference: 6 })], total_difference: 6 }));
     expect(counter.reverses_adjustment_id).toBe(6);
     expect(counter.reversed_by).toBeNull();
-    const reversed = parseStockAdjustmentDetail(detailBody({ reversed_by: 8 }));
+    // A counter-entry states its own motive, never the motive of a counter-entry.
+    expect(counter.reversed_by_reason).toBe('');
+    const reversed = parseStockAdjustmentDetail(detailBody({ reversed_by: 8, reversed_by_reason: 'error de conteo' }));
     expect(reversed.reversed_by).toBe(8);
     expect(reversed.reverses_adjustment_id).toBeNull();
+    // The counter-entry's own motive travels with the cross-reference.
+    expect(reversed.reversed_by_reason).toBe('error de conteo');
   });
 
   it.each([
@@ -203,6 +207,12 @@ describe('adjustment document parsing', () => {
     ['a self reference', detailBody({ reverses_adjustment_id: 6 })],
     ['a foreign document location', detailBody({ location_id: 2 })],
     ['an empty motive', detailBody({ reason: '' })],
+    // The counter-entry motive is present exactly when the document is reversed.
+    ['a reversed document without a counter-entry motive', detailBody({ reversed_by: 8 })],
+    ['a counter-entry motive without a counter-entry', detailBody({ reversed_by_reason: 'error de conteo' })],
+    ['a wrong-typed counter-entry motive', detailBody({ reversed_by: 8, reversed_by_reason: 8 })],
+    ['a blank counter-entry motive', detailBody({ reversed_by: 8, reversed_by_reason: '   ' })],
+    ['an unbounded counter-entry motive', detailBody({ reversed_by: 8, reversed_by_reason: 'x'.repeat(501) })],
   ])('refuses a detail with %s', (_, raw) => {
     expect(() => parseStockAdjustmentDetail(raw)).toThrow('Respuesta inválida del servidor.');
   });

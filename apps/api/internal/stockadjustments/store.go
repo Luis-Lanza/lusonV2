@@ -430,12 +430,17 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
 		_ = tx.Rollback(cleanup)
 	}()
 	var detail Detail
+	// One header statement carries the counter-entry's identity and its own motive
+	// from the same correlated row, so the reversed document is described without a
+	// second round trip and without a second read of the ledger.
 	err = tx.QueryRow(ctx, `SELECT a.id,a.location_id,a.reason,a.detail,a.created_by_account_id,
   a.created_at,a.reverses_adjustment_id,
-  (SELECT counter.id FROM stock_adjustments counter WHERE counter.reverses_adjustment_id=a.id)
+  (SELECT counter.id FROM stock_adjustments counter WHERE counter.reverses_adjustment_id=a.id),
+  coalesce((SELECT counter.reason FROM stock_adjustments counter WHERE counter.reverses_adjustment_id=a.id),'')
  FROM stock_adjustments a WHERE a.id=$1 AND a.location_id=$2`, id, warehouseLocationID).Scan(
 		&detail.ID, &detail.LocationID, &detail.Reason, &detail.Detail,
-		&detail.CreatedByAccountID, &detail.CreatedAt, &detail.ReversesAdjustmentID, &detail.ReversedBy)
+		&detail.CreatedByAccountID, &detail.CreatedAt, &detail.ReversesAdjustmentID, &detail.ReversedBy,
+		&detail.ReversedByReason)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Detail{}, ErrNotFound
 	}
@@ -504,6 +509,20 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
 	// A document can only be reversed by a later document of this warehouse.
 	if detail.ReversedBy != nil && (*detail.ReversedBy < 1 || *detail.ReversedBy <= detail.ID) {
 		return Detail{}, ErrUnavailable
+	}
+	// A reversed document also reports its counter-entry's own motive. The counter
+	// entry states a mandatory motive, so a reversed document without a canonical
+	// one is not this ledger's and fails closed; a document that is not reversed
+	// reports no motive at all.
+	if detail.ReversedBy == nil {
+		if detail.ReversedByReason != "" {
+			return Detail{}, ErrUnavailable
+		}
+	} else {
+		counterReason, validCounterReason := CanonicalReason(detail.ReversedByReason)
+		if !validCounterReason || counterReason != detail.ReversedByReason {
+			return Detail{}, ErrUnavailable
+		}
 	}
 	detail.Lines = lines
 	detail.TotalDifference = total

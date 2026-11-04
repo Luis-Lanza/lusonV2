@@ -183,7 +183,7 @@ invalid_request`.
 ```json
 {"id":1,"location_id":1,"reason":"conteo físico","detail":"pasillo 2",
  "created_at":"2026-11-04T14:20:00Z","created_by_account_id":1,
- "reverses_adjustment_id":null,"reversed_by":null,
+ "reverses_adjustment_id":null,"reversed_by":null,"reversed_by_reason":"",
  "lines":[{"variant_id":7,"catalog_entry_id":4,"brand":"TOYO","model":"NS60L",
   "capacity_ah":"45","polarity":"L",
   "expected_quantity":18,"counted_quantity":12,"difference":-6}],
@@ -200,6 +200,7 @@ invalid_request`.
 | `created_by_account_id` | The warehouse administrator that confirmed the document |
 | `reverses_adjustment_id` | The original document when this one is a counter-entry, otherwise `null` |
 | `reversed_by` | The counter-entry that reverses this document, otherwise `null` |
+| `reversed_by_reason` | The motive of that counter-entry, so the correction reads in one response; empty string when the document is not reversed |
 | `lines` | The document lines, ordered by `variant_id` ascending |
 | `total_difference` | Exact signed sum of the line differences |
 
@@ -214,8 +215,12 @@ snapshot the database took when the document was applied and `counted_quantity`
 is what the warehouse declared, so the detail stays readable and exact after the
 current stock has changed again. Nothing here is inferred from the client: a
 document of another location, an unknown id and an aliased id are all
-`not_found`. The response carries no stored column outside the table above: no
-operation key, no account detail and no stock column of any other contract.
+`not_found`. A reversed document's detail also includes the counter-entry's
+own motive in `reversed_by_reason`, read with the same statement, so the
+correction is legible without a second request; that field is the empty string
+for a document that is not reversed. The response carries no stored column
+outside the table above: no operation key, no account detail and no stock column
+of any other contract.
 
 ## Counter-entry (contra-asiento)
 

@@ -36,7 +36,7 @@ const historyBody = (overrides: Record<string, unknown> = {}) => JSON.stringify(
 });
 const detailBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   id: 6, location_id: 1, reason: motive, detail: '', created_at: '2026-11-04T14:20:00Z',
-  created_by_account_id: 1, reverses_adjustment_id: null, reversed_by: null,
+  created_by_account_id: 1, reverses_adjustment_id: null, reversed_by: null, reversed_by_reason: '',
   lines: [{ variant_id: 7, catalog_entry_id: 4, brand: 'TOYO', model: 'NS60L', capacity_ah: '45',
     polarity: 'L', expected_quantity: 18, counted_quantity: 12, difference: -6 }],
   total_difference: -6, ...overrides,

@@ -400,7 +400,7 @@ func TestStockAdjustmentDetailRecord(t *testing.T) {
 	stamp := time.Date(2026, 11, 4, 14, 20, 0, 0, time.UTC)
 	valid := stockadjustments.Detail{
 		ID: 7, LocationID: 1, Reason: "conteo físico", Detail: "pasillo 2", CreatedAt: stamp, CreatedByAccountID: 1,
-		ReversedBy: &counter,
+		ReversedBy: &counter, ReversedByReason: "error de conteo",
 		Lines: []stockadjustments.DetailLine{
 			{VariantID: 1, CatalogEntryID: 1, Brand: "TOYO", Model: "NS60L", Capacity: "45", Polarity: "L",
 				Expected: 18, Counted: 12, Difference: -6},
@@ -414,9 +414,17 @@ func TestStockAdjustmentDetailRecord(t *testing.T) {
 		t.Fatal("a persisted detail was rejected")
 	}
 	if record.ID != 7 || record.CreatedAt != "2026-11-04T14:20:00Z" || record.ReversedBy == nil || *record.ReversedBy != 9 ||
+		record.ReversedByReason != "error de conteo" ||
 		record.ReversesAdjustmentID != nil || len(record.Lines) != 2 || record.Lines[1].Capacity != "6.5" ||
 		record.Lines[0].CatalogEntryID != 1 || record.TotalDifference != -3 {
 		t.Fatal("detail does not match the frozen contract")
+	}
+	// A document that is not reversed carries no counter-entry motive at all.
+	plain := valid
+	plain.ReversedBy, plain.ReversedByReason = nil, ""
+	plainRecord, err := stockAdjustmentDetailRecord(plain)
+	if err != nil || plainRecord.ReversedBy != nil || plainRecord.ReversedByReason != "" {
+		t.Fatal("a document that is not reversed must carry no counter-entry motive")
 	}
 	for name, change := range map[string]func(*stockadjustments.Detail){
 		"zero_id":          func(d *stockadjustments.Detail) { d.ID = 0 },
@@ -441,6 +449,15 @@ func TestStockAdjustmentDetailRecord(t *testing.T) {
 		"self_reversal":    func(d *stockadjustments.Detail) { d.ReversesAdjustmentID = &d.ID },
 		"stale_reversedBy": func(d *stockadjustments.Detail) { stale := int64(3); d.ReversedBy = &stale },
 		"self_reversedBy":  func(d *stockadjustments.Detail) { d.ReversedBy = &d.ID },
+		// The counter-entry's motive is present exactly when the document is reversed.
+		"missing_counter_motive": func(d *stockadjustments.Detail) { d.ReversedByReason = "" },
+		"blank_counter_motive":   func(d *stockadjustments.Detail) { d.ReversedByReason = "  " },
+		"padded_counter_motive":  func(d *stockadjustments.Detail) { d.ReversedByReason = " error de conteo " },
+		"nul_counter_motive":     func(d *stockadjustments.Detail) { d.ReversedByReason = "a\x00b" },
+		"long_counter_motive": func(d *stockadjustments.Detail) {
+			d.ReversedByReason = strings.Repeat("ñ", 501)
+		},
+		"orphan_counter_motive": func(d *stockadjustments.Detail) { d.ReversedBy, d.ReversedByReason = nil, "error de conteo" },
 	} {
 		detail := valid
 		detail.Lines = append([]stockadjustments.DetailLine(nil), valid.Lines...)
@@ -844,7 +861,7 @@ func stockAdjustmentHistoryWire(t *testing.T, w *httptest.ResponseRecorder) stoc
 	return page
 }
 
-// stockAdjustmentDetailWire admits only the frozen detail shape: ten header keys
+// stockAdjustmentDetailWire admits only the frozen detail shape: eleven header keys
 // and nine line keys, with no operation key and no stock column outside it.
 func stockAdjustmentDetailWire(t *testing.T, w *httptest.ResponseRecorder) stockAdjustmentDetailDTO {
 	t.Helper()
@@ -852,14 +869,22 @@ func stockAdjustmentDetailWire(t *testing.T, w *httptest.ResponseRecorder) stock
 		t.Fatalf("detail response mismatch: status=%d want=200", w.Code)
 	}
 	var top map[string]json.RawMessage
-	if json.Unmarshal(w.Body.Bytes(), &top) != nil || len(top) != 10 {
+	if json.Unmarshal(w.Body.Bytes(), &top) != nil || len(top) != 11 {
 		t.Fatal("detail whitelist changed")
 	}
 	for _, key := range []string{"id", "location_id", "reason", "detail", "created_at", "created_by_account_id",
-		"reverses_adjustment_id", "reversed_by", "lines", "total_difference"} {
+		"reverses_adjustment_id", "reversed_by", "reversed_by_reason", "lines", "total_difference"} {
 		if _, ok := top[key]; !ok {
 			t.Fatalf("detail whitelist incomplete: %s", key)
 		}
+	}
+	var counterMotive string
+	if json.Unmarshal(top["reversed_by_reason"], &counterMotive) != nil {
+		t.Fatal("reversed_by_reason must be a string")
+	}
+	// The counter-entry motive is present exactly when this document is reversed.
+	if reversed := string(top["reversed_by"]); (reversed == "null") != (string(top["reversed_by_reason"]) == `""`) {
+		t.Fatal("reversed_by_reason must be empty exactly when reversed_by is null")
 	}
 	var lines []map[string]json.RawMessage
 	if json.Unmarshal(top["lines"], &lines) != nil || len(lines) == 0 {
@@ -1257,7 +1282,7 @@ func TestStockAdjustmentHTTPDetail(t *testing.T) {
 	detail := stockAdjustmentDetailWire(t, w)
 	if detail.ID != original.ID || detail.LocationID != 1 || detail.CreatedByAccountID != 1 ||
 		detail.Reason != "conteo físico" || detail.Detail != "pasillo 2" || detail.ReversesAdjustmentID != nil ||
-		detail.ReversedBy != nil || detail.TotalDifference != 1 || len(detail.Lines) != 2 {
+		detail.ReversedBy != nil || detail.ReversedByReason != "" || detail.TotalDifference != 1 || len(detail.Lines) != 2 {
 		t.Fatal("detail does not match the frozen contract")
 	}
 	if stamp, err := time.Parse(time.RFC3339, detail.CreatedAt); err != nil || stamp.UTC().Format(time.RFC3339) != detail.CreatedAt {
@@ -1302,7 +1327,7 @@ func TestStockAdjustmentHTTPDetail(t *testing.T) {
 	if counterDetail.ID != counter.ID || counterDetail.ReversesAdjustmentID == nil ||
 		*counterDetail.ReversesAdjustmentID != original.ID || counterDetail.ReversedBy != nil ||
 		counterDetail.Reason != "conteo mal tomado" || counterDetail.TotalDifference != -1 ||
-		counterDetail.Detail != "" {
+		counterDetail.Detail != "" || counterDetail.ReversedByReason != "" {
 		t.Fatal("counter-entry detail does not match the frozen contract")
 	}
 	if len(counterDetail.Lines) != 2 || counterDetail.Lines[0].VariantID != 1 ||
@@ -1314,8 +1339,8 @@ func TestStockAdjustmentHTTPDetail(t *testing.T) {
 	}
 	reversed := stockAdjustmentDetailWire(t, f.serve(t, f.request(1, "GET", adjustmentDetailPath(original.ID), "")))
 	if reversed.ReversedBy == nil || *reversed.ReversedBy != counter.ID || reversed.ReversesAdjustmentID != nil ||
-		reversed.TotalDifference != 1 {
-		t.Fatal("a reversed document must expose its counter-entry and keep its own header")
+		reversed.TotalDifference != 1 || reversed.ReversedByReason != "conteo mal tomado" {
+		t.Fatal("a reversed document must expose its counter-entry, its motive and keep its own header")
 	}
 	// The document stays readable after the stock moved again.
 	f.setBalance(t, 1, 1, 0)

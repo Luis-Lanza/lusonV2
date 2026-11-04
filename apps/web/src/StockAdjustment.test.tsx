@@ -31,13 +31,13 @@ const detailLine = (overrides: Record<string, unknown> = {}) => ({
   expected_quantity: 18, counted_quantity: 14, difference: -4, ...overrides });
 const detailReply = (overrides: Record<string, unknown> = {}) => json(JSON.stringify({
   id: 6, location_id: 1, reason: motive, detail: 'pasillo 2', created_at: '2026-11-02T09:12:00Z',
-  created_by_account_id: 1, reverses_adjustment_id: null, reversed_by: null,
+  created_by_account_id: 1, reverses_adjustment_id: null, reversed_by: null, reversed_by_reason: '',
   lines: [detailLine()], total_difference: -4, ...overrides }));
 const detailsFor = (id: number) => id === 8
   ? detailReply({ id: 8, reason: 'Otro', detail: '', created_at: '2026-11-03T10:00:00Z', reverses_adjustment_id: 7,
     lines: [detailLine({ expected_quantity: 14, counted_quantity: 18, difference: 4 })], total_difference: 4 })
   : id === 7
-    ? detailReply({ id: 7, detail: 'pasillo 2', reversed_by: 8 })
+    ? detailReply({ id: 7, detail: 'pasillo 2', reversed_by: 8, reversed_by_reason: 'Otro' })
     : id === 10
       ? detailReply({ id: 10, reason: 'Diferencia detectada en preparación', detail: '',
         reverses_adjustment_id: 6, lines: [detailLine({ expected_quantity: 14, counted_quantity: 18, difference: 4 })],
@@ -151,10 +151,13 @@ describe('adjustment history', () => {
     await ready(h);
     fireEvent.click(disclosure(7));
     const reversed = document.getElementById('adjustment-lines-7')!;
-    expect(await within(reversed).findByText('Revertido por el contra-asiento #8.')).toBeInTheDocument();
+    expect(await within(reversed).findByText(
+      'Revertido por el contra-asiento #8 · motivo: “Otro”.')).toBeInTheDocument();
     fireEvent.click(disclosure(8));
     const counter = document.getElementById('adjustment-lines-8')!;
     expect(await within(counter).findByText('Contra-asiento del documento #7.')).toBeInTheDocument();
+    // A counter-entry is never described as reversed, so it reports no counter motive.
+    expect(within(counter).queryByText(/Revertido por el contra-asiento/)).not.toBeInTheDocument();
     const lines = within(counter).getAllByRole('row').slice(1).map(row => within(row).getAllByRole('cell')[4].textContent);
     expect(lines).toEqual(['18']);
     expect(within(counter).getByText('Otro')).toBeInTheDocument();

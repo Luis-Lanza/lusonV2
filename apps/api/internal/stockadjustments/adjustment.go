@@ -104,7 +104,9 @@ type DetailLine struct {
 // Detail is one persisted document with its catalogue-resolved lines and its
 // reversal cross-references. ReversesAdjustmentID is the original document when
 // this one is a counter-entry, and ReversedBy is the counter-entry that reverses
-// this document, if any.
+// this document, if any. ReversedByReason is that counter-entry's own motive, so
+// the correction reads as one document instead of two reads; it is empty exactly
+// when the document is not reversed.
 type Detail struct {
 	ID                   int64
 	LocationID           int
@@ -114,6 +116,7 @@ type Detail struct {
 	CreatedByAccountID   int64
 	ReversesAdjustmentID *int64
 	ReversedBy           *int64
+	ReversedByReason     string
 	Lines                []DetailLine
 	TotalDifference      int64
 }

@@ -374,7 +374,7 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
         {view.document.reverses_adjustment_id !== null &&
           <p className="stock-hint">{`Contra-asiento del documento #${view.document.reverses_adjustment_id}.`}</p>}
         {view.document.reversed_by !== null &&
-          <p className="stock-hint">{`Revertido por el contra-asiento #${view.document.reversed_by}.`}</p>}
+          <p className="stock-hint">{`Revertido por el contra-asiento #${view.document.reversed_by} · motivo: “${view.document.reversed_by_reason}”.`}</p>}
         <p className="stock-hint">El esperado es la foto del momento del ajuste: el stock actual puede haber cambiado.</p>
       </>}
     </div>;

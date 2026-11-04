@@ -730,6 +730,50 @@ func TestReadDetailReversalCrossReferences(t *testing.T) {
 	}
 }
 
+// TestReadDetailCounterEntryMotive pins the counter-entry's own motive on the
+// reversed document: one detail read renders it beside the cross-reference, and
+// the original keeps its own header, lines and arithmetic.
+func TestReadDetailCounterEntryMotive(t *testing.T) {
+	ctx, p, s := fixture(t)
+	setBalance(t, ctx, p, 4, 15, 0)
+	setBalance(t, ctx, p, 9, 15, 0)
+	original, _, err := s.Create(ctx, warehouse(), stockadjustments.CreateInput{
+		OperationKey: "motive-key-000000000001", Reason: "conteo físico", Detail: "góndola 9",
+		Lines: []stockadjustments.Line{{VariantID: 9, Counted: 11}, {VariantID: 4, Counted: 18}},
+	})
+	if err != nil {
+		t.Fatal("original document was not created")
+	}
+	// A document that is not reversed has no counter-entry motive to report.
+	plain := readDetail(t, ctx, s, original.ID)
+	if plain.ReversedBy != nil || plain.ReversedByReason != "" {
+		t.Fatalf("a document that is not reversed carries no counter motive: %+v", plain)
+	}
+	counter, _, err := s.Reverse(ctx, warehouse(), original.ID, "motive-key-000000000002", "  error de conteo  ")
+	if err != nil {
+		t.Fatal("reversal was not created")
+	}
+	reversed := readDetail(t, ctx, s, original.ID)
+	if reversed.ReversedBy == nil || *reversed.ReversedBy != counter.ID ||
+		reversed.ReversedByReason != "error de conteo" {
+		t.Fatalf("a reversed document must carry the counter-entry motive: %+v", reversed)
+	}
+	// The motive is a cross-reference, never a rewrite of the original document.
+	if reversed.Reason != "conteo físico" || reversed.Detail != "góndola 9" || reversed.TotalDifference != -1 ||
+		len(reversed.Lines) != 2 ||
+		reversed.Lines[0].VariantID != 4 || reversed.Lines[0].Expected != 15 ||
+		reversed.Lines[0].Counted != 18 || reversed.Lines[0].Difference != 3 ||
+		reversed.Lines[1].VariantID != 9 || reversed.Lines[1].Expected != 15 ||
+		reversed.Lines[1].Counted != 11 || reversed.Lines[1].Difference != -4 {
+		t.Fatalf("the reversed document must keep its own lines and arithmetic: %+v", reversed)
+	}
+	// A counter-entry is not itself reversed, so it reports no counter motive.
+	detail := readDetail(t, ctx, s, counter.ID)
+	if detail.ReversedBy != nil || detail.ReversedByReason != "" || detail.Reason != "error de conteo" {
+		t.Fatalf("a counter-entry must not report a counter-entry motive: %+v", detail)
+	}
+}
+
 // foreignDocument persists an adjustment of another location. Only the database
 // may refuse one in normal operation, so the isolated fixture writes it with the
 // admission and application triggers disabled, then re-enables them immediately.

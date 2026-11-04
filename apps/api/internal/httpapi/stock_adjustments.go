@@ -490,7 +490,9 @@ type stockAdjustmentDetailLineDTO struct {
 
 // stockAdjustmentDetailDTO is the frozen per-document detail: the header, the
 // catalogue identity of every line together with its expected, counted and applied
-// difference, and the reversal cross-references.
+// difference, and the reversal cross-references. ReversedByReason is the motive of
+// the counter-entry named by ReversedBy, so a reversed document is described by one
+// response instead of a second read.
 type stockAdjustmentDetailDTO struct {
 	ID                   int64                          `json:"id"`
 	LocationID           int                            `json:"location_id"`
@@ -500,6 +502,7 @@ type stockAdjustmentDetailDTO struct {
 	CreatedByAccountID   int64                          `json:"created_by_account_id"`
 	ReversesAdjustmentID *int64                         `json:"reverses_adjustment_id"`
 	ReversedBy           *int64                         `json:"reversed_by"`
+	ReversedByReason     string                         `json:"reversed_by_reason"`
 	Lines                []stockAdjustmentDetailLineDTO `json:"lines"`
 	TotalDifference      int64                          `json:"total_difference"`
 }
@@ -656,6 +659,16 @@ func stockAdjustmentDetailRecord(detail stockadjustments.Detail) (stockAdjustmen
 	if !ok {
 		return unavailable()
 	}
+	// The counter-entry's own motive travels beside its cross-reference: a reversed
+	// document reports the canonical motive of its counter-entry, and a document
+	// that is not reversed reports none at all.
+	if reversedBy == nil {
+		if detail.ReversedByReason != "" {
+			return unavailable()
+		}
+	} else if !stockAdjustmentMotive(detail.ReversedByReason) {
+		return unavailable()
+	}
 	lines := make([]stockAdjustmentDetailLineDTO, 0, len(detail.Lines))
 	var previous, total int64
 	for _, line := range detail.Lines {
@@ -694,6 +707,7 @@ func stockAdjustmentDetailRecord(detail stockadjustments.Detail) (stockAdjustmen
 		CreatedByAccountID:   detail.CreatedByAccountID,
 		ReversesAdjustmentID: reverses,
 		ReversedBy:           reversedBy,
+		ReversedByReason:     detail.ReversedByReason,
 		Lines:                lines,
 		TotalDifference:      detail.TotalDifference,
 	}, nil
