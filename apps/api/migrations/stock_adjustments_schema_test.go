@@ -118,3 +118,31 @@ func TestStockAdjustmentsSchemaGuards(t *testing.T) {
 		t.Error("reversal completeness guard missing")
 	}
 }
+
+// Migration 022 was already applied to tracked databases, so the header
+// completeness guard is its own immutable version. A committed document with no
+// lines restores nothing, and as a counter-entry it would take the single-reversal
+// slot while the original stays uncorrected; the per-line guards cannot see it.
+func TestStockAdjustmentLineCompletenessSchema(t *testing.T) {
+	b, err := migrations.Files.ReadFile("023_stock_adjustment_lines_required.sql")
+	if err != nil {
+		t.Fatal("line completeness migration must be embedded", err)
+	}
+	sql := string(b)
+	for _, required := range []string{
+		"CREATE FUNCTION require_stock_adjustment_lines()",
+		"SELECT count(*) INTO line_count FROM stock_adjustment_lines WHERE adjustment_id=NEW.id;",
+		"IF line_count < 1 THEN",
+		"ERRCODE='LS008'",
+		"CREATE CONSTRAINT TRIGGER require_stock_adjustment_lines AFTER INSERT ON stock_adjustments\nDEFERRABLE INITIALLY DEFERRED",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("missing %s", required)
+		}
+	}
+	// The guard is additive: it never redefines or rewrites what 022 created.
+	if strings.Contains(sql, "CREATE OR REPLACE") || strings.Contains(sql, "ALTER TABLE") ||
+		strings.Contains(sql, "DROP ") {
+		t.Fatal("a later migration must not rewrite the applied schema")
+	}
+}

@@ -366,6 +366,7 @@ application, decides the following, with stable SQLSTATEs:
 | `LS005` | `location_id <> 1` | 400 `invalid_request` |
 | `LS006` | Reversal target missing, in another location, or itself a reversal | 400 `invalid_request` |
 | `LS007` | The resulting `existing` would leave `bigint` | 400 `invalid_request` |
+| `LS008` | A committed document has no counted line (migration 023, checked at commit) | 400 `invalid_request` |
 
 Lines are applied immediately, one by one, in ascending `variant_id` order, so
 balance rows are locked in a deterministic order and each line's expected

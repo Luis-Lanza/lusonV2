@@ -693,7 +693,7 @@ func mapFailure(ctx context.Context, err error) error {
 		switch pg.Code {
 		case "LS001":
 			return ErrInsufficientStock
-		case "LS002", "LS003", "LS005", "LS006", "LS007":
+		case "LS002", "LS003", "LS005", "LS006", "LS007", "LS008":
 			return ErrInvalid
 		}
 	}
