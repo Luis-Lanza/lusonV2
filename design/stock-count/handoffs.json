@@ -3,13 +3,14 @@
   "chosen": "03-history-first.html",
   "handoffs": {
     "03-history-first.html": {
-      "status": "in_progress",
+      "status": "implemented",
       "queued": false,
       "sentAt": "2026-11-04T17:50:44.668Z",
       "startedAt": "2026-11-04T17:50:57.754Z",
-      "implementedAt": null,
+      "implementedAt": "2026-11-04T18:49:24.754Z",
       "feature": "odd/tasks/conteo-fisico-ajuste-stock.md",
-      "note": "Implementando historial primero: captura ciega en panel lateral, historial con detalle expandible y contra-asiento. Rama feat/stock-adjustments."
+      "note": "Implementado en React/Go/PostgreSQL: historial #/ajustes con detalle expandible (esperado/contado/diferencia), captura ciega en panel lateral sin stock, contra-asiento con motivo y motivo del contra-asiento visible en el documento revertido. Verificado con suites Go contra PostgreSQL real, 183 tests de la sección, tsc y build.",
+      "previewUrl": "http://127.0.0.1:8080/"
     }
   }
 }
