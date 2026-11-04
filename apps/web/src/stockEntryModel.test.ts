@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   canonicalStockEntryInput, canonicalStockEntryReversalInput, canonicalStockEntryReversalReason, matchesStockEntryInput,
   matchesStockEntryReversal, newStockEntryOperationKey, parseStockCatalog, parseStockEntryError, parseStockEntryHistory,
-  parseStockEntryRecord, parseStockEntryReversalError, parseStockEntryReversalRecord, stockCatalogPath,
-  stockEntryAdmittedErrors, stockEntryErrorMessages, stockEntryFailureIsDefinite, stockEntryHistoryPath,
+  parseStockEntryDetail, parseStockEntryDetailError, parseStockEntryRecord, parseStockEntryReversalError,
+  parseStockEntryReversalRecord, stockCatalogPath, stockEntryAdmittedErrors, stockEntryDetailAdmittedErrors,
+  stockEntryDetailErrorMessages, stockEntryDetailPath, stockEntryErrorMessages, stockEntryFailureIsDefinite,
+  stockEntryHistoryPath,
   stockEntryHistoryPageSizes, stockEntryReversalAdmittedErrors, stockEntryReversalErrorMessages,
   stockEntryReversalFailureIsDefinite, stockEntryReversalPath, stockEntryReversible, validStockEntryHistoryQuery,
   validStockQuantity, type StockEntryHistoryRow, type StockEntryInput, type StockEntryReversalInput,
@@ -391,5 +393,128 @@ describe('stock counter-entry contract', () => {
     for (const code of ['service_unavailable', 'invalid_response', 'network', 'aborted'] as const) {
       expect(stockEntryReversalFailureIsDefinite(code)).toBe(false);
     }
+  });
+});
+
+describe('stock ingress detail contract', () => {
+  const detailLine = (overrides: Record<string, unknown> = {}) => ({
+    variant_id: 7, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L', quantity: 18, ...overrides });
+  const detailJSON = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+    id: 6, location_id: 1, note: 'Remito 0002-00045871', created_at: '2026-11-04T14:20:00Z',
+    created_by_account_id: 1, reverses_entry_id: null, reversed_by: null, reason: '',
+    lines: [detailLine()], total_units: 18, ...overrides });
+
+  it('builds the frozen detail path and admits only a canonical document id', () => {
+    expect(stockEntryDetailPath(6)).toBe('/api/stock-entries/6');
+    expect(stockEntryDetailPath(9007199254740991)).toBe('/api/stock-entries/9007199254740991');
+    for (const id of [0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => stockEntryDetailPath(id)).toThrow('Detalle de ingreso inválido.');
+    }
+  });
+
+  it('parses the exact units of one document with its catalogue identity', () => {
+    const detail = parseStockEntryDetail(detailJSON({
+      lines: [detailLine({ variant_id: 7, quantity: 3 }), detailLine({ variant_id: 9, quantity: 15 })],
+      total_units: 18,
+    }));
+    expect(detail).toEqual({ id: 6, location_id: 1, note: 'Remito 0002-00045871',
+      created_at: '2026-11-04T14:20:00Z', created_by_account_id: 1, reverses_entry_id: null,
+      reversed_by: null, reason: '',
+      lines: [
+        { variant_id: 7, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L', quantity: 3 },
+        { variant_id: 9, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L', quantity: 15 },
+      ], total_units: 18 });
+    expect(Object.isFrozen(detail)).toBe(true);
+    expect(Object.isFrozen(detail.lines)).toBe(true);
+    expect(Object.isFrozen(detail.lines[0])).toBe(true);
+  });
+
+  it('parses a reversed document and its counter-entry cross-references', () => {
+    const reversed = parseStockEntryDetail(detailJSON({ reversed_by: 10 }));
+    expect(reversed.reversed_by).toBe(10);
+    expect(reversed.reverses_entry_id).toBeNull();
+    const counter = parseStockEntryDetail(detailJSON({ id: 10, note: '', reverses_entry_id: 6,
+      reason: 'error de carga', lines: [detailLine({ quantity: -18 })], total_units: -18 }));
+    expect(counter).toMatchObject({ id: 10, reverses_entry_id: 6, reversed_by: null,
+      reason: 'error de carga', note: '', total_units: -18 });
+    expect(counter.lines.map(line => line.quantity)).toEqual([-18]);
+  });
+
+  it('keeps a fractional capacity as its exact decimal text', () => {
+    expect(parseStockEntryDetail(detailJSON({ lines: [detailLine({ capacity_ah: '6.5' })] })).lines[0].capacity_ah).toBe('6.5');
+  });
+
+  it.each([
+    ['an extra header field', detailJSON({ location_name: 'Almacén' })],
+    ['a missing header field', JSON.stringify({ id: 6, location_id: 1, note: '', created_at: '2026-11-04T14:20:00Z',
+      created_by_account_id: 1, reverses_entry_id: null, reason: '', lines: [detailLine()], total_units: 18 })],
+    ['a zero document id', detailJSON({ id: 0 })],
+    ['an unsafe document id', detailJSON({ id: 9007199254740992 })],
+    ['a document of another location', detailJSON({ location_id: 2 })],
+    ['a note with NUL', detailJSON({ note: 'a\u0000b' })],
+    ['a note over 500 characters', detailJSON({ note: 'n'.repeat(501) })],
+    ['an impossible date', detailJSON({ created_at: '2026-02-31T00:00:00Z' })],
+    ['an unknown actor', detailJSON({ created_by_account_id: 0 })],
+    ['an extra line field', detailJSON({ lines: [detailLine({ catalog_entry_id: 2 })] })],
+    ['a missing line field', detailJSON({ lines: [{ variant_id: 7, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', quantity: 18 }] })],
+    ['a numeric capacity', detailJSON({ lines: [detailLine({ capacity_ah: 45 })] })],
+    ['a padded capacity', detailJSON({ lines: [detailLine({ capacity_ah: '045' })] })],
+    ['a capacity with trailing zeros', detailJSON({ lines: [detailLine({ capacity_ah: '45.000' })] })],
+    ['a zero capacity', detailJSON({ lines: [detailLine({ capacity_ah: '0' })] })],
+    ['an empty brand', detailJSON({ lines: [detailLine({ brand: '' })] })],
+    ['an unknown polarity', detailJSON({ lines: [detailLine({ polarity: 'X' })] })],
+    ['a zero quantity', detailJSON({ lines: [detailLine({ quantity: 0 })] })],
+    ['a fractional quantity', detailJSON({ lines: [detailLine({ quantity: 1.5 })] })],
+    ['an exponent quantity', '{"id":6,"location_id":1,"note":"","created_at":"2026-11-04T14:20:00Z","created_by_account_id":1,"reverses_entry_id":null,"reversed_by":null,"reason":"","lines":[{"variant_id":7,"brand":"TOYO","model":"NS60L","capacity_ah":"45","polarity":"L","quantity":1e3}],"total_units":1000}'],
+    ['a quantity above one document line', detailJSON({ lines: [detailLine({ quantity: 1000001 })], total_units: 1000001 })],
+    ['a negative line on an ingress document', detailJSON({ lines: [detailLine({ quantity: -18 })], total_units: -18 })],
+    ['lines out of order', detailJSON({ lines: [detailLine({ variant_id: 9 }), detailLine({ variant_id: 7 })], total_units: 36 })],
+    ['a repeated line', detailJSON({ lines: [detailLine(), detailLine()], total_units: 36 })],
+    ['no lines', detailJSON({ lines: [], total_units: 0 })],
+    ['a total that does not add up', detailJSON({ total_units: 19 })],
+    ['a counter-entry without a motive', detailJSON({ reverses_entry_id: 5, note: '', lines: [detailLine({ quantity: -18 })], total_units: -18 })],
+    ['an original document with a motive', detailJSON({ reason: 'error de carga' })],
+    ['a padded motive', detailJSON({ reverses_entry_id: 5, note: '', reason: ' error de carga ',
+      lines: [detailLine({ quantity: -18 })], total_units: -18 })],
+    ['a motive over 500 characters', detailJSON({ reverses_entry_id: 5, note: '', reason: 'ñ'.repeat(501),
+      lines: [detailLine({ quantity: -18 })], total_units: -18 })],
+    ['a counter-entry of itself', detailJSON({ id: 6, reverses_entry_id: 6, note: '', lines: [detailLine({ quantity: -18 })], total_units: -18 })],
+    ['a counter-entry of a later document', detailJSON({ reverses_entry_id: 9, note: '', lines: [detailLine({ quantity: -18 })], total_units: -18 })],
+    ['a reverse entry id of zero', detailJSON({ reverses_entry_id: 0 })],
+    ['a positive line on a counter-entry', detailJSON({ reverses_entry_id: 5, note: '', reason: 'error de carga', lines: [detailLine({ quantity: 18 })] })],
+    ['a reversal of itself', detailJSON({ reversed_by: 6 })],
+    ['a reversal of an earlier document', detailJSON({ reversed_by: 5 })],
+    ['a zero reversal id', detailJSON({ reversed_by: 0 })],
+    ['a duplicated JSON key', '{"id":6,"id":7,"location_id":1,"note":"","created_at":"2026-11-04T14:20:00Z","created_by_account_id":1,"reverses_entry_id":null,"reversed_by":null,"reason":"","lines":[{"variant_id":7,"brand":"TOYO","model":"NS60L","capacity_ah":"45","polarity":"L","quantity":18}],"total_units":18}'],
+    ['a non JSON body', '<html>proxy</html>'],
+  ])('rejects %s', (_, raw) => {
+    expect(() => parseStockEntryDetail(raw)).toThrow('Respuesta inválida del servidor.');
+  });
+
+  it('admits only the exact detail error code for each status', () => {
+    expect(parseStockEntryDetailError('{"error":"invalid_request"}', 400)).toBe('invalid_request');
+    expect(parseStockEntryDetailError('{"error":"unauthenticated"}', 401)).toBe('unauthenticated');
+    expect(parseStockEntryDetailError('{"error":"forbidden"}', 403)).toBe('forbidden');
+    expect(parseStockEntryDetailError('{"error":"not_found"}', 404)).toBe('not_found');
+    expect(parseStockEntryDetailError('{"error":"service_unavailable"}', 503)).toBe('service_unavailable');
+  });
+
+  it.each([
+    ['the reversal code set on a detail status', '{"error":"decision_conflict"}', 409],
+    ['a known code on the wrong status', '{"error":"not_found"}', 403],
+    ['an unlisted status', '{"error":"not_found"}', 409],
+    ['an envelope with more than one key', '{"error":"forbidden","detail":"x"}', 403],
+    ['a non JSON body', '<html>proxy</html>', 503],
+  ])('rejects %s', (_, raw, status) => {
+    expect(() => parseStockEntryDetailError(raw, status)).toThrow('Respuesta inválida del servidor.');
+  });
+
+  it('maps every detail failure to a Spanish message', () => {
+    for (const codes of stockEntryDetailAdmittedErrors.values()) {
+      for (const code of codes) expect(stockEntryDetailErrorMessages[code]).toMatch(/[áéíóúñ¿]/i);
+    }
+    expect(stockEntryDetailErrorMessages.not_found).toContain('no existe');
+    expect(stockEntryDetailErrorMessages.network).toContain('No se pudo conectar');
+    expect(stockEntryDetailErrorMessages.aborted).toContain('Se interrumpió');
   });
 });

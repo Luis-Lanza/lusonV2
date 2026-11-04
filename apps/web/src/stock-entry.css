@@ -90,3 +90,23 @@
 @media (max-width: 767px) {
   .stock-reversal-body { padding: 16px; }
 }
+/* Detail: one action per history row plus the read-only dialog. The layout reuses
+   the shared backdrop/modal classes, the existing table treatment and the same
+   tokens and 44px targets, so no new colour enters the section. */
+.stock-history .stock-row-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.stock-history :is(.stock-detail, .stock-reverse) { min-width: 44px; min-height: 44px; border-color: var(--muted);
+  white-space: normal; overflow-wrap: anywhere; }
+.stock-history .stock-detail { color: var(--wine); border-color: var(--border); font-weight: 600; }
+.stock-detail-modal { width: min(760px, 100%); }
+.stock-detail-body { display: grid; gap: 16px; padding: 24px; overflow-y: auto; }
+.stock-detail-summary { display: flex; flex-wrap: wrap; gap: 12px 24px; margin: 0; padding: 12px;
+  background: var(--page); border: 1px solid var(--border); border-radius: 4px; }
+.stock-detail-summary dt { color: var(--muted); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.stock-detail-summary dd { margin: 2px 0 0; font-size: 16px; overflow-wrap: anywhere; }
+.stock-detail-table td:nth-child(n+2) { font-variant-numeric: tabular-nums; }
+.stock-detail-total { padding-top: 12px; border-top: 1px solid var(--border); color: var(--wine);
+  font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.stock-detail-body .stock-message button { min-width: 44px; min-height: 44px; border-color: var(--muted); }
+@media (max-width: 767px) {
+  .stock-detail-body { padding: 16px; }
+}

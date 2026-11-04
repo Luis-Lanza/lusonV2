@@ -1,9 +1,10 @@
 import { canonicalStockEntryInput, canonicalStockEntryReversalInput, matchesStockEntryInput, matchesStockEntryReversal,
-  parseStockEntryError, parseStockEntryHistory, parseStockEntryRecord, parseStockEntryReversalError,
-  parseStockEntryReversalRecord, stockEntryHistoryPath, stockEntryReversalPath, stockEntryReversible,
-  validStockEntryHistoryQuery,
-  type StockEntryErrorCode, type StockEntryHistoryPage, type StockEntryHistoryRow, type StockEntryInput,
-  type StockEntryRecord, type StockEntryReversalErrorCode, type StockEntryReversalInput } from './stockEntryModel';
+  parseStockEntryDetail, parseStockEntryDetailError, parseStockEntryError, parseStockEntryHistory, parseStockEntryRecord,
+  parseStockEntryReversalError, parseStockEntryReversalRecord, stockEntryDetailPath, stockEntryHistoryPath,
+  stockEntryReversalPath, stockEntryReversible, validStockEntryHistoryQuery,
+  type StockEntryDetail, type StockEntryDetailErrorCode, type StockEntryErrorCode, type StockEntryHistoryPage,
+  type StockEntryHistoryRow, type StockEntryInput, type StockEntryRecord, type StockEntryReversalErrorCode,
+  type StockEntryReversalInput } from './stockEntryModel';
 
 export class StockEntryAPIError extends Error {
   constructor(public readonly code: StockEntryErrorCode, public readonly status: number | null) {
@@ -15,6 +16,13 @@ export class StockEntryAPIError extends Error {
 export class StockEntryReversalAPIError extends Error {
   constructor(public readonly code: StockEntryReversalErrorCode, public readonly status: number | null) {
     super(code); this.name = 'StockEntryReversalAPIError';
+  }
+}
+// The document detail is a read of its own contract: identity and missing-document
+// failures are its codes, not the creation vocabulary.
+export class StockEntryDetailAPIError extends Error {
+  constructor(public readonly code: StockEntryDetailErrorCode, public readonly status: number | null) {
+    super(code); this.name = 'StockEntryDetailAPIError';
   }
 }
 export interface StockEntryCreateResult { readonly record: StockEntryRecord; readonly replayed: boolean }
@@ -95,6 +103,34 @@ export function createStockEntryAPI(fetch: typeof globalThis.fetch = globalThis.
       // The counter-entry must be the exact negation of the listed document.
       if (!matchesStockEntryReversal(row, record)) throw malformed();
       return { record, replayed: reply.status === 200 };
+    },
+
+    async detail(id: number, signal?: AbortSignal): Promise<StockEntryDetail> {
+      // The path is the frozen detail contract: a non-canonical id never leaves here.
+      let path: string;
+      try { path = stockEntryDetailPath(id); } catch { throw new StockEntryDetailAPIError('invalid_request', null); }
+      let reply: Response;
+      let raw: string;
+      try {
+        reply = await fetch(path, { method: 'GET', credentials: 'same-origin', cache: 'no-store', signal });
+        raw = await reply.text();
+      } catch (error) {
+        const aborted = signal?.aborted === true
+          || (typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError');
+        throw new StockEntryDetailAPIError(aborted ? 'aborted' : 'network', null);
+      }
+      const malformed = () => new StockEntryDetailAPIError('invalid_response', reply.status);
+      if (!/^application\/json(?:\s*;\s*charset=utf-8)?$/i.test(reply.headers.get('Content-Type') ?? '')) throw malformed();
+      if (reply.status !== 200) {
+        let code: StockEntryDetailErrorCode;
+        try { code = parseStockEntryDetailError(raw, reply.status); } catch { throw malformed(); }
+        throw new StockEntryDetailAPIError(code, reply.status);
+      }
+      let detail: StockEntryDetail;
+      try { detail = parseStockEntryDetail(raw); } catch { throw malformed(); }
+      // A reply for another document is never evidence about the row that asked.
+      if (detail.id !== id) throw malformed();
+      return detail;
     },
 
     async history(page: number, pageSize: number, signal?: AbortSignal): Promise<StockEntryHistoryPage> {

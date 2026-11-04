@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createStockEntryAPI, StockEntryAPIError, StockEntryReversalAPIError } from './stockEntryAPI';
+import { createStockEntryAPI, StockEntryAPIError, StockEntryDetailAPIError, StockEntryReversalAPIError } from './stockEntryAPI';
 import type { StockEntryInput } from './stockEntryModel';
 
 const csrf = 'c'.repeat(43);
@@ -267,5 +267,72 @@ describe('stock counter-entry transport', () => {
     const aborted = mockFetch().mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' }));
     await expect(createStockEntryAPI(aborted).reverse(listed(), reversal, csrf, controller.signal))
       .rejects.toMatchObject({ code: 'aborted', status: null });
+  });
+});
+
+describe('stock document detail transport', () => {
+  const detailLine = (overrides: Record<string, unknown> = {}) => ({
+    variant_id: 7, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L', quantity: 18, ...overrides });
+  const detailBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+    id: 6, location_id: 1, note: 'Remito 0002-00045871', created_at: '2026-05-01T14:20:00Z',
+    created_by_account_id: 1, reverses_entry_id: null, reversed_by: null, reason: '',
+    lines: [detailLine()], total_units: 18, ...overrides,
+  });
+  const detailResponse = (body = detailBody(), status = 200) => json(body, status);
+
+  it('reads one document with the session cookie and no CSRF header', async () => {
+    const fetch = mockFetch().mockResolvedValue(detailResponse());
+    const detail = await createStockEntryAPI(fetch).detail(6);
+    expect(detail).toMatchObject({ id: 6, note: 'Remito 0002-00045871', total_units: 18,
+      reverses_entry_id: null, reversed_by: null, reason: '' });
+    expect(detail.lines).toEqual([{ variant_id: 7, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L', quantity: 18 }]);
+    expect(fetch.mock.calls[0]).toEqual(['/api/stock-entries/6', {
+      method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: undefined,
+    }]);
+  });
+
+  it('sends the abort signal it was given', async () => {
+    const fetch = mockFetch().mockResolvedValue(detailResponse());
+    const controller = new AbortController();
+    await createStockEntryAPI(fetch).detail(6, controller.signal);
+    expect(fetch.mock.calls[0][1]?.signal).toBe(controller.signal);
+  });
+
+  it.each([[0], [-1], [1.5], [Number.NaN], [Number.MAX_SAFE_INTEGER + 1]])(
+    'fails closed on document id %s without any network call', async id => {
+      const fetch = mockFetch();
+      await expect(createStockEntryAPI(fetch).detail(id)).rejects.toMatchObject({ code: 'invalid_request', status: null });
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+  it.each([
+    ['a text/html body', new Response(detailBody(), { status: 200, headers: { 'Content-Type': 'text/html' } })],
+    ['an unparseable detail', json('not json', 200)],
+    ['a detail of another document', detailResponse(detailBody({ id: 7 }))],
+    ['a detail with a foreign field', detailResponse(detailBody({ operation_key: 'warehouse_key_0001' }))],
+    ['a detail of another location', detailResponse(detailBody({ location_id: 2 }))],
+    ['an unadmitted success status', detailResponse(detailBody(), 201)],
+    ['an error envelope with extra keys', json('{"error":"forbidden","detail":"x"}', 403)],
+    ['an unlisted failure status', json('{"error":"not_found"}', 409)],
+  ])('refuses to interpret %s', async (_, reply) => {
+    const fetch = mockFetch().mockResolvedValue(reply);
+    await expect(createStockEntryAPI(fetch).detail(6)).rejects.toMatchObject({ code: 'invalid_response' });
+  });
+
+  it.each([[400, 'invalid_request'], [401, 'unauthenticated'], [403, 'forbidden'], [404, 'not_found'], [503, 'service_unavailable']])(
+    'reports the admitted %s %s code with its status', async (status, code) => {
+      const fetch = mockFetch().mockResolvedValue(json(`{"error":"${code}"}`, status));
+      const failure = await createStockEntryAPI(fetch).detail(6).catch(error => error);
+      expect(failure).toBeInstanceOf(StockEntryDetailAPIError);
+      expect(failure).toMatchObject({ code, status });
+    });
+
+  it('distinguishes a lost connection from an aborted read', async () => {
+    const network = mockFetch().mockRejectedValue(new TypeError('Failed to fetch'));
+    await expect(createStockEntryAPI(network).detail(6)).rejects.toMatchObject({ code: 'network', status: null });
+    const controller = new AbortController();
+    controller.abort();
+    const aborted = mockFetch().mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    await expect(createStockEntryAPI(aborted).detail(6, controller.signal)).rejects.toMatchObject({ code: 'aborted', status: null });
   });
 });

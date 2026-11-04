@@ -31,6 +31,7 @@ function harness(options: {
   create?: (body: string) => Response | Promise<Response>;
   history?: (query: URLSearchParams) => Response | Promise<Response>;
   reverse?: (target: string, body: string) => Response | Promise<Response>;
+  detail?: (id: string) => Response | Promise<Response>;
 } = {}) {
   const calls: { url: string; init: RequestInit }[] = [];
   const fetcher = vi.fn<typeof fetch>(async (input, init = {}) => {
@@ -46,12 +47,15 @@ function harness(options: {
     if (url === '/api/stock-entries') return options.create?.(String(init.body)) ?? entryReply();
     const reversal = /^\/api\/stock-entries\/([^/]+)\/reverse$/.exec(url);
     if (reversal) return options.reverse?.(reversal[1], String(init.body)) ?? counterReply();
+    const detail = /^\/api\/stock-entries\/([^/?]+)$/.exec(url);
+    if (detail) return options.detail?.(detail[1]) ?? detailReply();
     throw new Error('Unexpected mocked URL: ' + url);
   });
   return { fetcher, calls, catalogs: () => calls.filter(call => call.url.startsWith('/api/inventory?')),
     posts: () => calls.filter(call => call.url === '/api/stock-entries'),
     histories: () => calls.filter(call => call.url.startsWith('/api/stock-entries?')),
-    reversals: () => calls.filter(call => call.url.endsWith('/reverse')) };
+    reversals: () => calls.filter(call => call.url.endsWith('/reverse')),
+    details: () => calls.filter(call => /^\/api\/stock-entries\/[^/?]+$/.test(call.url)) };
 }
 
 // The counter-entry of `historyRow(6, ..., 2, 18)`: the same lines, negated.
@@ -59,6 +63,15 @@ const counterReply = (overrides: Record<string, unknown> = {}) => new Response(J
   id: 10, location_id: 1, note: '', created_by_account_id: 1, created_at: '2026-05-01T14:25:00Z',
   lines: [{ variant_id: 4, quantity: -3 }, { variant_id: 9, quantity: -15 }], total_units: -18, ...overrides,
 }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+// The per-document detail of the row used by the detail tests: two catalogue lines
+// summing to the listed total.
+const detailLineOf = (variant_id: number, model: string, quantity: number, capacity = '45') =>
+  ({ variant_id, brand: 'TOYO', model, capacity_ah: capacity, polarity: 'L' as const, quantity });
+const detailReply = (overrides: Record<string, unknown> = {}) => new Response(JSON.stringify({
+  id: 6, location_id: 1, note: 'Remito 0002', created_at: '2026-05-01T14:20:00Z',
+  created_by_account_id: 1, reverses_entry_id: null, reversed_by: null, reason: '',
+  lines: [detailLineOf(4, 'NS40ZL', 3, '35'), detailLineOf(9, 'NS60L', 15)], total_units: 18, ...overrides,
+}), { status: 200, headers: { 'Content-Type': 'application/json' } });
 const counterBody = (id: number) => JSON.stringify({
   id, location_id: 1, note: '', created_by_account_id: 1, created_at: '2026-05-01T14:25:00Z',
   lines: [{ variant_id: 4, quantity: -3 }, { variant_id: 9, quantity: -15 }], total_units: -18 });
@@ -453,6 +466,134 @@ describe('stock counter-entry', () => {
     fireEvent.click(confirm(dialog));
     expect(h.reversals()).toHaveLength(1);
     resolve(counterReply());
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+});
+
+describe('stock ingress detail', () => {
+  const historial = () => sections().historial;
+  // Each listed document has its own detail, so a stale reply would be visible.
+  const defaultDetail = (id: string) => id === '9'
+    ? detailReply({ id: 9, note: 'Remito 0003', lines: [detailLineOf(4, '95D31L', 4, '90')], total_units: 4 })
+    : id === '7'
+      ? detailReply({ id: 7, note: '', reverses_entry_id: 6, reason: 'error de carga',
+        lines: [detailLineOf(4, 'NS40ZL', -3, '35'), detailLineOf(9, 'NS60L', -15)], total_units: -18 })
+      : detailReply();
+  const rowsWithDetail = () => [historyRow(9, 'Remito 0003', 1, 4), historyRow(7, '', 2, -18), historyRow(6, 'Remito 0002', 2, 18)];
+  const detailButton = (id: number) => within(historial()).getByRole('button', { name: `Ver detalle del ingreso #${id}` });
+  const openDetail = async (id: number) => {
+    fireEvent.click(detailButton(id));
+    return screen.getByRole('dialog', { name: `Detalle del ingreso #${id}` });
+  };
+
+  it('offers the detail action on every row, including a reversed document', async () => {
+    const h = harness({ history: () => historyReply([historyRow(9, 'Remito 0003', 1, 4),
+      historyRow(7, 'Remito 0002', 2, 18, 10), historyRow(6, '', 3, 6)]) });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#6');
+    expect(within(historial()).getAllByRole('button', { name: /^Ver detalle del ingreso/ })
+      .map(button => button.getAttribute('aria-label')))
+      .toEqual(['Ver detalle del ingreso #9', 'Ver detalle del ingreso #7', 'Ver detalle del ingreso #6']);
+  });
+
+  it('opens the clicked document with exactly the units that entered', async () => {
+    const h = harness({ history: () => historyReply(rowsWithDetail()), detail: defaultDetail });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#6');
+    fireEvent.click(detailButton(6));
+    const dialog = screen.getByRole('dialog', { name: 'Detalle del ingreso #6' });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(within(dialog).getByRole('status')).toHaveTextContent('Consultando el detalle del ingreso');
+    await within(dialog).findByText('TOYO · NS60L');
+    expect(h.details().map(call => call.url)).toEqual(['/api/stock-entries/6']);
+    expect(h.details()[0].init).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+    const lines = within(dialog).getAllByRole('row').slice(1).map(row => within(row).getAllByRole('cell').map(cell => cell.textContent));
+    expect(lines).toEqual([
+      ['TOYO · NS40ZL', '35 Ah', 'L', '3'],
+      ['TOYO · NS60L', '45 Ah', 'L', '15'],
+    ]);
+    expect(within(dialog).getByText('Unidades del documento: 18')).toBeInTheDocument();
+    expect(within(dialog).getByText('Aplicado')).toBeInTheDocument();
+    expect(within(dialog).getByText('Remito 0002')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Volver' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(detailButton(6)).toHaveFocus();
+  });
+
+  it('shows the motive and the original document of a counter-entry with negative units', async () => {
+    const h = harness({ history: () => historyReply(rowsWithDetail()), detail: defaultDetail });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#7');
+    const dialog = await openDetail(7);
+    await within(dialog).findByText(/error de carga/);
+    expect(within(dialog).getByText('Contra-asiento del documento')).toBeInTheDocument();
+    expect(within(dialog).getByText('#6', { selector: 'dd' })).toBeInTheDocument();
+    expect(within(dialog).getByText('Motivo')).toBeInTheDocument();
+    const quantities = within(dialog).getAllByRole('row').slice(1).map(row => within(row).getAllByRole('cell')[3].textContent);
+    expect(quantities).toEqual(['-3', '-15']);
+    expect(within(dialog).getByText('Unidades del documento: -18')).toBeInTheDocument();
+    expect(within(dialog).queryByText('Nota')).not.toBeInTheDocument();
+  });
+
+  it('never shows the previous document after closing and opening another row', async () => {
+    const h = harness({ history: () => historyReply(rowsWithDetail()), detail: defaultDetail });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#6');
+    const first = await openDetail(6);
+    await within(first).findByText('TOYO · NS60L');
+    fireEvent.keyDown(first, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    const second = await openDetail(9);
+    await within(second).findByText('TOYO · 95D31L');
+    expect(within(second).getByText('Unidades del documento: 4')).toBeInTheDocument();
+    expect(within(second).queryByText('TOYO · NS60L')).not.toBeInTheDocument();
+    expect(within(second).queryByText('Unidades del documento: 18')).not.toBeInTheDocument();
+    expect(h.details().map(call => call.url)).toEqual(['/api/stock-entries/6', '/api/stock-entries/9']);
+  });
+
+  it('reports a failed detail read and retries it inside the dialog', async () => {
+    let failing = true;
+    const h = harness({ history: () => historyReply(rowsWithDetail()),
+      detail: id => { if (failing) { failing = false; return errorReply('service_unavailable', 503); } return defaultDetail(id); } });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#6');
+    const dialog = await openDetail(6);
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('No pudimos traer el detalle de este ingreso');
+    expect(within(dialog).queryByRole('table')).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Reintentar detalle' }));
+    await within(dialog).findByText('Unidades del documento: 18');
+    expect(h.details()).toHaveLength(2);
+  });
+
+  it('closes with Escape, restores focus and cycles Tab inside the dialog', async () => {
+    const h = harness({ history: () => historyReply(rowsWithDetail()), detail: defaultDetail });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#6');
+    const dialog = await openDetail(6);
+    await within(dialog).findByText('TOYO · NS60L');
+    expect(dialog).toHaveFocus();
+    fireEvent.keyDown(dialog, { key: 'Tab' });
+    expect(within(dialog).getByRole('button', { name: 'Cerrar detalle del ingreso' })).toHaveFocus();
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
+    expect(within(dialog).getByRole('button', { name: 'Volver' })).toHaveFocus();
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(detailButton(6)).toHaveFocus();
+  });
+
+  it('keeps the counter-entry flow unchanged after a detail dialog closed', async () => {
+    const h = harness({ history: () => historyReply(rowsWithDetail()), detail: defaultDetail });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#6');
+    const dialog = await openDetail(6);
+    await within(dialog).findByText('TOYO · NS60L');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    fireEvent.click(within(historial()).getByRole('button', { name: 'Anular ingreso #6' }));
+    const reversal = screen.getByRole('dialog', { name: 'Registrar contra-asiento' });
+    fireEvent.change(within(reversal).getByLabelText('Motivo del contra-asiento'), { target: { value: 'error de carga' } });
+    fireEvent.click(within(reversal).getByRole('button', { name: 'Confirmar contra-asiento' }));
+    await waitFor(() => expect(h.reversals()).toHaveLength(1));
+    expect(h.reversals()[0].url).toBe('/api/stock-entries/6/reverse');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });
 });

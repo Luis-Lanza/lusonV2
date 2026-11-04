@@ -2,15 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Item } from './model';
 import { validSearch } from './model';
 import TransferDate from './TransferDate';
-import { createStockEntryAPI, StockEntryAPIError, StockEntryReversalAPIError } from './stockEntryAPI';
+import { createStockEntryAPI, StockEntryAPIError, StockEntryDetailAPIError, StockEntryReversalAPIError } from './stockEntryAPI';
 import {
   canonicalStockEntryInput, canonicalStockEntryReversalInput, canonicalStockEntryReversalReason,
-  newStockEntryOperationKey, parseStockCatalog, stockCatalogPath, stockEntryErrorMessages,
+  newStockEntryOperationKey, parseStockCatalog, stockCatalogPath, stockEntryDetailErrorMessages, stockEntryErrorMessages,
   stockEntryFailureIsDefinite, stockEntryHistoryDefaultPageSize, stockEntryHistoryMaxPage, stockEntryHistoryPageSizes,
   stockEntryHistoryUnavailable, stockEntryMaxNote, stockEntryMaxQuantity, stockEntryMaxReason,
   stockEntryReversalErrorMessages, stockEntryReversalFailureIsDefinite, stockEntryReversible, validStockQuantity,
-  type StockEntryErrorCode, type StockEntryHistoryPage, type StockEntryHistoryRow, type StockEntryInput,
-  type StockEntryReversalErrorCode, type StockEntryReversalInput,
+  type StockEntryDetail, type StockEntryDetailErrorCode, type StockEntryErrorCode, type StockEntryHistoryPage,
+  type StockEntryHistoryRow, type StockEntryInput, type StockEntryReversalErrorCode, type StockEntryReversalInput,
 } from './stockEntryModel';
 import './stock-entry.css';
 
@@ -23,6 +23,14 @@ interface CatalogState { readonly phase: 'loading' | 'ready' | 'error'; readonly
 interface HistoryState {
   readonly phase: 'loading' | 'ready' | 'error';
   readonly page: StockEntryHistoryPage | null;
+  readonly problem: string;
+}
+// The detail is its own read, tagged with the document it asked about so a reply
+// for one row can never be rendered for another.
+interface DetailState {
+  readonly id: number;
+  readonly phase: 'loading' | 'ready' | 'error';
+  readonly document: StockEntryDetail | null;
   readonly problem: string;
 }
 
@@ -65,6 +73,12 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
   // One key per (target, canonical reason): an uncertain retry replays exactly,
   // and a different motive becomes a different counter-entry intent.
   const reversalAttempt = useRef<{ target: number; reason: string; key: string } | null>(null);
+  // The detail dialog: the row that opened it, the focusable action to return to
+  // and its own read, which is discarded the moment another row is opened.
+  const [detail, setDetail] = useState<{ row: StockEntryHistoryRow; trigger: HTMLButtonElement } | null>(null);
+  const [detailLoad, setDetailLoad] = useState<DetailState>({ id: 0, phase: 'loading', document: null, problem: '' });
+  const [detailRevision, setDetailRevision] = useState(0);
+  const detailDialog = useRef<HTMLElement>(null);
   useEffect(() => {
     const flight = lifetime.current;
     mounted.current = true;
@@ -109,6 +123,28 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
     })();
     return () => controller.abort();
   }, [api, historyPage, historySize, historyRevision]);
+
+  // One document detail per open dialog: the read is aborted when the dialog closes
+  // or another row is opened, and only a reply for the requested id is stored.
+  useEffect(() => {
+    if (!detail) return;
+    const id = detail.row.id;
+    const controller = new AbortController();
+    const alive = () => mounted.current && !controller.signal.aborted && !lifetime.current.signal.aborted;
+    setDetailLoad({ id, phase: 'loading', document: null, problem: '' });
+    void (async () => {
+      try {
+        const document = await api.detail(id, controller.signal);
+        if (!alive() || document.id !== id) return;
+        setDetailLoad({ id, phase: 'ready', document, problem: '' });
+      } catch (failure) {
+        if (!alive()) return;
+        const code: StockEntryDetailErrorCode = failure instanceof StockEntryDetailAPIError ? failure.code : 'invalid_response';
+        setDetailLoad({ id, phase: 'error', document: null, problem: stockEntryDetailErrorMessages[code] });
+      }
+    })();
+    return () => controller.abort();
+  }, [api, detail, detailRevision]);
 
   function forgetAttempt() { operationKey.current = null; }
   function add(row: Item) {
@@ -173,11 +209,23 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
   }
 
   // ---- counter-entry ----------------------------------------------------------
-  const focusableInDialog = () => Array.from(reversalDialog.current?.querySelectorAll<HTMLElement>(
+  const focusableWithin = (element: HTMLElement | null) => Array.from(element?.querySelectorAll<HTMLElement>(
     'button:not(:disabled), textarea:not(:disabled), input:not(:disabled), select:not(:disabled), a[href]') ?? []);
+  // Focus never escapes a dialog: Tab and Shift+Tab cycle its own controls.
+  function trapFocus(event: React.KeyboardEvent, element: HTMLElement | null) {
+    if (event.key !== 'Tab') return;
+    const focusable = focusableWithin(element);
+    if (!focusable.length) { event.preventDefault(); return; }
+    const first = focusable[0]; const last = focusable[focusable.length - 1];
+    if (event.shiftKey && (document.activeElement === first || document.activeElement === element)) {
+      event.preventDefault(); last.focus();
+    } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === element)) {
+      event.preventDefault(); first.focus();
+    }
+  }
 
   function openReversal(row: StockEntryHistoryRow, trigger: HTMLButtonElement) {
-    if (reversal || reversalBusy || !stockEntryReversible(row)) return;
+    if (reversal || detail || reversalBusy || !stockEntryReversible(row)) return;
     reversalAttempt.current = null;
     setReversal({ row, trigger });
     setReversalReason('');
@@ -253,8 +301,30 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
     }
   }
 
+  // ---- document detail --------------------------------------------------------
+  function openDetail(row: StockEntryHistoryRow, trigger: HTMLButtonElement) {
+    if (detail || reversal || reversalBusy) return;
+    // The previous document is dropped before the new read starts, so no render can
+    // pair a new row with the detail of the one before it.
+    setDetailLoad({ id: row.id, phase: 'loading', document: null, problem: '' });
+    setDetail({ row, trigger });
+  }
+  function closeDetail() {
+    const trigger = detail?.trigger;
+    setDetail(null);
+    setDetailLoad({ id: 0, phase: 'loading', document: null, problem: '' });
+    if (trigger?.isConnected) trigger.focus();
+  }
+  // Focus moves into the dialog as soon as it exists, so keyboard and screen
+  // reader users are never left behind on the history table.
+  useEffect(() => {
+    if (detail) detailDialog.current?.focus();
+  }, [detail]);
+
   const catalogCount = `${catalog.items.length} ${catalog.items.length === 1 ? 'variante' : 'variantes'}`;
   const historyRows = history.phase === 'ready' && history.page ? history.page.entries : [];
+  // A detail is only ever rendered for the document that asked for it.
+  const detailView = detail && detailLoad.id === detail.row.id ? detailLoad : null;
   const historyTotal = history.page ? history.page.total_entries : 0;
   const historyCount = history.phase === 'ready'
     ? `${historyTotal} ${historyTotal === 1 ? 'ingreso' : 'ingresos'}` : 'Almacén';
@@ -350,10 +420,12 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
             <td data-label="Estado">{row.reversed_by === null
               ? <span className="stock-tag">Aplicado</span>
               : <span className="stock-tag reversed">Anulado por contra-asiento</span>}</td>
-            <td data-label="Acción">{stockEntryReversible(row)
-              ? <button type="button" className="stock-reverse" aria-label={`Anular ingreso #${row.id}`} disabled={reversalBusy}
-                onClick={event => openReversal(row, event.currentTarget)}>Anular</button>
-              : '—'}</td>
+            <td data-label="Acción"><div className="stock-row-actions">
+              <button type="button" className="stock-detail" aria-label={`Ver detalle del ingreso #${row.id}`}
+                disabled={reversalBusy} onClick={event => openDetail(row, event.currentTarget)}>Ver detalle</button>
+              {stockEntryReversible(row) && <button type="button" className="stock-reverse" aria-label={`Anular ingreso #${row.id}`} disabled={reversalBusy}
+                onClick={event => openReversal(row, event.currentTarget)}>Anular</button>}
+            </div></td>
           </tr>)}</tbody>
         </table>
       </div>}
@@ -379,16 +451,7 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
       aria-labelledby="stock-reversal-title" aria-describedby="stock-reversal-notice" aria-busy={reversalBusy}
       onKeyDown={event => {
         if (event.key === 'Escape') { event.preventDefault(); closeReversal(); return; }
-        if (event.key !== 'Tab') return;
-        // Focus never escapes the dialog: Tab and Shift+Tab cycle its own controls.
-        const focusable = focusableInDialog();
-        if (!focusable.length) { event.preventDefault(); return; }
-        const first = focusable[0]; const last = focusable[focusable.length - 1];
-        if (event.shiftKey && (document.activeElement === first || document.activeElement === reversalDialog.current)) {
-          event.preventDefault(); last.focus();
-        } else if (!event.shiftKey && (document.activeElement === last || document.activeElement === reversalDialog.current)) {
-          event.preventDefault(); first.focus();
-        }
+        trapFocus(event, reversalDialog.current);
       }}>
       <header><div><h2 id="stock-reversal-title">Registrar contra-asiento</h2>
         <p>Documento #{reversal.row.id} · <TransferDate value={reversal.row.created_at} /> · {reversal.row.note || 'sin nota'}</p></div>
@@ -412,6 +475,53 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
       </div>
       <footer><button type="button" disabled={reversalBusy} onClick={closeReversal}>Cancelar</button>
         <button type="button" className="primary" disabled={reversalBusy} onClick={() => void confirmReversal()}>Confirmar contra-asiento</button></footer>
+    </section></div>}
+    {detail && <div className="transfer-decision-backdrop"><section ref={detailDialog} tabIndex={-1}
+      className="transfer-decision-modal stock-detail-modal" role="dialog" aria-modal="true"
+      aria-labelledby="stock-detail-title" aria-busy={detailView?.phase !== 'ready'}
+      onKeyDown={event => {
+        if (event.key === 'Escape') { event.preventDefault(); closeDetail(); return; }
+        trapFocus(event, detailDialog.current);
+      }}>
+      <header><div><h2 id="stock-detail-title">Detalle del ingreso #{detail.row.id}</h2>
+        <p>Documento #{detail.row.id} · <TransferDate value={detail.row.created_at} /> · {detail.row.note || 'sin nota'}</p></div>
+        <button type="button" aria-label="Cerrar detalle del ingreso" onClick={closeDetail}>×</button></header>
+      <div className="stock-detail-body">
+        {(!detailView || detailView.phase === 'loading') && <p role="status" className="stock-message">Consultando el detalle del ingreso…</p>}
+        {detailView?.phase === 'error' && <p role="alert" className="stock-message">{detailView.problem}
+          <button type="button" onClick={() => setDetailRevision(value => value + 1)}>Reintentar detalle</button></p>}
+        {detailView?.phase === 'ready' && detailView.document && <>
+          <dl className="stock-detail-summary">
+            <div><dt>Documento</dt><dd>#{detailView.document.id}</dd></div>
+            <div><dt>Fecha</dt><dd><TransferDate value={detailView.document.created_at} /></dd></div>
+            <div><dt>Estado</dt><dd>{detailView.document.reverses_entry_id !== null
+              ? 'Contra-asiento'
+              : detailView.document.reversed_by !== null
+                ? `Anulado por contra-asiento #${detailView.document.reversed_by}`
+                : 'Aplicado'}</dd></div>
+            {detailView.document.note !== '' && <div><dt>Nota</dt><dd>{detailView.document.note}</dd></div>}
+            {detailView.document.reverses_entry_id !== null &&
+              <div><dt>Contra-asiento del documento</dt><dd>#{detailView.document.reverses_entry_id}</dd></div>}
+            {detailView.document.reverses_entry_id !== null &&
+              <div><dt>Motivo</dt><dd>{detailView.document.reason}</dd></div>}
+          </dl>
+          <div className="stock-table-wrap">
+            <table className="stock-table stock-detail-table">
+              <caption className="sr-only">Unidades que entraron con este documento</caption>
+              <thead><tr><th scope="col">Producto</th><th scope="col">Capacidad</th><th scope="col">Polaridad</th><th scope="col">Cantidad</th></tr></thead>
+              <tbody>{detailView.document.lines.map(line => <tr key={line.variant_id} data-variant-id={line.variant_id}>
+                <td data-label="Producto"><strong>{productLabel(line)}</strong></td>
+                <td data-label="Capacidad">{line.capacity_ah} Ah</td>
+                <td data-label="Polaridad"><span className="polarity">{line.polarity}</span></td>
+                <td data-label="Cantidad">{line.quantity}</td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+          <p className="stock-detail-total">{`Unidades del documento: ${detailView.document.total_units}`}</p>
+          <p className="stock-hint">Un documento confirmado no se edita ni se borra: estas son las líneas que se aplicaron al stock del Almacén.</p>
+        </>}
+      </div>
+      <footer><button type="button" onClick={closeDetail}>Volver</button></footer>
     </section></div>}
   </section>;
 }

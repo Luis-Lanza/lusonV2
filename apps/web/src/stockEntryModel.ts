@@ -27,6 +27,27 @@ export interface StockEntryHistoryRow {
   readonly id: number; readonly note: string; readonly created_at: string;
   readonly lines: number; readonly total_units: number; readonly reversed_by: number | null;
 }
+/**
+ * One persisted line of a document detail: the catalogue identity of the variant
+ * plus the signed quantity of that document. Capacity keeps the inventory read's
+ * canonical decimal text, never a float.
+ */
+export interface StockEntryDetailLine {
+  readonly variant_id: number; readonly brand: string; readonly model: string;
+  readonly capacity_ah: string; readonly polarity: 'L' | 'R'; readonly quantity: number;
+}
+/**
+ * The full persisted document behind one history row: its header, the exact units
+ * that entered and the two directions of the reversal cross-reference.
+ */
+export interface StockEntryDetail {
+  readonly id: number; readonly location_id: number; readonly note: string;
+  readonly created_at: string; readonly created_by_account_id: number;
+  readonly reverses_entry_id: number | null; readonly reversed_by: number | null;
+  readonly reason: string; readonly lines: readonly StockEntryDetailLine[]; readonly total_units: number;
+}
+export type StockEntryDetailErrorCode = 'invalid_request' | 'unauthenticated' | 'forbidden' | 'not_found'
+  | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
 /** One newest-first page of persisted ingress documents plus the exact total. */
 export interface StockEntryHistoryPage {
   readonly page: number; readonly page_size: number; readonly total_entries: number;
@@ -65,6 +86,15 @@ export const stockEntryReversalAdmittedErrors: ReadonlyMap<number, readonly Stoc
   [503, ['service_unavailable']],
 ]);
 
+/** The document-detail route adds the identity and missing-document failures of its own contract. */
+export const stockEntryDetailAdmittedErrors: ReadonlyMap<number, readonly StockEntryDetailErrorCode[]> = new Map([
+  [400, ['invalid_request']],
+  [401, ['unauthenticated']],
+  [403, ['forbidden']],
+  [404, ['not_found']],
+  [503, ['service_unavailable']],
+]);
+
 /** Spanish user-facing message for every code, including transport failures. */
 export const stockEntryErrorMessages: Record<StockEntryErrorCode, string> = {
   invalid_request: 'El documento no es válido. Revisá las líneas y la nota, y volvé a intentar.',
@@ -92,9 +122,22 @@ export const stockEntryReversalErrorMessages: Record<StockEntryReversalErrorCode
   aborted: 'La confirmación se interrumpió. Conservamos el motivo para reintentar el mismo contra-asiento.',
 };
 
+/** Spanish message for every document-detail failure, including transport ones. */
+export const stockEntryDetailErrorMessages: Record<StockEntryDetailErrorCode, string> = {
+  invalid_request: 'El documento pedido no es válido. Cerrá el detalle y volvé a intentar desde el historial.',
+  unauthenticated: 'La sesión no está activa. Volvé a iniciar sesión para ver el detalle del ingreso.',
+  forbidden: 'No tenés permiso para ver este ingreso en este almacén.',
+  not_found: 'El documento ya no existe en el Almacén. Actualizá el historial: no hay detalle para mostrar.',
+  service_unavailable: 'El servicio no está disponible. No pudimos traer el detalle de este ingreso: reintentá el detalle.',
+  invalid_response: 'La respuesta del servidor no es válida. No pudimos traer el detalle de este ingreso: reintentá el detalle.',
+  network: 'No se pudo conectar con el servidor. Revisá la conexión y reintentá el detalle.',
+  aborted: 'Se interrumpió la lectura del detalle. Reintentá el detalle del ingreso.',
+};
+
 function invalidResponse(): never { throw new Error('Respuesta inválida del servidor.'); }
 function invalidInput(): never { throw new Error('Documento de ingreso inválido.'); }
 function invalidReversal(): never { throw new Error('Contra-asiento inválido.'); }
+function invalidDetail(): never { throw new Error('Detalle de ingreso inválido.'); }
 
 function decode(raw: string): unknown {
   try {
@@ -364,4 +407,83 @@ export function matchesStockEntryReversal(row: StockEntryHistoryRow, record: Sto
 export function stockEntryReversalFailureIsDefinite(code: StockEntryReversalErrorCode): boolean {
   return code === 'invalid_request' || code === 'unauthenticated' || code === 'forbidden' || code === 'not_found'
     || code === 'decision_conflict' || code === 'retry_conflict' || code === 'insufficient_stock';
+}
+
+/**
+ * Capacity is the inventory contract's canonical decimal text: at most six
+ * integral digits, at most six fractional ones, positive, and already normalized,
+ * because the server never writes a trailing zero.
+ */
+function stockCapacity(value: unknown): string {
+  if (typeof value !== 'string' || !/^(0|[1-9]\d{0,5})(\.\d{1,6})?$/.test(value) || !/[1-9]/.test(value)) return invalidResponse();
+  const normalized = value.includes('.') ? value.replace(/0+$/, '').replace(/\.$/, '') : value;
+  // The server always writes the normalized decimal, so a padded one is a shape
+  // this contract never produces.
+  return normalized === value ? value : invalidResponse();
+}
+
+/** A persisted motive is canonical: trimmed, non-empty, bounded UTF-16. */
+function stockDetailReason(value: unknown): string {
+  if (typeof value !== 'string' || !value.isWellFormed() || value.includes('\0')) return invalidResponse();
+  if (Array.from(value).length > stockEntryMaxReason) return invalidResponse();
+  const trimmed = value.trim();
+  if (trimmed === '' || trimmed !== value) return invalidResponse();
+  return value;
+}
+
+/** The frozen detail path; only a canonical positive document id is admitted. */
+export function stockEntryDetailPath(id: number): string {
+  if (!Number.isSafeInteger(id) || id < 1) return invalidDetail();
+  return `/api/stock-entries/${id}`;
+}
+
+/**
+ * Parses one document detail strictly: exact keys, lossless numbers, the catalogue
+ * identity of every line and exactly the units that entered. An ingress document
+ * only adds units, a counter-entry always negates its original and states why, and
+ * neither cross-reference can point at itself or forward.
+ */
+export function parseStockEntryDetail(raw: string): StockEntryDetail {
+  const record = fields(decode(raw), ['id', 'location_id', 'note', 'created_at', 'created_by_account_id',
+    'reverses_entry_id', 'reversed_by', 'reason', 'lines', 'total_units']);
+  const id = integer(record.id, 1, Number.MAX_SAFE_INTEGER);
+  if (integer(record.location_id, 1, 32767) !== stockCatalogLocationID) return invalidResponse();
+  const created_by_account_id = integer(record.created_by_account_id, 1, Number.MAX_SAFE_INTEGER);
+  const created_at = timestamp(record.created_at);
+  // A counter-entry points at an earlier document of this warehouse; an ingress
+  // document points at nothing.
+  const reverses_entry_id = record.reverses_entry_id === null
+    ? null : integer(record.reverses_entry_id, 1, id - 1);
+  // Only a later document can have reversed this one.
+  const reversed_by = record.reversed_by === null
+    ? null : integer(record.reversed_by, id + 1, Number.MAX_SAFE_INTEGER);
+  const counter = reverses_entry_id !== null;
+  const reason = counter ? stockDetailReason(record.reason) : record.reason === '' ? '' : invalidResponse();
+  if (!Array.isArray(record.lines) || record.lines.length < 1 || record.lines.length > stockEntryMaxLines) return invalidResponse();
+  let previous = 0;
+  const lines = record.lines.map(value => {
+    const line = fields(value, ['variant_id', 'brand', 'model', 'capacity_ah', 'polarity', 'quantity']);
+    const variant_id = integer(line.variant_id, 1, stockEntryMaxVariantID);
+    if (variant_id <= previous) return invalidResponse();
+    previous = variant_id;
+    if (line.polarity !== 'L' && line.polarity !== 'R') return invalidResponse();
+    const quantity = counter
+      ? signedInteger(line.quantity, -stockEntryMaxQuantity, -1)
+      : integer(line.quantity, 1, stockEntryMaxQuantity);
+    return Object.freeze({ variant_id, brand: text(line.brand), model: text(line.model),
+      capacity_ah: stockCapacity(line.capacity_ah), polarity: line.polarity, quantity });
+  });
+  const total_units = counter
+    ? signedInteger(record.total_units, -stockEntryMaxDocumentUnits, -1)
+    : integer(record.total_units, 1, stockEntryMaxDocumentUnits);
+  // The total is the exact signed sum of the listed lines, never a rounded or
+  // independently reported figure.
+  if (lines.reduce((sum, line) => sum + line.quantity, 0) !== total_units) return invalidResponse();
+  return Object.freeze({ id, location_id: stockCatalogLocationID, note: note(record.note), created_at,
+    created_by_account_id, reverses_entry_id, reversed_by, reason,
+    lines: Object.freeze(lines), total_units });
+}
+
+export function parseStockEntryDetailError(raw: string, status: number): StockEntryDetailErrorCode {
+  return admittedError(raw, status, stockEntryDetailAdmittedErrors);
 }
