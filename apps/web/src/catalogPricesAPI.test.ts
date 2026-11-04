@@ -3,41 +3,42 @@ import { CatalogPricesAPIError, createCatalogPricesAPI } from './catalogPricesAP
 import type { CatalogPriceInput, CatalogPricesQuery } from './catalogPricesModel';
 
 const csrf = 'c'.repeat(43);
-const query: CatalogPricesQuery = { search: 'NS40ZL', brand: 'CAR', capacity: '35', polarity: 'L', page: 1, page_size: 10 };
+const query: CatalogPricesQuery = { search: 'NS40ZL', brand: 'CAR', capacity: '35', page: 1, page_size: 10 };
 const draft = (): CatalogPriceInput => ({
-  variant_id: 1, min_price: '85000', suggested_price: '96000', branch_ids: [2, 3],
+  catalog_entry_id: 1, min_price: '85000', suggested_price: '96000', branch_ids: [2, 3],
 });
 const json = (body: string, status = 200) => new Response(body, { status, headers: { 'Content-Type': 'application/json' } });
 const mockFetch = () => vi.fn<typeof fetch>();
 
 const pageBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   branches: [{ id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }],
-  variants: [{ variant_id: 1, catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L',
-    cells: ['B5', 'C5', 'D5'], warranty_months: 6, warranty_updated_at: '2026-11-04T10:00:00Z',
+  batteries: [{ catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarities: ['L', 'R'],
+    cells: ['B5', 'C5', 'D5'],
     prices: [{ branch_location_id: 2, min_price: '85000.00', suggested_price: '96000.00',
       updated_at: '2026-11-04T10:00:00Z', updated_by_account_id: 1, updated_by_display_name: 'Almacén' }] }],
-  page: 1, page_size: 10, total_variants: 190, ...overrides,
+  page: 1, page_size: 10, total_batteries: 95, ...overrides,
 });
 const resultBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
-  variant_id: 1, written: 2, branch_ids: [2, 3], min_price: '85000.00', suggested_price: '96000.00',
-  warranty_months: 6, ...overrides,
+  catalog_entry_id: 1, written: 2, branch_ids: [2, 3], min_price: '85000.00', suggested_price: '96000.00',
+  ...overrides,
 });
 
 describe('catalog prices read transport', () => {
   it('reads one matrix page with the exact query and the session cookie', async () => {
     const fetch = mockFetch().mockResolvedValue(json(pageBody()));
     const page = await createCatalogPricesAPI(fetch).list(query);
-    expect(page.total_variants).toBe(190);
-    expect(page.variants[0].prices[0].min_price).toBe('85000.00');
+    expect(page.total_batteries).toBe(95);
+    expect(page.batteries[0].polarities).toEqual(['L', 'R']);
+    expect(page.batteries[0].prices[0].min_price).toBe('85000.00');
     expect(fetch.mock.calls[0]).toEqual([
-      '/api/catalog/prices?search=NS40ZL&brand=CAR&capacity=35&polarity=L&page=1&page_size=10',
+      '/api/catalog/prices?search=NS40ZL&brand=CAR&capacity=35&page=1&page_size=10',
       { method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: undefined },
     ]);
   });
 
   it('leaves out the filters the operator left blank and always sends page and size', async () => {
     const fetch = mockFetch().mockResolvedValue(json(pageBody()));
-    await createCatalogPricesAPI(fetch).list({ ...query, search: '', brand: '', capacity: '', polarity: '' });
+    await createCatalogPricesAPI(fetch).list({ ...query, search: '', brand: '', capacity: '' });
     expect(fetch.mock.calls[0][0]).toBe('/api/catalog/prices?page=1&page_size=10');
   });
 
@@ -60,6 +61,7 @@ describe('catalog prices read transport', () => {
     ['a text/html body', new Response(pageBody(), { status: 200, headers: { 'Content-Type': 'text/html' } })],
     ['a page that reports another size', json(pageBody({ page_size: 25 }))],
     ['an uninterpretable error code', json('{"error":"unauthenticated"}', 400)],
+    ['the variant-shaped page of the previous contract', json(pageBody({ batteries: undefined, variants: [] }))],
   ])('refuses to interpret %s', async (_, reply) => {
     const fetch = mockFetch().mockResolvedValue(reply);
     await expect(createCatalogPricesAPI(fetch).list(query)).rejects.toMatchObject({ code: 'invalid_response' });
@@ -89,28 +91,20 @@ describe('catalog prices write transport', () => {
   it('puts the exact block payload to the frozen path with the session CSRF header', async () => {
     const fetch = mockFetch().mockResolvedValue(json(resultBody()));
     const result = await createCatalogPricesAPI(fetch).apply(draft(), csrf);
-    expect(result).toMatchObject({ variant_id: 1, written: 2, branch_ids: [2, 3], min_price: '85000.00' });
-    expect(result).not.toHaveProperty('warranty_months');
+    expect(result).toMatchObject({ catalog_entry_id: 1, written: 2, branch_ids: [2, 3], min_price: '85000.00' });
+    expect(Object.keys(result).sort())
+      .toEqual(['branch_ids', 'catalog_entry_id', 'min_price', 'suggested_price', 'written']);
     expect(fetch.mock.calls[0]).toEqual(['/api/catalog/prices', {
       method: 'PUT', credentials: 'same-origin', cache: 'no-store', signal: undefined,
       headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
-      body: '{"variant_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[2,3]}',
+      body: '{"catalog_entry_id":1,"min_price":"85000","suggested_price":"96000","branch_ids":[2,3]}',
     }]);
-  });
-
-  it('admits a reply that still reports a product term without exposing it', async () => {
-    const fetch = mockFetch().mockResolvedValue(json(resultBody({ warranty_months: 12 })));
-    const result = await createCatalogPricesAPI(fetch).apply(draft(), csrf);
-    expect(result).not.toHaveProperty('warranty_months');
-    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({
-      variant_id: 1, min_price: '85000', suggested_price: '96000', branch_ids: [2, 3],
-    });
   });
 
   it('captures the exact payload before awaiting and sends the abort signal', async () => {
     let resolve!: (value: Response) => void;
     const fetch = mockFetch().mockReturnValue(new Promise<Response>(yes => { resolve = yes; }));
-    const input = draft() as { variant_id: number; min_price: string; suggested_price: string;
+    const input = draft() as { catalog_entry_id: number; min_price: string; suggested_price: string;
       branch_ids: number[] };
     const controller = new AbortController();
     const job = createCatalogPricesAPI(fetch).apply(input, csrf, controller.signal);
@@ -120,7 +114,7 @@ describe('catalog prices write transport', () => {
     await job;
     expect(fetch.mock.calls[0][1]?.signal).toBe(controller.signal);
     expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({
-      variant_id: 1, min_price: '85000', suggested_price: '96000', branch_ids: [2, 3],
+      catalog_entry_id: 1, min_price: '85000', suggested_price: '96000', branch_ids: [2, 3],
     });
   });
 
@@ -138,7 +132,9 @@ describe('catalog prices write transport', () => {
 
   it.each([
     ['a text/html body', new Response(resultBody(), { status: 200, headers: { 'Content-Type': 'text/html' } })],
-    ['another variant', json(resultBody({ variant_id: 2 }))],
+    ['another battery', json(resultBody({ catalog_entry_id: 2 }))],
+    ['the variant-shaped echo of the previous contract', json(resultBody({ variant_id: 1 }))],
+    ['a warranty term the contract no longer carries', json(resultBody({ warranty_months: 6 }))],
     ['another branch set', json(resultBody({ branch_ids: [2, 4] }))],
     ['another written count', json(resultBody({ written: 1 }))],
     ['another minimum', json(resultBody({ min_price: '86000.00' }))],
@@ -154,6 +150,7 @@ describe('catalog prices write transport', () => {
     ['a suggested price below the minimum', { ...draft(), suggested_price: '80000' }, csrf],
     ['no branch', { ...draft(), branch_ids: [] }, csrf],
     ['a minimum with three decimals', { ...draft(), min_price: '85000.123' }, csrf],
+    ['an invalid battery id', { ...draft(), catalog_entry_id: 0 }, csrf],
     ['a missing CSRF token', draft(), ''],
     ['a CSRF token with forbidden characters', draft(), 'not a token'],
   ])('fails closed on %s without any network call', async (_, input, token) => {

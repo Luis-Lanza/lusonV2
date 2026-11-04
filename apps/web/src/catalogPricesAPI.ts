@@ -51,8 +51,8 @@ export function createCatalogPricesAPI(fetch: typeof globalThis.fetch = globalTh
     },
 
     /**
-     * Writes one block. The payload carries prices and branches only: the reply is
-     * admitted when it repeats exactly that write.
+     * Writes one block. The payload carries the battery, the prices and the branches
+     * only: the reply is admitted when it repeats exactly that write.
      */
     async apply(input: CatalogPriceInput, csrf: string,
       signal?: AbortSignal): Promise<CatalogPriceResult> {

@@ -14,7 +14,8 @@
 .catalog-tag { display: inline-block; flex-shrink: 0; padding: 4px 8px; background: var(--page);
   border: 1px solid var(--border); border-radius: 3px; color: var(--muted); font-size: 11px; font-weight: 600; }
 .catalog-hint { color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-.catalog-filters { display: grid; grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, .8fr)); gap: 12px; }
+/* Search, brand and capacity: the polarity no longer tells prices apart. */
+.catalog-filters { display: grid; grid-template-columns: minmax(0, 1.4fr) repeat(2, minmax(0, .8fr)); gap: 12px; }
 .catalog-filters label { display: grid; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }
 .catalog-filters input, .catalog-filters select { width: 100%; min-height: 44px; padding: 10px 12px;
   border-color: var(--muted); color: #242124; font-size: 13px; }
@@ -42,6 +43,8 @@
 .catalog-detail-inner > header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .catalog-detail-inner h3 { margin: 0; font-size: 16px; }
 .catalog-detail-inner > header p { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+/* The single price of the battery over both of its polarities. */
+.catalog-detail-inner > .catalog-shared { color: var(--wine); font-size: 13px; font-weight: 600; line-height: 1.6; }
 .catalog-form { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 24px; align-items: start; }
 .catalog-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .catalog-pair label { display: grid; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }

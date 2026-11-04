@@ -12,21 +12,21 @@ const priceOf = (branch: number, min: string, suggested: string, updatedAt = '20
   branch_location_id: branch, min_price: min, suggested_price: suggested, updated_at: updatedAt,
   updated_by_account_id: 1, updated_by_display_name: 'Almacén',
 });
-const variantOf = (overrides: Record<string, unknown> = {}) => ({
-  variant_id: 1, catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L',
-  cells: ['B5', 'C5', 'D5'], warranty_months: 6, warranty_updated_at: '2026-11-04T10:00:00Z',
+// One row per battery: both polarities share the same price.
+const batteryOf = (overrides: Record<string, unknown> = {}) => ({
+  catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarities: ['L', 'R'],
+  cells: ['B5', 'C5', 'D5'],
   prices: [priceOf(2, '85000.00', '96000.00'), priceOf(3, '88000.00', '99000.00', '2026-11-02T10:00:00Z')], ...overrides,
 });
-const untimed = {
-  variant_id: 3, catalog_entry_id: 3, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'R',
-  cells: ['F5'], warranty_months: null, warranty_updated_at: null, prices: [],
+const unpriced = {
+  catalog_entry_id: 3, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarities: ['R'], cells: ['F5'], prices: [],
 };
-const pageBody = (variants: readonly unknown[] = [variantOf(), untimed]) => JSON.stringify({
-  branches, variants, page: 1, page_size: 10, total_variants: 190,
+const pageBody = (batteries: readonly unknown[] = [batteryOf(), unpriced]) => JSON.stringify({
+  branches, batteries, page: 1, page_size: 10, total_batteries: 95,
 });
 const resultBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
-  variant_id: 1, written: 2, branch_ids: [2, 3], min_price: '85000.00', suggested_price: '96000.00',
-  warranty_months: 6, ...overrides,
+  catalog_entry_id: 1, written: 2, branch_ids: [2, 3], min_price: '85000.00', suggested_price: '96000.00',
+  ...overrides,
 });
 
 function harness(options: {
@@ -59,11 +59,11 @@ async function ready(h: ReturnType<typeof harness>) {
 }
 
 describe('catalogue matrix', () => {
-  it('lists one row per variant with its product data, its branch chips and its action', async () => {
+  it('lists one row per battery with both polarities, its branch chips and its action', async () => {
     const h = harness();
     await ready(h);
     const car = pickRow('CAR NS40ZL');
-    expect(within(car).getByText('35 Ah · Polaridad L')).toBeInTheDocument();
+    expect(within(car).getByText('35 Ah · Polaridades L y R')).toBeInTheDocument();
     expect(within(car).getByText('A')).toBeInTheDocument();
     expect(within(car).getByText('B')).toBeInTheDocument();
     expect(within(car).getByText('C sin precio')).toBeInTheDocument();
@@ -71,11 +71,23 @@ describe('catalogue matrix', () => {
     expect(car).toHaveAttribute('aria-expanded', 'false');
     expect(car).toHaveAttribute('tabindex', '0');
     expect(within(car).getByText('Almacén')).toBeInTheDocument();
+    // A battery with a single polarity says so, and still gets a single row.
     expect(within(pickRow('TOYO NS60L')).getByText('45 Ah · Polaridad R')).toBeInTheDocument();
-    // The payload still carries a product term; the catalogue never shows it.
+    expect(screen.getAllByRole('row').filter(row => row.hasAttribute('aria-controls'))).toHaveLength(2);
     expect(screen.queryByText(/garantía/i)).not.toBeInTheDocument();
+    expect(screen.getByText('95 baterías · desplegá una batería para cargar o cambiar sus precios')).toBeInTheDocument();
     expect(h.reads()[0].url).toBe('/api/catalog/prices?page=1&page_size=10');
     expect(h.reads()[0].init).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+  });
+
+  it('offers search, brand and capacity only: the polarity no longer distinguishes a price', async () => {
+    const h = harness();
+    await ready(h);
+    expect(screen.getByLabelText('Buscar marca o modelo')).toBeInTheDocument();
+    expect(screen.getByLabelText('Marca')).toBeInTheDocument();
+    expect(screen.getByLabelText('Capacidad')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Polaridad')).not.toBeInTheDocument();
+    expect(h.reads().every(call => !call.url.includes('polarity'))).toBe(true);
   });
 
   it('reports an unavailable matrix and reads it again on demand', async () => {
@@ -94,8 +106,11 @@ describe('catalogue matrix', () => {
     await ready(h);
     fireEvent.change(screen.getByLabelText('Marca'), { target: { value: 'CAR' } });
     await waitFor(() => expect(h.reads().at(-1)?.url).toBe('/api/catalog/prices?brand=CAR&page=1&page_size=10'));
-    fireEvent.change(screen.getByLabelText('Polaridad'), { target: { value: 'R' } });
-    await waitFor(() => expect(h.reads().at(-1)?.url).toBe('/api/catalog/prices?brand=CAR&polarity=R&page=1&page_size=10'));
+    fireEvent.change(screen.getByLabelText('Capacidad'), { target: { value: '45' } });
+    await waitFor(() => expect(h.reads().at(-1)?.url).toBe('/api/catalog/prices?brand=CAR&capacity=45&page=1&page_size=10'));
+    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'NS40' } });
+    await waitFor(() => expect(h.reads().at(-1)?.url)
+      .toBe('/api/catalog/prices?search=NS40&brand=CAR&capacity=45&page=1&page_size=10'));
   });
 });
 
@@ -110,7 +125,9 @@ describe('catalogue unfolding', () => {
     expect(detail).not.toHaveAttribute('hidden');
     expect(within(car).getByText('Cerrar −')).toBeInTheDocument();
     expect(within(detail).getByRole('heading', { name: 'Precios de CAR NS40ZL' })).toBeInTheDocument();
-    expect(within(detail).getByText('35 Ah · Polaridad L · 3 celdas de origen (B5, C5, D5)')).toBeInTheDocument();
+    expect(within(detail).getByText('35 Ah · Polaridades L y R · 3 celdas de origen (B5, C5, D5)')).toBeInTheDocument();
+    // The whole point of the section: one price covers both polarities.
+    expect(within(detail).getByText('Un mismo precio para las polaridades L y R de esta batería.')).toBeInTheDocument();
   });
 
   it.each([['Enter'], [' ']])('unfolds and folds again with the %s key', async key => {
@@ -133,7 +150,9 @@ describe('catalogue unfolding', () => {
     expect(pickRow('CAR NS40ZL')).toHaveAttribute('aria-expanded', 'false');
     expect(detailOf('CAR NS40ZL')).toHaveAttribute('hidden');
     expect(toyo).toHaveAttribute('aria-expanded', 'true');
-    expect(within(detailOf('TOYO NS60L')).getByRole('heading', { name: 'Precios de TOYO NS60L' })).toBeInTheDocument();
+    const detail = detailOf('TOYO NS60L');
+    expect(within(detail).getByRole('heading', { name: 'Precios de TOYO NS60L' })).toBeInTheDocument();
+    expect(within(detail).getByText('Un mismo precio para la polaridad R de esta batería.')).toBeInTheDocument();
   });
 
   it('closes with Cancelar and returns focus to the row', async () => {
@@ -233,8 +252,8 @@ describe('catalogue detail form', () => {
     expect(amount(detail, 'Precio mínimo de venta')).toHaveValue('86000');
   });
 
-  it('writes only prices and branches, even when the variant has no product term', async () => {
-    const h = harness({ write: () => json(resultBody({ variant_id: 3, written: 1, branch_ids: [2], warranty_months: null })) });
+  it('writes the price of the battery, and only prices and branches', async () => {
+    const h = harness({ write: () => json(resultBody({ catalog_entry_id: 3, written: 1, branch_ids: [2] })) });
     await ready(h);
     const detail = openRow('TOYO NS60L');
     expect(within(detail).queryByRole('textbox', { name: /garantía/i })).toBeNull();
@@ -244,7 +263,7 @@ describe('catalogue detail form', () => {
     fireEvent.click(within(detail).getByRole('button', { name: 'Aplicar a 1 sucursal' }));
     await waitFor(() => expect(h.writes()).toHaveLength(1));
     expect(JSON.parse(String(h.writes()[0].init.body))).toEqual({
-      variant_id: 3, min_price: '78000', suggested_price: '89000', branch_ids: [2],
+      catalog_entry_id: 3, min_price: '78000', suggested_price: '89000', branch_ids: [2],
     });
   });
 });
@@ -260,13 +279,12 @@ describe('catalogue with the persisted preview shape', () => {
     branch_location_id: branch, min_price: '100.00', suggested_price: '120.50',
     updated_at: updatedAt, updated_by_account_id: 1, updated_by_display_name: '',
   });
-  const previewVariant = {
-    variant_id: 1, catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L',
-    cells: ['B5'], warranty_months: 6, warranty_updated_at: '2026-11-04T23:14:07Z',
+  const previewBattery = {
+    catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarities: ['L', 'R'], cells: ['B5'],
     prices: [persisted(2), persisted(3, '2026-11-04T23:14:07.123456Z')],
   };
   const previewPage = () => json(JSON.stringify({
-    branches: previewBranches, variants: [previewVariant], page: 1, page_size: 10, total_variants: 190,
+    branches: previewBranches, batteries: [previewBattery], page: 1, page_size: 10, total_batteries: 95,
   }));
 
   it('re-reads and renders the matrix after a write', async () => {
@@ -278,8 +296,12 @@ describe('catalogue with the persisted preview shape', () => {
     await screen.findByRole('table');
     const detail = openRow('CAR NS40ZL');
     expect(amount(detail, 'Precio mínimo de venta')).toHaveValue('100');
+    expect(within(detail).getByText('Un mismo precio para las polaridades L y R de esta batería.')).toBeInTheDocument();
     fireEvent.click(within(detail).getByRole('button', { name: 'Aplicar a 2 sucursales' }));
     await waitFor(() => expect(h.writes()).toHaveLength(1));
+    expect(JSON.parse(String(h.writes()[0].init.body))).toEqual({
+      catalog_entry_id: 1, min_price: '100', suggested_price: '120.5', branch_ids: [2, 3],
+    });
     // The section re-reads the matrix after the write, exactly like setRevision does.
     await waitFor(() => expect(h.reads()).toHaveLength(2));
     expect(await screen.findByText(/Precios aplicados: CAR · NS40ZL · mínimo \$ 100 · sugerido \$ 120,50 en 2 sucursales\./))
@@ -300,9 +322,9 @@ describe('catalogue write outcome', () => {
   it('writes the block, collapses the row, refreshes the chips and reports what was written', async () => {
     let written = false;
     const h = harness({
-      page: () => json(pageBody([variantOf(written
+      page: () => json(pageBody([batteryOf(written
         ? { prices: [priceOf(2, '85000.00', '96000.00', '2026-11-05T10:00:00Z'), priceOf(3, '85000.00', '96000.00', '2026-11-05T10:00:00Z'), priceOf(4, '50000.00', '96000.00', '2026-11-05T10:00:00Z')] }
-        : {}), untimed])),
+        : {}), unpriced])),
       write: () => { written = true; return json(resultBody({ written: 3, branch_ids: [2, 3, 4] })); },
     });
     await ready(h);
@@ -314,7 +336,7 @@ describe('catalogue write outcome', () => {
     expect(h.writes()[0].init).toMatchObject({ method: 'PUT', credentials: 'same-origin', cache: 'no-store',
       headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf } });
     expect(JSON.parse(String(h.writes()[0].init.body))).toEqual({
-      variant_id: 1, min_price: '85000', suggested_price: '96000', branch_ids: [2, 3, 4],
+      catalog_entry_id: 1, min_price: '85000', suggested_price: '96000', branch_ids: [2, 3, 4],
     });
     await screen.findByText('Precios aplicados: CAR · NS40ZL · mínimo $ 85.000 · sugerido $ 96.000 en 3 sucursales.');
     expect(pickRow('CAR NS40ZL')).toHaveAttribute('aria-expanded', 'false');

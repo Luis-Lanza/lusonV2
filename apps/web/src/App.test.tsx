@@ -1611,11 +1611,11 @@ describe('warehouse catalogue section', () => {
   const catalogBranches = [{ id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }];
   const catalogPage = JSON.stringify({
     branches: catalogBranches,
-    variants: [{ variant_id: 1, catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L',
-      cells: ['B5', 'C5'], warranty_months: 6, warranty_updated_at: '2026-11-04T10:00:00Z',
+    batteries: [{ catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarities: ['L', 'R'],
+      cells: ['B5', 'C5'],
       prices: [{ branch_location_id: 2, min_price: '85000.00', suggested_price: '96000.00',
         updated_at: '2026-11-04T10:00:00Z', updated_by_account_id: 1, updated_by_display_name: 'Almacén' }] }],
-    page: 1, page_size: 10, total_variants: 1,
+    page: 1, page_size: 10, total_batteries: 1,
   });
   const catalogMock = (mock: ReturnType<typeof setup>) =>
     mock.mock.calls.filter(([url]) => String(url).startsWith('/api/catalog/prices'));
