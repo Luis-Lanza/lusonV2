@@ -113,10 +113,8 @@ function Navigation({ mobile = false, transfers, disabled, actionCount, countUna
   </nav>;
 }
 function InventoryView({ state, recovery }: { state: Controller; recovery: ReturnType<typeof createTransferRecovery> }) {
-  if (!state.session?.authenticated) return null;
-  const { identity } = state.session;
-  const { metadata, query, data } = state;
-  const warehouse = identity.location.id === 1;
+  // Every hook below runs unconditionally. The authentication gate must stay after the
+  // last hook: an identity change must never alter the hook order of this component.
   const [creationRequested, setCreation] = useState(false);
   const ownerTag = transferViewOwner(state.getTransferAuthority());
   // Independent from Pending's lane: overlapping reads and differing snapshots are intentional.
@@ -155,6 +153,19 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
       window.removeEventListener('hashchange', restore);
     };
   }, [ownerTag, creation, route, recovery, state.getTransferAuthority]);
+  const [narrow, setNarrow] = useState(() => window.matchMedia?.('(max-width: 767px)').matches ?? false);
+  useEffect(() => {
+    const media = window.matchMedia?.('(max-width: 767px)');
+    if (!media) return;
+    const update = () => setNarrow(media.matches);
+    update(); media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  // Last hook above. Everything below may depend on the authenticated identity.
+  if (!state.session?.authenticated) return null;
+  const { identity } = state.session;
+  const { metadata, query, data } = state;
+  const warehouse = identity.location.id === 1;
   const adminOwner = state.privateOwner('admin');
   const passwordOwner = state.privateOwner('password');
   // Ingress and adjustments are warehouse-only surfaces: account 1 is the only
@@ -201,14 +212,6 @@ function InventoryView({ state, recovery }: { state: Controller; recovery: Retur
     setCreation(false);
     changeRoute({ section: 'transfers', id });
   }
-  const [narrow, setNarrow] = useState(() => window.matchMedia?.('(max-width: 767px)').matches ?? false);
-  useEffect(() => {
-    const media = window.matchMedia?.('(max-width: 767px)');
-    if (!media) return;
-    const update = () => setNarrow(media.matches);
-    update(); media.addEventListener('change', update);
-    return () => media.removeEventListener('change', update);
-  }, []);
   const mobile = warehouse && narrow;
   const selected = metadata?.locations.find(l => l.id === query.location);
   const recoverable = recovery.getCurrent(state.getTransferAuthority);
