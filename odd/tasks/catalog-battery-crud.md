@@ -31,7 +31,7 @@ S5. Solo el administrador de almacén (cuenta con location 1) puede crear, edita
 | T1 | S2-S3 | inline (parent) | `fb6eb9c` |
 | T2 | S3 | worker `gentle-ai-worker` | pending |
 | T3 | S1-S3 | pending | pending |
-| T4 | S2-S3 | worker `gentle-ai-worker` | pending |
+| T4 | S2-S3 | worker `gentle-ai-worker` | `8714c0b` |
 | T5 | S1,S5 | pending | pending |
 | T6 | S1-S2 | pending | pending |
 | T7 | S1-S5 | pending | pending |
@@ -54,6 +54,10 @@ Task rules agreed before implementation:
   visible in past evidence. `pricing` must stop returning `service_unavailable` for a battery
   that has no fixture cells: cells become optional. The SPA bounds that hardcode 95/190 must
   stop rejecting allocated identities.
+
+Delivery strategy: one commit per task on `feat/catalog-battery-crud`. The 400-line
+slice was crossed at T4 (661 authored lines across T1 and T4); remaining tasks keep
+their own commit so each is reviewable alone.
 
 ## Log
 
