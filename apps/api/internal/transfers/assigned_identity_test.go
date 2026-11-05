@@ -97,7 +97,7 @@ func TestStoreAssignedBinding(t *testing.T) {
 	} {
 		for _, operation := range []struct {
 			name string
-			run func() (any, error)
+			run  func() (any, error)
 		}{
 			{"create", func() (any, error) { return s.Create(ctx, who, request) }},
 			{"get", func() (any, error) { return s.Get(ctx, who, id) }},
@@ -115,8 +115,12 @@ func TestStoreAssignedBinding(t *testing.T) {
 			{"restitution decision", func() (any, error) { return s.DecideRestitution(ctx, who, id, transfers.RestitutionDecisionInput{}) }},
 			{"restitution history", func() (any, error) { return s.GetRestitutions(ctx, who, id) }},
 			{"restitution access", func() (any, error) { return struct{}{}, s.CheckRestitutionAccess(ctx, who, id) }},
-			{"dispatch proposal", func() (any, error) { return s.ProposeDispatchReconciliation(ctx, who, id, transfers.DispatchReconciliationProposalInput{}) }},
-			{"dispatch decision", func() (any, error) { return s.DecideDispatchReconciliation(ctx, who, id, transfers.DispatchReconciliationDecisionInput{}) }},
+			{"dispatch proposal", func() (any, error) {
+				return s.ProposeDispatchReconciliation(ctx, who, id, transfers.DispatchReconciliationProposalInput{})
+			}},
+			{"dispatch decision", func() (any, error) {
+				return s.DecideDispatchReconciliation(ctx, who, id, transfers.DispatchReconciliationDecisionInput{})
+			}},
 			{"dispatch history", func() (any, error) { return s.GetDispatchReconciliations(ctx, who, id) }},
 			{"dispatch access", func() (any, error) { return struct{}{}, s.CheckDispatchReconciliationAccess(ctx, who, id) }},
 		} {
