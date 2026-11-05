@@ -3,12 +3,13 @@
   "chosen": "01-counter-cart.html",
   "handoffs": {
     "01-counter-cart.html": {
-      "status": "sent",
+      "status": "in_progress",
       "queued": false,
-      "sentAt": "2026-11-04T23:18:54.672Z",
-      "startedAt": null,
+      "sentAt": "2026-11-04T23:52:16.417Z",
+      "startedAt": "2026-11-04T23:52:57.661Z",
       "implementedAt": null,
-      "feature": "odd/tasks/punto-de-venta.md"
+      "feature": "odd/tasks/punto-de-venta.md",
+      "note": "Implementando la sección Punto de venta (#/ventas) con el shell y los tokens existentes; contrato de venta en vuelo (T17+T10)."
     }
   }
 }

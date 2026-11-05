@@ -37,7 +37,7 @@ main{margin-left:240px;padding:24px;max-width:1700px}
 .heading{display:flex;align-items:end;justify-content:space-between;gap:16px;margin-bottom:20px;flex-wrap:wrap}
 .heading p{color:var(--muted);margin-top:6px;max-width:70ch}
 .panel{background:#FFFFFF;border:1px solid var(--border);border-radius:4px;padding:20px}
-.filters{display:grid;grid-template-columns:minmax(0,1fr) 190px 150px auto;gap:12px;align-items:end;margin-bottom:16px}
+.filters{display:grid;grid-template-columns:minmax(0,1fr) 190px auto;gap:12px;align-items:end;margin-bottom:16px}
 .filters button{white-space:nowrap}
 table{width:100%;border-collapse:collapse}
 caption{text-align:left;font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);padding-bottom:10px}
@@ -93,12 +93,11 @@ table{font-size:12px}}
     <div class="filters">
       <label>Buscar<input type="search" placeholder="Número de garantía o cliente"></label>
       <label>Forma de pago<select><option>Todas</option><option>Efectivo</option><option>Transferencia</option><option>Tarjeta</option><option>Mixto</option></select></label>
-      <label>Desde<select><option>Hoy</option><option>Últimos 7 días</option><option>Este mes</option><option>Todo</option></select></label>
       <button type="button" class="quiet" data-demo>Limpiar filtros</button>
     </div>
 
     <table>
-      <caption>87 ventas emitidas · total Bs 18.942.000,00</caption>
+      <caption>87 ventas emitidas</caption>
       <thead>
         <tr>
           <th scope="col">Venta</th>
