@@ -87,12 +87,17 @@ With frontend dependencies already available, run from the repository root:
 
 ```sh
 npm --prefix apps/web test
+npm --prefix apps/web run test:r05
 npm --prefix apps/web run typecheck
 npm --prefix apps/web run build
 ```
 
-These commands run Vitest, TypeScript checking, and the compiled frontend build.
-They can write workspace caches and build outputs. By themselves they do not
+These commands run Vitest, the R05 ownership and isolation suites, TypeScript
+checking, and the compiled frontend build. The R05 suites use `node:test` rather
+than Vitest and resolve their fixtures from the repository root, so the script
+changes directory before running them; running `node --test` yourself from
+`apps/web` fails on a doubled path. They can write workspace caches and build
+outputs. By themselves they do not
 update an already-running frozen manual-test environment or its database, nor
 do they deploy the generated assets. Keep verification separate from that
 running environment. Dependency installation, runtime startup and database
