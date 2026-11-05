@@ -29,12 +29,12 @@ S5. Solo el administrador de almacén (cuenta con location 1) puede crear, edita
 | ID | Spec | Route | Commit |
 | --- | --- | --- | --- |
 | T1 | S2-S3 | inline (parent) | `fb6eb9c` |
-| T2 | S3 | worker `gentle-ai-worker` | pending |
-| T3 | S1-S3 | pending | pending |
+| T2 | S3 | worker `gentle-ai-worker` | `5d41e66` |
+| T3 | S1-S3 | worker `gentle-ai-worker` | `bccd62c` |
 | T4 | S2-S3 | worker `gentle-ai-worker` | `8714c0b` |
-| T5 | S1,S5 | pending | pending |
-| T6 | S1-S2 | pending | pending |
-| T7 | S1-S5 | pending | pending |
+| T5 | S1,S5 | worker `gentle-ai-worker` | `bccd62c` |
+| T6 | S1-S2 | worker `gentle-ai-worker` | `cce22cf` |
+| T7 | S1-S5 | inline (parent) | pending |
 
 Task rules agreed before implementation:
 
@@ -120,3 +120,34 @@ gane variants; `observe` se acota a los ids del fixture. RED/GREEN del CRITICAL 
 mano con dos sesiones intercaladas: `missing=1` antes, `missing=0` después; variant en batería
 archivada rechazado con `catalog_variant_retired_battery`; tras limpiar las sondas vuelven
 entries=95, variants=190, balances=570, locations=3 y `migrate check` sigue en verde.
+
+L10 (T3/T5, commit `bccd62c`): API del administrador de almacén. `POST /api/catalog/batteries`
+crea entrada y variantes en una transacción, con ids asignados por la base y una fila de
+balance en cero por sucursal activa (probado en vivo: entry 113, variants 212/213, tres filas
+`0|0` cada una). `PATCH` exige la identidad completa; `DELETE` archiva, con `409
+catalog_battery_has_stock` / `409 catalog_battery_has_pending` y repetición idempotente. Gate
+idéntico a `/api/admin/branches` (401/403 byte a byte). Diferencial contra el binario previo:
+todas las rutas preexistentes iguales. Doc nueva: `apps/api/docs/catalog-batteries.md`.
+
+L11 (T6, commit `cce22cf`): pantalla «Baterías» junto a Precios, misma sección y mismo gate;
+crear/escribir-una-vez y re-leer, editar identidad completa, archivar confirmado con los tres
+409 como mensajes propios, y una batería con `priced_branches: 0` marcada «No vendible · sin
+precio» con la instrucción de ponerle precio. 128 tests nuevos, ninguno existente modificado.
+
+L12 (T7, verificación final): suite web 3205 passed | 1 skipped (el seam opt-in, preexistente);
+`tsc --noEmit`, `npm run lint` y `npm run build` limpios; en Go `gofmt -l` sin salida,
+`go build ./...` y `go vet ./...` limpios. API reiniciada sobre el código final: `POST` y
+`DELETE /api/catalog/batteries` responden 401 (ruta montada y con gate) en vez del 404 previo,
+y el SPA sirve el bundle nuevo. Veredicto por spec: S1 ✅ (API probada en vivo, UI cubierta por
+tests; falta el click-through real en navegador, que requiere las credenciales del usuario),
+S2 ✅ (archivo de una vía, idempotente, historia intacta), S3 ✅ (`migrate check` verde con
+catálogo sembrado, con baterías operativas y con una batería editada), S4 ✅ (ambos 409 y su
+resolución probados en vivo), S5 ✅ (401/403 iguales a administración, y un test de UI prueba
+que una identidad de sucursal no alcanza ninguna superficie de catálogo).
+
+L13 (gaps declarados, no tapados): las suites Go con PostgreSQL no se ejecutan en este entorno
+(`testpg.Open` falla cerrado sin el fixture `LUSON_TEST_PG_MANIFEST`), así que los tests de
+esquema y de store existen pero no corrieron acá; el click-through en navegador queda para el
+usuario; y los cinco findings advisory del review aprobado (`seed.go:205`, `seed.go:252`,
+`catalog_fanout_serialization_schema_test.go:27-29`, `inventory.go:117`, `029:13`) quedan como
+trabajo posterior.
