@@ -103,6 +103,26 @@ do they deploy the generated assets. Keep verification separate from that
 running environment. Dependency installation, runtime startup and database
 changes require separate instructions; none is part of this quick path.
 
+### Opt-in Go to TypeScript seam check
+
+One frontend test bridges the real Go HTTP output into the strict TypeScript
+decoders: `apps/web/src/transferUnifiedReconciliationSeam.test.ts`. It is
+skipped by default because it needs an artifact this repository cannot commit.
+The Go half is opt-in as well: `TestURHTTPCodecSeam` skips unless
+`LUSON_UNIFIED_SEAM_EXPORT=1` is set and an admitted fixture is present. To run
+the pair, capture the Go test's stdout into a file and point the frontend at it:
+
+```sh
+cd apps/api
+go test ./internal/httpapi -run '^TestURHTTPCodecSeam$' -count=1 -v > /tmp/seam.out
+cd ../..
+LUSON_UNIFIED_SEAM_STDOUT=/tmp/seam.out npm --prefix apps/web test
+```
+
+When the variable is set the check is strict: a missing or malformed capture
+fails instead of falling back to a copied fixture. When it is unset the suite
+reports as skipped, never as passed.
+
 ## Historical L01–L05 verification status
 
 L01–L04 independently passed; their PostgreSQL bindings are historical and

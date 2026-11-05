@@ -1,15 +1,17 @@
-// Opt-in integration: the parent supplies stdout from the real authenticated
-// Go router harness. There is deliberately no copied fixture or fallback.
+// Opt-in integration: the parent supplies stdout from the real authenticated Go router
+// harness. There is deliberately no copied fixture or fallback, and the Go half is opt-in
+// too: TestURHTTPCodecSeam skips unless LUSON_UNIFIED_SEAM_EXPORT=1 and an admitted
+// fixture are present. Absent that artifact this suite skips rather than throwing, so the
+// default run stays honest instead of permanently red on a clean checkout.
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parseTransferRecord } from './transferModel';
 import { parseUnifiedReconciliations } from './transferUnifiedReconciliationModel';
 
 const output = process.env.LUSON_UNIFIED_SEAM_STDOUT;
-describe('actual Go HTTP → strict TS codec (requires LUSON_UNIFIED_SEAM_STDOUT)', () => {
+describe.skipIf(!output)('actual Go HTTP → strict TS codec (needs LUSON_UNIFIED_SEAM_STDOUT)', () => {
   it('preserves original/legacy evidence and applies sample/prior-restoration accounting S3-S7', () => {
-    if (!output) throw new Error('Run TestURHTTPCodecSeam and set LUSON_UNIFIED_SEAM_STDOUT to its captured stdout; no fixture fallback exists');
-    const lines = readFileSync(output, 'utf8').split('\n').filter(l => l.startsWith('LUSON_UNIFIED_SEAM='));
+    const lines = readFileSync(output!, 'utf8').split('\n').filter(l => l.startsWith('LUSON_UNIFIED_SEAM='));
     expect(lines).toHaveLength(1);
     const captures = JSON.parse(lines[0].slice('LUSON_UNIFIED_SEAM='.length));
     expect(captures.map((c: { name: string }) => c.name)).toEqual(['sample', 'prior-restoration']);
