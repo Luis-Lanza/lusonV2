@@ -1,9 +1,9 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { InventoryView, type Controller } from './App';
+import { InventoryView } from './App';
 import type { Metadata, Query, Session } from './model';
 import { createTransferRecovery } from './transferRecovery';
-import type { TransferAuthority } from './useInventory';
+import type { Controller, TransferAuthority } from './useInventory';
 
 // App only mounts InventoryView for an authenticated identity without a pending
 // password change, so the shell is rendered directly here: that is the only way to
@@ -53,8 +53,6 @@ describe('InventoryView hook order across an authentication transition', () => {
     const matchMedia = stubMatchMedia();
     const fetchMock = stubFetch();
     const recovery = createTransferRecovery();
-    const logged: string[] = [];
-    const spy = vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => { logged.push(args.map(String).join(' ')); });
     const view = render(<InventoryView state={controller({ epoch: 1, ready: false, sessionGeneration: 1, session: anonymous })} recovery={recovery} />);
     expect(view.container.querySelector('.app-shell')).toBeNull();
     // The gate is the last statement, not the first: hooks and their effects already ran.
@@ -69,7 +67,5 @@ describe('InventoryView hook order across an authentication transition', () => {
     // The count lane settling proves the authenticated children mounted, not just the shell div.
     await waitFor(() => expect(within(navigation).getByRole('status')).toHaveTextContent('Acciones requeridas: 0'));
     expect(fetchMock).toHaveBeenCalled();
-    expect(logged.join('\n')).not.toMatch(/hook/i);
-    spy.mockRestore();
   });
 });

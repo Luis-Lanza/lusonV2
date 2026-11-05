@@ -80,6 +80,7 @@ export interface SourceInventoryController {
   subscribeSourceInventoryInvalidation: (listener: () => void) => () => void;
 }
 
+export type Controller = ReturnType<typeof useInventory>;
 export function useInventory() {
   const [decisionRecovery] = useState(createTransferDecisionRecovery);
   const [dispatchRecovery] = useState(createTransferDispatchRecovery);

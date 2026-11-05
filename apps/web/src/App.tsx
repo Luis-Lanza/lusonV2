@@ -5,7 +5,7 @@ import { Brand, Icon } from './icons';
 import { groupItems } from './model';
 import { validTransferLocation } from './transferModel';
 import type { Item } from './model';
-import { useInventory } from './useInventory';
+import { useInventory, type Controller } from './useInventory';
 import { useTransfers } from './useTransfers';
 import TransferCreation from './TransferCreation';
 import TransferPending, { transferViewOwner } from './TransferPending';
@@ -19,7 +19,6 @@ import CatalogSectionBoundary from './CatalogSectionBoundary';
 import PointOfSale, { SalesSectionBoundary, salesHistoryFailureMessage } from './PointOfSale';
 import SalesHistory from './SalesHistory';
 
-export type Controller = ReturnType<typeof useInventory>;
 function Login({ state }: { state: Controller }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
