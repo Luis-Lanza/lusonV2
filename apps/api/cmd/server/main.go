@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/auth"
 	"luson/api/internal/bootstrap"
+	"luson/api/internal/catalogadmin"
 	"luson/api/internal/config"
 	"luson/api/internal/httpapi"
 	"luson/api/internal/inventory"
@@ -114,6 +115,12 @@ func run() (result error) {
 	// The branch point of sale mounts on the composed API right after the price list, so
 	// both factories keep their own contract and every route they own keeps its behavior.
 	api, err = httpapi.NewWithSales(api, service, httpCfg, sales.New(pool))
+	if err != nil {
+		return errors.New("API initialization failed")
+	}
+	// The warehouse catalog administrator mounts last, so the battery contract owns
+	// only its own path and every other composed surface keeps its exact behavior.
+	api, err = httpapi.NewWithCatalogAdmin(api, service, httpCfg, catalogadmin.New(pool, service))
 	if err != nil {
 		return errors.New("API initialization failed")
 	}
