@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "test": "vitest run",
+    "lint": "biome lint src",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit && vite build"
   },
@@ -16,6 +17,7 @@
     "react-dom": "19.3.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.6.5",
     "@playwright/test": "1.62.1",
     "@tailwindcss/vite": "4.3.3",
     "@testing-library/dom": "10.4.2",

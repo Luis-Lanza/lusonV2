@@ -1,0 +1,76 @@
+{
+  // Scope: the SPA sources. The e2e/ harness is linted separately when it gets a runner.
+  "$schema": "https://biomejs.dev/schemas/2.6.5/schema.json",
+  "files": {
+    "includes": ["src/**"]
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+
+      // Deliberate project conventions this codebase relies on. Kept off on purpose,
+      // not by oversight: the value! pattern follows an explicit regex match check.
+      "style": {
+        "noNonNullAssertion": "off",
+        "useTemplate": "off",
+        "noDescendingSpecificity": "off"
+      },
+      "complexity": {
+        "useMathMinMax": "off",
+        "useOptionalChain": "off",
+        "useArrowFunction": "off",
+        "noUselessFragments": "off"
+      },
+
+      // Real defects. `useHookAtTopLevel` stays an error: a rules-of-hooks violation
+      // corrupts React state, so it must never be silenced to make the script green.
+      "correctness": {
+        "useHookAtTopLevel": "error",
+        "useExhaustiveDependencies": "warn",
+        "noVoidTypeReturn": "warn",
+        "noComponentHookFactories": "warn"
+      },
+
+      // Existing debt, visible but not blocking. Burn it down, do not hide it deeper.
+      "a11y": {
+        "useButtonType": "warn",
+        "useAriaPropsSupportedByRole": "warn",
+        "useSemanticElements": "warn",
+        "useValidAnchor": "warn",
+        "noStaticElementInteractions": "warn",
+        "useKeyWithClickEvents": "warn"
+      },
+      "suspicious": {
+        "useIterableCallbackReturn": "warn",
+        "noExportsInTest": "warn",
+        "noImplicitAnyLet": "warn",
+        "noArrayIndexKey": "warn"
+      }
+    }
+  },
+  "overrides": [
+    {
+      // The boundary that keeps src/shared/ from becoming a dumping ground:
+      // shared modules sit at the bottom of the import graph and may not reach up.
+      "includes": ["src/shared/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["../**"],
+                    "message": "src/shared/ is the bottom of the import graph: a shared module must not import a feature module. Move the shared part into src/shared/ instead."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
