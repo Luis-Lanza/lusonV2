@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -895,13 +894,11 @@ type saleHTTPFixture struct {
 	prices  *pricing.Store
 }
 
-// saleFixture needs the isolated test PostgreSQL; without an admitted manifest every
-// database test here is skipped, which is the expected local outcome.
+// saleFixture needs the isolated test PostgreSQL. Admission fails closed inside
+// testpg.Open, exactly like every other database fixture in this repository: without an
+// admitted manifest the test fails instead of passing with a skip.
 func saleFixture(t *testing.T) *saleHTTPFixture {
 	t.Helper()
-	if os.Getenv("LUSON_TEST_PG_MANIFEST") == "" {
-		t.Skip("test PostgreSQL manifest not admitted")
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	t.Cleanup(cancel)
 	p := testpg.Open(t)
