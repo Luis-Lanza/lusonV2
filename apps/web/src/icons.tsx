@@ -12,6 +12,8 @@ const paths = {
   warehouse: 'M3 21V7l9-4 9 4v14 M7 21V11h10v10 M10 15h4v6',
   adjustment: 'M7 4v8 M3 8h8 M15 17h6',
   catalog: 'M3 3h10l8 8-10 10-8-8V3z M7.5 7.5h.01',
+  sale: 'M3 4h2l2.4 11.2a2 2 0 0 0 2 1.6h8.1a2 2 0 0 0 1.9-1.4L21 8H6 M10 21h.01 M18 21h.01',
+  history: 'M5 3h9l5 5v13H5z M14 3v5h5 M9 13h6 M9 17h6',
 };
 export function Icon({ name }: { name: keyof typeof paths }) {
   return <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={paths[name]} /></svg>;

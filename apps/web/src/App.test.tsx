@@ -1687,3 +1687,56 @@ describe('warehouse catalogue section', () => {
     }
   });
 });
+
+describe('branch point of sale and its history', () => {
+  const branchSession = { ...session, identity: { ...identity, account_id: 2, username: 'sucursala', location: metadata.locations[1] } };
+  const jsonResponse = (body: string) =>
+    new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
+  const sellablePage = JSON.stringify({ page: 1, page_size: 10, total_variants: 1, items: [
+    { variant_id: 1, catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L',
+      sellable: true, existing: 12, reserved: 0, available: 12,
+      suggested_price: '96000.00', min_price: '85000.00' }] });
+  const historyPage = JSON.stringify({ page: 1, page_size: 10, total_sales: 1, sales: [
+    { id: 1, branch_sequence: 126, warranty_number: '2-000126', payment_method: 'cash',
+      customer_name: 'Marta Giménez', total: '96000.00', created_at: '2026-11-04T17:42:00Z', lines: 1 }] });
+  const salesCalls = (mock: ReturnType<typeof setup>) =>
+    mock.mock.calls.filter(([url]) => String(url).startsWith('/api/sales'));
+  const branchSetup = () => setup(branchSession, url => url.startsWith('/api/sales/sellable?')
+    ? Promise.resolve(jsonResponse(sellablePage))
+    : url.startsWith('/api/sales?') ? Promise.resolve(jsonResponse(historyPage)) : undefined);
+
+  it('offers the counter and its history to a branch session and opens both', async () => {
+    const mock = branchSetup();
+    render(<App />); await inventory();
+    const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
+    fireEvent.click(within(navigation).getByRole('button', { name: 'Punto de venta' }));
+    await screen.findByRole('heading', { name: 'Nueva venta' });
+    expect(window.location.hash).toBe('#/ventas');
+    expect(screen.getByText('Luson Punto de venta')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'CAR NS40ZL' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Punto de venta' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
+    expect(mock.mock.calls.some(([url]) => String(url).startsWith('/api/sales/sellable?'))).toBe(true);
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+    fireEvent.click(within(navigation).getByRole('button', { name: 'Historial de ventas' }));
+    await screen.findByRole('heading', { name: 'Historial de ventas' });
+    expect(window.location.hash).toBe('#/ventas/historial');
+    expect(screen.getByText('Luson Historial de ventas')).toBeInTheDocument();
+    expect(await screen.findByText('2-000126')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Historial de ventas' })).toHaveAttribute('aria-current', 'page');
+    expect(salesCalls(mock).some(([url]) => String(url).startsWith('/api/sales?'))).toBe(true);
+  });
+
+  it.each([['#/ventas'], ['#/ventas/historial']])('hides both sections from the warehouse and falls back from %s', async hash => {
+    window.history.replaceState(null, '', '/' + hash);
+    const mock = setup(session);
+    render(<App />); await inventory();
+    expect(screen.queryByRole('button', { name: 'Punto de venta' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Historial de ventas' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Nueva venta' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Historial de ventas' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Resultados de inventario' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Inventario' })).toHaveAttribute('aria-current', 'page');
+    expect(salesCalls(mock)).toHaveLength(0);
+  });
+});
