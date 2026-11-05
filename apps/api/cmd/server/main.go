@@ -14,6 +14,7 @@ import (
 	"luson/api/internal/inventory"
 	"luson/api/internal/pricing"
 	"luson/api/internal/realtime"
+	"luson/api/internal/sales"
 	"luson/api/internal/stockadjustments"
 	"luson/api/internal/stockentries"
 	"luson/api/internal/transfers"
@@ -107,6 +108,12 @@ func run() (result error) {
 	// The branch price list mounts on the composed API, so the stock entry factory
 	// keeps its own constructor and every route it owns keeps its exact behavior.
 	api, err = httpapi.NewWithBranchPrices(api, service, httpCfg, pricing.New(pool))
+	if err != nil {
+		return errors.New("API initialization failed")
+	}
+	// The branch point of sale mounts on the composed API right after the price list, so
+	// both factories keep their own contract and every route they own keeps its behavior.
+	api, err = httpapi.NewWithSales(api, service, httpCfg, sales.New(pool))
 	if err != nil {
 		return errors.New("API initialization failed")
 	}

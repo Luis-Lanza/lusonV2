@@ -144,6 +144,18 @@ func (e *env) zeroStockVariant(t *testing.T, locationID int64) int64 {
 	return variant
 }
 
+// availability reads the branch balance of one variant the way the catalogue publishes
+// it: a missing row is the honest zero, because the counter must still show the variant.
+func (e *env) availability(t *testing.T, locationID, variantID int64) (existing, reserved, available int64) {
+	t.Helper()
+	if e.pool.QueryRow(e.ctx, `SELECT coalesce(max(existing),0),coalesce(max(reserved),0),
+  coalesce(max(available),0) FROM inventory_balances WHERE location_id=$1 AND variant_id=$2`,
+		int16(locationID), int32(variantID)).Scan(&existing, &reserved, &available) != nil {
+		t.Fatal("balance read failed")
+	}
+	return existing, reserved, available
+}
+
 // snapshot captures every table a sale writes, so a refused sale is proven to leave
 // nothing behind, stock included.
 func (e *env) snapshot(t *testing.T) string {
@@ -565,19 +577,32 @@ func TestSaleVariantWithoutPrice(t *testing.T) {
 	if e.snapshot(t) != before {
 		t.Fatal("a not sellable variant must not write a sale nor touch stock")
 	}
-	// The sellable catalogue of the branch lists both polarities of the priced battery
-	// and nothing of the unpriced one, so the blocked row never reaches the counter.
+	// The counter catalogue of the branch lists both polarities of the priced battery as
+	// sellable and the polarities of the unpriced battery as blocked rows, so the counter
+	// can disable them instead of hiding them (S7).
 	page, err := e.store.Sellable(e.ctx, clerk(2), sales.SellableQuery{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("catalogue read failed: %v", err)
 	}
-	if page.TotalVariants != 2 || len(page.Items) != 2 ||
-		page.Items[0].VariantID != 1 || page.Items[1].VariantID != 2 {
-		t.Fatalf("the catalogue must expose only the sellable battery: %+v", page)
+	if len(page.Items) != 10 || page.Items[0].VariantID != 1 || page.Items[1].VariantID != 2 {
+		t.Fatalf("the catalogue must start with the priced battery: %+v", page)
 	}
 	for _, item := range page.Items {
-		if item.CatalogEntryID != e.entryOf(t, 1) || item.SuggestedPrice != "96000.00" ||
-			item.MinPrice != "85000.00" {
+		priced := item.CatalogEntryID == e.entryOf(t, 1)
+		if item.Sellable != priced {
+			t.Fatalf("the catalogue must block exactly the unpriced battery: %+v", item)
+		}
+		if item.VariantID > 4 {
+			continue
+		}
+		existing, reserved, available := e.availability(t, 2, item.VariantID)
+		if item.Existing != existing || item.Reserved != reserved || item.Available != available {
+			t.Fatalf("every row must carry the branch balance: %+v", item)
+		}
+		if !priced && (item.SuggestedPrice != "" || item.MinPrice != "") {
+			t.Fatalf("an unpriced battery must carry no pair: %+v", item)
+		}
+		if priced && (item.SuggestedPrice != "96000.00" || item.MinPrice != "85000.00") {
 			t.Fatalf("both polarities must be offered at the battery pair: %+v", item)
 		}
 	}
@@ -656,11 +681,17 @@ func TestSalePriceIsPerBattery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("catalogue read failed: %v", err)
 	}
-	if page.TotalVariants != 2 || len(page.Items) != 2 {
-		t.Fatalf("both polarities of the battery must be sellable: %+v", page)
+	if len(page.Items) != 10 {
+		t.Fatalf("the catalogue must list the whole first page: %+v", page)
 	}
 	for _, item := range page.Items {
-		if item.MinPrice != "95000.00" || item.SuggestedPrice != "99000.00" {
+		if item.CatalogEntryID != entry {
+			if item.Sellable || item.SuggestedPrice != "" || item.MinPrice != "" {
+				t.Fatalf("only the priced battery is sellable: %+v", item)
+			}
+			continue
+		}
+		if !item.Sellable || item.MinPrice != "95000.00" || item.SuggestedPrice != "99000.00" {
 			t.Fatalf("both polarities must carry the same battery pair: %+v", item)
 		}
 	}
@@ -887,6 +918,47 @@ func TestSaleExhaustedStock(t *testing.T) {
 	}
 }
 
+// TestSaleDetailCarriesTheBranchName pins the branch the warranty is printed for: the
+// detail resolves the name of the selling branch from locations, each branch reads its
+// own, and a sale of another branch is still not found.
+func TestSaleDetailCarriesTheBranchName(t *testing.T) {
+	e := fixture(t)
+	e.price(t, e.entryOf(t, 1), "1000", "1200", 2, 3)
+	first, err := e.store.Create(e.ctx, clerk(2), sale(1, 1, "1000.00"))
+	if err != nil {
+		t.Fatalf("the sale of the first branch failed: %v", err)
+	}
+	other, err := e.store.Create(e.ctx, clerk(3), sale(1, 1, "1000.00"))
+	if err != nil {
+		t.Fatalf("the sale of the second branch failed: %v", err)
+	}
+	for _, tc := range []struct {
+		actor auth.Identity
+		id    int64
+		name  string
+	}{
+		{clerk(2), first.ID, "Sucursal A"},
+		{clerk(3), other.ID, "Sucursal B"},
+	} {
+		detail, err := e.store.Read(e.ctx, tc.actor, tc.id)
+		if err != nil {
+			t.Fatalf("the emitted sale must stay readable: %v", err)
+		}
+		var stored string
+		if err := e.pool.QueryRow(e.ctx, `SELECT l.name FROM sales s
+ JOIN locations l ON l.id=s.branch_location_id WHERE s.id=$1`, tc.id).Scan(&stored); err != nil {
+			t.Fatal("the branch name could not be read")
+		}
+		if detail.BranchName != tc.name || detail.BranchName != stored {
+			t.Fatalf("the detail must carry the name of the selling branch: %q want %q", detail.BranchName, stored)
+		}
+	}
+	// The name of another branch's sale is not readable, because the sale is not.
+	if _, err := e.store.Read(e.ctx, clerk(2), other.ID); !errors.Is(err, sales.ErrNotFound) {
+		t.Fatalf("another branch's document must not be found: %v", err)
+	}
+}
+
 // TestSaleNumbersArePerBranch pins the numeration: every branch allocates its own
 // correlative and its own warranty number, and no two sales of a branch share either.
 func TestSaleNumbersArePerBranch(t *testing.T) {
@@ -992,6 +1064,11 @@ func TestSaleKeepsFrozenFacts(t *testing.T) {
 	}
 	if detail.Total != "180000.00" || detail.WarrantyNumber != emitted.WarrantyNumber {
 		t.Fatalf("the emitted document must keep its own numbers: %+v", detail)
+	}
+	// The branch that sold is resolved from locations, so the warranty can be printed with
+	// the branch it belongs to (S11).
+	if detail.BranchName != "Sucursal A" {
+		t.Fatalf("the detail must carry the name of the selling branch: %q", detail.BranchName)
 	}
 }
 
@@ -1122,46 +1199,94 @@ func TestSaleDocumentIsImmutable(t *testing.T) {
 	}
 }
 
-// TestSaleSellableCatalogue pins the counter catalogue: only the variants the branch
-// can sell, with the suggested price and the minimum it can never go under. The price
-// is the battery's, so the three priced batteries expose their six polarities at the
-// price of their battery. The warranty term is deliberately absent: the seller states
-// it on the sale.
+// TestSaleSellableCatalogue pins the catalogue the counter reads: every variant of the
+// catalogue comes back once with the stock of the branch and whether the branch can sell it
+// right now, so an unpriced variant is a blocked row instead of an absent one (S7). The
+// price is the battery's, so the two polarities of one battery always carry the same pair,
+// and the warranty term is deliberately absent: the seller states it on the sale.
 func TestSaleSellableCatalogue(t *testing.T) {
 	e := fixture(t)
 	e.price(t, e.entryOf(t, 1), "85000", "96000.5", 2, 3)
 	e.price(t, e.entryOf(t, 3), "10000", "12000", 2)
 	e.price(t, e.entryOf(t, 5), "5000", "6000", 2)
-	page, err := e.store.Sellable(e.ctx, clerk(2), sales.SellableQuery{Page: 1, PageSize: 10})
+	total := e.scalar(t, "SELECT count(*) FROM catalog_variants")
+	page, err := e.store.Sellable(e.ctx, clerk(2), sales.SellableQuery{Page: 1, PageSize: 50})
 	if err != nil {
 		t.Fatalf("catalogue read failed: %v", err)
 	}
-	if page.Page != 1 || page.PageSize != 10 || page.TotalVariants != 6 || len(page.Items) != 6 {
-		t.Fatalf("the catalogue must expose the sellable variants in order: %+v", page)
+	// The page lists the catalogue in order and counts every variant, priced or not.
+	if page.Page != 1 || page.PageSize != 50 || page.TotalVariants != total || len(page.Items) != 50 {
+		t.Fatalf("the catalogue must page every variant and count them all: %+v", page)
 	}
-	first := page.Items[0]
-	if first.VariantID != 1 || first.Brand == "" || first.Model == "" || first.Capacity == "" ||
-		(first.Polarity != "L" && first.Polarity != "R") {
-		t.Fatalf("the catalogue item must carry the catalogue identity: %+v", first)
+	for i := 1; i < len(page.Items); i++ {
+		if page.Items[i].VariantID <= page.Items[i-1].VariantID {
+			t.Fatalf("the catalogue order must be deterministic: %+v", page.Items[i-1])
+		}
 	}
-	if first.SuggestedPrice != "96000.50" || first.MinPrice != "85000.00" {
+	// The three priced batteries are the batteries of variants 1, 3 and 5, so their six
+	// polarities are the sellable rows and the rest of the catalogue is blocked.
+	sellable := map[int64]bool{1: true, 2: true, 3: true, 4: true, 5: true, 6: true}
+	for _, item := range page.Items {
+		if item.VariantID > 6 {
+			continue
+		}
+		if item.Brand == "" || item.Model == "" || item.Capacity == "" ||
+			(item.Polarity != "L" && item.Polarity != "R") {
+			t.Fatalf("the catalogue item must carry the catalogue identity: %+v", item)
+		}
+		if item.Sellable != sellable[item.VariantID] {
+			t.Fatalf("variant %d must be sellable=%v: %+v", item.VariantID, sellable[item.VariantID], item)
+		}
+	}
+	// The first two rows are the two polarities of the first priced battery, at its pair.
+	if first := page.Items[0]; !first.Sellable || first.SuggestedPrice != "96000.50" ||
+		first.MinPrice != "85000.00" {
 		t.Fatalf("the item must carry the prices in force: %+v", first)
 	}
-	// Branch 3 only carries the battery of variant 1, so it offers both its polarities.
-	other, err := e.store.Sellable(e.ctx, clerk(3), sales.SellableQuery{Page: 1, PageSize: 10})
-	if err != nil || other.TotalVariants != 2 || len(other.Items) != 2 ||
-		other.Items[0].VariantID != 1 || other.Items[1].VariantID != 2 {
-		t.Fatalf("each branch must expose only its own sellable variants: %+v %v", other, err)
+	if second := page.Items[1]; !second.Sellable || second.SuggestedPrice != "96000.50" ||
+		second.MinPrice != "85000.00" {
+		t.Fatalf("both polarities must carry the pair of their battery: %+v", second)
 	}
-	// The sellable variants of this fixture are the six polarities of the three priced
-	// batteries.
-	priced := []int64{1, 2, 3, 4, 5, 6}
+	// A variant whose battery has no price in the branch is still a row: blocked, with no
+	// pair at all and with the branch's real availability.
+	for _, blocked := range []int64{7, 8} {
+		item := page.Items[blocked-1]
+		existing, reserved, available := e.availability(t, 2, blocked)
+		if item.VariantID != blocked || item.Sellable || item.SuggestedPrice != "" ||
+			item.MinPrice != "" || item.Existing != existing || item.Reserved != reserved ||
+			item.Available != available {
+			t.Fatalf("an unpriced variant must be published blocked: %+v want %d/%d/%d",
+				item, existing, reserved, available)
+		}
+	}
+	// A priced variant carries the balance of the branch, which is the counter's own datum.
+	existing, reserved, available := e.availability(t, 2, 1)
+	if got := page.Items[0]; got.Existing != existing || got.Reserved != reserved ||
+		got.Available != available {
+		t.Fatalf("a sellable variant must carry the branch balance: %+v want %d/%d/%d",
+			got, existing, reserved, available)
+	}
+	// Branch 3 only prices the first battery, so its catalogue is the same size and only
+	// those two polarities are sellable.
+	other, err := e.store.Sellable(e.ctx, clerk(3), sales.SellableQuery{Page: 1, PageSize: 10})
+	if err != nil || other.TotalVariants != total || len(other.Items) != 10 {
+		t.Fatalf("each branch must see the whole catalogue: %+v %v", other, err)
+	}
+	for i, item := range other.Items {
+		want := i < 2
+		if item.Sellable != want {
+			t.Fatalf("branch 3 must sell only the priced battery: %+v", item)
+		}
+		if want && (item.SuggestedPrice != "96000.50" || item.MinPrice != "85000.00") {
+			t.Fatalf("the sellable pair of branch 3 is wrong: %+v", item)
+		}
+	}
+	// Every filter is derived from the source catalogue instead of being guessed, and each
+	// counts every matching variant, priced or not.
 	source, err := catalog.Load()
 	if err != nil {
 		t.Fatal("catalogue source load failed")
 	}
-	// The priced batteries are the only sellable ones, so every filter expectation is
-	// derived from the source catalogue instead of being guessed.
 	matches := func(q sales.SellableQuery, entry catalog.Entry, variantID int64) bool {
 		polarity := "R"
 		if variantID%2 == 1 {
@@ -1193,7 +1318,7 @@ func TestSaleSellableCatalogue(t *testing.T) {
 		"no_match":        {Search: "zzz"},
 	} {
 		want := 0
-		for _, variantID := range priced {
+		for variantID := int64(1); variantID <= total; variantID++ {
 			if matches(query, source.Entries[(variantID-1)/2], variantID) {
 				want++
 			}
@@ -1203,7 +1328,10 @@ func TestSaleSellableCatalogue(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s filter failed: %v", name, err)
 		}
-		if len(result.Items) != want {
+		if int64(result.TotalVariants) != int64(want) {
+			t.Fatalf("%s counted %d variants, want %d", name, result.TotalVariants, want)
+		}
+		if want <= 50 && len(result.Items) != want {
 			t.Fatalf("%s returned %d items, want %d", name, len(result.Items), want)
 		}
 		if result.Items == nil {

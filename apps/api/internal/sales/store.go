@@ -221,6 +221,10 @@ func readHeader(ctx context.Context, q querier, id, branch int64) (Sale, error) 
 	return sale, nil
 }
 
+// maxBranchName is the bound of a branch name this store publishes: the column has no
+// stored bound, so the read keeps a text it can print.
+const maxBranchName = 200
+
 // Read reads one persisted sale of the actor's own branch with its lines joined to the
 // catalogue, so the emitted document stays legible with the prices of the sale. The
 // snapshot is the history read's, and the document is resolved by one header statement
@@ -263,6 +267,23 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
 		Payments: sale.Payments, Customer: sale.Customer, Total: sale.Total,
 		CreatedByAccountID: sale.CreatedByAccountID, CreatedAt: sale.CreatedAt,
 	}
+	// The name of the branch that sold is resolved by joining the document's own branch
+	// row, so the warranty is printed with the branch it belongs to. A missing or retired
+	// branch row means the document is not what this domain wrote, so the read fails
+	// closed instead of describing an empty branch.
+	var branchName string
+	switch err := tx.QueryRow(ctx, `SELECT l.name FROM sales s
+ JOIN locations l ON l.id=s.branch_location_id AND l.deleted_at IS NULL
+ WHERE s.id=$1 AND s.branch_location_id=$2`, id, int64(branch)).Scan(&branchName); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return Detail{}, ErrUnavailable
+	case err != nil:
+		return Detail{}, fail(ctx)
+	}
+	if strings.TrimSpace(branchName) == "" || !boundedText(branchName, 1, maxBranchName) {
+		return Detail{}, ErrUnavailable
+	}
+	detail.BranchName = branchName
 	rows, err := tx.Query(ctx, `SELECT l.variant_id,l.quantity,l.unit_price::text,l.min_price::text,
   l.warranty_months,l.subtotal::text,e.id,e.brand,e.model,e.capacity_ah::text,v.polarity
  FROM sale_lines l
@@ -398,13 +419,14 @@ const listFilter = ` FROM sales s
  AND ($2='' OR s.warranty_number ILIKE $2 ESCAPE '\' OR s.customer_name ILIKE $2 ESCAPE '\')
  AND ($3='' OR s.payment_method=$3)`
 
-// Sellable reads the point-of-sale catalogue of the actor's own branch: only the
-// variants the branch can actually sell, each with the suggested price the counter
-// starts from and the minimum it can never go under. The pair belongs to the battery of
-// the variant, so the two polarities of one battery are offered together at the same
-// pair. A battery without a price in this branch, or in a retired branch, is simply
-// absent, so the counter cannot offer its polarities. The warranty term is not read
-// here: the seller states it on the sale.
+// Sellable reads the point-of-sale catalogue of the actor's own branch: every variant of
+// the catalogue once, each with the stock of the branch, whether the branch can sell it
+// right now, and the suggested price the counter starts from plus the minimum it can
+// never go under. The pair belongs to the battery of the variant, so the two polarities
+// of one battery are offered together at the same pair. A variant whose battery has no
+// price in this branch is still listed, with empty prices and Sellable=false, because the
+// counter must show the row with its action disabled (S7) instead of hiding it. The
+// warranty term is not read here: the seller states it on the sale.
 func (s *Store) Sellable(ctx context.Context, actor auth.Identity, q SellableQuery) (SellablePage, error) {
 	result := SellablePage{Page: q.Page, PageSize: q.PageSize, Items: []SellableItem{}}
 	if ctx == nil || s == nil || s.pool == nil {
@@ -437,7 +459,8 @@ func (s *Store) Sellable(ctx context.Context, actor auth.Identity, q SellableQue
 	}
 	args = append(args, int64(q.PageSize), int64(q.Page-1)*int64(q.PageSize))
 	rows, err := tx.Query(ctx, `SELECT v.id,e.id,e.brand,e.model,e.capacity_ah::text,v.polarity,
-  p.suggested_price::text,p.min_price::text`+sellableFilter+
+  coalesce(p.suggested_price::text,''),coalesce(p.min_price::text,''),
+  coalesce(b.existing,0),coalesce(b.reserved,0),coalesce(b.available,0)`+sellableFilter+
 		` ORDER BY v.id LIMIT $6 OFFSET $7`, args...)
 	if err != nil {
 		return SellablePage{}, fail(ctx)
@@ -447,19 +470,40 @@ func (s *Store) Sellable(ctx context.Context, actor auth.Identity, q SellableQue
 		var item SellableItem
 		var capacity, suggested, minimum string
 		if rows.Scan(&item.VariantID, &item.CatalogEntryID, &item.Brand, &item.Model, &capacity,
-			&item.Polarity, &suggested, &minimum) != nil {
+			&item.Polarity, &suggested, &minimum, &item.Existing, &item.Reserved,
+			&item.Available) != nil {
 			return SellablePage{}, fail(ctx)
 		}
-		item.SuggestedPrice = Money(suggested)
-		item.MinPrice = Money(minimum)
-		if item.SuggestedPrice.String() != suggested || item.MinPrice.String() != minimum ||
-			!item.SuggestedPrice.AtLeast(item.MinPrice) ||
-			item.VariantID < 1 || item.CatalogEntryID < 1 || item.Brand == "" || item.Model == "" ||
+		if item.VariantID < 1 || item.CatalogEntryID < 1 || item.Brand == "" || item.Model == "" ||
 			(item.Polarity != "L" && item.Polarity != "R") ||
 			(len(result.Items) > 0 && item.VariantID <= result.Items[len(result.Items)-1].VariantID) {
 			return SellablePage{}, ErrUnavailable
 		}
 		if item.Capacity, err = catalog.ParseDecimal(capacity); err != nil {
+			return SellablePage{}, ErrUnavailable
+		}
+		// The price is the branch's own reading of the battery: it is present on both
+		// columns or on neither, and a published pair is canonical and never under its own
+		// floor. A branch pair the price list could not have written is not described.
+		switch {
+		case suggested == "" && minimum == "":
+			item.Sellable = false
+			item.SuggestedPrice, item.MinPrice = "", ""
+		case suggested != "" && minimum != "":
+			item.SuggestedPrice = Money(suggested)
+			item.MinPrice = Money(minimum)
+			if item.SuggestedPrice.String() != suggested || item.MinPrice.String() != minimum ||
+				!item.SuggestedPrice.AtLeast(item.MinPrice) {
+				return SellablePage{}, ErrUnavailable
+			}
+			item.Sellable = true
+		default:
+			return SellablePage{}, ErrUnavailable
+		}
+		// The availability is the branch's own balance row: a missing row is the honest
+		// zero, and a shape the ledger could not hold is not described.
+		if item.Existing < 0 || item.Reserved < 0 || item.Reserved > item.Existing ||
+			item.Available != item.Existing-item.Reserved {
 			return SellablePage{}, ErrUnavailable
 		}
 		result.Items = append(result.Items, item)
@@ -473,17 +517,18 @@ func (s *Store) Sellable(ctx context.Context, actor auth.Identity, q SellableQue
 	return result, nil
 }
 
-// sellableFilter is shared by the count and the page. The branch price pair is the
-// sellability rule, and it is the battery's pair: a battery without a pair in this
-// branch has no row here at all, so both of its polarities are absent together. One
-// row per sellable variant is produced by joining the price through the battery, never
-// through the variant.
-const sellableFilter = ` FROM catalog_entries e
- JOIN catalog_variants v ON v.catalog_entry_id=e.id
- JOIN branch_prices p ON p.catalog_entry_id=e.id
- JOIN locations l ON l.id=p.branch_location_id AND l.deleted_at IS NULL
- WHERE p.branch_location_id=$1
- AND ($2='' OR e.brand ILIKE $2 ESCAPE '\' OR e.model ILIKE $2 ESCAPE '\')
+// sellableFilter is shared by the count and the page, so both answer the same question.
+// Every variant matched by the filters is one row, priced or not: the pair is joined
+// through the battery and the balance through the branch, both as LEFT JOINs, so a
+// variant without a price in this branch -- the row the counter must show blocked -- and
+// a variant without a balance row still appear exactly once. The join on the battery also
+// gives both polarities of one battery the same pair, and no row here is duplicated,
+// because a battery has at most one price per branch and a variant one balance per branch.
+const sellableFilter = ` FROM catalog_variants v
+ JOIN catalog_entries e ON e.id=v.catalog_entry_id
+ LEFT JOIN branch_prices p ON p.catalog_entry_id=e.id AND p.branch_location_id=$1
+ LEFT JOIN inventory_balances b ON b.location_id=$1 AND b.variant_id=v.id
+ WHERE ($2='' OR e.brand ILIKE $2 ESCAPE '\' OR e.model ILIKE $2 ESCAPE '\')
  AND ($3='' OR e.brand=$3) AND ($4::numeric IS NULL OR e.capacity_ah=$4::numeric)
  AND ($5='' OR v.polarity=$5)`
 

@@ -274,10 +274,13 @@ type DetailLine struct {
 	Polarity       string
 }
 
-// Detail is one persisted sale with its catalogue-resolved lines.
+// Detail is one persisted sale with its catalogue-resolved lines. BranchName is the name
+// of the branch that sold, resolved from locations, so the warranty can be printed with
+// the branch it belongs to without a second lookup by the caller.
 type Detail struct {
 	ID                 int64
 	BranchLocationID   int64
+	BranchName         string
 	BranchSequence     int64
 	WarrantyNumber     string
 	PaymentMethod      PaymentMethod
@@ -329,9 +332,13 @@ type SellableQuery struct {
 	PageSize int
 }
 
-// SellableItem is one variant the branch can sell right now: the catalogue identity,
-// the suggested price the counter starts from and the minimum it can never go under.
-// The warranty term is not part of the catalogue: the seller states it on the sale.
+// SellableItem is one variant of the catalogue as the branch sees it at the counter:
+// the catalogue identity, whether this branch can sell it right now, the suggested price
+// the counter starts from and the minimum it can never go under, and the stock of the
+// branch. Sellable is true only when the battery of the variant has a price in this
+// branch; SuggestedPrice and MinPrice stay empty in that case, so the counter can show
+// the row with its action disabled (S7) instead of hiding it. The warranty term is not
+// part of the catalogue: the seller states it on the sale.
 type SellableItem struct {
 	VariantID      int64
 	CatalogEntryID int64
@@ -339,8 +346,12 @@ type SellableItem struct {
 	Model          string
 	Capacity       catalog.Decimal
 	Polarity       string
+	Sellable       bool
 	SuggestedPrice Money
 	MinPrice       Money
+	Existing       int64
+	Reserved       int64
+	Available      int64
 }
 
 // SellablePage is one admitted page of the sellable catalogue plus the total.
