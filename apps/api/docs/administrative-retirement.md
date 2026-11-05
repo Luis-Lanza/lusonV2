@@ -12,8 +12,9 @@ D5 source adds existing-layout user/branch deletion controls with explicit confi
 retains IDs, names, usernames, balances, realtime audiences and historical evidence.
 Deleted accounts must be disabled; administrator 1 and warehouse 1 are protected.
 There is no restore, recovery command, purge or identity/name recycling feature.
-Bootstrap still checks 190 variants × **all** locations, and realtime still retains
-**all** location audiences.
+Bootstrap checks the 190 preloaded variants against every **active** location and
+tolerates batteries created after the seed; realtime still retains **all** location
+audiences.
 
 ## Branch mutation contract
 

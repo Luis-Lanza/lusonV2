@@ -118,10 +118,8 @@ func state(ctx context.Context, tx pgx.Tx, source catalog.Catalog) (bool, error)
 	if counts["locations"] < len(catalog.Locations()) {
 		return false, errors.New("initialized dataset incomplete in locations")
 	}
-	for table, want := range map[string]int{"initialization_metadata": 1, "catalog_entries": 95, "catalog_variants": 190, "inventory_balances": 190 * counts["locations"]} {
-		if counts[table] != want {
-			return false, fmt.Errorf("initialized dataset incomplete in %s", table)
-		}
+	if counts["initialization_metadata"] != 1 {
+		return false, errors.New("initialized dataset incomplete in initialization_metadata")
 	}
 	var sourceSHA, fixtureSHA, origin string
 	if err := tx.QueryRow(ctx, "SELECT source_sha256,fixture_sha256,stock_origin FROM initialization_metadata WHERE id=1").Scan(&sourceSHA, &fixtureSHA, &origin); err != nil {
@@ -130,32 +128,11 @@ func state(ctx context.Context, tx pgx.Tx, source catalog.Catalog) (bool, error)
 	if sourceSHA != source.SourceSHA || fixtureSHA != fixtureHash() || origin != stockOrigin {
 		return false, errors.New("initialization provenance differs from embedded fixture")
 	}
-	if err := checkEntries(ctx, tx, source); err != nil {
-		return false, err
-	}
-	rows, err := tx.Query(ctx, "SELECT id,catalog_entry_id,polarity FROM catalog_variants ORDER BY id")
+	rows, err := observe(ctx, tx)
 	if err != nil {
 		return false, err
 	}
-	variants := source.Variants()
-	index := 0
-	for rows.Next() {
-		var id, entry int
-		var polarity string
-		if err := rows.Scan(&id, &entry, &polarity); err != nil {
-			rows.Close()
-			return false, err
-		}
-		expected := variants[index]
-		index++
-		if id != expected.ID || entry != expected.CatalogID || polarity != string(expected.Polarity) {
-			rows.Close()
-			return false, errors.New("preloaded variants differ from fixture")
-		}
-	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
+	if err := verifyFixture(source, rows); err != nil {
 		return false, err
 	}
 	for _, location := range catalog.Locations() {
@@ -171,25 +148,175 @@ func state(ctx context.Context, tx pgx.Tx, source catalog.Catalog) (bool, error)
 	// with trial stock: those quantities may already be operationally changed.
 	return true, nil
 }
-func checkEntries(ctx context.Context, tx pgx.Tx, source catalog.Catalog) error {
-	rows, err := tx.Query(ctx, "SELECT id,brand,model,capacity_ah::text FROM catalog_entries ORDER BY id")
+
+// seedRows are the observed rows the fixture comparison needs. The database is
+// the catalog authority, so rows past the seeded identities are operational
+// data: they are observed and then ignored, never repaired or refused.
+type seedRows struct {
+	entries   []entryRow
+	variants  []variantRow
+	locations []int
+	balances  []balanceRow
+}
+
+type entryRow struct {
+	id       int
+	brand    string
+	model    string
+	capacity catalog.Decimal
+}
+
+type variantRow struct {
+	id       int
+	entryID  int
+	polarity catalog.Polarity
+}
+
+type balanceRow struct {
+	locationID int
+	variantID  int
+}
+
+// observe reads the catalog, the active branch set and the balance matrix.
+// Archived fixture rows keep their exact values and are compared like active
+// ones; allocated identities, their balances and retired branches are read too
+// so verification can bound itself to the fixture instead of to a row count.
+func observe(ctx context.Context, tx pgx.Tx) (seedRows, error) {
+	var rows seedRows
+	entries, err := tx.Query(ctx, "SELECT id,brand,model,capacity_ah::text FROM catalog_entries ORDER BY id")
 	if err != nil {
+		return rows, err
+	}
+	for entries.Next() {
+		var row entryRow
+		var capacity string
+		if err := entries.Scan(&row.id, &row.brand, &row.model, &capacity); err != nil {
+			entries.Close()
+			return rows, err
+		}
+		if row.capacity, err = catalog.ParseDecimal(capacity); err != nil {
+			entries.Close()
+			return rows, err
+		}
+		rows.entries = append(rows.entries, row)
+	}
+	err = entries.Err()
+	entries.Close()
+	if err != nil {
+		return rows, err
+	}
+	variants, err := tx.Query(ctx, "SELECT id,catalog_entry_id,polarity FROM catalog_variants ORDER BY id")
+	if err != nil {
+		return rows, err
+	}
+	for variants.Next() {
+		var row variantRow
+		var polarity string
+		if err := variants.Scan(&row.id, &row.entryID, &polarity); err != nil {
+			variants.Close()
+			return rows, err
+		}
+		row.polarity = catalog.Polarity(polarity)
+		rows.variants = append(rows.variants, row)
+	}
+	err = variants.Err()
+	variants.Close()
+	if err != nil {
+		return rows, err
+	}
+	locations, err := tx.Query(ctx, "SELECT id FROM locations WHERE deleted_at IS NULL ORDER BY id")
+	if err != nil {
+		return rows, err
+	}
+	for locations.Next() {
+		var id int
+		if err := locations.Scan(&id); err != nil {
+			locations.Close()
+			return rows, err
+		}
+		rows.locations = append(rows.locations, id)
+	}
+	err = locations.Err()
+	locations.Close()
+	if err != nil {
+		return rows, err
+	}
+	balances, err := tx.Query(ctx, "SELECT location_id,variant_id FROM inventory_balances ORDER BY location_id,variant_id")
+	if err != nil {
+		return rows, err
+	}
+	for balances.Next() {
+		var row balanceRow
+		if err := balances.Scan(&row.locationID, &row.variantID); err != nil {
+			balances.Close()
+			return rows, err
+		}
+		rows.balances = append(rows.balances, row)
+	}
+	err = balances.Err()
+	balances.Close()
+	return rows, err
+}
+
+// verifyFixture proves the embedded fixture is still intact while the database
+// stays the catalog authority. Every fixture identity keeps its exact values and
+// every fixture variant keeps one balance row per active branch; batteries and
+// branches created after the seed, their balances and archived fixture rows are
+// operational history and never fail an integrity check.
+func verifyFixture(source catalog.Catalog, rows seedRows) error {
+	if err := verifyEntries(source, rows.entries); err != nil {
 		return err
 	}
-	defer rows.Close()
-	index := 0
-	for rows.Next() {
-		var id int
-		var brand, model, capacity string
-		if err := rows.Scan(&id, &brand, &model, &capacity); err != nil {
-			return err
-		}
-		expected := source.Entries[index]
-		index++
-		decimal, err := catalog.ParseDecimal(capacity)
-		if err != nil || id != expected.ID || brand != expected.Brand || model != expected.Model || decimal != expected.Capacity {
+	if err := verifyVariants(source, rows.variants); err != nil {
+		return err
+	}
+	return verifyBalances(source, rows.locations, rows.balances)
+}
+
+// verifyEntries compares only the fixture prefix; rows arrive ordered by id and
+// the fixture owns ids 1..N, so an allocated battery can never occupy or replace
+// a seeded identity.
+func verifyEntries(source catalog.Catalog, rows []entryRow) error {
+	if len(rows) < len(source.Entries) {
+		return errors.New("initialized dataset incomplete in catalog_entries")
+	}
+	for i, expected := range source.Entries {
+		row := rows[i]
+		if row.id != expected.ID || row.brand != expected.Brand || row.model != expected.Model || row.capacity != expected.Capacity {
 			return errors.New("preloaded catalog differs from fixture")
 		}
 	}
-	return rows.Err()
+	return nil
+}
+
+// verifyVariants applies the same fixture prefix the seed wrote.
+func verifyVariants(source catalog.Catalog, rows []variantRow) error {
+	variants := source.Variants()
+	if len(rows) < len(variants) {
+		return errors.New("initialized dataset incomplete in catalog_variants")
+	}
+	for i, expected := range variants {
+		row := rows[i]
+		if row.id != expected.ID || row.entryID != expected.CatalogID || row.polarity != expected.Polarity {
+			return errors.New("preloaded variants differ from fixture")
+		}
+	}
+	return nil
+}
+
+// verifyBalances requires one balance row per fixture variant in every active
+// branch. Balances of allocated variants and of retired branches are tolerated.
+func verifyBalances(source catalog.Catalog, locations []int, rows []balanceRow) error {
+	held := make(map[balanceRow]bool, len(rows))
+	for _, row := range rows {
+		held[row] = true
+	}
+	for _, location := range locations {
+		for _, variant := range source.Variants() {
+			if !held[balanceRow{location, variant.ID}] {
+				return errors.New("initialized dataset incomplete in inventory_balances")
+			}
+		}
+	}
+	return nil
 }
