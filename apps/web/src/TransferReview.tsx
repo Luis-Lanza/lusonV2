@@ -5,7 +5,7 @@ import type { TransferCreateInput } from './transferModel';
 import type { TransferCreateResult } from './transferAPI';
 import type { TransferAuthority, TransferController } from './useInventory';
 import { useTransfers } from './useTransfers';
-import TransferDate from './TransferDate';
+import TransferDate from './shared/TransferDate';
 import { validTransferLocation } from './transferModel';
 
 export interface TransferReviewProps {

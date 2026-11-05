@@ -6,7 +6,7 @@ import { captureDecisionRecord } from './transferDecisionRecovery';
 import { detailAuthority, TransferItems, transferStatusLabel } from './TransferDetail';
 import { transferViewOwner } from './TransferPending';
 import { TransferAPIError } from './transferAPI';
-import TransferDate from './TransferDate';
+import TransferDate from './shared/TransferDate';
 import { useTransferModalFocus, type TransferModalFocusBinding } from './transferModalFocus';
 import './transfer-cancellation.css';
 

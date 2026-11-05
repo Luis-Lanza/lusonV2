@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { validSearch } from './model';
-import TransferDate from './TransferDate';
+import TransferDate from './shared/TransferDate';
 import { createStockAdjustmentAPI, StockAdjustmentAPIError } from './stockAdjustmentAPI';
 import {
   canonicalStockAdjustmentInput, canonicalStockAdjustmentReason, canonicalStockAdjustmentReversalInput,

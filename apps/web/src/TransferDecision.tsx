@@ -6,7 +6,7 @@ import { captureDecisionRecord, matchesDecisionRecord, satisfiesDecision, type T
 import { detailAuthority, TransferItems, transferStatusLabel, type StockAdvice } from './TransferDetail';
 import { transferViewOwner } from './TransferPending';
 import { TransferAPIError } from './transferAPI';
-import TransferDate from './TransferDate';
+import TransferDate from './shared/TransferDate';
 import { Icon } from './icons';
 import { useTransferModalFocus, type TransferModalFocusBinding } from './transferModalFocus';
 

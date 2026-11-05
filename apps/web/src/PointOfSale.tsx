@@ -1,5 +1,5 @@
 import { Component, Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import TransferDate from './TransferDate';
+import TransferDate from './shared/TransferDate';
 import {
   addToCart, cartTotal, changeQuantity, emptyCustomer, emptyPayments, fillRemaining, formatMoney,
   moneyCents, moneySumMessage, paymentBreakdown, posCustomerNameMessage, posEmptyCartMessage,

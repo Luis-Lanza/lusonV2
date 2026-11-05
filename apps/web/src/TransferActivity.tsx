@@ -1,5 +1,5 @@
 import type { TransferActivityEntry } from './transferModel';
-import TransferDate from './TransferDate';
+import TransferDate from './shared/TransferDate';
 
 const labels: Record<string, Record<string, string>> = {
   transfer: { create: 'Transferencia creada', approve: 'Transferencia aprobada', reject: 'Transferencia rechazada', dispatch: 'Transferencia despachada', receive: 'Transferencia recibida', cancel: 'Transferencia cancelada' },

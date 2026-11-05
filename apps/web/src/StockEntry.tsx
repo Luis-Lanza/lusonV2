@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Item } from './model';
 import { validSearch } from './model';
-import TransferDate from './TransferDate';
+import TransferDate from './shared/TransferDate';
 import { createStockEntryAPI, StockEntryAPIError, StockEntryDetailAPIError, StockEntryReversalAPIError } from './stockEntryAPI';
 import {
   canonicalStockEntryInput, canonicalStockEntryReversalInput, canonicalStockEntryReversalReason,

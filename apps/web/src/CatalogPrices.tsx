@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import TransferDate from './TransferDate';
+import TransferDate from './shared/TransferDate';
 import { CatalogPricesAPIError, createCatalogPricesAPI } from './catalogPricesAPI';
 import {
   branchTag, catalogAmountEntry, catalogPricesDefaultPageSize, catalogPricesErrorMessages, catalogPricesListUnavailable,

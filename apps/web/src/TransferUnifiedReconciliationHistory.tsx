@@ -1,5 +1,5 @@
 import type { UnifiedReconciliations } from './transferUnifiedReconciliationModel';
-import TransferDate from './TransferDate';
+import TransferDate from './shared/TransferDate';
 
 const states = { pending: 'Pendiente de contraparte', superseded: 'Reemplazada · sin aplicación',
   rejected: 'Rechazada · sin aplicación', applied: 'Aplicada atómicamente' };

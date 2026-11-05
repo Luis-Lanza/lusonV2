@@ -4,7 +4,7 @@ import { loadSourceInventory, SourceInventoryError, type SourceCatalog } from '.
 import { transferQuantityTotal, type TransferRecord } from './transferModel';
 import { transferViewOwner } from './TransferPending';
 import { ReceiptTable } from './TransferReceipt';
-import TransferDate from './TransferDate';
+import TransferDate from './shared/TransferDate';
 import TransferUnifiedReconciliation from './TransferUnifiedReconciliation';
 import TransferUnifiedReconciliationHistory from './TransferUnifiedReconciliationHistory';
 import type { useTransferUnifiedReconciliations } from './useTransferUnifiedReconciliations';

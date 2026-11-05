@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import TransferDate from './TransferDate';
+import TransferDate from './shared/TransferDate';
 import { formatMoney, moneyCents, paymentLabel, type SaleCustomer } from './pointOfSaleModel';
 import {
   SalesAPIError, createSalesAPI, salesDefaultPageSize, salesErrorMessages, salesHistoryUnavailable, salesPageSizes,
