@@ -28,13 +28,32 @@ S5. Solo el administrador de almacén (cuenta con location 1) puede crear, edita
 
 | ID | Spec | Route | Commit |
 | --- | --- | --- | --- |
-| T1 | S2-S3 | inline | pending |
-| T2 | S3 | inline | pending |
-| T3 | S1-S3 | inline | pending |
-| T4 | S2-S4 | inline | pending |
-| T5 | S1,S5 | inline | pending |
-| T6 | S1-S2 | inline | pending |
-| T7 | S1-S5 | inline | pending |
+| T1 | S2-S3 | inline (parent) | `fb6eb9c` |
+| T2 | S3 | worker `gentle-ai-worker` | pending |
+| T3 | S1-S3 | pending | pending |
+| T4 | S2-S3 | worker `gentle-ai-worker` | pending |
+| T5 | S1,S5 | pending | pending |
+| T6 | S1-S2 | pending | pending |
+| T7 | S1-S5 | pending | pending |
+
+Task rules agreed before implementation:
+
+- T1 done: `028_catalog_operational_authority.sql` adds `deleted_at`, allocated ids past the
+  fixture (sequences 96/191), the retirement blocker (stock / open transfers), a one-way
+  retirement guard, a deletion-forbidden guard, an active-only `(brand, model)` unique index,
+  and the variant-to-active-branch balance fan-out. Static assertions plus live RED/GREEN
+  against the local database; `migrate check` still passes on the seeded dataset.
+- T2: `bootstrap.Check` keeps proving the seeded fixture is intact (metadata sha, the 95
+  entries and 190 variants with their exact values, one balance per active location for every
+  seeded variant) while tolerating operational batteries past the fixture and archived
+  fixture rows. `Seed` stays one-shot and must not fail on a database that already holds
+  operational batteries.
+- T4: only *selection* paths filter `deleted_at IS NULL` (inventory listing, sellable catalog,
+  price matrix, stock-adjustment catalog, transfer availability). *History* paths never filter
+  (sale detail, stock entry detail, request items), because archived batteries must stay
+  visible in past evidence. `pricing` must stop returning `service_unavailable` for a battery
+  that has no fixture cells: cells become optional. The SPA bounds that hardcode 95/190 must
+  stop rejecting allocated identities.
 
 ## Log
 
@@ -62,8 +81,7 @@ vertical no!, antes me guistaria levantar el proyecto en local" — el entorno l
 levantado (Postgres en contenedor `luson-dev-db`, API `local-trial` HTTP en
 `127.0.0.1:8080`, 3 cuentas provisionadas) antes de empezar esta vertical.
 
-L7 (evidencia, exploración read-only): el catálogo hoy es inmutable por construcción —
-`001_data_foundation.sql:44-62` trigger `protect_preloaded_catalog` (INSERT/UPDATE/DELETE
+L7 (evidencia, exploración read-only): el catálogo hoy es inmutable por construcción —`001_data_foundation.sql:44-62` trigger `protect_preloaded_catalog` (INSERT/UPDATE/DELETE
 prohibidos tras el seed), `:64-82` bloqueo de TRUNCATE, caps `id BETWEEN 1 AND 95` y
 `1 AND 190` (`001:11,20`), ids nunca generados (`bootstrap/seed.go:63-70`, variante =
 `(entry.ID-1)*2+i+1` en `catalog/catalog.go`), `catalog.Decode` exige 95 entries / 101

@@ -43,16 +43,21 @@ describe('R04 source catalog', () => {
     const catalog = await loadSourceInventory(1, {}, replies(page([190])));
     expect(catalog.rows[0]).toMatchObject({ variant_id: 190, catalog_entry_id: 95 });
   });
+  it('loads allocated identities past the preloaded fixture', async () => {
+    const fetcher = replies(
+      page(range(1, 50), 191), page(range(51, 50), 191, 2), page(range(101, 50), 191, 3), page(range(151, 41), 191, 4));
+    const catalog = await loadSourceInventory(1, {}, fetcher);
+    expect(catalog.rows).toHaveLength(191);
+    expect(catalog.rows[190]).toMatchObject({ variant_id: 191, catalog_entry_id: 96 });
+    expect(fetcher).toHaveBeenCalledTimes(4);
+  });
   it('accepts a consistent empty catalog without fabricated rows', async () => {
     const fetcher = replies(page([]));
     expect((await loadSourceInventory(1, {}, fetcher)).rows).toEqual([]);
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
   it.each([
-    ['entry96', page([190]).replace('"catalog_entry_id":95', '"catalog_entry_id":96')],
-    ['variant191', page([191], 1)],
     ['variant0', page([0], 1)],
-    ['oversize', page([1], 191)],
     ['count-type', page([1]).replace('"total_variants":1', '"total_variants":"1"')],
     ['size', page([1]).replace('"page_size":50', '"page_size":25')],
     ['page', page([1], 1, 2)],

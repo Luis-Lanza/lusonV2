@@ -65,7 +65,7 @@ func checkVariants(ctx context.Context, q querier, lines []Line) error {
 		ids[i] = int32(line.VariantID)
 	}
 	var known int64
-	if err := q.QueryRow(ctx, "SELECT count(*) FROM catalog_variants WHERE id = ANY($1)", ids).Scan(&known); err != nil {
+	if err := q.QueryRow(ctx, "SELECT count(*) FROM catalog_variants v JOIN catalog_entries e ON e.id=v.catalog_entry_id WHERE v.id = ANY($1) AND e.deleted_at IS NULL", ids).Scan(&known); err != nil {
 		return fail(ctx)
 	}
 	if known != int64(len(lines)) {
@@ -601,11 +601,13 @@ func (s *Store) Catalog(ctx context.Context, actor auth.Identity, q CatalogQuery
 }
 
 // catalogFilter is shared by the count and the page, so both answer the same
-// question. It selects no stock quantity at all.
+// question. It selects no stock quantity at all, and a retired battery is no longer
+// a valid target for an adjustment.
 const catalogFilter = ` FROM catalog_variants v
  JOIN catalog_entries e ON e.id=v.catalog_entry_id
  JOIN inventory_balances b ON b.location_id=$1 AND b.variant_id=v.id
- WHERE ($2='' OR e.brand ILIKE $2 ESCAPE '\' OR e.model ILIKE $2 ESCAPE '\')
+ WHERE e.deleted_at IS NULL
+ AND ($2='' OR e.brand ILIKE $2 ESCAPE '\' OR e.model ILIKE $2 ESCAPE '\')
  AND ($3='' OR e.brand=$3) AND ($4='' OR v.polarity=$4)`
 
 // literalPattern turns a free search into a literal substring, so % and _ in the

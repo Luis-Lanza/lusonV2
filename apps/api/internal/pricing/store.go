@@ -157,9 +157,11 @@ func validPolarities(polarities []string) bool {
 
 // matrixFilter is shared by the count and the page, so both answer the same question.
 // The capacity is a nullable numeric parameter: an absent filter never casts an empty
-// string. The matrix is a list of batteries, so the filter never looks at a polarity.
+// string. The matrix is a list of batteries, so the filter never looks at a polarity,
+// and a retired battery is no longer part of the sale catalog.
 const matrixFilter = ` FROM catalog_entries e
- WHERE ($1='' OR e.brand ILIKE $1 ESCAPE '\' OR e.model ILIKE $1 ESCAPE '\')
+ WHERE e.deleted_at IS NULL
+ AND ($1='' OR e.brand ILIKE $1 ESCAPE '\' OR e.model ILIKE $1 ESCAPE '\')
  AND ($2='' OR e.brand=$2) AND ($3::numeric IS NULL OR e.capacity_ah=$3::numeric)`
 
 // loadBranches reads the active branches of the matrix in id order. The warehouse is
@@ -379,9 +381,10 @@ func literalPattern(search string) string {
 	return "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(search) + "%"
 }
 
-// cellsOf reads the three source cells of a catalogue entry. The cells are part of
-// the preloaded source catalogue, so they are loaded once and validated there; a
-// missing entry is a store failure, never an empty list.
+// cellsOf reads the three source cells of a catalogue entry. Cells belong to the
+// preloaded source catalogue, so they are loaded and validated once there. A battery
+// created after the seed has no source cells: an empty list is its correct answer, not
+// a store failure. A broken embedded fixture keeps failing.
 func cellsOf(entryID int64) ([]string, error) {
 	cells.cache.Do(func() {
 		source, err := catalog.Load()
@@ -404,7 +407,7 @@ func cellsOf(entryID int64) ([]string, error) {
 	}
 	value, known := cells.byEntry[entryID]
 	if !known {
-		return nil, ErrUnavailable
+		return []string{}, nil
 	}
 	return append([]string(nil), value...), nil
 }

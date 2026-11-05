@@ -41,10 +41,10 @@ function quantity(input: CartQuantity): bigint {
   return exact;
 }
 function copyCatalog(catalog: SourceCatalog, source: number): SourceCatalog {
-  if (catalog.location.id !== source || catalog.rows.length > 190) return invalid();
+  if (catalog.location.id !== source || catalog.rows.length > 2_147_483_647) return invalid();
   const seen = new Set<number>();
   const rows = catalog.rows.map(item => {
-    if (!Number.isInteger(item.variant_id) || item.variant_id < 1 || item.variant_id > 190 || seen.has(item.variant_id)) return invalid();
+    if (!Number.isInteger(item.variant_id) || item.variant_id < 1 || item.variant_id > 2_147_483_647 || seen.has(item.variant_id)) return invalid();
     seen.add(item.variant_id);
     return Object.freeze({ ...item });
   });
@@ -78,8 +78,8 @@ export function restoreTransferCart(authority: TransferAuthority, catalog: Sourc
     const lines = snapshot.items.map(selected => {
       const { variant_id, catalog_entry_id, brand, model, capacity_ah, polarity } = selected;
       const validText = (s: string) => typeof s === 'string' && !!s && !s.includes('\0') && s.isWellFormed();
-      if (!Number.isInteger(variant_id) || variant_id < 1 || variant_id > 190 || seen.has(variant_id)
-        || !Number.isInteger(catalog_entry_id) || catalog_entry_id < 1 || catalog_entry_id > 95
+      if (!Number.isInteger(variant_id) || variant_id < 1 || variant_id > 2_147_483_647 || seen.has(variant_id)
+        || !Number.isInteger(catalog_entry_id) || catalog_entry_id < 1 || catalog_entry_id > 2_147_483_647
         || !validText(brand) || !validText(model) || typeof capacity_ah !== 'string'
         || !/^(0|[1-9][0-9]{0,5})(\.[0-9]{0,5}[1-9])?$/.test(capacity_ah) || capacity_ah === '0'
         || (polarity !== 'L' && polarity !== 'R')) return invalid();

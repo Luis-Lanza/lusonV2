@@ -124,7 +124,9 @@ func (s *Store) Receive(ctx context.Context, actor auth.Identity, id int64, inpu
 		return Request{}, err
 	}
 	var catalogCount int
-	if tx.QueryRow(ctx, "SELECT count(*) FROM catalog_variants WHERE id=ANY($1::integer[])", ids).Scan(&catalogCount) != nil {
+	if tx.QueryRow(ctx, `SELECT count(*) FROM catalog_variants v
+ JOIN catalog_entries e ON e.id=v.catalog_entry_id
+ WHERE v.id=ANY($1::integer[]) AND e.deleted_at IS NULL`, ids).Scan(&catalogCount) != nil {
 		return Request{}, fail(ctx)
 	}
 	if catalogCount != len(ids) {

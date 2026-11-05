@@ -46,6 +46,20 @@ describe('W2 warehouse recovery fences', () => {
 });
 
 describe('Transfer recovery R04b2c1', () => {
+  it('captures a reviewed cart carrying identities allocated past the preloaded fixture', () => {
+    const a = authority();
+    const row = { variant_id: 191, catalog_entry_id: 96, brand: 'TOYO', model: 'Model', capacity_ah: '6.000001',
+      polarity: 'L' as const, existing: BigInt(max), reserved: 0n, available: BigInt(max) };
+    let cart = createTransferCart(a, 'requestWarehouse', { location: { id: 1, name: 'Warehouse' }, rows: [row] });
+    cart = setCartQuantity(cart, a, 191, max);
+    const cache = createTransferRecovery();
+    let current = a;
+    const handle = cache.capture(() => current, reviewCart(cart, a, key));
+    expect(cache.getCurrent(() => current)).toMatchObject({ phase: 'ready', items: [{ variant_id: 191, catalog_entry_id: 96, quantity: max }] });
+    current = authority(2, 2, 8);
+    expect(cache.getCurrent(() => current)).toMatchObject({ phase: 'ready', attempt: { items: [{ variant_id: 191, quantity: max }] } });
+    expect(cache.begin(() => current, handle)).toBeDefined();
+  });
   it('recovers exact A attempt after B and a fresh verified A epoch', () => {
     const cache = createTransferRecovery(); let current = authority(); const get = () => current;
     const handle = cache.capture(get, reviewed()); const flight = cache.begin(get, handle);

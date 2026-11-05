@@ -86,13 +86,13 @@ export function parseInventory(raw: string): Inventory {
   const o = object(decode(raw));
   const page = integer(o.page, 1, 1000000);
   const size = integer(o.page_size, 10, 50);
-  const total = integer(o.total_variants, 0, 190);
+  const total = integer(o.total_variants, 0, 2_147_483_647);
   if (![10, 25, 50].includes(size) || !Array.isArray(o.items) || o.items.length > size || o.items.length > total) return invalid();
   const items = o.items.map(value => {
     const i = object(value);
     if (i.polarity !== 'L' && i.polarity !== 'R') return invalid();
     const result: Item = {
-      variant_id: integer(i.variant_id, 1, 190), catalog_entry_id: integer(i.catalog_entry_id, 1, 95),
+      variant_id: integer(i.variant_id, 1, 2_147_483_647), catalog_entry_id: integer(i.catalog_entry_id, 1, 2_147_483_647),
       brand: text(i.brand), model: text(i.model), capacity_ah: capacity(i.capacity_ah), polarity: i.polarity,
       existing: quantity(i.existing), reserved: quantity(i.reserved), available: quantity(i.available),
     };

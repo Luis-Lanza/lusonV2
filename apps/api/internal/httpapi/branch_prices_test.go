@@ -347,6 +347,58 @@ func TestBranchPriceMatrixRecord(t *testing.T) {
 	}
 }
 
+// branchPriceMatrixOptionalCells proves the price matrix stops refusing a battery that
+// has no source cells, while it keeps refusing every other cell shape: the payload
+// stays a literal array for both the preloaded and the operational battery.
+func TestBranchPriceMatrixOptionalCells(t *testing.T) {
+	value := branchPriceMatrixValue()
+	value.Batteries[1].CatalogEntryID = 96
+	value.Batteries[1].Brand = "NUEVA"
+	value.Batteries[1].Model = "AGM"
+	value.Batteries[1].Cells = []string{}
+	value.TotalBatteries = 96
+	record, err := branchPriceMatrixRecord(value)
+	if err != nil {
+		t.Fatalf("a battery without source cells must be described: %v", err)
+	}
+	if len(record.Batteries) != 2 {
+		t.Fatalf("the operational battery must stay in the page: %+v", record.Batteries)
+	}
+	if cells := record.Batteries[1].Cells; cells == nil || len(cells) != 0 {
+		t.Fatalf("a battery without source cells reports an empty list: %+v", record.Batteries[1])
+	}
+	// The wire shape does not change: cells is still present and still an array.
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("the record is not encodable: %v", err)
+	}
+	var top struct {
+		Batteries []map[string]json.RawMessage `json:"batteries"`
+	}
+	if json.Unmarshal(encoded, &top) != nil || len(top.Batteries) != 2 {
+		t.Fatalf("the record is not decodable: %s", encoded)
+	}
+	if string(top.Batteries[1]["cells"]) != "[]" {
+		t.Fatalf("cells must stay an empty array, never null or absent: %s", top.Batteries[1]["cells"])
+	}
+	if len(top.Batteries[1]) != 7 {
+		t.Fatalf("battery whitelist changed: %s", top.Batteries[1])
+	}
+	// Every other cell shape stays refused: optional cells never relaxes the count.
+	for name, cells := range map[string][]string{
+		"one_cell":   {"B5"},
+		"two_cells":  {"B5", "C5"},
+		"four_cells": {"B5", "C5", "D5", "E5"},
+		"nil_cells":  nil,
+	} {
+		refused := branchPriceMatrixValue()
+		refused.Batteries[0].Cells = cells
+		if _, err := branchPriceMatrixRecord(refused); !errors.Is(err, pricing.ErrUnavailable) {
+			t.Fatalf("%s must fail closed", name)
+		}
+	}
+}
+
 // branchPriceRecorder is a base handler that only records the request it received,
 // so forwarding stays provable without a database.
 type branchPriceRecorder struct {

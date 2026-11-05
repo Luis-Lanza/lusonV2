@@ -87,7 +87,8 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 		}
 		rows, err := tx.Query(ctx, `SELECT b.variant_id,b.available FROM inventory_balances b
    JOIN catalog_variants v ON v.id=b.variant_id
-   WHERE b.location_id=$1 AND b.variant_id=ANY($2::integer[])
+   JOIN catalog_entries e ON e.id=v.catalog_entry_id
+   WHERE b.location_id=$1 AND b.variant_id=ANY($2::integer[]) AND e.deleted_at IS NULL
    ORDER BY b.variant_id FOR UPDATE OF b`, n.OriginID, ids)
 		if err != nil {
 			return CreateResult{}, fail(ctx)

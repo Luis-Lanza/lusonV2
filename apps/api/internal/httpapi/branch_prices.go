@@ -405,7 +405,7 @@ func branchPriceMatrixRecord(matrix pricing.Matrix) (branchPriceMatrixDTO, error
 			item.CatalogEntryID <= previousBattery ||
 			!validBranchPriceText(item.Brand) || item.Brand == "" ||
 			!validBranchPriceText(item.Model) || item.Model == "" ||
-			len(item.Cells) != 3 || !validBranchPricePolarities(item.Polarities) {
+			!validBranchPriceCells(item.Cells) || !validBranchPricePolarities(item.Polarities) {
 			return unavailable()
 		}
 		capacity, err := catalog.ParseDecimal(string(item.Capacity))
@@ -463,6 +463,13 @@ func branchPriceMatrixRecord(matrix pricing.Matrix) (branchPriceMatrixDTO, error
 		PageSize:       matrix.PageSize,
 		TotalBatteries: matrix.TotalBatteries,
 	}, nil
+}
+
+// validBranchPriceCells admits the source cells of a preloaded battery, and for a
+// battery created after the seed the empty list the store answers. Cells are optional
+// payload: a nil list is refused, so the matrix keeps publishing an array either way.
+func validBranchPriceCells(cells []string) bool {
+	return cells != nil && (len(cells) == 0 || len(cells) == 3)
 }
 
 // validBranchPricePolarities admits only the polarities that exist for one battery:

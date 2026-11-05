@@ -530,7 +530,8 @@ const sellableFilter = ` FROM catalog_variants v
  LEFT JOIN inventory_balances b ON b.location_id=$1 AND b.variant_id=v.id
  WHERE ($2='' OR e.brand ILIKE $2 ESCAPE '\' OR e.model ILIKE $2 ESCAPE '\')
  AND ($3='' OR e.brand=$3) AND ($4::numeric IS NULL OR e.capacity_ah=$4::numeric)
- AND ($5='' OR v.polarity=$5)`
+ AND ($5='' OR v.polarity=$5)
+ AND e.deleted_at IS NULL`
 
 // capacityArg turns the optional capacity filter into a nullable numeric parameter, so
 // an absent filter never casts an empty string.

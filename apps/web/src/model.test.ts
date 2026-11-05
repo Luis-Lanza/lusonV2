@@ -22,6 +22,15 @@ describe('lossless contract', () => {
     expect(parseInventory(pageJSON(row.replace('6.5', '0.000001'))).items[0].capacity_ah).toBe('0.000001');
     for (const raw of ['{', 'null', '[]', pageJSON().replace('"items":[', '"items":null,"discard":['), pageJSON().replace('"page_size":10', '"page_size":11')]) expect(() => parseInventory(raw)).toThrow('Respuesta inválida');
   });
+  it('accepts allocated catalog identities past the preloaded fixture', () => {
+    // Identities 96+ / 191+ are allocated by the database once the catalog is
+    // operational data, so the page parser must not keep the fixture's bounds.
+    const allocated = pageJSON(row.replace('"variant_id":1', '"variant_id":191').replace('"catalog_entry_id":1', '"catalog_entry_id":96'), 1, 191);
+    const item = parseInventory(allocated).items[0];
+    expect(item.variant_id).toBe(191);
+    expect(item.catalog_entry_id).toBe(96);
+    expect(parseInventory(pageJSON(row, 1, 191)).items[0].variant_id).toBe(1);
+  });
   it('checks bounded IDs, pages/counts, duplicate variants and polarity', () => {
     for (const raw of [pageJSON().replace('"id":1', '"id":32768'), pageJSON().replace('"page":1', '"page":1000001'),
       pageJSON().replace('"total_variants":190', '"total_variants":9007199254740993'),

@@ -76,7 +76,7 @@ export function createTransferRecovery() {
           const selected = cart.lines.find(v => v.item.variant_id === line.variant_id);
           if (!selected || selected.quantity.toString() !== line.quantity) return unavailable();
           const v = selected.item;
-          if (!integer(v.variant_id, 190) || !integer(v.catalog_entry_id, 95) || seen.has(v.variant_id)
+          if (!integer(v.variant_id, 2_147_483_647) || !integer(v.catalog_entry_id, 2_147_483_647) || seen.has(v.variant_id)
             || !text(v.brand) || !text(v.model) || typeof v.capacity_ah !== 'string'
             || !/^(0|[1-9][0-9]{0,5})(\.[0-9]{0,5}[1-9])?$/.test(v.capacity_ah) || v.capacity_ah === '0'
             || (v.polarity !== 'L' && v.polarity !== 'R')) return unavailable();

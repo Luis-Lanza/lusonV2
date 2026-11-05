@@ -54,10 +54,34 @@ func checkAssignment(ctx context.Context, q querier, actor auth.Identity) error 
 	return nil
 }
 
+// admitActiveVariants refuses a document that names a retired battery: ingress is an
+// operating act and a retired battery is out of operation. A reversal keeps working,
+// because it follows a persisted document instead of a selection, and a replay is
+// resolved before this check, because it creates no new document.
+func admitActiveVariants(ctx context.Context, q querier, lines []Line) error {
+	ids := make([]int32, len(lines))
+	for i, line := range lines {
+		ids[i] = int32(line.VariantID)
+	}
+	var retired int64
+	if err := q.QueryRow(ctx, `SELECT count(*) FROM catalog_variants v
+ JOIN catalog_entries e ON e.id=v.catalog_entry_id
+ WHERE v.id=ANY($1) AND e.deleted_at IS NOT NULL`, ids).Scan(&retired); err != nil {
+		return fail(ctx)
+	}
+	if retired != 0 {
+		return ErrInvalid
+	}
+	return nil
+}
+
 // CreateEntry applies one immutable ingress document atomically. The warehouse
 // administrator is the only admitted actor; the canonical payload is resolved
 // first, so an identical replay returns the persisted document and a different
 // payload under the same operation key is a conflict, never a second document.
+// A new document is an operating act, so it may not name a retired battery; the
+// replay is resolved before that check, because it answers with a document that
+// already exists instead of admitting new ingress.
 // Lines are inserted in ascending variant order, which is the database's
 // balance-row lock order.
 func (s *Store) CreateEntry(ctx context.Context, actor auth.Identity, input CreateInput) (Entry, bool, error) {
@@ -105,6 +129,9 @@ func (s *Store) CreateEntry(ctx context.Context, actor auth.Identity, input Crea
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return Entry{}, false, fail(ctx)
+	}
+	if err := admitActiveVariants(ctx, tx, canonical.Lines); err != nil {
+		return Entry{}, false, err
 	}
 	err = tx.QueryRow(ctx, `INSERT INTO stock_entries(operation_key,location_id,note,created_by_account_id)
  VALUES($1,$2,$3,$4) RETURNING id`, canonical.OperationKey, warehouseLocationID, canonical.Note, actor.AccountID).Scan(&id)

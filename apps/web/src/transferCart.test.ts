@@ -228,7 +228,13 @@ describe('R04 transfer cart', () => {
     expect(state.lines).toHaveLength(190);
     expect(cartStatus(state, authority())).toMatchObject({ usable: true, ready: true, total: max * 190n, invalid: [] });
     expect(reviewCart(state, authority(), key).attempt?.items).toHaveLength(190);
-    expect(() => createTransferCart(authority(), 'requestWarehouse', catalog(1, 191))).toThrow();
+    // A source catalog may now carry allocated identities, while one transfer still
+    // carries at most 190 lines.
+    let beyond = createTransferCart(authority(), 'requestWarehouse', catalog(1, 191));
+    expect(beyond.lines).toEqual([]);
+    for (let id = 1; id <= 190; id++) beyond = addCartItem(beyond, authority(), id, '1');
+    expect(beyond.lines).toHaveLength(190);
+    expect(() => addCartItem(beyond, authority(), 191, '1')).toThrow();
   });
   it('removes explicitly, clears explicitly and starts a different source only as an empty new cart', () => {
     const selected = addCartItem(cart(), authority(), 1, '2');
