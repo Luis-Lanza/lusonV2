@@ -1,0 +1,28 @@
+{
+  "title": "Administración de usuarios y sucursales",
+  "brief": "Mockups sobre la sidebar y paleta existentes. Una sola cuenta de almacén administradora; usuarios personales de sucursal; sin registro público ni nuevos almacenes; contraseñas temporales, cambio obligatorio y restablecimiento sin correo; recuperación del administrador desde servidor. Permisos concretos ilustrativos, pendientes de definición.",
+  "feature": "odd/tasks/account-administration.md",
+  "artboards": [
+    {
+      "file": "01-directory.html",
+      "title": "Directorio y panel lateral",
+      "tradeoff": "Más rápido para administrar cuentas; concentra bastante información en una pantalla.",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "file": "02-guided.html",
+      "title": "Alta guiada junto al directorio",
+      "tradeoff": "Hace explícitos sucursal, permisos y acceso inicial; ocupa más espacio vertical.",
+      "width": 1440,
+      "height": 1000
+    },
+    {
+      "file": "03-workspace.html",
+      "title": "Centro de administración por tareas",
+      "tradeoff": "Separa las tareas y orienta al administrador; requiere más navegación.",
+      "width": 1440,
+      "height": 1000
+    }
+  ]
+}

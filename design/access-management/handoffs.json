@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "chosen": "01-directory.html",
+  "handoffs": {
+    "01-directory.html": {
+      "status": "implemented",
+      "queued": false,
+      "sentAt": "2026-10-29T19:38:10.163Z",
+      "startedAt": "2026-10-29T23:29:03.592Z",
+      "implementedAt": "2026-10-30T06:32:57.599Z",
+      "feature": "odd/tasks/account-administration.md",
+      "note": "Implemented in React/Go/PostgreSQL. Directory, personal operators, zero-stock branches, password lifecycle/private recovery and attribution verified. Final real-stack browser created a branch/operator and verified all 190 zero-stock variants, assignment and private-secret retirement; screenshot reviewed. Test server closed, so no running preview URL. Native review unavailable; scoped independent reviews and retained limits documented."
+    }
+  }
+}
