@@ -46,10 +46,11 @@ jobs:
 
       # The R05 suites use node:test rather than Vitest, so npm test never sees
       # them, and they resolve their fixtures from the repository root: running
-      # them from apps/web fails on a doubled path.
+      # them from apps/web fails on a doubled path. Invoking node directly from
+      # the workspace root keeps that requirement explicit instead of relying on
+      # npm's --prefix working-directory behaviour and a relative cd.
       - name: R05 ownership and isolation suites
-        working-directory: .
-        run: npm --prefix apps/web run test:r05
+        run: node --test apps/web/e2e/*.test.mjs
 
   go:
     name: go
