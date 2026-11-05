@@ -19,7 +19,7 @@ import CatalogSectionBoundary from './CatalogSectionBoundary';
 import PointOfSale, { SalesSectionBoundary, salesHistoryFailureMessage } from './PointOfSale';
 import SalesHistory from './SalesHistory';
 
-type Controller = ReturnType<typeof useInventory>;
+export type Controller = ReturnType<typeof useInventory>;
 function Login({ state }: { state: Controller }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -112,7 +112,9 @@ function Navigation({ mobile = false, transfers, disabled, actionCount, countUna
     <span id={statusID} className="sr-only" role="status">{countStatus}</span>
   </nav>;
 }
-function InventoryView({ state, recovery }: { state: Controller; recovery: ReturnType<typeof createTransferRecovery> }) {
+// Exported for the hook-order test: App can never mount this with an unauthenticated
+// controller, so the invariant is only reachable by rendering the shell directly.
+export function InventoryView({ state, recovery }: { state: Controller; recovery: ReturnType<typeof createTransferRecovery> }) {
   // Every hook below runs unconditionally. The authentication gate must stay after the
   // last hook: an identity change must never alter the hook order of this component.
   const [creationRequested, setCreation] = useState(false);
