@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/auth"
 	"luson/api/internal/bootstrap"
@@ -143,6 +144,18 @@ func (e *env) zeroStockVariant(t *testing.T, locationID int64) int64 {
 	return variant
 }
 
+// availability reads the branch balance of one variant the way the catalogue publishes
+// it: a missing row is the honest zero, because the counter must still show the variant.
+func (e *env) availability(t *testing.T, locationID, variantID int64) (existing, reserved, available int64) {
+	t.Helper()
+	if e.pool.QueryRow(e.ctx, `SELECT coalesce(max(existing),0),coalesce(max(reserved),0),
+  coalesce(max(available),0) FROM inventory_balances WHERE location_id=$1 AND variant_id=$2`,
+		int16(locationID), int32(variantID)).Scan(&existing, &reserved, &available) != nil {
+		t.Fatal("balance read failed")
+	}
+	return existing, reserved, available
+}
+
 // snapshot captures every table a sale writes, so a refused sale is proven to leave
 // nothing behind, stock included.
 func (e *env) snapshot(t *testing.T) string {
@@ -178,15 +191,26 @@ func (e *env) createBranch(t *testing.T, name string) int64 {
 	return id
 }
 
-// sale is the canonical shape of a one-line sale used by most tests. The warranty term
-// is the seller's own input of the sale.
+// sale is the canonical shape of a one-line sale used by most tests: one cash payment
+// for exactly the total of the document. The warranty term is the seller's own input of
+// the sale.
 func sale(variantID, quantity int64, unit string) sales.CreateInput {
+	total, err := sales.LineTotal(sales.Money(unit), quantity)
+	if err != nil {
+		panic("fixture sale amount is not canonical: " + err.Error())
+	}
 	return sales.CreateInput{
-		PaymentMethod: sales.PaymentCash,
-		Customer:      sales.Customer{Name: "Cliente Mostrador"},
+		Payments: []sales.Payment{{Method: sales.PaymentCash, Amount: total}},
+		Customer: sales.Customer{Name: "Cliente Mostrador"},
 		Lines: []sales.LineInput{{VariantID: variantID, Quantity: quantity,
 			UnitPrice: sales.Money(unit), WarrantyMonths: 6}},
 	}
+}
+
+// cashPayment is one cash payment that pays the whole document, the shape the pure
+// contract's refusals are written in.
+func cashPayment(amount string) []sales.Payment {
+	return []sales.Payment{{Method: sales.PaymentCash, Amount: sales.Money(amount)}}
 }
 
 // TestSaleMoneyArithmetic pins the money contract: the subtotal of a line and the
@@ -231,12 +255,17 @@ func TestSaleMoneyArithmetic(t *testing.T) {
 	}
 }
 
-// TestSaleValidate covers the pure document contract: the payment method, the client
-// bounds, unique variants, bounded quantities, canonical amounts and the exact total.
+// TestSaleValidate covers the pure document contract: the payments, the client bounds,
+// unique variants, bounded quantities, canonical amounts and the exact total.
 func TestSaleValidate(t *testing.T) {
+	// A mixed sale: the payments are stated transfer-first and come back in the frozen
+	// order cash, card, transfer, with the sum closing exactly against the total.
 	payload, err := sales.Validate(sales.CreateInput{
-		PaymentMethod: sales.PaymentTransfer,
-		Customer:      sales.Customer{Name: "  Ana Pérez  ", Phone: "700-00000", Document: "V-123"},
+		Payments: []sales.Payment{
+			{Method: sales.PaymentTransfer, Amount: "200000.00"},
+			{Method: sales.PaymentCash, Amount: "77001.00"},
+		},
+		Customer: sales.Customer{Name: "  Ana Pérez  ", Phone: "700-00000", Document: "V-123"},
 		Lines: []sales.LineInput{
 			{VariantID: 4, Quantity: 2, UnitPrice: "96000.5", WarrantyMonths: 12},
 			{VariantID: 2, Quantity: 1, UnitPrice: "85000.00", WarrantyMonths: 6},
@@ -261,15 +290,26 @@ func TestSaleValidate(t *testing.T) {
 	if payload.Total != "277001.00" {
 		t.Fatalf("the total must be the exact sum of the lines: %q", payload.Total)
 	}
-	// Every frozen payment method is admitted, and an absent phone or document is
-	// legal: the warranty is issued to a name.
+	// The payments are the frozen order cash, card, transfer, whatever order the client
+	// stated them in, and only the methods that actually paid.
+	if len(payload.Payments) != 2 ||
+		payload.Payments[0] != (sales.Payment{Method: sales.PaymentCash, Amount: "77001.00"}) ||
+		payload.Payments[1] != (sales.Payment{Method: sales.PaymentTransfer, Amount: "200000.00"}) {
+		t.Fatalf("payments must come back in the frozen order: %+v", payload.Payments)
+	}
+	// Every admitted method pays a document on its own, and an absent phone or document
+	// is legal: the warranty is issued to a name.
 	for _, method := range sales.PaymentMethods() {
-		if _, err := sales.Validate(sales.CreateInput{
-			PaymentMethod: method,
-			Customer:      sales.Customer{Name: "Cliente"},
-			Lines:         []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}},
-		}); err != nil {
+		valid, err := sales.Validate(sales.CreateInput{
+			Payments: []sales.Payment{{Method: method, Amount: "1.00"}},
+			Customer: sales.Customer{Name: "Cliente"},
+			Lines:    []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}},
+		})
+		if err != nil {
 			t.Fatalf("%s must be admitted: %v", method, err)
+		}
+		if len(valid.Payments) != 1 || valid.Payments[0].Method != method {
+			t.Fatalf("%s must be the only payment of the document: %+v", method, valid.Payments)
 		}
 	}
 	// The caller's slice is never reordered by validation.
@@ -277,7 +317,7 @@ func TestSaleValidate(t *testing.T) {
 		{VariantID: 3, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6},
 		{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6},
 	}
-	if _, err := sales.Validate(sales.CreateInput{PaymentMethod: sales.PaymentCash,
+	if _, err := sales.Validate(sales.CreateInput{Payments: cashPayment("2.00"),
 		Customer: sales.Customer{Name: "Cliente"}, Lines: input}); err != nil {
 		t.Fatal("a valid sale must be admitted")
 	}
@@ -285,30 +325,40 @@ func TestSaleValidate(t *testing.T) {
 		t.Fatal("validation must not reorder the caller's lines")
 	}
 	for name, in := range map[string]sales.CreateInput{
-		"no_method":        {Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
-		"unknown_method":   {PaymentMethod: "cheque", Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
-		"method_case":      {PaymentMethod: "CASH", Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
-		"no_customer":      {PaymentMethod: sales.PaymentCash, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
-		"blank_customer":   {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "   "}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
-		"long_customer":    {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: strings.Repeat("ñ", sales.MaxCustomerName+1)}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
-		"nul_customer":     {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "a\x00b"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
-		"long_phone":       {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente", Phone: strings.Repeat("7", sales.MaxCustomerPhone+1)}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
-		"long_document":    {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente", Document: strings.Repeat("7", sales.MaxCustomerDocument+1)}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
-		"no_lines":         {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente"}},
-		"zero_variant":     {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 0, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
-		"negative_variant": {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: -1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
-		"variant_bound":    {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 2147483648, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
-		"duplicate":        {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}, {VariantID: 1, Quantity: 2, UnitPrice: "1.00", WarrantyMonths: 6}}},
-		"zero_quantity":    {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 0, UnitPrice: "1.00", WarrantyMonths: 6}}},
-		"quantity_bound":   {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: sales.MaxQuantity + 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
-		"price_precision":  {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "85000.001", WarrantyMonths: 6}}},
-		"price_negative":   {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "-1.00", WarrantyMonths: 6}}},
-		"price_zero":       {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "0.00", WarrantyMonths: 6}}},
-		"price_empty":      {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "", WarrantyMonths: 6}}},
-		"price_text":       {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "abc", WarrantyMonths: 6}}},
-		"no_term":          {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00"}}},
-		"negative_term":    {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: -1}}},
-		"term_above_bound": {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: sales.MaxWarrantyMonths + 1}}},
+		"no_payments":      {Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"unknown_method":   {Payments: []sales.Payment{{Method: "cheque", Amount: "1.00"}}, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"method_case":      {Payments: []sales.Payment{{Method: "CASH", Amount: "1.00"}}, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"derived_label":    {Payments: []sales.Payment{{Method: sales.PaymentMixed, Amount: "1.00"}}, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"repeated_method":  {Payments: []sales.Payment{{Method: sales.PaymentCash, Amount: "1.00"}, {Method: sales.PaymentCash, Amount: "1.00"}}, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"zero_amount":      {Payments: []sales.Payment{{Method: sales.PaymentCash, Amount: "0.00"}}, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"negative_amount":  {Payments: []sales.Payment{{Method: sales.PaymentCash, Amount: "-1.00"}}, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"three_decimals":   {Payments: []sales.Payment{{Method: sales.PaymentCash, Amount: "1.000"}}, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"one_decimal":      {Payments: []sales.Payment{{Method: sales.PaymentCash, Amount: "1.0"}}, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"integer_amount":   {Payments: []sales.Payment{{Method: sales.PaymentCash, Amount: "1"}}, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"padded_amount":    {Payments: []sales.Payment{{Method: sales.PaymentCash, Amount: "001.00"}}, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"text_amount":      {Payments: []sales.Payment{{Method: sales.PaymentCash, Amount: "abc"}}, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"empty_amount":     {Payments: []sales.Payment{{Method: sales.PaymentCash, Amount: ""}}, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"no_customer":      {Payments: cashPayment("1.00"), Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"blank_customer":   {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "   "}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"long_customer":    {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: strings.Repeat("ñ", sales.MaxCustomerName+1)}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"nul_customer":     {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "a\x00b"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"long_phone":       {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "Cliente", Phone: strings.Repeat("7", sales.MaxCustomerPhone+1)}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"long_document":    {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "Cliente", Document: strings.Repeat("7", sales.MaxCustomerDocument+1)}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"no_lines":         {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "Cliente"}},
+		"zero_variant":     {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 0, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"negative_variant": {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: -1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"variant_bound":    {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 2147483648, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"duplicate":        {Payments: cashPayment("3.00"), Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6}, {VariantID: 1, Quantity: 2, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"zero_quantity":    {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 0, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"quantity_bound":   {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: sales.MaxQuantity + 1, UnitPrice: "1.00", WarrantyMonths: 6}}},
+		"price_precision":  {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "85000.001", WarrantyMonths: 6}}},
+		"price_negative":   {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "-1.00", WarrantyMonths: 6}}},
+		"price_zero":       {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "0.00", WarrantyMonths: 6}}},
+		"price_empty":      {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "", WarrantyMonths: 6}}},
+		"price_text":       {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "abc", WarrantyMonths: 6}}},
+		"no_term":          {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00"}}},
+		"negative_term":    {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: -1}}},
+		"term_above_bound": {Payments: cashPayment("1.00"), Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1.00", WarrantyMonths: sales.MaxWarrantyMonths + 1}}},
 	} {
 		if _, err := sales.Validate(in); !errors.Is(err, sales.ErrInvalid) {
 			t.Fatalf("%s must be refused by validation", name)
@@ -319,14 +369,55 @@ func TestSaleValidate(t *testing.T) {
 	for i := 0; i <= sales.MaxLines; i++ {
 		tooMany = append(tooMany, sales.LineInput{VariantID: int64(i + 1), Quantity: 1, UnitPrice: "1.00", WarrantyMonths: 6})
 	}
-	if _, err := sales.Validate(sales.CreateInput{PaymentMethod: sales.PaymentCash,
+	if _, err := sales.Validate(sales.CreateInput{Payments: cashPayment("191.00"),
 		Customer: sales.Customer{Name: "Cliente"}, Lines: tooMany}); !errors.Is(err, sales.ErrInvalid) {
 		t.Fatal("a document above the line bound must be refused")
 	}
 	full := tooMany[:sales.MaxLines]
-	if _, err := sales.Validate(sales.CreateInput{PaymentMethod: sales.PaymentCash,
+	if _, err := sales.Validate(sales.CreateInput{Payments: cashPayment("190.00"),
 		Customer: sales.Customer{Name: "Cliente"}, Lines: full}); err != nil {
 		t.Fatalf("a full-width document must be admitted: %v", err)
+	}
+}
+
+// TestSalePaymentsMustClose pins S16's refusal of a settlement that does not close: the
+// error says which side is open -- how much is missing or how much is left over -- and it
+// is still the invalid-document refusal, so a caller can treat both the same way.
+func TestSalePaymentsMustClose(t *testing.T) {
+	line := []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "1000.00", WarrantyMonths: 6}}
+	for name, tc := range map[string]struct {
+		payments []sales.Payment
+		missing  sales.Money
+		excess   sales.Money
+	}{
+		"short":        {[]sales.Payment{{Method: sales.PaymentCash, Amount: "400.00"}, {Method: sales.PaymentTransfer, Amount: "500.00"}}, "100.00", ""},
+		"over":         {[]sales.Payment{{Method: sales.PaymentCash, Amount: "400.00"}, {Method: sales.PaymentTransfer, Amount: "900.00"}}, "", "300.00"},
+		"short_single": {[]sales.Payment{{Method: sales.PaymentCard, Amount: "999.99"}}, "0.01", ""},
+		"over_single":  {[]sales.Payment{{Method: sales.PaymentCard, Amount: "1000.01"}}, "", "0.01"},
+	} {
+		_, err := sales.Validate(sales.CreateInput{Payments: tc.payments,
+			Customer: sales.Customer{Name: "Cliente"}, Lines: line})
+		var mismatch *sales.PaymentsMismatch
+		if !errors.As(err, &mismatch) {
+			t.Fatalf("%s must be named as a payments mismatch: %v", name, err)
+		}
+		if !errors.Is(err, sales.ErrInvalid) {
+			t.Fatalf("%s must stay the invalid-document refusal", name)
+		}
+		if mismatch.Missing != tc.missing || mismatch.Excess != tc.excess {
+			t.Fatalf("%s must name missing %q and excess %q, got %q/%q", name, tc.missing, tc.excess,
+				mismatch.Missing, mismatch.Excess)
+		}
+		// Exactly one side is ever set, so a client never has to guess which one to show.
+		if (mismatch.Missing == "") == (mismatch.Excess == "") {
+			t.Fatalf("%s must set exactly one side of the mismatch", name)
+		}
+		// The message names the amount, so the counter can say what is left to pay or what
+		// was charged too much without re-deriving it.
+		side := string(tc.missing) + string(tc.excess)
+		if !strings.Contains(mismatch.Error(), side) {
+			t.Fatalf("%s message must name %q: %q", name, side, mismatch.Error())
+		}
 	}
 }
 
@@ -336,8 +427,12 @@ func TestSaleValidQueries(t *testing.T) {
 		query sales.ListQuery
 		ok    bool
 	}{
-		"defaults":    {sales.ListQuery{Page: 1, PageSize: 25}, true},
-		"filters":     {sales.ListQuery{Search: "2-000001", PaymentMethod: "card", Page: 2, PageSize: 10}, true},
+		"defaults": {sales.ListQuery{Page: 1, PageSize: 25}, true},
+		"filters":  {sales.ListQuery{Search: "2-000001", PaymentMethod: "card", Page: 2, PageSize: 10}, true},
+		// A mixed sale is a real row of the history, so its derived label is a filter a
+		// branch can use, even though no client can ever state it as an input.
+		"mixed":       {sales.ListQuery{PaymentMethod: "mixed", Page: 1, PageSize: 10}, true},
+		"cash":        {sales.ListQuery{PaymentMethod: "cash", Page: 1, PageSize: 10}, true},
 		"bound_page":  {sales.ListQuery{Page: 1_000_000, PageSize: 50}, true},
 		"zero_page":   {sales.ListQuery{Page: 0, PageSize: 10}, false},
 		"over_page":   {sales.ListQuery{Page: 1_000_001, PageSize: 10}, false},
@@ -426,9 +521,11 @@ func TestSaleStoreGuards(t *testing.T) {
 	}
 	// A pure request shape is refused before the first statement.
 	for name, bad := range map[string]sales.CreateInput{
-		"unknown_method": {PaymentMethod: "cheque", Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "85000.00", WarrantyMonths: 6}}},
-		"no_lines":       {PaymentMethod: sales.PaymentCash, Customer: sales.Customer{Name: "Cliente"}},
-		"bad_price":      sale(1, 1, "85000.001"),
+		"unknown_method": {Payments: []sales.Payment{{Method: "cheque", Amount: "85000.00"}}, Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "85000.00", WarrantyMonths: 6}}},
+		"no_payments":    {Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "85000.00", WarrantyMonths: 6}}},
+		"open_sum":       {Payments: cashPayment("84999.99"), Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "85000.00", WarrantyMonths: 6}}},
+		"no_lines":       {Payments: cashPayment("85000.00"), Customer: sales.Customer{Name: "Cliente"}},
+		"bad_price":      {Payments: cashPayment("85000.00"), Customer: sales.Customer{Name: "Cliente"}, Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "85000.001", WarrantyMonths: 6}}},
 	} {
 		if _, err := e.store.Create(e.ctx, clerk(2), bad); !errors.Is(err, sales.ErrInvalid) {
 			t.Fatalf("%s must be an invalid request", name)
@@ -480,19 +577,32 @@ func TestSaleVariantWithoutPrice(t *testing.T) {
 	if e.snapshot(t) != before {
 		t.Fatal("a not sellable variant must not write a sale nor touch stock")
 	}
-	// The sellable catalogue of the branch lists both polarities of the priced battery
-	// and nothing of the unpriced one, so the blocked row never reaches the counter.
+	// The counter catalogue of the branch lists both polarities of the priced battery as
+	// sellable and the polarities of the unpriced battery as blocked rows, so the counter
+	// can disable them instead of hiding them (S7).
 	page, err := e.store.Sellable(e.ctx, clerk(2), sales.SellableQuery{Page: 1, PageSize: 10})
 	if err != nil {
 		t.Fatalf("catalogue read failed: %v", err)
 	}
-	if page.TotalVariants != 2 || len(page.Items) != 2 ||
-		page.Items[0].VariantID != 1 || page.Items[1].VariantID != 2 {
-		t.Fatalf("the catalogue must expose only the sellable battery: %+v", page)
+	if len(page.Items) != 10 || page.Items[0].VariantID != 1 || page.Items[1].VariantID != 2 {
+		t.Fatalf("the catalogue must start with the priced battery: %+v", page)
 	}
 	for _, item := range page.Items {
-		if item.CatalogEntryID != e.entryOf(t, 1) || item.SuggestedPrice != "96000.00" ||
-			item.MinPrice != "85000.00" {
+		priced := item.CatalogEntryID == e.entryOf(t, 1)
+		if item.Sellable != priced {
+			t.Fatalf("the catalogue must block exactly the unpriced battery: %+v", item)
+		}
+		if item.VariantID > 4 {
+			continue
+		}
+		existing, reserved, available := e.availability(t, 2, item.VariantID)
+		if item.Existing != existing || item.Reserved != reserved || item.Available != available {
+			t.Fatalf("every row must carry the branch balance: %+v", item)
+		}
+		if !priced && (item.SuggestedPrice != "" || item.MinPrice != "") {
+			t.Fatalf("an unpriced battery must carry no pair: %+v", item)
+		}
+		if priced && (item.SuggestedPrice != "96000.00" || item.MinPrice != "85000.00") {
 			t.Fatalf("both polarities must be offered at the battery pair: %+v", item)
 		}
 	}
@@ -571,11 +681,17 @@ func TestSalePriceIsPerBattery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("catalogue read failed: %v", err)
 	}
-	if page.TotalVariants != 2 || len(page.Items) != 2 {
-		t.Fatalf("both polarities of the battery must be sellable: %+v", page)
+	if len(page.Items) != 10 {
+		t.Fatalf("the catalogue must list the whole first page: %+v", page)
 	}
 	for _, item := range page.Items {
-		if item.MinPrice != "95000.00" || item.SuggestedPrice != "99000.00" {
+		if item.CatalogEntryID != entry {
+			if item.Sellable || item.SuggestedPrice != "" || item.MinPrice != "" {
+				t.Fatalf("only the priced battery is sellable: %+v", item)
+			}
+			continue
+		}
+		if !item.Sellable || item.MinPrice != "95000.00" || item.SuggestedPrice != "99000.00" {
 			t.Fatalf("both polarities must carry the same battery pair: %+v", item)
 		}
 	}
@@ -624,8 +740,8 @@ func TestSaleWarrantyTermIsSoldData(t *testing.T) {
 	}
 	e.price(t, other, "10000", "12000", 2)
 	mixed := sales.CreateInput{
-		PaymentMethod: sales.PaymentCash,
-		Customer:      sales.Customer{Name: "Cliente"},
+		Payments: cashPayment("97000.00"),
+		Customer: sales.Customer{Name: "Cliente"},
 		Lines: []sales.LineInput{
 			{VariantID: 3, Quantity: 1, UnitPrice: "85000.00", WarrantyMonths: 1},
 			{VariantID: 5, Quantity: 1, UnitPrice: "12000.00", WarrantyMonths: sales.MaxWarrantyMonths},
@@ -689,15 +805,18 @@ func TestSaleTwoLinesOneInvalidIsAtomic(t *testing.T) {
 	e.price(t, e.entryOf(t, 5), "10000", "12000", 2)
 	before := e.snapshot(t)
 	input := sales.CreateInput{
-		PaymentMethod: sales.PaymentCard,
-		Customer:      sales.Customer{Name: "Cliente"},
+		Payments: []sales.Payment{{Method: sales.PaymentCard, Amount: "95000.00"}},
+		Customer: sales.Customer{Name: "Cliente"},
 		Lines: []sales.LineInput{
 			{VariantID: 3, Quantity: 1, UnitPrice: "85000.00", WarrantyMonths: 6},
 			{VariantID: 5, Quantity: 1, UnitPrice: "10000.00", WarrantyMonths: 6},
 		},
 	}
-	// The second line is under its floor while the first one is perfectly valid.
+	// The second line is under its floor while the first one is perfectly valid. The
+	// settlement follows the document it pays, so the line -- and not an open sum -- is what
+	// the refusal comes from.
 	input.Lines[1].UnitPrice = "9999.99"
+	input.Payments = cashPayment("94999.99")
 	_, err := e.store.Create(e.ctx, clerk(2), input)
 	var refused *sales.BelowMinimum
 	if !errors.As(err, &refused) || refused.VariantID != 5 {
@@ -711,6 +830,7 @@ func TestSaleTwoLinesOneInvalidIsAtomic(t *testing.T) {
 	}
 	// An uncovered line mid-document behaves the same way.
 	input.Lines[1] = sales.LineInput{VariantID: 5, Quantity: 200, UnitPrice: "10000.00", WarrantyMonths: 6}
+	input.Payments = cashPayment("2085000.00")
 	var shortage *sales.InsufficientStock
 	if _, err := e.store.Create(e.ctx, clerk(2), input); !errors.As(err, &shortage) || shortage.VariantID != 5 {
 		t.Fatalf("the second line must hit the stock bound: %v", err)
@@ -721,6 +841,7 @@ func TestSaleTwoLinesOneInvalidIsAtomic(t *testing.T) {
 	// The very same document is applied once both lines are valid, which proves the
 	// two refusals came from the lines and not from the document.
 	input.Lines[1].Quantity = 1
+	input.Payments = cashPayment("95000.00")
 	sold, err := e.store.Create(e.ctx, clerk(2), input)
 	if err != nil {
 		t.Fatalf("the valid document must be applied: %v", err)
@@ -797,6 +918,47 @@ func TestSaleExhaustedStock(t *testing.T) {
 	}
 }
 
+// TestSaleDetailCarriesTheBranchName pins the branch the warranty is printed for: the
+// detail resolves the name of the selling branch from locations, each branch reads its
+// own, and a sale of another branch is still not found.
+func TestSaleDetailCarriesTheBranchName(t *testing.T) {
+	e := fixture(t)
+	e.price(t, e.entryOf(t, 1), "1000", "1200", 2, 3)
+	first, err := e.store.Create(e.ctx, clerk(2), sale(1, 1, "1000.00"))
+	if err != nil {
+		t.Fatalf("the sale of the first branch failed: %v", err)
+	}
+	other, err := e.store.Create(e.ctx, clerk(3), sale(1, 1, "1000.00"))
+	if err != nil {
+		t.Fatalf("the sale of the second branch failed: %v", err)
+	}
+	for _, tc := range []struct {
+		actor auth.Identity
+		id    int64
+		name  string
+	}{
+		{clerk(2), first.ID, "Sucursal A"},
+		{clerk(3), other.ID, "Sucursal B"},
+	} {
+		detail, err := e.store.Read(e.ctx, tc.actor, tc.id)
+		if err != nil {
+			t.Fatalf("the emitted sale must stay readable: %v", err)
+		}
+		var stored string
+		if err := e.pool.QueryRow(e.ctx, `SELECT l.name FROM sales s
+ JOIN locations l ON l.id=s.branch_location_id WHERE s.id=$1`, tc.id).Scan(&stored); err != nil {
+			t.Fatal("the branch name could not be read")
+		}
+		if detail.BranchName != tc.name || detail.BranchName != stored {
+			t.Fatalf("the detail must carry the name of the selling branch: %q want %q", detail.BranchName, stored)
+		}
+	}
+	// The name of another branch's sale is not readable, because the sale is not.
+	if _, err := e.store.Read(e.ctx, clerk(2), other.ID); !errors.Is(err, sales.ErrNotFound) {
+		t.Fatalf("another branch's document must not be found: %v", err)
+	}
+}
+
 // TestSaleNumbersArePerBranch pins the numeration: every branch allocates its own
 // correlative and its own warranty number, and no two sales of a branch share either.
 func TestSaleNumbersArePerBranch(t *testing.T) {
@@ -846,8 +1008,8 @@ func TestSaleFreezesDocumentInDatabase(t *testing.T) {
 	var id int64
 	// The caller supplies placeholder numbers and a subtotal of its own: the
 	// admission trigger and the line trigger overwrite every one of them.
-	if err := tx.QueryRow(e.ctx, `INSERT INTO sales(branch_location_id,branch_sequence,warranty_number,payment_method,
-  customer_name,total,created_by_account_id) VALUES(2,99,'9-999999','cash','Cliente',180000.00,2) RETURNING id`).Scan(&id); err != nil {
+	if err := tx.QueryRow(e.ctx, `INSERT INTO sales(branch_location_id,branch_sequence,warranty_number,cash_amount,
+  customer_name,total,created_by_account_id) VALUES(2,99,'9-999999',180000.00,'Cliente',180000.00,2) RETURNING id`).Scan(&id); err != nil {
 		t.Fatalf("raw header insert failed: %v", err)
 	}
 	if _, err := tx.Exec(e.ctx, `INSERT INTO sale_lines(sale_id,variant_id,quantity,unit_price,min_price,warranty_months,subtotal)
@@ -903,6 +1065,11 @@ func TestSaleKeepsFrozenFacts(t *testing.T) {
 	if detail.Total != "180000.00" || detail.WarrantyNumber != emitted.WarrantyNumber {
 		t.Fatalf("the emitted document must keep its own numbers: %+v", detail)
 	}
+	// The branch that sold is resolved from locations, so the warranty can be printed with
+	// the branch it belongs to (S11).
+	if detail.BranchName != "Sucursal A" {
+		t.Fatalf("the detail must carry the name of the selling branch: %q", detail.BranchName)
+	}
 }
 
 // TestSaleReadAndListAreBranchScoped pins S1 for reads: another branch's sale is not
@@ -936,7 +1103,7 @@ func TestSaleReadAndListAreBranchScoped(t *testing.T) {
 	}
 	// The filters are literal and scoped to the branch.
 	second := sale(1, 1, "1200.00")
-	second.PaymentMethod = sales.PaymentCard
+	second.Payments = []sales.Payment{{Method: sales.PaymentCard, Amount: "1200.00"}}
 	second.Customer = sales.Customer{Name: "Beto 100%"}
 	if _, err := e.store.Create(e.ctx, clerk(2), second); err != nil {
 		t.Fatalf("the second sale failed: %v", err)
@@ -974,6 +1141,37 @@ func TestSaleReadAndListAreBranchScoped(t *testing.T) {
 	if page.Sales[0].BranchSequence < page.Sales[1].BranchSequence {
 		t.Fatal("the history must be newest first")
 	}
+	// A sale settled with two methods is labelled 'mixed' by the database, and the history
+	// filter finds it by that derived label so a branch can search its mixed sales.
+	mixed := sale(1, 1, "1000.00")
+	mixed.Payments = []sales.Payment{{Method: sales.PaymentCash, Amount: "400.00"},
+		{Method: sales.PaymentTransfer, Amount: "600.00"}}
+	if _, err := e.store.Create(e.ctx, clerk(2), mixed); err != nil {
+		t.Fatalf("the mixed sale failed: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		query sales.ListQuery
+		want  int
+		label sales.PaymentMethod
+	}{
+		"all":   {sales.ListQuery{Page: 1, PageSize: 25}, 3, ""},
+		"mixed": {sales.ListQuery{PaymentMethod: "mixed", Page: 1, PageSize: 25}, 1, sales.PaymentMixed},
+		"cash":  {sales.ListQuery{PaymentMethod: "cash", Page: 1, PageSize: 25}, 1, sales.PaymentCash},
+		"card":  {sales.ListQuery{PaymentMethod: "card", Page: 1, PageSize: 25}, 1, sales.PaymentCard},
+	} {
+		found, err := e.store.List(e.ctx, clerk(2), tc.query)
+		if err != nil {
+			t.Fatalf("%s list failed: %v", name, err)
+		}
+		if len(found.Sales) != tc.want {
+			t.Fatalf("%s returned %d sales, want %d", name, len(found.Sales), tc.want)
+		}
+		for _, summary := range found.Sales {
+			if tc.label != "" && summary.PaymentMethod != tc.label {
+				t.Fatalf("%s must be labelled %s: %+v", name, tc.label, summary)
+			}
+		}
+	}
 }
 
 // TestSaleDocumentIsImmutable pins the immutable document: no update, no delete, no
@@ -1001,46 +1199,94 @@ func TestSaleDocumentIsImmutable(t *testing.T) {
 	}
 }
 
-// TestSaleSellableCatalogue pins the counter catalogue: only the variants the branch
-// can sell, with the suggested price and the minimum it can never go under. The price
-// is the battery's, so the three priced batteries expose their six polarities at the
-// price of their battery. The warranty term is deliberately absent: the seller states
-// it on the sale.
+// TestSaleSellableCatalogue pins the catalogue the counter reads: every variant of the
+// catalogue comes back once with the stock of the branch and whether the branch can sell it
+// right now, so an unpriced variant is a blocked row instead of an absent one (S7). The
+// price is the battery's, so the two polarities of one battery always carry the same pair,
+// and the warranty term is deliberately absent: the seller states it on the sale.
 func TestSaleSellableCatalogue(t *testing.T) {
 	e := fixture(t)
 	e.price(t, e.entryOf(t, 1), "85000", "96000.5", 2, 3)
 	e.price(t, e.entryOf(t, 3), "10000", "12000", 2)
 	e.price(t, e.entryOf(t, 5), "5000", "6000", 2)
-	page, err := e.store.Sellable(e.ctx, clerk(2), sales.SellableQuery{Page: 1, PageSize: 10})
+	total := e.scalar(t, "SELECT count(*) FROM catalog_variants")
+	page, err := e.store.Sellable(e.ctx, clerk(2), sales.SellableQuery{Page: 1, PageSize: 50})
 	if err != nil {
 		t.Fatalf("catalogue read failed: %v", err)
 	}
-	if page.Page != 1 || page.PageSize != 10 || page.TotalVariants != 6 || len(page.Items) != 6 {
-		t.Fatalf("the catalogue must expose the sellable variants in order: %+v", page)
+	// The page lists the catalogue in order and counts every variant, priced or not.
+	if page.Page != 1 || page.PageSize != 50 || page.TotalVariants != total || len(page.Items) != 50 {
+		t.Fatalf("the catalogue must page every variant and count them all: %+v", page)
 	}
-	first := page.Items[0]
-	if first.VariantID != 1 || first.Brand == "" || first.Model == "" || first.Capacity == "" ||
-		(first.Polarity != "L" && first.Polarity != "R") {
-		t.Fatalf("the catalogue item must carry the catalogue identity: %+v", first)
+	for i := 1; i < len(page.Items); i++ {
+		if page.Items[i].VariantID <= page.Items[i-1].VariantID {
+			t.Fatalf("the catalogue order must be deterministic: %+v", page.Items[i-1])
+		}
 	}
-	if first.SuggestedPrice != "96000.50" || first.MinPrice != "85000.00" {
+	// The three priced batteries are the batteries of variants 1, 3 and 5, so their six
+	// polarities are the sellable rows and the rest of the catalogue is blocked.
+	sellable := map[int64]bool{1: true, 2: true, 3: true, 4: true, 5: true, 6: true}
+	for _, item := range page.Items {
+		if item.VariantID > 6 {
+			continue
+		}
+		if item.Brand == "" || item.Model == "" || item.Capacity == "" ||
+			(item.Polarity != "L" && item.Polarity != "R") {
+			t.Fatalf("the catalogue item must carry the catalogue identity: %+v", item)
+		}
+		if item.Sellable != sellable[item.VariantID] {
+			t.Fatalf("variant %d must be sellable=%v: %+v", item.VariantID, sellable[item.VariantID], item)
+		}
+	}
+	// The first two rows are the two polarities of the first priced battery, at its pair.
+	if first := page.Items[0]; !first.Sellable || first.SuggestedPrice != "96000.50" ||
+		first.MinPrice != "85000.00" {
 		t.Fatalf("the item must carry the prices in force: %+v", first)
 	}
-	// Branch 3 only carries the battery of variant 1, so it offers both its polarities.
-	other, err := e.store.Sellable(e.ctx, clerk(3), sales.SellableQuery{Page: 1, PageSize: 10})
-	if err != nil || other.TotalVariants != 2 || len(other.Items) != 2 ||
-		other.Items[0].VariantID != 1 || other.Items[1].VariantID != 2 {
-		t.Fatalf("each branch must expose only its own sellable variants: %+v %v", other, err)
+	if second := page.Items[1]; !second.Sellable || second.SuggestedPrice != "96000.50" ||
+		second.MinPrice != "85000.00" {
+		t.Fatalf("both polarities must carry the pair of their battery: %+v", second)
 	}
-	// The sellable variants of this fixture are the six polarities of the three priced
-	// batteries.
-	priced := []int64{1, 2, 3, 4, 5, 6}
+	// A variant whose battery has no price in the branch is still a row: blocked, with no
+	// pair at all and with the branch's real availability.
+	for _, blocked := range []int64{7, 8} {
+		item := page.Items[blocked-1]
+		existing, reserved, available := e.availability(t, 2, blocked)
+		if item.VariantID != blocked || item.Sellable || item.SuggestedPrice != "" ||
+			item.MinPrice != "" || item.Existing != existing || item.Reserved != reserved ||
+			item.Available != available {
+			t.Fatalf("an unpriced variant must be published blocked: %+v want %d/%d/%d",
+				item, existing, reserved, available)
+		}
+	}
+	// A priced variant carries the balance of the branch, which is the counter's own datum.
+	existing, reserved, available := e.availability(t, 2, 1)
+	if got := page.Items[0]; got.Existing != existing || got.Reserved != reserved ||
+		got.Available != available {
+		t.Fatalf("a sellable variant must carry the branch balance: %+v want %d/%d/%d",
+			got, existing, reserved, available)
+	}
+	// Branch 3 only prices the first battery, so its catalogue is the same size and only
+	// those two polarities are sellable.
+	other, err := e.store.Sellable(e.ctx, clerk(3), sales.SellableQuery{Page: 1, PageSize: 10})
+	if err != nil || other.TotalVariants != total || len(other.Items) != 10 {
+		t.Fatalf("each branch must see the whole catalogue: %+v %v", other, err)
+	}
+	for i, item := range other.Items {
+		want := i < 2
+		if item.Sellable != want {
+			t.Fatalf("branch 3 must sell only the priced battery: %+v", item)
+		}
+		if want && (item.SuggestedPrice != "96000.50" || item.MinPrice != "85000.00") {
+			t.Fatalf("the sellable pair of branch 3 is wrong: %+v", item)
+		}
+	}
+	// Every filter is derived from the source catalogue instead of being guessed, and each
+	// counts every matching variant, priced or not.
 	source, err := catalog.Load()
 	if err != nil {
 		t.Fatal("catalogue source load failed")
 	}
-	// The priced batteries are the only sellable ones, so every filter expectation is
-	// derived from the source catalogue instead of being guessed.
 	matches := func(q sales.SellableQuery, entry catalog.Entry, variantID int64) bool {
 		polarity := "R"
 		if variantID%2 == 1 {
@@ -1072,7 +1318,7 @@ func TestSaleSellableCatalogue(t *testing.T) {
 		"no_match":        {Search: "zzz"},
 	} {
 		want := 0
-		for _, variantID := range priced {
+		for variantID := int64(1); variantID <= total; variantID++ {
 			if matches(query, source.Entries[(variantID-1)/2], variantID) {
 				want++
 			}
@@ -1082,7 +1328,10 @@ func TestSaleSellableCatalogue(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s filter failed: %v", name, err)
 		}
-		if len(result.Items) != want {
+		if int64(result.TotalVariants) != int64(want) {
+			t.Fatalf("%s counted %d variants, want %d", name, result.TotalVariants, want)
+		}
+		if want <= 50 && len(result.Items) != want {
 			t.Fatalf("%s returned %d items, want %d", name, len(result.Items), want)
 		}
 		if result.Items == nil {
@@ -1128,5 +1377,177 @@ func TestSaleConcurrentSalesGetDistinctCorrelatives(t *testing.T) {
 	}
 	if n := e.scalar(t, "SELECT count(DISTINCT warranty_number) FROM sales"); n != 2 {
 		t.Fatalf("each concurrent sale must receive its own warranty number, got %d", n)
+	}
+}
+
+// TestSaleMixedPayment pins S16: one sale can be settled partly in cash and partly by
+// transfer, both amounts are persisted under their own method, and every read path
+// reports the kind of payment the database derived instead of a label the counter chose.
+func TestSaleMixedPayment(t *testing.T) {
+	e := fixture(t)
+	e.price(t, e.entryOf(t, 3), "85000", "96000", 2)
+	if existing, _ := e.stock(t, 2, 3); existing < 2 {
+		t.Fatalf("fixture expects stock to sell, got %d", existing)
+	}
+	// Two units at 85000.00 are 170000.00, paid as 50000.00 in cash and 120000.00 by
+	// transfer.
+	input := sale(3, 2, "85000.00")
+	input.Payments = []sales.Payment{
+		{Method: sales.PaymentTransfer, Amount: "120000.00"},
+		{Method: sales.PaymentCash, Amount: "50000.00"},
+	}
+	emitted, err := e.store.Create(e.ctx, clerk(2), input)
+	if err != nil {
+		t.Fatalf("a sale settled with two methods must be applied: %v", err)
+	}
+	if emitted.Total != "170000.00" {
+		t.Fatalf("the document total must be the sum of its lines: %q", emitted.Total)
+	}
+	if emitted.PaymentMethod != sales.PaymentMixed {
+		t.Fatalf("a sale paid with two methods must be labelled mixed: %q", emitted.PaymentMethod)
+	}
+	// The payments come back in the frozen order, only the methods that paid.
+	if len(emitted.Payments) != 2 ||
+		emitted.Payments[0] != (sales.Payment{Method: sales.PaymentCash, Amount: "50000.00"}) ||
+		emitted.Payments[1] != (sales.Payment{Method: sales.PaymentTransfer, Amount: "120000.00"}) {
+		t.Fatalf("both paid amounts must be returned in the frozen order: %+v", emitted.Payments)
+	}
+	// Both amounts, and the derived label, are the database's own columns.
+	var cash, card, transfer, label string
+	if err := e.pool.QueryRow(e.ctx, `SELECT cash_amount::text,card_amount::text,transfer_amount::text,
+  payment_method FROM sales WHERE id=$1`, emitted.ID).Scan(&cash, &card, &transfer, &label); err != nil {
+		t.Fatal("the persisted settlement could not be read")
+	}
+	if cash != "50000.00" || card != "0.00" || transfer != "120000.00" || label != "mixed" {
+		t.Fatalf("each amount must live under its own method: %s/%s/%s/%s", cash, card, transfer, label)
+	}
+	// The detail keeps the same settlement, so the warranty can print one row per method.
+	detail, err := e.store.Read(e.ctx, clerk(2), emitted.ID)
+	if err != nil {
+		t.Fatalf("the emitted sale must stay readable: %v", err)
+	}
+	if detail.PaymentMethod != sales.PaymentMixed || len(detail.Payments) != 2 ||
+		detail.Payments[0] != emitted.Payments[0] || detail.Payments[1] != emitted.Payments[1] {
+		t.Fatalf("the detail must carry the same settlement as the emitted sale: %+v", detail)
+	}
+	// The label is never an input: a client that tries to state it is refused before any
+	// database work, and nothing is written.
+	before := e.snapshot(t)
+	chosen := sale(3, 1, "85000.00")
+	chosen.Payments = []sales.Payment{{Method: sales.PaymentMixed, Amount: "85000.00"}}
+	if _, err := e.store.Create(e.ctx, clerk(2), chosen); !errors.Is(err, sales.ErrInvalid) {
+		t.Fatalf("the payment label must not be an input: %v", err)
+	}
+	if e.snapshot(t) != before {
+		t.Fatal("a label chosen by the client must not write anything")
+	}
+}
+
+// TestSaleSinglePaymentKeepsItsLabel pins the rest of the label rule: a sale paid with one
+// method is labelled with that method, so the common case still reads cash, card or
+// transfer and never 'mixed'.
+func TestSaleSinglePaymentKeepsItsLabel(t *testing.T) {
+	e := fixture(t)
+	e.price(t, e.entryOf(t, 3), "1000", "1200", 2)
+	for _, method := range sales.PaymentMethods() {
+		input := sale(3, 1, "1000.00")
+		input.Payments = []sales.Payment{{Method: method, Amount: "1000.00"}}
+		emitted, err := e.store.Create(e.ctx, clerk(2), input)
+		if err != nil {
+			t.Fatalf("a %s sale must be applied: %v", method, err)
+		}
+		if emitted.PaymentMethod != method || len(emitted.Payments) != 1 ||
+			emitted.Payments[0] != (sales.Payment{Method: method, Amount: "1000.00"}) {
+			t.Fatalf("a sale paid with %s must read back as %s: %+v", method, method, emitted)
+		}
+		detail, err := e.store.Read(e.ctx, clerk(2), emitted.ID)
+		if err != nil || detail.PaymentMethod != method || len(detail.Payments) != 1 {
+			t.Fatalf("the detail of a %s sale must keep its label and its payment: %+v %v", method, detail, err)
+		}
+	}
+}
+
+// TestSalePaymentsMustCloseInStore pins S16's refusal in the store: a settlement that does
+// not close is refused before the first statement, the error names how much is missing or
+// left over, and nothing is written or decremented.
+func TestSalePaymentsMustCloseInStore(t *testing.T) {
+	e := fixture(t)
+	e.price(t, e.entryOf(t, 3), "85000", "96000", 2)
+	existing, reserved := e.stock(t, 2, 3)
+	before := e.snapshot(t)
+	for name, tc := range map[string]struct {
+		payments []sales.Payment
+		missing  sales.Money
+		excess   sales.Money
+	}{
+		"below": {[]sales.Payment{{Method: sales.PaymentCash, Amount: "40000.00"},
+			{Method: sales.PaymentTransfer, Amount: "30000.00"}}, "15000.00", ""},
+		"above": {[]sales.Payment{{Method: sales.PaymentCash, Amount: "90000.00"}}, "", "5000.00"},
+	} {
+		input := sale(3, 1, "85000.00")
+		input.Payments = tc.payments
+		_, err := e.store.Create(e.ctx, clerk(2), input)
+		var mismatch *sales.PaymentsMismatch
+		if !errors.As(err, &mismatch) || mismatch.Missing != tc.missing || mismatch.Excess != tc.excess {
+			t.Fatalf("%s must name the open side: %v", name, err)
+		}
+		if !errors.Is(err, sales.ErrInvalid) {
+			t.Fatalf("%s must stay the invalid-document refusal", name)
+		}
+		if e.snapshot(t) != before {
+			t.Fatalf("%s must not write a sale nor touch stock", name)
+		}
+		if got, gotReserved := e.stock(t, 2, 3); got != existing || gotReserved != reserved {
+			t.Fatalf("%s must leave the balance untouched: %d/%d", name, got, gotReserved)
+		}
+	}
+}
+
+// TestSalePaymentSumIsTheDatabaseRule proves the sum is enforced by the database and not
+// only by this store: a direct insert whose amounts leave change behind is refused, and a
+// settlement that closes is admitted with its label derived from its own amounts.
+func TestSalePaymentSumIsTheDatabaseRule(t *testing.T) {
+	e := fixture(t)
+	e.price(t, e.entryOf(t, 5), "85000", "96000", 2)
+	insert := func(header string, args ...any) error {
+		t.Helper()
+		tx, err := e.pool.Begin(e.ctx)
+		if err != nil {
+			t.Fatal("the raw sale transaction failed")
+		}
+		defer tx.Rollback(context.WithoutCancel(e.ctx))
+		var id int64
+		if err := tx.QueryRow(e.ctx, header, args...).Scan(&id); err != nil {
+			return err
+		}
+		// The document needs its line, so the header is inserted the same way a writer
+		// would and the deferred total guard is satisfied.
+		if _, err := tx.Exec(e.ctx, `INSERT INTO sale_lines(sale_id,variant_id,quantity,unit_price,warranty_months)
+ VALUES($1,5,2,'90000.00',6)`, id); err != nil {
+			return err
+		}
+		return tx.Commit(e.ctx)
+	}
+	// The amounts do not add up to the total, so the header itself is refused.
+	err := insert(`INSERT INTO sales(branch_location_id,cash_amount,card_amount,transfer_amount,
+  customer_name,total,created_by_account_id) VALUES(2,90000.01,90000.01,0.00,'Cliente',180000.00,2) RETURNING id`)
+	var pg *pgconn.PgError
+	if !errors.As(err, &pg) || pg.Code != "23514" {
+		t.Fatalf("a settlement that does not close must be refused by the database: %v", err)
+	}
+	if n := e.scalar(t, "SELECT count(*) FROM sales"); n != 0 {
+		t.Fatalf("a refused settlement must not persist a header, got %d", n)
+	}
+	// The same document with amounts that close is admitted and labelled by the database.
+	if err := insert(`INSERT INTO sales(branch_location_id,cash_amount,card_amount,transfer_amount,
+  customer_name,total,created_by_account_id) VALUES(2,90000.00,0.00,90000.00,'Cliente',180000.00,2) RETURNING id`); err != nil {
+		t.Fatalf("a settlement that closes must be admitted: %v", err)
+	}
+	var label string
+	if err := e.pool.QueryRow(e.ctx, "SELECT payment_method FROM sales").Scan(&label); err != nil {
+		t.Fatal("the derived label could not be read")
+	}
+	if label != "mixed" {
+		t.Fatalf("two paying methods must be derived as mixed, got %q", label)
 	}
 }

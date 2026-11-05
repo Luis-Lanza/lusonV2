@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "chosen": "01-counter-cart.html",
+  "handoffs": {
+    "01-counter-cart.html": {
+      "status": "implemented",
+      "queued": false,
+      "sentAt": "2026-11-04T23:52:16.417Z",
+      "startedAt": "2026-11-04T23:52:57.661Z",
+      "implementedAt": "2026-11-05T00:26:08.974Z",
+      "feature": "odd/tasks/punto-de-venta.md",
+      "note": "Instalado en el preview: schema 27, cuatro rutas de venta montadas. Falta la aceptación del humano en el navegador: venta simple, venta mixta y descarga del PDF.",
+      "previewUrl": "http://127.0.0.1:8080/#/ventas"
+    }
+  }
+}

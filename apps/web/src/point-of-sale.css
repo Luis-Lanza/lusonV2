@@ -1,0 +1,132 @@
+/* Branch point of sale and sales history: layout only. Colours, radii, shadows,
+   spacing, focus ring and 44px touch targets reuse the tokens and values already
+   declared in style.css, so no new colour value enters the application. */
+.point-of-sale { display: grid; gap: 16px; min-width: 0; max-width: 1700px; width: 100%; }
+.pos-heading { display: grid; gap: 8px; }
+.pos-heading small { color: var(--muted); font-size: 11px; letter-spacing: .04em; }
+.pos-heading h1 { margin: 0; }
+.pos-heading p { color: var(--muted); font-size: 13px; line-height: 1.6; max-width: 78ch; }
+.pos-layout { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; align-items: start; min-width: 0; }
+.pos-panel { display: grid; gap: 16px; min-width: 0; padding: 24px; background: #fff;
+  border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 1px 2px #2421240d; }
+.pos-panel-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 16px; min-width: 0; }
+.pos-panel-head h2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 18px; font-weight: 600; }
+.pos-panel-head .pos-hint { margin-top: 4px; }
+.pos-tag { display: inline-block; flex-shrink: 0; padding: 4px 8px; background: var(--page);
+  border: 1px solid var(--border); border-radius: 3px; color: var(--muted); font-size: 11px; font-weight: 600; }
+.pos-tag.ok { background: #ECFDF5; border-color: #A7F3D0; color: #047857; }
+.pos-tag.short { background: #FFF0F0; border-color: #FFDAD6; color: #991515; }
+.pos-hint { color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.pos-filters { display: grid; grid-template-columns: minmax(0, 1.6fr) repeat(3, minmax(0, .8fr)); gap: 12px; }
+.pos-history-filters { grid-template-columns: minmax(0, 1fr) 190px; }
+.pos-filters label { display: grid; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }
+.pos-filters input, .pos-filters select { width: 100%; min-height: 44px; padding: 10px 12px;
+  border-color: var(--muted); color: #242124; font-size: 13px; }
+.pos-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.pos-card { display: grid; gap: 10px; align-content: start; padding: 14px; background: #fff;
+  border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 1px 2px #2421240d; }
+.pos-card h3 { font-size: 14px; font-weight: 600; }
+.pos-card.blocked { background: var(--page); border-style: dashed; }
+.pos-card.blocked .pos-price { color: var(--muted); }
+.pos-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+.pos-figures { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: end; }
+.pos-price { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.pos-stock { color: var(--muted); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+.pos-banner { padding: 10px 12px; background: #FFF0F0; border: 1px solid #FFDAD6; border-radius: 4px;
+  color: #991515; font-size: 12px; line-height: 1.5; }
+.pos-card button { min-height: 44px; }
+.pos-card small { color: var(--muted); font-size: 11px; }
+.pos-message { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; color: var(--muted);
+  font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.pos-message button { min-width: 44px; min-height: 44px; border-color: var(--muted); }
+/* Cart and settlement: always beside the catalogue on wide counters. */
+.pos-cart { position: sticky; top: 16px; display: grid; gap: 12px; min-width: 0; }
+.pos-lines { display: grid; gap: 10px; }
+.pos-line { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 4px; }
+.pos-line-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.pos-line-head strong { font-size: 13px; }
+.pos-line-head small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+.pos-num { font-weight: 600; font-variant-numeric: tabular-nums; }
+.pos-line-controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; align-items: end; }
+.pos-line label { display: grid; gap: 4px; min-width: 0; color: var(--muted); font-size: 12px; }
+.pos-line-controls input, .pos-line > label input { width: 100%; min-height: 34px; padding: 4px 8px;
+  border-color: var(--muted); color: #242124; font-size: 13px; font-variant-numeric: tabular-nums; }
+.pos-line > label input { text-align: right; }
+.pos-qty { display: flex; align-items: center; gap: 6px; }
+.pos-qty button { min-height: 34px; padding: 4px 10px; line-height: 1; }
+.pos-qty input { width: 58px; text-align: center; }
+.pos-remove { justify-self: start; min-height: 34px; padding: 4px 10px; border-color: var(--border);
+  color: var(--muted); font-size: 12px; }
+.pos-totals { display: grid; gap: 6px; padding-top: 12px; border-top: 1px solid var(--border);
+  font-variant-numeric: tabular-nums; }
+.pos-row { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.pos-grand { font-size: 20px; font-weight: 700; color: var(--wine); }
+.pos-payments { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
+  border: 0; padding: 0; margin: 0; min-width: 0; }
+.pos-payments legend { padding: 0; margin-bottom: 8px; color: var(--muted); font-size: 12px; }
+.pos-payments label { display: grid; gap: 4px; min-width: 0; color: var(--muted); font-size: 12px; }
+.pos-payments input { width: 100%; min-height: 40px; padding: 8px; border-color: var(--muted); color: #242124;
+  text-align: right; font-size: 13px; font-variant-numeric: tabular-nums; }
+.pos-pay-sum { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.pos-rest { min-height: 34px; padding: 4px 10px; border-color: var(--border); color: var(--muted); font-size: 12px; }
+.pos-customer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.pos-customer label:first-child { grid-column: 1 / -1; }
+.pos-customer label { display: grid; gap: 4px; min-width: 0; color: var(--muted); font-size: 12px; }
+.pos-customer input { width: 100%; min-height: 40px; padding: 8px 12px; border-color: var(--muted);
+  color: #242124; font-size: 13px; }
+.pos-charge { width: 100%; min-height: 44px; }
+.pos-status { min-height: 20px; color: var(--wine); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.pos-issued { display: grid; gap: 8px; padding: 14px; background: #ECFDF5; border: 1px solid #A7F3D0; border-radius: 4px; }
+.pos-issued h3 { color: #047857; font-size: 14px; }
+.pos-issued-number { color: #047857; font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.pos-issued small { color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.pos-issued-actions { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.pos-pdf { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px;
+  padding: 8px 12px; border: 1px solid var(--wine); border-radius: 4px; background: var(--wine);
+  color: #fff; font-size: 13px; font-weight: 600; text-decoration: none; }
+.pos-pdf:not(:disabled):hover { background: var(--hover); }
+/* History table: the row's own actions, and its document unfolded underneath. */
+.pos-table-wrap { overflow-x: auto; }
+.sales-table, .sales-detail-lines { width: 100%; border-collapse: collapse; font-size: 13px; }
+.sales-table th, .sales-table td, .sales-detail-lines th, .sales-detail-lines td {
+  height: auto; padding: 12px 12px 12px 0; border-bottom: 1px solid var(--border);
+  text-align: left; white-space: normal; vertical-align: middle; overflow-wrap: anywhere; }
+.sales-table th, .sales-detail-lines th { background: var(--page); color: var(--muted); font-size: 11px;
+  font-weight: 600; letter-spacing: .03em; text-transform: uppercase; }
+.sales-table .num, .sales-detail-lines .num { text-align: right; font-variant-numeric: tabular-nums; }
+.sales-table td small, .sales-detail-lines td small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+.pos-doc { font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.sales-table .pos-tag.mixed { background: var(--tint); border-color: var(--border); color: var(--wine); }
+.sales-table .pos-tag.cash, .sales-table .pos-tag.transfer, .sales-table .pos-tag.card {
+  background: #ECFDF5; border-color: #A7F3D0; color: #047857; }
+.sales-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.pos-quiet { display: inline-flex; align-items: center; justify-content: center; min-height: 34px;
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px; background: #fff;
+  color: var(--wine); font-size: 12px; font-weight: 600; text-decoration: none; }
+.pos-quiet:not(:disabled):hover { background: var(--tint); }
+.sales-table tr.sales-row[aria-expanded="true"] { background: var(--tint); box-shadow: inset 2px 0 0 var(--wine); }
+.sales-table tr.sales-detail > td { padding: 0; background: var(--page); }
+.sales-detail-inner { display: grid; gap: 16px; padding: 20px 24px 24px; }
+.sales-detail-inner h3 { font-size: 16px; }
+.sales-detail-inner h4 { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .03em;
+  text-transform: uppercase; }
+.sales-detail-payments { display: grid; gap: 8px; }
+.sales-detail-payments ul { display: grid; gap: 4px; margin: 8px 0 0; padding: 0; list-style: none; }
+.sales-detail-payments li { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.pos-panel .pager { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px;
+  background: var(--page); border: 1px solid var(--border); border-radius: 4px; }
+.pos-panel .page-controls { flex-wrap: wrap; }
+.point-of-sale :is(button, input, select, a):focus-visible { outline: 2px solid var(--wine); outline-offset: 3px; }
+
+@media (max-width: 1100px) {
+  .pos-layout { grid-template-columns: minmax(0, 1fr); }
+  .pos-cart { position: static; }
+}
+@media (max-width: 767px) {
+  .pos-panel { padding: 16px; border-radius: 8px; }
+  .pos-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .pos-filters label:first-child { grid-column: 1 / -1; }
+  .pos-history-filters { grid-template-columns: minmax(0, 1fr); }
+  .sales-detail-inner { padding: 16px; }
+  .pos-charge { width: 100%; }
+}

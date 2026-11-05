@@ -286,3 +286,68 @@ func countRows(t *testing.T, ctx context.Context, p *pgxpool.Pool, query string)
 	}
 	return n
 }
+
+// TestBranchPricesByBatterySaleWithPayments proves the reshape still holds once the mixed
+// payment migration is applied: the price is still resolved through the battery of the sold
+// variant, and the sale header records how much was paid with each method, so the price key
+// and the settlement never interfere with each other.
+func TestBranchPricesByBatterySaleWithPayments(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	t.Cleanup(cancel)
+	p := testpg.Open(t)
+	// The whole schema, so the sale header is the shape 027 leaves behind.
+	applyMigrationRange(t, ctx, p, 27)
+	if err := bootstrap.Seed(ctx, p, config.LocalTrial); err != nil {
+		t.Fatal("the dataset could not be seeded")
+	}
+	if _, err := p.Exec(ctx, `INSERT INTO auth_accounts(location_id,username,password_hash)
+ VALUES(1,'almacen','x'),(2,'sucursal_a','x')`); err != nil {
+		t.Fatal("the accounts could not be provisioned")
+	}
+	// One price for the battery of variants 1 and 2, never one per polarity.
+	if _, err := p.Exec(ctx, `INSERT INTO branch_prices(branch_location_id,catalog_entry_id,min_price,suggested_price,updated_by_account_id)
+ VALUES(2,1,2000.00,2500.00,1)`); err != nil {
+		t.Fatalf("the price fixture failed: %v", err)
+	}
+	// The document is settled partly in cash and partly by transfer, and it sells both
+	// polarities of the priced battery.
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		t.Fatal("the sale fixture transaction failed")
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	var sale int64
+	if err := tx.QueryRow(ctx, `INSERT INTO sales(branch_location_id,cash_amount,card_amount,transfer_amount,
+  customer_name,total,created_by_account_id) VALUES(2,2000.00,0.00,2000.00,'Cliente',4000.00,2) RETURNING id`).Scan(&sale); err != nil {
+		t.Fatalf("the sale fixture failed: %v", err)
+	}
+	for _, variant := range []int{1, 2} {
+		if _, err := tx.Exec(ctx, `INSERT INTO sale_lines(sale_id,variant_id,quantity,unit_price,warranty_months)
+ VALUES($1,$2,1,2000.00,6)`, sale, variant); err != nil {
+			t.Fatalf("the polarity %d of the battery must be sellable: %v", variant, err)
+		}
+		var frozen string
+		if err := tx.QueryRow(ctx, `SELECT min_price::text FROM sale_lines WHERE sale_id=$1 AND variant_id=$2`,
+			sale, variant).Scan(&frozen); err != nil {
+			t.Fatal("the frozen floor could not be read")
+		}
+		if frozen != "2000.00" {
+			t.Fatalf("the frozen floor must be the battery's pair: %s", frozen)
+		}
+	}
+	// The settlement is stored by method and the label is derived from it, never chosen.
+	var cash, card, transfer, label string
+	if err := tx.QueryRow(ctx, `SELECT cash_amount::text,card_amount::text,transfer_amount::text,payment_method
+ FROM sales WHERE id=$1`, sale).Scan(&cash, &card, &transfer, &label); err != nil {
+		t.Fatalf("the settlement could not be read: %v", err)
+	}
+	if cash != "2000.00" || card != "0.00" || transfer != "2000.00" || label != "mixed" {
+		t.Fatalf("the sale must record both amounts and derive mixed: %s/%s/%s/%s", cash, card, transfer, label)
+	}
+	// Both rules still hold together: a polarity under the battery floor is refused by the
+	// trigger 026 replaced, before the settlement is ever reached.
+	if _, err := tx.Exec(ctx, `INSERT INTO sale_lines(sale_id,variant_id,quantity,unit_price,warranty_months)
+ VALUES($1,1,1,1999.99,6)`, sale); err == nil {
+		t.Fatal("a line under the battery floor must be refused")
+	}
+}

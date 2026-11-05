@@ -13,6 +13,11 @@
 // subtotal of a line and the total of the document are computed here in integer
 // cents, and the database derives them again and refuses a document that does not
 // add up.
+//
+// A sale also records how much was paid with each admitted method, so one document can
+// be settled partly in cash and partly by transfer. The payments must close against the
+// total exactly, and the payment label is derived by the database from the amounts
+// instead of being chosen by a client.
 package sales
 
 import (
@@ -74,6 +79,29 @@ func (e *InsufficientStock) Error() string {
 // Unwrap keeps errors.Is(err, ErrInsufficientStock) true.
 func (e *InsufficientStock) Unwrap() error { return ErrInsufficientStock }
 
+// PaymentsMismatch is the refusal of a document whose payments do not close against its
+// own total. Exactly one side is set: Missing when the payments fall short of the total,
+// Excess when they overshoot it, so a client can say how much is left to pay or how much
+// was charged too much instead of only reporting that the document is wrong.
+type PaymentsMismatch struct {
+	Missing Money
+	Excess  Money
+}
+
+func (e *PaymentsMismatch) Error() string {
+	switch {
+	case e.Missing != "":
+		return "payments are " + string(e.Missing) + " short of the sale total"
+	case e.Excess != "":
+		return "payments exceed the sale total by " + string(e.Excess)
+	}
+	return "payments do not close against the sale total"
+}
+
+// Unwrap keeps errors.Is(err, ErrInvalid) true: an open settlement is part of the
+// document contract, not a separate class of failure.
+func (e *PaymentsMismatch) Unwrap() error { return ErrInvalid }
+
 const (
 	// The warehouse (location 1) never sells: branches start at id 2.
 	warehouseLocationID = 1
@@ -93,6 +121,8 @@ const (
 	MaxWarrantyMonths   = 120
 	maxBranchLocationID = math.MaxInt16
 	maxSearch           = 128
+	// maxPayments is the number of admitted methods: one payment per method at most.
+	maxPayments = 3
 	// maxCents is the whole range of numeric(12,2) expressed in cents.
 	maxCents = int64(999_999_999_999)
 )
@@ -102,6 +132,11 @@ const (
 // money contract and no binary float ever touches an amount.
 type Money = pricing.Money
 
+// zeroAmount is the canonical text of a method that was not used. It is the database's
+// own representation of "nothing paid with this method", so a read accepts it as zero
+// and it is never a payment entry of a document.
+const zeroAmount Money = "0.00"
+
 // PaymentMethod is the admitted way a sale was paid.
 type PaymentMethod string
 
@@ -109,16 +144,34 @@ const (
 	PaymentCash     PaymentMethod = "cash"
 	PaymentCard     PaymentMethod = "card"
 	PaymentTransfer PaymentMethod = "transfer"
+	// PaymentMixed is the label of a sale settled with more than one method. The database
+	// derives it from the three amounts, so it is never an input and no client chooses it.
+	PaymentMixed PaymentMethod = "mixed"
 )
 
-// Valid reports whether the method is one of the frozen three.
+// Valid reports whether the method is one of the frozen three a client may state. The
+// derived 'mixed' is deliberately not one of them: it is a consequence of the amounts.
 func (p PaymentMethod) Valid() bool {
 	return p == PaymentCash || p == PaymentCard || p == PaymentTransfer
 }
 
-// PaymentMethods lists the admitted methods in their frozen order.
+// Recorded reports whether the method is a label a persisted sale can carry: the three
+// admitted inputs plus the derived 'mixed'. Reads and the history filter use this
+// predicate, so a mixed sale is legible and filterable, while an input still has to name
+// one real method.
+func (p PaymentMethod) Recorded() bool { return p.Valid() || p == PaymentMixed }
+
+// PaymentMethods lists the admitted input methods in their frozen order.
 func PaymentMethods() []PaymentMethod {
 	return []PaymentMethod{PaymentCash, PaymentCard, PaymentTransfer}
+}
+
+// Payment is one way a sale was paid and the amount paid with it. A sale admits at most
+// one payment per method, so one document can be settled partly in cash and partly by
+// transfer, and the amounts must close against the total exactly.
+type Payment struct {
+	Method PaymentMethod
+	Amount Money
 }
 
 // Customer is the client the warranty is issued to. The name is mandatory; the phone
@@ -151,11 +204,12 @@ type LineInput struct {
 	WarrantyMonths int
 }
 
-// CreateInput is one sale to register in the actor's own branch.
+// CreateInput is one sale to register in the actor's own branch. Payments state how the
+// total was settled: one to three entries, each method at most once, in any order.
 type CreateInput struct {
-	PaymentMethod PaymentMethod
-	Customer      Customer
-	Lines         []LineInput
+	Payments []Payment
+	Customer Customer
+	Lines    []LineInput
 }
 
 // Line is one canonical line: the charged price, the seller's warranty term and the
@@ -169,14 +223,15 @@ type Line struct {
 	Subtotal       Money
 }
 
-// Payload is the canonical document used to persist and to answer: the admitted
-// method, the canonical customer, the lines in ascending variant order (also the
-// database's lock order) and the exact total.
+// Payload is the canonical document used to persist and to answer: the canonical client,
+// the lines in ascending variant order (also the database's lock order), the payments in
+// the frozen order cash, card, transfer with only the methods that paid, and the exact
+// total those payments must close against.
 type Payload struct {
-	PaymentMethod PaymentMethod
-	Customer      Customer
-	Lines         []Line
-	Total         Money
+	Payments []Payment
+	Customer Customer
+	Lines    []Line
+	Total    Money
 }
 
 // SaleLine is one persisted line: the price that was charged, the minimum frozen at
@@ -191,13 +246,16 @@ type SaleLine struct {
 }
 
 // Sale is one persisted sale document. Both the branch correlative and the warranty
-// number are the database's own allocation.
+// number are the database's own allocation. PaymentMethod is the label the database
+// derived from the amounts -- cash, card, transfer or mixed -- and Payments is how much
+// was paid with each method that actually paid.
 type Sale struct {
 	ID                 int64
 	BranchLocationID   int64
 	BranchSequence     int64
 	WarrantyNumber     string
 	PaymentMethod      PaymentMethod
+	Payments           []Payment
 	Customer           Customer
 	Total              Money
 	CreatedByAccountID int64
@@ -216,13 +274,17 @@ type DetailLine struct {
 	Polarity       string
 }
 
-// Detail is one persisted sale with its catalogue-resolved lines.
+// Detail is one persisted sale with its catalogue-resolved lines. BranchName is the name
+// of the branch that sold, resolved from locations, so the warranty can be printed with
+// the branch it belongs to without a second lookup by the caller.
 type Detail struct {
 	ID                 int64
 	BranchLocationID   int64
+	BranchName         string
 	BranchSequence     int64
 	WarrantyNumber     string
 	PaymentMethod      PaymentMethod
+	Payments           []Payment
 	Customer           Customer
 	Total              Money
 	CreatedByAccountID int64
@@ -230,7 +292,8 @@ type Detail struct {
 	Lines              []DetailLine
 }
 
-// Summary is one row of the read-only sales history of a branch.
+// Summary is one row of the read-only sales history of a branch. PaymentMethod is the
+// label the database derived for the settlement, so a mixed sale is filtered by 'mixed'.
 type Summary struct {
 	ID             int64
 	BranchSequence int64
@@ -269,9 +332,13 @@ type SellableQuery struct {
 	PageSize int
 }
 
-// SellableItem is one variant the branch can sell right now: the catalogue identity,
-// the suggested price the counter starts from and the minimum it can never go under.
-// The warranty term is not part of the catalogue: the seller states it on the sale.
+// SellableItem is one variant of the catalogue as the branch sees it at the counter:
+// the catalogue identity, whether this branch can sell it right now, the suggested price
+// the counter starts from and the minimum it can never go under, and the stock of the
+// branch. Sellable is true only when the battery of the variant has a price in this
+// branch; SuggestedPrice and MinPrice stay empty in that case, so the counter can show
+// the row with its action disabled (S7) instead of hiding it. The warranty term is not
+// part of the catalogue: the seller states it on the sale.
 type SellableItem struct {
 	VariantID      int64
 	CatalogEntryID int64
@@ -279,8 +346,12 @@ type SellableItem struct {
 	Model          string
 	Capacity       catalog.Decimal
 	Polarity       string
+	Sellable       bool
 	SuggestedPrice Money
 	MinPrice       Money
+	Existing       int64
+	Reserved       int64
+	Available      int64
 }
 
 // SellablePage is one admitted page of the sellable catalogue plus the total.
@@ -363,13 +434,98 @@ func LineTotal(unit Money, quantity int64) (Money, error) {
 	return moneyFromCents(cents * quantity)
 }
 
+// canonicalPayments admits the settlement of one sale: one to three payments, each method
+// at most once, every amount canonical two-decimal text above zero. It answers the
+// payments in the frozen order cash, card, transfer together with the amount paid, in
+// integer cents, so the sum is compared exactly and never as a float.
+func canonicalPayments(input []Payment) ([]Payment, int64, bool) {
+	if len(input) < 1 || len(input) > maxPayments {
+		return nil, 0, false
+	}
+	seen := make(map[PaymentMethod]Money, len(input))
+	var paid int64
+	for _, payment := range input {
+		text := string(payment.Amount)
+		// The method is one a client may state, and it pays at most once.
+		if !payment.Method.Valid() {
+			return nil, 0, false
+		}
+		if _, repeated := seen[payment.Method]; repeated {
+			return nil, 0, false
+		}
+		// The amount is the same canonical money contract as every other amount of this
+		// domain: two decimals, above zero, no binary float and nothing approximated.
+		amount := Money(text)
+		cents, ok := centsOf(amount)
+		if !ok || amount.String() != text || cents < 1 || paid > maxCents-cents {
+			return nil, 0, false
+		}
+		seen[payment.Method] = amount
+		paid += cents
+	}
+	payments := make([]Payment, 0, len(seen))
+	for _, method := range PaymentMethods() {
+		if amount, ok := seen[method]; ok {
+			payments = append(payments, Payment{Method: method, Amount: amount})
+		}
+	}
+	return payments, paid, true
+}
+
+// amountsOf maps the frozen-order payments of a document onto the three stored amount
+// columns, with the canonical zero for a method that was not used.
+func amountsOf(payments []Payment) (cash, card, transfer Money) {
+	cash, card, transfer = zeroAmount, zeroAmount, zeroAmount
+	for _, payment := range payments {
+		switch payment.Method {
+		case PaymentCash:
+			cash = payment.Amount
+		case PaymentCard:
+			card = payment.Amount
+		case PaymentTransfer:
+			transfer = payment.Amount
+		}
+	}
+	return cash, card, transfer
+}
+
+// paymentsOf rebuilds the frozen-order payments of a persisted sale from its three amount
+// columns: only the methods that actually paid, cash then card then transfer. Each amount
+// is read back as canonical text, and a stored shape this domain never wrote is refused
+// instead of being described.
+func paymentsOf(cash, card, transfer string) ([]Payment, int64, bool) {
+	payments := make([]Payment, 0, maxPayments)
+	var paid int64
+	for _, column := range []struct {
+		method PaymentMethod
+		text   string
+	}{
+		{PaymentCash, cash}, {PaymentCard, card}, {PaymentTransfer, transfer},
+	} {
+		if column.text == string(zeroAmount) {
+			continue
+		}
+		amount := Money(column.text)
+		cents, ok := centsOf(amount)
+		if !ok || amount.String() != column.text || cents < 1 {
+			return nil, 0, false
+		}
+		payments = append(payments, Payment{Method: column.method, Amount: amount})
+		paid += cents
+	}
+	return payments, paid, true
+}
+
 // Validate returns the canonical document used to persist and to answer. Lines are
 // copied and sorted ascending by variant, which is also the database's balance-row
-// lock order, and the caller's slice is never modified. An unknown variant, a
-// duplicate variant, an impossible quantity and an amount that is not canonical
-// two-decimal text are refused here, before any database work.
+// lock order, and the caller's slice is never modified. An unknown variant, a duplicate
+// variant, an impossible quantity, a payment shape no sale admits and an amount that is
+// not canonical two-decimal text are refused here, before any database work. A
+// settlement whose amounts do not close against the total is refused with the amount that
+// is missing or left over.
 func Validate(input CreateInput) (Payload, error) {
-	if !input.PaymentMethod.Valid() {
+	payments, paid, ok := canonicalPayments(input.Payments)
+	if !ok {
 		return Payload{}, ErrInvalid
 	}
 	customer, admitted := CanonicalCustomer(input.Customer)
@@ -413,7 +569,23 @@ func Validate(input CreateInput) (Payload, error) {
 	if err != nil {
 		return Payload{}, err
 	}
-	return Payload{PaymentMethod: input.PaymentMethod, Customer: customer, Lines: lines, Total: total}, nil
+	// The settlement must close against the document's own total, compared in integer
+	// cents so nothing is rounded. The refusal names the open side.
+	if paid != cents {
+		if paid < cents {
+			missing, err := moneyFromCents(cents - paid)
+			if err != nil {
+				return Payload{}, err
+			}
+			return Payload{}, &PaymentsMismatch{Missing: missing}
+		}
+		excess, err := moneyFromCents(paid - cents)
+		if err != nil {
+			return Payload{}, err
+		}
+		return Payload{}, &PaymentsMismatch{Excess: excess}
+	}
+	return Payload{Payments: payments, Customer: customer, Lines: lines, Total: total}, nil
 }
 
 // The admitted page sizes of the frozen read contract.
@@ -435,13 +607,14 @@ func validText(text string) bool {
 	return boundedText(text, 0, maxSearch)
 }
 
-// ValidListQuery admits the history filter. An unknown payment method is refused
-// here, so it never becomes a SQL parameter.
+// ValidListQuery admits the history filter. An unknown payment method is refused here, so
+// it never becomes a SQL parameter, while 'mixed' is admitted because it is a label the
+// database derives and the branch must be able to filter.
 func ValidListQuery(q ListQuery) bool {
 	if !ValidPage(q.Page, q.PageSize) || !validText(q.Search) {
 		return false
 	}
-	return q.PaymentMethod == "" || PaymentMethod(q.PaymentMethod).Valid()
+	return q.PaymentMethod == "" || PaymentMethod(q.PaymentMethod).Recorded()
 }
 
 // ValidSellableQuery admits the catalogue filter. The capacity is a catalogue

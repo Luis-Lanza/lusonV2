@@ -70,13 +70,20 @@ main{margin-left:240px;padding:24px;max-width:1700px}
 .qty input{width:58px;min-height:34px;text-align:center;font-variant-numeric:tabular-nums;padding:4px}
 .line .money{display:grid;grid-template-columns:1fr 1fr;gap:8px;align-items:end}
 .line .money label{gap:4px}
-.line .money input{min-height:34px;text-align:right;font-variant-numeric:tabular-nums;padding:4px 8px}
+.line .money input,.line .money select{min-height:34px;font-variant-numeric:tabular-nums;padding:4px 8px}
+.line .money input{text-align:right}
+.line .precio{margin-top:8px}
+.line .precio input{min-height:34px;text-align:right;font-variant-numeric:tabular-nums;padding:4px 8px}
+.customer{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.customer label:first-child{grid-column:1/-1}
 .totals{border-top:1px solid var(--border);padding-top:12px;display:grid;gap:6px;font-variant-numeric:tabular-nums}
 .totals .row{display:flex;justify-content:space-between;font-size:13px}
 .totals .grand{font-size:20px;font-weight:700;color:var(--wine)}
-.pay{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.pay button{min-height:40px;font-size:12px;padding:8px 6px}
-.pay .on{background:var(--tint);border-color:var(--wine);color:var(--wine);font-weight:600}
+.pay{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;border:0;padding:0;margin:0}
+.pay legend{padding:0;margin-bottom:8px;font-size:12px;color:var(--muted)}
+.pay label{gap:4px}
+.pay input{min-height:40px;text-align:right;font-variant-numeric:tabular-nums;padding:8px}
+.pay-sum{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:8px;flex-wrap:wrap}
 .issued{background:var(--ok-bg);border:1px solid var(--ok-border);border-radius:4px;padding:14px;display:grid;gap:8px}
 .issued h3{color:var(--ok-ink)}
 .issued .n{font-variant-numeric:tabular-nums;font-size:16px;font-weight:700;color:var(--ok-ink)}
@@ -102,6 +109,7 @@ main{padding:16px}}
       <button type="button" data-demo>▦ Inventario</button>
       <button type="button" data-demo>⇄ Transferencias</button>
       <button type="button" class="active" aria-current="page">🛒 Punto de venta</button>
+      <button type="button">▤ Historial de ventas</button>
     </nav>
   </div>
   <div class="identity"><strong>sucursala</strong><small>Sucursal A · Encargado</small></div>
@@ -113,12 +121,11 @@ main{padding:16px}}
       <h1>Nueva venta</h1>
       <p>Sólo las baterías con precio cargado en Sucursal A se pueden vender. El precio mínimo es un piso: por debajo de él la venta se rechaza.</p>
     </div>
-    <a href="#historial" class="tag">Historial de ventas de hoy</a>
   </div>
 
   <div class="layout">
     <section aria-labelledby="productos">
-      <div class="panel" style="margin-bottom:16px">
+      <div class="panel">
         <h2 id="productos" class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.04em">Baterías disponibles</h2>
         <div class="search" style="margin-top:12px">
           <label>Buscar batería<input type="search" placeholder="Marca, modelo o capacidad"></label>
@@ -127,36 +134,32 @@ main{padding:16px}}
         <div class="cards">
           <article class="card">
             <h3>CAR NS40ZL</h3>
-            <div class="meta"><span class="tag">35 Ah</span><span class="tag">L</span><span class="tag ok">6 meses</span></div>
-            <div class="figures"><span class="price">$ 96.000</span><span class="stock">12 disp.</span></div>
+            <div class="meta"><span class="tag">35 Ah</span><span class="tag">L</span></div>
+            <div class="figures"><span class="price">Bs 96.000,00</span><span class="stock">12 disp.</span></div>
             <button type="button" class="primary" data-demo>Agregar a la venta</button>
           </article>
           <article class="card">
             <h3>TOYO NS60L</h3>
-            <div class="meta"><span class="tag">45 Ah</span><span class="tag">L</span><span class="tag ok">12 meses</span></div>
-            <div class="figures"><span class="price">$ 118.000</span><span class="stock">7 disp.</span></div>
+            <div class="meta"><span class="tag">45 Ah</span><span class="tag">L</span></div>
+            <div class="figures"><span class="price">Bs 118.000,00</span><span class="stock">7 disp.</span></div>
             <button type="button" class="primary" data-demo>Agregar a la venta</button>
           </article>
           <article class="card unsellable">
             <h3>HYBRID BT54L</h3>
-            <div class="meta"><span class="tag">54 Ah</span><span class="tag">L</span><span class="tag short">12 meses</span></div>
-            <div class="figures"><span class="price">$ —</span><span class="stock">4 disp.</span></div>
+            <div class="meta"><span class="tag">54 Ah</span><span class="tag">L</span></div>
+            <div class="figures"><span class="price">Bs —</span><span class="stock">4 disp.</span></div>
             <div class="banner">Sin precio en Sucursal A. No es vendible hasta que el Almacén lo cargue.</div>
             <button type="button" disabled aria-describedby="nb1">Agregar a la venta</button>
             <small id="nb1">No vendible</small>
           </article>
           <article class="card unsellable">
             <h3>VOLTA N120</h3>
-            <div class="meta"><span class="tag">120 Ah</span><span class="tag">R</span><span class="tag short">18 meses</span></div>
-            <div class="figures"><span class="price">$ —</span><span class="stock">0 disp.</span></div>
+            <div class="meta"><span class="tag">120 Ah</span><span class="tag">R</span></div>
+            <div class="figures"><span class="price">Bs —</span><span class="stock">0 disp.</span></div>
             <div class="banner">Sin precio en Sucursal A. No es vendible hasta que el Almacén lo cargue.</div>
             <button type="button" disabled>Agregar a la venta</button>
           </article>
         </div>
-      </div>
-      <div class="panel">
-        <h2>Ventas de hoy</h2>
-        <p class="muted" style="margin-top:6px">Tres ventas emitidas · total $ 331.000 · cada una con su garantía descargable.</p>
       </div>
     </section>
 
@@ -166,33 +169,44 @@ main{padding:16px}}
         <form style="margin-top:12px">
           <div class="lines">
             <div class="line">
-              <div class="head"><div><strong>CAR NS40ZL</strong><small>35 Ah · L · garantía 6 meses</small></div><span class="num">$ 96.000</span></div>
+              <div class="head"><div><strong>CAR NS40ZL</strong><small>35 Ah · L</small></div><span class="num">Bs 96.000,00</span></div>
               <div class="money">
                 <div class="qty"><button type="button" aria-label="Restar una unidad" data-demo>−</button><input value="2" inputmode="numeric" aria-label="Cantidad CAR NS40ZL"><button type="button" aria-label="Sumar una unidad" data-demo>+</button></div>
-                <label>Precio unitario<input class="num" inputmode="decimal" value="96000"></label>
+                <label>Garantía (meses)<select aria-label="Garantía en meses de CAR NS40ZL"><option>6</option><option selected>12</option><option>18</option><option>24</option></select></label>
               </div>
-              <small class="muted">Mínimo autorizado $ 85.000 · máximo 12</small>
+              <label class="precio">Precio unitario<input class="num" inputmode="decimal" value="96.000,00"></label>
+              <small class="muted">Mínimo autorizado Bs 85.000,00</small>
             </div>
             <div class="line">
-              <div class="head"><div><strong>TOYO NS60L</strong><small>45 Ah · L · garantía 12 meses</small></div><span class="num">$ 118.000</span></div>
+              <div class="head"><div><strong>TOYO NS60L</strong><small>45 Ah · L</small></div><span class="num">Bs 118.000,00</span></div>
               <div class="money">
                 <div class="qty"><button type="button" aria-label="Restar una unidad" data-demo>−</button><input value="1" inputmode="numeric" aria-label="Cantidad TOYO NS60L"><button type="button" aria-label="Sumar una unidad" data-demo>+</button></div>
-                <label>Precio unitario<input class="num" inputmode="decimal" value="112000"></label>
+                <label>Garantía (meses)<select aria-label="Garantía en meses de TOYO NS60L"><option>6</option><option selected>12</option><option>18</option><option>24</option></select></label>
               </div>
-              <small class="muted">Mínimo autorizado $ 100.000 · ajustado $ 6.000 por debajo del sugerido</small>
+              <label class="precio">Precio unitario<input class="num" inputmode="decimal" value="112.000,00"></label>
+              <small class="muted">Mínimo autorizado Bs 100.000,00 · ajustado Bs 6.000,00 por debajo del sugerido</small>
             </div>
           </div>
           <div class="totals" style="margin-top:12px">
-            <div class="row"><span class="muted">2 × CAR NS40ZL</span><span>$ 192.000</span></div>
-            <div class="row"><span class="muted">1 × TOYO NS60L</span><span>$ 112.000</span></div>
-            <div class="row grand"><span>Total</span><span>$ 304.000</span></div>
+            <div class="row"><span class="muted">2 × CAR NS40ZL</span><span>Bs 192.000,00</span></div>
+            <div class="row"><span class="muted">1 × TOYO NS60L</span><span>Bs 112.000,00</span></div>
+            <div class="row grand"><span>Total</span><span>Bs 304.000,00</span></div>
           </div>
-          <div class="pay" role="group" aria-label="Forma de pago" style="margin-top:12px">
-            <button type="button" class="on" data-demo>Efectivo</button>
-            <button type="button" data-demo>Tarjeta</button>
-            <button type="button" data-demo>Transferencia</button>
+          <fieldset class="pay" style="margin-top:12px">
+            <legend>Formas de pago · total Bs 304.000,00</legend>
+            <label>Efectivo<input class="num" inputmode="decimal" value="200.000,00"></label>
+            <label>Transferencia<input class="num" inputmode="decimal" value="104.000,00"></label>
+          </fieldset>
+          <div class="pay-sum">
+            <span class="tag ok">Suma Bs 304.000,00 · cubre el total</span>
+            <button type="button" class="quiet" data-demo>Resto</button>
           </div>
-          <label style="margin-top:12px">Cliente<input value="Marta Giménez · 381 555 0198 · DNI 27.884.310"></label>
+          <small class="muted" style="display:block;margin-top:6px">Si la suma no es exactamente el total, el cobro queda deshabilitado y el aviso dice cuánto falta o cuánto sobra. Un solo monto es una venta normal; más de uno queda como <strong>Mixto</strong>.</small>
+          <div class="customer">
+            <label>Cliente<input value="Marta Giménez" autocomplete="off"></label>
+            <label>Teléfono<input value="381 555 0198" inputmode="tel"></label>
+            <label>Documento<input value="27.884.310" inputmode="numeric"></label>
+          </div>
           <button type="button" class="primary" data-demo style="width:100%;margin-top:12px">Cobrar y emitir garantía</button>
           <div class="status" role="status" aria-live="polite"></div>
         </form>
@@ -200,9 +214,9 @@ main{padding:16px}}
 
       <div class="issued" aria-labelledby="emitida">
         <h3 id="emitida">Venta anterior emitida</h3>
-        <span class="n">Venta V-000126 · Garantía G-000126</span>
-        <small>31/10/2026 17:42 · 1 × CAR NS40ZL · $ 96.000</small>
-        <div class="actions"><button type="button" class="primary" data-demo>Descargar PDF</button><button type="button" class="quiet" data-demo>Ver</button></div>
+        <span class="n">Venta #126 · Garantía 2-000126</span>
+        <small>04/11/2026 17:42 · 1 × CAR NS40ZL · Bs 96.000,00 · Mixto: Bs 40.000,00 efectivo + Bs 56.000,00 transferencia</small>
+        <div class="actions"><button type="button" class="primary" data-demo style="grid-column:1/-1">Descargar PDF</button></div>
       </div>
     </aside>
   </div>
@@ -212,12 +226,6 @@ document.querySelectorAll('[data-demo]').forEach(function(button){
   button.addEventListener('click',function(){
     var status=document.querySelector('.status');
     if(status){status.textContent='Acción de demostración: '+button.textContent.trim();}
-  });
-});
-document.querySelectorAll('.pay button').forEach(function(button){
-  button.addEventListener('click',function(){
-    document.querySelectorAll('.pay button').forEach(function(other){other.classList.remove('on')});
-    button.classList.add('on');
   });
 });
 </script>
