@@ -1,0 +1,86 @@
+name: verify
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      # npm ci, not npm install: the lockfile is the contract and every direct
+      # dependency is pinned to an exact version.
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm run typecheck
+
+      # The Go to TypeScript seam check reports as skipped here on purpose: it
+      # needs a capture produced by a Go test against the isolated PostgreSQL
+      # fixture, which this workflow cannot provide. See the README section
+      # "Opt-in Go to TypeScript seam check".
+      - run: npm test
+
+      - run: npm run build
+
+      # The R05 suites use node:test rather than Vitest, so npm test never sees
+      # them, and they resolve their fixtures from the repository root: running
+      # them from apps/web fails on a doubled path.
+      - name: R05 ownership and isolation suites
+        working-directory: .
+        run: npm --prefix apps/web run test:r05
+
+  go:
+    name: go
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/api/go.mod
+          cache-dependency-path: apps/api/go.sum
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt reported files that are not formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - run: go vet ./...
+
+      - run: go build ./...
+
+      # `go test ./...` is deliberately absent, and adding it would not be an
+      # improvement. Every PostgreSQL-backed test requires LUSON_TEST_PG_MANIFEST
+      # to point at a parent-owned fixture whose root path is machine specific,
+      # and admission fails closed by design. A step that is red on every run is
+      # the failure mode this workflow exists to prevent, so the Go suite runs
+      # where its fixture lives.

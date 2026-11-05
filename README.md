@@ -123,6 +123,25 @@ When the variable is set the check is strict: a missing or malformed capture
 fails instead of falling back to a copied fixture. When it is unset the suite
 reports as skipped, never as passed.
 
+## Continuous integration
+
+`.github/workflows/verify.yml` runs on every push to `master` and every pull
+request, in two jobs. The frontend job installs from the lockfile with `npm ci`
+and runs lint, typecheck, the Vitest suite, the R05 ownership and isolation
+suites, and the production build. The Go job runs `gofmt`, `go vet ./...` and
+`go build ./...`.
+
+`go test ./...` is deliberately **not** part of it. Every PostgreSQL-backed test
+requires `LUSON_TEST_PG_MANIFEST` to name a parent-owned fixture whose root path
+is machine specific, and admission fails closed by design, so the step would be
+red on every run. The Go suite runs where its fixture lives, not in this
+workflow. Adding it without providing the fixture would trade a real signal for
+permanent noise.
+
+The seam check reports as skipped in CI for the same reason: it needs a capture
+produced by a Go test against that fixture. Skipped is reported as skipped,
+never as passed, and it is strict whenever the capture is supplied.
+
 ## Historical L01–L05 verification status
 
 L01–L04 independently passed; their PostgreSQL bindings are historical and
