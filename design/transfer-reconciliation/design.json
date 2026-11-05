@@ -1,0 +1,27 @@
+{
+  "title": "Resolver diferencia de transferencia · Luson",
+  "brief": "Propuesta visual independiente que conserva el shell y la evidencia original de Luson. Una entrada Resolver diferencia; recepción y conciliación separadas; hechos, retención física, efectos calculados, revisión de contraparte y pendientes sin cierre automático. Solo maquetas locales sin persistencia ni movimientos de stock.",
+  "artboards": [
+    {
+      "file": "01-guided.html",
+      "title": "Aclaración guiada en modal sobre el detalle actual",
+      "tradeoff": "Conserva la tabla efectiva y la recepción original; Gestiones abre un modal con hechos, evidencia, efectos y revisión. Se cierra para inspeccionar el detalle; agrega pasos y desplazamiento interno en móvil.",
+      "width": 1440,
+      "height": 1100
+    },
+    {
+      "file": "02-worksheet.html",
+      "title": "Planilla de conciliación multiproducto",
+      "tradeoff": "Compara y edita varias variantes de una vez; más eficiente para volumen, pero exige más atención y se alarga en móvil.",
+      "width": 1440,
+      "height": 1100
+    },
+    {
+      "file": "03-incident-workspace.html",
+      "title": "Incidente integrado en el detalle",
+      "tradeoff": "Mantiene evidencia, seguimiento y revisión junto al detalle; mejor continuidad, a costa de densidad y mayor desplazamiento.",
+      "width": 1440,
+      "height": 1100
+    }
+  ]
+}

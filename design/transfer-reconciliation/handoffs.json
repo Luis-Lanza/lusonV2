@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "chosen": "01-guided.html",
+  "handoffs": {
+    "01-guided.html": {
+      "status": "implemented",
+      "queued": false,
+      "sentAt": "2026-10-31T18:46:21.463Z",
+      "startedAt": "2026-10-31T18:46:31.489Z",
+      "implementedAt": "2026-11-01T06:41:27.078Z",
+      "note": "Implementación entregada en worktree feat/transfer-unified-delivery. Tests DOM/tipos/build, upgrade real3escenarios y diferencial81rechazos PASS. Chromium delivery8casos móvil/escritorio yambosactores PASS con foco exacto Gestiones y0errores. Transporte browser simulado, no backendE2E; sin aprobación nativa por assessunavailable."
+    }
+  }
+}
