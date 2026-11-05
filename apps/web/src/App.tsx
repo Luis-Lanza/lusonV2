@@ -15,6 +15,7 @@ import PasswordChange from './PasswordChange';
 import StockEntry from './StockEntry';
 import StockAdjustment from './StockAdjustment';
 import CatalogPrices from './CatalogPrices';
+import CatalogBatteries from './CatalogBatteries';
 import CatalogSectionBoundary from './CatalogSectionBoundary';
 import PointOfSale, { SalesSectionBoundary, salesHistoryFailureMessage } from './PointOfSale';
 import SalesHistory from './SalesHistory';
@@ -111,6 +112,23 @@ function Navigation({ mobile = false, transfers, disabled, actionCount, countUna
     <span id={statusID} className="sr-only" role="status">{countStatus}</span>
   </nav>;
 }
+// The catalogue holds two screens of one section: the price matrix and the battery
+// catalogue. Both are gated by the same warehouse authority and remounted per owner,
+// so a rotated session cannot publish either one into a newer session.
+function CatalogScreens({ owner, csrf, brands, screen, onScreen }: {
+  owner: string; csrf: string; brands: readonly string[]; screen: 'prices' | 'batteries';
+  onScreen: (screen: 'prices' | 'batteries') => void;
+}) {
+  return <>
+    <div className="admin-tabs" role="group" aria-label="Secciones del catálogo">
+      <button type="button" aria-pressed={screen === 'prices'} onClick={() => onScreen('prices')}>Precios</button>
+      <button type="button" aria-pressed={screen === 'batteries'} onClick={() => onScreen('batteries')}>Baterías</button>
+    </div>
+    {screen === 'batteries'
+      ? <CatalogBatteries key={`catalog-batteries-${owner}`} csrf={csrf} />
+      : <CatalogPrices key={owner} csrf={csrf} brands={brands} />}
+  </>;
+}
 // Exported for the hook-order test: App can never mount this with an unauthenticated
 // controller, so the invariant is only reachable by rendering the shell directly.
 export function InventoryView({ state, recovery }: { state: Controller; recovery: ReturnType<typeof createTransferRecovery> }) {
@@ -174,6 +192,8 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
   const stock = warehouse && route.section === 'stock';
   const adjustments = warehouse && route.section === 'adjustments';
   const catalog = warehouse && route.section === 'catalog';
+  // The catalogue's two screens: its own hash opens the price matrix.
+  const catalogScreen: 'prices' | 'batteries' = catalog && route.screen === 'batteries' ? 'batteries' : 'prices';
   // The counter and its history are branch-only surfaces (S1): the warehouse (account 1,
   // location 1) neither sees them in the sidebar nor reaches them with a typed hash.
   const branch = identity.location.id > 1;
@@ -237,6 +257,11 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
     if (navDisabled || catalog || latest !== ownerTag) return;
     changeRoute({ section: 'catalog' });
   }
+  function navigateCatalogScreen(screen: 'prices' | 'batteries') {
+    const latest = transferViewOwner(state.getTransferAuthority());
+    if (navDisabled || !catalog || latest !== ownerTag || catalogScreen === screen) return;
+    changeRoute({ section: 'catalog', screen });
+  }
   function navigateSales() {
     const latest = transferViewOwner(state.getTransferAuthority());
     if (navDisabled || sales || latest !== ownerTag) return;
@@ -267,7 +292,10 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
         : stock ? <p role="status">Verificando la sesión del Almacén…</p>
         : adjustments && adminOwner ? <StockAdjustment key={adminOwner} csrf={csrf} realtime={state} />
         : adjustments ? <p role="status">Verificando la sesión del Almacén…</p>
-        : catalog && adminOwner ? <CatalogSectionBoundary key={adminOwner}><CatalogPrices key={adminOwner} csrf={csrf} brands={metadata?.brands ?? []} /></CatalogSectionBoundary>
+        : catalog && adminOwner ? <CatalogSectionBoundary key={adminOwner}>
+          <CatalogScreens owner={adminOwner} csrf={csrf} brands={metadata?.brands ?? []}
+            screen={catalogScreen} onScreen={navigateCatalogScreen} />
+        </CatalogSectionBoundary>
         : catalog ? <p role="status">Verificando la sesión del Almacén…</p>
         : sales && ownerTag ? <SalesSectionBoundary key={`pos-${ownerTag}`}><PointOfSale key={ownerTag} csrf={csrf} branch={identity.location.name} brands={metadata?.brands ?? []} /></SalesSectionBoundary>
         : sales ? <p role="status">Verificando la sesión de la sucursal…</p>

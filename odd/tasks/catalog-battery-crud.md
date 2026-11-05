@@ -56,8 +56,10 @@ Task rules agreed before implementation:
   stop rejecting allocated identities.
 
 Delivery strategy: one commit per task on `feat/catalog-battery-crud`. The 400-line
-slice was crossed at T4 (661 authored lines across T1 and T4); remaining tasks keep
-their own commit so each is reviewable alone.
+slice was crossed at T4 (661 authored lines across T1 and T4) and again at T3/T5
+(2455 lines across seven commits); remaining tasks keep their own commit so each is
+reviewable alone. Each slice is reviewed natively as its own candidate, never as the
+accumulated branch.
 
 ## Log
 

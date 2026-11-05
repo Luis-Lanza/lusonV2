@@ -1686,6 +1686,60 @@ describe('warehouse catalogue section', () => {
       clock.mockRestore(); errors.mockRestore();
     }
   });
+
+  it('offers both catalogue screens and reaches the battery catalogue from the price screen', async () => {
+    const mock = setup(session, url => url.startsWith('/api/catalog/prices?')
+      ? Promise.resolve(new Response(catalogPage, { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      : undefined);
+    render(<App />); await inventory();
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Navegación principal' }))
+      .getByRole('button', { name: 'Catálogo' }));
+    await screen.findByRole('heading', { name: 'Catálogo de precios' });
+    const screens = screen.getByRole('group', { name: 'Secciones del catálogo' });
+    expect(within(screens).getByRole('button', { name: 'Precios' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(within(screens).getByRole('button', { name: 'Baterías' }));
+    await screen.findByRole('heading', { name: 'Baterías del catálogo' });
+    expect(window.location.hash).toBe('#/catalogo/baterias');
+    expect(screen.queryByRole('heading', { name: 'Catálogo de precios' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Crear batería' })).toBeInTheDocument();
+    expect(await screen.findByText('CAR NS40ZL')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Catálogo' })).toHaveAttribute('aria-current', 'page');
+    // Coming back to the price matrix is the section's own hash.
+    fireEvent.click(within(screens).getByRole('button', { name: 'Precios' }));
+    await screen.findByRole('heading', { name: 'Catálogo de precios' });
+    expect(window.location.hash).toBe('#/catalogo');
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('restores a typed #/catalogo/baterias hash for the warehouse identity', async () => {
+    window.history.replaceState(null, '', '/#/catalogo/baterias');
+    const mock = setup(session, url => url.startsWith('/api/catalog/prices?')
+      ? Promise.resolve(new Response(catalogPage, { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      : undefined);
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Baterías del catálogo' });
+    expect(screen.getByRole('button', { name: 'Catálogo' })).toHaveAttribute('aria-current', 'page');
+    expect(await screen.findByText('CAR NS40ZL'), ).toBeInTheDocument();
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('hides the battery catalogue and its write affordances from a branch identity', async () => {
+    // A typed path below the catalogue is not a screen this branch session can reach.
+    window.history.replaceState(null, '', '/#/catalogo/baterias');
+    const mock = setup({ ...session, identity: { ...identity, account_id: 2, location: metadata.locations[1] } });
+    render(<App />); await inventory();
+    expect(screen.queryByRole('button', { name: 'Catálogo' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Secciones del catálogo' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Baterías del catálogo' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Crear batería' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^(Editar|Archivar) / })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Nueva batería/)).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Resultados de inventario' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Inventario' })).toHaveAttribute('aria-current', 'page');
+    expect(mock.mock.calls.some(([url]) => String(url).startsWith('/api/catalog/batteries'))).toBe(false);
+    expect(mock.mock.calls.some(([url]) => String(url).startsWith('/api/catalog/prices'))).toBe(false);
+    expect(mock.mock.calls.some(([, init]) => init?.method && init.method !== 'GET')).toBe(false);
+  });
 });
 
 describe('branch point of sale and its history', () => {
