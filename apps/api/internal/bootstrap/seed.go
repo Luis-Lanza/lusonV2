@@ -128,7 +128,7 @@ func state(ctx context.Context, tx pgx.Tx, source catalog.Catalog) (bool, error)
 	if sourceSHA != source.SourceSHA || fixtureSHA != fixtureHash() || origin != stockOrigin {
 		return false, errors.New("initialization provenance differs from embedded fixture")
 	}
-	rows, err := observe(ctx, tx)
+	rows, err := observe(ctx, tx, source)
 	if err != nil {
 		return false, err
 	}
@@ -177,13 +177,22 @@ type balanceRow struct {
 	variantID  int
 }
 
-// observe reads the catalog, the active branch set and the balance matrix.
-// Archived fixture rows keep their exact values and are compared like active
-// ones; allocated identities, their balances and retired branches are read too
-// so verification can bound itself to the fixture instead of to a row count.
-func observe(ctx context.Context, tx pgx.Tx) (seedRows, error) {
+// observe reads exactly the fixture rows and their balances, plus the active branch
+// set. Both the catalog and the branch set grow at runtime, so an unscoped read
+// would scale with the whole branch x variant matrix on every startup check and
+// would have to parse values the fixture never authored. Allocated identities and
+// retired branches are simply not part of what this check proves.
+func observe(ctx context.Context, tx pgx.Tx, source catalog.Catalog) (seedRows, error) {
 	var rows seedRows
-	entries, err := tx.Query(ctx, "SELECT id,brand,model,capacity_ah::text FROM catalog_entries ORDER BY id")
+	entryIDs := make([]int32, 0, len(source.Entries))
+	for _, entry := range source.Entries {
+		entryIDs = append(entryIDs, int32(entry.ID))
+	}
+	variantIDs := make([]int32, 0, len(source.Entries)*2)
+	for _, variant := range source.Variants() {
+		variantIDs = append(variantIDs, int32(variant.ID))
+	}
+	entries, err := tx.Query(ctx, "SELECT id,brand,model,capacity_ah::text FROM catalog_entries WHERE id=ANY($1::integer[]) ORDER BY id", entryIDs)
 	if err != nil {
 		return rows, err
 	}
@@ -205,7 +214,7 @@ func observe(ctx context.Context, tx pgx.Tx) (seedRows, error) {
 	if err != nil {
 		return rows, err
 	}
-	variants, err := tx.Query(ctx, "SELECT id,catalog_entry_id,polarity FROM catalog_variants ORDER BY id")
+	variants, err := tx.Query(ctx, "SELECT id,catalog_entry_id,polarity FROM catalog_variants WHERE id=ANY($1::integer[]) ORDER BY id", variantIDs)
 	if err != nil {
 		return rows, err
 	}
@@ -241,7 +250,7 @@ func observe(ctx context.Context, tx pgx.Tx) (seedRows, error) {
 	if err != nil {
 		return rows, err
 	}
-	balances, err := tx.Query(ctx, "SELECT location_id,variant_id FROM inventory_balances ORDER BY location_id,variant_id")
+	balances, err := tx.Query(ctx, "SELECT location_id,variant_id FROM inventory_balances WHERE variant_id=ANY($1::integer[]) ORDER BY location_id,variant_id", variantIDs)
 	if err != nil {
 		return rows, err
 	}

@@ -97,3 +97,24 @@ fila de balance para operar. Append-only con FK hacia `catalog_variants`: `sale_
 `stock_entry_lines` (021:29), `stock_adjustment_lines` (022:34), `transfer_recovery_events`
 (020:13), `variant_warranties` (024:16); `transfer_personal_activity.variant_id` (016:15) sin
 FK a propósito. Ningún read path filtra activo/archivado hoy.
+
+L8 (review nativo, tres líneas + hallazgos leídos del store del provider): las líneas
+`review-b79e73483e89a274`, `review-8e2a8b459dd12d01` y `review-9c17189a7f73948d` cerraron las
+tres en `correction_required`. El texto de los findings se leyó de
+`.git/gentle-ai/review-transactions/v2/<lineage>/review-state.json` (evidencia almacenada por
+el provider), no de STATUS: el facade no expone findings y su `status` no acepta
+`baseRef`/`committedOnly`, así que la ruta de corrección queda inalcanzable cuando el worktree
+coincide con HEAD. Hallazgos: **R4-001 CRITICAL** (carrera entre la creación de sucursal y de
+batería: cada fan-out lee el snapshot del otro y la fila de `inventory_balances` faltante es
+permanente, invisible para el verificador), R3-002 (misma carrera, lente reliability), R3-003
+(el guard de variants aceptaba INSERT en una batería archivada), R3-001 (inferencial:
+`observe` parseaba capacidad de entradas operativas), R4-002 (`observe` cargaba toda la matriz
+de balances en memoria). Lente risk: 0 findings.
+
+L9 (corrección, commits 60214d1 y el de 029): `60214d1` probó que una batería editada sigue
+siendo verificable (S1 vs T2). `029_catalog_fanout_serialization.sql` serializa ambos fan-outs
+con el advisory lock de inicialización (21485914531180593) y prohíbe que una batería archivada
+gane variants; `observe` se acota a los ids del fixture. RED/GREEN del CRITICAL reproducido a
+mano con dos sesiones intercaladas: `missing=1` antes, `missing=0` después; variant en batería
+archivada rechazado con `catalog_variant_retired_battery`; tras limpiar las sondas vuelven
+entries=95, variants=190, balances=570, locations=3 y `migrate check` sigue en verde.
