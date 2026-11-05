@@ -280,10 +280,12 @@ func verifyEntries(source catalog.Catalog, rows []entryRow) error {
 	if len(rows) < len(source.Entries) {
 		return errors.New("initialized dataset incomplete in catalog_entries")
 	}
+	// Only the seeded identity is proven. A brand, model or capacity is operational
+	// data an administrator may legitimately edit, so a changed value is not a
+	// defect; a missing or misordered identity still is.
 	for i, expected := range source.Entries {
-		row := rows[i]
-		if row.id != expected.ID || row.brand != expected.Brand || row.model != expected.Model || row.capacity != expected.Capacity {
-			return errors.New("preloaded catalog differs from fixture")
+		if rows[i].id != expected.ID {
+			return errors.New("preloaded catalog identity differs from fixture")
 		}
 	}
 	return nil

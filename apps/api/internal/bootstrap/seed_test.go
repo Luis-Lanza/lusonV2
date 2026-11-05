@@ -75,9 +75,9 @@ func TestVerifyFixtureRejectsTampering(t *testing.T) {
 	}
 	for name, mutate := range map[string]func(*seedRows){
 		"missing entry": func(rows *seedRows) { rows.entries = rows.entries[1:] },
-		"brand":         func(rows *seedRows) { rows.entries[0].brand = "CARGO" },
-		"model":         func(rows *seedRows) { rows.entries[0].model = "NS40ZL-X" },
-		"capacity":      func(rows *seedRows) { rows.entries[0].capacity = "36" },
+		"entry identity": func(rows *seedRows) {
+			rows.entries[0].id = 96
+		},
 		"missing variant": func(rows *seedRows) {
 			rows.variants = append(rows.variants[:1], rows.variants[2:]...)
 		},
@@ -97,7 +97,22 @@ func TestVerifyFixtureRejectsTampering(t *testing.T) {
 	}
 }
 
-// A branch created after the seed still owes the fixture its balance matrix.
+// A branch created after the seed still owes the fixture its balance matrix.// An administrator may edit a seeded battery: the identity is proven, its values are
+// operational data.
+func TestVerifyFixtureAcceptsEditedEntries(t *testing.T) {
+	source, err := catalog.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := seeded(t, source, []int{1, 2, 3})
+	rows.entries[0].brand = "EDITADA"
+	rows.entries[0].model = "NUEVO MODELO"
+	rows.entries[0].capacity = "62.5"
+	if err := verifyFixture(source, rows); err != nil {
+		t.Fatalf("an edited battery must stay verifiable: %v", err)
+	}
+}
+
 func TestVerifyFixtureRejectsMissingBranchBalances(t *testing.T) {
 	source, err := catalog.Load()
 	if err != nil {
