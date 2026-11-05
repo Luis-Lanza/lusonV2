@@ -118,6 +118,11 @@ export function useInventory() {
   // Auth-only fingerprint detects even in-place changes before React renders.
   // Recovery receives only the monotonic generation, never this credential tag.
   const sessionFence = useRef({ fingerprint: '', generation: 0 });
+  // This is not a pure getter: it advances the session fence generation when the auth
+  // fingerprint changes and synchronizes the restitution recovery store, so each call has
+  // side effects. The shell calls it during render on purpose (this hook body, App.tsx and
+  // InventoryView) to advance the fence before children render. Changing that call pattern
+  // is a fence redesign, not a local cleanup.
   const getTransferAuthority = useCallback((): TransferAuthority => {
     const session = authorityState.current.session;
     const fingerprint = session?.authenticated ? JSON.stringify([session.identity.account_id, session.identity.username,
