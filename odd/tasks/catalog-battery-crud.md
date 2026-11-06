@@ -151,3 +151,16 @@ esquema y de store existen pero no corrieron acá; el click-through en navegador
 usuario; y los cinco findings advisory del review aprobado (`seed.go:205`, `seed.go:252`,
 `catalog_fanout_serialization_schema_test.go:27-29`, `inventory.go:117`, `029:13`) quedan como
 trabajo posterior.
+
+L14 (smoke manual, reportado por el usuario): el usuario completó el recorrido manual completo
+sobre el entorno local (`localhost:8080`, base de trial con 3 cuentas) y lo reporta conforme.
+Cobertura del recorrido, según lo observado en la sesión: login del administrador de almacén por
+`localhost` (el origen `127.0.0.1` se rechaza con 403 por el guard de origen, comportamiento
+correcto y esperado), intento de archivar la batería sembrada `CARGO NS40ZL` con stock en los
+tres locales, que devolvió `409 catalog_battery_has_stock` como exige S4, y el resto de los pasos
+del recorrido (alta, estado no vendible, permisos por sucursal) cerrado por el usuario.
+
+Carácter de esta evidencia: aceptación manual **reportada por el usuario**, no verificada de forma
+independiente en esta sesión. Vale como cierre del smoke de S1, no como garantía para cambios
+futuros ni como sustituto de las suites Go con PostgreSQL, que siguen sin ejecutarse en este
+entorno.
