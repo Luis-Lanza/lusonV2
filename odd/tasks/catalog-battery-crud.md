@@ -35,7 +35,8 @@ S5. Solo el administrador de almacén (cuenta con location 1) puede crear, edita
 | T5 | S1,S5 | worker `gentle-ai-worker` | `bccd62c` |
 | T6 | S1-S2 | worker `gentle-ai-worker` | `cce22cf` |
 | T7 | S1-S5 | inline (parent) | `293e6cc` |
-| T8 | S2-S4 | worker `gentle-ai-worker` | pending |
+| T8 | S2-S4 | worker `gentle-ai-worker` | `8423113`+`9441033` |
+| T9 | S1,S2 | worker `gentle-ai-worker` | pending |
 
 Task rules agreed before implementation:
 
@@ -231,3 +232,13 @@ validación de la línea anterior quedó inejecutable; los tres lentes admitiero
 individuales (nunca en grupo: el grupo trunca `resilience` en candidatos grandes). Quedan dos
 findings **informational, no bloqueantes**: `seed.go:244` y `030:29-31`. Con esto la corrección del
 BLOCKER tiene recibo independiente y el árbol de `master` local está validado.
+
+L21 (fixture PostgreSQL construido, `odd/tasks/postgres-test-fixture.md`): con el fixture corriendo,
+`go test ./...` pasó de 8 paquetes verdes y 16 rechazados por admisión a **21 verdes y 3 rojos con
+cero rechazos**. Los rojos son reales y venían tapados. T9 cubre los que son de esta vertical: (a)
+`TestCatalogOperationalAuthority/a_pending_operation_blocks_retirement`, que escribí yo y que inserta
+la cabecera de transferencia sin ítems, rechazada por la constraint diferida de completitud; (b) los
+dos tests que siguen afirmando que ningún UPDATE del catálogo es legal, regla que S1 retiró al
+permitir editar una batería activa. Los otros ocho (`column e.deleted_at does not exist` en los
+tests de upgrade por prefijo) quedan como decisión de diseño aparte: `bootstrap.Seed` ahora depende
+de una columna de la 028 y esos tests siembran sobre esquemas anteriores.
