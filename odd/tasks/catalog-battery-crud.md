@@ -34,7 +34,8 @@ S5. Solo el administrador de almacén (cuenta con location 1) puede crear, edita
 | T4 | S2-S3 | worker `gentle-ai-worker` | `8714c0b` |
 | T5 | S1,S5 | worker `gentle-ai-worker` | `bccd62c` |
 | T6 | S1-S2 | worker `gentle-ai-worker` | `cce22cf` |
-| T7 | S1-S5 | inline (parent) | pending |
+| T7 | S1-S5 | inline (parent) | `293e6cc` |
+| T8 | S2-S4 | worker `gentle-ai-worker` | pending |
 
 Task rules agreed before implementation:
 
@@ -164,3 +165,12 @@ Carácter de esta evidencia: aceptación manual **reportada por el usuario**, no
 independiente en esta sesión. Vale como cierre del smoke de S1, no como garantía para cambios
 futuros ni como sustituto de las suites Go con PostgreSQL, que siguen sin ejecutarse en este
 entorno.
+
+L15 (usuario, decisión verbatim: "arreglemos todos"): se resuelven los cinco findings advisory
+del review aprobado como T8. Alcance: (1) la aserción de locks del test de 029 deja de contar
+ocurrencias totales y verifica por función; (2) `initialize_branch_inventory` deja de crear filas
+de balance para variantes de baterías archivadas, en migración nueva porque 029 ya está aplicada
+y con checksum; (3) la verificación de balances consulta solo los pares faltantes en vez de
+cargar 190 x sucursales filas; (4) `observe` deja de leer y parsear la capacidad de las entradas,
+porque el check ya no compara valores; (5) las tres consultas de inventario (marcas, sonda de
+marca y listado filtrado) comparten una única definición del predicado de batería activa.
