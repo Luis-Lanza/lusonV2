@@ -37,6 +37,7 @@ S5. Solo el administrador de almacén (cuenta con location 1) puede crear, edita
 | T7 | S1-S5 | inline (parent) | `293e6cc` |
 | T8 | S2-S4 | worker `gentle-ai-worker` | `8423113`+`9441033` |
 | T9 | S1,S2 | worker `gentle-ai-worker` | pending |
+| T10 | S3 | pending | pending |
 
 Task rules agreed before implementation:
 
@@ -242,3 +243,15 @@ dos tests que siguen afirmando que ningún UPDATE del catálogo es legal, regla 
 permitir editar una batería activa. Los otros ocho (`column e.deleted_at does not exist` en los
 tests de upgrade por prefijo) quedan como decisión de diseño aparte: `bootstrap.Seed` ahora depende
 de una columna de la 028 y esos tests siembran sobre esquemas anteriores.
+
+L22 (usuario, decisión verbatim: "me convence tu lectura, asi lo hagamos"): **`bootstrap` exige el
+esquema completo y no va a tolerar bases anteriores a la 028.** Un servicio que arranca sobre un
+esquema viejo falla en silencio de una forma peor que no arrancar, así que la exigencia es una
+virtud. La corrección va en los tests: cada test de upgrade debe construir su dataset con el SQL de
+su época en vez de llamar a `bootstrap.Seed`, que es una operación de esquema actual. T10 cubre los
+ocho fallos: cuatro en `internal/transfers` (`TestUR4CleanPrefixUpgradeValidatesConstraint`,
+`TestUR4PopulatedPrefixUpgrade`, `TestUnifiedReconciliationReaderUnowned`,
+`TestUR2UnexpectedAuditCorrectionPreserved`) y cuatro en `migrations`
+(`TestBranchPricesByBatteryReshapeBackfill`, `TestBranchPricesByBatterySaleWithPayments`,
+`TestSalePaymentsBackfill`, `TestSalePaymentsDatabaseRefusesOpenSum`). No se debilita ninguna
+aserción: esos tests siguen probando lo que probaban, con datos sembrados a mano.
