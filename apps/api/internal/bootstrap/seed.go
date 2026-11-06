@@ -153,17 +153,17 @@ func state(ctx context.Context, tx pgx.Tx, source catalog.Catalog) (bool, error)
 // the catalog authority, so rows past the seeded identities are operational
 // data: they are observed and then ignored, never repaired or refused.
 type seedRows struct {
-	entries   []entryRow
-	variants  []variantRow
-	locations []int
-	balances  []balanceRow
+	entries  []entryRow
+	variants []variantRow
+	// missing holds only the (active branch, fixture variant) pairs the database
+	// reported as having no balance row, never the whole matrix.
+	missing []missingBalance
 }
 
 type entryRow struct {
-	id       int
-	brand    string
-	model    string
-	capacity catalog.Decimal
+	id    int
+	brand string
+	model string
 }
 
 type variantRow struct {
@@ -172,16 +172,18 @@ type variantRow struct {
 	polarity catalog.Polarity
 }
 
-type balanceRow struct {
+// missingBalance is one active branch that has no balance row for a fixture
+// variant: the pair the integrity check must refuse.
+type missingBalance struct {
 	locationID int
 	variantID  int
 }
 
-// observe reads exactly the fixture rows and their balances, plus the active branch
-// set. Both the catalog and the branch set grow at runtime, so an unscoped read
-// would scale with the whole branch x variant matrix on every startup check and
-// would have to parse values the fixture never authored. Allocated identities and
-// retired branches are simply not part of what this check proves.
+// observe reads exactly the fixture identities and the balance pairs that are absent
+// from the active branch set. Both the catalog and the branch set grow at runtime, so
+// an unscoped read would scale with the whole branch x variant matrix on every startup
+// check, and it would have to parse values the fixture never authored. Allocated
+// identities and retired branches are simply not part of what this check proves.
 func observe(ctx context.Context, tx pgx.Tx, source catalog.Catalog) (seedRows, error) {
 	var rows seedRows
 	entryIDs := make([]int32, 0, len(source.Entries))
@@ -192,18 +194,15 @@ func observe(ctx context.Context, tx pgx.Tx, source catalog.Catalog) (seedRows, 
 	for _, variant := range source.Variants() {
 		variantIDs = append(variantIDs, int32(variant.ID))
 	}
-	entries, err := tx.Query(ctx, "SELECT id,brand,model,capacity_ah::text FROM catalog_entries WHERE id=ANY($1::integer[]) ORDER BY id", entryIDs)
+	// Identity and authored labels only: an administrator may edit a capacity, so the
+	// check neither reads nor parses that value.
+	entries, err := tx.Query(ctx, "SELECT id,brand,model FROM catalog_entries WHERE id=ANY($1::integer[]) ORDER BY id", entryIDs)
 	if err != nil {
 		return rows, err
 	}
 	for entries.Next() {
 		var row entryRow
-		var capacity string
-		if err := entries.Scan(&row.id, &row.brand, &row.model, &capacity); err != nil {
-			entries.Close()
-			return rows, err
-		}
-		if row.capacity, err = catalog.ParseDecimal(capacity); err != nil {
+		if err := entries.Scan(&row.id, &row.brand, &row.model); err != nil {
 			entries.Close()
 			return rows, err
 		}
@@ -233,43 +232,33 @@ func observe(ctx context.Context, tx pgx.Tx, source catalog.Catalog) (seedRows, 
 	if err != nil {
 		return rows, err
 	}
-	locations, err := tx.Query(ctx, "SELECT id FROM locations WHERE deleted_at IS NULL ORDER BY id")
+	// The database answers only the pairs that are missing for the fixture variants in
+	// the active branches: an intact matrix costs one bounded query that returns no
+	// rows, instead of loading every balance the deployment has.
+	missing, err := tx.Query(ctx, `SELECT l.id,v.id FROM locations l
+CROSS JOIN unnest($1::integer[]) AS v(id)
+WHERE l.deleted_at IS NULL AND NOT EXISTS (
+    SELECT 1 FROM inventory_balances b WHERE b.location_id=l.id AND b.variant_id=v.id)
+ORDER BY l.id,v.id`, variantIDs)
 	if err != nil {
 		return rows, err
 	}
-	for locations.Next() {
-		var id int
-		if err := locations.Scan(&id); err != nil {
-			locations.Close()
+	for missing.Next() {
+		var row missingBalance
+		if err := missing.Scan(&row.locationID, &row.variantID); err != nil {
+			missing.Close()
 			return rows, err
 		}
-		rows.locations = append(rows.locations, id)
+		rows.missing = append(rows.missing, row)
 	}
-	err = locations.Err()
-	locations.Close()
-	if err != nil {
-		return rows, err
-	}
-	balances, err := tx.Query(ctx, "SELECT location_id,variant_id FROM inventory_balances WHERE variant_id=ANY($1::integer[]) ORDER BY location_id,variant_id", variantIDs)
-	if err != nil {
-		return rows, err
-	}
-	for balances.Next() {
-		var row balanceRow
-		if err := balances.Scan(&row.locationID, &row.variantID); err != nil {
-			balances.Close()
-			return rows, err
-		}
-		rows.balances = append(rows.balances, row)
-	}
-	err = balances.Err()
-	balances.Close()
+	err = missing.Err()
+	missing.Close()
 	return rows, err
 }
 
 // verifyFixture proves the embedded fixture is still intact while the database
 // stays the catalog authority. Every fixture identity keeps its exact values and
-// every fixture variant keeps one balance row per active branch; batteries and
+// every fixture variant keeps a balance row in every active branch; batteries and
 // branches created after the seed, their balances and archived fixture rows are
 // operational history and never fail an integrity check.
 func verifyFixture(source catalog.Catalog, rows seedRows) error {
@@ -279,7 +268,7 @@ func verifyFixture(source catalog.Catalog, rows seedRows) error {
 	if err := verifyVariants(source, rows.variants); err != nil {
 		return err
 	}
-	return verifyBalances(source, rows.locations, rows.balances)
+	return verifyBalances(rows.missing)
 }
 
 // verifyEntries compares only the fixture prefix; rows arrive ordered by id and
@@ -315,19 +304,13 @@ func verifyVariants(source catalog.Catalog, rows []variantRow) error {
 	return nil
 }
 
-// verifyBalances requires one balance row per fixture variant in every active
-// branch. Balances of allocated variants and of retired branches are tolerated.
-func verifyBalances(source catalog.Catalog, locations []int, rows []balanceRow) error {
-	held := make(map[balanceRow]bool, len(rows))
-	for _, row := range rows {
-		held[row] = true
-	}
-	for _, location := range locations {
-		for _, variant := range source.Variants() {
-			if !held[balanceRow{location, variant.ID}] {
-				return errors.New("initialized dataset incomplete in inventory_balances")
-			}
-		}
+// verifyBalances fails when an active branch is missing the balance row the
+// operating catalog requires for a fixture variant. Balances of allocated variants
+// and of retired branches are never asked for, so this check cannot scale with the
+// deployment, and a missing pair still fails it.
+func verifyBalances(missing []missingBalance) error {
+	if len(missing) != 0 {
+		return errors.New("initialized dataset incomplete in inventory_balances")
 	}
 	return nil
 }

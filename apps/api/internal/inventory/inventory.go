@@ -90,7 +90,7 @@ func (s *Store) Metadata(ctx context.Context, actor auth.Identity) (Metadata, er
 	if err = rows.Err(); err != nil {
 		return result, err
 	}
-	rows, err = tx.Query(ctx, `SELECT DISTINCT brand FROM catalog_entries WHERE deleted_at IS NULL ORDER BY brand`)
+	rows, err = tx.Query(ctx, `SELECT DISTINCT e.brand FROM catalog_entries e WHERE `+activeBattery+` ORDER BY e.brand`)
 	if err != nil {
 		return result, err
 	}
@@ -109,12 +109,18 @@ func (s *Store) Metadata(ctx context.Context, actor auth.Identity) (Metadata, er
 	return result, tx.Commit(ctx)
 }
 
+// activeBattery is the single definition of "this battery is part of the operating
+// catalog": the brand list, the brand probe and the filtered listing all compose it
+// as `e`, so a change to the rule reaches every selection path at once. History paths
+// never apply it - an archived battery must stay visible in past evidence.
+const activeBattery = `e.deleted_at IS NULL`
+
 // Count and items share both predicates and a repeatable-read read-only snapshot.
 // A retired battery is no longer part of the operating inventory.
 const filtered = ` FROM inventory_balances b
  JOIN catalog_variants v ON v.id=b.variant_id
  JOIN catalog_entries e ON e.id=v.catalog_entry_id
- WHERE b.location_id=$1 AND e.deleted_at IS NULL
+ WHERE b.location_id=$1 AND ` + activeBattery + `
  AND ($2='' OR e.brand ILIKE $2 ESCAPE '\' OR e.model ILIKE $2 ESCAPE '\')
  AND ($3='' OR e.brand=$3) AND ($4='' OR v.polarity=$4)`
 
@@ -144,7 +150,7 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q Query) (Page, e
 	}
 	if q.Brand != "" {
 		var exists bool
-		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM catalog_entries WHERE brand=$1 AND deleted_at IS NULL)`, q.Brand).Scan(&exists); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM catalog_entries e WHERE e.brand=$1 AND `+activeBattery+`)`, q.Brand).Scan(&exists); err != nil {
 			return result, err
 		}
 		if !exists {

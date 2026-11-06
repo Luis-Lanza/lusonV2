@@ -174,3 +174,26 @@ y con checksum; (3) la verificación de balances consulta solo los pares faltant
 cargar 190 x sucursales filas; (4) `observe` deja de leer y parsear la capacidad de las entradas,
 porque el check ya no compara valores; (5) las tres consultas de inventario (marcas, sonda de
 marca y listado filtrado) comparten una única definición del predicado de batería activa.
+
+L16 (T8, los cinco advisory resueltos — y un hallazgo propio en el camino): (1) la aserción del
+test de 029 ahora deriva los fan-outs del cuerpo que escribe `inventory_balances` y verifica el
+lock por función, con casos que fijan las formas peligrosas (tercer fan-out, lock ajeno, lock
+ajeno tapando uno faltante); (2) `030_branch_fanout_skips_retired_batteries.sql` acota el fan-out
+de sucursal a baterías activas; (3) `observe` consulta solo los pares faltantes con una query
+acotada (0 filas en base sana, exactamente `(branch 1, variant 1)` al borrar un balance sembrado,
+y `migrate check` sale 1 en ese estado y 0 al restaurarlo); (4) `observe` ya no lee ni parsea
+`capacity_ah`; (5) las tres consultas de inventario componen una única definición `activeBattery`,
+con `const filtered` renderizado byte-idéntico al anterior.
+
+L17 (regresión encontrada al escribir 030, corregida antes de commitear): la **029 que escribí
+borró la inserción de `realtime_revisions` que introdujo la 015**. La función que reemplacé tenía
+esa obligación y mi cuerpo la omitió, así que toda sucursal creada desde entonces quedaba sin
+scope `transfers:<id>` en el realtime. No lo detectó ningún test porque `test_for_branches` es una
+prueba con PostgreSQL y esas no corren en este entorno. Verificado en la base real antes de tocar
+nada: el cuerpo vivo no tenía la inserción y `realtime_revisions` solo tenía `inventory` y
+`transfers:1..3`. Corrección: la 030 restauró la inserción de la 015 junto al filtro nuevo,
+`create_branch('T8-VERIFY')` volvió a crear `transfers:4` y 190 balances, y la aserción estática
+de la 030 ahora exige esa línea para que reemplazar un cuerpo entero no pueda volver a tirar una
+obligación ajena en silencio. La base de dev quedó reparada (checksum de la 030 actualizado tras
+editar el archivo no commiteado) y en baseline: entries 95, variants 190, balances 570,
+locations 3, realtime `inventory,transfers:1..3`, cero triggers apagados, `migrate check` verde.
