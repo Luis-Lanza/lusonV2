@@ -166,6 +166,17 @@ func TestBranchFanoutSkipsRetiredBatteriesStructure(t *testing.T) {
 	if !strings.Contains(branch, "INSERT INTO realtime_revisions(scope) VALUES ('transfers:' || NEW.id)") {
 		t.Error("the branch fan-out must keep the realtime audience row that 015 created")
 	}
+	// A trigger fires only for future rows, so branches created while the scope was
+	// missing need one explicit backfill; without it their transfers stay invisible.
+	for _, required := range []string{
+		"INSERT INTO realtime_revisions(scope)",
+		"SELECT 'transfers:' || l.id FROM locations l",
+		"ON CONFLICT (scope) DO NOTHING",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Errorf("existing branches need their scope backfilled: missing %s", required)
+		}
+	}
 	for _, forbidden := range []string{"CREATE TABLE", "ALTER TABLE", "DROP TRIGGER", "DROP FUNCTION", "DROP COLUMN"} {
 		if strings.Contains(sql, forbidden) {
 			t.Errorf("the migration must only replace one function body: found %s", forbidden)

@@ -24,3 +24,10 @@ BEGIN
     RETURN NEW;
 END;
 $$;
+
+-- Branches created between 029 and this migration never got their transfers scope,
+-- and a trigger only fires for future rows. Backfill every existing branch once, so
+-- no subscriber stays blind to transfers of an already existing branch.
+INSERT INTO realtime_revisions(scope)
+SELECT 'transfers:' || l.id FROM locations l
+ON CONFLICT (scope) DO NOTHING;

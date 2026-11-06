@@ -232,12 +232,16 @@ func observe(ctx context.Context, tx pgx.Tx, source catalog.Catalog) (seedRows, 
 	if err != nil {
 		return rows, err
 	}
-	// The database answers only the pairs that are missing for the fixture variants in
-	// the active branches: an intact matrix costs one bounded query that returns no
-	// rows, instead of loading every balance the deployment has.
+	// The database answers only the pairs that are missing for the fixture variants of
+	// active batteries in the active branches: an intact matrix costs one bounded query
+	// that returns no rows, instead of loading every balance the deployment has. A
+	// retired battery is deliberately exempt, because a new branch no longer fans out
+	// balances for it.
 	missing, err := tx.Query(ctx, `SELECT l.id,v.id FROM locations l
 CROSS JOIN unnest($1::integer[]) AS v(id)
-WHERE l.deleted_at IS NULL AND NOT EXISTS (
+JOIN catalog_variants cv ON cv.id=v.id
+JOIN catalog_entries e ON e.id=cv.catalog_entry_id
+WHERE l.deleted_at IS NULL AND e.deleted_at IS NULL AND NOT EXISTS (
     SELECT 1 FROM inventory_balances b WHERE b.location_id=l.id AND b.variant_id=v.id)
 ORDER BY l.id,v.id`, variantIDs)
 	if err != nil {
