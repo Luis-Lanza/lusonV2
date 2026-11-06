@@ -197,3 +197,30 @@ de la 030 ahora exige esa línea para que reemplazar un cuerpo entero no pueda v
 obligación ajena en silencio. La base de dev quedó reparada (checksum de la 030 actualizado tras
 editar el archivo no commiteado) y en baseline: entries 95, variants 190, balances 570,
 locations 3, realtime `inventory,transfers:1..3`, cero triggers apagados, `migrate check` verde.
+
+L18 (review de T8, hallazgo BLOCKER real y corrección commiteada `9441033`): los tres lentes
+coincidieron en el mismo defecto, introducido por mi propia 030 y determinista. **R1-001 (BLOCKER)**
+/ **R3-001 (CRITICAL)** / **R4-retired-fixture-balance-check (CRITICAL)**: retirar una batería
+sembrada y después crear una sucursal deja esa sucursal sin fila de balance para sus variantes
+(030 las saltea), pero el check seguía exigiendo una fila por cada variante del fixture → **el
+servicio no arrancaba** después de dos operaciones legítimas de administración. **R4-realtime-backfill
+/ R3-002 (WARNING)**: la 030 restauraba el scope de realtime solo para sucursales futuras, sin
+backfill de las creadas entre 029 y 030.
+
+Reproducido a mano antes de corregir: vaciar la batería 1, archivarla, `create_branch` → 2 pares
+faltantes y `migrate check` exit 1. Corrección: el check exige la matriz solo para variantes de
+baterías **activas** (lo que el fan-out efectivamente promete) y la 030 backfillea
+`realtime_revisions` para todas las sucursales existentes. GREEN: mismo estado, `migrate check`
+exit 0 y `transfers:4` creado por el backfill. Sondas revertidas: stock de la batería 1 restaurado
+(18,29,9 / 25,5,16), sucursal de prueba borrada, `realtime` en `inventory,transfers:1..3`,
+baseline 95/190/570/3, cero triggers apagados.
+
+L19 (review de T8, estado final y bloqueo de la ruta de validación): el plan de corrección fue
+aceptado por el provider (30 líneas de diff, dentro del presupuesto de 200). El paso siguiente,
+`targeted_validation_required`, no se puede ejecutar: el slot `provider_targeted_validator`
+rechaza el binding con `collectBinding is missing or stale for current STATUS` en las dos formas
+documentadas (texto serializado exacto, y el slot completo con su `validationRequest`). Según el
+contrato, un validador que no puede inspeccionar los árboles inmutables no produce veredicto: se
+declara una decisión humana bloqueada y no se envía nada. La línea `review-23e930835f0c3a07` queda
+en `correction_required`, sin autoridad de entrega, y el código corregido está commiteado en
+`master` local sin pushear.
