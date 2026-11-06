@@ -224,3 +224,10 @@ contrato, un validador que no puede inspeccionar los árboles inmutables no prod
 declara una decisión humana bloqueada y no se envía nada. La línea `review-23e930835f0c3a07` queda
 en `correction_required`, sin autoridad de entrega, y el código corregido está commiteado en
 `master` local sin pushear.
+
+L20 (review de T8 corregido, línea `review-57e5b95642d83667`): **APPROVED** y autoridad quemada.
+Se abrió una línea nueva sobre el árbol corregido (`ffddbb9`, base `287ed1a`) porque la ruta de
+validación de la línea anterior quedó inejecutable; los tres lentes admitieron en corridas
+individuales (nunca en grupo: el grupo trunca `resilience` en candidatos grandes). Quedan dos
+findings **informational, no bloqueantes**: `seed.go:244` y `030:29-31`. Con esto la corrección del
+BLOCKER tiene recibo independiente y el árbol de `master` local está validado.
