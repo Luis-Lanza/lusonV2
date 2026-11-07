@@ -85,3 +85,112 @@ jobs:
       # and admission fails closed by design. A step that is red on every run is
       # the failure mode this workflow exists to prevent, so the Go suite runs
       # where its fixture lives.
+
+  # The database-backed suites. Until this job existed nothing in CI ran `go
+  # test` against PostgreSQL, so a pull request that broke a migration stayed
+  # green. It runs `make test-pg`, the same single entry point a developer runs:
+  # one fixture cycle, the whole API suite with `-count=1`, teardown.
+  #
+  # The job cannot just call `make test-pg`. apps/api/internal/testpg requires
+  # os.Getuid() == 1000 and the private directory under the literal path
+  # /home/luis/.local/share, and it fails closed on purpose. The hosted runner
+  # runs as uid 1001, so this job creates a real uid-1000 account whose home is
+  # /home/luis and adds it to the docker group. Nothing relaxes the admission and
+  # no fixture path is re-owned to fake that identity: the fixture creates its
+  # own private directory and files as uid 1000. The frontend job's Go to
+  # TypeScript seam check still reports as skipped, because the capture it wants
+  # would have to be transported out of this job as an artifact.
+  go-postgresql:
+    name: go-postgresql
+    runs-on: ubuntu-latest
+    # The default is six hours. A measured local cycle of this job's exact steps
+    # is 6m31s on a contended 16-core desktop, and a four-vCPU runner starts with
+    # a cold build cache, so this cap leaves headroom while still turning a hung
+    # fixture into a red job instead of a hung run.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: apps/api/go.mod
+          cache-dependency-path: apps/api/go.sum
+
+      # The fixture never pulls the image; it fails closed when the pinned image
+      # is absent. Fetching it here keeps that rule intact and makes the cost a
+      # single, visible step.
+      - name: pull the pinned PostgreSQL image
+        run: docker pull postgres:17.9-bookworm
+
+      - name: prepare the uid-1000 identity the admission requires
+        run: |
+          set -euo pipefail
+          if entry=$(getent passwd 1000); then
+            identity=$(printf '%s' "${entry}" | cut -d: -f1)
+            home=$(printf '%s' "${entry}" | cut -d: -f6)
+            echo "uid 1000 is already taken by ${identity} (home ${home}); reusing it"
+          else
+            identity=luis
+            home=/home/luis
+            sudo useradd --uid 1000 --home-dir "${home}" --create-home --shell /bin/bash "${identity}"
+          fi
+          if [ "${home}" != /home/luis ]; then
+            echo "::error::uid 1000 belongs to ${identity} with home ${home}, but the fixture admission hardcodes /home/luis/.local/share"
+            exit 1
+          fi
+          sudo usermod --append --groups docker "${identity}"
+          {
+            echo "CI_UID1000_USER=${identity}"
+            echo "CI_UID1000_HOME=${home}"
+          } >>"${GITHUB_ENV}"
+          # Prove the two facts the fixture needs before anything runs: the real
+          # uid, and that this identity can drive the Docker socket itself.
+          sudo -u "${identity}" -- env HOME="${home}" bash -c 'test "$(id -u)" = 1000'
+          sudo -u "${identity}" -- docker info >/dev/null
+          echo "uid 1000 identity ${identity} holds uid 1000 and can reach Docker"
+
+      # The checkout belongs to the runner user. The suite only reads it, but the
+      # uid-1000 identity has to traverse every path to reach it, and the runner's
+      # home mode is not something this workflow controls. An own copy makes that
+      # a property of the job instead of a guess, and leaves the checkout
+      # pristine. The re-ownership below covers this copy of the repository only,
+      # never a fixture path.
+      - name: give the uid-1000 identity its own copy of the checkout
+        run: |
+          set -euo pipefail
+          sudo cp -a "${GITHUB_WORKSPACE}" "${CI_UID1000_HOME}/work"
+          sudo chown -R -- "${CI_UID1000_USER}:${CI_UID1000_USER}" "${CI_UID1000_HOME}/work"
+
+      # The whole point of the job: a broken migration fails the pull request.
+      # `-count=1` comes from the Makefile target, because the fixture is external
+      # state rather than a build input, and one `run` covers the whole suite, so
+      # the suite is never multiplied. A failure here also tears the fixture down
+      # and fails the job; `run` never turns a red suite into a green job.
+      - name: make test-pg
+        run: |
+          set -euo pipefail
+          cd "${CI_UID1000_HOME}/work"
+          sudo -u "${CI_UID1000_USER}" -- env \
+            HOME="${CI_UID1000_HOME}" \
+            PATH="${PATH}" \
+            GOCACHE="${CI_UID1000_HOME}/.cache/go-build" \
+            GOPATH="${CI_UID1000_HOME}/go" \
+            make test-pg
+
+      # `run` already tears the fixture down on success, on failure and on
+      # SIGTERM. This second pass also runs after a cancellation, and `down`
+      # exits non-zero when a container, network or private directory survived,
+      # so a green job can never mean a leftover fixture.
+      - name: tear the fixture down
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -z "${CI_UID1000_USER:-}" ] || [ ! -d "${CI_UID1000_HOME}/work" ]; then
+            echo "this job never reached the fixture: no uid 1000 copy of the checkout exists, so there is nothing to tear down"
+            exit 0
+          fi
+          cd "${CI_UID1000_HOME}/work"
+          sudo -u "${CI_UID1000_USER}" -- env \
+            HOME="${CI_UID1000_HOME}" \
+            PATH="${PATH}" \
+            make test-pg-down

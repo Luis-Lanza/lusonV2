@@ -1,5 +1,10 @@
 # Local entry points. Database-backed Go tests need the ephemeral audited
 # PostgreSQL fixture; see apps/api/docs/testing.md and scripts/README.md.
+#
+# The `go-postgresql` job in .github/workflows/verify.yml runs this same target
+# on every pull request and every push to master, as a real uid-1000 identity:
+# the admission pins uid 1000 and /home/luis/.local/share, so the job creates
+# that identity instead of relaxing apps/api/internal/testpg.
 TEST_PG := ./scripts/test-pg-fixture.sh
 
 .PHONY: test-pg test-pg-up test-pg-down test-pg-status

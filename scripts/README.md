@@ -103,13 +103,40 @@ The command `run` executes never inherits the lock descriptor. A wrapper killed
 while the command keeps running therefore leaves no surviving process holding
 the advisory lock, and the next `up`, `down` or `run` is not blocked by it.
 
+### In GitHub Actions
+
+`.github/workflows/verify.yml` runs this fixture in the `go-postgresql` job on
+every pull request and every push to `master`, so a pull request that breaks a
+migration fails CI. The job runs `make test-pg`, the same command as above.
+
+The admission hardcodes two facts that a hosted runner does not provide: uid
+1000, and the private root under the literal `/home/luis/.local/share`. The
+runner user is uid 1001, and `apps/api/internal/testpg` is never relaxed. The
+job therefore:
+
+1. creates a real uid-1000 account whose home is `/home/luis` (reusing one only
+   if its home already matches that path, and failing with an `::error::`
+   otherwise), adds it to the `docker` group, and proves `id -u` is 1000 and
+   `docker info` works for it before running anything;
+2. gives it its own copy of the checkout under `/home/luis/work`, because the
+   checkout belongs to the runner user and the runner's home permissions are
+   not something the workflow controls — the copy is re-owned, no fixture path
+   ever is;
+3. pulls `postgres:17.9-bookworm`, because this script never pulls.
+
+`run` then does the whole cycle once, with the Makefile's `-count=1`, and a
+final `if: always()` step runs `down`. That step also runs after a failure or a
+cancellation, and it exits non-zero when a container, network or private
+directory survived, so a green job cannot hide a leftover fixture. The job has
+an explicit `timeout-minutes: 25` cap instead of the six-hour default.
+
 ### Requirements and safety
 
 - Docker reachable by the current user, without `sudo`. The script never calls
   `sudo`.
 - `jq`, `od`, `stat`, `dd` (coreutils) and `flock` (util-linux).
 - The image `postgres:17.9-bookworm` must be present locally; the script never
-  pulls anything.
+  pulls anything. The GitHub Actions job pulls it in a step of its own.
 - Everything else is created fresh and removed again: no volume, no published
   port, no persistent service.
 - The development database (`luson-dev-db`) and its volume are never touched.

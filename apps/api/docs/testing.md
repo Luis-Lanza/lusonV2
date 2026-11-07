@@ -70,6 +70,28 @@ The fixture never touches the development database (`luson-dev-db`) or its
 volume: it has a different container, network, directory and password, and it
 never publishes a port.
 
+## Continuous integration
+
+The `go-postgresql` job in `.github/workflows/verify.yml` runs `make test-pg` on
+every pull request and every push to `master`, so a migration or query that
+breaks a database-backed suite fails the pull request instead of staying green.
+It runs exactly the command above against the same fixture, once, with
+`-count=1`.
+
+The admission is not relaxed for CI. `testpg` still requires `os.Getuid() ==
+1000` and every private path under the literal `/home/luis/.local/share`, and
+the hosted runner runs as uid 1001. The job therefore creates a real uid-1000
+account whose home is `/home/luis`, adds it to the `docker` group, and gives it
+its own copy of the checkout. The fixture creates its private directory, DSN
+file and manifest as that uid 1000, so the metadata the admission checks is real
+rather than rewritten.
+
+One fixture cycle covers the whole suite, and an `if: always()` teardown step
+runs after a failure or a cancellation as well. It fails loudly if a container,
+network or private directory survived, so a green job cannot hide a leftover
+fixture. The job has an explicit `timeout-minutes` cap rather than the six-hour
+default.
+
 ## Rules for test authors
 
 - Open a database only through `testpg.Open(t)`; never build a DSN from the
