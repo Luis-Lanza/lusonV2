@@ -416,7 +416,9 @@ write_manifest() {
             network_name: $n.Name,
             ip: $c.NetworkSettings.Networks[$n.Name].IPAddress,
             port: 5432,
-            published_ports: (($c.HostConfig.PortBindings // {}) | [ .[][]? ] | length) > 0
+            # Parenthesised on purpose: jq 1.7 rejects a bare comparison as an object
+            # value, while 1.8 accepts it. The runner ships 1.7.
+            published_ports: ((($c.HostConfig.PortBindings // {}) | [ .[][]? ] | length) > 0)
           },
           data_bind: ($data[0] | {Type, Source, Destination, Mode, RW, Propagation})
         }
