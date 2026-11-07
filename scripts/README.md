@@ -15,7 +15,11 @@ creates or destroys Docker objects, so this script owns the whole lifecycle.
 ./scripts/test-pg-fixture.sh run -- go test ./...   # up, run, always down
 ```
 
-From the repository root, `make test-pg` runs the whole Go suite this way.
+From the repository root, `make test-pg` runs the whole Go suite this way. It
+is one fixture cycle split into two `go test` invocations inside that cycle:
+`./internal/testpg` alone, then every other package concurrently. The admission
+in `internal/testpg` polls the shared catalog for a quiet moment, so it cannot
+share a fixture with packages creating their own databases at the same time.
 See `apps/api/docs/testing.md` for the test-side rules.
 
 ### What `up` does
@@ -124,11 +128,13 @@ job therefore:
    ever is;
 3. pulls `postgres:17.9-bookworm`, because this script never pulls.
 
-`run` then does the whole cycle once, with the Makefile's `-count=1`, and a
-final `if: always()` step runs `down`. That step also runs after a failure or a
-cancellation, and it exits non-zero when a container, network or private
-directory survived, so a green job cannot hide a leftover fixture. The job has
-an explicit `timeout-minutes: 25` cap instead of the six-hour default.
+`run` then does the whole cycle once, with the Makefile's `-count=1`, as two
+`go test` invocations (the admission package alone, then the rest of the suite
+concurrently), and a final `if: always()` step runs `down`. That step also runs
+after a failure or a cancellation, and it exits non-zero when a container,
+network or private directory survived, so a green job cannot hide a leftover
+fixture. The job has an explicit `timeout-minutes: 25` cap instead of the
+six-hour default.
 
 ### Requirements and safety
 

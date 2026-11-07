@@ -89,7 +89,13 @@ jobs:
   # The database-backed suites. Until this job existed nothing in CI ran `go
   # test` against PostgreSQL, so a pull request that broke a migration stayed
   # green. It runs `make test-pg`, the same single entry point a developer runs:
-  # one fixture cycle, the whole API suite with `-count=1`, teardown.
+  # one fixture cycle, the whole API suite with `-count=1`, teardown. The target
+  # splits that one cycle into two `go test` invocations on purpose: the
+  # internal/testpg admission first, alone, then every other package in
+  # parallel. That admission ends by polling the fixture catalog until no
+  # isolated database is left, and package binaries that call testpg.Open hold
+  # their own databases while they run, which is exactly what a four-vCPU runner
+  # cannot guarantee away. The assertion is untouched; only its neighbours are.
   #
   # The job cannot just call `make test-pg`. apps/api/internal/testpg requires
   # os.Getuid() == 1000 and the private directory under the literal path
@@ -165,8 +171,9 @@ jobs:
 
       # The whole point of the job: a broken migration fails the pull request.
       # `-count=1` comes from the Makefile target, because the fixture is external
-      # state rather than a build input, and one `run` covers the whole suite, so
-      # the suite is never multiplied. A failure here also tears the fixture down
+      # state rather than a build input, and one `run` covers the whole suite in
+      # its two invocations, so the suite is never multiplied and the fixture is
+      # cycled once. A failure in either invocation also tears the fixture down
       # and fails the job; `run` never turns a red suite into a green job.
       - name: make test-pg
         run: |

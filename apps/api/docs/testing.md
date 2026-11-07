@@ -19,9 +19,25 @@ From the repository root:
 make test-pg
 ```
 
-That is one command: it creates the fixture, runs `go test ./...` in `apps/api`
-with `LUSON_TEST_PG_MANIFEST` exported and every `PG*` variable unset, then
-tears the fixture down even when the tests fail.
+That is one command: it creates the fixture, runs the whole Go suite in
+`apps/api` with `LUSON_TEST_PG_MANIFEST` exported and every `PG*` variable
+unset, then tears the fixture down even when the tests fail.
+
+The suite runs as two `go test` invocations inside that single fixture cycle:
+`./internal/testpg` on its own, then every other package concurrently with
+`-count=1`.
+
+Why the split: `TestR01AdmissionPostgres` ends by polling the fixture catalog
+until every isolated database is gone (150 attempts, 100 ms apart).
+`go test ./...` runs package binaries concurrently and every package that calls
+`testpg.Open` holds its own `luson_test_<32 hex>` database for the length of a
+test, so under load the shared catalog can stay busy for the whole 15 seconds
+and the admission fails a suite that is actually healthy. Running the admission
+in its own invocation does not weaken that assertion: it makes "no other
+package is creating databases at the same time" a property of the command
+instead of a scheduling coincidence. Both invocations share one `run`, so it is
+still one fixture cycle, the fixture is still torn down on any outcome, and a
+failure in either invocation still fails the target.
 
 ## Run it step by step
 
@@ -33,6 +49,11 @@ cd ../.. && ./scripts/test-pg-fixture.sh down
 
 `up` prints only the manifest path on standard output; progress and errors go
 to standard error.
+
+A manual `go test ./...` against a fixture you brought up yourself shares one
+catalog with every package running in it, so it can hit the settle-poll failure
+described above. Run `./internal/testpg` as its own invocation afterwards, which
+is what `make test-pg` does.
 
 `run` still performs the whole lifecycle for one command:
 
@@ -76,7 +97,8 @@ The `go-postgresql` job in `.github/workflows/verify.yml` runs `make test-pg` on
 every pull request and every push to `master`, so a migration or query that
 breaks a database-backed suite fails the pull request instead of staying green.
 It runs exactly the command above against the same fixture, once, with
-`-count=1`.
+`-count=1`, as two invocations: the admission package alone, then the rest of
+the suite concurrently.
 
 The admission is not relaxed for CI. `testpg` still requires `os.Getuid() ==
 1000` and every private path under the literal `/home/luis/.local/share`, and
