@@ -171,13 +171,16 @@ jobs:
       - name: make test-pg
         run: |
           set -euo pipefail
-          cd "${CI_UID1000_HOME}/work"
+          # The step itself runs as the runner user, which cannot traverse a 0700
+          # home owned by uid 1000. Enter the directory as that identity instead of
+          # changing into it first.
           sudo -u "${CI_UID1000_USER}" -- env \
             HOME="${CI_UID1000_HOME}" \
             PATH="${PATH}" \
             GOCACHE="${CI_UID1000_HOME}/.cache/go-build" \
             GOPATH="${CI_UID1000_HOME}/go" \
-            make test-pg
+            bash -c 'cd "${HOME}/work" && exec make test-pg'
+
 
       # `run` already tears the fixture down on success, on failure and on
       # SIGTERM. This second pass also runs after a cancellation, and `down`
@@ -187,12 +190,16 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          if [ -z "${CI_UID1000_USER:-}" ] || [ ! -d "${CI_UID1000_HOME}/work" ]; then
+          if [ -z "${CI_UID1000_USER:-}" ]; then
+            echo "this job never prepared a uid 1000 identity, so it never reached the fixture"
+            exit 0
+          fi
+          if ! sudo -u "${CI_UID1000_USER}" -- env HOME="${CI_UID1000_HOME}" test -d "${CI_UID1000_HOME}/work"; then
             echo "this job never reached the fixture: no uid 1000 copy of the checkout exists, so there is nothing to tear down"
             exit 0
           fi
-          cd "${CI_UID1000_HOME}/work"
           sudo -u "${CI_UID1000_USER}" -- env \
             HOME="${CI_UID1000_HOME}" \
             PATH="${PATH}" \
-            make test-pg-down
+            bash -c 'cd "${HOME}/work" && exec make test-pg-down'
+
