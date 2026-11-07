@@ -71,7 +71,9 @@ func TestAccountAdministrationSchema(t *testing.T) {
 		`UPDATE locations SET name='Other warehouse' WHERE id=1`,
 		`INSERT INTO locations(id,name) VALUES(0,'Second warehouse')`,
 		`DELETE FROM locations WHERE id=1`,
-		`UPDATE catalog_entries SET model='changed' WHERE id=1`,
+		// The catalogue is operational data since 028, so "no catalogue UPDATE is
+		// legal" is no longer a rule: editing an active battery is admitted. The
+		// catalogue mutation rules are asserted on their own below.
 	} {
 		reject(sql)
 	}
@@ -112,6 +114,51 @@ func TestAccountAdministrationSchema(t *testing.T) {
 	}
 	// Existing session insertion still uses legacy initial IDs; FK now identifies accounts.
 	exec(`INSERT INTO auth_sessions(token_hash,account_id,created_at,last_seen_at,absolute_deadline,idle_deadline) VALUES(decode(repeat('01',32),'hex'),1,now(),now(),now()+interval '1 hour',now()+interval '1 hour')`)
+	// The catalogue rules of 028, asserted after the administration rules so they
+	// cannot perturb the branch fan-out counts above: an active battery's identity
+	// fields are editable, while its id, its deletion and its retired form are not.
+	t.Run("an_active_battery_is_editable_and_id_delete_and_retired_edits_are_refused", func(t *testing.T) {
+		var edited bool
+		if err := p.QueryRow(ctx, `UPDATE catalog_entries SET brand='EDITADA',model='CAMBIADO',capacity_ah=62.5 WHERE id=1
+RETURNING brand='EDITADA' AND model='CAMBIADO' AND capacity_ah=62.5`).Scan(&edited); err != nil {
+			t.Fatalf("an active battery must be editable: %v", err)
+		}
+		if !edited {
+			t.Fatal("the edit of an active battery did not persist")
+		}
+		// A fresh battery has one zero balance per active branch, so it retires.
+		var fresh int64
+		if err := p.QueryRow(ctx, `INSERT INTO catalog_entries(brand,model,capacity_ah) VALUES('RETIRABLE','40Ah',40) RETURNING id`).Scan(&fresh); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.Exec(ctx, `INSERT INTO catalog_variants(catalog_entry_id,polarity) VALUES($1,'L')`, fresh); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.Exec(ctx, `UPDATE catalog_entries SET deleted_at=CURRENT_TIMESTAMP WHERE id=$1`, fresh); err != nil {
+			t.Fatalf("a battery without stock or open operations must be retirable: %v", err)
+		}
+		catalogue := func() string {
+			t.Helper()
+			var row string
+			if err := p.QueryRow(ctx, `SELECT COALESCE(jsonb_agg(to_jsonb(e) ORDER BY e.id),'[]'::jsonb)::text FROM catalog_entries e`).Scan(&row); err != nil {
+				t.Fatal(err)
+			}
+			return row
+		}
+		before := catalogue()
+		refused := func(query string, args ...any) error {
+			t.Helper()
+			_, err := p.Exec(ctx, query, args...)
+			return err
+		}
+		requirePgFailure(t, refused(`UPDATE catalog_entries SET id=id+1000 WHERE id=1`), "23514", "catalog_entry_identity_immutable")
+		requirePgFailure(t, refused(`DELETE FROM catalog_entries WHERE id=1`), "23514", "catalog_entry_deletion_forbidden")
+		requirePgFailure(t, refused(`UPDATE catalog_entries SET model='OTRO' WHERE id=$1`, fresh), "23514", "catalog_entry_retired_immutable")
+		// None of the refusals may have touched the admitted edit.
+		if after := catalogue(); after != before {
+			t.Fatalf("a refused catalogue mutation changed state: %s", after)
+		}
+	})
 	if err := db.Apply(ctx, p); err != nil {
 		t.Fatal(err)
 	}

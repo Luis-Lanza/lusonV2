@@ -2,11 +2,13 @@ package bootstrap_test
 
 import (
 	"context"
+	"errors"
 	"io/fs"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/bootstrap"
 	"luson/api/internal/config"
@@ -14,6 +16,20 @@ import (
 	"luson/api/internal/testpg"
 	"luson/api/migrations"
 )
+
+// refuse proves the exact database-level refusal, so a catalogue rule cannot pass
+// as a generic error. The migrations schema test asserts the same contract from
+// its own package.
+func refuse(t *testing.T, err error, code, constraint string) {
+	t.Helper()
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		t.Fatalf("expected a PostgreSQL refusal %s, got %v", constraint, err)
+	}
+	if pgErr.Code != code || pgErr.ConstraintName != constraint {
+		t.Fatalf("expected %s/%s, got %s/%s", code, constraint, pgErr.Code, pgErr.ConstraintName)
+	}
+}
 
 // These tests require the admitted parent-owned PostgreSQL fixture; no skip path.
 func TestPostgres(t *testing.T) {
@@ -99,8 +115,10 @@ func TestPostgres(t *testing.T) {
 			"UPDATE inventory_balances SET reserved=-1 WHERE location_id=1 AND variant_id=1",
 			"UPDATE inventory_balances SET reserved=existing+1 WHERE location_id=1 AND variant_id=1",
 			"UPDATE inventory_balances SET existing=1.5::text::bigint WHERE location_id=1 AND variant_id=1",
+			// Only the capacity validity rule still refuses an UPDATE of the seeded
+			// battery: capacity stays positive. "No catalogue UPDATE is legal" was
+			// retired by 028, so the catalogue mutation rules have their own case.
 			"UPDATE catalog_entries SET capacity_ah=0 WHERE id=1",
-			"UPDATE catalog_entries SET model='changed' WHERE id=1",
 			"DELETE FROM catalog_variants WHERE id=1",
 			"INSERT INTO locations VALUES (0,'Other')",
 		} {
@@ -108,6 +126,51 @@ func TestPostgres(t *testing.T) {
 				t.Fatalf("accepted invalid mutation: %s", query)
 			}
 		}
+		// Since 028 the catalogue is operational data: an active battery's identity
+		// fields are editable, while its id, its deletion and its retired form are
+		// refused by their own constraint.
+		t.Run("an_active_battery_is_editable_and_id_delete_and_retired_edits_are_refused", func(t *testing.T) {
+			var edited bool
+			if err := p.QueryRow(ctx, `UPDATE catalog_entries SET brand='EDITADA',model='CAMBIADO',capacity_ah=62.5 WHERE id=1
+RETURNING brand='EDITADA' AND model='CAMBIADO' AND capacity_ah=62.5`).Scan(&edited); err != nil {
+				t.Fatalf("an active battery must be editable: %v", err)
+			}
+			if !edited {
+				t.Fatal("the edit of an active battery did not persist")
+			}
+			// A fresh battery has one zero balance per active branch, so it retires.
+			var fresh int64
+			if err := p.QueryRow(ctx, `INSERT INTO catalog_entries(brand,model,capacity_ah) VALUES('RETIRABLE','40Ah',40) RETURNING id`).Scan(&fresh); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := p.Exec(ctx, `INSERT INTO catalog_variants(catalog_entry_id,polarity) VALUES($1,'L')`, fresh); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := p.Exec(ctx, `UPDATE catalog_entries SET deleted_at=CURRENT_TIMESTAMP WHERE id=$1`, fresh); err != nil {
+				t.Fatalf("a battery without stock or open operations must be retirable: %v", err)
+			}
+			catalogue := func() string {
+				t.Helper()
+				var row string
+				if err := p.QueryRow(ctx, `SELECT COALESCE(jsonb_agg(to_jsonb(e) ORDER BY e.id),'[]'::jsonb)::text FROM catalog_entries e`).Scan(&row); err != nil {
+					t.Fatal(err)
+				}
+				return row
+			}
+			before := catalogue()
+			refused := func(query string, args ...any) error {
+				t.Helper()
+				_, err := p.Exec(ctx, query, args...)
+				return err
+			}
+			refuse(t, refused(`UPDATE catalog_entries SET id=id+1000 WHERE id=1`), "23514", "catalog_entry_identity_immutable")
+			refuse(t, refused(`DELETE FROM catalog_entries WHERE id=1`), "23514", "catalog_entry_deletion_forbidden")
+			refuse(t, refused(`UPDATE catalog_entries SET model='OTRO' WHERE id=$1`, fresh), "23514", "catalog_entry_retired_immutable")
+			// None of the refusals may have touched the admitted edit.
+			if after := catalogue(); after != before {
+				t.Fatalf("a refused catalogue mutation changed state: %s", after)
+			}
+		})
 		// Constraints protect even initial inserts, before immutable sealing.
 		q := fresh(t)
 		if err := db.Apply(ctx, q); err != nil {

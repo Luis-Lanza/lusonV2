@@ -175,11 +175,34 @@ func TestCatalogOperationalAuthority(t *testing.T) {
 
 	t.Run("a_pending_operation_blocks_retirement", func(t *testing.T) {
 		entry, variant := create(t, "CON_PENDIENTE", "90Ah")
-		exec(t, "INSERT INTO transfer_requests(creator_location_id,kind,origin_location_id,destination_location_id,approver_location_id,retry_key,payload_sha256) "+
-			"VALUES(2,'request_stock',1,2,1,'028pendingoperation1',sha256('028'::bytea))")
-		exec(t, "INSERT INTO transfer_request_items(request_id,variant_id,quantity) "+
-			"VALUES(currval('transfer_requests_id_seq'),$1,1)", variant)
+		// A pending header alone is not a legal request: completeness is a deferred
+		// constraint and an item may only be inserted by the transaction that created
+		// its header. One statement is one transaction, so the header and its item are
+		// written together, exactly like the sibling schema test builds a request.
+		var request int64
+		if err := p.QueryRow(ctx, `WITH request AS (
+INSERT INTO transfer_requests(creator_location_id,kind,origin_location_id,destination_location_id,approver_location_id,retry_key,payload_sha256)
+VALUES(2,'request_stock',1,2,1,'028pendingoperation1',sha256('028'::bytea)) RETURNING id)
+INSERT INTO transfer_request_items(request_id,variant_id,quantity)
+SELECT id,$1,1 FROM request RETURNING request_id`, variant).Scan(&request); err != nil {
+			t.Fatalf("a pending transfer with its item must be insertable: %v", err)
+		}
+		if got := scalar(t, "SELECT count(*) FROM transfer_request_items WHERE request_id=$1 AND variant_id=$2", request, variant); got != 1 {
+			t.Fatalf("the pending transfer must own its item, got %d", got)
+		}
+		// The blocker has to be the operation, not stock: the battery was just created
+		// and every active branch carries a zero balance for it.
+		if got := scalar(t, "SELECT count(*) FROM inventory_balances b JOIN catalog_variants v ON v.id=b.variant_id WHERE v.catalog_entry_id=$1 AND (b.existing<>0 OR b.reserved<>0)", entry); got != 0 {
+			t.Fatalf("the retirement must not be blocked by stock, got %d stocked balances", got)
+		}
 		_, err := p.Exec(ctx, "UPDATE catalog_entries SET deleted_at=CURRENT_TIMESTAMP WHERE id=$1", entry)
 		requirePgFailure(t, err, "23514", "catalog_retirement_blocked")
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Message != "Battery retirement blocked: operations" {
+			t.Fatalf("the pending operation must be the blocker, got %v", err)
+		}
+		if got := scalar(t, "SELECT count(*) FROM catalog_entries WHERE id=$1 AND deleted_at IS NULL", entry); got != 1 {
+			t.Fatal("a refused retirement must leave the battery active")
+		}
 	})
 }
