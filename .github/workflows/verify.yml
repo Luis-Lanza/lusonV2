@@ -122,22 +122,24 @@ jobs:
       - name: pull the pinned PostgreSQL image
         run: docker pull postgres:17.9-bookworm
 
+      # The admission is uid- and path-based: it demands uid 1000 and its private
+      # directories under /home/luis. The runner image already occupies uid 1000
+      # with a different home (packer, /home/packer), so rather than inventing a
+      # second uid-1000 account that cannot exist, give that identity the directory
+      # the admission expects. Nothing is faked: the directory is owned by the real
+      # uid-1000 identity and the admission still validates the uid.
       - name: prepare the uid-1000 identity the admission requires
         run: |
           set -euo pipefail
-          if entry=$(getent passwd 1000); then
-            identity=$(printf '%s' "${entry}" | cut -d: -f1)
-            home=$(printf '%s' "${entry}" | cut -d: -f6)
-            echo "uid 1000 is already taken by ${identity} (home ${home}); reusing it"
-          else
-            identity=luis
-            home=/home/luis
-            sudo useradd --uid 1000 --home-dir "${home}" --create-home --shell /bin/bash "${identity}"
+          entry=$(getent passwd 1000)
+          identity=$(printf '%s' "${entry}" | cut -d: -f1)
+          gid=$(printf '%s' "${entry}" | cut -d: -f4)
+          existing_home=$(printf '%s' "${entry}" | cut -d: -f6)
+          home=/home/luis
+          if [ "${existing_home}" != "${home}" ]; then
+            echo "uid 1000 belongs to ${identity} (home ${existing_home}); provisioning ${home} for that identity"
           fi
-          if [ "${home}" != /home/luis ]; then
-            echo "::error::uid 1000 belongs to ${identity} with home ${home}, but the fixture admission hardcodes /home/luis/.local/share"
-            exit 1
-          fi
+          sudo install -d -o "${identity}" -g "${gid}" -m 0700 "${home}"
           sudo usermod --append --groups docker "${identity}"
           {
             echo "CI_UID1000_USER=${identity}"
@@ -147,7 +149,7 @@ jobs:
           # uid, and that this identity can drive the Docker socket itself.
           sudo -u "${identity}" -- env HOME="${home}" bash -c 'test "$(id -u)" = 1000'
           sudo -u "${identity}" -- docker info >/dev/null
-          echo "uid 1000 identity ${identity} holds uid 1000 and can reach Docker"
+          echo "uid 1000 identity ${identity} holds uid 1000 and can reach Docker as ${home}"
 
       # The checkout belongs to the runner user. The suite only reads it, but the
       # uid-1000 identity has to traverse every path to reach it, and the runner's

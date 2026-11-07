@@ -120,3 +120,7 @@ default.
 Teardown proof and recovery: `./scripts/test-pg-fixture.sh status` reports any
 fixture container, network or manifest still on the host, and
 `./scripts/test-pg-fixture.sh down` removes every one of them.
+
+The CI identity step resolves whatever account holds uid 1000 in the runner image and
+provisions `/home/luis` for it, because the admission is uid- and path-based. It never
+creates a second uid-1000 account and never rewrites ownership of a fixture path.
