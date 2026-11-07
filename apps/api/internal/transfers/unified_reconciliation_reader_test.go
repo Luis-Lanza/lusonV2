@@ -14,7 +14,7 @@ func TestUnifiedReconciliationReaderUnowned(t *testing.T) {
 	// anymore: seed it on 001-018, upgrade through 019, then read it back.
 	ctx, p := urPrefixFixtureAt(t, 19)
 	s := transfers.New(p)
-	r := urHistoricalReceipt(t, ctx, s)
+	r := urHistoricalReceipt(t, ctx, p, s)
 	urSeedUnexpectedLine(t, ctx, p, r, 3, 1)
 	if err := db.Apply(ctx, p); err != nil {
 		t.Fatal("apply019 over historical receipt lines", err)
@@ -47,6 +47,8 @@ func TestUnifiedReconciliationReaderUnowned(t *testing.T) {
 	if len(got.Original) != 2 || got.Original[0].VariantID != 1 || got.Original[0].ExpectedQuantity != 10 || got.Original[0].ActualQuantity != 8 || got.Original[0].AvailableQuantity != 8 || got.Original[1].VariantID != 3 || got.Original[1].ExpectedQuantity != 0 || got.Original[1].ActualQuantity != 1 || got.Original[1].AvailableQuantity != 0 {
 		t.Fatal("immutable receipt including unexpected line", got.Original)
 	}
+	t.Logf("post-upgrade: %d original line(s) kept, the unexpected one without credit, over %d stock row(s)",
+		len(got.Original), len(before))
 	if len(got.Current) != 2 || len(got.Lines) != 1 || got.Lines[0].VariantID != 1 || got.Lines[0].Proposals == nil || len(got.Lines[0].Proposals) != 0 || got.Operations == nil || len(got.Operations) != 0 {
 		t.Fatal("unowned workflow", got)
 	}

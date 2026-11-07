@@ -248,16 +248,16 @@ func TestUR2UnexpectedAuditCorrectionPreserved(t *testing.T) {
 	// them, then 019 is applied on top and the evidence must survive intact.
 	ctx, p := urPrefixFixtureAt(t, 19)
 	s := transfers.New(p)
-	r := urHistoricalReceipt(t, ctx, s)
+	r := urHistoricalReceipt(t, ctx, p, s)
 	urSeedUnexpectedLine(t, ctx, p, r, 3, 1)
 	if _, e := s.ProposeUnifiedReconciliation(ctx, actor(r.Origin.ID), r.ID, urProposal("ur2-expected-ownership")); e != nil {
 		t.Fatal(e)
 	}
-	stock := dr1Inventory(t, ctx, p)
+	stock := urEraInventory(t, ctx, p)
 	expected := urRead(t, ctx, s, r)
 	urSeedCountCorrection(t, ctx, p, r, 3, 2)
 	after := urRead(t, ctx, s, r)
-	if !reflect.DeepEqual(stock, dr1Inventory(t, ctx, p)) || !reflect.DeepEqual(urCurrent(t, expected), urCurrent(t, after)) || !reflect.DeepEqual(expected.Lines, after.Lines) || !reflect.DeepEqual(expected.Operations, after.Operations) {
+	if !reflect.DeepEqual(stock, urEraInventory(t, ctx, p)) || !reflect.DeepEqual(urCurrent(t, expected), urCurrent(t, after)) || !reflect.DeepEqual(expected.Lines, after.Lines) || !reflect.DeepEqual(expected.Operations, after.Operations) {
 		t.Fatal("unexpected audit-only correction affected expected accounting or inventory")
 	}
 	got := after.Legacy.Count
@@ -273,6 +273,8 @@ func TestUR2UnexpectedAuditCorrectionPreserved(t *testing.T) {
 	if !found {
 		t.Fatal("unexpected audit history missing")
 	}
+	t.Logf("pre-019: historical receipt with an unexpected line and an audit-only correction, over %d stocked variants per location",
+		stock[0].TotalVariants)
 	// 019 keeps refusing new zero-quantity lines without deleting this history.
 	if err := db.Apply(ctx, p); err != nil {
 		t.Fatal("apply019 over historical correction evidence", err)

@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
-	"luson/api/internal/bootstrap"
-	"luson/api/internal/config"
 	"luson/api/internal/testpg"
 	"luson/api/migrations"
 )
@@ -301,9 +299,7 @@ func TestSalePaymentsBackfill(t *testing.T) {
 	p := testpg.Open(t)
 	// The pre-backfill schema: the label is still a chosen input of the header.
 	applyMigrationRange(t, ctx, p, 26)
-	if err := bootstrap.Seed(ctx, p, config.LocalTrial); err != nil {
-		t.Fatal("the pre-backfill dataset could not be seeded")
-	}
+	seedPrefixCatalog(t, ctx, p)
 	if _, err := p.Exec(ctx, `INSERT INTO auth_accounts(location_id,username,password_hash)
  VALUES(1,'almacen','x'),(2,'sucursal_a','x')`); err != nil {
 		t.Fatal("the pre-backfill accounts could not be provisioned")
@@ -313,7 +309,9 @@ func TestSalePaymentsBackfill(t *testing.T) {
  VALUES(2,1,2000.00,2500.00,1)`); err != nil {
 		t.Fatal("the pre-backfill price fixture failed")
 	}
-	// One issued sale per former method, each of them paid with the whole total.
+	// One issued sale per former method, each of them paid with the whole total, so the
+	// branch holds the stock those three sales of variant 1 decrement.
+	seedBranchStock(t, ctx, p, 50, 1)
 	issued := make(map[string]int64, 3)
 	for _, method := range []string{"cash", "card", "transfer"} {
 		tx, err := p.Begin(ctx)
@@ -339,6 +337,11 @@ func TestSalePaymentsBackfill(t *testing.T) {
 	if err != nil {
 		t.Fatal("the mixed payment migration must be embedded", err)
 	}
+	// Evidence that the backfill is still exercised: three issued sales, each already
+	// declaring its own label before the migration rewrites the header.
+	t.Logf("027 pre-backfill: %d issued sale(s) with %d frozen line(s)",
+		countRows(t, ctx, p, "SELECT count(*) FROM sales"),
+		countRows(t, ctx, p, "SELECT count(*) FROM sale_lines"))
 	if _, err := p.Exec(ctx, string(migration)); err != nil {
 		t.Fatalf("the mixed payment migration failed on a live database: %v", err)
 	}
@@ -365,6 +368,7 @@ func TestSalePaymentsBackfill(t *testing.T) {
 	if n := countRows(t, ctx, p, "SELECT count(*) FROM sales"); n != 3 {
 		t.Fatalf("the backfill must keep every issued sale, got %d", n)
 	}
+	t.Logf("027 post-backfill: every sale kept its total on its own method and its declared label")
 	// The immutability guard of 025 is enabled again: the backfill window is closed.
 	if _, err := p.Exec(ctx, "UPDATE sales SET total=1.00"); err == nil {
 		t.Fatal("the backfill must leave the immutability guard enabled")
@@ -386,9 +390,7 @@ func TestSalePaymentsDatabaseRefusesOpenSum(t *testing.T) {
 	t.Cleanup(cancel)
 	p := testpg.Open(t)
 	applyMigrationRange(t, ctx, p, 27)
-	if err := bootstrap.Seed(ctx, p, config.LocalTrial); err != nil {
-		t.Fatal("the dataset could not be seeded")
-	}
+	seedPrefixCatalog(t, ctx, p)
 	if _, err := p.Exec(ctx, `INSERT INTO auth_accounts(location_id,username,password_hash)
  VALUES(1,'almacen','x'),(2,'sucursal_a','x')`); err != nil {
 		t.Fatal("the accounts could not be provisioned")
@@ -397,6 +399,10 @@ func TestSalePaymentsDatabaseRefusesOpenSum(t *testing.T) {
  VALUES(2,1,2000.00,2500.00,1)`); err != nil {
 		t.Fatal("the price fixture failed")
 	}
+	// The four admitted settlements below each sell one unit of variant 1, so the branch
+	// holds that stock.
+	seedBranchStock(t, ctx, p, 50, 1)
+	t.Logf("027 pre-check: 1 priced battery, branch 2 holds 50 units of variant 1")
 	// Each refused settlement names a constraint that proves the amounts themselves -- and
 	// not some other guard -- were the reason. A settlement that breaks two amount rules at
 	// once may be refused by either, so each case names the admitted refusals.

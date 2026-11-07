@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"luson/api/internal/bootstrap"
-	"luson/api/internal/config"
 	"luson/api/internal/testpg"
 	"luson/api/migrations"
 )
@@ -144,6 +142,44 @@ func applyMigrationRange(t *testing.T, ctx context.Context, p *pgxpool.Pool, las
 	}
 }
 
+// seedPrefixCatalog installs the historical catalogue the price and settlement rules
+// below are written against, through the columns the applied prefix actually has.
+// bootstrap.Seed is a current-schema operation -- it reads catalog_entries.deleted_at,
+// a column migration 028 adds -- so it cannot build a historical starting point.
+//
+// The dataset is exactly what these four rules touch: the three known locations, two
+// batteries (entry 1 with its L/R pair, entry 2 with one polarity) and no stock.
+// Balances are seeded by each test for the variants its own sale decrements, and no
+// initialization_metadata row is written, because none of these rules reads it.
+func seedPrefixCatalog(t *testing.T, ctx context.Context, p *pgxpool.Pool) {
+	t.Helper()
+	if _, err := p.Exec(ctx, `INSERT INTO locations(id,name)
+ VALUES(1,'Almacén'),(2,'Sucursal A'),(3,'Sucursal B')`); err != nil {
+		t.Fatal("the prefix locations could not be provisioned")
+	}
+	if _, err := p.Exec(ctx, `INSERT INTO catalog_entries(id,brand,model,capacity_ah)
+ VALUES(1,'Yuasa','NP7-12',7),(2,'Bosch','S4 005',45)`); err != nil {
+		t.Fatal("the prefix batteries could not be provisioned")
+	}
+	if _, err := p.Exec(ctx, `INSERT INTO catalog_variants(id,catalog_entry_id,polarity)
+ VALUES(1,1,'L'),(2,1,'R'),(3,2,'L')`); err != nil {
+		t.Fatal("the prefix variants could not be provisioned")
+	}
+}
+
+// seedBranchStock gives branch 2 the stock its own sales decrement, and nothing else:
+// the sale trigger refuses a variant without a balance row, and no rule here reads the
+// rest of the matrix.
+func seedBranchStock(t *testing.T, ctx context.Context, p *pgxpool.Pool, existing int64, variants ...int) {
+	t.Helper()
+	for _, variant := range variants {
+		if _, err := p.Exec(ctx, `INSERT INTO inventory_balances(location_id,variant_id,existing,reserved)
+ VALUES(2,$1,$2,0)`, variant, existing); err != nil {
+			t.Fatalf("the branch stock of variant %d could not be provisioned: %v", variant, err)
+		}
+	}
+}
+
 // TestBranchPricesByBatteryReshapeBackfill proves the reshape on a real database that
 // still has the variant-keyed shape: two rows of the same battery in one branch
 // collapse into the single battery row, the most recently updated one wins, another
@@ -154,9 +190,7 @@ func TestBranchPricesByBatteryReshapeBackfill(t *testing.T) {
 	t.Cleanup(cancel)
 	p := testpg.Open(t)
 	applyMigrationRange(t, ctx, p, 25)
-	if err := bootstrap.Seed(ctx, p, config.LocalTrial); err != nil {
-		t.Fatal("the pre-reshape dataset could not be seeded")
-	}
+	seedPrefixCatalog(t, ctx, p)
 	// Three branches with their own account, exactly like the provisioned trial.
 	if _, err := p.Exec(ctx, `INSERT INTO auth_accounts(location_id,username,password_hash)
  VALUES(1,'almacen','x'),(2,'sucursal_a','x'),(3,'sucursal_b','x')`); err != nil {
@@ -176,6 +210,12 @@ func TestBranchPricesByBatteryReshapeBackfill(t *testing.T) {
 	if err != nil {
 		t.Fatal("the battery price reshape must be embedded", err)
 	}
+	// Evidence that the rule is still exercised: the four variant-keyed rows the
+	// reshape must collapse.
+	if n := countRows(t, ctx, p, "SELECT count(*) FROM branch_prices"); n != 4 {
+		t.Fatalf("the variant-keyed table must hold one row per polarity, got %d", n)
+	}
+	t.Logf("026 pre-reshape: 4 variant-keyed price rows, entry 1 carrying two polarities")
 	if _, err := p.Exec(ctx, string(reshape)); err != nil {
 		t.Fatalf("the battery price reshape failed on a live database: %v", err)
 	}
@@ -222,6 +262,7 @@ func TestBranchPricesByBatteryReshapeBackfill(t *testing.T) {
 	if n := countRows(t, ctx, p, "SELECT count(*) FROM branch_prices"); n != 3 {
 		t.Fatalf("the reshape must keep one row per kept pair, got %d", n)
 	}
+	t.Logf("026 post-reshape: 3 battery price rows, entry 1 kept the newest pair 2000.00/2500.00")
 	// The new primary key is the battery: a second row for the same battery of the
 	// same branch is refused, so L and R can never hold different prices.
 	if _, err := p.Exec(ctx, `INSERT INTO branch_prices(branch_location_id,catalog_entry_id,min_price,suggested_price,updated_by_account_id)
@@ -239,7 +280,8 @@ func TestBranchPricesByBatteryReshapeBackfill(t *testing.T) {
 	}
 	// A sale resolves the pair through the battery: both polarities of entry 1 are
 	// sellable at the branch 2 pair, and the document is one transaction because its
-	// total is a deferred constraint of 025.
+	// total is a deferred constraint of 025. Selling them decrements their branch stock.
+	seedBranchStock(t, ctx, p, 50, 1, 2)
 	tx, err := p.Begin(ctx)
 	if err != nil {
 		t.Fatal("the sale fixture transaction failed")
@@ -297,9 +339,7 @@ func TestBranchPricesByBatterySaleWithPayments(t *testing.T) {
 	p := testpg.Open(t)
 	// The whole schema, so the sale header is the shape 027 leaves behind.
 	applyMigrationRange(t, ctx, p, 27)
-	if err := bootstrap.Seed(ctx, p, config.LocalTrial); err != nil {
-		t.Fatal("the dataset could not be seeded")
-	}
+	seedPrefixCatalog(t, ctx, p)
 	if _, err := p.Exec(ctx, `INSERT INTO auth_accounts(location_id,username,password_hash)
  VALUES(1,'almacen','x'),(2,'sucursal_a','x')`); err != nil {
 		t.Fatal("the accounts could not be provisioned")
@@ -310,7 +350,9 @@ func TestBranchPricesByBatterySaleWithPayments(t *testing.T) {
 		t.Fatalf("the price fixture failed: %v", err)
 	}
 	// The document is settled partly in cash and partly by transfer, and it sells both
-	// polarities of the priced battery.
+	// polarities of the priced battery, so the branch holds exactly that stock.
+	seedBranchStock(t, ctx, p, 50, 1, 2)
+	t.Logf("027: 1 battery price over 2 stocked polarities of branch 2, settled by recorded amounts")
 	tx, err := p.Begin(ctx)
 	if err != nil {
 		t.Fatal("the sale fixture transaction failed")

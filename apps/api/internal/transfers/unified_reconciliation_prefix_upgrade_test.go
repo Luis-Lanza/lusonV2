@@ -16,8 +16,8 @@ import (
 	"luson/api/internal/auth"
 	"luson/api/internal/bootstrap"
 	"luson/api/internal/catalog"
-	"luson/api/internal/config"
 	"luson/api/internal/db"
+	"luson/api/internal/inventory"
 	"luson/api/internal/testpg"
 	"luson/api/internal/transfers"
 	"luson/api/migrations"
@@ -84,9 +84,7 @@ func urPrefixFixtureAt(t *testing.T, stop int) (context.Context, *pgxpool.Pool) 
 	if err != nil {
 		t.Fatal("install real prefix", err)
 	}
-	if err := bootstrap.Seed(ctx, p, config.LocalTrial); err != nil {
-		t.Fatal(err)
-	}
+	urSeedPrefixDataset(t, ctx, p)
 	// Duplicate Provision invariants, except its latest-schema Check: exactly
 	// three distinct valid credentials, production password hashing, empty account
 	// set, exact catalog location identities/order, and one locked transaction.
@@ -139,19 +137,214 @@ func urPrefixFixtureAt(t *testing.T, stop int) (context.Context, *pgxpool.Pool) 
 	return ctx, p
 }
 
+// urSeedPrefixDataset installs the historical local-trial dataset through the only
+// tables and columns that exist at the prefix. bootstrap.Seed is a current-schema
+// operation -- it reads catalog_entries.deleted_at, which migration 028 adds -- so it
+// cannot build a historical starting point; db.Check still validates the upgrade.
+//
+// The dataset is the fixture's own and complete: the three locations, its entries with
+// both polarities, and the deterministic fictional balance per (location, variant).
+// These upgrade tests need that whole matrix, because they snapshot every balance row
+// as the proof that the upgrade changed no stock, and page the whole inventory listing
+// per location. They read no seed provenance, so no initialization_metadata row is
+// written: without it the 014 branch fan-out stays inert and the balances below are the
+// only stock in the database, exactly as the seed leaves it.
+func urSeedPrefixDataset(t *testing.T, ctx context.Context, p *pgxpool.Pool) {
+	t.Helper()
+	source, err := catalog.Load()
+	if err != nil {
+		t.Fatal("embedded catalog is unreadable", err)
+	}
+	err = db.Locked(ctx, p, func(tx pgx.Tx) error {
+		for _, location := range catalog.Locations() {
+			if _, err := tx.Exec(ctx, "INSERT INTO locations(id,name) VALUES($1,$2)", location.ID, location.Name); err != nil {
+				return err
+			}
+		}
+		for _, entry := range source.Entries {
+			if _, err := tx.Exec(ctx, "INSERT INTO catalog_entries(id,brand,model,capacity_ah) VALUES($1,$2,$3,$4::numeric)", entry.ID, entry.Brand, entry.Model, string(entry.Capacity)); err != nil {
+				return err
+			}
+		}
+		for _, variant := range source.Variants() {
+			if _, err := tx.Exec(ctx, "INSERT INTO catalog_variants(id,catalog_entry_id,polarity) VALUES($1,$2,$3)", variant.ID, variant.CatalogID, string(variant.Polarity)); err != nil {
+				return err
+			}
+			for _, location := range catalog.Locations() {
+				if _, err := tx.Exec(ctx, "INSERT INTO inventory_balances(location_id,variant_id,existing,reserved) VALUES($1,$2,$3,0)", location.ID, variant.ID, urTrialQuantity(location.ID, variant.ID)); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal("prefix dataset", err)
+	}
+}
+
+// urTrialQuantity is the fictional, deterministic, deliberately varied trial stock
+// (it includes zero) the historical seed wrote: each location holds a distinct
+// quantity of every variant.
+func urTrialQuantity(locationID, variantID int) int64 {
+	return int64((variantID*7 + locationID*11) % 31)
+}
+
+// urEraInventory is the per-location stock listing the prefix era could answer, in the
+// same public shape inventory.Store answers with today. The current selection path
+// filters catalog_entries.deleted_at, a column migration 028 adds, so it cannot read a
+// pre-028 database at all; this helper asks the same question with the columns the
+// prefix has. The upgrade assertions below compare this pre-upgrade snapshot with a
+// post-upgrade read through the real store, so both sides stay the public stock.
+func urEraInventory(t *testing.T, ctx context.Context, p *pgxpool.Pool) []inventory.Page {
+	t.Helper()
+	var pages []inventory.Page
+	for location := 1; location <= 3; location++ {
+		var page inventory.Page
+		page.Location.ID = location
+		if err := p.QueryRow(ctx, "SELECT name FROM locations WHERE id=$1", location).Scan(&page.Location.Name); err != nil {
+			t.Fatal("prefix location unreadable", err)
+		}
+		for number := 1; number <= 4; number++ {
+			page.Page, page.PageSize, page.Items = number, 50, []inventory.Item{}
+			if err := p.QueryRow(ctx, "SELECT count(*) FROM inventory_balances WHERE location_id=$1", location).Scan(&page.TotalVariants); err != nil {
+				t.Fatal("prefix inventory count unreadable", err)
+			}
+			rows, err := p.Query(ctx, `SELECT v.id,e.id,e.brand,e.model,e.capacity_ah::text,v.polarity,
+  b.existing,b.reserved,b.available
+  FROM inventory_balances b JOIN catalog_variants v ON v.id=b.variant_id
+  JOIN catalog_entries e ON e.id=v.catalog_entry_id
+  WHERE b.location_id=$1 ORDER BY v.id LIMIT $2 OFFSET $3`, location, page.PageSize, (number-1)*page.PageSize)
+			if err != nil {
+				t.Fatal("prefix inventory listing failed", err)
+			}
+			for rows.Next() {
+				var item inventory.Item
+				var capacity string
+				if err := rows.Scan(&item.VariantID, &item.CatalogEntryID, &item.Brand, &item.Model, &capacity, &item.Polarity, &item.Existing, &item.Reserved, &item.Available); err != nil {
+					rows.Close()
+					t.Fatal("prefix inventory row unreadable", err)
+				}
+				if item.Capacity, err = catalog.ParseDecimal(capacity); err != nil {
+					rows.Close()
+					t.Fatal("prefix inventory capacity unreadable", err)
+				}
+				page.Items = append(page.Items, item)
+			}
+			err = rows.Err()
+			rows.Close()
+			if err != nil {
+				t.Fatal("prefix inventory listing failed", err)
+			}
+			pages = append(pages, page)
+		}
+	}
+	return pages
+}
+
 // urHistoricalReceipt finalizes the receipt the legacy fixtures used: variant 1
-// dispatched with 10 units and 8 arriving. It runs through the public store so
-// the prefix database holds genuine pre-019 history.
-func urHistoricalReceipt(t *testing.T, ctx context.Context, s *transfers.Store) transfers.Request {
+// dispatched with 10 units and 8 arriving. The prefix database therefore holds genuine
+// pre-019 history, written with the SQL that prefix era admits.
+func urHistoricalReceipt(t *testing.T, ctx context.Context, p *pgxpool.Pool, s *transfers.Store) transfers.Request {
+	t.Helper()
+	return urEraReceipt(t, ctx, p, s, 2,
+		[]transfers.Line{{VariantID: 1, Quantity: 10}},
+		[]transfers.Line{{VariantID: 1, Quantity: 8}})
+}
+
+// urEraPendingRequest writes the pending request through the tables and columns the
+// installed prefix actually has. Store.Create cannot do it there: its availability read
+// selects catalog_entries.deleted_at, a column migration 028 adds, so a current-schema
+// writer is exactly as unusable on a historical schema as bootstrap.Seed. The intent is
+// still the public contract -- transfers.Validate derives the fingerprint the store would
+// persist, and Get re-derives it later -- and the 015 creation admission trigger still
+// judges the row.
+func urEraPendingRequest(t *testing.T, ctx context.Context, p *pgxpool.Pool, creator int, in transfers.CreateInput) int64 {
+	t.Helper()
+	n, err := transfers.Validate(actor(creator), in)
+	if err != nil {
+		t.Fatal("historical creation intent", err)
+	}
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		t.Fatal("historical creation transaction", err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	var id int64
+	if err := tx.QueryRow(ctx, `INSERT INTO transfer_requests
+   (creator_location_id,kind,origin_location_id,destination_location_id,approver_location_id,retry_key,payload_sha256,status)
+   VALUES($1,$2,$3,$4,$5,$6,$7,'pending') RETURNING id`,
+		n.CreatorID, string(n.Kind), n.OriginID, n.DestinationID, n.ApproverID, n.RetryKey, n.Fingerprint[:]).Scan(&id); err != nil {
+		t.Fatal("historical pending request", err)
+	}
+	for _, line := range n.Items {
+		if _, err := tx.Exec(ctx, "INSERT INTO transfer_request_items(request_id,variant_id,quantity) VALUES($1,$2,$3)", id, int32(line.VariantID), line.Quantity); err != nil {
+			t.Fatal("historical request item", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal("historical pending request", err)
+	}
+	return id
+}
+
+// urEraReceipt builds the historical received transfer the pre-019 flows produced.
+// Approval and dispatch still run through the public store, which reads no post-prefix
+// column; the finalization is the two writes the store itself issues, because
+// Store.Receive admits the destination catalogue through catalog_entries.deleted_at.
+// Everything the receipt *means* stays the database's: the 008 triggers credit the
+// destination, derive the shortage/excess rows and judge the document at commit.
+func urEraReceipt(t *testing.T, ctx context.Context, p *pgxpool.Pool, s *transfers.Store, creator int, dispatched, arrived []transfers.Line) transfers.Request {
 	t.Helper()
 	in := input()
-	in.Items = []transfers.Line{{VariantID: 1, Quantity: 10}}
-	r := receiptDispatch(t, ctx, s, in)
-	got, err := s.Receive(ctx, actor(r.Destination.ID), r.ID, transfers.ReceiptInput{Items: []transfers.Line{{VariantID: 1, Quantity: 8}}})
+	in.Items = dispatched
+	r, err := s.Get(ctx, actor(creator), urEraPendingRequest(t, ctx, p, creator, in))
+	if err != nil {
+		t.Fatal("historical request", err)
+	}
+	if _, err := s.Approve(ctx, actor(r.Approver.ID), r.ID); err != nil {
+		t.Fatal("historical approval", err)
+	}
+	r, err = s.Dispatch(ctx, actor(r.Origin.ID), r.ID)
+	if err != nil {
+		t.Fatal("historical dispatch", err)
+	}
+	actual := make(map[int64]int64, len(arrived))
+	for _, line := range arrived {
+		actual[line.VariantID] = line.Quantity
+	}
+	// Which lines the historical finalization owed is the dispatched payload the 008
+	// admission trigger demands, never a second copy of the wire input.
+	sent := make(map[int64]int64, len(r.Items))
+	for _, item := range r.Items {
+		sent[item.VariantID] = item.Quantity
+	}
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		t.Fatal("historical receipt transaction", err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	for variant, expected := range sent {
+		quantity, ok := actual[variant]
+		if !ok {
+			t.Fatal("historical receipt is missing a dispatched variant", variant)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO transfer_receipt_lines(request_id,variant_id,expected_quantity,actual_quantity,available_quantity)
+   VALUES($1,$2,$3::bigint,$4::bigint,LEAST($3::bigint,$4::bigint))`, r.ID, int32(variant), expected, quantity); err != nil {
+			t.Fatal("historical receipt line", err)
+		}
+	}
+	if _, err := tx.Exec(ctx, "UPDATE transfer_requests SET status='received' WHERE id=$1", r.ID); err != nil {
+		t.Fatal("historical receipt finalization", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal("historical receipt finalization", err)
+	}
+	settled, err := s.Get(ctx, actor(r.Destination.ID), r.ID)
 	if err != nil {
 		t.Fatal("historical receipt", err)
 	}
-	return got
+	return settled
 }
 
 // urSeedUnexpectedLine installs the undispatched ("unexpected") receipt line a
@@ -294,12 +487,7 @@ func TestUR4PopulatedPrefixUpgrade(t *testing.T) {
 			}
 			in := input()
 			in.Items = []transfers.Line{{VariantID: 1, Quantity: expected}}
-			r := receiptDispatch(t, ctx, s, in)
-			var err error
-			r, err = s.Receive(ctx, actor(r.Destination.ID), r.ID, transfers.ReceiptInput{Items: []transfers.Line{{VariantID: 1, Quantity: arrival}}})
-			if err != nil {
-				t.Fatal("public historical receipt", err)
-			}
+			r := urEraReceipt(t, ctx, p, s, 2, in.Items, []transfers.Line{{VariantID: 1, Quantity: arrival}})
 			original, err := s.Get(ctx, actor(r.Origin.ID), r.ID)
 			if err != nil {
 				t.Fatal(err)
@@ -330,7 +518,9 @@ func TestUR4PopulatedPrefixUpgrade(t *testing.T) {
 				rev = 1
 			}
 			pending := c2StorePropose(t, ctx, s, r, r.Destination.ID, 1, rev, 9, "upgrade-prefix-pending")
-			stock := dr1Inventory(t, ctx, p)
+			stock := urEraInventory(t, ctx, p)
+			t.Logf("pre-upgrade: historical receipt expected=%d actual=%d over %d stocked variants per location, pending count consent revision %d",
+				expected, arrival, stock[0].TotalVariants, rev)
 			if err := db.Apply(ctx, p); err != nil {
 				t.Fatal("apply018 through normal runner", err)
 			}
@@ -358,6 +548,8 @@ func TestUR4PopulatedPrefixUpgrade(t *testing.T) {
 			if before.Original[0].ExpectedQuantity != expected || before.Original[0].ActualQuantity != arrival || len(before.Legacy.Count.Operations) == 0 {
 				t.Fatal("missing original/legacy evidence", before)
 			}
+			t.Logf("post-upgrade: original expected=%d actual=%d preserved with %d legacy count operation(s)",
+				before.Original[0].ExpectedQuantity, before.Original[0].ActualQuantity, len(before.Legacy.Count.Operations))
 			if scenario == "restored" && (before.Legacy.Restitution.Lines[0].AppliedRetainedQuantity != 1 || urCurrent(t, before).SourceDebit != 9) {
 				t.Fatal("lost historical restoration", before)
 			}
