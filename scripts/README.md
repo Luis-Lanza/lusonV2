@@ -77,8 +77,14 @@ when it carries all five fixture labels. A Docker object whose name merely
 the fixture, and it never reaches another run's objects.
 
 Every removal step is checked. If Docker refuses to remove a container or a
-network, or a private path cannot be deleted, `down` reports exactly what is
-still present and exits non-zero; it never logs a warning and reports success.
+network, or a private path cannot be deleted, `down` retries it in the leftover
+pass and then re-checks the end state: it names whatever is still present and
+exits non-zero, and it never reports a leftover that is gone. A failed removal
+step whose object the retry pass did remove is a clean teardown, not a failure.
+
+On a clean host `down` is a safe no-op: the state root `$HOME/.local/share` is
+created by whichever command takes the lock first, so `up`, `down` and `run` all
+work on a host where no fixture ever ran.
 
 ### What `run` does
 
@@ -90,13 +96,18 @@ returns the command's exit status.
 A teardown failure is never swallowed: `run` names the leftovers and exits
 non-zero even when the command itself succeeded, so `make test-pg` cannot report
 success while the fixture container, network or private directory is still
-there.
+there. An interrupted `run` is torn down as well, including a signal that
+arrives while the fixture is still being created and no manifest path exists yet.
+
+The command `run` executes never inherits the lock descriptor. A wrapper killed
+while the command keeps running therefore leaves no surviving process holding
+the advisory lock, and the next `up`, `down` or `run` is not blocked by it.
 
 ### Requirements and safety
 
 - Docker reachable by the current user, without `sudo`. The script never calls
   `sudo`.
-- `jq`, `od`, `stat` (coreutils) and `flock` (util-linux).
+- `jq`, `od`, `stat`, `dd` (coreutils) and `flock` (util-linux).
 - The image `postgres:17.9-bookworm` must be present locally; the script never
   pulls anything.
 - Everything else is created fresh and removed again: no volume, no published
@@ -118,6 +129,9 @@ there.
 | `$HOME/.local/share/luson-transfer-tests.lock` | `0600` | advisory lock (`flock`) |
 
 Nothing is written inside the repository. The lock file holds the pid of the
-current holder and is emptied when the command releases it; the lock itself is
+current holder as a single fixed-width line that is rewritten without truncating
+the file and blanked while the lock is still held, so a concurrent invocation
+that is refused always names the live holder instead of reading an empty file,
+and releasing never erases a pid written by the next holder. The lock itself is
 kernel state, so it cannot go stale and a killed invocation never blocks the
 next one.

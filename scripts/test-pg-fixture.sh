@@ -18,8 +18,14 @@
 #
 # One fixture at a time is enforced with an advisory lock file held for the whole
 # creating or removing command, so two concurrent invocations cannot race into
-# separate run ids. A failed removal is reported and makes the command exit
-# non-zero instead of being logged and forgotten.
+# separate run ids. The lock file carries the holder pid without ever being
+# truncated, so a refused invocation can name who holds it, and the descriptor is
+# never inherited by the command `run` executes, so a killed wrapper cannot leave
+# the lock held by a surviving child.
+#
+# Teardown is judged by its end state, not by its steps: a removal that failed but
+# left nothing behind is a clean teardown, and a leftover that survived the retry
+# pass is reported by name and makes the command exit non-zero.
 #
 # ODD task: odd/tasks/postgres-test-fixture.md (S1-S3, T1-T2).
 #
@@ -93,6 +99,42 @@ LOCK_FD=""
 LOCK_HELD=""
 LOCK_OWNER_PID=""
 
+# The lock file lives in the state root, which does not exist on a clean host and
+# is not created by opening a file inside it. `up` used to be its only creator, so
+# `down` and `run` failed outright on a clean host; every lock taker now makes sure
+# the directory is there first.
+ensure_state_root() {
+  if [[ -d ${STATE_ROOT} ]]; then
+    return 0
+  fi
+  mkdir -p -- "${STATE_ROOT}" 2>/dev/null ||
+    die "cannot create the fixture state root ${STATE_ROOT}"
+}
+
+# The lock file holds one fixed-width line: the pid of the current holder, or
+# blank space when nobody holds it. The line is rewritten without truncating the
+# file, so a concurrent invocation that fails to take the lock reads a well-formed
+# line instead of the empty file a truncating open leaves behind. It is only ever
+# written by the process that holds the lock, and it is blanked while the lock is
+# still held, so releasing can never erase a pid the next holder wrote.
+readonly LOCK_PID_WIDTH=12
+readonly LOCK_LINE_WIDTH=$((LOCK_PID_WIDTH + 1))
+
+write_lock_pid() {
+  printf '%-*s\n' "${LOCK_PID_WIDTH}" "$1" |
+    dd of="${LOCK_FILE}" bs=1 count="${LOCK_LINE_WIDTH}" conv=notrunc status=none \
+      2>/dev/null || true
+}
+
+read_lock_pid() {
+  local raw
+  raw=$(cat -- "${LOCK_FILE}" 2>/dev/null) || raw=""
+  raw=${raw%%[[:space:]]*}
+  if [[ ${raw} =~ ^[0-9]+$ ]]; then
+    printf '%s' "${raw}"
+  fi
+}
+
 # One fixture at a time, enforced by the kernel instead of by a leftover check
 # that two racing invocations can both pass. Every command that creates or
 # removes objects holds this lock while it does so; a second invocation fails
@@ -102,30 +144,35 @@ acquire_lock() {
     return 0
   fi
   require_command flock
-  exec {LOCK_FD}>"${LOCK_FILE}" ||
+  require_command dd
+  ensure_state_root
+  # Append, never truncate: a refused invocation must not empty the file that
+  # records who holds the lock.
+  exec {LOCK_FD}>>"${LOCK_FILE}" ||
     die "cannot open the fixture lock file ${LOCK_FILE}"
   if ! flock --nonblock "${LOCK_FD}"; then
     local holder=""
-    holder=$(cat -- "${LOCK_FILE}" 2>/dev/null) || holder=""
+    holder=$(read_lock_pid) || holder=""
     exec {LOCK_FD}>&-
     die "another fixture invocation is active${holder:+ (pid ${holder})}; wait for it to finish or inspect it with '$0 status'"
   fi
   LOCK_HELD=1
   LOCK_OWNER_PID=${BASHPID}
+  write_lock_pid "${BASHPID}"
   chmod "${SECRET_FILE_MODE}" -- "${LOCK_FILE}" 2>/dev/null || true
-  printf '%s\n' "${BASHPID}" >&"${LOCK_FD}" 2>/dev/null || true
 }
 
 # Only the process that took the lock drops it. The kernel also drops it when
 # this process exits, so a crashed or killed invocation never leaves a stuck
-# lock behind.
+# lock behind. The pid line is blanked before the unlock: blanking it afterwards
+# could erase the pid of a holder that acquired the lock in between.
 release_lock() {
   if [[ -n ${LOCK_HELD} && ${LOCK_OWNER_PID:-} == "${BASHPID}" ]]; then
+    write_lock_pid ""
     flock --unlock "${LOCK_FD}" >/dev/null 2>&1 || true
     exec {LOCK_FD}>&-
     LOCK_HELD=""
     LOCK_OWNER_PID=""
-    : >"${LOCK_FILE}" 2>/dev/null || true
   fi
 }
 
@@ -220,14 +267,17 @@ remove_data_dir() {
   if ! docker run --rm --user 0 --network none --entrypoint /bin/sh \
     --mount "type=bind,source=${root}/${DATA_DIR_NAME},target=/pgdata" \
     "${IMAGE_REFERENCE}" -c 'find /pgdata -mindepth 1 -delete' >/dev/null; then
-    log "error: could not clear ${root}/${DATA_DIR_NAME}"
+    log "warning: could not clear ${root}/${DATA_DIR_NAME} from a throwaway container"
     return 1
   fi
   return 0
 }
 
-# Removes one private directory and reports every step that failed instead of
-# returning success for a directory that is still there.
+# Removes one private directory. Success is decided by the end state, not by the
+# steps along the way: the throwaway-container clear can fail on a hiccup, or on a
+# pgdata the invoking user may delete anyway, and the plain removal that follows is
+# the belt and braces for exactly that. Only a path that is still there is a
+# failure, so a clean end state is never reported as a leftover.
 remove_private_dir() {
   local dir=$1 base run_id failed=0
   base=$(basename -- "${dir}")
@@ -238,12 +288,11 @@ remove_private_dir() {
     log "error: refusing to remove unexpected path: ${dir}"
     return 1
   fi
-  remove_data_dir "${dir}" || failed=1
+  remove_data_dir "${dir}" || true
   if [[ -e ${dir} ]]; then
     log "removing private directory ${dir}"
     if ! rm -rf -- "${dir}"; then
       log "error: could not remove ${dir}"
-      failed=1
     fi
   fi
   if [[ -e ${dir} ]]; then
@@ -539,9 +588,9 @@ all_run_ids() {
 
 # Removes one run by name. Container and network are addressed by the exact
 # names derived from the validated run id, so teardown works even when the
-# manifest or the private directory never got written. Every step is checked:
-# the function reports what could not be removed and returns non-zero, so a
-# caller can never turn an incomplete cleanup into a success.
+# manifest or the private directory never got written. Every step is checked and
+# returns non-zero so a caller can tell that this pass did not finish the job; the
+# caller decides the verdict from the re-check that follows its retry pass.
 remove_run() {
   local run_id=$1 root net ctr failed=0
   run_id_valid "${run_id}" || die "refusing to remove unknown run id: ${run_id}"
@@ -643,7 +692,7 @@ cmd_down() {
   require_docker
   acquire_lock
   local -a run_ids=()
-  local arg run_id dir base name listing failed=0
+  local arg run_id dir base name listing remaining=0
   if [[ $# -gt 0 ]]; then
     for arg in "$@"; do
       if [[ -d ${arg} && ${arg} == "${STATE_ROOT}/${RUN_PREFIX}-"* ]]; then
@@ -662,7 +711,9 @@ cmd_down() {
   fi
 
   for run_id in "${run_ids[@]}"; do
-    remove_run "${run_id}" || failed=1
+    # A failure here is retried by the leftover passes below, so the verdict is
+    # the re-check at the end, not this step.
+    remove_run "${run_id}" || true
   done
 
   # Belt and braces for a crashed up, with exact ownership only: an object is
@@ -672,28 +723,24 @@ cmd_down() {
   if ! listing=$(fixture_container_names); then
     log "error: could not enumerate fixture containers"
     listing=""
-    failed=1
   fi
   while IFS= read -r name; do
     [[ -n ${name} ]] || continue
     log "removing leftover fixture container ${name}"
     if ! docker rm --force "${name}" >/dev/null; then
       log "error: could not remove container ${name}"
-      failed=1
     fi
   done <<<"${listing}"
 
   if ! listing=$(fixture_network_names); then
     log "error: could not enumerate fixture networks"
     listing=""
-    failed=1
   fi
   while IFS= read -r name; do
     [[ -n ${name} ]] || continue
     log "removing leftover fixture network ${name}"
     if ! docker network rm "${name}" >/dev/null; then
       log "error: could not remove network ${name}"
-      failed=1
     fi
   done <<<"${listing}"
 
@@ -702,52 +749,60 @@ cmd_down() {
     base=$(basename -- "${dir}")
     [[ ${base} =~ ^${RUN_PREFIX}-[a-f0-9]{8}$ ]] || continue
     log "removing leftover private directory ${dir}"
-    remove_private_dir "${dir}" || failed=1
+    remove_private_dir "${dir}" || true
   done
 
+  # The end state decides the exit status. A step above that failed and left
+  # nothing behind is a clean teardown; anything still enumerable, or any
+  # enumeration that fails so that "clean" cannot be proved, is not.
   if ! listing=$(fixture_container_names); then
     log "error: could not re-check fixture containers after teardown"
-    listing=""
-    failed=1
-  fi
-  if [[ -n ${listing} ]]; then
+    remaining=1
+  elif [[ -n ${listing} ]]; then
     log "error: fixture containers remain: ${listing//$'\n'/, }"
-    failed=1
+    remaining=1
   fi
   if ! listing=$(fixture_network_names); then
     log "error: could not re-check fixture networks after teardown"
-    listing=""
-    failed=1
-  fi
-  if [[ -n ${listing} ]]; then
+    remaining=1
+  elif [[ -n ${listing} ]]; then
     log "error: fixture networks remain: ${listing//$'\n'/, }"
-    failed=1
+    remaining=1
   fi
   for dir in "${STATE_ROOT}/${RUN_PREFIX}-"*; do
     [[ -e ${dir} ]] || continue
     log "error: private path remains: ${dir}"
-    failed=1
+    remaining=1
   done
   release_lock
-  if ((failed)); then
+  if ((remaining)); then
     log "error: teardown incomplete: the fixture objects named above are still present"
     return 1
   fi
   log "teardown clean: no fixture container, network, private directory or manifest left"
 }
 
+# A signal can arrive while the fixture is still being created, when no
+# manifest path exists yet. Teardown therefore never depends on that path: with
+# it, exactly that run is removed, and without it `down` removes whatever this
+# invocation managed to create, so an interrupted creation cannot leave a
+# container, a network or a private directory behind.
 teardown_after_signal() {
   local signal=$1 status=130
   if [[ ${signal} == TERM ]]; then
     status=143
   fi
-  trap - INT TERM
+  trap - INT TERM EXIT
   log "received ${signal}; tearing the fixture down"
+  local cleaned=0
   if [[ -n ${RUN_MANIFEST} ]]; then
-    if ! cmd_down "${RUN_MANIFEST}"; then
-      log "error: teardown after ${signal} left fixture objects behind; run '$0 down' to finish it"
-      status=1
-    fi
+    cmd_down "${RUN_MANIFEST}" || cleaned=1
+  else
+    cmd_down || cleaned=1
+  fi
+  if ((cleaned)); then
+    log "error: teardown after ${signal} left fixture objects behind; run '$0 down' to finish it"
+    status=1
   fi
   release_lock
   exit "${status}"
@@ -766,6 +821,16 @@ cmd_run() {
   (
     scrub_pg_env
     export LUSON_TEST_PG_MANIFEST="${manifest}"
+    # The command must not inherit the lock descriptor. If the wrapper is killed
+    # while the command keeps running, an inherited copy of the descriptor would
+    # keep the flock held by that orphan and block every later up, down and run
+    # until it exits, which is exactly what the lock must never do.
+    if [[ -n ${LOCK_FD} ]]; then
+      exec {LOCK_FD}>&-
+      LOCK_FD=""
+      LOCK_HELD=""
+      LOCK_OWNER_PID=""
+    fi
     exec "$@"
   )
   status=$?
