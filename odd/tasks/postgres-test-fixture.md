@@ -32,7 +32,7 @@ S5. El costo de correrlo es acotado: levantar, correr los tests y bajar, sin pas
 | --- | --- | --- | --- |
 | T1 | S1-S3 | worker `gentle-ai-worker` | pending |
 | T2 | S1-S2 | worker `gentle-ai-worker` | pending |
-| T3 | S4-S5 | pending | pending |
+| T3 | S4-S5 | worker `gentle-ai-worker` | pending |
 
 T3 queda pendiente de una decisión del usuario: si el mismo fixture se cablea en el CI de
 GitHub o queda solo para local. No se implementa hasta que la respuesta exista.
@@ -66,3 +66,10 @@ distintas líneas, así que el review **no cerró y no hay recibo**. Se publica 
 evidencia disponible es: dos lentes en cero, controles negativos ida y vuelta de los cinco
 defectos, `make test-pg` verde (24/24) y verificación propia del caso de host limpio. Lo que falta
 es un veredicto, no una corrección conocida pendiente.
+
+L5 (T3, cableado en CI de GitHub — usuario: "dale vamos a hacer ese CI entonces"): el CI de hoy no
+corre ninguna suite de base, así que un PR que rompa una migración se pone verde igual. Restricción
+descubierta antes de empezar: `internal/testpg` exige `os.Getuid() == 1000` y `expected_uid: 1000`
+en el manifiesto, y el runner `ubuntu-latest` corre como uid 1001. El job no puede invocar
+`make test-pg` directamente: necesita una identidad de uid 1000 con acceso al socket de Docker, o
+el equivalente. No se relaja `internal/testpg`: falla cerrado y eso es el valor.
