@@ -73,3 +73,18 @@ descubierta antes de empezar: `internal/testpg` exige `os.Getuid() == 1000` y `e
 en el manifiesto, y el runner `ubuntu-latest` corre como uid 1001. El job no puede invocar
 `make test-pg` directamente: necesita una identidad de uid 1000 con acceso al socket de Docker, o
 el equivalente. No se relaja `internal/testpg`: falla cerrado y eso es el valor.
+
+L6 (T3 cerrada): el CI corre el fixture y está verde. Run 42415831575 en `e2bcc41`: `frontend`,
+`go` y `go-postgresql` en success. Costó cinco intentos, y cada fallo fue información nueva:
+
+1. uid 1000 ya lo ocupa `packer` en el runner → se le da a esa identidad el `/home/luis` que la
+   admisión espera, sin falsear dueño ni relajar `internal/testpg`.
+2. el paso hacía `cd` como usuario `runner` a un home 0700 de uid 1000 → entrar al directorio ya
+   como la identidad correcta.
+3. `jq 1.7` rechaza una comparación como valor de objeto y `jq 1.8` la acepta: **bug real del
+   script**, que solo el runner podía revelar. Parentizada.
+4. `TestR01AdmissionPostgres` necesita un catálogo quieto: sondea 150×100ms y en el runner nunca
+   hubo un hueco con paquetes creando bases en paralelo. La causa se verificó leyendo el test, no
+   se asumió, y se reprodujo local con 12 binarios compitiendo. Se arregla por scheduling (la
+   admisión sola primero, el resto después, un solo ciclo de fixture), sin tocar la aserción:
+   `internal/testpg` quedó byte-idéntico.
