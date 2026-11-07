@@ -12,6 +12,15 @@
 # that actually exist. Nothing here relaxes the admission, touches product code,
 # runs migrations or reuses the development database.
 #
+# Teardown only addresses objects that are provably this fixture's own: the
+# exact generated name (<prefix>-<run_id>-pg|-net) or the full fixed label set.
+# A Docker object whose name merely contains the prefix is never removed.
+#
+# One fixture at a time is enforced with an advisory lock file held for the whole
+# creating or removing command, so two concurrent invocations cannot race into
+# separate run ids. A failed removal is reported and makes the command exit
+# non-zero instead of being logged and forgotten.
+#
 # ODD task: odd/tasks/postgres-test-fixture.md (S1-S3, T1-T2).
 #
 # Commands:
@@ -25,6 +34,7 @@ readonly IMAGE_REFERENCE=postgres:17.9-bookworm
 readonly STATE_ROOT="${HOME}/.local/share"
 readonly RUN_PREFIX=luson-transfer-tests
 readonly RUN_ID_RE='^[a-f0-9]{8}$'
+readonly LOCK_FILE="${STATE_ROOT}/${RUN_PREFIX}.lock"
 readonly MANIFEST_NAME=manifest.json
 readonly DSN_NAME=admin-dsn
 readonly SECRET_NAME=pg-password
@@ -37,7 +47,6 @@ readonly DATA_DIR_MODE=700
 readonly SECRET_FILE_MODE=600
 readonly HEALTH_ATTEMPTS=120
 readonly HEALTH_RETRIES=30
-readonly LIFECYCLE_LABEL=luson.purpose=go-postgresql-tests
 
 # The exact label set the admission compares with reflect.DeepEqual. Order is
 # irrelevant for Docker, but every pair is mandatory and no extra pair is legal.
@@ -74,6 +83,50 @@ require_commands() {
   require_command jq
   require_command od
   require_command stat
+}
+
+# LOCK_HELD is inherited by subshells and children: a subshell never takes the
+# lock again and never drops the lock its parent is holding. Ownership is tracked
+# by BASHPID, not $$, because a command-substitution subshell keeps the parent's
+# $$ and would otherwise release the parent's lock.
+LOCK_FD=""
+LOCK_HELD=""
+LOCK_OWNER_PID=""
+
+# One fixture at a time, enforced by the kernel instead of by a leftover check
+# that two racing invocations can both pass. Every command that creates or
+# removes objects holds this lock while it does so; a second invocation fails
+# fast instead of inventing a second run id.
+acquire_lock() {
+  if [[ -n ${LOCK_HELD} ]]; then
+    return 0
+  fi
+  require_command flock
+  exec {LOCK_FD}>"${LOCK_FILE}" ||
+    die "cannot open the fixture lock file ${LOCK_FILE}"
+  if ! flock --nonblock "${LOCK_FD}"; then
+    local holder=""
+    holder=$(cat -- "${LOCK_FILE}" 2>/dev/null) || holder=""
+    exec {LOCK_FD}>&-
+    die "another fixture invocation is active${holder:+ (pid ${holder})}; wait for it to finish or inspect it with '$0 status'"
+  fi
+  LOCK_HELD=1
+  LOCK_OWNER_PID=${BASHPID}
+  chmod "${SECRET_FILE_MODE}" -- "${LOCK_FILE}" 2>/dev/null || true
+  printf '%s\n' "${BASHPID}" >&"${LOCK_FD}" 2>/dev/null || true
+}
+
+# Only the process that took the lock drops it. The kernel also drops it when
+# this process exits, so a crashed or killed invocation never leaves a stuck
+# lock behind.
+release_lock() {
+  if [[ -n ${LOCK_HELD} && ${LOCK_OWNER_PID:-} == "${BASHPID}" ]]; then
+    flock --unlock "${LOCK_FD}" >/dev/null 2>&1 || true
+    exec {LOCK_FD}>&-
+    LOCK_HELD=""
+    LOCK_OWNER_PID=""
+    : >"${LOCK_FILE}" 2>/dev/null || true
+  fi
 }
 
 new_run_id() {
@@ -133,7 +186,7 @@ prepare_data_dir() {
   install_private_dir "${pgdata}"
   docker run --rm --user 0 --network none --entrypoint /bin/sh \
     --mount "type=bind,source=${pgdata},target=/pgdata" \
-    "${IMAGE_REFERENCE}" -c 'chown 999:999 /pgdata && chmod 700 /pgdata'
+    "${IMAGE_REFERENCE}" -c 'chown 999:999 /pgdata && chmod 700 /pgdata' >/dev/null
   owner=$(stat -c '%u:%a' -- "${pgdata}")
   [[ ${owner} == "${DATA_DIR_UID}:${DATA_DIR_MODE}" ]] ||
     die "pgdata metadata is ${owner}, expected ${DATA_DIR_UID}:${DATA_DIR_MODE}"
@@ -163,10 +216,41 @@ remove_data_dir() {
   if [[ ! -d ${root}/${DATA_DIR_NAME} ]]; then
     return 0
   fi
-  docker run --rm --user 0 --network none --entrypoint /bin/sh \
+  log "clearing ${root}/${DATA_DIR_NAME}"
+  if ! docker run --rm --user 0 --network none --entrypoint /bin/sh \
     --mount "type=bind,source=${root}/${DATA_DIR_NAME},target=/pgdata" \
-    "${IMAGE_REFERENCE}" -c 'find /pgdata -mindepth 1 -delete' ||
-    log "warning: could not clear ${root}/${DATA_DIR_NAME} contents"
+    "${IMAGE_REFERENCE}" -c 'find /pgdata -mindepth 1 -delete' >/dev/null; then
+    log "error: could not clear ${root}/${DATA_DIR_NAME}"
+    return 1
+  fi
+  return 0
+}
+
+# Removes one private directory and reports every step that failed instead of
+# returning success for a directory that is still there.
+remove_private_dir() {
+  local dir=$1 base run_id failed=0
+  base=$(basename -- "${dir}")
+  run_id=${base#"${RUN_PREFIX}"-}
+  if [[ ${dir} != "${STATE_ROOT}/${RUN_PREFIX}-"* ]] ||
+    ! run_id_valid "${run_id}" ||
+    [[ ${dir} != "$(fixture_root "${run_id}")" ]]; then
+    log "error: refusing to remove unexpected path: ${dir}"
+    return 1
+  fi
+  remove_data_dir "${dir}" || failed=1
+  if [[ -e ${dir} ]]; then
+    log "removing private directory ${dir}"
+    if ! rm -rf -- "${dir}"; then
+      log "error: could not remove ${dir}"
+      failed=1
+    fi
+  fi
+  if [[ -e ${dir} ]]; then
+    log "error: private path still exists: ${dir}"
+    failed=1
+  fi
+  return ${failed}
 }
 
 create_container() {
@@ -189,13 +273,30 @@ create_container() {
 }
 
 wait_healthy() {
-  local ctr=$1 attempt state
+  local ctr=$1 attempt state streak detail line raw
   for ((attempt = 0; attempt < HEALTH_ATTEMPTS; attempt++)); do
     state=$(docker inspect --format \
       '{{if .State.Running}}{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}{{else}}not-running{{end}}' \
       "${ctr}" 2>/dev/null) || state=missing
     case ${state} in
       healthy) return 0 ;;
+      unhealthy)
+        # Docker only says unhealthy after HEALTH_RETRIES failed checks. Waiting
+        # out the whole HEALTH_ATTEMPTS budget would hide the diagnosis for two
+        # more minutes, so fail now and say what the health check reported.
+        streak=$(docker inspect --format '{{.State.Health.FailingStreak}}' "${ctr}" 2>/dev/null) ||
+          streak="unknown"
+        raw=$(docker inspect --format '{{json .State.Health}}' "${ctr}" 2>/dev/null |
+          jq --raw-output '[.Log[]?.Output // ""] | map(select(. != "")) | last // ""' 2>/dev/null) ||
+          raw=""
+        detail=""
+        while IFS= read -r line; do
+          line=${line%$'\r'}
+          [[ -n ${line} ]] || continue
+          detail=${line}
+        done <<<"${raw}"
+        die "container ${ctr} reported unhealthy (failing_streak=${streak}): ${detail:-no health check output}"
+        ;;
       not-running | missing | no-healthcheck)
         die "container ${ctr} cannot report healthy state (${state})"
         ;;
@@ -349,18 +450,65 @@ verify_fixture() {
   [[ $(stat -c '%s' -- "${manifest}") -le 32768 ]] || die "manifest exceeds the admission limit"
 }
 
-fixture_containers() {
-  {
-    docker ps --all --quiet --filter "label=${LIFECYCLE_LABEL}"
-    docker ps --all --quiet --filter "name=${RUN_PREFIX}-"
-  } | sort -u
+# Ownership, never name containment. An object belongs to the fixture only when
+# its generated name is exact for its kind, or when it carries the full fixed
+# label set (Docker ANDs repeated label filters, so all five pairs must match).
+# An unrelated object whose name merely contains the prefix is never a target.
+exact_generated_name() {
+  local kind=$1 name=$2
+  case ${kind} in
+    container) [[ ${name} =~ ^${RUN_PREFIX}-[a-f0-9]{8}-pg$ ]] ;;
+    network) [[ ${name} =~ ^${RUN_PREFIX}-[a-f0-9]{8}-net$ ]] ;;
+    *) return 1 ;;
+  esac
 }
 
-fixture_networks() {
-  {
-    docker network ls --quiet --filter "label=${LIFECYCLE_LABEL}"
-    docker network ls --quiet --filter "name=${RUN_PREFIX}-"
-  } | sort -u
+fixture_label_filters() {
+  local -n out=$1
+  local label
+  out=()
+  for label in "${FIXTURE_LABELS[@]}"; do
+    out+=(--filter "label=${label}")
+  done
+}
+
+fixture_container_names() {
+  local -a filters=() names=()
+  local labelled all name
+  fixture_label_filters filters
+  labelled=$(docker ps --all --format '{{.Names}}' "${filters[@]}") || return 1
+  all=$(docker ps --all --format '{{.Names}}') || return 1
+  while IFS= read -r name; do
+    name=${name%%,*}
+    [[ -n ${name} ]] || continue
+    names+=("${name}")
+  done <<<"${labelled}"
+  while IFS= read -r name; do
+    [[ -n ${name} ]] || continue
+    exact_generated_name container "${name}" || continue
+    names+=("${name}")
+  done <<<"${all}"
+  ((${#names[@]})) || return 0
+  printf '%s\n' "${names[@]}" | sort -u
+}
+
+fixture_network_names() {
+  local -a filters=() names=()
+  local labelled all name
+  fixture_label_filters filters
+  labelled=$(docker network ls --format '{{.Name}}' "${filters[@]}") || return 1
+  all=$(docker network ls --format '{{.Name}}') || return 1
+  while IFS= read -r name; do
+    [[ -n ${name} ]] || continue
+    names+=("${name}")
+  done <<<"${labelled}"
+  while IFS= read -r name; do
+    [[ -n ${name} ]] || continue
+    exact_generated_name network "${name}" || continue
+    names+=("${name}")
+  done <<<"${all}"
+  ((${#names[@]})) || return 0
+  printf '%s\n' "${names[@]}" | sort -u
 }
 
 run_ids_from_names() {
@@ -373,7 +521,7 @@ run_ids_from_names() {
 }
 
 all_run_ids() {
-  local dir base name
+  local dir base
   {
     for dir in "${STATE_ROOT}/${RUN_PREFIX}-"*; do
       [[ -d ${dir} ]] || continue
@@ -382,18 +530,20 @@ all_run_ids() {
         printf '%s\n' "${BASH_REMATCH[1]}"
       fi
     done
-    local -a containers=() networks=()
-    mapfile -t containers < <(docker ps --all --format '{{.Names}}')
-    mapfile -t networks < <(docker network ls --format '{{.Name}}')
-    run_ids_from_names "${containers[@]}" "${networks[@]}"
+    local -a objects=() networks=()
+    mapfile -t objects < <(fixture_container_names)
+    mapfile -t networks < <(fixture_network_names)
+    run_ids_from_names "${objects[@]}" "${networks[@]}"
   } | sort -u
 }
 
-# Removes one run by name. Container and network are addressed by the names
-# derived from the validated run id, so teardown works even when the manifest
-# or the private directory never got written.
+# Removes one run by name. Container and network are addressed by the exact
+# names derived from the validated run id, so teardown works even when the
+# manifest or the private directory never got written. Every step is checked:
+# the function reports what could not be removed and returns non-zero, so a
+# caller can never turn an incomplete cleanup into a success.
 remove_run() {
-  local run_id=$1 root net ctr
+  local run_id=$1 root net ctr failed=0
   run_id_valid "${run_id}" || die "refusing to remove unknown run id: ${run_id}"
   root=$(fixture_root "${run_id}")
   net=$(network_name "${run_id}")
@@ -403,33 +553,45 @@ remove_run() {
 
   if docker container inspect "${ctr}" >/dev/null 2>&1; then
     log "removing container ${ctr}"
-    docker rm --force "${ctr}" >/dev/null
+    if ! docker rm --force "${ctr}" >/dev/null; then
+      log "error: could not remove container ${ctr}"
+      failed=1
+    fi
   fi
   if docker network inspect "${net}" >/dev/null 2>&1; then
     log "removing network ${net}"
-    docker network rm "${net}" >/dev/null
+    if ! docker network rm "${net}" >/dev/null; then
+      log "error: could not remove network ${net}"
+      failed=1
+    fi
   fi
   if [[ -e ${root} ]]; then
-    log "removing private directory ${root}"
-    remove_data_dir "${root}"
-    rm -rf -- "${root}" || log "warning: could not remove ${root}"
+    remove_private_dir "${root}" || failed=1
   fi
+  return ${failed}
 }
 
 abort_up() {
   local status=$?
+  trap - EXIT INT TERM
   if [[ -n ${ACTIVE_RUN_ID} ]]; then
-    trap - EXIT INT TERM
     log "up failed (exit ${status}); removing partial fixture ${ACTIVE_RUN_ID}"
-    remove_run "${ACTIVE_RUN_ID}" || log "warning: partial cleanup was incomplete"
+    if ! remove_run "${ACTIVE_RUN_ID}"; then
+      log "error: partial cleanup of ${ACTIVE_RUN_ID} is incomplete; run '$0 down ${ACTIVE_RUN_ID}' to finish it"
+      if ((status == 0)); then
+        status=1
+      fi
+    fi
     ACTIVE_RUN_ID=""
   fi
-  return "${status}"
+  release_lock
+  exit "${status}"
 }
 
 cmd_up() {
   require_docker
   require_commands
+  acquire_lock
 
   local pending
   pending=$(pg_env_names)
@@ -438,10 +600,12 @@ cmd_up() {
   fi
 
   local leftovers
-  leftovers=$(fixture_containers)
-  [[ -z ${leftovers} ]] || die "a fixture container already exists; run '$0 down' first"
-  leftovers=$(fixture_networks)
-  [[ -z ${leftovers} ]] || die "a fixture network already exists; run '$0 down' first"
+  leftovers=$(fixture_container_names) || die "could not enumerate fixture containers"
+  [[ -z ${leftovers} ]] ||
+    die "a fixture container already exists (${leftovers//$'\n'/, }); run '$0 down' first"
+  leftovers=$(fixture_network_names) || die "could not enumerate fixture networks"
+  [[ -z ${leftovers} ]] ||
+    die "a fixture network already exists (${leftovers//$'\n'/, }); run '$0 down' first"
 
   local run_id root net ctr password ip dsn
   run_id=$(new_run_id)
@@ -471,13 +635,15 @@ cmd_up() {
   trap - EXIT INT TERM
   ACTIVE_RUN_ID=""
   log "fixture ${run_id} is ready on ${net} (unpublished, internal)"
+  release_lock
   printf '%s\n' "${root}/${MANIFEST_NAME}"
 }
 
 cmd_down() {
   require_docker
+  acquire_lock
   local -a run_ids=()
-  local arg run_id dir base
+  local arg run_id dir base name listing failed=0
   if [[ $# -gt 0 ]]; then
     for arg in "$@"; do
       if [[ -d ${arg} && ${arg} == "${STATE_ROOT}/${RUN_PREFIX}-"* ]]; then
@@ -496,57 +662,106 @@ cmd_down() {
   fi
 
   for run_id in "${run_ids[@]}"; do
-    remove_run "${run_id}"
+    remove_run "${run_id}" || failed=1
   done
 
-  # Belt and braces: anything still carrying the fixture labels or the fixture
-  # name prefix is removed too, so a crashed up cannot leak an object.
-  local -a ids=()
-  mapfile -t ids < <(fixture_containers)
-  if ((${#ids[@]})); then
-    log "removing ${#ids[@]} leftover fixture container(s)"
-    docker rm --force "${ids[@]}" >/dev/null
+  # Belt and braces for a crashed up, with exact ownership only: an object is
+  # removed because its generated name is exact for its kind or because it
+  # carries the full fixture label set, never because its name contains the
+  # prefix.
+  if ! listing=$(fixture_container_names); then
+    log "error: could not enumerate fixture containers"
+    listing=""
+    failed=1
   fi
-  mapfile -t ids < <(fixture_networks)
-  if ((${#ids[@]})); then
-    log "removing ${#ids[@]} leftover fixture network(s)"
-    docker network rm "${ids[@]}" >/dev/null
+  while IFS= read -r name; do
+    [[ -n ${name} ]] || continue
+    log "removing leftover fixture container ${name}"
+    if ! docker rm --force "${name}" >/dev/null; then
+      log "error: could not remove container ${name}"
+      failed=1
+    fi
+  done <<<"${listing}"
+
+  if ! listing=$(fixture_network_names); then
+    log "error: could not enumerate fixture networks"
+    listing=""
+    failed=1
   fi
+  while IFS= read -r name; do
+    [[ -n ${name} ]] || continue
+    log "removing leftover fixture network ${name}"
+    if ! docker network rm "${name}" >/dev/null; then
+      log "error: could not remove network ${name}"
+      failed=1
+    fi
+  done <<<"${listing}"
+
   for dir in "${STATE_ROOT}/${RUN_PREFIX}-"*; do
     [[ -d ${dir} ]] || continue
     base=$(basename -- "${dir}")
-    if [[ ${base} =~ ^${RUN_PREFIX}-[a-f0-9]{8}$ ]]; then
-      log "removing leftover private directory ${dir}"
-      remove_data_dir "${dir}"
-      rm -rf -- "${dir}" || log "warning: could not remove ${dir}"
-    fi
+    [[ ${base} =~ ^${RUN_PREFIX}-[a-f0-9]{8}$ ]] || continue
+    log "removing leftover private directory ${dir}"
+    remove_private_dir "${dir}" || failed=1
   done
 
-  local dirty=0
-  if [[ -n $(fixture_containers) ]]; then
-    log "error: fixture containers remain"
-    dirty=1
+  if ! listing=$(fixture_container_names); then
+    log "error: could not re-check fixture containers after teardown"
+    listing=""
+    failed=1
   fi
-  if [[ -n $(fixture_networks) ]]; then
-    log "error: fixture networks remain"
-    dirty=1
+  if [[ -n ${listing} ]]; then
+    log "error: fixture containers remain: ${listing//$'\n'/, }"
+    failed=1
+  fi
+  if ! listing=$(fixture_network_names); then
+    log "error: could not re-check fixture networks after teardown"
+    listing=""
+    failed=1
+  fi
+  if [[ -n ${listing} ]]; then
+    log "error: fixture networks remain: ${listing//$'\n'/, }"
+    failed=1
   fi
   for dir in "${STATE_ROOT}/${RUN_PREFIX}-"*; do
     [[ -e ${dir} ]] || continue
     log "error: private path remains: ${dir}"
-    dirty=1
+    failed=1
   done
-  if ((dirty)); then
+  release_lock
+  if ((failed)); then
+    log "error: teardown incomplete: the fixture objects named above are still present"
     return 1
   fi
   log "teardown clean: no fixture container, network, private directory or manifest left"
 }
 
+teardown_after_signal() {
+  local signal=$1 status=130
+  if [[ ${signal} == TERM ]]; then
+    status=143
+  fi
+  trap - INT TERM
+  log "received ${signal}; tearing the fixture down"
+  if [[ -n ${RUN_MANIFEST} ]]; then
+    if ! cmd_down "${RUN_MANIFEST}"; then
+      log "error: teardown after ${signal} left fixture objects behind; run '$0 down' to finish it"
+      status=1
+    fi
+  fi
+  release_lock
+  exit "${status}"
+}
+
 cmd_run() {
   [[ $# -gt 0 ]] || die "run needs a command, for example: run -- go test ./..."
-  local manifest status
+  local manifest status teardown_failed=0
+  acquire_lock
+  RUN_MANIFEST=""
+  trap 'teardown_after_signal INT' INT
+  trap 'teardown_after_signal TERM' TERM
   manifest=$(cmd_up)
-  trap 'cmd_down "${manifest}" >/dev/null 2>&1 || true' INT TERM
+  RUN_MANIFEST=${manifest}
   set +e
   (
     scrub_pg_env
@@ -556,7 +771,16 @@ cmd_run() {
   status=$?
   set -e
   trap - INT TERM
-  cmd_down "${manifest}" || log "warning: teardown reported leftovers"
+  if ! cmd_down "${manifest}"; then
+    teardown_failed=1
+  fi
+  release_lock
+  if ((teardown_failed)); then
+    log "error: the fixture teardown failed, so this run cannot report success (the command exited ${status})"
+    if ((status == 0)); then
+      status=1
+    fi
+  fi
   return "${status}"
 }
 
@@ -603,14 +827,25 @@ commands:
                        LUSON_TEST_PG_MANIFEST for the test run
   down [run-id...]     remove the fixture container, network, private directory
                        and manifest; with no argument removes every fixture
+                       run found on this host
   run -- <command>     bring the fixture up, run <command> with
                        LUSON_TEST_PG_MANIFEST exported and every PG* variable
-                       unset, then always tear the fixture down
+                       unset, then always tear the fixture down (a teardown
+                       failure makes the run exit non-zero)
   status               report fixture containers, networks and manifests
 
 environment:
   HOME                 fixture state lives in
                        $HOME/.local/share/luson-transfer-tests-<run_id>/
+                       and the advisory lock file
+                       $HOME/.local/share/luson-transfer-tests.lock
+
+Only one fixture command runs at a time: up, down and run take an advisory
+lock for the whole creating or removing step, so a second concurrent
+invocation fails fast instead of racing into a second run id. Teardown only
+removes objects with the exact generated name or the full fixture label set;
+an object whose name merely contains the prefix is never touched. A removal
+that fails is reported as an error and makes the command exit non-zero.
 
 The fixture never uses sudo, never publishes a port, never reuses the
 development database and never touches apps/api/internal/testpg.
@@ -641,4 +876,5 @@ main() {
 }
 
 ACTIVE_RUN_ID=""
+RUN_MANIFEST=""
 main "$@"

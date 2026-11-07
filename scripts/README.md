@@ -32,17 +32,27 @@ See `apps/api/docs/testing.md` for the test-side rules.
 5. Starts `luson-transfer-tests-<run_id>-pg` from `postgres:17.9-bookworm` on
    that network only, with `pgdata` bound `rw`/`rprivate` and the password file
    bound read-only from the private directory.
-6. Waits for the container health check (`pg_isready`).
+6. Waits for the container health check (`pg_isready`). A container Docker marks
+   `unhealthy` fails the command immediately, with the last health-check output,
+   instead of burning the 120 second budget; a container that stops or never
+   reports health fails at once too.
 7. Reads the real network and container back with `docker inspect` and writes
    `manifest.json` (`0600`) with the real network id, container id, image id,
    IPAM, labels, mount and address. `admin-dsn` (`0600`, owner 1000) holds the
    `postgres://` URL for the admin database and role.
 8. Re-checks every fact the admission validates before it prints the manifest
    path. On any failure it removes the partial container, network and
-   directory, so a failed `up` leaves nothing behind.
+   directory, so a failed `up` leaves nothing behind — and if that cleanup
+   itself fails, it says what remains, names the `run_id` and exits non-zero
+   instead of only reporting the original error.
 
 `up` refuses to start while another fixture exists, so two runs can never share
-or orphan objects: finish with `down` first.
+or orphan objects: finish with `down` first. That refusal is not a racy check:
+`up`, `down` and `run` hold an advisory lock on
+`$HOME/.local/share/luson-transfer-tests.lock` for the whole creating or
+removing step, so a second concurrent invocation fails fast instead of inventing
+a second run id. The lock lives in the kernel, so a crashed or killed invocation
+never leaves it stuck.
 
 `up` prints only the manifest path on standard output; diagnostics go to
 standard error:
@@ -55,9 +65,20 @@ export LUSON_TEST_PG_MANIFEST=$(./scripts/test-pg-fixture.sh up)
 
 `down` removes the container, the network, the private directory and the
 manifest for every fixture run it finds, including a run whose `up` crashed
-before writing a manifest (objects are addressed by the names derived from the
-validated run id, plus the fixed labels). It then asserts that no fixture
-container, network or directory remains and exits non-zero if one does.
+before writing a manifest: objects are addressed by the names derived from the
+validated run id, or by the full fixed label set.
+
+Removal targets are exact. An object is removed only when its generated name is
+exactly `luson-transfer-tests-<run_id>-pg` / `-net` for a validated `run_id`, or
+when it carries all five fixture labels. A Docker object whose name merely
+*contains* the fixture prefix is never touched.
+
+`down` takes the same advisory lock, so it cannot run while another `run` holds
+the fixture, and it never reaches another run's objects.
+
+Every removal step is checked. If Docker refuses to remove a container or a
+network, or a private path cannot be deleted, `down` reports exactly what is
+still present and exits non-zero; it never logs a warning and reports success.
 
 ### What `run` does
 
@@ -66,11 +87,16 @@ variable, exports `LUSON_TEST_PG_MANIFEST` and executes the command. It tears
 the fixture down afterwards even when the command fails or is interrupted, and
 returns the command's exit status.
 
+A teardown failure is never swallowed: `run` names the leftovers and exits
+non-zero even when the command itself succeeded, so `make test-pg` cannot report
+success while the fixture container, network or private directory is still
+there.
+
 ### Requirements and safety
 
 - Docker reachable by the current user, without `sudo`. The script never calls
   `sudo`.
-- `jq`, `od` and `stat` (coreutils).
+- `jq`, `od`, `stat` (coreutils) and `flock` (util-linux).
 - The image `postgres:17.9-bookworm` must be present locally; the script never
   pulls anything.
 - Everything else is created fresh and removed again: no volume, no published
@@ -89,5 +115,9 @@ returns the command's exit status.
 | `.../pg-password` | `0600`, 1000 | random admin password |
 | `.../admin-dsn` | `0600`, 1000 | admin connection URL |
 | `.../manifest.json` | `0600`, 1000 | versioned fixture manifest |
+| `$HOME/.local/share/luson-transfer-tests.lock` | `0600` | advisory lock (`flock`) |
 
-Nothing is written inside the repository.
+Nothing is written inside the repository. The lock file holds the pid of the
+current holder and is emptied when the command releases it; the lock itself is
+kernel state, so it cannot go stale and a killed invocation never blocks the
+next one.
