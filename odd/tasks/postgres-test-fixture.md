@@ -55,3 +55,14 @@ L3 (motivo): los dos defectos de la vertical de catálogo que solo encontró el 
 —una función reemplazada que perdió una inserción de realtime y un check desalineado con su
 fan-out— los habría cazado un test PostgreSQL en segundos. Mientras el fixture no exista, la
 red de seguridad de las migraciones depende del review y de la lectura humana.
+
+L4 (estado del review de este fixture, honesto): el hardening v1 (`4af6fe0`) fue revisado y el
+provider devolvió `escalated` con **cuatro hallazgos severos corroborados** por el refuter (lock
+abierto antes de crear su directorio, descriptor heredado al hijo de `run`, traps instalados antes
+de conocer el manifiesto, y `failed` pegajoso). Los cinco se corrigieron en `be30a76`. Ese segundo
+hardening no tiene veredicto completo: `risk` y `resilience` devolvieron **cero hallazgos**, pero
+el lente `reliability` falló cuatro veces por truncamiento del transporte a lo largo de las
+distintas líneas, así que el review **no cerró y no hay recibo**. Se publica igual porque la
+evidencia disponible es: dos lentes en cero, controles negativos ida y vuelta de los cinco
+defectos, `make test-pg` verde (24/24) y verificación propia del caso de host limpio. Lo que falta
+es un veredicto, no una corrección conocida pendiente.
