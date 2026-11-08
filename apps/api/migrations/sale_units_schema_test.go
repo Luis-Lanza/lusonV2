@@ -93,6 +93,22 @@ func TestSaleUnitSchemaStructure(t *testing.T) {
 			t.Errorf("a sold unit must never depend on %s", forbidden)
 		}
 	}
+	// S7: there is nothing to migrate, so the unit migration moves no data at all. This is
+	// the migration's own statements, not the bodies of the guards it installs: a guard
+	// reads the tables it judges, while a statement outside a body is what the migration
+	// itself executes against stored data.
+	data := topLevelStatements(sql)
+	for _, forbidden := range []string{"INSERT INTO", "UPDATE sale_units", "SELECT", "VALUES("} {
+		if strings.Contains(data, forbidden) {
+			t.Errorf("the unit migration must move no data: %s", forbidden)
+		}
+	}
+	// The guard is proven able to fail on a document that does backfill: a function body is
+	// dropped, a statement beside it is not.
+	composed := topLevelStatements("CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$\nBEGIN SELECT 1; END;\n$$;\nINSERT INTO sale_units VALUES (1,1,1,'X',NULL);")
+	if !strings.Contains(composed, "INSERT INTO") || strings.Contains(composed, "SELECT 1") {
+		t.Fatalf("the no-backfill guard must read statements outside a function body: %q", composed)
+	}
 	// The valuable window is closed in the only order that keeps the promise stored:
 	// the unit table exists before the line loses its term.
 	if first, second := strings.Index(sql, "CREATE TABLE sale_units"), strings.Index(sql, "DROP COLUMN warranty_months"); first < 0 || second < 0 || first > second {
@@ -118,6 +134,31 @@ func TestSaleUnitSchemaStructure(t *testing.T) {
 	for _, documented := range []string{"sale_units", "NULL means", "one physical battery cannot be sold twice"} {
 		if !strings.Contains(string(b), documented) {
 			t.Errorf("the migration must document its own decision: %s", documented)
+		}
+	}
+}
+
+// topLevelStatements drops the dollar-quoted bodies of the guards the migration installs,
+// so a rule about the migration's own statements is never satisfied or tripped by the body
+// of a trigger function: those bodies run on later writes, not while the migration applies.
+func topLevelStatements(sql string) string {
+	var kept strings.Builder
+	inside := false
+	for {
+		switch index := strings.Index(sql, "$$"); {
+		case index < 0:
+			if !inside {
+				kept.WriteString(sql)
+			}
+			return kept.String()
+		case inside:
+			inside = false
+			sql = sql[index+2:]
+		default:
+			inside = true
+			kept.WriteString(sql[:index])
+			kept.WriteString("\n")
+			sql = sql[index+2:]
 		}
 	}
 }
