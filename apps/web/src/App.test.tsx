@@ -1752,7 +1752,8 @@ describe('branch point of sale and its history', () => {
       suggested_price: '96000.00', min_price: '85000.00' }] });
   const historyPage = JSON.stringify({ page: 1, page_size: 10, total_sales: 1, sales: [
     { id: 1, branch_sequence: 126, warranty_number: '2-000126', payment_method: 'cash',
-      customer_name: 'Marta Giménez', total: '96000.00', created_at: '2026-11-04T17:42:00Z', lines: 1 }] });
+      customer_name: 'Marta Giménez', total: '96000.00', created_at: '2026-11-04T17:42:00Z', lines: 1,
+      units_total: 1, units_with_warranty: 1 }] });
   const salesCalls = (mock: ReturnType<typeof setup>) =>
     mock.mock.calls.filter(([url]) => String(url).startsWith('/api/sales'));
   const branchSetup = () => setup(branchSession, url => url.startsWith('/api/sales/sellable?')

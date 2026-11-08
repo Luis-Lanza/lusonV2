@@ -1,8 +1,9 @@
 import { LosslessNumber, parse as parseJSON } from 'lossless-json';
 import { validSearch } from './model';
 import {
-  centsToMoney, maxCartLines, maxQuantity, maxWarrantyMonths, minWarrantyMonths, moneyCents,
-  type CreateSaleInput, type PaymentWire, type SellablePage, type SellableVariant,
+  centsToMoney, maxCartLines, maxCustomerAddress, maxQuantity, maxSaleUnits, maxSerialLength, maxWarrantyMonths,
+  minWarrantyMonths, moneyCents,
+  type CreateSaleInput, type PaymentWire, type SaleUnitWire, type SellablePage, type SellableVariant,
 } from './pointOfSaleModel';
 
 /**
@@ -13,8 +14,8 @@ import {
 
 export type SalesErrorCode =
   | 'invalid_request' | 'payments_mismatch' | 'variant_not_sellable' | 'below_minimum'
-  | 'insufficient_stock' | 'unauthenticated' | 'forbidden' | 'not_found' | 'method_not_allowed'
-  | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
+  | 'insufficient_stock' | 'serial_already_sold' | 'unauthenticated' | 'forbidden' | 'not_found'
+  | 'method_not_allowed' | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
 
 /** The side of the total a settlement failed on, with the canonical amount. */
 export interface PaymentsMismatch { readonly side: 'missing' | 'excess'; readonly amount: string }
@@ -26,7 +27,7 @@ export const salesAdmittedErrors: ReadonlyMap<number, readonly SalesErrorCode[]>
   [403, ['forbidden']],
   [404, ['not_found']],
   [405, ['method_not_allowed']],
-  [409, ['variant_not_sellable', 'below_minimum', 'insufficient_stock']],
+  [409, ['variant_not_sellable', 'below_minimum', 'insufficient_stock', 'serial_already_sold']],
   [503, ['service_unavailable']],
 ]);
 
@@ -40,6 +41,7 @@ export const salesErrorMessages: Record<SalesErrorCode, string> = {
   variant_not_sellable: 'Una batería no tiene precio en esta sucursal: no es vendible. No se registró nada.',
   below_minimum: 'Una línea cobra menos que el precio mínimo de la sucursal. No se registró nada.',
   insufficient_stock: 'La sucursal no tiene stock suficiente para una línea. No se registró nada.',
+  serial_already_sold: 'Ese número de serie ya se vendió: cada batería se vende una sola vez. No se registró nada.',
   unauthenticated: 'La sesión no está activa. Volvé a iniciar sesión: no se registró nada.',
   forbidden: 'No podés vender desde esta cuenta: el punto de venta es de la sucursal. No se registró nada.',
   not_found: 'El documento no existe o no es de esta sucursal.',
@@ -76,14 +78,21 @@ export interface SalesQuery {
 /** One amount of a persisted settlement. */
 export interface SalePayment { readonly method: string; readonly amount: string }
 /** The client the warranty names, exactly as persisted. */
-export interface SaleCustomerRecord { readonly name: string; readonly phone: string; readonly document: string }
-/** One persisted line of a created document: the price and the term frozen at write time. */
+export interface SaleCustomerRecord {
+  readonly name: string;
+  readonly phone: string;
+  readonly document: string;
+  readonly address: string;
+}
+/** One physical battery of a persisted line: the serial it carries and its term or its absence. */
+export interface SaleUnitRecord { readonly serial_number: string; readonly warranty_months: number | null }
+/** One persisted line of a created document: the price frozen at write time and its units. */
 export interface SaleLineRecord {
   readonly variant_id: number;
   readonly quantity: number;
   readonly unit_price: string;
   readonly min_price: string;
-  readonly warranty_months: number;
+  readonly units: readonly SaleUnitRecord[];
   readonly subtotal: string;
 }
 /** One persisted line with the catalogue identity of its variant. */
@@ -118,6 +127,9 @@ export interface SaleSummary {
   readonly total: string;
   readonly created_at: string;
   readonly lines: number;
+  /** The physical batteries of the sale, so the list can state its warranty position. */
+  readonly units_total: number;
+  readonly units_with_warranty: number;
 }
 export interface SalesPage {
   readonly page: number;
@@ -234,8 +246,43 @@ function variantID(value: unknown): number {
 function quantity(value: unknown): number {
   return integer(value, 1, maxQuantity);
 }
-function warrantyMonths(value: unknown): number {
+/** A term of a persisted unit: 1 to 120 months, or the explicit absence `null`. */
+function unitWarranty(value: unknown): number | null {
+  if (value === null) return null;
   return integer(value, minWarrantyMonths, maxWarrantyMonths);
+}
+/** The serial of one physical battery: free text, one to 64 characters. */
+function serialNumber(value: unknown): string {
+  const raw = text(value);
+  if (raw.length > maxSerialLength) return invalidResponse();
+  return raw;
+}
+/**
+ * The serial a refusal names is the canonical one the server compared: trimmed before it was
+ * folded, never a value carrying the padding the seller's draft had (D2, D8).
+ */
+function refusedSerial(value: unknown): string {
+  const raw = serialNumber(value);
+  if (raw !== raw.trim()) return invalidResponse();
+  return raw;
+}
+/**
+ * The units of a line: exactly as many as its quantity, each with its serial and a term
+ * that is present in the body and is either an integer or `null`, never absent and never
+ * zero. A serial repeated inside one document contradicts the physical battery it tracks.
+ */
+function saleUnits(value: unknown, count: number): readonly SaleUnitRecord[] {
+  if (!Array.isArray(value) || value.length !== count) return invalidResponse();
+  const serials = new Set<string>();
+  const rows = value.map(entry => {
+    const record = fields(entry, ['serial_number', 'warranty_months']);
+    const serial_number = serialNumber(record.serial_number);
+    const key = serial_number.toLowerCase();
+    if (serials.has(key)) return invalidResponse();
+    serials.add(key);
+    return Object.freeze({ serial_number, warranty_months: unitWarranty(record.warranty_months) });
+  });
+  return Object.freeze(rows);
 }
 /** The warranty number of a document: the branch, a hyphen and the padded correlative. */
 function warrantyNumber(value: unknown): string {
@@ -268,18 +315,20 @@ function payments(value: unknown): readonly SalePayment[] {
   return Object.freeze(rows);
 }
 function customer(value: unknown): SaleCustomerRecord {
-  const record = fields(value, ['name', 'phone', 'document']);
+  const record = fields(value, ['name', 'phone', 'document', 'address']);
   const name = text(record.name);
   if (name.length > 120) return invalidResponse();
-  return Object.freeze({ name, phone: optionalText(record.phone, 40), document: optionalText(record.document, 40) });
+  return Object.freeze({ name, phone: optionalText(record.phone, 40), document: optionalText(record.document, 40),
+    address: optionalText(record.address, maxCustomerAddress) });
 }
-/** A frozen line: the charged price, the floor, the term and the exact subtotal. */
+/** A frozen line: the charged price, the floor, its units and the exact subtotal. */
 function saleLine(value: unknown): SaleLineRecord {
-  const record = fields(value, ['variant_id', 'quantity', 'unit_price', 'min_price', 'warranty_months', 'subtotal']);
+  const record = fields(value, ['variant_id', 'quantity', 'unit_price', 'min_price', 'units', 'subtotal']);
+  const count = quantity(record.quantity);
   const line = {
-    variant_id: variantID(record.variant_id), quantity: quantity(record.quantity),
+    variant_id: variantID(record.variant_id), quantity: count,
     unit_price: wireMoney(record.unit_price), min_price: wireMoney(record.min_price),
-    warranty_months: warrantyMonths(record.warranty_months), subtotal: wireMoney(record.subtotal),
+    units: saleUnits(record.units, count), subtotal: wireMoney(record.subtotal),
   };
   if (moneyCents(line.unit_price) < moneyCents(line.min_price)) return invalidResponse();
   if (moneyCents(line.subtotal) !== moneyCents(line.unit_price) * BigInt(line.quantity)) return invalidResponse();
@@ -287,10 +336,10 @@ function saleLine(value: unknown): SaleLineRecord {
 }
 function detailLine(value: unknown): SaleDetailLine {
   const record = fields(value, ['variant_id', 'catalog_entry_id', 'brand', 'model', 'capacity_ah', 'polarity',
-    'quantity', 'unit_price', 'min_price', 'warranty_months', 'subtotal']);
+    'quantity', 'unit_price', 'min_price', 'units', 'subtotal']);
   const line = saleLine({
     variant_id: record.variant_id, quantity: record.quantity, unit_price: record.unit_price,
-    min_price: record.min_price, warranty_months: record.warranty_months, subtotal: record.subtotal,
+    min_price: record.min_price, units: record.units, subtotal: record.subtotal,
   });
   return Object.freeze({
     ...line, catalog_entry_id: variantID(record.catalog_entry_id), brand: text(record.brand),
@@ -310,6 +359,23 @@ function ascending(rows: readonly { variant_id: number }[]): void {
 }
 function totalOf(lines: readonly SaleLineRecord[]): bigint {
   return lines.reduce((total, line) => total + moneyCents(line.subtotal), 0n);
+}
+/**
+ * One sale carries at most a thousand physical batteries, and a battery is sold once: a
+ * serial that repeats anywhere in the document contradicts the unit it tracks (D2).
+ */
+function boundedUnits(lines: readonly SaleLineRecord[]): void {
+  let total = 0;
+  const serials = new Set<string>();
+  for (const line of lines) {
+    total += line.units.length;
+    for (const unit of line.units) {
+      const key = unit.serial_number.toLowerCase();
+      if (serials.has(key)) invalidResponse();
+      serials.add(key);
+    }
+  }
+  if (total > maxSaleUnits) invalidResponse();
 }
 function pageOf(record: Record<string, unknown>): { page: number; page_size: number } {
   const page = integer(record.page, 1, salesMaxPage);
@@ -439,6 +505,7 @@ export function parseCreatedSale(raw: string): SaleDocument {
   if (sale.payment_method !== label) return invalidResponse();
   const lines = lineList(sale.lines, saleLine);
   ascending(lines);
+  boundedUnits(lines);
   const total = wireMoney(sale.total);
   if (moneyCents(total) !== totalOf(lines) || paymentsTotal(settlement) !== moneyCents(total)) return invalidResponse();
   return Object.freeze({
@@ -449,7 +516,7 @@ export function parseCreatedSale(raw: string): SaleDocument {
   });
 }
 
-/** Parses one page of the branch history: the document header and its line count. */
+/** Parses one page of the branch history: the document header, its lines and its units. */
 export function parseSalePage(raw: string): SalesPage {
   const record = fields(decode(raw), ['page', 'page_size', 'total_sales', 'sales']);
   const { page, page_size } = pageOf(record);
@@ -459,16 +526,21 @@ export function parseSalePage(raw: string): SalesPage {
   let previous = Number.MAX_SAFE_INTEGER;
   const sales = record.sales.map(value => {
     const row = fields(value, ['id', 'branch_sequence', 'warranty_number', 'payment_method', 'customer_name',
-      'total', 'created_at', 'lines']);
+      'total', 'created_at', 'lines', 'units_total', 'units_with_warranty']);
     const id = integer(row.id, 1, Number.MAX_SAFE_INTEGER);
     if (id >= previous) return invalidResponse();
     previous = id;
     if (typeof row.payment_method !== 'string' || !recordedMethods.includes(row.payment_method)) return invalidResponse();
+    const lines = integer(row.lines, 1, maxCartLines);
+    const units_total = integer(row.units_total, 1, maxSaleUnits);
+    const units_with_warranty = integer(row.units_with_warranty, 0, maxSaleUnits);
+    // Every line holds at least one battery, and a battery cannot be counted twice.
+    if (units_total < lines || units_with_warranty > units_total) return invalidResponse();
     return Object.freeze({
       id, branch_sequence: integer(row.branch_sequence, 1, 999_999_999),
       warranty_number: warrantyNumber(row.warranty_number), payment_method: row.payment_method,
       customer_name: text(row.customer_name), total: wireMoney(row.total),
-      created_at: timestamp(row.created_at), lines: integer(row.lines, 1, maxCartLines),
+      created_at: timestamp(row.created_at), lines, units_total, units_with_warranty,
     }) as SaleSummary;
   });
   return Object.freeze({ page, page_size, total_sales, sales: Object.freeze(sales) });
@@ -483,6 +555,7 @@ export function parseSaleDetail(raw: string): SaleDetail {
   if (record.payment_method !== label) return invalidResponse();
   const lines = lineList(record.lines, detailLine);
   ascending(lines);
+  boundedUnits(lines);
   const total = wireMoney(record.total);
   if (moneyCents(total) !== totalOf(lines) || paymentsTotal(settlement) !== moneyCents(total)) return invalidResponse();
   const customer_name = text(record.customer_name);
@@ -496,17 +569,18 @@ export function parseSaleDetail(raw: string): SaleDetail {
   });
 }
 
-/** One admitted refusal: the code, the line it names and the side of an open settlement. */
+/** One admitted refusal: the code, the line it names, the serial it names and the side of an open settlement. */
 export interface SalesErrorDetail {
   readonly code: SalesErrorCode;
   readonly variant_id: number | null;
+  readonly serial_number: string | null;
   readonly mismatch: PaymentsMismatch | null;
 }
 
 export function parseSalesError(raw: string, status: number): SalesErrorDetail {
   const admitted = salesAdmittedErrors.get(status);
   if (!admitted) return invalidResponse();
-  const envelope = fields(decode(raw), ['error', 'variant_id', 'missing', 'excess'], false);
+  const envelope = fields(decode(raw), ['error', 'variant_id', 'serial_number', 'missing', 'excess'], false);
   const code = envelope.error;
   if (typeof code !== 'string' || !admitted.includes(code as SalesErrorCode)) return invalidResponse();
   const keys = Object.keys(envelope).sort();
@@ -516,14 +590,21 @@ export function parseSalesError(raw: string, status: number): SalesErrorDetail {
     const side = sides[0];
     let amount: string;
     try { amount = paidMoney(envelope[side]); } catch { return invalidResponse(); }
-    return { code: code as SalesErrorCode, variant_id: null, mismatch: { side, amount } };
+    return { code: code as SalesErrorCode, variant_id: null, serial_number: null, mismatch: { side, amount } };
   }
   if (lineRefusals.includes(code as SalesErrorCode)) {
     if (keys.length !== 2 || !Object.hasOwn(envelope, 'variant_id')) return invalidResponse();
-    return { code: code as SalesErrorCode, variant_id: integer(envelope.variant_id, 1, maxSaleID), mismatch: null };
+    return { code: code as SalesErrorCode, variant_id: integer(envelope.variant_id, 1, maxSaleID),
+      serial_number: null, mismatch: null };
+  }
+  // D8: the repeated serial is answered with its own envelope, the serial and nothing else.
+  if (code === 'serial_already_sold') {
+    if (keys.length !== 2 || !Object.hasOwn(envelope, 'serial_number')) return invalidResponse();
+    return { code: code as SalesErrorCode, variant_id: null,
+      serial_number: refusedSerial(envelope.serial_number), mismatch: null };
   }
   if (keys.length !== 1) return invalidResponse();
-  return { code: code as SalesErrorCode, variant_id: null, mismatch: null };
+  return { code: code as SalesErrorCode, variant_id: null, serial_number: null, mismatch: null };
 }
 
 // ---------------------------------------------------------------------------------
@@ -550,10 +631,53 @@ function canonicalPayment(value: unknown): PaymentWire {
   return Object.freeze({ method, amount });
 }
 
+/** One written serial of the payload: the seller read it, so it is never empty. */
+function draftSerial(value: unknown): string {
+  if (typeof value !== 'string') return invalidPayload();
+  const serial = value.trim();
+  if (serial === '' || serial.length > maxSerialLength) return invalidPayload();
+  if (serial.includes('\0') || !serial.isWellFormed()) return invalidPayload();
+  return serial;
+}
+
 /**
- * Admits the exact body of `POST /api/sales`: only the methods and the lines the
- * contract takes, every amount canonical, every term inside its bounds and a client the
- * warranty can name. Anything else fails closed before a single byte is sent.
+ * The one free field of the client, trimmed before it is bounded the way the server
+ * canonicalizes it. The padded draft and the trimmed answered document are the same sale,
+ * so D9 holds on both sides of the echo check.
+ */
+function canonicalAddress(value: unknown): string {
+  if (typeof value !== 'string' || value.includes('\0') || !value.isWellFormed()) return invalidPayload();
+  const address = value.trim();
+  if (address.length > maxCustomerAddress) return invalidPayload();
+  return address;
+}
+
+/**
+ * The units of one payload line: exactly as many as its quantity, exactly two keys each,
+ * a written serial per battery and the term key always present, an integer or `null`.
+ */
+function canonicalUnits(value: unknown, quantity: number, serials: Set<string>): readonly SaleUnitWire[] {
+  if (!Array.isArray(value) || value.length !== quantity) return invalidPayload();
+  const units = value.map(entry => {
+    const unit = fields(entry, ['serial_number', 'warranty_months'], false);
+    if (Object.keys(unit).length !== 2) return invalidPayload();
+    const serial_number = draftSerial(unit.serial_number);
+    const key = serial_number.toLowerCase();
+    if (serials.has(key)) return invalidPayload();
+    serials.add(key);
+    const months = unit.warranty_months === null
+      ? null
+      : draftInteger(unit.warranty_months, minWarrantyMonths, maxWarrantyMonths);
+    return Object.freeze({ serial_number, warranty_months: months });
+  });
+  return Object.freeze(units);
+}
+
+/**
+ * Admits the exact body of `POST /api/sales`: only the methods, the lines and the units the
+ * contract takes, every amount canonical, one written serial and a valid term per battery
+ * and a client the warranty can name. Anything else fails closed before a single byte is
+ * sent, including the absent address key and a term key that is missing instead of `null`.
  */
 export function canonicalCreateSaleInput(input: CreateSaleInput): CreateSaleInput {
   const record = fields(input, ['payments', 'customer', 'lines'], false);
@@ -569,35 +693,42 @@ export function canonicalCreateSaleInput(input: CreateSaleInput): CreateSaleInpu
     previous = rank;
     return payment;
   });
-  const client = fields(record.customer, ['name', 'phone', 'document'], false);
-  if (Object.keys(client).length !== 3) return invalidPayload();
+  const client = fields(record.customer, ['name', 'phone', 'document', 'address'], false);
+  if (Object.keys(client).length !== 4) return invalidPayload();
   const name = typeof client.name === 'string' ? client.name.trim() : invalidPayload();
   if (name === '' || name.length > 120 || name.includes('\0') || !name.isWellFormed()) return invalidPayload();
   const phone = optionalText(client.phone, 40);
   const document = optionalText(client.document, 40);
+  const address = canonicalAddress(client.address);
   if (!Array.isArray(record.lines) || record.lines.length < 1 || record.lines.length > maxCartLines) return invalidPayload();
   const variants = new Set<number>();
+  const serials = new Set<string>();
+  let unitsTotal = 0;
   const lines = record.lines.map(entry => {
-    const line = fields(entry, ['variant_id', 'quantity', 'unit_price', 'warranty_months'], false);
+    const line = fields(entry, ['variant_id', 'quantity', 'unit_price', 'units'], false);
     if (Object.keys(line).length !== 4) return invalidPayload();
     const variant_id = draftInteger(line.variant_id, 1, maxSaleID);
     if (variants.has(variant_id)) return invalidPayload();
     variants.add(variant_id);
+    const count = draftInteger(line.quantity, 1, maxQuantity);
+    const units = canonicalUnits(line.units, count, serials);
+    unitsTotal += units.length;
     return Object.freeze({
-      variant_id, quantity: draftInteger(line.quantity, 1, maxQuantity), unit_price: wireMoney(line.unit_price),
-      warranty_months: draftInteger(line.warranty_months, minWarrantyMonths, maxWarrantyMonths),
+      variant_id, quantity: count, unit_price: wireMoney(line.unit_price), units,
     });
   });
+  if (unitsTotal > maxSaleUnits) return invalidPayload();
   return Object.freeze({
     payments: Object.freeze(payments),
-    customer: Object.freeze({ name, phone, document }),
+    customer: Object.freeze({ name, phone, document, address }),
     lines: Object.freeze(lines),
   });
 }
 
 /**
  * The creation reply is evidence only when it repeats the exact sale this counter sent:
- * the same settlement, the same lines and the same client.
+ * the same settlement, every line and every one of its batteries, and the same client,
+ * address included.
  */
 export function matchesCreateSale(input: CreateSaleInput, sale: SaleDocument): boolean {
   let expected: CreateSaleInput;
@@ -610,7 +741,8 @@ export function matchesCreateSale(input: CreateSaleInput, sale: SaleDocument): b
   });
   if (!settled) return false;
   if (sale.customer.name !== expected.customer.name || sale.customer.phone !== expected.customer.phone
-    || sale.customer.document !== expected.customer.document) return false;
+    || sale.customer.document !== expected.customer.document
+    || sale.customer.address !== expected.customer.address) return false;
   if (sale.lines.length !== expected.lines.length) return false;
   const sent = new Map(expected.lines.map(line => [line.variant_id, line]));
   for (const line of sale.lines) {
@@ -618,7 +750,13 @@ export function matchesCreateSale(input: CreateSaleInput, sale: SaleDocument): b
     if (!asked) return false;
     if (line.quantity !== asked.quantity) return false;
     if (moneyCents(line.unit_price) !== moneyCents(asked.unit_price)) return false;
-    if (line.warranty_months !== asked.warranty_months) return false;
+    if (line.units.length !== asked.units.length) return false;
+    const sameUnits = asked.units.every((unit, index) => {
+      const written = line.units[index];
+      return written.serial_number === unit.serial_number
+        && written.warranty_months === unit.warranty_months;
+    });
+    if (!sameUnits) return false;
   }
   const expectedTotal = expected.lines.reduce((total, line) => total + moneyCents(line.unit_price) * BigInt(line.quantity), 0n);
   return moneyCents(sale.total) === expectedTotal;
@@ -631,7 +769,8 @@ export function matchesCreateSale(input: CreateSaleInput, sale: SaleDocument): b
 export class SalesAPIError extends Error {
   constructor(public readonly code: SalesErrorCode, public readonly status: number | null,
     public readonly variantId: number | null = null,
-    public readonly mismatch: PaymentsMismatch | null = null) {
+    public readonly mismatch: PaymentsMismatch | null = null,
+    public readonly serialNumber: string | null = null) {
     super(code); this.name = 'SalesAPIError';
   }
 }
@@ -643,7 +782,7 @@ function failure(reply: Response, raw: string, status: number): never {
   const malformed = () => new SalesAPIError('invalid_response', reply.status);
   let detail: SalesErrorDetail;
   try { detail = parseSalesError(raw, status); } catch { throw malformed(); }
-  throw new SalesAPIError(detail.code, status, detail.variant_id, detail.mismatch);
+  throw new SalesAPIError(detail.code, status, detail.variant_id, detail.mismatch, detail.serial_number);
 }
 
 async function read(reply: Response, signal?: AbortSignal): Promise<string> {

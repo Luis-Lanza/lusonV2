@@ -2,9 +2,11 @@ import { Component, Fragment, useEffect, useMemo, useRef, useState, type ReactNo
 import TransferDate from './shared/TransferDate';
 import {
   addToCart, cartTotal, changeQuantity, emptyCustomer, emptyPayments, fillRemaining, formatMoney,
-  moneyCents, moneySumMessage, paymentBreakdown, posCustomerNameMessage, posEmptyCartMessage,
-  posNotSellableReason, posQuantityMessage, posWarrantyMessage, prepareSale, removeFromCart, setPayment,
-  setQuantity, setUnitPrice, setWarranty, settlement, typedMoney, variantLabel,
+  maxCustomerAddress, maxSerialLength, maxWarrantyMonths, minWarrantyMonths, moneyCents, moneySumMessage,
+  paymentBreakdown, posCustomerNameMessage, posEmptyCartMessage, posNotSellableReason, posQuantityMessage,
+  posWarrantyMessage, prepareSale, removeFromCart, serialSoldProblem, setPayment, setQuantity, setUnitPrice,
+  setUnitSerial,
+  setUnitWarranty, setWarranty, settlement, typedMoney, unitsProblem, variantLabel, warrantyLabel,
   type CartEdit, type CartLine, type PaymentSplit, type SaleCustomer, type SellablePage, type SellableVariant,
 } from './pointOfSaleModel';
 import {
@@ -57,7 +59,7 @@ interface CatalogueState {
   readonly problem: string;
 }
 /** What the seller has typed in one line, before it is admitted into the cart. */
-interface LineDraft { readonly quantity: string; readonly warranty: string; readonly price: string }
+interface LineDraft { readonly quantity: string; readonly price: string; readonly bulk: string }
 interface PaymentDrafts { readonly cash: string; readonly transfer: string }
 
 const noPayments: PaymentDrafts = { cash: '', transfer: '' };
@@ -65,8 +67,20 @@ const blockedReason = (variantID: number) => `pos-blocked-${variantID}`;
 /** A zero field shows nothing instead of `0,00`, so the seller sees it as unpaid. */
 const entryOf = (cents: bigint): string => cents === 0n ? '' : typedMoney(cents);
 const draftOf = (line: CartLine): LineDraft => ({
-  quantity: String(line.quantity), warranty: String(line.warranty_months), price: typedMoney(line.unit_price_cents),
+  quantity: String(line.quantity), price: typedMoney(line.unit_price_cents), bulk: '',
 });
+/** One months field per battery: empty is the explicit absence of warranty, never a zero. */
+const unitKey = (variantID: number, index: number) => `${variantID}:${index}`;
+const termText = (months: number | null): string => months === null ? '' : String(months);
+/** A months field that still holds something the contract does not accept. */
+function draftTermInvalid(typed: string | undefined): boolean {
+  if (typed === undefined) return false;
+  const text = typed.trim();
+  if (text === '') return false;
+  if (!/^\d+$/.test(text)) return true;
+  const months = Number(text);
+  return months < minWarrantyMonths || months > maxWarrantyMonths;
+}
 const lineRefusals: Record<string, string> = {
   variant_not_sellable: 'no es vendible: no tiene precio en esta sucursal.',
   below_minimum: 'cobra menos que el precio mínimo de esta sucursal.',
@@ -96,6 +110,7 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
   const [split, setSplit] = useState<PaymentSplit>(emptyPayments);
   const [customer, setCustomer] = useState<SaleCustomer>(emptyCustomer);
   const [drafts, setDrafts] = useState<Readonly<Record<number, LineDraft>>>({});
+  const [termDrafts, setTermDrafts] = useState<Readonly<Record<string, string>>>({});
   const [payDrafts, setPayDrafts] = useState<PaymentDrafts>(noPayments);
   const [problem, setProblem] = useState('');
   const [issued, setIssued] = useState<SaleDocument | null>(null);
@@ -145,17 +160,40 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
   const open = settlement(saleTotal, split);
   const nameMissing = customer.name.trim() === '';
   const closable = open.status === 'exact';
-  const canCharge = !busy && cart.length > 0 && closable && !nameMissing;
+  // Every battery needs its serial and a valid term before the sale can be charged (S2, S3).
+  const unitsIssue = unitsProblem(cart);
+  // A months field the seller is still typing blocks the charge too: the counter never
+  // charges a term the seller sees one way and the document records another.
+  const termIssue = cart.some(line => line.units.some((_, index) =>
+    draftTermInvalid(termDrafts[unitKey(line.variant_id, index)]))) ? posWarrantyMessage : null;
+  const canCharge = !busy && cart.length > 0 && closable && !nameMissing
+    && unitsIssue === null && termIssue === null;
   // The sum already states what is missing, so the hint only covers what it cannot say.
   const hint = busy ? 'Emitiendo la venta…'
     : cart.length === 0 ? posEmptyCartMessage
-    : closable && nameMissing ? posCustomerNameMessage : '';
+    : closable && nameMissing ? posCustomerNameMessage
+    : unitsIssue !== null ? unitsIssue
+    : termIssue ?? '';
 
   function draftFor(line: CartLine): LineDraft {
     return drafts[line.variant_id] ?? draftOf(line);
   }
   function patchDraft(line: CartLine, patch: Partial<LineDraft>) {
     setDrafts(current => ({ ...current, [line.variant_id]: { ...(current[line.variant_id] ?? draftOf(line)), ...patch } }));
+  }
+  /** The months field of one battery: what the seller typed, or what the unit carries. */
+  function termFor(line: CartLine, index: number): string {
+    return termDrafts[unitKey(line.variant_id, index)] ?? termText(line.units[index].warranty_months);
+  }
+  /** Forgets the months the seller typed for the units of one line, from `index` on. */
+  function dropTerms(variantID: number, from = 0) {
+    setTermDrafts(current => {
+      const next = { ...current };
+      for (const key of Object.keys(next)) {
+        if (Number(key.split(':')[0]) === variantID && Number(key.split(':')[1]) >= from) delete next[key];
+      }
+      return next;
+    });
   }
   function commit(edit: CartEdit): boolean {
     if (!edit.ok) { setProblem(edit.message); return false; }
@@ -176,6 +214,7 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
     if (busy) return;
     setProblem('');
     setCart(removeFromCart(cart, variantID));
+    dropTerms(variantID);
     setDrafts(current => { const next = { ...current }; delete next[variantID]; return next; });
   }
   function step(line: CartLine, delta: number) {
@@ -184,21 +223,42 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
     if (!edit.ok) { setProblem(edit.message); return; }
     const next = edit.cart.find(entry => entry.variant_id === line.variant_id);
     commit(edit);
-    if (next) patchDraft(next, { quantity: String(next.quantity) });
+    if (next === undefined) return;
+    patchDraft(next, { quantity: String(next.quantity) });
+    // A unit the seller just removed no longer keeps the months written for it.
+    dropTerms(line.variant_id, next.quantity);
   }
   function typeQuantity(line: CartLine, value: string) {
     patchDraft(line, { quantity: value });
     if (!/^\d+$/.test(value)) { setProblem(posQuantityMessage); return; }
     const edit = setQuantity(cart, line.variant_id, Number(value));
     if (!edit.ok) { setProblem(edit.message); return; }
+    // A unit the seller just removed no longer keeps the months written for it.
+    dropTerms(line.variant_id, Number(value));
     commit(edit);
   }
-  function typeWarranty(line: CartLine, value: string) {
-    patchDraft(line, { warranty: value });
-    if (!/^\d+$/.test(value)) { setProblem(posWarrantyMessage); return; }
-    const edit = setWarranty(cart, line.variant_id, Number(value));
-    if (!edit.ok) { setProblem(edit.message); return; }
-    commit(edit);
+  function typeSerial(line: CartLine, index: number, value: string) {
+    commit(setUnitSerial(cart, line.variant_id, index, value));
+  }
+  /** A cleared months field is the seller saying this battery carries no warranty (S3). */
+  function typeTerm(line: CartLine, index: number, value: string) {
+    setTermDrafts(current => ({ ...current, [unitKey(line.variant_id, index)]: value }));
+    const typed = value.trim();
+    if (typed === '') { commit(setUnitWarranty(cart, line.variant_id, index, null)); return; }
+    if (!/^\d+$/.test(typed)) { setProblem(posWarrantyMessage); return; }
+    commit(setUnitWarranty(cart, line.variant_id, index, Number(typed)));
+  }
+  /** D5: one action sets the same term, or its absence, on every unit of the line. */
+  function applyTerm(line: CartLine, months: number | null) {
+    const edit = setWarranty(cart, line.variant_id, months);
+    if (!commit(edit)) return;
+    dropTerms(line.variant_id);
+    patchDraft(line, { bulk: '' });
+  }
+  function applyTypedTerm(line: CartLine) {
+    const typed = draftFor(line).bulk.trim();
+    if (typed === '') { setProblem(posWarrantyMessage); return; }
+    applyTerm(line, Number(typed));
   }
   function typePrice(line: CartLine, value: string) {
     patchDraft(line, { price: value });
@@ -227,7 +287,8 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
       const sale = await api.create(prepared.input, csrf, lifetime.current.signal);
       if (!mounted.current || lifetime.current.signal.aborted) return;
       setIssued(sale);
-      setCart([]); setDrafts({}); setSplit(emptyPayments); setPayDrafts(noPayments); setCustomer(emptyCustomer);
+      setCart([]); setDrafts({}); setTermDrafts({}); setSplit(emptyPayments); setPayDrafts(noPayments);
+      setCustomer(emptyCustomer);
       // The catalogue is re-read because the branch stock just changed.
       setRevision(value => value + 1);
     } catch (failure) {
@@ -235,10 +296,15 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
       const code: SalesErrorCode = failure instanceof SalesAPIError ? failure.code : 'invalid_response';
       const mismatch = failure instanceof SalesAPIError ? failure.mismatch : null;
       const variantID = failure instanceof SalesAPIError ? failure.variantId : null;
+      const serial = failure instanceof SalesAPIError ? failure.serialNumber : null;
       if (code === 'payments_mismatch' && mismatch !== null) {
         setProblem(mismatch.side === 'missing'
           ? `Faltan ${formatMoney(moneyCents(mismatch.amount))} para cubrir el total.`
           : `Sobran ${formatMoney(moneyCents(mismatch.amount))}: la suma no puede superar el total.`);
+        return;
+      }
+      if (code === 'serial_already_sold' && serial !== null) {
+        setProblem(serialSoldProblem(cart, serial));
         return;
       }
       const named = variantID === null ? null : cart.find(line => line.variant_id === variantID) ?? null;
@@ -257,7 +323,7 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
     <header className="pos-heading">
       <small>SUCURSAL / PUNTO DE VENTA</small>
       <h1 id="point-of-sale-title">Nueva venta</h1>
-      <p>{`Sólo las baterías con precio cargado en ${branch} se pueden vender. El precio mínimo es un piso: por debajo de él la venta se rechaza.`}</p>
+      <p>{`Sólo las baterías con precio cargado en ${branch} se pueden vender. Cada batería lleva el número de serie que leés en el momento y su plazo de garantía, o su ausencia. El precio mínimo es un piso: por debajo de él la venta se rechaza.`}</p>
     </header>
     <div className="pos-layout">
       <section className="pos-panel pos-catalogue" aria-labelledby="pos-catalogue-title" aria-busy={state.phase === 'loading'}>
@@ -363,17 +429,46 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
                   <button type="button" aria-label={`Sumar una unidad de ${label}`} disabled={busy}
                     onClick={() => step(line, 1)}>+</button>
                 </div>
-                <label htmlFor={`pos-warranty-${line.variant_id}`}>Garantía (meses)
-                  <input id={`pos-warranty-${line.variant_id}`} aria-label={`Garantía en meses de ${label}`}
-                    inputMode="numeric" value={draft.warranty} disabled={busy}
-                    onChange={event => typeWarranty(line, event.target.value)} />
+                <label htmlFor={`pos-price-${line.variant_id}`}>Precio unitario
+                  <input id={`pos-price-${line.variant_id}`} aria-label={`Precio unitario de ${label}`}
+                    inputMode="decimal" value={draft.price} disabled={busy}
+                    onChange={event => typePrice(line, event.target.value)} />
                 </label>
               </div>
-              <label htmlFor={`pos-price-${line.variant_id}`}>Precio unitario
-                <input id={`pos-price-${line.variant_id}`} aria-label={`Precio unitario de ${label}`}
-                  inputMode="decimal" value={draft.price} disabled={busy}
-                  onChange={event => typePrice(line, event.target.value)} />
-              </label>
+              <div className="pos-units">{line.units.map((unit, index) => <div className="pos-unit"
+                key={unitKey(line.variant_id, index)}>
+                <div className="pos-unit-head">
+                  <span className="pos-unit-index">{`Unidad ${index + 1}`}</span>
+                  <span className="pos-tag">{warrantyLabel(unit.warranty_months)}</span>
+                </div>
+                <label htmlFor={`pos-serial-${line.variant_id}-${index}`}>Número de serie
+                  <input id={`pos-serial-${line.variant_id}-${index}`}
+                    aria-label={`Número de serie de la unidad ${index + 1} de ${label}`}
+                    value={unit.serial_number} maxLength={maxSerialLength} disabled={busy} autoComplete="off"
+                    placeholder="Leelo de la batería"
+                    onChange={event => typeSerial(line, index, event.target.value)} />
+                </label>
+                <label htmlFor={`pos-unit-warranty-${line.variant_id}-${index}`}>Garantía (meses)
+                  <input id={`pos-unit-warranty-${line.variant_id}-${index}`}
+                    aria-label={`Garantía en meses de la unidad ${index + 1} de ${label}`}
+                    inputMode="numeric" value={termFor(line, index)} disabled={busy} placeholder="Sin garantía"
+                    onChange={event => typeTerm(line, index, event.target.value)} />
+                </label>
+              </div>)}</div>
+              <div className="pos-line-bulk">
+                <label htmlFor={`pos-bulk-${line.variant_id}`}>Plazo para todas (meses)
+                  <input id={`pos-bulk-${line.variant_id}`}
+                    aria-label={`Plazo en meses para todas las unidades de ${label}`}
+                    inputMode="numeric" value={draft.bulk} disabled={busy} placeholder="1 a 120"
+                    onChange={event => patchDraft(line, { bulk: event.target.value })} />
+                </label>
+                <button type="button" disabled={busy}
+                  aria-label={`Aplicar plazo a todas las unidades de ${label}`}
+                  onClick={() => applyTypedTerm(line)}>Aplicar a todas</button>
+                <button type="button" disabled={busy}
+                  aria-label={`Sin garantía a todas las unidades de ${label}`}
+                  onClick={() => applyTerm(line, null)}>Sin garantía a todas</button>
+              </div>
               <small className="pos-hint">{`Mínimo autorizado ${formatMoney(line.min_price_cents)}`}
                 {adjusted && ` · ajustado ${formatMoney(line.suggested_price_cents - line.unit_price_cents)} por debajo del sugerido`}</small>
               <button type="button" className="pos-remove" aria-label={`Quitar ${label}`} disabled={busy}
@@ -416,6 +511,11 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
             <label htmlFor="pos-customer-document">Documento
               <input id="pos-customer-document" inputMode="numeric" value={customer.document} disabled={busy} maxLength={40}
                 onChange={event => setCustomer({ ...customer, document: event.target.value })} />
+            </label>
+            <label htmlFor="pos-customer-address" className="pos-address">Dirección o barrio
+              <input id="pos-customer-address" value={customer.address} disabled={busy}
+                maxLength={maxCustomerAddress} autoComplete="off"
+                onChange={event => setCustomer({ ...customer, address: event.target.value })} />
             </label>
           </div>
           <button type="button" className="primary pos-charge" disabled={!canCharge} onClick={() => void charge()}>Cobrar y emitir garantía</button>

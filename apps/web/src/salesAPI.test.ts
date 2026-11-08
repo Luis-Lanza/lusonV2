@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   SalesAPIError, createSalesAPI, matchesCreateSale, parseCreatedSale, parseSaleDetail, parseSalePage,
-  parseSalesError, parseSellablePage, saleDetailPath, salesHistoryPath, sellablePath, validSalesQuery,
-  validSellableQuery, warrantyPath,
+  parseSalesError, parseSellablePage, saleDetailPath, salesErrorMessages, salesHistoryPath, sellablePath,
+  validSalesQuery, validSellableQuery, warrantyPath,
 } from './salesAPI';
 import { moneyCents, type CreateSaleInput } from './pointOfSaleModel';
 
@@ -24,18 +24,21 @@ const saleBody = (overrides: Record<string, unknown> = {}) => ({
   id: 1, branch_location_id: 2, branch_sequence: 126, warranty_number: '2-000126',
   payment_method: 'mixed',
   payments: [{ method: 'cash', amount: '200000.00' }, { method: 'transfer', amount: '104000.00' }],
-  customer: { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310' },
+  customer: { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: 'Av. América 123' },
   total: '304000.00', created_by_account_id: 2, created_at: '2026-11-04T17:42:00Z',
   lines: [
-    { variant_id: 1, quantity: 2, unit_price: '96000.00', min_price: '85000.00', warranty_months: 12, subtotal: '192000.00' },
-    { variant_id: 3, quantity: 1, unit_price: '112000.00', min_price: '100000.00', warranty_months: 12, subtotal: '112000.00' },
+    { variant_id: 1, quantity: 2, unit_price: '96000.00', min_price: '85000.00', subtotal: '192000.00',
+      units: [{ serial_number: 'ABC123', warranty_months: 12 }, { serial_number: 'ABC124', warranty_months: null }] },
+    { variant_id: 3, quantity: 1, unit_price: '112000.00', min_price: '100000.00', subtotal: '112000.00',
+      units: [{ serial_number: 'TOYO-9', warranty_months: 12 }] },
   ],
   ...overrides,
 });
 const createdBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({ sale: saleBody(overrides) });
 const summary = (overrides: Record<string, unknown> = {}) => ({
   id: 1, branch_sequence: 126, warranty_number: '2-000126', payment_method: 'mixed',
-  customer_name: 'Marta Giménez', total: '304000.00', created_at: '2026-11-04T17:42:00Z', lines: 2, ...overrides,
+  customer_name: 'Marta Giménez', total: '304000.00', created_at: '2026-11-04T17:42:00Z', lines: 2,
+  units_total: 3, units_with_warranty: 2, ...overrides,
 });
 const pageBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   page: 1, page_size: 10, total_sales: 87, sales: [summary()], ...overrides,
@@ -44,20 +47,22 @@ const detailBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   id: 1, branch_sequence: 126, warranty_number: '2-000126', payment_method: 'cash',
   payments: [{ method: 'cash', amount: '192000.00' }],
   customer_name: 'Marta Giménez',
-  customer: { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310' },
+  customer: { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: 'Av. América 123' },
   total: '192000.00', created_at: '2026-11-04T17:42:00Z',
   lines: [{
     variant_id: 1, catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L',
-    quantity: 2, unit_price: '96000.00', min_price: '85000.00', warranty_months: 12, subtotal: '192000.00',
+    quantity: 2, unit_price: '96000.00', min_price: '85000.00', subtotal: '192000.00',
+    units: [{ serial_number: 'ABC123', warranty_months: 12 }, { serial_number: 'ABC124', warranty_months: null }],
   }],
   ...overrides,
 });
 const input = (): CreateSaleInput => ({
   payments: [{ method: 'cash', amount: '200000.00' }, { method: 'transfer', amount: '104000.00' }],
-  customer: { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310' },
+  customer: { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: 'Av. América 123' },
   lines: [
-    { variant_id: 1, quantity: 2, unit_price: '96000.00', warranty_months: 12 },
-    { variant_id: 3, quantity: 1, unit_price: '112000.00', warranty_months: 12 },
+    { variant_id: 1, quantity: 2, unit_price: '96000.00',
+      units: [{ serial_number: 'ABC123', warranty_months: 12 }, { serial_number: 'ABC124', warranty_months: null }] },
+    { variant_id: 3, quantity: 1, unit_price: '112000.00', units: [{ serial_number: 'TOYO-9', warranty_months: 12 }] },
   ],
 });
 
@@ -145,34 +150,41 @@ describe('the sellable catalogue read', () => {
 });
 
 describe('the sale document read', () => {
-  it('reads the created document with its settlement and its frozen lines', () => {
+  it('reads the created document with its settlement and its frozen units', () => {
     const sale = parseCreatedSale(createdBody());
     expect(sale).toMatchObject({
       id: 1, branch_location_id: 2, branch_sequence: 126, warranty_number: '2-000126',
       payment_method: 'mixed', total: '304000.00', created_by_account_id: 2,
-      customer: { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310' },
+      customer: { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: 'Av. América 123' },
     });
     expect(sale.payments).toEqual([
       { method: 'cash', amount: '200000.00' }, { method: 'transfer', amount: '104000.00' },
     ]);
-    expect(sale.lines[1]).toMatchObject({ variant_id: 3, quantity: 1, unit_price: '112000.00', warranty_months: 12 });
+    expect(sale.lines[1]).toMatchObject({ variant_id: 3, quantity: 1, unit_price: '112000.00' });
+    // One row per physical battery, its serial and its term or its explicit absence.
+    expect(sale.lines[0].units).toEqual([
+      { serial_number: 'ABC123', warranty_months: 12 }, { serial_number: 'ABC124', warranty_months: null },
+    ]);
   });
 
-  it('reads the history page of the branch', () => {
+  it('reads the history page of the branch with its warranty position', () => {
     const page = parseSalePage(pageBody());
     expect(page.total_sales).toBe(87);
     expect(page.sales[0]).toMatchObject({ id: 1, warranty_number: '2-000126', payment_method: 'mixed', lines: 2 });
     expect(page.sales[0].total).toBe('304000.00');
+    expect(page.sales[0].units_total).toBe(3);
+    expect(page.sales[0].units_with_warranty).toBe(2);
   });
 
-  it('reads one document with the catalogue identity of every line', () => {
+  it('reads one document with the catalogue identity and the units of every line', () => {
     const detail = parseSaleDetail(detailBody());
     expect(detail.customer_name).toBe('Marta Giménez');
-    expect(detail.customer).toEqual({ name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310' });
+    expect(detail.customer.address).toBe('Av. América 123');
     expect(detail.lines[0]).toMatchObject({
       variant_id: 1, catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L',
-      quantity: 2, unit_price: '96000.00', min_price: '85000.00', warranty_months: 12, subtotal: '192000.00',
+      quantity: 2, unit_price: '96000.00', min_price: '85000.00', subtotal: '192000.00',
     });
+    expect(detail.lines[0].units.map(unit => unit.warranty_months)).toEqual([12, null]);
   });
 
   it.each([
@@ -184,8 +196,34 @@ describe('the sale document read', () => {
     ['a payment with a zero amount', createdBody({ payments: [{ method: 'cash', amount: '0.00' }], payment_method: 'cash' })],
     ['a duplicated payment method', createdBody({ payments: [{ method: 'cash', amount: '1.00' }, { method: 'cash', amount: '2.00' }] })],
     ['a document without lines', createdBody({ lines: [] })],
-    ['a line without its frozen minimum', createdBody({ lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00', warranty_months: 12, subtotal: '96000.00' }] })],
-    ['a client without a name', createdBody({ customer: { name: '', phone: '', document: '' } })],
+    ['a line without its frozen minimum', createdBody({ lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00', subtotal: '96000.00',
+      units: [{ serial_number: 'ABC123', warranty_months: 12 }] }] })],
+    ['a line without its units', createdBody({ lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00', min_price: '85000.00',
+      subtotal: '96000.00' }] })],
+    ['a line with more units than its quantity', createdBody({ lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00',
+      min_price: '85000.00', subtotal: '96000.00', units: [{ serial_number: 'A', warranty_months: 1 },
+        { serial_number: 'B', warranty_months: 1 }] }] })],
+    ['a unit with an unknown key', createdBody({ lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00',
+      min_price: '85000.00', subtotal: '96000.00',
+      units: [{ serial_number: 'A', warranty_months: 1, serial: 'A' }] }] })],
+    ['a unit without its term key', createdBody({ lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00',
+      min_price: '85000.00', subtotal: '96000.00', units: [{ serial_number: 'A' }] }] })],
+    ['a unit whose term is zero', createdBody({ lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00',
+      min_price: '85000.00', subtotal: '96000.00', units: [{ serial_number: 'A', warranty_months: 0 }] }] })],
+    ['a unit whose term is past 120', createdBody({ lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00',
+      min_price: '85000.00', subtotal: '96000.00', units: [{ serial_number: 'A', warranty_months: 121 }] }] })],
+    ['a unit with an empty serial', createdBody({ lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00',
+      min_price: '85000.00', subtotal: '96000.00', units: [{ serial_number: '', warranty_months: 1 }] }] })],
+    ['a unit with a serial over 64 characters', createdBody({ lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00',
+      min_price: '85000.00', subtotal: '96000.00', units: [{ serial_number: 'x'.repeat(65), warranty_months: 1 }] }] })],
+    ['the same serial twice in one sale', createdBody({ lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00',
+      min_price: '85000.00', subtotal: '96000.00', units: [{ serial_number: 'ABC123', warranty_months: 1 }] },
+    { variant_id: 3, quantity: 1, unit_price: '96000.00', min_price: '85000.00', subtotal: '96000.00',
+      units: [{ serial_number: 'abc123', warranty_months: 1 }] }], total: '192000.00',
+    payments: [{ method: 'cash', amount: '192000.00' }], payment_method: 'cash' })],
+    ['a client without a name', createdBody({ customer: { name: '', phone: '', document: '', address: '' } })],
+    ['a client without its address key', createdBody({ customer: { name: 'Marta Giménez', phone: '', document: '' } })],
+    ['a client address over 200 characters', createdBody({ customer: { name: 'Marta Giménez', phone: '', document: '', address: 'x'.repeat(201) } })],
     ['a total that is not canonical', createdBody({ total: '304000' })],
     ['a creation reply without the sale key', JSON.stringify(saleBody())],
   ])('refuses %s', (_, body) => {
@@ -196,9 +234,17 @@ describe('the sale document read', () => {
     ['an unknown history key', pageBody({ extra: true })],
     ['a row without its line count', pageBody({ sales: [{ ...summary(), lines: undefined }] })],
     ['a zero line count', pageBody({ sales: [summary({ lines: 0 })] })],
+    ['a row without its unit count', pageBody({ sales: [{ ...summary(), units_total: undefined }] })],
+    ['a row without its warranty count', pageBody({ sales: [{ ...summary(), units_with_warranty: undefined }] })],
+    ['a row whose warranties exceed its units', pageBody({ sales: [summary({ units_with_warranty: 4 })] })],
+    ['a row with more lines than units', pageBody({ sales: [summary({ units_total: 1, units_with_warranty: 1 })] })],
     ['more rows than the announced page', pageBody({ page_size: 10, sales: Array.from({ length: 11 }, (_, index) => summary({ id: index + 1 })) })],
     ['a page past the announced total', pageBody({ page: 2, sales: [summary()], total_sales: 1 })],
-    ['a detail without the catalogue identity', detailBody({ lines: [{ variant_id: 1, quantity: 1, unit_price: '1.00', min_price: '1.00', warranty_months: 12, subtotal: '1.00' }] })],
+    ['a detail without the catalogue identity', detailBody({ lines: [{ variant_id: 1, quantity: 1, unit_price: '1.00', min_price: '1.00', subtotal: '1.00',
+      units: [{ serial_number: 'A', warranty_months: 1 }] }] })],
+    ['a detail whose line has no units', detailBody({ lines: [{ variant_id: 1, catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL',
+      capacity_ah: '35', polarity: 'L', quantity: 1, unit_price: '96000.00', min_price: '85000.00', subtotal: '96000.00' }],
+    total: '96000.00', payments: [{ method: 'cash', amount: '96000.00' }] })],
     ['a detail without its payments', detailBody({ payments: [] })],
   ])('refuses %s', (_, body) => {
     expect(() => (body.includes('"sales"') ? parseSalePage(body) : parseSaleDetail(body))).toThrow();
@@ -213,23 +259,44 @@ describe('the sale evidence', () => {
   it.each([
     ['another total', createdBody({ total: '400000.00', payment_method: 'cash',
       payments: [{ method: 'cash', amount: '400000.00' }], lines: [
-      { variant_id: 1, quantity: 3, unit_price: '96000.00', min_price: '85000.00', warranty_months: 12, subtotal: '288000.00' },
-      { variant_id: 3, quantity: 1, unit_price: '112000.00', min_price: '100000.00', warranty_months: 12, subtotal: '112000.00' },
+      { variant_id: 1, quantity: 3, unit_price: '96000.00', min_price: '85000.00', subtotal: '288000.00',
+        units: [{ serial_number: 'ABC123', warranty_months: 12 }, { serial_number: 'ABC124', warranty_months: null },
+          { serial_number: 'ABC125', warranty_months: 12 }] },
+      { variant_id: 3, quantity: 1, unit_price: '112000.00', min_price: '100000.00', subtotal: '112000.00',
+        units: [{ serial_number: 'TOYO-9', warranty_months: 12 }] },
     ] })],
     ['another settlement', createdBody({ payments: [{ method: 'cash', amount: '304000.00' }], payment_method: 'cash' })],
     ['another line price', createdBody({ total: '302000.00',
       payments: [{ method: 'cash', amount: '190000.00' }, { method: 'transfer', amount: '112000.00' }], lines: [
-      { variant_id: 1, quantity: 2, unit_price: '95000.00', min_price: '85000.00', warranty_months: 12, subtotal: '190000.00' },
-      { variant_id: 3, quantity: 1, unit_price: '112000.00', min_price: '100000.00', warranty_months: 12, subtotal: '112000.00' },
+      { variant_id: 1, quantity: 2, unit_price: '95000.00', min_price: '85000.00', subtotal: '190000.00',
+        units: [{ serial_number: 'ABC123', warranty_months: 12 }, { serial_number: 'ABC124', warranty_months: null }] },
+      { variant_id: 3, quantity: 1, unit_price: '112000.00', min_price: '100000.00', subtotal: '112000.00',
+        units: [{ serial_number: 'TOYO-9', warranty_months: 12 }] },
     ] })],
-    ['another warranty term', createdBody({ lines: [
-      { variant_id: 1, quantity: 2, unit_price: '96000.00', min_price: '85000.00', warranty_months: 6, subtotal: '192000.00' },
-      { variant_id: 3, quantity: 1, unit_price: '112000.00', min_price: '100000.00', warranty_months: 12, subtotal: '112000.00' },
+    ['another term on one unit', createdBody({ lines: [
+      { variant_id: 1, quantity: 2, unit_price: '96000.00', min_price: '85000.00', subtotal: '192000.00',
+        units: [{ serial_number: 'ABC123', warranty_months: 6 }, { serial_number: 'ABC124', warranty_months: null }] },
+      { variant_id: 3, quantity: 1, unit_price: '112000.00', min_price: '100000.00', subtotal: '112000.00',
+        units: [{ serial_number: 'TOYO-9', warranty_months: 12 }] },
     ] })],
-    ['another client', createdBody({ customer: { name: 'Otra Persona', phone: '', document: '' } })],
+    ['a warranty where the seller registered none', createdBody({ lines: [
+      { variant_id: 1, quantity: 2, unit_price: '96000.00', min_price: '85000.00', subtotal: '192000.00',
+        units: [{ serial_number: 'ABC123', warranty_months: 12 }, { serial_number: 'ABC124', warranty_months: 12 }] },
+      { variant_id: 3, quantity: 1, unit_price: '112000.00', min_price: '100000.00', subtotal: '112000.00',
+        units: [{ serial_number: 'TOYO-9', warranty_months: 12 }] },
+    ] })],
+    ['another serial on one unit', createdBody({ lines: [
+      { variant_id: 1, quantity: 2, unit_price: '96000.00', min_price: '85000.00', subtotal: '192000.00',
+        units: [{ serial_number: 'ZZZ999', warranty_months: 12 }, { serial_number: 'ABC124', warranty_months: null }] },
+      { variant_id: 3, quantity: 1, unit_price: '112000.00', min_price: '100000.00', subtotal: '112000.00',
+        units: [{ serial_number: 'TOYO-9', warranty_months: 12 }] },
+    ] })],
+    ['another client', createdBody({ customer: { name: 'Otra Persona', phone: '', document: '', address: 'Av. América 123' } })],
+    ['another address', createdBody({ customer: { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: '' } })],
     ['a missing line', createdBody({ total: '192000.00', payment_method: 'cash',
       payments: [{ method: 'cash', amount: '192000.00' }],
-      lines: [{ variant_id: 1, quantity: 2, unit_price: '96000.00', min_price: '85000.00', warranty_months: 12, subtotal: '192000.00' }] })],
+      lines: [{ variant_id: 1, quantity: 2, unit_price: '96000.00', min_price: '85000.00', subtotal: '192000.00',
+        units: [{ serial_number: 'ABC123', warranty_months: 12 }, { serial_number: 'ABC124', warranty_months: null }] }] })],
   ])('refuses a reply that reports %s', (_, body) => {
     expect(matchesCreateSale(input(), parseCreatedSale(body))).toBe(false);
   });
@@ -245,6 +312,7 @@ describe('the sale failures', () => {
     [409, '{"error":"variant_not_sellable","variant_id":3}', 'variant_not_sellable'],
     [409, '{"error":"below_minimum","variant_id":1}', 'below_minimum'],
     [409, '{"error":"insufficient_stock","variant_id":19}', 'insufficient_stock'],
+    [409, '{"error":"serial_already_sold","serial_number":"ABC123"}', 'serial_already_sold'],
     [503, '{"error":"service_unavailable"}', 'service_unavailable'],
   ])('admits the %s %s envelope', (status, body, code) => {
     expect(parseSalesError(body, status)).toMatchObject({ code });
@@ -252,15 +320,27 @@ describe('the sale failures', () => {
 
   it('names the variant a line refusal points at', () => {
     expect(parseSalesError('{"error":"below_minimum","variant_id":1}', 409))
-      .toEqual({ code: 'below_minimum', variant_id: 1, mismatch: null });
+      .toEqual({ code: 'below_minimum', variant_id: 1, serial_number: null, mismatch: null });
+  });
+
+  it('names the serial a repeated-serial refusal points at', () => {
+    expect(parseSalesError('{"error":"serial_already_sold","serial_number":"ABC123"}', 409))
+      .toEqual({ code: 'serial_already_sold', variant_id: null, serial_number: 'ABC123', mismatch: null });
+  });
+
+  it('tells the seller the serial was already sold and that nothing was registered', () => {
+    expect(salesErrorMessages.serial_already_sold).toContain('ya se vendió');
+    expect(salesErrorMessages.serial_already_sold).toContain('No se registró nada.');
   });
 
   it('names the side that does not close, with its amount', () => {
     expect(parseSalesError('{"error":"payments_mismatch","missing":"104000.00"}', 400)).toEqual({
-      code: 'payments_mismatch', variant_id: null, mismatch: { side: 'missing', amount: '104000.00' },
+      code: 'payments_mismatch', variant_id: null, serial_number: null,
+      mismatch: { side: 'missing', amount: '104000.00' },
     });
     expect(parseSalesError('{"error":"payments_mismatch","excess":"6000.00"}', 400)).toEqual({
-      code: 'payments_mismatch', variant_id: null, mismatch: { side: 'excess', amount: '6000.00' },
+      code: 'payments_mismatch', variant_id: null, serial_number: null,
+      mismatch: { side: 'excess', amount: '6000.00' },
     });
   });
 
@@ -271,6 +351,12 @@ describe('the sale failures', () => {
     ['a mismatch with both sides', '{"error":"payments_mismatch","missing":"1.00","excess":"2.00"}', 400],
     ['a mismatch with money that is not canonical', '{"error":"payments_mismatch","missing":"1000"}', 400],
     ['a variant refusal without its id', '{"error":"below_minimum"}', 409],
+    ['a serial refusal without its serial', '{"error":"serial_already_sold"}', 409],
+    ['a serial refusal beside a variant id', '{"error":"serial_already_sold","serial_number":"ABC123","variant_id":1}', 409],
+    ['a serial refusal with an empty serial', '{"error":"serial_already_sold","serial_number":""}', 409],
+    ['a serial refusal with a padded serial', '{"error":"serial_already_sold","serial_number":" ABC123 "}', 409],
+    ['a serial refusal with a serial over 64 characters', `{"error":"serial_already_sold","serial_number":"${'x'.repeat(65)}"}`, 409],
+    ['a serial beside another code', '{"error":"forbidden","serial_number":"ABC123"}', 403],
     ['a message beside the code', '{"error":"forbidden","message":"no"}', 403],
     ['a non-JSON body', 'forbidden', 403],
   ])('refuses %s', (_, body, status) => {
@@ -297,6 +383,18 @@ describe('the counter transport', () => {
     expect((await api.history({ search: '', payment_method: '', page: 1, page_size: 10 })).total_sales).toBe(87);
     expect((await api.detail(1)).lines[0].brand).toBe('CAR');
     expect(fetch.mock.calls[1][0]).toBe('/api/sales/1');
+  });
+
+  it('trims the address it sends and compares the replied one the way the server does', async () => {
+    const asked = input();
+    const spaced = { ...asked, customer: { ...asked.customer, address: '  Av. América 123  ' } };
+    const fetch = mockFetch().mockResolvedValue(json(createdBody({
+      customer: { ...asked.customer, address: 'Av. América 123' },
+    }), 201));
+    const sale = await createSalesAPI(fetch).create(spaced, csrf);
+    expect(sale.customer.address).toBe('Av. América 123');
+    // D9: the body carries the trimmed address the server echoes back.
+    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body)).customer.address).toBe('Av. América 123');
   });
 
   it('posts the exact document payload with the session CSRF header', async () => {
@@ -340,8 +438,14 @@ describe('the counter transport', () => {
     });
   });
 
+  it('carries the serial a repeated-serial refusal names, so the counter can point at it', async () => {
+    const fetch = mockFetch().mockResolvedValue(json('{"error":"serial_already_sold","serial_number":"ABC123"}', 409));
+    await expect(createSalesAPI(fetch).create(input(), csrf)).rejects.toMatchObject({
+      code: 'serial_already_sold', status: 409, serialNumber: 'ABC123',
+    });
+  });
+
   it.each([
-    ['a text/html body', new Response(createdBody(), { status: 201, headers: { 'Content-Type': 'text/html' } })],
     ['a reply under another status', new Response(createdBody(), { status: 200, headers: { 'Content-Type': 'application/json' } })],
     ['a reply that reports another total', new Response(createdBody({ total: '1.00' }), { status: 201, headers: { 'Content-Type': 'application/json' } })],
   ])('refuses to interpret %s', async (_, reply) => {
@@ -360,9 +464,26 @@ describe('the counter transport', () => {
     ['a CSRF token with forbidden characters', input(), 'not a token'],
     ['a document with no payments', { ...input(), payments: [] }, csrf],
     ['a document with no lines', { ...input(), lines: [] }, csrf],
-    ['a price with three decimals', { ...input(), lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.000', warranty_months: 12 }] }, csrf],
-    ['a term outside its bounds', { ...input(), lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00', warranty_months: 0 }] }, csrf],
-    ['a client without a name', { ...input(), customer: { name: '  ', phone: '', document: '' } }, csrf],
+    ['a price with three decimals', { ...input(), lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.000',
+      units: [{ serial_number: 'ABC123', warranty_months: 12 }] }] }, csrf],
+    ['a term outside its bounds', { ...input(), lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00',
+      units: [{ serial_number: 'ABC123', warranty_months: 0 }] }] }, csrf],
+    ['a unit without its term key', { ...input(), lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00',
+      units: [{ serial_number: 'ABC123' }] }] }, csrf],
+    ['a unit count that is not the quantity', { ...input(), lines: [{ variant_id: 1, quantity: 2, unit_price: '96000.00',
+      units: [{ serial_number: 'ABC123', warranty_months: 12 }] }] }, csrf],
+    ['a unit without a serial', { ...input(), lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00',
+      units: [{ serial_number: '  ', warranty_months: 12 }] }] }, csrf],
+    ['a serial over 64 characters', { ...input(), lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00',
+      units: [{ serial_number: 'x'.repeat(65), warranty_months: 12 }] }] }, csrf],
+    ['the same serial twice', { ...input(), lines: [{ variant_id: 1, quantity: 2, unit_price: '96000.00',
+      units: [{ serial_number: 'ABC123', warranty_months: 12 }, { serial_number: 'abc123', warranty_months: 12 }] }] }, csrf],
+    ['a line with a warranty term outside the units', { ...input(), lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00',
+      warranty_months: 12, units: [{ serial_number: 'ABC123', warranty_months: 12 }] }] }, csrf],
+    ['a client without a name', { ...input(), customer: { name: '  ', phone: '', document: '', address: '' } }, csrf],
+    ['a client without its address key', { ...input(), customer: { name: 'Marta', phone: '', document: '' } }, csrf],
+    ['a client address over 200 characters', { ...input(),
+      customer: { name: 'Marta', phone: '', document: '', address: 'x'.repeat(201) } }, csrf],
   ])('fails closed on %s without any network call', async (_, body, token) => {
     const fetch = mockFetch();
     await expect(createSalesAPI(fetch).create(body as CreateSaleInput, token)).rejects.toMatchObject({

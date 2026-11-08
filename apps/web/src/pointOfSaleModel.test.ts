@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
   addToCart, cartCount, cartTotal, centsToMoney, changeQuantity, defaultWarrantyMonths, emptyCustomer, emptyPayments,
-  fillRemaining, formatMoney, lineSubtotal, maxWarrantyMonths, minWarrantyMonths, moneyCents, moneySumMessage,
-  parseTypedMoney, paymentAmount, paymentBreakdown, paymentLabel, paymentsTotal, paymentsWire, posEmptyCartMessage,
-  posCustomerNameMessage, posExcessMessage, posMissingMessage, posNotSellableReason, posPriceFloorMessage,
-  posWarrantyMessage, prepareSale, removeFromCart, setPayment, setPaymentAmount, setQuantity, setUnitPrice, setWarranty,
-  settlement, typedMoney, variantLabel, type CartLine, type SellableVariant,
+  fillRemaining, formatMoney, lineSubtotal, maxSaleUnits, maxSerialLength, maxWarrantyMonths, minWarrantyMonths,
+  moneyCents,
+  moneySumMessage, parseTypedMoney, paymentAmount, paymentBreakdown, paymentLabel, paymentsTotal, paymentsWire,
+  posAddressMessage, posCustomerNameMessage, posDuplicateSerialMessage, posEmptyCartMessage, posExcessMessage,
+  posMissingMessage, posMissingUnitMessage, posNotSellableReason, posPriceFloorMessage, posSerialLengthMessage,
+  posSerialMessage, posUnitTotalMessage, posUnitsMessage, posWarrantyMessage, prepareSale, removeFromCart, serialSoldProblem,
+  setPayment,
+  setPaymentAmount,
+  setQuantity, setUnitPrice, setUnitSerial, setUnitWarranty, setWarranty, settlement, typedMoney, unitsProblem,
+  variantLabel, warrantyLabel, type CartLine, type SellableVariant,
 } from './pointOfSaleModel';
 
 /** The counter's sellable variant: its battery carries the pair, the variant one polarity. */
@@ -37,6 +42,22 @@ function priced(cart: readonly CartLine[], variantID: number, typed: string): re
   const edited = setUnitPrice(cart, variantID, typed);
   expect(edited.ok).toBe(true);
   return edited.ok ? edited.cart : cart;
+}
+/** The seller's own work at the counter: one serial per battery, and the term of each one. */
+function unitsOf(cart: readonly CartLine[], variantID: number, serials: readonly string[],
+  terms: readonly (number | null)[] = []): readonly CartLine[] {
+  let next = cart;
+  serials.forEach((serial, index) => {
+    const written = setUnitSerial(next, variantID, index, serial);
+    expect(written.ok).toBe(true);
+    if (!written.ok) return;
+    next = written.cart;
+    if (index >= terms.length) return;
+    const term = setUnitWarranty(next, variantID, index, terms[index]);
+    expect(term.ok).toBe(true);
+    if (term.ok) next = term.cart;
+  });
+  return next;
 }
 
 describe('counter money', () => {
@@ -94,16 +115,65 @@ describe('counter money', () => {
 });
 
 describe('the cart', () => {
-  it('holds one line per variant, starting from the suggested price and a term', () => {
+  it('holds one line per variant, with one unit per battery from the start', () => {
     const cart = cartOf(item());
     expect(cart).toHaveLength(1);
     expect(cart[0]).toMatchObject({
       variant_id: 1, catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L',
       quantity: 1, unit_price_cents: 9_600_000n, suggested_price_cents: 9_600_000n, min_price_cents: 8_500_000n,
-      warranty_months: defaultWarrantyMonths,
     });
+    // Every unit starts with the same default term (D5) and no serial yet (S2).
+    expect(cart[0].units).toEqual([{ serial_number: '', warranty_months: defaultWarrantyMonths }]);
     expect(defaultWarrantyMonths).toBe(12);
     expect(variantLabel(cart[0])).toBe('CAR NS40ZL L');
+  });
+
+  it('keeps one unit row per battery while the quantity moves', () => {
+    const one = cartOf(item());
+    const grown = changeQuantity(one, 1, 1);
+    expect(grown.ok).toBe(true);
+    const two = grown.ok ? grown.cart : one;
+    expect(two[0].units).toEqual([
+      { serial_number: '', warranty_months: defaultWarrantyMonths },
+      { serial_number: '', warranty_months: defaultWarrantyMonths },
+    ]);
+    const written = unitsOf(two, 1, ['ABC123', 'ABC124'], [12, null]);
+    expect(written[0].units).toEqual([
+      { serial_number: 'ABC123', warranty_months: 12 },
+      { serial_number: 'ABC124', warranty_months: null },
+    ]);
+    // Shrinking drops the trailing unit and keeps what the seller already wrote.
+    const shrunk = setQuantity(written, 1, 1);
+    expect(shrunk.ok && shrunk.cart[0].units).toEqual([{ serial_number: 'ABC123', warranty_months: 12 }]);
+  });
+
+  it('writes the serial the seller read off the battery, up to 64 characters', () => {
+    const cart = cartOf(item());
+    const written = setUnitSerial(cart, 1, 0, 'ABC123');
+    expect(written.ok && written.cart[0].units[0].serial_number).toBe('ABC123');
+    expect(setUnitSerial(cart, 1, 0, 'x'.repeat(maxSerialLength)).ok).toBe(true);
+    expect(maxSerialLength).toBe(64);
+    expect(setUnitSerial(cart, 1, 0, 'x'.repeat(65))).toEqual({ ok: false, message: posSerialLengthMessage });
+    // A unit that is not in the line cannot be written.
+    expect(setUnitSerial(cart, 1, 1, 'ABC124')).toEqual({ ok: false, message: posMissingUnitMessage });
+    expect(setUnitSerial(cart, 2, 0, 'ABC124')).toEqual({ ok: false, message: expect.stringContaining('línea') });
+  });
+
+  it('assigns a term to one unit, or its explicit absence', () => {
+    const two = changeQuantity(cartOf(item()), 1, 1);
+    const cart = two.ok ? two.cart : [];
+    const first = setUnitWarranty(cart, 1, 0, 24);
+    expect(first.ok && first.cart[0].units.map(unit => unit.warranty_months)).toEqual([24, defaultWarrantyMonths]);
+    const absent = setUnitWarranty(cart, 1, 1, null);
+    expect(absent.ok && absent.cart[0].units.map(unit => unit.warranty_months)).toEqual([defaultWarrantyMonths, null]);
+    // There is no zero-month term: the absence is null.
+    expect(setUnitWarranty(cart, 1, 0, 0)).toEqual({ ok: false, message: posWarrantyMessage });
+    expect(setUnitWarranty(cart, 1, 0, 121)).toEqual({ ok: false, message: posWarrantyMessage });
+    expect(setUnitWarranty(cart, 1, 0, 12.5)).toEqual({ ok: false, message: posWarrantyMessage });
+    expect(setUnitWarranty(cart, 1, 5, 12)).toEqual({ ok: false, message: posMissingUnitMessage });
+    expect(warrantyLabel(null)).toBe('Sin garantía');
+    expect(warrantyLabel(1)).toBe('1 mes');
+    expect(warrantyLabel(12)).toBe('12 meses');
   });
 
   it('bumps the quantity instead of repeating the variant', () => {
@@ -125,7 +195,8 @@ describe('the cart', () => {
     const full: readonly CartLine[] = Array.from({ length: 190 }, (_, index) => ({
       variant_id: index + 1, catalog_entry_id: index + 1, brand: 'CAR', model: `M${index + 1}`,
       capacity_ah: '35', polarity: 'L', quantity: 1, unit_price_cents: 9_600_000n,
-      suggested_price_cents: 9_600_000n, min_price_cents: 8_500_000n, warranty_months: 12,
+      suggested_price_cents: 9_600_000n, min_price_cents: 8_500_000n,
+      units: [{ serial_number: `S${index + 1}`, warranty_months: 12 }],
     }));
     expect(addToCart(full, item({ variant_id: 500 })).ok).toBe(false);
   });
@@ -155,9 +226,12 @@ describe('the cart', () => {
     expect(setQuantity(cart, 1, 0).ok).toBe(false);
     expect(setQuantity(cart, 1, 1.5).ok).toBe(false);
     expect(setQuantity(cart, 1, 1_000_001).ok).toBe(false);
-    const max = setQuantity(cart, 1, 1_000_000);
+    // One row per battery: a line never holds more units than a whole sale may carry.
+    expect(setQuantity(cart, 1, 1_001)).toEqual({ ok: false, message: posUnitTotalMessage });
+    const max = setQuantity(cart, 1, maxSaleUnits);
     expect(max.ok).toBe(true);
-    expect(max.ok && max.cart[0].quantity).toBe(1_000_000);
+    expect(max.ok && max.cart[0].quantity).toBe(maxSaleUnits);
+    expect(max.ok && max.cart[0].units).toHaveLength(maxSaleUnits);
   });
 
   it('keeps the warranty term between one and hundred twenty months', () => {
@@ -169,7 +243,21 @@ describe('the cart', () => {
     expect(setWarranty(cart, 1, 12.5)).toEqual({ ok: false, message: posWarrantyMessage });
     expect(setWarranty(cart, 1, Number.NaN)).toEqual({ ok: false, message: posWarrantyMessage });
     const term = setWarranty(cart, 1, 24);
-    expect(term.ok && term.cart[0].warranty_months).toBe(24);
+    expect(term.ok && term.cart[0].units[0].warranty_months).toBe(24);
+  });
+
+  // D5: one action per line, so a bulk sale is not eight manual entries.
+  it('applies one term, or its absence, to every unit of the line at once', () => {
+    const two = changeQuantity(cartOf(item()), 1, 2);
+    const cart = two.ok ? two.cart : [];
+    const applied = setWarranty(cart, 1, 24);
+    expect(applied.ok && applied.cart[0].units.map(unit => unit.warranty_months)).toEqual([24, 24, 24]);
+    const absent = setWarranty(cart, 1, null);
+    expect(absent.ok && absent.cart[0].units.map(unit => unit.warranty_months)).toEqual([null, null, null]);
+    // The bulk action never reaches past its own line.
+    const both = cartOf(item(), toyo());
+    const one = setWarranty(both, 1, null);
+    expect(one.ok && one.cart[1].units[0].warranty_months).toBe(defaultWarrantyMonths);
   });
 
   it('refuses a price under the branch minimum before sending anything', () => {
@@ -261,26 +349,115 @@ describe('the payment split', () => {
 describe('the sale the counter sends', () => {
   const cart = priced(cartOf(item(), toyo()), 3, '112.000,00');
   const bump = changeQuantity(cart, 1, 1);
-  const document = bump.ok ? bump.cart : cart;
+  const two = bump.ok ? bump.cart : cart;
+  const document = unitsOf(unitsOf(two, 1, ['ABC123', 'ABC124']), 3, ['TOYO-9']);
   const split = setPaymentAmount(setPaymentAmount(emptyPayments, 'cash', 20_000_000n), 'transfer', 10_400_000n);
-  const customer = { name: '  Marta Giménez ', phone: '381 555 0198', document: '27.884.310' };
+  const customer = {
+    name: '  Marta Giménez ', phone: '381 555 0198', document: '27.884.310', address: 'Av. América 123',
+  };
 
   it('builds the exact payload of the contract once the sum closes', () => {
     expect(prepareSale(document, split, customer)).toEqual({
       ok: true, total_cents: 30_400_000n,
       input: {
         payments: [{ method: 'cash', amount: '200000.00' }, { method: 'transfer', amount: '104000.00' }],
-        customer: { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310' },
+        customer: { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: 'Av. América 123' },
         lines: [
-          { variant_id: 1, quantity: 2, unit_price: '96000.00', warranty_months: 12 },
-          { variant_id: 3, quantity: 1, unit_price: '112000.00', warranty_months: 12 },
+          { variant_id: 1, quantity: 2, unit_price: '96000.00', units: [
+            { serial_number: 'ABC123', warranty_months: 12 }, { serial_number: 'ABC124', warranty_months: 12 }] },
+          { variant_id: 3, quantity: 1, unit_price: '112000.00', units: [
+            { serial_number: 'TOYO-9', warranty_months: 12 }] },
         ],
       },
     });
   });
 
+  it('sends the explicit absence of warranty as null, never as zero', () => {
+    const withoutOne = unitsOf(document, 1, ['ABC123', 'ABC124'], [12, null]);
+    const prepared = prepareSale(withoutOne, split, customer);
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    expect(prepared.input.lines[0].units).toEqual([{ serial_number: 'ABC123', warranty_months: 12 },
+      { serial_number: 'ABC124', warranty_months: null }]);
+    // The key is always present and never zero: the absence travels as JSON null.
+    const body = JSON.parse(JSON.stringify(prepared.input)) as { lines: { units: unknown[] }[] };
+    expect(body.lines[0].units).toEqual([{ serial_number: 'ABC123', warranty_months: 12 },
+      { serial_number: 'ABC124', warranty_months: null }]);
+    const all = unitsOf(unitsOf(document, 1, ['ABC123', 'ABC124'], [null, null]), 3, ['TOYO-9'], [null]);
+    expect(prepareSale(all, split, customer).ok).toBe(true);
+  });
+
+  it('refuses a sale with a unit that has no serial, and says why', () => {
+    expect(prepareSale(two, split, customer)).toEqual({ ok: false, message: posSerialMessage });
+    // One missing serial is enough: the rest of the sale is not charged either.
+    expect(prepareSale(unitsOf(unitsOf(two, 1, ['ABC123']), 3, ['TOYO-9']), split, customer))
+      .toEqual({ ok: false, message: posSerialMessage });
+    expect(unitsProblem(document)).toBeNull();
+    expect(unitsProblem(two)).toBe(posSerialMessage);
+    expect(prepareSale(document, split, { ...customer, address: '' }).ok).toBe(true);
+  });
+
+  it('refuses the same serial twice in one sale, whatever its case', () => {
+    expect(prepareSale(unitsOf(unitsOf(two, 1, ['ABC123', 'ABC123']), 3, ['TOYO-9']), split, customer))
+      .toEqual({ ok: false, message: posDuplicateSerialMessage });
+    expect(prepareSale(unitsOf(unitsOf(two, 1, ['ABC123', 'abc123']), 3, ['TOYO-9']), split, customer))
+      .toEqual({ ok: false, message: posDuplicateSerialMessage });
+  });
+
+  it('refuses a unit count that is not the quantity, and a term that is not one', () => {
+    const short = document.map(line => line.variant_id === 1 ? { ...line, units: line.units.slice(0, 1) } : line);
+    expect(prepareSale(short, split, customer)).toEqual({ ok: false, message: posUnitsMessage });
+    const noTerm = document.map(line => line.variant_id === 1
+      ? { ...line, units: [{ serial_number: 'ABC123', warranty_months: 0 }, { serial_number: 'ABC124', warranty_months: 12 }] }
+      : line);
+    expect(prepareSale(noTerm, split, customer)).toEqual({ ok: false, message: posWarrantyMessage });
+    const missing = document.map(line => line.variant_id === 1
+      ? { ...line, units: [{ serial_number: 'ABC123' }, { serial_number: 'ABC124', warranty_months: 12 }] }
+      : line);
+    expect(prepareSale(missing as never, split, customer)).toEqual({ ok: false, message: posWarrantyMessage });
+  });
+
+  it('refuses an address over two hundred characters', () => {
+    expect(prepareSale(document, split, { ...customer, address: 'x'.repeat(201) }))
+      .toEqual({ ok: false, message: posAddressMessage });
+    expect(prepareSale(document, split, { ...customer, address: 'x'.repeat(200) }).ok).toBe(true);
+  });
+
+  it('trims the address before bounding it and before sending it', () => {
+    // D9: the server trims and bounds, so a trailing space never turns a real sale in.
+    const padded = prepareSale(document, split, { ...customer, address: '  Av. América 123  ' });
+    expect(padded.ok).toBe(true);
+    if (!padded.ok) return;
+    expect(padded.input.customer.address).toBe('Av. América 123');
+    // Two hundred characters are two hundred characters after the trim, as on the server.
+    const paddedMax = prepareSale(document, split, { ...customer, address: `  ${'x'.repeat(200)}  ` });
+    expect(paddedMax.ok).toBe(true);
+    if (!paddedMax.ok) return;
+    expect(paddedMax.input.customer.address).toBe('x'.repeat(200));
+    // A blank field stays the empty address S1 admits instead of failing the echo check.
+    expect(prepareSale(document, split, { ...customer, address: '   ' }).ok).toBe(true);
+  });
+
   it('refuses an empty cart', () => {
     expect(prepareSale([], split, customer)).toEqual({ ok: false, message: posEmptyCartMessage });
+  });
+
+  it('names the units that carry a serial the server refused, so the seller knows which row to fix', () => {
+    // D8: the refusal names the battery, and the counter points at the row that carries it.
+    const two2 = unitsOf(document, 1, ['abc123', 'ABC124']);
+    expect(serialSoldProblem(two2, 'ABC123')).toBe('El número de serie ABC123 ya se vendió: lo lleva la unidad 1 '
+      + 'de CAR NS40ZL L. Corregí ese serial antes de cobrar. No se registró nada.');
+    // D2 compares after trimming and case folding: the padded draft is still that battery.
+    expect(serialSoldProblem(unitsOf(document, 1, [' ABC123 ', 'ABC124']), 'ABC123'))
+      .toContain('la unidad 1 de CAR NS40ZL L');
+    // The same serial can be written on more than one row of the counter, and both are named.
+    expect(serialSoldProblem(unitsOf(two, 1, ['ABC123', 'ABC123'], [12, 12]), 'ABC123'))
+      .toContain('lo llevan la unidad 1 de CAR NS40ZL L y la unidad 2 de CAR NS40ZL L');
+    // A serial the counter no longer carries is still named instead of read as invalid.
+    expect(serialSoldProblem(document, 'ZZZ999'))
+      .toBe('El número de serie ZZZ999 ya se vendió en otra venta. No se registró nada.');
+    expect(serialSoldProblem(document, '  '))
+      .toBe('El número de serie    ya se vendió en otra venta. No se registró nada.');
   });
 
   it('refuses a sum that does not close exactly', () => {
@@ -296,11 +473,13 @@ describe('the sale the counter sends', () => {
     expect(prepareSale(document, split, { ...customer, name: 'x'.repeat(121) }).ok).toBe(false);
     expect(prepareSale(document, split, { ...customer, phone: 'x'.repeat(41) }).ok).toBe(false);
     expect(prepareSale(document, split, { ...customer, document: 'x'.repeat(41) }).ok).toBe(false);
-    expect(emptyCustomer).toEqual({ name: '', phone: '', document: '' });
+    expect(emptyCustomer).toEqual({ name: '', phone: '', document: '', address: '' });
   });
 
   it('refuses a document whose line would break a frozen rule', () => {
-    const broken = document.map(line => line.variant_id === 1 ? { ...line, warranty_months: 0 } : line);
+    const broken = document.map(line => line.variant_id === 1
+      ? { ...line, units: [{ serial_number: 'ABC123', warranty_months: 121 },
+        { serial_number: 'ABC124', warranty_months: 12 }] } : line);
     expect(prepareSale(broken, split, customer)).toEqual({ ok: false, message: posWarrantyMessage });
     const cheap = document.map(line => line.variant_id === 1 ? { ...line, unit_price_cents: 1n } : line);
     expect(prepareSale(cheap, split, customer)).toEqual({ ok: false, message: posPriceFloorMessage(8_500_000n) });

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import TransferDate from './shared/TransferDate';
-import { formatMoney, moneyCents, paymentLabel, type SaleCustomer } from './pointOfSaleModel';
+import { formatMoney, moneyCents, paymentLabel, warrantyLabel, type SaleCustomer } from './pointOfSaleModel';
 import {
   SalesAPIError, createSalesAPI, salesDefaultPageSize, salesErrorMessages, salesHistoryUnavailable, salesPageSizes,
-  warrantyPath, type SaleDetail, type SalesPage, type SalesErrorCode,
+  warrantyPath, type SaleDetail, type SalesPage, type SaleSummary, type SalesErrorCode,
 } from './salesAPI';
 import './point-of-sale.css';
 
@@ -28,8 +28,18 @@ export interface SalesHistoryProps {
   fetcher?: typeof globalThis.fetch;
 }
 
+/** How a sale's warranty stands, from its counts alone, without unfolding the document. */
+export function warrantyPosition(sale: SaleSummary): string {
+  if (sale.units_with_warranty === 0) return 'Sin garantía';
+  if (sale.units_with_warranty === sale.units_total) {
+    return `${sale.units_total} con garantía`;
+  }
+  return `${sale.units_with_warranty} de ${sale.units_total} con garantía`;
+}
+
+/** The client the warranty names: the address the seller wrote, then the two contacts. */
 const customerLine = (customer: SaleCustomer): string =>
-  [customer.phone, customer.document].filter(part => part !== '').join(' · ');
+  [customer.address.trim(), customer.phone, customer.document].filter(part => part !== '').join(' · ');
 
 export default function SalesHistory({ branch = 'esta sucursal', fetcher = globalThis.fetch }: SalesHistoryProps) {
   const api = useMemo(() => createSalesAPI(fetcher), [fetcher]);
@@ -96,7 +106,7 @@ export default function SalesHistory({ branch = 'esta sucursal', fetcher = globa
     <header className="pos-heading">
       <small>SUCURSAL / PUNTO DE VENTA</small>
       <h1 id="sales-history-title">Historial de ventas</h1>
-      <p>{`Todas las ventas de ${branch}, de la más nueva a la más vieja. Cada una conserva el precio y el plazo que se cobraron ese día, y su garantía se descarga desde la misma fila.`}</p>
+      <p>{`Todas las ventas de ${branch}, de la más nueva a la más vieja. Cada una conserva el precio, la serie y el plazo de cada batería que se cobraron ese día, y su garantía se descarga desde la misma fila.`}</p>
     </header>
     <section className="pos-panel" aria-labelledby="sales-history-list" aria-busy={state.phase === 'loading'}>
       <div className="pos-panel-head">
@@ -124,7 +134,7 @@ export default function SalesHistory({ branch = 'esta sucursal', fetcher = globa
           <thead><tr>
             <th scope="col">Venta</th><th scope="col">Garantía</th><th scope="col">Fecha y hora</th>
             <th scope="col">Cliente</th><th scope="col">Forma de pago</th><th scope="col" className="num">Líneas</th>
-            <th scope="col" className="num">Total</th><th scope="col">Acciones</th>
+            <th scope="col">Garantías</th><th scope="col" className="num">Total</th><th scope="col">Acciones</th>
           </tr></thead>
           <tbody>{sales.map(sale => {
             const unfolded = open?.id === sale.id;
@@ -138,6 +148,7 @@ export default function SalesHistory({ branch = 'esta sucursal', fetcher = globa
                 <td data-label="Cliente">{sale.customer_name}</td>
                 <td data-label="Forma de pago"><span className={`pos-tag ${sale.payment_method}`}>{paymentLabel(sale.payment_method)}</span></td>
                 <td data-label="Líneas" className="num">{sale.lines}</td>
+                <td data-label="Garantías">{warrantyPosition(sale)}</td>
                 <td data-label="Total" className="num">{formatMoney(moneyCents(sale.total))}</td>
                 <td data-label="Acciones"><div className="sales-actions">
                   <button type="button" className="pos-quiet" aria-label={`Ver la venta ${sale.branch_sequence}`}
@@ -148,7 +159,7 @@ export default function SalesHistory({ branch = 'esta sucursal', fetcher = globa
                 </div></td>
               </tr>,
               <tr key={`detail-${sale.id}`} id={detailID} className="sales-detail" hidden={!unfolded}>
-                <td colSpan={8}>{unfolded && open &&
+                <td colSpan={9}>{unfolded && open &&
                   <section className="sales-detail-inner" aria-label={`Venta ${sale.branch_sequence}`}>
                     {open.phase === 'loading' && <p className="pos-message" role="status">Consultando la venta…</p>}
                     {open.phase === 'error' && <p className="pos-message" role="alert">{open.problem}</p>}
@@ -164,7 +175,7 @@ export default function SalesHistory({ branch = 'esta sucursal', fetcher = globa
                           <caption className="sr-only">Líneas de la venta {open.detail.branch_sequence}</caption>
                           <thead><tr>
                             <th scope="col">Batería</th><th scope="col">Cantidad</th><th scope="col">Precio unitario</th>
-                            <th scope="col">Plazo</th><th scope="col" className="num">Subtotal</th>
+                            <th scope="col">Unidades</th><th scope="col" className="num">Subtotal</th>
                           </tr></thead>
                           <tbody>{open.detail.lines.map(line => <tr key={line.variant_id}>
                             <td data-label="Batería">
@@ -174,7 +185,13 @@ export default function SalesHistory({ branch = 'esta sucursal', fetcher = globa
                             <td data-label="Cantidad">{`${line.quantity} × ${formatMoney(moneyCents(line.unit_price))}`}</td>
                             <td data-label="Precio unitario">{formatMoney(moneyCents(line.unit_price))}
                               <small>{`Mínimo al vender ${formatMoney(moneyCents(line.min_price))}`}</small></td>
-                            <td data-label="Plazo">{`${line.warranty_months} meses`}</td>
+                            <td data-label="Unidades">
+                              <ul className="sales-detail-units">{line.units.map(unit =>
+                                <li key={unit.serial_number}>
+                                  <span className="pos-doc">{unit.serial_number}</span>
+                                  <small>{warrantyLabel(unit.warranty_months)}</small>
+                                </li>)}</ul>
+                            </td>
                             <td data-label="Subtotal" className="num">{formatMoney(moneyCents(line.subtotal))}</td>
                           </tr>)}</tbody>
                         </table>
@@ -221,7 +238,7 @@ export default function SalesHistory({ branch = 'esta sucursal', fetcher = globa
             onClick={() => setPageNumber(value => value + 1)}><span>Siguiente</span>›</button>
         </div>
       </footer>
-      <p className="pos-hint">El historial es de la sucursal de la sesión: otra sucursal nunca ve estas ventas. El precio cobrado y el plazo de cada línea quedan congelados en el documento, así que cambiar un precio hoy no altera una venta de ayer.</p>
+      <p className="pos-hint">El historial es de la sucursal de la sesión: otra sucursal nunca ve estas ventas. El precio cobrado, la serie de cada batería y su plazo quedan congelados en el documento, así que cambiar un precio hoy no altera una venta de ayer.</p>
     </section>
   </section>;
 }

@@ -55,6 +55,24 @@
 .pos-qty { display: flex; align-items: center; gap: 6px; }
 .pos-qty button { min-height: 34px; padding: 4px 10px; line-height: 1; }
 .pos-qty input { width: 58px; text-align: center; }
+/* One row per physical battery: a serial and a term, or its explicit absence. */
+.pos-units { display: grid; gap: 8px; }
+.pos-unit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 76px); gap: 8px;
+  align-items: end; padding: 8px; background: var(--page); border: 1px solid var(--border); border-radius: 4px; }
+.pos-unit-head { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline;
+  justify-content: space-between; gap: 6px; }
+.pos-unit-index { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .03em;
+  text-transform: uppercase; }
+.pos-unit label { display: grid; gap: 4px; min-width: 0; color: var(--muted); font-size: 12px; }
+.pos-unit input { width: 100%; min-height: 34px; padding: 4px 8px; border-color: var(--muted);
+  color: #242124; font-size: 13px; }
+/* The bulk action of D5: one term, or its absence, for every unit of the line. */
+.pos-line-bulk { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: end; }
+.pos-line-bulk label { display: grid; gap: 4px; min-width: 0; color: var(--muted); font-size: 12px; }
+.pos-line-bulk input { width: 100%; min-height: 34px; padding: 4px 8px; border-color: var(--muted);
+  color: #242124; font-size: 13px; }
+.pos-line-bulk button { min-height: 34px; padding: 4px 10px; border-color: var(--border); color: var(--muted);
+  font-size: 12px; }
 .pos-remove { justify-self: start; min-height: 34px; padding: 4px 10px; border-color: var(--border);
   color: var(--muted); font-size: 12px; }
 .pos-totals { display: grid; gap: 6px; padding-top: 12px; border-top: 1px solid var(--border);
@@ -70,7 +88,7 @@
 .pos-pay-sum { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .pos-rest { min-height: 34px; padding: 4px 10px; border-color: var(--border); color: var(--muted); font-size: 12px; }
 .pos-customer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.pos-customer label:first-child { grid-column: 1 / -1; }
+.pos-customer label:first-child, .pos-customer .pos-address { grid-column: 1 / -1; }
 .pos-customer label { display: grid; gap: 4px; min-width: 0; color: var(--muted); font-size: 12px; }
 .pos-customer input { width: 100%; min-height: 40px; padding: 8px 12px; border-color: var(--muted);
   color: #242124; font-size: 13px; }
@@ -113,6 +131,10 @@
 .sales-detail-payments { display: grid; gap: 8px; }
 .sales-detail-payments ul { display: grid; gap: 4px; margin: 8px 0 0; padding: 0; list-style: none; }
 .sales-detail-payments li { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+/* The batteries of one line, each with its serial and its term or its absence. */
+.sales-detail-units { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.sales-detail-units li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.sales-detail-units small { margin: 0; }
 .pos-panel .pager { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px;
   background: var(--page); border: 1px solid var(--border); border-radius: 4px; }
 .pos-panel .page-controls { flex-wrap: wrap; }
@@ -127,6 +149,10 @@
   .pos-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .pos-filters label:first-child { grid-column: 1 / -1; }
   .pos-history-filters { grid-template-columns: minmax(0, 1fr); }
+  /* A 390px counter stacks the serial and the term of each battery instead of overflowing. */
+  .pos-line-controls { grid-template-columns: minmax(0, 1fr); }
+  .pos-unit { grid-template-columns: minmax(0, 1fr); }
+  .pos-line-bulk { grid-template-columns: minmax(0, 1fr); }
   .sales-detail-inner { padding: 16px; }
   .pos-charge { width: 100%; }
 }
