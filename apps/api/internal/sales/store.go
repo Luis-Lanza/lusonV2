@@ -52,15 +52,17 @@ func resolveBranch(ctx context.Context, q querier, actor auth.Identity) (int16, 
 }
 
 // Create applies one immutable sale atomically in the actor's own branch: the header,
-// every line and the stock decrement are one transaction, so a refused line leaves the
-// ledger exactly as it was. The client supplies how the total was settled, the client and
-// the lines; the branch, the actor, the per-branch correlative, the warranty number, the
-// frozen minimum, the frozen warranty term, the subtotal and the payment label are the
-// database's own.
+// every line, every physical unit and the stock decrement are one transaction, so a refused
+// line or a repeated serial leaves the ledger exactly as it was. The client supplies how the
+// total was settled, the client, the address and the lines with their units; the branch, the
+// actor, the per-branch correlative, the warranty number, the frozen minimum, the subtotal
+// and the payment label are the database's own.
 //
 // Lines are inserted in ascending variant order, which is the database's balance-row
-// lock order, and the document completeness plus its total are deferred triggers, so a
-// document that does not add up is still refused at commit.
+// lock order, and each line is followed by its units in ordinal order, so the trigger that
+// admits a unit finds the line it belongs to. The document completeness, the sold-piece
+// count and the total are deferred triggers, so a document that does not add up is still
+// refused at commit.
 func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInput) (Sale, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return Sale{}, ErrUnavailable
@@ -95,11 +97,11 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 	// the sum.
 	cash, card, transfer := amountsOf(payload.Payments)
 	err = tx.QueryRow(ctx, `INSERT INTO sales(branch_location_id,cash_amount,card_amount,transfer_amount,
-  customer_name,customer_phone,customer_document,total,created_by_account_id)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+  customer_name,customer_phone,customer_document,customer_address,total,created_by_account_id)
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
 		branch, string(cash), string(card), string(transfer), payload.Customer.Name,
-		payload.Customer.Phone, payload.Customer.Document, string(payload.Total),
-		int64(actor.AccountID)).Scan(&id)
+		payload.Customer.Phone, payload.Customer.Document, payload.Customer.Address,
+		string(payload.Total), int64(actor.AccountID)).Scan(&id)
 	if err != nil {
 		return Sale{}, mapFailure(ctx, err)
 	}
@@ -108,12 +110,24 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 		// writes them from the branch's stored pair of the sold variant's battery (brand
 		// + model + capacity), so both polarities of one battery are sold at the same
 		// pair, and it derives the subtotal from the sold quantity. The line keeps the
-		// polarity it sells: the warranty term is the seller's own input of this sale
-		// and is stored as stated.
-		if _, err := tx.Exec(ctx, `INSERT INTO sale_lines(sale_id,variant_id,quantity,unit_price,warranty_months)
- VALUES($1,$2,$3,$4,$5)`, id, int32(line.VariantID), line.Quantity, string(line.UnitPrice),
-			int16(line.WarrantyMonths)); err != nil {
+		// polarity it sells and carries no term: the promise belongs to the unit now.
+		if _, err := tx.Exec(ctx, `INSERT INTO sale_lines(sale_id,variant_id,quantity,unit_price)
+ VALUES($1,$2,$3,$4)`, id, int32(line.VariantID), line.Quantity,
+			string(line.UnitPrice)); err != nil {
 			return Sale{}, mapFailure(ctx, err)
+		}
+		// One unit per sold piece, in the order the seller registered them: the ordinal is
+		// the position inside its own line and the term is either stated or absent.
+		for i, unit := range line.Units {
+			var term any
+			if unit.WarrantyMonths != nil {
+				term = int16(*unit.WarrantyMonths)
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO sale_units(sale_id,variant_id,unit_ordinal,serial_number,warranty_months)
+ VALUES($1,$2,$3,$4,$5)`, id, int32(line.VariantID), int32(i+1),
+				string(unit.SerialNumber), term); err != nil {
+				return Sale{}, mapUnitFailure(ctx, err, unit.SerialNumber)
+			}
 		}
 	}
 	sale, err := loadSale(ctx, tx, id)
@@ -126,14 +140,96 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 	return sale, nil
 }
 
-// loadSale reads one persisted sale with its lines exactly as the database stored it:
-// the document numbers, the frozen prices, the frozen term and the derived subtotals.
+// readUnits reads the units of one sale grouped by the variant of their line, in ordinal
+// order inside it, so a line is rebuilt exactly as the counter registered it. A row outside
+// the frozen shape means the ledger is not what this domain wrote, so the read fails closed
+// instead of describing it.
+func readUnits(ctx context.Context, q querier, id int64) (map[int64][]Unit, error) {
+	rows, err := q.Query(ctx, `SELECT variant_id,unit_ordinal,serial_number,warranty_months
+ FROM sale_units WHERE sale_id=$1 ORDER BY variant_id,unit_ordinal`, id)
+	if err != nil {
+		return nil, fail(ctx)
+	}
+	defer rows.Close()
+	units := make(map[int64][]Unit, 4)
+	var previous, ordinal int64
+	for rows.Next() {
+		var variantID, stored int64
+		var serial string
+		var months *int16
+		if rows.Scan(&variantID, &stored, &serial, &months) != nil {
+			return nil, fail(ctx)
+		}
+		if variantID < 1 || variantID > math.MaxInt32 {
+			return nil, ErrUnavailable
+		}
+		// The ordinals of one line are 1..n in order, so a gap or a repeat is refused.
+		if variantID != previous {
+			if stored != 1 {
+				return nil, ErrUnavailable
+			}
+			previous, ordinal = variantID, 0
+		}
+		ordinal++
+		if stored != ordinal {
+			return nil, ErrUnavailable
+		}
+		// The serial is stored trimmed and bounded: anything else is not this domain's row.
+		canonical, ok := CanonicalSerial(SerialNumber(serial))
+		if !ok || canonical != SerialNumber(serial) {
+			return nil, ErrUnavailable
+		}
+		unit := Unit{SerialNumber: canonical}
+		if months != nil {
+			term := int(*months)
+			if term < MinWarrantyMonths || term > MaxWarrantyMonths {
+				return nil, ErrUnavailable
+			}
+			unit.WarrantyMonths = &term
+		}
+		units[variantID] = append(units[variantID], unit)
+		if len(units[variantID]) > MaxUnits {
+			return nil, ErrUnavailable
+		}
+	}
+	if rows.Err() != nil {
+		return nil, fail(ctx)
+	}
+	return units, nil
+}
+
+// admitUnits rebuilds the units of every line from the sale's own rows. A sale whose units
+// are not exactly one per sold piece, whose units belong to no line of the document, or that
+// carries no unit at all is not a document this domain wrote, so the read fails closed.
+func admitUnits(units map[int64][]Unit, variants, quantities []int64) ([][]Unit, error) {
+	if len(variants) != len(quantities) || len(units) != len(variants) {
+		return nil, ErrUnavailable
+	}
+	rebuilt := make([][]Unit, len(variants))
+	total := 0
+	for i, variant := range variants {
+		line := units[variant]
+		if int64(len(line)) != quantities[i] {
+			return nil, ErrUnavailable
+		}
+		rebuilt[i] = line
+		total += len(line)
+	}
+	if total < 1 || total > MaxUnits {
+		return nil, ErrUnavailable
+	}
+	return rebuilt, nil
+}
+
+// loadSale reads one persisted sale with its lines and units exactly as the database stored
+// them: the document numbers, the frozen prices, the units the seller registered and the
+// derived subtotals.
 func loadSale(ctx context.Context, q querier, id int64) (Sale, error) {
 	sale, err := readHeader(ctx, q, id, 0)
 	if err != nil {
 		return Sale{}, err
 	}
-	rows, err := q.Query(ctx, `SELECT variant_id,quantity,unit_price::text,min_price::text,warranty_months,
+	rows, err := q.Query(ctx, `SELECT variant_id,quantity,unit_price::text,min_price::text,
   subtotal::text FROM sale_lines WHERE sale_id=$1 ORDER BY variant_id`, id)
 	if err != nil {
 		return Sale{}, fail(ctx)
@@ -143,8 +239,7 @@ func loadSale(ctx context.Context, q querier, id int64) (Sale, error) {
 	for rows.Next() {
 		var line SaleLine
 		var unit, minimum, subtotal string
-		if rows.Scan(&line.VariantID, &line.Quantity, &unit, &minimum, &line.WarrantyMonths,
-			&subtotal) != nil {
+		if rows.Scan(&line.VariantID, &line.Quantity, &unit, &minimum, &subtotal) != nil {
 			return Sale{}, fail(ctx)
 		}
 		// A persisted line outside the admitted bounds means the ledger is not what this
@@ -157,7 +252,6 @@ func loadSale(ctx context.Context, q querier, id int64) (Sale, error) {
 			!line.UnitPrice.AtLeast(line.MinPrice) ||
 			line.VariantID < 1 || line.VariantID > math.MaxInt32 ||
 			line.Quantity < 1 || line.Quantity > MaxQuantity ||
-			line.WarrantyMonths < MinWarrantyMonths || line.WarrantyMonths > MaxWarrantyMonths ||
 			(len(lines) > 0 && line.VariantID <= lines[len(lines)-1].VariantID) {
 			return Sale{}, ErrUnavailable
 		}
@@ -171,6 +265,22 @@ func loadSale(ctx context.Context, q querier, id int64) (Sale, error) {
 	}
 	if len(lines) == 0 {
 		return Sale{}, ErrUnavailable
+	}
+	units, err := readUnits(ctx, q, id)
+	if err != nil {
+		return Sale{}, err
+	}
+	variants := make([]int64, len(lines))
+	quantities := make([]int64, len(lines))
+	for i, line := range lines {
+		variants[i], quantities[i] = line.VariantID, line.Quantity
+	}
+	sold, err := admitUnits(units, variants, quantities)
+	if err != nil {
+		return Sale{}, err
+	}
+	for i := range lines {
+		lines[i].Units = sold[i]
 	}
 	sale.Lines = lines
 	return sale, nil
@@ -191,11 +301,12 @@ func readHeader(ctx context.Context, q querier, id, branch int64) (Sale, error) 
 	}
 	err := q.QueryRow(ctx, `SELECT s.id,s.branch_location_id,s.branch_sequence,s.warranty_number,
   s.payment_method,s.cash_amount::text,s.card_amount::text,s.transfer_amount::text,
-  s.customer_name,s.customer_phone,s.customer_document,s.total::text,
+  s.customer_name,s.customer_phone,s.customer_document,s.customer_address,s.total::text,
   s.created_by_account_id,s.created_at FROM sales s WHERE s.id=$1`+scope, args...).Scan(
 		&sale.ID, &sale.BranchLocationID, &sale.BranchSequence, &sale.WarrantyNumber, &method,
 		&cash, &card, &transfer, &sale.Customer.Name, &sale.Customer.Phone,
-		&sale.Customer.Document, &total, &sale.CreatedByAccountID, &sale.CreatedAt)
+		&sale.Customer.Document, &sale.Customer.Address, &total, &sale.CreatedByAccountID,
+		&sale.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Sale{}, ErrNotFound
 	}
@@ -285,7 +396,7 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
 	}
 	detail.BranchName = branchName
 	rows, err := tx.Query(ctx, `SELECT l.variant_id,l.quantity,l.unit_price::text,l.min_price::text,
-  l.warranty_months,l.subtotal::text,e.id,e.brand,e.model,e.capacity_ah::text,v.polarity
+  l.subtotal::text,e.id,e.brand,e.model,e.capacity_ah::text,v.polarity
  FROM sale_lines l
  JOIN catalog_variants v ON v.id=l.variant_id
  JOIN catalog_entries e ON e.id=v.catalog_entry_id
@@ -298,7 +409,7 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
 	for rows.Next() {
 		var line DetailLine
 		var unit, minimum, subtotal, capacity string
-		if rows.Scan(&line.VariantID, &line.Quantity, &unit, &minimum, &line.WarrantyMonths,
+		if rows.Scan(&line.VariantID, &line.Quantity, &unit, &minimum,
 			&subtotal, &line.CatalogEntryID, &line.Brand, &line.Model, &capacity,
 			&line.Polarity) != nil {
 			return Detail{}, fail(ctx)
@@ -311,7 +422,6 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
 			!line.UnitPrice.AtLeast(line.MinPrice) ||
 			line.VariantID < 1 || line.VariantID > math.MaxInt32 ||
 			line.Quantity < 1 || line.Quantity > MaxQuantity ||
-			line.WarrantyMonths < MinWarrantyMonths || line.WarrantyMonths > MaxWarrantyMonths ||
 			line.CatalogEntryID < 1 || line.Brand == "" || line.Model == "" ||
 			(line.Polarity != "L" && line.Polarity != "R") ||
 			(len(lines) > 0 && line.VariantID <= lines[len(lines)-1].VariantID) {
@@ -330,6 +440,22 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
 	}
 	if len(lines) == 0 {
 		return Detail{}, ErrUnavailable
+	}
+	units, err := readUnits(ctx, tx, id)
+	if err != nil {
+		return Detail{}, err
+	}
+	variants := make([]int64, len(lines))
+	quantities := make([]int64, len(lines))
+	for i, line := range lines {
+		variants[i], quantities[i] = line.VariantID, line.Quantity
+	}
+	sold, err := admitUnits(units, variants, quantities)
+	if err != nil {
+		return Detail{}, err
+	}
+	for i := range lines {
+		lines[i].Units = sold[i]
 	}
 	detail.Lines = lines
 	if tx.Commit(ctx) != nil {
@@ -375,7 +501,9 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q ListQuery) (Pag
 	args = append(args, int64(q.PageSize), int64(q.Page-1)*int64(q.PageSize))
 	rows, err := tx.Query(ctx, `SELECT s.id,s.branch_sequence,s.warranty_number,s.payment_method,
   s.customer_name,s.total::text,s.created_at,
-  (SELECT count(*) FROM sale_lines l WHERE l.sale_id=s.id)`+listFilter+
+  (SELECT count(*) FROM sale_lines l WHERE l.sale_id=s.id),
+  (SELECT count(*) FROM sale_units u WHERE u.sale_id=s.id),
+  (SELECT count(*) FROM sale_units u WHERE u.sale_id=s.id AND u.warranty_months IS NOT NULL)`+listFilter+
 		` ORDER BY s.id DESC LIMIT $4 OFFSET $5`, args...)
 	if err != nil {
 		return Page{}, fail(ctx)
@@ -384,22 +512,28 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q ListQuery) (Pag
 	for rows.Next() {
 		var summary Summary
 		var method, total string
-		var lines int64
+		var lines, unitsTotal, unitsWithWarranty int64
 		if rows.Scan(&summary.ID, &summary.BranchSequence, &summary.WarrantyNumber, &method,
-			&summary.CustomerName, &total, &summary.CreatedAt, &lines) != nil {
+			&summary.CustomerName, &total, &summary.CreatedAt, &lines, &unitsTotal,
+			&unitsWithWarranty) != nil {
 			return Page{}, fail(ctx)
 		}
 		summary.PaymentMethod = PaymentMethod(method)
 		summary.Total = Money(total)
-		// A persisted sale always has between one and MaxLines lines, and its label is one
-		// the database derived from its own amounts.
+		// A persisted sale always has between one and MaxLines lines, one unit per sold piece
+		// and never more than MaxUnits of them, and its label is one the database derived
+		// from its own amounts.
 		if !summary.PaymentMethod.Recorded() || summary.Total.String() != total ||
 			summary.BranchSequence < 1 || summary.WarrantyNumber == "" ||
 			summary.CreatedAt.IsZero() || lines < 1 || lines > MaxLines ||
+			unitsTotal < lines || unitsTotal > MaxUnits ||
+			unitsWithWarranty < 0 || unitsWithWarranty > unitsTotal ||
 			(len(result.Sales) > 0 && summary.ID >= result.Sales[len(result.Sales)-1].ID) {
 			return Page{}, ErrUnavailable
 		}
 		summary.Lines = int(lines)
+		summary.UnitsTotal = int(unitsTotal)
+		summary.UnitsWithWarranty = int(unitsWithWarranty)
 		result.Sales = append(result.Sales, summary)
 	}
 	if rows.Err() != nil {
@@ -551,6 +685,21 @@ func literalPattern(search string) string {
 	return "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(search) + "%"
 }
 
+// mapUnitFailure publishes the refusal of one unit insert, and it is the second producer of
+// the already-sold refusal: a serial already committed is refused by the unit guard, which
+// names it in its detail, while a serial a concurrent writer is inserting is refused by the
+// unique index, whose error carries no key at all. The insertion knows the serial it was
+// writing, so that producer names the same battery the guard's does and the counter never
+// receives a refusal it cannot act on.
+func mapUnitFailure(ctx context.Context, err error, serial SerialNumber) error {
+	mapped := mapFailure(ctx, err)
+	var refused *SerialAlreadySold
+	if errors.As(mapped, &refused) && refused.Serial == "" {
+		return &SerialAlreadySold{Serial: serial}
+	}
+	return mapped
+}
+
 // mapFailure publishes the database's own decision and nothing else: SQLSTATE is the
 // only trusted evidence, the offending variant is read from the database's own detail
 // when the refusal names one, and cancellation keeps its semantics.
@@ -577,14 +726,27 @@ func mapFailure(ctx context.Context, err error) error {
 		// LV005: the branch cannot cover the sale.
 		case "LV005":
 			return &InsufficientStock{VariantID: variantOf(pg)}
+		// LV009: the serial number was already sold. The database names the serial it
+		// refused, so the counter can point at the exact battery instead of guessing.
+		case "LV009":
+			return &SerialAlreadySold{Serial: SerialNumber(pg.Detail)}
+		// 23505 on the serial index is the same refusal reached through a concurrent writer, so
+		// it is published as the same class without a serial of its own: this mapping sees only
+		// the database's error, and mapUnitFailure fills the serial the insertion was writing.
+		// Any other unique violation is not a serial and stays unmapped.
+		case "23505":
+			if pg.ConstraintName == "sale_units_serial_number" {
+				return &SerialAlreadySold{}
+			}
 		// A refused amount, a refused document shape or an unknown variant is the same
 		// public refusal, because the database decides it.
 		case "23503", "23514", "22003":
 			return ErrInvalid
 		}
-		// LV006, LV007 and LV008 restate invariants this store already derived (at least
-		// one line, the exact total, the correlative bound), so reaching them means the
-		// ledger is not what this domain wrote: fail closed, never publish them.
+		// LV006, LV007, LV008, LV010, LV011, LV012 and LV013 restate invariants this store
+		// already derived (at least one line, the exact total, the correlative bound, one
+		// unit per sold piece), so reaching them means the ledger is not what this domain
+		// wrote: fail closed, never publish them.
 	}
 	return ErrUnavailable
 }

@@ -3,10 +3,15 @@
 // sells, and only the branch's own provisioned account registers a sale there; the
 // warehouse (location 1) is refused. The database owns the price rules: the charged
 // price is no lower than the branch's stored minimum, the frozen minimum comes from
-// branch_prices, and a variant without a price in the branch is not sellable. The
-// warranty term is not a product datum: the seller states it at the counter, it is
-// required on every line and it is frozen there, so a sale always congeals the term
-// that was actually promised.
+// branch_prices, and a variant without a price in the branch is not sellable.
+//
+// The line stays commercial and the unit is physical: a line states the variant, the sold
+// quantity and the price, and every one of those pieces is a unit of its own, carrying the
+// serial number the seller reads at the counter and, optionally, the warranty term stated
+// for that battery. There is no zero months: a battery sold without warranty carries no
+// term at all, and that absence is stored data, never missing data. The serial is written
+// down, never resolved against stock, and it is unique in the installation after trimming
+// and case folding, because one physical battery cannot be sold twice.
 //
 // Money is a canonical decimal string with exactly two decimals and is never a
 // binary float, so no rounding is invented between the database and the client. The
@@ -41,8 +46,25 @@ var (
 	ErrNotSellable       = errors.New("variant not sellable")
 	ErrBelowMinimum      = errors.New("sale price below the branch minimum")
 	ErrInsufficientStock = errors.New("insufficient stock for the sale")
+	ErrSerialAlreadySold = errors.New("serial number was already sold")
 	ErrUnavailable       = errors.New("sale store unavailable")
 )
+
+// SerialAlreadySold is the refusal of a sale that repeats the serial number of a battery
+// that was already sold. Serial is the serial the database reported, which is the one the
+// sale tried to sell; a refusal that could not read it keeps the empty text, so the
+// refusal still names its class without inventing a battery.
+type SerialAlreadySold struct{ Serial SerialNumber }
+
+func (e *SerialAlreadySold) Error() string {
+	if e.Serial == "" {
+		return ErrSerialAlreadySold.Error()
+	}
+	return "serial number " + string(e.Serial) + " was already sold"
+}
+
+// Unwrap keeps errors.Is(err, ErrSerialAlreadySold) true.
+func (e *SerialAlreadySold) Unwrap() error { return ErrSerialAlreadySold }
 
 // NotSellable is the refusal of a line whose variant the branch cannot sell: no
 // price in that branch, or no warranty term to congeal. The variant is named, so the
@@ -105,18 +127,26 @@ func (e *PaymentsMismatch) Unwrap() error { return ErrInvalid }
 const (
 	// The warehouse (location 1) never sells: branches start at id 2.
 	warehouseLocationID = 1
-	// MaxLines, MaxQuantity, MaxCustomerName, MaxCustomerPhone,
-	// MaxCustomerDocument, MaxPage and DefaultPageSize are the frozen bounds of this
-	// contract, and the database checks say the same.
+	// MaxLines, MaxQuantity, MaxCustomerName, MaxCustomerPhone, MaxCustomerDocument,
+	// MaxCustomerAddress, MaxUnits, MaxSerialLength, MaxPage and DefaultPageSize are the
+	// frozen bounds of this contract, and the database checks say the same.
 	MaxLines            = 190
 	MaxQuantity         = 1_000_000
 	MaxCustomerName     = 120
 	MaxCustomerPhone    = 40
 	MaxCustomerDocument = 40
+	MaxCustomerAddress  = 200
 	MaxPage             = 1_000_000
 	DefaultPageSize     = 25
-	// MinWarrantyMonths and MaxWarrantyMonths are the bounds of the term the seller
-	// states for a line, which the sale then freezes.
+	// MaxUnits is the number of physical batteries one sale carries. The database refuses
+	// a sale above it at commit, so the documented body limit stays reachable.
+	MaxUnits = 1_000
+	// MaxSerialLength is the bound of the serial the seller reads at the counter, after
+	// trimming.
+	MaxSerialLength = 64
+	// MinWarrantyMonths and MaxWarrantyMonths are the bounds of the term a seller may state
+	// for one unit, which the sale then freezes. The absence of a warranty is not a term: it
+	// is a nil term, never zero.
 	MinWarrantyMonths   = 1
 	MaxWarrantyMonths   = 120
 	maxBranchLocationID = math.MaxInt16
@@ -174,34 +204,96 @@ type Payment struct {
 	Amount Money
 }
 
-// Customer is the client the warranty is issued to. The name is mandatory; the phone
-// and the document are optional and bounded.
+// Customer is the client the warranty is issued to. The name is mandatory; the phone, the
+// document and the address are optional and bounded. The address is one free field, the
+// neighbourhood or street the client gave at the counter, never structured into parts.
 type Customer struct {
 	Name     string `json:"name"`
 	Phone    string `json:"phone"`
 	Document string `json:"document"`
+	Address  string `json:"address"`
 }
 
-// CanonicalCustomer trims the mandatory name and refuses a value outside the
-// database's own bounds.
+// CanonicalCustomer trims the mandatory name and the optional address, and refuses a value
+// outside the database's own bounds.
 func CanonicalCustomer(customer Customer) (Customer, bool) {
 	name := strings.TrimSpace(customer.Name)
+	address := strings.TrimSpace(customer.Address)
 	if !boundedText(name, 1, MaxCustomerName) ||
 		!boundedText(customer.Phone, 0, MaxCustomerPhone) ||
-		!boundedText(customer.Document, 0, MaxCustomerDocument) {
+		!boundedText(customer.Document, 0, MaxCustomerDocument) ||
+		!boundedText(address, 0, MaxCustomerAddress) {
 		return Customer{}, false
 	}
-	return Customer{Name: name, Phone: customer.Phone, Document: customer.Document}, true
+	return Customer{Name: name, Phone: customer.Phone, Document: customer.Document,
+		Address: address}, true
+}
+
+// SerialNumber is the serial number the seller reads on the physical battery and writes
+// down at the counter. It tracks the battery the client left with; it is never a stock
+// identity and it is never resolved against inventory_balances.
+type SerialNumber string
+
+// CanonicalSerial trims the serial and refuses a value outside the database's own bounds:
+// one to sixty-four characters, valid UTF-8, without a NUL.
+func CanonicalSerial(serial SerialNumber) (SerialNumber, bool) {
+	trimmed := SerialNumber(strings.TrimSpace(string(serial)))
+	if !boundedText(string(trimmed), 1, MaxSerialLength) {
+		return "", false
+	}
+	return trimmed, true
+}
+
+// Unit is one physical battery of a line: the serial the seller read and, optionally, the
+// warranty term stated for that battery. A nil term is the recorded absence of warranty,
+// which is sold data and never a zero.
+type Unit struct {
+	SerialNumber   SerialNumber
+	WarrantyMonths *int
+}
+
+// canonicalUnit trims the serial, refuses a value outside the frozen bounds and copies the
+// stated term, so the canonical document never shares a term with the caller's slice.
+func canonicalUnit(unit Unit) (Unit, bool) {
+	serial, ok := CanonicalSerial(unit.SerialNumber)
+	if !ok {
+		return Unit{}, false
+	}
+	if unit.WarrantyMonths == nil {
+		return Unit{SerialNumber: serial}, true
+	}
+	term := *unit.WarrantyMonths
+	if term < MinWarrantyMonths || term > MaxWarrantyMonths {
+		return Unit{}, false
+	}
+	return Unit{SerialNumber: serial, WarrantyMonths: &term}, true
+}
+
+// canonicalUnits canonicalizes the units of one line and refuses a line that does not
+// carry exactly one unit per sold piece.
+func canonicalUnits(units []Unit, quantity int64) ([]Unit, bool) {
+	if quantity < 1 || int64(len(units)) != quantity {
+		return nil, false
+	}
+	canonical := make([]Unit, 0, len(units))
+	for _, unit := range units {
+		admitted, ok := canonicalUnit(unit)
+		if !ok {
+			return nil, false
+		}
+		canonical = append(canonical, admitted)
+	}
+	return canonical, true
 }
 
 // LineInput is one line the client asks to sell. The client supplies the variant, the
-// quantity, the price it wants to charge and the warranty term it offers: the floor and
-// the frozen minimum are the database's, never the caller's.
+// quantity, the price it wants to charge and one unit per sold piece: the floor, the frozen
+// minimum and the term of every battery are never derived from the catalogue.
 type LineInput struct {
-	VariantID      int64
-	Quantity       int64
-	UnitPrice      Money
-	WarrantyMonths int
+	VariantID int64
+	Quantity  int64
+	UnitPrice Money
+	Units     []Unit
 }
 
 // CreateInput is one sale to register in the actor's own branch. Payments state how the
@@ -212,15 +304,15 @@ type CreateInput struct {
 	Lines    []LineInput
 }
 
-// Line is one canonical line: the charged price, the seller's warranty term and the
-// exact subtotal of that line. MinPrice is deliberately absent: the database freezes it
-// and the store reports what it persisted.
+// Line is one canonical line: the charged price, one canonical unit per sold piece and the
+// exact subtotal of that line. MinPrice is deliberately absent: the database freezes it and
+// the store reports what it persisted.
 type Line struct {
-	VariantID      int64
-	Quantity       int64
-	UnitPrice      Money
-	WarrantyMonths int
-	Subtotal       Money
+	VariantID int64
+	Quantity  int64
+	UnitPrice Money
+	Units     []Unit
+	Subtotal  Money
 }
 
 // Payload is the canonical document used to persist and to answer: the canonical client,
@@ -235,14 +327,14 @@ type Payload struct {
 }
 
 // SaleLine is one persisted line: the price that was charged, the minimum frozen at
-// write time, the warranty term the seller stated and the derived subtotal.
+// write time, the units the seller registered and the derived subtotal.
 type SaleLine struct {
-	VariantID      int64
-	Quantity       int64
-	UnitPrice      Money
-	MinPrice       Money
-	WarrantyMonths int
-	Subtotal       Money
+	VariantID int64
+	Quantity  int64
+	UnitPrice Money
+	MinPrice  Money
+	Units     []Unit
+	Subtotal  Money
 }
 
 // Sale is one persisted sale document. Both the branch correlative and the warranty
@@ -294,15 +386,19 @@ type Detail struct {
 
 // Summary is one row of the read-only sales history of a branch. PaymentMethod is the
 // label the database derived for the settlement, so a mixed sale is filtered by 'mixed'.
+// UnitsTotal and UnitsWithWarranty tell the sale's position without unfolding it, so a
+// battery sold without warranty is legible from the history itself.
 type Summary struct {
-	ID             int64
-	BranchSequence int64
-	WarrantyNumber string
-	PaymentMethod  PaymentMethod
-	CustomerName   string
-	Total          Money
-	CreatedAt      time.Time
-	Lines          int
+	ID                int64
+	BranchSequence    int64
+	WarrantyNumber    string
+	PaymentMethod     PaymentMethod
+	CustomerName      string
+	Total             Money
+	CreatedAt         time.Time
+	Lines             int
+	UnitsTotal        int
+	UnitsWithWarranty int
 }
 
 // ListQuery is the frozen history filter: a literal search over the warranty number
@@ -519,10 +615,11 @@ func paymentsOf(cash, card, transfer string) ([]Payment, int64, bool) {
 // Validate returns the canonical document used to persist and to answer. Lines are
 // copied and sorted ascending by variant, which is also the database's balance-row
 // lock order, and the caller's slice is never modified. An unknown variant, a duplicate
-// variant, an impossible quantity, a payment shape no sale admits and an amount that is
-// not canonical two-decimal text are refused here, before any database work. A
-// settlement whose amounts do not close against the total is refused with the amount that
-// is missing or left over.
+// variant, an impossible quantity, a line without exactly one unit per sold piece, a serial
+// outside the frozen bounds, a term that is neither absent nor inside 1..120, a sale above
+// MaxUnits batteries, a payment shape no sale admits and an amount that is not canonical
+// two-decimal text are refused here, before any database work. A settlement whose amounts
+// do not close against the total is refused with the amount that is missing or left over.
 func Validate(input CreateInput) (Payload, error) {
 	payments, paid, ok := canonicalPayments(input.Payments)
 	if !ok {
@@ -537,6 +634,7 @@ func Validate(input CreateInput) (Payload, error) {
 	}
 	seen := make(map[int64]bool, len(input.Lines))
 	lines := make([]Line, 0, len(input.Lines))
+	units := int64(0)
 	for _, line := range input.Lines {
 		if line.VariantID < 1 || line.VariantID > math.MaxInt32 || seen[line.VariantID] {
 			return Payload{}, ErrInvalid
@@ -546,7 +644,14 @@ func Validate(input CreateInput) (Payload, error) {
 		if err != nil {
 			return Payload{}, ErrInvalid
 		}
-		if line.WarrantyMonths < MinWarrantyMonths || line.WarrantyMonths > MaxWarrantyMonths {
+		// The units are exactly as many as the sold quantity, and one sale carries at most
+		// MaxUnits batteries, so the documented body limit stays reachable.
+		batteries, ok := canonicalUnits(line.Units, line.Quantity)
+		if !ok {
+			return Payload{}, ErrInvalid
+		}
+		units += line.Quantity
+		if units > MaxUnits {
 			return Payload{}, ErrInvalid
 		}
 		subtotal, err := LineTotal(unit, line.Quantity)
@@ -554,7 +659,7 @@ func Validate(input CreateInput) (Payload, error) {
 			return Payload{}, err
 		}
 		lines = append(lines, Line{VariantID: line.VariantID, Quantity: line.Quantity,
-			UnitPrice: unit, WarrantyMonths: line.WarrantyMonths, Subtotal: subtotal})
+			UnitPrice: unit, Units: batteries, Subtotal: subtotal})
 	}
 	sort.Slice(lines, func(i, j int) bool { return lines[i].VariantID < lines[j].VariantID })
 	var cents int64
