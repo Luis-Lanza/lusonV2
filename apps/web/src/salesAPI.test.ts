@@ -176,6 +176,22 @@ describe('the sale document read', () => {
     expect(page.sales[0].units_with_warranty).toBe(2);
   });
 
+  it('reads a sale issued before the sold unit existed as a document with no units', () => {
+    // T12/S7: the sale carries lines and not one unit, because it was stored by the
+    // contract that had no units. It is recoverable history: zero units, nothing warranted
+    // and an empty units array per line, never a "Sin garantía" claim.
+    const page = parseSalePage(pageBody({ sales: [summary({ units_total: 0, units_with_warranty: 0 })] }));
+    expect(page.sales[0].units_total).toBe(0);
+    expect(page.sales[0].units_with_warranty).toBe(0);
+    expect(page.sales[0].lines).toBe(2);
+    const detail = parseSaleDetail(detailBody({ lines: [{
+      variant_id: 1, catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L',
+      quantity: 2, unit_price: '96000.00', min_price: '85000.00', subtotal: '192000.00', units: [],
+    }] }));
+    expect(detail.lines[0].quantity).toBe(2);
+    expect(detail.lines[0].units).toEqual([]);
+  });
+
   it('reads one document with the catalogue identity and the units of every line', () => {
     const detail = parseSaleDetail(detailBody());
     expect(detail.customer_name).toBe('Marta Giménez');
@@ -246,6 +262,19 @@ describe('the sale document read', () => {
       capacity_ah: '35', polarity: 'L', quantity: 1, unit_price: '96000.00', min_price: '85000.00', subtotal: '96000.00' }],
     total: '96000.00', payments: [{ method: 'cash', amount: '96000.00' }] })],
     ['a detail without its payments', detailBody({ payments: [] })],
+    ['a detail whose line has an empty units list beside a united one', detailBody({
+    payments: [{ method: 'cash', amount: '288000.00' }], total: '288000.00',
+    lines: [
+      { variant_id: 1, catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L',
+        quantity: 1, unit_price: '96000.00', min_price: '85000.00', subtotal: '96000.00',
+        units: [{ serial_number: 'ABC123', warranty_months: 12 }] },
+      { variant_id: 3, catalog_entry_id: 3, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'R',
+        quantity: 2, unit_price: '96000.00', min_price: '85000.00', subtotal: '192000.00', units: [] },
+    ] })],
+    ['a detail whose only line carries more units than pieces', detailBody({ lines: [{
+      variant_id: 1, catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L',
+      quantity: 2, unit_price: '96000.00', min_price: '85000.00', subtotal: '192000.00',
+      units: [{ serial_number: 'ABC123', warranty_months: 12 }] }] })],
   ])('refuses %s', (_, body) => {
     expect(() => (body.includes('"sales"') ? parseSalePage(body) : parseSaleDetail(body))).toThrow();
   });

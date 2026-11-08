@@ -708,6 +708,16 @@ func TestSalePageRecord(t *testing.T) {
 	if mixedRecord, err := salePageRecord(mixed); err != nil || mixedRecord.Sales[0].PaymentMethod != "mixed" {
 		t.Fatalf("a mixed sale must be a legible history row: %+v %v", mixedRecord.Sales, err)
 	}
+	// T12/S7: a sale issued before the sold unit existed carries no unit at all. It is
+	// recoverable history, so the page names it with zero units and nothing warranted
+	// instead of failing the whole branch closed.
+	preVertical := salePageValue()
+	preVertical.Sales[0].UnitsTotal = 0
+	preVertical.Sales[0].UnitsWithWarranty = 0
+	if record, err := salePageRecord(preVertical); err != nil ||
+		record.Sales[0].UnitsTotal != 0 || record.Sales[0].UnitsWithWarranty != 0 {
+		t.Fatalf("a pre-vertical row must be a legible history row: %+v %v", record.Sales, err)
+	}
 	// A page beyond the last one is legitimately empty.
 	value, err := salePageRecord(sales.Page{Page: 3, PageSize: 10, TotalSales: 2, Sales: []sales.Summary{}})
 	if err != nil || value.Sales == nil || len(value.Sales) != 0 {
@@ -734,10 +744,13 @@ func TestSalePageRecord(t *testing.T) {
 		"zero_created":      mutate(func(v *sales.Page) { v.Sales[0].CreatedAt = time.Time{} }),
 		"zero_lines":        mutate(func(v *sales.Page) { v.Sales[0].Lines = 0 }),
 		"lines_above":       mutate(func(v *sales.Page) { v.Sales[0].Lines = sales.MaxLines + 1 }),
-		"zero_units":        mutate(func(v *sales.Page) { v.Sales[0].UnitsTotal = 0 }),
+		"units_below_lines": mutate(func(v *sales.Page) { v.Sales[0].UnitsTotal = v.Sales[0].Lines - 1 }),
 		"units_above":       mutate(func(v *sales.Page) { v.Sales[0].UnitsTotal = sales.MaxUnits + 1 }),
-		"units_below_lines": mutate(func(v *sales.Page) { v.Sales[0].Lines = 3 }),
-		"warranted_above":   mutate(func(v *sales.Page) { v.Sales[0].UnitsWithWarranty = v.Sales[0].UnitsTotal + 1 }),
+		"warranted_without_units": mutate(func(v *sales.Page) {
+			v.Sales[0].UnitsTotal = 0
+			v.Sales[0].UnitsWithWarranty = 1
+		}),
+		"warranted_above": mutate(func(v *sales.Page) { v.Sales[0].UnitsWithWarranty = v.Sales[0].UnitsTotal + 1 }),
 		"warranted_negative": mutate(func(v *sales.Page) {
 			v.Sales[0].UnitsWithWarranty = -1
 		}),
@@ -830,6 +843,25 @@ func TestSaleDetailRecord(t *testing.T) {
 		if _, err := saleDetailRecord(detail); !errors.Is(err, sales.ErrUnavailable) {
 			t.Fatalf("%s must fail closed", name)
 		}
+	}
+	// T12/S7: a document issued before the sold unit existed carries no unit at all. It is
+	// recoverable history, so its detail is described with an empty units array per line
+	// instead of failing closed, and its header, its prices and its client stay the same.
+	preVertical := saleDetailValue()
+	preVertical.Lines[0].Units = nil
+	old, err := saleDetailRecord(preVertical)
+	if err != nil {
+		t.Fatalf("a pre-vertical document must be described: %v", err)
+	}
+	if len(old.Lines) != 1 || old.Lines[0].Units == nil || len(old.Lines[0].Units) != 0 ||
+		old.Lines[0].Quantity != 2 || old.Total != "192000.00" || old.Customer.Name != "Cliente Mostrador" {
+		t.Fatalf("a pre-vertical document keeps its lines and states no unit: %+v", old)
+	}
+	// A document whose units are short of its sold pieces is corrupt and still fails closed.
+	short := saleDetailValue()
+	short.Lines[0].Units = short.Lines[0].Units[:1]
+	if _, err := saleDetailRecord(short); !errors.Is(err, sales.ErrUnavailable) {
+		t.Fatalf("a partially united document must fail closed: %v", err)
 	}
 	// A mixed sale publishes both of its payments in the frozen order.
 	mixed := saleDetailValue()
@@ -1440,12 +1472,15 @@ func salePageWire(t *testing.T, w *httptest.ResponseRecorder) salePageDTO {
 			}
 		}
 		// S5: the counts tell the sale's position without unfolding it, and the warranted
-		// units are a subset of all of them.
+		// units are a subset of all of them. A sale issued before the sold unit existed
+		// (T12) is a legible row with zero units; a row with some units but fewer than its
+		// lines is not.
 		var lines, total, warranted int64
 		if json.Unmarshal(row["lines"], &lines) != nil ||
 			json.Unmarshal(row["units_total"], &total) != nil ||
 			json.Unmarshal(row["units_with_warranty"], &warranted) != nil ||
-			lines < 1 || total < lines || total > sales.MaxUnits || warranted > total {
+			lines < 1 || total > sales.MaxUnits || (total != 0 && total < lines) ||
+			warranted > total {
 			t.Fatalf("the unit counts are not a legible row: %s", row["units_total"])
 		}
 	}
@@ -2138,5 +2173,153 @@ func TestSaleHTTPWarrantyNamesEveryUnit(t *testing.T) {
 	page := salePageWire(t, f.serve(t, f.request(2, "GET", "/api/sales", "")))
 	if len(page.Sales) != 1 || page.Sales[0].UnitsTotal != 3 || page.Sales[0].UnitsWithWarranty != 1 {
 		t.Fatalf("the history row must count the units and their warranties: %+v", page.Sales)
+	}
+}
+
+// storedLine is one line of a sale written straight into the ledger: the variant, the sold
+// pieces, the charged price and the serials registered for it, which may be fewer than the
+// pieces or none at all.
+type storedLine struct {
+	variantID int64
+	quantity  int64
+	unitPrice string
+	serials   []string
+}
+
+// storedSale persists a sale the way the ledger can hold but the counter can no longer
+// write: the lines handed in and their units, which may be none at all. The database judges
+// the unit count of a document at commit (LV012), so this fixture disables that one guard for
+// the shortest possible window, exactly as the other fixtures of this repository do. A
+// pre-vertical sale and a corrupt one can only be produced this way: today's contract refuses
+// to store either, and both are needed to prove the reader separates them.
+func (f *saleHTTPFixture) storedSale(t *testing.T, lines ...storedLine) int64 {
+	t.Helper()
+	enable := func() {
+		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
+		defer done()
+		_, _ = f.p.Exec(cleanup, "ALTER TABLE sales ENABLE TRIGGER require_sale_units")
+	}
+	t.Cleanup(enable)
+	if _, err := f.p.Exec(f.ctx, "ALTER TABLE sales DISABLE TRIGGER require_sale_units"); err != nil {
+		t.Fatal("stored sale fixture setup failed")
+	}
+	cents := int64(0)
+	for _, line := range lines {
+		total, err := sales.LineTotal(sales.Money(line.unitPrice), line.quantity)
+		if err != nil {
+			enable()
+			t.Fatalf("the fixture amount is not canonical money: %v", err)
+		}
+		part, err := strconv.ParseInt(strings.Replace(string(total), ".", "", 1), 10, 64)
+		if err != nil {
+			enable()
+			t.Fatalf("the fixture amount is not canonical money: %v", err)
+		}
+		cents += part
+	}
+	amount := fmt.Sprintf("%d.%02d", cents/100, cents%100)
+	// The header, the lines and the units are one transaction: the document's own totals are
+	// deferred constraint triggers, so they are judged at this commit and at no other.
+	tx, err := f.p.Begin(f.ctx)
+	if err != nil {
+		enable()
+		t.Fatal("stored sale fixture transaction failed")
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var id int64
+	if err := tx.QueryRow(f.ctx, `INSERT INTO sales(branch_location_id,customer_name,customer_address,
+ cash_amount,total,created_by_account_id)
+ VALUES(2,'Cliente Mostrador','Av. Colón 1234',$1,$1,2) RETURNING id`, amount).Scan(&id); err != nil {
+		enable()
+		t.Fatalf("stored sale header insert failed: %v", err)
+	}
+	for _, line := range lines {
+		if _, err := tx.Exec(f.ctx, `INSERT INTO sale_lines(sale_id,variant_id,quantity,unit_price)
+ VALUES($1,$2,$3,$4)`, id, int32(line.variantID), line.quantity, line.unitPrice); err != nil {
+			enable()
+			t.Fatalf("stored sale line insert failed: %v", err)
+		}
+		for i, serial := range line.serials {
+			if _, err := tx.Exec(f.ctx, `INSERT INTO sale_units(sale_id,variant_id,unit_ordinal,serial_number)
+ VALUES($1,$2,$3,$4)`, id, int32(line.variantID), int32(i+1), serial); err != nil {
+				enable()
+				t.Fatalf("stored sale unit insert failed: %v", err)
+			}
+		}
+	}
+	if err := tx.Commit(f.ctx); err != nil {
+		enable()
+		t.Fatalf("stored sale commit failed: %v", err)
+	}
+	enable()
+	return id
+}
+
+// TestSaleHistoryShowsThePreVerticalDocument pins T12/S7 end to end: a sale issued before
+// this vertical carries lines and no unit at all, so the branch history must keep naming it
+// -- zero units, nothing warranted -- instead of a single such sale failing the whole page
+// closed. A sale whose units are short of its sold pieces is corrupt and still fails the
+// page closed.
+func TestSaleHistoryShowsThePreVerticalDocument(t *testing.T) {
+	f := saleFixture(t)
+	f.price(t, f.entryOf(t, 1), "85000", "96000", 2)
+	f.price(t, f.entryOf(t, 3), "85000", "96000", 2)
+	// The sale the branch issued before the sold unit existed: two batteries, no series.
+	old := f.storedSale(t, storedLine{variantID: 1, quantity: 2, unitPrice: "96000.00"})
+	// One sale the counter registers today, so both shapes share one page.
+	created := saleCreatedWire(t, f.serve(t, f.request(2, "POST", "/api/sales", saleBody(1, 2, "96000.00", 12))))
+	page := salePageWire(t, f.serve(t, f.request(2, "GET", "/api/sales", "")))
+	if page.TotalSales != 2 || len(page.Sales) != 2 || page.Sales[0].ID != created.ID {
+		t.Fatalf("the history must hold both sales newest first: %+v", page)
+	}
+	row := page.Sales[1]
+	if row.ID != old || row.Lines != 1 || row.UnitsTotal != 0 || row.UnitsWithWarranty != 0 ||
+		row.Total != "192000.00" || row.CustomerName != "Cliente Mostrador" {
+		t.Fatalf("the pre-vertical row must be legible with zero units: %+v", row)
+	}
+	// A corrupt document -- two lines and a unit registered for only one of them -- still
+	// fails the page as a whole, exactly as before this correction.
+	f.storedSale(t,
+		storedLine{variantID: 1, quantity: 1, unitPrice: "96000.00", serials: []string{"PRE-VERTICAL-UNITED-1"}},
+		storedLine{variantID: 3, quantity: 1, unitPrice: "85000.00"})
+	if w := f.serve(t, f.request(2, "GET", "/api/sales", "")); w.Code != 503 {
+		t.Fatalf("a partially united row must still fail the page closed: status=%d body=%s",
+			w.Code, w.Body.String())
+	}
+}
+
+// TestSaleDetailShowsThePreVerticalDocument pins the other half of T12/S7: the document
+// read answers a pre-vertical sale with an empty units array per line, keeping its header,
+// its prices and its client, while a document whose units are short of its sold pieces is
+// still refused.
+func TestSaleDetailShowsThePreVerticalDocument(t *testing.T) {
+	f := saleFixture(t)
+	f.price(t, f.entryOf(t, 1), "85000", "96000", 2)
+	old := f.storedSale(t, storedLine{variantID: 1, quantity: 2, unitPrice: "96000.00"})
+	w := f.serve(t, f.request(2, "GET", fmt.Sprintf("/api/sales/%d", old), ""))
+	if w.Code != 200 {
+		t.Fatalf("a pre-vertical document must stay readable: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var body struct {
+		WarrantyNumber string `json:"warranty_number"`
+		CustomerName   string `json:"customer_name"`
+		Total          string `json:"total"`
+		Lines          []struct {
+			Quantity int64           `json:"quantity"`
+			Units    json.RawMessage `json:"units"`
+		} `json:"lines"`
+	}
+	if json.Unmarshal(w.Body.Bytes(), &body) != nil || len(body.Lines) != 1 ||
+		body.Total != "192000.00" || body.CustomerName != "Cliente Mostrador" ||
+		body.WarrantyNumber != "2-000001" {
+		t.Fatalf("the pre-vertical document does not match the frozen contract: %s", w.Body.String())
+	}
+	if body.Lines[0].Quantity != 2 || string(body.Lines[0].Units) != "[]" {
+		t.Fatalf("a pre-vertical line must answer its empty units array: %s", w.Body.String())
+	}
+	short := f.storedSale(t, storedLine{variantID: 1, quantity: 2, unitPrice: "96000.00",
+		serials: []string{"PRE-VERTICAL-SHORT-1"}})
+	if w := f.serve(t, f.request(2, "GET", fmt.Sprintf("/api/sales/%d", short), "")); w.Code != 503 {
+		t.Fatalf("a partially united document must fail closed: status=%d body=%s", w.Code, w.Body.String())
 	}
 }

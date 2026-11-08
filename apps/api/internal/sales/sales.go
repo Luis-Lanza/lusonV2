@@ -252,6 +252,16 @@ type Unit struct {
 	WarrantyMonths *int
 }
 
+// inputUnits counts the units an asked document states, so the whole shape is judged once
+// instead of line by line.
+func inputUnits(lines []LineInput) int {
+	total := 0
+	for _, line := range lines {
+		total += len(line.Units)
+	}
+	return total
+}
+
 // canonicalUnit trims the serial, refuses a value outside the frozen bounds and copies the
 // stated term, so the canonical document never shares a term with the caller's slice.
 func canonicalUnit(unit Unit) (Unit, bool) {
@@ -612,6 +622,13 @@ func paymentsOf(cash, card, transfer string) ([]Payment, int64, bool) {
 	return payments, paid, true
 }
 
+// PreVertical reports whether a persisted document was stored by the contract that had no
+// sold unit at all: it carries one or more lines and not one unit between them. Such a
+// document is recoverable history -- the series and the term of its batteries were never
+// recorded -- so every read path names it instead of failing closed. A document carrying
+// some units but fewer than its sold pieces is corrupt, not pre-vertical, and stays refused.
+func PreVertical(lines, units int) bool { return lines > 0 && units == 0 }
+
 // Validate returns the canonical document used to persist and to answer. Lines are
 // copied and sorted ascending by variant, which is also the database's balance-row
 // lock order, and the caller's slice is never modified. An unknown variant, a duplicate
@@ -620,7 +637,16 @@ func paymentsOf(cash, card, transfer string) ([]Payment, int64, bool) {
 // MaxUnits batteries, a payment shape no sale admits and an amount that is not canonical
 // two-decimal text are refused here, before any database work. A settlement whose amounts
 // do not close against the total is refused with the amount that is missing or left over.
-func Validate(input CreateInput) (Payload, error) {
+func Validate(input CreateInput) (Payload, error) { return validate(input, false) }
+
+// ValidatePersisted revalidates a document read back from the ledger and applies the same
+// contract as Validate with one difference: a pre-vertical document (PreVertical) is
+// admitted with an empty units array per line, because its absence of units is history and
+// not corruption. A document carrying some units is held to exactly one per sold piece, and
+// one whose lines disagree about carrying them is refused like any other corrupt shape.
+func ValidatePersisted(input CreateInput) (Payload, error) { return validate(input, true) }
+
+func validate(input CreateInput, admitPreVertical bool) (Payload, error) {
 	payments, paid, ok := canonicalPayments(input.Payments)
 	if !ok {
 		return Payload{}, ErrInvalid
@@ -635,6 +661,9 @@ func Validate(input CreateInput) (Payload, error) {
 	seen := make(map[int64]bool, len(input.Lines))
 	lines := make([]Line, 0, len(input.Lines))
 	units := int64(0)
+	// A pre-vertical document is judged as a whole: every one of its lines carries no unit.
+	// One line without units beside a united one is a shape no contract ever stored.
+	preVertical := admitPreVertical && PreVertical(len(input.Lines), inputUnits(input.Lines))
 	for _, line := range input.Lines {
 		if line.VariantID < 1 || line.VariantID > math.MaxInt32 || seen[line.VariantID] {
 			return Payload{}, ErrInvalid
@@ -645,10 +674,13 @@ func Validate(input CreateInput) (Payload, error) {
 			return Payload{}, ErrInvalid
 		}
 		// The units are exactly as many as the sold quantity, and one sale carries at most
-		// MaxUnits batteries, so the documented body limit stays reachable.
-		batteries, ok := canonicalUnits(line.Units, line.Quantity)
-		if !ok {
-			return Payload{}, ErrInvalid
+		// MaxUnits batteries, so the documented body limit stays reachable. A pre-vertical
+		// line carries none by definition, so nothing is invented for it here.
+		batteries := []Unit{}
+		if !preVertical {
+			if batteries, ok = canonicalUnits(line.Units, line.Quantity); !ok {
+				return Payload{}, ErrInvalid
+			}
 		}
 		units += line.Quantity
 		if units > MaxUnits {

@@ -262,6 +262,14 @@ is simply absent from it.
 | `sales[].units_total` | How many physical batteries the sale carries |
 | `sales[].units_with_warranty` | How many of those units were sold **with** a warranty; the rest were taken without one, so the history names an unwarranted sale without unfolding it |
 
+A sale issued **before** this contract has no units at all: its lines were stored when a
+term belonged to the line and a serial was not recorded. Such a document answers
+`units_total: 0` and `units_with_warranty: 0`, and it is history, not corruption and not
+"no warranty" — the history names it as a document without recorded series, and the detail
+answers an empty `units` array per line. A document that carries some units but fewer than
+its sold pieces is a different thing: it is refused, because a partly recorded sale cannot
+be described without inventing what is missing.
+
 A page beyond the last one is legitimately empty and reports the same `total_sales`.
 The history never carries prices, the settlement, the serials or the address: the detail
 read does. It does carry the two unit counts, so a battery sold without warranty is

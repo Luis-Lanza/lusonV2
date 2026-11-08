@@ -267,11 +267,30 @@ function refusedSerial(value: unknown): string {
   return raw;
 }
 /**
- * The units of a line: exactly as many as its quantity, each with its serial and a term
+ * True when no line of the asked document carries a unit: the shape of a sale stored by the
+ * contract that had no units. Only a present and empty `units` array counts, because a line
+ * whose key is missing is a refused document and never a pre-vertical one.
+ */
+function carriesNoUnits(lines: unknown): boolean {
+  if (!Array.isArray(lines) || lines.length === 0) return false;
+  return lines.every(entry => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return false;
+    if (!Object.hasOwn(entry, 'units')) return false;
+    const units = (entry as { units: unknown }).units;
+    return Array.isArray(units) && units.length === 0;
+  });
+}
+/** The units of one line of a pre-vertical sale: the empty array, and nothing invented. */
+function saleNoUnits(value: unknown): readonly SaleUnitRecord[] {
+  if (!Array.isArray(value) || value.length !== 0) return invalidResponse();
+  return Object.freeze([]);
+}
+/** The units of a line: exactly as many as its quantity, each with its serial and a term
  * that is present in the body and is either an integer or `null`, never absent and never
  * zero. A serial repeated inside one document contradicts the physical battery it tracks.
  */
-function saleUnits(value: unknown, count: number): readonly SaleUnitRecord[] {
+function saleUnits(value: unknown, count: number, noUnits: boolean): readonly SaleUnitRecord[] {
+  if (noUnits) return saleNoUnits(value);
   if (!Array.isArray(value) || value.length !== count) return invalidResponse();
   const serials = new Set<string>();
   const rows = value.map(entry => {
@@ -322,25 +341,25 @@ function customer(value: unknown): SaleCustomerRecord {
     address: optionalText(record.address, maxCustomerAddress) });
 }
 /** A frozen line: the charged price, the floor, its units and the exact subtotal. */
-function saleLine(value: unknown): SaleLineRecord {
+function saleLine(value: unknown, noUnits: boolean): SaleLineRecord {
   const record = fields(value, ['variant_id', 'quantity', 'unit_price', 'min_price', 'units', 'subtotal']);
   const count = quantity(record.quantity);
   const line = {
     variant_id: variantID(record.variant_id), quantity: count,
     unit_price: wireMoney(record.unit_price), min_price: wireMoney(record.min_price),
-    units: saleUnits(record.units, count), subtotal: wireMoney(record.subtotal),
+    units: saleUnits(record.units, count, noUnits), subtotal: wireMoney(record.subtotal),
   };
   if (moneyCents(line.unit_price) < moneyCents(line.min_price)) return invalidResponse();
   if (moneyCents(line.subtotal) !== moneyCents(line.unit_price) * BigInt(line.quantity)) return invalidResponse();
   return Object.freeze(line);
 }
-function detailLine(value: unknown): SaleDetailLine {
+function detailLine(value: unknown, noUnits: boolean): SaleDetailLine {
   const record = fields(value, ['variant_id', 'catalog_entry_id', 'brand', 'model', 'capacity_ah', 'polarity',
     'quantity', 'unit_price', 'min_price', 'units', 'subtotal']);
   const line = saleLine({
     variant_id: record.variant_id, quantity: record.quantity, unit_price: record.unit_price,
     min_price: record.min_price, units: record.units, subtotal: record.subtotal,
-  });
+  }, noUnits);
   return Object.freeze({
     ...line, catalog_entry_id: variantID(record.catalog_entry_id), brand: text(record.brand),
     model: text(record.model), capacity_ah: capacity(record.capacity_ah), polarity: polarity(record.polarity),
@@ -503,7 +522,7 @@ export function parseCreatedSale(raw: string): SaleDocument {
   const settlement = payments(sale.payments);
   const label = paymentLabel(settlement);
   if (sale.payment_method !== label) return invalidResponse();
-  const lines = lineList(sale.lines, saleLine);
+  const lines = lineList(sale.lines, entry => saleLine(entry, false));
   ascending(lines);
   boundedUnits(lines);
   const total = wireMoney(sale.total);
@@ -532,10 +551,12 @@ export function parseSalePage(raw: string): SalesPage {
     previous = id;
     if (typeof row.payment_method !== 'string' || !recordedMethods.includes(row.payment_method)) return invalidResponse();
     const lines = integer(row.lines, 1, maxCartLines);
-    const units_total = integer(row.units_total, 1, maxSaleUnits);
+    // A sale issued before the sold unit existed carries no unit at all: it is a legible
+    // row with zero units and nothing warranted. A row carrying some units but fewer than
+    // its lines is corrupt, and a battery is never counted twice (S5, T12).
+    const units_total = integer(row.units_total, 0, maxSaleUnits);
     const units_with_warranty = integer(row.units_with_warranty, 0, maxSaleUnits);
-    // Every line holds at least one battery, and a battery cannot be counted twice.
-    if (units_total < lines || units_with_warranty > units_total) return invalidResponse();
+    if ((units_total !== 0 && units_total < lines) || units_with_warranty > units_total) return invalidResponse();
     return Object.freeze({
       id, branch_sequence: integer(row.branch_sequence, 1, 999_999_999),
       warranty_number: warrantyNumber(row.warranty_number), payment_method: row.payment_method,
@@ -553,7 +574,11 @@ export function parseSaleDetail(raw: string): SaleDetail {
   const settlement = payments(record.payments);
   const label = paymentLabel(settlement);
   if (record.payment_method !== label) return invalidResponse();
-  const lines = lineList(record.lines, detailLine);
+  // A document stored before the sold unit existed answers an empty units array in every
+  // line. It is recoverable history, so it is read with its lines and its prices and no
+  // unit is invented; a document with units in some lines only is refused as corrupt.
+  const noUnits = carriesNoUnits(record.lines);
+  const lines = lineList(record.lines, entry => detailLine(entry, noUnits));
   ascending(lines);
   boundedUnits(lines);
   const total = wireMoney(record.total);

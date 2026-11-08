@@ -122,6 +122,40 @@ describe('the sales history', () => {
     expect(within(detail).queryByText(/Av\. América 123/)).not.toBeInTheDocument();
   });
 
+  it('names a sale issued before per-unit series as having no recorded series', async () => {
+    // T12/S7: the sale was stored before the counter registered the series and the term of
+    // each battery, so nothing was ever recorded for it. Calling it "Sin garantía" would
+    // claim an absent warranty that was never stated; the list and the detail name the
+    // document instead.
+    const staggered = {
+      id: 2, branch_sequence: 126, warranty_number: '2-000126', payment_method: 'cash',
+      customer_name: 'Marta Giménez', total: '320000.00', created_at: '2026-11-04T17:42:00Z', lines: 2,
+      units_total: 0, units_with_warranty: 0,
+    };
+    const h = harness({
+      page: () => json(pageBody([staggered])),
+      detail: () => json(detailBody({ total: '320000.00', lines: [
+        { variant_id: 1, catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35',
+          polarity: 'L', quantity: 1, unit_price: '96000.00', min_price: '85000.00',
+          subtotal: '96000.00', units: [] },
+        { variant_id: 3, catalog_entry_id: 3, brand: 'TOYO', model: 'NS60L', capacity_ah: '45',
+          polarity: 'R', quantity: 2, unit_price: '112000.00', min_price: '100000.00',
+          subtotal: '224000.00', units: [] },
+      ] })),
+    });
+    await ready(h);
+    const row = rowOf(126);
+    expect(within(row).getByText('Sin series registradas')).toBeInTheDocument();
+    expect(within(row).queryByText('Sin garantía')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Ver la venta 126' }));
+    const detail = await screen.findByRole('region', { name: 'Venta 126' });
+    expect(within(detail).getByText(/Venta emitida antes de que el punto de venta registrara la serie y la garantía de cada batería/)).toBeInTheDocument();
+    expect(within(detail).queryByText('Sin garantía')).not.toBeInTheDocument();
+    // Its lines and its frozen prices are still the document's own.
+    expect(within(detail).getByText('CAR NS40ZL')).toBeInTheDocument();
+    expect(within(detail).getByText('2 × Bs 112.000,00')).toBeInTheDocument();
+  });
+
   it('states when every battery of the sale carries a warranty', async () => {
     const h = harness({ page: () => json(pageBody([summary({ units_total: 2, units_with_warranty: 2 })])) });
     await ready(h);

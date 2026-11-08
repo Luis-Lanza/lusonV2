@@ -872,10 +872,12 @@ func saleSameUnits(left, right []sales.Unit) bool {
 }
 
 // saleUnitsRecord admits only the units this contract publishes: canonical serial text and a
-// term that is either absent or inside the frozen bounds. A unit the document cannot describe
-// exactly means the document is not published at all.
+// term that is either absent or inside the frozen bounds. An empty list is admitted because
+// the caller has already revalidated the document: it is the line of a pre-vertical sale,
+// whose empty units array is published as `[]` and never as an invented battery. A unit the
+// document cannot describe exactly means the document is not published at all.
 func saleUnitsRecord(units []sales.Unit) ([]saleUnitDTO, bool) {
-	if len(units) < 1 || len(units) > sales.MaxUnits {
+	if len(units) > sales.MaxUnits {
 		return nil, false
 	}
 	records := make([]saleUnitDTO, 0, len(units))
@@ -894,11 +896,24 @@ func saleUnitsRecord(units []sales.Unit) ([]saleUnitDTO, bool) {
 	return records, true
 }
 
-// saleDocument admits only a complete persisted document: the branch, the actor, the
-// database's own numbers, the frozen floor and the exact arithmetic. The document is
-// revalidated with the domain's own contract, so a persisted sale that does not add up is
-// never published, and every line is published with its units or not at all.
+// saleDocument admits only a complete persisted document of the write contract: the branch,
+// the actor, the database's own numbers, the frozen floor and the exact arithmetic. The
+// document is revalidated with the domain's own contract, so a persisted sale that does not
+// add up is never published, and every line is published with its units or not at all.
 func saleDocument(sale sales.Sale) (saleDTO, error) {
+	return saleDocumentRecord(sale, sales.Validate)
+}
+
+// saleHistoryDocument admits the document a read answers, which is the same contract with one
+// exception: a pre-vertical sale -- one or more lines and not one unit between them -- was
+// stored before the sold unit existed, so it is described with an empty units array per line
+// instead of failing closed. A sale carrying some units is still held to exactly one unit per
+// sold piece, so a corrupt document is never published.
+func saleHistoryDocument(sale sales.Sale) (saleDTO, error) {
+	return saleDocumentRecord(sale, sales.ValidatePersisted)
+}
+
+func saleDocumentRecord(sale sales.Sale, validate func(sales.CreateInput) (sales.Payload, error)) (saleDTO, error) {
 	unavailable := func() (saleDTO, error) { return saleDTO{}, sales.ErrUnavailable }
 	if sale.ID < 1 || sale.BranchLocationID < 2 || sale.BranchLocationID > math.MaxInt16 ||
 		sale.BranchSequence < 1 || sale.CreatedByAccountID < 1 || sale.CreatedAt.IsZero() ||
@@ -932,7 +947,7 @@ func saleDocument(sale sales.Sale) (saleDTO, error) {
 		input.Lines = append(input.Lines, sales.LineInput{VariantID: line.VariantID,
 			Quantity: line.Quantity, UnitPrice: line.UnitPrice, Units: line.Units})
 	}
-	payload, err := sales.Validate(input)
+	payload, err := validate(input)
 	if err != nil || payload.Total != sale.Total || payload.Customer != sale.Customer ||
 		len(payload.Lines) != len(sale.Lines) || !saleSamePayments(payload.Payments, sale.Payments) {
 		return unavailable()
@@ -998,9 +1013,13 @@ func salePageRecord(page sales.Page) (salePageDTO, error) {
 			// filter the branch can use.
 			!summary.PaymentMethod.Recorded() || !ok ||
 			summary.Lines < 1 || summary.Lines > sales.MaxLines ||
-			// Every line holds at least one unit, one sale never carries more than MaxUnits of
-			// them, and the warranted units are a subset of all of them.
-			summary.UnitsTotal < summary.Lines || summary.UnitsTotal > sales.MaxUnits ||
+			// A sale with no unit at all was stored before the sold unit existed, so it is a
+			// legible row with zero units; one carrying some units but fewer than its lines is
+			// corrupt. One sale never carries more than MaxUnits units, and a warranted unit is
+			// always one of them.
+			summary.UnitsTotal > sales.MaxUnits ||
+			(!sales.PreVertical(summary.Lines, summary.UnitsTotal) &&
+				summary.UnitsTotal < summary.Lines) ||
 			summary.UnitsWithWarranty < 0 || summary.UnitsWithWarranty > summary.UnitsTotal ||
 			summary.CustomerName == "" || !saleText(summary.CustomerName) {
 			return unavailable()
@@ -1025,7 +1044,8 @@ func salePageRecord(page sales.Page) (salePageDTO, error) {
 
 // saleDetailRecord admits only a complete persisted document with the catalogue identity
 // of every line: the battery, its brand and model, its capacity as canonical text and the
-// polarity that was sold.
+// polarity that was sold. A document stored before the sold unit existed is admitted with
+// empty units arrays, because it is recoverable history and not corruption.
 func saleDetailRecord(detail sales.Detail) (saleDetailDTO, error) {
 	unavailable := func() (saleDetailDTO, error) { return saleDetailDTO{}, sales.ErrUnavailable }
 	if len(detail.Lines) < 1 || len(detail.Lines) > sales.MaxLines || detail.Customer.Name == "" {
@@ -1035,7 +1055,7 @@ func saleDetailRecord(detail sales.Detail) (saleDetailDTO, error) {
 	for _, line := range detail.Lines {
 		lines = append(lines, line.SaleLine)
 	}
-	document, err := saleDocument(sales.Sale{
+	document, err := saleHistoryDocument(sales.Sale{
 		ID: detail.ID, BranchLocationID: detail.BranchLocationID, BranchSequence: detail.BranchSequence,
 		WarrantyNumber: detail.WarrantyNumber, PaymentMethod: detail.PaymentMethod,
 		Payments: detail.Payments, Customer: detail.Customer, Total: detail.Total,

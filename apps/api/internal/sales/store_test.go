@@ -2060,3 +2060,51 @@ func TestSaleAddressIsSaleData(t *testing.T) {
 		t.Fatalf("the address must be kept whole: %d", len([]rune(wide.Customer.Address)))
 	}
 }
+
+// TestSaleValidatePersisted pins the two contracts the reader needs apart (S5, S7, T12).
+// The write contract still requires exactly one unit per sold piece, so a sale is never
+// registered without the series the counter reads. The persisted contract admits one more
+// shape: a document that carries no unit at all was stored before the sold unit existed,
+// so it is recoverable history with empty units, never corruption. A document carrying
+// some units but fewer than its sold pieces is corrupt under both contracts.
+func TestSaleValidatePersisted(t *testing.T) {
+	preVertical := func() sales.CreateInput {
+		return sales.CreateInput{
+			Payments: cashPayment("192000.00"),
+			Customer: sales.Customer{Name: "Cliente Mostrador"},
+			Lines:    []sales.LineInput{{VariantID: 1, Quantity: 2, UnitPrice: "96000.00"}},
+		}
+	}
+	if _, err := sales.Validate(preVertical()); !errors.Is(err, sales.ErrInvalid) {
+		t.Fatalf("the write contract must still require one unit per sold piece: %v", err)
+	}
+	payload, err := sales.ValidatePersisted(preVertical())
+	if err != nil {
+		t.Fatalf("a pre-vertical document must be admitted by the persisted contract: %v", err)
+	}
+	if len(payload.Lines) != 1 || payload.Lines[0].Quantity != 2 || len(payload.Lines[0].Units) != 0 ||
+		payload.Total != "192000.00" {
+		t.Fatalf("a pre-vertical document keeps its line and states no unit: %+v", payload)
+	}
+	// A partially united document is corrupt: some units, fewer than the sold pieces.
+	short := preVertical()
+	short.Lines[0].Units = units(1, months(6))
+	if _, err := sales.ValidatePersisted(short); !errors.Is(err, sales.ErrInvalid) {
+		t.Fatalf("a sale whose units are short of its pieces must fail closed: %v", err)
+	}
+	// So is one unit too many.
+	long := preVertical()
+	long.Lines[0].Units = units(3, months(6))
+	if _, err := sales.ValidatePersisted(long); !errors.Is(err, sales.ErrInvalid) {
+		t.Fatalf("a sale with more units than pieces must fail closed: %v", err)
+	}
+	// One line without units beside one line with them is not a pre-vertical document: no
+	// contract ever stored that, so it fails closed.
+	mixed := preVertical()
+	mixed.Payments = cashPayment("288000.00")
+	mixed.Lines = append(mixed.Lines, sales.LineInput{VariantID: 3, Quantity: 1,
+		UnitPrice: "96000.00", Units: units(1, months(6))})
+	if _, err := sales.ValidatePersisted(mixed); !errors.Is(err, sales.ErrInvalid) {
+		t.Fatalf("a partially united document must fail closed: %v", err)
+	}
+}

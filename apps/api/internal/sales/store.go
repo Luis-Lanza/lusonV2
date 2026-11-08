@@ -198,15 +198,32 @@ func readUnits(ctx context.Context, q querier, id int64) (map[int64][]Unit, erro
 	return units, nil
 }
 
-// admitUnits rebuilds the units of every line from the sale's own rows. A sale whose units
-// are not exactly one per sold piece, whose units belong to no line of the document, or that
-// carries no unit at all is not a document this domain wrote, so the read fails closed.
+// admitUnits rebuilds the units of every line from the sale's own rows. A pre-vertical
+// document -- one or more lines and not one unit between them -- was stored by the contract
+// that had no units, so every line answers its empty units array and the document is shown.
+// Any other disagreement, including units that are fewer than the sold pieces, belongs to no
+// line of the document or exceed MaxUnits, is not a document this domain wrote, so the read
+// fails closed.
 func admitUnits(units map[int64][]Unit, variants, quantities []int64) ([][]Unit, error) {
-	if len(variants) != len(quantities) || len(units) != len(variants) {
+	if len(variants) != len(quantities) {
+		return nil, ErrUnavailable
+	}
+	total := 0
+	for _, line := range units {
+		total += len(line)
+	}
+	if PreVertical(len(variants), total) {
+		empty := make([][]Unit, len(variants))
+		for i := range empty {
+			empty[i] = []Unit{}
+		}
+		return empty, nil
+	}
+	if len(units) != len(variants) {
 		return nil, ErrUnavailable
 	}
 	rebuilt := make([][]Unit, len(variants))
-	total := 0
+	total = 0
 	for i, variant := range variants {
 		line := units[variant]
 		if int64(len(line)) != quantities[i] {
@@ -215,7 +232,7 @@ func admitUnits(units map[int64][]Unit, variants, quantities []int64) ([][]Unit,
 		rebuilt[i] = line
 		total += len(line)
 	}
-	if total < 1 || total > MaxUnits {
+	if total > MaxUnits {
 		return nil, ErrUnavailable
 	}
 	return rebuilt, nil
@@ -520,13 +537,16 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q ListQuery) (Pag
 		}
 		summary.PaymentMethod = PaymentMethod(method)
 		summary.Total = Money(total)
-		// A persisted sale always has between one and MaxLines lines, one unit per sold piece
-		// and never more than MaxUnits of them, and its label is one the database derived
-		// from its own amounts.
+		// A persisted sale always has between one and MaxLines lines, never more than MaxUnits
+		// units, and its label is one the database derived from its own amounts. A sale with
+		// no unit at all was stored before the sold unit existed, so it is history with zero
+		// units rather than corruption; one with some units but fewer than its lines is
+		// corrupt and fails the page closed.
 		if !summary.PaymentMethod.Recorded() || summary.Total.String() != total ||
 			summary.BranchSequence < 1 || summary.WarrantyNumber == "" ||
 			summary.CreatedAt.IsZero() || lines < 1 || lines > MaxLines ||
-			unitsTotal < lines || unitsTotal > MaxUnits ||
+			unitsTotal > MaxUnits ||
+			(!PreVertical(int(lines), int(unitsTotal)) && unitsTotal < lines) ||
 			unitsWithWarranty < 0 || unitsWithWarranty > unitsTotal ||
 			(len(result.Sales) > 0 && summary.ID >= result.Sales[len(result.Sales)-1].ID) {
 			return Page{}, ErrUnavailable

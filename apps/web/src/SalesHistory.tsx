@@ -28,14 +28,23 @@ export interface SalesHistoryProps {
   fetcher?: typeof globalThis.fetch;
 }
 
-/** How a sale's warranty stands, from its counts alone, without unfolding the document. */
+/**
+ * How a sale's warranty stands, from its counts alone, without unfolding the document. A
+ * sale with no unit at all was issued before the counter registered the series and the term
+ * of each battery, so nothing was ever recorded for it: naming it "Sin garantía" would claim
+ * an absent warranty nobody stated (S5, T12).
+ */
 export function warrantyPosition(sale: SaleSummary): string {
+  if (sale.units_total === 0) return 'Sin series registradas';
   if (sale.units_with_warranty === 0) return 'Sin garantía';
   if (sale.units_with_warranty === sale.units_total) {
     return `${sale.units_total} con garantía`;
   }
   return `${sale.units_with_warranty} de ${sale.units_total} con garantía`;
 }
+
+/** The one sentence that names a document issued before per-unit series and warranty. */
+const preVerticalNote = 'Venta emitida antes de que el punto de venta registrara la serie y la garantía de cada batería: este documento no tiene series registradas.';
 
 /** The client the warranty names: the address the seller wrote, then the two contacts. */
 const customerLine = (customer: SaleCustomer): string =>
@@ -170,6 +179,8 @@ export default function SalesHistory({ branch = 'esta sucursal', fetcher = globa
                           {` · ${open.detail.customer.name}${customerLine(open.detail.customer) === '' ? '' : ` · ${customerLine(open.detail.customer)}`}`}
                         </p>
                       </header>
+                      {open.detail.lines.every(line => line.units.length === 0) &&
+                        <p className="pos-hint" data-testid="pre-vertical-note">{preVerticalNote}</p>}
                       <div className="pos-table-wrap">
                         <table className="sales-detail-lines">
                           <caption className="sr-only">Líneas de la venta {open.detail.branch_sequence}</caption>
@@ -186,11 +197,13 @@ export default function SalesHistory({ branch = 'esta sucursal', fetcher = globa
                             <td data-label="Precio unitario">{formatMoney(moneyCents(line.unit_price))}
                               <small>{`Mínimo al vender ${formatMoney(moneyCents(line.min_price))}`}</small></td>
                             <td data-label="Unidades">
-                              <ul className="sales-detail-units">{line.units.map(unit =>
-                                <li key={unit.serial_number}>
-                                  <span className="pos-doc">{unit.serial_number}</span>
-                                  <small>{warrantyLabel(unit.warranty_months)}</small>
-                                </li>)}</ul>
+                              {line.units.length === 0
+                                ? <small>Sin series registradas</small>
+                                : <ul className="sales-detail-units">{line.units.map(unit =>
+                                  <li key={unit.serial_number}>
+                                    <span className="pos-doc">{unit.serial_number}</span>
+                                    <small>{warrantyLabel(unit.warranty_months)}</small>
+                                  </li>)}</ul>}
                             </td>
                             <td data-label="Subtotal" className="num">{formatMoney(moneyCents(line.subtotal))}</td>
                           </tr>)}</tbody>
