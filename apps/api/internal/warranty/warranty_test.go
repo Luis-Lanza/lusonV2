@@ -34,6 +34,9 @@ func renderOK(t *testing.T, doc warranty.Document) []byte {
 	return data
 }
 
+// months is the warranty term of one fixture unit, so a term can be stated by value.
+func months(value int) *int { return &value }
+
 func smallDocument() warranty.Document {
 	return warranty.Document{
 		WarrantyNumber: "2-000007",
@@ -44,14 +47,15 @@ func smallDocument() warranty.Document {
 			Phone:    "77412345",
 			Document: "V-12345678",
 		},
+		// One row per physical battery: each one carries its own serial and its own term.
 		Lines: []warranty.Line{
 			{
 				Brand:          "YUASA",
 				Model:          "YTX7A-BS",
 				Capacity:       "12.0",
 				Polarity:       "L",
-				Quantity:       2,
-				WarrantyMonths: 12,
+				SerialNumber:   "YTX-0001",
+				WarrantyMonths: months(12),
 				Subtotal:       "75000.00",
 			},
 		},
@@ -81,11 +85,12 @@ func TestRenderPinsPersistedFields(t *testing.T) {
 		"Maria Nandu",      // customer name
 		"77412345",         // customer phone
 		"V-12345678",       // customer document
-		"YUASA",            // line brand
-		"YTX7A-BS",         // line model
-		"12.0",             // line capacity
-		"12 meses",         // warranty months of the line
-		"Bs 75.000,00",     // line subtotal, L20 format
+		"YUASA",            // unit brand
+		"YTX7A-BS",         // unit model
+		"12.0",             // unit capacity
+		"YTX-0001",         // serial the seller read at the counter
+		"12 meses",         // term of that unit
+		"Bs 75.000,00",     // row amount, L20 format
 		"Bs 85.000,00",     // document total, L20 format
 		"Formas de pago",   // heading of the payment block, S16
 		"Efectivo",         // readable payment method of the only payment
@@ -158,8 +163,8 @@ func TestRenderLongDocumentKeepsEveryRow(t *testing.T) {
 			Model:          fmt.Sprintf("MODELO-%03d", i),
 			Capacity:       "75.0",
 			Polarity:       "R",
-			Quantity:       int64(i%3 + 1),
-			WarrantyMonths: 6 + i%12,
+			SerialNumber:   fmt.Sprintf("SERIE-%03d", i),
+			WarrantyMonths: months(6 + i%12),
 			Subtotal:       "1234.56",
 		})
 	}
@@ -250,15 +255,21 @@ func TestRenderRefusesInvalidDocument(t *testing.T) {
 	badSubtotal := base
 	badSubtotal.Lines = []warranty.Line{base.Lines[0]}
 	badSubtotal.Lines[0].Subtotal = "75000"
-	zeroQuantity := base
-	zeroQuantity.Lines = []warranty.Line{base.Lines[0]}
-	zeroQuantity.Lines[0].Quantity = 0
-	noTerm := base
-	noTerm.Lines = []warranty.Line{base.Lines[0]}
-	noTerm.Lines[0].WarrantyMonths = 0
+	zeroTerm := base
+	zeroTerm.Lines = []warranty.Line{base.Lines[0]}
+	zeroTerm.Lines[0].WarrantyMonths = months(0)
+	negativeTerm := base
+	negativeTerm.Lines = []warranty.Line{base.Lines[0]}
+	negativeTerm.Lines[0].WarrantyMonths = months(-1)
 	tooLongTerm := base
 	tooLongTerm.Lines = []warranty.Line{base.Lines[0]}
-	tooLongTerm.Lines[0].WarrantyMonths = 121
+	tooLongTerm.Lines[0].WarrantyMonths = months(121)
+	noSerial := base
+	noSerial.Lines = []warranty.Line{base.Lines[0]}
+	noSerial.Lines[0].SerialNumber = "   "
+	longSerial := base
+	longSerial.Lines = []warranty.Line{base.Lines[0]}
+	longSerial.Lines[0].SerialNumber = strings.Repeat("S", 65)
 	noNumber := base
 	noNumber.WarrantyNumber = " "
 	noBranch := base
@@ -296,9 +307,11 @@ func TestRenderRefusesInvalidDocument(t *testing.T) {
 		"empty lines":      noLines,
 		"invalid total":    badTotal,
 		"invalid subtotal": badSubtotal,
-		"zero quantity":    zeroQuantity,
-		"zero term":        noTerm,
+		"zero term":        zeroTerm,
+		"negative term":    negativeTerm,
 		"term above 120":   tooLongTerm,
+		"blank serial":     noSerial,
+		"long serial":      longSerial,
 		"empty number":     noNumber,
 		"empty branch":     noBranch,
 		"zero date":        noDate,
@@ -508,8 +521,8 @@ func TestRenderKeepsPaymentsBlockTogetherAtThePageBottom(t *testing.T) {
 			Model:          fmt.Sprintf("MODELO-%03d", i),
 			Capacity:       "75.0",
 			Polarity:       "R",
-			Quantity:       1,
-			WarrantyMonths: 12,
+			SerialNumber:   fmt.Sprintf("SERIE-%03d", i),
+			WarrantyMonths: months(12),
 			Subtotal:       "1234.56",
 		})
 	}
@@ -569,4 +582,88 @@ func tail(data []byte, n int) string {
 		data = data[len(data)-n:]
 	}
 	return strings.ReplaceAll(string(data), "\n", "\\n")
+}
+
+// S6: the document lists one row per physical battery, with the serial the seller read and
+// the term stated for that battery or "Sin garantía", and the row amounts still add up to
+// the sale total. A unit whose term is absent is a row like any other: it is named, never
+// dropped.
+func TestRenderNamesEveryUnitAndTheAbsentWarranty(t *testing.T) {
+	doc := smallDocument()
+	doc.Lines = []warranty.Line{
+		{Brand: "YUASA", Model: "YTX7A-BS", Capacity: "12.0", Polarity: "L",
+			SerialNumber: "SERIE-A", WarrantyMonths: months(12), Subtotal: "30000.00"},
+		{Brand: "YUASA", Model: "YTX7A-BS", Capacity: "12.0", Polarity: "L",
+			SerialNumber: "SERIE-B", WarrantyMonths: nil, Subtotal: "30000.00"},
+		{Brand: "YUASA", Model: "YTX7A-BS", Capacity: "12.0", Polarity: "L",
+			SerialNumber: "SERIE-C", WarrantyMonths: months(6), Subtotal: "25000.00"},
+	}
+	doc.Total = "85000.00"
+	doc.Payments = []warranty.Payment{{Method: "cash", Amount: "85000.00"}}
+
+	data := renderOK(t, doc)
+	// One row per battery, in the order of the sale, and every serial is drawn once.
+	for i, serial := range []string{"SERIE-A", "SERIE-B", "SERIE-C"} {
+		if got := bytes.Count(data, []byte(serial)); got != 1 {
+			t.Fatalf("serial %s (%d) rendered %d times, want exactly one row", serial, i+1, got)
+		}
+	}
+	// The stated terms are named and the absent one is named as absent.
+	for _, want := range []string{"12 meses", "6 meses"} {
+		if got := bytes.Count(data, []byte(want)); got != 1 {
+			t.Fatalf("term %q rendered %d times, want exactly one", want, got)
+		}
+	}
+	if got := bytes.Count(data, []byte("Sin garant\xeda")); got != 1 {
+		t.Fatalf("the unit without warranty must be named exactly once, got %d", got)
+	}
+	// The row amounts are drawn as stored and they close against the total.
+	for _, want := range []string{"Bs 30.000,00", "Bs 25.000,00"} {
+		if !bytes.Contains(data, []byte(want)) {
+			t.Fatalf("document does not contain the row amount %q", want)
+		}
+	}
+	if got := bytes.Count(data, []byte("Bs 30.000,00")); got != 2 {
+		t.Fatalf("both units sold at that amount must be printed, got %d", got)
+	}
+	if !bytes.Contains(data, []byte("Total: Bs 85.000,00")) {
+		t.Fatal("the document lost the stored total")
+	}
+	// The order of the rows is the order of the units, so two prints of one sale agree with
+	// the screen the seller saw.
+	previous := -1
+	for _, serial := range []string{"SERIE-A", "SERIE-B", "SERIE-C"} {
+		at := bytes.Index(data, []byte(serial))
+		if at < previous {
+			t.Fatalf("the unit %s is printed out of order", serial)
+		}
+		previous = at
+	}
+}
+
+// S6/L4: a sale whose every battery was taken without warranty is still always issued, and
+// the document says "sin garantía" instead of printing a term or a zero.
+func TestRenderIssuesWithoutAnyWarranty(t *testing.T) {
+	doc := smallDocument()
+	doc.Lines = []warranty.Line{
+		{Brand: "YUASA", Model: "YTX7A-BS", Capacity: "12.0", Polarity: "L",
+			SerialNumber: "SIN-1", Subtotal: "42500.00"},
+		{Brand: "YUASA", Model: "YTX7A-BS", Capacity: "12.0", Polarity: "R",
+			SerialNumber: "SIN-2", Subtotal: "42500.00"},
+	}
+	doc.Total = "85000.00"
+	doc.Payments = []warranty.Payment{{Method: "cash", Amount: "85000.00"}}
+
+	data := renderOK(t, doc)
+	if got := bytes.Count(data, []byte("Sin garant\xeda")); got != 2 {
+		t.Fatalf("both units must be named as without warranty, got %d", got)
+	}
+	for _, absent := range []string{"0 meses", "0 meses", "null"} {
+		if bytes.Contains(data, []byte(absent)) {
+			t.Fatalf("a document without warranty must never print %q", absent)
+		}
+	}
+	if !bytes.Contains(data, []byte("Total: Bs 85.000,00")) {
+		t.Fatal("the document without warranty must still print its total")
+	}
 }

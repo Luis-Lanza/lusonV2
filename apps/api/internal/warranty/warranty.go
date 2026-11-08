@@ -9,6 +9,11 @@
 // dot and decimals separated by a comma. Formatting works on integer cents, so no
 // binary float ever touches an amount.
 //
+// A sale states its promise per physical battery, so the table has one row per unit with
+// the serial number the seller read and the term stated for it, or "Sin garantía" when the
+// client took that battery without warranty. The row amount is the amount the unit
+// contributes to the sale, so the rows add up to the stored total.
+//
 // The package owns its own input types on purpose: it does not import the sale store,
 // the HTTP layer or the price list, so the document can be rendered from any source
 // that can fill Document. A sale may be paid with more than one method, so the payment
@@ -53,16 +58,17 @@ type Customer struct {
 	Document string
 }
 
-// Line is one persisted sale line together with the catalogue identity of its
-// variant. Quantity, WarrantyMonths and Subtotal are the values frozen when the sale
-// was written; the renderer prints them as they are.
+// Line is one physical battery of the sale: the catalogue identity of its variant, the
+// serial number the seller read at the counter and the term stated for that battery, or no
+// term at all. Subtotal is the amount this one unit contributes to the sale, frozen on the
+// sale and printed as it was stored, so the rows add up to the document total.
 type Line struct {
 	Brand          string
 	Model          string
 	Capacity       string
 	Polarity       string
-	Quantity       int64
-	WarrantyMonths int
+	SerialNumber   string
+	WarrantyMonths *int
 	Subtotal       Money
 }
 
@@ -111,16 +117,19 @@ const (
 
 	// The warranty number is allocated by the database as "<branch>-<sequence>".
 	maxWarrantyNumberLen = 32
-	maxQuantity          = 1_000_000
-	minWarrantyMonths    = 1
-	maxWarrantyMonths    = 120
+	// The serial the seller read is bounded by the same rule the sale applies.
+	maxSerialLength   = 64
+	minWarrantyMonths = 1
+	maxWarrantyMonths = 120
 	// maxPayments is the number of admitted payment methods: cash, card and transfer.
 	// A sale carries at most one amount per method.
 	maxPayments = 3
 )
 
 // column is one table column of the warranty: the frozen width, its heading and the
-// alignment of its cells. The widths add up to contentWidth exactly.
+// alignment of its cells. The widths add up to contentWidth exactly. A row is one physical
+// battery, so the table shows its serial and the term stated for it beside its amount.
+// The term column is wide enough for the longest label, "Sin garantía".
 type column struct {
 	width float64
 	title string
@@ -128,13 +137,13 @@ type column struct {
 }
 
 var columns = []column{
-	{width: 32, title: "Marca", align: "L"},
-	{width: 40, title: "Modelo", align: "L"},
-	{width: 22, title: "Capacidad", align: "C"},
-	{width: 20, title: "Polaridad", align: "C"},
-	{width: 16, title: "Cant.", align: "R"},
-	{width: 22, title: "Plazo", align: "C"},
-	{width: 34, title: "Subtotal", align: "R"},
+	{width: 30, title: "Marca", align: "L"},
+	{width: 38, title: "Modelo", align: "L"},
+	{width: 18, title: "Capacidad", align: "C"},
+	{width: 14, title: "Polaridad", align: "C"},
+	{width: 26, title: "Serie", align: "L"},
+	{width: 32, title: "Plazo", align: "C"},
+	{width: 28, title: "Subtotal", align: "R"},
 }
 
 // moneyPattern is the canonical amount of the database: at most ten integer digits
@@ -149,7 +158,8 @@ var paymentLabels = map[string]string{
 
 // Render draws the warranty of one sale and returns the PDF bytes. The document is A4
 // portrait, the header of the document and the heading of the table are repeated after
-// every page break, and no line of the sale is dropped or reordered.
+// every page break, and no unit of the sale is dropped or reordered: one row per physical
+// battery, with its serial and its term or the absence of one.
 func Render(doc Document) ([]byte, error) {
 	if err := doc.validate(); err != nil {
 		return nil, err
@@ -277,8 +287,8 @@ func Render(doc Document) ([]byte, error) {
 			line.Model,
 			line.Capacity,
 			line.Polarity,
-			strconv.FormatInt(line.Quantity, 10),
-			strconv.Itoa(line.WarrantyMonths) + " meses",
+			line.SerialNumber,
+			lineTerm(line.WarrantyMonths),
 			subtotals[i],
 		}
 		for c, col := range columns {
@@ -339,14 +349,20 @@ func (doc Document) validate() error {
 		return invalid("total: %v", err)
 	}
 	for i, line := range doc.Lines {
-		if line.Quantity < 1 || line.Quantity > maxQuantity {
-			return invalid("línea %d: cantidad %d fuera de rango", i+1, line.Quantity)
-		}
-		if line.WarrantyMonths < minWarrantyMonths || line.WarrantyMonths > maxWarrantyMonths {
-			return invalid("línea %d: plazo %d fuera de rango", i+1, line.WarrantyMonths)
-		}
 		if _, err := parseCents(line.Subtotal); err != nil {
-			return invalid("línea %d: subtotal: %v", i+1, err)
+			return invalid("unidad %d: subtotal: %v", i+1, err)
+		}
+		// The serial identifies the battery the client left with, so a row without one
+		// cannot be printed: the document would not say which battery it covers.
+		serial := strings.TrimSpace(line.SerialNumber)
+		if serial == "" || len([]rune(serial)) > maxSerialLength {
+			return invalid("unidad %d: número de serie vacío o demasiado largo", i+1)
+		}
+		// There is no zero months: a unit without warranty carries no term at all and is
+		// printed as such, so a term outside 1..120 is a document this renderer refuses.
+		if line.WarrantyMonths != nil &&
+			(*line.WarrantyMonths < minWarrantyMonths || *line.WarrantyMonths > maxWarrantyMonths) {
+			return invalid("unidad %d: plazo %d fuera de rango", i+1, *line.WarrantyMonths)
 		}
 	}
 	return nil
@@ -434,6 +450,15 @@ func formatCents(cents int64) string {
 	b.WriteByte(byte('0' + decimals/10))
 	b.WriteByte(byte('0' + decimals%10))
 	return b.String()
+}
+
+// lineTerm names the term of one unit the way the counter promises it: the stated months or
+// the explicit absence of warranty. There is no zero months to print.
+func lineTerm(months *int) string {
+	if months == nil {
+		return "Sin garantía"
+	}
+	return strconv.Itoa(*months) + " meses"
 }
 
 // customerField joins a label and its value. An empty value leaves the label alone, so
