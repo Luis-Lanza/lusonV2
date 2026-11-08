@@ -22,10 +22,12 @@ import (
 	"luson/api/internal/warranty"
 )
 
-// saleBodyLimit bounds decoding work well above any admitted payload: a sale admits
-// MaxLines lines, and 190 lines of the widest admitted framing stay far below it, so
-// an oversized body is never buffered whole.
-const saleBodyLimit = 64 << 10
+// saleBodyLimit bounds decoding work well above any admitted payload: a sale admits at most
+// MaxUnits physical units, and a thousand units of the widest admitted framing -- sixty-four
+// four-byte UTF-8 characters of serial each, the largest the contract allows -- measure about
+// 287 KiB, so the limit sits above that document and still bounds the decode. The check below
+// stops reading at the limit instead of buffering the body whole.
+const saleBodyLimit = 512 << 10
 
 const (
 	// saleCollectionPath and saleSellablePath are the only two literal paths of this
@@ -120,12 +122,14 @@ func (a *API) saleRoutes(store *sales.Store) http.Handler {
 // names the variant the counter must point at, so it is answered with that id beside
 // the error code; a refusal without a reusable id fails closed instead of publishing a
 // meaningless zero. A settlement that does not close is its own refusal: it names the
-// side that is open, which the counter needs to say how much is left to pay.
+// side that is open, which the counter needs to say how much is left to pay. A serial that
+// was already sold is its own refusal too, and it names the battery it refused.
 func saleFailure(w http.ResponseWriter, err error) {
 	var notSellable *sales.NotSellable
 	var belowMinimum *sales.BelowMinimum
 	var insufficient *sales.InsufficientStock
 	var mismatch *sales.PaymentsMismatch
+	var duplicated *sales.SerialAlreadySold
 	switch {
 	// The open settlement is checked before the generic invalid document, because it is
 	// itself a refusal of that class and carries the amount that is missing or over.
@@ -137,6 +141,8 @@ func saleFailure(w http.ResponseWriter, err error) {
 		saleVariantFailure(w, "below_minimum", belowMinimum.VariantID)
 	case errors.As(err, &insufficient):
 		saleVariantFailure(w, "insufficient_stock", insufficient.VariantID)
+	case errors.As(err, &duplicated):
+		saleSerialFailure(w, duplicated.Serial)
 	case errors.Is(err, sales.ErrInvalid):
 		failure(w, 400, "invalid_request")
 	case errors.Is(err, sales.ErrForbidden):
@@ -146,6 +152,19 @@ func saleFailure(w http.ResponseWriter, err error) {
 	default:
 		failure(w, 503, "service_unavailable")
 	}
+}
+
+// saleSerialFailure answers a sale refused because one of its serials was already sold. The
+// serial is published beside the code when the database named it, so the counter can point
+// at the exact battery; a refusal that lost it is still the same refusal, so it is answered
+// with the house envelope instead of an invented serial.
+func saleSerialFailure(w http.ResponseWriter, serial sales.SerialNumber) {
+	canonical, ok := sales.CanonicalSerial(serial)
+	if !ok || canonical != serial {
+		failure(w, 409, "serial_already_sold")
+		return
+	}
+	respond(w, 409, map[string]string{"error": "serial_already_sold", "serial_number": string(serial)})
 }
 
 // saleVariantFailure answers a refusal that names one variant. The id is the database's
@@ -259,9 +278,10 @@ func salePayments(d *json.Decoder) ([]sales.Payment, error) {
 	return payments, nil
 }
 
-// saleCustomer reads the client of the warranty: exactly the three frozen keys. The
-// name is mandatory, the phone and the document are optional and may be empty; their
-// bounds are the store's own rule, so a text outside them is still refused there.
+// saleCustomer reads the client of the warranty: exactly the four frozen keys. The name is
+// mandatory, the phone, the document and the address are optional and may be empty; their
+// bounds are the store's own rule, so a text outside them is still refused there. The
+// address is one free field of the sale header, never structured into parts.
 func saleCustomer(d *json.Decoder) (sales.Customer, error) {
 	var customer sales.Customer
 	if !transferDelimiter(d, '{') {
@@ -281,6 +301,8 @@ func saleCustomer(d *json.Decoder) (sales.Customer, error) {
 			customer.Phone, err = transferString(d)
 		case "document":
 			customer.Document, err = transferString(d)
+		case "address":
+			customer.Address, err = transferString(d)
 		default:
 			return sales.Customer{}, sales.ErrInvalid
 		}
@@ -288,15 +310,98 @@ func saleCustomer(d *json.Decoder) (sales.Customer, error) {
 			return sales.Customer{}, sales.ErrInvalid
 		}
 	}
-	if len(seen) != 3 || !transferDelimiter(d, '}') {
+	if len(seen) != 4 || !transferDelimiter(d, '}') {
 		return sales.Customer{}, sales.ErrInvalid
 	}
 	return customer, nil
 }
 
-// saleLine reads one line: the variant, the sold quantity, the charged price and the
-// warranty term the seller states at the counter. The frozen minimum is not part of
-// the body at all, because the branch's stored floor is the database's.
+// saleWarrantyTerm reads the term of one physical unit: a canonical integer from 1 to 120
+// or the explicit absence of warranty, which is JSON null. There is no zero months, and the
+// key is never absent: the decoder refuses both.
+func saleWarrantyTerm(d *json.Decoder) (*int, error) {
+	token, err := d.Token()
+	if err != nil {
+		return nil, sales.ErrInvalid
+	}
+	// A JSON null is the absence of warranty, which is sold data and never a zero.
+	if token == nil {
+		return nil, nil
+	}
+	number, ok := token.(json.Number)
+	if !ok {
+		return nil, sales.ErrInvalid
+	}
+	months, err := canonicalAdjustmentInteger(string(number), sales.MaxWarrantyMonths)
+	if err != nil {
+		return nil, sales.ErrInvalid
+	}
+	term := int(months)
+	return &term, nil
+}
+
+// saleUnit reads one physical battery of a line: exactly the serial the seller read at the
+// counter and the term stated for that battery, or its explicit absence.
+func saleUnit(d *json.Decoder) (sales.Unit, error) {
+	var unit sales.Unit
+	if !transferDelimiter(d, '{') {
+		return unit, sales.ErrInvalid
+	}
+	seen := map[string]bool{}
+	for d.More() {
+		key, err := transferString(d)
+		if err != nil || seen[key] {
+			return sales.Unit{}, sales.ErrInvalid
+		}
+		seen[key] = true
+		switch key {
+		case "serial_number":
+			var serial string
+			serial, err = transferString(d)
+			unit.SerialNumber = sales.SerialNumber(serial)
+		case "warranty_months":
+			unit.WarrantyMonths, err = saleWarrantyTerm(d)
+		default:
+			return sales.Unit{}, sales.ErrInvalid
+		}
+		if err != nil {
+			return sales.Unit{}, sales.ErrInvalid
+		}
+	}
+	// Both keys are mandatory, and warranty_months is present even when it is null.
+	if len(seen) != 2 || !transferDelimiter(d, '}') {
+		return sales.Unit{}, sales.ErrInvalid
+	}
+	return unit, nil
+}
+
+// saleUnits reads the units of one line. The count against the quantity is the document's
+// rule and the store's, so it is judged there; the bound here keeps the decoding work
+// inside the admitted size of one sale.
+func saleUnits(d *json.Decoder) ([]sales.Unit, error) {
+	if !transferDelimiter(d, '[') {
+		return nil, sales.ErrInvalid
+	}
+	units := make([]sales.Unit, 0, 4)
+	for d.More() {
+		if len(units) >= sales.MaxUnits {
+			return nil, sales.ErrInvalid
+		}
+		unit, err := saleUnit(d)
+		if err != nil {
+			return nil, sales.ErrInvalid
+		}
+		units = append(units, unit)
+	}
+	if len(units) == 0 || !transferDelimiter(d, ']') {
+		return nil, sales.ErrInvalid
+	}
+	return units, nil
+}
+
+// saleLine reads one line: the variant, the sold quantity, the charged price and one unit
+// per sold piece, each with its serial and its term. The frozen minimum is not part of the
+// body at all, because the branch's stored floor is the database's.
 func saleLine(d *json.Decoder) (sales.LineInput, error) {
 	var line sales.LineInput
 	if !transferDelimiter(d, '{') {
@@ -316,10 +421,8 @@ func saleLine(d *json.Decoder) (sales.LineInput, error) {
 			line.Quantity, err = branchPriceNumber(d, sales.MaxQuantity)
 		case "unit_price":
 			line.UnitPrice, err = saleMoney(d)
-		case "warranty_months":
-			var term int64
-			term, err = branchPriceNumber(d, sales.MaxWarrantyMonths)
-			line.WarrantyMonths = int(term)
+		case "units":
+			line.Units, err = saleUnits(d)
 		default:
 			return sales.LineInput{}, sales.ErrInvalid
 		}
@@ -527,21 +630,31 @@ type salePaymentDTO struct {
 }
 
 // saleCustomerDTO is the client the warranty is issued to, exactly as it was persisted.
+// The address is one free field of the sale header, empty when the sale carries none.
 type saleCustomerDTO struct {
 	Name     string `json:"name"`
 	Phone    string `json:"phone"`
 	Document string `json:"document"`
+	Address  string `json:"address"`
+}
+
+// saleUnitDTO is one physical battery of a line: the serial the seller read at the counter
+// and the term stated for that battery, which is JSON null when the client took it without
+// warranty. The key is always present and the absence is never a zero.
+type saleUnitDTO struct {
+	SerialNumber   string `json:"serial_number"`
+	WarrantyMonths *int   `json:"warranty_months"`
 }
 
 // saleLineDTO is one persisted line of the created document: the charged price, the
-// minimum frozen at write time, the seller's warranty term and the exact subtotal.
+// minimum frozen at write time, the units the seller registered and the exact subtotal.
 type saleLineDTO struct {
-	VariantID      int64  `json:"variant_id"`
-	Quantity       int64  `json:"quantity"`
-	UnitPrice      string `json:"unit_price"`
-	MinPrice       string `json:"min_price"`
-	WarrantyMonths int    `json:"warranty_months"`
-	Subtotal       string `json:"subtotal"`
+	VariantID int64         `json:"variant_id"`
+	Quantity  int64         `json:"quantity"`
+	UnitPrice string        `json:"unit_price"`
+	MinPrice  string        `json:"min_price"`
+	Units     []saleUnitDTO `json:"units"`
+	Subtotal  string        `json:"subtotal"`
 }
 
 // saleDTO is the created sale: the database's own document numbers, the branch, the
@@ -566,17 +679,20 @@ type saleCreatedDTO struct {
 	Sale saleDTO `json:"sale"`
 }
 
-// saleSummaryDTO is one row of the branch history: the document header and how many
-// lines it holds.
+// saleSummaryDTO is one row of the branch history: the document header, how many lines it
+// holds and how many physical units, of which how many were sold with a warranty. The counts
+// tell the sale's position without unfolding it.
 type saleSummaryDTO struct {
-	ID             int64  `json:"id"`
-	BranchSequence int64  `json:"branch_sequence"`
-	WarrantyNumber string `json:"warranty_number"`
-	PaymentMethod  string `json:"payment_method"`
-	CustomerName   string `json:"customer_name"`
-	Total          string `json:"total"`
-	CreatedAt      string `json:"created_at"`
-	Lines          int    `json:"lines"`
+	ID                int64  `json:"id"`
+	BranchSequence    int64  `json:"branch_sequence"`
+	WarrantyNumber    string `json:"warranty_number"`
+	PaymentMethod     string `json:"payment_method"`
+	CustomerName      string `json:"customer_name"`
+	Total             string `json:"total"`
+	CreatedAt         string `json:"created_at"`
+	Lines             int    `json:"lines"`
+	UnitsTotal        int    `json:"units_total"`
+	UnitsWithWarranty int    `json:"units_with_warranty"`
 }
 
 // salePageDTO is one newest-first page of the branch history plus the total.
@@ -588,19 +704,20 @@ type salePageDTO struct {
 }
 
 // saleDetailLineDTO is one persisted line together with the catalogue identity of its
-// variant, so the document stays legible with the prices of the sale.
+// variant, so the document stays legible with the prices of the sale and with the serial and
+// term of every battery it sold.
 type saleDetailLineDTO struct {
-	VariantID      int64  `json:"variant_id"`
-	CatalogEntryID int64  `json:"catalog_entry_id"`
-	Brand          string `json:"brand"`
-	Model          string `json:"model"`
-	Capacity       string `json:"capacity_ah"`
-	Polarity       string `json:"polarity"`
-	Quantity       int64  `json:"quantity"`
-	UnitPrice      string `json:"unit_price"`
-	MinPrice       string `json:"min_price"`
-	WarrantyMonths int    `json:"warranty_months"`
-	Subtotal       string `json:"subtotal"`
+	VariantID      int64         `json:"variant_id"`
+	CatalogEntryID int64         `json:"catalog_entry_id"`
+	Brand          string        `json:"brand"`
+	Model          string        `json:"model"`
+	Capacity       string        `json:"capacity_ah"`
+	Polarity       string        `json:"polarity"`
+	Quantity       int64         `json:"quantity"`
+	UnitPrice      string        `json:"unit_price"`
+	MinPrice       string        `json:"min_price"`
+	Units          []saleUnitDTO `json:"units"`
+	Subtotal       string        `json:"subtotal"`
 }
 
 // saleDetailDTO is one persisted sale with its catalogue-resolved lines. The header is
@@ -733,16 +850,61 @@ func saleText(value string) bool {
 	return utf8.ValidString(value) && !strings.ContainsRune(value, 0)
 }
 
+// saleSameUnits reports whether two unit lists hold the same batteries in the same order.
+// A unit is the same only when its serial and its term agree, and an absent term only
+// matches another absent term: null is never the same as a number.
+func saleSameUnits(left, right []sales.Unit) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i].SerialNumber != right[i].SerialNumber {
+			return false
+		}
+		switch {
+		case (left[i].WarrantyMonths == nil) != (right[i].WarrantyMonths == nil):
+			return false
+		case left[i].WarrantyMonths != nil && *left[i].WarrantyMonths != *right[i].WarrantyMonths:
+			return false
+		}
+	}
+	return true
+}
+
+// saleUnitsRecord admits only the units this contract publishes: canonical serial text and a
+// term that is either absent or inside the frozen bounds. A unit the document cannot describe
+// exactly means the document is not published at all.
+func saleUnitsRecord(units []sales.Unit) ([]saleUnitDTO, bool) {
+	if len(units) < 1 || len(units) > sales.MaxUnits {
+		return nil, false
+	}
+	records := make([]saleUnitDTO, 0, len(units))
+	for _, unit := range units {
+		serial, ok := sales.CanonicalSerial(unit.SerialNumber)
+		if !ok || serial != unit.SerialNumber {
+			return nil, false
+		}
+		if unit.WarrantyMonths != nil && (*unit.WarrantyMonths < sales.MinWarrantyMonths ||
+			*unit.WarrantyMonths > sales.MaxWarrantyMonths) {
+			return nil, false
+		}
+		records = append(records, saleUnitDTO{SerialNumber: string(serial),
+			WarrantyMonths: unit.WarrantyMonths})
+	}
+	return records, true
+}
+
 // saleDocument admits only a complete persisted document: the branch, the actor, the
 // database's own numbers, the frozen floor and the exact arithmetic. The document is
-// revalidated with the domain's own contract, so a persisted sale that does not add up
-// is never published.
+// revalidated with the domain's own contract, so a persisted sale that does not add up is
+// never published, and every line is published with its units or not at all.
 func saleDocument(sale sales.Sale) (saleDTO, error) {
 	unavailable := func() (saleDTO, error) { return saleDTO{}, sales.ErrUnavailable }
 	if sale.ID < 1 || sale.BranchLocationID < 2 || sale.BranchLocationID > math.MaxInt16 ||
 		sale.BranchSequence < 1 || sale.CreatedByAccountID < 1 || sale.CreatedAt.IsZero() ||
 		sale.Customer.Name == "" || !saleText(sale.Customer.Name) ||
 		!saleText(sale.Customer.Phone) || !saleText(sale.Customer.Document) ||
+		!saleText(sale.Customer.Address) ||
 		sale.WarrantyNumber != saleWarrantyNumber(sale.BranchLocationID, sale.BranchSequence) ||
 		len(sale.Lines) < 1 || len(sale.Lines) > sales.MaxLines {
 		return unavailable()
@@ -762,13 +924,13 @@ func saleDocument(sale sales.Sale) (saleDTO, error) {
 		return unavailable()
 	}
 	// The domain's own validation is reused instead of restating the arithmetic here,
-	// so the published subtotals, the canonical amounts, the settlement and the total
-	// are the same numbers the store applied.
+	// so the published subtotals, the canonical amounts, the settlement, the units and the
+	// total are the same numbers the store applied.
 	input := sales.CreateInput{Payments: sale.Payments, Customer: sale.Customer,
 		Lines: make([]sales.LineInput, 0, len(sale.Lines))}
 	for _, line := range sale.Lines {
 		input.Lines = append(input.Lines, sales.LineInput{VariantID: line.VariantID,
-			Quantity: line.Quantity, UnitPrice: line.UnitPrice, WarrantyMonths: line.WarrantyMonths})
+			Quantity: line.Quantity, UnitPrice: line.UnitPrice, Units: line.Units})
 	}
 	payload, err := sales.Validate(input)
 	if err != nil || payload.Total != sale.Total || payload.Customer != sale.Customer ||
@@ -781,7 +943,7 @@ func saleDocument(sale sales.Sale) (saleDTO, error) {
 		unit, ok := saleMoneyText(persisted.UnitPrice)
 		if !ok || persisted.VariantID != line.VariantID || persisted.Quantity != line.Quantity ||
 			persisted.UnitPrice != line.UnitPrice || persisted.Subtotal != line.Subtotal ||
-			persisted.WarrantyMonths != line.WarrantyMonths {
+			!saleSameUnits(persisted.Units, line.Units) {
 			return unavailable()
 		}
 		minimum, ok := saleMoneyText(persisted.MinPrice)
@@ -792,9 +954,12 @@ func saleDocument(sale sales.Sale) (saleDTO, error) {
 		if !ok {
 			return unavailable()
 		}
+		units, ok := saleUnitsRecord(line.Units)
+		if !ok {
+			return unavailable()
+		}
 		lines = append(lines, saleLineDTO{VariantID: persisted.VariantID, Quantity: persisted.Quantity,
-			UnitPrice: unit, MinPrice: minimum, WarrantyMonths: persisted.WarrantyMonths,
-			Subtotal: subtotal})
+			UnitPrice: unit, MinPrice: minimum, Units: units, Subtotal: subtotal})
 	}
 	return saleDTO{
 		ID:                 sale.ID,
@@ -803,7 +968,7 @@ func saleDocument(sale sales.Sale) (saleDTO, error) {
 		WarrantyNumber:     sale.WarrantyNumber,
 		PaymentMethod:      string(sale.PaymentMethod),
 		Payments:           payments,
-		Customer:           saleCustomerDTO{Name: sale.Customer.Name, Phone: sale.Customer.Phone, Document: sale.Customer.Document},
+		Customer:           saleCustomerDTO{Name: sale.Customer.Name, Phone: sale.Customer.Phone, Document: sale.Customer.Document, Address: sale.Customer.Address},
 		Total:              total,
 		CreatedByAccountID: sale.CreatedByAccountID,
 		CreatedAt:          sale.CreatedAt.UTC().Format(time.RFC3339),
@@ -833,19 +998,25 @@ func salePageRecord(page sales.Page) (salePageDTO, error) {
 			// filter the branch can use.
 			!summary.PaymentMethod.Recorded() || !ok ||
 			summary.Lines < 1 || summary.Lines > sales.MaxLines ||
+			// Every line holds at least one unit, one sale never carries more than MaxUnits of
+			// them, and the warranted units are a subset of all of them.
+			summary.UnitsTotal < summary.Lines || summary.UnitsTotal > sales.MaxUnits ||
+			summary.UnitsWithWarranty < 0 || summary.UnitsWithWarranty > summary.UnitsTotal ||
 			summary.CustomerName == "" || !saleText(summary.CustomerName) {
 			return unavailable()
 		}
 		previous = summary.ID
 		rows = append(rows, saleSummaryDTO{
-			ID:             summary.ID,
-			BranchSequence: summary.BranchSequence,
-			WarrantyNumber: summary.WarrantyNumber,
-			PaymentMethod:  string(summary.PaymentMethod),
-			CustomerName:   summary.CustomerName,
-			Total:          total,
-			CreatedAt:      summary.CreatedAt.UTC().Format(time.RFC3339),
-			Lines:          summary.Lines,
+			ID:                summary.ID,
+			BranchSequence:    summary.BranchSequence,
+			WarrantyNumber:    summary.WarrantyNumber,
+			PaymentMethod:     string(summary.PaymentMethod),
+			CustomerName:      summary.CustomerName,
+			Total:             total,
+			CreatedAt:         summary.CreatedAt.UTC().Format(time.RFC3339),
+			Lines:             summary.Lines,
+			UnitsTotal:        summary.UnitsTotal,
+			UnitsWithWarranty: summary.UnitsWithWarranty,
 		})
 	}
 	return salePageDTO{Page: page.Page, PageSize: page.PageSize, TotalSales: page.TotalSales,
@@ -892,7 +1063,7 @@ func saleDetailRecord(detail sales.Detail) (saleDetailDTO, error) {
 			Quantity:       price.Quantity,
 			UnitPrice:      price.UnitPrice,
 			MinPrice:       price.MinPrice,
-			WarrantyMonths: price.WarrantyMonths,
+			Units:          price.Units,
 			Subtotal:       price.Subtotal,
 		})
 	}
@@ -1137,11 +1308,12 @@ func saleWarrantyFilename(number string) (string, bool) {
 	return "garantia-" + number + ".pdf", true
 }
 
-// saleWarrantyDocument maps one persisted sale onto the printable warranty. Every amount
-// and every line arrives from the document and is printed as persisted, so the PDF never
-// recomputes a price, a subtotal or the total. The payment rows are only the methods that
-// actually paid, in the store's own order, and the moment of issue is the stored moment of
-// the sale.
+// saleWarrantyDocument maps one persisted sale onto the printable warranty. Every amount and
+// every unit arrive from the document and are printed as persisted, so the PDF never
+// recomputes a price, a subtotal or the total. Each physical battery is its own row, with the
+// serial the seller read and the term stated for it, or the recorded absence of warranty. The
+// payment rows are only the methods that actually paid, in the store's own order, and the
+// moment of issue is the stored moment of the sale.
 func saleWarrantyDocument(detail sales.Detail) (warranty.Document, error) {
 	unavailable := func() (warranty.Document, error) { return warranty.Document{}, sales.ErrUnavailable }
 	// The guard the detail read publishes is reused here, so a document that cannot be
@@ -1163,12 +1335,16 @@ func saleWarrantyDocument(detail sales.Detail) (warranty.Document, error) {
 	if len(payments) == 0 {
 		return unavailable()
 	}
-	lines := make([]warranty.Line, 0, len(detail.Lines))
-	for i := range detail.Lines {
+	// One row per physical unit. The amount of a row is the frozen price of its line, so the
+	// rows of a line add up to its subtotal and the rows of the sale to the stored total.
+	lines := make([]warranty.Line, 0, len(record.Lines))
+	for i := range record.Lines {
 		line := record.Lines[i]
-		lines = append(lines, warranty.Line{Brand: line.Brand, Model: line.Model,
-			Capacity: line.Capacity, Polarity: line.Polarity, Quantity: line.Quantity,
-			WarrantyMonths: line.WarrantyMonths, Subtotal: warranty.Money(line.Subtotal)})
+		for _, unit := range line.Units {
+			lines = append(lines, warranty.Line{Brand: line.Brand, Model: line.Model,
+				Capacity: line.Capacity, Polarity: line.Polarity, SerialNumber: unit.SerialNumber,
+				WarrantyMonths: unit.WarrantyMonths, Subtotal: warranty.Money(line.UnitPrice)})
+		}
 	}
 	return warranty.Document{
 		WarrantyNumber: record.WarrantyNumber,

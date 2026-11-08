@@ -12,7 +12,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,8 +32,28 @@ import (
 	"luson/api/internal/transfers"
 )
 
+// saleSerialSeq numbers every fixture serial: one physical battery is sold once per
+// installation, and one test database is one installation.
+var saleSerialSeq atomic.Int64
+
+// saleUnitsJSON renders the units of one fixture line: one unit per sold piece, each with
+// its own serial and the stated term. A zero term is the explicit absence of warranty, which
+// the wire carries as JSON null and never as zero.
+func saleUnitsJSON(quantity int64, warrantyMonths int) string {
+	units := make([]string, 0, quantity)
+	for i := int64(0); i < quantity; i++ {
+		term := strconv.Itoa(warrantyMonths)
+		if warrantyMonths == 0 {
+			term = "null"
+		}
+		units = append(units, fmt.Sprintf(`{"serial_number":%q,"warranty_months":%s}`,
+			fmt.Sprintf("SN-%d", saleSerialSeq.Add(1)), term))
+	}
+	return "[" + strings.Join(units, ",") + "]"
+}
+
 // saleBody is one admitted sale body: how the total was settled, the client of the
-// warranty and one line with the price the counter charges and the term the seller states.
+// warranty and one line with the price the counter charges and one unit per sold piece.
 // The cash payment pays exactly the total of the line, so the fixture body is a document
 // that closes; a body whose price is deliberately not canonical keeps a canonical amount,
 // because the refusal being pinned there is the price's and not the settlement's.
@@ -41,12 +63,12 @@ func saleBody(variantID, quantity int64, unit string, warrantyMonths int) string
 		amount = string(total)
 	}
 	return fmt.Sprintf(`{"payments":[{"method":"cash","amount":%q}],`+
-		`"customer":{"name":"Cliente Mostrador","phone":"700-00000","document":"V-123"},`+
-		`"lines":[{"variant_id":%d,"quantity":%d,"unit_price":%q,"warranty_months":%d}]}`,
-		amount, variantID, quantity, unit, warrantyMonths)
+		`"customer":{"name":"Cliente Mostrador","phone":"700-00000","document":"V-123","address":"Av. Colón 1234"},`+
+		`"lines":[{"variant_id":%d,"quantity":%d,"unit_price":%q,"units":%s}]}`,
+		amount, variantID, quantity, unit, saleUnitsJSON(quantity, warrantyMonths))
 }
 
-const validSaleJSON = `{"payments":[{"method":"card","amount":"192000.00"}],"customer":{"name":"Ana Pérez","phone":"700-00000","document":"V-123"},"lines":[{"variant_id":1,"quantity":2,"unit_price":"96000.00","warranty_months":6}]}`
+const validSaleJSON = `{"payments":[{"method":"card","amount":"192000.00"}],"customer":{"name":"Ana Pérez","phone":"700-00000","document":"V-123","address":"Barrio Norte"},"lines":[{"variant_id":1,"quantity":2,"unit_price":"96000.00","units":[{"serial_number":"ABC123","warranty_months":6},{"serial_number":"ABC124","warranty_months":null}]}]}`
 
 func TestSaleDecoder(t *testing.T) {
 	replace := func(old, value string) string { return strings.Replace(validSaleJSON, old, value, 1) }
@@ -54,20 +76,23 @@ func TestSaleDecoder(t *testing.T) {
 		for _, body := range []string{
 			validSaleJSON,
 			" \n" + validSaleJSON + " \n",
-			`{"payments":[{"method":"cash","amount":"1.00"}],"customer":{"name":"C","phone":"","document":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"1.00","warranty_months":1}]}`,
-			`{"payments":[{"method":"transfer","amount":"85000.00"}],"customer":{"document":"V-1","name":"C","phone":"7"},"lines":[{"warranty_months":120,"unit_price":"85000.00","quantity":1,"variant_id":1}]}`,
-			`{"lines":[{"variant_id":1,"quantity":1000000,"unit_price":"1.00","warranty_months":6}],"customer":{"name":"C","phone":"","document":""},"payments":[{"amount":"1000000.00","method":"cash"}]}`,
+			`{"payments":[{"method":"cash","amount":"1.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"1.00","units":[{"serial_number":"A1","warranty_months":1}]}]}`,
+			`{"payments":[{"method":"transfer","amount":"85000.00"}],"customer":{"document":"V-1","name":"C","phone":"7","address":""},"lines":[{"units":[{"warranty_months":120,"serial_number":"A2"}],"unit_price":"85000.00","quantity":1,"variant_id":1}]}`,
+			// The term may be the explicit absence of warranty: JSON null, never absent and
+			// never zero.
+			`{"payments":[{"method":"cash","amount":"1.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"1.00","units":[{"serial_number":"A3","warranty_months":null}]}]}`,
+			`{"lines":[{"variant_id":1,"quantity":1,"unit_price":"1.00","units":[{"serial_number":"A4","warranty_months":6}]}],"customer":{"name":"C","phone":"","document":"","address":""},"payments":[{"amount":"1.00","method":"cash"}]}`,
 			// One document settled with two methods, stated in either order: the shape is
 			// admitted here and the store decides whether the amounts close.
-			`{"payments":[{"method":"cash","amount":"40000.00"},{"method":"transfer","amount":"56000.00"}],"customer":{"name":"C","phone":"","document":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","warranty_months":6}]}`,
-			`{"payments":[{"method":"transfer","amount":"56000.00"},{"method":"cash","amount":"40000.00"}],"customer":{"name":"C","phone":"","document":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","warranty_months":6}]}`,
+			`{"payments":[{"method":"cash","amount":"40000.00"},{"method":"transfer","amount":"56000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"A5","warranty_months":6}]}]}`,
+			`{"payments":[{"method":"transfer","amount":"56000.00"},{"method":"cash","amount":"40000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"A6","warranty_months":6}]}]}`,
 			// The three admitted methods, each paying once, is the widest settlement.
-			`{"payments":[{"method":"cash","amount":"32000.00"},{"method":"card","amount":"32000.00"},{"method":"transfer","amount":"32000.00"}],"customer":{"name":"C","phone":"","document":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","warranty_months":6}]}`,
+			`{"payments":[{"method":"cash","amount":"32000.00"},{"method":"card","amount":"32000.00"},{"method":"transfer","amount":"32000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"A7","warranty_months":6}]}]}`,
 			// The two admitted polarities of one battery are two lines of one document,
-			// each with the term the seller states for it.
-			`{"payments":[{"method":"cash","amount":"351000.50"}],"customer":{"name":"C","phone":"","document":""},"lines":[` +
-				`{"variant_id":2,"quantity":1,"unit_price":"96000.00","warranty_months":6},` +
-				`{"variant_id":1,"quantity":3,"unit_price":"85000.50","warranty_months":12}]}`,
+			// each with the units the seller registers for it.
+			`{"payments":[{"method":"cash","amount":"351000.50"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[` +
+				`{"variant_id":2,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"A8","warranty_months":6}]},` +
+				`{"variant_id":1,"quantity":3,"unit_price":"85000.50","units":[{"serial_number":"A9","warranty_months":12},{"serial_number":"A10","warranty_months":null},{"serial_number":"A11","warranty_months":120}]}]}`,
 		} {
 			r := httptest.NewRequest("POST", "/api/sales", strings.NewReader(body))
 			r.Header.Set("Content-Type", "application/json; charset=UTF-8")
@@ -80,20 +105,49 @@ func TestSaleDecoder(t *testing.T) {
 					t.Fatalf("an admitted payment must name one real method: %+v", payment)
 				}
 			}
+			for _, line := range got.Lines {
+				if int64(len(line.Units)) != line.Quantity {
+					t.Fatalf("an admitted line must carry one unit per sold piece: %+v", line)
+				}
+			}
 		}
 	})
 	// A full-width document is admitted: the body limit exists because a sale admits
 	// MaxLines lines.
 	lines := make([]string, 0, sales.MaxLines)
 	for i := 0; i < sales.MaxLines; i++ {
-		lines = append(lines, fmt.Sprintf(`{"variant_id":%d,"quantity":1,"unit_price":"1.00","warranty_months":6}`, i+1))
+		lines = append(lines, fmt.Sprintf(`{"variant_id":%d,"quantity":1,"unit_price":"1.00","units":[{"serial_number":"FULL-%d","warranty_months":6}]}`, i+1, i))
 	}
-	full := `{"payments":[{"method":"cash","amount":"190.00"}],"customer":{"name":"C","phone":"","document":""},"lines":[` +
+	full := `{"payments":[{"method":"cash","amount":"190.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[` +
 		strings.Join(lines, ",") + `]}`
 	r := httptest.NewRequest("POST", "/api/sales", strings.NewReader(full))
 	r.Header.Set("Content-Type", "application/json")
 	if got, err := decodeSale(r); err != nil || len(got.Lines) != sales.MaxLines {
 		t.Fatalf("a full-width sale must be admitted: %v", err)
+	}
+	// The widest sale is one line of one thousand batteries, each with the longest admitted
+	// serial in the widest admitted encoding: sixty-four characters of four-byte UTF-8, so
+	// the document is the largest one the contract can ask for and the limit must hold it.
+	// An ASCII serial would measure a quarter of that and prove nothing about the bound.
+	widest := make([]string, 0, sales.MaxUnits)
+	for i := 0; i < sales.MaxUnits; i++ {
+		widest = append(widest, fmt.Sprintf(`{"serial_number":%q,"warranty_months":120}`,
+			fmt.Sprintf("%s-%03d", strings.Repeat("\U0001F600", sales.MaxSerialLength-4), i)))
+	}
+	wide := fmt.Sprintf(`{"payments":[{"method":"cash","amount":"1000.00"}],`+
+		`"customer":{"name":"C","phone":"","document":"","address":""},`+
+		`"lines":[{"variant_id":1,"quantity":%d,"unit_price":"1.00","units":[%s]}]}`,
+		sales.MaxUnits, strings.Join(widest, ","))
+	if len(wide) <= 64<<10 {
+		t.Fatalf("the widest admitted sale must exceed the old 64 KiB limit, got %d bytes", len(wide))
+	}
+	if len(wide) > saleBodyLimit {
+		t.Fatalf("the widest admitted sale must fit the new body limit, got %d bytes", len(wide))
+	}
+	r = httptest.NewRequest("POST", "/api/sales", strings.NewReader(wide))
+	r.Header.Set("Content-Type", "application/json")
+	if got, err := decodeSale(r); err != nil || len(got.Lines) != 1 || len(got.Lines[0].Units) != sales.MaxUnits {
+		t.Fatalf("the widest admitted sale must be decoded: %v", err)
 	}
 	invalid := map[string]string{
 		"empty_object":     `{}`,
@@ -112,8 +166,8 @@ func TestSaleDecoder(t *testing.T) {
 		"duplicate":        replace(`"payments":`, `"payments":[{"method":"cash","amount":"1.00"}],"payments":`),
 		"escaped_dup":      replace(`"payments":`, `"\u0070ayments":[{"method":"cash","amount":"1.00"}],"payments":`),
 		"missing_payments": replace(`"payments":[{"method":"card","amount":"192000.00"}],`, ``),
-		"missing_customer": replace(`"customer":{"name":"Ana Pérez","phone":"700-00000","document":"V-123"},`, ``),
-		"missing_lines":    replace(`,"lines":[{"variant_id":1,"quantity":2,"unit_price":"96000.00","warranty_months":6}]`, ``),
+		"missing_customer": replace(`"customer":{"name":"Ana Pérez","phone":"700-00000","document":"V-123","address":"Barrio Norte"},`, ``),
+		"missing_lines":    replace(`,"lines":[{"variant_id":1,"quantity":2,"unit_price":"96000.00","units":[{"serial_number":"ABC123","warranty_months":6},{"serial_number":"ABC124","warranty_months":null}]}]`, ``),
 		// The settlement itself is exact: one to three payments of exactly `method` and
 		// `amount`, each method once, and the amounts canonical two-decimal text.
 		"payments_null":          replace(`[{"method":"card","amount":"192000.00"}]`, `null`),
@@ -141,55 +195,88 @@ func TestSaleDecoder(t *testing.T) {
 		"payment_negative":       replace(`"192000.00"`, `"-192000.00"`),
 		"payment_comma":          replace(`"192000.00"`, `"192000,00"`),
 		"payment_exponent":       replace(`"192000.00"`, `"1.92e5"`),
-		"null_customer":          replace(`{"name":"Ana Pérez","phone":"700-00000","document":"V-123"}`, `null`),
-		"array_customer":         replace(`{"name":"Ana Pérez","phone":"700-00000","document":"V-123"}`, `[]`),
-		"customer_unknown":       replace(`"phone":"700-00000"`, `"email":"a@b.c","phone":"700-00000"`),
-		"customer_dup":           replace(`"phone":`, `"name":"Otra","phone":`),
-		"customer_esc_dup":       replace(`"phone":`, `"\u006eame":"Otra","phone":`),
-		"customer_missing":       replace(`,"document":"V-123"`, ``),
-		"customer_numeric":       replace(`"Ana Pérez"`, `7`),
-		"null_lines":             replace(`[{"variant_id":1,"quantity":2,"unit_price":"96000.00","warranty_months":6}]`, `null`),
-		"empty_lines":            replace(`[{"variant_id":1,"quantity":2,"unit_price":"96000.00","warranty_months":6}]`, `[]`),
-		"line_root":              replace(`[{"variant_id":1,"quantity":2,"unit_price":"96000.00","warranty_months":6}]`, `[[]]`),
-		"line_unknown":           replace(`"quantity":2`, `"min_price":"1.00","quantity":2`),
-		"line_duplicate":         replace(`"quantity":`, `"variant_id":1,"quantity":`),
-		"line_missing":           replace(`,"warranty_months":6`, ``),
-		"line_empty_obj":         replace(`{"variant_id":1,"quantity":2,"unit_price":"96000.00","warranty_months":6}`, `{}`),
-		"zero_variant":           replace(`"variant_id":1`, `"variant_id":0`),
-		"padded_variant":         replace(`"variant_id":1`, `"variant_id":01`),
-		"negative_variant":       replace(`"variant_id":1`, `"variant_id":-1`),
-		"variant_bound":          replace(`"variant_id":1`, `"variant_id":2147483648`),
-		"string_variant":         replace(`"variant_id":1`, `"variant_id":"1"`),
-		"float_variant":          replace(`"variant_id":1`, `"variant_id":1.0`),
-		"zero_quantity":          replace(`"quantity":2`, `"quantity":0`),
-		"negative_qty":           replace(`"quantity":2`, `"quantity":-2`),
-		"quantity_bound":         replace(`"quantity":2`, fmt.Sprintf(`"quantity":%d`, sales.MaxQuantity+1)),
-		"string_quantity":        replace(`"quantity":2`, `"quantity":"2"`),
+		"null_customer":          replace(`{"name":"Ana Pérez","phone":"700-00000","document":"V-123","address":"Barrio Norte"}`, `null`),
+		"array_customer":         replace(`{"name":"Ana Pérez","phone":"700-00000","document":"V-123","address":"Barrio Norte"}`, `[]`),
+		// S1: the client carries exactly four keys, so the address is mandatory in the wire
+		// shape even when it is empty, and an unknown fifth key is refused.
+		"customer_no_address":      replace(`,"address":"Barrio Norte"`, ``),
+		"customer_address_unknown": replace(`"address":"Barrio Norte"`, `"address":"Barrio Norte","neighbourhood":"Norte"`),
+		"customer_address_numeric": replace(`"address":"Barrio Norte"`, `"address":7`),
+		"customer_unknown":         replace(`"phone":"700-00000"`, `"email":"a@b.c","phone":"700-00000"`),
+		"customer_dup":             replace(`"phone":`, `"name":"Otra","phone":`),
+		"customer_esc_dup":         replace(`"phone":`, `"\u006eame":"Otra","phone":`),
+		"customer_missing":         replace(`,"document":"V-123"`, ``),
+		"customer_numeric":         replace(`"Ana Pérez"`, `7`),
+		"null_lines":               replace(`[{"variant_id":1,"quantity":2,"unit_price":"96000.00","units":[{"serial_number":"ABC123","warranty_months":6},{"serial_number":"ABC124","warranty_months":null}]}]`, `null`),
+		"empty_lines":              replace(`[{"variant_id":1,"quantity":2,"unit_price":"96000.00","units":[{"serial_number":"ABC123","warranty_months":6},{"serial_number":"ABC124","warranty_months":null}]}]`, `[]`),
+		"line_root":                replace(`[{"variant_id":1,"quantity":2,"unit_price":"96000.00","units":[{"serial_number":"ABC123","warranty_months":6},{"serial_number":"ABC124","warranty_months":null}]}]`, `[[]]`),
+		"line_unknown":             replace(`"quantity":2`, `"min_price":"1.00","quantity":2`),
+		"line_duplicate":           replace(`"quantity":`, `"variant_id":1,"quantity":`),
+		"line_missing":             replace(`,"units":[{"serial_number":"ABC123","warranty_months":6},{"serial_number":"ABC124","warranty_months":null}]`, ``),
+		"line_empty_obj":           replace(`{"variant_id":1,"quantity":2,"unit_price":"96000.00","units":[{"serial_number":"ABC123","warranty_months":6},{"serial_number":"ABC124","warranty_months":null}]}`, `{}`),
+		"zero_variant":             replace(`"variant_id":1`, `"variant_id":0`),
+		"padded_variant":           replace(`"variant_id":1`, `"variant_id":01`),
+		"negative_variant":         replace(`"variant_id":1`, `"variant_id":-1`),
+		"variant_bound":            replace(`"variant_id":1`, `"variant_id":2147483648`),
+		"string_variant":           replace(`"variant_id":1`, `"variant_id":"1"`),
+		"float_variant":            replace(`"variant_id":1`, `"variant_id":1.0`),
+		"zero_quantity":            replace(`"quantity":2`, `"quantity":0`),
+		"negative_qty":             replace(`"quantity":2`, `"quantity":-2`),
+		"quantity_bound":           replace(`"quantity":2`, fmt.Sprintf(`"quantity":%d`, sales.MaxQuantity+1)),
+		"string_quantity":          replace(`"quantity":2`, `"quantity":"2"`),
 		// The money of this contract is canonical two-decimal text: a JSON number, a
 		// missing fraction, three decimals and a zero amount are all refusals.
-		"numeric_price":     replace(`"96000.00"`, `96000`),
-		"null_price":        replace(`"unit_price":"96000.00"`, `"unit_price":null`),
-		"empty_price":       replace(`"96000.00"`, `""`),
-		"no_fraction":       replace(`"96000.00"`, `"96000"`),
-		"one_decimal":       replace(`"96000.00"`, `"96000.5"`),
-		"three_decimals":    replace(`"96000.00"`, `"96000.001"`),
-		"exponent_price":    replace(`"96000.00"`, `"9.6e4"`),
-		"negative_price":    replace(`"96000.00"`, `"-96000.00"`),
-		"zero_price":        replace(`"96000.00"`, `"0.00"`),
-		"padded_price":      replace(`"96000.00"`, `"096000.00"`),
-		"comma_price":       replace(`"96000.00"`, `"96000,00"`),
-		"missing_price":     replace(`,"unit_price":"96000.00"`, ``),
+		"numeric_price":  replace(`"96000.00"`, `96000`),
+		"null_price":     replace(`"unit_price":"96000.00"`, `"unit_price":null`),
+		"empty_price":    replace(`"96000.00"`, `""`),
+		"no_fraction":    replace(`"96000.00"`, `"96000"`),
+		"one_decimal":    replace(`"96000.00"`, `"96000.5"`),
+		"three_decimals": replace(`"96000.00"`, `"96000.001"`),
+		"exponent_price": replace(`"96000.00"`, `"9.6e4"`),
+		"negative_price": replace(`"96000.00"`, `"-96000.00"`),
+		"zero_price":     replace(`"96000.00"`, `"0.00"`),
+		"padded_price":   replace(`"96000.00"`, `"096000.00"`),
+		"comma_price":    replace(`"96000.00"`, `"96000,00"`),
+		"missing_price":  replace(`,"unit_price":"96000.00"`, ``),
+		// The term of a unit is a canonical integer 1..120 or JSON null: never zero, never
+		// absent and never a string or a float.
 		"zero_warranty":     replace(`"warranty_months":6`, `"warranty_months":0`),
 		"negative_warranty": replace(`"warranty_months":6`, `"warranty_months":-6`),
 		"warranty_bound":    replace(`"warranty_months":6`, fmt.Sprintf(`"warranty_months":%d`, sales.MaxWarrantyMonths+1)),
 		"string_warranty":   replace(`"warranty_months":6`, `"warranty_months":"6"`),
 		"float_warranty":    replace(`"warranty_months":6`, `"warranty_months":6.0`),
-		"invalid_utf8":      replace("Ana Pérez", "Ana P\xe9rez"),
-		"repeated_variant": `{"payments":[{"method":"cash","amount":"2.00"}],"customer":{"name":"C","phone":"","document":""},"lines":[` +
-			`{"variant_id":1,"quantity":1,"unit_price":"1.00","warranty_months":6},` +
-			`{"variant_id":1,"quantity":1,"unit_price":"1.00","warranty_months":6}]}`,
-		"too_many_lines": `{"payments":[{"method":"cash","amount":"191.00"}],"customer":{"name":"C","phone":"","document":""},"lines":[` +
-			strings.Join(append(append([]string{}, lines...), `{"variant_id":191,"quantity":1,"unit_price":"1.00","warranty_months":6}`), ",") + `]}`,
+		"padded_warranty":   replace(`"warranty_months":6`, `"warranty_months":06`),
+		"warranty_absent":   replace(`,"warranty_months":6`, ``),
+		"warranty_true":     replace(`"warranty_months":6`, `"warranty_months":true`),
+		// The unit itself is exactly serial_number and warranty_months.
+		"units_null":     replace(`"units":[{"serial_number":"ABC123","warranty_months":6},{"serial_number":"ABC124","warranty_months":null}]`, `"units":null`),
+		"units_object":   replace(`"units":[{"serial_number":"ABC123","warranty_months":6},{"serial_number":"ABC124","warranty_months":null}]`, `"units":{}`),
+		"units_empty":    replace(`"units":[{"serial_number":"ABC123","warranty_months":6},{"serial_number":"ABC124","warranty_months":null}]`, `"units":[]`),
+		"unit_root":      replace(`"units":[{"serial_number":"ABC123","warranty_months":6},{"serial_number":"ABC124","warranty_months":null}]`, `"units":[[]]`),
+		"unit_unknown":   replace(`"serial_number":"ABC123"`, `"serial_number":"ABC123","brand":"CAR"`),
+		"unit_duplicate": replace(`"serial_number":"ABC124"`, `"serial_number":"ABC124","serial_number":"ABC125"`),
+		"unit_empty":     replace(`{"serial_number":"ABC123","warranty_months":6}`, `{}`),
+		"serial_missing": replace(`"serial_number":"ABC124",`, ``),
+		"serial_null":    replace(`"serial_number":"ABC124"`, `"serial_number":null`),
+		"serial_numeric": replace(`"serial_number":"ABC124"`, `"serial_number":124`),
+		"invalid_utf8":   replace("Ana Pérez", "Ana P\xe9rez"),
+		"repeated_variant": `{"payments":[{"method":"cash","amount":"2.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[` +
+			`{"variant_id":1,"quantity":1,"unit_price":"1.00","units":[{"serial_number":"R1","warranty_months":6}]},` +
+			`{"variant_id":1,"quantity":1,"unit_price":"1.00","units":[{"serial_number":"R2","warranty_months":6}]}]}`,
+		"too_many_lines": `{"payments":[{"method":"cash","amount":"191.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[` +
+			strings.Join(append(append([]string{}, lines...), `{"variant_id":191,"quantity":1,"unit_price":"1.00","units":[{"serial_number":"R191","warranty_months":6}]}`), ",") + `]}`,
+		// D6: one sale carries at most one thousand units, so the decode refuses the next
+		// one before any store work.
+		"too_many_units": func() string {
+			batteries := make([]string, 0, sales.MaxUnits+1)
+			for i := 0; i <= sales.MaxUnits; i++ {
+				batteries = append(batteries, fmt.Sprintf(`{"serial_number":"W-%d","warranty_months":null}`, i))
+			}
+			return fmt.Sprintf(`{"payments":[{"method":"cash","amount":"1001.00"}],`+
+				`"customer":{"name":"C","phone":"","document":"","address":""},`+
+				`"lines":[{"variant_id":1,"quantity":%d,"unit_price":"1.00","units":[%s]}]}`,
+				sales.MaxUnits+1, strings.Join(batteries, ","))
+		}(),
 	}
 	for name, body := range invalid {
 		t.Run(name, func(t *testing.T) {
@@ -380,6 +467,28 @@ func TestSaleFailureMapping(t *testing.T) {
 		saleFailure(w, err)
 		expectTransferError(t, w, 503, "service_unavailable")
 	}
+	// A serial that was already sold is its own refusal, and it names the battery when the
+	// database named it: the counter must point at the exact serial it has to fix.
+	for _, tc := range []struct {
+		err  error
+		body string
+	}{
+		{&sales.SerialAlreadySold{Serial: "ABC123"}, `{"error":"serial_already_sold","serial_number":"ABC123"}` + "\n"},
+		// A refusal that lost the serial is still the same refusal, answered with the house
+		// envelope instead of an invented serial.
+		{&sales.SerialAlreadySold{}, `{"error":"serial_already_sold"}` + "\n"},
+		{&sales.SerialAlreadySold{Serial: " padded "}, `{"error":"serial_already_sold"}` + "\n"},
+	} {
+		w := httptest.NewRecorder()
+		saleFailure(w, fmt.Errorf("wrapped: %w", tc.err))
+		if w.Code != 409 || w.Body.String() != tc.body ||
+			w.Header().Get("Content-Type") != "application/json" {
+			t.Fatalf("an already-sold serial must name its battery: %d %s", w.Code, w.Body.String())
+		}
+		if !errors.Is(tc.err, sales.ErrSerialAlreadySold) {
+			t.Fatal("an already-sold serial must stay its own domain refusal")
+		}
+	}
 	// A refusal that lost its variant fails closed instead of publishing variant zero.
 	for _, err := range []error{&sales.NotSellable{}, &sales.BelowMinimum{VariantID: -1}, &sales.InsufficientStock{VariantID: math.MaxInt32 + 1}} {
 		w := httptest.NewRecorder()
@@ -395,15 +504,19 @@ func TestSaleFailureMapping(t *testing.T) {
 }
 
 func saleDocumentValue() sales.Sale {
+	term := 6
 	return sales.Sale{
 		ID: 7, BranchLocationID: 2, BranchSequence: 1, WarrantyNumber: "2-000001",
 		PaymentMethod: sales.PaymentCash,
 		Payments:      []sales.Payment{{Method: sales.PaymentCash, Amount: "192000.00"}},
-		Customer:      sales.Customer{Name: "Cliente Mostrador", Phone: "700-00000", Document: "V-123"},
+		Customer:      sales.Customer{Name: "Cliente Mostrador", Phone: "700-00000", Document: "V-123", Address: "Av. Colón 1234"},
 		Total:         "192000.00", CreatedByAccountID: 2,
 		CreatedAt: time.Date(2026, 11, 20, 14, 30, 0, 0, time.UTC),
 		Lines: []sales.SaleLine{{VariantID: 1, Quantity: 2, UnitPrice: "96000.00",
-			MinPrice: "85000.00", WarrantyMonths: 6, Subtotal: "192000.00"}},
+			MinPrice: "85000.00", Subtotal: "192000.00", Units: []sales.Unit{
+				{SerialNumber: "ABC123", WarrantyMonths: &term},
+				{SerialNumber: "ABC124"},
+			}}},
 	}
 }
 
@@ -421,8 +534,20 @@ func TestSaleDocumentRecord(t *testing.T) {
 	}
 	if line := record.Lines[0]; line.VariantID != 1 || line.Quantity != 2 ||
 		line.UnitPrice != "96000.00" || line.MinPrice != "85000.00" ||
-		line.WarrantyMonths != 6 || line.Subtotal != "192000.00" {
+		line.Subtotal != "192000.00" || len(line.Units) != 2 {
 		t.Fatalf("the created line does not freeze the pair: %+v", line)
+	}
+	// The answered document replaces the line's term with its units: one per sold piece,
+	// with the serial and the term or its explicit absence.
+	if unit := record.Lines[0].Units[0]; unit.SerialNumber != "ABC123" || unit.WarrantyMonths == nil ||
+		*unit.WarrantyMonths != 6 {
+		t.Fatalf("the first unit does not carry its serial and term: %+v", unit)
+	}
+	if unit := record.Lines[0].Units[1]; unit.SerialNumber != "ABC124" || unit.WarrantyMonths != nil {
+		t.Fatalf("a unit without warranty must answer a null term: %+v", unit)
+	}
+	if record.Customer.Address != "Av. Colón 1234" {
+		t.Fatalf("the document must carry the address of the sale: %q", record.Customer.Address)
 	}
 	if len(record.Payments) != 1 || record.Payments[0].Method != "cash" ||
 		record.Payments[0].Amount != "192000.00" {
@@ -515,15 +640,30 @@ func TestSaleDocumentRecord(t *testing.T) {
 			v.Lines[0].Subtotal = "190000.00"
 			v.Total = "190000.00"
 		}),
-		"unit_changed":     mutate(func(v *sales.Sale) { v.Lines[0].UnitPrice = "95000.00" }),
-		"zero_quantity":    mutate(func(v *sales.Sale) { v.Lines[0].Quantity = 0 }),
-		"zero_term":        mutate(func(v *sales.Sale) { v.Lines[0].WarrantyMonths = 0 }),
-		"term_above":       mutate(func(v *sales.Sale) { v.Lines[0].WarrantyMonths = sales.MaxWarrantyMonths + 1 }),
+		"unit_changed":  mutate(func(v *sales.Sale) { v.Lines[0].UnitPrice = "95000.00" }),
+		"zero_quantity": mutate(func(v *sales.Sale) { v.Lines[0].Quantity = 0 }),
+		"zero_term": mutate(func(v *sales.Sale) {
+			term := 0
+			v.Lines[0].Units[0].WarrantyMonths = &term
+		}),
+		"term_above": mutate(func(v *sales.Sale) {
+			term := sales.MaxWarrantyMonths + 1
+			v.Lines[0].Units[0].WarrantyMonths = &term
+		}),
+		"no_units":         mutate(func(v *sales.Sale) { v.Lines[0].Units = nil }),
+		"unit_short":       mutate(func(v *sales.Sale) { v.Lines[0].Units = v.Lines[0].Units[:1] }),
+		"unit_long":        mutate(func(v *sales.Sale) { v.Lines[0].Units = append(v.Lines[0].Units, v.Lines[0].Units[0]) }),
+		"unit_padded":      mutate(func(v *sales.Sale) { v.Lines[0].Units[1].SerialNumber = " ABC124 " }),
+		"unit_serial_nul":  mutate(func(v *sales.Sale) { v.Lines[0].Units[1].SerialNumber = "a\x00b" }),
+		"long_address":     mutate(func(v *sales.Sale) { v.Customer.Address = strings.Repeat("ñ", sales.MaxCustomerAddress+1) }),
+		"nul_address":      mutate(func(v *sales.Sale) { v.Customer.Address = "a\x00b" }),
 		"repeated_variant": mutate(func(v *sales.Sale) { v.Lines = append(v.Lines, v.Lines[0]) }),
 		"unordered_lines": mutate(func(v *sales.Sale) {
 			v.Lines = []sales.SaleLine{
-				{VariantID: 2, Quantity: 1, UnitPrice: "96000.00", MinPrice: "85000.00", WarrantyMonths: 6, Subtotal: "96000.00"},
-				{VariantID: 1, Quantity: 1, UnitPrice: "96000.00", MinPrice: "85000.00", WarrantyMonths: 6, Subtotal: "96000.00"},
+				{VariantID: 2, Quantity: 1, UnitPrice: "96000.00", MinPrice: "85000.00", Subtotal: "96000.00",
+					Units: []sales.Unit{{SerialNumber: "ORDER-2"}}},
+				{VariantID: 1, Quantity: 1, UnitPrice: "96000.00", MinPrice: "85000.00", Subtotal: "96000.00",
+					Units: []sales.Unit{{SerialNumber: "ORDER-1"}}},
 			}
 			v.Total = "192000.00"
 		}),
@@ -539,6 +679,7 @@ func salePageValue() sales.Page {
 		ID: 7, BranchSequence: 1, WarrantyNumber: "2-000001", PaymentMethod: sales.PaymentCard,
 		CustomerName: "Cliente Mostrador", Total: "192000.00",
 		CreatedAt: time.Date(2026, 11, 20, 14, 30, 0, 0, time.UTC), Lines: 1,
+		UnitsTotal: 2, UnitsWithWarranty: 1,
 	}}}
 }
 
@@ -555,6 +696,10 @@ func TestSalePageRecord(t *testing.T) {
 		row.PaymentMethod != "card" || row.CustomerName != "Cliente Mostrador" ||
 		row.Total != "192000.00" || row.CreatedAt != "2026-11-20T14:30:00Z" || row.Lines != 1 {
 		t.Fatalf("the history row does not match the frozen contract: %+v", row)
+	}
+	// S5: the row tells the sale's position without unfolding it.
+	if row.UnitsTotal != 2 || row.UnitsWithWarranty != 1 {
+		t.Fatalf("the history row must count the units and their warranties: %+v", row)
 	}
 	// A sale settled with more than one method is a legible row: its derived label is
 	// published, so the branch can filter by it.
@@ -574,21 +719,28 @@ func TestSalePageRecord(t *testing.T) {
 		return value
 	}
 	for name, page := range map[string]sales.Page{
-		"bad_page":       mutate(func(v *sales.Page) { v.Page = 0 }),
-		"bad_size":       mutate(func(v *sales.Page) { v.PageSize = 15 }),
-		"negative_total": mutate(func(v *sales.Page) { v.TotalSales = -1 }),
-		"overflow":       mutate(func(v *sales.Page) { v.TotalSales = 0 }),
-		"too_many_rows":  mutate(func(v *sales.Page) { v.PageSize = 10; v.Sales = append(v.Sales, v.Sales[0]) }),
-		"zero_id":        mutate(func(v *sales.Page) { v.Sales[0].ID = 0 }),
-		"unordered":      mutate(func(v *sales.Page) { v.Sales = append(v.Sales, v.Sales[0]) }),
-		"zero_sequence":  mutate(func(v *sales.Page) { v.Sales[0].BranchSequence = 0 }),
-		"empty_number":   mutate(func(v *sales.Page) { v.Sales[0].WarrantyNumber = "" }),
-		"unknown_method": mutate(func(v *sales.Page) { v.Sales[0].PaymentMethod = "cheque" }),
-		"empty_customer": mutate(func(v *sales.Page) { v.Sales[0].CustomerName = "" }),
-		"money_digits":   mutate(func(v *sales.Page) { v.Sales[0].Total = "192000" }),
-		"zero_created":   mutate(func(v *sales.Page) { v.Sales[0].CreatedAt = time.Time{} }),
-		"zero_lines":     mutate(func(v *sales.Page) { v.Sales[0].Lines = 0 }),
-		"lines_above":    mutate(func(v *sales.Page) { v.Sales[0].Lines = sales.MaxLines + 1 }),
+		"bad_page":          mutate(func(v *sales.Page) { v.Page = 0 }),
+		"bad_size":          mutate(func(v *sales.Page) { v.PageSize = 15 }),
+		"negative_total":    mutate(func(v *sales.Page) { v.TotalSales = -1 }),
+		"overflow":          mutate(func(v *sales.Page) { v.TotalSales = 0 }),
+		"too_many_rows":     mutate(func(v *sales.Page) { v.PageSize = 10; v.Sales = append(v.Sales, v.Sales[0]) }),
+		"zero_id":           mutate(func(v *sales.Page) { v.Sales[0].ID = 0 }),
+		"unordered":         mutate(func(v *sales.Page) { v.Sales = append(v.Sales, v.Sales[0]) }),
+		"zero_sequence":     mutate(func(v *sales.Page) { v.Sales[0].BranchSequence = 0 }),
+		"empty_number":      mutate(func(v *sales.Page) { v.Sales[0].WarrantyNumber = "" }),
+		"unknown_method":    mutate(func(v *sales.Page) { v.Sales[0].PaymentMethod = "cheque" }),
+		"empty_customer":    mutate(func(v *sales.Page) { v.Sales[0].CustomerName = "" }),
+		"money_digits":      mutate(func(v *sales.Page) { v.Sales[0].Total = "192000" }),
+		"zero_created":      mutate(func(v *sales.Page) { v.Sales[0].CreatedAt = time.Time{} }),
+		"zero_lines":        mutate(func(v *sales.Page) { v.Sales[0].Lines = 0 }),
+		"lines_above":       mutate(func(v *sales.Page) { v.Sales[0].Lines = sales.MaxLines + 1 }),
+		"zero_units":        mutate(func(v *sales.Page) { v.Sales[0].UnitsTotal = 0 }),
+		"units_above":       mutate(func(v *sales.Page) { v.Sales[0].UnitsTotal = sales.MaxUnits + 1 }),
+		"units_below_lines": mutate(func(v *sales.Page) { v.Sales[0].Lines = 3 }),
+		"warranted_above":   mutate(func(v *sales.Page) { v.Sales[0].UnitsWithWarranty = v.Sales[0].UnitsTotal + 1 }),
+		"warranted_negative": mutate(func(v *sales.Page) {
+			v.Sales[0].UnitsWithWarranty = -1
+		}),
 	} {
 		if _, err := salePageRecord(page); !errors.Is(err, sales.ErrUnavailable) {
 			t.Fatalf("%s must fail closed", name)
@@ -597,17 +749,21 @@ func TestSalePageRecord(t *testing.T) {
 }
 
 func saleDetailValue() sales.Detail {
+	term := 6
 	return sales.Detail{
 		ID: 7, BranchLocationID: 2, BranchName: "Sucursal A", BranchSequence: 1,
 		WarrantyNumber: "2-000001",
 		PaymentMethod:  sales.PaymentCash,
 		Payments:       []sales.Payment{{Method: sales.PaymentCash, Amount: "192000.00"}},
-		Customer:       sales.Customer{Name: "Cliente Mostrador", Phone: "700-00000", Document: "V-123"},
+		Customer:       sales.Customer{Name: "Cliente Mostrador", Phone: "700-00000", Document: "V-123", Address: "Av. Colón 1234"},
 		Total:          "192000.00", CreatedByAccountID: 2,
 		CreatedAt: time.Date(2026, 11, 20, 14, 30, 0, 0, time.UTC),
 		Lines: []sales.DetailLine{{
 			SaleLine: sales.SaleLine{VariantID: 1, Quantity: 2, UnitPrice: "96000.00",
-				MinPrice: "85000.00", WarrantyMonths: 6, Subtotal: "192000.00"},
+				MinPrice: "85000.00", Subtotal: "192000.00", Units: []sales.Unit{
+					{SerialNumber: "ABC123", WarrantyMonths: &term},
+					{SerialNumber: "ABC124"},
+				}},
 			CatalogEntryID: 1, Brand: "CAR", Model: "NS40ZL", Capacity: catalog.Decimal("35"), Polarity: "L",
 		}},
 	}
@@ -637,8 +793,19 @@ func TestSaleDetailRecord(t *testing.T) {
 	if line.VariantID != 1 || line.CatalogEntryID != 1 || line.Brand != "CAR" ||
 		line.Model != "NS40ZL" || line.Capacity != "35" || line.Polarity != "L" ||
 		line.Quantity != 2 || line.UnitPrice != "96000.00" || line.MinPrice != "85000.00" ||
-		line.WarrantyMonths != 6 || line.Subtotal != "192000.00" {
+		line.Subtotal != "192000.00" || len(line.Units) != 2 {
 		t.Fatalf("the document line does not keep the prices of the sale: %+v", line)
+	}
+	// The detail names each unit with its serial and its term, or its explicit absence.
+	if unit := line.Units[0]; unit.SerialNumber != "ABC123" || unit.WarrantyMonths == nil ||
+		*unit.WarrantyMonths != 6 {
+		t.Fatalf("the detail must carry the serial and term of each unit: %+v", unit)
+	}
+	if unit := line.Units[1]; unit.SerialNumber != "ABC124" || unit.WarrantyMonths != nil {
+		t.Fatalf("a battery sold without warranty must answer a null term: %+v", unit)
+	}
+	if record.Customer.Address != "Av. Colón 1234" {
+		t.Fatalf("the detail must carry the address of the sale: %q", record.Customer.Address)
 	}
 	mutate := func(change func(*sales.Detail)) sales.Detail {
 		value := saleDetailValue()
@@ -1102,24 +1269,74 @@ func salePaymentsWire(t *testing.T, raw json.RawMessage) []salePaymentDTO {
 	return payments
 }
 
-// saleCustomerWire admits only the client of the warranty: exactly name, phone and
-// document.
+// saleCustomerWire admits only the client of the warranty: exactly name, phone, document
+// and the free-text address of the sale.
 func saleCustomerWire(t *testing.T, raw json.RawMessage) saleCustomerDTO {
 	t.Helper()
 	var customer map[string]json.RawMessage
-	if json.Unmarshal(raw, &customer) != nil || len(customer) != 3 {
+	if json.Unmarshal(raw, &customer) != nil || len(customer) != 4 {
 		t.Fatalf("client whitelist changed: %s", raw)
 	}
-	for _, key := range []string{"name", "phone", "document"} {
+	for _, key := range []string{"name", "phone", "document", "address"} {
 		if _, ok := customer[key]; !ok {
 			t.Fatalf("client whitelist incomplete: %s", key)
 		}
+	}
+	var address string
+	if json.Unmarshal(customer["address"], &address) != nil {
+		t.Fatalf("client address must be text: %s", raw)
+	}
+	if len([]rune(address)) > sales.MaxCustomerAddress {
+		t.Fatalf("client address is outside its bound: %q", address)
 	}
 	var client saleCustomerDTO
 	if json.Unmarshal(raw, &client) != nil || client.Name == "" {
 		t.Fatalf("client is not decodable: %s", raw)
 	}
 	return client
+}
+
+// saleUnitsWire admits only the published units of one line: exactly serial_number and
+// warranty_months per unit, one unit per sold piece, a bounded serial and a term that is
+// either an integer 1..120 or JSON null. Zero months is never the absence of warranty.
+func saleUnitsWire(t *testing.T, raw json.RawMessage, quantity int64) []saleUnitDTO {
+	t.Helper()
+	var rows []map[string]json.RawMessage
+	if json.Unmarshal(raw, &rows) != nil || rows == nil {
+		t.Fatalf("units are not an array: %s", raw)
+	}
+	if int64(len(rows)) != quantity {
+		t.Fatalf("one unit per sold piece required, got %d of %d: %s", len(rows), quantity, raw)
+	}
+	for _, row := range rows {
+		if len(row) != 2 {
+			t.Fatalf("unit whitelist changed: %s", raw)
+		}
+		var serial string
+		if json.Unmarshal(row["serial_number"], &serial) != nil {
+			t.Fatalf("serial_number must be text: %s", raw)
+		}
+		if trimmed := strings.TrimSpace(serial); trimmed == "" || len([]rune(trimmed)) > sales.MaxSerialLength {
+			t.Fatalf("serial_number is outside its bounds: %q", serial)
+		}
+		term, present := row["warranty_months"]
+		if !present {
+			t.Fatalf("warranty_months must always be present: %s", raw)
+		}
+		if string(term) == "null" {
+			continue
+		}
+		var months int
+		if json.Unmarshal(term, &months) != nil || months < sales.MinWarrantyMonths ||
+			months > sales.MaxWarrantyMonths {
+			t.Fatalf("warranty_months must be 1..120 or null: %s", term)
+		}
+	}
+	var units []saleUnitDTO
+	if json.Unmarshal(raw, &units) != nil || len(units) != len(rows) {
+		t.Fatalf("units are not decodable: %s", raw)
+	}
+	return units
 }
 
 func saleCreatedWire(t *testing.T, w *httptest.ResponseRecorder) saleDTO {
@@ -1157,7 +1374,7 @@ func saleCreatedWire(t *testing.T, w *httptest.ResponseRecorder) saleDTO {
 			t.Fatal("line whitelist changed")
 		}
 		for _, key := range []string{"variant_id", "quantity", "unit_price", "min_price",
-			"warranty_months", "subtotal"} {
+			"units", "subtotal"} {
 			if _, ok := line[key]; !ok {
 				t.Fatalf("line whitelist incomplete: %s", key)
 			}
@@ -1167,6 +1384,15 @@ func saleCreatedWire(t *testing.T, w *httptest.ResponseRecorder) saleDTO {
 				t.Fatalf("%s must be canonical money text", key)
 			}
 		}
+		// The answered line no longer carries a term of its own: the units do.
+		if _, ok := line["warranty_months"]; ok {
+			t.Fatal("the answered line must not carry a line-level warranty term")
+		}
+		var quantity int64
+		if json.Unmarshal(line["quantity"], &quantity) != nil {
+			t.Fatal("quantity must be a number")
+		}
+		saleUnitsWire(t, line["units"], quantity)
 	}
 	var record saleDTO
 	if json.Unmarshal(top["sale"], &record) != nil || len(record.Payments) != len(payments) {
@@ -1195,11 +1421,11 @@ func salePageWire(t *testing.T, w *httptest.ResponseRecorder) salePageDTO {
 		t.Fatal("history rows are not an array")
 	}
 	for _, row := range rows {
-		if len(row) != 8 {
+		if len(row) != 10 {
 			t.Fatal("history row whitelist changed")
 		}
 		for _, key := range []string{"id", "branch_sequence", "warranty_number", "payment_method",
-			"customer_name", "total", "created_at", "lines"} {
+			"customer_name", "total", "created_at", "lines", "units_total", "units_with_warranty"} {
 			if _, ok := row[key]; !ok {
 				t.Fatalf("history row whitelist incomplete: %s", key)
 			}
@@ -1207,9 +1433,20 @@ func salePageWire(t *testing.T, w *httptest.ResponseRecorder) salePageDTO {
 		if !saleMoneyWire.MatchString(string(row["total"])) {
 			t.Fatal("total must be canonical money text")
 		}
-		// The history never carries prices of its own: the line count is a number.
-		if !regexp.MustCompile(`^[0-9]+$`).MatchString(string(row["lines"])) {
-			t.Fatal("lines must be a count in the history")
+		// The history never carries prices of its own: the counts are numbers.
+		for _, key := range []string{"lines", "units_total", "units_with_warranty"} {
+			if !regexp.MustCompile(`^[0-9]+$`).MatchString(string(row[key])) {
+				t.Fatalf("%s must be a count in the history", key)
+			}
+		}
+		// S5: the counts tell the sale's position without unfolding it, and the warranted
+		// units are a subset of all of them.
+		var lines, total, warranted int64
+		if json.Unmarshal(row["lines"], &lines) != nil ||
+			json.Unmarshal(row["units_total"], &total) != nil ||
+			json.Unmarshal(row["units_with_warranty"], &warranted) != nil ||
+			lines < 1 || total < lines || total > sales.MaxUnits || warranted > total {
+			t.Fatalf("the unit counts are not a legible row: %s", row["units_total"])
 		}
 	}
 	var page salePageDTO
@@ -1251,7 +1488,7 @@ func saleDetailWire(t *testing.T, w *httptest.ResponseRecorder) saleDetailDTO {
 		}
 		for _, key := range []string{"variant_id", "catalog_entry_id", "brand", "model",
 			"capacity_ah", "polarity", "quantity", "unit_price", "min_price",
-			"warranty_months", "subtotal"} {
+			"units", "subtotal"} {
 			if _, ok := line[key]; !ok {
 				t.Fatalf("document line whitelist incomplete: %s", key)
 			}
@@ -1264,6 +1501,11 @@ func saleDetailWire(t *testing.T, w *httptest.ResponseRecorder) saleDetailDTO {
 		if !saleCapacityWire.MatchString(string(line["capacity_ah"])) {
 			t.Fatal("capacity_ah must be the canonical capacity as a string")
 		}
+		var quantity int64
+		if json.Unmarshal(line["quantity"], &quantity) != nil {
+			t.Fatal("quantity must be a number")
+		}
+		saleUnitsWire(t, line["units"], quantity)
 	}
 	var detail saleDetailDTO
 	if json.Unmarshal(w.Body.Bytes(), &detail) != nil || len(detail.Lines) != len(lines) ||
@@ -1374,8 +1616,20 @@ func TestSaleHTTPCreateAndDetail(t *testing.T) {
 	line := created.Lines[0]
 	// S9: the charged price and the branch minimum are frozen at write time.
 	if line.VariantID != 1 || line.Quantity != 2 || line.UnitPrice != "96000.00" ||
-		line.MinPrice != "85000.00" || line.WarrantyMonths != 6 || line.Subtotal != "192000.00" {
+		line.MinPrice != "85000.00" || line.Subtotal != "192000.00" || len(line.Units) != 2 {
 		t.Fatalf("the created line does not freeze the pair: %+v", line)
+	}
+	// S2-S4: each sold piece is its own unit, with the serial the seller read and the same
+	// term the counter stated for the line.
+	if unit := line.Units[0]; unit.WarrantyMonths == nil || *unit.WarrantyMonths != 6 {
+		t.Fatalf("the created unit must carry its term: %+v", unit)
+	}
+	if line.Units[0].SerialNumber == line.Units[1].SerialNumber || line.Units[0].SerialNumber == "" {
+		t.Fatalf("each unit must carry its own serial: %+v", line.Units)
+	}
+	// S1: the address of the sale comes back with the client of the warranty.
+	if created.Customer.Address != "Av. Colón 1234" {
+		t.Fatalf("the created sale must carry its address: %+v", created.Customer)
 	}
 	if got, gotReserved := f.stock(t, 2, 1); got != existing-2 || gotReserved != reserved {
 		t.Fatalf("the sale must decrement existing stock only: %d/%d", got, gotReserved)
@@ -1408,8 +1662,17 @@ func TestSaleHTTPCreateAndDetail(t *testing.T) {
 	if resolved.VariantID != 1 || resolved.CatalogEntryID != entry || resolved.Brand != "CAR" ||
 		resolved.Model != "NS40ZL" || resolved.Capacity != "35" || resolved.Polarity != "L" ||
 		resolved.Quantity != 2 || resolved.UnitPrice != "96000.00" || resolved.MinPrice != "85000.00" ||
-		resolved.WarrantyMonths != 6 || resolved.Subtotal != "192000.00" {
+		resolved.Subtotal != "192000.00" || len(resolved.Units) != 2 {
 		t.Fatalf("the document line must stay legible with the prices of the sale: %+v", resolved)
+	}
+	// The detail keeps the same units the creation answered, serial and term included.
+	for i, unit := range resolved.Units {
+		sold := created.Lines[0].Units[i]
+		if unit.SerialNumber != sold.SerialNumber ||
+			(unit.WarrantyMonths == nil) != (sold.WarrantyMonths == nil) ||
+			(unit.WarrantyMonths != nil && *unit.WarrantyMonths != *sold.WarrantyMonths) {
+			t.Fatalf("the detail must carry the units of the sale: %+v want %+v", resolved.Units, created.Lines[0].Units)
+		}
 	}
 	f.price(t, entry, "99000", "100000", 2)
 	after := saleDetailWire(t, f.serve(t, f.request(2, "GET", fmt.Sprintf("/api/sales/%d", created.ID), "")))
@@ -1425,6 +1688,12 @@ func TestSaleHTTPCreateAndDetail(t *testing.T) {
 		page.Sales[1].WarrantyNumber != "2-000001" || page.Sales[1].Lines != 1 ||
 		page.Sales[1].Total != "192000.00" || page.Sales[1].CustomerName != "Cliente Mostrador" {
 		t.Fatalf("the history rows do not match the frozen contract: %+v", page.Sales)
+	}
+	// S5: the row counts the physical units of the sale, so the history tells a sale without
+	// warranty without unfolding it.
+	if page.Sales[1].UnitsTotal != 2 || page.Sales[1].UnitsWithWarranty != 2 ||
+		page.Sales[0].UnitsTotal != 1 || page.Sales[0].UnitsWithWarranty != 1 {
+		t.Fatalf("the history rows must count the units of the sale: %+v", page.Sales)
 	}
 }
 
@@ -1465,9 +1734,9 @@ func TestSaleHTTPRefusals(t *testing.T) {
 	// A document with one valid and one refused line writes nothing at all: the valid
 	// line is the last word of the atomicity check.
 	f.rejectedLine(t, f.request(2, "POST", "/api/sales",
-		`{"payments":[{"method":"cash","amount":"97200.00"}],"customer":{"name":"C","phone":"","document":""},"lines":[`+
-			`{"variant_id":1,"quantity":1,"unit_price":"96000.00","warranty_months":6},`+
-			fmt.Sprintf(`{"variant_id":%d,"quantity":1,"unit_price":"1200.00","warranty_months":6}]}`, exhausted)),
+		`{"payments":[{"method":"cash","amount":"97200.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[`+
+			`{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"ATOM-1","warranty_months":6}]},`+
+			fmt.Sprintf(`{"variant_id":%d,"quantity":1,"unit_price":"1200.00","units":[{"serial_number":"ATOM-2","warranty_months":6}]}]}`, exhausted)),
 		"insufficient_stock", exhausted)
 	// The framing of a mutation is exact: no query string, no unknown key, no
 	// non-canonical price and no term outside 1..120.
@@ -1475,23 +1744,61 @@ func TestSaleHTTPRefusals(t *testing.T) {
 	f.rejected(t, f.request(2, "POST", "/api/sales?",
 		saleBody(1, 1, "96000.00", 6)), 400, "invalid_request")
 	f.rejected(t, f.request(2, "POST", "/api/sales",
-		`{"payments":[{"method":"cash","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":""},"total":"1.00","lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","warranty_months":6}]}`),
+		`{"payments":[{"method":"cash","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"total":"1.00","lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"ATOM-4","warranty_months":6}]}]}`),
 		400, "invalid_request")
 	// The label is not an input anymore: the settlement is.
 	f.rejected(t, f.request(2, "POST", "/api/sales",
-		`{"payment_method":"cash","customer":{"name":"C","phone":"","document":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","warranty_months":6}]}`),
+		`{"payment_method":"cash","customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"ATOM-5","warranty_months":6}]}]}`),
 		400, "invalid_request")
 	// The derived label is never an input either, and a settlement cannot pay nothing.
 	f.rejected(t, f.request(2, "POST", "/api/sales",
-		`{"payments":[{"method":"mixed","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","warranty_months":6}]}`),
+		`{"payments":[{"method":"mixed","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"ATOM-6","warranty_months":6}]}]}`),
 		400, "invalid_request")
 	f.rejected(t, f.request(2, "POST", "/api/sales",
-		`{"payments":[{"method":"cash","amount":"0.00"},{"method":"transfer","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","warranty_months":6}]}`),
+		`{"payments":[{"method":"cash","amount":"0.00"},{"method":"transfer","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"ATOM-7","warranty_months":6}]}]}`),
 		400, "invalid_request")
 	f.rejected(t, f.request(2, "POST", "/api/sales", saleBody(1, 1, "96000", 6)), 400, "invalid_request")
 	f.rejected(t, f.request(2, "POST", "/api/sales", saleBody(1, 1, "96000.00", 121)), 400, "invalid_request")
+	// D3: the units are exactly as many as the quantity, and a sale whose units do not match
+	// writes nothing at all.
+	for name, body := range map[string]string{
+		"units_short": `{"payments":[{"method":"cash","amount":"192000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":2,"unit_price":"96000.00","units":[{"serial_number":"REF-1","warranty_months":6}]}]}`,
+		"units_long":  `{"payments":[{"method":"cash","amount":"192000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":2,"unit_price":"96000.00","units":[{"serial_number":"REF-2","warranty_months":6},{"serial_number":"REF-3","warranty_months":6},{"serial_number":"REF-4","warranty_months":6}]}]}`,
+		// S2: a serial is mandatory, at most sixty-four characters and never a NUL.
+		"blank_serial": `{"payments":[{"method":"cash","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"   ","warranty_months":6}]}]}`,
+		"long_serial":  fmt.Sprintf(`{"payments":[{"method":"cash","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":%q,"warranty_months":6}]}]}`, strings.Repeat("S", 65)),
+		"nul_serial":   `{"payments":[{"method":"cash","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"a\u0000b","warranty_months":6}]}]}`,
+		// S3: the term is 1..120 or null, and there is no zero months.
+		"zero_term":    `{"payments":[{"method":"cash","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"REF-5","warranty_months":0}]}]}`,
+		"absent_term":  `{"payments":[{"method":"cash","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"REF-6"}]}]}`,
+		"unit_unknown": `{"payments":[{"method":"cash","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"REF-7","warranty_months":6,"price":"1.00"}]}]}`,
+		"units_absent": `{"payments":[{"method":"cash","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00"}]}`,
+		// S1: the address is one bounded free field of the sale header.
+		"long_address": fmt.Sprintf(`{"payments":[{"method":"cash","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":"","address":%q},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"REF-8","warranty_months":6}]}]}`, strings.Repeat("ñ", sales.MaxCustomerAddress+1)),
+		"no_address":   `{"payments":[{"method":"cash","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"REF-9","warranty_months":6}]}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f.rejected(t, f.request(2, "POST", "/api/sales", body), 400, "invalid_request")
+		})
+	}
+	// D2: one physical battery is sold once. The second sale of the same serial, spelled with
+	// the padding the counter may type, is refused with its own code and names the battery.
+	sold := saleCreatedWire(t, f.serve(t, f.request(2, "POST", "/api/sales", saleBody(1, 1, "96000.00", 6))))
+	serial := sold.Lines[0].Units[0].SerialNumber
+	repeated := fmt.Sprintf(`{"payments":[{"method":"cash","amount":"96000.00"}],`+
+		`"customer":{"name":"C","phone":"","document":"","address":""},`+
+		`"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":%q,"warranty_months":6}]}]}`,
+		"  "+serial+"  ")
+	before := f.snapshot(t)
+	w := f.serve(t, f.request(2, "POST", "/api/sales", repeated))
+	if w.Code != 409 || w.Body.String() != fmt.Sprintf(`{"error":"serial_already_sold","serial_number":%q}`+"\n", serial) {
+		t.Fatalf("a repeated serial must name its battery: %d %s", w.Code, w.Body.String())
+	}
+	if f.snapshot(t) != before {
+		t.Fatal("a repeated serial must not write a sale, a unit nor touch stock")
+	}
 	f.rejected(t, f.request(2, "POST", "/api/sales",
-		`{"payments":[{"method":"cash","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00"}]}`),
+		`{"payments":[{"method":"cash","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00"}]}`),
 		400, "invalid_request")
 	// The mutation guards are the house ones.
 	for _, mutate := range []func(*http.Request){
@@ -1661,9 +1968,9 @@ func TestSaleHTTPSellable(t *testing.T) {
 func saleMixedBody(variantID, quantity int64, cash, transfer string) string {
 	return fmt.Sprintf(`{"payments":[{"method":"transfer","amount":%q},`+
 		`{"method":"cash","amount":%q}],`+
-		`"customer":{"name":"Cliente Mostrador","phone":"700-00000","document":"V-123"},`+
-		`"lines":[{"variant_id":%d,"quantity":%d,"unit_price":"96000.00","warranty_months":6}]}`,
-		transfer, cash, variantID, quantity)
+		`"customer":{"name":"Cliente Mostrador","phone":"700-00000","document":"V-123","address":"Barrio Norte"},`+
+		`"lines":[{"variant_id":%d,"quantity":%d,"unit_price":"96000.00","units":%s}]}`,
+		transfer, cash, variantID, quantity, saleUnitsJSON(quantity, 6))
 }
 
 // rejectedMismatch proves a settlement that does not close is answered with the open side
@@ -1749,10 +2056,12 @@ func TestSaleHTTPWarrantyPDF(t *testing.T) {
 	if !bytes.HasPrefix(body, []byte("%PDF-")) || len(body) < 1024 {
 		t.Fatalf("the warranty must be a PDF document: %q", body[:min(len(body), 16)])
 	}
-	// The document prints the persisted facts: the branch it belongs to, its number, the
-	// lines and one row per payment method with its amount, never a recomputed total.
+	// The document prints the persisted facts: the branch it belongs to, its number, the unit
+	// with the serial the seller read and one row per payment method with its amount, never a
+	// recomputed total.
+	unit := created.Lines[0].Units[0]
 	for _, want := range []string{"Sucursal A", "2-000001", "NS40ZL", "Efectivo", "Transferencia",
-		"Bs 40.000,00", "Bs 56.000,00", "Bs 96.000,00"} {
+		"Bs 40.000,00", "Bs 56.000,00", "Bs 96.000,00", unit.SerialNumber, "6 meses"} {
 		if !bytes.Contains(body, []byte(want)) {
 			t.Fatalf("the warranty must print %q", want)
 		}
@@ -1783,5 +2092,51 @@ func TestSaleHTTPWarrantyPDF(t *testing.T) {
 	w = f.serve(t, f.request(2, "POST", target, ""))
 	if w.Code != 405 || w.Header().Get("Allow") != "GET" {
 		t.Fatalf("the warranty must advertise its method: %d %q", w.Code, w.Header().Get("Allow"))
+	}
+}
+
+// TestSaleHTTPWarrantyNamesEveryUnit pins S6 over HTTP: the warranty is always issued, every
+// physical battery is its own row with its serial and its term or "Sin garantía", and the row
+// amounts of the sale still add up to its total.
+func TestSaleHTTPWarrantyNamesEveryUnit(t *testing.T) {
+	f := saleFixture(t)
+	f.price(t, f.entryOf(t, 1), "85000", "96000", 2)
+	// Three batteries of one line: the first with a term, the other two without warranty.
+	body := `{"payments":[{"method":"cash","amount":"288000.00"}],` +
+		`"customer":{"name":"Cliente Mostrador","phone":"700-00000","document":"V-123","address":"Barrio Norte"},` +
+		`"lines":[{"variant_id":1,"quantity":3,"unit_price":"96000.00","units":[` +
+		`{"serial_number":"SERIE-1","warranty_months":12},` +
+		`{"serial_number":"SERIE-2","warranty_months":null},` +
+		`{"serial_number":"SERIE-3","warranty_months":null}]}]}`
+	created := saleCreatedWire(t, f.serve(t, f.request(2, "POST", "/api/sales", body)))
+	if len(created.Lines) != 1 || len(created.Lines[0].Units) != 3 {
+		t.Fatalf("the sale must register one unit per battery: %+v", created.Lines)
+	}
+	w := f.serve(t, f.request(2, "GET", fmt.Sprintf("/api/sales/%d/warranty.pdf", created.ID), ""))
+	if w.Code != 200 || w.Header().Get("Content-Type") != "application/pdf" {
+		t.Fatalf("the warranty must download: %d %s", w.Code, w.Body.String())
+	}
+	pdf := w.Body.Bytes()
+	for _, want := range []string{"SERIE-1", "SERIE-2", "SERIE-3", "12 meses", "Sin garant\xeda"} {
+		if !bytes.Contains(pdf, []byte(want)) {
+			t.Fatalf("the warranty must print %q", want)
+		}
+	}
+	// Two of the three units were sold without warranty, so the absence is named twice.
+	if got := bytes.Count(pdf, []byte("Sin garant\xeda")); got != 2 {
+		t.Fatalf("both units without warranty must be named, got %d", got)
+	}
+	// The rows are the frozen price of each battery, so they add up to the sale total:
+	// three rows of the same amount and a total of three times it.
+	if got := bytes.Count(pdf, []byte("Bs 96.000,00")); got != 3 {
+		t.Fatalf("one row per physical battery, got %d rows of that amount", got)
+	}
+	if !bytes.Contains(pdf, []byte("Total: Bs 288.000,00")) {
+		t.Fatalf("the rows must close against the stored total")
+	}
+	// The history less every unit of that sale in one row, without unfolding it (S5).
+	page := salePageWire(t, f.serve(t, f.request(2, "GET", "/api/sales", "")))
+	if len(page.Sales) != 1 || page.Sales[0].UnitsTotal != 3 || page.Sales[0].UnitsWithWarranty != 1 {
+		t.Fatalf("the history row must count the units and their warranties: %+v", page.Sales)
 	}
 }
