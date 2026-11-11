@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compras · documento y recibido — Luson</title>
+<style>
+  :root{
+    --wine:#7A1F3D; --hover:#5B162D; --tint:#F5E8ED; --page:#F8F6F4; --border:#DED7DA;
+    --muted:#6B6267; --ink:#242124; --surface:#FFFFFF; --approved-bg:#EDF7F0;
+    --approved-ink:#22633B; --warning-bg:#FFFBEF; --warning-border:#E8CF86;
+    --warning-ink:#805400; --shortage-bg:#FFF0F0; --shortage-border:#FFDAD6;
+    --alert:#BA1A1A; --shadow:0 1px 2px #2421240d;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    display:flex;min-height:100vh;background:var(--page);color:var(--ink);
+    font:14px/1.45 sans-serif;
+  }
+  a{color:inherit;text-decoration:none}
+  :focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+  .sidebar{
+    width:240px;flex:0 0 240px;background:var(--surface);border-right:1px solid var(--border);
+    padding:16px 12px;display:flex;flex-direction:column;gap:4px;
+  }
+  .brand{font-weight:700;font-size:16px;letter-spacing:.02em;padding:4px 0 20px}
+  .brand span{color:var(--muted);font-weight:400;font-size:12px;display:block;padding-top:2px}
+  .side-nav{display:flex;flex-direction:column;gap:2px}
+  .side-nav a{
+    display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:4px;
+    font-size:13px;color:var(--ink);border-left:2px solid transparent;
+  }
+  .side-nav a:hover{background:var(--tint)}
+  .side-nav a[aria-current="page"]{
+    background:var(--tint);color:var(--wine);font-weight:600;border-left-color:var(--wine);
+  }
+  .app{flex:1;min-width:0;display:flex;flex-direction:column}
+  .app-header{
+    height:56px;background:var(--surface);border-bottom:1px solid var(--border);
+    display:flex;align-items:center;justify-content:space-between;padding:0 24px;font-size:13px;
+  }
+  .app-header .where{display:flex;align-items:center;gap:10px}
+  .branch{background:var(--tint);color:var(--wine);font-weight:600;padding:2px 10px;border-radius:3px}
+  .who{color:var(--muted)}
+  main{padding:24px 24px 32px 40px;max-width:1180px}
+
+  .page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:18px}
+  h1{font-size:22px;line-height:1.2;margin:0 0 6px;font-weight:700}
+  .lede{margin:0;color:var(--muted);font-size:13px;max-width:62ch}
+  .tabs{display:flex;gap:6px;border-bottom:1px solid var(--border);margin-bottom:18px}
+  .tabs button{
+    appearance:none;background:none;border:0;border-bottom:2px solid transparent;
+    padding:10px 14px;font:inherit;font-size:13px;font-weight:500;color:var(--muted);cursor:pointer;
+  }
+  .tabs button[aria-selected="true"]{color:var(--wine);border-bottom-color:var(--wine);font-weight:600}
+  .tabs .count{color:var(--muted);font-weight:400;font-size:12px;padding-left:4px}
+
+  .cols{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:20px;align-items:start}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow)}
+  .doc{padding:18px 18px 16px}
+  .doc h2,.received h2{font-size:15px;margin:0 0 4px;font-weight:600}
+  .doc .sub,.received .sub{margin:0 0 14px;color:var(--muted);font-size:12px}
+
+  table{width:100%;border-collapse:collapse}
+  th{
+    text-align:left;font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--muted);font-weight:600;padding:0 8px 6px 0;border-bottom:1px solid var(--border);
+  }
+  td{padding:8px 8px 8px 0;border-bottom:1px solid var(--border);vertical-align:middle;font-size:13px}
+  tr:last-child td{border-bottom:0}
+  .num{text-align:right;font-variant-numeric:tabular-nums}
+  th.num{text-align:right}
+  .lines input,.lines select{
+    font:inherit;font-size:13px;padding:7px 8px;border:1px solid var(--muted);
+    border-radius:4px;background:var(--surface);color:var(--ink);width:100%;
+  }
+  .lines input.num{text-align:right;font-variant-numeric:tabular-nums}
+  .hint{display:block;color:var(--muted);font-size:11px;padding-top:3px}
+  .hint strong{color:var(--ink);font-weight:600}
+  button{
+    font:inherit;font-size:13px;padding:9px 14px;border-radius:4px;border:1px solid var(--muted);
+    background:var(--surface);color:var(--ink);cursor:pointer;min-height:36px;
+  }
+  button:hover{background:var(--page)}
+  button.primary{background:var(--wine);border-color:var(--wine);color:#fff;font-weight:600}
+  button.primary:hover{background:var(--hover);border-color:var(--hover)}
+  button.ghost{border-color:transparent;color:var(--muted)}
+  button.ghost:hover{background:var(--tint);color:var(--wine)}
+  .add-line{margin:10px 0 0;display:flex;gap:8px;align-items:center}
+  .add-line svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8}
+
+  .field{margin-top:16px}
+  .field label{display:block;font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--muted);font-weight:600;margin-bottom:5px}
+  .field input,.field textarea{
+    font:inherit;font-size:13px;padding:8px 10px;border:1px solid var(--muted);border-radius:4px;
+    width:100%;background:var(--surface);color:var(--ink);
+  }
+  .field textarea{resize:vertical;min-height:52px}
+
+  .settle{margin-top:18px;border-top:2px solid var(--border);padding-top:14px;display:grid;
+    grid-template-columns:1fr 1fr 1fr;gap:14px;align-items:end}
+  .settle .total{grid-column:1 / -1;display:flex;justify-content:space-between;align-items:baseline;
+    padding-bottom:10px;border-bottom:1px solid var(--border);margin-bottom:4px}
+  .settle .total span{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600}
+  .settle .total strong{font-size:20px;font-variant-numeric:tabular-nums}
+  .settle .pair{display:flex;flex-direction:column;gap:4px}
+  .settle .pair label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+  .settle .pair input{font:inherit;font-size:13px;padding:8px 10px;border:1px solid var(--muted);
+    border-radius:4px;text-align:right;font-variant-numeric:tabular-nums}
+  .actions{grid-column:1 / -1;display:flex;justify-content:flex-end;gap:8px;margin-top:6px;padding-top:12px;
+    border-top:1px solid var(--border)}
+
+  .received{padding:16px;position:sticky;top:16px}
+  .received table th{padding-bottom:4px}
+  .received td{padding:7px 0;font-size:13px;border-bottom:1px solid var(--border)}
+  .received .model{font-weight:600}
+  .received .unit{display:block;color:var(--muted);font-size:11px}
+  .received tfoot td{border-bottom:0;padding-top:10px;font-weight:600}
+  .received .note{
+    margin-top:12px;background:var(--warning-bg);border:1px solid var(--warning-border);
+    color:var(--warning-ink);border-radius:4px;padding:8px 10px;font-size:11px;line-height:1.4;
+  }
+
+  .history{margin-top:24px}
+  .history h2{font-size:15px;margin:0 0 12px;font-weight:600}
+  .history .panel{padding:16px}
+  .state{font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;display:inline-block}
+  .state.ok{background:var(--approved-bg);color:var(--approved-ink);border:1px solid var(--approved-ink)}
+  .state.rev{background:var(--shortage-bg);color:var(--alert);border:1px solid var(--shortage-border)}
+</style>
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand">Luson<span>Gestión de baterías</span></div>
+  <nav class="side-nav" aria-label="Secciones">
+    <a href="#">Inventario</a>
+    <a href="#">Transferencias</a>
+    <a href="#">Ventas</a>
+    <a href="#">Historial de ventas</a>
+    <a href="#" aria-current="page">Compras</a>
+  </nav>
+</aside>
+<div class="app">
+  <header class="app-header">
+    <div class="where"><span class="branch">Sucursal A</span><span class="who">Mariana Ríos · vendedora</span></div>
+    <span class="who">11/11/2026 · 18:24</span>
+  </header>
+  <main>
+    <div class="page-head">
+      <div>
+        <h1>Compras</h1>
+        <p class="lede">Lo que la sucursal compra a quien lo trae. Las baterías usadas no se revenden: el acumulado sirve para cerrar el mes. Nada de esto toca la venta.</p>
+      </div>
+    </div>
+
+    <div class="tabs" role="tablist" aria-label="Tipo de material">
+      <button role="tab" id="tab-usadas" aria-selected="true" aria-controls="panel-usadas">Baterías usadas <span class="count">20 u.</span></button>
+      <button role="tab" id="tab-chatarra" aria-selected="false" aria-controls="panel-chatarra">Chatarra <span class="count">410,700 kg</span></button>
+    </div>
+
+    <div class="cols">
+      <section class="panel doc" id="panel-usadas" role="tabpanel" aria-labelledby="tab-usadas">
+        <h2>Nueva compra</h2>
+        <p class="sub">Un solo modelo por línea, sin marca ni polaridad. El valor lo tipeás vos.</p>
+        <table class="lines">
+          <caption class="hint" style="padding:0 0 8px;text-align:left">Recibido de: quien trae el material. No se piden datos.</caption>
+          <thead>
+            <tr>
+              <th scope="col" style="width:38%">Modelo</th>
+              <th scope="col" class="num" style="width:14%">Cantidad</th>
+              <th scope="col" class="num" style="width:26%">Valor unitario</th>
+              <th scope="col" class="num" style="width:22%">Importe</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>
+                <select aria-label="Modelo de la primera línea">
+                  <option selected>NS60ZL</option>
+                  <option>NS40ZL</option>
+                  <option>12N5-3B</option>
+                  <option>55B24L</option>
+                  <option>Otro modelo…</option>
+                </select>
+              </td>
+              <td class="num"><input class="num" type="number" min="1" value="1" aria-label="Cantidad de la primera línea"></td>
+              <td class="num">
+                <input class="num" type="text" value="25000.00" aria-describedby="anchor-1" aria-label="Valor unitario de la primera línea">
+                <span class="hint" id="anchor-1">última: <strong>Bs 25.000,00</strong></span>
+              </td>
+              <td class="num" style="font-variant-numeric:tabular-nums">Bs 25.000,00</td>
+            </tr>
+            <tr>
+              <td>
+                <select aria-label="Modelo de la segunda línea">
+                  <option>NS60ZL</option>
+                  <option>NS40ZL</option>
+                  <option selected>12N5-3B</option>
+                  <option>55B24L</option>
+                  <option>Otro modelo…</option>
+                </select>
+              </td>
+              <td class="num"><input class="num" type="number" min="1" value="2" aria-label="Cantidad de la segunda línea"></td>
+              <td class="num">
+                <input class="num" type="text" value="18000.00" aria-describedby="anchor-2" aria-label="Valor unitario de la segunda línea">
+                <span class="hint" id="anchor-2">última: <strong>Bs 18.000,00</strong></span>
+              </td>
+              <td class="num" style="font-variant-numeric:tabular-nums">Bs 36.000,00</td>
+            </tr>
+          </tbody>
+        </table>
+        <div class="add-line">
+          <button class="ghost" type="button">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke-linecap="round"/></svg>
+            Agregar línea
+          </button>
+        </div>
+
+        <div class="field">
+          <label for="nota">Nota (opcional)</label>
+          <textarea id="nota" placeholder="Ej.: vino con la carcasa rota, se pesa igual"></textarea>
+        </div>
+
+        <div class="settle">
+          <div class="total"><span>Total a pagar</span><strong>Bs 61.000,00</strong></div>
+          <div class="pair">
+            <label for="efectivo">Efectivo</label>
+            <input id="efectivo" type="text" value="61000.00">
+          </div>
+          <div class="pair">
+            <label for="transferencia">Transferencia</label>
+            <input id="transferencia" type="text" value="0.00">
+          </div>
+          <div class="pair">
+            <label>Diferencia</label>
+            <p style="margin:0;padding:9px 0;font-variant-numeric:tabular-nums;color:var(--approved-ink);font-weight:600">Saldado</p>
+          </div>
+          <div class="actions">
+            <button type="button">Cancelar</button>
+            <button class="primary" type="button">Registrar compra</button>
+          </div>
+        </div>
+      </section>
+
+      <aside class="panel received" aria-labelledby="rec-h">
+        <h2 id="rec-h">Recibido</h2>
+        <p class="sub">Suma de todos los documentos de la sucursal.</p>
+        <table>
+          <thead><tr><th scope="col">Modelo</th><th scope="col" class="num">Cant.</th><th scope="col" class="num">Valor</th></tr></thead>
+          <tbody>
+            <tr><td><span class="model">NS60ZL</span></td><td class="num">12</td><td class="num">300.000,00</td></tr>
+            <tr><td><span class="model">NS40ZL</span></td><td class="num">5</td><td class="num">105.000,00</td></tr>
+            <tr><td><span class="model">12N5-3B</span></td><td class="num">3</td><td class="num">54.000,00</td></tr>
+          </tbody>
+          <tfoot><tr><td>20 u.</td><td class="num"></td><td class="num">459.000,00</td></tr></tfoot>
+        </table>
+        <p class="note">Es <strong>recibido</strong>, no disponible: estas baterías no se revenden ni descuentan stock de venta.</p>
+      </aside>
+    </div>
+
+    <section class="history" aria-labelledby="hist-h">
+      <h2 id="hist-h">Compras registradas</h2>
+      <div class="panel">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Documento</th><th scope="col">Fecha</th><th scope="col">Contenido</th>
+              <th scope="col" class="num">Total</th><th scope="col">Pago</th><th scope="col">Estado</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>#7</td><td>11/11/2026 18:20</td><td>1 usada · 1 chatarra</td>
+              <td class="num">Bs 124.200,00</td><td>Efectivo</td>
+              <td><span class="state ok">Vigente</span></td>
+            </tr>
+            <tr>
+              <td>#6</td><td>10/11/2026 14:02</td><td>3 usadas</td>
+              <td class="num">Bs 75.000,00</td><td>Transferencia</td>
+              <td><span class="state ok">Vigente</span></td>
+            </tr>
+            <tr>
+              <td>#5</td><td>10/11/2026 09:41</td><td>2 usadas</td>
+              <td class="num">Bs 50.000,00</td><td>Efectivo</td>
+              <td><span class="state rev">Revertida por #6</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</div>
+</body>
+</html>

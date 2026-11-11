@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "chosen": "02-received-first.html",
+  "handoffs": {
+    "02-received-first.html": {
+      "status": "implemented",
+      "queued": false,
+      "sentAt": "2026-11-11T21:00:28.507Z",
+      "startedAt": "2026-11-11T21:00:38.853Z",
+      "implementedAt": "2026-11-11T21:29:08.390Z",
+      "feature": "odd/tasks/compra-usadas-y-chatarra.md",
+      "note": "Sección alineada al artboard: métricas del mes, pestañas con totales, participación y documento en diálogo.",
+      "previewUrl": "http://127.0.0.1:8080/"
+    }
+  }
+}

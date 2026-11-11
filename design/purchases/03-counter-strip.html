@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compras · mostrador con tira de liquidación — Luson</title>
+<style>
+  :root{
+    --wine:#7A1F3D; --hover:#5B162D; --tint:#F5E8ED; --page:#F8F6F4; --border:#DED7DA;
+    --muted:#6B6267; --ink:#242124; --surface:#FFFFFF; --approved-bg:#EDF7F0;
+    --approved-ink:#22633B; --warning-bg:#FFFBEF; --warning-border:#E8CF86;
+    --warning-ink:#805400; --shortage-bg:#FFF0F0; --shortage-border:#FFDAD6;
+    --alert:#BA1A1A; --shadow:0 1px 2px #2421240d; --backdrop:#24212466;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    display:flex;min-height:100vh;background:var(--page);color:var(--ink);
+    font:14px/1.45 sans-serif;
+  }
+  a{color:inherit;text-decoration:none}
+  :focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+  button{transition:background-color .12s ease,border-color .12s ease,color .12s ease}
+
+  .sidebar{
+    width:240px;flex:0 0 240px;background:var(--surface);border-right:1px solid var(--border);
+    padding:16px 12px;display:flex;flex-direction:column;gap:4px;
+  }
+  .brand{font-weight:700;font-size:16px;letter-spacing:.02em;padding:4px 0 20px}
+  .brand span{color:var(--muted);font-weight:400;font-size:12px;display:block;padding-top:2px}
+  .side-nav{display:flex;flex-direction:column;gap:2px}
+  .side-nav a{
+    display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:4px;
+    font-size:13px;color:var(--ink);border-left:2px solid transparent;
+  }
+  .side-nav a:hover{background:var(--tint)}
+  .side-nav a[aria-current="page"]{
+    background:var(--tint);color:var(--wine);font-weight:600;border-left-color:var(--wine);
+  }
+  .app{flex:1;min-width:0;display:flex;flex-direction:column}
+  .app-header{
+    height:56px;background:var(--surface);border-bottom:1px solid var(--border);
+    display:flex;align-items:center;justify-content:space-between;padding:0 24px;font-size:13px;
+  }
+  .app-header .where{display:flex;align-items:center;gap:10px}
+  .branch{background:var(--tint);color:var(--wine);font-weight:600;padding:2px 10px;border-radius:3px}
+  .who{color:var(--muted)}
+  main{padding:20px 24px 104px 40px;max-width:1180px}
+
+  button{
+    font:inherit;font-size:13px;padding:9px 14px;border-radius:4px;border:1px solid var(--muted);
+    background:var(--surface);color:var(--ink);cursor:pointer;min-height:40px;
+  }
+  button:hover{background:var(--page)}
+  button.primary{background:var(--wine);border-color:var(--wine);color:#fff;font-weight:600}
+  button.primary:hover{background:var(--hover);border-color:var(--hover)}
+  button.ghost{border-color:transparent;color:var(--muted)}
+  button.ghost:hover{background:var(--tint);color:var(--wine)}
+  button.icon{
+    min-height:36px;min-width:36px;display:inline-flex;align-items:center;justify-content:center;
+    border-color:transparent;color:var(--muted);padding:0;
+  }
+  button.icon:hover{background:var(--shortage-bg);color:var(--alert)}
+  button.icon svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8}
+
+  .page-head{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:14px}
+  .eyebrow{
+    margin:0 0 4px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--muted);font-weight:600;
+  }
+  .eyebrow b{color:var(--wine);font-weight:700}
+  h1{font-size:22px;line-height:1.2;margin:0 0 4px;font-weight:700}
+  .lede{margin:0;color:var(--muted);font-size:12.5px;max-width:78ch}
+  .head-actions{display:flex;gap:8px;flex:0 0 auto}
+
+  .tools{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px;flex-wrap:wrap}
+  .kindgroup{display:flex;align-items:center;gap:10px}
+  .kind-label{color:var(--muted);font-size:11px;letter-spacing:.06em;text-transform:uppercase;font-weight:600}
+  .kind{display:flex;gap:8px;border:0;padding:0;margin:0}
+  .kind button{border-radius:999px;padding:8px 16px;min-height:40px;color:var(--muted);font-size:12.5px}
+  .kind button[aria-pressed="true"]{background:var(--tint);border-color:var(--wine);color:var(--wine);font-weight:600}
+  .keys{list-style:none;display:flex;gap:14px;margin:0;padding:0;color:var(--muted);font-size:11.5px;flex-wrap:wrap}
+  .keys li{display:flex;align-items:center;gap:5px}
+  kbd{
+    font:inherit;font-size:11px;font-weight:600;color:var(--wine);background:var(--tint);
+    border:1px solid var(--border);border-radius:3px;padding:1px 5px;line-height:1.5;
+  }
+
+  .cols{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:20px;align-items:start}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--shadow)}
+  .panel-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:14px 16px 0}
+  .panel-head h2{font-size:15px;margin:0;font-weight:600}
+  .panel-head .sub{color:var(--muted);font-size:11px;text-align:right}
+
+  table{width:100%;border-collapse:collapse}
+  th{
+    text-align:left;font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--muted);font-weight:600;padding:0 10px 6px 0;border-bottom:1px solid var(--border);
+  }
+  td{padding:5px 10px 5px 0;border-bottom:1px solid var(--border);vertical-align:top;font-size:13px}
+  .num{text-align:right;font-variant-numeric:tabular-nums}
+  th.num{text-align:right}
+
+  .lines-wrap{padding:12px 16px 14px}
+  .lines .group th{
+    background:var(--tint);color:var(--wine);border-bottom:0;padding:6px 8px;
+    font-size:10px;letter-spacing:.08em;border-radius:3px;
+  }
+  .lines .group th .g-note{float:right;text-transform:none;letter-spacing:0;color:var(--muted);font-weight:500;font-size:10.5px}
+  .lines tr:last-child td{border-bottom:0}
+  .lines select,.lines input[type="number"],.lines input[type="text"]{
+    font:inherit;font-size:13px;padding:7px 8px;border:1px solid var(--muted);
+    border-radius:4px;background:var(--surface);color:var(--ink);width:100%;min-height:36px;
+  }
+  .lines input.num{text-align:right;font-variant-numeric:tabular-nums}
+  .lines .amount{font-variant-numeric:tabular-nums;font-weight:600;padding-top:9px;display:block}
+  .hint{display:block;color:var(--muted);font-size:10.5px;padding-top:2px;line-height:1.3}
+  .hint strong{color:var(--ink);font-weight:600}
+  .hint.none{font-style:italic}
+  .lines tfoot td{border-bottom:0;padding-top:12px;font-weight:700}
+  .lines tfoot .label{font-weight:600;color:var(--muted);font-size:11.5px}
+  td.act{width:44px;text-align:right}
+  .add{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px;flex-wrap:wrap}
+  .add button{display:inline-flex;align-items:center;gap:8px;min-height:40px}
+  .add button svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8}
+  .add .hint{font-size:11px}
+  .note-field{margin-top:12px;padding-top:10px;border-top:1px solid var(--border);display:grid;gap:5px}
+  .note-field label{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:600}
+  .note-field input{
+    font:inherit;font-size:12.5px;padding:8px 10px;border:1px solid var(--muted);
+    border-radius:4px;background:var(--surface);color:var(--ink);min-height:38px;
+  }
+
+  /* --- receipt preview --- */
+  .receipt{padding:12px}
+  .receipt h2{font-size:13px;margin:0 0 2px;font-weight:600}
+  .receipt .sub{margin:0 0 8px;color:var(--muted);font-size:11px}
+  .paper{
+    border:1px dashed var(--border);border-radius:6px;padding:10px 12px 8px;background:var(--surface);
+  }
+  .r-head{text-align:center;border-bottom:1px dashed var(--border);padding-bottom:6px}
+  .r-head strong{display:block;font-size:14px;letter-spacing:.1em}
+  .r-head small{display:block;color:var(--muted);font-size:10.5px}
+  .r-num{margin:6px 0 0;font-size:11px;font-weight:700;letter-spacing:.04em}
+  .r-date{margin:6px 0 8px;text-align:center;color:var(--muted);font-size:10.5px}
+  .paper table{width:100%}
+  .paper th{font-size:9.5px;padding:0 4px 4px 0;letter-spacing:.06em}
+  .paper td{padding:3px 4px 3px 0;border-bottom:0;font-size:11px;vertical-align:top}
+  .paper td small{display:block;color:var(--muted);font-size:9.5px}
+  .r-total{
+    display:flex;justify-content:space-between;align-items:baseline;margin-top:4px;
+    padding-top:6px;border-top:1px solid var(--ink);font-size:12px;
+  }
+  .r-total strong{font-size:15px;font-variant-numeric:tabular-nums}
+  .r-pay{margin:6px 0 0;display:grid;gap:2px;font-size:10.5px}
+  .r-pay div{display:flex;justify-content:space-between;gap:8px}
+  .r-pay dt{color:var(--muted);margin:0}
+  .r-pay dd{margin:0;font-variant-numeric:tabular-nums}
+  .r-who{margin:8px 0 0;font-size:10.5px;line-height:1.4}
+  .sign{margin-top:10px;border-top:1px solid var(--muted);padding-top:3px;text-align:center;
+    color:var(--muted);font-size:9.5px;letter-spacing:.04em}
+  .r-note{margin:7px 0 0;color:var(--muted);font-size:9.5px;line-height:1.35}
+  .r-warn{
+    margin:8px 0 0;background:var(--shortage-bg);border:1px solid var(--shortage-border);
+    color:var(--alert);border-radius:4px;padding:5px 7px;font-size:10.5px;font-weight:600;
+  }
+  .receipt-actions{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+  .receipt-actions button{min-height:38px;font-size:12px;flex:1 1 auto}
+
+  /* --- fixed settlement strip --- */
+  .strip{
+    position:fixed;inset:auto 0 0 240px;z-index:20;background:var(--surface);
+    border-top:1px solid var(--border);box-shadow:var(--shadow);
+    padding:12px 24px;display:grid;gap:16px;align-items:end;
+    grid-template-columns:minmax(170px,1fr) 170px 170px minmax(190px,1fr) auto;
+  }
+  .cell{display:grid;gap:4px;min-width:0}
+  .cell label,.cell .lbl{
+    font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600;
+  }
+  .cell.total strong{font-size:22px;font-variant-numeric:tabular-nums;line-height:1.15}
+  .cell small{color:var(--muted);font-size:10.5px}
+  .cell input{
+    font:inherit;font-size:14px;padding:8px 10px;border:1px solid var(--muted);border-radius:4px;
+    text-align:right;font-variant-numeric:tabular-nums;min-height:40px;width:100%;
+    background:var(--surface);color:var(--ink);
+  }
+  .diff .short{
+    margin:0;background:var(--shortage-bg);border:1px solid var(--shortage-border);
+    color:var(--alert);border-radius:4px;padding:8px 10px;font-weight:700;
+    font-variant-numeric:tabular-nums;font-size:14px;min-height:40px;display:flex;align-items:center;
+    justify-content:flex-end;
+  }
+  .action{justify-items:end}
+  .action button{min-height:44px;padding:10px 18px;font-size:13.5px}
+  .strip .primary[disabled]{
+    background:var(--page);border-color:var(--border);color:var(--muted);cursor:not-allowed;
+  }
+  .strip .primary[disabled]:hover{background:var(--page);border-color:var(--border)}
+  .why{
+    margin:0;color:var(--alert);font-size:11px;font-weight:600;max-width:34ch;text-align:right;line-height:1.35;
+  }
+  .why svg{width:11px;height:11px;stroke:currentColor;fill:none;stroke-width:2;vertical-align:-1px;margin-right:3px}
+  .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+
+  @media (prefers-reduced-motion:reduce){
+    *{transition:none!important;animation:none!important;scroll-behavior:auto!important}
+  }
+  @media (max-width:1179px){
+    .cols{grid-template-columns:1fr}
+    .strip{grid-template-columns:1fr 1fr;position:static;inset:auto;margin:0}
+    main{padding:16px}
+  }
+  @media (max-width:767px){
+    body{display:block}
+    .sidebar{width:auto;border-right:0;border-bottom:1px solid var(--border)}
+    .side-nav{flex-direction:row;flex-wrap:wrap}
+  }
+</style>
+</head>
+<body>
+<aside class="sidebar">
+  <div class="brand">Luson<span>Gestión de baterías</span></div>
+  <nav class="side-nav" aria-label="Secciones">
+    <a href="#">Inventario</a>
+    <a href="#">Transferencias</a>
+    <a href="#">Ventas</a>
+    <a href="#">Historial de ventas</a>
+    <a href="#" aria-current="page">Compras</a>
+  </nav>
+</aside>
+
+<div class="app">
+  <header class="app-header">
+    <div class="where"><span class="branch">Sucursal A</span><span class="who">Mariana Ríos · vendedora</span></div>
+    <span class="who">11/11/2026 · 18:24</span>
+  </header>
+
+  <main>
+    <div class="page-head">
+      <div>
+        <p class="eyebrow">Compra <b>#8</b> · borrador · 11/11/2026 18:24</p>
+        <h1>Registrar compra</h1>
+        <p class="lede">Cargá sin soltar el teclado: modelo o material, cantidad y valor. La tira de abajo cierra el pago.</p>
+      </div>
+      <div class="head-actions">
+        <button class="ghost" type="button">Historial</button>
+        <button type="button">Descartar borrador</button>
+      </div>
+    </div>
+
+    <div class="tools">
+      <div class="kindgroup">
+        <span class="kind-label" id="kind-lbl">Agregar línea de</span>
+        <div class="kind" role="group" aria-labelledby="kind-lbl">
+          <button type="button" aria-pressed="true">Batería usada</button>
+          <button type="button" aria-pressed="false">Chatarra por kg</button>
+        </div>
+      </div>
+      <ul class="keys">
+        <li><kbd>Tab</kbd> siguiente campo</li>
+        <li><kbd>Enter</kbd> agrega línea</li>
+        <li><kbd>Ctrl</kbd>+<kbd>Enter</kbd> registra</li>
+        <li><kbd>Esc</kbd> vuelve atrás</li>
+      </ul>
+    </div>
+
+    <div class="cols">
+      <section class="panel" aria-labelledby="lines-h">
+        <div class="panel-head">
+          <h2 id="lines-h">Líneas del documento</h2>
+          <span class="sub">Hasta 190 líneas por tipo · el importe se calcula</span>
+        </div>
+
+        <div class="lines-wrap">
+          <table class="lines">
+            <caption class="sr-only">Líneas de la compra: baterías usadas y chatarra por kilogramo</caption>
+            <thead>
+              <tr>
+                <th scope="col" style="width:34%">Modelo o material</th>
+                <th scope="col" class="num" style="width:15%">Cantidad</th>
+                <th scope="col" class="num" style="width:31%">Valor unitario</th>
+                <th scope="col" class="num" style="width:20%">Importe</th>
+                <th scope="col" class="act"><span class="sr-only">Quitar</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="group"><th scope="colgroup" colspan="5">Baterías usadas <span class="g-note">solo modelo, sin marca ni polaridad</span></th></tr>
+              <tr>
+                <td>
+                  <select aria-label="Modelo de la primera línea">
+                    <option selected>NS60ZL</option>
+                    <option>NS40ZL</option>
+                    <option>12N5-3B</option>
+                    <option>55B24L</option>
+                    <option>Otro modelo…</option>
+                  </select>
+                </td>
+                <td class="num"><input class="num" type="number" min="1" value="1" aria-label="Cantidad de la primera línea"></td>
+                <td class="num">
+                  <input class="num" type="text" inputmode="decimal" value="25000.00" aria-describedby="a1" aria-label="Valor unitario de la primera línea">
+                  <span class="hint" id="a1">última: <strong>Bs 25.000,00</strong> · 10/11</span>
+                </td>
+                <td class="num"><span class="amount">Bs 25.000,00</span></td>
+                <td class="act">
+                  <button class="icon" type="button" aria-label="Quitar línea 1: NS60ZL">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" stroke-linecap="round"/></svg>
+                  </button>
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <select aria-label="Modelo de la segunda línea">
+                    <option>NS60ZL</option>
+                    <option>NS40ZL</option>
+                    <option selected>12N5-3B</option>
+                    <option>55B24L</option>
+                    <option>Otro modelo…</option>
+                  </select>
+                </td>
+                <td class="num"><input class="num" type="number" min="1" value="2" aria-label="Cantidad de la segunda línea"></td>
+                <td class="num">
+                  <input class="num" type="text" inputmode="decimal" value="18000.00" aria-describedby="a2" aria-label="Valor unitario de la segunda línea">
+                  <span class="hint" id="a2">última: <strong>Bs 18.000,00</strong> · 10/11</span>
+                </td>
+                <td class="num"><span class="amount">Bs 36.000,00</span></td>
+                <td class="act">
+                  <button class="icon" type="button" aria-label="Quitar línea 2: 12N5-3B">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" stroke-linecap="round"/></svg>
+                  </button>
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <select aria-label="Modelo de la tercera línea">
+                    <option>NS60ZL</option>
+                    <option>NS40ZL</option>
+                    <option>12N5-3B</option>
+                    <option selected>55B24L</option>
+                    <option>Otro modelo…</option>
+                  </select>
+                </td>
+                <td class="num"><input class="num" type="number" min="1" value="1" aria-label="Cantidad de la tercera línea"></td>
+                <td class="num">
+                  <input class="num" type="text" inputmode="decimal" value="23200.00" aria-describedby="a3" aria-label="Valor unitario de la tercera línea">
+                  <span class="hint none" id="a3">sin compra previa en esta sucursal</span>
+                </td>
+                <td class="num"><span class="amount">Bs 23.200,00</span></td>
+                <td class="act">
+                  <button class="icon" type="button" aria-label="Quitar línea 3: 55B24L">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" stroke-linecap="round"/></svg>
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+            <tbody>
+              <tr class="group"><th scope="colgroup" colspan="5">Chatarra por kg <span class="g-note">cobre, aluminio, plomo y bronce</span></th></tr>
+              <tr>
+                <td>
+                  <select aria-label="Material de la cuarta línea">
+                    <option selected>Cobre</option>
+                    <option>Aluminio</option>
+                    <option>Plomo</option>
+                    <option>Bronce</option>
+                  </select>
+                </td>
+                <td class="num">
+                  <input class="num" type="text" inputmode="decimal" value="5.000" aria-describedby="a4" aria-label="Kilogramos de la cuarta línea">
+                  <span class="hint" id="a4">kilogramos</span>
+                </td>
+                <td class="num">
+                  <input class="num" type="text" inputmode="decimal" value="8000.00" aria-describedby="a5" aria-label="Precio por kilogramo de la cuarta línea">
+                  <span class="hint" id="a5">última: <strong>Bs 8.000,00</strong> /kg · 10/11</span>
+                </td>
+                <td class="num"><span class="amount">Bs 40.000,00</span></td>
+                <td class="act">
+                  <button class="icon" type="button" aria-label="Quitar línea 4: Cobre">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 3.5l9 9M12.5 3.5l-9 9" stroke-linecap="round"/></svg>
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+            <tfoot>
+              <tr>
+                <td class="label">4 líneas · 3 usadas y 1 chatarra</td>
+                <td class="num"></td>
+                <td class="num"></td>
+                <td class="num">Bs 124.200,00</td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+
+          <div class="add">
+            <button class="ghost" type="button">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10" stroke-linecap="round"/></svg>
+              Agregar línea
+            </button>
+            <span class="hint">El valor lo tipea el vendedor: no hay precio de compra automático.</span>
+          </div>
+
+          <div class="note-field">
+            <label for="nota">Nota (opcional)</label>
+            <input id="nota" type="text" placeholder="Ej.: el cobre vino con cable, se pesó igual">
+          </div>
+        </div>
+      </section>
+
+      <aside class="panel receipt" aria-labelledby="ticket-h">
+        <h2 id="ticket-h">Copia del comprobante</h2>
+        <p class="sub">Lo que se lleva quien trae el material.</p>
+        <div class="paper">
+          <div class="r-head">
+            <strong>LUSON</strong>
+            <small>Sucursal A · La Paz</small>
+            <p class="r-num">Comprobante de compra Nº 8</p>
+          </div>
+          <p class="r-date">11/11/2026 · 18:24</p>
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Detalle</th>
+                <th scope="col" class="num">Cant.</th>
+                <th scope="col" class="num">P. unit.</th>
+                <th scope="col" class="num">Importe</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>NS60ZL<small>usada</small></td><td class="num">1</td><td class="num">25.000,00</td><td class="num">25.000,00</td></tr>
+              <tr><td>12N5-3B<small>usada</small></td><td class="num">2</td><td class="num">18.000,00</td><td class="num">36.000,00</td></tr>
+              <tr><td>55B24L<small>usada</small></td><td class="num">1</td><td class="num">23.200,00</td><td class="num">23.200,00</td></tr>
+              <tr><td>Cobre<small>chatarra</small></td><td class="num">5,000 kg</td><td class="num">8.000,00</td><td class="num">40.000,00</td></tr>
+            </tbody>
+          </table>
+          <div class="r-total"><span>Total</span><strong>Bs 124.200,00</strong></div>
+          <dl class="r-pay">
+            <div><dt>Efectivo</dt><dd>Bs 120.000,00</dd></div>
+            <div><dt>Transferencia</dt><dd>Bs 0,00</dd></div>
+          </dl>
+          <p class="r-warn">Pago incompleto: faltan Bs 4.200,00</p>
+          <p class="r-who">Recibido por: Mariana Ríos · sucursal A</p>
+          <div class="sign">Firma de quien entrega el material</div>
+          <p class="r-note">No se registran datos personales: modelo o material, cantidad y precio. Una usada no se revende.</p>
+        </div>
+        <div class="receipt-actions">
+          <button type="button">Imprimir copia</button>
+          <button class="ghost" type="button">Ver #7</button>
+        </div>
+      </aside>
+    </div>
+  </main>
+</div>
+
+<section class="strip" aria-label="Liquidación de la compra">
+  <div class="cell total">
+    <span class="lbl">Total</span>
+    <strong>Bs 124.200,00</strong>
+    <small>3 usadas · 1 chatarra</small>
+  </div>
+  <div class="cell">
+    <label for="efectivo">Efectivo</label>
+    <input id="efectivo" type="text" inputmode="decimal" value="120000.00" aria-describedby="dif">
+  </div>
+  <div class="cell">
+    <label for="transferencia">Transferencia</label>
+    <input id="transferencia" type="text" inputmode="decimal" value="0.00">
+  </div>
+  <div class="cell diff">
+    <span class="lbl" id="dif-lbl">Diferencia</span>
+    <p class="short" id="dif">Faltan Bs 4.200,00</p>
+    <small>Efectivo y transferencia no cubren el total</small>
+  </div>
+  <div class="cell action">
+    <button class="primary" type="button" disabled aria-describedby="why">Registrar compra</button>
+    <p class="why" id="why">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v5M8 11.6v.1" stroke-linecap="round"/><circle cx="8" cy="8" r="6.2"/></svg>
+      Falta cubrir Bs 4.200,00 para poder registrar.
+    </p>
+  </div>
+</section>
+</body>
+</html>

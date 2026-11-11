@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "comments": [
+    {
+      "id": "onqep15k",
+      "file": "02-received-first.html",
+      "selector": "#shell > main",
+      "excerpt": "Compras Lo que la sucursal compró a quien lo trajo, sumado por modelo y por material. Ese acumulado es lo que cierra el mes; registrar el papel es un paso aparte. Noviembre 2026 · al 11/11 18:24 Registrar compra Recibido acumulado Derivado de los documentos, nunca de un stock guardado: los contra-do",
+      "comment": "Ese texto que dice Lo que la sucursal compro a quien lo trajo,.... se elimina\n\neso de Recibido acumulado y su texto, derivado de los documenteos, etc etc se elimina",
+      "createdAt": "2026-11-11T20:46:27.853Z",
+      "status": "resolved",
+      "sentAt": "2026-11-11T20:46:27.890Z",
+      "resolvedAt": "2026-11-11T20:46:48.929Z"
+    },
+    {
+      "id": "o15p73dp",
+      "file": "02-received-first.html",
+      "selector": "#shell > main > div > div:nth-of-type(2)",
+      "excerpt": "Noviembre 2026 · al 11/11 18:24 Registrar compra",
+      "comment": "eso no quiero que salga ahi, y ademas en general ahora como quitamos los textos anteriores, quiero ajustar el contenido para que no haya muchon espacio blanco arriba",
+      "createdAt": "2026-11-11T20:54:15.486Z",
+      "status": "resolved",
+      "sentAt": "2026-11-11T20:54:15.518Z",
+      "resolvedAt": "2026-11-11T20:54:40.848Z"
+    },
+    {
+      "id": "bvspnedd",
+      "file": "02-received-first.html",
+      "selector": "#shell > main",
+      "excerpt": "Compras Recibido Registrar compra TOTAL DEL MES Bs 3.743.600,00 12 documentos · lo que salió de caja BATERÍAS USADAS 20 u. Bs 459.000,00 · no se revenden CHATARRA 410,700 kg Bs 3.284.600,00 · cobre, aluminio, plomo, bronce Baterías usadas 20 u. · Bs 459.000,00 Chatarra 410,700 kg · Bs 3.284.600,00 D",
+      "comment": "tengo mucho espacio vacio en la derecha y en la parte superior!",
+      "createdAt": "2026-11-11T20:57:43.917Z",
+      "status": "resolved",
+      "sentAt": "2026-11-11T20:57:43.951Z",
+      "resolvedAt": "2026-11-11T20:59:05.098Z"
+    }
+  ]
+}

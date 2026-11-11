@@ -1,0 +1,28 @@
+{
+  "title": "Compras de baterías usadas y chatarra",
+  "brief": "Sección Compras de una sucursal Luson: la sucursal le compra a quien trae el material, baterías usadas identificadas solo por modelo y chatarra por kilogramo, con el valor tipeado, sin datos de la persona, pagado en efectivo o transferencia que deben sumar el total exacto. Las usadas nunca se revenden: lo recibido se consulta con su valuación para cerrar el mes. Tres alternativas sobre el mismo shell de 240px, la paleta vino y los tokens de design/system.md.",
+  "feature": "odd/tasks/compra-usadas-y-chatarra.md",
+  "artboards": [
+    {
+      "file": "01-document-tabs.html",
+      "title": "Documento con pestañas y recibido al costado",
+      "tradeoff": "Cargar y ver el recibido conviven en una sola pantalla y el documento se ve completo; el acumulado del mes queda en una columna angosta al costado y compite por el ancho.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "02-received-first.html",
+      "title": "Recibido primero",
+      "tradeoff": "El número del mes es inconfundible y lo recibido por modelo, peso y valuación manda en la página; registrar una compra es un paso más, detrás de un diálogo con el fondo atenuado.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "03-counter-strip.html",
+      "title": "Mostrador con tira de liquidación",
+      "tradeoff": "Máxima velocidad para un vendedor entrenado: líneas densas, anclas de última compra y la liquidación fija abajo con la diferencia a la vista; densidad alta y curva de aprendizaje de teclado.",
+      "width": 1440,
+      "height": 900
+    }
+  ]
+}
