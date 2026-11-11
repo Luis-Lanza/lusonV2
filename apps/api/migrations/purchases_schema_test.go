@@ -79,6 +79,12 @@ func TestPurchaseSchemaStructure(t *testing.T) {
 		"CREATE TRIGGER admit_purchase BEFORE INSERT ON purchases",
 		"CREATE CONSTRAINT TRIGGER require_purchase_document AFTER INSERT ON purchases",
 		"DEFERRABLE INITIALLY DEFERRED",
+		// A line is judged with its document: the header's own deferred check cannot see
+		// an append to an already committed document, so every line insert re-checks the
+		// whole document at commit.
+		"CREATE FUNCTION guard_purchase_line()",
+		"CREATE CONSTRAINT TRIGGER guard_purchase_used_line AFTER INSERT ON purchase_used_lines",
+		"CREATE CONSTRAINT TRIGGER guard_purchase_scrap_line AFTER INSERT ON purchase_scrap_lines",
 		// At most one counter-document per original: both stay visible forever.
 		"CREATE UNIQUE INDEX purchases_single_reversal ON purchases(reverses_purchase_id)",
 		// The page and the last-prices read need their own access paths.
@@ -453,6 +459,117 @@ func TestPurchaseGuards(t *testing.T) {
 		}
 	}
 	t.Logf("032: admitted, mirrored and refused documents behave as the contract says")
+}
+
+// TestPurchaseLineInsertGuard proves a line belongs to the document it was typed in.
+// The header and the counter-document are judged at commit, but that check lives on
+// `purchases` and never sees a row appended to an already committed document: the
+// append would leave the header total stale and break the reversal mirror. Every line
+// insert therefore re-checks the whole document at commit, and an append is refused.
+func TestPurchaseLineInsertGuard(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	t.Cleanup(cancel)
+	p := testpg.Open(t)
+	applyMigrationRange(t, ctx, p, 32)
+	seedPrefixCatalog(t, ctx, p)
+	if _, err := p.Exec(ctx, `INSERT INTO auth_accounts(location_id,username,password_hash)
+ VALUES(1,'almacen','x'),(2,'sucursal_a','x')`); err != nil {
+		t.Fatal("the accounts could not be provisioned")
+	}
+
+	// A document of both kinds closes normally: the guards are deferred, so they judge
+	// the whole document once every line of it is stored, and never a line alone.
+	tx, document := admitPurchase(t, ctx, p, "purchase-line-guard-01", "80000.00", "60000.00", "20000.00")
+	if _, err := tx.Exec(ctx, `INSERT INTO purchase_used_lines(purchase_id,model,quantity,unit_price)
+ VALUES($1,'NS60ZL',2,25000.00)`, document); err != nil {
+		t.Fatalf("the used line must be admitted: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO purchase_scrap_lines(purchase_id,material_id,kg,price_per_kg)
+ VALUES($1,1,4.000,7500.00)`, document); err != nil {
+		t.Fatalf("the scrap line must be admitted: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("a document whose lines add up to its total must commit: %v", err)
+	}
+	if total := purchaseLinesTotal(t, ctx, p, document); total != "80000.00" {
+		t.Fatalf("the committed document must keep its declared value: %q", total)
+	}
+
+	// A used line appended after that document committed is refused at commit with the
+	// line guard's own SQLSTATE, and the append is not persisted: the document keeps the
+	// one used line and the value it was closed with.
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		t.Fatal("the append transaction could not start")
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO purchase_used_lines(purchase_id,model,quantity,unit_price)
+ VALUES($1,'55B24L',1,10000.00)`, document); err != nil {
+		t.Fatalf("the appended used line must be insertable before commit: %v", err)
+	}
+	commitRefusal(t, ctx, tx, "LP002")
+	var usedLines string
+	if err := p.QueryRow(ctx, `SELECT string_agg(model,',' ORDER BY model) FROM purchase_used_lines WHERE purchase_id=$1`, document).Scan(&usedLines); err != nil || usedLines != "NS60ZL" {
+		t.Fatalf("an appended used line must not be persisted: %q %v", usedLines, err)
+	}
+	if total := purchaseLinesTotal(t, ctx, p, document); total != "80000.00" {
+		t.Fatalf("a refused used append must leave the value untouched: %q", total)
+	}
+
+	// The same for a scrap line: an appended kilogram is refused and never stored.
+	tx, err = p.Begin(ctx)
+	if err != nil {
+		t.Fatal("the append transaction could not start")
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO purchase_scrap_lines(purchase_id,material_id,kg,price_per_kg)
+ VALUES($1,2,1.000,1000.00)`, document); err != nil {
+		t.Fatalf("the appended scrap line must be insertable before commit: %v", err)
+	}
+	commitRefusal(t, ctx, tx, "LP002")
+	var scrapLines string
+	if err := p.QueryRow(ctx, `SELECT string_agg(material_id::text,',' ORDER BY material_id) FROM purchase_scrap_lines WHERE purchase_id=$1`, document).Scan(&scrapLines); err != nil || scrapLines != "1" {
+		t.Fatalf("an appended scrap line must not be persisted: %q %v", scrapLines, err)
+	}
+	if total := purchaseLinesTotal(t, ctx, p, document); total != "80000.00" {
+		t.Fatalf("a refused scrap append must leave the value untouched: %q", total)
+	}
+
+	// The counter-document is still admitted, still mirrors both kinds of its original
+	// and still nets it out exactly: the closed document did not become uncorrectable.
+	tx, counter := admitCounter(t, ctx, p, "purchase-line-guard-counter-01", document, "-80000.00", "-60000.00", "-20000.00", "pesaje mal tipeado")
+	if _, err := tx.Exec(ctx, `INSERT INTO purchase_used_lines(purchase_id,model,quantity,unit_price)
+ VALUES($1,'NS60ZL',-2,25000.00)`, counter); err != nil {
+		t.Fatalf("the mirrored used line must be admitted: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO purchase_scrap_lines(purchase_id,material_id,kg,price_per_kg)
+ VALUES($1,1,-4.000,7500.00)`, counter); err != nil {
+		t.Fatalf("the mirrored scrap line must be admitted: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("a mirroring counter-document must commit: %v", err)
+	}
+	if total := purchaseLinesTotal(t, ctx, p, counter); total != "-80000.00" {
+		t.Fatalf("the counter-document must negate the value of its original: %q", total)
+	}
+	var netUsed, netScrap string
+	if err := p.QueryRow(ctx, `SELECT sum(quantity)::text FROM purchase_used_lines WHERE purchase_id IN ($1,$2)`, document, counter).Scan(&netUsed); err != nil || netUsed != "0" {
+		t.Fatalf("the counter must net out the received units: %q %v", netUsed, err)
+	}
+	if err := p.QueryRow(ctx, `SELECT (coalesce(sum(kg),0))::text FROM purchase_scrap_lines WHERE purchase_id IN ($1,$2)`, document, counter).Scan(&netScrap); err != nil || netScrap != "0.000" {
+		t.Fatalf("the counter must net out the received weight: %q %v", netScrap, err)
+	}
+	t.Logf("032: a closed document admits no further line and its reversal still mirrors it")
+}
+
+// purchaseLinesTotal is the persisted value of one document, the sum of both line
+// kinds: the figure its header total must keep matching.
+func purchaseLinesTotal(t *testing.T, ctx context.Context, p *pgxpool.Pool, document int64) string {
+	t.Helper()
+	var total string
+	if err := p.QueryRow(ctx, `SELECT (coalesce((SELECT sum(amount) FROM purchase_used_lines WHERE purchase_id=$1),0)
+         + coalesce((SELECT sum(amount) FROM purchase_scrap_lines WHERE purchase_id=$1),0))::text`, document).Scan(&total); err != nil {
+		t.Fatalf("the value of the document lines could not be read: %v", err)
+	}
+	return total
 }
 
 // admitPurchase starts one document of branch 2 with the asked settlement and leaves
