@@ -813,3 +813,71 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .app-shell:not(.warehouse) .pager,
   .app-shell:not(.warehouse) .page-controls { flex-wrap: wrap; }
 }
+
+/* Compras, "recibido primero" (design/purchases/02-received-first.html). The section
+   reuses the stock panel, table, tag, hint, pager and decision-dialog treatments;
+   only the metrics band, the tabs row and the participation bar are new here. */
+.purchases { gap: 12px; }
+.purchases-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.purchases-heading h1 { margin: 0; font-size: 22px; font-weight: 700; }
+.purchases-received { display: grid; gap: 0; min-width: 0; }
+.purchases-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0 0 12px; padding: 0; background: white; border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 1px 2px #2421240d; overflow: hidden; }
+.purchases-metrics > div { min-width: 0; margin: 0; padding: 12px 16px; border-left: 1px solid var(--border); }
+.purchases-metrics > div:first-child { border-left: 0; background: var(--tint); }
+.purchases-metrics dt { color: var(--muted); font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.purchases-metrics dd { margin: 4px 0 0; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.purchases-metrics .purchases-metric-sub { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; font-weight: 400; }
+.purchases-metrics .purchases-metric-total dd { color: var(--wine); font-size: 24px; }
+.purchases-tabs-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+.purchases-tabs { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.purchases-tabs button { appearance: none; min-height: 44px; padding: 10px 14px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); font-size: 13px; font-weight: 500; }
+.purchases-tabs button[aria-selected="true"] { border-bottom-color: var(--wine); color: var(--wine); font-weight: 600; }
+.purchases-tabs .count { padding-left: 4px; color: var(--muted); font-size: 12px; font-weight: 400; }
+.purchases-register { margin-bottom: 6px; min-height: 44px; white-space: normal; overflow-wrap: anywhere; }
+.purchases-panel { gap: 10px; padding: 16px 18px 14px; min-width: 0; }
+.purchases .purchases-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.purchases .purchases-table tfoot td { border-bottom: 0; font-weight: 700; }
+.purchases .purchases-table tfoot td.label { color: var(--muted); font-size: 12px; font-weight: 600; white-space: normal; }
+.purchases .purchases-table .purchases-unit { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
+.purchases-share { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.purchases-bar { display: block; width: 86px; height: 6px; border-radius: 999px; background: var(--tint); overflow: hidden; }
+.purchases-bar i { display: block; width: 8px; height: 100%; border-radius: 999px; background: var(--wine); }
+.purchases-pct { min-width: 38px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; text-align: right; }
+.purchases-note { margin: 4px 0 0; padding: 10px 12px; border: 1px solid #e8cf86; border-radius: 4px; background: #fffbef; color: #805400; font-size: 12px; line-height: 1.5; }
+.purchases-footline { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
+
+/* The purchase document over the attenuated page. Only its body is laid out here. */
+.purchases .purchase-document { width: min(720px, 100%); }
+.purchase-doc-meta { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.purchase-doc-meta b { color: var(--wine); }
+.purchase-document-body { display: grid; gap: 14px; }
+.purchase-kind { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; border: 0; }
+.purchase-kind button { min-height: 40px; padding: 9px 16px; border-radius: 999px; color: var(--muted); }
+.purchase-kind button[aria-pressed="true"] { border-color: var(--wine); background: var(--tint); color: var(--wine); font-weight: 600; }
+.purchase-line { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 108px) minmax(0, 1fr) minmax(0, 1fr) auto; gap: 12px; align-items: start; }
+.purchase-add { align-self: end; display: flex; }
+.purchase-add button { min-height: 44px; white-space: normal; overflow-wrap: anywhere; }
+.purchase-field { display: grid; gap: 5px; min-width: 0; margin: 0; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.purchase-field label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.purchase-field input, .purchase-field select { width: 100%; min-height: 44px; padding: 9px 10px; border-color: var(--muted); border-radius: 4px; color: #242124; font-size: 13px; font-weight: 400; letter-spacing: 0; text-transform: none; }
+.purchase-field input.num { text-align: right; font-variant-numeric: tabular-nums; }
+.purchase-field .stock-hint, .purchase-field .stock-status { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.purchase-amount { display: flex; align-items: center; justify-content: flex-end; min-height: 44px; margin: 0; padding: 0 2px; border-bottom: 1px solid var(--border); color: #242124; font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: 0; text-transform: none; }
+.purchase-document .stock-note { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.purchase-document .stock-note textarea { width: 100%; min-height: 56px; padding: 9px 10px; border: 1px solid var(--muted); border-radius: 4px; color: #242124; font-family: inherit; font-size: 13px; font-weight: 400; letter-spacing: 0; line-height: 1.5; text-transform: none; resize: vertical; }
+.purchase-settle { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: end; padding-top: 14px; border-top: 2px solid var(--border); }
+.purchase-settle-total { grid-column: 1 / -1; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 2px; padding-bottom: 10px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
+.purchase-settle-total strong { color: #242124; font-size: 22px; font-variant-numeric: tabular-nums; letter-spacing: 0; }
+@media (max-width: 1050px) {
+  .purchase-line { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .purchase-add { grid-column: 1 / -1; }
+}
+@media (max-width: 767px) {
+  .purchases-metrics { grid-template-columns: minmax(0, 1fr); }
+  .purchases-metrics > div { border-left: 0; border-top: 1px solid var(--border); }
+  .purchases-metrics > div:first-child { border-top: 0; }
+  .purchases-tabs-row { flex-wrap: wrap; align-items: stretch; }
+  .purchases-register { margin-bottom: 8px; width: 100%; }
+  .purchase-line, .purchase-settle { grid-template-columns: minmax(0, 1fr); }
+  .purchases-bar { width: 64px; }
+}

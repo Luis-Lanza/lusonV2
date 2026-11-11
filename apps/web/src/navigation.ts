@@ -1,6 +1,6 @@
 import { transferDetailPath } from './transferModel';
 
-export type NavigationRoute = { section: 'inventory' } | { section: 'administration' } | { section: 'password' } | { section: 'stock' } | { section: 'adjustments' } | { section: 'catalog'; screen?: 'prices' | 'batteries' } | { section: 'sales' } | { section: 'salesHistory' } | { section: 'transfers'; id: string | null };
+export type NavigationRoute = { section: 'inventory' } | { section: 'administration' } | { section: 'password' } | { section: 'stock' } | { section: 'adjustments' } | { section: 'catalog'; screen?: 'prices' | 'batteries' } | { section: 'sales' } | { section: 'salesHistory' } | { section: 'purchases' } | { section: 'transfers'; id: string | null };
 
 export function readNavigation(): NavigationRoute {
   const hash = window.location.hash;
@@ -15,6 +15,8 @@ export function readNavigation(): NavigationRoute {
   // The branch counter and its history: two screens of their own, reached from the sidebar.
   if (hash === '#/ventas') return { section: 'sales' };
   if (hash === '#/ventas/historial') return { section: 'salesHistory' };
+  // Compras is a section of its own: used batteries and scrap, never part of a sale.
+  if (hash === '#/compras') return { section: 'purchases' };
   if (hash === '#/transferencias') return { section: 'transfers', id: null };
   const match = /^#\/transferencias\/([^/]+)$/.exec(hash);
   if (match) {
@@ -35,6 +37,7 @@ export function navigationHash(route: NavigationRoute): string {
   if (route.section === 'catalog') return route.screen === 'batteries' ? '#/catalogo/baterias' : '#/catalogo';
   if (route.section === 'sales') return '#/ventas';
   if (route.section === 'salesHistory') return '#/ventas/historial';
+  if (route.section === 'purchases') return '#/compras';
   return '#/transferencias' + (route.id === null ? '' : '/' + route.id);
 }
 

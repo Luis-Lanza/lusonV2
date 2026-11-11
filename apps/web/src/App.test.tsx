@@ -1795,3 +1795,45 @@ describe('branch point of sale and its history', () => {
     expect(salesCalls(mock)).toHaveLength(0);
   });
 });
+
+describe('branch purchases', () => {
+  const branchSession = { ...session, identity: { ...identity, account_id: 2, username: 'sucursala', location: metadata.locations[1] } };
+  const purchasesResponse = (body: unknown) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  const branchSetup = () => setup(branchSession, url => {
+    if (url === '/api/purchases/models') return Promise.resolve(purchasesResponse({ models: [] }));
+    if (url === '/api/purchases/materials') return Promise.resolve(purchasesResponse({ materials: [{ id: 1, name: 'Cobre' }] }));
+    if (url === '/api/purchases/last-prices') return Promise.resolve(purchasesResponse({ models: [], materials: [] }));
+    if (url === '/api/purchases/received') return Promise.resolve(purchasesResponse({ used: [], scrap: [] }));
+    if (url.startsWith('/api/purchases?page=')) return Promise.resolve(purchasesResponse({
+      page: 1, page_size: 25, total_purchases: 0, purchases: [] }));
+    return undefined;
+  });
+  const purchaseCalls = (mock: ReturnType<typeof setup>) =>
+    mock.mock.calls.filter(([url]) => String(url).startsWith('/api/purchases'));
+
+  it('offers Compras to a branch session and opens it without any write', async () => {
+    const mock = branchSetup();
+    render(<App />); await inventory();
+    const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
+    fireEvent.click(within(navigation).getByRole('button', { name: 'Compras' }));
+    await screen.findByRole('heading', { name: 'Compras' });
+    expect(window.location.hash).toBe('#/compras');
+    expect(screen.getByText('Luson Compras')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Compras' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
+    expect(purchaseCalls(mock).some(([url]) => String(url) === '/api/purchases/received')).toBe(true);
+    expect(purchaseCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('hides Compras from the warehouse and falls back from its typed hash', async () => {
+    window.history.replaceState(null, '', '/#/compras');
+    const mock = setup(session);
+    render(<App />); await inventory();
+    expect(screen.queryByRole('button', { name: 'Compras' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Compras' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Resultados de inventario' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Inventario' })).toHaveAttribute('aria-current', 'page');
+    expect(purchaseCalls(mock)).toHaveLength(0);
+  });
+});
