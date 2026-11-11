@@ -14,6 +14,7 @@ import (
 	"luson/api/internal/httpapi"
 	"luson/api/internal/inventory"
 	"luson/api/internal/pricing"
+	"luson/api/internal/purchases"
 	"luson/api/internal/realtime"
 	"luson/api/internal/sales"
 	"luson/api/internal/stockadjustments"
@@ -121,6 +122,12 @@ func run() (result error) {
 	// The warehouse catalog administrator mounts last, so the battery contract owns
 	// only its own path and every other composed surface keeps its exact behavior.
 	api, err = httpapi.NewWithCatalogAdmin(api, service, httpCfg, catalogadmin.New(pool, service))
+	if err != nil {
+		return errors.New("API initialization failed")
+	}
+	// The branch purchase ledger mounts last: it is the only money-out document, it
+	// owns only its own path, and every composed surface keeps its exact behavior.
+	api, err = httpapi.NewWithPurchases(api, service, httpCfg, purchases.New(pool))
 	if err != nil {
 		return errors.New("API initialization failed")
 	}
