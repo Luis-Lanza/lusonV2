@@ -899,7 +899,12 @@ func purchasePageRecord(page purchases.Page) (purchasePageDTO, error) {
 			summary.ScrapLines < 0 || summary.ScrapLines > purchases.MaxLines ||
 			summary.UsedUnits > purchases.MaxLines*purchases.MaxQuantity ||
 			summary.UsedUnits < -(purchases.MaxLines*purchases.MaxQuantity) ||
-			(summary.UsedUnits > 0) == counter ||
+			// The used total follows the document's direction — never negative on an
+			// original, never positive on a counter-document — and a document always
+			// carries at least one line between the two kinds. A scrap-only purchase is
+			// legal and carries zero used units, exactly like the contract admits.
+			(counter && summary.UsedUnits > 0) || (!counter && summary.UsedUnits < 0) ||
+			(summary.UsedUnits == 0 && summary.ScrapLines == 0) ||
 			(counter && (*summary.ReversesPurchaseID < 1 ||
 				*summary.ReversesPurchaseID >= summary.ID)) ||
 			(summary.ReversedBy != nil && (*summary.ReversedBy <= summary.ID || counter)) {

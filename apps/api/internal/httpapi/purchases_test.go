@@ -777,6 +777,10 @@ func TestPurchaseHTTPList(t *testing.T) {
 	first := purchaseDocumentWire(t, f.serve(t, f.request(2, "POST", "/api/purchases", validPurchaseJSON)), 201)
 	secondBody := `{"operation_key":"http-purchase-key-02","used_lines":[{"model":"55B24L","quantity":3,"unit_price":"9000.00"}],"paid_cash":"27000.00","paid_transfer":"0.00"}`
 	second := purchaseDocumentWire(t, f.serve(t, f.request(2, "POST", "/api/purchases", secondBody)), 201)
+	// A scrap-only purchase is a legal document: no used units, one scrap line, and it must
+	// appear in the page instead of failing it closed — the counter sells kilograms too.
+	scrapOnly := purchaseDocumentWire(t, f.serve(t, f.request(2, "POST", "/api/purchases",
+		`{"operation_key":"http-purchase-key-03","scrap_lines":[{"material_id":1,"kg":"2.500","price_per_kg":"8000.00"}],"paid_cash":"20000.00","paid_transfer":"0.00"}`)), 201)
 	counter := purchaseDocumentWire(t, f.serve(t, f.request(2, "POST",
 		"/api/purchases/"+strconv.FormatInt(first.ID, 10)+"/reverse",
 		`{"operation_key":"http-purchase-reverse-1","reason":"pesaje mal tipeado"}`)), 201)
@@ -790,7 +794,7 @@ func TestPurchaseHTTPList(t *testing.T) {
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &page) != nil {
 		t.Fatalf("the page answer is not JSON: %d %s", w.Code, w.Body.String())
 	}
-	if page.Page != 1 || page.PageSize != 10 || page.TotalPurchases != 3 || len(page.Purchases) != 3 {
+	if page.Page != 1 || page.PageSize != 10 || page.TotalPurchases != 4 || len(page.Purchases) != 4 {
 		t.Fatalf("the page is wrong: %s", w.Body.String())
 	}
 	for _, row := range page.Purchases {
@@ -818,11 +822,19 @@ func TestPurchaseHTTPList(t *testing.T) {
 		t.Fatalf("the counter total must be published as canonical text: %s", page.Purchases[0]["total"])
 	}
 	var reversedBy int64
-	if json.Unmarshal(page.Purchases[2]["id"], &leadID) != nil || leadID != first.ID ||
-		json.Unmarshal(page.Purchases[2]["reversed_by"], &reversedBy) != nil || reversedBy != counter.ID {
+	if json.Unmarshal(page.Purchases[3]["id"], &leadID) != nil || leadID != first.ID ||
+		json.Unmarshal(page.Purchases[3]["reversed_by"], &reversedBy) != nil || reversedBy != counter.ID {
 		t.Fatalf("the reversed original row is wrong: %s", w.Body.String())
 	}
-	if json.Unmarshal(page.Purchases[1]["id"], &leadID) != nil || leadID != second.ID {
+	// The scrap-only document is listed with zero used units and its one scrap line: it is
+	// not a counter-document, and it is the case that used to fail the whole page closed.
+	if json.Unmarshal(page.Purchases[1]["id"], &leadID) != nil || leadID != scrapOnly.ID ||
+		json.Unmarshal(page.Purchases[1]["used_units"], &leadUnits) != nil || leadUnits != 0 ||
+		json.Unmarshal(page.Purchases[1]["scrap_lines"], &leadScrap) != nil || leadScrap != 1 ||
+		json.Unmarshal(page.Purchases[1]["total"], &leadTotal) != nil || leadTotal != "20000.00" {
+		t.Fatalf("the scrap-only row is wrong: %s", w.Body.String())
+	}
+	if json.Unmarshal(page.Purchases[2]["id"], &leadID) != nil || leadID != second.ID {
 		t.Fatalf("the page is not newest first: %s", w.Body.String())
 	}
 	// The frozen page contract is enforced before the page is read.
@@ -835,7 +847,7 @@ func TestPurchaseHTTPList(t *testing.T) {
 	// A page beyond the last one is legitimately empty.
 	w = f.serve(t, f.request(2, "GET", "/api/purchases?page=2&page_size=10", ""))
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &page) != nil || len(page.Purchases) != 0 ||
-		page.TotalPurchases != 3 {
+		page.TotalPurchases != 4 {
 		t.Fatalf("a page beyond the last one must be empty: %s", w.Body.String())
 	}
 	// The warehouse is forbidden on every route of this contract.
