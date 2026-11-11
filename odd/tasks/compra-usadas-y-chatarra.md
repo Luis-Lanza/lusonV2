@@ -1,0 +1,106 @@
+# Compras de baterías usadas y chatarra
+
+Adds the first money-out document of the system: the branch buys used batteries
+and scrap (by weight) from whoever brings them. It is a document of its own,
+never part of a sale, and nothing already existing changes.
+
+## Specs
+
+S1. The purchase is a **separate document**: the sale is registered normally, at
+full price, and receiving a used battery is registered afterwards in its own
+section. Verbatim: "no se si hacerlo en el momento de hacer la venta o que la
+venta se haga normal con el precio de la bateria y luego tener otra seccion
+donde agrego la compra de una bateria usada" and the operator chose "Sección
+separada, al final".
+
+S2. One same document serves both cases: a purchase next to a sale, and a
+customer who only comes to sell. Verbatim: "el negocio igual puede comprar
+baterias usadas sin necesidad de hacer una venta( puede venir un cliente a
+vender su bateria usada simplemente), chatarra (como ser cobre, aluminio)".
+
+S3. A used battery is identified **only by its model code**, with no brand, no
+polarity and no condition. Verbatim: "generalmente no se coloca la marca, solo
+amperaje/modelo por ejemplo NS60ZL, tampoco se coloca con polaridad, etc" and
+"Solo agregamos los modelos sin repetir entre marcas y sin agregar polaridad".
+
+S4. Used batteries are **never resold**: the record exists to close the month's
+accounts. Verbatim: "No se puede revender baterias usadas. solo hay un stock
+para cerrar cuentas a fin de mes, etc". They do not enter the catalogue, the
+point of sale, `inventory_balances` or the price matrix.
+
+S5. The model list is the catalogue's own list, deduplicated across brands, and a
+model that is not in the catalogue can still be typed. Verbatim: "si se crea
+luego un nuevo modelo en catalogo debe actualizarse en chatarra" — with no
+mirror table to maintain: the list is read from the catalogue, so a new model
+appears by itself.
+
+S6. The value paid is **typed**, and **no data about the person who brings the
+material is recorded**. Verbatim: "el valor se tipea al venderla sin necesidad de
+mencional al cliente, solo una venta de modelo - precio" and "no nos detenemos
+al preguntarle al cliente sus datos, simplemente compramos y listo".
+
+S7. Scrap is bought **by kilogram**: copper, aluminium, lead and bronze, with the
+price per kilogram typed, and no exit document in this phase. Verbatim: "debe
+haber una seccion de charra y de baterias usadas, ahi debe haber un boton de
+realizar compra, y lo que eso conlleva", "de momento esa lista inicial de
+materiales esta bien" and "kg pa", with "Materiales por kg, solo compra (fase 1)".
+
+S8. The customer is paid in **cash or by transfer**, and the section is named
+**Compras**, with no shortcut from a confirmed sale. Verbatim: "Efectivo y
+transferencia", "si, que sea compras de moemnto" and "no quiero un acceso
+directo a registrar compra de usada".
+
+S9. What was received is consultable per model and per material **with its
+valuation**, for the month-end close, derived from the documents and never from
+a stored balance. Verbatim: "solo hay un stock para cerrar cuentas a fin de mes".
+
+## Tasks
+
+| ID | Spec | Route | Work | Commit |
+| --- | --- | --- | --- | --- |
+| T1 | S1-S9 | inline | Migration 032: `purchases`, `purchase_used_lines`, `materials` (cobre, aluminio, plomo, bronce, kg), `purchase_scrap_lines`, the branch guard, the total and mirror guards, immutability, the bootstrap whitelist and the migration structure test | `cee2d28` |
+| T2 | S2-S9 | worker | Go domain and store of the purchase document: canonical validation, idempotent create, mirror reversal, page, detail, model list, material list, last prices, received totals | `3e074ab` |
+| T3 | S2-S9 | worker | Go HTTP boundary of `/api/purchases` exactly as `apps/api/docs/purchases.md` freezes it, with its tests | `3e074ab` |
+| T4 | S1-S9 | worker | Web section **Compras**: the two tabs, the purchase document with its lines, the history, the detail, the reversal, the printable receipt and the received totals (model, API client and screen with their tests) | `04aeb74` |
+| T5 | all | inline | Full verification: `gofmt`/`vet`/`build`, the whole fixture suite on every package, the web suite, typecheck, lint, build, and the new endpoints exercised against the running dev instance | `cee2d28..04aeb74` |
+| T6 | all | inline | Delivery evidence in this document and the work-unit commits | `este documento` |
+
+## Delivery
+
+Four reviewable slices on one feature branch, each green on its own:
+
+| Slice | Contents | Risk | Commit |
+| --- | --- | --- | --- |
+| 1 | Feature document and the frozen contract (`apps/api/docs/purchases.md`) | none | `0895797` |
+| 2 | Migration 032 and its guards | item 1 (a migration; additive only) | `cee2d28` |
+| 3 | Go domain, store and HTTP boundary | none | `3e074ab` |
+| 4 | The web section and its receipt | none | `04aeb74` |
+
+## Log
+
+L1. "bien! entonces ahora quiero hacer una nueva vertical!,
+en este tipo de negocios, el cliente puede venir y comprar una bateria nueva pero dejar su bateria vieja como parte del pago!, entonces quiero plantear como hacer esto!, no se si hacerlo en el momento de hacer la venta o que la venta se haga normal con el precio de la bateria y luego tener otra seccion donde agrego la compra de una bateria usada. las dos son validas para el negocio, pero el negocio igual puede comprar baterias usadas sin necesidad de hacer una venta( puede venir un cliente a vender su bateria usada simplemente), chatarra (como ser cobre, aluminio). cachas? quiero que exploremos las alternativas que tenemos y valorar tanto UI como UX"
+
+L2. Identification of the used battery: "Si entra stock como bateria usada del catalogo, pero generalmente no se coloca la marca, solo amperaje/modelo por ejemplo NS60ZL, tampoco se coloca con polaridad, etc".
+
+L3. Correction, decisive: "No se puede revender baterias usadas. solo hay un stock para cerrar cuentas a fin de mes, etc. Solo agregamos los modelos sin repetir entre marcas y sin agregar polaridad, si se crea luego un nuevo modelo en catalogo debe actualizarse en chatarra". No sale price: "no se revenden".
+
+L4. Value and counterparty: "el valor se tipea al venderla sin necesidad de mencional al cliente, solo una venta de modelo - precio".
+
+L5. Insistence on the counterparty, after the legal objection was raised once: "es que al comprara baterias, comprar cobre, etc. no nos detenemos al preguntarle al cliente sus datos, simplemente compramos y listo". Accepted as phase 1: no customer columns at all; the receipt, `created_by` and the free note are the whole trace.
+
+L6. Shape confirmed: "si, que sea compras de moemnto. de momento esa lista inicial de materiales esta bien kg pa no quiero un acceso directo a registrar compra de usada. vamos pa! creamos una rama y trabajamos". Section name `Compras`; materials cobre, aluminio, plomo, bronce; weight in kilograms; no shortcut from a confirmed sale.
+
+L7. Exploration of the existing ground, before any write: a sale's settlement is three amount columns that must sum exactly to the total (`027_sale_payments.sql:53-62`, `sales.go:566`), the sale document is immutable with no reversal (`025_sales.sql:174`), warehouse ingress refuses any location but the warehouse (`021_stock_entries.sql:39`) and carries no serial, cost or supplier (`021:27-30`), the catalogue requires a brand, a positive capacity and a polarity with `UNIQUE (brand, model)` (`001:10-24`), and `inventory_balances` is keyed by variant (`001:26-32`). Conclusion recorded with the operator: a used battery never resold does not belong to any of those three structures, so this vertical adds a document instead of widening an existing one.
+
+L8. Design exploration of the section, before aligning any screen: `design/purchases/` holds three artboards over the same shell and the tokens of `design/system.md`, all with realistic branch content (NS60ZL, NS40ZL, 12N5-3B, 55B24L; cobre, aluminio, plomo, bronce; money with two decimals and kilograms with three). `01-document-tabs.html` is **Documento con pestañas y recibido al costado**: the document is the working surface, the received accumulated value sits in a side column, and the cost is that the month-end figure competes for width. `02-received-first.html` is **Recibido primero**: the accumulated received table is the hero of the page because that is what closes the month, and the document opens over it as a modal dialog with its picker, quantity, typed value with the last-paid anchor, note, total plus cash and transfer, and "Registrar compra"; the cost is that registering lives one layer down. `03-counter-strip.html` is **Mostrador con tira de liquidación**: a dense line table with the last-paid anchor inline and a fixed settlement strip pinned to the bottom, shown in its real error state (cash short of the total, `Faltan Bs 4.200,00`, primary action disabled with its reason), next to a preview of the printed receipt; the cost is density and a keyboard-first learning curve. The three are **alternatives pending the operator's choice**, not a decision: the `Compras` frontend section already written is a functional skeleton and will be aligned to whichever artboard the operator picks, without changing the frozen contract. `design/purchases/design.json` is the manifest of the three.
+
+L9. The operator chose `design/purchases/02-received-first.html` and the `Compras` screen was reworked to it, web only and with `apps/api/docs/purchases.md` untouched. The accumulated **recibido** is now the hero: a full-width band of `Total recibido` (wine, 24px), `Baterías usadas` (units + value) and `Chatarra` (kilograms + value), the three hero tabs (`Baterías usadas`, `Chatarra`, `Documentos`) sharing one row with the primary `Registrar compra` on the row's bottom border, per-tab totals in each tab label, and the selected tab's table below; the heading paragraph, the meta block and the separate action row are gone, and the page starts compact. The used table gained a **participación** column (`.purchases-bar` plus `purchaseSharePercent`, exact bigint percentage) and a tabular totals row; the documents table (document, date, content, total, state, actions) moved into its own tab keeping the frozen page sizes, the detail and the reversal. The purchase document is a `role="dialog" aria-modal` over the attenuated page: it opens only from the trigger, focuses the model picker, closes on Escape and `Cancelar`, returns focus to the trigger, and the background is `inert` while open; inside it the kind toggle (`Batería usada` / `Chatarra por kg`), the type-as-you-go `Importe`, the last-paid anchor, the note, the caution, and the total plus `Efectivo`/`Transferencia` with the exact difference are laid out per the artboard. Reused `stock-entry*`, `stock-table`, `stock-tag`, `stock-message`, `stock-hint`, `stock-note`, `pager` and the `transfer-decision-*` dialog; added the `.purchases-*` band/tabs/bar rules and `.purchase-*` document rules to `apps/web/src/style.css`. Honest copy keeps *recibido* (`Es recibido, no es stock de venta.`), and two artboard asks are not expressible against the frozen contract, so the band says `Total recibido` over every persisted document instead of `Total del mes`, and the scrap table has no per-material `Compras` count because `GET /api/purchases/received` returns only `kg` and `value`. `npm test` (3407 passed, 1 skipped), `npm run typecheck`, `npm run lint` (227 warnings, the baseline) and `npm run build` are green.
+
+L10. Delivery evidence, and the size the branch reached. The whole gate is green in one pass: `gofmt -l` empty, `go vet ./...`, `go build ./...`, then `make test-pg` with 19 packages `ok` — including `internal/purchases` (13.9 s), `internal/httpapi` (243.7 s) and `internal/bootstrap` (18.1 s, the whitelist case) — and a clean fixture teardown; the web suite, `tsc --noEmit`, Biome at its 227-warning baseline and the production build all exit 0. The section was reworked to the chosen artboard (`design/purchases/02-received-first.html`): the accumulated figure is the hero, the tabs carry their totals and share one row with the primary action, the table carries the participation bar, and the document opens as a dialog over an inert page. Two artboard asks the frozen contract cannot express were reported instead of worked around: the accumulated read is defined over every persisted document, so the band says `Total recibido` and never "del mes"; and `Received` returns kilograms and value per material without a document count, so the scrap table carries no such column.
+L11. Size, recorded honestly before the delivery decision. The branch is 9 362 authored changed lines across four commits in four areas (SQL migration and its guards, Go domain/store, HTTP boundary, React section and its CSS) plus the design. That is far past a comfortable single review slice, and the previous vertical's native review already proved what this size does to a reviewer: `lens_context_budget_exceeded`. The honest options for delivery are therefore a per-area review of each commit against its own parent (the migration alone is the risk item) or a decision by the operator to deliver on the green gates plus the design review, as happened with the sold-unit vertical. Nothing is pushed yet.
+
+L12. Runtime verification attempt against the live development instance, stopped at the authentication boundary: nothing authenticated was exercised, so no answer of the eight frozen routes and no divergence from `apps/api/docs/purchases.md` could be observed. The existing dev environment was used instead of inventing one: `docker start luson-dev-db` (`postgres:17.9-bookworm`, `127.0.0.1:5432`, volume-backed, previously exited) and the existing private starter `~/.local/state/luson-dev/run-api.sh` (`LUSON_PROFILE=local-trial`, `LUSON_DATABASE_URL_FILE` inside that `0700` directory, `LUSON_ORIGIN=http://localhost:8080`, `LUSON_LISTEN=127.0.0.1:8080`, `LUSON_WEB_DIR=apps/web/dist`), which serves **http://127.0.0.1:8080**; `GET /` answers `200`, the startup log is empty, and the instance was left running (pids 253994/254071) as requested. Migration state after startup, all read-only: the server's own `bootstrap.Initialize` applied `032_purchases.sql` — `schema_migrations` max version **32** with `applied_at 2026-11-11 21:25:24Z` against a startup at 21:25, versions 29/30/31/32 present — and `LUSON_PROFILE=local-trial LUSON_DATABASE_URL_FILE=…/database_url go run ./cmd/migrate check` printed `data foundation check succeeded`, exit 0. New relations exist and hold no documents: `purchases`, `purchase_used_lines`, `purchase_scrap_lines` each 0 rows, and `materials` 4 rows read as `1|Cobre|kg  2|Aluminio|kg  3|Plomo|kg  4|Bronce|kg` under `CHECK (unit = 'kg')`. Routes are mounted and session-guarded: `GET /api/purchases/models`, `GET /api/purchases/materials`, `GET /api/purchases/last-prices`, `GET /api/purchases/received`, `GET /api/purchases?page=1&page_size=25`, `GET /api/purchases/1`, `POST /api/purchases` and `POST /api/purchases/1/reverse` all answer `401 {"error":"unauthenticated"}` with no session, and those anonymous answers already carry `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`; `GET /api/auth/session` answers the documented anonymous shape. Exact blocked point: the real `POST /api/auth/login` needs a branch account password and no credential may be read here. The three dev accounts were provisioned privately in an earlier session (`auth_accounts` aggregate only: 3 rows, 3 active, 1 still `must_change_password`), `cmd/bootstrap-accounts` is `/dev/tty`-only and refuses replay, and `odd/tasks/transfer-live-acceptance.md` L4 together with `transfer-approval.md` D02 place the only copy of the passwords in a private `test_accounts.json` that must never be read, copied or echoed. No account was created, no mandatory rotation disabled, no direct database write and no application change; the only SQL executed was `SELECT` for the migration, aggregate and reference-data evidence above, within "no database writes other than the documents the exercise creates". Therefore still unverified and open for this vertical: the exact `POST /api/purchases` document and its derived total, the same-key replay answering the persisted document, the different-payload `409 retry_conflict`, `page`/detail answers, `last-prices`, `received` before/after, the counter-document, the second reversal's `409 already_reversed`, and the warehouse `403 forbidden`.
+
+L13. Live defect found while exercising the purchases API: the catalogue serves 49 distinct model codes through `GET /api/purchases/models`, and 2 of them — `12N6,5_3B` and `YB6,5_BS` — contain the comma, the only character the frozen pattern `^[A-Z0-9][A-Z0-9 ._/-]{0,39}$` forbade. The picker therefore offered a code that `POST /api/purchases` refused with `400 invalid_request`, so a used battery of those models could not be recorded. Fix: the canonical Go pattern is now `^[A-Z0-9][A-Z0-9 .,_/-]{0,39}$`, applied after trimming and upper-casing, and every other bound and rule is unchanged. `032_purchases.sql` is applied and checksummed and was not edited; the new `033_purchase_model_code_comma.sql` drops the constraint PostgreSQL named `purchase_used_lines_model_check` and adds the widened CHECK of the same name, with no data movement, and the one contract sentence in `apps/api/docs/purchases.md` now matches the implemented rule with its reason. Tests were written first: `TestCanonicalModel` admits `12n6,5_3b` and refuses `NS60ZL!`/`NS60ZL;`, `TestStoreCommaModelCode` persists both comma models through the store and proves the bang writes nothing, `TestPurchaseModelCodeCommaMigration` pins the 033 structure and `TestPurchaseModelCodeCommaGuard` proves on a live database that the comma models commit and that `NS60ZL!` and a leading comma are refused with SQLSTATE 23514. RED before the fix: `model "12n6,5_3b" canonicalizes to ""`, `the catalogue's comma models must be admitted: invalid purchase`, `033_purchase_model_code_comma.sql: file does not exist` and `violates check constraint "purchase_used_lines_model_check" (SQLSTATE 23514)`; GREEN with it. Verification: `gofmt -l .` empty, `go vet ./...`, `go build ./...`, and `make test-pg` with every package `ok` (including `internal/purchases`, `internal/httpapi` and `migrations`) and a clean fixture teardown. Read-only catalogue check over the fixture: 49 distinct models, none refused by the widened pattern. One risk remains outside this task's edit surface: `apps/web/src/purchaseModel.ts` still carries the old pattern and would reject the same two models client-side.
+L14. The same defect on the other half, and the end-to-end proof. The web form carried its own copy of the pattern (`purchaseModel.ts`), so the two comma models were refused before the request left the browser; it was widened with its own test (`12N6,5_3B` admitted, `yb6,5_bs` canonicalized, `NS60ZL!` and `NS60ZL;` refused), 61 model cases green and `tsc` clean. The web bundle was rebuilt and the dev API restarted, which applied migration 033 at startup; then, authenticated as `dev_sucursal_a`, `POST /api/purchases` answered `201` for `12N6,5_3B` and for `YB6,5_BS`, each reversal answered `201`, and `GET /api/purchases/received` returned to empty — which is also the proof that the widened CHECK, and not only the Go validation, is in force. The runtime exercise of L12 was completed in the same session: page, detail, last prices, received before and after, the idempotent replay, `409 retry_conflict` for a valid different payload under the same key, `409 already_reversed` for a new key on a reversed target and for a counter-document, `404` for an unknown id, and `400 invalid_request` for an invalid page size, for a model outside the set and for a settlement that does not add up. Two answers of the frozen contract were confirmed by observation rather than by test: a counter-document publishes `paid_transfer` as `0.00` (zero has no sign) and an invalid payload is refused before the operation key is compared, so the retry conflict applies only to a valid payload. One check could not run: the warehouse `403 forbidden`, because no warehouse credential exists and the CLI refuses to replay one.
