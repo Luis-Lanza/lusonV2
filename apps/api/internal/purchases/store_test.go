@@ -413,8 +413,9 @@ func TestStoreModelsMaterialsAndLastPrices(t *testing.T) {
 	}
 	// The contract orders the list by model code, so the expectation is read in the same
 	// byte order the store publishes, never in the database's locale collation.
-	rows, err := f.p.Query(f.ctx, `SELECT DISTINCT model COLLATE "C" AS model FROM catalog_entries
- WHERE deleted_at IS NULL ORDER BY model`)
+	rows, err := f.p.Query(f.ctx, `SELECT canonical.model FROM (
+ SELECT DISTINCT upper(btrim(model)) AS model FROM catalog_entries WHERE deleted_at IS NULL
+) canonical ORDER BY canonical.model COLLATE "C"`)
 	if err != nil {
 		t.Fatalf("the catalogue models could not be read: %v", err)
 	}
@@ -454,6 +455,27 @@ func TestStoreModelsMaterialsAndLastPrices(t *testing.T) {
 	}
 	if !appeared {
 		t.Fatalf("the new catalogue model is missing from the list: %v", models)
+	}
+	// The published list is canonical, because the contract trims and upper-cases a model
+	// code and the client refuses a list that is not already canonical: the same code under
+	// two brands, typed in mixed case, is one entry in upper case, not two and not "zz-nuevo".
+	if _, err := f.p.Exec(f.ctx, `INSERT INTO catalog_entries(brand,model,capacity_ah)
+ VALUES('Otra','zz-nuevo',50),('Tercera','SolarN9',50)`); err != nil {
+		t.Fatalf("the repeated battery could not be created: %v", err)
+	}
+	models, err = f.store.Models(f.ctx, f.branch)
+	if err != nil {
+		t.Fatalf("the model list must stay readable: %v", err)
+	}
+	seen := map[string]int{}
+	for _, model := range models {
+		if model != strings.ToUpper(model) {
+			t.Fatalf("the model list must be canonical, got %q", model)
+		}
+		seen[model]++
+	}
+	if seen["ZZ-NUEVO"] != 1 || seen["SOLARN9"] != 1 {
+		t.Fatalf("a code repeated across brands and case must be one canonical entry: %v", seen)
 	}
 	materials, err := f.store.Materials(f.ctx, f.branch)
 	if err != nil {

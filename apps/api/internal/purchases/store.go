@@ -432,8 +432,9 @@ func (s *Store) Models(ctx context.Context, actor auth.Identity) ([]string, erro
 		defer done()
 		_ = tx.Rollback(cleanup)
 	}()
-	rows, err := tx.Query(ctx, `SELECT model FROM catalog_entries
- WHERE deleted_at IS NULL ORDER BY model COLLATE "C"`)
+	rows, err := tx.Query(ctx, `SELECT canonical.model FROM (
+ SELECT DISTINCT upper(btrim(model)) AS model FROM catalog_entries WHERE deleted_at IS NULL
+) canonical ORDER BY canonical.model COLLATE "C"`)
 	if err != nil {
 		return nil, fail(ctx)
 	}
@@ -444,10 +445,15 @@ func (s *Store) Models(ctx context.Context, actor auth.Identity) ([]string, erro
 		if rows.Scan(&model) != nil {
 			return nil, fail(ctx)
 		}
-		// A catalogue model is non-empty text; anything else is not a row this catalogue
-		// wrote, so the list fails closed instead of publishing it. The list is
-		// deduplicated across brands: "modelos sin repetir entre marcas".
+		// A catalogue model is non-empty text that the purchase contract can carry: the
+		// published list is canonical (trimmed and upper-cased) and a value the contract
+		// could not accept as a model code is not a row this catalogue wrote, so the list
+		// fails closed instead of offering something the document would refuse. The list
+		// is deduplicated across brands: "modelos sin repetir entre marcas".
 		if !boundedText(model, 1, maxCategoryText) || len(models) >= maxCatalogueRows {
+			return nil, ErrUnavailable
+		}
+		if canonical, ok := CanonicalModel(model); !ok || canonical != model {
 			return nil, ErrUnavailable
 		}
 		if len(models) > 0 {

@@ -172,8 +172,11 @@ replay and answers the persisted counter-document.
 {"models": ["12N5-3B", "NS40ZL", "NS60ZL"]}
 ```
 
-The distinct `model` values of the active catalogue entries (`deleted_at IS NULL`),
-ascending, deduplicated across brands — "modelos sin repetir entre marcas". There
+Every published value is a **canonical model code** — trimmed and upper-cased, exactly the
+form the document accepts — so `N100solar` is published as `N100SOLAR`. The distinct
+canonical codes of the active catalogue entries (`deleted_at IS NULL`) are ordered
+ascending and deduplicated across brands — "modelos sin repetir entre marcas" — so one code
+under two brands, or typed in two cases, is one entry. There
 is no mirror list to maintain: a model created in the catalogue appears here by
 itself. A model that is not in the catalogue is still typed freely in a purchase
 and then shows up in `GET /api/purchases/received`, never in this list.
