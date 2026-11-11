@@ -854,8 +854,14 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .purchase-kind { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; border: 0; }
 .purchase-kind button { min-height: 40px; padding: 9px 16px; border-radius: 999px; color: var(--muted); }
 .purchase-kind button[aria-pressed="true"] { border-color: var(--wine); background: var(--tint); color: var(--wine); font-weight: 600; }
-.purchase-line { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 108px) minmax(0, 1fr) minmax(0, 1fr) auto; gap: 12px; align-items: start; }
-.purchase-add { align-self: end; display: flex; }
+/* One grid for the whole add-line row: a label row, a control row and a hint row.
+   Every field subgrids those three rows, so a label that wraps to two lines or a
+   three-line hint grows its own row and never pushes its input out of line. */
+.purchase-line { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 108px) minmax(0, 1fr) minmax(0, 1fr) auto; grid-template-rows: auto auto auto; gap: 5px 12px; align-items: start; }
+.purchase-line > .purchase-field { grid-row: span 3; grid-template-columns: minmax(0, 1fr); grid-template-rows: subgrid; }
+/* The label sits on the row's baseline, its last line closest to the control. */
+.purchase-line > .purchase-field > :first-child { align-self: end; overflow-wrap: anywhere; }
+.purchase-add { grid-column: 5; grid-row: 2; align-self: stretch; display: flex; }
 .purchase-add button { min-height: 44px; white-space: normal; overflow-wrap: anywhere; }
 .purchase-field { display: grid; gap: 5px; min-width: 0; margin: 0; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
 .purchase-field label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
@@ -869,8 +875,11 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .purchase-settle-total { grid-column: 1 / -1; display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 2px; padding-bottom: 10px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; }
 .purchase-settle-total strong { color: #242124; font-size: 22px; font-variant-numeric: tabular-nums; letter-spacing: 0; }
 @media (max-width: 1050px) {
-  .purchase-line { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .purchase-add { grid-column: 1 / -1; }
+  /* Stacked: no single control row to share, so each field keeps its own stack. */
+  .purchase-line { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: none; gap: 12px; }
+  .purchase-line > .purchase-field { grid-row: auto; grid-template-rows: none; }
+  .purchase-line > .purchase-field > :first-child { align-self: auto; }
+  .purchase-add { grid-column: 1 / -1; grid-row: auto; align-self: start; }
 }
 @media (max-width: 767px) {
   .purchases-metrics { grid-template-columns: minmax(0, 1fr); }

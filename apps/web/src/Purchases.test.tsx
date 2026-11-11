@@ -207,6 +207,37 @@ describe('purchases section', () => {
     expect(trigger).toHaveFocus();
   });
 
+  it('lays every add-line field as label, control and hint inside one shared row', async () => {
+    setup();
+    const dialog = await openDraft();
+    // The style pins the three rows of the row's grid through this shape: the fields
+    // are direct children of the row and each one carries exactly a label, a control
+    // and a hint child. A wrapper or a missing hint would break the shared rows.
+    const row = within(dialog).getByLabelText('Modelo').closest('.purchase-line') as HTMLElement;
+    const fields = [...row.children].filter(child => child.classList.contains('purchase-field'));
+    expect(fields).toHaveLength(4);
+    for (const field of fields) expect(field.children).toHaveLength(3);
+    expect(fields[0].children[0].tagName).toBe('LABEL');
+    expect(fields[0].children[1].tagName).toBe('INPUT');
+    expect(fields[0].children[2]).toHaveClass('stock-hint');
+    // Importe labels with a plain span and its control is the live amount, not an input.
+    expect(fields[3].children[0].tagName).toBe('SPAN');
+    expect(fields[3].children[1]).toHaveClass('purchase-amount');
+    expect(fields[3].children[2]).toHaveClass('stock-hint');
+    // The action shares the row instead of sitting under it.
+    const action = within(row).getByRole('button', { name: 'Agregar batería' });
+    expect(action.parentElement?.parentElement).toBe(row);
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Chatarra por kg' }));
+    const scrapRow = within(dialog).getByLabelText('Material').closest('.purchase-line') as HTMLElement;
+    const scrapFields = [...scrapRow.children].filter(child => child.classList.contains('purchase-field'));
+    expect(scrapFields).toHaveLength(4);
+    for (const field of scrapFields) expect(field.children).toHaveLength(3);
+    expect(scrapFields[2].children[1].tagName).toBe('INPUT');
+    expect(within(scrapRow).getByRole('button', { name: 'Agregar material' }).parentElement?.parentElement)
+      .toBe(scrapRow);
+  });
+
   it('edits a used draft, anchors the last paid price and admits a model typed outside the catalogue', async () => {
     setup();
     const dialog = await openDraft();
