@@ -1853,6 +1853,7 @@ describe('warehouse settlement workspace', () => {
     const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
     fireEvent.click(within(navigation).getByRole('button', { name: 'Rendiciones' }));
     await screen.findByRole('heading', { name: 'Rendición de cuentas' });
+    expect(window.location.hash).toBe('#/rendiciones');
     expect(screen.getByText('Luson Rendiciones')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Rendiciones' })).toHaveAttribute('aria-current', 'page');
     expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
@@ -1863,6 +1864,54 @@ describe('warehouse settlement workspace', () => {
     fireEvent.change(within(scope).getByLabelText('Sucursal'), { target: { value: '2' } });
     expect(await within(scope).findByText('La sucursal no tiene una rendición abierta.')).toBeInTheDocument();
     expect(closingCalls(mock).some(([url]) => String(url) === '/api/closings?branch_location_id=2&page=1&page_size=25')).toBe(true);
+    expect(closingCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('restores the workspace from a typed #/rendiciones hash after a reload, without any write', async () => {
+    window.history.replaceState(null, '', '/#/rendiciones');
+    const mock = settlementSetup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Rendición de cuentas' });
+    expect(window.location.hash).toBe('#/rendiciones');
+    expect(screen.getByText('Luson Rendiciones')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rendiciones' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
+    const scope = screen.getByRole('region', { name: 'Sucursal a rendir' });
+    // The workspace reaches its branches from the session metadata, like every other screen.
+    expect(await within(scope).findByRole('option', { name: 'Sucursal A' })).toBeInTheDocument();
+    expect(closingCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('falls back to the inventory when the warehouse types the branch decision hash', async () => {
+    window.history.replaceState(null, '', '/#/rendicion');
+    const mock = setup(session, url => url.startsWith('/api/closings') ? Promise.reject(new Error('unexpected read')) : undefined);
+    render(<App />); await inventory();
+    expect(screen.queryByRole('region', { name: 'Tu decisión' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Rendición de cuentas' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Rendición de cuentas' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Resultados de inventario' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Inventario' })).toHaveAttribute('aria-current', 'page');
+    expect(closingCalls(mock)).toHaveLength(0);
+  });
+
+  it('does not carry the open workspace into the next identity', async () => {
+    window.history.replaceState(null, '', '/#/rendiciones');
+    let current: typeof session | typeof anonymous = session;
+    const mock = setup(session, url => {
+      if (url === '/api/auth/validate') return Promise.resolve(response(current));
+      if (url.startsWith('/api/closings?')) return Promise.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, total_closings: 0, closings: [] }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      return undefined;
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Rendición de cuentas' });
+    current = branchSession;
+    await act(async () => { AppSource.instances[0].emit('error'); });
+    await inventory();
+    expect(window.location.hash).toBe('#/inventario');
+    expect(screen.queryByRole('heading', { name: 'Rendición de cuentas' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Sucursal a rendir' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Resultados de inventario' })).toBeInTheDocument();
     expect(closingCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
   });
 
@@ -1883,6 +1932,7 @@ describe('warehouse settlement workspace', () => {
     await screen.findByRole('heading', { name: 'Rendición de cuentas' });
     fireEvent.click(screen.getByRole('link', { name: 'Inventario' }));
     await inventory();
+    expect(window.location.hash).toBe('#/inventario');
     expect(screen.getByRole('link', { name: 'Inventario' })).toHaveAttribute('aria-current', 'page');
     expect(screen.queryByRole('heading', { name: 'Rendición de cuentas' })).not.toBeInTheDocument();
     expect(closingCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
@@ -1935,6 +1985,7 @@ describe('branch settlement decision', () => {
     const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
     fireEvent.click(within(navigation).getByRole('button', { name: 'Rendición de cuentas' }));
     await screen.findByRole('heading', { name: 'Rendición de cuentas · Sucursal A' });
+    expect(window.location.hash).toBe('#/rendicion');
     expect(screen.getByText('Luson Rendición de cuentas')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Rendición de cuentas' })).toHaveAttribute('aria-current', 'page');
     expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
@@ -1946,6 +1997,53 @@ describe('branch settlement decision', () => {
     expect(closingCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
   });
 
+  it('restores the decision from a typed #/rendicion hash after a reload, without any write', async () => {
+    window.history.replaceState(null, '', '/#/rendicion');
+    const mock = branchSetup();
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Rendición de cuentas · Sucursal A' });
+    expect(window.location.hash).toBe('#/rendicion');
+    expect(screen.getByText('Luson Rendición de cuentas')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rendición de cuentas' })).toHaveAttribute('aria-current', 'page');
+    expect(within(await screen.findByRole('region', { name: 'Tu decisión' }))
+      .getByRole('button', { name: 'Aceptar y cerrar la rendición' })).toBeEnabled();
+    expect(closingCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('falls back to the inventory when a branch types the warehouse workspace hash', async () => {
+    window.history.replaceState(null, '', '/#/rendiciones');
+    const mock = setup(branchSession, url => url.startsWith('/api/closings') ? Promise.reject(new Error('unexpected read')) : undefined);
+    render(<App />); await inventory();
+    expect(screen.queryByRole('heading', { name: 'Rendición de cuentas' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Sucursal a rendir' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Rendiciones' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Resultados de inventario' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Inventario' })).toHaveAttribute('aria-current', 'page');
+    expect(closingCalls(mock)).toHaveLength(0);
+  });
+
+  it('does not carry the open decision into the next identity', async () => {
+    window.history.replaceState(null, '', '/#/rendicion');
+    let current: typeof session | typeof anonymous = branchSession;
+    const mock = setup(branchSession, url => {
+      if (url === '/api/auth/validate') return Promise.resolve(response(current));
+      if (url.startsWith('/api/closings?')) return Promise.resolve(settlementJSON({
+        page: 1, page_size: 25, total_closings: 1, closings: [{ ...settlement, count_lines: [], rounds: [] }] }));
+      if (url === '/api/closings/1') return Promise.resolve(settlementJSON(settlement));
+      return undefined;
+    });
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Rendición de cuentas · Sucursal A' });
+    current = session;
+    await act(async () => { AppSource.instances[0].emit('error'); });
+    await inventory();
+    expect(window.location.hash).toBe('#/inventario');
+    expect(screen.queryByRole('heading', { name: 'Rendición de cuentas · Sucursal A' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Tu decisión' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Resultados de inventario' })).toBeInTheDocument();
+    expect(closingCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
   it('returns to the inventory from the decision and keeps the shell', async () => {
     const mock = branchSetup();
     render(<App />); await inventory();
@@ -1953,6 +2051,7 @@ describe('branch settlement decision', () => {
     await screen.findByRole('heading', { name: 'Rendición de cuentas · Sucursal A' });
     fireEvent.click(screen.getByRole('link', { name: 'Inventario' }));
     await inventory();
+    expect(window.location.hash).toBe('#/inventario');
     expect(screen.getByRole('link', { name: 'Inventario' })).toHaveAttribute('aria-current', 'page');
     expect(screen.queryByRole('heading', { name: 'Rendición de cuentas · Sucursal A' })).not.toBeInTheDocument();
     expect(closingCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);

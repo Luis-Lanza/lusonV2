@@ -151,25 +151,17 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
   const countUnavailable = ownerTag !== null && !!shellTransfers.countsError;
   const actionCount = ownerTag !== null && counts && !shellTransfers.countsBusy && !countUnavailable
     ? counts.action_count.toString() : null;
-  // The settlement workspace is a working screen of its own, like the transfer creation:
-  // it is opened from the shell and closed by returning to the routes the shell already owns.
-  const [settlementsRequested, setSettlementsRequested] = useState(false);
-  // The branch's decision is a working screen of its own too, and it is not part of the
-  // navigation hash: like the warehouse workspace it is opened from the shell and left there.
-  const [settlementDecisionRequested, setSettlementDecisionRequested] = useState(false);
   const [creationOwner, setCreationOwner] = useState<string | null>(null);
   const creation = creationRequested && creationOwner === ownerTag && ownerTag !== null;
   const [route, setRoute] = useState<NavigationRoute>(readNavigation);
   const routeOwner = useRef(ownerTag);
   function changeRoute(next: NavigationRoute) {
-    setSettlementsRequested(false); setSettlementDecisionRequested(false);
     writeNavigation(next); setRoute(next);
   }
   useEffect(() => {
     // An identity change must not carry private navigation into another session.
     if (routeOwner.current !== null && routeOwner.current !== ownerTag) {
       const next = { section: 'inventory' } as const;
-      setSettlementsRequested(false); setSettlementDecisionRequested(false);
       writeNavigation(next, true); setRoute(next);
     }
     routeOwner.current = ownerTag;
@@ -180,7 +172,6 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
       if (!ownerTag || latest !== ownerTag || creation || recovery.getCurrent(state.getTransferAuthority)?.phase === 'inFlight') {
         writeNavigation(route, true); return;
       }
-      setSettlementsRequested(false); setSettlementDecisionRequested(false);
       setRoute(readNavigation());
     };
     window.addEventListener('popstate', restore);
@@ -210,8 +201,9 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
   const stock = warehouse && route.section === 'stock';
   const adjustments = warehouse && route.section === 'adjustments';
   // The settlement of a branch is the warehouse's own work (S1, S2, S14): a branch identity
-  // never sees the section and never reaches it from the shell.
-  const settlements = warehouse && settlementsRequested && adminOwner !== null;
+  // never sees the section and never reaches it with a typed hash. Both settlement screens are
+  // routes like every other section, so a reload lands back on the same one.
+  const settlements = warehouse && route.section === 'settlements';
   const catalog = warehouse && route.section === 'catalog';
   // The catalogue's two screens: its own hash opens the price matrix.
   const catalogScreen: 'prices' | 'batteries' = catalog && route.screen === 'batteries' ? 'batteries' : 'prices';
@@ -220,7 +212,7 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
   const branch = identity.location.id > 1;
   // The branch decides the settlement of its own branch and nothing else: the screen reads
   // its own history and never offers a settlement it could not answer.
-  const settlementDecision = branch && settlementDecisionRequested && ownerTag !== null;
+  const settlementDecision = branch && route.section === 'settlementDecision';
   const sales = branch && route.section === 'sales';
   const salesHistory = branch && route.section === 'salesHistory';
   // Purchases is branch-only too, and never part of a sale (S1, S8).
@@ -281,12 +273,12 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
   function navigateSettlements() {
     const latest = transferViewOwner(state.getTransferAuthority());
     if (navDisabled || settlements || latest !== ownerTag) return;
-    setSettlementsRequested(true);
+    changeRoute({ section: 'settlements' });
   }
   function navigateSettlementDecision() {
     const latest = transferViewOwner(state.getTransferAuthority());
     if (navDisabled || settlementDecision || latest !== ownerTag) return;
-    setSettlementDecisionRequested(true);
+    changeRoute({ section: 'settlementDecision' });
   }
   function navigateCatalog() {
     const latest = transferViewOwner(state.getTransferAuthority());

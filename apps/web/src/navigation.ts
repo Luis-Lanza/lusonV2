@@ -1,6 +1,6 @@
 import { transferDetailPath } from './transferModel';
 
-export type NavigationRoute = { section: 'inventory' } | { section: 'administration' } | { section: 'password' } | { section: 'stock' } | { section: 'adjustments' } | { section: 'catalog'; screen?: 'prices' | 'batteries' } | { section: 'sales' } | { section: 'salesHistory' } | { section: 'purchases' } | { section: 'transfers'; id: string | null };
+export type NavigationRoute = { section: 'inventory' } | { section: 'administration' } | { section: 'password' } | { section: 'stock' } | { section: 'adjustments' } | { section: 'catalog'; screen?: 'prices' | 'batteries' } | { section: 'sales' } | { section: 'salesHistory' } | { section: 'purchases' } | { section: 'settlements' } | { section: 'settlementDecision' } | { section: 'transfers'; id: string | null };
 
 export function readNavigation(): NavigationRoute {
   const hash = window.location.hash;
@@ -17,6 +17,10 @@ export function readNavigation(): NavigationRoute {
   if (hash === '#/ventas/historial') return { section: 'salesHistory' };
   // Compras is a section of its own: used batteries and scrap, never part of a sale.
   if (hash === '#/compras') return { section: 'purchases' };
+  // The two settlement screens live in the hash like every other section: the warehouse
+  // workspace and the branch decision, each behind its own identity gate.
+  if (hash === '#/rendiciones') return { section: 'settlements' };
+  if (hash === '#/rendicion') return { section: 'settlementDecision' };
   if (hash === '#/transferencias') return { section: 'transfers', id: null };
   const match = /^#\/transferencias\/([^/]+)$/.exec(hash);
   if (match) {
@@ -38,6 +42,8 @@ export function navigationHash(route: NavigationRoute): string {
   if (route.section === 'sales') return '#/ventas';
   if (route.section === 'salesHistory') return '#/ventas/historial';
   if (route.section === 'purchases') return '#/compras';
+  if (route.section === 'settlements') return '#/rendiciones';
+  if (route.section === 'settlementDecision') return '#/rendicion';
   return '#/transferencias' + (route.id === null ? '' : '/' + route.id);
 }
 
