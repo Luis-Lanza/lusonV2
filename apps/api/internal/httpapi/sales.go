@@ -622,7 +622,7 @@ func saleSellableQuery(raw string) (sales.SellableQuery, error) {
 }
 
 // salePaymentDTO is one amount of the settlement: the method that paid and the canonical
-// amount paid with it, in the frozen order cash, card, transfer and never a method that
+// amount paid with it, in the frozen order cash, card, transfer, QR and never a method that
 // did not pay.
 type salePaymentDTO struct {
 	Method string `json:"method"`
@@ -774,7 +774,7 @@ func saleMoneyText(money sales.Money) (string, bool) {
 	return string(money), true
 }
 
-// salePaymentRank is the frozen order of the settlement: cash, card, transfer. It is not
+// salePaymentRank is the frozen order of the settlement: cash, card, transfer, QR. It is not
 // the alphabetical one, so the order is read from the domain instead of being restated.
 func salePaymentRank(method sales.PaymentMethod) (int, bool) {
 	for rank, admitted := range sales.PaymentMethods() {

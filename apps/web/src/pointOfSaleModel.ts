@@ -129,7 +129,7 @@ export const posMissingLineMessage = 'La línea ya no está en la venta: volvé 
 export const posEmptyCartMessage = 'Agregá al menos una batería para cobrar.';
 export const posCustomerNameMessage = 'Escribí el nombre del cliente: la garantía lo exige.';
 export const posCustomerTextMessage = 'El teléfono y el documento llevan como máximo 40 caracteres.';
-export const posPaymentMethodMessage = 'El mostrador cobra en efectivo o por transferencia.';
+export const posPaymentMethodMessage = 'El mostrador cobra en efectivo, por transferencia o por QR.';
 
 export const posMissingMessage = (cents: bigint): string => `Faltan ${formatMoney(cents)} para cubrir el total.`;
 export const posExcessMessage = (cents: bigint): string => `Sobran ${formatMoney(cents)}: la suma no puede superar el total.`;
@@ -347,40 +347,58 @@ export function cartCount(cart: readonly CartLine[]): number {
 // The settlement: one amount per method the counter offers
 // ---------------------------------------------------------------------------------
 
-/** The counter offers cash and transfer only; the contract admits card as well. */
-export type CounterPaymentMethod = 'cash' | 'transfer';
-export const counterPaymentMethods: readonly CounterPaymentMethod[] = ['cash', 'transfer'];
+/**
+ * The methods the counter offers: cash, transfer and the QR the branch collects
+ * electronically. The contract admits card as well, but the counter has no card field, so a
+ * card is not a way to charge here. QR is its own amount and never part of the cash: that
+ * money does not exist in the drawer (S13).
+ */
+export type CounterPaymentMethod = 'cash' | 'transfer' | 'qr';
+export const counterPaymentMethods: readonly CounterPaymentMethod[] = ['cash', 'transfer', 'qr'];
 
 const methodNames: Record<string, string> = {
-  cash: 'Efectivo', card: 'Tarjeta', transfer: 'Transferencia', mixed: 'Mixto',
+  cash: 'Efectivo', card: 'Tarjeta', transfer: 'Transferencia', qr: 'QR', mixed: 'Mixto',
 };
 const methodNouns: Record<string, string> = {
-  cash: 'efectivo', card: 'tarjeta', transfer: 'transferencia',
+  cash: 'efectivo', card: 'tarjeta', transfer: 'transferencia', qr: 'QR',
 };
 
 export function paymentLabel(method: string): string {
   return methodNames[method] ?? 'Forma de pago desconocida';
 }
 
-/** The settlement of one sale: exactly one amount per offered method. */
+/**
+ * The settlement of one sale: exactly one amount per offered method. Cash and transfer are
+ * always present; QR is the electronic money the counter collects, and a surface that does
+ * not collect it (a purchase, which is paid in cash or by transfer) leaves it absent, so its
+ * settlement keeps the two sides it always had.
+ */
 export interface PaymentSplit {
   readonly cash_cents: bigint;
   readonly transfer_cents: bigint;
+  readonly qr_cents?: bigint;
 }
 
-export const emptyPayments: PaymentSplit = Object.freeze({ cash_cents: 0n, transfer_cents: 0n });
+/** The amount field of each offered method, so no method is ever read from the wrong one. */
+const splitFields: Record<CounterPaymentMethod, keyof PaymentSplit> = {
+  cash: 'cash_cents', transfer: 'transfer_cents', qr: 'qr_cents',
+};
+
+export const emptyPayments: PaymentSplit = Object.freeze({
+  cash_cents: 0n, transfer_cents: 0n, qr_cents: 0n,
+});
 
 function isCounterMethod(method: string): method is CounterPaymentMethod {
-  return method === 'cash' || method === 'transfer';
+  return method === 'cash' || method === 'transfer' || method === 'qr';
 }
 
 export function paymentAmount(split: PaymentSplit, method: CounterPaymentMethod): bigint {
-  return method === 'cash' ? split.cash_cents : split.transfer_cents;
+  return split[splitFields[method]] ?? 0n;
 }
 
 export function setPaymentAmount(split: PaymentSplit, method: CounterPaymentMethod,
   cents: bigint): PaymentSplit {
-  return method === 'cash' ? { ...split, cash_cents: cents } : { ...split, transfer_cents: cents };
+  return { ...split, [splitFields[method]]: cents };
 }
 
 /** Reads one typed field of the settlement: an empty field is a method that did not pay. */
@@ -395,7 +413,7 @@ export function setPayment(split: PaymentSplit, method: CounterPaymentMethod,
 }
 
 export function paymentsTotal(split: PaymentSplit): bigint {
-  return split.cash_cents + split.transfer_cents;
+  return counterPaymentMethods.reduce((total, method) => total + paymentAmount(split, method), 0n);
 }
 
 export type Settlement =
@@ -425,7 +443,8 @@ export function moneySumMessage(total: bigint, split: PaymentSplit): string {
 
 /**
  * The `Resto` shortcut: fills the open amount into the first offered method that holds
- * nothing. When both methods already hold money it guesses nothing and answers null.
+ * nothing. When every offered method already holds money it guesses nothing and answers
+ * null, so a QR amount is never invented by the shortcut.
  */
 export function fillRemaining(split: PaymentSplit, total: bigint): PaymentSplit | null {
   const open = total - paymentsTotal(split);

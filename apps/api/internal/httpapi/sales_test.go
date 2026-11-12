@@ -2044,6 +2044,15 @@ func saleMixedBody(variantID, quantity int64, cash, transfer string) string {
 		transfer, cash, variantID, quantity, saleUnitsJSON(quantity, 6))
 }
 
+// saleSettlementBody is one document settled exactly as `payments` states it, so a QR sale and
+// a cash-and-QR sale need no other fixture helper.
+func saleSettlementBody(variantID, quantity int64, payments string) string {
+	return fmt.Sprintf(`{"payments":%s,`+
+		`"customer":{"name":"Cliente Mostrador","phone":"700-00000","document":"V-123","address":"Barrio Norte"},`+
+		`"lines":[{"variant_id":%d,"quantity":%d,"unit_price":"96000.00","units":%s}]}`,
+		payments, variantID, quantity, saleUnitsJSON(quantity, 6))
+}
+
 // rejectedMismatch proves a settlement that does not close is answered with the open side
 // and writes nothing at all.
 func (f *saleHTTPFixture) rejectedMismatch(t *testing.T, r *http.Request, want string) {
@@ -2221,6 +2230,46 @@ func TestSaleHTTPWarrantyPDF(t *testing.T) {
 	w = f.serve(t, f.request(2, "POST", target, ""))
 	if w.Code != 405 || w.Header().Get("Allow") != "GET" {
 		t.Fatalf("the warranty must advertise its method: %d %q", w.Code, w.Header().Get("Allow"))
+	}
+}
+
+// TestSaleHTTPWarrantyPrintsQRPayment pins S13 over HTTP: the money the branch collected by QR
+// is its own row of the warranty, with its own amount, and a sale paid partly in cash and
+// partly by QR prints one row per method it used while the total still closes.
+func TestSaleHTTPWarrantyPrintsQRPayment(t *testing.T) {
+	f := saleFixture(t)
+	f.price(t, f.entryOf(t, 1), "85000", "96000", 2)
+	onlyQR := saleCreatedWire(t, f.serve(t, f.request(2, "POST", "/api/sales",
+		saleSettlementBody(1, 1, `[{"method":"qr","amount":"96000.00"}]`))))
+	if onlyQR.PaymentMethod != "qr" || len(onlyQR.Payments) != 1 {
+		t.Fatalf("a sale collected by QR must publish its own label: %+v", onlyQR)
+	}
+	pdf := f.serve(t, f.request(2, "GET", fmt.Sprintf("/api/sales/%d/warranty.pdf", onlyQR.ID), ""))
+	if pdf.Code != 200 || pdf.Header().Get("Content-Type") != "application/pdf" {
+		t.Fatalf("the warranty must download: %d %s", pdf.Code, pdf.Body.String())
+	}
+	for _, want := range []string{"QR", "Bs 96.000,00", "Total: Bs 96.000,00"} {
+		if !bytes.Contains(pdf.Body.Bytes(), []byte(want)) {
+			t.Fatalf("a QR sale must print %q in its warranty", want)
+		}
+	}
+
+	mixed := saleCreatedWire(t, f.serve(t, f.request(2, "POST", "/api/sales",
+		saleSettlementBody(1, 1, `[{"method":"cash","amount":"40000.00"},`+
+			`{"method":"qr","amount":"56000.00"}]`))))
+	mixedPDF := f.serve(t, f.request(2, "GET", fmt.Sprintf("/api/sales/%d/warranty.pdf", mixed.ID), ""))
+	if mixedPDF.Code != 200 {
+		t.Fatalf("the warranty must download: %d %s", mixedPDF.Code, mixedPDF.Body.String())
+	}
+	body := mixedPDF.Body.Bytes()
+	// One row per method that paid, each with its amount, QR included, and the stored total.
+	for _, want := range []string{"Efectivo", "Bs 40.000,00", "QR", "Bs 56.000,00", "Total: Bs 96.000,00"} {
+		if !bytes.Contains(body, []byte(want)) {
+			t.Fatalf("a cash-and-QR sale must print %q in its warranty", want)
+		}
+	}
+	if got := bytes.Count(body, []byte("QR")); got != 1 {
+		t.Fatalf("the QR payment must be one row, got %d", got)
 	}
 }
 

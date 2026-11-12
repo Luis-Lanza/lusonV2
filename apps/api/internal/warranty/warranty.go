@@ -87,8 +87,8 @@ type Document struct {
 }
 
 // Payment is one amount of the sale paid with one method, as it was stored. Method is
-// the persisted code ("cash", "card" or "transfer") and Amount is the canonical amount
-// paid with it; a sale paid with two methods carries two payments. Methods are never
+// the persisted code ("cash", "card", "transfer" or "qr") and Amount is the canonical
+// amount paid with it; a sale paid with two methods carries two payments. Methods are never
 // repeated, so the same money is never printed twice.
 type Payment struct {
 	Method string
@@ -121,9 +121,9 @@ const (
 	maxSerialLength   = 64
 	minWarrantyMonths = 1
 	maxWarrantyMonths = 120
-	// maxPayments is the number of admitted payment methods: cash, card and transfer.
+	// maxPayments is the number of admitted payment methods: cash, card, transfer and QR.
 	// A sale carries at most one amount per method.
-	maxPayments = 3
+	maxPayments = 4
 )
 
 // column is one table column of the warranty: the frozen width, its heading and the
@@ -154,6 +154,7 @@ var paymentLabels = map[string]string{
 	"cash":     "Efectivo",
 	"card":     "Tarjeta",
 	"transfer": "Transferencia",
+	"qr":       "QR",
 }
 
 // Render draws the warranty of one sale and returns the PDF bytes. The document is A4

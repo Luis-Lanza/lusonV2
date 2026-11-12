@@ -1,13 +1,14 @@
 import { Component, Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import TransferDate from './shared/TransferDate';
 import {
-  addToCart, cartTotal, changeQuantity, emptyCustomer, emptyPayments, fillRemaining, formatMoney,
+  addToCart, cartTotal, changeQuantity, counterPaymentMethods, emptyCustomer, emptyPayments, fillRemaining, formatMoney,
   maxCustomerAddress, maxSerialLength, maxWarrantyMonths, minWarrantyMonths, moneyCents, moneySumMessage,
-  paymentBreakdown, posCustomerNameMessage, posEmptyCartMessage, posNotSellableReason, posQuantityMessage,
+  paymentAmount, paymentBreakdown, posCustomerNameMessage, posEmptyCartMessage, posNotSellableReason, posQuantityMessage,
   posWarrantyMessage, prepareSale, removeFromCart, serialSoldProblem, setPayment, setQuantity, setUnitPrice,
   setUnitSerial,
   setUnitWarranty, setWarranty, settlement, typedMoney, unitsProblem, variantLabel, warrantyLabel,
-  type CartEdit, type CartLine, type PaymentSplit, type SaleCustomer, type SellablePage, type SellableVariant,
+  type CartEdit, type CartLine, type CounterPaymentMethod, type PaymentSplit, type SaleCustomer, type SellablePage,
+  type SellableVariant,
 } from './pointOfSaleModel';
 import {
   SalesAPIError, createSalesAPI, salesDefaultPageSize, salesErrorMessages, salesPageSizes, sellableUnavailable,
@@ -60,9 +61,14 @@ interface CatalogueState {
 }
 /** What the seller has typed in one line, before it is admitted into the cart. */
 interface LineDraft { readonly quantity: string; readonly price: string; readonly bulk: string }
-interface PaymentDrafts { readonly cash: string; readonly transfer: string }
+/** One amount field per method the counter offers: cash, transfer and QR. */
+interface PaymentDrafts { readonly cash: string; readonly transfer: string; readonly qr: string }
 
-const noPayments: PaymentDrafts = { cash: '', transfer: '' };
+const noPayments: PaymentDrafts = { cash: '', transfer: '', qr: '' };
+/** The label of each offered method, so the counter names it the way the document does. */
+const paymentFields: Readonly<Record<CounterPaymentMethod, string>> = {
+  cash: 'Efectivo', transfer: 'Transferencia', qr: 'QR',
+};
 const blockedReason = (variantID: number) => `pos-blocked-${variantID}`;
 /** A zero field shows nothing instead of `0,00`, so the seller sees it as unpaid. */
 const entryOf = (cents: bigint): string => cents === 0n ? '' : typedMoney(cents);
@@ -264,7 +270,7 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
     patchDraft(line, { price: value });
     commit(setUnitPrice(cart, line.variant_id, value));
   }
-  function typePayment(method: 'cash' | 'transfer', value: string) {
+  function typePayment(method: CounterPaymentMethod, value: string) {
     setPayDrafts(current => ({ ...current, [method]: value }));
     const edit = setPayment(split, method, value);
     if (!edit.ok) { setProblem(edit.message); return; }
@@ -275,7 +281,8 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
     if (filled === null) return;
     setProblem('');
     setSplit(filled);
-    setPayDrafts({ cash: entryOf(filled.cash_cents), transfer: entryOf(filled.transfer_cents) });
+    setPayDrafts({ cash: entryOf(paymentAmount(filled, 'cash')),
+      transfer: entryOf(paymentAmount(filled, 'transfer')), qr: entryOf(paymentAmount(filled, 'qr')) });
   }
 
   async function charge() {
@@ -484,21 +491,18 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
           </div>
           <fieldset className="pos-payments">
             <legend>{`Formas de pago · total ${formatMoney(saleTotal)}`}</legend>
-            <label htmlFor="pos-payment-cash">Efectivo
-              <input id="pos-payment-cash" inputMode="decimal" value={payDrafts.cash} disabled={busy}
-                onChange={event => typePayment('cash', event.target.value)} />
-            </label>
-            <label htmlFor="pos-payment-transfer">Transferencia
-              <input id="pos-payment-transfer" inputMode="decimal" value={payDrafts.transfer} disabled={busy}
-                onChange={event => typePayment('transfer', event.target.value)} />
-            </label>
+            {counterPaymentMethods.map(method => <label key={method} htmlFor={`pos-payment-${method}`}>
+              {paymentFields[method]}
+              <input id={`pos-payment-${method}`} inputMode="decimal" value={payDrafts[method]} disabled={busy}
+                onChange={event => typePayment(method, event.target.value)} />
+            </label>)}
           </fieldset>
           <div className="pos-pay-sum">
             <span className={open.status === 'exact' ? 'pos-tag ok' : 'pos-tag short'}>{moneySumMessage(saleTotal, split)}</span>
             <button type="button" className="pos-rest" disabled={busy || fillRemaining(split, saleTotal) === null}
               onClick={rest}>Resto</button>
           </div>
-          <p className="pos-hint">Un solo monto es una venta normal; más de uno queda como Mixto. Si la suma no es exactamente el total, el cobro queda deshabilitado.</p>
+          <p className="pos-hint">Un solo monto es una venta normal; más de uno queda como Mixto. El QR es dinero electrónico: no es efectivo y no entra en la caja. Si la suma no es exactamente el total, el cobro queda deshabilitado.</p>
           <div className="pos-customer">
             <label htmlFor="pos-customer-name">Cliente
               <input id="pos-customer-name" value={customer.name} disabled={busy} autoComplete="off" maxLength={120}

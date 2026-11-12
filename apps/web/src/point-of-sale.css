@@ -115,7 +115,8 @@
 .sales-table td small, .sales-detail-lines td small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
 .pos-doc { font-weight: 600; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .sales-table .pos-tag.mixed { background: var(--tint); border-color: var(--border); color: var(--wine); }
-.sales-table .pos-tag.cash, .sales-table .pos-tag.transfer, .sales-table .pos-tag.card {
+.sales-table .pos-tag.cash, .sales-table .pos-tag.transfer, .sales-table .pos-tag.card,
+.sales-table .pos-tag.qr {
   background: #ECFDF5; border-color: #A7F3D0; color: #047857; }
 .sales-actions { display: flex; gap: 6px; justify-content: flex-end; }
 .pos-quiet { display: inline-flex; align-items: center; justify-content: center; min-height: 34px;
