@@ -292,10 +292,17 @@ The proposal is refused, naming what is missing, when:
 | Refusal | Status and body |
 |---|---|
 | A variant of the sheet is still pending | `409 {"error":"count_pending","variant_id":7}` |
+| The count sheet changed while the offer was being recorded | `409 {"error":"proposal_stale","variant_id":7}` |
 | The drawer is not stated | `409 {"error":"cash_not_stated"}` |
 | The fund exceeds the drawer | `409 {"error":"fund_exceeds_drawer","excess":"50.00"}` |
 | The branch has no configured rate | `409 {"error":"commission_rate_missing"}` |
 | The settlement is not held (already proposed or closed) | `409 {"error":"state_conflict"}` |
+
+`count_pending` and `proposal_stale` are the two sides of the same fact. `count_pending` is
+what the store answers when it reads the sheet before proposing; `proposal_stale` is the
+database's own `LC019`, raised when a line of the sheet lost its counted quantity between that
+read and the transition that records the offer. Both are conflicts: the warehouse re-reads the
+settlement and proposes again, and neither is an outage.
 
 On success the database freezes the configured rate on the settlement, records the period
 totals and the commission and the warehouse's round is added to the history:
@@ -337,9 +344,13 @@ POST /api/closings/1/decision
   exclusive.
 * A decision on a settlement that is not `proposed` is `409 state_conflict`; a decision by
   another branch or by the warehouse is `403 forbidden`.
-* The closure is refused with `409 reserved_stock` while a variant of the branch still holds a
-  reservation, and with `409 round_not_accepted` if the latest round was not accepted — a
-  warehouse-only transition that never applies an offer the branch did not accept.
+* The closure is refused with `409 {"error":"reserved_stock","variant_id":7}` while a variant
+  of the branch still holds a reservation, and with
+  `409 {"error":"stock_moved","variant_id":7}` while a variant no longer holds the quantity the
+  count sheet photographed: both name the variant in conflict, because both are the line of the
+  sheet the warehouse has to resolve. The closure is also refused with `409 round_not_accepted`
+  if the latest round was not accepted — a warehouse-only transition that never applies an offer
+  the branch did not accept.
 * A difference of cash of any size is admitted and persisted with its observation: it is never
   distributed, never discounted from the commission and never absorbed by the stock.
 
@@ -440,20 +451,28 @@ about instead of a generic code.
 | 409 | `settlement_live` | `branch_location_id`, `closing_id` | The branch already has a live settlement, named by the refusal; only one exists at a time |
 | 409 | `branch_retired` | `branch_location_id` | The branch was retired and is not settled |
 | 409 | `count_pending` | `variant_id` | A variant of the sheet has no counted quantity |
+| 409 | `proposal_stale` | `variant_id` | The count sheet lost a counted quantity while the offer was being recorded; re-read and propose again |
 | 409 | `cash_not_stated` | — | The proposal needs the counted cash and the fund |
 | 409 | `fund_exceeds_drawer` | `excess` | The fund exceeds the counted cash plus the contribution by that amount |
 | 409 | `commission_rate_missing` | — | The branch has no configured commission rate |
 | 409 | `count_frozen` | — | The count sheet is not writable in this state |
 | 409 | `state_conflict` | — | The settlement's state does not admit this operation |
 | 409 | `closure_refused` | — | The closure's own money rule refused the settlement |
-| 409 | `reserved_stock` | — | A variant of the branch still holds a reservation |
+| 409 | `reserved_stock` | `variant_id` | A variant of the branch still holds a reservation |
+| 409 | `stock_moved` | `variant_id` | A variant moved during the settlement, so the count is stale |
 | 409 | `round_not_accepted` | — | The settlement has no accepted proposal round |
 | 409 | `branch_frozen` | — | The branch is frozen by a live settlement and cannot record an expense |
 | 503 | `service_unavailable` | — | Pool, database, or any unmapped failure |
 
 Failures never leak driver, SQL or configuration details: only the database's own rejection is
-trusted, and it is mapped by SQLSTATE. Every other failure of the vertical is
-`service_unavailable`, including a stored shape this domain never wrote.
+trusted, and it is mapped by SQLSTATE. The refusals that name a variant read it back from the
+count sheet and the balances — the same rows and the same predicates the database used — instead
+of parsing the message of the trigger, so the number in the body is the line that actually
+refused the operation. Every other failure of the vertical is `service_unavailable`, including a
+stored shape this domain never wrote. The only SQLSTATEs of this vertical that still land there
+are the ones the store cannot reach at all: `LC012`, `LC013`, `LC014`, `LC021`, `LC022` and
+`LC023` belong to the corrections journal, whose routes are not served yet, and `LC020` is the
+provenance of a settlement ledger row, which only the closure's own trigger writes.
 
 ## Database invariants
 
@@ -469,8 +488,8 @@ stable SQLSTATEs:
 | `LC003` | The branch has no configured commission rate | 409 `commission_rate_missing` |
 | `LC004` | Count lines are written only while the warehouse holds the settlement; only the counted quantity moves | 409 `count_frozen` |
 | `LC005` | Unsupported transition, frozen identity, draft of a proposed or closed settlement, period totals that are not drafts | 409 `state_conflict` |
-| `LC006` | The closure's money rule: the fund above the drawer, the drawer not stated, a pending variant | 409 `fund_exceeds_drawer`, `cash_not_stated` or `closure_refused` |
-| `LC007` | A variant still holds reserved stock | 409 `reserved_stock` |
+| `LC006` | The closure's money rule: the fund above the drawer, the drawer not stated, a pending variant | 409 `fund_exceeds_drawer`, `cash_not_stated`, `count_pending` or `closure_refused` |
+| `LC007` | A variant still holds reserved stock | 409 `reserved_stock` with `variant_id` |
 | `LC008` | A proposal belongs to a live settlement and only the warehouse proposes | 409 `state_conflict` |
 | `LC009` | Rounds are never deleted and a decided round is final | 409 `state_conflict` |
 | `LC010` | Only a proposed settlement is decided, and only by an enabled account of its branch | 403 `forbidden` or 409 `state_conflict` |
@@ -478,8 +497,8 @@ stable SQLSTATEs:
 | `LC015` | Only the warehouse configures a branch commission, and never to itself | 400 `invalid_request` or 403 `forbidden` |
 | `LC016` | The latest proposal round is not accepted, is still undecided, or is not rejected | 409 `round_not_accepted` |
 | `LC017` | The branch was retired | 409 `branch_retired` |
-| `LC018` | A variant moved during the settlement | 503 `service_unavailable` |
-| `LC019` | A variant has no counted quantity at the proposal | 409 `count_pending` (the store refuses it before the database does) |
+| `LC018` | A variant moved during the settlement | 409 `stock_moved` with `variant_id` |
+| `LC019` | A variant has no counted quantity at the proposal | 409 `proposal_stale` with `variant_id` when the store's own read missed it; `409 count_pending` when the store refuses first |
 
 One live settlement per branch is a unique index, reported as `409 settlement_live`; a
 reference to a settlement that does not exist is reported as `404 not_found`.
@@ -487,7 +506,10 @@ reference to a settlement that does not exist is reported as `404 not_found`.
 The closure is one transaction: the counted stock, the cash ledger rows of the drawer
 (`aporte` for the contribution, `recaudacion` for what the warehouse takes), the state and the
 unfreezing of the branch all commit together or not at all. A closure of a settlement whose
-branch traded during the period is refused (`LC018`) instead of restoring stale stock.
+branch traded during the period is refused (`LC018`, `409 stock_moved`) instead of restoring
+stale stock, and one of a branch that still owes a reserved unit is refused (`LC007`, `409
+reserved_stock`); neither applies anything, so resolving the line and accepting again closes the
+same settlement.
 
 ## Not served yet
 

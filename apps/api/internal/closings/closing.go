@@ -52,9 +52,20 @@ var (
 	// ErrClosureRefused is the generic refusal of the database's closure money rule
 	// (LC006). The reachable cases are raised as the typed errors below.
 	ErrClosureRefused = errors.New("the settlement cash does not satisfy the closure rule")
-	// ErrReservedStock is the refusal of a closure whose counted quantity would leave the
-	// stock below what the branch already reserved (LC007).
-	ErrReservedStock = errors.New("the counted quantity is lower than the reserved stock")
+	// ErrReservedStock is the refusal of a closure while a variant of the branch still holds an
+	// open reservation (LC007): the branch already promised that stock, so settling it under
+	// the count would promise it twice. ReservedStock names the variant in conflict.
+	ErrReservedStock = errors.New("the variant still holds reserved stock")
+	// ErrStockMoved is the refusal of a closure whose count sheet no longer matches the live
+	// stock of the branch (LC018): a variant moved during the settlement, so applying the
+	// photographed count would resurrect sold stock or discard received stock. StockMoved names
+	// the variant; the warehouse answers it by recounting, never by reporting an outage.
+	ErrStockMoved = errors.New("the variant moved during the settlement")
+	// ErrProposalStale is the refusal of a proposal whose count sheet stopped being complete
+	// between the store's own check and the database's transition (LC019). StaleProposal names
+	// the variant that lost its counted quantity; the operator re-reads the settlement and
+	// proposes again.
+	ErrProposalStale = errors.New("the count sheet changed while the settlement was being proposed")
 	// ErrRoundNotAccepted is the refusal of a closure whose latest proposal round was not
 	// accepted (LC016): nothing is applied by an offer the branch has not accepted.
 	ErrRoundNotAccepted = errors.New("the settlement has no accepted proposal round")
@@ -102,6 +113,41 @@ func (e *CountPending) Error() string {
 
 // Unwrap keeps errors.Is(err, ErrClosureRefused) true.
 func (e *CountPending) Unwrap() error { return ErrClosureRefused }
+
+// ReservedStock is the refusal of a closure by an open reservation of the branch, naming the
+// variant it still owes to a transfer (LC007). Which variant blocks is the database's own fact:
+// the closure reads it back from the balances instead of parsing the message of the trigger.
+type ReservedStock struct{ VariantID int64 }
+
+func (e *ReservedStock) Error() string {
+	return "variant " + digits(e.VariantID) + " still has reserved stock"
+}
+
+// Unwrap keeps errors.Is(err, ErrReservedStock) true.
+func (e *ReservedStock) Unwrap() error { return ErrReservedStock }
+
+// StockMoved is the refusal of a closure by a variant of the branch whose stock is no longer the
+// quantity the count sheet photographed, naming it so the warehouse knows which line is stale
+// (LC018).
+type StockMoved struct{ VariantID int64 }
+
+func (e *StockMoved) Error() string {
+	return "variant " + digits(e.VariantID) + " moved during the settlement"
+}
+
+// Unwrap keeps errors.Is(err, ErrStockMoved) true.
+func (e *StockMoved) Unwrap() error { return ErrStockMoved }
+
+// StaleProposal is the refusal of a proposal that raced the count sheet, naming the variant that
+// lost its counted quantity between the store's own check and the database's transition (LC019).
+type StaleProposal struct{ VariantID int64 }
+
+func (e *StaleProposal) Error() string {
+	return "variant " + digits(e.VariantID) + " lost its counted quantity before the proposal"
+}
+
+// Unwrap keeps errors.Is(err, ErrProposalStale) true.
+func (e *StaleProposal) Unwrap() error { return ErrProposalStale }
 
 // CashNotStated is the refusal of a proposal or a closure that does not state the cash it
 // counted and the fund it leaves behind, which the closure requires (LC006).

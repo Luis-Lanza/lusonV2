@@ -1666,3 +1666,180 @@ func TestClosingsExpenses(t *testing.T) {
 		t.Fatalf("an expense must not move a settlement that does not cover it: %+v", earlier)
 	}
 }
+
+// closingAwaitsTableLock waits until a statement of this database is waiting for a table lock,
+// which is how the proposal race below is armed without a sleep: a proposal that still waits for
+// the sale ledger of the period has already read the count sheet and has not yet reached the
+// database's transition.
+func (f *closingHTTPFixture) closingAwaitsTableLock(t *testing.T, table string) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting int64
+		if err := f.p.QueryRow(f.ctx, `SELECT count(*) FROM pg_locks
+ WHERE relation=$1::regclass AND NOT granted`, table).Scan(&waiting); err != nil {
+			t.Fatalf("the waiting lock could not be read: %v", err)
+		}
+		if waiting > 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("no statement ever waited for the %s table", table)
+}
+
+// closingReserveStock promises units of one variant of a branch to a transfer and leaves the
+// reservation open: the branch sends the units back to the warehouse, the warehouse approves, and
+// the reservation is the transfer's own (S3, LC007).
+func (f *closingHTTPFixture) closingReserveStock(t *testing.T, branch, variant, quantity int64) {
+	t.Helper()
+	promises := transfers.New(f.p)
+	created, err := promises.Create(f.ctx,
+		auth.Identity{AccountID: int(branch), Location: auth.Location{ID: int(branch)}},
+		transfers.CreateInput{Kind: transfers.SendToWarehouse, CounterpartyID: 1,
+			RetryKey: testpg.Random(t)[:24], Items: []transfers.Line{{VariantID: variant, Quantity: quantity}}})
+	if err != nil {
+		t.Fatalf("the transfer reservation could not be created: %v", err)
+	}
+	if _, err := promises.Approve(f.ctx, auth.Identity{AccountID: 1, Location: auth.Location{ID: 1}},
+		created.Request.ID); err != nil {
+		t.Fatalf("the transfer reservation could not be approved: %v", err)
+	}
+}
+
+// TestClosingsClosureConflictsNameTheBlockedStock pins S5 over HTTP: a closure refused by a variant
+// that moved during the settlement and a closure refused by a reservation the branch still owes are
+// both conflicts that name the variant, never an outage, and neither of them applies anything.
+func TestClosingsClosureConflictsNameTheBlockedStock(t *testing.T) {
+	f := closingFixture(t)
+	for _, branch := range []int64{2, 3} {
+		if w := f.serve(t, f.request(1, "POST",
+			fmt.Sprintf("/api/closings/branches/%d/commission", branch),
+			`{"commission_rate_percent":"10.00"}`)); w.Code != 200 {
+			t.Fatalf("the rate of branch %d must be configured: %d %s", branch, w.Code, w.Body.String())
+		}
+	}
+
+	// A variant moved during the settlement: the photographed count is stale, so it is refused by
+	// naming the variant instead of being applied. The freeze guards refuse every branch operation
+	// while the settlement is open, so this is the state a bypassed guard leaves.
+	moved := f.open(t, 2)
+	f.countAll(t, moved)
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", moved),
+		`{"counted_cash":"100.00","contributed_cash":"0.00","closing_cash":"20.00","observation":""}`)); w.Code != 200 {
+		t.Fatalf("the drawer must be drafted: %d %s", w.Code, w.Body.String())
+	}
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/propose", moved), "")); w.Code != 200 {
+		t.Fatalf("the settlement must be proposed: %d %s", w.Code, w.Body.String())
+	}
+	if _, err := f.p.Exec(f.ctx, `UPDATE inventory_balances SET existing=existing+1
+ WHERE location_id=2 AND variant_id=2`); err != nil {
+		t.Fatal("the branch stock could not be moved behind the settlement")
+	}
+	before := f.snapshot(t)
+	closingFailureBody(t, f.serve(t, f.request(2, "POST",
+		fmt.Sprintf("/api/closings/%d/decision", moved), `{"decision":"accepted"}`)), 409,
+		`{"error":"stock_moved","variant_id":2}`)
+	if f.snapshot(t) != before {
+		t.Fatal("a closure refused by a moved variant changed stored state")
+	}
+	if existing, _ := f.stock(t, 2, 2); existing != f.expectedStock(t, moved, 2)+1 {
+		t.Fatalf("a refused closure must not apply the count: variant 2 is %d", existing)
+	}
+	// Restoring the photographed quantity closes the same settlement: the refusal was the stale
+	// count and not a broken document.
+	if _, err := f.p.Exec(f.ctx, `UPDATE inventory_balances SET existing=existing-1
+ WHERE location_id=2 AND variant_id=2`); err != nil {
+		t.Fatal("the branch stock could not be restored")
+	}
+	closed := closingWire(t, f.serve(t, f.request(2, "POST",
+		fmt.Sprintf("/api/closings/%d/decision", moved), `{"decision":"accepted"}`)), 200)
+	if closed.Status != "closed" {
+		t.Fatalf("a restored branch must close: %+v", closed)
+	}
+
+	// A reservation the branch still owes blocks the other closure even when the count covers it:
+	// the refusal names the variant, and the unit the branch promised stays reserved.
+	f.closingReserveStock(t, 3, 1, 2)
+	reserved := f.open(t, 3)
+	f.countAll(t, reserved)
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", reserved),
+		`{"counted_cash":"100.00","contributed_cash":"0.00","closing_cash":"20.00","observation":""}`)); w.Code != 200 {
+		t.Fatalf("the drawer must be drafted: %d %s", w.Code, w.Body.String())
+	}
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/propose", reserved), "")); w.Code != 200 {
+		t.Fatalf("the settlement must be proposed: %d %s", w.Code, w.Body.String())
+	}
+	before = f.snapshot(t)
+	closingFailureBody(t, f.serve(t, f.request(3, "POST",
+		fmt.Sprintf("/api/closings/%d/decision", reserved), `{"decision":"accepted"}`)), 409,
+		`{"error":"reserved_stock","variant_id":1}`)
+	if f.snapshot(t) != before {
+		t.Fatal("a closure refused by a reservation changed stored state")
+	}
+	if existing, held := f.stock(t, 3, 1); existing != f.expectedStock(t, reserved, 1) || held != 2 {
+		t.Fatalf("a refused closure must keep the reservation: %d/%d", existing, held)
+	}
+}
+
+// TestClosingsProposalRaceIsAConflict pins LC019 over HTTP: the count sheet can stop being complete
+// between the store's own check of the proposal and the database's transition, and the answer is a
+// conflict that names the variant, never a 503 that would hide a readable document.
+func TestClosingsProposalRaceIsAConflict(t *testing.T) {
+	f := closingFixture(t)
+	if w := f.serve(t, f.request(1, "POST", "/api/closings/branches/2/commission",
+		`{"commission_rate_percent":"10.00"}`)); w.Code != 200 {
+		t.Fatalf("the rate must be configured: %d %s", w.Code, w.Body.String())
+	}
+	id := f.open(t, 2)
+	f.countAll(t, id)
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", id),
+		`{"counted_cash":"100.00","contributed_cash":"0.00","closing_cash":"20.00","observation":""}`)); w.Code != 200 {
+		t.Fatalf("the drawer must be drafted: %d %s", w.Code, w.Body.String())
+	}
+	// The rounds of the settlement are held, so the proposal stops after its last read of the
+	// count sheet and before the database's transition.
+	blocker, err := f.p.Begin(f.ctx)
+	if err != nil {
+		t.Fatalf("the blocking transaction could not start: %v", err)
+	}
+	defer func() { _ = blocker.Rollback(context.Background()) }()
+	if _, err := blocker.Exec(f.ctx, "LOCK TABLE closing_proposals IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatalf("the proposal rounds could not be held: %v", err)
+	}
+	request := f.request(1, "POST", fmt.Sprintf("/api/closings/%d/propose", id), "")
+	recorder := httptest.NewRecorder()
+	served := make(chan struct{})
+	go func() {
+		f.handler.ServeHTTP(recorder, request)
+		close(served)
+	}()
+	f.closingAwaitsTableLock(t, "closing_proposals")
+	if _, err := f.p.Exec(f.ctx, `UPDATE closing_count_lines SET counted_quantity=NULL
+ WHERE closing_id=$1 AND variant_id=2`, id); err != nil {
+		t.Fatalf("the counted line could not be made pending again: %v", err)
+	}
+	if err := blocker.Commit(f.ctx); err != nil {
+		t.Fatalf("the proposal rounds could not be released: %v", err)
+	}
+	<-served
+	if recorder.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("the raced proposal must answer JSON: %v", recorder.Header())
+	}
+	closingFailureBody(t, recorder, 409, `{"error":"proposal_stale","variant_id":2}`)
+	// No round was written and the settlement is still open: the warehouse counts the line again
+	// and proposes the very same settlement.
+	var rounds int
+	var status string
+	if err := f.p.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM closing_proposals WHERE closing_id=$1),
+ status FROM branch_closings WHERE id=$1`, id).Scan(&rounds, &status); err != nil {
+		t.Fatal("the settlement state could not be read")
+	}
+	if rounds != 0 || status != "open" {
+		t.Fatalf("a refused proposal must write nothing: %d rounds in %q", rounds, status)
+	}
+	f.countAll(t, id)
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/propose", id), "")); w.Code != 200 {
+		t.Fatalf("the settlement must be proposable again: %d %s", w.Code, w.Body.String())
+	}
+}

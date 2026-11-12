@@ -149,6 +149,9 @@ func closingFailure(w http.ResponseWriter, err error) {
 	var excess *closings.FundExceedsDrawer
 	var retired *closings.RetiredBranch
 	var notStated *closings.CashNotStated
+	var reserved *closings.ReservedStock
+	var moved *closings.StockMoved
+	var stale *closings.StaleProposal
 	switch {
 	case errors.As(err, &pending):
 		closingFailureRecord(w, 409, "count_pending", "variant_id", pending.VariantID)
@@ -158,6 +161,18 @@ func closingFailure(w http.ResponseWriter, err error) {
 		closingFailureRecord(w, 409, "branch_retired", "branch_location_id", retired.BranchID)
 	case errors.As(err, &notStated):
 		failure(w, 409, "cash_not_stated")
+	case errors.As(err, &reserved):
+		// The closure is refused by a reservation of the branch, and the refusal names the
+		// variant that is still owed to a transfer, exactly like the pending line does (S5).
+		closingFailureRecord(w, 409, "reserved_stock", "variant_id", reserved.VariantID)
+	case errors.As(err, &moved):
+		// A variant moved during the settlement, so the count is stale: the warehouse recounts
+		// that line instead of reading an outage (S5).
+		closingFailureRecord(w, 409, "stock_moved", "variant_id", moved.VariantID)
+	case errors.As(err, &stale):
+		// The count sheet changed while the offer was being recorded, so the settlement is
+		// re-read and proposed again; the refusal names the variant that is pending again.
+		closingFailureRecord(w, 409, "proposal_stale", "variant_id", stale.VariantID)
 	case errors.Is(err, closings.ErrNoCommissionRate):
 		// The missing fact is the rate itself, which is what the code names: without it no
 		// branch can be proposed (S6).
@@ -170,6 +185,10 @@ func closingFailure(w http.ResponseWriter, err error) {
 		failure(w, 409, "closure_refused")
 	case errors.Is(err, closings.ErrReservedStock):
 		failure(w, 409, "reserved_stock")
+	case errors.Is(err, closings.ErrStockMoved):
+		failure(w, 409, "stock_moved")
+	case errors.Is(err, closings.ErrProposalStale):
+		failure(w, 409, "proposal_stale")
 	case errors.Is(err, closings.ErrRoundNotAccepted):
 		failure(w, 409, "round_not_accepted")
 	case errors.Is(err, closings.ErrBranchFrozen):

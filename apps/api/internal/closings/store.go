@@ -619,9 +619,7 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 	}
 	// The sheet must be complete and the drawer counted: the offer states both, and the
 	// closure admits neither a pending variant nor a missing amount (LC006).
-	var pending int64
-	err = tx.QueryRow(ctx, `SELECT variant_id FROM closing_count_lines
- WHERE closing_id=$1 AND counted_quantity IS NULL ORDER BY variant_id LIMIT 1`, id).Scan(&pending)
+	pending, err := pendingVariant(ctx, tx, id)
 	if err == nil {
 		return Closing{}, &CountPending{VariantID: pending}
 	}
@@ -686,9 +684,23 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 	// sale totals, the cash of the period and the commission from the frozen rate, and freezes
 	// the rate. The expenses of the period are the branch's own ledger facts, which the database
 	// does not read here, so they are written in the same statement that moves the state machine.
-	if _, err := tx.Exec(ctx, `UPDATE branch_closings SET status='proposed',cash_expenses=$2
+	//
+	// The transition runs in a savepoint so a refusal can be read back: LC019 is a variant whose
+	// counted quantity disappeared between the store's own reads of the sheet and this statement,
+	// and the pending line is read from the sheet instead of the message the trigger composed.
+	transition, err := tx.Begin(ctx)
+	if err != nil {
+		return Closing{}, fail(ctx)
+	}
+	if _, err := transition.Exec(ctx, `UPDATE branch_closings SET status='proposed',cash_expenses=$2
  WHERE id=$1 AND status IN ('open','rejected')`, id, string(totals.expenses)); err != nil {
-		return Closing{}, mapFailure(ctx, err)
+		if rollback := transition.Rollback(ctx); rollback != nil {
+			return Closing{}, fail(ctx)
+		}
+		return Closing{}, mapProposalFailure(ctx, tx, err, id)
+	}
+	if err := transition.Commit(ctx); err != nil {
+		return Closing{}, fail(ctx)
 	}
 	closing, err := loadClosing(ctx, tx, id)
 	if err != nil {
@@ -850,9 +862,7 @@ func (s *Store) Decide(ctx context.Context, actor auth.Identity, id int64, decis
 		}
 	} else {
 		// The closure states the count and the drawer, so the offer it accepts must state both.
-		var pending int64
-		err = tx.QueryRow(ctx, `SELECT variant_id FROM closing_count_lines
- WHERE closing_id=$1 AND counted_quantity IS NULL ORDER BY variant_id LIMIT 1`, id).Scan(&pending)
+		pending, err := pendingVariant(ctx, tx, id)
 		if err == nil {
 			return Closing{}, &CountPending{VariantID: pending}
 		}
@@ -876,9 +886,23 @@ func (s *Store) Decide(ctx context.Context, actor auth.Identity, id int64, decis
 		// disagree with the numbers the branch approved, so this statement only moves the
 		// state machine. The database applies the counted stock and writes the cash ledger of
 		// the drawer in the same transaction.
-		if _, err := tx.Exec(ctx, `UPDATE branch_closings SET status='closed'
+		//
+		// The transition runs in a savepoint so its refusal can be read back: the closure's
+		// stock rules name a variant, and that variant is the one the sheet and the balances
+		// refuse, not a phrase parsed out of a message.
+		transition, err := tx.Begin(ctx)
+		if err != nil {
+			return Closing{}, fail(ctx)
+		}
+		if _, err := transition.Exec(ctx, `UPDATE branch_closings SET status='closed'
  WHERE id=$1 AND status='proposed'`, id); err != nil {
-			return Closing{}, mapFailure(ctx, err)
+			if rollback := transition.Rollback(ctx); rollback != nil {
+				return Closing{}, fail(ctx)
+			}
+			return Closing{}, mapClosureFailure(ctx, tx, err, id, branch)
+		}
+		if err := transition.Commit(ctx); err != nil {
+			return Closing{}, fail(ctx)
 		}
 	}
 	closing, err := loadClosing(ctx, tx, id)
@@ -1199,6 +1223,79 @@ func liveConflict(ctx context.Context, q querier, branchID int64) error {
 	return &LiveConflict{BranchID: branchID, ClosingID: id}
 }
 
+// pendingVariant reads the first variant of a count sheet that has no counted quantity, which is
+// the line both the proposal (LC019) and the closure (LC006) refuse by. It reports pgx.ErrNoRows
+// when every line is counted, so a caller keeps its own answer for a read that fails.
+func pendingVariant(ctx context.Context, q querier, id int64) (int64, error) {
+	var variant int64
+	err := q.QueryRow(ctx, `SELECT variant_id FROM closing_count_lines
+ WHERE closing_id=$1 AND counted_quantity IS NULL ORDER BY variant_id LIMIT 1`, id).Scan(&variant)
+	return variant, err
+}
+
+// mapProposalFailure publishes the database's own refusal of a proposal transition. LC019 is "a
+// variant has no counted quantity" read at the transition: the store already checked the sheet,
+// so what the database answered is the count changing between that check and its own statement.
+// The reaction is to re-read the settlement and propose again, never to report an outage, and
+// only the database knows which variant lost its line -- so the pending line is read back instead
+// of the message the trigger composed. Every other refusal keeps the plain mapping.
+func mapProposalFailure(ctx context.Context, q querier, err error, id int64) error {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) && pg.Code == "LC019" {
+		if pending, read := pendingVariant(ctx, q, id); read == nil {
+			return &StaleProposal{VariantID: pending}
+		}
+		return ErrProposalStale
+	}
+	return mapFailure(ctx, err)
+}
+
+// mapClosureFailure publishes the database's own refusal of the closure and names the fact that
+// refused it. The stock rules of apply_branch_closing_closure (LC006 for a pending line, LC007 for
+// an open reservation, LC018 for stock that moved) compose a message the statement is the only
+// source of, so the state is read back instead of the prose being parsed: the refusal names the
+// very first line the trigger refused, in the order the trigger refuses them. A closure refused
+// for another reason, or a sheet that cannot be read back, keeps the plain mapping.
+func mapClosureFailure(ctx context.Context, q querier, err error, id int64, branch int16) error {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) {
+		switch pg.Code {
+		case "LC006", "LC007", "LC018":
+			if blocker := closureBlocker(ctx, q, id, branch); blocker != nil {
+				return blocker
+			}
+		}
+	}
+	return mapFailure(ctx, err)
+}
+
+// closureBlocker names the fact that refuses a closure, reading the same rows with the same
+// predicates as the trigger: first a variant with no counted quantity, then -- in variant order,
+// as the trigger walks the sheet -- a variant whose stock is still reserved and a variant that no
+// longer holds the quantity the sheet photographed. A state that cannot be read back is not
+// guessed: this returns nil and the caller publishes the plain class of the refusal.
+func closureBlocker(ctx context.Context, q querier, id int64, branch int16) error {
+	if pending, err := pendingVariant(ctx, q, id); err == nil {
+		return &CountPending{VariantID: pending}
+	}
+	var variant int64
+	var reserved bool
+	err := q.QueryRow(ctx, `SELECT line.variant_id,coalesce(balance.reserved,0) > 0
+ FROM closing_count_lines line
+ JOIN inventory_balances balance
+   ON balance.location_id=$2 AND balance.variant_id=line.variant_id
+ WHERE line.closing_id=$1
+   AND (coalesce(balance.reserved,0) > 0 OR balance.existing IS DISTINCT FROM line.expected_quantity)
+ ORDER BY line.variant_id LIMIT 1`, id, branch).Scan(&variant, &reserved)
+	if err != nil {
+		return nil
+	}
+	if reserved {
+		return &ReservedStock{VariantID: variant}
+	}
+	return &StockMoved{VariantID: variant}
+}
+
 // mapFailure publishes the database's own decision and nothing else: SQLSTATE is the only
 // trusted evidence, and cancellation keeps its semantics.
 func mapFailure(ctx context.Context, err error) error {
@@ -1232,7 +1329,19 @@ func mapFailure(ctx context.Context, err error) error {
 		case "LC006":
 			return ErrClosureRefused
 		case "LC007":
+			// A variant still holds a reservation. The closure path names it through
+			// closureBlocker; this is the class of the same refusal.
 			return ErrReservedStock
+		case "LC018":
+			// A variant moved during the settlement, so the closure refuses to apply a stale
+			// count. The closure path names the variant through closureBlocker; this is the
+			// class of the same refusal.
+			return ErrStockMoved
+		case "LC019":
+			// The count sheet stopped being complete between the store's check and the
+			// database's transition. It is a conflict the operator answers by re-reading and
+			// retrying, never an outage.
+			return ErrProposalStale
 		case "LC016":
 			return ErrRoundNotAccepted
 		case "LC017":

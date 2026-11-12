@@ -17,6 +17,7 @@ import (
 	"luson/api/internal/pricing"
 	"luson/api/internal/sales"
 	"luson/api/internal/testpg"
+	"luson/api/internal/transfers"
 )
 
 // env is one isolated database with the settlement store on top of the trial catalogue.
@@ -1587,5 +1588,210 @@ func TestReadPublishesTheExpensesOfItsWindow(t *testing.T) {
 	assertExpenses(closed)
 	if closed.CashExpenses != "55.50" {
 		t.Fatalf("the closed settlement must keep the total it settled: %q", closed.CashExpenses)
+	}
+}
+
+// reserveStock promises units of one variant of a branch to a transfer and leaves the
+// reservation open, which is the state a settlement can find and must refuse: the branch sends
+// the units back to the warehouse and the warehouse approves, so the reservation is the
+// transfer's own and the branch's stock is the only thing that changed (S3, LC007).
+func (e *env) reserveStock(t *testing.T, branch int, variant, quantity int64) int64 {
+	t.Helper()
+	promises := transfers.New(e.pool)
+	created, err := promises.Create(e.ctx, identity(branch), transfers.CreateInput{
+		Kind: transfers.SendToWarehouse, CounterpartyID: 1,
+		RetryKey: "reserve-the-units-of-a-settlement",
+		Items:    []transfers.Line{{VariantID: variant, Quantity: quantity}},
+	})
+	if err != nil {
+		t.Fatalf("the transfer reservation could not be created: %v", err)
+	}
+	if _, err := promises.Approve(e.ctx, warehouse(), created.Request.ID); err != nil {
+		t.Fatalf("the transfer reservation could not be approved: %v", err)
+	}
+	return created.Request.ID
+}
+
+// awaitWaitingLock waits until a statement of this database is waiting for a table lock, which is
+// how the proposal race below is armed without a sleep: a proposal that still waits for the sale
+// ledger of the period has already read the count sheet and has not yet reached the database's
+// transition.
+func (e *env) awaitWaitingLock(t *testing.T, table string) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting int64
+		if err := e.pool.QueryRow(e.ctx, `SELECT count(*) FROM pg_locks
+ WHERE relation=$1::regclass AND NOT granted`, table).Scan(&waiting); err != nil {
+			t.Fatalf("the waiting lock could not be read: %v", err)
+		}
+		if waiting > 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("no statement ever waited for the %s table", table)
+}
+
+// TestClosureRefusesAVariantThatMovedByName pins LC018: a variant whose stock is no longer the
+// quantity the count sheet photographed refuses the closure, and the refusal names that variant
+// so the warehouse knows which line of the sheet is stale (S5). It is a conflict the operator
+// answers by recounting, never an outage; nothing is applied, and putting the stock back is what
+// unblocks the very same closure.
+func TestClosureRefusesAVariantThatMovedByName(t *testing.T) {
+	e := fixture(t)
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+	e.countAll(t, opened.ID)
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("100.00", "0.00", "20.00")); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	if _, err := e.store.Propose(e.ctx, warehouse(), opened.ID); err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	// A counted variant no longer holds what the sheet photographed. The freeze guards refuse
+	// every branch operation while the settlement is open (S3), so this is the state a bypassed
+	// guard leaves -- exactly the state the closure's own check exists for.
+	if _, err := e.pool.Exec(e.ctx, `UPDATE inventory_balances SET existing=existing+1
+ WHERE location_id=2 AND variant_id=2`); err != nil {
+		t.Fatal("the branch stock could not be moved behind the settlement")
+	}
+	_, err = e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, "")
+	var moved *closings.StockMoved
+	if !errors.As(err, &moved) || moved.VariantID != 2 {
+		t.Fatalf("a variant that moved must be refused by name: %v", err)
+	}
+	refused(t, err, closings.ErrStockMoved)
+	// Nothing was applied: the drawer's money was not written, the stock is where it moved to and
+	// the settlement is still the offer the branch was shown.
+	if movements := e.scalar(t, `SELECT count(*) FROM branch_cash_movements
+ WHERE closing_id=$1`, opened.ID); movements != 0 {
+		t.Fatalf("a refused closure must write no cash movement: %d", movements)
+	}
+	if existing, _ := e.balance(t, 2, 2); existing != 5 {
+		t.Fatalf("a refused closure must not apply the count: variant 2 is %d", existing)
+	}
+	if existing, _ := e.balance(t, 2, 1); existing != 10 {
+		t.Fatalf("a refused closure must not apply the count: variant 1 is %d", existing)
+	}
+	if state := e.text(t, "SELECT status FROM branch_closings WHERE id=$1", opened.ID); state != "proposed" {
+		t.Fatalf("a refused closure must leave the settlement proposed: %q", state)
+	}
+	// Restoring the photographed quantity is what closes the same settlement: the refusal was
+	// the stale count and not a broken document.
+	if _, err := e.pool.Exec(e.ctx, `UPDATE inventory_balances SET existing=4
+ WHERE location_id=2 AND variant_id=2`); err != nil {
+		t.Fatal("the branch stock could not be restored")
+	}
+	closed, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, "")
+	if err != nil || closed.Status != closings.StatusClosed {
+		t.Fatalf("a restored branch must close: %+v %v", closed, err)
+	}
+}
+
+// TestClosureRefusesAnOpenReservationByName pins LC007 with S5: a variant the branch still owes
+// to a transfer blocks the closure and is named by the refusal, even when the count covers the
+// reservation, because a reserved unit is stock the branch already promised.
+func TestClosureRefusesAnOpenReservationByName(t *testing.T) {
+	e := fixture(t)
+	// The branch promises two units of variant 1 to the warehouse before the settlement freezes
+	// it, so the reservation is the transfer's own and not a column this test typed.
+	e.reserveStock(t, 2, 1, 2)
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+	e.countAll(t, opened.ID)
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("100.00", "0.00", "20.00")); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	if _, err := e.store.Propose(e.ctx, warehouse(), opened.ID); err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	_, err = e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, "")
+	var reserved *closings.ReservedStock
+	if !errors.As(err, &reserved) || reserved.VariantID != 1 {
+		t.Fatalf("an open reservation must be refused by naming the variant: %v", err)
+	}
+	refused(t, err, closings.ErrReservedStock)
+	// Nothing was applied: the reservation is intact, no money moved and the settlement is still
+	// proposed.
+	if existing, held := e.balance(t, 2, 1); existing != 10 || held != 2 {
+		t.Fatalf("a refused closure must keep the reservation: %d/%d", existing, held)
+	}
+	if movements := e.scalar(t, `SELECT count(*) FROM branch_cash_movements
+ WHERE closing_id=$1`, opened.ID); movements != 0 {
+		t.Fatalf("a refused closure must write no cash movement: %d", movements)
+	}
+	if state := e.text(t, "SELECT status FROM branch_closings WHERE id=$1", opened.ID); state != "proposed" {
+		t.Fatalf("a refused closure must leave the settlement proposed: %q", state)
+	}
+}
+
+// TestProposalRaceIsAConflictNotAnOutage pins LC019: the count sheet can stop being complete in
+// the window between the store's own check of the proposal and the database's transition. The
+// refusal is a conflict that names the variant, because the operator re-reads the settlement and
+// proposes again; reporting an outage would hide a document that is perfectly readable.
+func TestProposalRaceIsAConflictNotAnOutage(t *testing.T) {
+	e := fixture(t)
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+	e.countAll(t, opened.ID)
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("100.00", "0.00", "20.00")); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	// The rounds of the settlement are held, so the proposal stops after its last read of the
+	// count sheet and before the database's transition. A line that becomes pending then is a
+	// real race and not a scenario the store invents.
+	blocker, err := e.pool.Begin(e.ctx)
+	if err != nil {
+		t.Fatalf("the blocking transaction could not start: %v", err)
+	}
+	defer func() { _ = blocker.Rollback(context.Background()) }()
+	if _, err := blocker.Exec(e.ctx, "LOCK TABLE closing_proposals IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatalf("the proposal rounds could not be held: %v", err)
+	}
+	proposed := make(chan error, 1)
+	go func() {
+		_, err := e.store.Propose(e.ctx, warehouse(), opened.ID)
+		proposed <- err
+	}()
+	e.awaitWaitingLock(t, "closing_proposals")
+	if _, err := e.pool.Exec(e.ctx, `UPDATE closing_count_lines SET counted_quantity=NULL
+ WHERE closing_id=$1 AND variant_id=2`, opened.ID); err != nil {
+		t.Fatalf("the counted line could not be made pending again: %v", err)
+	}
+	if err := blocker.Commit(e.ctx); err != nil {
+		t.Fatalf("the proposal rounds could not be released: %v", err)
+	}
+	err = <-proposed
+	var stale *closings.StaleProposal
+	if !errors.As(err, &stale) || stale.VariantID != 2 {
+		t.Fatalf("the raced proposal must be refused by naming the pending variant: %v", err)
+	}
+	refused(t, err, closings.ErrProposalStale)
+	// No round was written and the settlement is where it was: the operator counts the line and
+	// proposes the very same settlement again.
+	if rounds := e.scalar(t, `SELECT count(*) FROM closing_proposals WHERE closing_id=$1`,
+		opened.ID); rounds != 0 {
+		t.Fatalf("a refused proposal must write no round: %d", rounds)
+	}
+	if state := e.text(t, "SELECT status FROM branch_closings WHERE id=$1", opened.ID); state != "open" {
+		t.Fatalf("a refused proposal must leave the settlement open: %q", state)
+	}
+	if _, err := e.store.Count(e.ctx, warehouse(), opened.ID,
+		[]closings.Counted{{VariantID: 2, Quantity: 4}}); err != nil {
+		t.Fatalf("the pending line could not be counted again: %v", err)
+	}
+	again, err := e.store.Propose(e.ctx, warehouse(), opened.ID)
+	if err != nil || again.Status != closings.StatusProposed || len(again.Rounds) != 1 {
+		t.Fatalf("the settlement must be proposable again: %+v %v", again, err)
 	}
 }
