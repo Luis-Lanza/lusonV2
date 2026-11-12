@@ -3,19 +3,25 @@ import type { KeyboardEvent } from 'react';
 import { validSearch, type Location } from './model';
 import {
   canonicalCorrection, canonicalCountPayload, canonicalDrawerPayload, closingAccountLabel,
-  closingAcceptedCorrections, closingBlockReason, closingBlockers,
+  closingAcceptedCorrections, closingAddLine, closingBlockReason, closingBlockers,
+  closingCatalogueEmpty, closingCatalogueHelp, closingCatalogueHeldTag, closingCatalogueListedTag,
+  closingCatalogueOptions, closingCatalogueUnavailable,
   closingCorrectedAmounts, closingCorrectedCounts, closingCorrectionDeltaText,
   closingCorrectionKindLabels, closingCorrectionPreview, closingCorrectionQuantityDeltaText,
   closingCorrectionReasonMessage, closingCorrectionStatusLabels, closingCorrectionValueMessage,
-  closingDifferenceName, closingIsEditable, closingIsLive, closingLineDifference, closingLineLabel,
+  closingCountChanges, closingDifferenceName, closingIsEditable, closingIsLive, closingLineDifference,
+  closingLineIsOutsideSystem, closingLineLabel,
   closingCountBatches, closingMoneyText, closingMomentText, closingObservationMessage,
   closingPendingCorrection, closingPendingTag, closingPeriod,
   closingPeriodLabel,
   closingProgress, closingQuantityMessage, closingQuantityText, closingRateText, closingRail,
-  closingSearchMessage, closingSignedText, closingStatusLabels, correctionDraftFrom, drawerDraftFrom,
+  closingRemoveLine, closingSearchMessage, closingSheetRows, closingSheetVariantIDs,
+  closingSignedText, closingStatusLabels, closingOutsideSystemHelp, closingOutsideSystemTag,
+  correctionDraftFrom, drawerDraftFrom,
   drawerView,
   emptyDrawerDraft, filterCountLines,
-  type Closing, type ClosingCountLine, type ClosingRail, type CorrectionDraft, type CorrectionBody,
+  type Closing, type ClosingCatalogueVariant, type ClosingCountLine, type ClosingRail,
+  type CorrectionDraft, type CorrectionBody,
   type DrawerDraft,
 } from './closingModel';
 import {
@@ -42,12 +48,14 @@ function countDraftFrom(closing: Closing): Record<number, string> {
   return draft;
 }
 
-/** The lines the admin changed, so a save sends only what was counted and never the whole sheet. */
-function changedLines(closing: Closing, draft: Record<number, string>) {
-  return closing.count_lines
-    .filter(line => (draft[line.variant_id] ?? '') !== (line.counted_quantity === null ? '' : String(line.counted_quantity)))
-    .map(line => ({ variant_id: line.variant_id, counted: draft[line.variant_id] ?? '' }));
+/** The catalogue search of the sheet: what it read, what it is doing and why it failed. */
+interface CatalogueState {
+  readonly phase: 'idle' | 'loading' | 'ready' | 'error';
+  readonly variants: readonly ClosingCatalogueVariant[];
+  readonly problem: string;
 }
+
+const emptyCatalogue: CatalogueState = Object.freeze({ phase: 'idle', variants: [], problem: '' });
 
 function sameDrawer(left: DrawerDraft, right: DrawerDraft): boolean {
   return left.counted === right.counted && left.contribution === right.contribution
@@ -90,6 +98,10 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   const [draft, setDraft] = useState<DrawerDraft>(emptyDrawerDraft);
   const [correction, setCorrection] = useState<CorrectionDraft | null>(null);
   const [search, setSearch] = useState('');
+  // The battery the admin counted and the cut did not know: a row the closure honours upward (S5).
+  const [added, setAdded] = useState<readonly ClosingCatalogueVariant[]>([]);
+  const [catalogueSearch, setCatalogueSearch] = useState('');
+  const [catalogue, setCatalogue] = useState<CatalogueState>(emptyCatalogue);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
   const [problem, setProblem] = useState('');
@@ -109,12 +121,15 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
     if (branch === 0) {
       setPhase('idle'); setClosing(null); setHistoryTotal(0); setResumed(null); setClosedView(null);
       setCounted({}); setDraft(emptyDrawerDraft); setCorrection(null); setProblem(''); setStatus('');
+      setAdded([]); setCatalogue(emptyCatalogue); setCatalogueSearch('');
       return;
     }
     const controller = new AbortController();
     const alive = () => mounted.current && !controller.signal.aborted && !lifetime.current.signal.aborted;
     setPhase('loading'); setProblem(''); setStatus('');
     setClosing(null); setResumed(null); setClosedView(null); setCorrection(null);
+    // The rows added for another branch are not rows of this one, and the catalogue is not shared.
+    setAdded([]); setCatalogue(emptyCatalogue);
     void (async () => {
       try {
         const page = await api.history(branch, 1, 25, controller.signal);
@@ -150,12 +165,16 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
     setCounted(countDraftFrom(document));
     setDraft(drawerDraftFrom(document));
     setCorrection(document.status === 'closed' ? correctionDraftFrom(document) : null);
+    // A row the server now holds is a line of the sheet, so it is no longer a local addition.
+    setAdded(current => current.filter(line =>
+      !document.count_lines.some(row => row.variant_id === line.variant_id)));
     setPhase('ready');
   }
 
   async function openSettlement() {
     if (branch === 0 || busy || pending.current) return;
     pending.current = true; setBusy(true); setProblem(''); setStatus('Abriendo la rendición…');
+    setAdded([]); setCatalogue(emptyCatalogue);
     try {
       const document = await api.open(branch, csrf, lifetime.current.signal);
       if (!mounted.current || lifetime.current.signal.aborted) return;
@@ -178,6 +197,35 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
     }
   }
 
+  /**
+   * Searches the branch's own catalogue for a battery the count sheet does not have: the sheet is the
+   * snapshot of the cut, so a variant the branch counted without having it in the system has no row
+   * to type into until the admin adds one (S4, S5).
+   */
+  async function searchCatalogue() {
+    const current = closing;
+    if (current === null || busy || pending.current) return;
+    if (!validSearch(catalogueSearch)) {
+      setCatalogue({ phase: 'error', variants: [], problem: closingSearchMessage });
+      return;
+    }
+    setCatalogue(state => ({ ...state, phase: 'loading', problem: '' }));
+    try {
+      const variants = await api.catalogue(current.branch_location_id, catalogueSearch.trim(),
+        lifetime.current.signal);
+      if (!mounted.current || lifetime.current.signal.aborted) return;
+      setCatalogue({ phase: 'ready', variants, problem: '' });
+    } catch (failure) {
+      if (!mounted.current || lifetime.current.signal.aborted) return;
+      // The refusal of this read is about the catalogue, never about the settlement: a failure of
+      // the settlement's own vocabulary would name the wrong document.
+      const error = failureOf(failure);
+      setCatalogue({ phase: 'error', variants: [],
+        problem: error.code === 'unauthenticated'
+          ? closingErrorMessages.unauthenticated : closingCatalogueUnavailable });
+    }
+  }
+
   async function save() {
     const current = closing;
     if (!current || busy || pending.current) return;
@@ -185,7 +233,8 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
       setStatus(''); setProblem('La rendición no admite cambios en este estado.');
       return;
     }
-    const changed = changedLines(current, counted);
+    // A save sends only what was counted: the rows whose count changed, added rows included.
+    const changed = closingCountChanges(rows, counted);
     let lines;
     try { lines = changed.length === 0 ? [] : canonicalCountPayload(changed); }
     catch (failure) {
@@ -304,16 +353,30 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   const rail: ClosingRail | null = closing === null ? null : closingRail(closing);
   const view = rail === null ? null : drawerView(rail, draft);
   const editable = closing !== null && closingIsEditable(closing.status);
-  const changed = closing === null ? [] : changedLines(closing, counted);
+  // The sheet the admin works on: the snapshot of the cut plus the rows added by hand (S5).
+  const rows = closing === null ? [] : closingSheetRows(closing, added);
+  const takenIds = closing === null ? new Set<number>() : closingSheetVariantIDs(closing, added);
+  const options = closingCatalogueOptions(catalogue.variants, takenIds);
+  const addableCount = options.filter(option => option.state === 'addable').length;
+
+  /** Adds one variant of the branch catalogue as a row with no expected quantity at all. */
+  function addLine(variant: ClosingCatalogueVariant) {
+    try { setAdded(current => closingAddLine(current, variant, takenIds)); }
+    catch (failure) {
+      setStatus('');
+      setProblem(failure instanceof Error && failure.message ? failure.message
+        : closingCatalogueEmpty);
+    }
+  }
+
+  const changed = closing === null ? [] : closingCountChanges(rows, counted);
   const unsaved = closing !== null
-    && (changed.length > 0 || !sameDrawer(draft, drawerDraftFrom(closing)));
-  const blockers = closing === null || view === null ? [] : closingBlockers(closing, view, unsaved);
+    && (changed.length > 0 || added.length > 0 || !sameDrawer(draft, drawerDraftFrom(closing)));
+  const blockers = closing === null || view === null ? [] : closingBlockers(closing, view, unsaved, rows);
   const blocked = blockers.length > 0;
   const searchValid = validSearch(search);
-  const rows = closing === null ? []
-    : searchValid ? filterCountLines(closing.count_lines, search) : closing.count_lines;
-  const progress = closing === null
-    ? { total: 0, counted: 0, pending: 0 } : closingProgress(closing.count_lines);
+  const visibleRows = searchValid ? filterCountLines(rows, search) : rows;
+  const progress = closingProgress(rows);
   const reasonID = 'closing-block-reason';
   const period = closing === null ? null : closingPeriod(closing.period_start, closing.cut_at);
   // The rail answers to what is typed, over the facts the settlement holds: the difference and
@@ -405,6 +468,49 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
             <small><kbd>Tab</kbd> avanza · <kbd>Enter</kbd> confirma · <kbd>↑</kbd><kbd>↓</kbd> mueven</small>
           </div>
           {!searchValid && <p role="alert" className="closing-problem">{closingSearchMessage}</p>}
+          {/* The sheet is the snapshot of the cut, so a battery the system did not have is only
+              countable once the admin adds it from the branch's own catalogue (S4, S5). */}
+          {editable && <section className="closing-catalogue" aria-labelledby="closing-catalogue-title">
+            <h3 id="closing-catalogue-title">Agregar una batería que el sistema no tiene</h3>
+            <p className="closing-muted">{closingCatalogueHelp}</p>
+            <div className="closing-catalogue-search">
+              <input type="search" aria-label="Buscar batería en el catálogo de la sucursal"
+                placeholder="Marca, modelo o amperaje" value={catalogueSearch}
+                onChange={event => setCatalogueSearch(event.target.value)}
+                onKeyDown={event => {
+                  if (event.key !== 'Enter') return;
+                  event.preventDefault();
+                  void searchCatalogue();
+                }} />
+              <button type="button" disabled={busy || catalogue.phase === 'loading'}
+                onClick={() => void searchCatalogue()}>Buscar en el catálogo</button>
+            </div>
+            {catalogue.phase === 'loading' && <p role="status" className="closing-muted">
+              Consultando el catálogo de la sucursal…</p>}
+            {catalogue.phase === 'error' && <p role="alert" className="closing-problem">
+              {catalogue.problem}</p>}
+            {catalogue.phase === 'ready' && addableCount === 0
+              && <p className="closing-muted">{closingCatalogueEmpty}</p>}
+            {catalogue.phase === 'ready' && options.length > 0
+              && <ul className="closing-catalogue-list" aria-label="Variantes del catálogo para agregar">
+                {options.map(option => {
+                  const label = closingLineLabel({ variant_id: option.variant.variant_id,
+                    catalog_entry_id: option.variant.catalog_entry_id, brand: option.variant.brand,
+                    model: option.variant.model, capacity_ah: option.variant.capacity_ah,
+                    polarity: option.variant.polarity, expected_quantity: 0, counted_quantity: null });
+                  return <li key={option.variant.variant_id} data-variant-id={option.variant.variant_id}
+                    data-state={option.state}>
+                    <span>{label}</span>
+                    {option.state === 'addable' && <button type="button" disabled={busy}
+                      onClick={() => addLine(option.variant)}>{`Agregar ${label}`}</button>}
+                    {option.state === 'listed' && <span className="closing-tag">
+                      {closingCatalogueListedTag}</span>}
+                    {option.state === 'held' && <span className="closing-tag warn">
+                      {closingCatalogueHeldTag}</span>}
+                  </li>;
+                })}
+              </ul>}
+          </section>}
           <div className="closing-table-wrap">
             <table className="closing-table">
               <caption className="sr-only">Conteo de stock de {closing.branch_name}</caption>
@@ -416,20 +522,33 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
                   <th scope="col" className="num">Dif.</th>
                 </tr>
               </thead>
-              <tbody onKeyDown={moveFocus}>{rows.map(line => {
+              <tbody onKeyDown={moveFocus}>{visibleRows.map(line => {
                 const typed = counted[line.variant_id];
                 const difference = draftDifference(line, typed);
                 const pendingRow = line.counted_quantity === null && (typed ?? '') === '';
+                // A row added by hand is not a row of the cut: the system had none of it, so it
+                // carries no expected quantity and says so at a glance.
+                const outside = closingLineIsOutsideSystem(line);
+                const removal = added.some(entry => entry.variant_id === line.variant_id);
                 const differenceClass = difference === null || difference === 0 ? 'zero'
                   : difference < 0 ? 'neg' : 'pos';
                 return <tr key={line.variant_id} data-variant-id={line.variant_id}
-                  className={pendingRow ? 'pending' : undefined}>
+                  data-outside={outside ? 'true' : undefined}
+                  className={[pendingRow ? 'pending' : '', outside ? 'outside' : '']
+                    .filter(name => name !== '').join(' ') || undefined}>
                   <td>
                     {line.brand}{' '}
                     <small>{line.model} · {line.capacity_ah} Ah · {line.polarity}</small>
+                    {outside && <span className="closing-outside" title={closingOutsideSystemHelp}>
+                      {closingOutsideSystemTag}</span>}
                     {pendingRow && <span className="closing-pending">{closingPendingTag}</span>}
+                    {editable && removal && <button type="button" className="closing-unadd" disabled={busy}
+                      aria-label={`Quitar ${closingLineLabel(line)} del borrador`}
+                      onClick={() => setAdded(current => closingRemoveLine(current, line.variant_id))}>
+                      Quitar
+                    </button>}
                   </td>
-                  <td className="num">{line.expected_quantity}</td>
+                  <td className="num">{outside ? '—' : line.expected_quantity}</td>
                   <td className="num">{editable
                     ? <input className="count" inputMode="numeric" placeholder="—"
                       aria-label={`Contado de ${closingLineLabel(line)}`} value={typed ?? ''}
@@ -442,7 +561,8 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
           </div>
           <p className="closing-help">
             Al cerrar, cada variante contada queda con su existencia <b>exactamente igual a lo contado</b>.
-            Las filas marcadas como pendientes todavía no permiten proponer.
+            Las filas marcadas como pendientes todavía no permiten proponer. Una fila agregada por vos
+            queda <b>fuera del sistema</b>: no lleva cantidad esperada porque la sucursal no la tenía.
           </p>
         </section>
 

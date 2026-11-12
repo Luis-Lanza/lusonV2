@@ -482,6 +482,144 @@ export function closingCountBatches(
 }
 
 // ---------------------------------------------------------------------------------
+// A battery the system did not have (S4, S5: the stock squares upward too)
+// ---------------------------------------------------------------------------------
+
+/**
+ * The sheet of the cut only lists the variants the branch held, so a battery that exists physically
+ * and the system does not have has no row at all. The admin adds it from the branch's own catalogue,
+ * and the closure honours it as stock the system did not have (S5, L38).
+ */
+export const closingCataloguePageSize = 50;
+export const closingCatalogueUnavailable =
+  'No se pudo consultar el catálogo de la sucursal. Revisá la conexión e intentá de nuevo.';
+export const closingCatalogueHelp =
+  '¿Contaste una batería que el sistema no tiene? Buscala en el catálogo de la sucursal y agregala: la fila queda sin cantidad esperada y el cierre la deja con lo que contaste.';
+export const closingCatalogueEmpty = 'Sin variantes para agregar con esa búsqueda.';
+export const closingCatalogueListedTag = 'Ya está en la planilla';
+export const closingCatalogueHeldTag = 'La sucursal ya tiene stock';
+export const closingDuplicateLineMessage =
+  'Esa variante ya está en la planilla: no se puede agregar dos veces.';
+/** A row added by hand says, in words, that the cut did not know it. */
+export const closingOutsideSystemTag = 'Fuera del sistema';
+export const closingOutsideSystemHelp =
+  'La sucursal no tenía esta variante en el sistema: la fila no lleva cantidad esperada y su diferencia es lo contado.';
+
+/** One variant of the branch's catalogue, with the stock the branch holds right now. */
+export interface ClosingCatalogueVariant {
+  readonly variant_id: number;
+  readonly catalog_entry_id: number;
+  readonly brand: string;
+  readonly model: string;
+  readonly capacity_ah: string;
+  readonly polarity: ClosingPolarity;
+  /** What the branch holds: only a variant it holds none of is an addition (S5). */
+  readonly existing: bigint;
+}
+
+/** What the catalogue search offers for one variant of the branch. */
+export type ClosingCatalogueState = 'addable' | 'listed' | 'held';
+
+/** One row of the catalogue search: the variant and whether the sheet can still take it. */
+export interface ClosingCatalogueOption {
+  readonly variant: ClosingCatalogueVariant;
+  readonly state: ClosingCatalogueState;
+}
+
+/**
+ * The variant ids the sheet already holds: the snapshot of the cut plus the rows the admin added by
+ * hand and has not saved yet. One variant is added once, and a line of the sheet is never added.
+ */
+export function closingSheetVariantIDs(closing: Closing,
+  added: readonly ClosingCatalogueVariant[] = []): ReadonlySet<number> {
+  const ids = new Set<number>(closing.count_lines.map(line => line.variant_id));
+  for (const variant of added) ids.add(variant.variant_id);
+  return ids;
+}
+
+/**
+ * The catalogue search as the sheet can use it: a variant the sheet already lists is only listed, a
+ * variant the branch holds is only held, and only a variant the system does not have is addable.
+ * It is the one place the exclusion is decided, so the screen cannot offer a row twice.
+ */
+export function closingCatalogueOptions(catalogue: readonly ClosingCatalogueVariant[],
+  taken: ReadonlySet<number>): readonly ClosingCatalogueOption[] {
+  const seen = new Set<number>();
+  const options: ClosingCatalogueOption[] = [];
+  for (const variant of catalogue) {
+    if (seen.has(variant.variant_id)) continue;
+    seen.add(variant.variant_id);
+    const state: ClosingCatalogueState = taken.has(variant.variant_id) ? 'listed'
+      : variant.existing !== 0n ? 'held' : 'addable';
+    options.push(Object.freeze({ variant: Object.freeze({ ...variant }), state }));
+  }
+  return Object.freeze(options);
+}
+
+/**
+ * Adds one variant of the branch catalogue as a row the closure will honour as stock the system did
+ * not have. A variant already taken — on the sheet or added once already — is refused instead.
+ */
+export function closingAddLine(lines: readonly ClosingCatalogueVariant[],
+  variant: ClosingCatalogueVariant, taken: ReadonlySet<number>): readonly ClosingCatalogueVariant[] {
+  if (taken.has(variant.variant_id) || lines.some(line => line.variant_id === variant.variant_id)) {
+    throw new Error(closingDuplicateLineMessage);
+  }
+  return Object.freeze([...lines, Object.freeze({ ...variant })]);
+}
+
+/** Drops a row the admin added and has not saved yet: a line of the cut is never removed. */
+export function closingRemoveLine(lines: readonly ClosingCatalogueVariant[],
+  variant_id: number): readonly ClosingCatalogueVariant[] {
+  return Object.freeze(lines.filter(line => line.variant_id !== variant_id));
+}
+
+/**
+ * The rows the screen works on: the snapshot of the cut plus the rows added by hand, in variant
+ * order. An added row carries no expected quantity because the cut had none of it.
+ */
+export function closingSheetRows(closing: Closing,
+  added: readonly ClosingCatalogueVariant[] = []): readonly ClosingCountLine[] {
+  const rows: ClosingCountLine[] = closing.count_lines.map(line => Object.freeze({
+    variant_id: line.variant_id, catalog_entry_id: line.catalog_entry_id, brand: line.brand,
+    model: line.model, capacity_ah: line.capacity_ah, polarity: line.polarity,
+    expected_quantity: line.expected_quantity, counted_quantity: line.counted_quantity,
+  }));
+  for (const variant of added) {
+    if (rows.some(row => row.variant_id === variant.variant_id)) continue;
+    rows.push(Object.freeze({ variant_id: variant.variant_id,
+      catalog_entry_id: variant.catalog_entry_id, brand: variant.brand, model: variant.model,
+      capacity_ah: variant.capacity_ah, polarity: variant.polarity,
+      expected_quantity: 0, counted_quantity: null }));
+  }
+  rows.sort((left, right) => left.variant_id - right.variant_id);
+  return Object.freeze(rows);
+}
+
+/**
+ * A row the cut did not know: the system had none of it, so it carries no expected quantity. Every
+ * line the opening seeded has stock, which is exactly what makes the two kinds tellable apart.
+ */
+export function closingLineIsOutsideSystem(line: { readonly expected_quantity: number }): boolean {
+  return line.expected_quantity === 0;
+}
+
+/**
+ * The lines the admin is about to save: every row whose count changed, the rows added by hand
+ * included, and nothing else. A row that was not typed is not a count and is never sent (S4).
+ */
+export function closingCountChanges(rows: readonly ClosingCountLine[],
+  draft: Readonly<Record<number, string>>): readonly CountedLineInput[] {
+  const changes: CountedLineInput[] = [];
+  for (const row of rows) {
+    const typed = typeof draft[row.variant_id] === 'string' ? draft[row.variant_id] : '';
+    const saved = row.counted_quantity === null ? '' : String(row.counted_quantity);
+    if (typed !== saved) changes.push(Object.freeze({ variant_id: row.variant_id, counted: typed }));
+  }
+  return Object.freeze(changes);
+}
+
+// ---------------------------------------------------------------------------------
 // Why the offer cannot be made yet
 // ---------------------------------------------------------------------------------
 
@@ -508,10 +646,11 @@ function pendingBlocker(lines: readonly ClosingCountLine[]): ClosingBlocker {
 /**
  * What still blocks the proposal, in the order the warehouse can act on it. Every blocker is a
  * fact of the settlement it already holds or of the draft it typed; the refusal itself is the
- * server's, and this list never replaces it.
+ * server's, and this list never replaces it. `sheet` is the sheet the admin is working on, which
+ * carries the rows added by hand beside the snapshot of the cut.
  */
 export function closingBlockers(closing: Closing, view: DrawerView,
-  unsaved = false): readonly ClosingBlocker[] {
+  unsaved = false, sheet: readonly ClosingCountLine[] = closing.count_lines): readonly ClosingBlocker[] {
   if (!closingIsEditable(closing.status)) {
     return Object.freeze([Object.freeze({
       code: closing.status === 'proposed' ? 'state_conflict' : 'closed',
@@ -521,7 +660,7 @@ export function closingBlockers(closing: Closing, view: DrawerView,
     })]);
   }
   const blockers: ClosingBlocker[] = [];
-  const pending = closingPendingLines(closing.count_lines);
+  const pending = closingPendingLines(sheet);
   if (pending.length > 0) blockers.push(pendingBlocker(pending));
   if (view.problem !== '') {
     blockers.push(Object.freeze({ code: 'invalid_amount', message: view.problem }));

@@ -482,3 +482,63 @@ describe('the corrections a closed settlement publishes (S16)', () => {
     expect(correction.payload.counted_quantities).toHaveLength(1);
   });
 });
+
+// The branch's own catalogue, as the count sheet reads it when the admin counted a battery the
+// cut did not know. The read is the branch's balance matrix: it carries every variant of the
+// branch with the stock it holds, zero included (S4, S5, L38).
+describe('the branch catalogue of the count sheet (S4, S5)', () => {
+  // Capacity and the three stock quantities are JSON numbers in this contract, never text.
+  const inventory = (overrides: Record<string, unknown> = {}) => ({
+    location: { id: 2, name: 'Sopocachi' }, page: 1, page_size: 50, total_variants: 2,
+    items: [
+      { variant_id: 1, catalog_entry_id: 1, brand: 'Bosch', model: 'S4', capacity_ah: 45,
+        polarity: 'L', existing: 12, reserved: 0, available: 12 },
+      { variant_id: 20, catalog_entry_id: 11, brand: 'Toyo', model: 'NS60', capacity_ah: 65,
+        polarity: 'R', existing: 0, reserved: 0, available: 0 },
+    ], ...overrides,
+  });
+
+  it('reads the branch catalogue with the search and the sheet page, stock as an exact quantity', async () => {
+    const h = harness(() => json(inventory()));
+    const variants = await h.api.catalogue(2, 'NS60');
+    expect(h.calls[0].url).toBe('/api/inventory?location_id=2&page=1&page_size=50&search=NS60');
+    expect(variants).toEqual([
+      { variant_id: 1, catalog_entry_id: 1, brand: 'Bosch', model: 'S4', capacity_ah: '45',
+        polarity: 'L', existing: 12n },
+      { variant_id: 20, catalog_entry_id: 11, brand: 'Toyo', model: 'NS60', capacity_ah: '65',
+        polarity: 'R', existing: 0n },
+    ]);
+    // An empty search is the whole matrix, never an absent filter the contract would refuse.
+    const all = harness(() => json(inventory()));
+    await all.api.catalogue(2, '');
+    expect(all.calls[0].url).toBe('/api/inventory?location_id=2&page=1&page_size=50');
+  });
+
+  it('refuses a page that answers another branch, another page or another shape', async () => {
+    const wrongBranch = harness(() => json(inventory({ location: { id: 3, name: 'Miraflores' } })));
+    expect((await refusalOf(wrongBranch.api.catalogue(2, ''))).code).toBe('invalid_response');
+    const wrongPage = harness(() => json(inventory({ page_size: 25 })));
+    expect((await refusalOf(wrongPage.api.catalogue(2, ''))).code).toBe('invalid_response');
+    const malformed = harness(() => json('{"items":[]}'));
+    expect((await refusalOf(malformed.api.catalogue(2, ''))).code).toBe('invalid_response');
+    const impossibleSearch = harness(() => json(inventory()));
+    expect((await refusalOf(impossibleSearch.api.catalogue(2, 'a\0b'))).code).toBe('invalid_request');
+  });
+
+  it('publishes the refusal of the read instead of an invented catalogue', async () => {
+    const missing = harness(() => json({ error: 'not_found' }, 404));
+    expect((await refusalOf(missing.api.catalogue(2, ''))).code).toBe('not_found');
+    const offline = harness(() => json({ error: 'service_unavailable' }, 503));
+    expect((await refusalOf(offline.api.catalogue(2, ''))).code).toBe('service_unavailable');
+  });
+
+  it('reads a reloaded sheet whose row the system did not have, with no expected quantity', () => {
+    const grown = parseClosing(JSON.stringify(document({ count_lines: [
+      countedLine(),
+      countedLine({ variant_id: 20, catalog_entry_id: 11, brand: 'Toyo', model: 'NS60',
+        capacity_ah: '65', polarity: 'R', expected_quantity: 0, counted_quantity: 3 })] })));
+    const added = grown.count_lines[1];
+    expect(added.expected_quantity).toBe(0);
+    expect(added.counted_quantity).toBe(3);
+  });
+});

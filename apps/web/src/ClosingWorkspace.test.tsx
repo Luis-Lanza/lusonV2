@@ -13,6 +13,30 @@ const countedLine = (overrides: Record<string, unknown> = {}) => ({
   polarity: 'L', expected_quantity: 12, counted_quantity: 12, ...overrides,
 });
 
+/** One row of the branch's own catalogue: every variant of the branch, stock or not. */
+const catalogueItem = (overrides: Record<string, unknown> = {}) => ({
+  variant_id: 1, catalog_entry_id: 1, brand: 'Bosch', model: 'S4', capacity_ah: 45,
+  polarity: 'L', existing: 12, reserved: 0, available: 12, ...overrides,
+});
+
+/**
+ * The branch catalogue as the screen reads it (`/api/inventory`): the three variants the sheet of
+ * the cut already holds, the battery the branch counted and the system had none of (variant 20) and
+ * a sibling variant the branch does hold (21), so an addition is never offered for it.
+ */
+const cataloguePage = (search: string) => {
+  const items = [catalogueItem(),
+    catalogueItem({ variant_id: 2, polarity: 'R', model: 'Power', capacity_ah: 110, existing: 9, available: 9 }),
+    catalogueItem({ variant_id: 3, model: 'Blue', capacity_ah: 60, existing: 14, available: 14 }),
+    catalogueItem({ variant_id: 20, catalog_entry_id: 11, brand: 'Toyo', model: 'NS60',
+      capacity_ah: 65, polarity: 'R', existing: 0, available: 0 }),
+    catalogueItem({ variant_id: 21, catalog_entry_id: 11, brand: 'Toyo', model: 'NS60',
+      capacity_ah: 65, polarity: 'L', existing: 4, available: 4 })].filter(item =>
+    search === '' || `${item.brand} ${item.model}`.toLowerCase().includes(search.toLowerCase()));
+  return { location: { id: 2, name: 'Sopocachi' }, page: 1, page_size: 50,
+    total_variants: items.length, items };
+};
+
 /**
  * The server of these tests: it holds the settlement of Sopocachi and applies the requests the
  * screen sends, so a save, a refusal and a reload are the real conversation and not a stub.
@@ -39,6 +63,8 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
     rounds: [] as unknown[],
     // The published corrections of the closed settlement: the accepted ones and the pending one.
     corrections: (options.corrections ?? []) as unknown[],
+    // The rows the admin added by hand: a variant the cut did not know, so no expected quantity.
+    added: new Map<number, number>(),
   };
   const calls: { url: string; init: RequestInit }[] = [];
   const document = () => {
@@ -46,7 +72,10 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
       countedLine({ variant_id: 2, polarity: 'R', expected_quantity: 9, model: 'Power', capacity_ah: '110',
         counted_quantity: state.counted.get(2) ?? null }),
       countedLine({ variant_id: 3, polarity: 'L', expected_quantity: 14, model: 'Blue', capacity_ah: '60',
-        counted_quantity: state.counted.get(3) ?? null })];
+        counted_quantity: state.counted.get(3) ?? null }),
+      ...[...state.added.entries()].sort((left, right) => left[0] - right[0]).map(([id, counted]) =>
+        countedLine({ variant_id: id, catalog_entry_id: 11, brand: 'Toyo', model: 'NS60',
+          capacity_ah: '65', polarity: 'R', expected_quantity: 0, counted_quantity: counted }))];
     const opened = state.status !== 'open';
     const bootstrap = state.bootstrap;
     // An open settlement publishes the period's totals as zero: they are recorded at the proposal.
@@ -99,8 +128,16 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
     if (url === '/api/closings/1') return json(document());
     if (url === '/api/closings/1/count' && init.method === 'POST') {
       const body = JSON.parse(String(init.body)) as { lines: { variant_id: number; counted_quantity: number }[] };
-      for (const line of body.lines) state.counted.set(line.variant_id, line.counted_quantity);
+      for (const line of body.lines) {
+        // A variant the cut did not know is added to the sheet with no expected quantity at all.
+        if (line.variant_id > 3) state.added.set(line.variant_id, line.counted_quantity);
+        else state.counted.set(line.variant_id, line.counted_quantity);
+      }
       return json(document());
+    }
+    if (url.startsWith('/api/inventory?')) {
+      const search = new URLSearchParams(url.slice(url.indexOf('?') + 1)).get('search') ?? '';
+      return json(cataloguePage(search));
     }
     if (url === '/api/closings/1/cash' && init.method === 'POST') {
       const body = JSON.parse(String(init.body)) as { counted_cash: string | null;
@@ -611,5 +648,126 @@ describe('corrections of a closed settlement (S16)', () => {
     // One correction waits at a time: there is no second proposal to make.
     expect(within(panel).queryByRole('button', { name: 'Proponer corrección' })).not.toBeInTheDocument();
     expect(h.posts('/api/closings/1/corrections')).toHaveLength(0);
+  });
+});
+
+// The upward half of S5: the sheet only lists what the cut knew, so the admin has to be able to
+// count a battery that exists physically and the system does not have (L38).
+describe('a battery the system did not have (S4, S5)', () => {
+  const catalogueSearch = async () => {
+    const count = await sheet();
+    fireEvent.change(within(count).getByLabelText('Buscar batería en el catálogo de la sucursal'),
+      { target: { value: 'NS60' } });
+    fireEvent.click(within(count).getByRole('button', { name: 'Buscar en el catálogo' }));
+    await within(count).findByRole('list', { name: 'Variantes del catálogo para agregar' });
+    return count;
+  };
+
+  it('adds it as a row with no expected quantity and sends only what was counted', async () => {
+    const h = server();
+    const view = await ready(h);
+    const count = await catalogueSearch();
+    const results = within(count).getByRole('list', { name: 'Variantes del catálogo para agregar' });
+    // The battery the branch holds none of is the only addition its sibling does not allow.
+    expect(within(results).getByText('La sucursal ya tiene stock')).toBeInTheDocument();
+    expect(within(results).queryByRole('button', { name: 'Agregar Toyo NS60 L · 65 Ah' }))
+      .not.toBeInTheDocument();
+    fireEvent.click(within(results).getByRole('button', { name: 'Agregar Toyo NS60 R · 65 Ah' }));
+    // The same variant cannot be added twice: it is listed as on the sheet from now on.
+    expect(within(await within(count).findByRole('list',
+      { name: 'Variantes del catálogo para agregar' })).getByText('Ya está en la planilla'))
+      .toBeInTheDocument();
+    const row = within(count).getByLabelText('Contado de Toyo NS60 R · 65 Ah').closest('tr')!;
+    // It carries no expected quantity at all, and says why it is different from a sheet row.
+    expect(within(row).getAllByRole('cell')[1]).toHaveTextContent('—');
+    expect(within(row).getByText('Fuera del sistema')).toBeInTheDocument();
+    // An uncounted added row is a pending line and blocks the proposal by name, beside the rest.
+    expect(proposeButton()).toBeDisabled();
+    expect(proposeButton()).toHaveAccessibleDescription(
+      /Faltan 3 variantes por contar: Bosch Power R · 110 Ah, Bosch Blue L · 60 Ah, Toyo NS60 R · 65 Ah/);
+    fireEvent.change(within(row).getByLabelText('Contado de Toyo NS60 R · 65 Ah'),
+      { target: { value: '4' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
+    await screen.findByText(/Borrador guardado/);
+    // The added row travels like every other row: its variant and its counted quantity, nothing else.
+    expect(JSON.parse(String(h.posts('/api/closings/1/count').at(-1)!.init.body)))
+      .toEqual({ lines: [{ variant_id: 20, counted_quantity: 4 }] });
+    // The row survives the reload of the draft, still outside the system.
+    view.unmount();
+    await ready(h);
+    const reloaded = within(await sheet()).getByLabelText('Contado de Toyo NS60 R · 65 Ah').closest('tr')!;
+    expect(within(reloaded).getByText('Fuera del sistema')).toBeInTheDocument();
+    expect(within(reloaded).getByLabelText('Contado de Toyo NS60 R · 65 Ah')).toHaveValue('4');
+    expect(within(reloaded).getAllByRole('cell')[1]).toHaveTextContent('—');
+  });
+
+  it('never offers a variant the sheet already lists', async () => {
+    const h = server();
+    await ready(h);
+    const count = await sheet();
+    fireEvent.change(within(count).getByLabelText('Buscar batería en el catálogo de la sucursal'),
+      { target: { value: 'Bosch' } });
+    fireEvent.click(within(count).getByRole('button', { name: 'Buscar en el catálogo' }));
+    const results = await within(count).findByRole('list',
+      { name: 'Variantes del catálogo para agregar' });
+    expect(within(results).getAllByText('Ya está en la planilla')).toHaveLength(3);
+    expect(within(results).queryAllByRole('button')).toHaveLength(0);
+    expect(h.posts('/api/closings/1/count')).toHaveLength(0);
+  });
+
+  it('says why the catalogue could not be read instead of naming the settlement', async () => {
+    const h = server();
+    const fetcher = vi.fn<typeof fetch>(async (input, init = {}) => {
+      const url = String(input);
+      if (url.startsWith('/api/inventory?')) return json({ error: 'service_unavailable' }, 503);
+      return h.fetcher(input as string, init as RequestInit);
+    });
+    render(<ClosingWorkspace csrf={csrf} branches={branches} fetcher={fetcher} />);
+    fireEvent.change(screen.getByLabelText('Sucursal'), { target: { value: '2' } });
+    const count = await sheet();
+    fireEvent.change(within(count).getByLabelText('Buscar batería en el catálogo de la sucursal'),
+      { target: { value: 'NS60' } });
+    fireEvent.click(within(count).getByRole('button', { name: 'Buscar en el catálogo' }));
+    expect(await within(count).findByRole('alert')).toHaveTextContent(
+      'No se pudo consultar el catálogo de la sucursal. Revisá la conexión e intentá de nuevo.');
+    // A failed read offers nothing to add, and it never touches the count of the cut.
+    expect(within(count).queryByRole('list', { name: 'Variantes del catálogo para agregar' }))
+      .not.toBeInTheDocument();
+    expect(h.posts('/api/closings/1/count')).toHaveLength(0);
+  });
+
+  it('takes the offer back while the added row is uncounted or not saved', async () => {
+    const h = server();
+    await ready(h);
+    fireEvent.change(await screen.findByLabelText('Contado de Bosch Power R · 110 Ah'),
+      { target: { value: '9' } });
+    fireEvent.change(screen.getByLabelText('Contado de Bosch Blue L · 60 Ah'), { target: { value: '14' } });
+    fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '800,00' } });
+    fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '500,00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
+    await waitFor(() => expect(proposeButton()).toBeEnabled());
+    const count = await catalogueSearch();
+    fireEvent.click(within(count).getByRole('button', { name: 'Agregar Toyo NS60 R · 65 Ah' }));
+    expect(proposeButton()).toBeDisabled();
+    expect(proposeButton()).toHaveAccessibleDescription(/Faltan 1 variante por contar: Toyo NS60 R · 65 Ah/);
+    fireEvent.change(screen.getByLabelText('Contado de Toyo NS60 R · 65 Ah'), { target: { value: '4' } });
+    // Counted and unsaved is still not an offer: the closure has no count for it yet.
+    expect(proposeButton()).toBeDisabled();
+    expect(proposeButton()).toHaveAccessibleDescription(/cambios sin guardar/);
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
+    await waitFor(() => expect(proposeButton()).toBeEnabled());
+  });
+
+  it('drops a row that is not saved yet and never one of the cut', async () => {
+    const h = server();
+    await ready(h);
+    const count = await catalogueSearch();
+    fireEvent.click(within(count).getByRole('button', { name: 'Agregar Toyo NS60 R · 65 Ah' }));
+    // A line of the cut is never removable: it is the snapshot the closure has to settle.
+    const bosch = within(count).getByLabelText('Contado de Bosch Power R · 110 Ah').closest('tr')!;
+    expect(within(bosch).queryAllByRole('button')).toHaveLength(0);
+    fireEvent.click(within(count).getByRole('button', { name: 'Quitar Toyo NS60 R · 65 Ah del borrador' }));
+    expect(within(count).queryByLabelText('Contado de Toyo NS60 R · 65 Ah')).not.toBeInTheDocument();
+    expect(h.posts('/api/closings/1/count')).toHaveLength(0);
   });
 });

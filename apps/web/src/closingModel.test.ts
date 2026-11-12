@@ -10,8 +10,10 @@ import {
   canonicalCorrection, canonicalCorrectionBody, closingAcceptedCorrections, closingCorrectedAmounts,
   closingCorrectedCommission, closingCorrectedCounts, closingCorrectionPreview,
   closingCorrectionReadiness, closingPendingCorrection, correctionDraftFrom,
-  type Closing, type ClosingCountLine, type ClosingCorrection, type ClosingOffer, type ClosingRound,
-  type CorrectionDraft, type DrawerDraft,
+  closingAddLine, closingCatalogueOptions, closingCountChanges, closingLineIsOutsideSystem,
+  closingSheetRows, closingSheetVariantIDs,
+  type Closing, type ClosingCatalogueVariant, type ClosingCountLine, type ClosingCorrection,
+  type ClosingOffer, type ClosingRound, type CorrectionDraft, type DrawerDraft,
 } from './closingModel';
 
 // The numbers of the chosen artboard (design/rendicion-de-cuentas/03-mesa-conteo.html), read as
@@ -709,5 +711,90 @@ describe('S16 the correction the warehouse proposes', () => {
     // A key the contract does not take is never sent.
     expect(() => canonicalCorrectionBody({ reason: 'un motivo',
       payload: { fund: '1.00' } } as never)).toThrow(/al menos un valor/);
+  });
+});
+
+// A battery that exists physically and the system does not have: the sheet only lists what the cut
+// knew, so the upward half of S5 is a row the admin adds from the branch's own catalogue (L38).
+const catalogueVariant = (variant_id: number, overrides: Partial<ClosingCatalogueVariant> = {}):
+ClosingCatalogueVariant => Object.freeze({
+  variant_id, catalog_entry_id: variant_id, brand: 'Toyo', model: 'NS60', capacity_ah: '65',
+  polarity: 'R', existing: 0n, ...overrides,
+});
+
+describe('S4, S5 a battery the system did not have', () => {
+  it('offers only what the branch does not hold and the sheet does not list', () => {
+    const options = closingCatalogueOptions([
+      catalogueVariant(1, { brand: 'Bosch', model: 'S4', capacity_ah: '45', polarity: 'L' }),
+      catalogueVariant(20),
+      // The same variant twice in one page is offered once, never twice.
+      catalogueVariant(20),
+      catalogueVariant(21, { existing: 4n, polarity: 'L' }),
+    ], closingSheetVariantIDs(closing()));
+    expect(options.map(option => [option.variant.variant_id, option.state])).toEqual([
+      [1, 'listed'], [20, 'addable'], [21, 'held']]);
+    // The three states are said in words, so the admin never guesses from a colour.
+    expect(model.closingCatalogueListedTag).toBe('Ya está en la planilla');
+    expect(model.closingCatalogueHeldTag).toBe('La sucursal ya tiene stock');
+    expect(model.closingOutsideSystemTag).toBe('Fuera del sistema');
+  });
+
+  it('marks an added row as outside the system, with no expected quantity at all', () => {
+    const rows = closingSheetRows(closing(), [catalogueVariant(20)]);
+    // The sheet of the cut keeps every line and the new row joins it, in variant order.
+    expect(rows.map(row => row.variant_id)).toEqual([...lines.map(line => line.variant_id), 20]);
+    const added = rows[rows.length - 1];
+    expect(added.expected_quantity).toBe(0);
+    expect(added.counted_quantity).toBeNull();
+    expect(closingLineIsOutsideSystem(added)).toBe(true);
+    expect(closingLineLabel(added)).toBe('Toyo NS60 R · 65 Ah');
+    // A line of the cut is never outside the system: the sheet only seeded what the branch held.
+    expect(rows.slice(0, -1).every(row => !closingLineIsOutsideSystem(row))).toBe(true);
+  });
+
+  it('refuses the same variant twice and a variant the sheet already lists', () => {
+    const taken = closingSheetVariantIDs(closing());
+    expect(() => closingAddLine([], catalogueVariant(1, { brand: 'Bosch', model: 'S4',
+      capacity_ah: '45', polarity: 'L' }), taken)).toThrow(model.closingDuplicateLineMessage);
+    const once = closingAddLine([], catalogueVariant(20), taken);
+    expect(once.map(line => line.variant_id)).toEqual([20]);
+    expect(() => closingAddLine(once, catalogueVariant(20), taken)).toThrow(model.closingDuplicateLineMessage);
+  });
+
+  it('sends only what the admin counted, the added row included and nothing else', () => {
+    const rows = closingSheetRows(closing(), [catalogueVariant(20)]);
+    // The screen seeds the draft from the sheet, so a row the admin did not touch is not a change.
+    const seeded = Object.fromEntries(rows.map(row =>
+      [row.variant_id, row.counted_quantity === null ? '' : String(row.counted_quantity)]));
+    const changes = closingCountChanges(rows, { ...seeded, 1: '11', 20: '3' });
+    // The added row travels exactly like a sheet row: its counted quantity and its variant.
+    expect(changes).toEqual([{ variant_id: 1, counted: '11' }, { variant_id: 20, counted: '3' }]);
+    expect(canonicalCountPayload(changes)).toEqual([
+      { variant_id: 1, counted_quantity: 11 }, { variant_id: 20, counted_quantity: 3 }]);
+    // What was not counted is not sent: no row invents a zero for the admin (S4).
+    expect(closingCountChanges(rows, { ...seeded, 1: '11' })).toEqual([{ variant_id: 1, counted: '11' }]);
+  });
+
+  it('blocks the proposal while the added row is uncounted, naming it', () => {
+    const sheetless = closing({ count_lines: [] });
+    const stated = drawerView(closingRail(sheetless), { counted: '7.015,00', contribution: '0,00',
+      fund: '900,00', observation: '' });
+    const rows = closingSheetRows(sheetless, [catalogueVariant(20)]);
+    const blocked = closingBlockers(sheetless, stated, false, rows);
+    expect(blocked.map(blocker => blocker.code)).toEqual(['count_pending']);
+    expect(blocked[0].message).toBe('Faltan 1 variante por contar: Toyo NS60 R · 65 Ah.');
+    // Without the added row, and with the drawer stated, nothing blocks the offer.
+    expect(closingBlockers(sheetless, stated, false, [])).toEqual([]);
+  });
+
+  it('keeps the added row of a reloaded draft, still outside the system', () => {
+    const reloaded = closing({ count_lines: [...lines, line(20, 0, 3,
+      { brand: 'Toyo', model: 'NS60', capacity_ah: '65', polarity: 'R' })] });
+    const added = closingSheetRows(reloaded).find(row => row.variant_id === 20)!;
+    expect(closingLineIsOutsideSystem(added)).toBe(true);
+    expect(added.counted_quantity).toBe(3);
+    expect(closingLineDifference(added)).toBe(3);
+    // The reloaded sheet covers the added row like any other line of the count.
+    expect(closingProgress(reloaded.count_lines).total).toBe(lines.length + 1);
   });
 });

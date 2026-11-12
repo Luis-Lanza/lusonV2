@@ -8,11 +8,14 @@
  * facts — a commission inside a cash figure, for instance — is never described as valid.
  */
 import { LosslessNumber, parse as parseJSON } from 'lossless-json';
+import { parseInventory, queryURL, validSearch } from './model';
 import {
-  canonicalCorrectionBody, closingCents, closingDecisionPayload, closingMaxCountLines, closingMaxCounted,
+  canonicalCorrectionBody, closingCataloguePageSize, closingCents, closingDecisionPayload,
+  closingMaxCountLines, closingMaxCounted,
   closingMaxID, closingMaxPage, closingPageSizes, closingRail, closingSignedCents, closingStatuses,
   closingFirstBranch, closingMaxBranch,
-  type Closing, type ClosingCorrection, type ClosingCorrectionEffect, type ClosingCorrectionKind,
+  type Closing, type ClosingCatalogueVariant, type ClosingCorrection,
+  type ClosingCorrectionEffect, type ClosingCorrectionKind,
   type ClosingCorrectionPayload, type ClosingCorrectionQuantity, type ClosingCorrectionStatus,
   type ClosingCountLine, type ClosingDecision, type ClosingDecisionPayload, type CorrectionBody,
   type ClosingOffer, type ClosingOfferLine,
@@ -817,6 +820,35 @@ export function createClosingAPI(fetch: typeof globalThis.fetch = globalThis.fet
       const closing = await send('POST', '/api/closings', 201, parseClosing, body, csrf, signal);
       if (closing.branch_location_id !== sent) throw new ClosingAPIError('invalid_response', 201);
       return closing;
+    },
+
+    /**
+     * The branch's own catalogue, for a battery the count sheet does not have at all: the balance
+     * matrix of the branch carries every variant of the operative catalogue with the stock it holds,
+     * zero included, so a battery that exists physically and the system does not have can be found
+     * (S4, S5, L38). The read is the session's own inventory read, scoped to the settlement's branch,
+     * and it is decoded strictly: a page that answers another branch or another size is not evidence.
+     */
+    async catalogue(branch: number, search: string, signal?: AbortSignal):
+      Promise<readonly ClosingCatalogueVariant[]> {
+      let path: string;
+      let wanted: number;
+      try {
+        if (!validSearch(search)) throw new Error('búsqueda inválida');
+        wanted = branchID(branch);
+        path = queryURL({ location: wanted, search: search.trim(), brand: '', polarity: '',
+          page: 1, size: closingCataloguePageSize });
+      } catch { throw new ClosingAPIError('invalid_request', null); }
+      const page = await send('GET', path, 200, parseInventory, null, '', signal);
+      if (page.page !== 1 || page.page_size !== closingCataloguePageSize
+        || page.location.id !== wanted) {
+        throw new ClosingAPIError('invalid_response', 200);
+      }
+      return Object.freeze(page.items.map(item => Object.freeze({
+        variant_id: item.variant_id, catalog_entry_id: item.catalog_entry_id, brand: item.brand,
+        model: item.model, capacity_ah: item.capacity_ah, polarity: item.polarity,
+        existing: item.existing,
+      })));
     },
 
     /** Records only what was counted: the expected quantity cannot even be expressed here. */

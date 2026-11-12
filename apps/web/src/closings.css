@@ -78,6 +78,30 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
   color: var(--muted); font-size: 12px; line-height: 18px; }
 .closing-help b { color: #242124; }
 
+/* The sheet grows upward (S5): a battery the branch counted and the system did not have is added
+   from the branch's own catalogue, and the row it creates says at a glance that it is not a row of
+   the cut — no expected quantity, its own tag and its own left rule. */
+.closing-catalogue { display: grid; gap: 8px; padding: 12px 20px 14px; border-bottom: 1px solid var(--border);
+  background: var(--tint); }
+.closing-catalogue h3 { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--wine); }
+.closing-catalogue p { color: var(--muted); font-size: 12px; line-height: 18px; }
+.closing-catalogue-search { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.closing-catalogue-search input { width: min(320px, 100%); min-height: 44px; }
+.closing-catalogue-search button { min-height: 44px; }
+.closing-catalogue-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.closing-catalogue-list li { display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px;
+  background: white; font-size: 13px; }
+.closing-catalogue-list button { min-height: 44px; }
+.closing-table tr.outside td { background: #F5F1F3; }
+.closing-table tr.outside td:first-child { box-shadow: inset 3px 0 0 var(--wine); }
+.closing-table tr.outside .count { border-color: var(--wine); }
+.closing-outside { display: inline-block; margin-left: 8px; padding: 2px 6px; border: 1px solid #D9B3C1;
+  border-radius: 3px; background: var(--tint); color: var(--wine); font-size: 11px; font-weight: 600; }
+.closing-unadd { margin-left: 8px; min-height: 32px; padding: 4px 10px; font-size: 11px;
+  border-color: #CCAAAA; color: #991515; background: white; }
+
 /* The rail: fixed beside the sheet at desktop widths, and below it when there is no room. */
 .closing-rail { position: sticky; top: 72px; align-self: start; min-width: 0; }
 .closing-group { padding: 14px 18px; border-bottom: 1px solid var(--border); }
@@ -132,6 +156,9 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
   .closing-panel-head .closing-muted { margin-left: 0; flex-basis: 100%; }
   .closing-search { padding: 12px; }
   .closing-search input { width: 100%; }
+  .closing-catalogue { padding: 12px; }
+  .closing-catalogue-search input { width: 100%; }
+  .closing-catalogue-list li { align-items: stretch; }
   .closing-table td, .closing-table th { padding: 8px; }
   .closing-group { padding: 12px; }
   .closing-bar { flex-direction: column; align-items: stretch; }
