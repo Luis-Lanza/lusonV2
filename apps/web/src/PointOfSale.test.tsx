@@ -363,6 +363,52 @@ describe('the counter settlement', () => {
     expect(screen.getByText(posEmptyCartMessage)).toBeInTheDocument();
   });
 
+  // S13: the counter collects by QR, alone or mixed with the other methods, and the charge
+  // stays disabled until the amounts on the screen sum exactly to the total.
+  it('charges a sale by QR alone, and refuses a sum that does not close', async () => {
+    const h = harness({ sale: () => new Response(JSON.stringify({ sale: {
+      ...JSON.parse(issuedBody()).sale, payment_method: 'qr',
+      payments: [{ method: 'qr', amount: '96000.00' }],
+    } }), { status: 201, headers: { 'Content-Type': 'application/json' } }) });
+    await ready(h);
+    addToSale('CAR NS40ZL');
+    typeSerial();
+    nameClient();
+    // The QR field carries its own amount: it is not cash and not a transfer.
+    fireEvent.change(screen.getByLabelText('QR'), { target: { value: '46.000,00' } });
+    expect(charge()).toBeDisabled();
+    expect(screen.getByText('Faltan Bs 50.000,00 para cubrir el total.')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('QR'), { target: { value: '96.000,00' } });
+    expect(screen.getByText('Suma Bs 96.000,00 · cubre el total')).toBeInTheDocument();
+    expect(charge()).toBeEnabled();
+    fireEvent.click(charge());
+    await screen.findByText('Venta #126 · Garantía 2-000126');
+    expect(JSON.parse(String(h.writes()[0].init.body)).payments).toEqual([{ method: 'qr', amount: '96000.00' }]);
+    expect(screen.getByText(/QR: Bs 96\.000,00/)).toBeInTheDocument();
+  });
+
+  it('charges a sale partly by QR and partly in cash', async () => {
+    // The answered document repeats the exact settlement the counter sent: cash and QR.
+    const h = harness({ sale: () => new Response(JSON.stringify({ sale: {
+      ...JSON.parse(issuedBody()).sale, payment_method: 'mixed',
+      payments: [{ method: 'cash', amount: '50000.00' }, { method: 'qr', amount: '46000.00' }],
+    } }), { status: 201, headers: { 'Content-Type': 'application/json' } }) });
+    await ready(h);
+    addToSale('CAR NS40ZL');
+    typeSerial();
+    nameClient();
+    fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '50.000,00' } });
+    fireEvent.change(screen.getByLabelText('QR'), { target: { value: '46.000,00' } });
+    expect(screen.getByText('Suma Bs 96.000,00 · cubre el total')).toBeInTheDocument();
+    fireEvent.click(charge());
+    await screen.findByText('Venta #126 · Garantía 2-000126');
+    // The settlement travels in the frozen order cash, card, transfer, QR.
+    expect(JSON.parse(String(h.writes()[0].init.body)).payments).toEqual([
+      { method: 'cash', amount: '50000.00' }, { method: 'qr', amount: '46000.00' },
+    ]);
+    expect(screen.getByText(/Mixto: Bs 50\.000,00 efectivo \+ Bs 46\.000,00 QR/)).toBeInTheDocument();
+  });
+
   it('surfaces the amount the server says is missing', async () => {
     const h = harness({ sale: () => json('{"error":"payments_mismatch","missing":"15000.00"}', 400) });
     await ready(h);

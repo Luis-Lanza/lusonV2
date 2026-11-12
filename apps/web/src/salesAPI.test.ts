@@ -81,6 +81,13 @@ describe('the read paths of the counter', () => {
       .toBe('/api/sales?search=2-00012&payment_method=mixed&page=3&page_size=50');
   });
 
+  // S13: the history filter admits the QR payment the branch now collects.
+  it('filters the history by the QR payment', () => {
+    expect(salesHistoryPath({ search: '', payment_method: 'qr', page: 1, page_size: 10 }))
+      .toBe('/api/sales?payment_method=qr&page=1&page_size=10');
+    expect(validSalesQuery({ search: '', payment_method: 'qr', page: 1, page_size: 25 })).toBe(true);
+  });
+
   it('addresses one document and its warranty', () => {
     expect(saleDetailPath(7)).toBe('/api/sales/7');
     expect(warrantyPath(7)).toBe('/api/sales/7/warranty.pdf');
@@ -150,6 +157,32 @@ describe('the sellable catalogue read', () => {
 });
 
 describe('the sale document read', () => {
+  // S13: a sale collected by QR is a legible document, and the label is derived from its own
+  // amounts: QR alone reports 'qr', QR mixed with cash reports 'mixed'.
+  it('reads a sale collected by QR, alone and mixed', () => {
+    const only = parseCreatedSale(JSON.stringify({ sale: saleBody({
+      payment_method: 'qr', payments: [{ method: 'qr', amount: '304000.00' }],
+    }) }));
+    expect(only.payment_method).toBe('qr');
+    expect(only.payments).toEqual([{ method: 'qr', amount: '304000.00' }]);
+    const mixed = parseCreatedSale(JSON.stringify({ sale: saleBody({
+      payment_method: 'mixed', payments: [{ method: 'cash', amount: '200000.00' }, { method: 'qr', amount: '104000.00' }],
+    }) }));
+    expect(mixed.payments.map(payment => payment.method)).toEqual(['cash', 'qr']);
+    // A label that contradicts the amounts is still refused.
+    expect(() => parseCreatedSale(JSON.stringify({ sale: saleBody({
+      payment_method: 'cash', payments: [{ method: 'qr', amount: '304000.00' }],
+    }) }))).toThrow();
+  });
+
+  it('reads a history row and a detail that were paid by QR', () => {
+    const page = parseSalePage(pageBody({ sales: [summary({ payment_method: 'qr' })] }));
+    expect(page.sales[0].payment_method).toBe('qr');
+    const detail = parseSaleDetail(detailBody({
+      payment_method: 'qr', payments: [{ method: 'qr', amount: '192000.00' }],
+    }));
+    expect(detail.payments).toEqual([{ method: 'qr', amount: '192000.00' }]);
+  });
   it('reads the created document with its settlement and its frozen units', () => {
     const sale = parseCreatedSale(createdBody());
     expect(sale).toMatchObject({
@@ -437,6 +470,30 @@ describe('the counter transport', () => {
       headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
       body: JSON.stringify(input()),
     }]);
+  });
+
+  // S13: QR travels as the fourth amount of the settlement, alone or mixed, in the frozen order.
+  it('posts a settlement collected by QR', async () => {
+    const onlyQr: CreateSaleInput = { ...input(),
+      payments: [{ method: 'qr', amount: '304000.00' }] };
+    const fetch = mockFetch().mockResolvedValue(new Response(
+      createdBody({ payment_method: 'qr', payments: [{ method: 'qr', amount: '304000.00' }] }),
+      { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    const sale = await createSalesAPI(fetch).create(onlyQr, csrf);
+    expect(sale.payment_method).toBe('qr');
+    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body)).payments).toEqual([{ method: 'qr', amount: '304000.00' }]);
+    // Mixed with cash, QR keeps its place in the frozen order cash, card, transfer, QR.
+    const mixed: CreateSaleInput = { ...input(),
+      payments: [{ method: 'card', amount: '104000.00' }, { method: 'qr', amount: '200000.00' }] };
+    const mixedFetch = mockFetch().mockResolvedValue(new Response(createdBody({
+      payment_method: 'mixed',
+      payments: [{ method: 'card', amount: '104000.00' }, { method: 'qr', amount: '200000.00' }],
+    }), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    expect((await createSalesAPI(mixedFetch).create(mixed, csrf)).payment_method).toBe('mixed');
+    // A settlement out of the frozen order is still refused before it leaves the counter.
+    const unordered: CreateSaleInput = { ...input(),
+      payments: [{ method: 'qr', amount: '200000.00' }, { method: 'cash', amount: '104000.00' }] };
+    await expect(createSalesAPI(mockFetch()).create(unordered, csrf)).rejects.toMatchObject({ code: 'invalid_request' });
   });
 
   it('captures the exact payload before awaiting', async () => {

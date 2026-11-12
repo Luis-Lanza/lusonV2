@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mesa de conteo · Rendición de cuentas · Luson</title>
+<style>
+*{box-sizing:border-box}
+:root{font-family:Inter,system-ui,sans-serif;color:#242124;background:#F8F6F4;font-size:14px;
+--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;--ink:#242124;
+--ok-bg:#ECFDF5;--ok-ink:#047857;--ok-border:#A7F3D0;
+--warn-bg:#FFFBEF;--warn-ink:#805400;--warn-border:#E8CF86;
+--short-bg:#FFF0F0;--short-ink:#991515;--short-border:#FFDAD6}
+body{margin:0;padding-bottom:88px}
+h1,h2,h3,p,dl,dd,dt,ul,li{margin:0}
+h1{font-size:22px}
+h2{font-size:15px}
+p{line-height:1.6}
+small,.muted{color:var(--muted);font-size:12px}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;padding:10px 12px;min-height:44px}
+button:hover{background:var(--tint)}
+button.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF;font-weight:600}
+button.primary:hover{background:var(--hover)}
+button:disabled{background:#EFEDEF;border-color:#AAA5AA;color:#595459;cursor:not-allowed}
+:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+input{padding:10px 12px;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;width:100%;min-height:44px}
+label{display:grid;gap:6px;font-size:12px;color:var(--muted)}
+aside.nav{position:fixed;width:240px;inset:0 auto 0 0;background:#FFFFFF;border-right:1px solid var(--border);padding:12px;display:flex;flex-direction:column;justify-content:space-between}
+.brand{display:flex;gap:10px;align-items:center;padding:4px 8px 16px;border-bottom:1px solid var(--border)}
+.logo{background:var(--wine);color:#FFFFFF;border-radius:4px;padding:8px;font-weight:700;font-size:18px}
+.brand strong{color:var(--wine);font-size:18px}
+.brand small{display:block}
+nav{display:grid;gap:4px;margin-top:12px}
+nav a{text-align:left;padding:12px;color:inherit;text-decoration:none;border-left:2px solid transparent}
+nav a:hover{background:var(--page)}
+nav .active{background:var(--tint);color:var(--wine);border-left:2px solid var(--wine);font-weight:600}
+.identity{padding:12px;background:var(--page);border:1px solid var(--border)}
+.identity small{display:block;margin-top:6px}
+.top{margin-left:240px;height:56px;background:#FFFFFF;border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;justify-content:space-between}
+main{margin-left:240px;padding:20px 24px 24px}
+.heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px;flex-wrap:wrap}
+.heading p{color:var(--muted);margin-top:4px}
+.tag{display:inline-block;border:1px solid var(--border);background:var(--page);padding:4px 8px;border-radius:3px;font-size:11px;font-weight:600}
+.tag.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-border)}
+.tag.warn{background:var(--warn-bg);color:var(--warn-ink);border-color:var(--warn-border)}
+.tag.short{background:var(--short-bg);color:var(--short-ink);border-color:var(--short-border)}
+.tag.frozen{background:var(--tint);color:var(--wine);border-color:var(--wine)}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:20px;align-items:start}
+.panel{background:#FFFFFF;border:1px solid var(--border);border-radius:4px}
+.panel>header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:16px}
+.panel .body{padding:16px 20px}
+.search{display:flex;gap:12px;align-items:center;padding:12px 20px;border-bottom:1px solid var(--border);background:var(--page)}
+.search input{max-width:320px}
+kbd{font-family:inherit;font-size:11px;background:#FFFFFF;border:1px solid var(--border);border-bottom-width:2px;border-radius:3px;padding:2px 6px;color:var(--muted)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{text-align:left;background:#FFFFFF;color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:600;position:sticky;top:0}
+th,td{padding:8px 12px;border-bottom:1px solid var(--border);vertical-align:middle}
+td small{display:block;margin-top:2px}
+.num{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+th.num{text-align:right}
+.count{width:76px;text-align:right;font-variant-numeric:tabular-nums}
+.neg{color:var(--short-ink);font-weight:600;font-variant-numeric:tabular-nums;text-align:right}
+.pos{color:var(--ok-ink);font-weight:600;font-variant-numeric:tabular-nums;text-align:right}
+.zero{color:var(--muted);font-variant-numeric:tabular-nums;text-align:right}
+tr.pending td{background:var(--warn-bg)}
+tr.pending input{border-color:var(--warn-border)}
+.summary{display:grid;gap:0}
+.summary div{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px dashed var(--border)}
+.summary div:last-child{border-bottom:0}
+.summary dt{color:var(--muted)}
+.summary dd{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+.summary .total{padding-top:10px}
+.summary .total dt,.summary .total dd{font-size:15px;font-weight:700;color:var(--ink)}
+.group{padding:14px 20px;border-bottom:1px solid var(--border)}
+.group h2{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:10px}
+.field{display:grid;gap:6px;margin-top:10px}
+.help{display:flex;gap:8px;align-items:flex-start;padding:10px 12px;background:var(--page);border:1px solid var(--border);border-radius:4px;font-size:12px;color:var(--muted);line-height:1.5}
+.help b{color:var(--ink)}
+.bar{position:fixed;left:240px;right:0;bottom:0;background:#FFFFFF;border-top:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;gap:16px;box-shadow:0 -2px 10px #2421240D}
+.bar .state{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.bar .action{display:flex;align-items:center;gap:12px}
+@media (prefers-reduced-motion:no-preference){button{transition:background .12s ease}}
+</style>
+
+<aside class="nav">
+  <div>
+    <div class="brand"><span class="logo">L</span><div><strong>Luson</strong><small>Almacén</small></div></div>
+    <nav aria-label="Secciones">
+      <a href="#">Inventario</a>
+      <a href="#">Transferencias</a>
+      <a href="#">Ingresos</a>
+      <a href="#">Compras</a>
+      <a href="#">Catálogo</a>
+      <a class="active" href="#" aria-current="page">Rendiciones</a>
+    </nav>
+  </div>
+  <div class="identity"><strong>Almacén</strong><small>Cuenta administrativa</small></div>
+</aside>
+
+<div class="top">
+  <span class="muted">Rendición · Sopocachi · 12 ago → 12 sep 2026</span>
+  <span class="tag frozen">Sucursal congelada</span>
+</div>
+
+<main>
+  <div class="heading">
+    <div>
+      <h1>Rendición de cuentas · Sopocachi</h1>
+      <p>Contá y cargá sin soltar el teclado. Los números del cierre quedan siempre a la vista.</p>
+    </div>
+    <span class="tag warn">9 de 11 contadas</span>
+  </div>
+
+  <div class="layout">
+    <section class="panel" aria-labelledby="h-conteo">
+      <header>
+        <h2 id="h-conteo">Conteo de stock</h2>
+        <span class="muted">Quedan 2 variantes por contar</span>
+      </header>
+      <div class="search">
+        <input type="search" placeholder="Buscar marca, modelo o amperaje" aria-label="Buscar batería">
+        <small><kbd>Tab</kbd> avanza · <kbd>Enter</kbd> confirma · <kbd>↑</kbd><kbd>↓</kbd> mueven</small>
+      </div>
+      <table>
+        <thead>
+          <tr><th scope="col">Batería</th><th scope="col" class="num">Sistema</th><th scope="col" class="num">Contado</th><th scope="col" class="num">Dif.</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Bosch <small>S4 45Ah · L</small></td><td class="num">12</td><td><input class="count" inputmode="numeric" value="12" aria-label="Contado Bosch S4 45Ah L"></td><td class="zero">—</td></tr>
+          <tr><td>Bosch <small>S4 45Ah · R</small></td><td class="num">9</td><td><input class="count" inputmode="numeric" value="8" aria-label="Contado Bosch S4 45Ah R"></td><td class="neg">−1</td></tr>
+          <tr><td>Varta <small>Blue 60Ah · L</small></td><td class="num">14</td><td><input class="count" inputmode="numeric" value="14" aria-label="Contado Varta Blue 60Ah L"></td><td class="zero">—</td></tr>
+          <tr><td>Varta <small>Blue 60Ah · R</small></td><td class="num">11</td><td><input class="count" inputmode="numeric" value="13" aria-label="Contado Varta Blue 60Ah R"></td><td class="pos">+2</td></tr>
+          <tr><td>Moura <small>Clean 75Ah · L</small></td><td class="num">7</td><td><input class="count" inputmode="numeric" value="7" aria-label="Contado Moura Clean 75Ah L"></td><td class="zero">—</td></tr>
+          <tr><td>Moura <small>Clean 75Ah · R</small></td><td class="num">6</td><td><input class="count" inputmode="numeric" value="6" aria-label="Contado Moura Clean 75Ah R"></td><td class="zero">—</td></tr>
+          <tr><td>Willard <small>Max 90Ah · L</small></td><td class="num">4</td><td><input class="count" inputmode="numeric" value="3" aria-label="Contado Willard Max 90Ah L"></td><td class="neg">−1</td></tr>
+          <tr><td>Willard <small>Max 90Ah · R</small></td><td class="num">2</td><td><input class="count" inputmode="numeric" value="2" aria-label="Contado Willard Max 90Ah R"></td><td class="zero">—</td></tr>
+          <tr><td>Record <small>Power 110Ah · L</small></td><td class="num">1</td><td><input class="count" inputmode="numeric" value="1" aria-label="Contado Record Power 110Ah L"></td><td class="zero">—</td></tr>
+          <tr class="pending"><td>Record <small>Power 110Ah · R</small></td><td class="num">3</td><td><input class="count" inputmode="numeric" placeholder="—" aria-label="Contado Record Power 110Ah R"></td><td class="zero">—</td></tr>
+          <tr class="pending"><td>Bosch <small>S5 100Ah · L</small></td><td class="num">2</td><td><input class="count" inputmode="numeric" placeholder="—" aria-label="Contado Bosch S5 100Ah L"></td><td class="zero">—</td></tr>
+        </tbody>
+      </table>
+      <div class="body">
+        <div class="help">
+          <span aria-hidden="true">▸</span>
+          <span>Al cerrar, cada variante contada queda con su existencia <b>exactamente igual a lo contado</b>. Las filas en amarillo todavía no se pueden cerrar: toda variante con existencia tiene que estar contada.</span>
+        </div>
+      </div>
+    </section>
+
+    <aside aria-label="Números de la rendición">
+      <section class="panel">
+        <div class="group">
+          <h2>Caja</h2>
+          <dl class="summary">
+            <div><dt>Fondo heredado</dt><dd>Bs 800,00</dd></div>
+            <div><dt>Ventas en efectivo</dt><dd>Bs 6.430,00</dd></div>
+            <div><dt>Gastos (3)</dt><dd>− Bs 215,00</dd></div>
+            <div class="total"><dt>Caja esperada</dt><dd>Bs 7.015,00</dd></div>
+          </dl>
+          <div class="field">
+            <label for="contada">Caja contada (Bs)</label>
+            <input id="contada" inputmode="decimal" value="6.980,00">
+            <div style="display:flex;justify-content:space-between;padding-top:6px">
+              <small>Diferencia</small><strong class="neg" aria-live="polite">− Bs 35,00</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
+          <h2>Comisión</h2>
+          <dl class="summary">
+            <div><dt>Ventas sobre precio de venta</dt><dd>Bs 32.480,00</dd></div>
+            <div><dt>Porcentaje de Sopocachi</dt><dd>4,5 %</dd></div>
+            <div class="total"><dt>Comisión</dt><dd>Bs 1.461,60</dd></div>
+          </dl>
+          <small style="display:block;margin-top:8px">Sólo baterías nuevas. Se congela acá.</small>
+        </div>
+
+        <div class="group">
+          <h2>Fondo que queda</h2>
+          <div class="field">
+            <label for="fondo">Monto que dejás en la caja (Bs)</label>
+            <input id="fondo" inputmode="decimal" value="900,00">
+          </div>
+          <dl class="summary" style="margin-top:10px">
+            <div><dt>Caja contada</dt><dd>Bs 6.980,00</dd></div>
+            <div><dt>Fondo que queda</dt><dd>− Bs 900,00</dd></div>
+            <div class="total"><dt>Te llevás al Almacén</dt><dd>Bs 6.080,00</dd></div>
+          </dl>
+        </div>
+
+        <div class="group" style="border-bottom:0">
+          <h2>Electrónico · fuera de la caja</h2>
+          <dl class="summary">
+            <div><dt>Tarjeta</dt><dd>Bs 3.240,00</dd></div>
+            <div><dt>Transferencia</dt><dd>Bs 1.180,00</dd></div>
+            <div><dt>QR</dt><dd>Bs 2.760,00</dd></div>
+          </dl>
+        </div>
+      </section>
+    </aside>
+  </div>
+</main>
+
+<div class="bar" role="region" aria-label="Acciones de la rendición">
+  <div class="state">
+    <span class="tag warn">Faltan 2 variantes por contar</span>
+    <span class="tag short">Diferencia de caja − Bs 35,00</span>
+    <small id="motivo-bloqueo">La rendición se puede proponer cuando el conteo cubre todas las variantes con existencia.</small>
+  </div>
+  <div class="action">
+    <button type="button">Guardar y salir</button>
+    <button class="primary" type="button" disabled aria-describedby="motivo-bloqueo">Proponer a la sucursal</button>
+  </div>
+</div>
+</html>

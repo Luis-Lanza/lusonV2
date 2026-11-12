@@ -171,7 +171,27 @@ describe('the sales history', () => {
     await waitFor(() => expect(h.reads().at(-1)?.url)
       .toBe('/api/sales?search=2-00012&payment_method=mixed&page=1&page_size=10'));
     const options = within(screen.getByLabelText('Forma de pago')).getAllByRole('option').map(option => option.textContent);
-    expect(options).toEqual(['Todas', 'Efectivo', 'Transferencia', 'Tarjeta', 'Mixto']);
+    expect(options).toEqual(['Todas', 'Efectivo', 'Transferencia', 'Tarjeta', 'QR', 'Mixto']);
+  });
+
+  // S13: a sale collected by QR reads like the others, and the filter admits it.
+  it('shows a QR payment like the others and filters by it', async () => {
+    const h = harness({
+      page: () => json(pageBody([summary({ payment_method: 'qr' })])),
+      detail: () => json(detailBody({
+        payment_method: 'mixed',
+        payments: [{ method: 'cash', amount: '100000.00' }, { method: 'qr', amount: '220000.00' }],
+      })),
+    });
+    await ready(h);
+    expect(within(rowOf(126)).getByText('QR')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Forma de pago'), { target: { value: 'qr' } });
+    await waitFor(() => expect(h.reads().at(-1)?.url).toBe('/api/sales?payment_method=qr&page=1&page_size=10'));
+    // The unfolded document names the QR amount beside the cash one.
+    fireEvent.click(screen.getByRole('button', { name: 'Ver la venta 126' }));
+    const detail = await screen.findByRole('region', { name: 'Venta 126' });
+    expect(within(detail).getByText('QR')).toBeInTheDocument();
+    expect(within(detail).getByText('Bs 220.000,00')).toBeInTheDocument();
   });
 
   it('paginates the branch history', async () => {

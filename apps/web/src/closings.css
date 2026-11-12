@@ -1,0 +1,227 @@
+/* Rendición de cuentas, warehouse side (design/rendicion-de-cuentas/03-mesa-conteo.html).
+   Only tokens of the app's own stylesheet are used: the wine primary, the page canvas, the
+   decorative border, the muted text and the received/warning/shortage pairs, plus the two
+   brand surfaces the rest of the shell already uses. The count sheet keeps the keyboard on the
+   left and the settlement numbers stay fixed on the right, so the admin never scrolls between
+   them. */
+
+.closing-workspace { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.closing-workspace h1 { font-size: 22px; font-weight: 600; letter-spacing: -.015em; overflow-wrap: anywhere; }
+.closing-workspace h2 { font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.closing-workspace p { margin: 0; }
+.closing-workspace small { font-size: 11px; }
+
+.closing-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.closing-heading small { display: block; color: var(--wine); font-weight: 600; letter-spacing: .06em; margin-bottom: 4px; }
+.closing-heading p { color: var(--muted); font-size: 13px; line-height: 18px; margin-top: 4px; }
+.closing-muted { color: var(--muted); }
+
+/* The scope of the settlement: the branch, its period and the fact that it is frozen. */
+.closing-scope { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px;
+  background: white; border: 1px solid var(--border); border-radius: 4px; }
+.closing-scope > label { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.closing-scope > select { min-width: 240px; max-width: 100%; min-height: 44px; }
+.closing-scope .closing-note { flex-basis: 100%; color: var(--muted); font-size: 12px; line-height: 18px; }
+.closing-scope > button { min-height: 44px; }
+
+.closing-tag { display: inline-block; padding: 4px 8px; border: 1px solid var(--border); border-radius: 3px;
+  background: var(--page); color: var(--muted); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.closing-tag.ok { background: #ECFDF5; border-color: #A7F3D0; color: #047857; }
+.closing-tag.warn { background: #FFFBEF; border-color: #E8CF86; color: #805400; }
+.closing-tag.short { background: #FFF0F0; border-color: #FFDAD6; color: #991515; }
+.closing-tag.frozen, .closing-tag.live { background: var(--tint); border-color: #D9B3C1; color: var(--wine); }
+.closing-tag.closed { background: var(--page); }
+.closing-tag.period { font-variant-numeric: tabular-nums; }
+
+.closing-status { font-size: 12px; color: var(--wine); overflow-wrap: anywhere; }
+.closing-status:empty { display: none; }
+.closing-problem { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px;
+  border: 1px solid #FFDAD6; border-radius: 4px; background: #FFF0F0; color: #991515; font-size: 13px; }
+.closing-problem button { min-height: 44px; color: #991515; border-color: #CCAAAA; background: white; }
+
+/* The two columns of the artboard: the sheet grows, the numbers stay put. */
+.closing-layout { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 20px; align-items: start; }
+.closing-panel { background: white; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.closing-panel-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 16px 20px;
+  border-bottom: 1px solid var(--border); }
+.closing-panel-head h2 { margin: 0; }
+.closing-panel-head .closing-muted { margin-left: auto; }
+
+.closing-search { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 12px 20px;
+  border-bottom: 1px solid var(--border); background: var(--page); }
+.closing-search input { width: min(320px, 100%); min-height: 44px; }
+.closing-search small { color: var(--muted); }
+kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px; border: 1px solid var(--border);
+  border-bottom-width: 2px; border-radius: 3px; background: white; color: var(--muted); }
+
+.closing-table-wrap { overflow-x: auto; }
+.closing-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.closing-table th { position: sticky; top: 0; height: 40px; padding: 0 12px; background: white;
+  color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase;
+  text-align: left; border-bottom: 1px solid var(--border); }
+.closing-table th.num { text-align: right; }
+.closing-table td { padding: 8px 12px; height: 44px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.closing-table td small { display: block; margin-top: 2px; color: var(--muted); }
+.closing-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.closing-table tbody tr:last-child td { border-bottom: 0; }
+.closing-table tr.pending td { background: #FFFBEF; }
+.closing-table tr.pending input { border-color: #E8CF86; }
+.closing-pending { display: inline-block; margin-left: 8px; padding: 2px 6px; border: 1px solid #E8CF86;
+  border-radius: 3px; background: #FFFBEF; color: #805400; font-size: 11px; font-weight: 600; }
+.closing-table .count { width: 76px; min-height: 36px; padding: 6px 8px; text-align: right;
+  font-variant-numeric: tabular-nums; border-color: var(--muted); }
+.closing-table .neg { color: #991515; font-weight: 600; }
+.closing-table .pos { color: #047857; font-weight: 600; }
+.closing-table .zero { color: var(--muted); }
+
+.closing-help { padding: 12px 20px 16px; border-top: 1px solid var(--border); background: var(--page);
+  color: var(--muted); font-size: 12px; line-height: 18px; }
+.closing-help b { color: #242124; }
+
+/* The sheet grows upward (S5): a battery the branch counted and the system did not have is added
+   from the branch's own catalogue, and the row it creates says at a glance that it is not a row of
+   the cut — no expected quantity, its own tag and its own left rule. */
+.closing-catalogue { display: grid; gap: 8px; padding: 12px 20px 14px; border-bottom: 1px solid var(--border);
+  background: var(--tint); }
+.closing-catalogue h3 { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--wine); }
+.closing-catalogue p { color: var(--muted); font-size: 12px; line-height: 18px; }
+.closing-catalogue-search { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.closing-catalogue-search input { width: min(320px, 100%); min-height: 44px; }
+.closing-catalogue-search button { min-height: 44px; }
+.closing-catalogue-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.closing-catalogue-list li { display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px;
+  background: white; font-size: 13px; }
+.closing-catalogue-list button { min-height: 44px; }
+.closing-table tr.outside td { background: #F5F1F3; }
+.closing-table tr.outside td:first-child { box-shadow: inset 3px 0 0 var(--wine); }
+.closing-table tr.outside .count { border-color: var(--wine); }
+.closing-outside { display: inline-block; margin-left: 8px; padding: 2px 6px; border: 1px solid #D9B3C1;
+  border-radius: 3px; background: var(--tint); color: var(--wine); font-size: 11px; font-weight: 600; }
+.closing-unadd { margin-left: 8px; min-height: 32px; padding: 4px 10px; font-size: 11px;
+  border-color: #CCAAAA; color: #991515; background: white; }
+
+/* The rail: fixed beside the sheet at desktop widths, and below it when there is no room. */
+.closing-rail { position: sticky; top: 72px; align-self: start; min-width: 0; }
+.closing-group { padding: 14px 18px; border-bottom: 1px solid var(--border); }
+.closing-group:last-child { border-bottom: 0; }
+.closing-group h2 { margin-bottom: 10px; }
+.closing-summary { margin: 0; display: grid; }
+.closing-summary > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  padding: 8px 0; border-bottom: 1px dashed var(--border); }
+.closing-summary > div:last-child { border-bottom: 0; }
+.closing-summary dt { color: var(--muted); font-size: 12px; }
+.closing-summary dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right;
+  overflow-wrap: anywhere; }
+.closing-summary .total { padding-top: 10px; }
+.closing-summary .total dt, .closing-summary .total dd { font-size: 15px; font-weight: 700; color: #242124; }
+.closing-field { display: grid; gap: 6px; margin-top: 12px; }
+.closing-field label { color: var(--muted); font-size: 12px; font-weight: 600; }
+.closing-field input { min-height: 44px; border-color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.closing-field textarea { min-height: 72px; padding: 8px 12px; border: 1px solid var(--muted); border-radius: 4px;
+  font: inherit; font-size: 13px; line-height: 1.5; color: #242124; resize: vertical; }
+/* The contribution the warehouse puts into the till for this settlement, beside the fund it makes
+   reachable: money in, never money collected, and so never a sale and never a commission (S10). */
+.closing-contribution { margin-top: 14px; padding: 10px 12px; border: 1px dashed var(--border);
+  border-radius: 4px; background: var(--page); }
+.closing-contribution small { color: var(--muted); font-size: 11px; line-height: 16px; }
+.closing-difference { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding-top: 4px; }
+.closing-difference small { color: var(--muted); font-size: 12px; }
+.closing-difference strong { display: inline-flex; align-items: baseline; gap: 6px; font-variant-numeric: tabular-nums; }
+.closing-difference .neg { color: #991515; }
+.closing-difference .pos { color: #047857; }
+.closing-difference .zero { color: var(--muted); }
+.closing-difference-name { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+
+/* The action bar follows the sheet: the state of the settlement on one side, its two actions on
+   the other, and the reason the offer is blocked under the state that names it. */
+.closing-bar { position: sticky; bottom: 0; display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; flex-wrap: wrap; padding: 12px 16px; background: white; border: 1px solid var(--border);
+  border-radius: 4px; box-shadow: 0 -2px 10px #2421240D; }
+.closing-bar-state { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; flex: 1 1 320px; }
+.closing-bar-state small { flex-basis: 100%; color: var(--muted); font-size: 12px; line-height: 16px; overflow-wrap: anywhere; }
+.closing-bar-action { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.closing-bar-action button { min-height: 44px; }
+.closing-bar-action .primary:disabled { opacity: .6; }
+
+@media (max-width: 1279px) {
+  .closing-layout { grid-template-columns: minmax(0, 1fr); }
+  .closing-rail { position: static; }
+}
+@media (max-width: 767px) {
+  .closing-workspace { gap: 12px; }
+  .closing-scope > select { min-width: 0; width: 100%; }
+  .closing-panel-head { padding: 12px; }
+  .closing-panel-head .closing-muted { margin-left: 0; flex-basis: 100%; }
+  .closing-search { padding: 12px; }
+  .closing-search input { width: 100%; }
+  .closing-catalogue { padding: 12px; }
+  .closing-catalogue-search input { width: 100%; }
+  .closing-catalogue-list li { align-items: stretch; }
+  .closing-table td, .closing-table th { padding: 8px; }
+  .closing-group { padding: 12px; }
+  .closing-bar { flex-direction: column; align-items: stretch; }
+  .closing-bar-action { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .closing-bar-action button { width: 100%; }
+}
+
+/* The branch's side of the settlement (design/rendicion-de-cuentas/04-decision-sucursal.html):
+   the offer the warehouse composed on the left and the answer on the right, with the rounds of
+   the settlement under it. It reuses the workspace's panel, tag and summary language. */
+.closing-workspace .closing-note { color: var(--muted); font-size: 12px; line-height: 18px; }
+.closing-readonly { padding: 12px 16px; background: white; border: 1px solid var(--border);
+  border-radius: 4px; color: var(--muted); font-size: 13px; line-height: 18px; }
+.closing-decision .closing-layout { grid-template-columns: minmax(0, 1fr) 360px; }
+.closing-decision-actions { display: grid; gap: 12px; }
+.closing-decision-actions p { color: var(--muted); font-size: 13px; line-height: 19px; }
+.closing-decision-actions button { min-height: 44px; }
+.closing-reject-toggle { border-color: #FFDAD6; color: #991515; font-weight: 600; background: white; }
+.closing-reject { border-color: #CCAAAA; color: #991515; font-weight: 600; background: white; }
+.closing-reject:disabled { background: #EFEDEF; border-color: #AAA5AA; color: #595459; }
+.closing-motive { display: grid; gap: 8px; padding: 12px; border: 1px solid #FFDAD6;
+  border-radius: 4px; background: #FFF0F0; }
+.closing-motive label { color: #991515; font-size: 12px; font-weight: 600; }
+.closing-motive textarea { min-height: 84px; padding: 8px 12px; border: 1px solid #CCAAAA;
+  border-radius: 4px; background: white; font: inherit; font-size: 13px; line-height: 1.5;
+  color: #242124; resize: vertical; }
+.closing-motive small { color: #991515; font-size: 11px; line-height: 16px; }
+.closing-motive-note { border-left: 2px solid var(--wine); background: var(--tint); padding: 12px 16px;
+  font-size: 13px; line-height: 1.6; }
+.closing-rounds { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.closing-rounds li { display: grid; gap: 4px; padding: 12px; border: 1px solid var(--border);
+  border-radius: 4px; background: var(--page); font-size: 13px; }
+.closing-round-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.closing-rounds small { color: var(--muted); font-size: 11px; line-height: 16px; }
+.closing-round-motive { border-left: 2px solid var(--wine); background: var(--tint);
+  padding: 8px 12px; font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
+@media (max-width: 1279px) {
+  .closing-decision .closing-layout { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Corrections of a closed settlement (S16): the corrected numbers are never shown as signed ones,
+   so every corrected figure carries the signed value, the corrected one and the delta that produced
+   it, in the same table language the count sheet uses. */
+.closing-corrections { margin-top: 4px; }
+.closing-correction { display: grid; gap: 0; }
+.closing-correction .closing-round-head { padding: 12px 18px 0; }
+.closing-correction .closing-round-motive { margin: 10px 18px 0; }
+.closing-correction > .closing-group > small { display: block; margin-top: 6px; color: var(--muted); font-size: 11px; }
+.closing-correction-value td.corrected, .closing-table td.corrected { color: #242124; font-weight: 600; }
+.closing-correction-value td .closing-pending { margin-left: 6px; background: #FFF0F0; border-color: #FFDAD6; color: #991515; }
+.closing-corrected, .closing-correction-preview { margin-top: 4px; }
+.closing-correction-form .closing-field input { text-align: right; }
+.closing-correction-form .closing-table { margin-top: 12px; }
+.closing-correction-submit { padding: 12px 18px 16px; border-top: 1px solid var(--border); }
+.closing-correction-submit small { flex-basis: 100%; color: var(--muted); font-size: 12px; line-height: 16px; }
+.closing-correction .closing-decision-actions { padding: 12px 18px 0; }
+
+/* A refusal belongs where the action is: the button lives in the bottom bar, so the bar states
+   why the server refused instead of leaving the alert at the top of a long sheet. */
+.closing-bar-problem {
+  display: block;
+  margin-top: 6px;
+  color: var(--wine);
+  font-weight: 600;
+  line-height: 1.4;
+}

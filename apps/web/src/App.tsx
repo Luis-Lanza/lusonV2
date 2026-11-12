@@ -14,6 +14,8 @@ import AccountAdministration from './AccountAdministration';
 import PasswordChange from './PasswordChange';
 import StockEntry from './StockEntry';
 import StockAdjustment from './StockAdjustment';
+import ClosingWorkspace from './ClosingWorkspace';
+import ClosingDecision from './ClosingDecision';
 import CatalogPrices from './CatalogPrices';
 import CatalogBatteries from './CatalogBatteries';
 import CatalogSectionBoundary from './CatalogSectionBoundary';
@@ -86,12 +88,14 @@ function Pager({ state }: { state: Controller }) {
     </div>
   </footer>;
 }
-function Navigation({ mobile = false, transfers, disabled, actionCount, countUnavailable, onInventory, onPending, privateSection, admin, onAdmin, onPassword, stock, stockActive, onStock, adjustments, adjustmentsActive, onAdjustments, catalog, catalogActive, onCatalog, sales, salesActive, onSales, salesHistory, salesHistoryActive, onSalesHistory, purchases, purchasesActive, onPurchases }: {
+function Navigation({ mobile = false, transfers, disabled, actionCount, countUnavailable, onInventory, onPending, privateSection, admin, onAdmin, onPassword, stock, stockActive, onStock, adjustments, adjustmentsActive, onAdjustments, catalog, catalogActive, onCatalog, settlements, settlementsActive, onSettlements, settlementDecision, settlementDecisionActive, onSettlementDecision, sales, salesActive, onSales, salesHistory, salesHistoryActive, onSalesHistory, purchases, purchasesActive, onPurchases }: {
   mobile?: boolean; transfers: boolean; disabled: boolean; actionCount: string | null; countUnavailable: boolean;
   onInventory: () => void; onPending: () => void; privateSection?: string; admin: boolean;
   onAdmin: () => void; onPassword: () => void; stock: boolean; stockActive: boolean; onStock: () => void;
   adjustments: boolean; adjustmentsActive: boolean; onAdjustments: () => void;
   catalog: boolean; catalogActive: boolean; onCatalog: () => void;
+  settlements: boolean; settlementsActive: boolean; onSettlements: () => void;
+  settlementDecision: boolean; settlementDecisionActive: boolean; onSettlementDecision: () => void;
   sales: boolean; salesActive: boolean; onSales: () => void;
   salesHistory: boolean; salesHistoryActive: boolean; onSalesHistory: () => void;
   purchases: boolean; purchasesActive: boolean; onPurchases: () => void;
@@ -100,13 +104,15 @@ function Navigation({ mobile = false, transfers, disabled, actionCount, countUna
   const countStatus = actionCount !== null ? `Acciones requeridas: ${actionCount}`
     : countUnavailable ? 'Contador de acciones no disponible.' : 'Consultando acciones requeridas…';
   return <nav className={mobile ? 'bottom-nav' : 'side-nav'} aria-label={mobile ? 'Navegación móvil' : 'Navegación principal'}>
-    <a href="#inventario" aria-current={!transfers && !privateSection && !stockActive && !adjustmentsActive && !catalogActive && !salesActive && !salesHistoryActive && !purchasesActive ? 'page' : undefined} aria-disabled={disabled} onClick={event => { event.preventDefault(); if (!disabled) onInventory(); }}><Icon name="inventory" /><span>Inventario</span></a>
+    <a href="#inventario" aria-current={!transfers && !privateSection && !stockActive && !adjustmentsActive && !catalogActive && !settlementsActive && !settlementDecisionActive && !salesActive && !salesHistoryActive && !purchasesActive ? 'page' : undefined} aria-disabled={disabled} onClick={event => { event.preventDefault(); if (!disabled) onInventory(); }}><Icon name="inventory" /><span>Inventario</span></a>
     <button type="button" disabled={disabled} aria-current={transfers ? 'page' : undefined} aria-describedby={statusID} onClick={onPending}><Icon name="transfer" /><span>Transferencias</span>
       <span className={'transfer-action-badge' + (actionCount === null ? ' unknown' : actionCount === '0' ? ' zero' : '')} aria-hidden="true">{actionCount ?? (countUnavailable ? '—' : '…')}</span>
     </button>
     {stock && <button type="button" disabled={disabled} aria-current={stockActive ? 'page' : undefined} onClick={onStock}><Icon name="warehouse" /><span>Ingresos</span></button>}
     {adjustments && <button type="button" disabled={disabled} aria-current={adjustmentsActive ? 'page' : undefined} onClick={onAdjustments}><Icon name="adjustment" /><span>Ajustes</span></button>}
     {catalog && <button type="button" disabled={disabled} aria-current={catalogActive ? 'page' : undefined} onClick={onCatalog}><Icon name="catalog" /><span>Catálogo</span></button>}
+    {settlements && <button type="button" disabled={disabled} aria-current={settlementsActive ? 'page' : undefined} onClick={onSettlements}><Icon name="history" /><span>Rendiciones</span></button>}
+    {settlementDecision && <button type="button" disabled={disabled} aria-current={settlementDecisionActive ? 'page' : undefined} onClick={onSettlementDecision}><Icon name="history" /><span>Rendición de cuentas</span></button>}
     {sales && <button type="button" disabled={disabled} aria-current={salesActive ? 'page' : undefined} onClick={onSales}><Icon name="sale" /><span>Punto de venta</span></button>}
     {salesHistory && <button type="button" disabled={disabled} aria-current={salesHistoryActive ? 'page' : undefined} onClick={onSalesHistory}><Icon name="history" /><span>Historial de ventas</span></button>}
     {purchases && <button type="button" disabled={disabled} aria-current={purchasesActive ? 'page' : undefined} onClick={onPurchases}><Icon name="sale" /><span>Compras</span></button>}
@@ -194,12 +200,19 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
   // identity assigned to location 1, so the gate is the same one for both.
   const stock = warehouse && route.section === 'stock';
   const adjustments = warehouse && route.section === 'adjustments';
+  // The settlement of a branch is the warehouse's own work (S1, S2, S14): a branch identity
+  // never sees the section and never reaches it with a typed hash. Both settlement screens are
+  // routes like every other section, so a reload lands back on the same one.
+  const settlements = warehouse && route.section === 'settlements';
   const catalog = warehouse && route.section === 'catalog';
   // The catalogue's two screens: its own hash opens the price matrix.
   const catalogScreen: 'prices' | 'batteries' = catalog && route.screen === 'batteries' ? 'batteries' : 'prices';
   // The counter and its history are branch-only surfaces (S1): the warehouse (account 1,
   // location 1) neither sees them in the sidebar nor reaches them with a typed hash.
   const branch = identity.location.id > 1;
+  // The branch decides the settlement of its own branch and nothing else: the screen reads
+  // its own history and never offers a settlement it could not answer.
+  const settlementDecision = branch && route.section === 'settlementDecision';
   const sales = branch && route.section === 'sales';
   const salesHistory = branch && route.section === 'salesHistory';
   // Purchases is branch-only too, and never part of a sale (S1, S8).
@@ -257,6 +270,16 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
     if (navDisabled || adjustments || latest !== ownerTag) return;
     changeRoute({ section: 'adjustments' });
   }
+  function navigateSettlements() {
+    const latest = transferViewOwner(state.getTransferAuthority());
+    if (navDisabled || settlements || latest !== ownerTag) return;
+    changeRoute({ section: 'settlements' });
+  }
+  function navigateSettlementDecision() {
+    const latest = transferViewOwner(state.getTransferAuthority());
+    if (navDisabled || settlementDecision || latest !== ownerTag) return;
+    changeRoute({ section: 'settlementDecision' });
+  }
   function navigateCatalog() {
     const latest = transferViewOwner(state.getTransferAuthority());
     if (navDisabled || catalog || latest !== ownerTag) return;
@@ -286,15 +309,18 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
     stock: warehouse, stockActive: stock, onStock: navigateStock,
     adjustments: warehouse, adjustmentsActive: adjustments, onAdjustments: navigateAdjustments,
     catalog: warehouse, catalogActive: catalog, onCatalog: navigateCatalog,
+    settlements: warehouse, settlementsActive: settlements, onSettlements: navigateSettlements,
+    settlementDecision: branch, settlementDecisionActive: settlementDecision,
+    onSettlementDecision: navigateSettlementDecision,
     sales: branch, salesActive: sales, onSales: navigateSales,
     salesHistory: branch, salesHistoryActive: salesHistory, onSalesHistory: navigateSalesHistory,
     purchases: branch, purchasesActive: purchases, onPurchases: navigatePurchases,
     onAdmin: () => navigatePrivate('administration'), onPassword: () => navigatePrivate('password'), onInventory: () => navigate(false), onPending: () => navigate(true) };
   return <div className={'app-shell' + (warehouse ? ' warehouse' : '') + (privateSection ? ' private-shell' : '')}>
     <aside className="sidebar" hidden={mobile}><div><Brand />{!mobile && <Navigation {...navigation} />}</div><div className="sidebar-footer"><div className="identity"><strong>{identity.username}</strong><small className="assigned-location">{identity.location.name}</small></div><button className="logout" type="button" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" />Cerrar sesión</button></div></aside>
-    <header className="app-header" hidden={mobile}><strong>Luson {administration ? 'Administración' : password ? 'Mi contraseña' : stock ? 'Ingresos' : adjustments ? 'Ajustes de stock' : catalog ? 'Catálogo' : sales ? 'Punto de venta' : salesHistory ? 'Historial de ventas' : purchases ? 'Compras' : transfers ? 'Transferencias' : 'Inventario'}</strong><span><Icon name="warehouse" />Ubicación asignada: <b>{identity.location.name}</b></span></header>
+    <header className="app-header" hidden={mobile}><strong>Luson {administration ? 'Administración' : password ? 'Mi contraseña' : stock ? 'Ingresos' : adjustments ? 'Ajustes de stock' : catalog ? 'Catálogo' : settlements ? 'Rendiciones' : settlementDecision ? 'Rendición de cuentas' : sales ? 'Punto de venta' : salesHistory ? 'Historial de ventas' : purchases ? 'Compras' : transfers ? 'Transferencias' : 'Inventario'}</strong><span><Icon name="warehouse" />Ubicación asignada: <b>{identity.location.name}</b></span></header>
     <header className="mobile-header" hidden={!mobile}><div><Brand /><button type="button" aria-label="Cerrar sesión" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" /></button></div><div className="mobile-identity"><span><Icon name="warehouse" />{identity.location.name}</span><span>{identity.username}</span></div></header>
-    <main id={transfers ? 'transferencias' : stock ? 'ingresos' : adjustments ? 'ajustes' : catalog ? 'catalogo' : sales ? 'ventas' : salesHistory ? 'historial-ventas' : purchases ? 'compras' : 'inventario'} className="inventory-main">
+    <main id={transfers ? 'transferencias' : stock ? 'ingresos' : settlements ? 'rendiciones' : settlementDecision ? 'rendicion' : adjustments ? 'ajustes' : catalog ? 'catalogo' : sales ? 'ventas' : salesHistory ? 'historial-ventas' : purchases ? 'compras' : 'inventario'} className="inventory-main">
       {administration && adminOwner ? <AccountAdministration key={adminOwner} controller={state} owner={adminOwner} />
         : password && passwordOwner ? <PasswordChange key={passwordOwner} controller={state} owner={passwordOwner} onBack={() => navigate(false)} />
         : creation && metadata ? <TransferCreation controller={state} metadata={metadata} recovery={recovery} onBack={returnToTransfers} onDetail={openCreatedDetail} />
@@ -303,6 +329,12 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
         : stock ? <p role="status">Verificando la sesión del Almacén…</p>
         : adjustments && adminOwner ? <StockAdjustment key={adminOwner} csrf={csrf} realtime={state} />
         : adjustments ? <p role="status">Verificando la sesión del Almacén…</p>
+        : settlements && adminOwner ? <ClosingWorkspace key={`rendiciones-${adminOwner}`} csrf={csrf}
+          branches={(metadata?.locations ?? []).filter(location => location.id > 1)} />
+        : settlements ? <p role="status">Verificando la sesión del Almacén…</p>
+        : settlementDecision && ownerTag ? <ClosingDecision key={`decision-${ownerTag}`} csrf={csrf}
+          branch={identity.location.id} branchName={identity.location.name} />
+        : settlementDecision ? <p role="status">Verificando la sesión de la sucursal…</p>
         : catalog && adminOwner ? <CatalogSectionBoundary key={adminOwner}>
           <CatalogScreens owner={adminOwner} csrf={csrf} brands={metadata?.brands ?? []}
             screen={catalogScreen} onScreen={navigateCatalogScreen} />

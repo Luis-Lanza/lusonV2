@@ -70,7 +70,7 @@ export interface SellableQuery {
 
 export interface SalesQuery {
   readonly search: string;
-  readonly payment_method: '' | 'cash' | 'card' | 'transfer' | 'mixed';
+  readonly payment_method: '' | 'cash' | 'card' | 'transfer' | 'qr' | 'mixed';
   readonly page: number;
   readonly page_size: number;
 }
@@ -157,9 +157,11 @@ export const salesMaxPage = 1_000_000;
 export const maxSaleID = 2_147_483_647;
 export const maxSaleText = 128;
 
-const recordedMethods: readonly string[] = ['cash', 'card', 'transfer', 'mixed'];
-const inputMethods: readonly string[] = ['cash', 'card', 'transfer'];
-const frozenOrder: readonly string[] = ['cash', 'card', 'transfer'];
+/** The labels a row of the history may carry: the four methods that pay plus 'mixed'. */
+const recordedMethods: readonly string[] = ['cash', 'card', 'transfer', 'qr', 'mixed'];
+/** The methods a client may state as a payment of the sale, in the frozen order. */
+const inputMethods: readonly string[] = ['cash', 'card', 'transfer', 'qr'];
+const frozenOrder: readonly string[] = ['cash', 'card', 'transfer', 'qr'];
 
 function invalidResponse(): never { throw new Error('Respuesta inválida del servidor.'); }
 function invalidPayload(): never { throw new Error('Venta inválida.'); }

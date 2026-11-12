@@ -30,6 +30,25 @@ describe('T6 private navigation and existing transfer paths', () => {
     window.history.replaceState(null, '', '/#/compras/7');
     expect(readNavigation()).toEqual({ section: 'inventory' });
   });
+  it('gives the warehouse settlement workspace and the branch decision their own hashes', () => {
+    expect(navigationHash({ section: 'settlements' })).toBe('#/rendiciones');
+    expect(navigationHash({ section: 'settlementDecision' })).toBe('#/rendicion');
+    writeNavigation({ section: 'settlements' });
+    expect(window.location.hash).toBe('#/rendiciones');
+    expect(readNavigation()).toEqual({ section: 'settlements' });
+    writeNavigation({ section: 'settlementDecision' });
+    expect(window.location.hash).toBe('#/rendicion');
+    expect(readNavigation()).toEqual({ section: 'settlementDecision' });
+    window.history.replaceState(null, '', '/#/rendiciones');
+    expect(readNavigation()).toEqual({ section: 'settlements' });
+    window.history.replaceState(null, '', '/#/rendicion');
+    expect(readNavigation()).toEqual({ section: 'settlementDecision' });
+    // Neither settlement screen swallows the other, and a path below one is not a screen.
+    for (const hash of ['/#/rendiciones/2', '/#/rendicion/1', '/#/rendiciones/rendicion']) {
+      window.history.replaceState(null, '', hash);
+      expect(readNavigation()).toEqual({ section: 'inventory' });
+    }
+  });
   it('preserves list/detail navigation and malformed-path refusal', () => {
     expect(navigationHash({ section: 'transfers', id: null })).toBe('#/transferencias');
     writeNavigation({ section: 'transfers', id: '9007199254740993' });

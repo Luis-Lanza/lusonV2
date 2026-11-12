@@ -280,11 +280,13 @@ func TestRenderRefusesInvalidDocument(t *testing.T) {
 	noCustomer.Customer.Name = ""
 	noPayments := base
 	noPayments.Payments = nil
+	// Four methods are the widest settlement a sale admits, so the refusal is the fifth.
 	tooManyPayments := base
 	tooManyPayments.Payments = []warranty.Payment{
 		{Method: "cash", Amount: "100.00"},
 		{Method: "card", Amount: "100.00"},
 		{Method: "transfer", Amount: "100.00"},
+		{Method: "qr", Amount: "100.00"},
 		{Method: "credit", Amount: "100.00"},
 	}
 	repeatedPayment := base
@@ -317,7 +319,7 @@ func TestRenderRefusesInvalidDocument(t *testing.T) {
 		"zero date":        noDate,
 		"empty customer":   noCustomer,
 		"no payments":      noPayments,
-		"four payments":    tooManyPayments,
+		"five payments":    tooManyPayments,
 		"repeated method":  repeatedPayment,
 		"zero payment":     zeroPayment,
 		"short payment":    shortPayment,
@@ -417,6 +419,7 @@ func TestRenderPaymentMethod(t *testing.T) {
 		{method: "cash", want: "Efectivo"},
 		{method: "card", want: "Tarjeta"},
 		{method: "transfer", want: "Transferencia"},
+		{method: "qr", want: "QR"},
 		{method: "credit", want: "credit"},
 	} {
 		t.Run(test.method, func(t *testing.T) {
@@ -455,6 +458,49 @@ func TestRenderMixedPaymentsRendersOneRowPerMethod(t *testing.T) {
 		at := bytes.Index(data, []byte(want))
 		if at < 0 {
 			t.Fatalf("document does not contain %q", want)
+		}
+		if at < previous {
+			t.Fatalf("%q is rendered before the previous entry of the payments block", want)
+		}
+		previous = at
+	}
+}
+
+// S13: the money collected by QR is electronic, so it is its own payment row with its own
+// amount, and a sale settled with all four admitted methods prints four rows whose amounts
+// still close against the stored total.
+func TestRenderQRAndFourPayments(t *testing.T) {
+	qrOnly := smallDocument()
+	qrOnly.Payments = []warranty.Payment{{Method: "qr", Amount: "85000.00"}}
+	data := renderOK(t, qrOnly)
+	if got := bytes.Count(data, []byte("QR")); got != 1 {
+		t.Fatalf("the QR payment rendered %d rows, want exactly one", got)
+	}
+	for _, want := range []string{"Bs 85.000,00", "Total: Bs 85.000,00"} {
+		if !bytes.Contains(data, []byte(want)) {
+			t.Fatalf("a QR-only document does not contain %q", want)
+		}
+	}
+
+	four := smallDocument()
+	four.Payments = []warranty.Payment{
+		{Method: "cash", Amount: "10000.00"},
+		{Method: "card", Amount: "20000.00"},
+		{Method: "transfer", Amount: "25000.00"},
+		{Method: "qr", Amount: "30000.00"},
+	}
+	data = renderOK(t, four)
+	if got := bytes.Count(data, []byte("Formas de pago")); got != 1 {
+		t.Fatalf("payments block rendered %d times, want exactly one", got)
+	}
+	// One row per method used, each with its own amount, in the order they were stored.
+	order := []string{"Formas de pago", "Efectivo", "Bs 10.000,00", "Tarjeta", "Bs 20.000,00",
+		"Transferencia", "Bs 25.000,00", "QR", "Bs 30.000,00", "Total: Bs 85.000,00"}
+	previous := -1
+	for _, want := range order {
+		at := bytes.Index(data, []byte(want))
+		if at < 0 {
+			t.Fatalf("a four-method document does not contain %q", want)
 		}
 		if at < previous {
 			t.Fatalf("%q is rendered before the previous entry of the payments block", want)

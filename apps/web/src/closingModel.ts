@@ -1,0 +1,1344 @@
+/**
+ * Branch account settlement (rendición de cuentas) from the warehouse's side: the count sheet
+ * of one settlement and the drawer the warehouse states, in exact cents end to end.
+ *
+ * The database is the authority of this vertical: the expected quantity of every line is the
+ * snapshot taken at the cut and is never recalculated here, the drawer's derived numbers follow
+ * their own identities and the commission is reported beside them — it is inside no cash
+ * identity (S9) and the electronic collection is never added to the till (S13).
+ *
+ * The drawer states three amounts: the cash counted, the contribution the warehouse puts into
+ * the till for this settlement and the fund left behind. The fund never exceeds the counted cash
+ * plus the contribution, which is what lets the first settlement of a branch leave money in an
+ * empty till (S10, S11, L13); the contribution is money put in and never money collected, so it
+ * is in no sale and in no commission.
+ */
+import { validSearch } from './model';
+import { centsToMoney, formatMoney, moneyCents, parseTypedMoney, typedMoney } from './pointOfSaleModel';
+
+// ---------------------------------------------------------------------------------
+// Bounds and vocabulary
+// ---------------------------------------------------------------------------------
+
+/** The act and the document are always the rendición de cuentas: the old name appears nowhere. */
+export const closingTitle = 'Rendición de cuentas';
+export const closingSectionTitle = 'Rendiciones';
+export const closingMaxCountLines = 190;
+export const closingMaxCounted = 1_000_000;
+export const closingMaxObservation = 1000;
+export const closingMaxID = 2_147_483_647;
+export const closingFirstBranch = 2;
+export const closingMaxBranch = 32767;
+export const closingMaxPage = 1_000_000;
+export const closingPageSizes: readonly number[] = [10, 25, 50];
+export const closingDefaultPageSize = 25;
+
+export type ClosingStatus = 'open' | 'proposed' | 'rejected' | 'closed';
+export const closingStatuses: readonly ClosingStatus[] = ['open', 'proposed', 'rejected', 'closed'];
+
+export const closingStatusLabels: Readonly<Record<ClosingStatus, string>> = Object.freeze({
+  open: 'Abierta',
+  proposed: 'Propuesta a la sucursal',
+  rejected: 'Devuelta por la sucursal',
+  closed: 'Cerrada',
+});
+
+/** A settlement that is not closed holds its branch: it can neither sell nor receive stock (S3). */
+export function closingIsLive(status: ClosingStatus): boolean {
+  return status !== 'closed';
+}
+
+/** The count sheet and the drawer are written only while the warehouse holds the settlement. */
+export function closingIsEditable(status: ClosingStatus): boolean {
+  return status === 'open' || status === 'rejected';
+}
+
+// ---------------------------------------------------------------------------------
+// The document, as the warehouse reads it
+// ---------------------------------------------------------------------------------
+
+export type ClosingPolarity = 'L' | 'R';
+
+/** One line of the sheet: the snapshot the database took at the cut and what was counted. */
+export interface ClosingCountLine {
+  readonly variant_id: number;
+  readonly catalog_entry_id: number;
+  readonly brand: string;
+  readonly model: string;
+  readonly capacity_ah: string;
+  readonly polarity: ClosingPolarity;
+  /** Frozen at the cut and never recalculated: the sheet stays a fact of the opening (S4). */
+  readonly expected_quantity: number;
+  /** `null` while the variant is pending, which is what blocks the proposal and the closure. */
+  readonly counted_quantity: number | null;
+}
+
+/** One line of a stored offer: both sides are stated, because the branch accepts that arithmetic. */
+export interface ClosingOfferLine {
+  readonly variant_id: number;
+  readonly expected_quantity: number;
+  readonly counted_quantity: number;
+}
+
+/** The offer of one round, frozen verbatim at proposal. */
+export interface ClosingOffer {
+  readonly period_start: string;
+  readonly cut_at: string;
+  readonly sales_total_cents: bigint;
+  readonly commission_rate_percent: string;
+  readonly commission_amount_cents: bigint;
+  readonly cash_sales_cents: bigint;
+  readonly cash_expenses_cents: bigint;
+  readonly card_total_cents: bigint;
+  readonly transfer_total_cents: bigint;
+  readonly qr_total_cents: bigint;
+  readonly counted_cash_cents: bigint;
+  readonly contributed_cash_cents: bigint;
+  readonly closing_cash_cents: bigint;
+  readonly observation: string;
+  readonly count_lines: readonly ClosingOfferLine[];
+}
+
+export type ClosingDecision = '' | 'accepted' | 'rejected';
+
+/** One proposal round with the branch's answer, if it has one. */
+export interface ClosingRound {
+  readonly id: number;
+  readonly round: number;
+  readonly offer: ClosingOffer;
+  readonly proposed_by_account_id: number;
+  readonly proposed_at: string;
+  readonly decision: ClosingDecision;
+  readonly decision_reason: string;
+  readonly decided_by_account_id: number | null;
+  readonly decided_at: string | null;
+}
+
+/**
+ * One settlement. The drawer's derived numbers are not stored: `expected`, the difference and
+ * what the warehouse takes follow from the facts below, on every read of every screen.
+ */
+export interface Closing {
+  readonly id: number;
+  readonly branch_location_id: number;
+  readonly branch_name: string;
+  readonly status: ClosingStatus;
+  readonly period_start: string;
+  readonly cut_at: string;
+  readonly closed_at: string | null;
+  /** The frozen rate; `null` while the settlement is still open (S6). */
+  readonly commission_rate_percent: string | null;
+  readonly opening_cash_cents: bigint;
+  readonly cash_sales_cents: bigint;
+  readonly cash_expenses_cents: bigint;
+  readonly counted_cash_cents: bigint | null;
+  readonly contributed_cash_cents: bigint;
+  readonly closing_cash_cents: bigint | null;
+  readonly sales_total_cents: bigint;
+  readonly commission_amount_cents: bigint;
+  readonly card_total_cents: bigint;
+  readonly transfer_total_cents: bigint;
+  readonly qr_total_cents: bigint;
+  readonly observation: string;
+  readonly opened_by_account_id: number;
+  readonly count_lines: readonly ClosingCountLine[];
+  readonly rounds: readonly ClosingRound[];
+  /**
+   * The corrections of this settlement, oldest first: the accepted ones with the deltas they applied
+   * and, when there is one, the correction that still waits for the branch's decision. A live
+   * settlement carries none — it is corrected by its own rounds — and a rejected one applied nothing,
+   * so it is never published (S16).
+   */
+  readonly corrections: readonly ClosingCorrection[];
+}
+
+/** One newest-first page of one branch's settlements: each row is the same document. */
+export interface ClosingPage {
+  readonly page: number;
+  readonly page_size: number;
+  readonly total_closings: number;
+  readonly closings: readonly Closing[];
+}
+
+// ---------------------------------------------------------------------------------
+// Money
+// ---------------------------------------------------------------------------------
+
+const signedMoneyShape = /^-?(0|[1-9]\d{0,9})\.\d{2}$/;
+
+export const closingAmountMessage = 'Escribí un monto válido, con hasta dos decimales.';
+
+function invalidMoney(): never { throw new Error(closingAmountMessage); }
+
+/** Exact cents of a published amount: canonical two-decimal text, never a float. */
+export function closingCents(amount: string): bigint {
+  try { return moneyCents(amount); } catch { return invalidMoney(); }
+}
+
+/** Exact cents of a derived amount, which carries its sign: `"-35.00"` is a shortage. */
+export function closingSignedCents(amount: string): bigint {
+  if (typeof amount !== 'string' || !signedMoneyShape.test(amount)) return invalidMoney();
+  const negative = amount.startsWith('-');
+  const cents = closingCents(negative ? amount.slice(1) : amount);
+  if (negative && cents === 0n) return invalidMoney();
+  return negative ? -cents : cents;
+}
+
+/** A derived amount with its sign, the way the rail names a difference: `− Bs 35,00`. */
+export function closingSignedText(cents: bigint): string {
+  if (cents < 0n) return `− ${formatMoney(-cents)}`;
+  if (cents > 0n) return `+ ${formatMoney(cents)}`;
+  return formatMoney(0n);
+}
+
+/** A published amount that is never negative: the expected drawer, the fund, what is taken. */
+export function closingMoneyText(cents: bigint): string {
+  return formatMoney(cents);
+}
+
+/** The name of a difference, never only its sign (S8). */
+export function closingDifferenceName(cents: bigint): string {
+  if (cents < 0n) return 'Faltante';
+  if (cents > 0n) return 'Sobrante';
+  return 'Sin diferencia';
+}
+
+/** The frozen percentage, read the way the branch's rate is written: `4,50 %`. */
+export function closingRateText(rate: string | null): string {
+  if (rate === null) return 'Se congela al proponer';
+  return `${rate.replace('.', ',')} %`;
+}
+
+// ---------------------------------------------------------------------------------
+// The rail: the drawer's identities
+// ---------------------------------------------------------------------------------
+
+/**
+ * The numbers the warehouse keeps in sight while counting. The commission and the electronic
+ * collection are reported beside the drawer and are part of none of the identities below (S9,
+ * S13); the settlement is the only place a cash figure comes from.
+ */
+export interface ClosingRail {
+  readonly opening_cents: bigint;
+  readonly cash_sales_cents: bigint;
+  readonly cash_expenses_cents: bigint;
+  readonly expected_cents: bigint;
+  readonly counted_cents: bigint | null;
+  readonly difference_cents: bigint | null;
+  readonly contribution_cents: bigint;
+  readonly fund_cents: bigint | null;
+  readonly taken_cents: bigint | null;
+  readonly rate_percent: string | null;
+  readonly sales_total_cents: bigint;
+  readonly commission_cents: bigint;
+  readonly card_cents: bigint;
+  readonly transfer_cents: bigint;
+  readonly qr_cents: bigint;
+}
+
+/** `expected = opening + cash sales − cash expenses`, computed once, over the settled facts. */
+export function closingRail(closing: Closing): ClosingRail {
+  const expected_cents = closing.opening_cash_cents + closing.cash_sales_cents
+    - closing.cash_expenses_cents;
+  const difference_cents = closing.counted_cash_cents === null
+    ? null : closing.counted_cash_cents - expected_cents;
+  const taken_cents = closing.counted_cash_cents === null || closing.closing_cash_cents === null
+    ? null : closing.counted_cash_cents + closing.contributed_cash_cents - closing.closing_cash_cents;
+  return Object.freeze({
+    opening_cents: closing.opening_cash_cents,
+    cash_sales_cents: closing.cash_sales_cents,
+    cash_expenses_cents: closing.cash_expenses_cents,
+    expected_cents,
+    counted_cents: closing.counted_cash_cents,
+    difference_cents,
+    contribution_cents: closing.contributed_cash_cents,
+    fund_cents: closing.closing_cash_cents,
+    taken_cents,
+    rate_percent: closing.commission_rate_percent,
+    sales_total_cents: closing.sales_total_cents,
+    commission_cents: closing.commission_amount_cents,
+    card_cents: closing.card_total_cents,
+    transfer_cents: closing.transfer_total_cents,
+    qr_cents: closing.qr_total_cents,
+  });
+}
+
+// ---------------------------------------------------------------------------------
+// The drawer draft the warehouse states
+// ---------------------------------------------------------------------------------
+
+/** What the warehouse typed: the drawer's two amounts beside the contribution, before they are
+ * canonical. The contribution is what the warehouse puts into the till for this settlement, so a
+ * fund can be left with an empty drawer (S10, S11, L13). */
+export interface DrawerDraft {
+  readonly counted: string;
+  readonly contribution: string;
+  readonly fund: string;
+  readonly observation: string;
+}
+
+/** The contribution defaults to zero, which is the normal case and what the settlement reports. */
+export const emptyDrawerDraft: DrawerDraft = Object.freeze({
+  counted: '', contribution: '0,00', fund: '', observation: '',
+});
+
+/** The draft the settlement already holds, so a reload of the screen restores the admin's work. */
+export function drawerDraftFrom(closing: Closing): DrawerDraft {
+  return Object.freeze({
+    counted: closing.counted_cash_cents === null ? '' : typedMoney(closing.counted_cash_cents),
+    // The contribution starts from the fact the server holds: a saved one never reopens as zero.
+    contribution: typedMoney(closing.contributed_cash_cents),
+    fund: closing.closing_cash_cents === null ? '' : typedMoney(closing.closing_cash_cents),
+    observation: closing.observation,
+  });
+}
+
+/** The drawer as the rail shows it while the warehouse types, before anything is saved. */
+export interface DrawerView {
+  readonly counted_cents: bigint | null;
+  /** What the warehouse puts into the till, as the draft states it; `null` while undeclared. */
+  readonly contribution_cents: bigint | null;
+  readonly fund_cents: bigint | null;
+  readonly expected_cents: bigint;
+  readonly difference_cents: bigint | null;
+  readonly taken_cents: bigint | null;
+  /** The amount the fund exceeds the drawer by, or `null` when the fund fits (S10). */
+  readonly excess_cents: bigint | null;
+  readonly problem: string;
+}
+
+function typedCents(text: string): bigint | null {
+  const trimmed = typeof text === 'string' ? text.trim() : '';
+  if (trimmed === '') return null;
+  try { return parseTypedMoney(trimmed); } catch { return invalidMoney(); }
+}
+
+/** The drawer over the facts the settlement carries: the commission is not one of them. */
+export function drawerView(rail: ClosingRail, draft: DrawerDraft): DrawerView {
+  let counted_cents: bigint | null = null;
+  let contribution_cents: bigint | null = null;
+  let fund_cents: bigint | null = null;
+  let problem = '';
+  try { counted_cents = typedCents(draft.counted); } catch { problem = closingAmountMessage; }
+  try { contribution_cents = typedCents(draft.contribution); } catch { problem = closingAmountMessage; }
+  try { fund_cents = typedCents(draft.fund); } catch { problem = closingAmountMessage; }
+  if (problem !== '') { counted_cents = null; contribution_cents = null; fund_cents = null; }
+  const difference_cents = counted_cents === null ? null : counted_cents - rail.expected_cents;
+  // The fund never exceeds the drawer the warehouse counts plus the money it put into the till,
+  // which is what makes the first settlement possible with an empty drawer (S10, S11, L13). The
+  // bound is stated only when its two sides are: an undeclared contribution leaves the screen
+  // without an answer, and then the server's own refusal is the only one the admin reads.
+  const bound_cents = counted_cents === null || contribution_cents === null
+    ? null : counted_cents + contribution_cents;
+  const excess_cents = bound_cents === null || fund_cents === null || fund_cents <= bound_cents
+    ? null : fund_cents - bound_cents;
+  // What the warehouse takes out of the till is stated only for a drawer it can take from: a
+  // fund above the drawer is a draft that is not an offer yet, and the excess names it.
+  const taken_cents = bound_cents === null || fund_cents === null || excess_cents !== null
+    ? null : bound_cents - fund_cents;
+  return Object.freeze({
+    counted_cents, contribution_cents, fund_cents,
+    expected_cents: rail.expected_cents, difference_cents, taken_cents, excess_cents, problem,
+  });
+}
+
+/** The exact body of `POST /api/closings/{id}/cash`: four keys, absent amounts as `null`. */
+export interface DrawerPayload {
+  readonly counted_cash: string | null;
+  readonly contributed_cash: string;
+  readonly closing_cash: string | null;
+  readonly observation: string;
+}
+
+export const closingObservationMessage = `La observación lleva hasta ${closingMaxObservation} caracteres.`;
+export const closingContributionMessage =
+  'Escribí el aporte del Almacén, aunque sea cero: el cierre lo registra como movimiento de caja.';
+
+/**
+ * Canonicalizes the drawer the way the contract takes it: an amount the warehouse has not
+ * counted is the explicit `null`, and the contribution is the money the warehouse states it put
+ * into the till. It is a fact of the settlement, so an empty field is refused instead of being
+ * sent as a zero the admin never declared (S10).
+ */
+export function canonicalDrawerPayload(draft: DrawerDraft): DrawerPayload {
+  let counted_cash: string | null;
+  let closing_cash: string | null;
+  try {
+    const counted = typedCents(draft.counted);
+    const fund = typedCents(draft.fund);
+    counted_cash = counted === null ? null : centsToMoney(counted);
+    closing_cash = fund === null ? null : centsToMoney(fund);
+  } catch { return invalidMoney(); }
+  const contribution = typedCents(draft.contribution);
+  if (contribution === null) throw new Error(closingContributionMessage);
+  const observation = draft.observation;
+  if (typeof observation !== 'string' || observation.includes('\0') || !observation.isWellFormed()
+    || Array.from(observation).length > closingMaxObservation) {
+    throw new Error(closingObservationMessage);
+  }
+  return Object.freeze({
+    counted_cash, contributed_cash: centsToMoney(contribution), closing_cash, observation,
+  });
+}
+
+// ---------------------------------------------------------------------------------
+// The count sheet
+// ---------------------------------------------------------------------------------
+
+export const closingQuantityMessage =
+  `La cantidad contada debe ser un número entero de 0 a ${closingMaxCounted}.`;
+export const closingCountEmptyMessage = 'Contá al menos una variante antes de guardar.';
+export const closingCountLimitMessage = `Un conteo lleva como máximo ${closingMaxCountLines} variantes.`;
+export const closingSearchMessage = 'La búsqueda admite hasta 128 bytes UTF-8, sin caracteres inválidos.';
+
+/** `TOYO NS40ZL L`: the label a row, a blocker and a refusal share. */
+export function closingLineLabel(line: ClosingCountLine): string {
+  return `${line.brand} ${line.model} ${line.polarity} · ${line.capacity_ah} Ah`;
+}
+
+export function closingPendingLines(lines: readonly ClosingCountLine[]): readonly ClosingCountLine[] {
+  return lines.filter(line => line.counted_quantity === null);
+}
+
+export interface ClosingProgress {
+  readonly total: number;
+  readonly counted: number;
+  readonly pending: number;
+}
+
+/** `9 de 11 contadas`: the progress of the sheet over every variant the branch held at the cut. */
+export function closingProgress(lines: readonly ClosingCountLine[]): ClosingProgress {
+  const total = lines.length;
+  const pending = closingPendingLines(lines).length;
+  return Object.freeze({ total, counted: total - pending, pending });
+}
+
+/** The difference of one row, with its sign; `null` while the row is pending. */
+export function closingLineDifference(line: ClosingCountLine): number | null {
+  if (line.counted_quantity === null) return null;
+  return line.counted_quantity - line.expected_quantity;
+}
+
+/** A counted difference is shown with its sign, and a match is shown as a dash, not zero. */
+export function closingQuantityText(value: number | null): string {
+  if (value === null || value === 0) return '—';
+  if (value > 0) return `+${value}`;
+  return `−${-value}`;
+}
+
+/** The pending row is visibly pending, in words, and not only through a colour. */
+export const closingPendingTag = 'Pendiente';
+
+/** The search of the sheet: the sheet is already here, so the filter never asks the server. */
+export function filterCountLines(lines: readonly ClosingCountLine[], search: string): readonly ClosingCountLine[] {
+  if (typeof search !== 'string' || !validSearch(search)) throw new Error(closingSearchMessage);
+  const needle = search.trim().toLocaleLowerCase('es');
+  if (needle === '') return lines;
+  return lines.filter(line => {
+    const haystack = `${line.brand} ${line.model} ${line.capacity_ah} ${line.polarity} ${line.variant_id}`
+      .toLocaleLowerCase('es');
+    return haystack.includes(needle);
+  });
+}
+
+/** One counted line the warehouse is about to save. */
+export interface CountedLineInput {
+  readonly variant_id: number;
+  readonly counted: string;
+}
+
+export interface CountPayloadLine { readonly variant_id: number; readonly counted_quantity: number }
+
+/**
+ * Admits what the warehouse counted: only a whole quantity per variant, inside the sheet's own
+ * bounds. The expected quantity and the difference cannot be expressed here at all (S4).
+ */
+export function canonicalCountPayload(input: readonly CountedLineInput[]): readonly CountPayloadLine[] {
+  if (!Array.isArray(input) || input.length === 0) throw new Error(closingCountEmptyMessage);
+  if (input.length > closingMaxCountLines) throw new Error(closingCountLimitMessage);
+  const seen = new Set<number>();
+  return Object.freeze(input.map(line => {
+    const variant = line.variant_id;
+    if (!Number.isInteger(variant) || variant < 1 || variant > closingMaxID || seen.has(variant)) {
+      throw new Error(closingQuantityMessage);
+    }
+    seen.add(variant);
+    const raw = typeof line.counted === 'string' ? line.counted.trim() : '';
+    if (!/^(0|[1-9]\d{0,6})$/.test(raw) || Number(raw) > closingMaxCounted) {
+      throw new Error(closingQuantityMessage);
+    }
+    return Object.freeze({ variant_id: variant, counted_quantity: Number(raw) });
+  }));
+}
+
+/** One request takes at most 190 lines: a longer sheet is saved in order, batch by batch. */
+export function closingCountBatches(
+  lines: readonly CountPayloadLine[]): readonly (readonly CountPayloadLine[])[] {
+  const batches: CountPayloadLine[][] = [];
+  for (let index = 0; index < lines.length; index += closingMaxCountLines) {
+    batches.push(lines.slice(index, index + closingMaxCountLines));
+  }
+  return Object.freeze(batches.map(batch => Object.freeze(batch)));
+}
+
+// ---------------------------------------------------------------------------------
+// A battery the system did not have (S4, S5: the stock squares upward too)
+// ---------------------------------------------------------------------------------
+
+/**
+ * The sheet of the cut only lists the variants the branch held, so a battery that exists physically
+ * and the system does not have has no row at all. The admin adds it from the branch's own catalogue,
+ * and the closure honours it as stock the system did not have (S5, L38).
+ */
+export const closingCataloguePageSize = 50;
+export const closingCatalogueUnavailable =
+  'No se pudo consultar el catálogo de la sucursal. Revisá la conexión e intentá de nuevo.';
+export const closingCatalogueHelp =
+  '¿Contaste una batería que el sistema no tiene? Buscala en el catálogo de la sucursal y agregala: la fila queda sin cantidad esperada y el cierre la deja con lo que contaste.';
+export const closingCatalogueEmpty = 'Sin variantes para agregar con esa búsqueda.';
+export const closingCatalogueListedTag = 'Ya está en la planilla';
+export const closingCatalogueHeldTag = 'La sucursal ya tiene stock';
+export const closingDuplicateLineMessage =
+  'Esa variante ya está en la planilla: no se puede agregar dos veces.';
+/** A row added by hand says, in words, that the cut did not know it. */
+export const closingOutsideSystemTag = 'Fuera del sistema';
+export const closingOutsideSystemHelp =
+  'La sucursal no tenía esta variante en el sistema: la fila no lleva cantidad esperada y su diferencia es lo contado.';
+
+/** One variant of the branch's catalogue, with the stock the branch holds right now. */
+export interface ClosingCatalogueVariant {
+  readonly variant_id: number;
+  readonly catalog_entry_id: number;
+  readonly brand: string;
+  readonly model: string;
+  readonly capacity_ah: string;
+  readonly polarity: ClosingPolarity;
+  /** What the branch holds: only a variant it holds none of is an addition (S5). */
+  readonly existing: bigint;
+}
+
+/** What the catalogue search offers for one variant of the branch. */
+export type ClosingCatalogueState = 'addable' | 'listed' | 'held';
+
+/** One row of the catalogue search: the variant and whether the sheet can still take it. */
+export interface ClosingCatalogueOption {
+  readonly variant: ClosingCatalogueVariant;
+  readonly state: ClosingCatalogueState;
+}
+
+/**
+ * The variant ids the sheet already holds: the snapshot of the cut plus the rows the admin added by
+ * hand and has not saved yet. One variant is added once, and a line of the sheet is never added.
+ */
+export function closingSheetVariantIDs(closing: Closing,
+  added: readonly ClosingCatalogueVariant[] = []): ReadonlySet<number> {
+  const ids = new Set<number>(closing.count_lines.map(line => line.variant_id));
+  for (const variant of added) ids.add(variant.variant_id);
+  return ids;
+}
+
+/**
+ * The catalogue search as the sheet can use it: a variant the sheet already lists is only listed, a
+ * variant the branch holds is only held, and only a variant the system does not have is addable.
+ * It is the one place the exclusion is decided, so the screen cannot offer a row twice.
+ */
+export function closingCatalogueOptions(catalogue: readonly ClosingCatalogueVariant[],
+  taken: ReadonlySet<number>): readonly ClosingCatalogueOption[] {
+  const seen = new Set<number>();
+  const options: ClosingCatalogueOption[] = [];
+  for (const variant of catalogue) {
+    if (seen.has(variant.variant_id)) continue;
+    seen.add(variant.variant_id);
+    const state: ClosingCatalogueState = taken.has(variant.variant_id) ? 'listed'
+      : variant.existing !== 0n ? 'held' : 'addable';
+    options.push(Object.freeze({ variant: Object.freeze({ ...variant }), state }));
+  }
+  return Object.freeze(options);
+}
+
+/**
+ * Adds one variant of the branch catalogue as a row the closure will honour as stock the system did
+ * not have. A variant already taken — on the sheet or added once already — is refused instead.
+ */
+export function closingAddLine(lines: readonly ClosingCatalogueVariant[],
+  variant: ClosingCatalogueVariant, taken: ReadonlySet<number>): readonly ClosingCatalogueVariant[] {
+  if (taken.has(variant.variant_id) || lines.some(line => line.variant_id === variant.variant_id)) {
+    throw new Error(closingDuplicateLineMessage);
+  }
+  return Object.freeze([...lines, Object.freeze({ ...variant })]);
+}
+
+/** Drops a row the admin added and has not saved yet: a line of the cut is never removed. */
+export function closingRemoveLine(lines: readonly ClosingCatalogueVariant[],
+  variant_id: number): readonly ClosingCatalogueVariant[] {
+  return Object.freeze(lines.filter(line => line.variant_id !== variant_id));
+}
+
+/**
+ * The rows the screen works on: the snapshot of the cut plus the rows added by hand, in variant
+ * order. An added row carries no expected quantity because the cut had none of it.
+ */
+export function closingSheetRows(closing: Closing,
+  added: readonly ClosingCatalogueVariant[] = []): readonly ClosingCountLine[] {
+  const rows: ClosingCountLine[] = closing.count_lines.map(line => Object.freeze({
+    variant_id: line.variant_id, catalog_entry_id: line.catalog_entry_id, brand: line.brand,
+    model: line.model, capacity_ah: line.capacity_ah, polarity: line.polarity,
+    expected_quantity: line.expected_quantity, counted_quantity: line.counted_quantity,
+  }));
+  for (const variant of added) {
+    if (rows.some(row => row.variant_id === variant.variant_id)) continue;
+    rows.push(Object.freeze({ variant_id: variant.variant_id,
+      catalog_entry_id: variant.catalog_entry_id, brand: variant.brand, model: variant.model,
+      capacity_ah: variant.capacity_ah, polarity: variant.polarity,
+      expected_quantity: 0, counted_quantity: null }));
+  }
+  rows.sort((left, right) => left.variant_id - right.variant_id);
+  return Object.freeze(rows);
+}
+
+/**
+ * A row the cut did not know: the system had none of it, so it carries no expected quantity. Every
+ * line the opening seeded has stock, which is exactly what makes the two kinds tellable apart.
+ */
+export function closingLineIsOutsideSystem(line: { readonly expected_quantity: number }): boolean {
+  return line.expected_quantity === 0;
+}
+
+/**
+ * The lines the admin is about to save: every row whose count changed, the rows added by hand
+ * included, and nothing else. A row that was not typed is not a count and is never sent (S4).
+ */
+export function closingCountChanges(rows: readonly ClosingCountLine[],
+  draft: Readonly<Record<number, string>>): readonly CountedLineInput[] {
+  const changes: CountedLineInput[] = [];
+  for (const row of rows) {
+    const typed = typeof draft[row.variant_id] === 'string' ? draft[row.variant_id] : '';
+    const saved = row.counted_quantity === null ? '' : String(row.counted_quantity);
+    if (typed !== saved) changes.push(Object.freeze({ variant_id: row.variant_id, counted: typed }));
+  }
+  return Object.freeze(changes);
+}
+
+// ---------------------------------------------------------------------------------
+// Why the offer cannot be made yet
+// ---------------------------------------------------------------------------------
+
+export interface ClosingBlocker { readonly code: string; readonly message: string }
+
+const listedNames = 4;
+
+/** `a, b y c`: the sides a statement is missing, named in the order they are stated. */
+function listedSides(sides: readonly string[]): string {
+  if (sides.length <= 1) return sides.join('');
+  return `${sides.slice(0, -1).join(', ')} y ${sides[sides.length - 1]}`;
+}
+
+function pendingBlocker(lines: readonly ClosingCountLine[]): ClosingBlocker {
+  const names = lines.map(closingLineLabel);
+  const listed = names.slice(0, listedNames).join(', ');
+  const rest = names.length > listedNames ? ` y ${names.length - listedNames} más` : '';
+  return Object.freeze({
+    code: 'count_pending',
+    message: `Faltan ${names.length} ${names.length === 1 ? 'variante' : 'variantes'} por contar: ${listed}${rest}.`,
+  });
+}
+
+/**
+ * What still blocks the proposal, in the order the warehouse can act on it. Every blocker is a
+ * fact of the settlement it already holds or of the draft it typed; the refusal itself is the
+ * server's, and this list never replaces it. `sheet` is the sheet the admin is working on, which
+ * carries the rows added by hand beside the snapshot of the cut.
+ */
+export function closingBlockers(closing: Closing, view: DrawerView,
+  unsaved = false, sheet: readonly ClosingCountLine[] = closing.count_lines): readonly ClosingBlocker[] {
+  if (!closingIsEditable(closing.status)) {
+    return Object.freeze([Object.freeze({
+      code: closing.status === 'proposed' ? 'state_conflict' : 'closed',
+      message: closing.status === 'proposed'
+        ? 'La propuesta espera la decisión de la sucursal: no se puede proponer otra vez.'
+        : 'La rendición está cerrada: no se puede proponer ni editar.',
+    })]);
+  }
+  const blockers: ClosingBlocker[] = [];
+  const pending = closingPendingLines(sheet);
+  if (pending.length > 0) blockers.push(pendingBlocker(pending));
+  if (view.problem !== '') {
+    blockers.push(Object.freeze({ code: 'invalid_amount', message: view.problem }));
+  }
+  const missing: string[] = [];
+  if (view.counted_cents === null) missing.push('la caja contada');
+  // The contribution is a side of the drawer the admin states: without it the fund bound has no
+  // second term and the first settlement of a branch could never be offered (S10, S11).
+  if (view.contribution_cents === null) missing.push('el aporte del Almacén');
+  if (view.fund_cents === null) missing.push('el fondo que queda en la caja');
+  // An amount that cannot be read is already named above; it is not also reported as absent.
+  if (missing.length > 0 && view.problem === '') {
+    blockers.push(Object.freeze({
+      code: 'cash_not_stated',
+      message: `Falta ${listedSides(missing)}: el cierre no puede proponerse sin eso.`,
+    }));
+  }
+  if (view.excess_cents !== null) {
+    blockers.push(Object.freeze({
+      code: 'fund_exceeds_drawer',
+      message: `El fondo supera la caja contada más el aporte en ${formatMoney(view.excess_cents)}.`,
+    }));
+  }
+  if (unsaved) {
+    blockers.push(Object.freeze({
+      code: 'unsaved',
+      message: 'Hay cambios sin guardar: guardá el borrador antes de proponer.',
+    }));
+  }
+  return Object.freeze(blockers);
+}
+
+/** The state of the sheet and the drawer as the action bar announces it. */
+export function closingBlockReason(blockers: readonly ClosingBlocker[]): string {
+  if (blockers.length === 0) return 'La rendición se puede proponer: el conteo cubre toda variante con existencia y la caja está contada.';
+  return blockers.map(blocker => blocker.message).join(' ');
+}
+
+// ---------------------------------------------------------------------------------
+// The period: always the range between two rendiciones (S1)
+// ---------------------------------------------------------------------------------
+
+export interface ClosingPeriod { readonly from: string; readonly to: string; readonly empty: boolean }
+
+const periodFormat = new Intl.DateTimeFormat('es-BO', {
+  timeZone: 'America/La_Paz', day: '2-digit', month: 'short', year: 'numeric',
+});
+
+function periodDate(value: string): string {
+  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) return 'Fecha no disponible';
+  return periodFormat.format(new Date(value));
+}
+
+/** `23 feb 2026 → 23 mar 2026`; a bootstrap settlement starts and cuts at the same instant. */
+export function closingPeriod(periodStart: string, cutAt: string): ClosingPeriod {
+  return Object.freeze({
+    from: periodDate(periodStart),
+    to: periodDate(cutAt),
+    empty: periodStart === cutAt,
+  });
+}
+
+export function closingPeriodLabel(period: ClosingPeriod): string {
+  return `${period.from} → ${period.to}`;
+}
+
+// ---------------------------------------------------------------------------------
+// The branch's side: it only accepts or rejects the offer it is shown (S14, S15)
+// ---------------------------------------------------------------------------------
+
+export const closingMotiveRequiredMessage =
+  'Escribí el motivo del rechazo: sin motivo no se puede rechazar la propuesta.';
+export const closingMotiveLengthMessage =
+  `El motivo del rechazo lleva hasta ${closingMaxObservation} caracteres y no admite caracteres inválidos.`;
+export const closingAcceptanceMismatchMessage =
+  'La propuesta no coincide con la rendición que tenés delante: no se puede describir ni aceptar.';
+
+/** The exact body of `POST /api/closings/{id}/decision`: the two decisions are exclusive. */
+export interface ClosingDecisionPayload {
+  readonly decision: 'accepted' | 'rejected';
+  readonly reason?: string;
+}
+
+/**
+ * Canonicalizes the only two answers the branch can send. A rejection without a motive cannot
+ * even be expressed: it is trimmed, bounded and refused before it can reach the server (S14).
+ */
+export function closingDecisionPayload(
+  decision: 'accepted' | 'rejected', reason: string): ClosingDecisionPayload {
+  if (decision === 'accepted') return Object.freeze({ decision: 'accepted' });
+  if (decision !== 'rejected') throw new Error(closingMotiveRequiredMessage);
+  const motive = typeof reason === 'string' ? reason.trim() : '';
+  if (motive === '') throw new Error(closingMotiveRequiredMessage);
+  if (motive.includes('\0') || !motive.isWellFormed()
+    || Array.from(motive).length > closingMaxObservation) {
+    throw new Error(closingMotiveLengthMessage);
+  }
+  return Object.freeze({ decision: 'rejected', reason: motive });
+}
+
+/** Only `proposed` awaits the branch; every other state is read-only and says why. */
+export interface ClosingDecisionReadiness { readonly awaiting: boolean; readonly reason: string }
+
+export function closingDecisionReadiness(closing: Closing): ClosingDecisionReadiness {
+  if (closing.status === 'closed') {
+    return Object.freeze({
+      awaiting: false,
+      reason: 'La rendición ya está cerrada: el Almacén no puede reabrirla y no hay nada que decidir.',
+    });
+  }
+  if (closing.status === 'proposed') return Object.freeze({ awaiting: true, reason: '' });
+  return Object.freeze({
+    awaiting: false,
+    reason: 'La sucursal está congelada: el Almacén todavía no propuso el cierre, así que no hay nada que aceptar ni rechazar.',
+  });
+}
+
+/** One counted variant as the branch is about to accept it: the system, the count and the result. */
+export interface ClosingStockChange {
+  readonly variant_id: number;
+  readonly label: string;
+  readonly system_quantity: number;
+  readonly counted_quantity: number;
+  readonly becomes_quantity: number;
+  readonly difference: number;
+}
+
+function stockChange(variant_id: number, label: string, system: number, counted: number): ClosingStockChange {
+  return Object.freeze({
+    variant_id, label, system_quantity: system, counted_quantity: counted,
+    becomes_quantity: counted, difference: counted - system,
+  });
+}
+
+/** The counted sheet of a settlement that is not being offered, still legible after the closure. */
+export function closingSheetChanges(closing: Closing): readonly ClosingStockChange[] {
+  return Object.freeze(closing.count_lines
+    .filter(line => line.counted_quantity !== null)
+    .map(line => stockChange(line.variant_id, closingLineLabel(line), line.expected_quantity,
+      line.counted_quantity!)));
+}
+
+/** The counted lines of a stored offer, labelled with the sheet of the settlement it belongs to. */
+export function closingOfferChanges(closing: Closing,
+  offer: ClosingOffer): readonly ClosingStockChange[] {
+  const sheet = new Map(closing.count_lines.map(line => [line.variant_id, line]));
+  return Object.freeze(offer.count_lines.map(line => {
+    const entry = sheet.get(line.variant_id);
+    const label = entry === undefined ? `Variante #${line.variant_id}` : closingLineLabel(entry);
+    return stockChange(line.variant_id, label, line.expected_quantity, line.counted_quantity);
+  }));
+}
+
+/**
+ * The drawer of the offer: the inherited fund with the offer's own cash facts compute the
+ * expected drawer, the difference and what the warehouse takes. The commission is reported
+ * beside them and is inside none of those identities (S9).
+ */
+export function closingOfferRail(closing: Closing, offer: ClosingOffer): ClosingRail {
+  const expected_cents = closing.opening_cash_cents + offer.cash_sales_cents - offer.cash_expenses_cents;
+  return Object.freeze({
+    opening_cents: closing.opening_cash_cents,
+    cash_sales_cents: offer.cash_sales_cents,
+    cash_expenses_cents: offer.cash_expenses_cents,
+    expected_cents,
+    counted_cents: offer.counted_cash_cents,
+    difference_cents: offer.counted_cash_cents - expected_cents,
+    contribution_cents: offer.contributed_cash_cents,
+    fund_cents: offer.closing_cash_cents,
+    taken_cents: offer.counted_cash_cents + offer.contributed_cash_cents - offer.closing_cash_cents,
+    rate_percent: offer.commission_rate_percent,
+    sales_total_cents: offer.sales_total_cents,
+    commission_cents: offer.commission_amount_cents,
+    card_cents: offer.card_total_cents,
+    transfer_cents: offer.transfer_total_cents,
+    qr_cents: offer.qr_total_cents,
+  });
+}
+
+/** The offer the branch is deciding, with what acceptance applies and nothing else. */
+export interface ClosingAcceptance {
+  readonly round: ClosingRound;
+  readonly offer: ClosingOffer;
+  readonly changes: readonly ClosingStockChange[];
+  readonly rail: ClosingRail;
+}
+
+function sameOfferLines(left: readonly ClosingOfferLine[], right: readonly ClosingCountLine[]): boolean {
+  const counted = right.filter(line => line.counted_quantity !== null);
+  if (left.length !== counted.length) return false;
+  return left.every((line, index) => {
+    const sheet = counted[index];
+    return line.variant_id === sheet.variant_id && line.expected_quantity === sheet.expected_quantity
+      && line.counted_quantity === sheet.counted_quantity;
+  });
+}
+
+/**
+ * The decisive reading of a `proposed` settlement: the latest undecided round and the offer it
+ * holds. A document whose offer disagrees with its own facts is refused instead of described, so
+ * the branch never accepts arithmetic the server would not apply.
+ */
+export function closingAcceptance(closing: Closing): ClosingAcceptance | null {
+  if (closing.status !== 'proposed') return null;
+  const round = closing.rounds[closing.rounds.length - 1];
+  if (round === undefined || round.decision !== '') return null;
+  const rail = closingOfferRail(closing, round.offer);
+  const published = closingRail(closing);
+  if (rail.expected_cents !== published.expected_cents
+    || rail.difference_cents !== published.difference_cents
+    || rail.taken_cents !== published.taken_cents
+    || rail.commission_cents !== published.commission_cents
+    || !sameOfferLines(round.offer.count_lines, closing.count_lines)) {
+    throw new Error(closingAcceptanceMismatchMessage);
+  }
+  return Object.freeze({
+    round,
+    offer: round.offer,
+    changes: closingOfferChanges(closing, round.offer),
+    rail,
+  });
+}
+
+/** The account that proposed or decided a round, as the contract identifies it: no names (S7). */
+export function closingAccountLabel(accountID: number): string {
+  return `Cuenta #${accountID}`;
+}
+
+const momentFormat = new Intl.DateTimeFormat('es-BO', {
+  timeZone: 'America/La_Paz', day: '2-digit', month: 'short', year: 'numeric',
+  hour: '2-digit', minute: '2-digit', hour12: false,
+});
+
+/** `12 sept 2026, 10:44`: when a round was offered or answered, in the branch time zone. */
+export function closingMomentText(value: string): string {
+  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) return 'Fecha no disponible';
+  return momentFormat.format(new Date(value));
+}
+
+/** The answer of a round in the branch's words; `''` is the offer still on the table. */
+export function closingRoundStateLabel(decision: ClosingDecision): string {
+  if (decision === 'accepted') return 'Aceptada';
+  if (decision === 'rejected') return 'Rechazada';
+  return 'Por decidir';
+}
+
+// ---------------------------------------------------------------------------------
+// Corrections of a closed settlement (S16)
+// ---------------------------------------------------------------------------------
+
+export type ClosingCorrectionStatus = 'proposed' | 'accepted' | 'rejected';
+
+export const closingCorrectionStatusLabels: Readonly<Record<ClosingCorrectionStatus, string>> =
+  Object.freeze({
+    proposed: 'Espera la decisión de la sucursal',
+    accepted: 'Aceptada',
+    rejected: 'Rechazada',
+  });
+
+/** The four facts one correction can restate: the sheet, the drawer, the commission and the fund. */
+export type ClosingCorrectionKind = 'stock' | 'counted_cash' | 'commission' | 'fund';
+
+export const closingCorrectionKindLabels: Readonly<Record<ClosingCorrectionKind, string>> =
+  Object.freeze({
+    stock: 'Conteo',
+    counted_cash: 'Caja contada',
+    commission: 'Comisión',
+    fund: 'Fondo que queda',
+  });
+
+/** One corrected quantity: the variant and the number the warehouse says it counted. */
+export interface ClosingCorrectionQuantity {
+  readonly variant_id: number;
+  readonly counted_quantity: number;
+}
+
+/** The four values a correction can state; a value it does not touch stays absent (S16). */
+export interface ClosingCorrectionPayload {
+  readonly counted_quantities: readonly ClosingCorrectionQuantity[];
+  readonly counted_cash_cents: bigint | null;
+  readonly commission_amount_cents: bigint | null;
+  readonly closing_cash_cents: bigint | null;
+}
+
+/** One delta an accepted correction applied. Exactly one unit is stated, by the kind (036, 040). */
+export interface ClosingCorrectionEffect {
+  readonly kind: ClosingCorrectionKind;
+  readonly variant_id: number | null;
+  readonly quantity_delta: number | null;
+  readonly amount_delta_cents: bigint | null;
+}
+
+/** One correction of a closed settlement: what it corrects, why, and who answered it (S16). */
+export interface ClosingCorrection {
+  readonly id: number;
+  readonly closing_id: number;
+  readonly status: ClosingCorrectionStatus;
+  readonly reason: string;
+  readonly payload: ClosingCorrectionPayload;
+  readonly proposed_by_account_id: number;
+  readonly proposed_at: string;
+  readonly decided_by_account_id: number | null;
+  readonly decided_at: string | null;
+  readonly decision_reason: string;
+  readonly effects: readonly ClosingCorrectionEffect[];
+}
+
+/**
+ * The correction that waits for the branch, or `null` when there is none. It is the only one the
+ * branch can decide, so the screen that answers it reads it from here instead of guessing from a
+ * list: a settlement with no corrections offers no decision at all (S16).
+ */
+export function closingPendingCorrection(closing: Closing): ClosingCorrection | null {
+  return closing.corrections.find(correction => correction.status === 'proposed') ?? null;
+}
+
+/** The corrections the branch already accepted, oldest first: each one amended a number. */
+export function closingAcceptedCorrections(closing: Closing): readonly ClosingCorrection[] {
+  return closing.corrections.filter(correction => correction.status === 'accepted');
+}
+
+/** The delta the accepted corrections journalled for one money kind of the settlement. */
+function acceptedAmountDelta(closing: Closing, kind: ClosingCorrectionKind): bigint {
+  let total = 0n;
+  for (const correction of closingAcceptedCorrections(closing)) {
+    for (const effect of correction.effects) {
+      if (effect.kind === kind && effect.amount_delta_cents !== null) total += effect.amount_delta_cents;
+    }
+  }
+  return total;
+}
+
+/** The delta the accepted corrections applied to one variant of the count sheet. */
+function acceptedQuantityDeltas(closing: Closing): ReadonlyMap<number, number> {
+  const deltas = new Map<number, number>();
+  for (const correction of closingAcceptedCorrections(closing)) {
+    for (const effect of correction.effects) {
+      if (effect.kind !== 'stock' || effect.variant_id === null || effect.quantity_delta === null) continue;
+      deltas.set(effect.variant_id, (deltas.get(effect.variant_id) ?? 0) + effect.quantity_delta);
+    }
+  }
+  return deltas;
+}
+
+/**
+ * One amount of the settlement as the branch signed it and as it reads today. The row keeps the
+ * signed numbers and the journal keeps what moved, so the signed one is recovered from the published
+ * corrected one minus the deltas -- except the commission, which the document publishes as the
+ * signed amount and whose corrected figure is the signed one plus its delta (034, 036, 040). A
+ * corrected number is therefore always shown with the delta that produced it, never as signed.
+ */
+export interface ClosingCorrectedAmount {
+  readonly kind: 'counted_cash' | 'commission' | 'fund';
+  readonly label: string;
+  readonly signed_cents: bigint;
+  readonly corrected_cents: bigint;
+  readonly delta_cents: bigint;
+}
+
+/** The amounts the accepted corrections already changed, with the delta of each one. */
+export function closingCorrectedAmounts(closing: Closing): readonly ClosingCorrectedAmount[] {
+  const amounts: ClosingCorrectedAmount[] = [];
+  const countedDelta = acceptedAmountDelta(closing, 'counted_cash');
+  if (closing.counted_cash_cents !== null && countedDelta !== 0n) {
+    amounts.push(Object.freeze({ kind: 'counted_cash' as const,
+      label: closingCorrectionKindLabels.counted_cash,
+      signed_cents: closing.counted_cash_cents - countedDelta,
+      corrected_cents: closing.counted_cash_cents, delta_cents: countedDelta }));
+  }
+  const commissionDelta = acceptedAmountDelta(closing, 'commission');
+  if (commissionDelta !== 0n) {
+    amounts.push(Object.freeze({ kind: 'commission' as const,
+      label: closingCorrectionKindLabels.commission,
+      signed_cents: closing.commission_amount_cents,
+      corrected_cents: closing.commission_amount_cents + commissionDelta, delta_cents: commissionDelta }));
+  }
+  const fundDelta = acceptedAmountDelta(closing, 'fund');
+  if (closing.closing_cash_cents !== null && fundDelta !== 0n) {
+    amounts.push(Object.freeze({ kind: 'fund' as const, label: closingCorrectionKindLabels.fund,
+      signed_cents: closing.closing_cash_cents - fundDelta,
+      corrected_cents: closing.closing_cash_cents, delta_cents: fundDelta }));
+  }
+  return Object.freeze(amounts);
+}
+
+/** One count line the accepted corrections already changed. */
+export interface ClosingCorrectedCount {
+  readonly variant_id: number;
+  readonly label: string;
+  readonly signed_quantity: number;
+  readonly corrected_quantity: number;
+  readonly delta: number;
+}
+
+/** The count lines the accepted corrections already changed, in variant order. */
+export function closingCorrectedCounts(closing: Closing): readonly ClosingCorrectedCount[] {
+  const deltas = acceptedQuantityDeltas(closing);
+  const sheet = new Map(closing.count_lines.map(line => [line.variant_id, line]));
+  return Object.freeze([...deltas.keys()].sort((left, right) => left - right).map(variant_id => {
+    const line = sheet.get(variant_id);
+    const signed = line?.counted_quantity ?? 0;
+    const delta = deltas.get(variant_id) ?? 0;
+    return Object.freeze({ variant_id, label: line === undefined ? `Variante #${variant_id}` : closingLineLabel(line),
+      signed_quantity: signed, corrected_quantity: signed + delta, delta });
+  }));
+}
+
+/** The commission the settlement reads today, over the accepted deltas of its journal. */
+export function closingCorrectedCommission(closing: Closing): bigint {
+  return closing.commission_amount_cents + acceptedAmountDelta(closing, 'commission');
+}
+
+// ---------------------------------------------------------------------------------
+// What a pending correction would change
+// ---------------------------------------------------------------------------------
+
+/** One amount a pending correction would leave different, with the difference. */
+export interface ClosingCorrectionAmountStep {
+  readonly kind: 'counted_cash' | 'commission' | 'fund';
+  readonly label: string;
+  readonly current_cents: bigint;
+  readonly proposed_cents: bigint;
+  readonly delta_cents: bigint;
+}
+
+/** One count line a pending correction would leave different, with the difference. */
+export interface ClosingCorrectionCountStep {
+  readonly variant_id: number;
+  readonly label: string;
+  readonly current_quantity: number;
+  readonly proposed_quantity: number;
+  readonly delta: number;
+}
+
+/**
+ * The pending correction as the branch reads it before deciding: what it states, what it would
+ * change, and the drawer it would leave. The expected cash is untouched by a correction -- it is the
+ * inherited fund plus the cash facts of the period -- so the difference and what the warehouse takes
+ * are derived again over the corrected drawer instead of being restated (S8, S10, S16).
+ */
+export interface ClosingCorrectionPreview {
+  readonly correction: ClosingCorrection;
+  readonly amounts: readonly ClosingCorrectionAmountStep[];
+  readonly counts: readonly ClosingCorrectionCountStep[];
+  readonly expected_cents: bigint;
+  readonly counted_cents: bigint | null;
+  readonly difference_cents: bigint | null;
+  readonly contribution_cents: bigint;
+  readonly fund_cents: bigint | null;
+  readonly taken_cents: bigint | null;
+  readonly commission_cents: bigint;
+}
+
+/**
+ * The reading of the correction that waits for the branch, or `null` when nothing waits. A document
+ * whose pending correction belongs to another settlement is refused instead of described: the branch
+ * never decides a correction it cannot see whole (S16).
+ */
+export function closingCorrectionPreview(closing: Closing): ClosingCorrectionPreview | null {
+  if (closing.status !== 'closed') return null;
+  const correction = closingPendingCorrection(closing);
+  if (correction === null) return null;
+  if (correction.closing_id !== closing.id) throw new Error(closingAcceptanceMismatchMessage);
+  const expected_cents = closingRail(closing).expected_cents;
+  const currentCounts = new Map(closingCorrectedCounts(closing)
+    .map(count => [count.variant_id, count.corrected_quantity]));
+  const sheet = new Map(closing.count_lines.map(line => [line.variant_id, line]));
+  const amounts: ClosingCorrectionAmountStep[] = [];
+  const step = (kind: 'counted_cash' | 'commission' | 'fund', label: string,
+    current: bigint | null, proposed: bigint | null): bigint | null => {
+    if (proposed === null || current === null) return current;
+    amounts.push(Object.freeze({ kind, label, current_cents: current, proposed_cents: proposed,
+      delta_cents: proposed - current }));
+    return proposed;
+  };
+  const counted_cents = step('counted_cash', closingCorrectionKindLabels.counted_cash,
+    closing.counted_cash_cents, correction.payload.counted_cash_cents);
+  const commission_cents = step('commission', closingCorrectionKindLabels.commission,
+    closingCorrectedCommission(closing), correction.payload.commission_amount_cents);
+  const fund_cents = step('fund', closingCorrectionKindLabels.fund,
+    closing.closing_cash_cents, correction.payload.closing_cash_cents);
+  const counts: ClosingCorrectionCountStep[] = [];
+  for (const quantity of correction.payload.counted_quantities) {
+    const line = sheet.get(quantity.variant_id);
+    const current = currentCounts.get(quantity.variant_id) ?? line?.counted_quantity ?? null;
+    if (current === null) continue;
+    if (current === quantity.counted_quantity) continue;
+    counts.push(Object.freeze({
+      variant_id: quantity.variant_id,
+      label: line === undefined ? `Variante #${quantity.variant_id}` : closingLineLabel(line),
+      current_quantity: current, proposed_quantity: quantity.counted_quantity,
+      delta: quantity.counted_quantity - current,
+    }));
+  }
+  const difference_cents = counted_cents === null ? null : counted_cents - expected_cents;
+  const taken_cents = counted_cents === null || fund_cents === null
+    ? null : counted_cents + closing.contributed_cash_cents - fund_cents;
+  return Object.freeze({
+    correction,
+    amounts: Object.freeze(amounts),
+    counts: Object.freeze(counts),
+    expected_cents,
+    counted_cents,
+    difference_cents,
+    contribution_cents: closing.contributed_cash_cents,
+    fund_cents,
+    taken_cents,
+    commission_cents: commission_cents ?? closing.commission_amount_cents,
+  });
+}
+
+// ---------------------------------------------------------------------------------
+// The correction the warehouse proposes
+// ---------------------------------------------------------------------------------
+
+export const closingCorrectionReasonMessage =
+  'Escribí el motivo de la corrección: sin motivo no se puede proponer.';
+export const closingCorrectionValueMessage =
+  'La corrección tiene que cambiar al menos un valor: el conteo, la caja, la comisión o el fondo.';
+
+/** The four correctable values as the warehouse types them, over the closed settlement. */
+export interface CorrectionDraft {
+  readonly reason: string;
+  readonly counted: Readonly<Record<number, string>>;
+  readonly counted_cash: string;
+  readonly commission: string;
+  readonly fund: string;
+}
+
+/**
+ * The draft of a correction, seeded with what the settlement reads today: a field the warehouse does
+ * not touch is not restated, and the corrected numbers it already published are the ones a second
+ * correction takes its difference against (036, 040).
+ */
+export function correctionDraftFrom(closing: Closing): CorrectionDraft {
+  const correctedAmounts = new Map(closingCorrectedAmounts(closing)
+    .map(amount => [amount.kind, amount.corrected_cents]));
+  const correctedCounts = new Map(closingCorrectedCounts(closing)
+    .map(count => [count.variant_id, count.corrected_quantity]));
+  const counted: Record<number, string> = {};
+  for (const line of closing.count_lines) {
+    if (line.counted_quantity === null) continue;
+    counted[line.variant_id] = String(correctedCounts.get(line.variant_id) ?? line.counted_quantity);
+  }
+  return Object.freeze({
+    reason: '',
+    counted: Object.freeze(counted),
+    counted_cash: closing.counted_cash_cents === null ? ''
+      : typedMoney(correctedAmounts.get('counted_cash') ?? closing.counted_cash_cents),
+    commission: typedMoney(correctedAmounts.get('commission') ?? closingCorrectedCommission(closing)),
+    fund: closing.closing_cash_cents === null ? ''
+      : typedMoney(correctedAmounts.get('fund') ?? closing.closing_cash_cents),
+  });
+}
+
+/** The body of `POST /api/closings/{id}/corrections`: the reason and the values it corrects. */
+export interface CorrectionBody {
+  readonly reason: string;
+  readonly payload: {
+    readonly counted_quantities?: readonly ClosingCorrectionQuantity[];
+    readonly counted_cash?: string;
+    readonly commission_amount?: string;
+    readonly closing_cash?: string;
+  };
+}
+
+/**
+ * Canonicalizes the body of one correction: a reason that is not blank once trimmed, and at least
+ * one of the four values, each in the shape that value is. It is the contract's own gate, so a
+ * correction that states nothing never leaves the screen (S16, S20).
+ */
+export function canonicalCorrectionBody(body: CorrectionBody): CorrectionBody {
+  const reason = typeof body?.reason === 'string' ? body.reason.trim() : '';
+  if (reason === '' || reason.includes('\0') || !reason.isWellFormed()
+    || Array.from(reason).length > closingMaxObservation) {
+    throw new Error(closingCorrectionReasonMessage);
+  }
+  if (!body.payload || typeof body.payload !== 'object') throw new Error(closingCorrectionValueMessage);
+  const known = ['counted_quantities', 'counted_cash', 'commission_amount', 'closing_cash'];
+  if (Object.keys(body.payload).some(key => !known.includes(key))) {
+    throw new Error(closingCorrectionValueMessage);
+  }
+  const payload: { counted_quantities?: ClosingCorrectionQuantity[]; counted_cash?: string;
+    commission_amount?: string; closing_cash?: string } = {};
+  let stated = 0;
+  if (body.payload.counted_quantities !== undefined) {
+    const lines = body.payload.counted_quantities;
+    if (!Array.isArray(lines) || lines.length === 0) throw new Error(closingCorrectionValueMessage);
+    if (lines.length > closingMaxCountLines) throw new Error(closingCountLimitMessage);
+    const seen = new Set<number>();
+    payload.counted_quantities = lines.map(line => {
+      const variant = line.variant_id;
+      if (!Number.isInteger(variant) || variant < 1 || variant > closingMaxID || seen.has(variant)) {
+        throw new Error(closingQuantityMessage);
+      }
+      seen.add(variant);
+      if (!Number.isInteger(line.counted_quantity) || line.counted_quantity < 0
+        || line.counted_quantity > closingMaxCounted) {
+        throw new Error(closingQuantityMessage);
+      }
+      return Object.freeze({ variant_id: variant, counted_quantity: line.counted_quantity });
+    });
+    stated += 1;
+  }
+  for (const key of ['counted_cash', 'commission_amount', 'closing_cash'] as const) {
+    const value = body.payload[key];
+    if (value === undefined) continue;
+    if (typeof value !== 'string') throw new Error(closingAmountMessage);
+    const cents = closingCents(value);
+    if (centsToMoney(cents) !== value) throw new Error(closingAmountMessage);
+    payload[key] = value;
+    stated += 1;
+  }
+  if (stated === 0) throw new Error(closingCorrectionValueMessage);
+  return Object.freeze({ reason, payload: Object.freeze(payload) });
+}
+
+/**
+ * The correction the warehouse is proposing, built over the closed settlement's own numbers: only
+ * the values it actually changes are stated, each money one as canonical text, so the payload the
+ * branch receives is exactly what is different and nothing is restated (S16).
+ */
+export function canonicalCorrection(closing: Closing, draft: CorrectionDraft): CorrectionBody {
+  const currentCounts = new Map(closingCorrectedCounts(closing)
+    .map(count => [count.variant_id, count.corrected_quantity]));
+  const quantities: ClosingCorrectionQuantity[] = [];
+  for (const line of closing.count_lines) {
+    const current = currentCounts.get(line.variant_id) ?? line.counted_quantity;
+    if (current === null) continue;
+    const raw = typeof draft.counted[line.variant_id] === 'string'
+      ? draft.counted[line.variant_id].trim() : '';
+    if (raw === '') continue;
+    if (!/^(0|[1-9]\d{0,6})$/.test(raw) || Number(raw) > closingMaxCounted) {
+      throw new Error(closingQuantityMessage);
+    }
+    if (Number(raw) === current) continue;
+    quantities.push(Object.freeze({ variant_id: line.variant_id, counted_quantity: Number(raw) }));
+  }
+  const amount = (typed: string, current: bigint | null): string | null => {
+    const raw = typeof typed === 'string' ? typed.trim() : '';
+    if (raw === '') return null;
+    const cents = parseTypedMoney(raw);
+    if (current !== null && cents === current) return null;
+    return centsToMoney(cents);
+  };
+  const payload: { counted_quantities?: readonly ClosingCorrectionQuantity[];
+    counted_cash?: string; commission_amount?: string; closing_cash?: string } = {};
+  if (quantities.length > 0) payload.counted_quantities = quantities;
+  const countedCash = amount(draft.counted_cash, closing.counted_cash_cents);
+  if (countedCash !== null) payload.counted_cash = countedCash;
+  const commission = amount(draft.commission, closingCorrectedCommission(closing));
+  if (commission !== null) payload.commission_amount = commission;
+  const fund = amount(draft.fund, closing.closing_cash_cents);
+  if (fund !== null) payload.closing_cash = fund;
+  return canonicalCorrectionBody({ reason: draft.reason, payload });
+}
+
+/** Only the correction that waits for the branch is decidable; every other state says why (S16). */
+export function closingCorrectionReadiness(closing: Closing): ClosingDecisionReadiness {
+  if (closing.status !== 'closed') {
+    return Object.freeze({
+      awaiting: false,
+      reason: 'La rendición todavía no está cerrada: se corrige después del cierre, no antes.',
+    });
+  }
+  if (closingPendingCorrection(closing) !== null) return Object.freeze({ awaiting: true, reason: '' });
+  return Object.freeze({
+    awaiting: false,
+    reason: 'La rendición está cerrada y no tiene una corrección esperando tu decisión.',
+  });
+}
+
+/** `+ Bs 50,00` / `− Bs 35,00` for the delta of a correction, always with its sign. */
+export function closingCorrectionDeltaText(cents: bigint): string {
+  return closingSignedText(cents);
+}
+
+/** `+1` / `−2` for a corrected quantity, and a dash for a difference that is not one. */
+export function closingCorrectionQuantityDeltaText(delta: number): string {
+  return closingQuantityText(delta);
+}

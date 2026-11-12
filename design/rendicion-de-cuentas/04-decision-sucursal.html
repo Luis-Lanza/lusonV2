@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Decisión de la sucursal · Rendición de cuentas · Luson</title>
+<style>
+*{box-sizing:border-box}
+:root{font-family:Inter,system-ui,sans-serif;color:#242124;background:#F8F6F4;font-size:14px;
+--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;--ink:#242124;
+--ok-bg:#ECFDF5;--ok-ink:#047857;--ok-border:#A7F3D0;
+--warn-bg:#FFFBEF;--warn-ink:#805400;--warn-border:#E8CF86;
+--short-bg:#FFF0F0;--short-ink:#991515;--short-border:#FFDAD6}
+body{margin:0}
+h1,h2,h3,p,dl,dd,dt,ul,ol,li{margin:0}
+h1{font-size:22px}
+h2{font-size:15px}
+p{line-height:1.6}
+small,.muted{color:var(--muted);font-size:12px}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;padding:10px 12px;min-height:44px}
+button:hover{background:var(--tint)}
+button.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF;font-weight:600}
+button.primary:hover{background:var(--hover)}
+button:disabled{background:#EFEDEF;border-color:#AAA5AA;color:#595459;cursor:not-allowed}
+button.danger{border-color:var(--short-border);color:var(--short-ink);font-weight:600}
+:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+input,textarea{padding:10px 12px;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;width:100%;min-height:44px}
+textarea{min-height:84px;resize:vertical}
+label{display:grid;gap:6px;font-size:12px;color:var(--muted)}
+aside.nav{position:fixed;width:240px;inset:0 auto 0 0;background:#FFFFFF;border-right:1px solid var(--border);padding:12px;display:flex;flex-direction:column;justify-content:space-between}
+.brand{display:flex;gap:10px;align-items:center;padding:4px 8px 16px;border-bottom:1px solid var(--border)}
+.logo{background:var(--wine);color:#FFFFFF;border-radius:4px;padding:8px;font-weight:700;font-size:18px}
+.brand strong{color:var(--wine);font-size:18px}
+.brand small{display:block}
+nav{display:grid;gap:4px;margin-top:12px}
+nav a{text-align:left;padding:12px;color:inherit;text-decoration:none;border-left:2px solid transparent}
+nav a:hover{background:var(--page)}
+nav .active{background:var(--tint);color:var(--wine);border-left:2px solid var(--wine);font-weight:600}
+.identity{padding:12px;background:var(--page);border:1px solid var(--border)}
+.identity small{display:block;margin-top:6px}
+.top{margin-left:240px;height:56px;background:#FFFFFF;border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;justify-content:space-between}
+main{margin-left:240px;padding:24px 32px 32px;max-width:1280px}
+.heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:20px;flex-wrap:wrap}
+.heading p{color:var(--muted);margin-top:6px}
+.tag{display:inline-block;border:1px solid var(--border);background:var(--page);padding:4px 8px;border-radius:3px;font-size:11px;font-weight:600}
+.tag.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-border)}
+.tag.warn{background:var(--warn-bg);color:var(--warn-ink);border-color:var(--warn-border)}
+.tag.short{background:var(--short-bg);color:var(--short-ink);border-color:var(--short-border)}
+.tag.frozen{background:var(--tint);color:var(--wine);border-color:var(--wine)}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:20px;align-items:start}
+.panel{background:#FFFFFF;border:1px solid var(--border);border-radius:4px;margin-bottom:16px}
+.panel>header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:baseline;justify-content:space-between;gap:12px}
+.panel .body{padding:16px 20px}
+dl.summary{display:grid;gap:0}
+dl.summary div{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px dashed var(--border)}
+dl.summary div:last-child{border-bottom:0}
+dl.summary dt{color:var(--muted)}
+dl.summary dd{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+dl.summary .total{padding-top:10px}
+dl.summary .total dt,dl.summary .total dd{font-size:15px;font-weight:700;color:var(--ink)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{text-align:left;background:var(--page);color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:600}
+th,td{padding:10px 12px;border-bottom:1px solid var(--border)}
+td small{display:block;margin-top:2px}
+.num{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+th.num{text-align:right}
+.neg{color:var(--short-ink)!important}
+.pos{color:var(--ok-ink)!important}
+.zero{color:var(--muted)}
+.quote{border-left:2px solid var(--wine);background:var(--tint);padding:12px 16px;font-size:13px;line-height:1.6}
+.rounds{list-style:none;padding:0;display:grid;gap:10px}
+.rounds li{display:grid;gap:4px;padding:12px;border:1px solid var(--border);border-radius:4px;background:var(--page);font-size:13px}
+.rounds .head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.decision{display:grid;gap:12px}
+.decision .motivo{display:grid;gap:8px;padding:14px;background:var(--short-bg);border:1px solid var(--short-border);border-radius:4px}
+.decision .motivo small{color:var(--short-ink)}
+.help{display:flex;gap:8px;align-items:flex-start;padding:12px;background:var(--page);border:1px solid var(--border);border-radius:4px;font-size:12px;color:var(--muted);line-height:1.5}
+.help b{color:var(--ink)}
+@media (prefers-reduced-motion:no-preference){button{transition:background .12s ease}}
+</style>
+
+<aside class="nav">
+  <div>
+    <div class="brand"><span class="logo">L</span><div><strong>Luson</strong><small>Sopocachi</small></div></div>
+    <nav aria-label="Secciones">
+      <a href="#">Punto de venta</a>
+      <a href="#">Historial de ventas</a>
+      <a class="active" href="#" aria-current="page">Rendición de cuentas</a>
+    </nav>
+  </div>
+  <div class="identity"><strong>Sucursal Sopocachi</strong><small>Encargado</small></div>
+</aside>
+
+<div class="top">
+  <span class="muted">Rendición de cuentas</span>
+  <span class="muted">12 sep 2026, 11:02</span>
+</div>
+
+<main>
+  <div class="heading">
+    <div>
+      <h1>El Almacén propone cerrar el período</h1>
+      <p>Del 12 de agosto al 12 de septiembre · propuesta 2 de 2</p>
+    </div>
+    <span class="tag frozen">La sucursal está congelada</span>
+  </div>
+
+  <div class="layout">
+    <div>
+      <section class="panel" aria-labelledby="h-cambios">
+        <header>
+          <h2 id="h-cambios">Qué cambia si aceptás</h2>
+          <span class="tag warn">3 diferencias de stock</span>
+        </header>
+        <div class="body">
+          <table>
+            <thead><tr><th scope="col">Batería</th><th scope="col" class="num">Sistema</th><th scope="col" class="num">Contado</th><th scope="col" class="num">Queda en</th></tr></thead>
+            <tbody>
+              <tr><td>Bosch <small>S4 45Ah · R</small></td><td class="num">9</td><td class="num">8</td><td class="pos">8</td></tr>
+              <tr><td>Varta <small>Blue 60Ah · R</small></td><td class="num">11</td><td class="num">13</td><td class="pos">13</td></tr>
+              <tr><td>Willard <small>Max 90Ah · L</small></td><td class="num">4</td><td class="num">3</td><td class="pos">3</td></tr>
+            </tbody>
+          </table>
+          <div class="help" style="margin-top:16px">
+            <span aria-hidden="true">▸</span>
+            <span>El resto del stock no cambia. Al aceptar, las existencias del sistema quedan <b>iguales a lo que se contó en el local</b>.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="h-caja">
+        <header><h2 id="h-caja">Caja y pago</h2></header>
+        <div class="body">
+          <dl class="summary">
+            <div><dt>Fondo heredado</dt><dd>Bs 800,00</dd></div>
+            <div><dt>Ventas en efectivo</dt><dd>Bs 6.430,00</dd></div>
+            <div><dt>Gastos cargados</dt><dd>− Bs 215,00</dd></div>
+            <div><dt>Caja esperada</dt><dd>Bs 7.015,00</dd></div>
+            <div><dt>Caja contada</dt><dd>Bs 6.980,00</dd></div>
+            <div><dt>Diferencia</dt><dd class="neg">− Bs 35,00</dd></div>
+            <div><dt>Comisión del período (4,5 %)</dt><dd>Bs 1.461,60</dd></div>
+            <div class="total"><dt>Fondo que queda en la caja</dt><dd>Bs 900,00</dd></div>
+          </dl>
+          <div class="help" style="margin-top:16px">
+            <span aria-hidden="true">▸</span>
+            <span>La diferencia de <b>− Bs 35,00</b> queda registrada tal cual. No se descuenta de tu comisión y no se borra al cerrar.</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="h-obs">
+        <header><h2 id="h-obs">Observación del Almacén</h2></header>
+        <div class="body">
+          <div class="quote">Faltan dos baterías Varta 60Ah R que el encargado dice haber vendido sin registrar. Queda anotado para el próximo período.</div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="h-gastos">
+        <header>
+          <h2 id="h-gastos">Gastos que cargaste este período</h2>
+          <button type="button" disabled aria-describedby="gastos-bloqueo">Cargar gasto</button>
+        </header>
+        <div class="body">
+          <table>
+            <thead><tr><th scope="col">Fecha</th><th scope="col">Detalle</th><th scope="col" class="num">Monto</th></tr></thead>
+            <tbody>
+              <tr><td>22 ago</td><td>Flete de batería devuelta</td><td class="num">Bs 120,00</td></tr>
+              <tr><td>29 ago</td><td>Focos del local</td><td class="num">Bs 55,00</td></tr>
+              <tr><td>05 sep</td><td>Limpieza</td><td class="num">Bs 40,00</td></tr>
+            </tbody>
+          </table>
+          <small id="gastos-bloqueo" style="display:block;margin-top:12px">Los gastos se cargan durante el período. Mientras la rendición está abierta la sucursal no puede cargar ni vender.</small>
+        </div>
+      </section>
+    </div>
+
+    <div>
+      <section class="panel" aria-labelledby="h-decision">
+        <header><h2 id="h-decision">Tu decisión</h2><span class="muted">Propuesta 2</span></header>
+        <div class="body">
+          <div class="decision">
+            <p>Podés aceptar y cerrar, o rechazar y explicar qué está mal. El Almacén corrige y vuelve a proponer las veces que haga falta.</p>
+            <button class="primary" type="button">Aceptar y cerrar la rendición</button>
+            <button class="danger" type="button" aria-expanded="true" aria-controls="motivo">Rechazar la propuesta</button>
+
+            <div class="motivo" id="motivo">
+              <label for="razon">Motivo del rechazo <span aria-hidden="true">(obligatorio)</span></label>
+              <textarea id="razon" placeholder="Qué está mal y qué debería decir">El conteo de Willard 90Ah L tiene 4 en el sistema pero contamos 3: ya estaba bien en la propuesta anterior. Y la comisión está calculada sobre las ventas de agosto completo.</textarea>
+              <small>Queda guardado con tu nombre y la fecha. Nada se aplica hasta que aceptes.</small>
+              <button type="button" class="danger">Enviar rechazo al Almacén</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" aria-labelledby="h-historial">
+        <header><h2 id="h-historial">Rondas de esta rendición</h2></header>
+        <div class="body">
+          <ol class="rounds">
+            <li>
+              <div class="head"><strong>Propuesta 2</strong><span class="tag warn">Por decidir</span></div>
+              <small>Enviada por el Almacén el 12 sep, 10:58</small>
+            </li>
+            <li>
+              <div class="head"><strong>Propuesta 1</strong><span class="tag short">Rechazada</span></div>
+              <small>Enviada el 12 sep, 10:31 · rechazada el 12 sep, 10:44</small>
+              <span class="muted">Motivo: «La comisión estaba calculada sobre el período entero y no desde la rendición anterior.»</span>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <div class="help">
+        <span aria-hidden="true">▸</span>
+        <span>Mientras no aceptes, la sucursal <b>no puede vender</b> ni cargar gastos. Si hay algo mal, rechazá cuanto antes: la rendición sigue abierta hasta que la aceptes.</span>
+      </div>
+    </div>
+  </div>
+</main>
+</html>

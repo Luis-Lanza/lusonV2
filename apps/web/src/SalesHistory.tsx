@@ -20,8 +20,8 @@ interface OpenDocument {
   readonly problem: string;
 }
 
-type PaymentFilter = '' | 'cash' | 'card' | 'transfer' | 'mixed';
-const paymentFilters: readonly PaymentFilter[] = ['', 'cash', 'transfer', 'card', 'mixed'];
+type PaymentFilter = '' | 'cash' | 'card' | 'transfer' | 'qr' | 'mixed';
+const paymentFilters: readonly PaymentFilter[] = ['', 'cash', 'transfer', 'card', 'qr', 'mixed'];
 
 export interface SalesHistoryProps {
   branch?: string;

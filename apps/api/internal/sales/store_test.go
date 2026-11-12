@@ -1726,6 +1726,102 @@ func TestSalePaymentSumIsTheDatabaseRule(t *testing.T) {
 	}
 }
 
+// TestSaleQRPayment pins S13 in the point of sale: QR is the fourth amount of a sale. A
+// document paid only by QR is admitted and reports 'qr', a document where QR pays together
+// with cash reports 'mixed', all four methods together are still one sale, and the amounts
+// must close against the total exactly -- a settlement that does not close is refused with
+// the open side named and writes nothing.
+func TestSaleQRPayment(t *testing.T) {
+	e := fixture(t)
+	e.price(t, e.entryOf(t, 3), "1000", "1200", 2)
+	e.setStock(t, 2, 3, 10, 0)
+	// The fourth method is stated by the text the database stores and derives.
+	const qr = sales.PaymentMethod("qr")
+	// A sale paid only by QR.
+	only := sale(3, 1, "1000.00")
+	only.Payments = []sales.Payment{{Method: qr, Amount: "1000.00"}}
+	emitted, err := e.store.Create(e.ctx, clerk(2), only)
+	if err != nil {
+		t.Fatalf("a sale settled by QR must be applied: %v", err)
+	}
+	if emitted.PaymentMethod != qr || len(emitted.Payments) != 1 ||
+		emitted.Payments[0] != (sales.Payment{Method: qr, Amount: "1000.00"}) {
+		t.Fatalf("a sale paid only by QR must read back as qr: %+v", emitted)
+	}
+	// The amount lives under its own column and the label is the database's own.
+	var cash, card, transfer, qrAmount, label string
+	if err := e.pool.QueryRow(e.ctx, `SELECT cash_amount::text,card_amount::text,
+  transfer_amount::text,qr_amount::text,payment_method FROM sales WHERE id=$1`,
+		emitted.ID).Scan(&cash, &card, &transfer, &qrAmount, &label); err != nil {
+		t.Fatal("the persisted QR settlement could not be read")
+	}
+	if cash != "0.00" || card != "0.00" || transfer != "0.00" || qrAmount != "1000.00" ||
+		label != "qr" {
+		t.Fatalf("the QR amount must live under its own method: %s/%s/%s/%s/%s", cash, card,
+			transfer, qrAmount, label)
+	}
+	// QR plus cash is a mixed sale, and both amounts come back in the frozen order.
+	mixed := sale(3, 1, "1000.00")
+	mixed.Payments = []sales.Payment{{Method: qr, Amount: "600.00"},
+		{Method: sales.PaymentCash, Amount: "400.00"}}
+	paired, err := e.store.Create(e.ctx, clerk(2), mixed)
+	if err != nil {
+		t.Fatalf("a sale settled in cash and QR must be applied: %v", err)
+	}
+	if paired.PaymentMethod != sales.PaymentMixed || len(paired.Payments) != 2 ||
+		paired.Payments[0] != (sales.Payment{Method: sales.PaymentCash, Amount: "400.00"}) ||
+		paired.Payments[1] != (sales.Payment{Method: qr, Amount: "600.00"}) {
+		t.Fatalf("cash and QR must be a mixed sale in the frozen order: %+v", paired)
+	}
+	// Every admitted method at once is still one sale and still mixed.
+	all := sale(3, 1, "1000.00")
+	all.Payments = []sales.Payment{{Method: sales.PaymentCash, Amount: "100.00"},
+		{Method: sales.PaymentCard, Amount: "200.00"},
+		{Method: sales.PaymentTransfer, Amount: "300.00"},
+		{Method: qr, Amount: "400.00"}}
+	full, err := e.store.Create(e.ctx, clerk(2), all)
+	if err != nil {
+		t.Fatalf("a sale settled with all four methods must be applied: %v", err)
+	}
+	if full.PaymentMethod != sales.PaymentMixed || len(full.Payments) != 4 ||
+		full.Payments[3] != (sales.Payment{Method: qr, Amount: "400.00"}) {
+		t.Fatalf("four paying methods must be one mixed sale: %+v", full)
+	}
+	// The detail and the history report the same derived label, so the QR sale is legible
+	// and filterable like any other.
+	detail, err := e.store.Read(e.ctx, clerk(2), emitted.ID)
+	if err != nil || detail.PaymentMethod != qr || len(detail.Payments) != 1 ||
+		detail.Payments[0] != emitted.Payments[0] {
+		t.Fatalf("the detail of a QR sale must keep its label and its payment: %+v %v", detail, err)
+	}
+	page, err := e.store.List(e.ctx, clerk(2), sales.ListQuery{PaymentMethod: "qr", Page: 1,
+		PageSize: 25})
+	if err != nil || page.TotalSales != 1 || len(page.Sales) != 1 ||
+		page.Sales[0].PaymentMethod != qr {
+		t.Fatalf("the history must filter the QR sale by its label: %+v %v", page, err)
+	}
+	// The exact sum is the document rule, with QR as one more side of it.
+	existing, reserved := e.stock(t, 2, 3)
+	before := e.snapshot(t)
+	broken := sale(3, 1, "1000.00")
+	broken.Payments = []sales.Payment{{Method: qr, Amount: "900.00"},
+		{Method: sales.PaymentCash, Amount: "50.00"}}
+	_, err = e.store.Create(e.ctx, clerk(2), broken)
+	var mismatch *sales.PaymentsMismatch
+	if !errors.As(err, &mismatch) || mismatch.Missing != "50.00" || mismatch.Excess != "" {
+		t.Fatalf("a settlement that does not close must name the open side: %v", err)
+	}
+	if !errors.Is(err, sales.ErrInvalid) {
+		t.Fatalf("the refused settlement must stay the invalid-document refusal: %v", err)
+	}
+	if e.snapshot(t) != before {
+		t.Fatal("a settlement that does not close must not write a sale nor touch stock")
+	}
+	if got, gotReserved := e.stock(t, 2, 3); got != existing || gotReserved != reserved {
+		t.Fatalf("the refused sale must leave the balance untouched: %d/%d", got, gotReserved)
+	}
+}
+
 // TestSaleUnitsAreStoredPerUnit pins S2, S3 and S4: the line stays commercial and every
 // physical battery is its own unit, with the serial the seller read at the counter and the
 // term stated for that battery, which may differ from the term of its siblings.

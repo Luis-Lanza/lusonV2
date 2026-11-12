@@ -8,6 +8,7 @@ import {
   posMissingMessage, posMissingUnitMessage, posNotSellableReason, posPriceFloorMessage, posSerialLengthMessage,
   posSerialMessage, posUnitTotalMessage, posUnitsMessage, posWarrantyMessage, prepareSale, removeFromCart, serialSoldProblem,
   setPayment,
+  isClosed,
   setPaymentAmount,
   setQuantity, setUnitPrice, setUnitSerial, setUnitWarranty, setWarranty, settlement, typedMoney, unitsProblem,
   variantLabel, warrantyLabel, type CartLine, type SellableVariant,
@@ -310,19 +311,77 @@ describe('the payment split', () => {
     expect(filled).not.toBeNull();
     expect(paymentAmount(filled!, 'transfer')).toBe(10_400_000n);
     expect(settlement(total, filled!)).toEqual({ status: 'exact', paid: total });
-    // Both methods already hold an amount and the split does not close: nothing is guessed.
-    const both = setPaymentAmount(setPaymentAmount(emptyPayments, 'cash', 1_000_000n), 'transfer', 1_000_000n);
+    // Every offered method already holds an amount and the split does not close: nothing is guessed.
+    const both = setPaymentAmount(setPaymentAmount(setPaymentAmount(emptyPayments, 'cash', 1_000_000n),
+      'transfer', 1_000_000n), 'qr', 1_000_000n);
     expect(fillRemaining(both, total)).toBeNull();
     expect(fillRemaining(cash, 0n)).toBeNull();
   });
 
   it('reads a typed amount into the offered method and refuses the rest', () => {
     const split = setPayment(emptyPayments, 'cash', '200.000,00');
-    expect(split).toEqual({ ok: true, split: { cash_cents: 20_000_000n, transfer_cents: 0n } });
+    expect(split).toEqual({ ok: true, split: { cash_cents: 20_000_000n, transfer_cents: 0n, qr_cents: 0n } });
     expect(setPayment(emptyPayments, 'cash', '')).toEqual({ ok: true, split: emptyPayments });
     expect(setPayment(emptyPayments, 'cash', 'dos mil')).toEqual({ ok: false, message: expect.any(String) });
-    // The counter offers cash and transfer only: a card is not a field of this screen.
+    // The counter offers cash, transfer and QR: a card is not a field of this screen.
     expect(setPayment(emptyPayments, 'card' as never, '10,00').ok).toBe(false);
+  });
+
+  // S13: the money collected by QR is its own amount of the settlement, so the seller may
+  // charge a sale by QR alone.
+  it('charges a sale by QR alone', () => {
+    const qr = setPayment(emptyPayments, 'qr', '96.000,00');
+    expect(qr).toEqual({ ok: true, split: { cash_cents: 0n, transfer_cents: 0n, qr_cents: 9_600_000n } });
+    if (!qr.ok) return;
+    expect(paymentAmount(qr.split, 'qr')).toBe(9_600_000n);
+    expect(paymentsTotal(qr.split)).toBe(9_600_000n);
+    expect(settlement(9_600_000n, qr.split)).toEqual({ status: 'exact', paid: 9_600_000n });
+    expect(isClosed(9_600_000n, qr.split)).toBe(true);
+    // QR is not cash: an empty cash field and a paid QR still close against the total.
+    expect(paymentAmount(qr.split, 'cash')).toBe(0n);
+    expect(paymentsWire(qr.split)).toEqual([{ method: 'qr', amount: '96000.00' }]);
+  });
+
+  // S13: QR combines with the other methods, and the exact-sum rule keeps naming what is
+  // missing or over against the total.
+  it('charges part of a sale by QR and keeps the exact-sum rule', () => {
+    const total = 30_400_000n;
+    const cash = setPayment(emptyPayments, 'cash', '200.000,00');
+    expect(cash.ok).toBe(true);
+    if (!cash.ok) return;
+    const mixed = setPaymentAmount(cash.split, 'qr', 10_400_000n);
+    expect(paymentAmount(mixed, 'qr')).toBe(10_400_000n);
+    expect(settlement(total, mixed)).toEqual({ status: 'exact', paid: total });
+    // Only the methods that paid travel, in the frozen order cash, card, transfer, QR.
+    expect(paymentsWire(mixed)).toEqual([
+      { method: 'cash', amount: '200000.00' }, { method: 'qr', amount: '104000.00' },
+    ]);
+    // One cent short or one cent over is refused with the side that is open.
+    const short = setPaymentAmount(mixed, 'qr', 10_399_999n);
+    expect(settlement(total, short)).toEqual({ status: 'missing', remaining: 1n });
+    expect(moneySumMessage(total, short)).toBe(posMissingMessage(1n));
+    const over = setPaymentAmount(mixed, 'qr', 10_400_001n);
+    expect(settlement(total, over)).toEqual({ status: 'excess', excess: 1n });
+    expect(moneySumMessage(total, over)).toBe(posExcessMessage(1n));
+    // Resto fills the open amount into the first offered method that holds nothing: cash and
+    // transfer come before QR, so a QR sale is only written by the seller's own hand.
+    expect(fillRemaining(setPaymentAmount(emptyPayments, 'cash', 20_000_000n), total))
+      .toEqual({ cash_cents: 20_000_000n, transfer_cents: 10_400_000n, qr_cents: 0n });
+    expect(paymentsWire(setPaymentAmount(emptyPayments, 'qr', 5_000n))).toEqual([{ method: 'qr', amount: '50.00' }]);
+  });
+
+  // PRESERVE: a surface that collects cash and transfer only (a purchase) keeps settling and
+  // reporting the two sides it always had, with no QR amount invented.
+  it('settles a two-sided amount that carries no QR', () => {
+    const twoSides = { cash_cents: 20_000_000n, transfer_cents: 10_400_000n };
+    expect(paymentsTotal(twoSides)).toBe(30_400_000n);
+    expect(paymentAmount(twoSides, 'cash')).toBe(20_000_000n);
+    expect(paymentAmount(twoSides, 'transfer')).toBe(10_400_000n);
+    expect(settlement(30_400_000n, twoSides)).toEqual({ status: 'exact', paid: 30_400_000n });
+    expect(settlement(30_400_001n, twoSides)).toEqual({ status: 'missing', remaining: 1n });
+    expect(paymentsWire(twoSides)).toEqual([
+      { method: 'cash', amount: '200000.00' }, { method: 'transfer', amount: '104000.00' },
+    ]);
   });
 
   it('sends only the methods that paid, in the frozen order', () => {
@@ -339,10 +398,15 @@ describe('the payment split', () => {
     expect(paymentLabel('cash')).toBe('Efectivo');
     expect(paymentLabel('transfer')).toBe('Transferencia');
     expect(paymentLabel('card')).toBe('Tarjeta');
+    expect(paymentLabel('qr')).toBe('QR');
     expect(paymentLabel('mixed')).toBe('Mixto');
     expect(paymentBreakdown([
       { method: 'cash', amount: '40000.00' }, { method: 'transfer', amount: '56000.00' },
     ])).toBe('Mixto: Bs 40.000,00 efectivo + Bs 56.000,00 transferencia');
+    // A mixed sale that includes QR names it as the electronic method it is.
+    expect(paymentBreakdown([
+      { method: 'cash', amount: '40000.00' }, { method: 'qr', amount: '56000.00' },
+    ])).toBe('Mixto: Bs 40.000,00 efectivo + Bs 56.000,00 QR');
   });
 });
 

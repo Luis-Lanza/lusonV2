@@ -232,7 +232,7 @@ func salePayment(d *json.Decoder) (sales.Payment, error) {
 			var method string
 			method, err = transferString(d)
 			payment.Method = sales.PaymentMethod(method)
-			// Only the three admitted methods are inputs of a settlement.
+			// Only the four admitted methods are inputs of a settlement.
 			if err == nil && !payment.Method.Valid() {
 				err = sales.ErrInvalid
 			}
@@ -251,8 +251,8 @@ func salePayment(d *json.Decoder) (sales.Payment, error) {
 	return payment, nil
 }
 
-// salePayments reads the settlement of one sale: one to three payments, each method at
-// most once, and each amount canonical two-decimal text. Whether the amounts close
+// salePayments reads the settlement of one sale: one payment per admitted method at most,
+// each method once, and each amount canonical two-decimal text. Whether the amounts close
 // against the total is the store's rule, so a settlement that does not add up is admitted
 // here and refused there, with the amount that is missing or left over.
 func salePayments(d *json.Decoder) ([]sales.Payment, error) {
@@ -561,7 +561,7 @@ func saleListQuery(raw string) (sales.ListQuery, error) {
 		}
 	}
 	// The store's own query contract is the final word: only the frozen page sizes and
-	// the recorded labels are admitted, which are the three methods a client may state
+	// the recorded labels are admitted, which are the four methods a client may state
 	// plus the 'mixed' the database derives for a settlement with more than one.
 	if !sales.ValidListQuery(query) {
 		return query, sales.ErrInvalid
@@ -622,7 +622,7 @@ func saleSellableQuery(raw string) (sales.SellableQuery, error) {
 }
 
 // salePaymentDTO is one amount of the settlement: the method that paid and the canonical
-// amount paid with it, in the frozen order cash, card, transfer and never a method that
+// amount paid with it, in the frozen order cash, card, transfer, QR and never a method that
 // did not pay.
 type salePaymentDTO struct {
 	Method string `json:"method"`
@@ -774,7 +774,7 @@ func saleMoneyText(money sales.Money) (string, bool) {
 	return string(money), true
 }
 
-// salePaymentRank is the frozen order of the settlement: cash, card, transfer. It is not
+// salePaymentRank is the frozen order of the settlement: cash, card, transfer, QR. It is not
 // the alphabetical one, so the order is read from the domain instead of being restated.
 func salePaymentRank(method sales.PaymentMethod) (int, bool) {
 	for rank, admitted := range sales.PaymentMethods() {
@@ -788,11 +788,16 @@ func salePaymentRank(method sales.PaymentMethod) (int, bool) {
 // saleDerivedLabel is the label the database derives from the amounts: 'mixed' when more
 // than one method paid, otherwise the single method that paid. It is derived here again
 // so a label that contradicts its own money is never published.
+//
+// The whole range of the settlement is admitted, one payment per admitted method and no
+// more: the four-method sale is reachable since QR became the fourth payment, so the bound
+// is the domain's own count of methods instead of a restated number that would drift from
+// it. A settlement beyond that count cannot be represented by four amounts at all.
 func saleDerivedLabel(payments []sales.Payment) (sales.PaymentMethod, bool) {
-	switch len(payments) {
-	case 1:
+	switch {
+	case len(payments) == 1:
 		return payments[0].Method, payments[0].Method.Valid()
-	case 2, 3:
+	case len(payments) >= 2 && len(payments) <= len(sales.PaymentMethods()):
 		return sales.PaymentMixed, true
 	}
 	return "", false
@@ -813,8 +818,8 @@ func saleSamePayments(left, right []sales.Payment) bool {
 }
 
 // salePaymentsRecord admits only a complete settlement as this contract publishes it: one
-// to three payments in the frozen order, each method once, every amount canonical and
-// greater than zero. A method that did not pay is never a row of the document.
+// payment per admitted method at most, in the frozen order, each method once, every amount
+// canonical and greater than zero. A method that did not pay is never a row of the document.
 func salePaymentsRecord(payments []sales.Payment) ([]salePaymentDTO, bool) {
 	if len(payments) < 1 || len(payments) > len(sales.PaymentMethods()) {
 		return nil, false
