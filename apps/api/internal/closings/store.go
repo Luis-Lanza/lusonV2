@@ -497,13 +497,12 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
  VALUES($1,1,$2::jsonb,$3)`, id, string(encoded), int64(actor.AccountID)); err != nil {
 		return Closing{}, mapFailure(ctx, err)
 	}
-	// The cash sales and the cash expenses of the period are persisted here, in the same
-	// transaction as the round and the state change, so the offer the branch accepts is the
-	// one computed from the ledgers — the two facts S8 derives the expected cash and the
-	// difference from. The rate is frozen by the transition guard.
-	if _, err := tx.Exec(ctx, `UPDATE branch_closings SET status='proposed',cash_sales=$2,cash_expenses=$3
- WHERE id=$1 AND status IN ('open','rejected')`, id, string(totals.cash),
-		string(totals.expenses)); err != nil {
+	// The proposed transition is the database's for the sale side of the offer: it records the
+	// sale totals, the cash of the period and the commission from the frozen rate, and freezes
+	// the rate. The expenses of the period are the branch's own ledger facts, which the database
+	// does not read here, so they are written in the same statement that moves the state machine.
+	if _, err := tx.Exec(ctx, `UPDATE branch_closings SET status='proposed',cash_expenses=$2
+ WHERE id=$1 AND status IN ('open','rejected')`, id, string(totals.expenses)); err != nil {
 		return Closing{}, mapFailure(ctx, err)
 	}
 	closing, err := loadClosing(ctx, tx, id)
@@ -688,32 +687,13 @@ func (s *Store) Decide(ctx context.Context, actor auth.Identity, id int64, decis
 			// could not be described, so this is a database shape this domain never wrote.
 			return Closing{}, ErrUnavailable
 		}
-		frozen, err := ParsePercent(*rate)
-		if err != nil {
-			return Closing{}, ErrUnavailable
-		}
-		// The period is frozen by the cut instant and the sale ledger is immutable, so
-		// recomputing the period here yields exactly the numbers the branch was offered; the
-		// closure is where the database admits the snapshots, and the rate is the frozen one,
-		// never the current setting (S6).
-		totals, err := periodTotals(ctx, tx, branch, periodStart, cutAt)
-		if err != nil {
-			return Closing{}, err
-		}
-		commission, err := Commission(totals.salesTotal, frozen)
-		if err != nil {
-			return Closing{}, ErrUnavailable
-		}
-		// The closure is the database's: it stamps closed_at, applies the counted stock and
-		// writes the cash ledger of the drawer in this same transaction. The money of the
-		// period is recomputed by the very helper the proposal used, so an offered number can
-		// never differ from the closed one.
-		if _, err := tx.Exec(ctx, `UPDATE branch_closings SET status='closed',cash_sales=$2,
-  cash_expenses=$3,sales_total=$4,commission_amount=$5,card_total=$6,transfer_total=$7,
-  qr_total=$8 WHERE id=$1`,
-			id, string(totals.cash), string(totals.expenses), string(totals.salesTotal),
-			string(commission), string(totals.card), string(totals.transfer),
-			string(zeroAmount)); err != nil {
+		// The offer stated at proposal is what the branch accepted, and the closing
+		// transition freezes it: recomputing the period here would let a closed settlement
+		// disagree with the numbers the branch approved, so this statement only moves the
+		// state machine. The database applies the counted stock and writes the cash ledger of
+		// the drawer in the same transaction.
+		if _, err := tx.Exec(ctx, `UPDATE branch_closings SET status='closed'
+ WHERE id=$1 AND status='proposed'`, id); err != nil {
 			return Closing{}, mapFailure(ctx, err)
 		}
 	}

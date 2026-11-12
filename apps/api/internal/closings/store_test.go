@@ -662,11 +662,12 @@ func TestProposeFreezesTheRateAndOffersThePeriod(t *testing.T) {
 		t.Fatalf("a proposed settlement keeps the rate it offered: %+v %v", after, err)
 	}
 
-	// The period snapshots belong to the closure: migration 034 only admits them on the
-	// transition to closed, so the proposal keeps them at zero and the offer carries them.
-	if proposed.SalesTotal != "0.00" || proposed.CommissionAmount != "0.00" ||
-		proposed.CardTotal != "0.00" || proposed.TransferTotal != "0.00" {
-		t.Fatalf("a proposed settlement must not claim the closure's snapshots: %+v", proposed)
+	// The database records the offer at proposal (R1-001): the transition guard writes the
+	// sale totals and the commission of the period, so the settlement the branch is shown
+	// already states them and the closure is not allowed to rewrite them.
+	if proposed.SalesTotal != "170.00" || proposed.CommissionAmount != "21.25" ||
+		proposed.CardTotal != "50.00" || proposed.TransferTotal != "20.00" {
+		t.Fatalf("the offer must state the period the branch is accepting: %+v", proposed)
 	}
 	// A proposed settlement is not proposed twice: the branch is deciding it.
 	_, err = e.store.Propose(e.ctx, warehouse(), opened.ID)
@@ -918,8 +919,8 @@ func TestAcceptanceClosesAndAppliesTheCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the settlement could not be proposed: %v", err)
 	}
-	if proposed.SalesTotal != "0.00" {
-		t.Fatalf("the period snapshot belongs to the closure: %+v", proposed)
+	if proposed.SalesTotal != "100.00" || proposed.CommissionAmount != "12.50" {
+		t.Fatalf("the offer must state the period at proposal: %+v", proposed)
 	}
 	// Deciding a settlement that is not proposed has nothing to decide.
 	if _, err := e.store.Decide(e.ctx, identity(2), opened.ID+1000, closings.DecisionAccepted, ""); !errors.Is(err, closings.ErrNotFound) {
