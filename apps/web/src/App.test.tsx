@@ -1915,6 +1915,7 @@ describe('branch settlement decision', () => {
         { variant_id: 3, expected_quantity: 14, counted_quantity: 13 }] },
       proposed_by_account_id: 1, proposed_at: '2026-09-12T14:58:00Z', decision: '',
       decision_reason: '', decided_by_account_id: null, decided_at: null }],
+    expenses: [],
   };
   const settlementJSON = (body: unknown) =>
     new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });

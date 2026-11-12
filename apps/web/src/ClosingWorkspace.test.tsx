@@ -67,7 +67,7 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown }
       transfer_total: opened ? '1180.00' : '0.00',
       qr_total: opened ? '2760.00' : '0.00',
       observation: state.observation, opened_by_account_id: 1,
-      count_lines: lines, rounds: state.rounds,
+      count_lines: lines, rounds: state.rounds, expenses: [],
     };
   };
   const fetcher = vi.fn<typeof fetch>(async (input, init = {}) => {

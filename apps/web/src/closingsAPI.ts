@@ -334,7 +334,12 @@ function readClosing(value: unknown): Closing {
     'period_start', 'cut_at', 'closed_at', 'commission_rate_percent', 'opening_cash', 'cash_sales',
     'cash_expenses', 'expected_cash', 'counted_cash', 'cash_difference', 'contributed_cash',
     'closing_cash', 'taken_cash', 'sales_total', 'commission_amount', 'card_total',
-    'transfer_total', 'qr_total', 'observation', 'opened_by_account_id', 'count_lines', 'rounds']);
+    'transfer_total', 'qr_total', 'observation', 'opened_by_account_id', 'count_lines', 'rounds',
+    'expenses']);
+  // The branch's own expenses of the window. They are still not rendered, but the document is
+  // only accepted when the field is the array the contract publishes, so a shape change cannot
+  // reach the rail unnoticed.
+  if (!Array.isArray(record.expenses)) return invalidResponse();
   const state = status(record.status);
   const period_start = timestamp(record.period_start);
   const cut_at = timestamp(record.cut_at);
