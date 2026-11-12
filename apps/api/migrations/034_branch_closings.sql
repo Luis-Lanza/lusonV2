@@ -526,8 +526,10 @@ BEGIN
         -- The count is a snapshot of the cut instant. If the branch traded while the
         -- settlement is open, applying the stale count would resurrect sold stock or
         -- discard received stock. Freezing the branch lands in 035; this refusal is
-        -- what keeps 034 safe on its own.
-        IF coalesce(balance.existing, 0) IS DISTINCT FROM line.expected_quantity THEN
+        -- what keeps 034 safe on its own. A variant with no balance row yet has nothing
+        -- to compare: the INSERT below creates it from the count.
+        IF balance.location_id IS NOT NULL
+           AND balance.existing IS DISTINCT FROM line.expected_quantity THEN
             RAISE EXCEPTION USING ERRCODE='LC018',
                 MESSAGE='Variant ' || line.variant_id || ' moved during the settlement';
         END IF;
