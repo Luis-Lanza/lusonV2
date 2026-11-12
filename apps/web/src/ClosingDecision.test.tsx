@@ -44,14 +44,14 @@ const proposed = (overrides: Record<string, unknown> = {}) => ({
   taken_cash: '6080.00', sales_total: '32480.00', commission_amount: '1461.60',
   card_total: '3240.00', transfer_total: '1180.00', qr_total: '2760.00',
   observation: 'Faltan dos baterías que el encargado dice haber vendido sin registrar.',
-  opened_by_account_id: 1, count_lines: sheet(), rounds: [round(1)], expenses: [], ...overrides });
+  opened_by_account_id: 1, count_lines: sheet(), rounds: [round(1)], expenses: [], corrections: [], ...overrides });
 
 const open = () => proposed({
   status: 'open', commission_rate_percent: null, counted_cash: null, cash_difference: null,
   closing_cash: null, taken_cash: null, cash_sales: '0.00', cash_expenses: '0.00',
   expected_cash: '800.00', sales_total: '0.00', commission_amount: '0.00', card_total: '0.00',
   transfer_total: '0.00', qr_total: '0.00', observation: '',
-  count_lines: sheet().map(entry => ({ ...entry, counted_quantity: null })), rounds: [], expenses: [] });
+  count_lines: sheet().map(entry => ({ ...entry, counted_quantity: null })), rounds: [], expenses: [], corrections: [] });
 
 const closed = () => proposed({ status: 'closed', closed_at: '2026-09-12T18:31:00Z',
   rounds: [round(1, { decision: 'accepted', decided_by_account_id: 2,

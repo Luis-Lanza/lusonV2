@@ -28,7 +28,7 @@ const document = (overrides: Record<string, unknown> = {}) => ({
   commission_amount: '1461.60', card_total: '3240.00', transfer_total: '1180.00',
   qr_total: '2760.00', observation: 'contado en persona', opened_by_account_id: 1,
   count_lines: [countedLine(), countedLine({ variant_id: 2, polarity: 'R', expected_quantity: 9 })],
-  rounds: [], expenses: [], ...overrides,
+  rounds: [], expenses: [], corrections: [], ...overrides,
 });
 
 const openDocument = (overrides: Record<string, unknown> = {}) => document({
