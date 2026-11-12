@@ -16,14 +16,19 @@ const countedLine = (overrides: Record<string, unknown> = {}) => ({
 /**
  * The server of these tests: it holds the settlement of Sopocachi and applies the requests the
  * screen sends, so a save, a refusal and a reload are the real conversation and not a stub.
+ * `bootstrap` is the first settlement of the branch (S11): no inherited fund, no sales, an
+ * empty till, where only a contribution the Admin declares can leave a fund behind.
  */
-function server(options: { opened?: boolean, status?: string, refuse?: unknown } = {}) {
+function server(options: { opened?: boolean, status?: string, refuse?: unknown, bootstrap?: boolean,
+  contributed?: string } = {}) {
   const state = {
     opened: options.opened ?? true,
     status: options.status ?? 'open',
+    bootstrap: options.bootstrap ?? false,
     counted: new Map<number, number | null>([[1, 12], [2, null], [3, null]]),
     // A settlement that was already proposed states its drawer; an open one does not.
     countedCash: (options.status ?? 'open') === 'open' ? null : '6980.00',
+    contributedCash: options.contributed ?? '0.00',
     fund: (options.status ?? 'open') === 'open' ? null : '900.00',
     observation: '',
     closed: false,
@@ -37,35 +42,39 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown }
       countedLine({ variant_id: 3, polarity: 'L', expected_quantity: 14, model: 'Blue', capacity_ah: '60',
         counted_quantity: state.counted.get(3) ?? null })];
     const opened = state.status !== 'open';
+    const bootstrap = state.bootstrap;
     // An open settlement publishes the period's totals as zero: they are recorded at the proposal.
-    const expected = opened ? '7015.00' : '800.00';
+    const opening = bootstrap ? '0.00' : '800.00';
+    const expected = bootstrap ? '0.00' : opened ? '7015.00' : '800.00';
     const countedCash = state.countedCash;
+    const contributedCash = state.contributedCash;
     const fund = state.fund;
     const difference = countedCash === null ? null
       : (Number(countedCash) - Number(expected)).toFixed(2);
     // A published derived amount carries its sign only when it is negative.
     const signed = difference;
+    // counted + contribution − fund: the contribution lifts the bound the fund is taken from.
     const taken = countedCash === null || fund === null
-      ? null : (Number(countedCash) - Number(fund)).toFixed(2);
+      ? null : (Number(countedCash) + Number(contributedCash) - Number(fund)).toFixed(2);
     return {
       id: 1, branch_location_id: 2, branch_name: 'Sopocachi', status: state.closed ? 'closed' : state.status,
       period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z',
       closed_at: state.closed ? '2026-09-12T18:31:00Z' : null,
       commission_rate_percent: opened ? '4.50' : null,
-      opening_cash: '800.00',
-      cash_sales: opened ? '6430.00' : '0.00',
-      cash_expenses: opened ? '215.00' : '0.00',
+      opening_cash: opening,
+      cash_sales: !bootstrap && opened ? '6430.00' : '0.00',
+      cash_expenses: !bootstrap && opened ? '215.00' : '0.00',
       expected_cash: expected,
       counted_cash: countedCash,
       cash_difference: signed,
-      contributed_cash: '0.00',
+      contributed_cash: contributedCash,
       closing_cash: fund,
       taken_cash: taken,
-      sales_total: opened ? '32480.00' : '0.00',
-      commission_amount: opened ? '1461.60' : '0.00',
-      card_total: opened ? '3240.00' : '0.00',
-      transfer_total: opened ? '1180.00' : '0.00',
-      qr_total: opened ? '2760.00' : '0.00',
+      sales_total: !bootstrap && opened ? '32480.00' : '0.00',
+      commission_amount: !bootstrap && opened ? '1461.60' : '0.00',
+      card_total: !bootstrap && opened ? '3240.00' : '0.00',
+      transfer_total: !bootstrap && opened ? '1180.00' : '0.00',
+      qr_total: !bootstrap && opened ? '2760.00' : '0.00',
       observation: state.observation, opened_by_account_id: 1,
       count_lines: lines, rounds: state.rounds, expenses: [],
     };
@@ -89,8 +98,9 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown }
     }
     if (url === '/api/closings/1/cash' && init.method === 'POST') {
       const body = JSON.parse(String(init.body)) as { counted_cash: string | null;
-        closing_cash: string | null; observation: string };
+        contributed_cash: string; closing_cash: string | null; observation: string };
       state.countedCash = body.counted_cash;
+      state.contributedCash = body.contributed_cash;
       state.fund = body.closing_cash;
       state.observation = body.observation;
       return json(document());
@@ -99,10 +109,14 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown }
       if (options.refuse) return json(options.refuse, 409);
       state.status = 'proposed';
       state.rounds = [{ id: 1, round: 1, offer: {
-        period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z', sales_total: '32480.00',
-        commission_rate_percent: '4.50', commission_amount: '1461.60', cash_sales: '6430.00',
-        cash_expenses: '215.00', card_total: '3240.00', transfer_total: '1180.00', qr_total: '2760.00',
-        counted_cash: state.countedCash, contributed_cash: '0.00', closing_cash: state.fund,
+        period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z',
+        sales_total: state.bootstrap ? '0.00' : '32480.00',
+        commission_rate_percent: '4.50', commission_amount: state.bootstrap ? '0.00' : '1461.60',
+        cash_sales: state.bootstrap ? '0.00' : '6430.00',
+        cash_expenses: state.bootstrap ? '0.00' : '215.00', card_total: '3240.00',
+        transfer_total: '1180.00', qr_total: '2760.00',
+        counted_cash: state.countedCash, contributed_cash: state.contributedCash,
+        closing_cash: state.fund,
         observation: '', count_lines: [] }, proposed_by_account_id: 1,
         proposed_at: '2026-09-12T18:31:00Z', decision: '', decision_reason: '',
         decided_by_account_id: null, decided_at: null }];
@@ -356,5 +370,120 @@ describe('the drawer draft (S10)', () => {
     expect(proposeButton()).toBeDisabled();
     expect(proposeButton()).toHaveAccessibleDescription(
       /El fondo supera la caja contada más el aporte en Bs 105,00/);
+  });
+});
+
+describe('the contribution the Admin declares (S10, S11)', () => {
+  const contributionField = () => screen.getByLabelText('Aporte del Almacén (Bs)');
+
+  /** Counts the two pending variants of the fixture, so only the drawer is left to state. */
+  async function countTheSheet() {
+    fireEvent.change(await screen.findByLabelText('Contado de Bosch Power R · 110 Ah'),
+      { target: { value: '9' } });
+    fireEvent.change(screen.getByLabelText('Contado de Bosch Blue L · 60 Ah'), { target: { value: '14' } });
+  }
+
+  it('starts from the contribution the settlement already reports and keeps it on save', async () => {
+    const h = server({ contributed: '500.00' });
+    await ready(h);
+    await sheet();
+    expect(contributionField()).toHaveValue('500,00');
+    fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '6.980,00' } });
+    fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '900,00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
+    await screen.findByText(/Borrador guardado/);
+    // The field is not an invention of the screen: what it shows is what it sends (S10).
+    expect(JSON.parse(String(h.posts('/api/closings/1/cash')[0].init.body))).toEqual({
+      counted_cash: '6980.00', contributed_cash: '500.00', closing_cash: '900.00', observation: '' });
+  });
+
+  it('lets an empty drawer reach a fund and be proposed once the Admin declares the contribution (S11)',
+    async () => {
+      const h = server({ bootstrap: true });
+      await ready(h);
+      await sheet();
+      await countTheSheet();
+      fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '0,00' } });
+      fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '500,00' } });
+      // An empty till bounds the fund at zero, and the screen names the excess before the server.
+      expect(proposeButton()).toBeDisabled();
+      expect(proposeButton()).toHaveAccessibleDescription(
+        /El fondo supera la caja contada más el aporte en Bs 500,00/);
+      // The money the Admin puts into the till is what makes the fund reachable.
+      fireEvent.change(contributionField(), { target: { value: '500,00' } });
+      expect(proposeButton()).not.toHaveAccessibleDescription(/supera la caja contada/);
+      expect(proposeButton()).toHaveAccessibleDescription(/cambios sin guardar/);
+      fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
+      await waitFor(() => expect(proposeButton()).toBeEnabled());
+      expect(JSON.parse(String(h.posts('/api/closings/1/cash')[0].init.body))).toEqual({
+        counted_cash: '0.00', contributed_cash: '500.00', closing_cash: '500.00', observation: '' });
+      fireEvent.click(proposeButton());
+      await waitFor(() => expect(h.posts('/api/closings/1/propose')).toHaveLength(1));
+      expect(await screen.findByText(/espera su aceptación o su rechazo/)).toBeInTheDocument();
+    });
+
+  it('keeps the declared contribution when the draft is saved and reopened', async () => {
+    const h = server({ bootstrap: true });
+    const view = await ready(h);
+    await sheet();
+    await countTheSheet();
+    fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '0,00' } });
+    fireEvent.change(contributionField(), { target: { value: '500,00' } });
+    fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '500,00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
+    await screen.findByText(/Borrador guardado/);
+    view.unmount();
+    await ready(h);
+    await screen.findByRole('heading', { name: 'Rendición de cuentas · Sopocachi' });
+    // Reopening a saved draft does not silently zero the money the warehouse put in.
+    expect(contributionField()).toHaveValue('500,00');
+    expect(screen.getByLabelText('Monto que dejás en la caja (Bs)')).toHaveValue('500,00');
+    // The bound it lifted is still lifted, so the first settlement is still offerable.
+    expect(proposeButton()).toBeEnabled();
+  });
+
+  it('refuses a fund above the counted cash plus the contribution, naming the excess', async () => {
+    const h = server({ bootstrap: true });
+    await ready(h);
+    await sheet();
+    await countTheSheet();
+    fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '0,00' } });
+    fireEvent.change(contributionField(), { target: { value: '300,00' } });
+    fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '500,00' } });
+    expect(proposeButton()).toBeDisabled();
+    expect(proposeButton()).toHaveAccessibleDescription(
+      /El fondo supera la caja contada más el aporte en Bs 200,00/);
+    // Nothing leaves the screen: the refusal is the screen's own reading of its own draft.
+    expect(h.posts('/api/closings/1/propose')).toHaveLength(0);
+  });
+
+  it('shows the contribution as money put into the till, never as money collected', async () => {
+    const h = server({ bootstrap: true });
+    await ready(h);
+    await sheet();
+    await countTheSheet();
+    fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '0,00' } });
+    fireEvent.change(contributionField(), { target: { value: '500,00' } });
+    fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '500,00' } });
+    const aside = rail();
+    expect(within(aside).getByText('Aporte del Almacén').parentElement).toHaveTextContent('Bs 500,00');
+    // It is not cash sales, it is not in the expected drawer and it is in no commission (S9, S10).
+    expect(within(aside).getByText('Ventas en efectivo').parentElement).toHaveTextContent('Bs 0,00');
+    expect(within(aside).getByText('Caja esperada').parentElement).toHaveTextContent('Bs 0,00');
+    expect(within(aside).getByText('Ventas sobre precio de venta').parentElement).toHaveTextContent('Bs 0,00');
+    expect(within(aside).getByText('Comisión').parentElement).toHaveTextContent('Bs 0,00');
+    // Bs 0,00 counted + Bs 500,00 put in − Bs 500,00 left behind: nothing is taken out.
+    expect(within(aside).getByText('Te llevás al Almacén').parentElement).toHaveTextContent('Bs 0,00');
+    // The field that declares it says what it is, beside the fund and not among the cash facts.
+    expect(contributionField().closest('.closing-group')).toHaveTextContent(/no entra en la comisión/i);
+  });
+
+  it('publishes the server refusal of the fund bound when the screen cannot tell it', async () => {
+    const h = server({ refuse: { error: 'fund_exceeds_drawer', excess: '50.00' } });
+    await ready(h);
+    await completeTheSheet();
+    fireEvent.click(proposeButton());
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'El fondo supera la caja contada más el aporte en Bs 50,00: corregí el fondo.');
   });
 });

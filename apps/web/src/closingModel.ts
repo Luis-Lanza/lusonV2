@@ -6,6 +6,12 @@
  * snapshot taken at the cut and is never recalculated here, the drawer's derived numbers follow
  * their own identities and the commission is reported beside them — it is inside no cash
  * identity (S9) and the electronic collection is never added to the till (S13).
+ *
+ * The drawer states three amounts: the cash counted, the contribution the warehouse puts into
+ * the till for this settlement and the fund left behind. The fund never exceeds the counted cash
+ * plus the contribution, which is what lets the first settlement of a branch leave money in an
+ * empty till (S10, S11, L13); the contribution is money put in and never money collected, so it
+ * is in no sale and in no commission.
  */
 import { validSearch } from './model';
 import { centsToMoney, formatMoney, moneyCents, parseTypedMoney, typedMoney } from './pointOfSaleModel';
@@ -254,19 +260,27 @@ export function closingRail(closing: Closing): ClosingRail {
 // The drawer draft the warehouse states
 // ---------------------------------------------------------------------------------
 
-/** What the warehouse typed: two amounts and the observation, before they are canonical. */
+/** What the warehouse typed: the drawer's two amounts beside the contribution, before they are
+ * canonical. The contribution is what the warehouse puts into the till for this settlement, so a
+ * fund can be left with an empty drawer (S10, S11, L13). */
 export interface DrawerDraft {
   readonly counted: string;
+  readonly contribution: string;
   readonly fund: string;
   readonly observation: string;
 }
 
-export const emptyDrawerDraft: DrawerDraft = Object.freeze({ counted: '', fund: '', observation: '' });
+/** The contribution defaults to zero, which is the normal case and what the settlement reports. */
+export const emptyDrawerDraft: DrawerDraft = Object.freeze({
+  counted: '', contribution: '0,00', fund: '', observation: '',
+});
 
 /** The draft the settlement already holds, so a reload of the screen restores the admin's work. */
 export function drawerDraftFrom(closing: Closing): DrawerDraft {
   return Object.freeze({
     counted: closing.counted_cash_cents === null ? '' : typedMoney(closing.counted_cash_cents),
+    // The contribution starts from the fact the server holds: a saved one never reopens as zero.
+    contribution: typedMoney(closing.contributed_cash_cents),
     fund: closing.closing_cash_cents === null ? '' : typedMoney(closing.closing_cash_cents),
     observation: closing.observation,
   });
@@ -275,8 +289,9 @@ export function drawerDraftFrom(closing: Closing): DrawerDraft {
 /** The drawer as the rail shows it while the warehouse types, before anything is saved. */
 export interface DrawerView {
   readonly counted_cents: bigint | null;
+  /** What the warehouse puts into the till, as the draft states it; `null` while undeclared. */
+  readonly contribution_cents: bigint | null;
   readonly fund_cents: bigint | null;
-  readonly contribution_cents: bigint;
   readonly expected_cents: bigint;
   readonly difference_cents: bigint | null;
   readonly taken_cents: bigint | null;
@@ -294,23 +309,28 @@ function typedCents(text: string): bigint | null {
 /** The drawer over the facts the settlement carries: the commission is not one of them. */
 export function drawerView(rail: ClosingRail, draft: DrawerDraft): DrawerView {
   let counted_cents: bigint | null = null;
+  let contribution_cents: bigint | null = null;
   let fund_cents: bigint | null = null;
   let problem = '';
   try { counted_cents = typedCents(draft.counted); } catch { problem = closingAmountMessage; }
+  try { contribution_cents = typedCents(draft.contribution); } catch { problem = closingAmountMessage; }
   try { fund_cents = typedCents(draft.fund); } catch { problem = closingAmountMessage; }
-  if (problem !== '') { counted_cents = null; fund_cents = null; }
+  if (problem !== '') { counted_cents = null; contribution_cents = null; fund_cents = null; }
   const difference_cents = counted_cents === null ? null : counted_cents - rail.expected_cents;
-  // The fund never exceeds the drawer plus the contribution, which is what makes the first
-  // settlement possible with an empty till (S10, S11).
-  const excess_cents = counted_cents !== null && fund_cents !== null
-    && fund_cents > counted_cents + rail.contribution_cents
-    ? fund_cents - counted_cents - rail.contribution_cents : null;
+  // The fund never exceeds the drawer the warehouse counts plus the money it put into the till,
+  // which is what makes the first settlement possible with an empty drawer (S10, S11, L13). The
+  // bound is stated only when its two sides are: an undeclared contribution leaves the screen
+  // without an answer, and then the server's own refusal is the only one the admin reads.
+  const bound_cents = counted_cents === null || contribution_cents === null
+    ? null : counted_cents + contribution_cents;
+  const excess_cents = bound_cents === null || fund_cents === null || fund_cents <= bound_cents
+    ? null : fund_cents - bound_cents;
   // What the warehouse takes out of the till is stated only for a drawer it can take from: a
   // fund above the drawer is a draft that is not an offer yet, and the excess names it.
-  const taken_cents = counted_cents === null || fund_cents === null || excess_cents !== null
-    ? null : counted_cents + rail.contribution_cents - fund_cents;
+  const taken_cents = bound_cents === null || fund_cents === null || excess_cents !== null
+    ? null : bound_cents - fund_cents;
   return Object.freeze({
-    counted_cents, fund_cents, contribution_cents: rail.contribution_cents,
+    counted_cents, contribution_cents, fund_cents,
     expected_cents: rail.expected_cents, difference_cents, taken_cents, excess_cents, problem,
   });
 }
@@ -324,14 +344,16 @@ export interface DrawerPayload {
 }
 
 export const closingObservationMessage = `La observación lleva hasta ${closingMaxObservation} caracteres.`;
+export const closingContributionMessage =
+  'Escribí el aporte del Almacén, aunque sea cero: el cierre lo registra como movimiento de caja.';
 
 /**
  * Canonicalizes the drawer the way the contract takes it: an amount the warehouse has not
- * counted is the explicit `null`, and the contribution is the settled fact of the settlement,
- * never a number this screen invents.
+ * counted is the explicit `null`, and the contribution is the money the warehouse states it put
+ * into the till. It is a fact of the settlement, so an empty field is refused instead of being
+ * sent as a zero the admin never declared (S10).
  */
-export function canonicalDrawerPayload(draft: DrawerDraft, contributionCents: bigint): DrawerPayload {
-  if (typeof contributionCents !== 'bigint' || contributionCents < 0n) return invalidMoney();
+export function canonicalDrawerPayload(draft: DrawerDraft): DrawerPayload {
   let counted_cash: string | null;
   let closing_cash: string | null;
   try {
@@ -340,13 +362,15 @@ export function canonicalDrawerPayload(draft: DrawerDraft, contributionCents: bi
     counted_cash = counted === null ? null : centsToMoney(counted);
     closing_cash = fund === null ? null : centsToMoney(fund);
   } catch { return invalidMoney(); }
+  const contribution = typedCents(draft.contribution);
+  if (contribution === null) throw new Error(closingContributionMessage);
   const observation = draft.observation;
   if (typeof observation !== 'string' || observation.includes('\0') || !observation.isWellFormed()
     || Array.from(observation).length > closingMaxObservation) {
     throw new Error(closingObservationMessage);
   }
   return Object.freeze({
-    counted_cash, contributed_cash: centsToMoney(contributionCents), closing_cash, observation,
+    counted_cash, contributed_cash: centsToMoney(contribution), closing_cash, observation,
   });
 }
 
@@ -458,6 +482,12 @@ export interface ClosingBlocker { readonly code: string; readonly message: strin
 
 const listedNames = 4;
 
+/** `a, b y c`: the sides a statement is missing, named in the order they are stated. */
+function listedSides(sides: readonly string[]): string {
+  if (sides.length <= 1) return sides.join('');
+  return `${sides.slice(0, -1).join(', ')} y ${sides[sides.length - 1]}`;
+}
+
 function pendingBlocker(lines: readonly ClosingCountLine[]): ClosingBlocker {
   const names = lines.map(closingLineLabel);
   const listed = names.slice(0, listedNames).join(', ');
@@ -491,12 +521,15 @@ export function closingBlockers(closing: Closing, view: DrawerView,
   }
   const missing: string[] = [];
   if (view.counted_cents === null) missing.push('la caja contada');
+  // The contribution is a side of the drawer the admin states: without it the fund bound has no
+  // second term and the first settlement of a branch could never be offered (S10, S11).
+  if (view.contribution_cents === null) missing.push('el aporte del Almacén');
   if (view.fund_cents === null) missing.push('el fondo que queda en la caja');
   // An amount that cannot be read is already named above; it is not also reported as absent.
   if (missing.length > 0 && view.problem === '') {
     blockers.push(Object.freeze({
       code: 'cash_not_stated',
-      message: `Falta ${missing.join(' y ')}: el cierre no puede proponerse sin eso.`,
+      message: `Falta ${listedSides(missing)}: el cierre no puede proponerse sin eso.`,
     }));
   }
   if (view.excess_cents !== null) {

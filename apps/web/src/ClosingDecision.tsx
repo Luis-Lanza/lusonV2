@@ -229,6 +229,9 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
                 <div><dt>Gastos cargados</dt>
                   <dd>{rail.cash_expenses_cents === 0n ? closingMoneyText(0n) : `− ${closingMoneyText(rail.cash_expenses_cents)}`}</dd></div>
                 <div className="total"><dt>Caja esperada</dt><dd>{closingMoneyText(rail.expected_cents)}</dd></div>
+                {rail.contribution_cents !== null && rail.contribution_cents > 0n && (
+                  <div><dt>Aporte del Almacén</dt>
+                    <dd>{closingMoneyText(rail.contribution_cents)}</dd></div>)}
                 <div><dt>Caja contada</dt>
                   <dd>{rail.counted_cents === null ? 'Sin contar' : closingMoneyText(rail.counted_cents)}</dd></div>
                 <div><dt>Diferencia</dt>

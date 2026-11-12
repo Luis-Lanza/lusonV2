@@ -43,8 +43,8 @@ function changedLines(closing: Closing, draft: Record<number, string>) {
 }
 
 function sameDrawer(left: DrawerDraft, right: DrawerDraft): boolean {
-  return left.counted === right.counted && left.fund === right.fund
-    && left.observation === right.observation;
+  return left.counted === right.counted && left.contribution === right.contribution
+    && left.fund === right.fund && left.observation === right.observation;
 }
 
 /** The difference of a row over what is typed, so the running difference is never a step behind. */
@@ -177,7 +177,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
       return;
     }
     let drawer;
-    try { drawer = canonicalDrawerPayload(draft, current.contributed_cash_cents); }
+    try { drawer = canonicalDrawerPayload(draft); }
     catch (failure) {
       setStatus('');
       setProblem(failure instanceof Error && failure.message ? failure.message : closingObservationMessage);
@@ -419,11 +419,23 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
                     onChange={event => setDraft(current => ({ ...current, fund: event.target.value }))} />
                   : <strong>{view.fund_cents === null ? 'Sin contar' : closingMoneyText(view.fund_cents)}</strong>}
               </div>
+              {/* Beside the fund and not in a panel of its own: the contribution is the money the
+                  warehouse puts into the till for this settlement, and it lifts the fund bound. */}
+              <div className="closing-field closing-contribution">
+                <label htmlFor="closing-contribution">Aporte del Almacén (Bs)</label>
+                {editable
+                  ? <input id="closing-contribution" inputMode="decimal" value={draft.contribution}
+                    onChange={event => setDraft(current => ({ ...current, contribution: event.target.value }))} />
+                  : <strong>{view.contribution_cents === null ? 'Sin declarar'
+                    : closingMoneyText(view.contribution_cents)}</strong>}
+                <small>Plata que ponés en la caja para esta rendición. No es una venta y no entra en la
+                  comisión: sólo sube el tope del fondo que podés dejar.</small>
+              </div>
               <dl className="closing-summary">
                 <div><dt>Caja contada</dt>
                   <dd>{view.counted_cents === null ? 'Sin contar' : closingMoneyText(view.counted_cents)}</dd></div>
-                {rail.contribution_cents !== 0n && <div><dt>Aporte del Almacén</dt>
-                  <dd>{closingMoneyText(rail.contribution_cents)}</dd></div>}
+                {view.contribution_cents !== null && view.contribution_cents !== 0n && <div>
+                  <dt>Aporte del Almacén</dt><dd>{closingMoneyText(view.contribution_cents)}</dd></div>}
                 <div><dt>Fondo que queda en la caja</dt>
                   <dd>{view.fund_cents === null ? 'Sin contar' : `− ${closingMoneyText(view.fund_cents)}`}</dd></div>
                 <div className="total"><dt>Te llevás al Almacén</dt>

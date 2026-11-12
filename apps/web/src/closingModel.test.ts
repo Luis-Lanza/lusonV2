@@ -37,6 +37,13 @@ const closing = (overrides: Partial<Closing> = {}): Closing => Object.freeze({
   ...overrides,
 });
 
+/** The first settlement of a branch (S11): no inherited fund, no sales, an empty till. */
+const bootstrap = (overrides: Partial<Closing> = {}): Closing => closing({
+  opening_cash_cents: 0n, cash_sales_cents: 0n, cash_expenses_cents: 0n,
+  sales_total_cents: 0n, commission_amount_cents: 0n,
+  card_total_cents: 0n, transfer_total_cents: 0n, qr_total_cents: 0n, ...overrides,
+});
+
 describe('S1 the settlement and its period', () => {
   it('shows the period as the range between two rendiciones', () => {
     const period = closingPeriod('2026-08-12T18:00:00Z', '2026-09-12T18:30:00Z');
@@ -194,9 +201,11 @@ describe('S4 the count sheet is not blind and never recalculates the expected qu
 describe('S10 the fund, the contribution and what the warehouse takes', () => {
   it('reads the drawer the admin types over the facts the settlement holds', () => {
     const rail = closingRail(closing());
-    const view = drawerView(rail, { counted: '6.980,00', fund: '900,00', observation: '' });
+    const view = drawerView(rail, { counted: '6.980,00', contribution: '0,00', fund: '900,00',
+      observation: '' });
     expect(view.problem).toBe('');
     expect(view.counted_cents).toBe(698000n);
+    expect(view.contribution_cents).toBe(0n);
     expect(view.fund_cents).toBe(90000n);
     expect(view.difference_cents).toBe(-3500n);
     expect(view.taken_cents).toBe(608000n);
@@ -205,47 +214,118 @@ describe('S10 the fund, the contribution and what the warehouse takes', () => {
 
   it('names the amount the fund exceeds the drawer by, contribution included', () => {
     const rail = closingRail(closing());
-    const above = drawerView(rail, { counted: '6.980,00', fund: '7.100,00', observation: '' });
+    const above = drawerView(rail, { counted: '6.980,00', contribution: '0,00', fund: '7.100,00',
+      observation: '' });
     expect(above.excess_cents).toBe(12000n);
     // A fund that cannot be left leaves nothing to take: it is a draft, not an offer.
     expect(above.taken_cents).toBeNull();
-    const contributed = closingRail(closing({ contributed_cash_cents: 50000n }));
-    expect(drawerView(contributed, { counted: '6.980,00', fund: '7.100,00', observation: '' }).excess_cents)
-      .toBeNull();
-    expect(drawerView(contributed, { counted: '6.980,00', fund: '7.100,00', observation: '' }).taken_cents)
-      .toBe(38000n);
+    // The contribution the admin declares lifts the bound by exactly its own amount (S10, L13).
+    const contributed = drawerView(rail, { counted: '6.980,00', contribution: '120,00', fund: '7.100,00',
+      observation: '' });
+    expect(contributed.excess_cents).toBeNull();
+    expect(contributed.taken_cents).toBe(0n);
+    expect(contributed.contribution_cents).toBe(12000n);
+    // One cent over the bound is still over it.
+    const offByOneCent = drawerView(rail, { counted: '6.980,00', contribution: '119,99', fund: '7.100,00',
+      observation: '' });
+    expect(offByOneCent.excess_cents).toBe(1n);
+  });
+
+  it('lets an empty drawer reach a fund once the admin declares the contribution (S11)', () => {
+    const rail = closingRail(bootstrap());
+    expect(rail.expected_cents).toBe(0n);
+    // With no contribution the empty till bounds the fund at zero: the first settlement is refused.
+    const noAporte = drawerView(rail, { counted: '0,00', contribution: '0,00', fund: '500,00',
+      observation: '' });
+    expect(noAporte.excess_cents).toBe(50000n);
+    expect(noAporte.taken_cents).toBeNull();
+    // The money the warehouse puts in is the fund it leaves behind: nothing is taken out.
+    const declared = drawerView(rail, { counted: '0,00', contribution: '500,00', fund: '500,00',
+      observation: '' });
+    expect(declared.excess_cents).toBeNull();
+    expect(declared.taken_cents).toBe(0n);
+    expect(declared.difference_cents).toBe(0n);
+    // Bs 300,00 into an empty till cannot leave Bs 500,00 behind.
+    const short = drawerView(rail, { counted: '0,00', contribution: '300,00', fund: '500,00',
+      observation: '' });
+    expect(short.excess_cents).toBe(20000n);
+  });
+
+  it('keeps the contribution out of the money collected and out of the commission', () => {
+    const rail = closingRail(closing());
+    const withAporte = drawerView(rail, { counted: '6.980,00', contribution: '500,00', fund: '900,00',
+      observation: '' });
+    // It is money the warehouse put in: the expected drawer and its difference do not move.
+    expect(withAporte.expected_cents).toBe(rail.expected_cents);
+    expect(withAporte.difference_cents).toBe(-3500n);
+    expect(rail.cash_sales_cents).toBe(643000n);
+    expect(rail.sales_total_cents).toBe(3248000n);
+    expect(rail.commission_cents).toBe(146160n);
+    // counted + aporte − fondo: the contribution is what makes the fund reachable, nothing else.
+    expect(withAporte.taken_cents).toBe(658000n);
   });
 
   it('keeps a draft the admin has not stated yet explicitly absent, never zero', () => {
     const rail = closingRail(closing());
     const view = drawerView(rail, emptyDrawerDraft);
     expect(view.counted_cents).toBeNull();
+    expect(view.contribution_cents).toBe(0n);
     expect(view.fund_cents).toBeNull();
     expect(view.difference_cents).toBeNull();
     expect(view.taken_cents).toBeNull();
     expect(view.excess_cents).toBeNull();
   });
 
+  it('never guesses the fund bound while the contribution is not declared', () => {
+    // Without the contribution the screen cannot tell the bound, so it publishes none: the
+    // server's own refusal is then the only one the admin reads.
+    const view = drawerView(closingRail(closing()), { counted: '6.980,00', contribution: '',
+      fund: '9.999,00', observation: '' });
+    expect(view.contribution_cents).toBeNull();
+    expect(view.excess_cents).toBeNull();
+    expect(view.taken_cents).toBeNull();
+    // A contribution it cannot read is an amount it names, and not a bound it invents either.
+    const unreadable = drawerView(closingRail(closing()), { counted: '6.980,00', contribution: 'mil',
+      fund: '900,00', observation: '' });
+    expect(unreadable.problem).toBe(model.closingAmountMessage);
+    expect(unreadable.excess_cents).toBeNull();
+  });
+
   it('reports an amount it cannot read instead of guessing one', () => {
-    const view = drawerView(closingRail(closing()), { counted: '6.980,001', fund: '', observation: '' });
+    const view = drawerView(closingRail(closing()), { counted: '6.980,001', contribution: '0,00',
+      fund: '', observation: '' });
     expect(view.problem).toBe(model.closingAmountMessage);
     expect(view.counted_cents).toBeNull();
   });
 
-  it('saves the drawer with the four keys of the contract and the settled contribution', () => {
-    expect(canonicalDrawerPayload({ counted: '6.980,00', fund: '900,00', observation: 'contado en persona' }, 0n))
+  it('saves the drawer with the four keys of the contract and the declared contribution', () => {
+    expect(canonicalDrawerPayload({ counted: '6.980,00', contribution: '0,00', fund: '900,00',
+      observation: 'contado en persona' }))
       .toEqual({ counted_cash: '6980.00', contributed_cash: '0.00', closing_cash: '900.00',
         observation: 'contado en persona' });
-    expect(canonicalDrawerPayload(emptyDrawerDraft, 100000n))
-      .toEqual({ counted_cash: null, contributed_cash: '1000.00', closing_cash: null, observation: '' });
-    expect(() => canonicalDrawerPayload({ ...emptyDrawerDraft, observation: 'x'.repeat(1001) }, 0n)).toThrow();
+    expect(canonicalDrawerPayload({ counted: '0,00', contribution: '500,00', fund: '500,00',
+      observation: '' }))
+      .toEqual({ counted_cash: '0.00', contributed_cash: '500.00', closing_cash: '500.00', observation: '' });
+    expect(canonicalDrawerPayload(emptyDrawerDraft)).toEqual({
+      counted_cash: null, contributed_cash: '0.00', closing_cash: null, observation: '' });
+    // The contribution is a fact of the settlement: an empty field is a decision still to make.
+    expect(() => canonicalDrawerPayload({ ...emptyDrawerDraft, contribution: '' }))
+      .toThrow(model.closingContributionMessage);
+    expect(() => canonicalDrawerPayload({ counted: '0,00', contribution: 'mil', fund: '0,00', observation: '' }))
+      .toThrow(model.closingAmountMessage);
+    expect(() => canonicalDrawerPayload({ ...emptyDrawerDraft, contribution: '0,00',
+      observation: 'x'.repeat(1001) })).toThrow();
   });
 
-  it('restores the draft the settlement already holds', () => {
+  it('restores the draft the settlement already holds, contribution included', () => {
     const draft = drawerDraftFrom(closing({ counted_cash_cents: 698000n, closing_cash_cents: 90000n,
-      observation: 'contado en persona' }));
-    expect(draft).toEqual<DrawerDraft>({ counted: '6.980,00', fund: '900,00', observation: 'contado en persona' });
-    expect(drawerDraftFrom(closing())).toEqual(emptyDrawerDraft);
+      contributed_cash_cents: 50000n, observation: 'contado en persona' }));
+    expect(draft).toEqual<DrawerDraft>({ counted: '6.980,00', contribution: '500,00', fund: '900,00',
+      observation: 'contado en persona' });
+    // A saved draft never reopens with its contribution silently zeroed.
+    expect(drawerDraftFrom(closing()).contribution).toBe('0,00');
+    expect(drawerDraftFrom(closing())).toEqual<DrawerDraft>({ counted: '', contribution: '0,00',
+      fund: '', observation: '' });
   });
 });
 
@@ -257,8 +337,8 @@ describe('S14 what still blocks the offer, named', () => {
     ...overrides,
   });
 
-  const view = (subject: Closing, draft: DrawerDraft = { counted: '6.980,00', fund: '900,00', observation: '' }) =>
-    drawerView(closingRail(subject), draft);
+  const view = (subject: Closing, draft: DrawerDraft = { counted: '6.980,00', contribution: '0,00',
+    fund: '900,00', observation: '' }) => drawerView(closingRail(subject), draft);
 
   it('names the variants still to count and the drawer that is not stated', () => {
     const subject = closing();
@@ -271,11 +351,26 @@ describe('S14 what still blocks the offer, named', () => {
     expect(closingBlockReason(blockers)).toContain('Faltan 2 variantes por contar');
   });
 
+  it('names the contribution it does not have and never guesses the bound without it', () => {
+    const subject = complete();
+    const missing = closingBlockers(subject, view(subject, { counted: '6.980,00', contribution: '',
+      fund: '900,00', observation: '' }));
+    expect(missing.map(blocker => blocker.code)).toEqual(['cash_not_stated']);
+    expect(missing[0].message).toBe('Falta el aporte del Almacén: el cierre no puede proponerse sin eso.');
+    // With the contribution declared the fund the drawer cannot hold is a fund that fits.
+    expect(closingBlockers(subject, view(subject, { counted: '6.980,00', contribution: '120,00',
+      fund: '7.100,00', observation: '' }))).toEqual([]);
+    expect(closingBlockers(subject, view(subject, { counted: '6.980,00', contribution: '119,99',
+      fund: '7.100,00', observation: '' })).map(blocker => blocker.code)).toEqual(['fund_exceeds_drawer']);
+  });
+
   it('names only the side of the drawer that is missing', () => {
     const subject = complete();
-    expect(closingBlockers(subject, view(subject, { counted: '', fund: '900,00', observation: '' }))[0].message)
+    expect(closingBlockers(subject, view(subject, { counted: '', contribution: '0,00', fund: '900,00',
+      observation: '' }))[0].message)
       .toBe('Falta la caja contada: el cierre no puede proponerse sin eso.');
-    expect(closingBlockers(subject, view(subject, { counted: '6.980,00', fund: '', observation: '' }))[0].message)
+    expect(closingBlockers(subject, view(subject, { counted: '6.980,00', contribution: '0,00', fund: '',
+      observation: '' }))[0].message)
       .toBe('Falta el fondo que queda en la caja: el cierre no puede proponerse sin eso.');
   });
 
@@ -288,10 +383,12 @@ describe('S14 what still blocks the offer, named', () => {
 
   it('names a fund above the drawer and an amount it cannot read', () => {
     const subject = complete();
-    const excess = closingBlockers(subject, view(subject, { counted: '6.980,00', fund: '7.100,00', observation: '' }));
+    const excess = closingBlockers(subject, view(subject, { counted: '6.980,00', contribution: '0,00',
+      fund: '7.100,00', observation: '' }));
     expect(excess.map(blocker => blocker.code)).toEqual(['fund_exceeds_drawer']);
     expect(excess[0].message).toBe('El fondo supera la caja contada más el aporte en Bs 120,00.');
-    const invalid = closingBlockers(subject, view(subject, { counted: '6.980,001', fund: '900,00', observation: '' }));
+    const invalid = closingBlockers(subject, view(subject, { counted: '6.980,001', contribution: '0,00',
+      fund: '900,00', observation: '' }));
     expect(invalid.map(blocker => blocker.code)).toEqual(['invalid_amount']);
   });
 

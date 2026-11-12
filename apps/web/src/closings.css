@@ -97,6 +97,11 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
 .closing-field input { min-height: 44px; border-color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
 .closing-field textarea { min-height: 72px; padding: 8px 12px; border: 1px solid var(--muted); border-radius: 4px;
   font: inherit; font-size: 13px; line-height: 1.5; color: #242124; resize: vertical; }
+/* The contribution the warehouse puts into the till for this settlement, beside the fund it makes
+   reachable: money in, never money collected, and so never a sale and never a commission (S10). */
+.closing-contribution { margin-top: 14px; padding: 10px 12px; border: 1px dashed var(--border);
+  border-radius: 4px; background: var(--page); }
+.closing-contribution small { color: var(--muted); font-size: 11px; line-height: 16px; }
 .closing-difference { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding-top: 4px; }
 .closing-difference small { color: var(--muted); font-size: 12px; }
 .closing-difference strong { display: inline-flex; align-items: baseline; gap: 6px; font-variant-numeric: tabular-nums; }
