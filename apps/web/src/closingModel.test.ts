@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import * as model from './closingModel';
 import {
-  canonicalCountPayload, canonicalDrawerPayload, closingBlockers, closingBlockReason,
-  closingCents, closingDifferenceName, closingLineDifference, closingLineLabel, closingPendingLines,
-  closingPeriod, closingPeriodLabel, closingProgress, closingQuantityText, closingRail,
-  closingMoneyText, closingSignedCents, closingSignedText, drawerDraftFrom, drawerView, emptyDrawerDraft,
-  filterCountLines,
-  type Closing, type ClosingCountLine, type DrawerDraft,
+  canonicalCountPayload, canonicalDrawerPayload, closingAcceptance, closingAccountLabel,
+  closingBlockers, closingBlockReason, closingCents, closingDecisionPayload, closingDecisionReadiness,
+  closingDifferenceName, closingLineDifference, closingLineLabel, closingMomentText,
+  closingPendingLines, closingPeriod, closingPeriodLabel, closingProgress, closingQuantityText,
+  closingRail, closingMoneyText, closingRoundStateLabel, closingSheetChanges, closingSignedCents,
+  closingSignedText, drawerDraftFrom, drawerView, emptyDrawerDraft, filterCountLines,
+  type Closing, type ClosingCountLine, type ClosingOffer, type ClosingRound, type DrawerDraft,
 } from './closingModel';
 
 // The numbers of the chosen artboard (design/rendicion-de-cuentas/03-mesa-conteo.html), read as
@@ -302,5 +303,124 @@ describe('S14 what still blocks the offer, named', () => {
     const closed = closingBlockers(complete({ status: 'closed', commission_rate_percent: '4.50',
       closed_at: '2026-09-12T18:31:00Z' }), view(complete()));
     expect(closed[0].message).toBe('La rendición está cerrada: no se puede proponer ni editar.');
+  });
+});
+
+// ---------------------------------------------------------------------------------
+// The branch's side: it only accepts or rejects the offer it is shown (S14, S15)
+// ---------------------------------------------------------------------------------
+
+const completeLines: readonly ClosingCountLine[] = lines.map(entry => Object.freeze({
+  ...entry, counted_quantity: entry.counted_quantity ?? entry.expected_quantity }));
+
+const offerLines = completeLines.map(entry => Object.freeze({
+  variant_id: entry.variant_id, expected_quantity: entry.expected_quantity,
+  counted_quantity: entry.counted_quantity! }));
+
+const offer = (overrides: Partial<ClosingOffer> = {}): ClosingOffer => Object.freeze({
+  period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z',
+  sales_total_cents: 3248000n, commission_rate_percent: '4.50', commission_amount_cents: 146160n,
+  cash_sales_cents: 643000n, cash_expenses_cents: 21500n, card_total_cents: 324000n,
+  transfer_total_cents: 118000n, qr_total_cents: 276000n,
+  counted_cash_cents: 698000n, contributed_cash_cents: 0n, closing_cash_cents: 90000n,
+  observation: '', count_lines: offerLines, ...overrides,
+});
+
+const answer = (overrides: Partial<ClosingRound> = {}): ClosingRound => Object.freeze({
+  id: 1, round: 1, offer: offer(), proposed_by_account_id: 1,
+  proposed_at: '2026-09-12T14:58:00Z', decision: '', decision_reason: '',
+  decided_by_account_id: null, decided_at: null, ...overrides,
+});
+
+const proposed = (overrides: Partial<Closing> = {}): Closing => closing({
+  status: 'proposed', commission_rate_percent: '4.50', count_lines: completeLines,
+  counted_cash_cents: 698000n, closing_cash_cents: 90000n, rounds: [answer()], ...overrides,
+});
+
+describe('S14 the branch only accepts or rejects, with a mandatory motive', () => {
+  it('states the two decisions it can send and never a rejection without its motive', () => {
+    expect(closingDecisionPayload('accepted', '')).toEqual({ decision: 'accepted' });
+    expect(closingDecisionPayload('rejected', '  faltó contar la bodega  '))
+      .toEqual({ decision: 'rejected', reason: 'faltó contar la bodega' });
+    expect(() => closingDecisionPayload('rejected', '')).toThrow(model.closingMotiveRequiredMessage);
+    expect(() => closingDecisionPayload('rejected', '   ')).toThrow(model.closingMotiveRequiredMessage);
+    expect(() => closingDecisionPayload('rejected', 'x'.repeat(1001)))
+      .toThrow(model.closingMotiveLengthMessage);
+    expect(() => closingDecisionPayload('rejected', 'motivo\u0000')).toThrow(model.closingMotiveLengthMessage);
+    // An acceptance carries no reason at all: the two decisions are exclusive.
+    expect(closingDecisionPayload('accepted', 'x'.repeat(1001))).toEqual({ decision: 'accepted' });
+  });
+
+  it('offers a decision only while the settlement is proposed, naming why otherwise', () => {
+    expect(closingDecisionReadiness(proposed())).toEqual({ awaiting: true, reason: '' });
+    const open = closingDecisionReadiness(closing({ status: 'open' }));
+    expect(open.awaiting).toBe(false);
+    expect(open.reason).toContain('congelada');
+    expect(open.reason).toContain('todavía no propuso');
+    const rejected = closingDecisionReadiness(closing({ status: 'rejected',
+      commission_rate_percent: '4.50' }));
+    expect(rejected.awaiting).toBe(false);
+    expect(rejected.reason).toContain('todavía no propuso');
+    const closed = closingDecisionReadiness(closing({ status: 'closed',
+      commission_rate_percent: '4.50', closed_at: '2026-09-12T18:31:00Z' }));
+    expect(closed.awaiting).toBe(false);
+    expect(closed.reason).toContain('cerrada');
+  });
+
+  it('reads the offer it is accepting: what every counted variant becomes and the drawer', () => {
+    const acceptance = closingAcceptance(proposed())!;
+    expect(acceptance.round.round).toBe(1);
+    expect(acceptance.changes).toHaveLength(11);
+    const power = acceptance.changes.find(change => change.variant_id === 10)!;
+    expect(power.label).toBe('Bosch Power R · 110 Ah');
+    expect({ system: power.system_quantity, counted: power.counted_quantity, becomes: power.becomes_quantity,
+      difference: power.difference }).toEqual({ system: 3, counted: 3, becomes: 3, difference: 0 });
+    const short = acceptance.changes.find(change => change.variant_id === 2)!;
+    expect({ system: short.system_quantity, counted: short.counted_quantity, becomes: short.becomes_quantity,
+      difference: short.difference }).toEqual({ system: 9, counted: 8, becomes: 8, difference: -1 });
+    // Bs 7.015,00 expected, Bs 6.980,00 counted, Bs 35,00 short: the commission is inside no identity.
+    expect(acceptance.rail.expected_cents).toBe(701500n);
+    expect(acceptance.rail.difference_cents).toBe(-3500n);
+    expect(acceptance.rail.fund_cents).toBe(90000n);
+    expect(acceptance.rail.taken_cents).toBe(608000n);
+    expect(acceptance.rail.commission_cents).toBe(146160n);
+    expect(acceptance.rail.expected_cents).toBe(80000n + 643000n - 21500n);
+    // An open settlement has no offer to accept.
+    expect(closingAcceptance(closing())).toBeNull();
+  });
+
+  it('refuses an offer that does not agree with the settlement it belongs to', () => {
+    const drifted = proposed({ counted_cash_cents: 700000n });
+    expect(() => closingAcceptance(drifted)).toThrow(model.closingAcceptanceMismatchMessage);
+    const decided = proposed({ rounds: [answer({ decision: 'accepted', decided_by_account_id: 2,
+      decided_at: '2026-09-12T15:00:00Z' })] });
+    expect(closingAcceptance(decided)).toBeNull();
+  });
+
+  it('reads the counted sheet of a settlement that is not being offered', () => {
+    const changes = closingSheetChanges(closing({ count_lines: completeLines }));
+    expect(changes).toHaveLength(11);
+    expect(changes.find(change => change.variant_id === 4)).toMatchObject({ system_quantity: 11,
+      counted_quantity: 13, becomes_quantity: 13, difference: 2 });
+    expect(closingSheetChanges(closing()).map(change => change.variant_id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  });
+});
+
+describe('S15 every round of the settlement stays legible', () => {
+  it('names who answered each round and when, in the branch time zone', () => {
+    expect(closingAccountLabel(12)).toBe('Cuenta #12');
+    expect(closingMomentText('2026-09-12T14:44:00Z')).toBe('12 sept 2026, 10:44');
+    expect(closingMomentText('not an instant')).toBe('Fecha no disponible');
+  });
+
+  it('names the state of every round and keeps each rejection motive', () => {
+    expect(closingRoundStateLabel('')).toBe('Por decidir');
+    expect(closingRoundStateLabel('accepted')).toBe('Aceptada');
+    expect(closingRoundStateLabel('rejected')).toBe('Rechazada');
+    const rounds = [answer({ decision: 'rejected', decision_reason: 'La comisión estaba mal.',
+      decided_by_account_id: 2, decided_at: '2026-09-12T14:44:00Z' }),
+    answer({ id: 2, round: 2 })];
+    expect(rounds.map(entry => entry.decision_reason)).toEqual(['La comisión estaba mal.', '']);
+    expect(rounds.map(entry => closingRoundStateLabel(entry.decision))).toEqual(['Rechazada', 'Por decidir']);
   });
 });

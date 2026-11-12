@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { closingRail } from './closingModel';
 import {
-  ClosingAPIError, closingCashPath, closingCountPath, closingDetailPath, closingHistoryPath,
-  closingProposePath, closingRefusalMessage, createClosingAPI, parseClosing, parseClosingPage,
-  parseClosingRefusal,
+  ClosingAPIError, closingCashPath, closingCountPath, closingDecisionPath, closingDetailPath,
+  closingHistoryPath, closingProposePath, closingRefusalMessage, createClosingAPI, parseClosing,
+  parseClosingPage, parseClosingRefusal,
 } from './closingsAPI';
 
 const csrf = 'c'.repeat(43);
@@ -135,6 +135,7 @@ describe('the settlement document', () => {
     expect(closingCountPath(7)).toBe('/api/closings/7/count');
     expect(closingCashPath(7)).toBe('/api/closings/7/cash');
     expect(closingProposePath(7)).toBe('/api/closings/7/propose');
+    expect(closingDecisionPath(7)).toBe('/api/closings/7/decision');
     expect(() => closingHistoryPath(1, 1, 25)).toThrow();
     expect(() => closingHistoryPath(2, 1, 20)).toThrow();
     expect(() => closingDetailPath(0)).toThrow();
@@ -247,6 +248,55 @@ describe('the transport of the warehouse side', () => {
     expect(h.calls[0].init.body).toBeUndefined();
     expect(new Headers(h.calls[0].init.headers).has('Content-Type')).toBe(false);
     expect(new Headers(h.calls[0].init.headers).get('X-CSRF-Token')).toBe(csrf);
+  });
+
+  it('accepts with the decision alone and rejects with its motive (S14)', async () => {
+    const accepted = harness(() => json(document()));
+    const closed = await accepted.api.decision(1, { decision: 'accepted' }, csrf);
+    expect(closed.status).toBe('closed');
+    expect(accepted.calls[0].url).toBe('/api/closings/1/decision');
+    expect(accepted.calls[0].init).toMatchObject({ method: 'POST', credentials: 'same-origin', cache: 'no-store' });
+    expect(accepted.calls[0].init.body).toBe('{"decision":"accepted"}');
+    expect(new Headers(accepted.calls[0].init.headers).get('X-CSRF-Token')).toBe(csrf);
+    expect(new Headers(accepted.calls[0].init.headers).get('Content-Type')).toBe('application/json');
+
+    const rejected = harness(() => json(document({ status: 'rejected', closed_at: null })));
+    const returned = await rejected.api.decision(1, { decision: 'rejected', reason: 'faltó contar la bodega' }, csrf);
+    expect(returned.status).toBe('rejected');
+    expect(rejected.calls[0].init.body).toBe('{"decision":"rejected","reason":"faltó contar la bodega"}');
+  });
+
+  it('never sends a decision the contract does not take (S14)', async () => {
+    const h = harness(() => json(document()));
+    expect((await refusalOf(h.api.decision(1, { decision: 'accepted', reason: 'sobra' } as never, csrf))).code)
+      .toBe('invalid_request');
+    expect((await refusalOf(h.api.decision(1, { decision: 'rejected' } as never, csrf))).code)
+      .toBe('invalid_request');
+    expect((await refusalOf(h.api.decision(1, { decision: 'rejected', reason: '   ' }, csrf))).code)
+      .toBe('invalid_request');
+    expect((await refusalOf(h.api.decision(1, { decision: 'rejected', reason: 'x'.repeat(1001) }, csrf))).code)
+      .toBe('invalid_request');
+    expect((await refusalOf(h.api.decision(1, { decision: 'maybe' } as never, csrf))).code)
+      .toBe('invalid_request');
+    expect((await refusalOf(h.api.decision(1, { decision: 'accepted' }, 'not a token'))).code)
+      .toBe('invalid_request');
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it('names the state a decision cannot be taken in, and another branch as not found', async () => {
+    const conflict = harness(() => json({ error: 'state_conflict' }, 409));
+    expect((await refusalOf(conflict.api.decision(1, { decision: 'accepted' }, csrf))).code)
+      .toBe('state_conflict');
+    const reserved = harness(() => json({ error: 'reserved_stock' }, 409));
+    expect((await refusalOf(reserved.api.decision(1, { decision: 'accepted' }, csrf))).code)
+      .toBe('reserved_stock');
+    const foreign = harness(() => json({ error: 'not_found' }, 404));
+    const failure = await refusalOf(foreign.api.decision(7, { decision: 'accepted' }, csrf));
+    expect(failure.code).toBe('not_found');
+    expect(closingRefusalMessage(failure)).toBe('La rendición no existe para esta cuenta.');
+    const warehouse = harness(() => json({ error: 'forbidden' }, 403));
+    expect((await refusalOf(warehouse.api.decision(1, { decision: 'rejected', reason: 'no' }, csrf))).code)
+      .toBe('forbidden');
   });
 
   it('publishes the server refusal of a proposal and never a client guess', async () => {

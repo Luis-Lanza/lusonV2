@@ -133,3 +133,36 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
   .closing-bar-action { display: grid; grid-template-columns: minmax(0, 1fr); }
   .closing-bar-action button { width: 100%; }
 }
+
+/* The branch's side of the settlement (design/rendicion-de-cuentas/04-decision-sucursal.html):
+   the offer the warehouse composed on the left and the answer on the right, with the rounds of
+   the settlement under it. It reuses the workspace's panel, tag and summary language. */
+.closing-workspace .closing-note { color: var(--muted); font-size: 12px; line-height: 18px; }
+.closing-readonly { padding: 12px 16px; background: white; border: 1px solid var(--border);
+  border-radius: 4px; color: var(--muted); font-size: 13px; line-height: 18px; }
+.closing-decision .closing-layout { grid-template-columns: minmax(0, 1fr) 360px; }
+.closing-decision-actions { display: grid; gap: 12px; }
+.closing-decision-actions p { color: var(--muted); font-size: 13px; line-height: 19px; }
+.closing-decision-actions button { min-height: 44px; }
+.closing-reject-toggle { border-color: #FFDAD6; color: #991515; font-weight: 600; background: white; }
+.closing-reject { border-color: #CCAAAA; color: #991515; font-weight: 600; background: white; }
+.closing-reject:disabled { background: #EFEDEF; border-color: #AAA5AA; color: #595459; }
+.closing-motive { display: grid; gap: 8px; padding: 12px; border: 1px solid #FFDAD6;
+  border-radius: 4px; background: #FFF0F0; }
+.closing-motive label { color: #991515; font-size: 12px; font-weight: 600; }
+.closing-motive textarea { min-height: 84px; padding: 8px 12px; border: 1px solid #CCAAAA;
+  border-radius: 4px; background: white; font: inherit; font-size: 13px; line-height: 1.5;
+  color: #242124; resize: vertical; }
+.closing-motive small { color: #991515; font-size: 11px; line-height: 16px; }
+.closing-motive-note { border-left: 2px solid var(--wine); background: var(--tint); padding: 12px 16px;
+  font-size: 13px; line-height: 1.6; }
+.closing-rounds { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.closing-rounds li { display: grid; gap: 4px; padding: 12px; border: 1px solid var(--border);
+  border-radius: 4px; background: var(--page); font-size: 13px; }
+.closing-round-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.closing-rounds small { color: var(--muted); font-size: 11px; line-height: 16px; }
+.closing-round-motive { border-left: 2px solid var(--wine); background: var(--tint);
+  padding: 8px 12px; font-size: 13px; line-height: 1.55; overflow-wrap: anywhere; }
+@media (max-width: 1279px) {
+  .closing-decision .closing-layout { grid-template-columns: minmax(0, 1fr); }
+}

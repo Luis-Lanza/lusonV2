@@ -1888,3 +1888,80 @@ describe('warehouse settlement workspace', () => {
     expect(closingCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
   });
 });
+
+describe('branch settlement decision', () => {
+  const branchSession = { ...session, identity: { ...identity, account_id: 2, username: 'sucursala', location: metadata.locations[1] } };
+  const countLine = (variant_id: number, expected: number, counted: number, extra: Record<string, unknown> = {}) => ({
+    variant_id, catalog_entry_id: variant_id, brand: 'Bosch', model: 'S4', capacity_ah: '45',
+    polarity: 'L', expected_quantity: expected, counted_quantity: counted, ...extra });
+  const settlement = {
+    id: 1, branch_location_id: 2, branch_name: 'Sucursal A', status: 'proposed',
+    period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z', closed_at: null,
+    commission_rate_percent: '4.50', opening_cash: '800.00', cash_sales: '6430.00',
+    cash_expenses: '215.00', expected_cash: '7015.00', counted_cash: '6980.00',
+    cash_difference: '-35.00', contributed_cash: '0.00', closing_cash: '900.00',
+    taken_cash: '6080.00', sales_total: '32480.00', commission_amount: '1461.60',
+    card_total: '3240.00', transfer_total: '1180.00', qr_total: '2760.00', observation: '',
+    opened_by_account_id: 1,
+    count_lines: [countLine(1, 12, 12), countLine(2, 9, 8, { model: 'Power', capacity_ah: '110' }),
+      countLine(3, 14, 13, { model: 'Blue', capacity_ah: '60' })],
+    rounds: [{ id: 1, round: 1, offer: {
+      period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z', sales_total: '32480.00',
+      commission_rate_percent: '4.50', commission_amount: '1461.60', cash_sales: '6430.00',
+      cash_expenses: '215.00', card_total: '3240.00', transfer_total: '1180.00', qr_total: '2760.00',
+      counted_cash: '6980.00', contributed_cash: '0.00', closing_cash: '900.00', observation: '',
+      count_lines: [{ variant_id: 1, expected_quantity: 12, counted_quantity: 12 },
+        { variant_id: 2, expected_quantity: 9, counted_quantity: 8 },
+        { variant_id: 3, expected_quantity: 14, counted_quantity: 13 }] },
+      proposed_by_account_id: 1, proposed_at: '2026-09-12T14:58:00Z', decision: '',
+      decision_reason: '', decided_by_account_id: null, decided_at: null }],
+  };
+  const settlementJSON = (body: unknown) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  const branchSetup = () => setup(branchSession, url => {
+    if (url.startsWith('/api/closings?')) return Promise.resolve(settlementJSON({
+      page: 1, page_size: 25, total_closings: 1,
+      closings: [{ ...settlement, count_lines: [], rounds: [] }] }));
+    if (url === '/api/closings/1') return Promise.resolve(settlementJSON(settlement));
+    return undefined;
+  });
+  const closingCalls = (mock: ReturnType<typeof setup>) =>
+    mock.mock.calls.filter(([url]) => String(url).startsWith('/api/closings'));
+
+  it('offers the branch its own settlement and opens the decision without any write', async () => {
+    const mock = branchSetup();
+    render(<App />); await inventory();
+    const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
+    fireEvent.click(within(navigation).getByRole('button', { name: 'Rendición de cuentas' }));
+    await screen.findByRole('heading', { name: 'Rendición de cuentas · Sucursal A' });
+    expect(screen.getByText('Luson Rendición de cuentas')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rendición de cuentas' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
+    expect(within(screen.getByRole('region', { name: 'Tu decisión' }))
+      .getByRole('button', { name: 'Aceptar y cerrar la rendición' })).toBeEnabled();
+    // The branch reads only its own history: the branch of the session, never a chosen one.
+    expect(closingCalls(mock).some(([url]) =>
+      String(url) === '/api/closings?branch_location_id=2&page=1&page_size=25')).toBe(true);
+    expect(closingCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('returns to the inventory from the decision and keeps the shell', async () => {
+    const mock = branchSetup();
+    render(<App />); await inventory();
+    fireEvent.click(screen.getByRole('button', { name: 'Rendición de cuentas' }));
+    await screen.findByRole('heading', { name: 'Rendición de cuentas · Sucursal A' });
+    fireEvent.click(screen.getByRole('link', { name: 'Inventario' }));
+    await inventory();
+    expect(screen.getByRole('link', { name: 'Inventario' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('heading', { name: 'Rendición de cuentas · Sucursal A' })).not.toBeInTheDocument();
+    expect(closingCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('keeps the branch decision out of the warehouse shell', async () => {
+    const mock = setup(session);
+    render(<App />); await inventory();
+    expect(screen.queryByRole('button', { name: 'Rendición de cuentas' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Tu decisión' })).not.toBeInTheDocument();
+    expect(closingCalls(mock)).toHaveLength(0);
+  });
+});

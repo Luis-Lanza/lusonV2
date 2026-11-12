@@ -9,10 +9,11 @@
  */
 import { LosslessNumber, parse as parseJSON } from 'lossless-json';
 import {
-  closingCents, closingMaxCountLines, closingMaxCounted, closingMaxID, closingMaxPage,
-  closingPageSizes, closingRail, closingSignedCents, closingStatuses, closingFirstBranch,
-  closingMaxBranch,
-  type Closing, type ClosingCountLine, type ClosingDecision, type ClosingOffer, type ClosingOfferLine,
+  closingCents, closingDecisionPayload, closingMaxCountLines, closingMaxCounted, closingMaxID,
+  closingMaxPage, closingPageSizes, closingRail, closingSignedCents, closingStatuses,
+  closingFirstBranch, closingMaxBranch,
+  type Closing, type ClosingCountLine, type ClosingDecision, type ClosingDecisionPayload,
+  type ClosingOffer, type ClosingOfferLine,
   type ClosingPage, type ClosingPolarity, type ClosingRail, type ClosingRound, type ClosingStatus,
   type CountPayloadLine,
 } from './closingModel';
@@ -516,6 +517,10 @@ export function closingProposePath(id: number): string {
   return `/api/closings/${closingID(id)}/propose`;
 }
 
+export function closingDecisionPath(id: number): string {
+  return `/api/closings/${closingID(id)}/decision`;
+}
+
 // ---------------------------------------------------------------------------------
 // Transport
 // ---------------------------------------------------------------------------------
@@ -660,6 +665,34 @@ export function createClosingAPI(fetch: typeof globalThis.fetch = globalThis.fet
         wanted = closingID(id);
       } catch { throw new ClosingAPIError('invalid_request', null); }
       const closing = await send('POST', path, 200, parseClosing, null, csrf, signal);
+      if (closing.id !== wanted) throw new ClosingAPIError('invalid_response', 200);
+      return closing;
+    },
+
+    /**
+     * The branch's answer: acceptance carries only the decision, a rejection carries its motive
+     * and nothing else. Both are canonicalized by the model before anything leaves the screen.
+     */
+    async decision(id: number, payload: ClosingDecisionPayload, csrf: string,
+      signal?: AbortSignal): Promise<Closing> {
+      let body: string;
+      let path: string;
+      let wanted: number;
+      try {
+        token(csrf);
+        path = closingDecisionPath(id);
+        wanted = closingID(id);
+        const keys = Object.keys(payload);
+        const canonical = closingDecisionPayload(payload.decision, payload.reason ?? '');
+        if (canonical.decision === 'accepted') {
+          if (keys.length !== 1) throw new Error('decisión inválida');
+          body = JSON.stringify({ decision: 'accepted' });
+        } else {
+          if (keys.length !== 2 || canonical.reason === undefined) throw new Error('decisión inválida');
+          body = JSON.stringify({ decision: 'rejected', reason: canonical.reason });
+        }
+      } catch { throw new ClosingAPIError('invalid_request', null); }
+      const closing = await send('POST', path, 200, parseClosing, body, csrf, signal);
       if (closing.id !== wanted) throw new ClosingAPIError('invalid_response', 200);
       return closing;
     },

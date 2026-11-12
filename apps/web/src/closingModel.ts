@@ -547,3 +547,183 @@ export function closingPeriod(periodStart: string, cutAt: string): ClosingPeriod
 export function closingPeriodLabel(period: ClosingPeriod): string {
   return `${period.from} → ${period.to}`;
 }
+
+// ---------------------------------------------------------------------------------
+// The branch's side: it only accepts or rejects the offer it is shown (S14, S15)
+// ---------------------------------------------------------------------------------
+
+export const closingMotiveRequiredMessage =
+  'Escribí el motivo del rechazo: sin motivo no se puede rechazar la propuesta.';
+export const closingMotiveLengthMessage =
+  `El motivo del rechazo lleva hasta ${closingMaxObservation} caracteres y no admite caracteres inválidos.`;
+export const closingAcceptanceMismatchMessage =
+  'La propuesta no coincide con la rendición que tenés delante: no se puede describir ni aceptar.';
+
+/** The exact body of `POST /api/closings/{id}/decision`: the two decisions are exclusive. */
+export interface ClosingDecisionPayload {
+  readonly decision: 'accepted' | 'rejected';
+  readonly reason?: string;
+}
+
+/**
+ * Canonicalizes the only two answers the branch can send. A rejection without a motive cannot
+ * even be expressed: it is trimmed, bounded and refused before it can reach the server (S14).
+ */
+export function closingDecisionPayload(
+  decision: 'accepted' | 'rejected', reason: string): ClosingDecisionPayload {
+  if (decision === 'accepted') return Object.freeze({ decision: 'accepted' });
+  if (decision !== 'rejected') throw new Error(closingMotiveRequiredMessage);
+  const motive = typeof reason === 'string' ? reason.trim() : '';
+  if (motive === '') throw new Error(closingMotiveRequiredMessage);
+  if (motive.includes('\0') || !motive.isWellFormed()
+    || Array.from(motive).length > closingMaxObservation) {
+    throw new Error(closingMotiveLengthMessage);
+  }
+  return Object.freeze({ decision: 'rejected', reason: motive });
+}
+
+/** Only `proposed` awaits the branch; every other state is read-only and says why. */
+export interface ClosingDecisionReadiness { readonly awaiting: boolean; readonly reason: string }
+
+export function closingDecisionReadiness(closing: Closing): ClosingDecisionReadiness {
+  if (closing.status === 'closed') {
+    return Object.freeze({
+      awaiting: false,
+      reason: 'La rendición ya está cerrada: el Almacén no puede reabrirla y no hay nada que decidir.',
+    });
+  }
+  if (closing.status === 'proposed') return Object.freeze({ awaiting: true, reason: '' });
+  return Object.freeze({
+    awaiting: false,
+    reason: 'La sucursal está congelada: el Almacén todavía no propuso el cierre, así que no hay nada que aceptar ni rechazar.',
+  });
+}
+
+/** One counted variant as the branch is about to accept it: the system, the count and the result. */
+export interface ClosingStockChange {
+  readonly variant_id: number;
+  readonly label: string;
+  readonly system_quantity: number;
+  readonly counted_quantity: number;
+  readonly becomes_quantity: number;
+  readonly difference: number;
+}
+
+function stockChange(variant_id: number, label: string, system: number, counted: number): ClosingStockChange {
+  return Object.freeze({
+    variant_id, label, system_quantity: system, counted_quantity: counted,
+    becomes_quantity: counted, difference: counted - system,
+  });
+}
+
+/** The counted sheet of a settlement that is not being offered, still legible after the closure. */
+export function closingSheetChanges(closing: Closing): readonly ClosingStockChange[] {
+  return Object.freeze(closing.count_lines
+    .filter(line => line.counted_quantity !== null)
+    .map(line => stockChange(line.variant_id, closingLineLabel(line), line.expected_quantity,
+      line.counted_quantity!)));
+}
+
+/** The counted lines of a stored offer, labelled with the sheet of the settlement it belongs to. */
+export function closingOfferChanges(closing: Closing,
+  offer: ClosingOffer): readonly ClosingStockChange[] {
+  const sheet = new Map(closing.count_lines.map(line => [line.variant_id, line]));
+  return Object.freeze(offer.count_lines.map(line => {
+    const entry = sheet.get(line.variant_id);
+    const label = entry === undefined ? `Variante #${line.variant_id}` : closingLineLabel(entry);
+    return stockChange(line.variant_id, label, line.expected_quantity, line.counted_quantity);
+  }));
+}
+
+/**
+ * The drawer of the offer: the inherited fund with the offer's own cash facts compute the
+ * expected drawer, the difference and what the warehouse takes. The commission is reported
+ * beside them and is inside none of those identities (S9).
+ */
+export function closingOfferRail(closing: Closing, offer: ClosingOffer): ClosingRail {
+  const expected_cents = closing.opening_cash_cents + offer.cash_sales_cents - offer.cash_expenses_cents;
+  return Object.freeze({
+    opening_cents: closing.opening_cash_cents,
+    cash_sales_cents: offer.cash_sales_cents,
+    cash_expenses_cents: offer.cash_expenses_cents,
+    expected_cents,
+    counted_cents: offer.counted_cash_cents,
+    difference_cents: offer.counted_cash_cents - expected_cents,
+    contribution_cents: offer.contributed_cash_cents,
+    fund_cents: offer.closing_cash_cents,
+    taken_cents: offer.counted_cash_cents + offer.contributed_cash_cents - offer.closing_cash_cents,
+    rate_percent: offer.commission_rate_percent,
+    sales_total_cents: offer.sales_total_cents,
+    commission_cents: offer.commission_amount_cents,
+    card_cents: offer.card_total_cents,
+    transfer_cents: offer.transfer_total_cents,
+    qr_cents: offer.qr_total_cents,
+  });
+}
+
+/** The offer the branch is deciding, with what acceptance applies and nothing else. */
+export interface ClosingAcceptance {
+  readonly round: ClosingRound;
+  readonly offer: ClosingOffer;
+  readonly changes: readonly ClosingStockChange[];
+  readonly rail: ClosingRail;
+}
+
+function sameOfferLines(left: readonly ClosingOfferLine[], right: readonly ClosingCountLine[]): boolean {
+  const counted = right.filter(line => line.counted_quantity !== null);
+  if (left.length !== counted.length) return false;
+  return left.every((line, index) => {
+    const sheet = counted[index];
+    return line.variant_id === sheet.variant_id && line.expected_quantity === sheet.expected_quantity
+      && line.counted_quantity === sheet.counted_quantity;
+  });
+}
+
+/**
+ * The decisive reading of a `proposed` settlement: the latest undecided round and the offer it
+ * holds. A document whose offer disagrees with its own facts is refused instead of described, so
+ * the branch never accepts arithmetic the server would not apply.
+ */
+export function closingAcceptance(closing: Closing): ClosingAcceptance | null {
+  if (closing.status !== 'proposed') return null;
+  const round = closing.rounds[closing.rounds.length - 1];
+  if (round === undefined || round.decision !== '') return null;
+  const rail = closingOfferRail(closing, round.offer);
+  const published = closingRail(closing);
+  if (rail.expected_cents !== published.expected_cents
+    || rail.difference_cents !== published.difference_cents
+    || rail.taken_cents !== published.taken_cents
+    || rail.commission_cents !== published.commission_cents
+    || !sameOfferLines(round.offer.count_lines, closing.count_lines)) {
+    throw new Error(closingAcceptanceMismatchMessage);
+  }
+  return Object.freeze({
+    round,
+    offer: round.offer,
+    changes: closingOfferChanges(closing, round.offer),
+    rail,
+  });
+}
+
+/** The account that proposed or decided a round, as the contract identifies it: no names (S7). */
+export function closingAccountLabel(accountID: number): string {
+  return `Cuenta #${accountID}`;
+}
+
+const momentFormat = new Intl.DateTimeFormat('es-BO', {
+  timeZone: 'America/La_Paz', day: '2-digit', month: 'short', year: 'numeric',
+  hour: '2-digit', minute: '2-digit', hour12: false,
+});
+
+/** `12 sept 2026, 10:44`: when a round was offered or answered, in the branch time zone. */
+export function closingMomentText(value: string): string {
+  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) return 'Fecha no disponible';
+  return momentFormat.format(new Date(value));
+}
+
+/** The answer of a round in the branch's words; `''` is the offer still on the table. */
+export function closingRoundStateLabel(decision: ClosingDecision): string {
+  if (decision === 'accepted') return 'Aceptada';
+  if (decision === 'rejected') return 'Rechazada';
+  return 'Por decidir';
+}
