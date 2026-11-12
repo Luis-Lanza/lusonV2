@@ -25,7 +25,9 @@ A closed settlement is never reopened. An error is corrected by an appended corr
 the branch itself approves: the warehouse states what was wrong and why, and only an accepted
 correction applies — as compensating deltas against the open period, never by rewriting the
 closed document. The settlement publishes the corrections it accepted beside the numbers they
-moved, so a corrected number is legible as one.
+moved, so a corrected number is legible as one, and it publishes the correction that is still
+waiting for the branch with its status, so the branch can see what it has to decide and who
+proposed it.
 
 ## Vocabulary and money
 
@@ -426,6 +428,11 @@ counted instead of applying the same difference twice.
 settlement that is `open`, `proposed` or `rejected` is corrected by its own rounds.
 * A correction never freezes the branch: the settlement is already closed, so the branch keeps
 selling, receiving stock and recording expenses while it decides.
+* The correction that waits for the branch is **published with the settlement**, with
+`"status":"proposed"`, its reason, its payload and the account that proposed it: the branch reads
+what it has to decide from the document it already holds, and no second route lists corrections.
+No number of the document moves until the branch accepts, and a rejected correction is never
+published because it applied nothing.
 
 ```
 POST /api/closings/corrections/2/decision
@@ -475,7 +482,7 @@ Every route of this contract answers the whole settlement, with exactly these ke
 | `count_lines` | The sheet, ordered by `variant_id`, with `expected_quantity` and a `counted_quantity` that is `null` while pending |
 | `expenses` | The expenses of the branch inside this settlement's own window, in the order they were recorded |
 | `rounds` | The proposal history, oldest first |
-| `corrections` | The accepted corrections of the closed settlement, oldest first |
+| `corrections` | The corrections of the closed settlement, oldest first: the accepted ones with the deltas they applied and the pending one, if any, with its status |
 
 Each `count_lines` entry also carries the catalogue identity of its variant — `catalog_entry_id`,
 `brand`, `model`, `capacity_ah` (canonical decimal text) and `polarity` — so the sheet is legible
@@ -487,12 +494,13 @@ entry carries `id`, `round` (the database's own sequence), `offer`, `proposed_by
 `decided_by_account_id` and `decided_at`; a decided round states who answered it and when, and a
 rejected one always states its motive.
 
-Each `corrections` entry carries `id`, `closing_id`, `status` (`accepted` in the document — a
-pending correction is a decision that has not been taken and a rejected one applied nothing),
+Each `corrections` entry carries `id`, `closing_id`, `status` (`accepted`, or `proposed` for the
+one correction that still waits for the branch's decision — a rejected one applied nothing and is
+never published),
 `reason` (the warehouse's), `payload` (the four values it stated, each **absent** when the
 correction did not touch it), `proposed_by_account_id`, `proposed_at`,
-`decided_by_account_id`, `decided_at`, `decision_reason` (always empty for an acceptance) and
-`effects`. Each effect is `kind` plus exactly the unit of that kind: `stock` carries
+`decided_by_account_id` (`null` while pending), `decided_at` (`null` while pending), `decision_reason` (always empty for an acceptance) and
+`effects` (`[]` while pending, because nothing is applied before the acceptance). Each effect is `kind` plus exactly the unit of that kind: `stock` carries
 `variant_id` and `quantity_delta` (a whole quantity, either direction) and a `null`
 `amount_delta`; `counted_cash`, `commission` and `fund` carry a signed `amount_delta` and a
 `null` `variant_id` and `quantity_delta`. A document of a closed settlement whose `counted_cash`,

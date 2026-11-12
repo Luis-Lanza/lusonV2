@@ -461,12 +461,14 @@ type Closing struct {
 	CashDifference *Signed     `json:"cash_difference"`
 	TakenCash      *Signed     `json:"taken_cash"`
 	CountLines     []CountLine `json:"count_lines"`
-	// Corrections are the accepted corrections of the closed settlement, oldest first, each one
-	// with the reason the warehouse stated and the deltas the branch accepted. The row above
-	// keeps the numbers it was signed with; the derived numbers of this document are computed
-	// from the signed values plus these deltas, so a corrected drawer reads as corrected and a
-	// client can always tell which correction produced which number (S16). A settlement that is
-	// still live has none: it is corrected by its own rounds, not after the fact.
+	// Corrections are the corrections of the closed settlement, oldest first, each one with the reason
+	// the warehouse stated, its status and -- once the branch accepted it -- the deltas it applied. The
+	// row above keeps the numbers it was signed with; the derived numbers of this document are
+	// computed from the signed values plus the accepted deltas, so a corrected drawer reads as
+	// corrected and a client can always tell which correction produced which number (S16). The
+	// pending one is published with its status, because it is what awaits the branch's decision; a
+	// rejected one applied nothing and is not published. A settlement that is still live has none: it
+	// is corrected by its own rounds, not after the fact.
 	Corrections []Correction `json:"corrections"`
 	// Expenses are the small expenses the branch paid out of its till inside the window this
 	// settlement covers, read from its ledger in the order they were recorded. They are

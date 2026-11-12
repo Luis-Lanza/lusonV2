@@ -2044,6 +2044,100 @@ func TestCorrectionOfTheCountedCashPublishesTheCorrectedDifference(t *testing.T)
 		closings.ErrNotFound)
 }
 
+// TestPendingCorrectionIsPublishedWithItsStatus pins the surface half of S16 that the store owns:
+// a correction the branch still has to decide is published with the document, with its status, its
+// reason, its payload and the account that proposed it, because otherwise no screen of the branch
+// could know that something awaits a decision. The numbers it would change stay the signed ones
+// until the acceptance, and an accepted correction keeps being published exactly as it was, with
+// the deltas it applied (S16).
+func TestPendingCorrectionIsPublishedWithItsStatus(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "300.00")
+	e.sell(t, 1, 1, "100.00", sales.PaymentCash)
+	closed := e.closePeriod(t, "250.00", "0.00", "100.00")
+
+	// A closure with no correction publishes none: the document never invents a correction.
+	fresh, err := e.store.Read(e.ctx, identity(2), closed.ID)
+	if err != nil || len(fresh.Corrections) != 0 {
+		t.Fatalf("a settlement with no correction must publish none: %+v %v", fresh.Corrections, err)
+	}
+
+	pending, err := e.store.ProposeCorrection(e.ctx, warehouse(), closed.ID, closings.CorrectionOffer{
+		CountedQuantities: []closings.Counted{{VariantID: 1, Quantity: 3}},
+		CountedCash:       moneyPtr("300.00"),
+	}, "  conté mal la caja y una batería  ")
+	if err != nil {
+		t.Fatalf("the warehouse must propose a correction: %v", err)
+	}
+	// Both the branch that has to decide it and the warehouse that proposed it read it as a pending
+	// version of the closed settlement, with its author and its stated values and no delta at all.
+	for _, actor := range []auth.Identity{identity(2), warehouse()} {
+		document, err := e.store.Read(e.ctx, actor, closed.ID)
+		if err != nil {
+			t.Fatalf("the settlement could not be read: %v", err)
+		}
+		if len(document.Corrections) != 1 {
+			t.Fatalf("the pending correction must be published: %+v", document.Corrections)
+		}
+		published := document.Corrections[0]
+		if published.ID != pending.ID || published.ClosingID != closed.ID ||
+			published.Status != closings.CorrectionProposed ||
+			published.Reason != "conté mal la caja y una batería" ||
+			published.ProposedByAccountID != 1 || published.ProposedAt.IsZero() ||
+			published.DecidedByAccountID != nil || published.DecidedAt != nil ||
+			published.DecisionReason != "" || len(published.Effects) != 0 {
+			t.Fatalf("the pending correction must state its offer and its author: %+v", published)
+		}
+		if published.Payload.CountedCash == nil || *published.Payload.CountedCash != "300.00" ||
+			len(published.Payload.CountedQuantities) != 1 ||
+			published.Payload.CountedQuantities[0].VariantID != 1 ||
+			published.Payload.CountedQuantities[0].Quantity != 3 {
+			t.Fatalf("the pending correction must publish what it would change: %+v", published.Payload)
+		}
+		// A decision that has not been taken applies nothing: the document keeps the signed drawer.
+		if document.CountedCash == nil || *document.CountedCash != "250.00" ||
+			document.CashDifference == nil || string(*document.CashDifference) != "-150.00" ||
+			document.TakenCash == nil || string(*document.TakenCash) != "150.00" ||
+			document.Status != closings.StatusClosed {
+			t.Fatalf("a pending correction must change no published number: %+v", document)
+		}
+	}
+	if journal := e.journalOf(t, closed.ID); journal != "" {
+		t.Fatalf("a pending correction applies no delta: %q", journal)
+	}
+	// An accepted correction keeps the shape it already published, and the pending one follows it:
+	// the document carries both with their own status instead of one replacing the other.
+	if _, err := e.store.DecideCorrection(e.ctx, identity(2), pending.ID, closings.DecisionAccepted, ""); err != nil {
+		t.Fatalf("the branch must accept the correction: %v", err)
+	}
+	second, err := e.store.ProposeCorrection(e.ctx, warehouse(), closed.ID,
+		closings.CorrectionOffer{CommissionAmount: moneyPtr("20.00")}, "la comisión estaba mal")
+	if err != nil {
+		t.Fatalf("the warehouse must propose a second correction: %v", err)
+	}
+	document, err := e.store.Read(e.ctx, identity(2), closed.ID)
+	if err != nil || len(document.Corrections) != 2 {
+		t.Fatalf("the document must publish the accepted correction and the pending one: %+v %v",
+			document.Corrections, err)
+	}
+	accepted, next := document.Corrections[0], document.Corrections[1]
+	if accepted.ID != pending.ID || accepted.Status != closings.CorrectionAccepted ||
+		accepted.DecidedByAccountID == nil || *accepted.DecidedByAccountID != 2 ||
+		accepted.DecidedAt == nil || len(accepted.Effects) != 2 {
+		t.Fatalf("the accepted correction must keep the deltas it applied: %+v", accepted)
+	}
+	if next.ID != second.ID || next.Status != closings.CorrectionProposed ||
+		next.DecidedAt != nil || len(next.Effects) != 0 ||
+		next.Payload.CommissionAmount == nil || *next.Payload.CommissionAmount != "20.00" {
+		t.Fatalf("the pending correction must follow the accepted one: %+v", next)
+	}
+	// The accepted one is what the numbers follow; the pending commission is still not applied.
+	if document.CountedCash == nil || *document.CountedCash != "300.00" ||
+		document.CommissionAmount != "12.50" {
+		t.Fatalf("only the accepted correction moves a published number: %+v", document)
+	}
+}
+
 // TestRejectedCorrectionChangesNothing pins the other half of S16: a rejection states its reason,
 // applies nothing, keeps the settlement closed and the branch operating, and leaves room for the
 // next round -- the warehouse corrects again and the branch accepts what it can.

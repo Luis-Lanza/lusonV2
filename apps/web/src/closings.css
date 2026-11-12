@@ -171,3 +171,20 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
 @media (max-width: 1279px) {
   .closing-decision .closing-layout { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Corrections of a closed settlement (S16): the corrected numbers are never shown as signed ones,
+   so every corrected figure carries the signed value, the corrected one and the delta that produced
+   it, in the same table language the count sheet uses. */
+.closing-corrections { margin-top: 4px; }
+.closing-correction { display: grid; gap: 0; }
+.closing-correction .closing-round-head { padding: 12px 18px 0; }
+.closing-correction .closing-round-motive { margin: 10px 18px 0; }
+.closing-correction > .closing-group > small { display: block; margin-top: 6px; color: var(--muted); font-size: 11px; }
+.closing-correction-value td.corrected, .closing-table td.corrected { color: #242124; font-weight: 600; }
+.closing-correction-value td .closing-pending { margin-left: 6px; background: #FFF0F0; border-color: #FFDAD6; color: #991515; }
+.closing-corrected, .closing-correction-preview { margin-top: 4px; }
+.closing-correction-form .closing-field input { text-align: right; }
+.closing-correction-form .closing-table { margin-top: 12px; }
+.closing-correction-submit { padding: 12px 18px 16px; border-top: 1px solid var(--border); }
+.closing-correction-submit small { flex-basis: 100%; color: var(--muted); font-size: 12px; line-height: 16px; }
+.closing-correction .closing-decision-actions { padding: 12px 18px 0; }

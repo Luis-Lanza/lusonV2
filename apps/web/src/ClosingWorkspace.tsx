@@ -2,14 +2,21 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { validSearch, type Location } from './model';
 import {
-  canonicalCountPayload, canonicalDrawerPayload, closingBlockReason, closingBlockers,
+  canonicalCorrection, canonicalCountPayload, canonicalDrawerPayload, closingAccountLabel,
+  closingAcceptedCorrections, closingBlockReason, closingBlockers,
+  closingCorrectedAmounts, closingCorrectedCounts, closingCorrectionDeltaText,
+  closingCorrectionKindLabels, closingCorrectionPreview, closingCorrectionQuantityDeltaText,
+  closingCorrectionReasonMessage, closingCorrectionStatusLabels, closingCorrectionValueMessage,
   closingDifferenceName, closingIsEditable, closingIsLive, closingLineDifference, closingLineLabel,
-  closingCountBatches, closingMoneyText, closingObservationMessage, closingPendingTag, closingPeriod,
+  closingCountBatches, closingMoneyText, closingMomentText, closingObservationMessage,
+  closingPendingCorrection, closingPendingTag, closingPeriod,
   closingPeriodLabel,
   closingProgress, closingQuantityMessage, closingQuantityText, closingRateText, closingRail,
-  closingSearchMessage, closingSignedText, closingStatusLabels, drawerDraftFrom, drawerView,
+  closingSearchMessage, closingSignedText, closingStatusLabels, correctionDraftFrom, drawerDraftFrom,
+  drawerView,
   emptyDrawerDraft, filterCountLines,
-  type Closing, type ClosingCountLine, type ClosingRail, type DrawerDraft,
+  type Closing, type ClosingCountLine, type ClosingRail, type CorrectionDraft, type CorrectionBody,
+  type DrawerDraft,
 } from './closingModel';
 import {
   ClosingAPIError, closingErrorMessages, closingHistoryUnavailable, closingRefusalMessage,
@@ -77,9 +84,11 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   const [phase, setPhase] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [historyTotal, setHistoryTotal] = useState(0);
   const [resumed, setResumed] = useState<number | null>(null);
+  const [closedView, setClosedView] = useState<number | null>(null);
   const [closing, setClosing] = useState<Closing | null>(null);
   const [counted, setCounted] = useState<Record<number, string>>({});
   const [draft, setDraft] = useState<DrawerDraft>(emptyDrawerDraft);
+  const [correction, setCorrection] = useState<CorrectionDraft | null>(null);
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
@@ -98,28 +107,34 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   // never has to guess whether the count sheet is the one on screen.
   useEffect(() => {
     if (branch === 0) {
-      setPhase('idle'); setClosing(null); setHistoryTotal(0); setResumed(null);
-      setCounted({}); setDraft(emptyDrawerDraft); setProblem(''); setStatus('');
+      setPhase('idle'); setClosing(null); setHistoryTotal(0); setResumed(null); setClosedView(null);
+      setCounted({}); setDraft(emptyDrawerDraft); setCorrection(null); setProblem(''); setStatus('');
       return;
     }
     const controller = new AbortController();
     const alive = () => mounted.current && !controller.signal.aborted && !lifetime.current.signal.aborted;
-    setPhase('loading'); setProblem(''); setStatus(''); setClosing(null); setResumed(null);
+    setPhase('loading'); setProblem(''); setStatus('');
+    setClosing(null); setResumed(null); setClosedView(null); setCorrection(null);
     void (async () => {
       try {
         const page = await api.history(branch, 1, 25, controller.signal);
         if (!alive()) return;
         setHistoryTotal(page.total_closings);
         const live = page.closings.find(row => closingIsLive(row.status));
-        if (!live) { setPhase('ready'); return; }
-        const document = await api.detail(live.id, controller.signal);
+        // The live settlement is the work of the warehouse; without one, the last closure is what it
+        // reads, because that is the document a correction is proposed against (S16).
+        const target = live ?? page.closings[0];
+        if (target === undefined) { setPhase('ready'); return; }
+        const document = await api.detail(target.id, controller.signal);
         if (!alive()) return;
-        setClosing(document);
-        setCounted(countDraftFrom(document));
-        setDraft(drawerDraftFrom(document));
-        setResumed(document.id);
+        apply(document);
+        if (live) {
+          setResumed(document.id);
+          setStatus(`La sucursal ya tenía la rendición #${document.id} abierta: la retomamos con su conteo y su caja.`);
+        } else {
+          setClosedView(document.id);
+        }
         setPhase('ready');
-        setStatus(`La sucursal ya tenía la rendición #${document.id} abierta: la retomamos con su conteo y su caja.`);
       } catch (failure) {
         if (!alive()) return;
         const error = failureOf(failure);
@@ -134,6 +149,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
     setClosing(document);
     setCounted(countDraftFrom(document));
     setDraft(drawerDraftFrom(document));
+    setCorrection(document.status === 'closed' ? correctionDraftFrom(document) : null);
     setPhase('ready');
   }
 
@@ -145,6 +161,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
       if (!mounted.current || lifetime.current.signal.aborted) return;
       apply(document);
       setResumed(null);
+      setClosedView(null);
       setHistoryTotal(total => total + 1);
       setStatus(`Rendición #${document.id} abierta: la sucursal queda congelada hasta que la acepte.`);
     } catch (failure) {
@@ -229,6 +246,40 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
     }
   }
 
+  /**
+   * Proposes one correction of the closed settlement: the reason and the values that changed, and
+   * nothing else. The screen reads the settlement again after it, so what it publishes is the
+   * correction the server holds and not a copy the warehouse typed (S16).
+   */
+  async function proposeCorrection() {
+    const current = closing;
+    const typed = correction;
+    if (!current || typed === null || busy || pending.current) return;
+    let body: CorrectionBody;
+    try { body = canonicalCorrection(current, typed); }
+    catch (failure) {
+      setStatus(''); setProblem(failure instanceof Error && failure.message
+        ? failure.message : closingCorrectionValueMessage);
+      return;
+    }
+    pending.current = true; setBusy(true); setStatus('Proponiendo la corrección a la sucursal…'); setProblem('');
+    try {
+      await api.correction(current.id, body, csrf, lifetime.current.signal);
+      if (!mounted.current || lifetime.current.signal.aborted) return;
+      const document = await api.detail(current.id, lifetime.current.signal);
+      if (!mounted.current || lifetime.current.signal.aborted) return;
+      apply(document);
+      setStatus('Corrección propuesta a la sucursal: espera su aceptación o su rechazo con motivo.');
+    } catch (failure) {
+      if (!mounted.current || lifetime.current.signal.aborted) return;
+      setStatus('');
+      setProblem(refusalMessage(failureOf(failure)));
+    } finally {
+      pending.current = false;
+      if (mounted.current) setBusy(false);
+    }
+  }
+
   function setCountedValue(line: ClosingCountLine, value: string) {
     if (!/^\d{0,7}$/.test(value)) return;
     if (value === '' && line.counted_quantity !== null) {
@@ -269,6 +320,24 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   // what the warehouse takes move with the draft before anything is saved.
   const liveDifference = view === null ? null : view.difference_cents;
   const liveTaken = view === null ? null : view.taken_cents;
+  // The corrections of a closed settlement: what the accepted ones already changed and, when there
+  // is one, the correction that still waits for the branch. A live settlement has neither, and no
+  // correction figure is ever shown for one (S16).
+  const acceptedCorrections = closing === null ? [] : closingAcceptedCorrections(closing);
+  const pendingCorrection = closing === null ? null : closingPendingCorrection(closing);
+  const correctedAmounts = closing === null ? [] : closingCorrectedAmounts(closing);
+  const correctedCounts = closing === null ? [] : closingCorrectedCounts(closing);
+  const preview = closing === null ? null : closingCorrectionPreview(closing);
+  const correctionIssue: { body: CorrectionBody | null; problem: string } = (() => {
+    if (closing === null || correction === null) {
+      return { body: null, problem: closingCorrectionValueMessage };
+    }
+    try { return { body: canonicalCorrection(closing, correction), problem: '' }; }
+    catch (failure) {
+      return { body: null, problem: failure instanceof Error && failure.message
+        ? failure.message : closingCorrectionReasonMessage };
+    }
+  })();
 
   return <section className="closing-workspace" aria-labelledby="closing-title">
     <header className="closing-heading">
@@ -297,9 +366,14 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
       {resumed !== null && <p role="status" className="closing-note">
         La sucursal ya tenía la rendición #{resumed} abierta: la retomamos.
       </p>}
-      {branch !== 0 && closing === null && phase === 'ready' && <>
-        <p className="closing-note">La sucursal no tiene una rendición abierta.
-          {historyTotal > 0 && ` ${historyTotal} ${historyTotal === 1 ? 'rendición anterior' : 'rendiciones anteriores'}.`}</p>
+      {branch !== 0 && phase === 'ready' && (closing === null || closing.status === 'closed') && <>
+        <p className="closing-note">
+          {closing === null
+            ? <>La sucursal no tiene una rendición abierta.{historyTotal > 0
+              && ` ${historyTotal} ${historyTotal === 1 ? 'rendición anterior' : 'rendiciones anteriores'}.`}</>
+            : <>Mostrando la rendición #{closedView ?? closing.id} cerrada: no se reabre, se corrige con
+              aprobación de la sucursal.</>}
+        </p>
         <button type="button" className="primary" disabled={busy} onClick={() => void openSettlement()}>
           Abrir rendición de cuentas
         </button>
@@ -466,6 +540,180 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
           </section>
         </aside>
       </div>
+
+      {closing.status === 'closed' && <section className="closing-panel closing-corrections"
+        aria-labelledby="closing-corrections-title">
+        <header className="closing-panel-head">
+          <h2 id="closing-corrections-title">Correcciones del cierre</h2>
+          {pendingCorrection !== null
+            ? <span className="closing-tag warn">{closingCorrectionStatusLabels.proposed}</span>
+            : acceptedCorrections.length > 0
+              ? <span className="closing-tag ok">
+                {acceptedCorrections.length} {acceptedCorrections.length === 1 ? 'aceptada' : 'aceptadas'}
+              </span>
+              : <span className="closing-tag">Sin correcciones</span>}
+          <small className="closing-muted">Un cierre no se reabre: se corrige con aprobación de la sucursal.</small>
+        </header>
+
+        {acceptedCorrections.length === 0 && pendingCorrection === null
+          && <p className="closing-help">El cierre no tiene correcciones: los números de arriba son los que
+            la sucursal firmó y ninguno está corregido.</p>}
+
+        {(correctedAmounts.length > 0 || correctedCounts.length > 0) && <div className="closing-table-wrap">
+          <table className="closing-table closing-corrected">
+            <caption className="sr-only">Números corregidos del cierre</caption>
+            <thead>
+              <tr>
+                <th scope="col">Concepto</th>
+                <th scope="col" className="num">Firmado</th>
+                <th scope="col" className="num">Corregido</th>
+                <th scope="col" className="num">Diferencia</th>
+              </tr>
+            </thead>
+            <tbody>
+              {correctedAmounts.map(amount => <tr key={amount.kind} className="closing-correction-value"
+                data-kind={amount.kind}>
+                <td>{amount.label}</td>
+                <td className="num">{closingMoneyText(amount.signed_cents)}</td>
+                <td className="num corrected">{closingMoneyText(amount.corrected_cents)}
+                  <span className="closing-pending">Corregido</span></td>
+                <td className={`num ${amount.delta_cents < 0n ? 'neg' : 'pos'}`}>
+                  {closingCorrectionDeltaText(amount.delta_cents)}</td>
+              </tr>)}
+              {correctedCounts.map(count => <tr key={`variant-${count.variant_id}`}
+                className="closing-correction-value" data-variant-id={count.variant_id}>
+                <td>{count.label}</td>
+                <td className="num">{count.signed_quantity}</td>
+                <td className="num corrected">{count.corrected_quantity}
+                  <span className="closing-pending">Corregido</span></td>
+                <td className={`num ${count.delta < 0 ? 'neg' : 'pos'}`}>
+                  {closingCorrectionQuantityDeltaText(count.delta)}</td>
+              </tr>)}
+            </tbody>
+          </table>
+        </div>}
+
+        {acceptedCorrections.length > 0 && <div className="closing-group">
+          <h2>Correcciones aceptadas</h2>
+          <ol className="closing-rounds">{acceptedCorrections.map(entry => <li key={entry.id}>
+            <div className="closing-round-head">
+              <strong>Corrección #{entry.id}</strong>
+              <span className="closing-tag ok">{closingCorrectionStatusLabels.accepted}</span>
+            </div>
+            <p className="closing-round-motive">{entry.reason}</p>
+            <small>Propuesta por {closingAccountLabel(entry.proposed_by_account_id)} el {closingMomentText(entry.proposed_at)}</small>
+            {entry.decided_by_account_id !== null && entry.decided_at !== null
+              && <small>Aceptada por {closingAccountLabel(entry.decided_by_account_id)} el {closingMomentText(entry.decided_at)}</small>}
+          </li>)}</ol>
+        </div>}
+
+        {pendingCorrection !== null && preview !== null && <div className="closing-group">
+          <div className="closing-round-head">
+            <strong>Corrección #{pendingCorrection.id}</strong>
+            <span className="closing-muted">Todavía no aplicada</span>
+          </div>
+          <p className="closing-round-motive">{pendingCorrection.reason}</p>
+          <small>Propuesta por {closingAccountLabel(pendingCorrection.proposed_by_account_id)} el
+            {' '}{closingMomentText(pendingCorrection.proposed_at)}</small>
+          <div className="closing-table-wrap">
+            <table className="closing-table closing-correction-preview">
+              <caption className="sr-only">Qué cambiaría la corrección pendiente</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Concepto</th>
+                  <th scope="col" className="num">Ahora</th>
+                  <th scope="col" className="num">Quedaría</th>
+                  <th scope="col" className="num">Diferencia</th>
+                </tr>
+              </thead>
+              <tbody>
+                {preview.amounts.map(step => <tr key={step.kind} data-kind={step.kind}>
+                  <td>{step.label}</td>
+                  <td className="num">{closingMoneyText(step.current_cents)}</td>
+                  <td className="num">{closingMoneyText(step.proposed_cents)}</td>
+                  <td className={`num ${step.delta_cents < 0n ? 'neg' : 'pos'}`}>
+                    {closingCorrectionDeltaText(step.delta_cents)}</td>
+                </tr>)}
+                {preview.counts.map(step => <tr key={`variant-${step.variant_id}`} data-variant-id={step.variant_id}>
+                  <td>{step.label}</td>
+                  <td className="num">{step.current_quantity}</td>
+                  <td className="num">{step.proposed_quantity}</td>
+                  <td className={`num ${step.delta < 0 ? 'neg' : 'pos'}`}>
+                    {closingCorrectionQuantityDeltaText(step.delta)}</td>
+                </tr>)}
+              </tbody>
+            </table>
+          </div>
+          <p className="closing-help">Nada de esto está aplicado: se aplica sólo si la sucursal acepta.
+            Mientras espera su decisión no se puede proponer otra corrección.</p>
+        </div>}
+
+        {pendingCorrection === null && correction !== null && <div className="closing-group closing-correction-form">
+          <h2>Proponer una corrección</h2>
+          <p className="closing-help">Corregí lo que esté mal, con su motivo. La sucursal la acepta o la
+            rechaza: el cierre no se reabre y los números publicados son los firmados más lo aceptado.</p>
+          <div className="closing-field">
+            <label htmlFor="closing-correction-reason">Motivo de la corrección</label>
+            <textarea id="closing-correction-reason" rows={3} value={correction.reason}
+              onChange={event => setCorrection(current => current === null ? current
+                : { ...current, reason: event.target.value })} />
+          </div>
+          <div className="closing-field">
+            <label htmlFor="closing-correction-cash">Caja contada corregida (Bs)</label>
+            <input id="closing-correction-cash" inputMode="decimal" value={correction.counted_cash}
+              onChange={event => setCorrection(current => current === null ? current
+                : { ...current, counted_cash: event.target.value })} />
+          </div>
+          <div className="closing-field">
+            <label htmlFor="closing-correction-commission">Comisión corregida (Bs)</label>
+            <input id="closing-correction-commission" inputMode="decimal" value={correction.commission}
+              onChange={event => setCorrection(current => current === null ? current
+                : { ...current, commission: event.target.value })} />
+          </div>
+          <div className="closing-field">
+            <label htmlFor="closing-correction-fund">Fondo corregido (Bs)</label>
+            <input id="closing-correction-fund" inputMode="decimal" value={correction.fund}
+              onChange={event => setCorrection(current => current === null ? current
+                : { ...current, fund: event.target.value })} />
+          </div>
+          <div className="closing-table-wrap">
+            <table className="closing-table">
+              <caption className="sr-only">Conteo corregido de {closing.branch_name}</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Batería</th>
+                  <th scope="col" className="num">Sistema</th>
+                  <th scope="col" className="num">Firmado</th>
+                  <th scope="col" className="num">Corregido</th>
+                </tr>
+              </thead>
+              <tbody>{closing.count_lines.map(line => <tr key={line.variant_id}>
+                <td>{closingLineLabel(line)}</td>
+                <td className="num">{line.expected_quantity}</td>
+                <td className="num">{line.counted_quantity ?? '—'}</td>
+                <td className="num">
+                  <input className="count" inputMode="numeric"
+                    aria-label={`Contado corregido de ${closingLineLabel(line)}`}
+                    value={correction.counted[line.variant_id] ?? ''}
+                    onChange={event => {
+                      const value = event.target.value;
+                      if (!/^\d{0,7}$/.test(value)) return;
+                      setCorrection(current => current === null ? current
+                        : { ...current, counted: { ...current.counted, [line.variant_id]: value } });
+                    }} />
+                </td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+          <div className="closing-bar-action closing-correction-submit">
+            <button type="button" className="primary" disabled={busy || correctionIssue.body === null}
+              aria-describedby="closing-correction-issue" onClick={() => void proposeCorrection()}>
+              Proponer corrección
+            </button>
+            <small id="closing-correction-issue">{correctionIssue.problem}</small>
+          </div>
+        </div>}
+      </section>}
 
       <div className="closing-bar" role="region" aria-label="Acciones de la rendición">
         <div className="closing-bar-state">

@@ -9,10 +9,12 @@
  */
 import { LosslessNumber, parse as parseJSON } from 'lossless-json';
 import {
-  closingCents, closingDecisionPayload, closingMaxCountLines, closingMaxCounted, closingMaxID,
-  closingMaxPage, closingPageSizes, closingRail, closingSignedCents, closingStatuses,
+  canonicalCorrectionBody, closingCents, closingDecisionPayload, closingMaxCountLines, closingMaxCounted,
+  closingMaxID, closingMaxPage, closingPageSizes, closingRail, closingSignedCents, closingStatuses,
   closingFirstBranch, closingMaxBranch,
-  type Closing, type ClosingCountLine, type ClosingDecision, type ClosingDecisionPayload,
+  type Closing, type ClosingCorrection, type ClosingCorrectionEffect, type ClosingCorrectionKind,
+  type ClosingCorrectionPayload, type ClosingCorrectionQuantity, type ClosingCorrectionStatus,
+  type ClosingCountLine, type ClosingDecision, type ClosingDecisionPayload, type CorrectionBody,
   type ClosingOffer, type ClosingOfferLine,
   type ClosingPage, type ClosingPolarity, type ClosingRail, type ClosingRound, type ClosingStatus,
   type CountPayloadLine,
@@ -23,8 +25,10 @@ export type ClosingErrorCode =
   | 'invalid_request' | 'unauthenticated' | 'forbidden' | 'not_found' | 'method_not_allowed'
   | 'settlement_live' | 'branch_retired' | 'count_pending' | 'cash_not_stated'
   | 'fund_exceeds_drawer' | 'commission_rate_missing' | 'count_frozen' | 'state_conflict'
-  | 'closure_refused' | 'reserved_stock' | 'round_not_accepted' | 'service_unavailable'
-  | 'invalid_response' | 'network' | 'aborted';
+  | 'closure_refused' | 'reserved_stock' | 'stock_moved' | 'proposal_stale' | 'round_not_accepted'
+  | 'branch_frozen' | 'correction_not_closed' | 'correction_pending' | 'correction_decided'
+  | 'correction_payload' | 'correction_fund_started' | 'correction_journal'
+  | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
 
 /** The admitted refusal per HTTP status; nothing else may reach the UI. */
 export const closingAdmittedErrors: ReadonlyMap<number, readonly ClosingErrorCode[]> = new Map([
@@ -35,7 +39,9 @@ export const closingAdmittedErrors: ReadonlyMap<number, readonly ClosingErrorCod
   [405, ['method_not_allowed']],
   [409, ['settlement_live', 'branch_retired', 'count_pending', 'cash_not_stated',
     'fund_exceeds_drawer', 'commission_rate_missing', 'count_frozen', 'state_conflict',
-    'closure_refused', 'reserved_stock', 'round_not_accepted']],
+    'closure_refused', 'reserved_stock', 'stock_moved', 'proposal_stale', 'round_not_accepted',
+    'branch_frozen', 'correction_not_closed', 'correction_pending', 'correction_decided',
+    'correction_payload', 'correction_fund_started', 'correction_journal']],
   [503, ['service_unavailable']],
 ]);
 
@@ -56,7 +62,16 @@ export const closingErrorMessages: Record<ClosingErrorCode, string> = {
   state_conflict: 'El estado de la rendición no admite esta operación.',
   closure_refused: 'El cierre fue rechazado por su propia regla de caja.',
   reserved_stock: 'Una variante de la sucursal todavía tiene stock reservado: el cierre no se puede proponer.',
+  stock_moved: 'Una variante se movió durante la rendición: hay que volver a contar esa línea.',
+  proposal_stale: 'El conteo cambió mientras se proponía: volvé a leer la rendición y proponé de nuevo.',
   round_not_accepted: 'La última ronda de propuesta no está aceptada.',
+  branch_frozen: 'La sucursal está congelada por una rendición abierta: no puede operar hasta que se cierre.',
+  correction_not_closed: 'Sólo se corrige una rendición cerrada: una abierta se corrige con su propia propuesta.',
+  correction_pending: 'La rendición ya tiene una corrección esperando la decisión de la sucursal.',
+  correction_decided: 'La corrección ya fue decidida y no se puede decidir otra vez.',
+  correction_payload: 'La corrección no es una que este sistema aplique: revisá la variante y los montos.',
+  correction_fund_started: 'El período siguiente ya arrancó con el fondo registrado: la corrección del fondo ya no se puede aplicar.',
+  correction_journal: 'El asiento de la corrección sólo lo escribe su aceptación.',
   service_unavailable: 'El servicio no está disponible. No pudimos confirmar la operación.',
   invalid_response: 'La respuesta del servidor no es válida. No pudimos confirmar la operación.',
   network: 'No se pudo conectar con el servidor. Revisá la conexión e intentá de nuevo.',
@@ -145,6 +160,15 @@ function integer(value: unknown, min: number, max: number): number {
 function optionalInteger(value: unknown, min: number, max: number): number | null {
   if (value === null) return null;
   return integer(value, min, max);
+}
+
+/** A delta carries its sign: a correction moves a quantity in either direction (036). */
+function signedInteger(value: unknown, min: number, max: number): number {
+  const raw = numeric(value);
+  if (!/^-?(0|[1-9]\d*)$/.test(raw) || raw === '-0') return invalidResponse();
+  const exact = BigInt(raw);
+  if (exact < BigInt(min) || exact > BigInt(max)) return invalidResponse();
+  return Number(exact);
 }
 
 function timestamp(value: unknown): string {
@@ -317,6 +341,160 @@ function round(value: unknown, want: number): ClosingRound {
   });
 }
 
+const correctionKinds: readonly ClosingCorrectionKind[] =
+  ['stock', 'counted_cash', 'commission', 'fund'];
+
+/** One corrected quantity of a correction payload: the variant and what was counted. */
+function correctionQuantity(value: unknown, previous: number): ClosingCorrectionQuantity {
+  const line = fields(value, ['variant_id', 'counted_quantity']);
+  const variant_id = integer(line.variant_id, 1, closingMaxID);
+  if (variant_id <= previous) return invalidResponse();
+  return Object.freeze({ variant_id, counted_quantity: counted(line.counted_quantity) });
+}
+
+/**
+ * The payload of one correction: its four values, each **absent** when the correction does not touch
+ * it, and at least one of them stated. A value a correction does not restate is never sent as a
+ * zero, and a money value is canonical two-decimal text (S16, S20).
+ */
+function correctionPayload(value: unknown): ClosingCorrectionPayload {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value instanceof LosslessNumber) {
+    return invalidResponse();
+  }
+  const record = value as Record<string, unknown>;
+  const known = ['counted_quantities', 'counted_cash', 'commission_amount', 'closing_cash'];
+  if (Object.keys(record).some(key => !known.includes(key))) return invalidResponse();
+  let quantities: readonly ClosingCorrectionQuantity[] = Object.freeze([]);
+  if (Object.hasOwn(record, 'counted_quantities')) {
+    if (!Array.isArray(record.counted_quantities) || record.counted_quantities.length < 1
+      || record.counted_quantities.length > closingMaxCountLines) {
+      return invalidResponse();
+    }
+    let previous = 0;
+    quantities = Object.freeze(record.counted_quantities.map(entry => {
+      const line = correctionQuantity(entry, previous);
+      previous = line.variant_id;
+      return line;
+    }));
+  }
+  const optional = (key: string): bigint | null =>
+    Object.hasOwn(record, key) ? amount(record[key]) : null;
+  const counted_cash = optional('counted_cash');
+  const commission_amount = optional('commission_amount');
+  const closing_cash = optional('closing_cash');
+  // A correction states at least one of its four values: a decision about nothing is not a
+  // correction, and the database refuses the same empty payload (LC021).
+  if (quantities.length === 0 && counted_cash === null && commission_amount === null
+    && closing_cash === null) {
+    return invalidResponse();
+  }
+  return Object.freeze({ counted_quantities: quantities, counted_cash_cents: counted_cash,
+    commission_amount_cents: commission_amount, closing_cash_cents: closing_cash });
+}
+
+/** One delta an accepted correction applied, in the unit its kind owns and never in the other. */
+function correctionEffect(value: unknown): ClosingCorrectionEffect {
+  const record = fields(value, ['kind', 'variant_id', 'quantity_delta', 'amount_delta']);
+  const kind = record.kind;
+  if (typeof kind !== 'string' || !correctionKinds.includes(kind as ClosingCorrectionKind)) {
+    return invalidResponse();
+  }
+  const variant_id = optionalInteger(record.variant_id, 1, closingMaxID);
+  const quantity_delta = record.quantity_delta === null ? null
+    : signedInteger(record.quantity_delta, -closingMaxCounted, closingMaxCounted);
+  const amount_delta_cents = record.amount_delta === null ? null : signedAmount(record.amount_delta);
+  if (kind === 'stock') {
+    if (variant_id === null || quantity_delta === null || quantity_delta === 0
+      || amount_delta_cents !== null) {
+      return invalidResponse();
+    }
+  } else if (variant_id !== null || quantity_delta !== null || amount_delta_cents === null
+    || amount_delta_cents === 0n) {
+    return invalidResponse();
+  }
+  return Object.freeze({ kind: kind as ClosingCorrectionKind, variant_id, quantity_delta,
+    amount_delta_cents });
+}
+
+/**
+ * One correction of a closed settlement: what it corrects, why, who proposed it and -- once the
+ * branch accepted it -- the deltas it applied. A pending one states no decision and no delta, an
+ * accepted one states both, and a rejected one is never part of a document (S16).
+ */
+function correctionRecord(value: unknown, closing_id: number | null, previous: number,
+  answer: boolean): ClosingCorrection {
+  const record = fields(value, ['id', 'closing_id', 'status', 'reason', 'payload',
+    'proposed_by_account_id', 'proposed_at', 'decided_by_account_id', 'decided_at',
+    'decision_reason', 'effects']);
+  const id = integer(record.id, 1, Number.MAX_SAFE_INTEGER);
+  if (id <= previous) return invalidResponse();
+  const settlement = integer(record.closing_id, 1, Number.MAX_SAFE_INTEGER);
+  if (closing_id !== null && settlement !== closing_id) return invalidResponse();
+  const state = record.status;
+  if (state !== 'proposed' && state !== 'accepted' && state !== 'rejected') return invalidResponse();
+  // The document publishes the accepted corrections and the one that waits; a rejection applied
+  // nothing and is only published as the answer of the decision route (S16).
+  if (state === 'rejected' && !answer) return invalidResponse();
+  const decided_by_account_id = optionalInteger(record.decided_by_account_id, 1, Number.MAX_SAFE_INTEGER);
+  const decided_at = optionalTimestamp(record.decided_at);
+  const decision_reason = freeText(record.decision_reason, 1000);
+  if (!Array.isArray(record.effects) || record.effects.length > closingMaxCountLines) {
+    return invalidResponse();
+  }
+  const effects = Object.freeze(record.effects.map(entry => correctionEffect(entry)));
+  if (state === 'proposed') {
+    // A decision that has not been taken has no author, no instant, no motive and no delta.
+    if (decided_by_account_id !== null || decided_at !== null || decision_reason !== ''
+      || effects.length !== 0) {
+      return invalidResponse();
+    }
+  } else if (decided_by_account_id === null || decided_at === null) {
+    return invalidResponse();
+  } else if (state === 'accepted' && decision_reason !== '') {
+    return invalidResponse();
+  } else if (state === 'rejected' && decision_reason.trim() === '') {
+    return invalidResponse();
+  }
+  return Object.freeze({
+    id,
+    closing_id: settlement,
+    status: state as ClosingCorrectionStatus,
+    reason: text(record.reason),
+    payload: correctionPayload(record.payload),
+    proposed_by_account_id: integer(record.proposed_by_account_id, 1, Number.MAX_SAFE_INTEGER),
+    proposed_at: timestamp(record.proposed_at),
+    decided_by_account_id,
+    decided_at,
+    decision_reason,
+    effects,
+  });
+}
+
+/** The corrections of one settlement, oldest first, with the pending one always last (034, S16). */
+function correctionsOf(value: unknown, closing_id: number,
+  state: ClosingStatus): readonly ClosingCorrection[] {
+  if (!Array.isArray(value) || value.length > closingMaxCountLines) return invalidResponse();
+  // A live settlement is corrected by its own rounds, and a rejected correction applied nothing, so
+  // neither of them is ever part of a document.
+  if (state !== 'closed' && value.length > 0) return invalidResponse();
+  const corrections: ClosingCorrection[] = [];
+  let previous = 0;
+  let pending = false;
+  for (const entry of value) {
+    const correction = correctionRecord(entry, closing_id, previous, false);
+    if (correction.status === 'proposed') {
+      if (pending) return invalidResponse();
+      pending = true;
+    } else if (pending) {
+      // A decided correction is final, so no accepted one follows a pending one.
+      return invalidResponse();
+    }
+    previous = correction.id;
+    corrections.push(correction);
+  }
+  return Object.freeze(corrections);
+}
+
 function status(value: unknown): ClosingStatus {
   if (typeof value !== 'string' || !closingStatuses.includes(value as ClosingStatus)) {
     return invalidResponse();
@@ -339,8 +517,12 @@ function readClosing(value: unknown): Closing {
   // The branch's own expenses of the window. They are still not rendered, but the document is
   // only accepted when the field is the array the contract publishes, so a shape change cannot
   // reach the rail unnoticed.
-  if (!Array.isArray(record.expenses) || !Array.isArray(record.corrections)) return invalidResponse();
+  if (!Array.isArray(record.expenses)) return invalidResponse();
+  const id = integer(record.id, 1, Number.MAX_SAFE_INTEGER);
   const state = status(record.status);
+  // The corrections of the closed settlement, the pending one included: a settlement whose
+  // corrections are not the shape this contract publishes is never described.
+  const corrections = correctionsOf(record.corrections, id, state);
   const period_start = timestamp(record.period_start);
   const cut_at = timestamp(record.cut_at);
   if (Date.parse(cut_at) < Date.parse(period_start)) return invalidResponse();
@@ -362,7 +544,7 @@ function readClosing(value: unknown): Closing {
   if (!Array.isArray(record.rounds) || record.rounds.length > 1_000_000) return invalidResponse();
   const rounds = record.rounds.map((entry, index) => round(entry, index + 1));
   const closing: Closing = Object.freeze({
-    id: integer(record.id, 1, Number.MAX_SAFE_INTEGER),
+    id,
     branch_location_id: integer(record.branch_location_id, closingFirstBranch, closingMaxBranch),
     branch_name: text(record.branch_name),
     status: state,
@@ -385,6 +567,7 @@ function readClosing(value: unknown): Closing {
     opened_by_account_id: integer(record.opened_by_account_id, 1, Number.MAX_SAFE_INTEGER),
     count_lines: Object.freeze(count_lines),
     rounds: Object.freeze(rounds),
+    corrections,
   });
   const rail: ClosingRail = closingRail(closing);
   if (amount(record.expected_cash) !== rail.expected_cents) return invalidResponse();
@@ -401,6 +584,16 @@ function readClosing(value: unknown): Closing {
 /** Parses one settlement document, from the wire or from a row of a page. */
 export function parseClosing(raw: string): Closing {
   return readClosing(decode(raw));
+}
+
+/**
+ * Parses one correction on its own, which is what the two correction routes answer: the pending one
+ * when the warehouse proposes it and the decided one when the branch answers it. The settlement it
+ * belongs to is the one the correction states, and the correction is validated exactly like the one
+ * inside the document, so a correction read here and the same correction read there cannot disagree.
+ */
+export function parseClosingCorrection(raw: string): ClosingCorrection {
+  return correctionRecord(decode(raw), null, 0, true);
 }
 
 /**
@@ -450,6 +643,8 @@ export function parseClosingRefusal(raw: string, status: number): ClosingRefusal
     fund_exceeds_drawer: ['error', 'excess'],
     settlement_live: ['error', 'branch_location_id'],
     branch_retired: ['error', 'branch_location_id'],
+    // A correction of a live settlement names the document the operator has to look at.
+    correction_not_closed: ['error', 'closing_id'],
   };
   // The opening conflict names the document that holds the branch as well as the branch itself.
   const keys = Object.keys(record);
@@ -458,7 +653,7 @@ export function parseClosingRefusal(raw: string, status: number): ClosingRefusal
   if (keys.length !== expected.length || expected.some(key => !Object.hasOwn(record, key))) {
     return invalidResponse();
   }
-  const closing_id = code === 'settlement_live' && expected.length === 3
+  const closing_id = expected.includes('closing_id')
     ? integer(record.closing_id, 1, Number.MAX_SAFE_INTEGER) : null;
   const branch_location_id = code === 'settlement_live' || code === 'branch_retired'
     ? integer(record.branch_location_id, closingFirstBranch, closingMaxBranch) : null;
@@ -524,6 +719,16 @@ export function closingProposePath(id: number): string {
 
 export function closingDecisionPath(id: number): string {
   return `/api/closings/${closingID(id)}/decision`;
+}
+
+/** The corrections of one closed settlement: the warehouse appends one to it. */
+export function closingCorrectionPath(id: number): string {
+  return `/api/closings/${closingID(id)}/corrections`;
+}
+
+/** The branch's answer to one correction, named by the correction's own id. */
+export function closingCorrectionDecisionPath(correction: number): string {
+  return `/api/closings/corrections/${closingID(correction)}/decision`;
 }
 
 // ---------------------------------------------------------------------------------
@@ -700,6 +905,54 @@ export function createClosingAPI(fetch: typeof globalThis.fetch = globalThis.fet
       const closing = await send('POST', path, 200, parseClosing, body, csrf, signal);
       if (closing.id !== wanted) throw new ClosingAPIError('invalid_response', 200);
       return closing;
+    },
+
+    /**
+     * The warehouse proposes one correction of a closed settlement: a mandatory reason and at least
+     * one of the four values, each in the shape that value is. The body is canonicalized by the
+     * model before it leaves the screen, and here again, so a correction that states nothing never
+     * reaches the server (S16).
+     */
+    async correction(id: number, body: CorrectionBody, csrf: string,
+      signal?: AbortSignal): Promise<ClosingCorrection> {
+      let path: string;
+      let wanted: number;
+      let sent: string;
+      try {
+        token(csrf);
+        path = closingCorrectionPath(id);
+        wanted = closingID(id);
+        sent = JSON.stringify(canonicalCorrectionBody(body));
+      } catch { throw new ClosingAPIError('invalid_request', null); }
+      const correction = await send('POST', path, 201, parseClosingCorrection, sent, csrf, signal);
+      if (correction.closing_id !== wanted) throw new ClosingAPIError('invalid_response', 201);
+      return correction;
+    },
+
+    /** The branch's answer to the correction it was shown: the same gate as a round's decision. */
+    async correctionDecision(correction: number, payload: ClosingDecisionPayload, csrf: string,
+      signal?: AbortSignal): Promise<ClosingCorrection> {
+      let body: string;
+      let path: string;
+      let wanted: number;
+      try {
+        token(csrf);
+        path = closingCorrectionDecisionPath(correction);
+        wanted = closingID(correction);
+        const keys = Object.keys(payload);
+        const canonical = closingDecisionPayload(payload.decision, payload.reason ?? '');
+        if (canonical.decision === 'accepted') {
+          if (keys.length !== 1) throw new Error('decisión inválida');
+          body = JSON.stringify({ decision: 'accepted' });
+        } else {
+          if (keys.length !== 2 || canonical.reason === undefined) throw new Error('decisión inválida');
+          body = JSON.stringify({ decision: 'rejected', reason: canonical.reason });
+        }
+      } catch { throw new ClosingAPIError('invalid_request', null); }
+      const decided = await send('POST', path, 200, parseClosingCorrection, body, csrf, signal);
+      if (decided.id !== wanted) throw new ClosingAPIError('invalid_response', 200);
+      if (decided.status === 'proposed') throw new ClosingAPIError('invalid_response', 200);
+      return decided;
     },
   };
 }

@@ -143,6 +143,13 @@ export interface Closing {
   readonly opened_by_account_id: number;
   readonly count_lines: readonly ClosingCountLine[];
   readonly rounds: readonly ClosingRound[];
+  /**
+   * The corrections of this settlement, oldest first: the accepted ones with the deltas they applied
+   * and, when there is one, the correction that still waits for the branch's decision. A live
+   * settlement carries none — it is corrected by its own rounds — and a rejected one applied nothing,
+   * so it is never published (S16).
+   */
+  readonly corrections: readonly ClosingCorrection[];
 }
 
 /** One newest-first page of one branch's settlements: each row is the same document. */
@@ -759,4 +766,440 @@ export function closingRoundStateLabel(decision: ClosingDecision): string {
   if (decision === 'accepted') return 'Aceptada';
   if (decision === 'rejected') return 'Rechazada';
   return 'Por decidir';
+}
+
+// ---------------------------------------------------------------------------------
+// Corrections of a closed settlement (S16)
+// ---------------------------------------------------------------------------------
+
+export type ClosingCorrectionStatus = 'proposed' | 'accepted' | 'rejected';
+
+export const closingCorrectionStatusLabels: Readonly<Record<ClosingCorrectionStatus, string>> =
+  Object.freeze({
+    proposed: 'Espera la decisión de la sucursal',
+    accepted: 'Aceptada',
+    rejected: 'Rechazada',
+  });
+
+/** The four facts one correction can restate: the sheet, the drawer, the commission and the fund. */
+export type ClosingCorrectionKind = 'stock' | 'counted_cash' | 'commission' | 'fund';
+
+export const closingCorrectionKindLabels: Readonly<Record<ClosingCorrectionKind, string>> =
+  Object.freeze({
+    stock: 'Conteo',
+    counted_cash: 'Caja contada',
+    commission: 'Comisión',
+    fund: 'Fondo que queda',
+  });
+
+/** One corrected quantity: the variant and the number the warehouse says it counted. */
+export interface ClosingCorrectionQuantity {
+  readonly variant_id: number;
+  readonly counted_quantity: number;
+}
+
+/** The four values a correction can state; a value it does not touch stays absent (S16). */
+export interface ClosingCorrectionPayload {
+  readonly counted_quantities: readonly ClosingCorrectionQuantity[];
+  readonly counted_cash_cents: bigint | null;
+  readonly commission_amount_cents: bigint | null;
+  readonly closing_cash_cents: bigint | null;
+}
+
+/** One delta an accepted correction applied. Exactly one unit is stated, by the kind (036, 040). */
+export interface ClosingCorrectionEffect {
+  readonly kind: ClosingCorrectionKind;
+  readonly variant_id: number | null;
+  readonly quantity_delta: number | null;
+  readonly amount_delta_cents: bigint | null;
+}
+
+/** One correction of a closed settlement: what it corrects, why, and who answered it (S16). */
+export interface ClosingCorrection {
+  readonly id: number;
+  readonly closing_id: number;
+  readonly status: ClosingCorrectionStatus;
+  readonly reason: string;
+  readonly payload: ClosingCorrectionPayload;
+  readonly proposed_by_account_id: number;
+  readonly proposed_at: string;
+  readonly decided_by_account_id: number | null;
+  readonly decided_at: string | null;
+  readonly decision_reason: string;
+  readonly effects: readonly ClosingCorrectionEffect[];
+}
+
+/**
+ * The correction that waits for the branch, or `null` when there is none. It is the only one the
+ * branch can decide, so the screen that answers it reads it from here instead of guessing from a
+ * list: a settlement with no corrections offers no decision at all (S16).
+ */
+export function closingPendingCorrection(closing: Closing): ClosingCorrection | null {
+  return closing.corrections.find(correction => correction.status === 'proposed') ?? null;
+}
+
+/** The corrections the branch already accepted, oldest first: each one amended a number. */
+export function closingAcceptedCorrections(closing: Closing): readonly ClosingCorrection[] {
+  return closing.corrections.filter(correction => correction.status === 'accepted');
+}
+
+/** The delta the accepted corrections journalled for one money kind of the settlement. */
+function acceptedAmountDelta(closing: Closing, kind: ClosingCorrectionKind): bigint {
+  let total = 0n;
+  for (const correction of closingAcceptedCorrections(closing)) {
+    for (const effect of correction.effects) {
+      if (effect.kind === kind && effect.amount_delta_cents !== null) total += effect.amount_delta_cents;
+    }
+  }
+  return total;
+}
+
+/** The delta the accepted corrections applied to one variant of the count sheet. */
+function acceptedQuantityDeltas(closing: Closing): ReadonlyMap<number, number> {
+  const deltas = new Map<number, number>();
+  for (const correction of closingAcceptedCorrections(closing)) {
+    for (const effect of correction.effects) {
+      if (effect.kind !== 'stock' || effect.variant_id === null || effect.quantity_delta === null) continue;
+      deltas.set(effect.variant_id, (deltas.get(effect.variant_id) ?? 0) + effect.quantity_delta);
+    }
+  }
+  return deltas;
+}
+
+/**
+ * One amount of the settlement as the branch signed it and as it reads today. The row keeps the
+ * signed numbers and the journal keeps what moved, so the signed one is recovered from the published
+ * corrected one minus the deltas -- except the commission, which the document publishes as the
+ * signed amount and whose corrected figure is the signed one plus its delta (034, 036, 040). A
+ * corrected number is therefore always shown with the delta that produced it, never as signed.
+ */
+export interface ClosingCorrectedAmount {
+  readonly kind: 'counted_cash' | 'commission' | 'fund';
+  readonly label: string;
+  readonly signed_cents: bigint;
+  readonly corrected_cents: bigint;
+  readonly delta_cents: bigint;
+}
+
+/** The amounts the accepted corrections already changed, with the delta of each one. */
+export function closingCorrectedAmounts(closing: Closing): readonly ClosingCorrectedAmount[] {
+  const amounts: ClosingCorrectedAmount[] = [];
+  const countedDelta = acceptedAmountDelta(closing, 'counted_cash');
+  if (closing.counted_cash_cents !== null && countedDelta !== 0n) {
+    amounts.push(Object.freeze({ kind: 'counted_cash' as const,
+      label: closingCorrectionKindLabels.counted_cash,
+      signed_cents: closing.counted_cash_cents - countedDelta,
+      corrected_cents: closing.counted_cash_cents, delta_cents: countedDelta }));
+  }
+  const commissionDelta = acceptedAmountDelta(closing, 'commission');
+  if (commissionDelta !== 0n) {
+    amounts.push(Object.freeze({ kind: 'commission' as const,
+      label: closingCorrectionKindLabels.commission,
+      signed_cents: closing.commission_amount_cents,
+      corrected_cents: closing.commission_amount_cents + commissionDelta, delta_cents: commissionDelta }));
+  }
+  const fundDelta = acceptedAmountDelta(closing, 'fund');
+  if (closing.closing_cash_cents !== null && fundDelta !== 0n) {
+    amounts.push(Object.freeze({ kind: 'fund' as const, label: closingCorrectionKindLabels.fund,
+      signed_cents: closing.closing_cash_cents - fundDelta,
+      corrected_cents: closing.closing_cash_cents, delta_cents: fundDelta }));
+  }
+  return Object.freeze(amounts);
+}
+
+/** One count line the accepted corrections already changed. */
+export interface ClosingCorrectedCount {
+  readonly variant_id: number;
+  readonly label: string;
+  readonly signed_quantity: number;
+  readonly corrected_quantity: number;
+  readonly delta: number;
+}
+
+/** The count lines the accepted corrections already changed, in variant order. */
+export function closingCorrectedCounts(closing: Closing): readonly ClosingCorrectedCount[] {
+  const deltas = acceptedQuantityDeltas(closing);
+  const sheet = new Map(closing.count_lines.map(line => [line.variant_id, line]));
+  return Object.freeze([...deltas.keys()].sort((left, right) => left - right).map(variant_id => {
+    const line = sheet.get(variant_id);
+    const signed = line?.counted_quantity ?? 0;
+    const delta = deltas.get(variant_id) ?? 0;
+    return Object.freeze({ variant_id, label: line === undefined ? `Variante #${variant_id}` : closingLineLabel(line),
+      signed_quantity: signed, corrected_quantity: signed + delta, delta });
+  }));
+}
+
+/** The commission the settlement reads today, over the accepted deltas of its journal. */
+export function closingCorrectedCommission(closing: Closing): bigint {
+  return closing.commission_amount_cents + acceptedAmountDelta(closing, 'commission');
+}
+
+// ---------------------------------------------------------------------------------
+// What a pending correction would change
+// ---------------------------------------------------------------------------------
+
+/** One amount a pending correction would leave different, with the difference. */
+export interface ClosingCorrectionAmountStep {
+  readonly kind: 'counted_cash' | 'commission' | 'fund';
+  readonly label: string;
+  readonly current_cents: bigint;
+  readonly proposed_cents: bigint;
+  readonly delta_cents: bigint;
+}
+
+/** One count line a pending correction would leave different, with the difference. */
+export interface ClosingCorrectionCountStep {
+  readonly variant_id: number;
+  readonly label: string;
+  readonly current_quantity: number;
+  readonly proposed_quantity: number;
+  readonly delta: number;
+}
+
+/**
+ * The pending correction as the branch reads it before deciding: what it states, what it would
+ * change, and the drawer it would leave. The expected cash is untouched by a correction -- it is the
+ * inherited fund plus the cash facts of the period -- so the difference and what the warehouse takes
+ * are derived again over the corrected drawer instead of being restated (S8, S10, S16).
+ */
+export interface ClosingCorrectionPreview {
+  readonly correction: ClosingCorrection;
+  readonly amounts: readonly ClosingCorrectionAmountStep[];
+  readonly counts: readonly ClosingCorrectionCountStep[];
+  readonly expected_cents: bigint;
+  readonly counted_cents: bigint | null;
+  readonly difference_cents: bigint | null;
+  readonly contribution_cents: bigint;
+  readonly fund_cents: bigint | null;
+  readonly taken_cents: bigint | null;
+  readonly commission_cents: bigint;
+}
+
+/**
+ * The reading of the correction that waits for the branch, or `null` when nothing waits. A document
+ * whose pending correction belongs to another settlement is refused instead of described: the branch
+ * never decides a correction it cannot see whole (S16).
+ */
+export function closingCorrectionPreview(closing: Closing): ClosingCorrectionPreview | null {
+  if (closing.status !== 'closed') return null;
+  const correction = closingPendingCorrection(closing);
+  if (correction === null) return null;
+  if (correction.closing_id !== closing.id) throw new Error(closingAcceptanceMismatchMessage);
+  const expected_cents = closingRail(closing).expected_cents;
+  const currentCounts = new Map(closingCorrectedCounts(closing)
+    .map(count => [count.variant_id, count.corrected_quantity]));
+  const sheet = new Map(closing.count_lines.map(line => [line.variant_id, line]));
+  const amounts: ClosingCorrectionAmountStep[] = [];
+  const step = (kind: 'counted_cash' | 'commission' | 'fund', label: string,
+    current: bigint | null, proposed: bigint | null): bigint | null => {
+    if (proposed === null || current === null) return current;
+    amounts.push(Object.freeze({ kind, label, current_cents: current, proposed_cents: proposed,
+      delta_cents: proposed - current }));
+    return proposed;
+  };
+  const counted_cents = step('counted_cash', closingCorrectionKindLabels.counted_cash,
+    closing.counted_cash_cents, correction.payload.counted_cash_cents);
+  const commission_cents = step('commission', closingCorrectionKindLabels.commission,
+    closingCorrectedCommission(closing), correction.payload.commission_amount_cents);
+  const fund_cents = step('fund', closingCorrectionKindLabels.fund,
+    closing.closing_cash_cents, correction.payload.closing_cash_cents);
+  const counts: ClosingCorrectionCountStep[] = [];
+  for (const quantity of correction.payload.counted_quantities) {
+    const line = sheet.get(quantity.variant_id);
+    const current = currentCounts.get(quantity.variant_id) ?? line?.counted_quantity ?? null;
+    if (current === null) continue;
+    if (current === quantity.counted_quantity) continue;
+    counts.push(Object.freeze({
+      variant_id: quantity.variant_id,
+      label: line === undefined ? `Variante #${quantity.variant_id}` : closingLineLabel(line),
+      current_quantity: current, proposed_quantity: quantity.counted_quantity,
+      delta: quantity.counted_quantity - current,
+    }));
+  }
+  const difference_cents = counted_cents === null ? null : counted_cents - expected_cents;
+  const taken_cents = counted_cents === null || fund_cents === null
+    ? null : counted_cents + closing.contributed_cash_cents - fund_cents;
+  return Object.freeze({
+    correction,
+    amounts: Object.freeze(amounts),
+    counts: Object.freeze(counts),
+    expected_cents,
+    counted_cents,
+    difference_cents,
+    contribution_cents: closing.contributed_cash_cents,
+    fund_cents,
+    taken_cents,
+    commission_cents: commission_cents ?? closing.commission_amount_cents,
+  });
+}
+
+// ---------------------------------------------------------------------------------
+// The correction the warehouse proposes
+// ---------------------------------------------------------------------------------
+
+export const closingCorrectionReasonMessage =
+  'Escribí el motivo de la corrección: sin motivo no se puede proponer.';
+export const closingCorrectionValueMessage =
+  'La corrección tiene que cambiar al menos un valor: el conteo, la caja, la comisión o el fondo.';
+
+/** The four correctable values as the warehouse types them, over the closed settlement. */
+export interface CorrectionDraft {
+  readonly reason: string;
+  readonly counted: Readonly<Record<number, string>>;
+  readonly counted_cash: string;
+  readonly commission: string;
+  readonly fund: string;
+}
+
+/**
+ * The draft of a correction, seeded with what the settlement reads today: a field the warehouse does
+ * not touch is not restated, and the corrected numbers it already published are the ones a second
+ * correction takes its difference against (036, 040).
+ */
+export function correctionDraftFrom(closing: Closing): CorrectionDraft {
+  const correctedAmounts = new Map(closingCorrectedAmounts(closing)
+    .map(amount => [amount.kind, amount.corrected_cents]));
+  const correctedCounts = new Map(closingCorrectedCounts(closing)
+    .map(count => [count.variant_id, count.corrected_quantity]));
+  const counted: Record<number, string> = {};
+  for (const line of closing.count_lines) {
+    if (line.counted_quantity === null) continue;
+    counted[line.variant_id] = String(correctedCounts.get(line.variant_id) ?? line.counted_quantity);
+  }
+  return Object.freeze({
+    reason: '',
+    counted: Object.freeze(counted),
+    counted_cash: closing.counted_cash_cents === null ? ''
+      : typedMoney(correctedAmounts.get('counted_cash') ?? closing.counted_cash_cents),
+    commission: typedMoney(correctedAmounts.get('commission') ?? closingCorrectedCommission(closing)),
+    fund: closing.closing_cash_cents === null ? ''
+      : typedMoney(correctedAmounts.get('fund') ?? closing.closing_cash_cents),
+  });
+}
+
+/** The body of `POST /api/closings/{id}/corrections`: the reason and the values it corrects. */
+export interface CorrectionBody {
+  readonly reason: string;
+  readonly payload: {
+    readonly counted_quantities?: readonly ClosingCorrectionQuantity[];
+    readonly counted_cash?: string;
+    readonly commission_amount?: string;
+    readonly closing_cash?: string;
+  };
+}
+
+/**
+ * Canonicalizes the body of one correction: a reason that is not blank once trimmed, and at least
+ * one of the four values, each in the shape that value is. It is the contract's own gate, so a
+ * correction that states nothing never leaves the screen (S16, S20).
+ */
+export function canonicalCorrectionBody(body: CorrectionBody): CorrectionBody {
+  const reason = typeof body?.reason === 'string' ? body.reason.trim() : '';
+  if (reason === '' || reason.includes('\0') || !reason.isWellFormed()
+    || Array.from(reason).length > closingMaxObservation) {
+    throw new Error(closingCorrectionReasonMessage);
+  }
+  if (!body.payload || typeof body.payload !== 'object') throw new Error(closingCorrectionValueMessage);
+  const known = ['counted_quantities', 'counted_cash', 'commission_amount', 'closing_cash'];
+  if (Object.keys(body.payload).some(key => !known.includes(key))) {
+    throw new Error(closingCorrectionValueMessage);
+  }
+  const payload: { counted_quantities?: ClosingCorrectionQuantity[]; counted_cash?: string;
+    commission_amount?: string; closing_cash?: string } = {};
+  let stated = 0;
+  if (body.payload.counted_quantities !== undefined) {
+    const lines = body.payload.counted_quantities;
+    if (!Array.isArray(lines) || lines.length === 0) throw new Error(closingCorrectionValueMessage);
+    if (lines.length > closingMaxCountLines) throw new Error(closingCountLimitMessage);
+    const seen = new Set<number>();
+    payload.counted_quantities = lines.map(line => {
+      const variant = line.variant_id;
+      if (!Number.isInteger(variant) || variant < 1 || variant > closingMaxID || seen.has(variant)) {
+        throw new Error(closingQuantityMessage);
+      }
+      seen.add(variant);
+      if (!Number.isInteger(line.counted_quantity) || line.counted_quantity < 0
+        || line.counted_quantity > closingMaxCounted) {
+        throw new Error(closingQuantityMessage);
+      }
+      return Object.freeze({ variant_id: variant, counted_quantity: line.counted_quantity });
+    });
+    stated += 1;
+  }
+  for (const key of ['counted_cash', 'commission_amount', 'closing_cash'] as const) {
+    const value = body.payload[key];
+    if (value === undefined) continue;
+    if (typeof value !== 'string') throw new Error(closingAmountMessage);
+    const cents = closingCents(value);
+    if (centsToMoney(cents) !== value) throw new Error(closingAmountMessage);
+    payload[key] = value;
+    stated += 1;
+  }
+  if (stated === 0) throw new Error(closingCorrectionValueMessage);
+  return Object.freeze({ reason, payload: Object.freeze(payload) });
+}
+
+/**
+ * The correction the warehouse is proposing, built over the closed settlement's own numbers: only
+ * the values it actually changes are stated, each money one as canonical text, so the payload the
+ * branch receives is exactly what is different and nothing is restated (S16).
+ */
+export function canonicalCorrection(closing: Closing, draft: CorrectionDraft): CorrectionBody {
+  const currentCounts = new Map(closingCorrectedCounts(closing)
+    .map(count => [count.variant_id, count.corrected_quantity]));
+  const quantities: ClosingCorrectionQuantity[] = [];
+  for (const line of closing.count_lines) {
+    const current = currentCounts.get(line.variant_id) ?? line.counted_quantity;
+    if (current === null) continue;
+    const raw = typeof draft.counted[line.variant_id] === 'string'
+      ? draft.counted[line.variant_id].trim() : '';
+    if (raw === '') continue;
+    if (!/^(0|[1-9]\d{0,6})$/.test(raw) || Number(raw) > closingMaxCounted) {
+      throw new Error(closingQuantityMessage);
+    }
+    if (Number(raw) === current) continue;
+    quantities.push(Object.freeze({ variant_id: line.variant_id, counted_quantity: Number(raw) }));
+  }
+  const amount = (typed: string, current: bigint | null): string | null => {
+    const raw = typeof typed === 'string' ? typed.trim() : '';
+    if (raw === '') return null;
+    const cents = parseTypedMoney(raw);
+    if (current !== null && cents === current) return null;
+    return centsToMoney(cents);
+  };
+  const payload: { counted_quantities?: readonly ClosingCorrectionQuantity[];
+    counted_cash?: string; commission_amount?: string; closing_cash?: string } = {};
+  if (quantities.length > 0) payload.counted_quantities = quantities;
+  const countedCash = amount(draft.counted_cash, closing.counted_cash_cents);
+  if (countedCash !== null) payload.counted_cash = countedCash;
+  const commission = amount(draft.commission, closingCorrectedCommission(closing));
+  if (commission !== null) payload.commission_amount = commission;
+  const fund = amount(draft.fund, closing.closing_cash_cents);
+  if (fund !== null) payload.closing_cash = fund;
+  return canonicalCorrectionBody({ reason: draft.reason, payload });
+}
+
+/** Only the correction that waits for the branch is decidable; every other state says why (S16). */
+export function closingCorrectionReadiness(closing: Closing): ClosingDecisionReadiness {
+  if (closing.status !== 'closed') {
+    return Object.freeze({
+      awaiting: false,
+      reason: 'La rendición todavía no está cerrada: se corrige después del cierre, no antes.',
+    });
+  }
+  if (closingPendingCorrection(closing) !== null) return Object.freeze({ awaiting: true, reason: '' });
+  return Object.freeze({
+    awaiting: false,
+    reason: 'La rendición está cerrada y no tiene una corrección esperando tu decisión.',
+  });
+}
+
+/** `+ Bs 50,00` / `− Bs 35,00` for the delta of a correction, always with its sign. */
+export function closingCorrectionDeltaText(cents: bigint): string {
+  return closingSignedText(cents);
+}
+
+/** `+1` / `−2` for a corrected quantity, and a dash for a difference that is not one. */
+export function closingCorrectionQuantityDeltaText(delta: number): string {
+  return closingQuantityText(delta);
 }

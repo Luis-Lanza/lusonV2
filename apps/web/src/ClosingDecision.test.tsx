@@ -53,9 +53,10 @@ const open = () => proposed({
   transfer_total: '0.00', qr_total: '0.00', observation: '',
   count_lines: sheet().map(entry => ({ ...entry, counted_quantity: null })), rounds: [], expenses: [], corrections: [] });
 
-const closed = () => proposed({ status: 'closed', closed_at: '2026-09-12T18:31:00Z',
+const closed = (overrides: Record<string, unknown> = {}) => proposed({ status: 'closed',
+  closed_at: '2026-09-12T18:31:00Z',
   rounds: [round(1, { decision: 'accepted', decided_by_account_id: 2,
-    decided_at: '2026-09-12T15:01:00Z' })] });
+    decided_at: '2026-09-12T15:01:00Z' })], ...overrides });
 
 const summary = (document: Record<string, unknown>) => ({ ...document, count_lines: [], rounds: [] });
 
@@ -96,6 +97,23 @@ function server(initial: Record<string, unknown> = proposed()) {
             decided_by_account_id: 2, decided_at: '2026-09-12T15:02:00Z' })] };
       }
       return json(state.closing);
+    }
+    if (url === '/api/closings/corrections/1/decision' && init.method === 'POST') {
+      const body = JSON.parse(String(init.body)) as { decision: string; reason?: string };
+      const current = (state.closing.corrections as Record<string, unknown>[])[0];
+      const accepted = body.decision === 'accepted';
+      const decided = { ...current, status: accepted ? 'accepted' : 'rejected',
+        decided_by_account_id: 2, decided_at: '2026-09-13T10:00:00Z',
+        decision_reason: accepted ? '' : (body.reason ?? ''),
+        effects: accepted
+          ? [{ kind: 'counted_cash', variant_id: null, quantity_delta: null, amount_delta: '120.00' }]
+          : [] };
+      // An acceptance applies the delta; a rejection applies nothing and is never published.
+      state.closing = accepted
+        ? { ...state.closing, counted_cash: '7100.00', cash_difference: '85.00',
+          taken_cash: '6200.00', corrections: [decided] }
+        : { ...state.closing, corrections: [] };
+      return json(decided);
     }
     throw new Error('Unexpected mocked URL: ' + url);
   });
@@ -261,5 +279,94 @@ describe('the screen when there is nothing to decide (S14)', () => {
     expect(await screen.findByText(/no tiene una rendición abierta/)).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Tu decisión' })).not.toBeInTheDocument();
     expect(h.posts('/api/closings/1/decision')).toHaveLength(0);
+  });
+});
+
+/** The correction that waits for the branch of a closed settlement (S16). */
+const correction = (overrides: Record<string, unknown> = {}) => ({
+  id: 1, closing_id: 1, status: 'proposed', reason: 'conté mal el cajón y una batería',
+  payload: { counted_cash: '7100.00',
+    counted_quantities: [{ variant_id: 2, counted_quantity: 7 }] },
+  proposed_by_account_id: 1, proposed_at: '2026-09-13T09:00:00Z',
+  decided_by_account_id: null, decided_at: null, decision_reason: '', effects: [],
+  ...overrides });
+
+const awaitingCorrection = (overrides: Record<string, unknown> = {}) => closed({
+  corrections: [correction()], ...overrides });
+
+describe('the correction that waits for the branch (S16)', () => {
+  const pendingPanel = () => screen.findByRole('region', { name: 'Corrección pendiente' });
+  const acceptCorrection = () => within(screen.getByRole('region', { name: 'Corrección pendiente' }))
+    .getByRole('button', { name: 'Aceptar la corrección' });
+  const rejectToggle = () => within(screen.getByRole('region', { name: 'Corrección pendiente' }))
+    .getByRole('button', { name: 'Rechazar la corrección' });
+  const sendRejection = () => within(screen.getByRole('region', { name: 'Corrección pendiente' }))
+    .getByRole('button', { name: 'Enviar rechazo de la corrección' });
+  const motive = () => within(screen.getByRole('region', { name: 'Corrección pendiente' }))
+    .getByLabelText('Motivo del rechazo de la corrección');
+
+  it('cannot decide a correction it was not shown', async () => {
+    const h = server(closed());
+    await ready(h);
+    expect(screen.getByText(/no tiene una corrección esperando tu decisión/)).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Corrección pendiente' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Aceptar la corrección' })).not.toBeInTheDocument();
+    expect(h.posts('/api/closings/corrections/1/decision')).toHaveLength(0);
+  });
+
+  it('shows the reason and what accepting it would change before the answer', async () => {
+    const h = server(awaitingCorrection());
+    await ready(h);
+    const panel = await pendingPanel();
+    expect(within(panel).getByText('conté mal el cajón y una batería')).toBeInTheDocument();
+    expect(within(panel).getByText(/Cuenta #1/)).toBeInTheDocument();
+    // The corrected drawer, the corrected count line and the difference of each one.
+    const drawerRow = within(panel).getByText('Caja contada').closest('tr')!;
+    expect(within(drawerRow).getByText('Bs 6.980,00')).toBeInTheDocument();
+    expect(within(drawerRow).getByText('Bs 7.100,00')).toBeInTheDocument();
+    expect(within(drawerRow).getByText('+ Bs 120,00')).toBeInTheDocument();
+    const countRow = within(panel).getByText(/Bosch Power R · 110 Ah/).closest('tr')!;
+    expect(within(countRow).getByText('8')).toBeInTheDocument();
+    expect(within(countRow).getByText('7')).toBeInTheDocument();
+    expect(within(countRow).getByText('−1')).toBeInTheDocument();
+    // The identities stay over the corrected drawer, and the expected cash is untouched.
+    expect(within(panel).getByText('Caja esperada').parentElement).toHaveTextContent('Bs 7.015,00');
+    expect(within(panel).getByText('Diferencia').parentElement).toHaveTextContent('+ Bs 85,00');
+    expect(within(panel).getByText('Te llevás al Almacén').parentElement)
+      .toHaveTextContent('Bs 6.200,00');
+    // Nothing of it is applied while it waits: the settlement still publishes the signed drawer.
+    expect(within(cash()).getByText('Caja contada').parentElement).toHaveTextContent('Bs 6.980,00');
+    expect(h.posts('/api/closings/corrections/1/decision')).toHaveLength(0);
+  });
+
+  it('accepts the correction it was shown, and the settlement reads as corrected', async () => {
+    const h = server(awaitingCorrection());
+    await ready(h);
+    await pendingPanel();
+    fireEvent.click(acceptCorrection());
+    await waitFor(() => expect(h.posts('/api/closings/corrections/1/decision')).toHaveLength(1));
+    expect(h.posts('/api/closings/corrections/1/decision')[0].init.body)
+      .toBe('{"decision":"accepted"}');
+    expect(await screen.findByText(/Corrección aceptada/)).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Corrección pendiente' })).not.toBeInTheDocument();
+  });
+
+  it('cannot reject without a motive', async () => {
+    const h = server(awaitingCorrection());
+    await ready(h);
+    await pendingPanel();
+    fireEvent.click(rejectToggle());
+    expect(sendRejection()).toBeDisabled();
+    fireEvent.change(motive(), { target: { value: '   ' } });
+    expect(sendRejection()).toBeDisabled();
+    expect(h.posts('/api/closings/corrections/1/decision')).toHaveLength(0);
+    fireEvent.change(motive(), { target: { value: '  lo reviso con el contador  ' } });
+    expect(sendRejection()).toBeEnabled();
+    fireEvent.click(sendRejection());
+    await waitFor(() => expect(h.posts('/api/closings/corrections/1/decision')).toHaveLength(1));
+    // The motive is the branch's own and it is trimmed before it leaves the screen.
+    expect(h.posts('/api/closings/corrections/1/decision')[0].init.body).toBe(
+      '{"decision":"rejected","reason":"lo reviso con el contador"}');
+    expect(await screen.findByText(/Rechazo enviado al Almacén/)).toBeInTheDocument();
   });
 });

@@ -20,19 +20,25 @@ const countedLine = (overrides: Record<string, unknown> = {}) => ({
  * empty till, where only a contribution the Admin declares can leave a fund behind.
  */
 function server(options: { opened?: boolean, status?: string, refuse?: unknown, bootstrap?: boolean,
-  contributed?: string } = {}) {
+  contributed?: string, countedCash?: string, fund?: string,
+  corrections?: unknown[] } = {}) {
   const state = {
     opened: options.opened ?? true,
     status: options.status ?? 'open',
     bootstrap: options.bootstrap ?? false,
-    counted: new Map<number, number | null>([[1, 12], [2, null], [3, null]]),
+    // A closed settlement states every counted quantity; a live one still has pending lines.
+    counted: new Map<number, number | null>((options.status ?? 'open') === 'closed'
+      ? [[1, 12], [2, 9], [3, 14]] : [[1, 12], [2, null], [3, null]]),
     // A settlement that was already proposed states its drawer; an open one does not.
-    countedCash: (options.status ?? 'open') === 'open' ? null : '6980.00',
+    countedCash: options.countedCash
+      ?? ((options.status ?? 'open') === 'open' ? null : '6980.00'),
     contributedCash: options.contributed ?? '0.00',
-    fund: (options.status ?? 'open') === 'open' ? null : '900.00',
+    fund: options.fund ?? ((options.status ?? 'open') === 'open' ? null : '900.00'),
     observation: '',
-    closed: false,
+    closed: (options.status ?? 'open') === 'closed',
     rounds: [] as unknown[],
+    // The published corrections of the closed settlement: the accepted ones and the pending one.
+    corrections: (options.corrections ?? []) as unknown[],
   };
   const calls: { url: string; init: RequestInit }[] = [];
   const document = () => {
@@ -76,7 +82,7 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
       transfer_total: !bootstrap && opened ? '1180.00' : '0.00',
       qr_total: !bootstrap && opened ? '2760.00' : '0.00',
       observation: state.observation, opened_by_account_id: 1,
-      count_lines: lines, rounds: state.rounds, expenses: [], corrections: [],
+      count_lines: lines, rounds: state.rounds, expenses: [], corrections: state.corrections,
     };
   };
   const fetcher = vi.fn<typeof fetch>(async (input, init = {}) => {
@@ -121,6 +127,16 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
         proposed_at: '2026-09-12T18:31:00Z', decision: '', decision_reason: '',
         decided_by_account_id: null, decided_at: null }];
       return json(document());
+    }
+    if (url === '/api/closings/1/corrections' && init.method === 'POST') {
+      const body = JSON.parse(String(init.body)) as
+        { reason: string; payload: Record<string, unknown> };
+      const correction = { id: state.corrections.length + 1, closing_id: 1, status: 'proposed',
+        reason: body.reason, payload: body.payload, proposed_by_account_id: 1,
+        proposed_at: '2026-09-12T19:00:00Z', decided_by_account_id: null, decided_at: null,
+        decision_reason: '', effects: [] };
+      state.corrections = [...state.corrections, correction];
+      return json(correction, 201);
     }
     throw new Error('Unexpected mocked URL: ' + url);
   });
@@ -485,5 +501,115 @@ describe('the contribution the Admin declares (S10, S11)', () => {
     fireEvent.click(proposeButton());
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'El fondo supera la caja contada más el aporte en Bs 50,00: corregí el fondo.');
+  });
+});
+
+describe('corrections of a closed settlement (S16)', () => {
+  const corrections = () => screen.getByRole('region', { name: 'Correcciones del cierre' });
+  const proposeCorrection = () => within(corrections()).getByRole('button', { name: 'Proponer corrección' });
+  const reason = () => within(corrections()).getByLabelText('Motivo de la corrección');
+
+  /** One accepted correction of the drawer: the warehouse counted Bs 6.950,00 and not Bs 6.980,00. */
+  const acceptedDrawer = () => ({
+    id: 1, closing_id: 1, status: 'accepted', reason: 'conté mal el cajón, faltaba plata',
+    payload: { counted_cash: '6950.00' },
+    proposed_by_account_id: 1, proposed_at: '2026-09-12T19:00:00Z',
+    decided_by_account_id: 2, decided_at: '2026-09-12T19:10:00Z',
+    decision_reason: '',
+    effects: [{ kind: 'counted_cash', variant_id: null, quantity_delta: null, amount_delta: '-30.00' }],
+  });
+
+  const pendingDrawer = () => ({
+    id: 2, closing_id: 1, status: 'proposed', reason: 'la caja estaba mal contada',
+    payload: { counted_cash: '6900.00' },
+    proposed_by_account_id: 1, proposed_at: '2026-09-12T20:00:00Z',
+    decided_by_account_id: null, decided_at: null, decision_reason: '', effects: [],
+  });
+
+  it('offers nothing invented on a settlement with no correction', async () => {
+    const h = server({ status: 'closed' });
+    await ready(h);
+    const panel = await screen.findByRole('region', { name: 'Correcciones del cierre' });
+    expect(within(panel).getByText(/El cierre no tiene correcciones/)).toBeInTheDocument();
+    // No corrected figure is published when nothing was corrected: the numbers are the signed ones.
+    expect(within(panel).queryByRole('table', { name: 'Números corregidos del cierre' }))
+      .not.toBeInTheDocument();
+    expect(within(rail()).getByText('Caja contada').parentElement).toHaveTextContent('Bs 6.980,00');
+    expect(h.posts('/api/closings/1/corrections')).toHaveLength(0);
+  });
+
+  it('shows a corrected number as corrected, with its delta beside the signed one', async () => {
+    const h = server({ status: 'closed', countedCash: '6950.00', corrections: [acceptedDrawer()] });
+    await ready(h);
+    const panel = await screen.findByRole('region', { name: 'Correcciones del cierre' });
+    const row = within(panel).getByText('Caja contada').closest('.closing-correction-value')!;
+    // The three numbers of a corrected figure, together: what was signed, what it reads today and the
+    // delta that produced it.
+    expect(within(row as HTMLElement).getByText('Bs 6.980,00')).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByText('Bs 6.950,00')).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByText('− Bs 30,00')).toBeInTheDocument();
+    // The correction that produced it is legible beside it, with its reason.
+    expect(within(panel).getByText('conté mal el cajón, faltaba plata')).toBeInTheDocument();
+    // The rail keeps the identities over the corrected drawer, never over the signed one.
+    expect(within(rail()).getByText('Caja contada').parentElement).toHaveTextContent('Bs 6.950,00');
+    expect(within(rail()).getByText('− Bs 65,00')).toBeInTheDocument();
+    expect(within(rail()).getByText('Te llevás al Almacén').parentElement).toHaveTextContent('Bs 6.050,00');
+  });
+
+  it('will not propose a correction without a reason', async () => {
+    const h = server({ status: 'closed' });
+    await ready(h);
+    fireEvent.change(await within(corrections()).findByLabelText('Caja contada corregida (Bs)'),
+      { target: { value: '6.900,00' } });
+    expect(proposeCorrection()).toBeDisabled();
+    expect(proposeCorrection()).toHaveAccessibleDescription(/sin motivo no se puede proponer/);
+    expect(h.posts('/api/closings/1/corrections')).toHaveLength(0);
+  });
+
+  it('will not propose a correction that changes no value', async () => {
+    const h = server({ status: 'closed' });
+    await ready(h);
+    fireEvent.change(await within(corrections()).findByLabelText('Motivo de la corrección'),
+      { target: { value: 'revisé todo y estaba bien' } });
+    expect(proposeCorrection()).toBeDisabled();
+    expect(proposeCorrection()).toHaveAccessibleDescription(/al menos un valor/);
+    expect(h.posts('/api/closings/1/corrections')).toHaveLength(0);
+  });
+
+  it('proposes the correction with its reason and only the values that changed', async () => {
+    const h = server({ status: 'closed' });
+    await ready(h);
+    fireEvent.change(await within(corrections()).findByLabelText('Caja contada corregida (Bs)'),
+      { target: { value: '6.900,00' } });
+    fireEvent.change(within(corrections()).getByLabelText('Contado corregido de Bosch Power R · 110 Ah'),
+      { target: { value: '8' } });
+    fireEvent.change(reason(), { target: { value: '  conté mal la caja y una batería  ' } });
+    expect(proposeCorrection()).toBeEnabled();
+    fireEvent.click(proposeCorrection());
+    await waitFor(() => expect(h.posts('/api/closings/1/corrections')).toHaveLength(1));
+    // The untouched values are absent, never restated: the fund and the commission are not sent.
+    expect(JSON.parse(String(h.posts('/api/closings/1/corrections')[0].init.body))).toEqual({
+      reason: 'conté mal la caja y una batería',
+      payload: { counted_quantities: [{ variant_id: 2, counted_quantity: 8 }],
+        counted_cash: '6900.00' },
+    });
+    // The correction leaves and the settlement is read again, so the screen publishes what waits.
+    expect(await screen.findByText(/Corrección propuesta a la sucursal/)).toBeInTheDocument();
+    expect(within(corrections()).getByText('conté mal la caja y una batería')).toBeInTheDocument();
+    expect(within(corrections()).getByText('Espera la decisión de la sucursal')).toBeInTheDocument();
+  });
+
+  it('shows the correction that waits for the branch and refuses a second one', async () => {
+    const h = server({ status: 'closed', corrections: [pendingDrawer()] });
+    await ready(h);
+    const panel = await screen.findByRole('region', { name: 'Correcciones del cierre' });
+    expect(within(panel).getByText('Espera la decisión de la sucursal')).toBeInTheDocument();
+    expect(within(panel).getByText('la caja estaba mal contada')).toBeInTheDocument();
+    // What it would change is stated before the branch answers, and nothing is applied yet.
+    expect(within(panel).getByText('Bs 6.900,00')).toBeInTheDocument();
+    expect(within(rail()).getByText('Caja contada').parentElement).toHaveTextContent('Bs 6.980,00');
+    // One correction waits at a time: there is no second proposal to make.
+    expect(within(panel).queryByRole('button', { name: 'Proponer corrección' })).not.toBeInTheDocument();
+    expect(h.posts('/api/closings/1/corrections')).toHaveLength(0);
   });
 });

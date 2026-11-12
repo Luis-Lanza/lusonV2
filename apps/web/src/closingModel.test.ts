@@ -7,7 +7,11 @@ import {
   closingPendingLines, closingPeriod, closingPeriodLabel, closingProgress, closingQuantityText,
   closingRail, closingMoneyText, closingRoundStateLabel, closingSheetChanges, closingSignedCents,
   closingSignedText, drawerDraftFrom, drawerView, emptyDrawerDraft, filterCountLines,
-  type Closing, type ClosingCountLine, type ClosingOffer, type ClosingRound, type DrawerDraft,
+  canonicalCorrection, canonicalCorrectionBody, closingAcceptedCorrections, closingCorrectedAmounts,
+  closingCorrectedCommission, closingCorrectedCounts, closingCorrectionPreview,
+  closingCorrectionReadiness, closingPendingCorrection, correctionDraftFrom,
+  type Closing, type ClosingCountLine, type ClosingCorrection, type ClosingOffer, type ClosingRound,
+  type CorrectionDraft, type DrawerDraft,
 } from './closingModel';
 
 // The numbers of the chosen artboard (design/rendicion-de-cuentas/03-mesa-conteo.html), read as
@@ -33,7 +37,7 @@ const closing = (overrides: Partial<Closing> = {}): Closing => Object.freeze({
   counted_cash_cents: null, contributed_cash_cents: 0n, closing_cash_cents: null,
   sales_total_cents: 3248000n, commission_amount_cents: 146160n,
   card_total_cents: 324000n, transfer_total_cents: 118000n, qr_total_cents: 276000n,
-  observation: '', opened_by_account_id: 1, count_lines: lines, rounds: [],
+  observation: '', opened_by_account_id: 1, count_lines: lines, rounds: [], corrections: [],
   ...overrides,
 });
 
@@ -519,5 +523,191 @@ describe('S15 every round of the settlement stays legible', () => {
     answer({ id: 2, round: 2 })];
     expect(rounds.map(entry => entry.decision_reason)).toEqual(['La comisión estaba mal.', '']);
     expect(rounds.map(entry => closingRoundStateLabel(entry.decision))).toEqual(['Rechazada', 'Por decidir']);
+  });
+});
+
+// ---------------------------------------------------------------------------------
+// Corrections of a closed settlement (S16)
+// ---------------------------------------------------------------------------------
+
+/** The closed settlement of the artboard: Bs 6.980,00 counted over Bs 7.015,00 expected, fund 900. */
+const settled = (overrides: Partial<Closing> = {}): Closing => closing({
+  status: 'closed', closed_at: '2026-09-12T18:31:00Z', commission_rate_percent: '4.50',
+  counted_cash_cents: 698000n, closing_cash_cents: 90000n, ...overrides,
+});
+
+const accepted = (overrides: Partial<ClosingCorrection> = {}): ClosingCorrection => Object.freeze({
+  id: 3, closing_id: 1, status: 'accepted', reason: 'conté mal el cajón',
+  payload: Object.freeze({ counted_quantities: Object.freeze([]), counted_cash_cents: 695000n,
+    commission_amount_cents: null, closing_cash_cents: null }),
+  proposed_by_account_id: 1, proposed_at: '2026-09-12T19:00:00Z',
+  decided_by_account_id: 2, decided_at: '2026-09-12T19:10:00Z', decision_reason: '',
+  effects: Object.freeze([Object.freeze({ kind: 'counted_cash' as const, variant_id: null,
+    quantity_delta: null, amount_delta_cents: -3000n })]),
+  ...overrides,
+});
+
+const pending = (overrides: Partial<ClosingCorrection> = {}): ClosingCorrection => Object.freeze({
+  id: 4, closing_id: 1, status: 'proposed', reason: 'la caja estaba mal y una batería',
+  payload: Object.freeze({ counted_quantities: Object.freeze([{ variant_id: 2, counted_quantity: 7 }]),
+    counted_cash_cents: 710000n, commission_amount_cents: null, closing_cash_cents: null }),
+  proposed_by_account_id: 1, proposed_at: '2026-09-12T20:00:00Z',
+  decided_by_account_id: null, decided_at: null, decision_reason: '', effects: Object.freeze([]),
+  ...overrides,
+});
+
+const draft = (overrides: Partial<CorrectionDraft> = {}): CorrectionDraft => Object.freeze({
+  reason: 'conté mal el cajón', counted: Object.freeze({}),
+  counted_cash: '6.980,00', commission: '1.461,60', fund: '900,00', ...overrides,
+});
+
+describe('S16 what the accepted corrections already changed', () => {
+  it('shows a corrected number as corrected, beside the signed one and with its delta', () => {
+    // The published drawer is the corrected one: Bs 6.950,00 over the Bs 6.980,00 that were signed.
+    const document = settled({ counted_cash_cents: 695000n, corrections: [accepted()] });
+    const amounts = closingCorrectedAmounts(document);
+    expect(amounts).toHaveLength(1);
+    expect(amounts[0]).toEqual({ kind: 'counted_cash', label: 'Caja contada',
+      signed_cents: 698000n, corrected_cents: 695000n, delta_cents: -3000n });
+    // The corrected drawer is the one the identities of the document follow.
+    expect(closingRail(document).difference_cents).toBe(695000n - 701500n);
+    expect(closingRail(document).taken_cents).toBe(695000n - 90000n);
+  });
+
+  it('recovers the signed commission from the published one plus its delta', () => {
+    const document = settled({ corrections: [accepted({
+      payload: Object.freeze({ counted_quantities: Object.freeze([]), counted_cash_cents: null,
+        commission_amount_cents: 200000n, closing_cash_cents: null }),
+      effects: Object.freeze([Object.freeze({ kind: 'commission' as const, variant_id: null,
+        quantity_delta: null, amount_delta_cents: 200000n - 146160n })]) })] });
+    // The document publishes the commission the period was signed with; the corrected one is derived.
+    expect(closingCorrectedCommission(document)).toBe(200000n);
+    const commission = closingCorrectedAmounts(document)
+      .find(amount => amount.kind === 'commission')!;
+    expect(commission.signed_cents).toBe(146160n);
+    expect(commission.corrected_cents).toBe(200000n);
+    expect(commission.delta_cents).toBe(200000n - 146160n);
+  });
+
+  it('shows a corrected quantity with the signed one and the delta of the journal', () => {
+    const document = settled({ corrections: [accepted({
+      payload: Object.freeze({ counted_quantities: Object.freeze([{ variant_id: 2, counted_quantity: 7 }]),
+        counted_cash_cents: null, commission_amount_cents: null, closing_cash_cents: null }),
+      effects: Object.freeze([Object.freeze({ kind: 'stock' as const, variant_id: 2,
+        quantity_delta: -1, amount_delta_cents: null })]) })] });
+    const counts = closingCorrectedCounts(document);
+    expect(counts).toHaveLength(1);
+    expect(counts[0]).toMatchObject({ variant_id: 2, signed_quantity: 8,
+      corrected_quantity: 7, delta: -1 });
+    expect(counts[0].label).toBe('Bosch S4 R · 45 Ah');
+  });
+
+  it('renders nothing invented for a settlement with no correction', () => {
+    expect(closingCorrectedAmounts(settled())).toEqual([]);
+    expect(closingCorrectedCounts(settled())).toEqual([]);
+    expect(closingAcceptedCorrections(settled())).toEqual([]);
+    expect(closingPendingCorrection(settled())).toBeNull();
+    expect(closingCorrectionPreview(settled())).toBeNull();
+    expect(closingCorrectedCommission(settled())).toBe(146160n);
+  });
+});
+
+describe('S16 the correction that waits for the branch', () => {
+  it('is the proposed one, and the only one, with its reason and its author', () => {
+    const document = settled({ corrections: [accepted(), pending()] });
+    const waiting = closingPendingCorrection(document)!;
+    expect(waiting.id).toBe(4);
+    expect(waiting.reason).toBe('la caja estaba mal y una batería');
+    expect(waiting.proposed_by_account_id).toBe(1);
+    expect(closingAcceptedCorrections(document)).toHaveLength(1);
+    expect(closingCorrectionReadiness(document)).toEqual({ awaiting: true, reason: '' });
+  });
+
+  it('states what accepting it would change, with the identities over the corrected drawer', () => {
+    const preview = closingCorrectionPreview(settled({ corrections: [pending()] }))!;
+    expect(preview.correction.id).toBe(4);
+    expect(preview.amounts).toEqual([{ kind: 'counted_cash', label: 'Caja contada',
+      current_cents: 698000n, proposed_cents: 710000n, delta_cents: 12000n }]);
+    expect(preview.counts).toEqual([{ variant_id: 2, label: 'Bosch S4 R · 45 Ah',
+      current_quantity: 8, proposed_quantity: 7, delta: -1 }]);
+    // The expected cash is untouched by a correction and the difference follows the corrected drawer.
+    expect(preview.expected_cents).toBe(701500n);
+    expect(preview.counted_cents).toBe(710000n);
+    expect(preview.difference_cents).toBe(710000n - 701500n);
+    expect(preview.fund_cents).toBe(90000n);
+    expect(preview.taken_cents).toBe(710000n - 90000n);
+    expect(preview.commission_cents).toBe(146160n);
+  });
+
+  it('is not decidable before the closure, and says so', () => {
+    const live = closing({ status: 'proposed', commission_rate_percent: '4.50',
+      corrections: [pending()] });
+    expect(closingCorrectionPreview(live)).toBeNull();
+    expect(closingCorrectionReadiness(live).awaiting).toBe(false);
+    expect(closingCorrectionReadiness(live).reason).toContain('no está cerrada');
+    expect(closingCorrectionReadiness(settled()).awaiting).toBe(false);
+    expect(closingCorrectionReadiness(settled()).reason).toContain('no tiene una corrección');
+  });
+
+  it('refuses a correction of another settlement instead of describing it', () => {
+    expect(() => closingCorrectionPreview(settled({ corrections: [pending({ closing_id: 2 })] })))
+      .toThrow();
+  });
+});
+
+describe('S16 the correction the warehouse proposes', () => {
+  it('seeds the draft from the numbers the settlement reads today', () => {
+    const document = settled({ counted_cash_cents: 695000n, corrections: [accepted()] });
+    const seeded = correctionDraftFrom(document);
+    // The corrected drawer is what a second correction takes its difference against (036, 040).
+    expect(seeded.counted_cash).toBe('6.950,00');
+    expect(seeded.commission).toBe('1.461,60');
+    expect(seeded.fund).toBe('900,00');
+    expect(seeded.reason).toBe('');
+    expect(seeded.counted[1]).toBe('12');
+  });
+
+  it('states only the values that really changed', () => {
+    const body = canonicalCorrection(settled(), draft({
+      counted: Object.freeze({ 2: '7' }), counted_cash: '7.100,00' }));
+    expect(body).toEqual({
+      reason: 'conté mal el cajón',
+      payload: { counted_quantities: [{ variant_id: 2, counted_quantity: 7 }], counted_cash: '7100.00' },
+    });
+    // A restated value is not a correction of it, neither an amount nor a quantity: the sheet keeps
+    // what it counted and only the line that changed is stated.
+    const restated = canonicalCorrection(settled(), draft({ reason: 'motivo',
+      counted: Object.freeze({ 1: '11', 2: '8' }), counted_cash: '7.100,00' }));
+    expect(restated.payload).toEqual({
+      counted_quantities: [{ variant_id: 1, counted_quantity: 11 }], counted_cash: '7100.00' });
+    // A value restated as it reads today is not a correction of it, and a correction that states
+    // nothing at all is refused instead of sent.
+    expect(() => canonicalCorrection(settled(),
+      draft({ reason: 'motivo', counted_cash: '', fund: '900,00' }))).toThrow(/al menos un valor/);
+  });
+
+  it('refuses a correction without a reason or without any value', () => {
+    expect(() => canonicalCorrection(settled(), draft({ reason: '   ', counted: Object.freeze({ 2: '7' }) })))
+      .toThrow(/motivo/);
+    expect(() => canonicalCorrection(settled(), draft({ reason: 'un motivo' })))
+      .toThrow(/al menos un valor/);
+    expect(() => canonicalCorrectionBody({ reason: '', payload: { counted_cash: '1.00' } }))
+      .toThrow(/motivo/);
+    expect(() => canonicalCorrectionBody({ reason: 'un motivo', payload: {} }))
+      .toThrow(/al menos un valor/);
+  });
+
+  it('admits only canonical money and whole quantities', () => {
+    expect(() => canonicalCorrection(settled(), draft({ counted_cash: 'no es un monto' })))
+      .toThrow(/monto/i);
+    expect(() => canonicalCorrection(settled(), draft({ counted: Object.freeze({ 1: '1.5' }) })))
+      .toThrow(/entero/);
+    expect(() => canonicalCorrection(settled(), draft({ counted: Object.freeze({ 1: '-1' }) })))
+      .toThrow(/entero/);
+    expect(() => canonicalCorrectionBody({ reason: 'un motivo', payload: { counted_cash: '6980' } }))
+      .toThrow(/monto/i);
+    // A key the contract does not take is never sent.
+    expect(() => canonicalCorrectionBody({ reason: 'un motivo',
+      payload: { fund: '1.00' } } as never)).toThrow(/al menos un valor/);
   });
 });

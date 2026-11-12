@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  closingAcceptance, closingAccountLabel, closingDecisionPayload, closingDecisionReadiness,
-  closingDifferenceName, closingIsLive, closingMoneyText, closingMomentText, closingPeriod,
-  closingPeriodLabel, closingRail, closingRateText, closingRoundStateLabel, closingSheetChanges,
-  closingSignedText, closingStatusLabels, closingAcceptanceMismatchMessage,
+  closingAcceptance, closingAccountLabel, closingAcceptedCorrections, closingCorrectedAmounts,
+  closingCorrectedCounts, closingCorrectionDeltaText, closingCorrectionPreview,
+  closingCorrectionQuantityDeltaText, closingCorrectionStatusLabels, closingDecisionPayload,
+  closingDecisionReadiness, closingDifferenceName, closingIsLive, closingMoneyText,
+  closingMomentText, closingPendingCorrection, closingPeriod, closingPeriodLabel, closingRail,
+  closingRateText, closingRoundStateLabel, closingSheetChanges, closingSignedText,
+  closingStatusLabels, closingAcceptanceMismatchMessage,
   type Closing, type ClosingAcceptance, type ClosingRail, type ClosingStockChange,
 } from './closingModel';
 import {
@@ -53,6 +56,8 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
   const [closing, setClosing] = useState<Closing | null>(null);
   const [motive, setMotive] = useState('');
   const [rejecting, setRejecting] = useState(false);
+  const [correctionMotive, setCorrectionMotive] = useState('');
+  const [rejectingCorrection, setRejectingCorrection] = useState(false);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState('');
   const [problem, setProblem] = useState('');
@@ -73,6 +78,7 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
     const alive = () => mounted.current && !controller.signal.aborted && !lifetime.current.signal.aborted;
     setPhase('loading'); setProblem(''); setStatus('');
     setClosing(null); setMotive(''); setRejecting(false);
+    setCorrectionMotive(''); setRejectingCorrection(false);
     void (async () => {
       try {
         const page = await api.history(branch, 1, 25, controller.signal);
@@ -103,6 +109,8 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
     setClosing(document);
     setMotive('');
     setRejecting(false);
+    setCorrectionMotive('');
+    setRejectingCorrection(false);
     setPhase('ready');
     setProblem('');
   }
@@ -138,7 +146,54 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
     }
   }
 
+  /**
+   * The branch's answer to the correction of its closed settlement: acceptance applies the deltas
+   * the warehouse stated, a rejection carries its mandatory motive and applies nothing. The screen
+   * reads the settlement again afterwards, so it describes what the server applied (S16).
+   */
+  async function decideCorrection(answer: 'accepted' | 'rejected') {
+    const current = closing;
+    const waiting = current === null ? null : closingPendingCorrection(current);
+    if (current === null || waiting === null || busy || pending.current) return;
+    let payload;
+    try { payload = closingDecisionPayload(answer, correctionMotive); }
+    catch (failure) {
+      setStatus('');
+      setProblem(failure instanceof Error && failure.message ? failure.message
+        : closingErrorMessages.invalid_request);
+      return;
+    }
+    pending.current = true; setBusy(true); setProblem('');
+    setStatus(answer === 'accepted' ? 'Aceptando la corrección…' : 'Enviando el rechazo de la corrección…');
+    try {
+      await api.correctionDecision(waiting.id, payload, csrf, lifetime.current.signal);
+      if (!mounted.current || lifetime.current.signal.aborted) return;
+      const document = await api.detail(current.id, lifetime.current.signal);
+      if (!mounted.current || lifetime.current.signal.aborted) return;
+      if (document.branch_location_id !== branch) {
+        setPhase('error'); setProblem(closingErrorMessages.not_found); return;
+      }
+      apply(document);
+      setStatus(answer === 'accepted'
+        ? 'Corrección aceptada: la rendición sigue cerrada y sus números corregidos son los que quedan.'
+        : 'Rechazo enviado al Almacén: la corrección no se aplicó y nada cambió.');
+    } catch (failure) {
+      if (!mounted.current || lifetime.current.signal.aborted) return;
+      setStatus('');
+      setProblem(refusalMessage(failureOf(failure)));
+    } finally {
+      pending.current = false;
+      if (mounted.current) setBusy(false);
+    }
+  }
+
   const readiness = closing === null ? null : closingDecisionReadiness(closing);
+  const pendingCorrection = closing === null ? null : closingPendingCorrection(closing);
+  const correctionPreview = closing === null ? null : closingCorrectionPreview(closing);
+  const acceptedCorrections = closing === null ? [] : closingAcceptedCorrections(closing);
+  const correctedAmounts = closing === null ? [] : closingCorrectedAmounts(closing);
+  const correctedCounts = closing === null ? [] : closingCorrectedCounts(closing);
+  const canRejectCorrection = !busy && correctionMotive.trim() !== '';
   const acceptance = closing === null ? null : acceptanceOf(closing);
   const mismatch = closing !== null && closing.status === 'proposed' && acceptance === null;
   const rail: ClosingRail | null = acceptance?.rail ?? (closing === null ? null : closingRail(closing));
@@ -181,8 +236,153 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
     {phase === 'empty' && <p className="closing-note">La sucursal no tiene una rendición abierta ni cerrada todavía.</p>}
 
     {closing !== null && rail !== null && <>
-      {readiness !== null && !readiness.awaiting
-        && <p className="closing-readonly">{readiness.reason}</p>}
+      {readiness !== null && !readiness.awaiting && pendingCorrection === null
+        && <p className="closing-readonly">{closing.status === 'closed'
+          ? 'La rendición ya está cerrada y no tiene una corrección esperando tu decisión: el Almacén no puede reabrirla.'
+          : readiness.reason}</p>}
+
+      {pendingCorrection !== null && correctionPreview !== null
+        && <section className="closing-panel closing-correction" aria-labelledby="closing-correction-pending">
+          <header className="closing-panel-head">
+            <h2 id="closing-correction-pending">Corrección pendiente</h2>
+            <span className="closing-tag warn">{closingCorrectionStatusLabels.proposed}</span>
+            <small className="closing-muted">Nada se aplica hasta que la aceptes.</small>
+          </header>
+          <div className="closing-group">
+            <p className="closing-round-motive">{pendingCorrection.reason}</p>
+            <small>Propuesta por {closingAccountLabel(pendingCorrection.proposed_by_account_id)} el
+              {' '}{closingMomentText(pendingCorrection.proposed_at)}</small>
+            <div className="closing-table-wrap">
+              <table className="closing-table closing-correction-preview">
+                <caption className="sr-only">Qué cambiaría la corrección si la aceptás</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Concepto</th>
+                    <th scope="col" className="num">Ahora</th>
+                    <th scope="col" className="num">Quedaría</th>
+                    <th scope="col" className="num">Cambio</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {correctionPreview.amounts.map(step => <tr key={step.kind} data-kind={step.kind}>
+                    <td>{step.label}</td>
+                    <td className="num">{closingMoneyText(step.current_cents)}</td>
+                    <td className="num">{closingMoneyText(step.proposed_cents)}</td>
+                    <td className={`num ${step.delta_cents < 0n ? 'neg' : 'pos'}`}>
+                      {closingCorrectionDeltaText(step.delta_cents)}</td>
+                  </tr>)}
+                  {correctionPreview.counts.map(step => <tr key={`variant-${step.variant_id}`}
+                    data-variant-id={step.variant_id}>
+                    <td>{step.label}</td>
+                    <td className="num">{step.current_quantity}</td>
+                    <td className="num">{step.proposed_quantity}</td>
+                    <td className={`num ${step.delta < 0 ? 'neg' : 'pos'}`}>
+                      {closingCorrectionQuantityDeltaText(step.delta)}</td>
+                  </tr>)}
+                </tbody>
+              </table>
+            </div>
+            {/* The identities over the drawer the correction would leave: the commission is reported
+                beside them and enters none of them, and the expected cash is untouched (S8-S10). */}
+            <dl className="closing-summary">
+              <div><dt>Caja esperada</dt><dd>{closingMoneyText(correctionPreview.expected_cents)}</dd></div>
+              <div><dt>Caja contada con la corrección</dt>
+                <dd>{correctionPreview.counted_cents === null ? 'Sin contar'
+                  : closingMoneyText(correctionPreview.counted_cents)}</dd></div>
+              <div><dt>Diferencia</dt>
+                <dd className={correctionPreview.difference_cents === null
+                  || correctionPreview.difference_cents === 0n ? 'zero'
+                  : correctionPreview.difference_cents < 0n ? 'neg' : 'pos'}>
+                  <span>{correctionPreview.difference_cents === null ? 'Sin contar'
+                    : closingSignedText(correctionPreview.difference_cents)}</span>
+                  {correctionPreview.difference_cents !== null
+                    && <span className="closing-difference-name">
+                      {closingDifferenceName(correctionPreview.difference_cents)}</span>}
+                </dd></div>
+              {correctionPreview.contribution_cents > 0n && <div><dt>Aporte del Almacén</dt>
+                <dd>{closingMoneyText(correctionPreview.contribution_cents)}</dd></div>}
+              <div><dt>Comisión del período</dt>
+                <dd>{closingMoneyText(correctionPreview.commission_cents)}</dd></div>
+              <div className="total"><dt>Fondo que queda en la caja</dt>
+                <dd>{correctionPreview.fund_cents === null ? 'Sin contar'
+                  : closingMoneyText(correctionPreview.fund_cents)}</dd></div>
+              <div className="total"><dt>Te llevás al Almacén</dt>
+                <dd>{correctionPreview.taken_cents === null ? 'Sin contar'
+                  : closingMoneyText(correctionPreview.taken_cents)}</dd></div>
+            </dl>
+            <div className="closing-decision-actions">
+              <button type="button" className="primary" disabled={busy}
+                onClick={() => void decideCorrection('accepted')}>Aceptar la corrección</button>
+              <button type="button" className="closing-reject-toggle" disabled={busy}
+                aria-expanded={rejectingCorrection} aria-controls="closing-correction-motive"
+                onClick={() => setRejectingCorrection(value => !value)}>Rechazar la corrección</button>
+              {rejectingCorrection && <div className="closing-motive" id="closing-correction-motive">
+                <label htmlFor="closing-correction-motive-text">Motivo del rechazo de la corrección</label>
+                <textarea id="closing-correction-motive-text" rows={3} value={correctionMotive}
+                  aria-describedby="closing-correction-motive-help"
+                  onChange={event => setCorrectionMotive(event.target.value)} />
+                <small id="closing-correction-motive-help">Es obligatorio: sin motivo no se puede rechazar
+                  la corrección. Nada se aplica mientras no la aceptes.</small>
+                <button type="button" className="closing-reject" disabled={!canRejectCorrection}
+                  onClick={() => void decideCorrection('rejected')}>Enviar rechazo de la corrección</button>
+              </div>}
+            </div>
+          </div>
+        </section>}
+
+      {acceptedCorrections.length > 0
+        && <section className="closing-panel closing-correction" aria-labelledby="closing-correction-accepted">
+          <header className="closing-panel-head">
+            <h2 id="closing-correction-accepted">Correcciones aceptadas</h2>
+            <span className="closing-tag ok">
+              {acceptedCorrections.length} {acceptedCorrections.length === 1 ? 'aceptada' : 'aceptadas'}
+            </span>
+            <small className="closing-muted">Los números corregidos no son los que firmaste: cada uno lleva su delta.</small>
+          </header>
+          {(correctedAmounts.length > 0 || correctedCounts.length > 0) && <div className="closing-table-wrap">
+            <table className="closing-table closing-corrected">
+              <caption className="sr-only">Números corregidos del cierre</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Concepto</th>
+                  <th scope="col" className="num">Firmado</th>
+                  <th scope="col" className="num">Corregido</th>
+                  <th scope="col" className="num">Cambio</th>
+                </tr>
+              </thead>
+              <tbody>
+                {correctedAmounts.map(amount => <tr key={amount.kind} className="closing-correction-value"
+                  data-kind={amount.kind}>
+                  <td>{amount.label}</td>
+                  <td className="num">{closingMoneyText(amount.signed_cents)}</td>
+                  <td className="num corrected">{closingMoneyText(amount.corrected_cents)}
+                    <span className="closing-pending">Corregido</span></td>
+                  <td className={`num ${amount.delta_cents < 0n ? 'neg' : 'pos'}`}>
+                    {closingCorrectionDeltaText(amount.delta_cents)}</td>
+                </tr>)}
+                {correctedCounts.map(count => <tr key={`variant-${count.variant_id}`}
+                  className="closing-correction-value" data-variant-id={count.variant_id}>
+                  <td>{count.label}</td>
+                  <td className="num">{count.signed_quantity}</td>
+                  <td className="num corrected">{count.corrected_quantity}
+                    <span className="closing-pending">Corregido</span></td>
+                  <td className={`num ${count.delta < 0 ? 'neg' : 'pos'}`}>
+                    {closingCorrectionQuantityDeltaText(count.delta)}</td>
+                </tr>)}
+              </tbody>
+            </table>
+          </div>}
+          <ol className="closing-rounds">{acceptedCorrections.map(entry => <li key={entry.id}>
+            <div className="closing-round-head">
+              <strong>Corrección #{entry.id}</strong>
+              <span className="closing-tag ok">{closingCorrectionStatusLabels.accepted}</span>
+            </div>
+            <p className="closing-round-motive">{entry.reason}</p>
+            <small>Propuesta por {closingAccountLabel(entry.proposed_by_account_id)} el {closingMomentText(entry.proposed_at)}</small>
+            {entry.decided_by_account_id !== null && entry.decided_at !== null
+              && <small>Aceptada por {closingAccountLabel(entry.decided_by_account_id)} el {closingMomentText(entry.decided_at)}</small>}
+          </li>)}</ol>
+        </section>}
 
       <div className="closing-layout">
         <div>

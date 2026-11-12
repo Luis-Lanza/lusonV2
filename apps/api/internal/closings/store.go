@@ -1374,13 +1374,16 @@ func decodePayload(stored string) (ProposalPayload, error) {
 	return payload, nil
 }
 
-// loadCorrections reads the accepted corrections of one settlement, oldest first, each one with
-// its reason and the deltas the branch accepted. Only accepted ones are published: a proposed
-// correction is a decision that has not been taken and a rejected one applied nothing, so
-// neither of them changed a number of the document (S16).
+// loadCorrections reads the corrections of one settlement that its document publishes, oldest
+// first, each one with its reason, its status and the deltas the branch accepted. An accepted
+// correction is published with the deltas it applied, because the numbers of the document are the
+// signed ones plus those deltas. The pending correction is published too, with its status, so the
+// branch can see what awaits its decision and by whom it was proposed instead of needing a second
+// request it has no route for (S16). A rejected correction applied nothing and is never part of the
+// document.
 func loadCorrections(ctx context.Context, q querier, closingID int64) ([]Correction, error) {
 	rows, err := q.Query(ctx, `SELECT id FROM closing_corrections
- WHERE closing_id=$1 AND status='accepted' ORDER BY id`, closingID)
+ WHERE closing_id=$1 AND status<>'rejected' ORDER BY id`, closingID)
 	if err != nil {
 		return nil, fail(ctx)
 	}

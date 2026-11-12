@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { closingRail } from './closingModel';
 import {
-  ClosingAPIError, closingCashPath, closingCountPath, closingDecisionPath, closingDetailPath,
+  ClosingAPIError, closingCashPath, closingCorrectionDecisionPath, closingCorrectionPath,
+  closingCountPath, closingDecisionPath, closingDetailPath,
   closingHistoryPath, closingProposePath, closingRefusalMessage, createClosingAPI, parseClosing,
-  parseClosingPage, parseClosingRefusal,
+  parseClosingCorrection, parseClosingPage, parseClosingRefusal,
 } from './closingsAPI';
 
 const csrf = 'c'.repeat(43);
@@ -136,6 +137,10 @@ describe('the settlement document', () => {
     expect(closingCashPath(7)).toBe('/api/closings/7/cash');
     expect(closingProposePath(7)).toBe('/api/closings/7/propose');
     expect(closingDecisionPath(7)).toBe('/api/closings/7/decision');
+    expect(closingCorrectionPath(7)).toBe('/api/closings/7/corrections');
+    expect(closingCorrectionDecisionPath(8)).toBe('/api/closings/corrections/8/decision');
+    expect(() => closingCorrectionPath(0)).toThrow();
+    expect(() => closingCorrectionDecisionPath(-1)).toThrow();
     expect(() => closingHistoryPath(1, 1, 25)).toThrow();
     expect(() => closingHistoryPath(2, 1, 20)).toThrow();
     expect(() => closingDetailPath(0)).toThrow();
@@ -318,5 +323,162 @@ describe('the transport of the warehouse side', () => {
     const noToken = harness(() => json(openDocument(), 201));
     expect((await refusalOf(noToken.api.open(2, 'not a token'))).code).toBe('invalid_request');
     expect(noToken.calls).toHaveLength(0);
+  });
+});
+
+/** The accepted correction of a closed settlement: the drawer moved, and its delta is published. */
+const acceptedCorrection = (overrides: Record<string, unknown> = {}) => ({
+  id: 3, closing_id: 1, status: 'accepted', reason: 'conté mal el cajón',
+  payload: { counted_cash: '6950.00' },
+  proposed_by_account_id: 1, proposed_at: '2026-09-12T19:00:00Z',
+  decided_by_account_id: 2, decided_at: '2026-09-12T19:10:00Z', decision_reason: '',
+  effects: [{ kind: 'counted_cash', variant_id: null, quantity_delta: null, amount_delta: '-30.00' }],
+  ...overrides,
+});
+
+/** The correction that waits for the branch: no decision and no delta at all. */
+const pendingCorrection = (overrides: Record<string, unknown> = {}) => ({
+  id: 4, closing_id: 1, status: 'proposed', reason: 'la caja estaba mal',
+  payload: { counted_quantities: [{ variant_id: 2, counted_quantity: 7 }] },
+  proposed_by_account_id: 1, proposed_at: '2026-09-12T20:00:00Z',
+  decided_by_account_id: null, decided_at: null, decision_reason: '', effects: [],
+  ...overrides,
+});
+
+describe('the corrections a closed settlement publishes (S16)', () => {
+  it('reads the accepted corrections with the deltas they applied', () => {
+    const closing = parseClosing(JSON.stringify(document({ corrections: [acceptedCorrection()] })));
+    expect(closing.corrections).toHaveLength(1);
+    const [correction] = closing.corrections;
+    expect(correction.status).toBe('accepted');
+    expect(correction.reason).toBe('conté mal el cajón');
+    expect(correction.payload.counted_cash_cents).toBe(695000n);
+    expect(correction.payload.counted_quantities).toEqual([]);
+    expect(correction.effects[0]).toMatchObject({ kind: 'counted_cash', amount_delta_cents: -3000n });
+    expect(correction.decided_by_account_id).toBe(2);
+  });
+
+  it('reads the correction that waits for the branch with its status and no decision', () => {
+    const closing = parseClosing(JSON.stringify(document({ corrections: [pendingCorrection()] })));
+    expect(closing.corrections[0].status).toBe('proposed');
+    expect(closing.corrections[0].decided_at).toBeNull();
+    expect(closing.corrections[0].effects).toEqual([]);
+    expect(closing.corrections[0].payload.counted_quantities[0]).toEqual(
+      { variant_id: 2, counted_quantity: 7 });
+    // An accepted correction may precede the pending one, and the pending one is always last.
+    const both = parseClosing(JSON.stringify(document({
+      corrections: [acceptedCorrection(), pendingCorrection()] })));
+    expect(both.corrections.map(correction => correction.status)).toEqual(['accepted', 'proposed']);
+  });
+
+  it('refuses a document whose corrections are not ones it publishes (S16)', () => {
+    // A rejected correction applied nothing and is never published.
+    expect(() => parseClosing(JSON.stringify(document({
+      corrections: [acceptedCorrection({ status: 'rejected', decision_reason: 'no' })] }))))
+      .toThrow();
+    // One correction waits at a time, and a decided correction is final: no accepted one follows.
+    expect(() => parseClosing(JSON.stringify(document({
+      corrections: [pendingCorrection(), pendingCorrection({ id: 5 })] })))).toThrow();
+    expect(() => parseClosing(JSON.stringify(document({
+      corrections: [pendingCorrection(), acceptedCorrection({ id: 5 })] })))).toThrow();
+    // A pending correction states no decision and journals nothing.
+    expect(() => parseClosing(JSON.stringify(document({
+      corrections: [pendingCorrection({ decided_at: '2026-09-12T21:00:00Z' })] })))).toThrow();
+    expect(() => parseClosing(JSON.stringify(document({
+      corrections: [pendingCorrection({
+        effects: [{ kind: 'fund', variant_id: null, quantity_delta: null, amount_delta: '10.00' }] })] }))))
+      .toThrow();
+    // A correction of another settlement is never described in this document.
+    expect(() => parseClosing(JSON.stringify(document({
+      corrections: [acceptedCorrection({ closing_id: 2 })] })))).toThrow();
+    // An effect carries the unit of its kind, never the other one.
+    expect(() => parseClosing(JSON.stringify(document({
+      corrections: [acceptedCorrection({
+        effects: [{ kind: 'stock', variant_id: 2, quantity_delta: -1, amount_delta: '-1.00' }] })] }))))
+      .toThrow();
+    // A live settlement carries no corrections: it is corrected by its own rounds.
+    expect(() => parseClosing(JSON.stringify(openDocument({
+      corrections: [acceptedCorrection()] })))).toThrow();
+  });
+
+  it('publishes the proposal to the branch with the reason and only the values that changed', async () => {
+    const h = harness(() => json(pendingCorrection(), 201));
+    const correction = await h.api.correction(1, {
+      reason: 'la caja estaba mal',
+      payload: { counted_quantities: [{ variant_id: 2, counted_quantity: 7 }] },
+    }, csrf);
+    expect(correction.status).toBe('proposed');
+    expect(h.calls[0].url).toBe('/api/closings/1/corrections');
+    expect(h.calls[0].init).toMatchObject({ method: 'POST', credentials: 'same-origin', cache: 'no-store' });
+    expect(h.calls[0].init.body).toBe(
+      '{"reason":"la caja estaba mal","payload":{"counted_quantities":[{"variant_id":2,"counted_quantity":7}]}}');
+    expect(new Headers(h.calls[0].init.headers).get('X-CSRF-Token')).toBe(csrf);
+  });
+
+  it('never sends a correction without a reason or without a value (S16)', async () => {
+    const h = harness(() => json(pendingCorrection(), 201));
+    expect((await refusalOf(h.api.correction(1, { reason: '   ', payload: { counted_cash: '1.00' } }, csrf)))
+      .code).toBe('invalid_request');
+    expect((await refusalOf(h.api.correction(1, { reason: 'un motivo', payload: {} }, csrf)))
+      .code).toBe('invalid_request');
+    expect((await refusalOf(h.api.correction(1,
+      { reason: 'un motivo', payload: { counted_cash: 1 } } as never, csrf))).code).toBe('invalid_request');
+    expect((await refusalOf(h.api.correction(1,
+      { reason: 'un motivo', payload: { fund: '1.00' } } as never, csrf))).code).toBe('invalid_request');
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it('decides the correction it was shown, with the same gate as the round (S14, S16)', async () => {
+    const accepted = harness(() => json(acceptedCorrection()));
+    const decided = await accepted.api.correctionDecision(3, { decision: 'accepted' }, csrf);
+    expect(decided.status).toBe('accepted');
+    expect(accepted.calls[0].url).toBe('/api/closings/corrections/3/decision');
+    expect(accepted.calls[0].init.body).toBe('{"decision":"accepted"}');
+    const rejected = harness(() => json(acceptedCorrection({ status: 'rejected',
+      decided_at: '2026-09-12T19:10:00Z', decision_reason: 'no era así', effects: [] })));
+    const returned = await rejected.api.correctionDecision(3,
+      { decision: 'rejected', reason: '  no era así  ' }, csrf);
+    expect(returned.status).toBe('rejected');
+    expect(returned.decision_reason).toBe('no era así');
+    expect(rejected.calls[0].init.body).toBe('{"decision":"rejected","reason":"no era así"}');
+    // A decision the contract does not take never leaves the screen.
+    const refused = harness(() => json(acceptedCorrection()));
+    expect((await refusalOf(refused.api.correctionDecision(3, { decision: 'accepted', reason: 'x' } as never,
+      csrf))).code).toBe('invalid_request');
+    expect((await refusalOf(refused.api.correctionDecision(3, { decision: 'rejected' } as never, csrf)))
+      .code).toBe('invalid_request');
+    expect(refused.calls).toHaveLength(0);
+  });
+
+  it('does not describe a correction the server did not decide', async () => {
+    // A decision route that answers the pending correction is not the answer this transport takes.
+    const h = harness(() => json(pendingCorrection()));
+    expect((await refusalOf(h.api.correctionDecision(3, { decision: 'accepted' }, csrf))).code)
+      .toBe('invalid_response');
+  });
+
+  it('names the six refusals of a correction instead of reporting an outage', async () => {
+    const notClosed = parseClosingRefusal('{"error":"correction_not_closed","closing_id":7}', 409);
+    expect(notClosed.code).toBe('correction_not_closed');
+    expect(notClosed.closing_id).toBe(7);
+    for (const code of ['correction_pending', 'correction_decided', 'correction_payload',
+      'correction_fund_started', 'correction_journal'] as const) {
+      expect(parseClosingRefusal(`{"error":"${code}"}`, 409).code).toBe(code);
+    }
+    const pending = harness(() => json({ error: 'correction_pending' }, 409));
+    expect((await refusalOf(pending.api.correction(1,
+      { reason: 'otra', payload: { counted_cash: '1.00' } }, csrf))).code).toBe('correction_pending');
+    const notClosedResponse = harness(() => json({ error: 'correction_not_closed', closing_id: 7 }, 409));
+    const failure = await refusalOf(notClosedResponse.api.correction(7,
+      { reason: 'una', payload: { counted_cash: '1.00' } }, csrf));
+    expect(failure.code).toBe('correction_not_closed');
+    expect(failure.refusal?.closing_id).toBe(7);
+  });
+
+  it('reads one correction on its own, which is what the two correction routes answer', () => {
+    const correction = parseClosingCorrection(JSON.stringify(pendingCorrection()));
+    expect(correction.closing_id).toBe(1);
+    expect(correction.status).toBe('proposed');
+    expect(correction.payload.counted_quantities).toHaveLength(1);
   });
 });

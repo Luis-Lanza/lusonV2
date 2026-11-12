@@ -1021,10 +1021,12 @@ type closingDTO struct {
 	// warehouse sees what it subtracts and the branch what it is charged for.
 	Expenses []closingExpenseDTO `json:"expenses"`
 	Rounds   []closingRoundDTO   `json:"rounds"`
-	// Corrections are the accepted corrections of the closed settlement, oldest first: each one with
-	// the reason the warehouse stated, the branch's answer, the payload it offered and the deltas it
-	// applied. The drawer above is the signed one plus those deltas, so the document publishes a
-	// corrected number as corrected and the delta that produced it beside it (S16). A live
+	// Corrections are the corrections of the closed settlement, oldest first: each one with the reason
+	// the warehouse stated, its status, the branch's answer, the payload it offered and -- once
+	// accepted -- the deltas it applied. The drawer above is the signed one plus those deltas, so the
+	// document publishes a corrected number as corrected and the delta that produced it beside it
+	// (S16). The pending correction is published with `status: "proposed"` and no decision, because it
+	// is what the branch has to answer; a rejected one applied nothing and is not published. A live
 	// settlement publishes none: it is corrected by its own rounds, not after the fact.
 	Corrections []closingCorrectionDTO `json:"corrections"`
 }
@@ -1239,14 +1241,33 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 		}
 		expenses = append(expenses, record)
 	}
-	// The corrections of the document are the ones the branch accepted, oldest first: a pending
-	// correction is a decision that has not been taken and a rejected one applied nothing, so
-	// neither of them rewrote a number. Only a closed settlement is corrected at all (LC012).
+	// The corrections of the document are the ones the branch accepted, oldest first, plus the one that
+	// is still waiting for its decision. An accepted correction publishes the deltas it applied, so a
+	// corrected number is legible as the result of a correction; the pending one publishes its reason,
+	// its payload and its status, because that is what the branch has to answer and no other route
+	// lists it (S16). A rejected correction applied nothing and is never published, and only a closed
+	// settlement is corrected at all (LC012).
 	corrections := make([]closingCorrectionDTO, 0, len(closing.Corrections))
 	var previousCorrection int64
+	pendingCorrection := false
 	for _, correction := range closing.Corrections {
-		if correction.Status != closings.CorrectionAccepted || correction.ClosingID != closing.ID ||
-			correction.ID <= previousCorrection || closing.Status != closings.StatusClosed {
+		if correction.ClosingID != closing.ID || correction.ID <= previousCorrection ||
+			closing.Status != closings.StatusClosed {
+			return unavailable()
+		}
+		switch correction.Status {
+		case closings.CorrectionProposed:
+			// One correction waits at a time (034), and it is always the newest one: a decided
+			// correction is final, so a pending one never precedes an accepted one.
+			if pendingCorrection {
+				return unavailable()
+			}
+			pendingCorrection = true
+		case closings.CorrectionAccepted:
+			if pendingCorrection {
+				return unavailable()
+			}
+		default:
 			return unavailable()
 		}
 		record, err := closingCorrectionRecord(correction)

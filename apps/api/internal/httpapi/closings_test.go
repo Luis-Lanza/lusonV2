@@ -577,6 +577,31 @@ func TestClosingRecord(t *testing.T) {
 		*describedCorrection.Corrections[0].Effects[0].AmountDelta != "100.00" {
 		t.Fatalf("the document must publish the corrected drawer with its delta: %+v", describedCorrection)
 	}
+	// The correction that still waits for the branch is published too, with its status and its
+	// payload, because it is what the branch has to answer; a number it would change stays the signed
+	// one, and an accepted correction may precede it. Only one correction may wait (034).
+	pendingCorrection := corrected
+	pendingCorrection.Corrections = []closings.Correction{{ID: 6, ClosingID: 1,
+		Status: closings.CorrectionProposed, Reason: "faltaba una batería",
+		Payload:             closings.CorrectionOffer{CountedQuantities: []closings.Counted{{VariantID: 3, Quantity: 8}}},
+		ProposedByAccountID: 1, ProposedAt: corrected.CutAt.Add(2 * time.Hour)}}
+	describedPending, err := closingRecord(pendingCorrection)
+	if err != nil {
+		t.Fatalf("a settlement awaiting a decision must publish it: %+v %v", describedPending, err)
+	}
+	if len(describedPending.Corrections) != 1 || describedPending.Corrections[0].Status != "proposed" ||
+		describedPending.Corrections[0].DecidedByAccountID != nil ||
+		describedPending.Corrections[0].DecidedAt != nil || len(describedPending.Corrections[0].Effects) != 0 ||
+		describedPending.Corrections[0].Payload.CountedQuantities[0].CountedQuantity != 8 {
+		t.Fatalf("the pending correction must keep its status and its payload: %+v", describedPending.Corrections)
+	}
+	acceptedThenPending := corrected
+	acceptedThenPending.Corrections = []closings.Correction{corrected.Corrections[0],
+		pendingCorrection.Corrections[0]}
+	if described, err := closingRecord(acceptedThenPending); err != nil || len(described.Corrections) != 2 ||
+		described.Corrections[0].Status != "accepted" || described.Corrections[1].Status != "proposed" {
+		t.Fatalf("the accepted corrections and the pending one must be published in order: %+v %v", described.Corrections, err)
+	}
 	// Only a closed settlement carries corrections: a live one is corrected by its own rounds.
 	liveCorrection := corrected
 	liveCorrection.Status = closings.StatusProposed
@@ -592,12 +617,28 @@ func TestClosingRecord(t *testing.T) {
 	rejectedCorrection.Corrections = []closings.Correction{corrected.Corrections[0]}
 	rejectedCorrection.Corrections[0].Status = closings.CorrectionRejected
 	rejectedCorrection.Corrections[0].DecisionReason = "no"
+	// One correction waits at a time, and the pending one is always the newest: a document with two
+	// pending corrections or with an accepted one after a pending one is a shape this domain never
+	// wrote and is never published.
+	twoPending := corrected
+	twoPending.Corrections = []closings.Correction{pendingCorrection.Corrections[0],
+		pendingCorrection.Corrections[0]}
+	twoPending.Corrections[1].ID = 7
+	pendingAfterAcceptedOK := corrected
+	pendingAfterAcceptedOK.Corrections = []closings.Correction{pendingCorrection.Corrections[0],
+		corrected.Corrections[0]}
+	pendingAfterAcceptedOK.Corrections[1].ID = 7
+	livePending := liveCorrection
+	livePending.Corrections = []closings.Correction{pendingCorrection.Corrections[0]}
 	for name, value := range map[string]closings.Closing{
-		"correction_on_live":     liveCorrection,
-		"correction_elsewhere":   otherCorrection,
-		"correction_repeated":    repeatedCorrection,
-		"correction_rejected":    rejectedCorrection,
-		"correction_wrong_shape": func() closings.Closing { v := corrected; v.Corrections[0].Reason = ""; return v }(),
+		"correction_on_live":       liveCorrection,
+		"correction_pending_live":  livePending,
+		"correction_elsewhere":     otherCorrection,
+		"correction_repeated":      repeatedCorrection,
+		"correction_rejected":      rejectedCorrection,
+		"correction_two_pending":   twoPending,
+		"correction_accepted_last": pendingAfterAcceptedOK,
+		"correction_wrong_shape":   func() closings.Closing { v := corrected; v.Corrections[0].Reason = ""; return v }(),
 	} {
 		if _, err := closingRecord(value); !errors.Is(err, closings.ErrUnavailable) {
 			t.Fatalf("%s must fail closed", name)
@@ -2101,6 +2142,24 @@ func TestClosingsCorrectionOfAClosedSettlement(t *testing.T) {
 		proposed.Payload.CountedQuantities[0].CountedQuantity != signedQuantity-1 ||
 		proposed.Payload.CommissionAmount != "" || proposed.Payload.ClosingCash != "" {
 		t.Fatalf("the proposed correction is not published as it was offered: %+v", proposed)
+	}
+	// The pending correction is published with the document and its status, so the branch can see
+	// what awaits its decision and by whom it was proposed instead of calling a route that does not
+	// exist, and no number it would change is applied while it waits.
+	pending := closingWire(t, f.serve(t, f.request(3, "GET", fmt.Sprintf("/api/closings/%d", closed.ID), "")), 200)
+	if len(pending.Corrections) != 1 || pending.Corrections[0].ID != proposed.ID ||
+		pending.Corrections[0].Status != "proposed" || pending.Corrections[0].ClosingID != closed.ID ||
+		pending.Corrections[0].Reason != "conté mal el cajón y una batería" ||
+		pending.Corrections[0].ProposedByAccountID != 1 || pending.Corrections[0].ProposedAt == "" ||
+		pending.Corrections[0].DecidedByAccountID != nil || pending.Corrections[0].DecidedAt != nil ||
+		pending.Corrections[0].DecisionReason != "" || len(pending.Corrections[0].Effects) != 0 ||
+		pending.Corrections[0].Payload.CountedCash != "150.00" ||
+		len(pending.Corrections[0].Payload.CountedQuantities) != 1 {
+		t.Fatalf("the pending correction must be published with its status: %+v", pending.Corrections)
+	}
+	if pending.CountedCash == nil || *pending.CountedCash != "0.00" ||
+		pending.CashDifference == nil || *pending.CashDifference != "0.00" {
+		t.Fatalf("a pending correction must apply no published number: %+v", pending)
 	}
 	// One correction waits at a time: the warehouse waits for the branch's answer.
 	f.refused(t, f.request(1, "POST", corrections,
