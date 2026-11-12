@@ -3,6 +3,16 @@
 -- a fund for the next period. The period runs from one closed settlement to the next,
 -- with a cut date chosen by hand each time.
 --
+-- The vertical is two migrations. This one is the settlement's own shape:
+--
+--   tables, indexes, identity, the state machine and immutability.
+--
+-- Everything that reads or writes another table is 035: seeding the count sheet from
+-- the branch's balances, the stock the closure applies, the cash ledger rows and its
+-- admission, the freeze predicate and its wiring into the sale, purchase, transfer and
+-- reconciliation paths. The split is what makes this file readable as the document's
+-- contract: no table of 001-033 is named here.
+--
 -- Money authority lives here, not in the client:
 --   expected cash = opening_cash + cash_sales - cash_expenses   (derived on read)
 --   cash difference = counted_cash - expected cash              (derived on read)
@@ -14,9 +24,16 @@
 -- paid outside the system. The stock difference, unlike the cash one, cannot survive
 -- a closure: closing applies exactly what was counted.
 --
--- No new realtime code is required: migration 004 already installs
--- invalidate_balance_change on inventory_balances, so every difference applied by
--- the closure trigger invalidates the 'inventory' scope inside the same transaction.
+-- The offer is the settlement's own fact and it is recorded when the warehouse
+-- proposes: the period totals (sales_total, cash_sales, card_total, transfer_total,
+-- qr_total) and commission_amount are computed by the database from the immutable
+-- sales of the period and the frozen rate, and from then on they are immutable. A
+-- rejection hands the settlement back for editing but not the offer, and the closure
+-- applies the offer it was accepted with: it never recomputes it (R1-001).
+--
+-- No new realtime code is required: migration 004 already installs the balance
+-- invalidation trigger, so every difference applied by the closure of 035 invalidates
+-- the 'inventory' scope inside the same transaction.
 CREATE TABLE branch_settings (
     branch_location_id smallint PRIMARY KEY REFERENCES locations(id),
     -- Percentual commission settled to the branch for new batteries sold in a
@@ -48,13 +65,20 @@ CREATE TABLE branch_closings (
     commission_rate_percent numeric(5,2)
         CHECK (commission_rate_percent >= 0 AND commission_rate_percent <= 100),
     opening_cash numeric(12,2) NOT NULL DEFAULT 0 CHECK (opening_cash >= 0),
+    -- Cash the branch took in the period. A draft while the settlement is open, and
+    -- from the proposal on it is the database's own reading of the sale payments.
     cash_sales numeric(12,2) NOT NULL DEFAULT 0 CHECK (cash_sales >= 0),
+    -- Expenses the warehouse states at the cut: the branch's ledger is read by the
+    -- admin, never typed by the client as a period fact.
     cash_expenses numeric(12,2) NOT NULL DEFAULT 0 CHECK (cash_expenses >= 0),
-    -- Snapshots of the settled period, written once at closure.
+    -- The offer, recorded once by the proposal: the totals of the settled period and
+    -- the commission they pay. 035 computes them; nothing rewrites them afterwards.
     sales_total numeric(12,2) NOT NULL DEFAULT 0 CHECK (sales_total >= 0),
     commission_amount numeric(12,2) NOT NULL DEFAULT 0 CHECK (commission_amount >= 0),
     card_total numeric(12,2) NOT NULL DEFAULT 0 CHECK (card_total >= 0),
     transfer_total numeric(12,2) NOT NULL DEFAULT 0 CHECK (transfer_total >= 0),
+    -- The fourth method (S13) has its own column and its own migration: it is 0 here
+    -- so a settlement never reports money it did not classify.
     qr_total numeric(12,2) NOT NULL DEFAULT 0 CHECK (qr_total >= 0),
     counted_cash numeric(12,2) CHECK (counted_cash >= 0),
     -- Money the warehouse puts into the till at the cut, on top of what it counted: the
@@ -94,6 +118,8 @@ CREATE TABLE closing_count_lines (
 -- Cash that moves in and out of the branch till, independent of sales: the branch
 -- records small expenses as they happen, and the closure records the transfer between
 -- the branch and the warehouse. Immutable: a wrong movement is fixed by its opposite.
+-- Its admission is 035 (it reads the settlement and the branch status); the table and
+-- its append-only guards are the shape of the ledger and live here.
 CREATE TABLE branch_cash_movements (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     branch_location_id smallint NOT NULL REFERENCES locations(id),
@@ -163,25 +189,6 @@ CREATE TABLE closing_corrections (
 CREATE UNIQUE INDEX closing_corrections_one_pending ON closing_corrections(closing_id)
 WHERE status = 'proposed';
 
--- The predicate every branch-facing flow consults: a branch with a live settlement
--- cannot trade, receive stock, transfer or spend. Migration 035 wires it into the
--- existing admission functions; it is defined here because it reads this table.
-CREATE FUNCTION branch_closure_blocker(target smallint) RETURNS boolean LANGUAGE sql STABLE AS $$
-    SELECT EXISTS (
-        SELECT 1 FROM branch_closings
-        WHERE branch_location_id = target AND status <> 'closed'
-    );
-$$;
-
-CREATE FUNCTION assert_branch_not_frozen(target smallint) RETURNS void LANGUAGE plpgsql AS $$
-BEGIN
-    IF branch_closure_blocker(target) THEN
-        RAISE EXCEPTION USING ERRCODE='LC001',
-            MESSAGE='The branch has an open account settlement and cannot operate';
-    END IF;
-END;
-$$;
-
 -- Only the warehouse admin opens a settlement, only for a branch that is still
 -- operating, and the database decides the cut instant and the period start. The
 -- commission rate is not read here: it is a fact of the proposal (S6), so a settlement
@@ -211,8 +218,9 @@ BEGIN
     NEW.commission_rate_percent := NULL;
     -- A closure of the same branch may commit between this read and the unique index
     -- wait, and the snapshot below would then inherit a fund and a cut instant that are
-    -- already obsolete. The branch is locked for the rest of the transaction, and the
-    -- closure path takes the same lock.
+    -- already obsolete. The branch is locked for the rest of the transaction, and every
+    -- path that reads or writes the settlement of a branch takes the same lock: the
+    -- closure itself, and the freeze guards of 035 (R4-001).
     PERFORM pg_advisory_xact_lock(340251, NEW.branch_location_id::integer);
     SELECT max(closed_at) INTO previous FROM branch_closings
     WHERE branch_location_id = NEW.branch_location_id AND status = 'closed';
@@ -227,47 +235,10 @@ $$;
 CREATE TRIGGER admit_branch_closing BEFORE INSERT ON branch_closings
 FOR EACH ROW EXECUTE FUNCTION admit_branch_closing();
 
--- Opening a settlement freezes the expected snapshot for every variant the branch
--- holds, so the count sheet is a fact of the cut instant and never a live read.
-CREATE FUNCTION seed_closing_count_lines() RETURNS trigger LANGUAGE plpgsql AS $$
-BEGIN
-    INSERT INTO closing_count_lines(closing_id, variant_id, expected_quantity)
-    SELECT NEW.id, balance.variant_id, balance.existing
-    FROM inventory_balances balance
-    WHERE balance.location_id = NEW.branch_location_id AND balance.existing > 0;
-    RETURN NULL;
-END;
-$$;
-CREATE TRIGGER seed_closing_count_lines AFTER INSERT ON branch_closings
-FOR EACH ROW EXECUTE FUNCTION seed_closing_count_lines();
-
--- A count line belongs to the warehouse while the settlement is not being decided: the
--- sheet is writable while it is open and again after a rejection, because a rejection
--- hands the settlement back for correction (S14) — a branch usually rejects a count that
--- is wrong. It is frozen while the branch is deciding, and forever once closed. The
--- expected quantity is the database's own snapshot, never a caller promise: a caller
--- that sends one is ignored.
-CREATE FUNCTION admit_closing_count_line() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE
-    header branch_closings%ROWTYPE;
-    balance inventory_balances%ROWTYPE;
-BEGIN
-    SELECT * INTO header FROM branch_closings WHERE id=NEW.closing_id;
-    IF NOT FOUND OR header.status NOT IN ('open','rejected') THEN
-        RAISE EXCEPTION USING ERRCODE='LC004',
-            MESSAGE='Count lines are written while the warehouse holds the settlement';
-    END IF;
-    SELECT * INTO balance FROM inventory_balances
-    WHERE location_id=header.branch_location_id AND variant_id=NEW.variant_id;
-    NEW.expected_quantity := coalesce(balance.existing, 0);
-    RETURN NEW;
-END;
-$$;
-CREATE TRIGGER admit_closing_count_line BEFORE INSERT ON closing_count_lines
-FOR EACH ROW EXECUTE FUNCTION admit_closing_count_line();
-
 -- While the warehouse holds the settlement, the only thing that can change on a count
--- line is what was counted: the same window as the insert above, and never a closed one.
+-- line is what was counted: the expected quantity is the snapshot taken at open (035
+-- seeds it from the branch's balances), and a closed settlement's sheet never moves.
+-- This guard owns the shape of the line, so it does not read any other table.
 CREATE FUNCTION guard_closing_count_line() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE header branch_closings%ROWTYPE;
 BEGIN
@@ -309,8 +280,8 @@ CREATE FUNCTION admit_branch_closing_transition() RETURNS trigger LANGUAGE plpgs
 DECLARE
     configured numeric(5,2);
     latest record;
+    pending integer;
     excess numeric(12,2);
-    taken numeric(12,2);
 BEGIN
     IF TG_OP = 'DELETE' THEN
         RAISE EXCEPTION USING ERRCODE='LC005',
@@ -331,7 +302,7 @@ BEGIN
         RAISE EXCEPTION USING ERRCODE='LC005',
             MESSAGE='The identity of an account settlement is frozen at open';
     END IF;
-    -- The closure instant is taken by the closure itself below, never by a caller.
+    -- The closure instant is taken by this guard below, never by a caller.
     IF NEW.closed_at IS DISTINCT FROM OLD.closed_at THEN
         RAISE EXCEPTION USING ERRCODE='LC005',
             MESSAGE='The closure instant belongs to the closure';
@@ -350,8 +321,11 @@ BEGIN
     -- draftable fields are exactly cash_sales, cash_expenses, counted_cash,
     -- contributed_cash, closing_cash and observation: they are drafts because until the
     -- closure they are the admin's own reading of the branch, not a fact of the period.
+    -- cash_sales is the only one that stops being a draft: 035 overwrites it at the
+    -- proposal with the sum of the sale payments of the window, and from then on the
+    -- offer rule below freezes it (R1-001).
     -- A proposed settlement is not editable at all, because the branch is deciding that
-    -- very offer; the period snapshots and the commission rate are never drafts.
+    -- very offer; the period totals and the commission rate are never drafts.
     IF NEW.status = OLD.status THEN
         IF OLD.status NOT IN ('open','rejected') THEN
             RAISE EXCEPTION USING ERRCODE='LC005',
@@ -364,7 +338,7 @@ BEGIN
            OR NEW.qr_total <> OLD.qr_total
            OR NEW.commission_rate_percent IS DISTINCT FROM OLD.commission_rate_percent THEN
             RAISE EXCEPTION USING ERRCODE='LC005',
-                MESSAGE='The period snapshots and the commission rate are not drafts';
+                MESSAGE='The period totals and the commission rate are not drafts';
         END IF;
         RETURN NEW;
     END IF;
@@ -377,20 +351,24 @@ BEGIN
         RAISE EXCEPTION USING ERRCODE='LC005',
             MESSAGE='Unsupported account settlement transition';
     END IF;
-    -- The snapshots of the settled period are written once, by the closure itself.
-    IF NEW.status <> 'closed'
+    -- R1-001: the offer -- the five totals and the commission they pay -- is recorded
+    -- when the settlement is proposed (035 computes it) and never rewritten afterwards.
+    -- Neither a rejection nor the closure touches it: the branch is shown, decides and
+    -- closes exactly the numbers the database recorded.
+    IF NEW.status <> 'proposed'
        AND (NEW.sales_total <> OLD.sales_total
+            OR NEW.cash_sales <> OLD.cash_sales
             OR NEW.commission_amount <> OLD.commission_amount
             OR NEW.card_total <> OLD.card_total
             OR NEW.transfer_total <> OLD.transfer_total
             OR NEW.qr_total <> OLD.qr_total) THEN
         RAISE EXCEPTION USING ERRCODE='LC005',
-            MESSAGE='The period snapshots are written once, by the closure';
+            MESSAGE='The offer of a settlement is recorded when it is proposed';
     END IF;
-    -- The rate is a fact of the proposal (S6): it is read from branch_settings when the
-    -- warehouse proposes, and frozen from then on, so changing the configured rate
-    -- never alters a proposed or a closed settlement.
     IF NEW.status = 'proposed' THEN
+        -- The rate is a fact of the proposal (S6): it is read from branch_settings when
+        -- the warehouse proposes, and frozen from then on, so changing the configured
+        -- rate never alters a proposed or a closed settlement.
         SELECT commission_rate_percent INTO configured FROM branch_settings
         WHERE branch_location_id = NEW.branch_location_id;
         IF NOT FOUND THEN
@@ -398,6 +376,28 @@ BEGIN
                 MESSAGE='The branch has no commission rate configured';
         END IF;
         NEW.commission_rate_percent := configured;
+        -- R3-001: a branch can never be offered a settlement whose count is incomplete.
+        -- The refusal names the pending variant, exactly like the closure one does, so
+        -- the admin knows which line of the count sheet is missing.
+        SELECT variant_id INTO pending FROM closing_count_lines
+        WHERE closing_id = OLD.id AND counted_quantity IS NULL ORDER BY variant_id LIMIT 1;
+        IF pending IS NOT NULL THEN
+            RAISE EXCEPTION USING ERRCODE='LC019',
+                MESSAGE='Variant ' || pending || ' has no counted quantity';
+        END IF;
+        -- The offer is a round of the proposal (S14, S15): proposing opens one, so a
+        -- settlement is never offered without the version that states it, and it can
+        -- always be rejected because there is always a round to reject (R4-003).
+        SELECT round, decision INTO latest FROM closing_proposals
+        WHERE closing_id = OLD.id ORDER BY round DESC LIMIT 1;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION USING ERRCODE='LC016',
+                MESSAGE='The settlement has no proposal round to offer';
+        END IF;
+        IF latest.decision IS NOT NULL THEN
+            RAISE EXCEPTION USING ERRCODE='LC016',
+                MESSAGE='Proposal round ' || latest.round || ' is already decided';
+        END IF;
     ELSIF NEW.commission_rate_percent IS DISTINCT FROM OLD.commission_rate_percent THEN
         RAISE EXCEPTION USING ERRCODE='LC005',
             MESSAGE='The commission rate is frozen when the settlement is proposed';
@@ -414,6 +414,21 @@ BEGIN
            OR NEW.observation IS DISTINCT FROM OLD.observation THEN
             RAISE EXCEPTION USING ERRCODE='LC005',
                 MESSAGE='The drawer of a proposed settlement is the offer the branch decides';
+        END IF;
+    END IF;
+    -- R4-003: a rejection is the branch's answer to a round, so the latest round must
+    -- itself be rejected. A header-only update can never bypass an accepted round, and
+    -- it can never return a settlement to the warehouse that the branch did not refuse.
+    IF NEW.status = 'rejected' THEN
+        SELECT round, decision INTO latest FROM closing_proposals
+        WHERE closing_id = OLD.id ORDER BY round DESC LIMIT 1;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION USING ERRCODE='LC016',
+                MESSAGE='The settlement has no proposal round to reject';
+        END IF;
+        IF latest.decision IS DISTINCT FROM 'rejected' THEN
+            RAISE EXCEPTION USING ERRCODE='LC016',
+                MESSAGE='Proposal round ' || latest.round || ' is not rejected';
         END IF;
     END IF;
     -- Only an accepted round closes a settlement (S14): nothing is applied by an offer
@@ -437,7 +452,8 @@ BEGIN
     END IF;
     -- The closure instant is the database's, taken by this BEFORE trigger: an AFTER
     -- trigger writes it too late, and re-writing the row it watches re-enters this
-    -- very guard with a closed OLD row and refuses every closure.
+    -- very guard with a closed OLD row and refuses every closure. The ledger rows of
+    -- the closure are written by 035, which applies them under this same lock.
     IF NEW.status = 'closed' THEN
         -- A closure always states the money it counted, the contribution the warehouse
         -- made and the fund it leaves, and the fund never exceeds the drawer: the cash
@@ -453,31 +469,6 @@ BEGIN
                     || excess;
         END IF;
         PERFORM pg_advisory_xact_lock(340251, NEW.branch_location_id::integer);
-        -- The settlement's ledger rows are written here, while the row still reads as
-        -- proposed. admit_branch_cash_movement refuses them anywhere else, so a closed
-        -- settlement cannot grow new financial facts: a fix goes through the correction
-        -- workflow that the branch approves.
-        IF NEW.contributed_cash > 0 THEN
-            INSERT INTO branch_cash_movements(
-                branch_location_id, closing_id, kind, amount, description, created_by_account_id)
-            VALUES (NEW.branch_location_id, NEW.id, 'aporte', NEW.contributed_cash,
-                'Aporte de fondo de la rendición', NEW.opened_by_account_id);
-        END IF;
-        -- What the drawer held at the cut is the cash counted plus the contribution, and
-        -- its difference with the fund left behind is the settlement transfer. The S10
-        -- bound keeps that difference non-negative today.
-        taken := NEW.counted_cash + NEW.contributed_cash - NEW.closing_cash;
-        IF taken <> 0 THEN
-            INSERT INTO branch_cash_movements(
-                branch_location_id, closing_id, kind, amount, description, created_by_account_id)
-            VALUES (
-                NEW.branch_location_id, NEW.id,
-                CASE WHEN taken > 0 THEN 'recaudacion' ELSE 'aporte' END,
-                abs(taken),
-                CASE WHEN taken > 0 THEN 'Recaudación de la rendición'
-                     ELSE 'Aporte de fondo para la rendición' END,
-                NEW.opened_by_account_id);
-        END IF;
         NEW.closed_at := now();
     END IF;
     RETURN NEW;
@@ -492,65 +483,13 @@ FOR EACH ROW EXECUTE FUNCTION admit_branch_closing_transition();
 CREATE TRIGGER protect_branch_closings_truncate BEFORE TRUNCATE ON branch_closings
 EXECUTE FUNCTION protect_pending_request();
 
--- Closing is the only moment stock moves, and it moves to exactly what was counted:
--- the stock difference cannot survive a closure. Every line must be counted first, and
--- the money of the drawer becomes the closing ledger: the contribution the warehouse
--- made, and the fund left behind as its difference.
-CREATE FUNCTION apply_branch_closing_closure() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE
-    line record;
-    balance inventory_balances%ROWTYPE;
-    pending integer;
-BEGIN
-    IF NEW.status <> 'closed' OR OLD.status = 'closed' THEN
-        RETURN NULL;
-    END IF;
-    -- The refusal names the variant still pending, exactly like the stock one below:
-    -- the admin has to know which line of the count sheet is missing.
-    SELECT variant_id INTO pending FROM closing_count_lines
-    WHERE closing_id=NEW.id AND counted_quantity IS NULL ORDER BY variant_id LIMIT 1;
-    IF pending IS NOT NULL THEN
-        RAISE EXCEPTION USING ERRCODE='LC006',
-            MESSAGE='Variant ' || pending || ' has no counted quantity';
-    END IF;
-    FOR line IN
-        SELECT * FROM closing_count_lines WHERE closing_id = NEW.id ORDER BY variant_id
-    LOOP
-        SELECT * INTO balance FROM inventory_balances
-        WHERE location_id=NEW.branch_location_id AND variant_id=line.variant_id FOR UPDATE;
-        IF line.counted_quantity < coalesce(balance.reserved, 0) THEN
-            RAISE EXCEPTION USING ERRCODE='LC007',
-                MESSAGE='Counted quantity of variant ' || line.variant_id
-                    || ' is lower than its reserved stock';
-        END IF;
-        -- The count is a snapshot of the cut instant. If the branch traded while the
-        -- settlement is open, applying the stale count would resurrect sold stock or
-        -- discard received stock. Freezing the branch lands in 035; this refusal is
-        -- what keeps 034 safe on its own. A variant with no balance row yet has nothing
-        -- to compare: the INSERT below creates it from the count.
-        IF balance.location_id IS NOT NULL
-           AND balance.existing IS DISTINCT FROM line.expected_quantity THEN
-            RAISE EXCEPTION USING ERRCODE='LC018',
-                MESSAGE='Variant ' || line.variant_id || ' moved during the settlement';
-        END IF;
-        -- A variant counted above its expected quantity may have no balance row at
-        -- all, and then it exists only in the count: the closure creates the row, so
-        -- the stock ends exactly at what was counted in both directions.
-        INSERT INTO inventory_balances(location_id, variant_id, existing, reserved)
-        VALUES (NEW.branch_location_id, line.variant_id, line.counted_quantity, 0)
-        ON CONFLICT (location_id, variant_id)
-        DO UPDATE SET existing = EXCLUDED.existing;
-    END LOOP;
-    -- The settlement's ledger rows are written by the transition guard, which owns the
-    -- offer the branch accepted; here the stock is the only thing applied.
-    -- closed_at was already stamped by the BEFORE transition guard, which owns the
-    -- row: writing it from here would run the transition guard a second time on the
-    -- row this trigger is watching, and it would refuse every closure.
-    RETURN NULL;
-END;
-$$;
-CREATE TRIGGER apply_branch_closing_closure AFTER UPDATE ON branch_closings
-FOR EACH ROW EXECUTE FUNCTION apply_branch_closing_closure();
+-- The ledger is append only: a wrong movement is fixed by its opposite. This is the
+-- immutability half of the table, and it is here because it reads no other table; who
+-- may append a movement is 035.
+CREATE TRIGGER protect_branch_cash_movements BEFORE UPDATE OR DELETE ON branch_cash_movements
+FOR EACH ROW EXECUTE FUNCTION protect_pending_request();
+CREATE TRIGGER protect_branch_cash_movements_truncate BEFORE TRUNCATE ON branch_cash_movements
+EXECUTE FUNCTION protect_pending_request();
 
 -- A proposal round is immutable once decided, and only the branch it belongs to can
 -- decide it. Any enabled account of that branch may accept or reject.
@@ -624,59 +563,6 @@ $$;
 CREATE TRIGGER guard_closing_proposal_decision BEFORE UPDATE OR DELETE ON closing_proposals
 FOR EACH ROW EXECUTE FUNCTION guard_closing_proposal_decision();
 CREATE TRIGGER protect_closing_proposals_truncate BEFORE TRUNCATE ON closing_proposals
-EXECUTE FUNCTION protect_pending_request();
-
--- Cash movements are a ledger: append only, and a branch expense is always recorded by
--- the branch it belongs to while it is operating.
-CREATE FUNCTION admit_branch_cash_movement() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE actor auth_accounts%ROWTYPE;
-BEGIN
-    SELECT * INTO actor FROM auth_accounts WHERE id=NEW.created_by_account_id;
-    IF NOT FOUND THEN
-        RAISE EXCEPTION USING ERRCODE='LC011', MESSAGE='Cash movement requires a known account';
-    END IF;
-    IF NEW.kind = 'gasto' THEN
-        IF actor.location_id <> NEW.branch_location_id THEN
-            RAISE EXCEPTION USING ERRCODE='LC011',
-                MESSAGE='Only the branch records its own expenses';
-        END IF;
-        PERFORM assert_branch_not_frozen(NEW.branch_location_id);
-        NEW.closing_id := NULL;
-    ELSE
-        IF NEW.closing_id IS NULL THEN
-            RAISE EXCEPTION USING ERRCODE='LC011',
-                MESSAGE='A collection or contribution belongs to a settlement';
-        END IF;
-        -- The money of a settlement is the warehouse's: it moves in the till of the
-        -- branch that settlement belongs to, and never by an account of the branch.
-        IF actor.id <> 1 OR actor.location_id <> 1 THEN
-            RAISE EXCEPTION USING ERRCODE='LC011',
-                MESSAGE='Only the warehouse moves the money of a settlement';
-        END IF;
-        -- A settlement transfer is written once, by the closure itself, while the row
-        -- still reads as proposed. Anything else -- in particular appending money to a
-        -- closed settlement -- is refused: that history is fixed by an approved
-        -- correction, never by a new ledger row.
-        IF NOT EXISTS (SELECT 1 FROM branch_closings
-            WHERE id=NEW.closing_id AND branch_location_id=NEW.branch_location_id
-              AND status = 'proposed') THEN
-            RAISE EXCEPTION USING ERRCODE='LC011',
-                MESSAGE='A cash movement belongs to a proposed settlement of its own branch';
-        END IF;
-        IF EXISTS (SELECT 1 FROM branch_cash_movements
-            WHERE closing_id=NEW.closing_id AND kind=NEW.kind) THEN
-            RAISE EXCEPTION USING ERRCODE='LC011',
-                MESSAGE='A settlement states its transfer once';
-        END IF;
-    END IF;
-    RETURN NEW;
-END;
-$$;
-CREATE TRIGGER admit_branch_cash_movement BEFORE INSERT ON branch_cash_movements
-FOR EACH ROW EXECUTE FUNCTION admit_branch_cash_movement();
-CREATE TRIGGER protect_branch_cash_movements BEFORE UPDATE OR DELETE ON branch_cash_movements
-FOR EACH ROW EXECUTE FUNCTION protect_pending_request();
-CREATE TRIGGER protect_branch_cash_movements_truncate BEFORE TRUNCATE ON branch_cash_movements
 EXECUTE FUNCTION protect_pending_request();
 
 -- Corrections are proposed by the warehouse and decided by the branch, exactly like a

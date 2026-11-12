@@ -11,93 +11,186 @@ import (
 	"luson/api/migrations"
 )
 
-// migration035 is the freeze wiring of the branch account settlement: 034 owns the state
-// machine and the predicate, and this migration attaches that predicate to the admission
-// paths of the documents a branch writes ("Correcto, la sucursal se congela", S3). It is
-// add-only, like every migration of the vertical: 001-034 are applied and checksummed, so
-// no admission function of theirs is rewritten and every guard is a new trigger.
-const migration035 = "035_branch_freeze.sql"
+// migration035 is the other half of the settlement vertical: everything that reads or
+// writes another table -- the freeze predicate and its wiring, the stock snapshot, the
+// offer, the cash ledger and its provenance, the stock the closure applies, and the
+// reconciliation guards. It is add-only, like every migration of the vertical: 001-034
+// are applied and checksummed, so no admission function of theirs is rewritten and every
+// guard is a new trigger.
+const migration035 = "035_branch_guards.sql"
 
 // TestBranchFreezeSchemaStructure reads the embedded migration exactly as PostgreSQL
-// receives it and asserts the wiring it must install: one guard function and one trigger
-// per branch-facing admission path, each one calling the predicate of 034 on the branch
-// column of its own row, and no rewrite of anything that already exists.
+// receives it and asserts the wiring it must install: the freeze predicate with its
+// per-branch lock, one guard per branch-facing admission path, the snapshot, the offer,
+// the ledger's provenance and the closure -- and no rewrite of anything that exists.
 func TestBranchFreezeSchemaStructure(t *testing.T) {
 	b, err := migrations.Files.ReadFile(migration035)
 	if err != nil {
-		t.Fatal("the freeze migration must be embedded", err)
+		t.Fatal("the guards migration must be embedded", err)
 	}
 	sql := string(b)
 	for _, required := range []string{
-		// The sale of a frozen branch: the branch column of the sale header.
+		// The freeze predicate, and the per-branch advisory lock that makes it
+		// synchronise with the settlement instead of racing it (R4-001).
+		"CREATE FUNCTION branch_closure_blocker(target smallint) RETURNS boolean LANGUAGE sql STABLE AS $$",
+		"CREATE FUNCTION assert_branch_not_frozen(target smallint) RETURNS void LANGUAGE plpgsql AS $$",
+		"PERFORM pg_advisory_xact_lock(340251, target::integer);",
+		"IF branch_closure_blocker(target) THEN",
+
+		// The count sheet's snapshot and its admission: the expected quantity is the
+		// balance at the cut instant, never a caller promise (S4).
+		"CREATE FUNCTION seed_closing_count_lines() RETURNS trigger LANGUAGE plpgsql AS $$",
+		"CREATE TRIGGER seed_closing_count_lines AFTER INSERT ON branch_closings",
+		"CREATE FUNCTION admit_closing_count_line() RETURNS trigger LANGUAGE plpgsql AS $$",
+		"CREATE TRIGGER admit_closing_count_line BEFORE INSERT ON closing_count_lines",
+		"NEW.expected_quantity := coalesce(balance.existing, 0);",
+
+		// The cash ledger: a branch expense while the branch operates, and the money of a
+		// settlement only from its own closure, proven by a transaction-local marker and
+		// the trigger depth it can only be set from (R3-003).
+		"CREATE FUNCTION admit_branch_cash_movement() RETURNS trigger LANGUAGE plpgsql AS $$",
+		"CREATE TRIGGER admit_branch_cash_movement BEFORE INSERT ON branch_cash_movements",
+		"current_setting('luson.closing_ledger', true) IS DISTINCT FROM NEW.closing_id::text",
+		"pg_trigger_depth() < 2",
+		"MESSAGE='A cash movement of a settlement is written by its closure'",
+
+		// The offer the branch is shown (R1-001): the totals of the period from the sale
+		// lines and the sale payments of the window, and the commission over the frozen
+		// rate, rounded once, half a cent up (S6, S20).
+		"CREATE FUNCTION record_branch_closing_offer() RETURNS trigger LANGUAGE plpgsql AS $$",
+		"CREATE TRIGGER record_branch_closing_offer BEFORE UPDATE ON branch_closings",
+		"FROM sale_lines line",
+		"JOIN sales sale ON sale.id = line.sale_id",
+		"AND sale.created_at >= NEW.period_start",
+		"AND sale.created_at < NEW.cut_at",
+		"coalesce(sum(sale.cash_amount),0) AS cash",
+		"NEW.sales_total := sold;",
+		"NEW.qr_total := 0;",
+		"NEW.commission_amount := round(sold * NEW.commission_rate_percent / 100, 2);",
+
+		// The ledger rows of the closure, written while the row still reads as proposed
+		// and marked with the settlement they belong to.
+		"CREATE FUNCTION record_branch_closing_ledger() RETURNS trigger LANGUAGE plpgsql AS $$",
+		"CREATE TRIGGER record_branch_closing_ledger BEFORE UPDATE ON branch_closings",
+		"PERFORM set_config('luson.closing_ledger', NEW.id::text, true);",
+		"taken := NEW.counted_cash + NEW.contributed_cash - NEW.closing_cash;",
+		"abs(taken)",
+
+		// The closure: any open reservation blocks it (R3-002, R4-004), the count is the
+		// cut instant's snapshot, and the stock ends exactly as counted (S5).
+		"CREATE FUNCTION apply_branch_closing_closure() RETURNS trigger LANGUAGE plpgsql AS $$",
+		"CREATE TRIGGER apply_branch_closing_closure AFTER UPDATE ON branch_closings",
+		"IF coalesce(balance.reserved, 0) > 0 THEN",
+		"MESSAGE='Variant ' || line.variant_id || ' still has reserved stock'",
+		"FOR UPDATE",
+		"INSERT INTO inventory_balances(location_id, variant_id, existing, reserved)",
+		"ON CONFLICT (location_id, variant_id)",
+		"DO UPDATE SET existing = EXCLUDED.existing;",
+
+		// The freeze wiring: one guard per branch-facing admission path, refusing with
+		// the predicate's own domain error.
 		"CREATE FUNCTION admit_sale_when_branch_operating() RETURNS trigger LANGUAGE plpgsql AS $$",
 		"CREATE TRIGGER admit_frozen_branch_sale BEFORE INSERT ON sales",
-		"PERFORM assert_branch_not_frozen(NEW.branch_location_id);",
-
-		// The purchase the branch registers while it is being settled.
 		"CREATE FUNCTION admit_purchase_when_branch_operating() RETURNS trigger LANGUAGE plpgsql AS $$",
 		"CREATE TRIGGER admit_frozen_branch_purchase BEFORE INSERT ON purchases",
-		"PERFORM assert_branch_not_frozen(NEW.location_id);",
-
-		// The transfer as a document: both participants are asserted in both orders,
-		// because a branch can be the origin that ships or the destination that receives.
 		"CREATE FUNCTION admit_transfer_when_branches_operating() RETURNS trigger LANGUAGE plpgsql AS $$",
 		"CREATE TRIGGER admit_frozen_branch_transfer BEFORE INSERT ON transfer_requests",
-		"PERFORM assert_branch_not_frozen(NEW.origin_location_id);",
-		"PERFORM assert_branch_not_frozen(NEW.destination_location_id);",
-
-		// The transfer as a movement: dispatch leaves the origin and receipt enters the
-		// destination, and neither creates a second document to guard.
+		"NEW.origin_location_id <= NEW.destination_location_id",
 		"CREATE FUNCTION admit_transfer_move_when_branches_operating() RETURNS trigger LANGUAGE plpgsql AS $$",
 		"CREATE TRIGGER admit_frozen_branch_transfer_move BEFORE UPDATE ON transfer_requests",
 		"IF OLD.status = 'approved' AND NEW.status = 'in_transit' THEN",
-		"PERFORM assert_branch_not_frozen(OLD.origin_location_id);",
-		"PERFORM assert_branch_not_frozen(OLD.destination_location_id);",
+		"ELSIF OLD.status = 'in_transit' AND NEW.status = 'received' THEN",
+
+		// The reconciliation guards of 011/012/013/018 (R4-002): the actor's location and
+		// both endpoints of the request, because those operations move a branch's stock.
+		"CREATE FUNCTION admit_reconciliation_when_branch_operating() RETURNS trigger LANGUAGE plpgsql AS $$",
+		"PERFORM assert_branch_not_frozen(NEW.actor_location_id);",
+		"PERFORM assert_branch_not_frozen(header.origin_location_id);",
+		"PERFORM assert_branch_not_frozen(header.destination_location_id);",
+		"CREATE TRIGGER admit_frozen_branch_count BEFORE INSERT ON transfer_count_operations",
+		"CREATE TRIGGER admit_frozen_branch_restitution BEFORE INSERT ON transfer_restitution_operations",
+		"CREATE TRIGGER admit_frozen_branch_dispatch BEFORE INSERT ON transfer_dispatch_operations",
+		"CREATE TRIGGER admit_frozen_branch_unified BEFORE INSERT ON transfer_unified_operations",
 	} {
 		if !strings.Contains(sql, required) {
 			t.Errorf("missing %s", required)
 		}
 	}
-	// Four admission paths, four guards: a fifth trigger would mean a table was wired
-	// twice, and a missing one would leave a branch-facing flow trading while frozen.
-	if got := strings.Count(sql, "CREATE TRIGGER"); got != 4 {
-		t.Errorf("the freeze must install one trigger per admission path, got %d", got)
+	// Every trigger and every function of this migration is accounted for: a fifteenth
+	// trigger would mean a table was wired twice, and a missing one would leave a
+	// branch-facing flow operating while the branch is frozen.
+	if got := strings.Count(sql, "CREATE TRIGGER"); got != 14 {
+		t.Errorf("the guards migration must install fourteen triggers, got %d", got)
 	}
-	if got := strings.Count(sql, "CREATE FUNCTION"); got != 4 {
-		t.Errorf("the freeze must install one function per guard, got %d", got)
+	if got := strings.Count(sql, "CREATE FUNCTION"); got != 13 {
+		t.Errorf("the guards migration must install thirteen functions, got %d", got)
 	}
-	// Every guard must call the predicate 034 raises and nothing else: this migration is
-	// wiring, so the refusal keeps a single owner and a single message.
-	if got := strings.Count(sql, "PERFORM assert_branch_not_frozen("); got != 6 {
+	// The freeze predicate is called once per branch-bearing column, never duplicated.
+	if got := strings.Count(sql, "PERFORM assert_branch_not_frozen("); got != 14 {
 		t.Errorf("every branch column of every guarded row is asserted once, got %d", got)
 	}
+	// PostgreSQL fires the BEFORE ROW triggers of one table in name order: a guard has to
+	// sort before the admission or apply trigger it must precede, and the closure's two
+	// triggers have to sort after the state machine of 034 that validates the transition
+	// and freezes the rate they read.
+	for _, pair := range [][2]string{
+		{"admit_branch_closing_transition", "record_branch_closing_ledger"},
+		{"admit_branch_closing_transition", "record_branch_closing_offer"},
+		{"record_branch_closing_ledger", "record_branch_closing_offer"},
+		{"admit_frozen_branch_sale", "admit_sale"},
+		{"admit_frozen_branch_purchase", "admit_purchase"},
+		{"admit_frozen_branch_transfer", "admit_transfer_creation"},
+		{"admit_frozen_branch_transfer_move", "admit_transfer_decision"},
+		{"admit_frozen_branch_count", "apply_count_operation"},
+		{"admit_frozen_branch_restitution", "apply_restitution_operation"},
+		{"admit_frozen_branch_dispatch", "apply_transfer_dispatch_operation"},
+		{"admit_frozen_branch_unified", "apply_transfer_unified_operation"},
+	} {
+		if !(pair[0] < pair[1]) {
+			t.Errorf("%s must sort before %s to fire first", pair[0], pair[1])
+		}
+	}
 	// The migration decides from the schema, so it says which tables are branch-facing and
-	// why, and why the other tables that reference a location are left alone.
+	// why, why the other tables that reference a location are left alone, and which
+	// finding each guard closes.
 	for _, documented := range []string{
-		"branch-facing", "warehouse-only", "S3", "R4-001",
+		"branch-facing", "warehouse-only", "S3", "S4", "S5", "S6", "S10", "S13", "S20",
+		"R1-001", "R3-002", "R3-003", "R4-001", "R4-002", "R4-004",
 		"LV001", "LP001", "LS005", "LC002",
 		"stock_entries", "stock_adjustments", "inventory_balances", "branch_cash_movements",
+		"transfer_count_operations", "transfer_restitution_operations",
+		"transfer_dispatch_operations", "transfer_unified_operations",
+		"011", "012", "013", "018",
 	} {
 		if !strings.Contains(sql, documented) {
 			t.Errorf("the migration must document its own decision: %s", documented)
 		}
 	}
 	// Add-only: no historical table, function or trigger is rewritten, dropped or given a
-	// second owner, because 001-034 are already applied and checksummed.
+	// second owner, because 001-034 are already applied and checksummed. It guards no
+	// balance either: the closure of the very settlement that freezes the branch writes
+	// that table.
 	for _, forbidden := range []string{
 		"CREATE TABLE", "ALTER TABLE", "CREATE OR REPLACE", "DROP ", "TRUNCATE ",
-		"ON branch_cash_movements", "ON inventory_balances",
+		"ON inventory_balances", "ON branch_closings_transition",
 	} {
 		if strings.Contains(sql, forbidden) {
-			t.Errorf("the freeze must be additive and must not guard a shared table: %s", forbidden)
+			t.Errorf("the guards migration must be additive and must not guard a shared table: %s", forbidden)
 		}
 	}
 	// A function is created before the trigger that executes it.
 	for _, pair := range [][2]string{
+		{"CREATE FUNCTION seed_closing_count_lines", "CREATE TRIGGER seed_closing_count_lines"},
+		{"CREATE FUNCTION admit_closing_count_line", "CREATE TRIGGER admit_closing_count_line"},
+		{"CREATE FUNCTION admit_branch_cash_movement", "CREATE TRIGGER admit_branch_cash_movement"},
+		{"CREATE FUNCTION record_branch_closing_offer", "CREATE TRIGGER record_branch_closing_offer"},
+		{"CREATE FUNCTION record_branch_closing_ledger", "CREATE TRIGGER record_branch_closing_ledger"},
+		{"CREATE FUNCTION apply_branch_closing_closure", "CREATE TRIGGER apply_branch_closing_closure"},
 		{"CREATE FUNCTION admit_sale_when_branch_operating", "CREATE TRIGGER admit_frozen_branch_sale"},
 		{"CREATE FUNCTION admit_purchase_when_branch_operating", "CREATE TRIGGER admit_frozen_branch_purchase"},
 		{"CREATE FUNCTION admit_transfer_when_branches_operating", "CREATE TRIGGER admit_frozen_branch_transfer "},
 		{"CREATE FUNCTION admit_transfer_move_when_branches_operating", "CREATE TRIGGER admit_frozen_branch_transfer_move"},
+		{"CREATE FUNCTION admit_reconciliation_when_branch_operating", "CREATE TRIGGER admit_frozen_branch_count"},
 	} {
 		first, second := strings.Index(sql, pair[0]), strings.Index(sql, pair[1])
 		if first < 0 || second < 0 || first > second {
@@ -106,11 +199,9 @@ func TestBranchFreezeSchemaStructure(t *testing.T) {
 	}
 }
 
-// freezeFixture is the settlement fixture of 034 applied through 035: the prefix
-// catalogue, one account per location, the balances of the warehouse and of both branches
-// and the commission rate the closure reads. It is the same fixture as the settlement
-// tests, only one migration later, because the tables this migration guards are written by
-// the sale, purchase and transfer paths of the whole schema.
+// freezeFixture is the settlement block applied through 035: the prefix catalogue, one
+// account per location, the balances of the warehouse and of both branches, one price per
+// branch and the commission rate the closure reads.
 func freezeFixture(t *testing.T) (context.Context, *pgxpool.Pool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
@@ -149,6 +240,13 @@ func freezeFixture(t *testing.T) (context.Context, *pgxpool.Pool) {
 // battery that left with its serial. It returns the error instead of asserting, so the
 // same call is used where the sale must be admitted and where it must be refused.
 func trySale(ctx context.Context, p *pgxpool.Pool, branch int, serial string) error {
+	return sell(ctx, p, branch, serial, "2000.00", "2000.00", "0.00", "0.00")
+}
+
+// sell is one sale of one unit of variant 1 at the asked price, paid with the asked mix:
+// the three amounts 027 stores on the header have to add up to the total, which is what
+// the sale's own settlement check enforces.
+func sell(ctx context.Context, p *pgxpool.Pool, branch int, serial, price, cash, card, transfer string) error {
 	tx, err := p.Begin(ctx)
 	if err != nil {
 		return err
@@ -156,12 +254,14 @@ func trySale(ctx context.Context, p *pgxpool.Pool, branch int, serial string) er
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	var id int64
 	// The selling account is the account of the branch: the sale trigger refuses any other.
-	if err := tx.QueryRow(ctx, `INSERT INTO sales(branch_location_id,cash_amount,customer_name,total,created_by_account_id)
- VALUES($1::smallint,2000.00,'Cliente',2000.00,$1::integer) RETURNING id`, branch).Scan(&id); err != nil {
+	if err := tx.QueryRow(ctx, `INSERT INTO sales(branch_location_id,cash_amount,card_amount,
+ transfer_amount,customer_name,total,created_by_account_id)
+ VALUES($1::smallint,$2::numeric,$3::numeric,$4::numeric,'Cliente',$5::numeric,$1::integer)
+ RETURNING id`, branch, cash, card, transfer, price).Scan(&id); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO sale_lines(sale_id,variant_id,quantity,unit_price)
- VALUES($1,1,1,2000.00)`, id); err != nil {
+ VALUES($1,1,1,$2::numeric)`, id, price); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO sale_units(sale_id,variant_id,unit_ordinal,serial_number)
@@ -295,6 +395,22 @@ func receiveTransfer(t *testing.T, ctx context.Context, p *pgxpool.Pool, id int6
 	return tx.Commit(ctx)
 }
 
+// receiveStockedTransfer builds the transfer every reconciliation operation needs: a
+// request the warehouse ships to the branch and the branch receives, so the request is
+// 'received' with its receipt line and the corrections have something to correct.
+func receiveStockedTransfer(t *testing.T, ctx context.Context, p *pgxpool.Pool, key string) int64 {
+	t.Helper()
+	id := createTransfer(t, ctx, p, 2, "request_stock", 1, 2, 1, key, 2)
+	approveTransfer(t, ctx, p, id)
+	if err := dispatchTransfer(ctx, p, id); err != nil {
+		t.Fatalf("the warehouse must be able to ship to the branch: %v", err)
+	}
+	if err := receiveTransfer(t, ctx, p, id); err != nil {
+		t.Fatalf("the branch must be able to receive the shipment: %v", err)
+	}
+	return id
+}
+
 // tryShipment is the warehouse's own transfer: it authorizes and reserves at creation and
 // then owns every item, which is the only shape a direct shipment is admitted in.
 func tryShipment(t *testing.T, ctx context.Context, p *pgxpool.Pool, destination int, key string) error {
@@ -359,7 +475,8 @@ func stocks(t *testing.T, ctx context.Context, p *pgxpool.Pool) string {
 }
 
 // documents counts every row a refused branch write could have left behind, including the
-// ledgers the closure feeds: a refusal that writes one of them is not a refusal.
+// ledgers the closure feeds and the reconciliation evidence: a refusal that writes one of
+// them is not a refusal.
 func documents(t *testing.T, ctx context.Context, p *pgxpool.Pool) string {
 	t.Helper()
 	var snapshot string
@@ -372,6 +489,20 @@ func documents(t *testing.T, ctx context.Context, p *pgxpool.Pool) string {
          ||':'||(SELECT count(*) FROM stock_entries)
          ||':'||(SELECT count(*) FROM branch_cash_movements)`).Scan(&snapshot); err != nil {
 		t.Fatal("the document snapshot could not be read")
+	}
+	return snapshot
+}
+
+// reconciliationEvidence counts the operation tables of 011, 012, 013 and 018: no refused
+// reconciliation may leave a row in any of them.
+func reconciliationEvidence(t *testing.T, ctx context.Context, p *pgxpool.Pool) string {
+	t.Helper()
+	var snapshot string
+	if err := p.QueryRow(ctx, `SELECT (SELECT count(*) FROM transfer_count_operations)
+         ||':'||(SELECT count(*) FROM transfer_restitution_operations)
+         ||':'||(SELECT count(*) FROM transfer_dispatch_operations)
+         ||':'||(SELECT count(*) FROM transfer_unified_operations)`).Scan(&snapshot); err != nil {
+		t.Fatal("the reconciliation evidence could not be read")
 	}
 	return snapshot
 }
@@ -425,7 +556,7 @@ func TestBranchFreezeRefusesBranchTrading(t *testing.T) {
 		t.Fatal("the fixture must hold one approved and one in-transit movement")
 	}
 
-	// From here the branch operates nothing. Each refusal is the domain error of 034, the
+	// From here the branch operates nothing. Each refusal is the domain error of 035, the
 	// one that says the branch has an open settlement.
 	for _, refused := range []struct {
 		name string
@@ -542,4 +673,296 @@ func TestBranchFreezeReopensWhenSettlementCloses(t *testing.T) {
 		t.Fatalf("a released branch must ask for stock again: %v", err)
 	}
 	t.Logf("035: the freeze ended with the settlement and the branch traded again")
+}
+
+// TestBranchFreezeSynchronisesWithTheSettlement pins R4-001: every freeze guard takes the
+// same per-branch advisory lock the opener and the closure take, before it reads the
+// predicate. Without it a sale would read "no settlement" from a snapshot taken before a
+// concurrent opener committed, pass the guard and commit after the settlement opened, and
+// the closure would then refuse that brand new sale with LC018, leaving the settlement
+// impossible to close.
+func TestBranchFreezeSynchronisesWithTheSettlement(t *testing.T) {
+	ctx, p := freezeFixture(t)
+	if err := trySale(ctx, p, 2, "BEFORE-0001"); err != nil {
+		t.Fatalf("the branch must sell before the settlement opens: %v", err)
+	}
+	before := stocks(t, ctx, p)
+
+	// The warehouse opens the settlement in a transaction that has not committed yet.
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		t.Fatal("the opening transaction could not start")
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctx, `INSERT INTO branch_closings(branch_location_id,period_start,
+ commission_rate_percent,opened_by_account_id) VALUES(2,now(),0,1)`); err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+
+	// A sale of the same branch, from another connection, must wait for that commit: while
+	// the opener holds the lock the guard cannot read the settlement away.
+	done := make(chan error, 1)
+	go func() { done <- trySale(ctx, p, 2, "RACE-0001") }()
+	select {
+	case err := <-done:
+		t.Fatalf("the sale must wait for the settlement that is opening, got %v", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("the settlement could not be committed: %v", err)
+	}
+	select {
+	case err := <-done:
+		// The sale now sees the committed settlement and is refused with the domain error.
+		execRefusalMessage(t, err, "LC001", "open account settlement")
+	case <-time.After(30 * time.Second):
+		t.Fatal("the sale must be decided once the settlement commits")
+	}
+	// The branch is at the stock the settlement photographed, and no sale was written.
+	if after := stocks(t, ctx, p); after != before {
+		t.Fatalf("the refused sale must not move stock, got %s before %s", before, after)
+	}
+	if sequence := branchSequence(t, ctx, p, 2); sequence != 1 {
+		t.Fatalf("the refused sale must not take a correlative, got %d", sequence)
+	}
+	t.Logf("035: a sale waits for the settlement that opens and is then refused")
+}
+
+// TestBranchFreezeRefusesReconciliation pins R4-002: the reconciliation operations of 011,
+// 012, 013 and 018 are operated by a branch account and move a branch's balances, so a
+// frozen branch cannot reconcile through any of them. Both the branch's own account and the
+// warehouse's are refused, because the balance that would move belongs to the frozen branch.
+func TestBranchFreezeRefusesReconciliation(t *testing.T) {
+	ctx, p := freezeFixture(t)
+	request := receiveStockedTransfer(t, ctx, p, "freeze-reconcile-01")
+	before := stocks(t, ctx, p)
+
+	openSettlement(t, ctx, p, 2)
+	for _, operation := range []struct {
+		name string
+		key  string
+		stmt string
+	}{
+		{
+			"corrected count", "frozen-count-0001",
+			`INSERT INTO transfer_count_operations(operation_key,request_id,variant_id,
+ actor_location_id,action,expected_revision,actual_quantity,reason,revision,recorded_at)
+ VALUES($3,$1,1,$2,'propose',0,1,'conteo corregido',1,now())`,
+		},
+		{
+			"restitution", "frozen-restitution-001",
+			`INSERT INTO transfer_restitution_operations(operation_key,request_id,variant_id,
+ actor_location_id,action,expected_revision,retained_quantity,retained_at_origin,reason,revision,recorded_at)
+ VALUES($3,$1,1,$2,'propose',0,1,true,'quedó en sucursal',1,now())`,
+		},
+		{
+			"dispatch reconciliation", "frozen-dispatch-0001",
+			`INSERT INTO transfer_dispatch_operations(operation_key,request_id,variant_id,
+ actor_location_id,action,expected_revision,dispatch_quantity,reason,revision,recorded_at)
+ VALUES($3,$1,1,$2,'propose',0,0,'no se despachó',1,now())`,
+		},
+		{
+			"unified reconciliation", "frozen-unified-0001",
+			`INSERT INTO transfer_unified_operations(operation_key,request_id,variant_id,
+ actor_location_id,action,expected_revision,dispatch_quantity,arrival_quantity,
+ retained_quantity,retained_at_origin,reason,revision,recorded_at)
+ VALUES($3,$1,1,$2,'propose',0,0,0,0,false,'conciliación',1,now())`,
+		},
+	} {
+		for _, actor := range []struct {
+			name     string
+			account  int
+			location int
+		}{
+			{"the branch", 2, 2},
+			{"the warehouse", 1, 1},
+		} {
+			_, err := p.Exec(ctx, operation.stmt, request, actor.location, operation.key)
+			if err == nil {
+				t.Fatalf("%s from %s must be refused on a frozen branch", operation.name, actor.name)
+			}
+			execRefusalMessage(t, err, "LC001", "open account settlement")
+		}
+	}
+	// No evidence and no stock moved: the branch's balances are the ones the count sheet
+	// photographed, so the settlement can still close.
+	if evidence := reconciliationEvidence(t, ctx, p); evidence != "0:0:0:0" {
+		t.Fatalf("a refused reconciliation must write no evidence, got %s", evidence)
+	}
+	if after := stocks(t, ctx, p); after != before {
+		t.Fatalf("a refused reconciliation must not move stock, got %s before %s", before, after)
+	}
+	t.Logf("035: a frozen branch reconciles nothing, whichever endpoint operates it")
+}
+
+// TestBranchFreezeRecordsTheOfferAtProposal pins R1-001: at open|rejected -> proposed the
+// database records the offer -- the totals of the window and the commission they pay -- and
+// from then on those five plus the rate are immutable, so the closure applies the numbers
+// the branch accepted instead of recomputing them.
+func TestBranchFreezeRecordsTheOfferAtProposal(t *testing.T) {
+	ctx, p := freezeFixture(t)
+
+	// A first settlement closes empty-handed, so the branch has a period to sell into.
+	first := openSettlement(t, ctx, p, 2)
+	countAll(t, ctx, p, first, map[int]int{1: 10, 2: 4})
+	closeSettlement(t, ctx, p, first, "0.00", "0.00", "0.00")
+
+	// Two sales of the open period: a mixed one, and one whose commission falls exactly on
+	// half a cent, which the database rounds up once (S20).
+	if err := sell(ctx, p, 2, "OFFER-0001", "2130.00", "2100.00", "20.00", "10.00"); err != nil {
+		t.Fatalf("the mixed sale must be admitted: %v", err)
+	}
+	if err := sell(ctx, p, 2, "OFFER-0002", "2000.12", "2000.12", "0.00", "0.00"); err != nil {
+		t.Fatalf("the second sale must be admitted: %v", err)
+	}
+
+	// The settlement of the period: the count sheet is what the two sales left behind.
+	closing := openSettlement(t, ctx, p, 2)
+	countAll(t, ctx, p, closing, map[int]int{1: 8, 2: 4})
+	proposeRound(t, ctx, p, closing, `{"fund":"40.00"}`)
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='proposed',counted_cash=100.00,
+ contributed_cash=0.00,closing_cash=40.00 WHERE id=$1`, closing); err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	// 2130.00 + 2000.12 sold; 4100.12 in cash, 20.00 by card and 10.00 by transfer; the
+	// commission is 12.50% of 4130.12 = 516.265, rounded once to 516.27.
+	const offer = "4130.12:4100.12:20.00:10.00:0.00:516.27:12.50"
+	if state := settlementState(t, ctx, p, closing); !strings.HasSuffix(state, offer) {
+		t.Fatalf("the proposal must record the offer of the period, got %s, want %s", state, offer)
+	}
+
+	// The branch accepts, and from then on the base of the offer is immutable: a closing
+	// update cannot change any of the five totals, the commission or the rate.
+	decideRound(t, ctx, p, closing, "accepted", "")
+	for _, statement := range []string{
+		`UPDATE branch_closings SET status='closed',sales_total=1.00 WHERE id=$1`,
+		`UPDATE branch_closings SET status='closed',cash_sales=1.00 WHERE id=$1`,
+		`UPDATE branch_closings SET status='closed',card_total=1.00 WHERE id=$1`,
+		`UPDATE branch_closings SET status='closed',transfer_total=1.00 WHERE id=$1`,
+		`UPDATE branch_closings SET status='closed',qr_total=1.00 WHERE id=$1`,
+		`UPDATE branch_closings SET status='closed',commission_amount=1.00 WHERE id=$1`,
+	} {
+		_, err := p.Exec(ctx, statement, closing)
+		execRefusalMessage(t, err, "LC005", "recorded when it is proposed")
+	}
+	// The rate is frozen with the offer, by its own refusal.
+	_, err := p.Exec(ctx, `UPDATE branch_closings SET status='closed',
+ commission_rate_percent=1.00 WHERE id=$1`, closing)
+	execRefusalMessage(t, err, "LC005", "frozen when the settlement is proposed")
+	// The closure applies exactly the offer the branch accepted, and the stock of the count.
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='closed' WHERE id=$1`, closing); err != nil {
+		t.Fatalf("the accepted round must close the settlement: %v", err)
+	}
+	if state := settlementState(t, ctx, p, closing); !strings.HasPrefix(state, "closed:") ||
+		!strings.HasSuffix(state, offer) {
+		t.Fatalf("the closure must not rewrite the offer, got %s", state)
+	}
+	var stock string
+	if err := p.QueryRow(ctx, `SELECT string_agg(variant_id||':'||existing,',' ORDER BY variant_id)
+ FROM inventory_balances WHERE location_id=2`).Scan(&stock); err != nil || stock != "1:8,2:4" {
+		t.Fatalf("the closure must apply the counted stock: %q %v", stock, err)
+	}
+	t.Logf("035: the offer is recorded at the proposal and the closure applies it unchanged")
+}
+
+// TestBranchFreezeRefusesTheClosureWithAnOpenReservation pins R3-002 and R4-004: any open
+// reservation of a counted variant blocks the closure, naming the variant, even when the
+// counted quantity covers the reservation. A reserved unit is stock the branch already
+// promised, so closing underneath it would promise it twice.
+func TestBranchFreezeRefusesTheClosureWithAnOpenReservation(t *testing.T) {
+	ctx, p := freezeFixture(t)
+	// The branch already promised two units of variant 1 to a transfer.
+	if _, err := p.Exec(ctx, `UPDATE inventory_balances SET reserved=2
+ WHERE location_id=2 AND variant_id=1`); err != nil {
+		t.Fatal("the reservation could not be provisioned")
+	}
+	before := stocks(t, ctx, p)
+
+	closing := openSettlement(t, ctx, p, 2)
+	// Counting more than is reserved is exactly what the old rule accepted.
+	countAll(t, ctx, p, closing, map[int]int{1: 10, 2: 4})
+	proposeRound(t, ctx, p, closing, `{"fund":"0.00"}`)
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='proposed',counted_cash=0.00,
+ closing_cash=0.00 WHERE id=$1`, closing); err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	decideRound(t, ctx, p, closing, "accepted", "")
+	_, err := p.Exec(ctx, `UPDATE branch_closings SET status='closed' WHERE id=$1`, closing)
+	execRefusalMessage(t, err, "LC007", "Variant 1")
+	if after := stocks(t, ctx, p); after != before {
+		t.Fatalf("a refused closure must leave the stock untouched, got %s before %s", before, after)
+	}
+	var live bool
+	if err := p.QueryRow(ctx, `SELECT status='proposed' FROM branch_closings WHERE id=$1`, closing).Scan(&live); err != nil || !live {
+		t.Fatalf("a refused closure must leave the settlement proposed: %v %v", live, err)
+	}
+
+	// Releasing the reservation is what unblocks the same closure: it is the reservation,
+	// not the arithmetic of counted against reserved, that refused it.
+	if _, err := p.Exec(ctx, `UPDATE inventory_balances SET reserved=0
+ WHERE location_id=2 AND variant_id=1`); err != nil {
+		t.Fatal("the reservation could not be released")
+	}
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='closed' WHERE id=$1`, closing); err != nil {
+		t.Fatalf("a released branch must close: %v", err)
+	}
+	t.Logf("035: an open reservation blocks the closure and names the variant")
+}
+
+// TestBranchFreezeRefusesAManualLedgerRow pins R3-003: the settlement ledger rows are
+// written only by the closure. A manual aporte or recaudacion of a proposed settlement is
+// refused even for the warehouse account and even when the caller sets the provenance
+// marker itself, because the marker alone is not what the guard requires.
+func TestBranchFreezeRefusesAManualLedgerRow(t *testing.T) {
+	ctx, p := freezeFixture(t)
+	closing := openSettlement(t, ctx, p, 2)
+	countAll(t, ctx, p, closing, map[int]int{1: 10, 2: 4})
+	proposeRound(t, ctx, p, closing, `{"fund":"10.00"}`)
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='proposed',counted_cash=50.00,
+ contributed_cash=0.00,closing_cash=10.00 WHERE id=$1`, closing); err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+
+	// The warehouse is the only account that may move the money of a settlement, and even
+	// it cannot state the settlement's own money by hand.
+	for _, kind := range []string{"aporte", "recaudacion"} {
+		_, err := p.Exec(ctx, `INSERT INTO branch_cash_movements(branch_location_id,closing_id,kind,
+ amount,description,created_by_account_id) VALUES(2,$1,$2,10.00,'a mano',1)`, closing, kind)
+		execRefusalMessage(t, err, "LC020", "written by its closure")
+	}
+	// Setting the marker by hand is not provenance either: a client statement runs at
+	// trigger depth 1, and the closure writes at depth 2.
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		t.Fatal("the transaction could not start")
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := tx.Exec(ctx, `SELECT set_config('luson.closing_ledger',
+ (SELECT id::text FROM branch_closings WHERE id=$1),true)`, closing); err != nil {
+		t.Fatalf("the marker could not be set: %v", err)
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO branch_cash_movements(branch_location_id,closing_id,kind,
+ amount,description,created_by_account_id) VALUES(2,$1,'aporte',10.00,'con marcador',1)`, closing)
+	execRefusalMessage(t, err, "LC020", "written by its closure")
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("the transaction could not be rolled back: %v", err)
+	}
+	var movements int
+	if err := p.QueryRow(ctx, `SELECT count(*) FROM branch_cash_movements WHERE closing_id=$1`,
+		closing).Scan(&movements); err != nil || movements != 0 {
+		t.Fatalf("a refused ledger row must write nothing, got %d %v", movements, err)
+	}
+
+	// The closure still writes its own rows: counted 50 and fund 10 is one collection.
+	decideRound(t, ctx, p, closing, "accepted", "")
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='closed' WHERE id=$1`, closing); err != nil {
+		t.Fatalf("the accepted round must close the settlement: %v", err)
+	}
+	var ledger string
+	if err := p.QueryRow(ctx, `SELECT string_agg(kind||':'||amount,',' ORDER BY id)
+ FROM branch_cash_movements WHERE closing_id=$1`, closing).Scan(&ledger); err != nil ||
+		ledger != "recaudacion:40.00" {
+		t.Fatalf("the closure must write its own ledger row: %q %v", ledger, err)
+	}
+	t.Logf("035: the settlement ledger is written by the closure and by nothing else")
 }

@@ -13,18 +13,25 @@ import (
 	"luson/api/migrations"
 )
 
-// migration034 is the branch account settlement ("rendición de cuentas"): the first
-// money-in-hand document of the system, and the only one that moves real stock. It is
-// additive -- new tables, new guards and new indexes -- so it never rewrites the
-// historical versions 001-033, whose checksums are already recorded in live databases.
+// migration034 is the shape of the branch account settlement ("rendición de cuentas"):
+// its tables, indexes, identity, state machine and immutability. The guards and the
+// closure that read or write another table are 035, and this migration names no table
+// of 001-033. Both are additive -- new tables, new guards and new indexes -- so they
+// never rewrite the historical versions, whose checksums are already recorded in live
+// databases.
 const migration034 = "034_branch_closings.sql"
 
-// The settlement migration owns six tables, the freeze predicate every branch-facing
-// flow will consult, and the database-side rules of the whole vertical: one live
-// settlement per branch, a count that covers the stock, a closure that applies exactly
-// what was counted, an append-only cash ledger, and immutable rounds of proposal and
-// correction. statements is not used here because every required line below is a
-// whole statement and the file is read exactly as PostgreSQL receives it.
+// settlementMigration is the other half of the same vertical: the freeze predicate, the
+// stock snapshot, the offer, the cash ledger, the closure and the reconciliation guards.
+// The database tests below install the pair, because a settlement is only meaningful
+// when it can open, freeze, be decided and close.
+const settlementMigration = "035_branch_guards.sql"
+
+// The settlement migration owns six tables, the database-side rules of the whole
+// vertical -- one live settlement per branch, a count that covers the stock, an
+// append-only cash ledger, immutable rounds of proposal and correction -- and the
+// state machine itself. statements is not used here because every required line below
+// is a whole statement and the file is read exactly as PostgreSQL receives it.
 func TestBranchClosingsSchemaStructure(t *testing.T) {
 	b, err := migrations.Files.ReadFile(migration034)
 	if err != nil {
@@ -56,6 +63,7 @@ func TestBranchClosingsSchemaStructure(t *testing.T) {
 		"opening_cash numeric(12,2) NOT NULL DEFAULT 0 CHECK (opening_cash >= 0)",
 		"cash_sales numeric(12,2) NOT NULL DEFAULT 0 CHECK (cash_sales >= 0)",
 		"cash_expenses numeric(12,2) NOT NULL DEFAULT 0 CHECK (cash_expenses >= 0)",
+		// The offer: the totals of the period and the commission they pay (R1-001).
 		"sales_total numeric(12,2) NOT NULL DEFAULT 0 CHECK (sales_total >= 0)",
 		"commission_amount numeric(12,2) NOT NULL DEFAULT 0 CHECK (commission_amount >= 0)",
 		"card_total numeric(12,2) NOT NULL DEFAULT 0 CHECK (card_total >= 0)",
@@ -96,6 +104,7 @@ func TestBranchClosingsSchemaStructure(t *testing.T) {
 		"occurred_at timestamptz NOT NULL DEFAULT now()",
 		"created_by_account_id integer NOT NULL REFERENCES auth_accounts(id)",
 		"CREATE INDEX branch_cash_movements_by_branch ON branch_cash_movements(branch_location_id, occurred_at)",
+		"CREATE UNIQUE INDEX branch_cash_movements_one_transfer ON branch_cash_movements(closing_id, kind)",
 
 		// Every proposal round keeps what was offered, who decided and why it was
 		// rejected, so the branch can always be shown exactly what it accepted.
@@ -123,27 +132,20 @@ func TestBranchClosingsSchemaStructure(t *testing.T) {
 		"CREATE UNIQUE INDEX closing_corrections_one_pending ON closing_corrections(closing_id)",
 		"WHERE status = 'proposed';",
 
-		// The predicate the branch-facing flows consult, and its raising wrapper.
-		"CREATE FUNCTION branch_closure_blocker(target smallint) RETURNS boolean LANGUAGE sql STABLE AS $$",
-		"CREATE FUNCTION assert_branch_not_frozen(target smallint) RETURNS void LANGUAGE plpgsql AS $$",
-
 		// Every guard is a named trigger, so the store never depends on an implicit side
-		// effect of a table constraint.
+		// effect of a table constraint. The settlement's own triggers are all here; the
+		// ones that read another table are 035.
 		"CREATE TRIGGER admit_branch_closing BEFORE INSERT ON branch_closings",
-		"CREATE TRIGGER seed_closing_count_lines AFTER INSERT ON branch_closings",
-		"CREATE TRIGGER admit_closing_count_line BEFORE INSERT ON closing_count_lines",
 		"CREATE TRIGGER guard_closing_count_line BEFORE UPDATE ON closing_count_lines",
 		"CREATE TRIGGER protect_closing_count_lines BEFORE DELETE ON closing_count_lines",
 		"CREATE TRIGGER protect_closing_count_lines_truncate BEFORE TRUNCATE ON closing_count_lines",
 		"CREATE TRIGGER admit_branch_closing_transition BEFORE UPDATE OR DELETE ON branch_closings",
 		"CREATE TRIGGER protect_branch_closings_truncate BEFORE TRUNCATE ON branch_closings",
-		"CREATE TRIGGER apply_branch_closing_closure AFTER UPDATE ON branch_closings",
+		"CREATE TRIGGER protect_branch_cash_movements BEFORE UPDATE OR DELETE ON branch_cash_movements",
+		"CREATE TRIGGER protect_branch_cash_movements_truncate BEFORE TRUNCATE ON branch_cash_movements",
 		"CREATE TRIGGER admit_closing_proposal_insert BEFORE INSERT ON closing_proposals",
 		"CREATE TRIGGER guard_closing_proposal_decision BEFORE UPDATE OR DELETE ON closing_proposals",
 		"CREATE TRIGGER protect_closing_proposals_truncate BEFORE TRUNCATE ON closing_proposals",
-		"CREATE TRIGGER admit_branch_cash_movement BEFORE INSERT ON branch_cash_movements",
-		"CREATE TRIGGER protect_branch_cash_movements BEFORE UPDATE OR DELETE ON branch_cash_movements",
-		"CREATE TRIGGER protect_branch_cash_movements_truncate BEFORE TRUNCATE ON branch_cash_movements",
 		"CREATE TRIGGER admit_closing_correction BEFORE INSERT ON closing_corrections",
 		"CREATE TRIGGER guard_closing_correction_decision BEFORE UPDATE OR DELETE ON closing_corrections",
 		"CREATE TRIGGER protect_closing_corrections_truncate BEFORE TRUNCATE ON closing_corrections",
@@ -158,26 +160,22 @@ func TestBranchClosingsSchemaStructure(t *testing.T) {
 		"NEW.commission_rate_percent := configured;",
 		"NEW.period_start := coalesce(previous, NEW.cut_at);",
 		"NEW.opening_cash := coalesce((",
-		"NEW.expected_quantity := coalesce(balance.existing, 0);",
 		// The count sheet is writable while the settlement is open and again after a
 		// rejection, and frozen while the branch decides and once closed (S14).
 		"header.status NOT IN ('open','rejected') THEN",
-		"MESSAGE='Count lines are written while the warehouse holds the settlement'",
+		"MESSAGE='Only the counted quantity can change on a count line'",
 		"NEW.closed_at := now();",
-		// The closure locks each balance, refuses a count below the reservation and
-		// applies exactly what was counted, creating the row of a variant counted from
-		// nothing.
-		"FOR UPDATE",
-		"INSERT INTO inventory_balances(location_id, variant_id, existing, reserved)",
-		"ON CONFLICT (location_id, variant_id)",
-		"DO UPDATE SET existing = EXCLUDED.existing;",
-		// The drawer's money: the contribution is its own ledger fact and the transfer
-		// is the signed difference against the fund left behind.
-		"IF NEW.contributed_cash > 0 THEN",
-		"taken := NEW.counted_cash + NEW.contributed_cash - NEW.closing_cash;",
-		"abs(taken)",
-		// A branch expense is refused while the branch is frozen.
-		"PERFORM assert_branch_not_frozen(NEW.branch_location_id);",
+		// R1-001: the offer is recorded by the proposal and nothing rewrites it after.
+		"MESSAGE='The offer of a settlement is recorded when it is proposed'",
+		// R3-001: a settlement with a pending counted line cannot be offered at all.
+		"MESSAGE='Variant ' || pending || ' has no counted quantity'",
+		// R4-003: a header update cannot return a settlement the branch did not refuse.
+		"MESSAGE='Proposal round ' || latest.round || ' is not rejected'",
+		// The offer is a round: proposing opens one, so one always exists to reject.
+		"MESSAGE='The settlement has no proposal round to offer'",
+		// The opener and the closure take the same per-branch advisory lock the freeze
+		// guards of 035 take (R4-001).
+		"PERFORM pg_advisory_xact_lock(340251, NEW.branch_location_id::integer);",
 	} {
 		if !strings.Contains(sql, required) {
 			t.Errorf("missing %s", required)
@@ -185,11 +183,17 @@ func TestBranchClosingsSchemaStructure(t *testing.T) {
 	}
 	// Every refusal raises its own SQLSTATE: the store maps that code and nothing else.
 	for _, code := range []string{
-		"LC001", "LC002", "LC003", "LC004", "LC005", "LC006", "LC007", "LC008",
-		"LC009", "LC010", "LC011", "LC012", "LC013", "LC014", "LC015", "LC016", "LC017",
+		"LC002", "LC003", "LC004", "LC005", "LC006", "LC008", "LC009", "LC010",
+		"LC012", "LC013", "LC014", "LC015", "LC016", "LC017", "LC019",
 	} {
 		if !strings.Contains(sql, "ERRCODE='"+code+"'") {
 			t.Errorf("missing SQLSTATE %s", code)
+		}
+	}
+	// The codes of the guards that read another table live in 035, with those guards.
+	for _, code := range []string{"LC001", "LC007", "LC011", "LC018", "LC020"} {
+		if strings.Contains(sql, "ERRCODE='"+code+"'") {
+			t.Errorf("the refusal %s belongs to the guards of 035", code)
 		}
 	}
 	// Additive only: no historical table, function or trigger is rewritten or dropped,
@@ -199,8 +203,21 @@ func TestBranchClosingsSchemaStructure(t *testing.T) {
 			t.Errorf("the settlement migration must be additive: %s", forbidden)
 		}
 	}
+	// The split the two migrations exist for: this file is the settlement's own shape,
+	// so it names no table of 001-033 and it applies no stock and writes no ledger row.
+	// The stock and the money of the drawer are 035.
+	for _, forbidden := range []string{
+		"inventory_balances", "sale_lines", "FROM sales",
+		"INSERT INTO branch_cash_movements",
+		"branch_closure_blocker", "assert_branch_not_frozen",
+		"pg_trigger_depth", "set_config(",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Errorf("the settlement shape must not reach another table: %s", forbidden)
+		}
+	}
 	// The stock difference cannot survive a closure, and the reservation is never the
-	// database's to move: only `existing` is written.
+	// database's to move: only `existing` is written, and 035 writes it.
 	for _, forbidden := range []string{"reserved=", "reserved =", "reserved:="} {
 		if strings.Contains(sql, forbidden) {
 			t.Errorf("a closure must never move the reserved stock: %s", forbidden)
@@ -211,27 +228,18 @@ func TestBranchClosingsSchemaStructure(t *testing.T) {
 	if strings.Contains(sql, "commission_amount -") || strings.Contains(sql, "- commission_amount") {
 		t.Errorf("the commission must not participate in any cash identity")
 	}
-	// The closure must not rewrite the row it watches: that re-enters the transition
-	// guard with a closed row and refuses every closure.
-	if strings.Contains(sql, "UPDATE branch_closings SET closed_at") {
-		t.Error("the closure trigger must not update its own row")
-	}
 	// The tables must exist before the triggers that read them, and the settlement
 	// before its count sheet.
 	if first, second := strings.Index(sql, "CREATE TABLE branch_closings"),
 		strings.Index(sql, "CREATE TABLE closing_count_lines"); first < 0 || second < 0 || first > second {
 		t.Error("the settlement must exist before its count sheet does")
 	}
-	if first, second := strings.Index(sql, "CREATE TABLE branch_closings"),
-		strings.Index(sql, "CREATE FUNCTION branch_closure_blocker"); first < 0 || second < 0 || first > second {
-		t.Error("the freeze predicate must be defined after the table it reads")
-	}
 	// The migration documents its own decisions, so the next reader does not have to
 	// derive them from the guards.
 	for _, documented := range []string{"rendición de cuentas", "One live settlement", "append only",
 		"no limit of rounds", "Guardar y salir", "A retired branch is not settled",
-		"no proposal round to accept", "still undecided", "rejected, not accepted",
-		"exceeds the cash counted plus the contribution"} {
+		"is already decided", "is not rejected", "no proposal round to offer",
+		"exceeds the cash counted plus the contribution", "The offer is the settlement"} {
 		if !strings.Contains(sql, documented) {
 			t.Errorf("the migration must document its own decision: %s", documented)
 		}
@@ -239,15 +247,17 @@ func TestBranchClosingsSchemaStructure(t *testing.T) {
 }
 
 // closingFixture is the established database fixture, not a new one: an isolated
-// PostgreSQL database, every embedded migration applied in version order, the prefix
-// catalogue the settlement rules are written against, one account per location and the
-// two variants branch 2 holds stock of.
+// PostgreSQL database, every embedded migration applied in version order up to the last
+// one of the settlement block, the prefix catalogue the settlement rules are written
+// against, one account per location and the two variants branch 2 holds stock of. The
+// pair is installed because a settlement is only complete when it can freeze, close and
+// write its ledger; the split is asserted statically above.
 func closingFixture(t *testing.T) (context.Context, *pgxpool.Pool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	t.Cleanup(cancel)
 	p := testpg.Open(t)
-	applyMigrationRange(t, ctx, p, 34)
+	applyMigrationRange(t, ctx, p, 35)
 	seedPrefixCatalog(t, ctx, p)
 	if _, err := p.Exec(ctx, `INSERT INTO auth_accounts(location_id,username,password_hash)
  VALUES(1,'almacen','x'),(2,'sucursal_a','x'),(3,'sucursal_b','x')`); err != nil {
@@ -256,6 +266,11 @@ func closingFixture(t *testing.T) (context.Context, *pgxpool.Pool) {
 	if _, err := p.Exec(ctx, `INSERT INTO inventory_balances(location_id,variant_id,existing,reserved)
  VALUES(2,1,10,0),(2,2,4,0)`); err != nil {
 		t.Fatal("the branch stock could not be provisioned")
+	}
+	// One price per branch and variant, so the offer test can sell what the branch holds.
+	if _, err := p.Exec(ctx, `INSERT INTO branch_prices(branch_location_id,catalog_entry_id,min_price,suggested_price,updated_by_account_id)
+ VALUES(2,1,0.01,2500.00,1),(3,1,0.01,2500.00,1)`); err != nil {
+		t.Fatal("the branch prices could not be configured")
 	}
 	// The commission rate of branch 2: the only setting the settlement needs.
 	if _, err := p.Exec(ctx, `INSERT INTO branch_settings(branch_location_id,commission_rate_percent,updated_by_account_id)
@@ -333,6 +348,20 @@ func closeSettlement(t *testing.T, ctx context.Context, p *pgxpool.Pool, closing
 	}
 }
 
+// settlementState is the money and the state of one settlement as one value, so a test
+// proves a refusal wrote nothing by comparing it before and after.
+func settlementState(t *testing.T, ctx context.Context, p *pgxpool.Pool, closing int64) string {
+	t.Helper()
+	var state string
+	if err := p.QueryRow(ctx, `SELECT status||':'||coalesce(commission_rate_percent::text,'-')||':'
+         ||sales_total||':'||cash_sales||':'||card_total||':'||transfer_total||':'||qr_total||':'
+         ||commission_amount||':'||coalesce(commission_rate_percent::text,'-') FROM branch_closings WHERE id=$1`,
+		closing).Scan(&state); err != nil {
+		t.Fatalf("the settlement state could not be read: %v", err)
+	}
+	return state
+}
+
 // TestBranchClosingsGuards proves the settlement rules on a live database: opening
 // freezes the period and the snapshot and leaves the rate for the proposal; the money of
 // the period is a draft while the settlement is live; the rate is read and frozen when
@@ -395,8 +424,8 @@ func TestBranchClosingsGuards(t *testing.T) {
 		t.Fatalf("a live settlement must freeze its branch: %v %v", blocker, err)
 	}
 
-	// "Guardar y salir" (S10, L13): the six money and observation fields are a draft
-	// while the settlement is open, and nothing else is.
+	// "Guardar y salir" (S10, L13): the money and observation fields are a draft while
+	// the settlement is open, and nothing else is.
 	if _, err := p.Exec(ctx, `UPDATE branch_closings SET cash_sales=120.00,cash_expenses=20.00,
  counted_cash=100.00,contributed_cash=10.00,closing_cash=30.00,observation='borrador' WHERE id=$1`, closing); err != nil {
 		t.Fatalf("the admin must be able to save a draft and leave: %v", err)
@@ -615,10 +644,10 @@ func TestBranchClosingsGuards(t *testing.T) {
 		t.Fatalf("each branch freezes the rate it was configured with: %v", err)
 	}
 	decideRound(t, ctx, p, reserved, "accepted", "")
-	// A count below the reservation cannot close, and the refusal names the variant:
-	// the existing quantity never ends below what is reserved.
+	// Any open reservation blocks the closure, naming the variant, even when the counted
+	// quantity covers it (R3-002, R4-004).
 	_, err = p.Exec(ctx, `UPDATE branch_closings SET status='closed' WHERE id=$1`, reserved)
-	execRefusalMessage(t, err, "LC007", "variant 2")
+	execRefusalMessage(t, err, "LC007", "Variant 2")
 	if err := p.QueryRow(ctx, `SELECT string_agg(variant_id||':'||existing,',' ORDER BY variant_id)
  FROM inventory_balances WHERE location_id=3`).Scan(&stock); err != nil || stock != "1:3,2:5" {
 		t.Fatalf("a refused closure must leave the stock untouched: %q %v", stock, err)
@@ -626,13 +655,13 @@ func TestBranchClosingsGuards(t *testing.T) {
 
 	// The money and the count refusals, on a settlement whose round is already accepted so
 	// that the decision is not what stops them.
-	countAll(t, ctx, p, next, map[int]int{1: 8})
+	countAll(t, ctx, p, next, map[int]int{1: 8, 2: 6, 3: 5})
 	// The drawer is a draft while the settlement is live, and the bound is checked on
 	// every write so the admin sees the domain code, not a constraint violation.
 	_, err = p.Exec(ctx, `UPDATE branch_closings SET counted_cash=50.00,closing_cash=60.00
  WHERE id=$1`, next)
 	execRefusalMessage(t, err, "LC006", "exceeds the cash counted plus the contribution by 10.00")
-	// The contribution raises the bound; the incomplete count is what still blocks it.
+	// The contribution raises the bound.
 	if _, err := p.Exec(ctx, `UPDATE branch_closings SET counted_cash=50.00,
  contributed_cash=10.00,closing_cash=60.00 WHERE id=$1`, next); err != nil {
 		t.Fatalf("the drawer draft must be accepted: %v", err)
@@ -645,8 +674,9 @@ func TestBranchClosingsGuards(t *testing.T) {
 	// Once proposed, the drawer is the offer the branch accepted: closing cannot rewrite it.
 	_, err = p.Exec(ctx, `UPDATE branch_closings SET status='closed',counted_cash=99.00 WHERE id=$1`, next)
 	execRefusalMessage(t, err, "LC005", "the offer the branch decides")
-	_, err = p.Exec(ctx, `UPDATE branch_closings SET status='closed' WHERE id=$1`, next)
-	execRefusalMessage(t, err, "LC006", "Variant 2")
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='closed' WHERE id=$1`, next); err != nil {
+		t.Fatalf("an accepted round must close the second settlement: %v", err)
+	}
 	t.Logf("034: opened, drafted, proposed, accepted, closed and refused settlements behave as the contract says")
 }
 
@@ -659,22 +689,23 @@ func TestBranchClosingsFirstSettlement(t *testing.T) {
 	closing := openSettlement(t, ctx, p, 2)
 	countAll(t, ctx, p, closing, map[int]int{1: 10, 2: 4})
 
-	// An offer with no round at all cannot close: nothing was offered to the branch.
-	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='proposed',
- counted_cash=0.00,contributed_cash=500.00,closing_cash=500.00 WHERE id=$1`, closing); err != nil {
-		t.Fatalf("the first settlement could not be proposed: %v", err)
+	// The offer is a round (S14, S15): a settlement cannot even be proposed without the
+	// version that states what the branch is being offered, because a rejection would
+	// then have nothing to refuse.
+	before := settlementState(t, ctx, p, closing)
+	_, err := p.Exec(ctx, `UPDATE branch_closings SET status='proposed',
+ counted_cash=0.00,contributed_cash=500.00,closing_cash=500.00 WHERE id=$1`, closing)
+	execRefusalMessage(t, err, "LC016", "no proposal round to offer")
+	if after := settlementState(t, ctx, p, closing); after != before {
+		t.Fatalf("a refused proposal must change nothing, got %s before %s", before, after)
 	}
-	_, err := p.Exec(ctx, `UPDATE branch_closings SET status='closed' WHERE id=$1`, closing)
-	execRefusalMessage(t, err, "LC016", "no proposal round to accept")
 
 	// The warehouse offers the fund it will leave, the branch accepts it, and the closure
 	// records the declared money as a single contribution.
-	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='rejected' WHERE id=$1`, closing); err != nil {
-		t.Fatalf("the settlement could not return to the warehouse: %v", err)
-	}
 	proposeRound(t, ctx, p, closing, `{"fund":"500.00"}`)
-	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='proposed' WHERE id=$1`, closing); err != nil {
-		t.Fatalf("the first round could not be proposed: %v", err)
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='proposed',
+ counted_cash=0.00,contributed_cash=500.00,closing_cash=500.00 WHERE id=$1`, closing); err != nil {
+		t.Fatalf("the first settlement could not be proposed: %v", err)
 	}
 	decideRound(t, ctx, p, closing, "accepted", "")
 	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='closed' WHERE id=$1`, closing); err != nil {
@@ -729,6 +760,90 @@ func TestBranchClosingsRetiredBranch(t *testing.T) {
 	// The branches that still operate settle normally.
 	openSettlement(t, ctx, p, 2)
 	t.Logf("034: a retired branch is refused and an operating one still settles")
+}
+
+// TestBranchClosingsProposalNeedsCompleteCount pins R3-001: a settlement is never
+// offered to a branch while any line of its count sheet is still pending, and the
+// refusal names the variant. Otherwise the branch would accept a proposal whose count is
+// incomplete, the closure would then refuse the missing line with the count already
+// frozen, and the settlement would be stuck in 'proposed' with the branch frozen.
+func TestBranchClosingsProposalNeedsCompleteCount(t *testing.T) {
+	ctx, p := closingFixture(t)
+	closing := openSettlement(t, ctx, p, 2)
+	// Variant 2 is left pending on purpose; variant 1 is counted.
+	countAll(t, ctx, p, closing, map[int]int{1: 10})
+	proposeRound(t, ctx, p, closing, `{"fund":"0.00"}`)
+
+	before := settlementState(t, ctx, p, closing)
+	_, err := p.Exec(ctx, `UPDATE branch_closings SET status='proposed',counted_cash=0.00,
+ closing_cash=0.00 WHERE id=$1`, closing)
+	execRefusalMessage(t, err, "LC019", "Variant 2")
+	// The refusal wrote nothing: still open, still no rate, still no offer.
+	if after := settlementState(t, ctx, p, closing); after != before {
+		t.Fatalf("a refused proposal must change nothing, got %s before %s", before, after)
+	}
+	if state := settlementState(t, ctx, p, closing); !strings.HasPrefix(state, "open:") {
+		t.Fatalf("the settlement must stay open, got %s", state)
+	}
+
+	// Counting the pending variant is the only thing that unblocks the same proposal,
+	// and the round the warehouse already recorded is still the one being offered.
+	countAll(t, ctx, p, closing, map[int]int{2: 4})
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='proposed',counted_cash=0.00,
+ closing_cash=0.00 WHERE id=$1`, closing); err != nil {
+		t.Fatalf("a complete count must be proposable: %v", err)
+	}
+	if state := settlementState(t, ctx, p, closing); !strings.HasPrefix(state, "proposed:12.50:") {
+		t.Fatalf("the proposal must freeze the rate and record the offer, got %s", state)
+	}
+	t.Logf("034: a proposal with a pending count line is refused and names the variant")
+}
+
+// TestBranchClosingsRejectionNeedsRejectedRound pins R4-003: proposed -> rejected is the
+// branch's answer to a round, so the latest round must itself be rejected. A header-only
+// update can never return a settlement to the warehouse after the branch accepted it, and
+// it can never bypass an accepted round.
+func TestBranchClosingsRejectionNeedsRejectedRound(t *testing.T) {
+	ctx, p := closingFixture(t)
+	closing := openSettlement(t, ctx, p, 2)
+	countAll(t, ctx, p, closing, map[int]int{1: 10, 2: 4})
+	proposeRound(t, ctx, p, closing, `{"fund":"0.00"}`)
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='proposed',counted_cash=10.00,
+ closing_cash=0.00 WHERE id=$1`, closing); err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+
+	// The branch accepted the round: the header cannot then be moved to rejected.
+	decideRound(t, ctx, p, closing, "accepted", "")
+	before := settlementState(t, ctx, p, closing)
+	_, err := p.Exec(ctx, `UPDATE branch_closings SET status='rejected' WHERE id=$1`, closing)
+	execRefusalMessage(t, err, "LC016", "is not rejected")
+	if after := settlementState(t, ctx, p, closing); after != before {
+		t.Fatalf("a refused rejection must change nothing, got %s before %s", before, after)
+	}
+	// The accepted settlement cannot be proposed again either: it is no longer a draft.
+	_, err = p.Exec(ctx, `INSERT INTO closing_proposals(closing_id,round,proposed_payload,proposed_by_account_id)
+ VALUES($1,1,'{}'::jsonb,1)`, closing)
+	execRefusal(t, err, "LC008")
+	// The only way on is the closure the branch accepted.
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='closed' WHERE id=$1`, closing); err != nil {
+		t.Fatalf("the accepted round must close the settlement: %v", err)
+	}
+
+	// On a second settlement the rejection works exactly as S14 states: the round is
+	// rejected first, and only then does the header return to the warehouse.
+	second := openSettlement(t, ctx, p, 2)
+	countAll(t, ctx, p, second, map[int]int{1: 10, 2: 4})
+	proposeRound(t, ctx, p, second, `{"fund":"0.00"}`)
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='proposed',counted_cash=10.00,
+ closing_cash=0.00 WHERE id=$1`, second); err != nil {
+		t.Fatalf("the second settlement could not be proposed: %v", err)
+	}
+	decideRound(t, ctx, p, second, "rejected", "el fondo era otro")
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='rejected' WHERE id=$1`, second); err != nil {
+		t.Fatalf("a rejected round must return the settlement to the warehouse: %v", err)
+	}
+	t.Logf("034: a header-only rejection cannot bypass the round the branch decided")
 }
 
 // TestBranchClosingsProposalRounds proves the round contract of S14/S15 on a live
