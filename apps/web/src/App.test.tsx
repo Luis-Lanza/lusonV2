@@ -1837,3 +1837,54 @@ describe('branch purchases', () => {
     expect(purchaseCalls(mock)).toHaveLength(0);
   });
 });
+
+describe('warehouse settlement workspace', () => {
+  const branchSession = { ...session, identity: { ...identity, account_id: 2, username: 'sucursala', location: metadata.locations[1] } };
+  const closingCalls = (mock: ReturnType<typeof setup>) =>
+    mock.mock.calls.filter(([url]) => String(url).startsWith('/api/closings'));
+  const settlementSetup = () => setup(session, url => url.startsWith('/api/closings?')
+    ? Promise.resolve(new Response(JSON.stringify({ page: 1, page_size: 25, total_closings: 0, closings: [] }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }))
+    : undefined);
+
+  it('offers Rendiciones to the warehouse identity and opens the workspace without any write', async () => {
+    const mock = settlementSetup();
+    render(<App />); await inventory();
+    const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
+    fireEvent.click(within(navigation).getByRole('button', { name: 'Rendiciones' }));
+    await screen.findByRole('heading', { name: 'Rendición de cuentas' });
+    expect(screen.getByText('Luson Rendiciones')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rendiciones' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
+    // The branches are the ones of this session, and the warehouse itself is never one of them.
+    const scope = screen.getByRole('region', { name: 'Sucursal a rendir' });
+    const options = within(scope).getAllByRole('option').map(option => option.textContent);
+    expect(options).toEqual(['Elegí la sucursal que vas a rendir', 'Sucursal A', 'Sucursal B']);
+    fireEvent.change(within(scope).getByLabelText('Sucursal'), { target: { value: '2' } });
+    expect(await within(scope).findByText('La sucursal no tiene una rendición abierta.')).toBeInTheDocument();
+    expect(closingCalls(mock).some(([url]) => String(url) === '/api/closings?branch_location_id=2&page=1&page_size=25')).toBe(true);
+    expect(closingCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('hides Rendiciones from a branch identity and keeps the inventory', async () => {
+    const mock = setup(branchSession, url => url.startsWith('/api/closings') ? Promise.reject(new Error('unexpected read')) : undefined);
+    render(<App />); await inventory();
+    expect(screen.queryByRole('button', { name: 'Rendiciones' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Rendición de cuentas' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Resultados de inventario' })).toBeInTheDocument();
+    expect(closingCalls(mock)).toHaveLength(0);
+  });
+
+  it('returns to the inventory from the workspace without losing the shell', async () => {
+    const mock = settlementSetup();
+    render(<App />); await inventory();
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Navegación principal' }))
+      .getByRole('button', { name: 'Rendiciones' }));
+    await screen.findByRole('heading', { name: 'Rendición de cuentas' });
+    fireEvent.click(screen.getByRole('link', { name: 'Inventario' }));
+    await inventory();
+    expect(screen.getByRole('link', { name: 'Inventario' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('heading', { name: 'Rendición de cuentas' })).not.toBeInTheDocument();
+    expect(closingCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+});
