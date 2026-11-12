@@ -424,8 +424,9 @@ type Round struct {
 // Closing is one persisted settlement exactly as this vertical reads it. The money of the
 // period is the database's; the three derived numbers are computed here on read and never
 // written. SalesTotal, CommissionAmount, CardTotal, TransferTotal and QRTotal are written
-// by the closure: migration 034 only admits them on the transition to closed, so a
-// proposed settlement reads them as zero and the offer lives in its latest round.
+// by the proposal transition, which records the offer the branch is asked to accept, and
+// the closure freezes them: a closed settlement can never state a period other than the
+// one it was accepted on.
 type Closing struct {
 	ID                    int64      `json:"id"`
 	BranchID              int64      `json:"branch_location_id"`
