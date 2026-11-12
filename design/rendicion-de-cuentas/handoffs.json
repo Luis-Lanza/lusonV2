@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "chosen": "03-mesa-conteo.html",
+  "handoffs": {
+    "03-mesa-conteo.html": {
+      "status": "in_progress",
+      "queued": false,
+      "sentAt": "2026-11-12T01:04:06.538Z",
+      "startedAt": "2026-11-12T01:04:32.170Z",
+      "implementedAt": null,
+      "feature": "odd/tasks/rendicion-de-cuentas.md",
+      "note": "Implementando la vertical desde la migración; la pantalla llega cuando la API exista."
+    }
+  }
+}

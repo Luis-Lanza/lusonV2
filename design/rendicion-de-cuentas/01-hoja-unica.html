@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rendición en una hoja · Rendición de cuentas · Luson</title>
+<style>
+*{box-sizing:border-box}
+:root{font-family:Inter,system-ui,sans-serif;color:#242124;background:#F8F6F4;font-size:14px;
+--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;--ink:#242124;
+--ok-bg:#ECFDF5;--ok-ink:#047857;--ok-border:#A7F3D0;
+--warn-bg:#FFFBEF;--warn-ink:#805400;--warn-border:#E8CF86;
+--short-bg:#FFF0F0;--short-ink:#991515;--short-border:#FFDAD6}
+body{margin:0}
+h1,h2,h3,p,dl,dd,dt,ul,li{margin:0}
+h1{font-size:22px}
+h2{font-size:16px}
+h3{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+p{line-height:1.6}
+small,.muted{color:var(--muted);font-size:12px}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;padding:10px 12px;min-height:44px}
+button:hover{background:var(--tint)}
+button.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF;font-weight:600}
+button.primary:hover{background:var(--hover)}
+:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+input,select,textarea{padding:10px 12px;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;width:100%;min-height:44px}
+textarea{min-height:80px;resize:vertical}
+label{display:grid;gap:6px;font-size:12px;color:var(--muted)}
+aside.nav{position:fixed;width:240px;inset:0 auto 0 0;background:#FFFFFF;border-right:1px solid var(--border);padding:12px;display:flex;flex-direction:column;justify-content:space-between}
+.brand{display:flex;gap:10px;align-items:center;padding:4px 8px 16px;border-bottom:1px solid var(--border)}
+.logo{background:var(--wine);color:#FFFFFF;border-radius:4px;padding:8px;font-weight:700;font-size:18px}
+.brand strong{color:var(--wine);font-size:18px}
+.brand small{display:block}
+nav{display:grid;gap:4px;margin-top:12px}
+nav a{text-align:left;padding:12px;color:inherit;text-decoration:none;border-left:2px solid transparent}
+nav a:hover{background:var(--page)}
+nav .active{background:var(--tint);color:var(--wine);border-left:2px solid var(--wine);font-weight:600}
+.identity{padding:12px;background:var(--page);border:1px solid var(--border)}
+.identity small{display:block;margin-top:6px}
+.top{margin-left:240px;height:56px;background:#FFFFFF;border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;justify-content:space-between}
+main{margin-left:240px;padding:32px;max-width:1240px}
+.heading{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:24px;flex-wrap:wrap}
+.heading p{color:var(--muted);margin-top:6px}
+.panel{background:#FFFFFF;border:1px solid var(--border);border-radius:4px;padding:24px;margin-bottom:16px}
+.panel>header{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-bottom:16px;flex-wrap:wrap}
+.tag{display:inline-block;border:1px solid var(--border);background:var(--page);padding:4px 8px;border-radius:3px;font-size:11px;font-weight:600}
+.tag.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-border)}
+.tag.warn{background:var(--warn-bg);color:var(--warn-ink);border-color:var(--warn-border)}
+.tag.short{background:var(--short-bg);color:var(--short-ink);border-color:var(--short-border)}
+.tag.frozen{background:var(--tint);color:var(--wine);border-color:var(--wine)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{text-align:left;background:var(--page);color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:600}
+th,td{padding:12px;border-bottom:1px solid var(--border);vertical-align:middle}
+td small{display:block;margin-top:3px}
+.num{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+th.num{text-align:right}
+.neg{color:var(--short-ink);font-weight:600;font-variant-numeric:tabular-nums;text-align:right}
+.pos{color:var(--ok-ink);font-weight:600;font-variant-numeric:tabular-nums;text-align:right}
+.zero{color:var(--muted);font-variant-numeric:tabular-nums;text-align:right}
+.count{width:88px;text-align:right;font-variant-numeric:tabular-nums}
+.summary{display:grid;gap:2px;border-top:1px solid var(--border);padding-top:12px;margin-top:12px}
+.summary div{display:flex;justify-content:space-between;gap:16px;padding:8px 0;border-bottom:1px dashed var(--border)}
+.summary div:last-child{border-bottom:0}
+.summary dt{color:var(--muted)}
+.summary dd{font-variant-numeric:tabular-nums;font-weight:600}
+.summary .total dt,.summary .total dd{color:var(--ink);font-size:15px;font-weight:700}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.field{display:grid;gap:8px}
+.help{display:flex;gap:8px;align-items:flex-start;padding:12px;background:var(--page);border:1px solid var(--border);border-radius:4px;font-size:12px;color:var(--muted);line-height:1.5}
+.help b{color:var(--ink)}
+.propose{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+@media (prefers-reduced-motion:no-preference){button{transition:background .12s ease}}
+</style>
+
+<aside class="nav">
+  <div>
+    <div class="brand"><span class="logo">L</span><div><strong>Luson</strong><small>Almacén</small></div></div>
+    <nav aria-label="Secciones">
+      <a href="#">Inventario</a>
+      <a href="#">Transferencias</a>
+      <a href="#">Ingresos</a>
+      <a href="#">Compras</a>
+      <a href="#">Catálogo</a>
+      <a class="active" href="#" aria-current="page">Rendiciones</a>
+    </nav>
+  </div>
+  <div class="identity"><strong>Almacén</strong><small>Cuenta administrativa</small></div>
+</aside>
+
+<div class="top">
+  <span class="muted">Rendiciones de cuentas</span>
+  <span class="muted">Sopocachi · 12 sep 2026, 10:20</span>
+</div>
+
+<main>
+  <div class="heading">
+    <div>
+      <h1>Rendición de cuentas · Sopocachi</h1>
+      <p>Período del 12 de agosto al 12 de septiembre de 2026 · corte 12 sep, 10:20</p>
+    </div>
+    <span class="tag frozen">Abierta · sucursal congelada</span>
+  </div>
+
+  <section class="panel" aria-labelledby="h-conteo">
+    <header>
+      <div>
+        <h2 id="h-conteo">1. Conteo de stock</h2>
+        <small>Cargá lo que contaste en el local. El sistema no ajusta nada hasta que la sucursal acepte.</small>
+      </div>
+      <span class="tag warn">3 con diferencia</span>
+    </header>
+    <table>
+      <thead>
+        <tr><th scope="col">Batería</th><th scope="col" class="num">Sistema</th><th scope="col" class="num">Contado</th><th scope="col" class="num">Diferencia</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Bosch <small>S4 45Ah · L</small></td><td class="num">12</td><td><input class="count" inputmode="numeric" value="12" aria-label="Contado Bosch S4 45Ah L"></td><td class="zero">—</td></tr>
+        <tr><td>Bosch <small>S4 45Ah · R</small></td><td class="num">9</td><td><input class="count" inputmode="numeric" value="8" aria-label="Contado Bosch S4 45Ah R"></td><td class="neg">−1</td></tr>
+        <tr><td>Varta <small>Blue 60Ah · L</small></td><td class="num">14</td><td><input class="count" inputmode="numeric" value="14" aria-label="Contado Varta Blue 60Ah L"></td><td class="zero">—</td></tr>
+        <tr><td>Varta <small>Blue 60Ah · R</small></td><td class="num">11</td><td><input class="count" inputmode="numeric" value="13" aria-label="Contado Varta Blue 60Ah R"></td><td class="pos">+2</td></tr>
+        <tr><td>Moura <small>Clean 75Ah · L</small></td><td class="num">7</td><td><input class="count" inputmode="numeric" value="7" aria-label="Contado Moura Clean 75Ah L"></td><td class="zero">—</td></tr>
+        <tr><td>Moura <small>Clean 75Ah · R</small></td><td class="num">6</td><td><input class="count" inputmode="numeric" value="6" aria-label="Contado Moura Clean 75Ah R"></td><td class="zero">—</td></tr>
+        <tr><td>Willard <small>Max 90Ah · L</small></td><td class="num">4</td><td><input class="count" inputmode="numeric" value="3" aria-label="Contado Willard Max 90Ah L"></td><td class="neg">−1</td></tr>
+        <tr><td>Willard <small>Max 90Ah · R</small></td><td class="num">2</td><td><input class="count" inputmode="numeric" value="2" aria-label="Contado Willard Max 90Ah R"></td><td class="zero">—</td></tr>
+        <tr><td>Record <small>Power 110Ah · L</small></td><td class="num">1</td><td><input class="count" inputmode="numeric" value="1" aria-label="Contado Record Power 110Ah L"></td><td class="zero">—</td></tr>
+      </tbody>
+    </table>
+    <div class="help" role="note" style="margin-top:16px">
+      <span aria-hidden="true">▸</span><span><b>9 de 9 variantes contadas.</b> Al cerrar, el stock del sistema queda exactamente igual a lo contado. Las tres diferencias suman un ajuste de <b>−1 unidad</b> sobre 66.</span>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="h-caja">
+    <header>
+      <div>
+        <h2 id="h-caja">2. Caja del período</h2>
+        <small>La sucursal cargó 3 gastos por Bs 215,00 desde la apertura del período.</small>
+      </div>
+    </header>
+    <div class="split">
+      <div>
+        <dl class="summary">
+          <div><dt>Fondo heredado de la rendición anterior</dt><dd>Bs 800,00</dd></div>
+          <div><dt>Ventas cobradas en efectivo</dt><dd>Bs 6.430,00</dd></div>
+          <div><dt>Gastos pagados en efectivo</dt><dd>− Bs 215,00</dd></div>
+          <div class="total"><dt>Caja esperada</dt><dd>Bs 7.015,00</dd></div>
+        </dl>
+      </div>
+      <div class="field">
+        <label for="contada">Caja contada en el local (Bs)</label>
+        <input id="contada" inputmode="decimal" value="6.980,00">
+        <dl class="summary">
+          <div><dt>Caja esperada</dt><dd>Bs 7.015,00</dd></div>
+          <div class="total"><dt>Diferencia</dt><dd class="neg">− Bs 35,00</dd></div>
+        </dl>
+        <div class="help" role="note">
+          <span aria-hidden="true">▸</span><span>La diferencia <b>queda registrada</b> y sobrevive al cierre. No se descuenta de la comisión ni desaparece.</span>
+        </div>
+      </div>
+    </div>
+
+    <h3 style="margin-top:24px">Cobros electrónicos · no entran en la caja</h3>
+    <table style="margin-top:8px">
+      <thead><tr><th scope="col">Medio</th><th scope="col" class="num">Cobrado en el período</th><th scope="col">Dónde está</th></tr></thead>
+      <tbody>
+        <tr><td>Tarjeta</td><td class="num">Bs 3.240,00</td><td><small>Cuenta de la sucursal</small></td></tr>
+        <tr><td>Transferencia</td><td class="num">Bs 1.180,00</td><td><small>Cuenta de la sucursal</small></td></tr>
+        <tr><td>QR</td><td class="num">Bs 2.760,00</td><td><small>Cuenta de la sucursal</small></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel" aria-labelledby="h-comision">
+    <header>
+      <div>
+        <h2 id="h-comision">3. Comisión y fondo</h2>
+        <small>Sólo baterías nuevas, sobre el precio de venta del período.</small>
+      </div>
+    </header>
+    <div class="split">
+      <div class="field">
+        <label for="tasa">Porcentaje de esta sucursal</label>
+        <input id="tasa" value="4,5 %" aria-describedby="tasa-help">
+        <div class="help" id="tasa-help"><span aria-hidden="true">▸</span><span>El porcentaje se congela en esta rendición. Cambiarlo después no altera lo que la sucursal ya aceptó.</span></div>
+      </div>
+      <dl class="summary">
+        <div><dt>Ventas del período sobre precio de venta</dt><dd>Bs 32.480,00</dd></div>
+        <div><dt>Porcentaje aplicado</dt><dd>4,5 %</dd></div>
+        <div class="total"><dt>Comisión</dt><dd>Bs 1.461,60</dd></div>
+      </dl>
+    </div>
+
+    <div class="split" style="margin-top:24px">
+      <div class="field">
+        <label for="fondo">Fondo que queda en la caja (Bs)</label>
+        <input id="fondo" inputmode="decimal" value="900,00">
+        <small>Con esto arranca el próximo período.</small>
+      </div>
+      <dl class="summary">
+        <div><dt>Caja contada</dt><dd>Bs 6.980,00</dd></div>
+        <div><dt>Fondo que queda</dt><dd>− Bs 900,00</dd></div>
+        <div class="total"><dt>Se lleva el Almacén</dt><dd>Bs 6.080,00</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="h-propuesta">
+    <header>
+      <div>
+        <h2 id="h-propuesta">4. Propuesta</h2>
+        <small>Un solo documento: conteo, caja, comisión y fondo. La sucursal acepta o rechaza con motivo.</small>
+      </div>
+    </header>
+    <div class="field">
+      <label for="obs">Observación para la sucursal</label>
+      <textarea id="obs" placeholder="Ej.: la diferencia de −Bs 35,00 quedó en revisión con el dueño.">Faltan dos baterías Varta 60Ah R que el encargado dice haber vendido sin registrar. Queda anotado para el próximo período.</textarea>
+    </div>
+    <div class="propose" style="margin-top:24px">
+      <div>
+        <strong>Resumen</strong>
+        <dl class="summary" style="border-top:0;padding-top:4px">
+          <div><dt>Ajuste de stock</dt><dd>−1 unidad</dd></div>
+          <div><dt>Diferencia de caja</dt><dd class="neg">− Bs 35,00</dd></div>
+          <div><dt>Comisión</dt><dd>Bs 1.461,60</dd></div>
+          <div class="total"><dt>Fondo que queda</dt><dd>Bs 900,00</dd></div>
+        </dl>
+      </div>
+      <div style="display:grid;gap:8px;justify-items:end">
+        <button class="primary" type="button">Proponer a la sucursal</button>
+        <small>La sucursal sigue congelada hasta que acepte.</small>
+      </div>
+    </div>
+  </section>
+</main>
+</html>

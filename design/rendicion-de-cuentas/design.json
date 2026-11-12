@@ -1,0 +1,35 @@
+{
+  "title": "Rendición de cuentas por sucursal",
+  "brief": "Vertical nueva: el Almacén va en persona a una sucursal, congela su operación, cuenta la caja y el stock, calcula y paga una comisión por lo vendido, deja un fondo y deja el sistema igual a la realidad. El período va de una rendición cerrada a la siguiente, con fecha de corte elegida a mano. El admin propone un solo documento (conteo + caja + comisión + fondo); la sucursal sólo acepta o rechaza con motivo, las veces que haga falta. El stock debe cuadrar siempre; la diferencia de caja se registra y sobrevive al cierre. Mismo shell, paleta vino y tokens de design/system.md que el resto de la app.",
+  "feature": "odd/tasks/rendicion-de-cuentas.md",
+  "artboards": [
+    {
+      "file": "01-hoja-unica.html",
+      "title": "Rendición en una hoja",
+      "tradeoff": "Todo el cierre es un solo documento de arriba a abajo: se lee y se audita como un acta. En una sucursal con muchas variantes la hoja se estira y hay que scrollear entre el conteo y la caja, y la acción de proponer queda al final.",
+      "width": 1440,
+      "height": 2200
+    },
+    {
+      "file": "02-pasos-rail.html",
+      "title": "Pasos con resumen al costado",
+      "tradeoff": "Impone el orden contar → caja → comisión → proponer y mantiene los totales y la diferencia siempre visibles en un rail fijo. Obliga a recorrer los pasos en línea, incómodo cuando el admin ya sabe qué números quiere corregir.",
+      "width": 1440,
+      "height": 1700
+    },
+    {
+      "file": "03-mesa-conteo.html",
+      "title": "Mesa de conteo",
+      "tradeoff": "Optimizada para el trabajo real: contar con teclado a la izquierda y ver la caja, la comisión y el fondo a la derecha sin scrollear, con la propuesta bloqueada hasta cubrir todas las variantes. Es la más densa y necesita al menos 1280 px de ancho.",
+      "width": 1440,
+      "height": 1500
+    },
+    {
+      "file": "04-decision-sucursal.html",
+      "title": "Decisión de la sucursal",
+      "tradeoff": "Muestra qué cambia exactamente si acepta, con el motivo del rechazo a la vista y el historial de rondas. Superficie complementaria: funciona igual con cualquiera de las tres direcciones del lado del Almacén.",
+      "width": 1440,
+      "height": 2000
+    }
+  ]
+}
