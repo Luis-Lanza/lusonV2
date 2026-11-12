@@ -334,6 +334,37 @@ describe('proposing (S14)', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       'La sucursal no tiene porcentaje de comisión configurado: sin eso no se puede proponer.');
   });
+
+  it('states the refusal beside the button that caused it, not at the top of the sheet', async () => {
+    const h = server({ refuse: { error: 'commission_rate_missing' } });
+    await ready(h);
+    await completeTheSheet();
+    fireEvent.click(proposeButton());
+    // The button lives in the bottom bar and the sheet is long: a refusal rendered at the top of it
+    // is a refusal the operator never reads.
+    expect(await within(actionBar()).findByRole('alert')).toHaveTextContent(
+      'La sucursal no tiene porcentaje de comisión configurado: sin eso no se puede proponer.');
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+  });
+
+  it('keeps the refusal at the top, with a reload, when no settlement is on screen', async () => {
+    // Nothing to attach the refusal to: the operator is told why the branch has no document and
+    // offered the read again.
+    const h = server({ opened: false });
+    const fetcher = vi.fn<typeof fetch>(async (input, init = {}) => {
+      if (String(input) === '/api/closings' && init?.method === 'POST') {
+        return json({ error: 'service_unavailable' }, 503);
+      }
+      return h.fetcher(input as string, init as RequestInit);
+    });
+    render(<ClosingWorkspace csrf={csrf} branches={branches} fetcher={fetcher} />);
+    fireEvent.change(screen.getByLabelText('Sucursal'), { target: { value: '2' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Abrir rendición de cuentas' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('El servicio no está disponible. No pudimos confirmar la operación.');
+    expect(within(alert).getByRole('button', { name: 'Recargar la rendición' })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Acciones de la rendición' })).not.toBeInTheDocument();
+  });
 });
 
 describe('the numbers rail (S8, S9, S13)', () => {

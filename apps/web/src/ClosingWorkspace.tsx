@@ -445,7 +445,10 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
     </section>
 
     <p role="status" className="closing-status">{status}</p>
-    {problem !== '' && <p role="alert" className="closing-problem">{problem}
+    {/* With a settlement on screen the refusal belongs beside the action that caused it: the
+        button lives in the bottom bar, and an alert rendered at the top of a long sheet is a
+        refusal the operator never sees. */}
+    {problem !== '' && closing === null && <p role="alert" className="closing-problem">{problem}
       {branch !== 0 && <button type="button" disabled={busy} onClick={() => setRevision(value => value + 1)}>Recargar la rendición</button>}
     </p>}
 
@@ -844,6 +847,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
             {`Diferencia de caja ${closingSignedText(liveDifference)}`}
           </span>}
           <small id={reasonID}>{closingBlockReason(blockers)}</small>
+          {problem !== '' && <small role="alert" className="closing-bar-problem">{problem}</small>}
         </div>
         <div className="closing-bar-action">
           <button type="button" disabled={busy || !editable} onClick={() => void save()}>Guardar borrador</button>

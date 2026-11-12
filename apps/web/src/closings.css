@@ -215,3 +215,13 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
 .closing-correction-submit { padding: 12px 18px 16px; border-top: 1px solid var(--border); }
 .closing-correction-submit small { flex-basis: 100%; color: var(--muted); font-size: 12px; line-height: 16px; }
 .closing-correction .closing-decision-actions { padding: 12px 18px 0; }
+
+/* A refusal belongs where the action is: the button lives in the bottom bar, so the bar states
+   why the server refused instead of leaving the alert at the top of a long sheet. */
+.closing-bar-problem {
+  display: block;
+  margin-top: 6px;
+  color: var(--wine);
+  font-weight: 600;
+  line-height: 1.4;
+}
