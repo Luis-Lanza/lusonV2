@@ -633,6 +633,7 @@ stable SQLSTATEs:
 | `LC021` | The payload is not a correction this domain applies | 409 `correction_payload` |
 | `LC022` | The fund of a settlement is corrected before the next period starts | 409 `correction_fund_started` |
 | `LC023` | A correction effect is written by the acceptance of its own correction | 409 `correction_journal` |
+| `LC024` | Location 1 is the warehouse: an expense belongs to a branch | `403 forbidden` from the expense route, 503 `service_unavailable` elsewhere |
 
 One live settlement per branch is a unique index, reported as `409 settlement_live`; a
 reference to a settlement that does not exist is reported as `404 not_found`, and a second
