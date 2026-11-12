@@ -151,6 +151,10 @@ func TestClosingRoutes(t *testing.T) {
 		{"GET", "/api/closings/1/decision", "POST", 405, "method_not_allowed"},
 		{"POST", "/api/closings/expenses", "", 401, "unauthenticated"},
 		{"GET", "/api/closings/expenses", "POST", 405, "method_not_allowed"},
+		{"POST", "/api/closings/1/corrections", "", 401, "unauthenticated"},
+		{"GET", "/api/closings/1/corrections", "POST", 405, "method_not_allowed"},
+		{"POST", "/api/closings/corrections/1/decision", "", 401, "unauthenticated"},
+		{"GET", "/api/closings/corrections/1/decision", "POST", 405, "method_not_allowed"},
 	} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(tc.method, tc.target, nil))
@@ -168,6 +172,9 @@ func TestClosingRoutes(t *testing.T) {
 		"/api/closings/1/2", "/api/closings/1/counts", "/api/closings/1/Count",
 		"/api/closings/expenses/", "/api/closings/expenses/2",
 		"/api/closings/branches/2", "/api/closings/branches/2/commission/3",
+		"/api/closings/1/corrections/2", "/api/closings/1/Corrections",
+		"/api/closings/corrections/1", "/api/closings/corrections/1/decisions",
+		"/api/closings/corrections/1/decision/2",
 	} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest("GET", target, nil))
@@ -536,6 +543,66 @@ func TestClosingRecord(t *testing.T) {
 			t.Fatalf("%s must fail closed", name)
 		}
 	}
+
+	// A closed settlement publishes the corrections the branch accepted, and its drawer is the
+	// corrected one the store derived: a client reads a corrected number with the correction that
+	// produced it, and the signed number stays recoverable from the delta (S16).
+	corrected := closingValue()
+	correctionAccount := int64(3)
+	correctionMoment := corrected.CutAt.Add(time.Hour)
+	correctionDelta := closings.Signed("100.00")
+	correctedCash := closings.Money("96100.00")
+	correctedDifference := closings.Signed("100.00")
+	correctedTaken := closings.Signed("90100.00")
+	corrected.CountedCash = &correctedCash
+	corrected.CashDifference = &correctedDifference
+	corrected.TakenCash = &correctedTaken
+	corrected.Corrections = []closings.Correction{{ID: 5, ClosingID: 1,
+		Status: closings.CorrectionAccepted, Reason: "conté mal el cajón",
+		Payload:             closings.CorrectionOffer{CountedCash: &correctedCash},
+		ProposedByAccountID: 1, ProposedAt: corrected.CutAt.Add(30 * time.Minute),
+		DecidedByAccountID: &correctionAccount, DecidedAt: &correctionMoment,
+		Effects: []closings.CorrectionEffect{{Kind: closings.CorrectionKindCountedCash,
+			AmountDelta: &correctionDelta}}}}
+	describedCorrection, err := closingRecord(corrected)
+	if err != nil || len(describedCorrection.Corrections) != 1 {
+		t.Fatalf("a corrected settlement must publish its corrections: %+v %v", describedCorrection, err)
+	}
+	if *describedCorrection.CountedCash != "96100.00" ||
+		*describedCorrection.CashDifference != "100.00" ||
+		*describedCorrection.TakenCash != "90100.00" ||
+		describedCorrection.Corrections[0].Reason != "conté mal el cajón" ||
+		describedCorrection.Corrections[0].Payload.CountedCash != "96100.00" ||
+		len(describedCorrection.Corrections[0].Effects) != 1 ||
+		*describedCorrection.Corrections[0].Effects[0].AmountDelta != "100.00" {
+		t.Fatalf("the document must publish the corrected drawer with its delta: %+v", describedCorrection)
+	}
+	// Only a closed settlement carries corrections: a live one is corrected by its own rounds.
+	liveCorrection := corrected
+	liveCorrection.Status = closings.StatusProposed
+	// A correction of another settlement is never published in this document, and the list is the
+	// database's own order.
+	otherCorrection := corrected
+	otherCorrection.Corrections = []closings.Correction{corrected.Corrections[0]}
+	otherCorrection.Corrections[0].ClosingID = 2
+	repeatedCorrection := corrected
+	repeatedCorrection.Corrections = []closings.Correction{corrected.Corrections[0],
+		corrected.Corrections[0]}
+	rejectedCorrection := corrected
+	rejectedCorrection.Corrections = []closings.Correction{corrected.Corrections[0]}
+	rejectedCorrection.Corrections[0].Status = closings.CorrectionRejected
+	rejectedCorrection.Corrections[0].DecisionReason = "no"
+	for name, value := range map[string]closings.Closing{
+		"correction_on_live":     liveCorrection,
+		"correction_elsewhere":   otherCorrection,
+		"correction_repeated":    repeatedCorrection,
+		"correction_rejected":    rejectedCorrection,
+		"correction_wrong_shape": func() closings.Closing { v := corrected; v.Corrections[0].Reason = ""; return v }(),
+	} {
+		if _, err := closingRecord(value); !errors.Is(err, closings.ErrUnavailable) {
+			t.Fatalf("%s must fail closed", name)
+		}
+	}
 }
 
 // TestClosingFailureMapping pins the one status and one stable code of every refusal the store can
@@ -562,6 +629,17 @@ func TestClosingFailureMapping(t *testing.T) {
 		{"closure", closings.ErrClosureRefused, 409, `{"error":"closure_refused"}`},
 		{"reserved", closings.ErrReservedStock, 409, `{"error":"reserved_stock"}`},
 		{"round", closings.ErrRoundNotAccepted, 409, `{"error":"round_not_accepted"}`},
+		// The six refusals of a correction of a closed settlement answer their own code: none of
+		// them is an outage, and each names what is wrong with the correction (S16).
+		{"correction_not_closed", closings.ErrCorrectionNotClosed, 409,
+			`{"error":"correction_not_closed"}`},
+		{"correction_decided", closings.ErrCorrectionDecided, 409, `{"error":"correction_decided"}`},
+		{"correction_pending", closings.ErrCorrectionPending, 409, `{"error":"correction_pending"}`},
+		{"correction_payload", closings.ErrCorrectionPayload, 409, `{"error":"correction_payload"}`},
+		{"correction_fund_started", closings.ErrCorrectionFundStarted, 409,
+			`{"error":"correction_fund_started"}`},
+		{"correction_journal", closings.ErrCorrectionJournal, 409,
+			`{"error":"correction_journal"}`},
 		{"branch_frozen", closings.ErrBranchFrozen, 409, `{"error":"branch_frozen"}`},
 		{"not_branch_expense", closings.ErrNotBranchExpense, 403, `{"error":"forbidden"}`},
 		{"invalid", closings.ErrInvalid, 400, `{"error":"invalid_request"}`},
@@ -597,6 +675,12 @@ func TestClosingFailureMapping(t *testing.T) {
 	closingOpenFailure(w, closings.ErrForbidden, 2)
 	if w.Code != 403 || w.Body.String() != `{"error":"forbidden"}`+"\n" {
 		t.Fatalf("an opening forbidden must stay forbidden: %d %s", w.Code, w.Body.String())
+	}
+	// A correction of a live settlement names the document the operator has to look at.
+	w = httptest.NewRecorder()
+	closingFailure(w, &closings.CorrectionNotClosed{ClosingID: 7})
+	if w.Code != 409 || w.Body.String() != `{"closing_id":7,"error":"correction_not_closed"}`+"\n" {
+		t.Fatalf("a live settlement must be named by the refusal: %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -805,6 +889,8 @@ func (f *closingHTTPFixture) snapshot(t *testing.T) string {
   'closings',(SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY c.id),'[]'::jsonb) FROM branch_closings c),
   'lines',(SELECT coalesce(jsonb_agg(to_jsonb(l) ORDER BY l.closing_id,l.variant_id),'[]'::jsonb) FROM closing_count_lines l),
   'rounds',(SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id),'[]'::jsonb) FROM closing_proposals p),
+  'corrections',(SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY c.id),'[]'::jsonb) FROM closing_corrections c),
+  'effects',(SELECT coalesce(jsonb_agg(to_jsonb(e) ORDER BY e.id),'[]'::jsonb) FROM closing_correction_effects e),
   'cash',(SELECT coalesce(jsonb_agg(to_jsonb(m) ORDER BY m.id),'[]'::jsonb) FROM branch_cash_movements m),
   'settings',(SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY s.branch_location_id),'[]'::jsonb) FROM branch_settings s),
   'balances',(SELECT coalesce(jsonb_agg(to_jsonb(b) ORDER BY b.location_id,b.variant_id),'[]'::jsonb) FROM inventory_balances b))::text`).Scan(&data)
@@ -923,7 +1009,10 @@ type closingWireRecord struct {
 		CountedQuantity  *int64 `json:"counted_quantity"`
 	} `json:"count_lines"`
 	Expenses []closingExpenseWireRecord `json:"expenses"`
-	Rounds   []struct {
+	// Corrections are the accepted corrections of the closed settlement, oldest first: each one with
+	// the reason the warehouse stated, the branch's answer and the deltas it applied (S16).
+	Corrections []closingCorrectionWireRecord `json:"corrections"`
+	Rounds      []struct {
 		ID             int64  `json:"id"`
 		Round          int    `json:"round"`
 		Decision       string `json:"decision"`
@@ -946,7 +1035,7 @@ var closingWireKeys = []string{"id", "branch_location_id", "branch_name", "statu
 	"cut_at", "closed_at", "commission_rate_percent", "opening_cash", "cash_sales", "cash_expenses",
 	"expected_cash", "counted_cash", "cash_difference", "contributed_cash", "closing_cash",
 	"taken_cash", "sales_total", "commission_amount", "card_total", "transfer_total", "qr_total",
-	"observation", "opened_by_account_id", "count_lines", "rounds", "expenses"}
+	"observation", "opened_by_account_id", "count_lines", "rounds", "expenses", "corrections"}
 
 // closingWire admits only the frozen settlement shape: one object with exactly the published keys.
 func closingWire(t *testing.T, w *httptest.ResponseRecorder, status int) closingWireRecord {
@@ -967,6 +1056,78 @@ func closingWire(t *testing.T, w *httptest.ResponseRecorder, status int) closing
 	var record closingWireRecord
 	if json.Unmarshal(w.Body.Bytes(), &record) != nil {
 		t.Fatalf("settlement is not decodable: %s", w.Body.String())
+	}
+	return record
+}
+
+// closingCorrectionEffectWireRecord is one delta an accepted correction applied, exactly as the
+// contract publishes it: the unit it moves and the exact difference, with the other unit's keys at
+// JSON null.
+type closingCorrectionEffectWireRecord struct {
+	Kind          string  `json:"kind"`
+	VariantID     *int64  `json:"variant_id"`
+	QuantityDelta *int64  `json:"quantity_delta"`
+	AmountDelta   *string `json:"amount_delta"`
+}
+
+// closingCorrectionWireRecord is one correction exactly as this contract publishes it: the payload
+// the warehouse offered, the branch's answer and the deltas the acceptance journalled.
+type closingCorrectionWireRecord struct {
+	ID                  int64   `json:"id"`
+	ClosingID           int64   `json:"closing_id"`
+	Status              string  `json:"status"`
+	Reason              string  `json:"reason"`
+	ProposedByAccountID int64   `json:"proposed_by_account_id"`
+	ProposedAt          string  `json:"proposed_at"`
+	DecidedByAccountID  *int64  `json:"decided_by_account_id"`
+	DecidedAt           *string `json:"decided_at"`
+	DecisionReason      string  `json:"decision_reason"`
+	Payload             struct {
+		CountedQuantities []struct {
+			VariantID       int64 `json:"variant_id"`
+			CountedQuantity int64 `json:"counted_quantity"`
+		} `json:"counted_quantities"`
+		CountedCash      string `json:"counted_cash"`
+		CommissionAmount string `json:"commission_amount"`
+		ClosingCash      string `json:"closing_cash"`
+	} `json:"payload"`
+	Effects []closingCorrectionEffectWireRecord `json:"effects"`
+}
+
+var closingCorrectionWireKeys = []string{"id", "closing_id", "status", "reason", "payload",
+	"proposed_by_account_id", "proposed_at", "decided_by_account_id", "decided_at",
+	"decision_reason", "effects"}
+
+// closingCorrectionWire admits only the frozen correction shape: one object with exactly the
+// published keys, and every effect with exactly the four keys of a delta.
+func closingCorrectionWire(t *testing.T, w *httptest.ResponseRecorder,
+	status int) closingCorrectionWireRecord {
+	t.Helper()
+	var value map[string]json.RawMessage
+	if w.Code != status || w.Header().Get("Content-Type") != "application/json" ||
+		json.Unmarshal(w.Body.Bytes(), &value) != nil {
+		t.Fatalf("correction response mismatch: status=%d want=%d body=%s", w.Code, status, w.Body.String())
+	}
+	if len(value) != len(closingCorrectionWireKeys) {
+		t.Fatalf("correction whitelist changed: %s", w.Body.String())
+	}
+	for _, key := range closingCorrectionWireKeys {
+		if _, ok := value[key]; !ok {
+			t.Fatalf("correction key %q missing: %s", key, w.Body.String())
+		}
+	}
+	var effects []map[string]json.RawMessage
+	if json.Unmarshal(value["effects"], &effects) != nil {
+		t.Fatalf("correction effects are not decodable: %s", w.Body.String())
+	}
+	for _, effect := range effects {
+		if len(effect) != 4 {
+			t.Fatalf("correction effect whitelist changed: %s", w.Body.String())
+		}
+	}
+	var record closingCorrectionWireRecord
+	if json.Unmarshal(w.Body.Bytes(), &record) != nil {
+		t.Fatalf("correction is not decodable: %s", w.Body.String())
 	}
 	return record
 }
@@ -992,6 +1153,10 @@ func TestClosingsWarehouseOnlyRoutes(t *testing.T) {
 		{fmt.Sprintf("/api/closings/%d/cash", id),
 			`{"counted_cash":"1.00","contributed_cash":"0.00","closing_cash":"0.00","observation":""}`},
 		{fmt.Sprintf("/api/closings/%d/propose", id), ""},
+		// A correction is the warehouse's own reading of the cut it performed: a branch never
+		// proposes one, whatever the state of the settlement it would correct.
+		{fmt.Sprintf("/api/closings/%d/corrections", id),
+			`{"reason":"a mí no me toca","payload":{"counted_cash":"1.00"}}`},
 	} {
 		f.refused(t, f.request(2, "POST", attempt.target, attempt.body), 403, `{"error":"forbidden"}`)
 	}
@@ -1841,5 +2006,386 @@ func TestClosingsProposalRaceIsAConflict(t *testing.T) {
 	f.countAll(t, id)
 	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/propose", id), "")); w.Code != 200 {
 		t.Fatalf("the settlement must be proposable again: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// closeSettlement settles a branch from the first period to the closure: the rate is configured,
+// the whole sheet is counted exactly as the system expected it, the drawer is the one the test
+// states and the branch accepts the only round. It returns the closed document, which is the one a
+// correction corrects.
+func (f *closingHTTPFixture) closeSettlement(t *testing.T, branch int64, drawer string) closingWireRecord {
+	t.Helper()
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/branches/%d/commission", branch),
+		`{"commission_rate_percent":"10.00"}`)); w.Code != 200 {
+		t.Fatalf("the rate of branch %d must be configured: %d %s", branch, w.Code, w.Body.String())
+	}
+	id := f.open(t, branch)
+	f.countAll(t, id)
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", id), drawer)); w.Code != 200 {
+		t.Fatalf("the drawer must be drafted: %d %s", w.Code, w.Body.String())
+	}
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/propose", id), "")); w.Code != 200 {
+		t.Fatalf("the settlement must be proposed: %d %s", w.Code, w.Body.String())
+	}
+	closed := closingWire(t, f.serve(t, f.request(int(branch), "POST",
+		fmt.Sprintf("/api/closings/%d/decision", id), `{"decision":"accepted"}`)), 200)
+	if closed.Status != "closed" || closed.ClosedAt == nil {
+		t.Fatalf("the settlement must close: %+v", closed)
+	}
+	return closed
+}
+
+// TestClosingsCorrectionOfAClosedSettlement pins S16 over HTTP end to end: only a closed settlement
+// is corrected, the warehouse proposes with a mandatory reason and the branch accepts or rejects
+// with one; an acceptance is the only answer that applies the deltas, the corrected drawer is what
+// the document publishes, and the accepted correction is legible beside the delta it applied. A
+// rejection applies nothing, a decided correction is final, one correction waits at a time, and a
+// fund correction is refused once the next period started instead of reporting an outage.
+func TestClosingsCorrectionOfAClosedSettlement(t *testing.T) {
+	f := closingFixture(t)
+	// The bootstrap settlement of branch 3 closes a drawer of zero with a contribution of 100.00,
+	// so its counted cash, its difference and what the warehouse takes are all 0.00.
+	closed := f.closeSettlement(t, 3,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo inicial"}`)
+	if closed.CountedCash == nil || *closed.CountedCash != "0.00" || closed.CashDifference == nil ||
+		*closed.CashDifference != "0.00" || closed.TakenCash == nil || *closed.TakenCash != "0.00" ||
+		closed.ClosingCash == nil || *closed.ClosingCash != "100.00" || len(closed.Corrections) != 0 {
+		t.Fatalf("the signed settlement must publish its own numbers and no correction: %+v", closed)
+	}
+	line := closed.CountLines[0]
+	if line.CountedQuantity == nil {
+		t.Fatalf("a closed settlement states every counted quantity: %+v", line)
+	}
+	signedQuantity := *line.CountedQuantity
+	corrections := fmt.Sprintf("/api/closings/%d/corrections", closed.ID)
+	// A live settlement is corrected by its own rounds, not after the fact: the refusal names the
+	// settlement the operator has to look at instead of answering an outage.
+	live := f.open(t, 2)
+	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/corrections", live),
+		`{"reason":"me equivoqué","payload":{"counted_cash":"1.00"}}`), 409,
+		fmt.Sprintf(`{"closing_id":%d,"error":"correction_not_closed"}`, live))
+	// The payload is one this domain applies: a variant the settlement never counted has no
+	// recorded quantity to take a difference against.
+	f.refused(t, f.request(1, "POST", corrections,
+		`{"reason":"me equivoqué","payload":{"counted_quantities":[{"variant_id":9999,"counted_quantity":1}]}}`),
+		409, `{"error":"correction_payload"}`)
+	// A correction states a reason and at least one of its four values, each in the shape of that
+	// value: a number where money is canonical text, an amount the drawer is restated with as null,
+	// an empty sheet and an unknown key are all malformed bodies.
+	for _, body := range []string{
+		`{"payload":{"counted_cash":"1.00"}}`,
+		`{"reason":"   ","payload":{"counted_cash":"1.00"}}`,
+		`{"reason":"me equivoqué","payload":{}}`,
+		`{"reason":"me equivoqué","payload":{"counted_quantities":[]}}`,
+		`{"reason":"me equivoqué","payload":{"counted_cash":150.00}}`,
+		`{"reason":"me equivoqué","payload":{"counted_cash":null}}`,
+		`{"reason":"me equivoqué","payload":{"counted_cash":"150.0"}}`,
+		`{"reason":"me equivoqué","payload":{"fund":"1.00"}}`,
+		`{"reason":"me equivoqué","payload":{"counted_cash":"1.00"},"extra":1}`,
+		`{"reason":"me equivoqué","payload":{"counted_cash":"1.00"},"reason":"otra"}`,
+	} {
+		f.refused(t, f.request(1, "POST", corrections, body), 400, `{"error":"invalid_request"}`)
+	}
+	// The warehouse proposes one correction at a time and the branch answers it.
+	offered := fmt.Sprintf(`{"reason":"conté mal el cajón y una batería","payload":{"counted_quantities":[{"variant_id":%d,"counted_quantity":%d}],"counted_cash":"150.00"}}`,
+		line.VariantID, signedQuantity-1)
+	proposed := closingCorrectionWire(t, f.serve(t, f.request(1, "POST", corrections, offered)), 201)
+	if proposed.Status != "proposed" || proposed.ClosingID != closed.ID ||
+		proposed.ProposedByAccountID != 1 || proposed.ProposedAt == "" ||
+		proposed.DecidedByAccountID != nil || proposed.DecidedAt != nil ||
+		proposed.DecisionReason != "" || len(proposed.Effects) != 0 ||
+		proposed.Reason != "conté mal el cajón y una batería" ||
+		proposed.Payload.CountedCash != "150.00" ||
+		len(proposed.Payload.CountedQuantities) != 1 ||
+		proposed.Payload.CountedQuantities[0].VariantID != line.VariantID ||
+		proposed.Payload.CountedQuantities[0].CountedQuantity != signedQuantity-1 ||
+		proposed.Payload.CommissionAmount != "" || proposed.Payload.ClosingCash != "" {
+		t.Fatalf("the proposed correction is not published as it was offered: %+v", proposed)
+	}
+	// One correction waits at a time: the warehouse waits for the branch's answer.
+	f.refused(t, f.request(1, "POST", corrections,
+		`{"reason":"otra vez","payload":{"counted_cash":"1.00"}}`), 409, `{"error":"correction_pending"}`)
+	// Only an enabled account of the branch that owns the settlement decides it: another branch and
+	// the warehouse are both refused and nothing at all is written.
+	decision := fmt.Sprintf("/api/closings/corrections/%d/decision", proposed.ID)
+	f.refused(t, f.request(2, "POST", decision, `{"decision":"accepted"}`), 403, `{"error":"forbidden"}`)
+	f.refused(t, f.request(1, "POST", decision, `{"decision":"accepted"}`), 403, `{"error":"forbidden"}`)
+	// A rejection states its motive and applies nothing: the document keeps the numbers the branch
+	// signed, the stock stays where the closure left it and no correction is published.
+	f.refused(t, f.request(3, "POST", decision, `{"decision":"rejected"}`), 400, `{"error":"invalid_request"}`)
+	rejected := closingCorrectionWire(t, f.serve(t, f.request(3, "POST", decision,
+		`{"decision":"rejected","reason":"lo reviso mañana"}`)), 200)
+	if rejected.Status != "rejected" || rejected.DecisionReason != "lo reviso mañana" ||
+		rejected.DecidedByAccountID == nil || *rejected.DecidedByAccountID != 3 ||
+		rejected.DecidedAt == nil || len(rejected.Effects) != 0 {
+		t.Fatalf("the rejection must be published with its motive and no delta: %+v", rejected)
+	}
+	unchanged := closingWire(t, f.serve(t, f.request(1, "GET", fmt.Sprintf("/api/closings/%d", closed.ID), "")), 200)
+	if unchanged.CountedCash == nil || *unchanged.CountedCash != "0.00" ||
+		unchanged.CashDifference == nil || *unchanged.CashDifference != "0.00" ||
+		unchanged.TakenCash == nil || *unchanged.TakenCash != "0.00" || len(unchanged.Corrections) != 0 {
+		t.Fatalf("a rejected correction applies nothing: %+v", unchanged)
+	}
+	if existing, reserved := f.stock(t, 3, line.VariantID); existing != signedQuantity || reserved != 0 {
+		t.Fatalf("a rejected correction moves no stock: %d/%d", existing, reserved)
+	}
+	// A decided correction is final, whatever the answer was.
+	f.refused(t, f.request(3, "POST", decision, `{"decision":"accepted"}`), 409,
+		`{"error":"correction_decided"}`)
+	// The warehouse offers the same correction again and the branch accepts it: the acceptance is
+	// the only answer that applies the deltas the correction states.
+	second := closingCorrectionWire(t, f.serve(t, f.request(1, "POST", corrections, offered)), 201)
+	accepted := closingCorrectionWire(t, f.serve(t, f.request(3, "POST",
+		fmt.Sprintf("/api/closings/corrections/%d/decision", second.ID), `{"decision":"accepted"}`)), 200)
+	if accepted.Status != "accepted" || accepted.DecidedByAccountID == nil ||
+		*accepted.DecidedByAccountID != 3 || accepted.DecidedAt == nil ||
+		accepted.DecisionReason != "" || len(accepted.Effects) != 2 {
+		t.Fatalf("the acceptance must publish the deltas it applied: %+v", accepted)
+	}
+	// Each delta is one fact of its own unit: the count carries a variant and a quantity, the
+	// drawer carries a signed amount, and neither is read as the other.
+	seen := map[string]bool{}
+	for _, effect := range accepted.Effects {
+		seen[effect.Kind] = true
+		switch effect.Kind {
+		case "stock":
+			if effect.VariantID == nil || *effect.VariantID != line.VariantID ||
+				effect.QuantityDelta == nil || *effect.QuantityDelta != -1 || effect.AmountDelta != nil {
+				t.Fatalf("the stock delta must be one unit against the sheet: %+v", effect)
+			}
+		case "counted_cash":
+			if effect.VariantID != nil || effect.QuantityDelta != nil || effect.AmountDelta == nil ||
+				*effect.AmountDelta != "150.00" {
+				t.Fatalf("the drawer delta must be the money the count moved: %+v", effect)
+			}
+		default:
+			t.Fatalf("the acceptance journalled an effect this correction never stated: %+v", effect)
+		}
+	}
+	if !seen["stock"] || !seen["counted_cash"] {
+		t.Fatalf("the acceptance must journal both stated facts: %+v", accepted.Effects)
+	}
+	// The document publishes the corrected drawer and the correction that produced it: a client
+	// reads the corrected number and the delta beside it without a second request.
+	corrected := closingWire(t, f.serve(t, f.request(1, "GET", fmt.Sprintf("/api/closings/%d", closed.ID), "")), 200)
+	if corrected.CountedCash == nil || *corrected.CountedCash != "150.00" ||
+		corrected.CashDifference == nil || *corrected.CashDifference != "150.00" ||
+		corrected.TakenCash == nil || *corrected.TakenCash != "150.00" ||
+		corrected.ClosingCash == nil || *corrected.ClosingCash != "100.00" ||
+		corrected.ExpectedCash != "0.00" || len(corrected.Corrections) != 1 ||
+		corrected.Corrections[0].ID != second.ID || corrected.Corrections[0].Status != "accepted" ||
+		corrected.Corrections[0].Reason != "conté mal el cajón y una batería" ||
+		corrected.Corrections[0].DecisionReason != "" || len(corrected.Corrections[0].Effects) != 2 {
+		t.Fatalf("the document must publish the corrected drawer and its correction: %+v", corrected)
+	}
+	if existing, reserved := f.stock(t, 3, line.VariantID); existing != signedQuantity-1 || reserved != 0 {
+		t.Fatalf("the accepted count delta must be applied to the stock: %d/%d", existing, reserved)
+	}
+	// A correction never freezes the branch: it is still operating after it.
+	if w := f.serve(t, f.request(3, "POST", "/api/closings/expenses",
+		`{"amount":"5.00","description":"Flete"}`)); w.Code != 201 {
+		t.Fatalf("a correction must not freeze the branch: %d %s", w.Code, w.Body.String())
+	}
+	// The fund is the opening cash of the next period, so its delta folds into that opening exactly
+	// once and a fund correction that arrives after it started is refused by name when it is
+	// accepted, instead of leaving a drawer whose opening cash is not the money it holds.
+	fund := closingCorrectionWire(t, f.serve(t, f.request(1, "POST", corrections,
+		`{"reason":"dejé menos fondo","payload":{"closing_cash":"60.00"}}`)), 201)
+	funded := closingCorrectionWire(t, f.serve(t, f.request(3, "POST",
+		fmt.Sprintf("/api/closings/corrections/%d/decision", fund.ID), `{"decision":"accepted"}`)), 200)
+	if funded.Status != "accepted" || len(funded.Effects) != 1 || funded.Effects[0].Kind != "fund" ||
+		funded.Effects[0].AmountDelta == nil || *funded.Effects[0].AmountDelta != "-40.00" {
+		t.Fatalf("the fund delta must be the difference against the signed fund: %+v", funded)
+	}
+	next := f.open(t, 3)
+	if opened := closingWire(t, f.serve(t, f.request(1, "GET", fmt.Sprintf("/api/closings/%d", next), "")), 200); opened.OpeningCash != "60.00" {
+		t.Fatalf("the corrected fund must be the opening cash of the next period: %+v", opened)
+	}
+	late := closingCorrectionWire(t, f.serve(t, f.request(1, "POST", corrections,
+		`{"reason":"otra corrección del fondo","payload":{"closing_cash":"50.00"}}`)), 201)
+	f.refused(t, f.request(3, "POST", fmt.Sprintf("/api/closings/corrections/%d/decision", late.ID),
+		`{"decision":"accepted"}`), 409, `{"error":"correction_fund_started"}`)
+}
+
+// closingCorrectionBody serves one correction body as the warehouse would post it.
+func closingCorrectionBody(t *testing.T, body string) *http.Request {
+	t.Helper()
+	r := httptest.NewRequest("POST", "/api/closings/1/corrections", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	return r
+}
+
+// ptrMoney is one stated amount of a correction payload.
+func ptrMoney(text string) *closings.Money {
+	amount := closings.Money(text)
+	return &amount
+}
+
+// TestClosingCorrectionDecoders pins the framing of a correction: the mandatory reason, the four
+// values it can state, and at least one of them — an absent value is a correction that does not
+// touch that number and never an invented zero.
+func TestClosingCorrectionDecoders(t *testing.T) {
+	offer, reason, err := decodeClosingCorrection(closingCorrectionBody(t,
+		`{"reason":"conté mal el cajón","payload":{"counted_cash":"150.00"}}`))
+	if err != nil || reason != "conté mal el cajón" || offer.CountedCash == nil ||
+		string(*offer.CountedCash) != "150.00" || offer.CountedQuantities != nil ||
+		offer.CommissionAmount != nil || offer.ClosingCash != nil || !offer.Stated() {
+		t.Fatalf("a correction of the drawer must be read whole: %+v %q %v", offer, reason, err)
+	}
+	// The order of the keys is irrelevant and every value is admissible in the same payload.
+	offer, _, err = decodeClosingCorrection(closingCorrectionBody(t,
+		`{"payload":{"closing_cash":"60.00","counted_quantities":[{"variant_id":3,"counted_quantity":0}],"commission_amount":"1.00"},"reason":"faltaba una batería"}`))
+	if err != nil || len(offer.CountedQuantities) != 1 ||
+		offer.CountedQuantities[0].VariantID != 3 || offer.CountedQuantities[0].Quantity != 0 ||
+		offer.CommissionAmount == nil || string(*offer.CommissionAmount) != "1.00" ||
+		offer.ClosingCash == nil || string(*offer.ClosingCash) != "60.00" || offer.CountedCash != nil {
+		t.Fatalf("a correction of several values must be read whole: %+v %v", offer, err)
+	}
+	for name, body := range map[string]string{
+		"no payload":        `{"reason":"conté mal"}`,
+		"no reason":         `{"payload":{"counted_cash":"1.00"}}`,
+		"blank reason":      `{"reason":"   ","payload":{"counted_cash":"1.00"}}`,
+		"untrimmed reason":  `{"reason":" conté mal ","payload":{"counted_cash":"1.00"}}`,
+		"empty payload":     `{"reason":"conté mal","payload":{}}`,
+		"unknown value":     `{"reason":"conté mal","payload":{"fund":"1.00"}}`,
+		"unknown key":       `{"reason":"conté mal","payload":{"counted_cash":"1.00"},"note":"x"}`,
+		"duplicate key":     `{"reason":"conté mal","payload":{"counted_cash":"1.00"},"reason":"otra"}`,
+		"null amount":       `{"reason":"conté mal","payload":{"counted_cash":null}}`,
+		"number amount":     `{"reason":"conté mal","payload":{"counted_cash":150.00}}`,
+		"padded amount":     `{"reason":"conté mal","payload":{"counted_cash":"0150.00"}}`,
+		"one decimal":       `{"reason":"conté mal","payload":{"counted_cash":"150.0"}}`,
+		"empty sheet":       `{"reason":"conté mal","payload":{"counted_quantities":[]}}`,
+		"object payload":    `{"reason":"conté mal","payload":[]}`,
+		"padded variant":    `{"reason":"conté mal","payload":{"counted_quantities":[{"variant_id":03,"counted_quantity":1}]}}`,
+		"duplicate variant": `{"reason":"conté mal","payload":{"counted_quantities":[{"variant_id":3,"counted_quantity":1},{"variant_id":3,"counted_quantity":2}]}}`,
+		"negative quantity": `{"reason":"conté mal","payload":{"counted_quantities":[{"variant_id":3,"counted_quantity":-1}]}}`,
+		"unknown line key":  `{"reason":"conté mal","payload":{"counted_quantities":[{"variant_id":3,"counted_quantity":1,"expected_quantity":9}]}}`,
+		"trailing data":     `{"reason":"conté mal","payload":{"counted_cash":"1.00"}}{}`,
+		"not an object":     `[]`,
+		"no body":           ``,
+		"trailing token":    `{"reason":"conté mal","payload":{"counted_cash":"1.00"}} extra`,
+	} {
+		if _, _, err := decodeClosingCorrection(closingCorrectionBody(t, body)); !errors.Is(err, closings.ErrInvalid) {
+			t.Fatalf("%s must be refused as an invalid correction: %v", name, err)
+		}
+	}
+}
+
+// TestClosingCorrectionRecord pins the published shape of one correction: the reason, the payload as
+// it was offered, the answer that state implies and the deltas of that answer — a shape this domain
+// never wrote is refused instead of described (S16).
+func TestClosingCorrectionRecord(t *testing.T) {
+	proposed := time.Date(2026, 3, 24, 9, 0, 0, 0, time.UTC)
+	decided := proposed.Add(time.Hour)
+	account := int64(3)
+	variant, delta := int64(3), int64(-1)
+	amount := closings.Signed("150.00")
+	offer := closings.CorrectionOffer{
+		CountedQuantities: []closings.Counted{{VariantID: 3, Quantity: 8}},
+		CountedCash:       ptrMoney("150.00"),
+	}
+	pending := closings.Correction{ID: 4, ClosingID: 1, Status: closings.CorrectionProposed,
+		Reason: "conté mal el cajón", Payload: offer, ProposedByAccountID: 1, ProposedAt: proposed}
+	record, err := closingCorrectionRecord(pending)
+	if err != nil || record.ID != 4 || record.ClosingID != 1 || record.Status != "proposed" ||
+		record.Reason != "conté mal el cajón" || record.ProposedAt != "2026-03-24T09:00:00Z" ||
+		record.DecidedByAccountID != nil || record.DecidedAt != nil || record.DecisionReason != "" ||
+		record.Effects == nil || len(record.Effects) != 0 ||
+		record.Payload.CountedCash != "150.00" || len(record.Payload.CountedQuantities) != 1 ||
+		record.Payload.CountedQuantities[0].CountedQuantity != 8 ||
+		record.Payload.CommissionAmount != "" || record.Payload.ClosingCash != "" {
+		t.Fatalf("a pending correction must publish its offer and no answer: %+v %v", record, err)
+	}
+	// An accepted correction publishes the deltas the acceptance journalled, each in its own unit.
+	accepted := pending
+	accepted.Status = closings.CorrectionAccepted
+	accepted.DecidedByAccountID, accepted.DecidedAt = &account, &decided
+	accepted.Effects = []closings.CorrectionEffect{
+		{Kind: closings.CorrectionKindStock, VariantID: &variant, QuantityDelta: &delta},
+		{Kind: closings.CorrectionKindCountedCash, AmountDelta: &amount},
+	}
+	record, err = closingCorrectionRecord(accepted)
+	if err != nil || record.Status != "accepted" || record.DecidedByAccountID == nil ||
+		*record.DecidedByAccountID != 3 || record.DecidedAt == nil || len(record.Effects) != 2 {
+		t.Fatalf("an accepted correction must publish its answer and its deltas: %+v %v", record, err)
+	}
+	// A correction is published as accepted without a motive of its own, and its deltas are the
+	// signed difference of each fact.
+	for _, effect := range record.Effects {
+		switch effect.Kind {
+		case closings.CorrectionKindStock:
+			if effect.VariantID == nil || *effect.VariantID != 3 || effect.QuantityDelta == nil ||
+				*effect.QuantityDelta != -1 || effect.AmountDelta != nil {
+				t.Fatalf("a stock delta is a variant and a quantity: %+v", effect)
+			}
+		case closings.CorrectionKindCountedCash:
+			if effect.AmountDelta == nil || *effect.AmountDelta != "150.00" ||
+				effect.VariantID != nil || effect.QuantityDelta != nil {
+				t.Fatalf("a counted cash delta is a signed amount: %+v", effect)
+			}
+		default:
+			t.Fatalf("an unexpected effect kind was published: %+v", effect)
+		}
+	}
+	// A rejection always states the motive the branch wrote.
+	rejected := pending
+	rejected.Status = closings.CorrectionRejected
+	rejected.DecidedByAccountID, rejected.DecidedAt = &account, &decided
+	rejected.DecisionReason = "lo reviso mañana"
+	if record, err = closingCorrectionRecord(rejected); err != nil ||
+		record.Status != "rejected" || record.DecisionReason != "lo reviso mañana" {
+		t.Fatalf("a rejection must publish its motive: %+v %v", record, err)
+	}
+	// Every shape this domain never wrote is refused instead of published.
+	zero := closings.Signed("0.00")
+	untrimmed := pending
+	untrimmed.Reason = " conté mal el cajón"
+	emptyPayload := pending
+	emptyPayload.Payload = closings.CorrectionOffer{}
+	badAmount := pending
+	badAmount.Payload = closings.CorrectionOffer{CountedCash: ptrMoney("150.0")}
+	duplicate := pending
+	duplicate.Payload = closings.CorrectionOffer{CountedQuantities: []closings.Counted{
+		{VariantID: 3, Quantity: 1}, {VariantID: 3, Quantity: 2}}}
+	answered := pending
+	answered.DecidedByAccountID, answered.DecidedAt = &account, &decided
+	acceptWithMotive := accepted
+	acceptWithMotive.DecisionReason = "porque sí"
+	rejectWithoutMotive := rejected
+	rejectWithoutMotive.DecisionReason = ""
+	acceptedWithEffects := accepted
+	acceptedWithEffects.Status = closings.CorrectionRejected
+	acceptedWithEffects.DecisionReason = "no"
+	pendingWithEffects := pending
+	pendingWithEffects.Effects = accepted.Effects
+	stockAsMoney := accepted
+	stockAsMoney.Effects = []closings.CorrectionEffect{{Kind: closings.CorrectionKindStock,
+		AmountDelta: &amount}}
+	moneyAsStock := accepted
+	moneyAsStock.Effects = []closings.CorrectionEffect{{Kind: closings.CorrectionKindCommission,
+		VariantID: &variant, QuantityDelta: &delta}}
+	unknownEffect := accepted
+	unknownEffect.Effects = []closings.CorrectionEffect{{Kind: "drawer", AmountDelta: &amount}}
+	zeroDelta := accepted
+	zeroDelta.Effects = []closings.CorrectionEffect{{Kind: closings.CorrectionKindFund,
+		AmountDelta: &zero}}
+	for name, correction := range map[string]closings.Correction{
+		"untrimmed reason":         untrimmed,
+		"empty payload":            emptyPayload,
+		"non canonical amount":     badAmount,
+		"duplicate variant":        duplicate,
+		"pending with an answer":   answered,
+		"acceptance with a motive": acceptWithMotive,
+		"rejection without motive": rejectWithoutMotive,
+		"deltas on a rejection":    acceptedWithEffects,
+		"deltas on a pending":      pendingWithEffects,
+		"stock effect as money":    stockAsMoney,
+		"money effect as a count":  moneyAsStock,
+		"unknown effect kind":      unknownEffect,
+		"zero delta":               zeroDelta,
+	} {
+		if _, err := closingCorrectionRecord(correction); !errors.Is(err, closings.ErrUnavailable) {
+			t.Fatalf("%s must be refused instead of published: %v", name, err)
+		}
 	}
 }

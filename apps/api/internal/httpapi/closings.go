@@ -34,9 +34,15 @@ import (
 // reported, never part of a cash identity (S9): expected_cash, cash_difference and taken_cash
 // are the drawer's, and commission_amount sits beside them, not inside them.
 //
-// Corrections of a closed settlement (S16) have no store method yet, so this contract has no
-// correction route at all, and the history of a branch's settlements has no store method
-// either: docs/closings.md says both instead of inventing the behaviour.
+// Corrections of a closed settlement (S16) are the second half of the vertical: the warehouse
+// proposes one with a mandatory reason and the branch accepts or rejects it with one, and the
+// document publishes the accepted corrections beside the numbers they moved. The routes and the
+// payload below are that contract; what an accepted correction applies is the database's own work,
+// never a rule restated here. The history of a branch's settlements is read through the collection
+// route (GET), and a correction is a document of its own, so no route lists them separately.
+//
+// Nothing here restates a rule of the vertical: this file judges the framing of a request and
+// publishes the store's own decision as one status and one stable code.
 
 const (
 	// closingsCollectionPath is the one literal path of this contract; every settlement
@@ -51,6 +57,14 @@ const (
 	// it names no settlement because the settlement that covers an expense is decided by the
 	// instant the expense happened (S12).
 	closingsExpensesPath = closingsCollectionPath + "/expenses"
+	// closingsCorrectionsPath is the corrections of one closed settlement: the warehouse appends one
+	// and the branch decides it, exactly like a round of a live settlement (S16). `corrections` is a
+	// literal suffix of the settlement id, so it is never read as one.
+	closingsCorrectionsPath = closingsCollectionPath + "/{id}/corrections"
+	// closingsCorrectionDecisionPath is the branch's answer to one correction. A correction is named
+	// by its own id and not below its settlement, because the correction is what the branch decides
+	// and the database answers for the correction it locked, never for a document the path guessed.
+	closingsCorrectionDecisionPath = closingsCollectionPath + "/corrections/{correction}/decision"
 	// closingsBodyLimit bounds decoding work well above any admitted payload: the widest
 	// settlement body is a count sheet of MaxCountLines lines plus a bounded observation,
 	// far below this limit, and the check stops reading at the limit instead of buffering
@@ -130,6 +144,8 @@ func (a *API) closingRoutes(store *closings.Store) http.Handler {
 	mux.HandleFunc(closingsCollectionPath, a.closingCollection(store))
 	mux.HandleFunc(closingsCommissionPath, a.closingSettings(store))
 	mux.HandleFunc(closingsExpensesPath, a.closingExpenses(store))
+	mux.HandleFunc(closingsCorrectionsPath, a.closingCorrections(store))
+	mux.HandleFunc(closingsCorrectionDecisionPath, a.closingCorrectionDecision(store))
 	mux.HandleFunc(closingsCollectionPath+"/{id}/count", a.closingCount(store))
 	mux.HandleFunc(closingsCollectionPath+"/{id}/cash", a.closingCash(store))
 	mux.HandleFunc(closingsCollectionPath+"/{id}/propose", a.closingPropose(store))
@@ -152,6 +168,7 @@ func closingFailure(w http.ResponseWriter, err error) {
 	var reserved *closings.ReservedStock
 	var moved *closings.StockMoved
 	var stale *closings.StaleProposal
+	var notClosed *closings.CorrectionNotClosed
 	switch {
 	case errors.As(err, &pending):
 		closingFailureRecord(w, 409, "count_pending", "variant_id", pending.VariantID)
@@ -173,6 +190,10 @@ func closingFailure(w http.ResponseWriter, err error) {
 		// The count sheet changed while the offer was being recorded, so the settlement is
 		// re-read and proposed again; the refusal names the variant that is pending again.
 		closingFailureRecord(w, 409, "proposal_stale", "variant_id", stale.VariantID)
+	case errors.As(err, &notClosed):
+		// A correction belongs to a closed settlement, and a live one is corrected by its own
+		// proposal rounds: the refusal names the document the operator has to look at (LC012).
+		closingFailureRecord(w, 409, "correction_not_closed", "closing_id", notClosed.ClosingID)
 	case errors.Is(err, closings.ErrNoCommissionRate):
 		// The missing fact is the rate itself, which is what the code names: without it no
 		// branch can be proposed (S6).
@@ -191,6 +212,27 @@ func closingFailure(w http.ResponseWriter, err error) {
 		failure(w, 409, "proposal_stale")
 	case errors.Is(err, closings.ErrRoundNotAccepted):
 		failure(w, 409, "round_not_accepted")
+	case errors.Is(err, closings.ErrCorrectionNotClosed):
+		// Only a closed settlement is corrected (LC012).
+		failure(w, 409, "correction_not_closed")
+	case errors.Is(err, closings.ErrCorrectionDecided):
+		// A correction is decided once, and a decided one is final (LC013).
+		failure(w, 409, "correction_decided")
+	case errors.Is(err, closings.ErrCorrectionPending):
+		// One correction waits at a time: the second one is refused until the branch answers the
+		// first (the one-pending index of 034).
+		failure(w, 409, "correction_pending")
+	case errors.Is(err, closings.ErrCorrectionPayload):
+		// The payload is not one this domain applies: a value of the wrong shape, or a variant the
+		// closed settlement never counted (LC021).
+		failure(w, 409, "correction_payload")
+	case errors.Is(err, closings.ErrCorrectionFundStarted):
+		// The next period already inherited its opening cash from the recorded fund (LC022).
+		failure(w, 409, "correction_fund_started")
+	case errors.Is(err, closings.ErrCorrectionJournal):
+		// A delta is journalled by the acceptance of its own correction and by nothing else
+		// (LC023).
+		failure(w, 409, "correction_journal")
 	case errors.Is(err, closings.ErrBranchFrozen):
 		// The settlement holding the branch is what froze it, and the code names the freeze
 		// instead of reporting a generic state conflict (LC001, S3, S12).
@@ -684,6 +726,112 @@ func decodeClosingDecision(r *http.Request) (closings.Decision, string, error) {
 	return "", "", closings.ErrInvalid
 }
 
+// decodeClosingCorrection reads the warehouse's correction of a closed settlement: the mandatory
+// reason it corrects for and the payload of values it corrects. Every value of the payload is
+// optional and at least one is stated, because a correction never restates a number it does not
+// touch; a null is never an uncounted amount here, it is simply an absent value (S16).
+func decodeClosingCorrection(r *http.Request) (closings.CorrectionOffer, string, error) {
+	d, err := closingDecoder(r)
+	if err != nil || !closingDelimiter(d, '{') {
+		return closings.CorrectionOffer{}, "", closings.ErrInvalid
+	}
+	var offer closings.CorrectionOffer
+	var reason string
+	seen := map[string]bool{}
+	for d.More() {
+		key, err := closingString(d)
+		if err != nil || seen[key] {
+			return closings.CorrectionOffer{}, "", closings.ErrInvalid
+		}
+		seen[key] = true
+		switch key {
+		case "reason":
+			reason, err = closingString(d)
+		case "payload":
+			offer, err = closingCorrectionPayload(d)
+		default:
+			return closings.CorrectionOffer{}, "", closings.ErrInvalid
+		}
+		if err != nil {
+			return closings.CorrectionOffer{}, "", closings.ErrInvalid
+		}
+	}
+	// Both keys are mandatory: a correction states why it is made and what it corrects.
+	if len(seen) != 2 || !closingDelimiter(d, '}') {
+		return closings.CorrectionOffer{}, "", closings.ErrInvalid
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return closings.CorrectionOffer{}, "", closings.ErrInvalid
+	}
+	// The reason is the warehouse's own and is persisted as written, so exactly the canonical text
+	// the table admits: trimmed, never blank and inside its bound.
+	canonical, ok := closings.CanonicalReason(reason)
+	if !ok || canonical != reason {
+		return closings.CorrectionOffer{}, "", closings.ErrInvalid
+	}
+	if !offer.Stated() {
+		return closings.CorrectionOffer{}, "", closings.ErrInvalid
+	}
+	return offer, canonical, nil
+}
+
+// closingCorrectionPayload reads the four values a correction can state: the counted quantities,
+// the counted cash, the commission and the fund. A money value is canonical two-decimal text and
+// never a JSON number, and a counted sheet is the same one the count route admits.
+func closingCorrectionPayload(d *json.Decoder) (closings.CorrectionOffer, error) {
+	offer := closings.CorrectionOffer{}
+	if !closingDelimiter(d, '{') {
+		return offer, closings.ErrInvalid
+	}
+	seen := map[string]bool{}
+	for d.More() {
+		key, err := closingString(d)
+		if err != nil || seen[key] {
+			return closings.CorrectionOffer{}, closings.ErrInvalid
+		}
+		seen[key] = true
+		switch key {
+		case "counted_quantities":
+			// One line per variant: a correction that corrected the same variant twice would apply
+			// two differences against one recorded quantity.
+			if offer.CountedQuantities, err = closingCountLines(d); err == nil {
+				variants := make(map[int64]bool, len(offer.CountedQuantities))
+				for _, line := range offer.CountedQuantities {
+					if variants[line.VariantID] {
+						err = closings.ErrInvalid
+						break
+					}
+					variants[line.VariantID] = true
+				}
+			}
+		case "counted_cash":
+			var amount closings.Money
+			if amount, err = closingAmount(d); err == nil {
+				offer.CountedCash = &amount
+			}
+		case "commission_amount":
+			var amount closings.Money
+			if amount, err = closingAmount(d); err == nil {
+				offer.CommissionAmount = &amount
+			}
+		case "closing_cash":
+			var amount closings.Money
+			if amount, err = closingAmount(d); err == nil {
+				offer.ClosingCash = &amount
+			}
+		default:
+			return closings.CorrectionOffer{}, closings.ErrInvalid
+		}
+		if err != nil {
+			return closings.CorrectionOffer{}, closings.ErrInvalid
+		}
+	}
+	if !closingDelimiter(d, '}') || !offer.Stated() {
+		return closings.CorrectionOffer{}, closings.ErrInvalid
+	}
+	return offer, nil
+}
+
 // closingPathID admits one canonical identifier of a path segment: a padded, signed, zero,
 // fractional or aliased spelling is a malformed request, never a cleaned id.
 func closingPathID(value string, max int64) (int64, error) {
@@ -751,6 +899,52 @@ type closingOfferLineDTO struct {
 	VariantID        int64 `json:"variant_id"`
 	ExpectedQuantity int64 `json:"expected_quantity"`
 	CountedQuantity  int64 `json:"counted_quantity"`
+}
+
+// closingCorrectionLineDTO is one corrected quantity: the variant and the number the warehouse says
+// it counted, which is a difference against the settlement's own count sheet.
+type closingCorrectionLineDTO struct {
+	VariantID       int64 `json:"variant_id"`
+	CountedQuantity int64 `json:"counted_quantity"`
+}
+
+// closingCorrectionPayloadDTO is the payload of one correction exactly as the warehouse offered it:
+// the counted quantities, the counted cash, the commission and the fund. A value the correction
+// does not touch stays absent instead of restating the signed one, so a client reads which numbers
+// this correction rewrote (S16).
+type closingCorrectionPayloadDTO struct {
+	CountedQuantities []closingCorrectionLineDTO `json:"counted_quantities,omitempty"`
+	CountedCash       string                     `json:"counted_cash,omitempty"`
+	CommissionAmount  string                     `json:"commission_amount,omitempty"`
+	ClosingCash       string                     `json:"closing_cash,omitempty"`
+}
+
+// closingCorrectionEffectDTO is one delta an accepted correction applied. Exactly one of the two
+// deltas is set, so an effect is never read as the wrong unit: a count carries its variant and a
+// quantity, money carries a signed amount that both directions of a correction produce.
+type closingCorrectionEffectDTO struct {
+	Kind          string  `json:"kind"`
+	VariantID     *int64  `json:"variant_id"`
+	QuantityDelta *int64  `json:"quantity_delta"`
+	AmountDelta   *string `json:"amount_delta"`
+}
+
+// closingCorrectionDTO is one correction of a closed settlement: the reason the warehouse stated,
+// the payload it offered, the branch's answer and the deltas that answer applied. The document
+// publishes the accepted ones beside the corrected numbers they produced, so a corrected number is
+// legible as the result of a correction and the signed one is recoverable from the delta (S16).
+type closingCorrectionDTO struct {
+	ID                  int64                        `json:"id"`
+	ClosingID           int64                        `json:"closing_id"`
+	Status              string                       `json:"status"`
+	Reason              string                       `json:"reason"`
+	Payload             closingCorrectionPayloadDTO  `json:"payload"`
+	ProposedByAccountID int64                        `json:"proposed_by_account_id"`
+	ProposedAt          string                       `json:"proposed_at"`
+	DecidedByAccountID  *int64                       `json:"decided_by_account_id"`
+	DecidedAt           *string                      `json:"decided_at"`
+	DecisionReason      string                       `json:"decision_reason"`
+	Effects             []closingCorrectionEffectDTO `json:"effects"`
 }
 
 // closingOfferDTO is one round's offer exactly as it was stored: the period, the collection by
@@ -827,6 +1021,12 @@ type closingDTO struct {
 	// warehouse sees what it subtracts and the branch what it is charged for.
 	Expenses []closingExpenseDTO `json:"expenses"`
 	Rounds   []closingRoundDTO   `json:"rounds"`
+	// Corrections are the accepted corrections of the closed settlement, oldest first: each one with
+	// the reason the warehouse stated, the branch's answer, the payload it offered and the deltas it
+	// applied. The drawer above is the signed one plus those deltas, so the document publishes a
+	// corrected number as corrected and the delta that produced it beside it (S16). A live
+	// settlement publishes none: it is corrected by its own rounds, not after the fact.
+	Corrections []closingCorrectionDTO `json:"corrections"`
 }
 
 // closingExpenseRecord admits only a complete recorded expense: an amount the till can hold, a
@@ -1039,6 +1239,23 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 		}
 		expenses = append(expenses, record)
 	}
+	// The corrections of the document are the ones the branch accepted, oldest first: a pending
+	// correction is a decision that has not been taken and a rejected one applied nothing, so
+	// neither of them rewrote a number. Only a closed settlement is corrected at all (LC012).
+	corrections := make([]closingCorrectionDTO, 0, len(closing.Corrections))
+	var previousCorrection int64
+	for _, correction := range closing.Corrections {
+		if correction.Status != closings.CorrectionAccepted || correction.ClosingID != closing.ID ||
+			correction.ID <= previousCorrection || closing.Status != closings.StatusClosed {
+			return unavailable()
+		}
+		record, err := closingCorrectionRecord(correction)
+		if err != nil {
+			return unavailable()
+		}
+		previousCorrection = correction.ID
+		corrections = append(corrections, record)
+	}
 	return closingDTO{
 		ID: closing.ID, BranchLocationID: closing.BranchID, BranchName: closing.BranchName,
 		Status: string(closing.Status), PeriodStart: periodStart, CutAt: cutAt, ClosedAt: closedAt,
@@ -1048,7 +1265,7 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 		TakenCash: takenText, SalesTotal: amounts[3], CommissionAmount: amounts[4],
 		CardTotal: amounts[5], TransferTotal: amounts[6], QRTotal: amounts[7],
 		Observation: closing.Observation, OpenedByAccountID: closing.OpenedByAccountID,
-		CountLines: lines, Rounds: rounds, Expenses: expenses,
+		CountLines: lines, Rounds: rounds, Expenses: expenses, Corrections: corrections,
 	}, nil
 }
 
@@ -1190,6 +1407,148 @@ func closingOfferRecord(payload closings.ProposalPayload) (closingOfferDTO, bool
 		CashExpenses: amounts[3], CardTotal: amounts[4], TransferTotal: amounts[5], QRTotal: qrTotal,
 		CountedCash: countedCash, ContributedCash: contributed, ClosingCash: closingCash,
 		Observation: payload.Observation, CountLines: lines}, true
+}
+
+// closingCorrectionRecord admits one persisted correction: its state and the answer that state
+// implies, the reason the warehouse stated, the payload it offered as it was stored, and the deltas
+// the acceptance journalled. A shape this domain never wrote is never published, so the surface can
+// always show which correction produced which number (S16).
+func closingCorrectionRecord(correction closings.Correction) (closingCorrectionDTO, error) {
+	unavailable := func() (closingCorrectionDTO, error) {
+		return closingCorrectionDTO{}, closings.ErrUnavailable
+	}
+	if correction.ID < 1 || correction.ClosingID < 1 || !correction.Status.Valid() ||
+		correction.ProposedByAccountID < 1 {
+		return unavailable()
+	}
+	reason, ok := closings.CanonicalReason(correction.Reason)
+	if !ok || reason != correction.Reason {
+		return unavailable()
+	}
+	payload, ok := closingCorrectionPayloadRecord(correction.Payload)
+	if !ok {
+		return unavailable()
+	}
+	proposedAt, ok := closingMoment(correction.ProposedAt)
+	if !ok {
+		return unavailable()
+	}
+	// A correction is decided once, and only with the state the database stores: a pending one has
+	// no answer at all, an acceptance carries no motive of its own and a rejection always states
+	// the one the branch wrote (S16).
+	var decidedBy *int64
+	var decidedAt *string
+	switch correction.Status {
+	case closings.CorrectionProposed:
+		if correction.DecidedByAccountID != nil || correction.DecidedAt != nil ||
+			correction.DecisionReason != "" {
+			return unavailable()
+		}
+	case closings.CorrectionRejected:
+		motive, ok := closings.CanonicalReason(correction.DecisionReason)
+		if !ok || motive != correction.DecisionReason {
+			return unavailable()
+		}
+	case closings.CorrectionAccepted:
+		if correction.DecisionReason != "" {
+			return unavailable()
+		}
+	}
+	if correction.Status != closings.CorrectionProposed {
+		if correction.DecidedByAccountID == nil || *correction.DecidedByAccountID < 1 ||
+			correction.DecidedAt == nil {
+			return unavailable()
+		}
+		moment, ok := closingMoment(*correction.DecidedAt)
+		if !ok {
+			return unavailable()
+		}
+		by := *correction.DecidedByAccountID
+		decidedBy, decidedAt = &by, &moment
+	}
+	// A delta exists because the branch accepted its own correction and for no other reason (LC023),
+	// so a correction it has not accepted journals nothing.
+	if correction.Status != closings.CorrectionAccepted && len(correction.Effects) > 0 {
+		return unavailable()
+	}
+	effects := make([]closingCorrectionEffectDTO, 0, len(correction.Effects))
+	for _, effect := range correction.Effects {
+		record, ok := closingCorrectionEffectRecord(effect)
+		if !ok {
+			return unavailable()
+		}
+		effects = append(effects, record)
+	}
+	return closingCorrectionDTO{ID: correction.ID, ClosingID: correction.ClosingID,
+		Status: string(correction.Status), Reason: reason, Payload: payload,
+		ProposedByAccountID: correction.ProposedByAccountID, ProposedAt: proposedAt,
+		DecidedByAccountID: decidedBy, DecidedAt: decidedAt,
+		DecisionReason: correction.DecisionReason, Effects: effects}, nil
+}
+
+// closingCorrectionPayloadRecord admits the payload of one correction: at least one of the four
+// values it can state, the counted sheet inside the database's own bounds and one line per variant,
+// and every amount the canonical money of this vertical. An absent value is published as absent,
+// because a correction never restates a number it does not touch.
+func closingCorrectionPayloadRecord(payload closings.CorrectionOffer) (closingCorrectionPayloadDTO, bool) {
+	if !payload.Stated() || len(payload.CountedQuantities) > closings.MaxCountLines {
+		return closingCorrectionPayloadDTO{}, false
+	}
+	record := closingCorrectionPayloadDTO{
+		CountedQuantities: make([]closingCorrectionLineDTO, 0, len(payload.CountedQuantities))}
+	variants := make(map[int64]bool, len(payload.CountedQuantities))
+	for _, line := range payload.CountedQuantities {
+		if line.VariantID < 1 || line.VariantID > math.MaxInt32 || variants[line.VariantID] ||
+			line.Quantity < 0 || line.Quantity > closings.MaxCounted {
+			return closingCorrectionPayloadDTO{}, false
+		}
+		variants[line.VariantID] = true
+		record.CountedQuantities = append(record.CountedQuantities,
+			closingCorrectionLineDTO{VariantID: line.VariantID, CountedQuantity: line.Quantity})
+	}
+	for _, field := range []struct {
+		amount *closings.Money
+		into   *string
+	}{{payload.CountedCash, &record.CountedCash},
+		{payload.CommissionAmount, &record.CommissionAmount},
+		{payload.ClosingCash, &record.ClosingCash}} {
+		text, ok := closingOptionalAmountRecord(field.amount)
+		if !ok {
+			return closingCorrectionPayloadDTO{}, false
+		}
+		if text != nil {
+			*field.into = *text
+		}
+	}
+	return record, true
+}
+
+// closingCorrectionEffectRecord admits one delta an accepted correction applied. The unit is the
+// kind's: a stock effect carries its variant and a non-zero quantity and no amount, and every other
+// kind carries a non-zero signed amount and neither a variant nor a quantity.
+func closingCorrectionEffectRecord(effect closings.CorrectionEffect) (closingCorrectionEffectDTO, bool) {
+	switch effect.Kind {
+	case closings.CorrectionKindStock:
+		if effect.VariantID == nil || *effect.VariantID < 1 || *effect.VariantID > math.MaxInt32 ||
+			effect.QuantityDelta == nil || *effect.QuantityDelta == 0 ||
+			*effect.QuantityDelta > closings.MaxCounted || *effect.QuantityDelta < -closings.MaxCounted ||
+			effect.AmountDelta != nil {
+			return closingCorrectionEffectDTO{}, false
+		}
+		variant, quantity := *effect.VariantID, *effect.QuantityDelta
+		return closingCorrectionEffectDTO{Kind: effect.Kind, VariantID: &variant,
+			QuantityDelta: &quantity}, true
+	case closings.CorrectionKindCountedCash, closings.CorrectionKindCommission, closings.CorrectionKindFund:
+		if effect.VariantID != nil || effect.QuantityDelta != nil || effect.AmountDelta == nil {
+			return closingCorrectionEffectDTO{}, false
+		}
+		amount, ok := closingSignedText(*effect.AmountDelta)
+		if !ok || amount == "0.00" {
+			return closingCorrectionEffectDTO{}, false
+		}
+		return closingCorrectionEffectDTO{Kind: effect.Kind, AmountDelta: &amount}, true
+	}
+	return closingCorrectionEffectDTO{}, false
 }
 
 // closingPageDTO is one newest-first page of one branch's settlements plus the total of that
@@ -1655,6 +2014,87 @@ func (a *API) closingDecision(store *closings.Store) http.HandlerFunc {
 			return
 		}
 		record, err := closingRecord(closing)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		respond(w, 200, record)
+	}
+}
+
+// closingCorrections appends the warehouse's correction of a closed settlement (S16): the values it
+// corrects and the reason it corrects them for. The correction is an offer, so nothing is applied
+// and no number of the closed document moves until the branch accepts it; the answer is the
+// proposed correction the branch has to decide.
+func (a *API) closingCorrections(store *closings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, http.MethodPost) {
+			return
+		}
+		actor, ok := a.inventoryIdentity(w, r)
+		if !ok {
+			return
+		}
+		if !a.closingMutation(w, r) {
+			return
+		}
+		id, err := closingPathID(r.PathValue("id"), math.MaxInt64)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		offer, reason, err := decodeClosingCorrection(r)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		correction, err := store.ProposeCorrection(r.Context(), actor, id, offer, reason)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		record, err := closingCorrectionRecord(correction)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		respond(w, 201, record)
+	}
+}
+
+// closingCorrectionDecision records the branch's answer to the pending correction of its closed
+// settlement. Only an acceptance applies the deltas the correction states; a rejection states its
+// mandatory motive and applies nothing, exactly like the rejection of a round (S16).
+func (a *API) closingCorrectionDecision(store *closings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, http.MethodPost) {
+			return
+		}
+		actor, ok := a.inventoryIdentity(w, r)
+		if !ok {
+			return
+		}
+		if !a.closingMutation(w, r) {
+			return
+		}
+		id, err := closingPathID(r.PathValue("correction"), math.MaxInt64)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		// The two decisions are the ones the settlement's own rounds admit, so the body is the same
+		// one and the same refusal answers a malformed answer here.
+		decision, reason, err := decodeClosingDecision(r)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		correction, err := store.DecideCorrection(r.Context(), actor, id, decision, reason)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		record, err := closingCorrectionRecord(correction)
 		if err != nil {
 			closingFailure(w, err)
 			return

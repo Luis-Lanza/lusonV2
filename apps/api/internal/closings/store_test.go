@@ -1805,3 +1805,470 @@ func TestProposalRaceIsAConflictNotAnOutage(t *testing.T) {
 		t.Fatalf("the settlement must be proposable again: %+v %v", again, err)
 	}
 }
+
+// closePeriod walks one settlement of branch 2 after the first one to its closure: the period is
+// opened, the sheet is counted with what the fixture holds, the drawer, the contribution and the
+// fund are stated through the store's own draft, and the branch accepts the offer. It returns the
+// closed document, which is what a correction corrects (S16).
+func (e *env) closePeriod(t *testing.T, counted, contributed, fund string) closings.Closing {
+	t.Helper()
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	e.countAll(t, opened.ID)
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID, closings.CashDraft{
+		CountedCash: moneyPtr(counted), ContributedCash: money(contributed),
+		ClosingCash: moneyPtr(fund), Observation: "caja del período"}); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	if _, err := e.store.Propose(e.ctx, warehouse(), opened.ID); err != nil {
+		t.Fatalf("the period could not be proposed: %v", err)
+	}
+	closed, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, "")
+	if err != nil || closed.Status != closings.StatusClosed {
+		t.Fatalf("the branch must accept the offer: %+v %v", closed, err)
+	}
+	return closed
+}
+
+// drawer is a correction of the counted cash and nothing else, which is the fourth value S16
+// names beside the count sheet, the commission and the fund.
+func drawer(amount string) closings.CorrectionOffer {
+	return closings.CorrectionOffer{CountedCash: moneyPtr(amount)}
+}
+
+// journalOf is the correction journal of one settlement as one value, so a test states exactly
+// which deltas an acceptance applied -- kind, variant and the difference -- and proves that a
+// refusal applied none.
+func (e *env) journalOf(t *testing.T, closing int64) string {
+	t.Helper()
+	return e.text(t, `SELECT coalesce(string_agg(kind||':'||coalesce(variant_id::text,'0')||':'
+ ||coalesce(quantity_delta::text,amount_delta::text),',' ORDER BY id),'')
+ FROM closing_correction_effects WHERE closing_id=$1`, closing)
+}
+
+// balanceText is the whole balance matrix as one value, so "the correction moved no stock" is one
+// comparison instead of a promise about every row.
+func (e *env) balanceText(t *testing.T) string {
+	t.Helper()
+	return e.text(t, `SELECT coalesce(string_agg(location_id||':'||variant_id||':'||existing||':'
+ ||reserved,',' ORDER BY location_id,variant_id),'') FROM inventory_balances`)
+}
+
+// ledgerOf is the branch's cash ledger as one value, so "the correction moved no money" is one
+// comparison of the facts the branch signed.
+func (e *env) ledgerOf(t *testing.T) string {
+	t.Helper()
+	return e.text(t, `SELECT coalesce(string_agg(kind||':'||amount||':'
+ ||coalesce(closing_id::text,'-')||':'||description,',' ORDER BY id),'') FROM branch_cash_movements`)
+}
+
+// TestCorrectionOfTheCountedCashPublishesTheCorrectedDifference pins the fourth value of S16 on
+// the store's own path: the warehouse proposes a correction of the counted cash with a mandatory
+// reason, only the branch decides it, and the acceptance journals the delta without moving a peso
+// -- the closed row keeps the drawer the branch signed while the document publishes the corrected
+// difference, the corrected drawer and the corrected amount the warehouse took, with the
+// correction and its reason beside them so a corrected number is legible as one.
+func TestCorrectionOfTheCountedCashPublishesTheCorrectedDifference(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "300.00")
+	e.sell(t, 1, 1, "100.00", sales.PaymentCash)
+	closed := e.closePeriod(t, "250.00", "0.00", "100.00")
+	// The period collected 100 in cash over an inherited fund of 300, so the drawer should hold
+	// 400 and the admin found 250: a shortage of 150, and 150 taken out of the till.
+	if closed.ExpectedCash != "400.00" || closed.CashDifference == nil ||
+		string(*closed.CashDifference) != "-150.00" || closed.TakenCash == nil ||
+		string(*closed.TakenCash) != "150.00" {
+		t.Fatalf("the fixture must close with the money it was signed with: %+v", closed)
+	}
+	ledger, stock := e.ledgerOf(t), e.balanceText(t)
+	before := e.text(t, `SELECT counted_cash||':'||closing_cash||':'||commission_amount||':'||status
+ FROM branch_closings WHERE id=$1`, closed.ID)
+
+	// A branch never proposes a correction, neither of its own settlement nor of another
+	// branch's: a correction is the warehouse's reading of the cut it performed (LC012).
+	for _, actor := range []auth.Identity{identity(2), identity(3)} {
+		refused(t, func() error {
+			_, err := e.store.ProposeCorrection(e.ctx, actor, closed.ID, drawer("300.00"), "la caja estaba mal")
+			return err
+		}(), closings.ErrForbidden)
+	}
+	// The reason is mandatory, the offer has to state something, and every amount is canonical
+	// money: a value this vertical would round is refused instead of applied (S20).
+	refused(t, func() error {
+		_, err := e.store.ProposeCorrection(e.ctx, warehouse(), closed.ID, drawer("300.00"), "   ")
+		return err
+	}(), closings.ErrInvalid)
+	refused(t, func() error {
+		_, err := e.store.ProposeCorrection(e.ctx, warehouse(), closed.ID, closings.CorrectionOffer{}, "sin nada")
+		return err
+	}(), closings.ErrInvalid)
+	refused(t, func() error {
+		rounded := closings.Money("300.555")
+		_, err := e.store.ProposeCorrection(e.ctx, warehouse(), closed.ID,
+			closings.CorrectionOffer{CountedCash: &rounded}, "media unidad")
+		return err
+	}(), closings.ErrInvalid)
+	refused(t, func() error {
+		_, err := e.store.ProposeCorrection(e.ctx, warehouse(), closed.ID+1000, drawer("300.00"), "otro cierre")
+		return err
+	}(), closings.ErrNotFound)
+	if corrections := e.scalar(t, "SELECT count(*) FROM closing_corrections"); corrections != 0 {
+		t.Fatalf("a refused proposal must write nothing: %d corrections", corrections)
+	}
+
+	// The warehouse proposes the corrected drawer with its reason, and nothing is applied yet.
+	pending, err := e.store.ProposeCorrection(e.ctx, warehouse(), closed.ID, drawer("300.00"),
+		"  el conteo de la caja estaba mal  ")
+	if err != nil {
+		t.Fatalf("the warehouse must propose a correction: %v", err)
+	}
+	if pending.Status != closings.CorrectionProposed || pending.ClosingID != closed.ID ||
+		pending.Reason != "el conteo de la caja estaba mal" || pending.ProposedByAccountID != 1 ||
+		pending.DecidedAt != nil || len(pending.Effects) != 0 || pending.Payload.CountedCash == nil ||
+		*pending.Payload.CountedCash != "300.00" {
+		t.Fatalf("the pending correction must state its offer and its reason: %+v", pending)
+	}
+	if journal := e.journalOf(t, closed.ID); journal != "" {
+		t.Fatalf("a proposed correction applies nothing: %q", journal)
+	}
+	// One correction at a time: the warehouse waits for the branch.
+	refused(t, func() error {
+		_, err := e.store.ProposeCorrection(e.ctx, warehouse(), closed.ID, drawer("310.00"), "otra")
+		return err
+	}(), closings.ErrCorrectionPending)
+	// Only an enabled account of the branch decides, and an acceptance carries no rejection reason.
+	for _, actor := range []auth.Identity{warehouse(), identity(3)} {
+		refused(t, func() error {
+			_, err := e.store.DecideCorrection(e.ctx, actor, pending.ID, closings.DecisionAccepted, "")
+			return err
+		}(), closings.ErrForbidden)
+	}
+	refused(t, func() error {
+		_, err := e.store.DecideCorrection(e.ctx, identity(2), pending.ID, closings.DecisionAccepted, "soborno")
+		return err
+	}(), closings.ErrInvalid)
+	refused(t, func() error {
+		_, err := e.store.DecideCorrection(e.ctx, identity(2), pending.ID, closings.DecisionRejected, "  ")
+		return err
+	}(), closings.ErrInvalid)
+	refused(t, func() error {
+		_, err := e.store.DecideCorrection(e.ctx, identity(2), pending.ID, closings.Decision("maybe"), "no")
+		return err
+	}(), closings.ErrInvalid)
+	refused(t, func() error {
+		_, err := e.store.DecideCorrection(e.ctx, identity(2), pending.ID+1000, closings.DecisionAccepted, "")
+		return err
+	}(), closings.ErrNotFound)
+
+	accepted, err := e.store.DecideCorrection(e.ctx, identity(2), pending.ID, closings.DecisionAccepted, "")
+	if err != nil {
+		t.Fatalf("the branch must accept the correction: %v", err)
+	}
+	if accepted.Status != closings.CorrectionAccepted || accepted.DecidedAt == nil ||
+		accepted.DecidedByAccountID == nil || *accepted.DecidedByAccountID != 2 ||
+		len(accepted.Effects) != 1 {
+		t.Fatalf("the acceptance must be one version with its applied delta: %+v", accepted)
+	}
+	effect := accepted.Effects[0]
+	if effect.Kind != closings.CorrectionKindCountedCash || effect.AmountDelta == nil ||
+		*effect.AmountDelta != "50.00" || effect.VariantID != nil || effect.QuantityDelta != nil {
+		t.Fatalf("the drawer delta must be one amount of its own kind: %+v", effect)
+	}
+	if journal := e.journalOf(t, closed.ID); journal != "counted_cash:0:50.00" {
+		t.Fatalf("exactly one drawer delta must be journalled, got %q", journal)
+	}
+	// A decided correction is final: it is not decided again (LC013).
+	refused(t, func() error {
+		_, err := e.store.DecideCorrection(e.ctx, identity(2), pending.ID, closings.DecisionRejected, "tarde")
+		return err
+	}(), closings.ErrCorrectionDecided)
+
+	// The published document follows the journal: the corrected drawer, the corrected difference
+	// and the corrected amount taken out of the till, with the commission still the settled one
+	// and the expected cash untouched.
+	document, err := e.store.Read(e.ctx, warehouse(), closed.ID)
+	if err != nil {
+		t.Fatalf("the corrected settlement could not be read: %v", err)
+	}
+	if document.CountedCash == nil || *document.CountedCash != "300.00" ||
+		document.CashDifference == nil || string(*document.CashDifference) != "-100.00" ||
+		document.TakenCash == nil || string(*document.TakenCash) != "200.00" ||
+		document.ExpectedCash != "400.00" || document.ClosingCash == nil ||
+		*document.ClosingCash != "100.00" || document.CommissionAmount != "12.50" ||
+		document.Status != closings.StatusClosed {
+		t.Fatalf("the document must publish the corrected drawer: %+v", document)
+	}
+	// A client can tell which number is the result of a correction: the accepted correction is
+	// published with its reason and the delta it applied.
+	if len(document.Corrections) != 1 {
+		t.Fatalf("the accepted correction must be published with the document: %+v", document.Corrections)
+	}
+	published := document.Corrections[0]
+	if published.ID != pending.ID || published.Reason != "el conteo de la caja estaba mal" ||
+		published.Status != closings.CorrectionAccepted || published.DecidedByAccountID == nil ||
+		*published.DecidedByAccountID != 2 || len(published.Effects) != 1 ||
+		*published.Effects[0].AmountDelta != "50.00" {
+		t.Fatalf("the published correction must carry its reason and its delta: %+v", published)
+	}
+	// The settlement's own row still states what the branch signed, and the correction moved no
+	// money and no stock: the drawer holds what it holds.
+	if after := e.text(t, `SELECT counted_cash||':'||closing_cash||':'||commission_amount||':'||status
+ FROM branch_closings WHERE id=$1`, closed.ID); after != before {
+		t.Fatalf("the closed settlement must keep the numbers it was signed with: %q before %q", after, before)
+	}
+	if after := e.ledgerOf(t); after != ledger {
+		t.Fatalf("a drawer correction must not write the cash ledger: %q before %q", after, ledger)
+	}
+	if after := e.balanceText(t); after != stock {
+		t.Fatalf("a drawer correction must not move stock: %q before %q", after, stock)
+	}
+	// The history row is the same money as the document, so no row can disagree with it.
+	page, err := e.store.List(e.ctx, warehouse(), 2, 1, 25)
+	if err != nil {
+		t.Fatalf("the history of the branch could not be read: %v", err)
+	}
+	if len(page.Closings) != 2 || page.Closings[0].ID != closed.ID ||
+		page.Closings[0].CountedCash == nil || *page.Closings[0].CountedCash != "300.00" ||
+		page.Closings[0].CashDifference == nil || string(*page.Closings[0].CashDifference) != "-100.00" {
+		t.Fatalf("the history must publish the corrected money of the document: %+v", page.Closings[0])
+	}
+	// The branch reads its own corrected settlement, and its own correction is not published to
+	// another branch.
+	own, err := e.store.Read(e.ctx, identity(2), closed.ID)
+	if err != nil || len(own.Corrections) != 1 {
+		t.Fatalf("the branch must read the correction of its own settlement: %+v %v", own, err)
+	}
+	refused(t, func() error { _, err := e.store.Read(e.ctx, identity(3), closed.ID); return err }(),
+		closings.ErrNotFound)
+}
+
+// TestRejectedCorrectionChangesNothing pins the other half of S16: a rejection states its reason,
+// applies nothing, keeps the settlement closed and the branch operating, and leaves room for the
+// next round -- the warehouse corrects again and the branch accepts what it can.
+func TestRejectedCorrectionChangesNothing(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "300.00")
+	e.sell(t, 1, 1, "100.00", sales.PaymentCash)
+	closed := e.closePeriod(t, "250.00", "0.00", "100.00")
+	ledger, stock := e.ledgerOf(t), e.balanceText(t)
+
+	// One correction states the count sheet and the drawer together, which is the round the branch
+	// decides as a whole (S14).
+	proposed, err := e.store.ProposeCorrection(e.ctx, warehouse(), closed.ID, closings.CorrectionOffer{
+		CountedQuantities: []closings.Counted{{VariantID: 1, Quantity: 20}},
+		CountedCash:       moneyPtr("400.00"),
+	}, "el conteo y la caja estaban mal")
+	if err != nil {
+		t.Fatalf("the warehouse must propose a correction of both facts: %v", err)
+	}
+	rejected, err := e.store.DecideCorrection(e.ctx, identity(2), proposed.ID,
+		closings.DecisionRejected, "  el conteo estaba bien  ")
+	if err != nil {
+		t.Fatalf("the branch must reject the correction: %v", err)
+	}
+	if rejected.Status != closings.CorrectionRejected || rejected.DecisionReason != "el conteo estaba bien" ||
+		rejected.DecidedByAccountID == nil || *rejected.DecidedByAccountID != 2 || len(rejected.Effects) != 0 {
+		t.Fatalf("a rejection must be one version with its reason and no delta: %+v", rejected)
+	}
+	// Nothing was applied: no journal row, no stock, no money, and the settlement is still the one
+	// the branch signed.
+	if journal := e.journalOf(t, closed.ID); journal != "" {
+		t.Fatalf("a rejected correction must apply no delta: %q", journal)
+	}
+	if after := e.balanceText(t); after != stock {
+		t.Fatalf("a rejected correction must not move stock: %q before %q", after, stock)
+	}
+	if after := e.ledgerOf(t); after != ledger {
+		t.Fatalf("a rejected correction must not write the ledger: %q before %q", after, ledger)
+	}
+	document, err := e.store.Read(e.ctx, warehouse(), closed.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be read: %v", err)
+	}
+	if *document.CountedCash != "250.00" || string(*document.CashDifference) != "-150.00" ||
+		len(document.Corrections) != 0 || document.Status != closings.StatusClosed {
+		t.Fatalf("a rejection must change nothing the document publishes: %+v", document)
+	}
+	var state string
+	if state = e.text(t, `SELECT status||':'||decision_reason FROM closing_corrections WHERE id=$1`,
+		proposed.ID); state != "rejected:el conteo estaba bien" {
+		t.Fatalf("the rejection must stay recorded with its reason: %q", state)
+	}
+	if frozen := e.scalar(t, "SELECT (branch_closure_blocker(2::smallint))::int"); frozen != 0 {
+		t.Fatal("a correction must never freeze the branch")
+	}
+
+	// No limit of rounds: the warehouse corrects again and the branch accepts it.
+	again, err := e.store.ProposeCorrection(e.ctx, warehouse(), closed.ID, drawer("400.00"),
+		"la caja sí estaba mal")
+	if err != nil {
+		t.Fatalf("a correction after a rejection must be proposable: %v", err)
+	}
+	if _, err := e.store.DecideCorrection(e.ctx, identity(2), again.ID, closings.DecisionAccepted, ""); err != nil {
+		t.Fatalf("the branch must accept the next correction: %v", err)
+	}
+	corrected, err := e.store.Read(e.ctx, warehouse(), closed.ID)
+	if err != nil || corrected.CountedCash == nil || *corrected.CountedCash != "400.00" ||
+		corrected.CashDifference == nil || *corrected.CashDifference != "0.00" ||
+		len(corrected.Corrections) != 1 {
+		t.Fatalf("the accepted correction must publish the corrected drawer: %+v %v", corrected, err)
+	}
+}
+
+// TestCorrectionNeedsAClosedSettlement pins the door of S16: the count sheet and the drawer of a
+// live settlement are corrected by its own rounds, so a correction is refused with its own code
+// and names the settlement -- never an outage -- and nothing is written. A payload the closed
+// settlement cannot take, like a variant its sheet never counted, is refused as a payload.
+func TestCorrectionNeedsAClosedSettlement(t *testing.T) {
+	e := fixture(t)
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+	// An open settlement has no closure to correct, and the refusal names it.
+	_, err = e.store.ProposeCorrection(e.ctx, warehouse(), opened.ID, drawer("100.00"), "todavía no cerró")
+	var notClosed *closings.CorrectionNotClosed
+	if !errors.As(err, &notClosed) || notClosed.ClosingID != opened.ID {
+		t.Fatalf("a correction of an open settlement must be refused by name: %v", err)
+	}
+	refused(t, err, closings.ErrCorrectionNotClosed)
+	// Neither does a proposed or a rejected one: it is the same document, still live.
+	e.countAll(t, opened.ID)
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID, draft("100.00", "0.00", "20.00")); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	if _, err := e.store.Propose(e.ctx, warehouse(), opened.ID); err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	refused(t, func() error {
+		_, err := e.store.ProposeCorrection(e.ctx, warehouse(), opened.ID, drawer("100.00"), "ya lo decidimos")
+		return err
+	}(), closings.ErrCorrectionNotClosed)
+	if corrections := e.scalar(t, "SELECT count(*) FROM closing_corrections"); corrections != 0 {
+		t.Fatalf("a refused correction must write nothing: %d corrections", corrections)
+	}
+
+	// The settlement the branch rejected is still live: a correction is proposed for a closed one
+	// only, and the branch has already answered the offer it was shown.
+	if _, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionRejected, "el conteo estaba mal"); err != nil {
+		t.Fatalf("the branch must reject the offer: %v", err)
+	}
+	refused(t, func() error {
+		_, err := e.store.ProposeCorrection(e.ctx, warehouse(), opened.ID, drawer("100.00"), "otra vez no")
+		return err
+	}(), closings.ErrCorrectionNotClosed)
+	if _, err := e.store.Propose(e.ctx, warehouse(), opened.ID); err != nil {
+		t.Fatalf("the settlement must be proposable again: %v", err)
+	}
+	if _, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, ""); err != nil {
+		t.Fatalf("the branch must accept the offer: %v", err)
+	}
+
+	// A variant the closed settlement never counted has no recorded quantity to take a difference
+	// against, so the proposal is refused as a payload (LC021) -- a fact only the closed sheet
+	// knows, which is why the store does not guess it.
+	closed, err := e.store.Read(e.ctx, warehouse(), opened.ID)
+	if err != nil || closed.Status != closings.StatusClosed {
+		t.Fatalf("the settlement must be closed before it is corrected: %+v %v", closed, err)
+	}
+	_, err = e.store.ProposeCorrection(e.ctx, warehouse(), closed.ID, closings.CorrectionOffer{
+		CountedQuantities: []closings.Counted{{VariantID: 3, Quantity: 1}},
+	}, "un variant que no estaba")
+	refused(t, err, closings.ErrCorrectionPayload)
+	// A count line and a drawer in one correction is the shape of S14 and it is admitted.
+	mixed, err := e.store.ProposeCorrection(e.ctx, warehouse(), closed.ID, closings.CorrectionOffer{
+		CountedQuantities: []closings.Counted{{VariantID: 1, Quantity: 8}},
+		CountedCash:       moneyPtr("120.00"),
+	}, "el conteo y la caja")
+	if err != nil || len(mixed.Payload.CountedQuantities) != 1 ||
+		*mixed.Payload.CountedCash != "120.00" || mixed.Payload.ClosingCash != nil {
+		t.Fatalf("the whole offer must be stored as proposed: %+v %v", mixed, err)
+	}
+	accepted, err := e.store.DecideCorrection(e.ctx, identity(2), mixed.ID, closings.DecisionAccepted, "")
+	if err != nil || len(accepted.Effects) != 2 {
+		t.Fatalf("an accepted correction must journal each fact it moved: %+v %v", accepted, err)
+	}
+	if journal := e.journalOf(t, closed.ID); journal != "stock:1:-2,counted_cash:0:20.00" {
+		t.Fatalf("the stock and the drawer must be two deltas of their own, got %q", journal)
+	}
+}
+
+// TestCorrectionFundLandsOnce pins the fund delta of 036 through the store's own path: the
+// corrected fund is the opening cash of the next period, applied exactly once, and once that
+// period exists the fund is refused with its own code (LC022) while the drawer of the same
+// settlement is still correctable, because it moves no money of the next period.
+func TestCorrectionFundLandsOnce(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "300.00")
+	closed := e.closePeriod(t, "400.00", "0.00", "100.00")
+	ledger := e.ledgerOf(t)
+
+	fund, err := e.store.ProposeCorrection(e.ctx, warehouse(), closed.ID,
+		closings.CorrectionOffer{ClosingCash: moneyPtr("60.00")}, "el fondo era 60")
+	if err != nil {
+		t.Fatalf("the warehouse must propose a fund correction: %v", err)
+	}
+	accepted, err := e.store.DecideCorrection(e.ctx, identity(2), fund.ID, closings.DecisionAccepted, "")
+	if err != nil {
+		t.Fatalf("the branch must accept the fund correction: %v", err)
+	}
+	if len(accepted.Effects) != 1 || accepted.Effects[0].Kind != closings.CorrectionKindFund ||
+		*accepted.Effects[0].AmountDelta != "-40.00" {
+		t.Fatalf("the fund delta must be journalled: %+v", accepted.Effects)
+	}
+	// The corrected fund is the drawer chain's: the document publishes it and the amount taken out
+	// of the till that follows from it, while the ledger keeps the movement it made.
+	document, err := e.store.Read(e.ctx, warehouse(), closed.ID)
+	if err != nil || document.ClosingCash == nil || *document.ClosingCash != "60.00" ||
+		document.TakenCash == nil || string(*document.TakenCash) != "340.00" ||
+		*document.CountedCash != "400.00" {
+		t.Fatalf("the document must publish the corrected fund: %+v %v", document, err)
+	}
+	if after := e.ledgerOf(t); after != ledger {
+		t.Fatalf("a fund correction must not write the cash ledger: %q before %q", after, ledger)
+	}
+	// The next period opens with the corrected fund, and the delta is not applied again.
+	next, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil || next.OpeningCash != "60.00" {
+		t.Fatalf("the next period must inherit the corrected fund: %+v %v", next, err)
+	}
+	// Once that period started there is no coherent place for a second fund delta, and the refusal
+	// is the correction's own code instead of an outage.
+	late, err := e.store.ProposeCorrection(e.ctx, warehouse(), closed.ID,
+		closings.CorrectionOffer{ClosingCash: moneyPtr("80.00")}, "el fondo era 80")
+	if err != nil {
+		t.Fatalf("the warehouse must be able to propose it: %v", err)
+	}
+	before := e.journalOf(t, closed.ID)
+	_, err = e.store.DecideCorrection(e.ctx, identity(2), late.ID, closings.DecisionAccepted, "")
+	refused(t, err, closings.ErrCorrectionFundStarted)
+	if after := e.journalOf(t, closed.ID); after != before {
+		t.Fatalf("a refused fund correction must apply no delta: %q before %q", after, before)
+	}
+	if status := e.text(t, "SELECT status FROM closing_corrections WHERE id=$1", late.ID); status != "proposed" {
+		t.Fatalf("a refused fund correction stays pending for the branch to reject: %q", status)
+	}
+	// The drawer of the closed settlement is still correctable: it moves no money of the period
+	// that already started.
+	if _, err := e.store.DecideCorrection(e.ctx, identity(2), late.ID, closings.DecisionRejected, "ya hay otro período"); err != nil {
+		t.Fatalf("the branch must be able to reject it: %v", err)
+	}
+	drawerCorrection, err := e.store.ProposeCorrection(e.ctx, warehouse(), closed.ID, drawer("410.00"),
+		"la caja era 410")
+	if err != nil {
+		t.Fatalf("the drawer must still be correctable: %v", err)
+	}
+	if _, err := e.store.DecideCorrection(e.ctx, identity(2), drawerCorrection.ID, closings.DecisionAccepted, ""); err != nil {
+		t.Fatalf("the drawer correction must be accepted: %v", err)
+	}
+	corrected, err := e.store.Read(e.ctx, warehouse(), closed.ID)
+	if err != nil || *corrected.CountedCash != "410.00" || *corrected.ClosingCash != "60.00" {
+		t.Fatalf("the corrected drawer must build on the corrected fund: %+v %v", corrected, err)
+	}
+	// The delta lands once: the period that already started keeps the fund it inherited.
+	if opening := e.text(t, "SELECT opening_cash::text FROM branch_closings WHERE id=$1", next.ID); opening != "60.00" {
+		t.Fatalf("the started period must keep its opening cash: %q", opening)
+	}
+}

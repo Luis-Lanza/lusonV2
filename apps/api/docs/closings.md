@@ -8,23 +8,24 @@ previous one to the cut instant of this one (the first one of a branch settles a
 period that starts with the system).
 
 The vertical is one settlement per branch at a time, with the database as its authority
-(migrations 034, 035, 036 and 037): it decides the cut instant, the period start, the
-inherited fund and the expected stock snapshot; it admits one live settlement per branch;
-it decides when the count sheet and the fields of the drawer may be drafted; it reads and
-freezes the commission rate when the warehouse proposes; it keeps the proposal rounds
-immutable; and when the branch accepts it applies the counted stock and writes the cash
-ledger itself, in one transaction. This contract never restates those rules: it sends the
-request, publishes the database's own decision as one status and one stable code and reads
-back what the database wrote.
+(migrations 034 to 040): it decides the cut instant, the period start, the inherited fund and
+the expected stock snapshot; it admits one live settlement per branch; it decides when the
+count sheet and the fields of the drawer may be drafted; it reads and freezes the commission
+rate when the warehouse proposes; it keeps the proposal rounds and the corrections immutable;
+and when the branch accepts a round it applies the counted stock and writes the cash ledger
+itself, in one transaction. This contract never restates those rules: it sends the request,
+publishes the database's own decision as one status and one stable code and reads back what the
+database wrote.
 
 The branch is not only settled: it records the small expenses it pays out of its own till as
 they happen, and the settlement whose period covers them is charged for them. The warehouse
 has no till of its own and records none.
 
-A closed settlement is never reopened. An error is corrected by an appended correction
-that the branch itself approves — **that contract does not exist yet** (see
-[Not served yet](#not-served-yet)): there is no correction route here, and the settlement it
-would correct stays readable and immutable in the meantime.
+A closed settlement is never reopened. An error is corrected by an appended correction that
+the branch itself approves: the warehouse states what was wrong and why, and only an accepted
+correction applies — as compensating deltas against the open period, never by rewriting the
+closed document. The settlement publishes the corrections it accepted beside the numbers they
+moved, so a corrected number is legible as one.
 
 ## Vocabulary and money
 
@@ -50,12 +51,15 @@ evidence of an assignment; the database refuses a different actor with its own S
 
 * **Opening, counting, drafting the drawer and proposing** are the warehouse's alone. A
   branch account receives `403 forbidden` on all of them.
+* **Proposing a correction** of a closed settlement is the warehouse's alone, for the same
+  reason: a correction is the warehouse's reading of the cut it performed. A branch account is
+  refused with `403 forbidden`.
 * **Recording an expense** is the branch's alone: the till the money comes out of belongs to the
   branch that records it, so the warehouse is refused (`403 forbidden`) and every branch records
   only in its own.
 * **Deciding** is the branch's alone: any enabled account of the branch the settlement
   belongs to accepts or rejects. The warehouse cannot decide (`403 forbidden`), and neither
-  can another branch.
+  can another branch. The same rule decides a correction of that branch's closed settlement.
 * **Reading** a settlement is the warehouse's for every branch and the branch's for its own;
   a settlement of another branch is `404 not_found`, exactly like another branch's documents.
   The commission rate of a branch is read by the warehouse and by that branch only.
@@ -77,6 +81,8 @@ route takes an actor, a location or a role from JSON.
 | `/api/closings/{id}/cash` | POST | 200 with the settlement and its drawer |
 | `/api/closings/{id}/propose` | POST | 200 with the settlement and the round it now offers |
 | `/api/closings/{id}/decision` | POST | 200 with the settlement and the branch's answer |
+| `/api/closings/{id}/corrections` | POST | 201 with the proposed correction |
+| `/api/closings/corrections/{correction}/decision` | POST | 200 with the correction and the branch's answer |
 | `/api/closings/expenses` | POST | 201 with the recorded expense |
 
 No other method and no other path is served by this contract: `405 method_not_allowed` with
@@ -87,9 +93,9 @@ every read requires the session only. A query string is not part of any route he
 branch history (`GET /api/closings`), where it is the query itself: on every other route
 `?page=1` and a bare `?` are `400 invalid_request`.
 
-`{id}` and `{branch}` admit only canonical positive integers: `01`, `+1`, `0`, `1.0`, `abc`
-and an integer outside the column range are `400 invalid_request`, never a cleaned or
-redirected path. Any other path below `/api/closings/` is `404 not_found` as JSON, and an
+`{id}`, `{branch}` and `{correction}` admit only canonical positive integers: `01`, `+1`, `0`,
+`1.0`, `abc` and an integer outside the column range are `400 invalid_request`, never a cleaned
+or redirected path. Any other path below `/api/closings/` is `404 not_found` as JSON, and an
 ambiguous path is refused before it can be cleaned: a doubled slash, a `.` or `..` segment, a
 backslash, a NUL or an encoded alias (`%31` for `1`, `%2F` for `/`) is `404 not_found`. A
 trailing slash is `404 not_found`, never a redirect.
@@ -97,6 +103,11 @@ trailing slash is `404 not_found`, never a redirect.
 The commission path is a longer literal path than a settlement id, so it is never captured by
 `{id}` and never collides with the suffix of an operation. `expenses` is a literal path beside
 `{id}` for the same reason: it is never read as a settlement id, and it names no settlement at all.
+`corrections` is the literal suffix of one settlement's own collection, so it is never read as an
+id either, and the decision of a correction is named by the correction's **own** id:
+`corrections/{correction}/decision`. The branch decides the correction the database locked, and
+the settlement it belongs to is stated in its body, so no route has to guess which document the
+path meant.
 
 ## Commission rate
 
@@ -223,6 +234,10 @@ produce them on every read, so they cannot disagree with those facts:
 `cash_difference` and `taken_cash` are `null` until the drawer states what they need:
 `cash_difference` needs `counted_cash`, and `taken_cash` needs `counted_cash` and
 `closing_cash`.
+
+On a closed settlement, `counted_cash` and `closing_cash` are the numbers the branch signed plus
+the deltas its accepted corrections journalled, so the three identities above always describe the
+drawer as it reads after them; how much a correction moved is published in its own `effects`.
 
 `commission_amount`, `card_total`, `transfer_total` and `qr_total` are **reported beside** the
 drawer and are part of no cash identity in this document: the commission is never subtracted
@@ -354,6 +369,89 @@ POST /api/closings/1/decision
 * A difference of cash of any size is admitted and persisted with its observation: it is never
   distributed, never discounted from the commission and never absorbed by the stock.
 
+## Corrections of a closed settlement
+
+A closed settlement is never reopened, edited or deleted. An error is corrected by a
+**correction**: the warehouse states what was wrong and why, and the branch accepts or rejects
+it. Nothing is applied until an acceptance, and an acceptance never rewrites the closed
+document: it records the deltas of the corrected values as compensating effects, applies the
+stock delta to the branch inventory in both directions, folds a fund delta into the opening
+cash of the next period exactly once, and leaves the commission as reported money that moves
+no till (S16).
+
+```
+POST /api/closings/1/corrections
+{"reason":"conté mal el cajón y faltaba una batería",
+ "payload":{"counted_quantities":[{"variant_id":3,"counted_quantity":8}],
+            "counted_cash":"150.00",
+            "commission_amount":"516.27",
+            "closing_cash":"60.00"}}
+```
+
+```json
+{"id":2,"closing_id":1,"status":"proposed",
+ "reason":"conté mal el cajón y faltaba una batería",
+ "payload":{"counted_cash":"150.00","counted_quantities":[{"variant_id":3,"counted_quantity":8}]},
+ "proposed_by_account_id":1,"proposed_at":"2026-03-24T09:00:00Z",
+ "decided_by_account_id":null,"decided_at":null,"decision_reason":"","effects":[]}
+```
+
+* Both keys of the body are mandatory and there are no others: `reason` and `payload`. The
+  reason is valid UTF-8 without NUL, at most 1000 characters and never blank once trimmed, and
+  it is published exactly as it is stored, so a padded `" conté mal "` is `400 invalid_request`.
+  It is the warehouse's motive, not the branch's.
+* `payload` states **at least one** of four values, and every one of them is optional: the
+  values a correction does not touch stay **absent** instead of being restated, so a client can
+  read which numbers this correction rewrote.
+  * `counted_quantities` is the same array the count sheet admits (1 to 190 lines, one per
+    variant, `counted_quantity` from `0` to `1000000`). The variant must be on the closed
+    settlement's own sheet: a variant it never counted has no recorded quantity to take a
+    difference against, and is `409 {"error":"correction_payload"}`.
+  * `counted_cash` is the corrected cash the branch counted at the cut.
+  * `commission_amount` is the corrected commission of the period. It is informational money
+    settled outside the system, so it moves no till and no balance.
+  * `closing_cash` is the corrected fund, and it never exceeds the cash counted plus the
+    contribution the warehouse made: `409 {"error":"fund_exceeds_drawer","excess":"50.00"}`,
+    the same bound and the same sentence the closure uses.
+  * An amount is canonical two-decimal **text**: a JSON number (`150.00`), a `null`, a padded or
+    one-decimal value is `400 invalid_request`.
+* A correction states what the drawer, the count and the fund should have been, not the
+difference: the delta is derived against the settlement's own values as its accepted
+corrections already amended them, so successive corrections converge on the number the branch
+counted instead of applying the same difference twice.
+* **One correction waits at a time**: while the branch has not answered, a second proposal is
+`409 {"error":"correction_pending"}` and writes nothing.
+* A live settlement is not corrected: `409
+{"error":"correction_not_closed","closing_id":1}` names the settlement to look at, because a
+settlement that is `open`, `proposed` or `rejected` is corrected by its own rounds.
+* A correction never freezes the branch: the settlement is already closed, so the branch keeps
+selling, receiving stock and recording expenses while it decides.
+
+```
+POST /api/closings/corrections/2/decision
+{"decision":"accepted"}
+{"decision":"rejected","reason":"lo reviso con el contador"}
+```
+
+* `accepted` is the only answer that applies anything: the deltas of the corrected values are
+  recorded as effects of that correction, the stock of every corrected variant moves by its
+  difference (in both directions, never under its reserved stock), and a corrected fund becomes
+  the opening cash of the next period. The corrected drawer and the corrected fund are what the
+  document publishes, while a corrected commission is published as the delta of its effect beside
+  the reported `commission_amount` of the period: the commission is reported money that enters no
+  cash identity (S9), so it is not folded into any other number.
+* `rejected` states a **mandatory reason** — the same text rules as a rejection of a round — and
+  applies nothing at all: no stock, no drawer, no fund, no delta, no correction published in the
+  document. The settlement stays closed and cannot be proposed again; the warehouse simply
+  proposes another correction, with no limit of rounds.
+* A decided correction is final: a second decision is `409 {"error":"correction_decided"}`.
+* Only an enabled account of the branch that owns the settlement decides. Another branch and the
+  warehouse are `403 forbidden`, and nothing is written.
+* A fund correction is refused with `409 {"error":"correction_fund_started"}` when a later
+  settlement already exists: that period inherited its opening cash from the recorded fund and
+  there is no coherent place left to apply the delta, so it is named instead of silently leaving
+  a drawer wrong. The correction is proposed normally and refused when it is accepted.
+
 ## The settlement document
 
 Every route of this contract answers the whole settlement, with exactly these keys:
@@ -377,6 +475,7 @@ Every route of this contract answers the whole settlement, with exactly these ke
 | `count_lines` | The sheet, ordered by `variant_id`, with `expected_quantity` and a `counted_quantity` that is `null` while pending |
 | `expenses` | The expenses of the branch inside this settlement's own window, in the order they were recorded |
 | `rounds` | The proposal history, oldest first |
+| `corrections` | The accepted corrections of the closed settlement, oldest first |
 
 Each `count_lines` entry also carries the catalogue identity of its variant — `catalog_entry_id`,
 `brand`, `model`, `capacity_ah` (canonical decimal text) and `polarity` — so the sheet is legible
@@ -387,6 +486,19 @@ entry carries `id`, `round` (the database's own sequence), `offer`, `proposed_by
 `proposed_at`, `decision` (`""` while pending, `accepted` or `rejected`), `decision_reason`,
 `decided_by_account_id` and `decided_at`; a decided round states who answered it and when, and a
 rejected one always states its motive.
+
+Each `corrections` entry carries `id`, `closing_id`, `status` (`accepted` in the document — a
+pending correction is a decision that has not been taken and a rejected one applied nothing),
+`reason` (the warehouse's), `payload` (the four values it stated, each **absent** when the
+correction did not touch it), `proposed_by_account_id`, `proposed_at`,
+`decided_by_account_id`, `decided_at`, `decision_reason` (always empty for an acceptance) and
+`effects`. Each effect is `kind` plus exactly the unit of that kind: `stock` carries
+`variant_id` and `quantity_delta` (a whole quantity, either direction) and a `null`
+`amount_delta`; `counted_cash`, `commission` and `fund` carry a signed `amount_delta` and a
+`null` `variant_id` and `quantity_delta`. A document of a closed settlement whose `counted_cash`,
+`cash_difference` or `taken_cash` is the result of a correction therefore states both the
+corrected number and the delta that produced it, so a client never needs a second request to
+tell a corrected number from the signed one and the signed one is `corrected - delta`.
 
 The published document is revalidated before it is written: a settlement whose money is not
 canonical, whose derived numbers do not follow their own identity, whose sheet or rounds are out
@@ -410,20 +522,20 @@ GET /api/closings?branch_location_id=2&page=1&page_size=25
   retired one is `409 branch_retired`, exactly like an opening.
 
 ```json
-// abbreviated: every row carries all 27 keys of the settlement document
+// abbreviated: every row carries all 28 keys of the settlement document
 {"page":1,"page_size":25,"total_closings":2,
  "closings":[
   {"id":2,"branch_location_id":2,"branch_name":"Sucursal A","status":"open",
    "period_start":"2026-03-23T18:30:00Z","cut_at":"2026-04-23T18:30:00Z","closed_at":null,
    "commission_rate_percent":null,"expected_cash":"100.00","counted_cash":null,
    "cash_difference":null,"commission_amount":"0.00","closing_cash":null,"taken_cash":null,
-   "count_lines":[],"rounds":[],"expenses":[]},
+   "count_lines":[],"rounds":[],"expenses":[],"corrections":[]},
   {"id":1,"branch_location_id":2,"branch_name":"Sucursal A","status":"closed",
    "period_start":"2026-02-23T18:00:00Z","cut_at":"2026-03-23T18:30:00Z",
    "closed_at":"2026-03-23T18:31:10Z","commission_rate_percent":"10.00",
    "expected_cash":"0.00","counted_cash":"0.00","cash_difference":"0.00",
    "commission_amount":"0.00","closing_cash":"100.00","taken_cash":"0.00",
-   "count_lines":[],"rounds":[],"expenses":[]}]}
+   "count_lines":[],"rounds":[],"expenses":[],"corrections":[]}]}
 ```
 
 Rows are ordered by the **cut instant, newest first**, with the newer settlement first when two
@@ -434,8 +546,10 @@ which makes an empty page beyond the last one harmless.
 Every row is the **same document projection** the single read publishes — the whole settlement
 shape of the table above, already validated and with its derived money computed from its own
 facts — so a history row and the settlement it summarises can never disagree. The count sheet, the
-expenses and the proposal rounds belong to the single read: a row publishes them as empty arrays and
-`GET /api/closings/{id}` unfolds them.
+expenses, the proposal rounds and the corrections belong to the single read: a row publishes them as
+empty arrays and `GET /api/closings/{id}` unfolds them. A row of a corrected settlement therefore
+publishes the corrected drawer with `"corrections":[]`; the document of that settlement is where the
+deltas are.
 
 ## Errors
 
@@ -462,6 +576,12 @@ about instead of a generic code.
 | 409 | `stock_moved` | `variant_id` | A variant moved during the settlement, so the count is stale |
 | 409 | `round_not_accepted` | — | The settlement has no accepted proposal round |
 | 409 | `branch_frozen` | — | The branch is frozen by a live settlement and cannot record an expense |
+| 409 | `correction_not_closed` | `closing_id` | Only a closed settlement is corrected; the refusal names the live one |
+| 409 | `correction_pending` | — | The settlement already has a correction waiting for the branch |
+| 409 | `correction_decided` | — | The correction already has an answer, and a decided one is final |
+| 409 | `correction_payload` | — | The payload is not a correction this domain applies: a value of the wrong shape or a variant the settlement never counted |
+| 409 | `correction_fund_started` | — | The fund of a settlement is corrected before its next period starts |
+| 409 | `correction_journal` | — | A delta was journalled outside the acceptance of its own correction |
 | 503 | `service_unavailable` | — | Pool, database, or any unmapped failure |
 
 Failures never leak driver, SQL or configuration details: only the database's own rejection is
@@ -469,16 +589,16 @@ trusted, and it is mapped by SQLSTATE. The refusals that name a variant read it 
 count sheet and the balances — the same rows and the same predicates the database used — instead
 of parsing the message of the trigger, so the number in the body is the line that actually
 refused the operation. Every other failure of the vertical is `service_unavailable`, including a
-stored shape this domain never wrote. The only SQLSTATEs of this vertical that still land there
-are the ones the store cannot reach at all: `LC012`, `LC013`, `LC014`, `LC021`, `LC022` and
-`LC023` belong to the corrections journal, whose routes are not served yet, and `LC020` is the
-provenance of a settlement ledger row, which only the closure's own trigger writes.
+stored shape this domain never wrote. The only SQLSTATE of this vertical that still lands there is
+the one the store cannot reach at all: `LC020` is the provenance of a settlement ledger row, which
+only the closure's own trigger writes.
 
 ## Database invariants
 
-`branch_closings`, `closing_count_lines`, `closing_proposals`, `branch_cash_movements` and
-`branch_settings` are the settlement's own tables; the closed settlement, its rounds and the
-cash ledger are immutable. The database, not the application, decides the following, with
+`branch_closings`, `closing_count_lines`, `closing_proposals`, `closing_corrections`,
+`closing_correction_effects`, `branch_cash_movements` and `branch_settings` are the settlement's
+own tables; the closed settlement, its rounds, its corrections, the journal of their deltas and
+the cash ledger are immutable. The database, not the application, decides the following, with
 stable SQLSTATEs:
 
 | SQLSTATE | Guard | Published as |
@@ -499,9 +619,16 @@ stable SQLSTATEs:
 | `LC017` | The branch was retired | 409 `branch_retired` |
 | `LC018` | A variant moved during the settlement | 409 `stock_moved` with `variant_id` |
 | `LC019` | A variant has no counted quantity at the proposal | 409 `proposal_stale` with `variant_id` when the store's own read missed it; `409 count_pending` when the store refuses first |
+| `LC012` | Only a closed settlement is corrected | 409 `correction_not_closed` with `closing_id` |
+| `LC013` | A decided correction is final, and a correction states what the warehouse offered, unchanged | 409 `correction_decided` |
+| `LC014` | Only an enabled account of the branch decides a correction | 403 `forbidden` |
+| `LC021` | The payload is not a correction this domain applies | 409 `correction_payload` |
+| `LC022` | The fund of a settlement is corrected before the next period starts | 409 `correction_fund_started` |
+| `LC023` | A correction effect is written by the acceptance of its own correction | 409 `correction_journal` |
 
 One live settlement per branch is a unique index, reported as `409 settlement_live`; a
-reference to a settlement that does not exist is reported as `404 not_found`.
+reference to a settlement that does not exist is reported as `404 not_found`, and a second
+pending correction of the same settlement is `409 correction_pending`.
 
 The closure is one transaction: the counted stock, the cash ledger rows of the drawer
 (`aporte` for the contribution, `recaudacion` for what the warehouse takes), the state and the
@@ -511,18 +638,16 @@ stale stock, and one of a branch that still owes a reserved unit is refused (`LC
 reserved_stock`); neither applies anything, so resolving the line and accepting again closes the
 same settlement.
 
+An accepted correction writes nothing the branch signed: it appends the deltas of the corrected
+values to `closing_correction_effects`, moves the corrected variants' stock by their difference in
+both directions, and folds a fund delta into the next opening cash exactly once. A correction whose
+acceptance fails leaves neither a delta nor an answer behind, and no correction ever reopens,
+rewrites or refreezes anything.
+
 ## Not served yet
 
-One operation of the vertical has no store method yet and is therefore **not** part of this
-contract, rather than guessed at here: **corrections of a closed settlement** (S16). There is
-no `POST /api/closings/{id}/correct` and no approval route. Migration 036 already stores the
-journal a correction would apply — a mandatory motive, the branch's approval and compensating
-deltas against the open period — and the documentation of that contract will be written with
-the routes. Until then a closed settlement stays readable, immutable and correctable only by the
-next vertical slice.
-
 The corrective **counter-movement of a recorded expense** (S12: an expense is never edited nor
-deleted, a wrong one is corrected by its opposite) has no route here either: the ledger admits no
+deleted, a wrong one is corrected by its opposite) has no route here: the ledger admits no
 inverting movement of a `gasto` today, exactly as it admits no edit and no deletion of one. What
 this contract does guarantee is the immutable side — a recorded expense is never rewritten and
 never removed — and the reversal belongs to the corrections contract above, which is the only one

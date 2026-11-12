@@ -77,6 +77,27 @@ var (
 	// (LC011): the till an expense comes out of belongs to the branch that records it, so the
 	// warehouse never records one on its behalf.
 	ErrNotBranchExpense = errors.New("only the branch records its own expenses")
+	// ErrCorrectionNotClosed is the refusal of a correction of a settlement that is not closed
+	// (LC012). A live settlement is corrected by its own proposal rounds, which the branch has
+	// not decided yet; only a closed one is corrected after the fact (S16).
+	ErrCorrectionNotClosed = errors.New("only a closed settlement is corrected")
+	// ErrCorrectionDecided is the refusal of a decision on a correction that already has one
+	// (LC013): a correction is decided once, by the branch, and a decided one is final.
+	ErrCorrectionDecided = errors.New("the correction is already decided")
+	// ErrCorrectionPending is the refusal of a second correction while the branch still holds
+	// one pending: the warehouse waits for its decision, one correction at a time (034).
+	ErrCorrectionPending = errors.New("the settlement already has a correction waiting for the branch")
+	// ErrCorrectionPayload is the refusal of a correction this domain does not apply (LC021):
+	// one of its four values, each as the shape that value is, and a variant the closed
+	// settlement actually counted.
+	ErrCorrectionPayload = errors.New("the correction is not one this domain applies")
+	// ErrCorrectionFundStarted is the refusal of a fund correction once a later settlement
+	// exists (LC022): that period already inherited its opening cash from the recorded fund, so
+	// there is no coherent place left to apply the delta.
+	ErrCorrectionFundStarted = errors.New("the fund of a settlement is corrected before the next period starts")
+	// ErrCorrectionJournal is the refusal of the journal of applied deltas (LC023): an effect
+	// exists because the branch accepted its own correction, and for no other reason.
+	ErrCorrectionJournal = errors.New("a correction effect is written when its correction is accepted")
 )
 
 // RetiredBranch is the refusal of a settlement or a setting for a branch the warehouse
@@ -148,6 +169,18 @@ func (e *StaleProposal) Error() string {
 
 // Unwrap keeps errors.Is(err, ErrProposalStale) true.
 func (e *StaleProposal) Unwrap() error { return ErrProposalStale }
+
+// CorrectionNotClosed is the refusal of a correction of one named settlement that is not
+// closed (LC012). The settlement is named because a correction always belongs to one, and the
+// operator has to look at that document instead of proposing again (S16).
+type CorrectionNotClosed struct{ ClosingID int64 }
+
+func (e *CorrectionNotClosed) Error() string {
+	return "settlement " + digits(e.ClosingID) + " is not closed and is not corrected"
+}
+
+// Unwrap keeps errors.Is(err, ErrCorrectionNotClosed) true.
+func (e *CorrectionNotClosed) Unwrap() error { return ErrCorrectionNotClosed }
 
 // CashNotStated is the refusal of a proposal or a closure that does not state the cash it
 // counted and the fund it leaves behind, which the closure requires (LC006).
@@ -255,6 +288,80 @@ type CashDraft struct {
 	Observation     string
 }
 
+// CorrectionStatus is the state of one correction of a closed settlement: the warehouse
+// proposes it and only the branch decides it, exactly like a round of a live settlement (S16).
+type CorrectionStatus string
+
+const (
+	CorrectionProposed CorrectionStatus = "proposed"
+	CorrectionAccepted CorrectionStatus = "accepted"
+	CorrectionRejected CorrectionStatus = "rejected"
+)
+
+// Valid reports whether the status is one this vertical stores.
+func (s CorrectionStatus) Valid() bool {
+	return s == CorrectionProposed || s == CorrectionAccepted || s == CorrectionRejected
+}
+
+// The kinds of delta an accepted correction journals. Each one is a fact of its own and the
+// journal holds one row per fact, so a reader never has to parse a payload to know what moved;
+// the drawer and the fund are money, the count sheet is a quantity, and the commission is money
+// that moves nothing (036, 040).
+const (
+	CorrectionKindStock       = "stock"
+	CorrectionKindCountedCash = "counted_cash"
+	CorrectionKindCommission  = "commission"
+	CorrectionKindFund        = "fund"
+)
+
+// CorrectionOffer is the whole payload of one correction: every value it corrects, all of them
+// optional and at least one of them stated. The fields are the payload's own names, because the
+// offer is stored verbatim as jsonb and judged by the database when the warehouse proposes it;
+// a value a correction does not touch stays absent instead of being restated (S16, L6).
+type CorrectionOffer struct {
+	CountedQuantities []Counted `json:"counted_quantities,omitempty"`
+	CountedCash       *Money    `json:"counted_cash,omitempty"`
+	CommissionAmount  *Money    `json:"commission_amount,omitempty"`
+	ClosingCash       *Money    `json:"closing_cash,omitempty"`
+}
+
+// Stated reports whether the offer corrects anything at all, which is the minimum the journal
+// and its guard require: a correction that states no value would be a decision about nothing.
+func (o CorrectionOffer) Stated() bool {
+	return len(o.CountedQuantities) > 0 || o.CountedCash != nil ||
+		o.CommissionAmount != nil || o.ClosingCash != nil
+}
+
+// CorrectionEffect is one delta an accepted correction applied: the unit it moves and the exact
+// difference that was applied to it. Exactly one of the two deltas is set for each kind, so an
+// effect is never read as the wrong quantity -- a count is never money and money is never a
+// count (036). An amount delta is signed: a corrected drawer or fund is a difference against what
+// the branch signed, and both directions are legitimate.
+type CorrectionEffect struct {
+	Kind          string  `json:"kind"`
+	VariantID     *int64  `json:"variant_id"`
+	QuantityDelta *int64  `json:"quantity_delta"`
+	AmountDelta   *Signed `json:"amount_delta"`
+}
+
+// Correction is one correction of a closed settlement with the deltas it applied. The reason is
+// the warehouse's and the decision is the branch's, so an accepted correction publishes its
+// effects beside the reason it was accepted for: a corrected number is legible as the result of
+// a correction instead of being an invisible rewrite (S16).
+type Correction struct {
+	ID                  int64              `json:"id"`
+	ClosingID           int64              `json:"closing_id"`
+	Status              CorrectionStatus   `json:"status"`
+	Reason              string             `json:"reason"`
+	Payload             CorrectionOffer    `json:"payload"`
+	ProposedByAccountID int64              `json:"proposed_by_account_id"`
+	ProposedAt          time.Time          `json:"proposed_at"`
+	DecidedByAccountID  *int64             `json:"decided_by_account_id"`
+	DecidedAt           *time.Time         `json:"decided_at"`
+	DecisionReason      string             `json:"decision_reason"`
+	Effects             []CorrectionEffect `json:"effects"`
+}
+
 // Expense is one small expense the branch paid out of its own till during its period (S12).
 // It is the branch's own fact, recorded by the branch while it operates and with no previous
 // approval; it is never attached to a settlement by the caller, because the settlement that
@@ -354,6 +461,13 @@ type Closing struct {
 	CashDifference *Signed     `json:"cash_difference"`
 	TakenCash      *Signed     `json:"taken_cash"`
 	CountLines     []CountLine `json:"count_lines"`
+	// Corrections are the accepted corrections of the closed settlement, oldest first, each one
+	// with the reason the warehouse stated and the deltas the branch accepted. The row above
+	// keeps the numbers it was signed with; the derived numbers of this document are computed
+	// from the signed values plus these deltas, so a corrected drawer reads as corrected and a
+	// client can always tell which correction produced which number (S16). A settlement that is
+	// still live has none: it is corrected by its own rounds, not after the fact.
+	Corrections []Correction `json:"corrections"`
 	// Expenses are the small expenses the branch paid out of its till inside the window this
 	// settlement covers, read from its ledger in the order they were recorded. They are
 	// published beside the total, so the warehouse sees what it is subtracting and the branch
@@ -432,6 +546,81 @@ func digits(value int64) string {
 		value /= 10
 	}
 	return string(buffer[index:])
+}
+
+// canonicalCorrection admits the payload of one correction before the database sees it: at
+// least one of the four values it can correct, canonical money for the three amounts, and a
+// counted sheet inside the database's own bounds. It returns the payload exactly as it is
+// stored, so what the warehouse proposed is what the branch decides and what the journal
+// applies (S16, S20).
+func canonicalCorrection(offer CorrectionOffer) (CorrectionOffer, error) {
+	canonical := CorrectionOffer{}
+	if len(offer.CountedQuantities) > 0 {
+		lines, err := canonicalCount(offer.CountedQuantities)
+		if err != nil {
+			return CorrectionOffer{}, err
+		}
+		canonical.CountedQuantities = lines
+	}
+	countedCash, err := canonicalOptionalAmount(offer.CountedCash)
+	if err != nil {
+		return CorrectionOffer{}, err
+	}
+	commission, err := canonicalOptionalAmount(offer.CommissionAmount)
+	if err != nil {
+		return CorrectionOffer{}, err
+	}
+	fund, err := canonicalOptionalAmount(offer.ClosingCash)
+	if err != nil {
+		return CorrectionOffer{}, err
+	}
+	canonical.CountedCash, canonical.CommissionAmount, canonical.ClosingCash =
+		countedCash, commission, fund
+	if !canonical.Stated() {
+		// A correction that states nothing is not a correction, and the database refuses the
+		// same empty payload (LC021).
+		return CorrectionOffer{}, ErrInvalid
+	}
+	return canonical, nil
+}
+
+// canonicalOptionalAmount canonicalizes one optional amount of a correction: an absent value
+// stays absent, because a correction never restates a value it does not touch.
+func canonicalOptionalAmount(amount *Money) (*Money, error) {
+	if amount == nil {
+		return nil, nil
+	}
+	canonical, err := ParseAmount(string(*amount))
+	if err != nil {
+		return nil, ErrInvalid
+	}
+	return &canonical, nil
+}
+
+// correctedAmount applies one journalled delta to an amount of the settlement. A settlement
+// without the amount carries no delta -- a live one is never corrected (LC012) -- and the drawer
+// chain never holds a negative amount, so a journal that would take one there is a shape this
+// domain never wrote.
+func correctedAmount(amount *Money, delta Signed) (*Money, error) {
+	cents, ok := delta.Cents()
+	if !ok {
+		return nil, ErrInvalid
+	}
+	if amount == nil {
+		if cents != 0 {
+			return nil, ErrInvalid
+		}
+		return nil, nil
+	}
+	base, ok := amountCents(*amount)
+	if !ok {
+		return nil, ErrInvalid
+	}
+	value, err := amountFromCents(base + cents)
+	if err != nil {
+		return nil, ErrInvalid
+	}
+	return &value, nil
 }
 
 // canonicalCount admits the counted sheet of one request: one to MaxCountLines lines, each

@@ -915,18 +915,187 @@ func (s *Store) Decide(ctx context.Context, actor auth.Identity, id int64, decis
 	return closing, nil
 }
 
+// ProposeCorrection records the warehouse's correction of a closed settlement (S16): the values
+// it corrects and the reason it corrects them for. A correction is the warehouse's offer and a
+// decision of the branch, exactly like a round of a live settlement, so this only appends the
+// pending correction: nothing is applied and nothing is decided until the branch answers it.
+//
+// Only the warehouse proposes one. The answer a branch gets for a settlement of another branch is
+// the same refusal it gets for its own: a branch never proposes a correction (LC012), because a
+// correction is the warehouse's reading of the cut it performed.
+func (s *Store) ProposeCorrection(ctx context.Context, actor auth.Identity, closingID int64,
+	offer CorrectionOffer, reason string) (Correction, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return Correction{}, ErrUnavailable
+	}
+	if !warehouseAdmin(actor) {
+		return Correction{}, ErrForbidden
+	}
+	if closingID < 1 {
+		return Correction{}, ErrNotFound
+	}
+	canonicalReason, ok := CanonicalReason(reason)
+	if !ok {
+		return Correction{}, ErrInvalid
+	}
+	payload, err := canonicalCorrection(offer)
+	if err != nil {
+		return Correction{}, err
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return Correction{}, ErrUnavailable
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return Correction{}, fail(ctx)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = tx.Rollback(cleanup)
+	}()
+	if err := checkAccount(ctx, tx, actor); err != nil {
+		return Correction{}, err
+	}
+	// The insert runs in a savepoint, so a refusal can be answered with the settlement it was
+	// proposed for: a failed statement aborts its own transaction, and the row the warehouse has
+	// to look at is read from the transaction still open around it.
+	insert, err := tx.Begin(ctx)
+	if err != nil {
+		return Correction{}, fail(ctx)
+	}
+	var correctionID int64
+	err = insert.QueryRow(ctx, `INSERT INTO closing_corrections(closing_id,reason,payload,proposed_by_account_id)
+ VALUES($1,$2,$3::jsonb,$4) RETURNING id`, closingID, canonicalReason, string(encoded),
+		int64(actor.AccountID)).Scan(&correctionID)
+	if err != nil {
+		if rollback := insert.Rollback(ctx); rollback != nil {
+			return Correction{}, fail(ctx)
+		}
+		return Correction{}, mapCorrectionFailure(ctx, tx, err, closingID)
+	}
+	if err := insert.Commit(ctx); err != nil {
+		return Correction{}, fail(ctx)
+	}
+	correction, err := loadCorrection(ctx, tx, correctionID)
+	if err != nil {
+		return Correction{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Correction{}, mapFailure(ctx, err)
+	}
+	return correction, nil
+}
+
+// DecideCorrection records the branch's answer to the pending correction of its closed
+// settlement. Any enabled account of the branch decides, and only the branch decides: neither the
+// warehouse nor another branch can (LC014).
+//
+// A rejection states its reason and applies nothing, exactly like the rejection of a round; an
+// acceptance is the only thing that applies the deltas the correction states, and the database
+// does it in the same transaction, so a refused acceptance leaves neither a delta nor a decision
+// behind (S16).
+func (s *Store) DecideCorrection(ctx context.Context, actor auth.Identity, correctionID int64,
+	decision Decision, reason string) (Correction, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return Correction{}, ErrUnavailable
+	}
+	if decision != DecisionAccepted && decision != DecisionRejected {
+		return Correction{}, ErrInvalid
+	}
+	var canonicalReason string
+	if decision == DecisionRejected {
+		var ok bool
+		if canonicalReason, ok = CanonicalReason(reason); !ok {
+			return Correction{}, ErrInvalid
+		}
+	} else if reason != "" {
+		// An acceptance never carries a rejection reason: the two decisions are exclusive.
+		return Correction{}, ErrInvalid
+	}
+	if correctionID < 1 {
+		return Correction{}, ErrNotFound
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return Correction{}, fail(ctx)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = tx.Rollback(cleanup)
+	}()
+	if err := checkAccount(ctx, tx, actor); err != nil {
+		return Correction{}, err
+	}
+	var branch int16
+	var status string
+	// The correction is locked before it is judged, so two accounts of the same branch cannot
+	// decide it twice and a refusal leaves the row exactly as it was.
+	err = tx.QueryRow(ctx, `SELECT header.branch_location_id,correction.status
+ FROM closing_corrections correction JOIN branch_closings header ON header.id=correction.closing_id
+ WHERE correction.id=$1 FOR UPDATE OF correction`, correctionID).Scan(&branch, &status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Correction{}, ErrNotFound
+	}
+	if err != nil {
+		return Correction{}, fail(ctx)
+	}
+	// Only an account of the branch that owns the settlement decides, and a session still forced
+	// to change its password does not act. The database refuses the same actors with LC014.
+	if int64(actor.Location.ID) != int64(branch) || actor.MustChangePassword {
+		return Correction{}, ErrForbidden
+	}
+	if CorrectionStatus(status) != CorrectionProposed {
+		return Correction{}, ErrCorrectionDecided
+	}
+	// The decision is one version of its own: the database refuses to rewrite a decided
+	// correction, so a rejection is appended and never replaces the correction it answered. The
+	// acceptance is what makes the database journal the deltas the correction states.
+	if _, err := tx.Exec(ctx, `UPDATE closing_corrections SET status=$2,decision_reason=$3,
+ decided_by_account_id=$4 WHERE id=$1 AND status='proposed'`, correctionID, string(decision),
+		canonicalReason, int64(actor.AccountID)); err != nil {
+		return Correction{}, mapFailure(ctx, err)
+	}
+	correction, err := loadCorrection(ctx, tx, correctionID)
+	if err != nil {
+		return Correction{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Correction{}, mapFailure(ctx, err)
+	}
+	return correction, nil
+}
+
 // closingHeaderColumns is the persisted header of one settlement, in the order scanClosing
 // reads it. One projection, so the single read, the history and the derived numbers can never
 // disagree with each other.
+//
+// The two trailing columns are the journal of accepted corrections (036, 040): the deltas the
+// branch accepted for the counted cash and for the fund. They are read here, with the header, so
+// every read of a settlement -- the single document and each row of its history -- derives the
+// same corrected numbers from the same signed ones. The stock and the commission are journalled
+// too, but neither of them changes a number of this projection: the stock is the branch's
+// inventory and the commission is published beside the corrections that changed it.
 const closingHeaderColumns = `c.id,c.branch_location_id,l.name,c.status,
   c.period_start,c.cut_at,c.closed_at,coalesce(c.commission_rate_percent::text,''),
   c.opening_cash::text,c.cash_sales::text,c.cash_expenses::text,c.sales_total::text,
   c.commission_amount::text,c.card_total::text,c.transfer_total::text,c.qr_total::text,
   c.counted_cash::text,c.contributed_cash::text,c.closing_cash::text,c.observation,
-  c.opened_by_account_id`
+  c.opened_by_account_id,
+  coalesce((SELECT sum(effect.amount_delta) FROM closing_correction_effects effect
+    WHERE effect.closing_id=c.id AND effect.kind='counted_cash'),0)::numeric(12,2)::text,
+  coalesce((SELECT sum(effect.amount_delta) FROM closing_correction_effects effect
+    WHERE effect.closing_id=c.id AND effect.kind='fund'),0)::numeric(12,2)::text`
 
-// loadClosing reads one settlement with the database's own money, its count sheet and its
-// proposal rounds, and derives the three cash numbers that are never persisted.
+// loadClosing reads one settlement with the database's own money, its count sheet, its expenses,
+// its proposal rounds and the corrections it accepted, and derives the numbers that are never
+// persisted.
 func loadClosing(ctx context.Context, q querier, id int64) (Closing, error) {
 	closing, err := scanClosing(ctx, q.QueryRow(ctx, `SELECT `+closingHeaderColumns+`
  FROM branch_closings c JOIN locations l ON l.id=c.branch_location_id WHERE c.id=$1`, id))
@@ -942,6 +1111,9 @@ func loadClosing(ctx context.Context, q querier, id int64) (Closing, error) {
 	if closing.Rounds, err = loadRounds(ctx, q, id); err != nil {
 		return Closing{}, err
 	}
+	if closing.Corrections, err = loadCorrections(ctx, q, id); err != nil {
+		return Closing{}, err
+	}
 	return closing, nil
 }
 
@@ -953,13 +1125,14 @@ func scanClosing(ctx context.Context, row pgx.Row) (Closing, error) {
 	var closing Closing
 	var status, rate string
 	var counted, fund *string
+	var countedDelta, fundDelta string
 	err := row.Scan(
 		&closing.ID, &closing.BranchID, &closing.BranchName, &status,
 		&closing.PeriodStart, &closing.CutAt, &closing.ClosedAt, &rate,
 		&closing.OpeningCash, &closing.CashSales, &closing.CashExpenses, &closing.SalesTotal,
 		&closing.CommissionAmount, &closing.CardTotal, &closing.TransferTotal, &closing.QRTotal,
 		&counted, &closing.ContributedCash, &fund, &closing.Observation,
-		&closing.OpenedByAccountID)
+		&closing.OpenedByAccountID, &countedDelta, &fundDelta)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Closing{}, ErrNotFound
 	}
@@ -998,6 +1171,20 @@ func scanClosing(ctx context.Context, row pgx.Row) (Closing, error) {
 			return Closing{}, ErrUnavailable
 		}
 	}
+	// The drawer and the fund are the signed numbers plus the deltas the branch accepted (036,
+	// 040). Applying them here, on read, is what keeps one copy of the truth: the row states
+	// what the branch signed and the journal states what moved, so a corrected drawer can never
+	// be published as the uncorrected one.
+	corrected, err := correctedAmount(closing.CountedCash, Signed(countedDelta))
+	if err != nil {
+		return Closing{}, ErrUnavailable
+	}
+	closing.CountedCash = corrected
+	funded, err := correctedAmount(closing.ClosingCash, Signed(fundDelta))
+	if err != nil {
+		return Closing{}, ErrUnavailable
+	}
+	closing.ClosingCash = funded
 	// The three numbers of S8 and S10 are derived here, never stored, so they cannot
 	// disagree with the facts that produce them (L12).
 	expected, err := ExpectedCash(closing.OpeningCash, closing.CashSales, closing.CashExpenses)
@@ -1187,6 +1374,179 @@ func decodePayload(stored string) (ProposalPayload, error) {
 	return payload, nil
 }
 
+// loadCorrections reads the accepted corrections of one settlement, oldest first, each one with
+// its reason and the deltas the branch accepted. Only accepted ones are published: a proposed
+// correction is a decision that has not been taken and a rejected one applied nothing, so
+// neither of them changed a number of the document (S16).
+func loadCorrections(ctx context.Context, q querier, closingID int64) ([]Correction, error) {
+	rows, err := q.Query(ctx, `SELECT id FROM closing_corrections
+ WHERE closing_id=$1 AND status='accepted' ORDER BY id`, closingID)
+	if err != nil {
+		return nil, fail(ctx)
+	}
+	defer rows.Close()
+	// The ids are collected before any correction is read: one connection carries one statement
+	// at a time, so a read inside the loop of another read is not the same transaction any more.
+	ids := make([]int64, 0, 2)
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) != nil || id < 1 {
+			return nil, fail(ctx)
+		}
+		ids = append(ids, id)
+	}
+	if rows.Err() != nil {
+		return nil, fail(ctx)
+	}
+	corrections := make([]Correction, 0, len(ids))
+	for _, id := range ids {
+		correction, err := loadCorrection(ctx, q, id)
+		if err != nil {
+			return nil, err
+		}
+		if previous := len(corrections) - 1; previous >= 0 && corrections[previous].ID >= correction.ID {
+			return nil, ErrUnavailable
+		}
+		corrections = append(corrections, correction)
+	}
+	return corrections, nil
+}
+
+// loadCorrection reads one correction with the payload the warehouse offered and the effects the
+// acceptance journalled. A row this domain did not write fails closed instead of being described.
+func loadCorrection(ctx context.Context, q querier, id int64) (Correction, error) {
+	var correction Correction
+	var status, payload string
+	err := q.QueryRow(ctx, `SELECT id,closing_id,status,reason,payload::text,
+  proposed_by_account_id,proposed_at,decided_by_account_id,decided_at,decision_reason
+ FROM closing_corrections WHERE id=$1`, id).Scan(&correction.ID, &correction.ClosingID, &status,
+		&correction.Reason, &payload, &correction.ProposedByAccountID, &correction.ProposedAt,
+		&correction.DecidedByAccountID, &correction.DecidedAt, &correction.DecisionReason)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Correction{}, ErrNotFound
+	}
+	if err != nil {
+		return Correction{}, fail(ctx)
+	}
+	correction.Status = CorrectionStatus(status)
+	if !correction.Status.Valid() || correction.ID < 1 || correction.ClosingID < 1 ||
+		correction.ProposedByAccountID < 1 || correction.ProposedAt.IsZero() {
+		return Correction{}, ErrUnavailable
+	}
+	if canonical, ok := CanonicalReason(correction.Reason); !ok || canonical != correction.Reason {
+		return Correction{}, ErrUnavailable
+	}
+	// A correction is decided once and only with the state the database stores: a decided one has
+	// an author and an instant, a pending one has neither.
+	if (correction.Status == CorrectionProposed) != (correction.DecidedAt == nil) {
+		return Correction{}, ErrUnavailable
+	}
+	if correction.Status != CorrectionProposed && correction.DecidedByAccountID == nil {
+		return Correction{}, ErrUnavailable
+	}
+	if correction.Status == CorrectionRejected {
+		if reason, ok := CanonicalReason(correction.DecisionReason); !ok || reason != correction.DecisionReason {
+			return Correction{}, ErrUnavailable
+		}
+	} else if correction.DecisionReason != "" {
+		return Correction{}, ErrUnavailable
+	}
+	if correction.Payload, err = decodeCorrectionOffer(payload); err != nil {
+		return Correction{}, err
+	}
+	if correction.Effects, err = loadCorrectionEffects(ctx, q, id); err != nil {
+		return Correction{}, err
+	}
+	return correction, nil
+}
+
+// loadCorrectionEffects reads the deltas one correction applied, in the order the application
+// wrote them. The unit is the kind's: a stock delta carries its variant and a quantity, every
+// other kind carries an amount, so an effect is never read as the wrong number (036).
+func loadCorrectionEffects(ctx context.Context, q querier, id int64) ([]CorrectionEffect, error) {
+	rows, err := q.Query(ctx, `SELECT kind,variant_id,quantity_delta,amount_delta::text
+ FROM closing_correction_effects WHERE correction_id=$1 ORDER BY id`, id)
+	if err != nil {
+		return nil, fail(ctx)
+	}
+	defer rows.Close()
+	effects := make([]CorrectionEffect, 0, 1)
+	for rows.Next() {
+		var effect CorrectionEffect
+		var amount *string
+		if rows.Scan(&effect.Kind, &effect.VariantID, &effect.QuantityDelta, &amount) != nil {
+			return nil, fail(ctx)
+		}
+		switch effect.Kind {
+		case CorrectionKindStock:
+			if effect.VariantID == nil || *effect.VariantID < 1 || effect.QuantityDelta == nil ||
+				*effect.QuantityDelta == 0 || amount != nil {
+				return nil, ErrUnavailable
+			}
+		case CorrectionKindCountedCash, CorrectionKindCommission, CorrectionKindFund:
+			if effect.VariantID != nil || effect.QuantityDelta != nil || amount == nil {
+				return nil, ErrUnavailable
+			}
+			// A delta is signed: a corrected drawer, commission or fund is a difference against
+			// what the branch signed, and both directions are legitimate.
+			value := Signed(*amount)
+			if cents, ok := value.Cents(); !ok || cents == 0 {
+				return nil, ErrUnavailable
+			}
+			effect.AmountDelta = &value
+		default:
+			return nil, ErrUnavailable
+		}
+		effects = append(effects, effect)
+	}
+	if rows.Err() != nil {
+		return nil, fail(ctx)
+	}
+	return effects, nil
+}
+
+// decodeCorrectionOffer revalidates one stored correction: every amount must still be canonical
+// money and the counted sheet inside the database's bounds, so a stored payload keeps its own
+// arithmetic.
+func decodeCorrectionOffer(stored string) (CorrectionOffer, error) {
+	var offer CorrectionOffer
+	if err := json.Unmarshal([]byte(stored), &offer); err != nil {
+		return CorrectionOffer{}, ErrUnavailable
+	}
+	canonical, err := canonicalCorrection(offer)
+	if err != nil {
+		return CorrectionOffer{}, ErrUnavailable
+	}
+	return canonical, nil
+}
+
+// mapCorrectionFailure publishes the database's own refusal of a proposed correction. LC012 is
+// "only a closed settlement is corrected", and its admission reads the settlement it corrects, so
+// the read-back answers both refusals the code covers: a settlement this installation does not
+// have is not found, and a live one is named. Every other refusal keeps the plain mapping.
+func mapCorrectionFailure(ctx context.Context, q querier, err error, closingID int64) error {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) && pg.Code == "LC012" {
+		status, read := closingStatus(ctx, q, closingID)
+		switch {
+		case errors.Is(read, pgx.ErrNoRows):
+			return ErrNotFound
+		case read == nil && status != string(StatusClosed):
+			return &CorrectionNotClosed{ClosingID: closingID}
+		}
+	}
+	return mapFailure(ctx, err)
+}
+
+// closingStatus reads the state of one settlement, which is the fact LC012 refuses a correction
+// by. It reports pgx.ErrNoRows when the settlement does not exist, so a caller keeps its own
+// answer for a read that fails.
+func closingStatus(ctx context.Context, q querier, id int64) (string, error) {
+	var status string
+	err := q.QueryRow(ctx, `SELECT status FROM branch_closings WHERE id=$1`, id).Scan(&status)
+	return status, err
+}
+
 // mapOpenFailure publishes the database's own decision for an open and nothing else. A
 // second live settlement of the branch is the one refusal that has to name a document, so
 // the settlement that already holds the branch is read here, inside the transaction that is
@@ -1346,9 +1706,31 @@ func mapFailure(ctx context.Context, err error) error {
 			return ErrRoundNotAccepted
 		case "LC017":
 			return ErrInvalid
+		case "LC012":
+			// Only a closed settlement is corrected; the proposal path names the settlement.
+			return ErrCorrectionNotClosed
+		case "LC013":
+			// A correction is decided once, and a decided one is final.
+			return ErrCorrectionDecided
+		case "LC014":
+			// Only an enabled account of the branch that owns the settlement decides.
+			return ErrForbidden
+		case "LC021":
+			// The payload is not a correction this domain applies.
+			return ErrCorrectionPayload
+		case "LC022":
+			// The fund of a settlement is corrected before its next period starts.
+			return ErrCorrectionFundStarted
+		case "LC023":
+			// An effect is written by the acceptance of its own correction.
+			return ErrCorrectionJournal
 		case "23505":
 			if strings.Contains(pg.ConstraintName, "branch_closings_one_live") {
 				return ErrLiveConflict
+			}
+			if strings.Contains(pg.ConstraintName, "closing_corrections_one_pending") {
+				// One correction at a time: the warehouse waits for the branch's decision.
+				return ErrCorrectionPending
 			}
 			return ErrStateConflict
 		case "23503":
