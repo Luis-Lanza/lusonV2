@@ -1043,14 +1043,24 @@ func TestFirstSettlementRecordsTheDeclaredFund(t *testing.T) {
 // helper, so the offered period and the closed one can never differ.
 func TestProposeReadsTheCashExpensesOfThePeriodLedger(t *testing.T) {
 	e := fixture(t)
-	// An expense recorded before the first settlement belongs to no period of it.
+	// An expense recorded before the first settlement belongs to that first period: the first
+	// period starts where the branch started, so the money it already paid out is part of the
+	// drawer identity of the settlement that covers it (S8) -- leaving it out would overstate
+	// the expected cash by money the branch no longer has in the till.
 	e.expense(t, 2, "30.00", "Flete de la semana pasada")
-	// The first settlement settles an empty window: the branch has an expense in its ledger,
-	// but none of it falls between the cut instant and itself, so the period states zero.
+	// The first settlement settles an empty period of sales but not of expenses: the branch has
+	// no sale and one expense of 30.00 in its window, so the period states the expense it owes
+	// and zero cash collected.
 	first := e.closeFirstSettlement(t, "200.00")
 	settled, err := e.store.Read(e.ctx, warehouse(), first)
-	if err != nil || settled.CashExpenses != "0.00" || settled.CashSales != "0.00" {
-		t.Fatalf("a period without money in its window states zero: %+v %v", settled, err)
+	if err != nil || settled.CashExpenses != "30.00" || settled.CashSales != "0.00" {
+		t.Fatalf("the first period must state the expense it covers: %+v %v", settled, err)
+	}
+	// The reason is S8's identity and not a changed number: expected = 0.00 inherited + 0.00
+	// collected - 30.00 already spent, and the difference is the counted drawer against it.
+	if settled.ExpectedCash != "-30.00" || settled.CashDifference == nil ||
+		string(*settled.CashDifference) != "30.00" {
+		t.Fatalf("the first period must derive its drawer from the expense it covers: %+v", settled)
 	}
 	// Two expenses inside the period the next settlement covers.
 	e.expense(t, 2, "45.50", "Flete")
