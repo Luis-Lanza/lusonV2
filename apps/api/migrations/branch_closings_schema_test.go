@@ -627,22 +627,26 @@ func TestBranchClosingsGuards(t *testing.T) {
 	// The money and the count refusals, on a settlement whose round is already accepted so
 	// that the decision is not what stops them.
 	countAll(t, ctx, p, next, map[int]int{1: 8})
+	// The drawer is a draft while the settlement is live, and the bound is checked on
+	// every write so the admin sees the domain code, not a constraint violation.
+	_, err = p.Exec(ctx, `UPDATE branch_closings SET counted_cash=50.00,closing_cash=60.00
+ WHERE id=$1`, next)
+	execRefusalMessage(t, err, "LC006", "exceeds the cash counted plus the contribution by 10.00")
+	// The contribution raises the bound; the incomplete count is what still blocks it.
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET counted_cash=50.00,
+ contributed_cash=10.00,closing_cash=60.00 WHERE id=$1`, next); err != nil {
+		t.Fatalf("the drawer draft must be accepted: %v", err)
+	}
 	proposeRound(t, ctx, p, next, `{}`)
 	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='proposed' WHERE id=$1`, next); err != nil {
 		t.Fatalf("the second settlement could not be proposed: %v", err)
 	}
 	decideRound(t, ctx, p, next, "accepted", "")
-	// The fund bound is the drawer: the cash counted plus the contribution (S10).
-	_, err = p.Exec(ctx, `UPDATE branch_closings SET status='closed',counted_cash=50.00,closing_cash=60.00
- WHERE id=$1`, next)
-	execRefusalMessage(t, err, "LC006", "exceeds the cash counted plus the contribution by 10.00")
-	// The contribution raises the bound, and the count is still what blocks the closure.
-	_, err = p.Exec(ctx, `UPDATE branch_closings SET status='closed',counted_cash=50.00,
- contributed_cash=10.00,closing_cash=60.00 WHERE id=$1`, next)
-	execRefusalMessage(t, err, "LC006", "Variant 2")
-	// A closure states the cash it counted.
+	// Once proposed, the drawer is the offer the branch accepted: closing cannot rewrite it.
+	_, err = p.Exec(ctx, `UPDATE branch_closings SET status='closed',counted_cash=99.00 WHERE id=$1`, next)
+	execRefusalMessage(t, err, "LC005", "the offer the branch decides")
 	_, err = p.Exec(ctx, `UPDATE branch_closings SET status='closed' WHERE id=$1`, next)
-	execRefusalMessage(t, err, "LC006", "cash counted")
+	execRefusalMessage(t, err, "LC006", "Variant 2")
 	t.Logf("034: opened, drafted, proposed, accepted, closed and refused settlements behave as the contract says")
 }
 
@@ -795,15 +799,15 @@ func TestBranchClosingsProposalRounds(t *testing.T) {
 	if err := p.QueryRow(ctx, `SELECT round FROM closing_proposals WHERE id=$1`, second).Scan(&round); err != nil || round != 2 {
 		t.Fatalf("the second round must be numbered 2: %d %v", round, err)
 	}
-	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='proposed' WHERE id=$1`, closing); err != nil {
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='proposed',counted_cash=50.00,closing_cash=20.00
+ WHERE id=$1`, closing); err != nil {
 		t.Fatalf("the second round could not be proposed: %v", err)
 	}
 	if _, err := p.Exec(ctx, `UPDATE closing_proposals SET decision='accepted',decided_by_account_id=2
  WHERE id=$1`, second); err != nil {
 		t.Fatalf("the branch must be able to accept: %v", err)
 	}
-	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='closed',counted_cash=50.00,closing_cash=20.00
- WHERE id=$1`, closing); err != nil {
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='closed' WHERE id=$1`, closing); err != nil {
 		t.Fatalf("the accepted round must close the settlement: %v", err)
 	}
 

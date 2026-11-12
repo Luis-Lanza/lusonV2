@@ -108,6 +108,10 @@ CREATE TABLE branch_cash_movements (
     created_by_account_id integer NOT NULL REFERENCES auth_accounts(id)
 );
 CREATE INDEX branch_cash_movements_by_branch ON branch_cash_movements(branch_location_id, occurred_at);
+-- One transfer of each kind per settlement, behind the admission guard: the cash
+-- history of a closed settlement never grows.
+CREATE UNIQUE INDEX branch_cash_movements_one_transfer ON branch_cash_movements(closing_id, kind)
+WHERE kind <> 'gasto';
 
 -- Every round of the proposal is kept: what the warehouse offered, who decided, why
 -- it was rejected. Nothing is overwritten, so the branch can always be shown exactly
@@ -205,6 +209,11 @@ BEGIN
     NEW.closed_at := NULL;
     NEW.cut_at := now();
     NEW.commission_rate_percent := NULL;
+    -- A closure of the same branch may commit between this read and the unique index
+    -- wait, and the snapshot below would then inherit a fund and a cut instant that are
+    -- already obsolete. The branch is locked for the rest of the transaction, and the
+    -- closure path takes the same lock.
+    PERFORM pg_advisory_xact_lock(340251, NEW.branch_location_id::integer);
     SELECT max(closed_at) INTO previous FROM branch_closings
     WHERE branch_location_id = NEW.branch_location_id AND status = 'closed';
     NEW.period_start := coalesce(previous, NEW.cut_at);
@@ -301,6 +310,7 @@ DECLARE
     configured numeric(5,2);
     latest record;
     excess numeric(12,2);
+    taken numeric(12,2);
 BEGIN
     IF TG_OP = 'DELETE' THEN
         RAISE EXCEPTION USING ERRCODE='LC005',
@@ -325,6 +335,15 @@ BEGIN
     IF NEW.closed_at IS DISTINCT FROM OLD.closed_at THEN
         RAISE EXCEPTION USING ERRCODE='LC005',
             MESSAGE='The closure instant belongs to the closure';
+    END IF;
+    -- The fund never exceeds the drawer the admin declares: the cash counted plus the
+    -- contribution. Checked on every live write, so the admin gets this message while
+    -- typing instead of a bare constraint violation from the row CHECK.
+    IF NEW.counted_cash IS NOT NULL AND NEW.closing_cash IS NOT NULL
+       AND NEW.closing_cash - NEW.counted_cash - NEW.contributed_cash > 0 THEN
+        RAISE EXCEPTION USING ERRCODE='LC006',
+            MESSAGE='The fund left behind exceeds the cash counted plus the contribution by '
+                || (NEW.closing_cash - NEW.counted_cash - NEW.contributed_cash);
     END IF;
     -- "Guardar y salir": while the settlement is open or rejected the admin may persist
     -- a draft of the money it typed and of its observation, and nothing else. The
@@ -383,6 +402,20 @@ BEGIN
         RAISE EXCEPTION USING ERRCODE='LC005',
             MESSAGE='The commission rate is frozen when the settlement is proposed';
     END IF;
+    -- The branch decides on the numbers it was shown: once proposed, the drawer fields
+    -- are the offer, and closing or rejecting must apply exactly that offer. They are
+    -- draftable only while the warehouse holds the settlement.
+    IF OLD.status = 'proposed' AND NEW.status IN ('rejected','closed') THEN
+        IF NEW.cash_sales IS DISTINCT FROM OLD.cash_sales
+           OR NEW.cash_expenses IS DISTINCT FROM OLD.cash_expenses
+           OR NEW.counted_cash IS DISTINCT FROM OLD.counted_cash
+           OR NEW.contributed_cash IS DISTINCT FROM OLD.contributed_cash
+           OR NEW.closing_cash IS DISTINCT FROM OLD.closing_cash
+           OR NEW.observation IS DISTINCT FROM OLD.observation THEN
+            RAISE EXCEPTION USING ERRCODE='LC005',
+                MESSAGE='The drawer of a proposed settlement is the offer the branch decides';
+        END IF;
+    END IF;
     -- Only an accepted round closes a settlement (S14): nothing is applied by an offer
     -- the branch has not accepted, and nothing closes over an undecided one.
     IF NEW.status = 'closed' THEN
@@ -419,6 +452,32 @@ BEGIN
                 MESSAGE='The fund left behind exceeds the cash counted plus the contribution by '
                     || excess;
         END IF;
+        PERFORM pg_advisory_xact_lock(340251, NEW.branch_location_id::integer);
+        -- The settlement's ledger rows are written here, while the row still reads as
+        -- proposed. admit_branch_cash_movement refuses them anywhere else, so a closed
+        -- settlement cannot grow new financial facts: a fix goes through the correction
+        -- workflow that the branch approves.
+        IF NEW.contributed_cash > 0 THEN
+            INSERT INTO branch_cash_movements(
+                branch_location_id, closing_id, kind, amount, description, created_by_account_id)
+            VALUES (NEW.branch_location_id, NEW.id, 'aporte', NEW.contributed_cash,
+                'Aporte de fondo de la rendición', NEW.opened_by_account_id);
+        END IF;
+        -- What the drawer held at the cut is the cash counted plus the contribution, and
+        -- its difference with the fund left behind is the settlement transfer. The S10
+        -- bound keeps that difference non-negative today.
+        taken := NEW.counted_cash + NEW.contributed_cash - NEW.closing_cash;
+        IF taken <> 0 THEN
+            INSERT INTO branch_cash_movements(
+                branch_location_id, closing_id, kind, amount, description, created_by_account_id)
+            VALUES (
+                NEW.branch_location_id, NEW.id,
+                CASE WHEN taken > 0 THEN 'recaudacion' ELSE 'aporte' END,
+                abs(taken),
+                CASE WHEN taken > 0 THEN 'Recaudación de la rendición'
+                     ELSE 'Aporte de fondo para la rendición' END,
+                NEW.opened_by_account_id);
+        END IF;
         NEW.closed_at := now();
     END IF;
     RETURN NEW;
@@ -442,7 +501,6 @@ DECLARE
     line record;
     balance inventory_balances%ROWTYPE;
     pending integer;
-    taken numeric(12,2);
 BEGIN
     IF NEW.status <> 'closed' OR OLD.status = 'closed' THEN
         RETURN NULL;
@@ -465,6 +523,14 @@ BEGIN
                 MESSAGE='Counted quantity of variant ' || line.variant_id
                     || ' is lower than its reserved stock';
         END IF;
+        -- The count is a snapshot of the cut instant. If the branch traded while the
+        -- settlement is open, applying the stale count would resurrect sold stock or
+        -- discard received stock. Freezing the branch lands in 035; this refusal is
+        -- what keeps 034 safe on its own.
+        IF coalesce(balance.existing, 0) IS DISTINCT FROM line.expected_quantity THEN
+            RAISE EXCEPTION USING ERRCODE='LC018',
+                MESSAGE='Variant ' || line.variant_id || ' moved during the settlement';
+        END IF;
         -- A variant counted above its expected quantity may have no balance row at
         -- all, and then it exists only in the count: the closure creates the row, so
         -- the stock ends exactly at what was counted in both directions.
@@ -473,31 +539,8 @@ BEGIN
         ON CONFLICT (location_id, variant_id)
         DO UPDATE SET existing = EXCLUDED.existing;
     END LOOP;
-    -- The contribution is money the warehouse puts into the till, so it is a ledger fact
-    -- of its own: it is what the first settlement of a branch records (S11), and it is
-    -- the difference of nothing.
-    IF NEW.contributed_cash > 0 THEN
-        INSERT INTO branch_cash_movements(
-            branch_location_id, closing_id, kind, amount, description, created_by_account_id)
-        VALUES (NEW.branch_location_id, NEW.id, 'aporte', NEW.contributed_cash,
-            'Aporte de fondo de la rendición', NEW.opened_by_account_id);
-    END IF;
-    -- What the drawer held at the cut is the cash counted plus that contribution, and
-    -- its difference with the fund left behind is the settlement transfer: positive
-    -- leaves the branch for the warehouse, negative would be a further contribution.
-    -- The S10 bound keeps this difference non-negative today.
-    taken := NEW.counted_cash + NEW.contributed_cash - NEW.closing_cash;
-    IF taken <> 0 THEN
-        INSERT INTO branch_cash_movements(
-            branch_location_id, closing_id, kind, amount, description, created_by_account_id)
-        VALUES (
-            NEW.branch_location_id, NEW.id,
-            CASE WHEN taken > 0 THEN 'recaudacion' ELSE 'aporte' END,
-            abs(taken),
-            CASE WHEN taken > 0 THEN 'Recaudación de la rendición'
-                 ELSE 'Aporte de fondo para la rendición' END,
-            NEW.opened_by_account_id);
-    END IF;
+    -- The settlement's ledger rows are written by the transition guard, which owns the
+    -- offer the branch accepted; here the stock is the only thing applied.
     -- closed_at was already stamped by the BEFORE transition guard, which owns the
     -- row: writing it from here would run the transition guard a second time on the
     -- row this trigger is watching, and it would refuse every closure.
@@ -608,10 +651,20 @@ BEGIN
             RAISE EXCEPTION USING ERRCODE='LC011',
                 MESSAGE='Only the warehouse moves the money of a settlement';
         END IF;
+        -- A settlement transfer is written once, by the closure itself, while the row
+        -- still reads as proposed. Anything else -- in particular appending money to a
+        -- closed settlement -- is refused: that history is fixed by an approved
+        -- correction, never by a new ledger row.
         IF NOT EXISTS (SELECT 1 FROM branch_closings
-            WHERE id=NEW.closing_id AND branch_location_id=NEW.branch_location_id) THEN
+            WHERE id=NEW.closing_id AND branch_location_id=NEW.branch_location_id
+              AND status = 'proposed') THEN
             RAISE EXCEPTION USING ERRCODE='LC011',
-                MESSAGE='A cash movement belongs to a settlement of its own branch';
+                MESSAGE='A cash movement belongs to a proposed settlement of its own branch';
+        END IF;
+        IF EXISTS (SELECT 1 FROM branch_cash_movements
+            WHERE closing_id=NEW.closing_id AND kind=NEW.kind) THEN
+            RAISE EXCEPTION USING ERRCODE='LC011',
+                MESSAGE='A settlement states its transfer once';
         END IF;
     END IF;
     RETURN NEW;
