@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2447,4 +2448,338 @@ func TestClosingCorrectionRecord(t *testing.T) {
 			t.Fatalf("%s must be refused instead of published: %v", name, err)
 		}
 	}
+}
+
+// closingCents reads one canonical amount as whole cents, so the money of a cycle is compared as
+// arithmetic between published numbers and never as text this test also wrote.
+func closingCents(t *testing.T, text string) int64 {
+	t.Helper()
+	sign := int64(1)
+	if strings.HasPrefix(text, "-") {
+		sign, text = -1, strings.TrimPrefix(text, "-")
+	}
+	parts := strings.Split(text, ".")
+	if len(parts) != 2 || len(parts[0]) == 0 || len(parts[1]) != 2 {
+		t.Fatalf("%q is not a canonical two-decimal amount", text)
+	}
+	whole, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		t.Fatalf("%q is not a canonical two-decimal amount: %v", text, err)
+	}
+	fraction, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		t.Fatalf("%q is not a canonical two-decimal amount: %v", text, err)
+	}
+	return sign * (whole*100 + fraction)
+}
+
+// closingLineOf finds the published count line of one variant, so a test asserts the line it
+// counted instead of the position the database happened to give it.
+func closingLineOf(t *testing.T, record closingWireRecord, variant int64) (expected int64, counted *int64) {
+	t.Helper()
+	for _, line := range record.CountLines {
+		if line.VariantID == variant {
+			return line.ExpectedQuantity, line.CountedQuantity
+		}
+	}
+	t.Fatalf("variant %d is not on the count sheet of settlement %d", variant, record.ID)
+	return 0, nil
+}
+
+// TestSettlementCycleEndToEnd walks one whole settlement cycle through the product's own HTTP
+// surface, in order, asserting the money at every step: the empty drawer of the first settlement
+// (S11), the counted sheet with a variant the system did not have (S4), the offer the branch is
+// shown and accepts (S14), the closure that leaves stock equal to the count and the fund as the
+// next opening (S5, S10), the sale and the expense of the new period inside the next offer's base
+// and drawer (S8, S12), and the correction of the closed settlement whose deleted number stays
+// recoverable as corrected minus delta (S16).
+//
+// The database suites prove each step against PostgreSQL; this test is the other half of the
+// evidence: one operator-facing cycle that no single step can complete on its own. A step this
+// contract cannot finish is a finding, and it is reported by failing here with the response body,
+// never by relaxing the assertion.
+func TestSettlementCycleEndToEnd(t *testing.T) {
+	f := closingFixture(t)
+	const branch = int64(2)
+
+	// 1. The warehouse opens the first settlement of the branch: S11's empty drawer. The period
+	// starts at the system's own beginning, the rate is not yet frozen because nothing has been
+	// offered, and every money of the drawer is still unstated or zero.
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/branches/%d/commission", branch),
+		`{"commission_rate_percent":"10.00"}`)); w.Code != 200 {
+		t.Fatalf("step 1: the commission rate must be configured: %d %s", w.Code, w.Body.String())
+	}
+	opened := closingWire(t, f.serve(t, f.request(1, "POST", "/api/closings",
+		fmt.Sprintf(`{"branch_location_id":%d}`, branch))), 201)
+	if opened.Status != "open" || opened.BranchLocationID != branch ||
+		opened.PeriodStart == "" || opened.CutAt == "" || opened.ClosedAt != nil ||
+		opened.OpeningCash != "0.00" || opened.CashSales != "0.00" || opened.CashExpenses != "0.00" ||
+		opened.ExpectedCash != "0.00" || opened.CountedCash != nil || opened.CashDifference != nil ||
+		opened.ContributedCash != "0.00" || opened.ClosingCash != nil || opened.TakenCash != nil ||
+		opened.SalesTotal != "0.00" || opened.CommissionAmount != "0.00" ||
+		opened.CommissionRatePercent != nil || len(opened.CountLines) == 0 || len(opened.Rounds) != 0 {
+		t.Fatalf("step 1: the first settlement must open an empty drawer and an empty period: %+v", opened)
+	}
+	first := opened.ID
+
+	// 2. Counting is not blind: the sheet is the snapshot the database took when the settlement
+	// opened, the warehouse counts every variant it lists, and it also counts one variant the
+	// system did not have (existing 0, so the sheet does not even list it).
+	sheet := f.sheet(t, first)
+	counted := make([]closings.Counted, 0, len(sheet)+1)
+	for _, line := range sheet {
+		counted = append(counted, line)
+	}
+	absent := f.absentVariant(t, branch, first)
+	counted = append(counted, closings.Counted{VariantID: absent, Quantity: 3})
+	countedSheet := closingWire(t, f.serve(t, f.request(1, "POST",
+		fmt.Sprintf("/api/closings/%d/count", first), closingCountBody(counted))), 200)
+	if len(countedSheet.CountLines) != len(counted) {
+		t.Fatalf("step 2: the counted sheet must cover every line: %d/%d",
+			len(countedSheet.CountLines), len(counted))
+	}
+	for _, line := range sheet {
+		expected, counted := closingLineOf(t, countedSheet, line.VariantID)
+		if counted == nil || *counted != line.Quantity || expected != line.Quantity || expected != *counted {
+			t.Fatalf("step 2: variant %d must be counted as the system expected it: %d/%v",
+				line.VariantID, expected, counted)
+		}
+	}
+	if expected, counted := closingLineOf(t, countedSheet, absent); expected != 0 || counted == nil ||
+		*counted != 3 {
+		t.Fatalf("step 2: the variant the system did not have is counted against nothing: %d/%v",
+			expected, counted)
+	}
+	// The drawer the warehouse saves is the empty one plus the contribution that makes the fund
+	// reachable: counted 0.00, contribution 500.00, fund 300.00, and what it takes back is the
+	// difference, 200.00.
+	drawer := closingWire(t, f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", first),
+		`{"counted_cash":"0.00","contributed_cash":"500.00","closing_cash":"300.00","observation":"primer arranque"}`)), 200)
+	if *drawer.CountedCash != "0.00" || drawer.ContributedCash != "500.00" ||
+		*drawer.ClosingCash != "300.00" || drawer.ExpectedCash != "0.00" ||
+		*drawer.CashDifference != "0.00" || *drawer.TakenCash != "200.00" {
+		t.Fatalf("step 2: the bootstrap drawer must state its own money: %+v", drawer)
+	}
+	offered := closingWire(t, f.serve(t, f.request(1, "POST",
+		fmt.Sprintf("/api/closings/%d/propose", first), "")), 200)
+	if offered.Status != "proposed" || offered.CommissionRatePercent == nil ||
+		*offered.CommissionRatePercent != "10.00" || offered.SalesTotal != "0.00" ||
+		offered.CommissionAmount != "0.00" || offered.CashSales != "0.00" ||
+		offered.CashExpenses != "0.00" || offered.ExpectedCash != "0.00" ||
+		len(offered.Rounds) != 1 || offered.Rounds[0].Decision != "" ||
+		offered.Rounds[0].Offer.SalesTotal != "0.00" ||
+		offered.Rounds[0].Offer.CommissionRatePercent != "10.00" ||
+		offered.Rounds[0].Offer.CommissionAmount != "0.00" ||
+		offered.Rounds[0].Offer.CountedCash == nil || *offered.Rounds[0].Offer.CountedCash != "0.00" ||
+		offered.Rounds[0].Offer.ContributedCash != "500.00" ||
+		offered.Rounds[0].Offer.ClosingCash == nil || *offered.Rounds[0].Offer.ClosingCash != "300.00" {
+		t.Fatalf("step 2: the offer must state the empty period and the frozen rate: %+v", offered)
+	}
+
+	// 3. The branch reads its own settlement, sees the offer it has to answer, and accepts it.
+	own := closingWire(t, f.serve(t, f.request(int(branch), "GET",
+		fmt.Sprintf("/api/closings/%d", first), "")), 200)
+	if own.ID != first || own.Status != "proposed" || len(own.Rounds) != 1 ||
+		own.Rounds[0].Decision != "" || own.Rounds[0].Offer.CommissionRatePercent != "10.00" ||
+		own.Rounds[0].Offer.ContributedCash != "500.00" || own.ExpectedCash != "0.00" ||
+		own.CountedCash == nil || *own.CountedCash != "0.00" ||
+		own.ClosingCash == nil || *own.ClosingCash != "300.00" ||
+		*own.CashDifference != "0.00" || *own.TakenCash != "200.00" {
+		t.Fatalf("step 3: the branch must read the offer it is deciding: %+v", own)
+	}
+	closed := closingWire(t, f.serve(t, f.request(int(branch), "POST",
+		fmt.Sprintf("/api/closings/%d/decision", first), `{"decision":"accepted"}`)), 200)
+	if closed.Status != "closed" || closed.ClosedAt == nil || len(closed.Rounds) != 1 ||
+		closed.Rounds[0].Decision != "accepted" || closed.Rounds[0].Offer.ContributedCash != "500.00" ||
+		closed.ExpectedCash != "0.00" || *closed.CountedCash != "0.00" ||
+		closed.ContributedCash != "500.00" || *closed.ClosingCash != "300.00" ||
+		*closed.CashDifference != "0.00" || *closed.TakenCash != "200.00" ||
+		closed.SalesTotal != "0.00" || closed.CommissionAmount != "0.00" ||
+		len(closed.Expenses) != 0 || len(closed.Corrections) != 0 {
+		t.Fatalf("step 4: the closure must publish the money the branch signed: %+v", closed)
+	}
+
+	// 4. The closure lands: the stock of every counted variant is exactly what was counted, in both
+	// directions — including the variant the system did not have — and the ledger of the closure is
+	// the contribution the warehouse made and the money it took back.
+	for _, line := range closed.CountLines {
+		if line.CountedQuantity == nil {
+			t.Fatalf("step 4: a closed settlement states every counted quantity: %+v", line)
+		}
+		if existing, reserved := f.stock(t, branch, line.VariantID); existing != *line.CountedQuantity ||
+			reserved != 0 {
+			t.Fatalf("step 4: variant %d must end at what was counted: %d/%d (want %d/0)",
+				line.VariantID, existing, reserved, *line.CountedQuantity)
+		}
+	}
+	if existing, reserved := f.stock(t, branch, absent); existing != 3 || reserved != 0 {
+		t.Fatalf("step 4: the counted variant the system did not have must now exist: %d/%d",
+			existing, reserved)
+	}
+	ledger := make([][2]string, 0, 3)
+	rows, err := f.p.Query(f.ctx, `SELECT kind, amount::text FROM branch_cash_movements
+ WHERE closing_id=$1 ORDER BY id`, first)
+	if err != nil {
+		t.Fatalf("step 4: the cash ledger of the closure could not be read: %v", err)
+	}
+	for rows.Next() {
+		var kind, amount string
+		if rows.Scan(&kind, &amount) != nil {
+			rows.Close()
+			t.Fatal("step 4: the cash ledger rows of the closure could not be read")
+		}
+		ledger = append(ledger, [2]string{kind, amount})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		t.Fatalf("step 4: the cash ledger of the closure could not be read: %v", err)
+	}
+	rows.Close()
+	if len(ledger) != 2 || ledger[0] != [2]string{"aporte", "500.00"} ||
+		ledger[1] != [2]string{"recaudacion", "200.00"} {
+		t.Fatalf("step 4: the closure must write the contribution and the take, and nothing else: %v",
+			ledger)
+	}
+
+	// 5. The new period starts from the fund the closure left. The branch operates again: it sells
+	// 96000.00 for cash and records a 45.50 expense, and the next settlement covers both.
+	if _, err := f.prices.Write(f.ctx, auth.Identity{AccountID: 1, Location: auth.Location{ID: 1}},
+		pricing.WriteInput{CatalogEntryID: 1, MinPrice: pricing.Money("85000.00"),
+			SuggestedPrice: pricing.Money("96000.00"), BranchIDs: []int64{branch}}); err != nil {
+		t.Fatalf("step 5: the branch price could not be configured: %v", err)
+	}
+	if w := f.serve(t, f.request(int(branch), "POST", "/api/sales",
+		saleBody(1, 1, "96000.00", 6))); w.Code != 201 {
+		t.Fatalf("step 5: the branch must sell in its new period: %d %s", w.Code, w.Body.String())
+	}
+	expense := closingExpenseWire(t, f.serve(t, f.request(int(branch), "POST", "/api/closings/expenses",
+		`{"amount":"45.50","description":"Flete"}`)), 201)
+	if expense.Amount != "45.50" || expense.Description != "Flete" ||
+		expense.BranchLocationID != branch || expense.CreatedByAccountID != branch {
+		t.Fatalf("step 5: the expense of the period is the branch's own: %+v", expense)
+	}
+	next := closingWire(t, f.serve(t, f.request(1, "POST", "/api/closings",
+		fmt.Sprintf(`{"branch_location_id":%d}`, branch))), 201)
+	// The period boundary is the closure instant, and the fund the closure left is this opening.
+	if next.ID == first || next.Status != "open" || next.PeriodStart != *closed.ClosedAt ||
+		next.OpeningCash != "300.00" || next.CashSales != "0.00" || next.ExpectedCash != "300.00" ||
+		next.SalesTotal != "0.00" || next.CommissionRatePercent != nil || len(next.Rounds) != 0 {
+		t.Fatalf("step 5: the next period starts where the closure ended, holding its fund: %+v", next)
+	}
+	f.countAll(t, next.ID)
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", next.ID),
+		`{"counted_cash":"96254.50","contributed_cash":"0.00","closing_cash":"500.00","observation":"segundo corte"}`)); w.Code != 200 {
+		t.Fatalf("step 5: the drawer of the second period must be saved: %d %s", w.Code, w.Body.String())
+	}
+	second := closingWire(t, f.serve(t, f.request(1, "POST",
+		fmt.Sprintf("/api/closings/%d/propose", next.ID), "")), 200)
+	if second.Status != "proposed" || second.OpeningCash != "300.00" ||
+		second.SalesTotal != "96000.00" || second.CommissionRatePercent == nil ||
+		*second.CommissionRatePercent != "10.00" || second.CommissionAmount != "9600.00" ||
+		second.CashSales != "96000.00" || second.CashExpenses != "45.50" ||
+		second.CardTotal != "0.00" || second.TransferTotal != "0.00" || second.QRTotal != "0.00" ||
+		second.ExpectedCash != "96254.50" || second.CountedCash == nil ||
+		*second.CountedCash != "96254.50" || *second.CashDifference != "0.00" ||
+		*second.TakenCash != "95754.50" || second.ContributedCash != "0.00" ||
+		*second.ClosingCash != "500.00" || len(second.Expenses) != 1 ||
+		second.Expenses[0].ID != expense.ID || second.Expenses[0].Amount != "45.50" ||
+		second.Expenses[0].Description != "Flete" {
+		t.Fatalf("step 5: the second offer must state the sale in its base and the expense in its drawer: %+v", second)
+	}
+	// The offer's base is the period's own ledger and its drawer is the identity of S8 and S10,
+	// read from the numbers the document itself publishes: the commission stays outside both.
+	if got, want := closingCents(t, second.ExpectedCash),
+		closingCents(t, second.OpeningCash)+closingCents(t, second.CashSales)-closingCents(t, second.CashExpenses); got != want {
+		t.Fatalf("step 5: expected cash %d must be opening + cash sales - cash expenses %d", got, want)
+	}
+	if got, want := closingCents(t, *second.TakenCash),
+		closingCents(t, *second.CountedCash)+closingCents(t, second.ContributedCash)-
+			closingCents(t, *second.ClosingCash); got != want {
+		t.Fatalf("step 5: the take %d must be counted + contribution - fund %d", got, want)
+	}
+	if got, want := closingCents(t, second.CommissionAmount),
+		closingCents(t, second.SalesTotal)/10; got != want {
+		t.Fatalf("step 5: the commission %d must be the frozen 10%% of the base %d", got, want)
+	}
+	// The expense belongs to the period that covers it and to no other: the closed settlement
+	// publishes none of it, and its own money is untouched.
+	if len(closed.Expenses) != 0 || closed.SalesTotal != "0.00" || closed.CashExpenses != "0.00" {
+		t.Fatalf("step 5: a later period must not move the settlement that closed before it: %+v", closed)
+	}
+
+	// 6. The first settlement is corrected: the warehouse restates the cash it counted, the branch
+	// accepts, and the document publishes the corrected numbers while the signed ones stay
+	// recoverable as corrected minus the delta the acceptance journalled (S16).
+	proposedCorrection := closingCorrectionWire(t, f.serve(t, f.request(1, "POST",
+		fmt.Sprintf("/api/closings/%d/corrections", first),
+		`{"reason":"conté mal el cajón en la primera rendición","payload":{"counted_cash":"100.00"}}`)), 201)
+	if proposedCorrection.ClosingID != first || proposedCorrection.Status != "proposed" ||
+		proposedCorrection.Payload.CountedCash != "100.00" || len(proposedCorrection.Effects) != 0 ||
+		proposedCorrection.Reason != "conté mal el cajón en la primera rendición" {
+		t.Fatalf("step 6: the proposed correction is not the offer it stated: %+v", proposedCorrection)
+	}
+	// The correction moves no published number until the branch accepts it.
+	pending := closingWire(t, f.serve(t, f.request(1, "GET", fmt.Sprintf("/api/closings/%d", first), "")), 200)
+	if *pending.CountedCash != "0.00" || *pending.CashDifference != "0.00" || *pending.TakenCash != "200.00" ||
+		len(pending.Corrections) != 1 || pending.Corrections[0].Status != "proposed" {
+		t.Fatalf("step 6: a pending correction must apply nothing: %+v", pending)
+	}
+	accepted := closingCorrectionWire(t, f.serve(t, f.request(int(branch), "POST",
+		fmt.Sprintf("/api/closings/corrections/%d/decision", proposedCorrection.ID),
+		`{"decision":"accepted"}`)), 200)
+	if accepted.Status != "accepted" || accepted.DecidedByAccountID == nil ||
+		*accepted.DecidedByAccountID != branch || accepted.DecidedAt == nil ||
+		len(accepted.Effects) != 1 || accepted.Effects[0].Kind != "counted_cash" ||
+		accepted.Effects[0].AmountDelta == nil || *accepted.Effects[0].AmountDelta != "100.00" {
+		t.Fatalf("step 6: the acceptance must journal the counted-cash delta: %+v", accepted)
+	}
+	corrected := closingWire(t, f.serve(t, f.request(1, "GET", fmt.Sprintf("/api/closings/%d", first), "")), 200)
+	if corrected.Status != "closed" || corrected.CountedCash == nil ||
+		*corrected.CountedCash != "100.00" || corrected.ExpectedCash != "0.00" ||
+		corrected.CashDifference == nil || *corrected.CashDifference != "100.00" ||
+		corrected.TakenCash == nil || *corrected.TakenCash != "300.00" ||
+		corrected.ClosingCash == nil || *corrected.ClosingCash != "300.00" ||
+		len(corrected.Corrections) != 1 || corrected.Corrections[0].ID != proposedCorrection.ID ||
+		corrected.Corrections[0].Status != "accepted" || len(corrected.Corrections[0].Effects) != 1 {
+		t.Fatalf("step 6: the document must publish the corrected drawer with its correction: %+v", corrected)
+	}
+	// The signed number is not rewritten, it is recoverable: every corrected value minus the delta
+	// the correction applied is the value the branch signed at the closure.
+	delta := closingCents(t, *corrected.Corrections[0].Effects[0].AmountDelta)
+	for _, fact := range []struct {
+		name              string
+		corrected, signed string
+	}{
+		{"counted cash", *corrected.CountedCash, *closed.CountedCash},
+		{"difference", *corrected.CashDifference, *closed.CashDifference},
+		{"the warehouse take", *corrected.TakenCash, *closed.TakenCash},
+	} {
+		if got, want := closingCents(t, fact.corrected)-delta, closingCents(t, fact.signed); got != want {
+			t.Fatalf("step 6: the signed %s must stay recoverable as corrected minus delta: %d != %d",
+				fact.name, got, want)
+		}
+	}
+	// The correction never recalculates a later settlement: the open one still holds the offer its
+	// own period produced.
+	after := closingWire(t, f.serve(t, f.request(1, "GET",
+		fmt.Sprintf("/api/closings/%d", next.ID), "")), 200)
+	if after.Status != second.Status || after.ExpectedCash != second.ExpectedCash ||
+		after.CommissionAmount != second.CommissionAmount || after.CashExpenses != second.CashExpenses ||
+		after.OpeningCash != second.OpeningCash || len(after.Corrections) != 0 {
+		t.Fatalf("step 6: a correction must not recalculate the settlement that came after it: %+v", after)
+	}
+}
+
+// absentVariant reads one variant of the branch that the system says it does not hold, so a count
+// can add stock the settlement never expected to find: the sheet only lists what exists.
+func (f *closingHTTPFixture) absentVariant(t *testing.T, branch, closingID int64) int64 {
+	t.Helper()
+	var variant int64
+	if err := f.p.QueryRow(f.ctx, `SELECT balance.variant_id FROM inventory_balances balance
+ WHERE balance.location_id=$1 AND balance.existing=0 AND balance.variant_id NOT IN (
+   SELECT line.variant_id FROM closing_count_lines line WHERE line.closing_id=$2)
+ ORDER BY balance.variant_id LIMIT 1`, int16(branch), closingID).Scan(&variant); err != nil {
+		t.Fatalf("the fixture needs a variant the branch does not hold: %v", err)
+	}
+	return variant
 }
