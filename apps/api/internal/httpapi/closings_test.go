@@ -149,6 +149,8 @@ func TestClosingRoutes(t *testing.T) {
 		{"GET", "/api/closings/1/propose", "POST", 405, "method_not_allowed"},
 		{"POST", "/api/closings/1/decision", "", 401, "unauthenticated"},
 		{"GET", "/api/closings/1/decision", "POST", 405, "method_not_allowed"},
+		{"POST", "/api/closings/expenses", "", 401, "unauthenticated"},
+		{"GET", "/api/closings/expenses", "POST", 405, "method_not_allowed"},
 	} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(tc.method, tc.target, nil))
@@ -164,6 +166,7 @@ func TestClosingRoutes(t *testing.T) {
 	for _, target := range []string{
 		"/api/closings/", "/api/closings//", "/api/closings/./1", "/api/closings/%31",
 		"/api/closings/1/2", "/api/closings/1/counts", "/api/closings/1/Count",
+		"/api/closings/expenses/", "/api/closings/expenses/2",
 		"/api/closings/branches/2", "/api/closings/branches/2/commission/3",
 	} {
 		w := httptest.NewRecorder()
@@ -289,6 +292,32 @@ func TestClosingDecoders(t *testing.T) {
 		"decide_long":     `{"decision":"rejected","reason":"` + strings.Repeat("ñ", closings.MaxReason+1) + `"}`,
 	} {
 		if _, _, err := decodeClosingDecision(post(body)); !errors.Is(err, closings.ErrInvalid) {
+			t.Fatalf("%s must be refused", name)
+		}
+	}
+	// The expense of a branch is its amount and its description, and nothing else.
+	amount, description, err := decodeClosingExpense(post(`{"amount":"45.50","description":"Flete"}`))
+	if err != nil || amount != "45.50" || description != "Flete" {
+		t.Fatalf("a canonical expense must be admitted: %q %q %v", amount, description, err)
+	}
+	for name, body := range map[string]string{
+		"expense_amount_absent":      `{"description":"Flete"}`,
+		"expense_amount_number":      `{"amount":45.5,"description":"Flete"}`,
+		"expense_amount_one":         `{"amount":"45.5","description":"Flete"}`,
+		"expense_amount_padded":      `{"amount":"045.50","description":"Flete"}`,
+		"expense_amount_negative":    `{"amount":"-45.50","description":"Flete"}`,
+		"expense_amount_three":       `{"amount":"45.505","description":"Flete"}`,
+		"expense_description_blank":  `{"amount":"45.50","description":"   "}`,
+		"expense_description_pad":    `{"amount":"45.50","description":" Flete "}`,
+		"expense_description_null":   `{"amount":"45.50","description":null}`,
+		"expense_description_absent": `{"amount":"45.50"}`,
+		"expense_extra":              `{"amount":"45.50","description":"Flete","kind":"gasto"}`,
+		"expense_duplicate":          `{"amount":"45.50","amount":"10.00","description":"Flete"}`,
+		"expense_trailing":           `{"amount":"45.50","description":"Flete"}{}`,
+		"expense_long": `{"amount":"45.50","description":"` +
+			strings.Repeat("ñ", closings.MaxDescription+1) + `"}`,
+	} {
+		if _, _, err := decodeClosingExpense(post(body)); !errors.Is(err, closings.ErrInvalid) {
 			t.Fatalf("%s must be refused", name)
 		}
 	}
@@ -465,6 +494,48 @@ func TestClosingRecord(t *testing.T) {
 			t.Fatalf("%s must fail closed", name)
 		}
 	}
+
+	// A settlement publishes the expenses of its own window with their amount and description, and
+	// only a canonical list of its own branch is ever described.
+	withExpenses := closingValue()
+	withExpenses.Expenses = []closings.Expense{
+		{ID: 9, BranchID: 2, Amount: "45.50", Description: "Flete",
+			OccurredAt: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC), CreatedByAccountID: 2},
+		{ID: 10, BranchID: 2, Amount: "10.00", Description: "Insumos",
+			OccurredAt: time.Date(2026, 3, 2, 11, 0, 0, 0, time.UTC), CreatedByAccountID: 2},
+	}
+	described, err := closingRecord(withExpenses)
+	if err != nil || len(described.Expenses) != 2 || described.Expenses[0].ID != 9 ||
+		described.Expenses[0].Amount != "45.50" || described.Expenses[0].Description != "Flete" ||
+		described.Expenses[1].ID != 10 || described.Expenses[1].BranchLocationID != 2 ||
+		described.Expenses[0].OccurredAt != "2026-03-01T10:00:00Z" ||
+		described.Expenses[0].CreatedByAccountID != 2 {
+		t.Fatalf("the document must publish the expenses of its window: %+v %v", described, err)
+	}
+	expenseValue := func(change func(*closings.Expense)) closings.Closing {
+		value := withExpenses
+		value.Expenses = []closings.Expense{withExpenses.Expenses[0], withExpenses.Expenses[1]}
+		change(&value.Expenses[0])
+		return value
+	}
+	for name, value := range map[string]closings.Closing{
+		"expense_zero_id":      expenseValue(func(e *closings.Expense) { e.ID = 0 }),
+		"expense_other_branch": expenseValue(func(e *closings.Expense) { e.BranchID = 3 }),
+		"expense_amount_stale": expenseValue(func(e *closings.Expense) { e.Amount = "45.5" }),
+		"expense_zero_amount":  expenseValue(func(e *closings.Expense) { e.Amount = "0.00" }),
+		"expense_description":  expenseValue(func(e *closings.Expense) { e.Description = "  " }),
+		"expense_no_account":   expenseValue(func(e *closings.Expense) { e.CreatedByAccountID = 0 }),
+		"expense_no_moment":    expenseValue(func(e *closings.Expense) { e.OccurredAt = time.Time{} }),
+		"expense_order": func() closings.Closing {
+			value := withExpenses
+			value.Expenses = []closings.Expense{withExpenses.Expenses[1], withExpenses.Expenses[0]}
+			return value
+		}(),
+	} {
+		if _, err := closingRecord(value); !errors.Is(err, closings.ErrUnavailable) {
+			t.Fatalf("%s must fail closed", name)
+		}
+	}
 }
 
 // TestClosingFailureMapping pins the one status and one stable code of every refusal the store can
@@ -491,6 +562,8 @@ func TestClosingFailureMapping(t *testing.T) {
 		{"closure", closings.ErrClosureRefused, 409, `{"error":"closure_refused"}`},
 		{"reserved", closings.ErrReservedStock, 409, `{"error":"reserved_stock"}`},
 		{"round", closings.ErrRoundNotAccepted, 409, `{"error":"round_not_accepted"}`},
+		{"branch_frozen", closings.ErrBranchFrozen, 409, `{"error":"branch_frozen"}`},
+		{"not_branch_expense", closings.ErrNotBranchExpense, 403, `{"error":"forbidden"}`},
 		{"invalid", closings.ErrInvalid, 400, `{"error":"invalid_request"}`},
 		{"wrapped_invalid", fmt.Errorf("reading the body: %w", closings.ErrInvalid), 400,
 			`{"error":"invalid_request"}`},
@@ -849,7 +922,8 @@ type closingWireRecord struct {
 		ExpectedQuantity int64  `json:"expected_quantity"`
 		CountedQuantity  *int64 `json:"counted_quantity"`
 	} `json:"count_lines"`
-	Rounds []struct {
+	Expenses []closingExpenseWireRecord `json:"expenses"`
+	Rounds   []struct {
 		ID             int64  `json:"id"`
 		Round          int    `json:"round"`
 		Decision       string `json:"decision"`
@@ -872,7 +946,7 @@ var closingWireKeys = []string{"id", "branch_location_id", "branch_name", "statu
 	"cut_at", "closed_at", "commission_rate_percent", "opening_cash", "cash_sales", "cash_expenses",
 	"expected_cash", "counted_cash", "cash_difference", "contributed_cash", "closing_cash",
 	"taken_cash", "sales_total", "commission_amount", "card_total", "transfer_total", "qr_total",
-	"observation", "opened_by_account_id", "count_lines", "rounds"}
+	"observation", "opened_by_account_id", "count_lines", "rounds", "expenses"}
 
 // closingWire admits only the frozen settlement shape: one object with exactly the published keys.
 func closingWire(t *testing.T, w *httptest.ResponseRecorder, status int) closingWireRecord {
@@ -1432,5 +1506,163 @@ func TestClosingsRoundsAreNumbered(t *testing.T) {
 		if ids[i] <= ids[i-1] {
 			t.Fatalf("the rounds must be published in the order they were written: %v", ids)
 		}
+	}
+}
+
+// closingExpenseWireRecord is one recorded expense exactly as this contract publishes it: the same
+// shape inside the settlement document and in the answer of its own route.
+type closingExpenseWireRecord struct {
+	ID                 int64  `json:"id"`
+	BranchLocationID   int64  `json:"branch_location_id"`
+	Amount             string `json:"amount"`
+	Description        string `json:"description"`
+	OccurredAt         string `json:"occurred_at"`
+	CreatedByAccountID int64  `json:"created_by_account_id"`
+}
+
+// closingExpenseWire admits only the frozen expense shape: one object with exactly the published
+// keys, so a missing or renamed key of a recorded expense is caught.
+func closingExpenseWire(t *testing.T, w *httptest.ResponseRecorder, status int) closingExpenseWireRecord {
+	t.Helper()
+	var value map[string]json.RawMessage
+	if w.Code != status || w.Header().Get("Content-Type") != "application/json" ||
+		json.Unmarshal(w.Body.Bytes(), &value) != nil {
+		t.Fatalf("expense response mismatch: status=%d want=%d body=%s", w.Code, status, w.Body.String())
+	}
+	for _, key := range []string{"id", "branch_location_id", "amount", "description", "occurred_at",
+		"created_by_account_id"} {
+		if _, ok := value[key]; !ok {
+			t.Fatalf("expense key %q missing: %s", key, w.Body.String())
+		}
+	}
+	if len(value) != 6 {
+		t.Fatalf("expense whitelist changed: %s", w.Body.String())
+	}
+	var record closingExpenseWireRecord
+	if json.Unmarshal(w.Body.Bytes(), &record) != nil {
+		t.Fatalf("expense is not decodable: %s", w.Body.String())
+	}
+	return record
+}
+
+// TestClosingsExpenses pins S12 over HTTP end to end: the branch records a small expense of its own
+// period — amount and description, no previous approval and no settlement to name — the warehouse
+// cannot record one, a malformed expense writes nothing, the frozen branch is refused by name, and
+// the settlement that covers the expenses publishes them and subtracts their total from the
+// expected drawer, while a settlement that does not cover them stays exactly as it was.
+func TestClosingsExpenses(t *testing.T) {
+	f := closingFixture(t)
+	if w := f.serve(t, f.request(1, "POST", "/api/closings/branches/2/commission",
+		`{"commission_rate_percent":"10.00"}`)); w.Code != 200 {
+		t.Fatalf("the rate must be configured: %d %s", w.Code, w.Body.String())
+	}
+	// The first settlement of the branch closes leaving a fund of 100.00, so the branch operates
+	// again and its next period has a window of its own.
+	first := f.open(t, 2)
+	f.countAll(t, first)
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", first),
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo inicial"}`)); w.Code != 200 {
+		t.Fatalf("the bootstrap drawer must be drafted: %d %s", w.Code, w.Body.String())
+	}
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/propose", first), "")); w.Code != 200 {
+		t.Fatalf("the bootstrap settlement must be proposed: %d %s", w.Code, w.Body.String())
+	}
+	if w := f.serve(t, f.request(2, "POST", fmt.Sprintf("/api/closings/%d/decision", first),
+		`{"decision":"accepted"}`)); w.Code != 200 {
+		t.Fatalf("the branch must accept its bootstrap: %d %s", w.Code, w.Body.String())
+	}
+
+	// The branch records its own expense: the amount and the description, and nothing else.
+	flete := closingExpenseWire(t, f.serve(t, f.request(2, "POST", "/api/closings/expenses",
+		`{"amount":"45.50","description":"Flete"}`)), 201)
+	if flete.ID < 1 || flete.BranchLocationID != 2 || flete.Amount != "45.50" ||
+		flete.Description != "Flete" || flete.CreatedByAccountID != 2 || flete.OccurredAt == "" {
+		t.Fatalf("the recorded expense is not the published contract: %+v", flete)
+	}
+	insumos := closingExpenseWire(t, f.serve(t, f.request(2, "POST", "/api/closings/expenses",
+		`{"amount":"10.00","description":"Insumos"}`)), 201)
+	if insumos.ID <= flete.ID || insumos.BranchLocationID != 2 {
+		t.Fatalf("every expense is its own movement of the branch's ledger: %+v", insumos)
+	}
+	// The warehouse records no expense: the till the money comes out of is the branch's own.
+	f.refused(t, f.request(1, "POST", "/api/closings/expenses",
+		`{"amount":"10.00","description":"Flete del almacén"}`), 403, `{"error":"forbidden"}`)
+	// The other branch records its own, which never reads as an expense of this branch.
+	other := closingExpenseWire(t, f.serve(t, f.request(3, "POST", "/api/closings/expenses",
+		`{"amount":"99.00","description":"Flete de la otra sucursal"}`)), 201)
+	if other.BranchLocationID != 3 || other.CreatedByAccountID != 3 {
+		t.Fatalf("a branch records only its own expenses: %+v", other)
+	}
+	// A malformed amount or description is refused and writes nothing anywhere.
+	for _, body := range []string{
+		`{"amount":"0.00","description":"Flete"}`,
+		`{"amount":"45.5","description":"Flete"}`,
+		`{"amount":"-45.50","description":"Flete"}`,
+		`{"amount":"45.50","description":""}`,
+		`{"amount":"45.50","description":"   "}`,
+		`{"amount":45.50,"description":"Flete"}`,
+		`{"amount":"45.50"}`,
+		`{"description":"Flete"}`,
+		`{"amount":"45.50","description":"Flete","kind":"recaudacion"}`,
+		`{"amount":"45.50","description":"` + strings.Repeat("ñ", closings.MaxDescription+1) + `"}`,
+	} {
+		f.refused(t, f.request(2, "POST", "/api/closings/expenses", body), 400,
+			`{"error":"invalid_request"}`)
+	}
+
+	// The settlement that covers the two expenses of this branch publishes them, so the warehouse
+	// sees what it is subtracting and the branch what it is being charged for. The total is the
+	// offer's and is still unfrozen while the warehouse holds the settlement.
+	id := f.open(t, 2)
+	document := closingWire(t, f.serve(t, f.request(1, "GET",
+		fmt.Sprintf("/api/closings/%d", id), "")), 200)
+	if len(document.Expenses) != 2 || document.Expenses[0].ID != flete.ID ||
+		document.Expenses[0].Amount != "45.50" || document.Expenses[0].Description != "Flete" ||
+		document.Expenses[1].ID != insumos.ID || document.Expenses[1].Amount != "10.00" ||
+		document.Expenses[0].BranchLocationID != 2 || document.Expenses[0].OccurredAt == "" {
+		t.Fatalf("the document must list the expenses of its window: %+v", document.Expenses)
+	}
+	if document.CashExpenses != "0.00" {
+		t.Fatalf("a held settlement states no period total yet: %q", document.CashExpenses)
+	}
+	// A history row publishes the expenses as an empty list, exactly like the sheet and the rounds.
+	page := closingPageWire(t, f.serve(t, f.request(2, "GET",
+		"/api/closings?branch_location_id=2", "")), 200)
+	if page.Closings[0].ID != id || len(page.Closings[0].Expenses) != 0 {
+		t.Fatalf("a history row must not unfold the document: %+v", page.Closings[0].Expenses)
+	}
+
+	// The branch is frozen now: the same expense is refused by name and writes nothing.
+	f.refused(t, f.request(2, "POST", "/api/closings/expenses",
+		`{"amount":"5.00","description":"Agua"}`), 409, `{"error":"branch_frozen"}`)
+
+	// The offer freezes the total of the listed expenses and subtracts it from the expected
+	// drawer: 100.00 inherited minus 55.50 paid out is the 44.50 the branch hand counted.
+	f.countAll(t, id)
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", id),
+		`{"counted_cash":"44.50","contributed_cash":"0.00","closing_cash":"10.00","observation":""}`)); w.Code != 200 {
+		t.Fatalf("the drawer must be drafted: %d %s", w.Code, w.Body.String())
+	}
+	proposed := closingWire(t, f.serve(t, f.request(1, "POST",
+		fmt.Sprintf("/api/closings/%d/propose", id), "")), 200)
+	if proposed.CashExpenses != "55.50" || proposed.ExpectedCash != "44.50" ||
+		proposed.CashDifference == nil || *proposed.CashDifference != "0.00" ||
+		proposed.TakenCash == nil || *proposed.TakenCash != "34.50" || len(proposed.Expenses) != 2 {
+		t.Fatalf("the offer must freeze and subtract the expense it lists: %+v", proposed)
+	}
+	// The closure keeps the expenses it settled, and the settlement that does not cover them is
+	// exactly as it was: an expense belongs to the window that covers it and to nothing else.
+	closed := closingWire(t, f.serve(t, f.request(2, "POST",
+		fmt.Sprintf("/api/closings/%d/decision", id), `{"decision":"accepted"}`)), 200)
+	if closed.Status != "closed" || closed.CashExpenses != "55.50" || len(closed.Expenses) != 2 ||
+		closed.ExpectedCash != "44.50" {
+		t.Fatalf("the closure must publish the expenses it settled: %+v", closed)
+	}
+	earlier := closingWire(t, f.serve(t, f.request(1, "GET",
+		fmt.Sprintf("/api/closings/%d", first), "")), 200)
+	if earlier.CashExpenses != "0.00" || earlier.ExpectedCash != "0.00" ||
+		earlier.CashDifference == nil || *earlier.CashDifference != "0.00" ||
+		len(earlier.Expenses) != 0 {
+		t.Fatalf("an expense must not move a settlement that does not cover it: %+v", earlier)
 	}
 }

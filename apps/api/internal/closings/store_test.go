@@ -152,15 +152,16 @@ func (e *env) sellPayments(t *testing.T, variant, quantity int64, unitPrice stri
 	}
 }
 
-// expense records one small expense of the branch, the way the branch records it while it
-// operates: the ledger row is the branch's own fact and no settlement states it (S12).
-func (e *env) expense(t *testing.T, branch int, amount, description string) {
+// expense records one small expense of the branch through the branch's own path, the way it
+// records it while it operates: the ledger row is the branch's own fact and no settlement
+// states it (S12).
+func (e *env) expense(t *testing.T, branch int, amount, description string) closings.Expense {
 	t.Helper()
-	if _, err := e.pool.Exec(e.ctx, `INSERT INTO branch_cash_movements(
- branch_location_id,kind,amount,description,created_by_account_id)
- VALUES($1::smallint,'gasto',$2::numeric,$3,$1::integer)`, branch, amount, description); err != nil {
+	expense, err := e.store.RecordExpense(e.ctx, identity(branch), closings.Money(amount), description)
+	if err != nil {
 		t.Fatalf("the branch expense %q could not be recorded: %v", description, err)
 	}
+	return expense
 }
 
 // balance reads the stock of one branch straight from the database.
@@ -1312,5 +1313,279 @@ func TestListIsTheBranchOwnHistory(t *testing.T) {
 	var retired *closings.RetiredBranch
 	if _, err := e.store.List(e.ctx, warehouse(), 3, 1, 25); !errors.As(err, &retired) || retired.BranchID != 3 {
 		t.Fatalf("a retired branch has no history: %v", err)
+	}
+}
+
+// TestRecordExpenseIsTheBranchOwn pins S12 on the branch's own path: the branch records a small
+// expense of its period with an amount and a description, with no previous approval and no
+// settlement to name; the warehouse cannot record one on its behalf, because the till the
+// expense comes out of is the branch's; and a recorded expense is immutable, so a wrong one is
+// corrected by its opposite movement instead of being edited.
+func TestRecordExpenseIsTheBranchOwn(t *testing.T) {
+	e := fixture(t)
+
+	// The branch records its own expense and reads it back with its own identity: the branch of
+	// the movement is the account's own location, never a value the caller promises.
+	expense := e.expense(t, 2, "45.5", "  Flete de la semana  ")
+	if expense.ID < 1 || expense.BranchID != 2 || expense.Amount != "45.50" ||
+		expense.Description != "Flete de la semana" || expense.CreatedByAccountID != 2 ||
+		expense.OccurredAt.IsZero() {
+		t.Fatalf("the expense is not the branch's own fact: %+v", expense)
+	}
+	// Another branch records in its own till and never in this one.
+	if other := e.expense(t, 3, "5.00", "Agua"); other.BranchID != 3 || other.CreatedByAccountID != 3 {
+		t.Fatalf("a branch records only its own expenses: %+v", other)
+	}
+	if ledger := e.text(t, `SELECT string_agg(branch_location_id||':'||kind||':'||amount::text||':'
+ ||created_by_account_id::text,',' ORDER BY id) FROM branch_cash_movements`); ledger !=
+		"2:gasto:45.50:2,3:gasto:5.00:3" {
+		t.Fatalf("the ledger is not what the branches recorded: %q", ledger)
+	}
+
+	// The warehouse never records an expense: it is not the branch that owns the till, and the
+	// database's own refusal is the named domain error, not a generic failure.
+	_, err := e.store.RecordExpense(e.ctx, warehouse(), money("10.00"), "Flete del almacén")
+	refused(t, err, closings.ErrNotBranchExpense)
+	// An identity the provisioned accounts do not hold is refused before the database, and so is a
+	// session still forced to change its password: neither moves the branch's money.
+	_, err = e.store.RecordExpense(e.ctx, auth.Identity{AccountID: 2, Location: auth.Location{ID: 3}},
+		money("10.00"), "Flete ajeno")
+	refused(t, err, closings.ErrForbidden)
+	_, err = e.store.RecordExpense(e.ctx, auth.Identity{AccountID: 2, Location: auth.Location{ID: 2},
+		MustChangePassword: true}, money("10.00"), "Flete sin cambiar la clave")
+	refused(t, err, closings.ErrForbidden)
+
+	// Every malformed expense is refused before the database and writes nothing: the amount has
+	// to be money the drawer can hold and the description a real one.
+	for name, value := range map[string]struct{ amount, description string }{
+		"zero":      {"0.00", "Flete"},
+		"three_dec": {"1.005", "Flete"},
+		"negative":  {"-1.00", "Flete"},
+		"signed":    {"+1.00", "Flete"},
+		"padded":    {"010.00", "Flete"},
+		"text":      {"diez", "Flete"},
+		"above":     {"10000000000.00", "Flete"},
+		"empty":     {"10.00", ""},
+		"blank":     {"10.00", "   "},
+		"nul":       {"10.00", "a\x00b"},
+		"too_long":  {"10.00", strings.Repeat("ñ", closings.MaxDescription+1)},
+	} {
+		if _, err := e.store.RecordExpense(e.ctx, identity(2), closings.Money(value.amount),
+			value.description); !errors.Is(err, closings.ErrInvalid) {
+			t.Fatalf("%s must be refused with ErrInvalid, got %v", name, err)
+		}
+	}
+	if ledger := e.scalar(t, "SELECT count(*) FROM branch_cash_movements"); ledger != 2 {
+		t.Fatalf("a refused expense must write nothing: %d movements", ledger)
+	}
+
+	// A recorded expense never moves: the ledger is append only, and the correction is its
+	// opposite movement (S12).
+	if _, err := e.pool.Exec(e.ctx, "UPDATE branch_cash_movements SET amount=1.00"); err == nil {
+		t.Fatal("a recorded expense must not be editable")
+	}
+	if _, err := e.pool.Exec(e.ctx, "DELETE FROM branch_cash_movements"); err == nil {
+		t.Fatal("a recorded expense must not be deletable")
+	}
+}
+
+// TestExpenseChangesOnlyTheSettlementThatCoversIt pins S8 with S12: the expense of a window is
+// subtracted from the expected cash of the settlement that covers it, so its difference moves
+// with it, and it changes nothing of a settlement that is already closed.
+func TestExpenseChangesOnlyTheSettlementThatCoversIt(t *testing.T) {
+	e := fixture(t)
+	first := e.closeFirstSettlement(t, "200.00")
+	settled := e.text(t, `SELECT opening_cash||':'||cash_sales||':'||cash_expenses||':'||sales_total
+ ||':'||commission_amount||':'||counted_cash||':'||closing_cash
+ FROM branch_closings WHERE id=$1`, first)
+
+	// The branch pays 45.50 out of the till in the period the next settlement covers, and sells
+	// 100.00 in cash inside it.
+	e.expense(t, 2, "45.50", "Flete")
+	e.sell(t, 1, 1, "100.00", sales.PaymentCash)
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	// The expense belongs to the window of this settlement, so its document states it, and the
+	// settlement the earlier period closed has none.
+	if len(opened.Expenses) != 1 || opened.Expenses[0].Amount != "45.50" {
+		t.Fatalf("the document must state the expenses of its own window: %+v", opened.Expenses)
+	}
+	e.countAll(t, opened.ID)
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("250.00", "0.00", "50.00")); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	proposed, err := e.store.Propose(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	// S8: 200.00 inherited plus 100.00 collected in cash minus 45.50 paid out is the drawer the
+	// branch is charged, so the 250.00 counted is 4.50 short of it. Without the expense the
+	// expected drawer would be 300.00 and the shortage 50.00: the expense is what moved both.
+	if proposed.CashExpenses != "45.50" || proposed.ExpectedCash != "254.50" ||
+		proposed.CashDifference == nil || string(*proposed.CashDifference) != "-4.50" {
+		t.Fatalf("the expense must be subtracted from the expected drawer: %+v", proposed)
+	}
+	if offer := proposed.LatestRound().Payload; offer.CashExpenses != "45.50" {
+		t.Fatalf("the offer must state the expense it is subtracting: %+v", offer)
+	}
+
+	// The settlement the earlier period closed is exactly as it was: its expense total, its
+	// expected drawer, its difference and its fund did not move, and it covers no expense.
+	if after := e.text(t, `SELECT opening_cash||':'||cash_sales||':'||cash_expenses||':'||sales_total
+ ||':'||commission_amount||':'||counted_cash||':'||closing_cash
+ FROM branch_closings WHERE id=$1`, first); after != settled {
+		t.Fatalf("a closed settlement must not move: %q, was %q", after, settled)
+	}
+	closedFirst, err := e.store.Read(e.ctx, warehouse(), first)
+	if err != nil || len(closedFirst.Expenses) != 0 || closedFirst.CashExpenses != "0.00" ||
+		closedFirst.ExpectedCash != "0.00" || *closedFirst.CashDifference != "0.00" {
+		t.Fatalf("an expense belongs to the settlement that covers it, not to an earlier one: %+v %v",
+			closedFirst, err)
+	}
+
+	// The closure persists the offer it accepted: the expense stays subtracted where it was.
+	closed, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, "")
+	if err != nil {
+		t.Fatalf("the branch must accept the settlement: %v", err)
+	}
+	if closed.CashExpenses != "45.50" || closed.ExpectedCash != "254.50" ||
+		string(*closed.CashDifference) != "-4.50" || len(closed.Expenses) != 1 {
+		t.Fatalf("the closed settlement must keep the expense it settled: %+v", closed)
+	}
+}
+
+// TestExpenseIsRefusedWhileTheSettlementIsLive pins S12 with S3: an expense recorded while a
+// settlement holds the branch is refused by name, because the till it would move is the one
+// being counted; the refusal writes nothing and the settlement keeps the facts it froze.
+func TestExpenseIsRefusedWhileTheSettlementIsLive(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "100.00")
+	e.expense(t, 2, "20.00", "Flete del período")
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	before := e.text(t, `SELECT status||':'||opening_cash||':'||cash_sales||':'||cash_expenses||':'
+ ||sales_total FROM branch_closings WHERE id=$1`, opened.ID)
+
+	// The frozen branch cannot load an expense: the refusal names the freeze and never the
+	// settlement it is reading.
+	_, err = e.store.RecordExpense(e.ctx, identity(2), money("10.00"), "Agua")
+	refused(t, err, closings.ErrBranchFrozen)
+
+	// Nothing was written and no counter moved: the ledger holds the expenses of the open
+	// period and the closure's own movements, and the settlement is untouched.
+	if gastos := e.scalar(t, `SELECT count(*) FROM branch_cash_movements WHERE kind='gasto'`); gastos != 1 {
+		t.Fatalf("a refused expense must write nothing: %d expenses", gastos)
+	}
+	if ledger := e.scalar(t, `SELECT count(*) FROM branch_cash_movements`); ledger != 2 {
+		t.Fatalf("a refused expense must not move the ledger: %d movements", ledger)
+	}
+	if after := e.text(t, `SELECT status||':'||opening_cash||':'||cash_sales||':'||cash_expenses||':'
+ ||sales_total FROM branch_closings WHERE id=$1`, opened.ID); after != before {
+		t.Fatalf("a refused expense must leave the settlement alone: %q, was %q", after, before)
+	}
+	if frozen := e.scalar(t, "SELECT (branch_closure_blocker(2::smallint))::int"); frozen != 1 {
+		t.Fatal("the refusal must not unfreeze the branch")
+	}
+	// Once the settlement is closed the branch operates again and records its own expenses,
+	// which belong to the period the next settlement will cover.
+	e.countAll(t, opened.ID)
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("100.00", "0.00", "20.00")); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	if _, err := e.store.Propose(e.ctx, warehouse(), opened.ID); err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	if _, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, ""); err != nil {
+		t.Fatalf("the branch must accept the settlement: %v", err)
+	}
+	if _, err := e.store.RecordExpense(e.ctx, identity(2), money("10.00"), "Agua"); err != nil {
+		t.Fatalf("a closed settlement must free its branch: %v", err)
+	}
+	closed, err := e.store.Read(e.ctx, warehouse(), opened.ID)
+	if err != nil || len(closed.Expenses) != 1 || closed.Expenses[0].Amount != "20.00" {
+		t.Fatalf("an expense recorded after the closure belongs to no closed window: %+v %v",
+			closed.Expenses, err)
+	}
+}
+
+// TestReadPublishesTheExpensesOfItsWindow pins S12 on the document: a settlement publishes the
+// expenses of its own window with their amount and description, not only their total, so the
+// warehouse reads what it is subtracting and the branch what it is being charged for.
+func TestReadPublishesTheExpensesOfItsWindow(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "100.00")
+	// Two expenses of this branch inside the period and one of another branch: the document is
+	// one settlement of one branch.
+	flete := e.expense(t, 2, "45.50", "Flete")
+	insumos := e.expense(t, 2, "10.00", "Insumos")
+	e.expense(t, 3, "99.00", "Flete de la otra sucursal")
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	assertExpenses := func(document closings.Closing) {
+		t.Helper()
+		if len(document.Expenses) != 2 {
+			t.Fatalf("the document must list the expenses of its window: %+v", document.Expenses)
+		}
+		if document.Expenses[0].ID != flete.ID || document.Expenses[0].Amount != "45.50" ||
+			document.Expenses[0].Description != "Flete" ||
+			document.Expenses[1].ID != insumos.ID || document.Expenses[1].Amount != "10.00" ||
+			document.Expenses[1].Description != "Insumos" {
+			t.Fatalf("the listed expenses are not the ledger of the window: %+v", document.Expenses)
+		}
+		for _, expense := range document.Expenses {
+			if expense.BranchID != 2 || expense.CreatedByAccountID != 2 || expense.OccurredAt.IsZero() ||
+				expense.OccurredAt.Before(document.PeriodStart) || !expense.OccurredAt.Before(document.CutAt) {
+				t.Fatalf("a listed expense must be a fact of the window of its own branch: %+v", expense)
+			}
+		}
+	}
+	assertExpenses(opened)
+
+	// The list is the ledger, not the total: the total is the offer's, so it is still zero while
+	// the warehouse holds the settlement, and the proposal freezes it.
+	if opened.CashExpenses != "0.00" {
+		t.Fatalf("a held settlement states no period total: %q", opened.CashExpenses)
+	}
+	e.countAll(t, opened.ID)
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("44.50", "0.00", "10.00")); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	proposed, err := e.store.Propose(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	if proposed.CashExpenses != "55.50" || proposed.ExpectedCash != "44.50" {
+		t.Fatalf("the proposal must freeze the total of the listed expenses: %+v", proposed)
+	}
+	assertExpenses(proposed)
+
+	// The single read unfolds the document; a history row publishes its expenses as an empty
+	// list, exactly like the sheet and the rounds.
+	document, err := e.store.Read(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be read: %v", err)
+	}
+	assertExpenses(document)
+	page, err := e.store.List(e.ctx, warehouse(), 2, 1, 25)
+	if err != nil || len(page.Closings) != 2 || len(page.Closings[0].Expenses) != 0 {
+		t.Fatalf("a history row must not unfold the document: %+v %v", page, err)
+	}
+	// A closed settlement keeps the expenses it settled readable.
+	closed, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, "")
+	if err != nil {
+		t.Fatalf("the branch must accept the settlement: %v", err)
+	}
+	assertExpenses(closed)
+	if closed.CashExpenses != "55.50" {
+		t.Fatalf("the closed settlement must keep the total it settled: %q", closed.CashExpenses)
 	}
 }

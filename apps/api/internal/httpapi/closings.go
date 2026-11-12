@@ -22,10 +22,10 @@ import (
 
 // This file is the HTTP contract of the branch account settlement ("rendición de
 // cuentas"): the warehouse configures a branch's commission rate, opens the period, counts
-// the stock, drafts the drawer, proposes the settlement and reads it, and the branch accepts
-// or rejects the offer. Everything below is either a request shape judged before the store is
-// touched or the store's own decision published as one status and one stable code; no rule of
-// the vertical is restated here.
+// the stock, drafts the drawer, proposes the settlement and reads it, the branch accepts
+// or rejects the offer and records the small expenses of its own till. Everything below is
+// either a request shape judged before the store is touched or the store's own decision
+// published as one status and one stable code; no rule of the vertical is restated here.
 //
 // Two things the surface must always say, because they are what an operator acts on: a
 // refusal names what is missing (the variant still to count, the excess of a fund over the
@@ -46,6 +46,11 @@ const (
 	// settlement id, so it can never be read as one nor collide with the literal suffix of a
 	// settlement operation.
 	closingsCommissionPath = closingsCollectionPath + "/branches/{branch}/commission"
+	// closingsExpensesPath is the branch's own till: the small expenses it pays out of it while
+	// it operates. It is a literal path beside {id}, so it is never read as a settlement id, and
+	// it names no settlement because the settlement that covers an expense is decided by the
+	// instant the expense happened (S12).
+	closingsExpensesPath = closingsCollectionPath + "/expenses"
 	// closingsBodyLimit bounds decoding work well above any admitted payload: the widest
 	// settlement body is a count sheet of MaxCountLines lines plus a bounded observation,
 	// far below this limit, and the check stops reading at the limit instead of buffering
@@ -124,6 +129,7 @@ func (a *API) closingRoutes(store *closings.Store) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(closingsCollectionPath, a.closingCollection(store))
 	mux.HandleFunc(closingsCommissionPath, a.closingSettings(store))
+	mux.HandleFunc(closingsExpensesPath, a.closingExpenses(store))
 	mux.HandleFunc(closingsCollectionPath+"/{id}/count", a.closingCount(store))
 	mux.HandleFunc(closingsCollectionPath+"/{id}/cash", a.closingCash(store))
 	mux.HandleFunc(closingsCollectionPath+"/{id}/propose", a.closingPropose(store))
@@ -166,6 +172,14 @@ func closingFailure(w http.ResponseWriter, err error) {
 		failure(w, 409, "reserved_stock")
 	case errors.Is(err, closings.ErrRoundNotAccepted):
 		failure(w, 409, "round_not_accepted")
+	case errors.Is(err, closings.ErrBranchFrozen):
+		// The settlement holding the branch is what froze it, and the code names the freeze
+		// instead of reporting a generic state conflict (LC001, S3, S12).
+		failure(w, 409, "branch_frozen")
+	case errors.Is(err, closings.ErrNotBranchExpense):
+		// The till of an expense is the branch's own, so the warehouse recording one is not the
+		// actor of this operation (LC011).
+		failure(w, 403, "forbidden")
 	case errors.Is(err, closings.ErrInvalid):
 		failure(w, 400, "invalid_request")
 	case errors.Is(err, closings.ErrForbidden):
@@ -546,6 +560,52 @@ func decodeClosingCash(r *http.Request) (closings.CashDraft, error) {
 	return draft, nil
 }
 
+// decodeClosingExpense reads the expense of a branch: the amount it paid out of its till and what
+// for, and nothing else. The branch is the session's own account and the instant is the database's,
+// so neither is part of this body: a caller can never record an expense in another till nor
+// backdate one into a settled period.
+func decodeClosingExpense(r *http.Request) (closings.Money, string, error) {
+	d, err := closingDecoder(r)
+	if err != nil || !closingDelimiter(d, '{') {
+		return "", "", closings.ErrInvalid
+	}
+	var amount closings.Money
+	var description string
+	seen := map[string]bool{}
+	for d.More() {
+		key, err := closingString(d)
+		if err != nil || seen[key] {
+			return "", "", closings.ErrInvalid
+		}
+		seen[key] = true
+		switch key {
+		case "amount":
+			amount, err = closingAmount(d)
+		case "description":
+			description, err = closingString(d)
+		default:
+			return "", "", closings.ErrInvalid
+		}
+		if err != nil {
+			return "", "", closings.ErrInvalid
+		}
+	}
+	// Both keys are mandatory: an expense states its amount and what it was for.
+	if len(seen) != 2 || !closingDelimiter(d, '}') {
+		return "", "", closings.ErrInvalid
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return "", "", closings.ErrInvalid
+	}
+	// The description is persisted verbatim, so it is exactly the canonical text the ledger admits:
+	// trimmed, never blank and inside its own bound.
+	canonical, ok := closings.CanonicalDescription(description)
+	if !ok || canonical != description {
+		return "", "", closings.ErrInvalid
+	}
+	return amount, canonical, nil
+}
+
 // decodeClosingDecision reads the branch's answer: accept, or reject with its mandatory motive.
 // The two decisions are exclusive, so an acceptance that carries a reason is a malformed answer
 // and not an accepted one with a stray field.
@@ -654,6 +714,18 @@ type closingCountLineDTO struct {
 	CountedQuantity  *int64 `json:"counted_quantity"`
 }
 
+// closingExpenseDTO is one recorded expense of a branch's till: what it paid out, what for, when it
+// was recorded and by which account. It is the same shape inside the settlement document and in the
+// answer of the route that records it, so the operator reads one thing in both places.
+type closingExpenseDTO struct {
+	ID                 int64  `json:"id"`
+	BranchLocationID   int64  `json:"branch_location_id"`
+	Amount             string `json:"amount"`
+	Description        string `json:"description"`
+	OccurredAt         string `json:"occurred_at"`
+	CreatedByAccountID int64  `json:"created_by_account_id"`
+}
+
 // closingOfferLineDTO is one line of an offer: what the system expected at the cut and what the
 // warehouse counted, both stated, because the branch is accepting that arithmetic.
 type closingOfferLineDTO struct {
@@ -731,7 +803,35 @@ type closingDTO struct {
 	Observation           string                `json:"observation"`
 	OpenedByAccountID     int64                 `json:"opened_by_account_id"`
 	CountLines            []closingCountLineDTO `json:"count_lines"`
-	Rounds                []closingRoundDTO     `json:"rounds"`
+	// Expenses are the small expenses of the window this settlement covers, in the order the branch
+	// recorded them (S12). They are the facts its cash_expenses total was computed from, so the
+	// warehouse sees what it subtracts and the branch what it is charged for.
+	Expenses []closingExpenseDTO `json:"expenses"`
+	Rounds   []closingRoundDTO   `json:"rounds"`
+}
+
+// closingExpenseRecord admits only a complete recorded expense: an amount the till can hold, a
+// description the ledger admits, the branch it belongs to and the account that recorded it.
+func closingExpenseRecord(expense closings.Expense) (closingExpenseDTO, error) {
+	unavailable := func() (closingExpenseDTO, error) { return closingExpenseDTO{}, closings.ErrUnavailable }
+	amount, ok := closingAmountText(expense.Amount)
+	if !ok {
+		return unavailable()
+	}
+	description, ok := closings.CanonicalDescription(expense.Description)
+	// A canonical amount of exactly "0.00" is the only non-positive amount canonical text can
+	// hold, and an expense is never zero.
+	if !ok || description != expense.Description || amount == "0.00" || expense.ID < 1 ||
+		expense.BranchID < closingsFirstBranch || expense.BranchID > closings.MaxBranchID ||
+		expense.CreatedByAccountID < 1 {
+		return unavailable()
+	}
+	occurred, ok := closingMoment(expense.OccurredAt)
+	if !ok {
+		return unavailable()
+	}
+	return closingExpenseDTO{ID: expense.ID, BranchLocationID: expense.BranchID, Amount: amount,
+		Description: description, OccurredAt: occurred, CreatedByAccountID: expense.CreatedByAccountID}, nil
 }
 
 // closingAmountText admits only the canonical two-decimal text this contract publishes.
@@ -909,6 +1009,17 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 		}
 		rounds = append(rounds, record)
 	}
+	// The expenses of the document are the ledger of its own branch, in the order the branch
+	// recorded them: another branch's expense is never published in this settlement.
+	expenses := make([]closingExpenseDTO, 0, len(closing.Expenses))
+	for _, expense := range closing.Expenses {
+		record, err := closingExpenseRecord(expense)
+		if err != nil || expense.BranchID != closing.BranchID ||
+			(len(expenses) > 0 && expenses[len(expenses)-1].ID >= record.ID) {
+			return unavailable()
+		}
+		expenses = append(expenses, record)
+	}
 	return closingDTO{
 		ID: closing.ID, BranchLocationID: closing.BranchID, BranchName: closing.BranchName,
 		Status: string(closing.Status), PeriodStart: periodStart, CutAt: cutAt, ClosedAt: closedAt,
@@ -918,7 +1029,7 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 		TakenCash: takenText, SalesTotal: amounts[3], CommissionAmount: amounts[4],
 		CardTotal: amounts[5], TransferTotal: amounts[6], QRTotal: amounts[7],
 		Observation: closing.Observation, OpenedByAccountID: closing.OpenedByAccountID,
-		CountLines: lines, Rounds: rounds,
+		CountLines: lines, Rounds: rounds, Expenses: expenses,
 	}, nil
 }
 
@@ -1314,8 +1425,43 @@ func (a *API) closingSettings(store *closings.Store) http.HandlerFunc {
 	}
 }
 
-// closingDetail serves one settlement: the period, the money, the count sheet and every proposal
-// round with the answer it received.
+// closingExpenses records one small expense of the branch's own till (S12). The branch is the
+// session's own account, the instant is the database's and the settlement that covers the expense is
+// decided by that instant, so this route names no settlement and takes no approval: the branch
+// records the expense as it happens, and a frozen branch is refused by name.
+func (a *API) closingExpenses(store *closings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, http.MethodPost) {
+			return
+		}
+		actor, ok := a.inventoryIdentity(w, r)
+		if !ok {
+			return
+		}
+		if !a.closingMutation(w, r) {
+			return
+		}
+		amount, description, err := decodeClosingExpense(r)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		expense, err := store.RecordExpense(r.Context(), actor, amount, description)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		record, err := closingExpenseRecord(expense)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		respond(w, 201, record)
+	}
+}
+
+// closingDetail serves one settlement: the period, the money, the count sheet, the expenses of its
+// window and every proposal round with the answer it received.
 func (a *API) closingDetail(store *closings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !method(w, r, http.MethodGet) {

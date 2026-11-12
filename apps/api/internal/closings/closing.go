@@ -58,6 +58,14 @@ var (
 	// ErrRoundNotAccepted is the refusal of a closure whose latest proposal round was not
 	// accepted (LC016): nothing is applied by an offer the branch has not accepted.
 	ErrRoundNotAccepted = errors.New("the settlement has no accepted proposal round")
+	// ErrBranchFrozen is the refusal of a branch operation while a settlement holds the branch
+	// (LC001): the branch cannot trade, receive stock, transfer, reconcile or load an expense
+	// until the settlement is closed.
+	ErrBranchFrozen = errors.New("the branch has an open account settlement and cannot operate")
+	// ErrNotBranchExpense is the refusal of a cash movement that is not the branch's own
+	// (LC011): the till an expense comes out of belongs to the branch that records it, so the
+	// warehouse never records one on its behalf.
+	ErrNotBranchExpense = errors.New("only the branch records its own expenses")
 )
 
 // RetiredBranch is the refusal of a settlement or a setting for a branch the warehouse
@@ -121,6 +129,9 @@ const (
 	MaxCounted     = 1_000_000
 	MaxObservation = 1000
 	MaxReason      = 1000
+	// MaxDescription is the bound of the description of an expense, which is the database's
+	// own: the ledger admits between 1 and 500 characters once trimmed (S12).
+	MaxDescription = 500
 )
 
 // Status is the state of a settlement. A closed one is never reopened (S16): an error is
@@ -196,6 +207,20 @@ type CashDraft struct {
 	ContributedCash Money
 	ClosingCash     *Money
 	Observation     string
+}
+
+// Expense is one small expense the branch paid out of its own till during its period (S12).
+// It is the branch's own fact, recorded by the branch while it operates and with no previous
+// approval; it is never attached to a settlement by the caller, because the settlement that
+// covers it is the one whose window contains its instant. A recorded expense is immutable:
+// a wrong one is corrected by its opposite movement, never edited or deleted.
+type Expense struct {
+	ID                 int64     `json:"id"`
+	BranchID           int64     `json:"branch_location_id"`
+	Amount             Money     `json:"amount"`
+	Description        string    `json:"description"`
+	OccurredAt         time.Time `json:"occurred_at"`
+	CreatedByAccountID int64     `json:"created_by_account_id"`
 }
 
 // ProposalCountLine is one line of the count sheet as the branch reads it in the offer.
@@ -283,7 +308,14 @@ type Closing struct {
 	CashDifference *Signed     `json:"cash_difference"`
 	TakenCash      *Signed     `json:"taken_cash"`
 	CountLines     []CountLine `json:"count_lines"`
-	Rounds         []Round     `json:"rounds"`
+	// Expenses are the small expenses the branch paid out of its till inside the window this
+	// settlement covers, read from its ledger in the order they were recorded. They are
+	// published beside the total, so the warehouse sees what it is subtracting and the branch
+	// what it is being charged for (S12). A closed settlement's window never grows, so its
+	// list is fixed; the list is the ledger and the total is the offer's, so while the
+	// warehouse still holds the settlement the list is stated and CashExpenses is zero.
+	Expenses []Expense `json:"expenses"`
+	Rounds   []Round   `json:"rounds"`
 }
 
 // LatestRound is the round the branch is deciding or decided last, or nil when the
@@ -318,6 +350,20 @@ func CanonicalReason(reason string) (string, bool) {
 
 // ValidObservation admits the optional observation of the settlement, persisted verbatim.
 func ValidObservation(observation string) bool { return validText(observation, MaxObservation) }
+
+// CanonicalDescription admits the mandatory description of an expense and returns the exact
+// text that is persisted: valid UTF-8, no NUL, at most 500 characters, and never blank once
+// trimmed (S12).
+func CanonicalDescription(description string) (string, bool) {
+	if !validText(description, MaxDescription) {
+		return "", false
+	}
+	trimmed := strings.TrimSpace(description)
+	if trimmed == "" {
+		return "", false
+	}
+	return trimmed, true
+}
 
 // validText is the house text bound: valid UTF-8, no NUL and at most maximum characters.
 func validText(text string, maximum int) bool {

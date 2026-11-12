@@ -17,6 +17,10 @@ ledger itself, in one transaction. This contract never restates those rules: it 
 request, publishes the database's own decision as one status and one stable code and reads
 back what the database wrote.
 
+The branch is not only settled: it records the small expenses it pays out of its own till as
+they happen, and the settlement whose period covers them is charged for them. The warehouse
+has no till of its own and records none.
+
 A closed settlement is never reopened. An error is corrected by an appended correction
 that the branch itself approves — **that contract does not exist yet** (see
 [Not served yet](#not-served-yet)): there is no correction route here, and the settlement it
@@ -46,6 +50,9 @@ evidence of an assignment; the database refuses a different actor with its own S
 
 * **Opening, counting, drafting the drawer and proposing** are the warehouse's alone. A
   branch account receives `403 forbidden` on all of them.
+* **Recording an expense** is the branch's alone: the till the money comes out of belongs to the
+  branch that records it, so the warehouse is refused (`403 forbidden`) and every branch records
+  only in its own.
 * **Deciding** is the branch's alone: any enabled account of the branch the settlement
   belongs to accepts or rejects. The warehouse cannot decide (`403 forbidden`), and neither
   can another branch.
@@ -70,14 +77,15 @@ route takes an actor, a location or a role from JSON.
 | `/api/closings/{id}/cash` | POST | 200 with the settlement and its drawer |
 | `/api/closings/{id}/propose` | POST | 200 with the settlement and the round it now offers |
 | `/api/closings/{id}/decision` | POST | 200 with the settlement and the branch's answer |
+| `/api/closings/expenses` | POST | 201 with the recorded expense |
 
 No other method and no other path is served by this contract: `405 method_not_allowed` with
 an explicit `Allow` header (`GET, POST` for the collection, `GET, POST` for the commission,
-`GET` for one settlement, `POST` for each operation). Every mutation requires the usual
-same-origin session cookie, `Origin`, `Sec-Fetch-Site` and `X-CSRF-Token`; every read
-requires the session only. A query string is not part of any route here except the branch
-history (`GET /api/closings`), where it is the query itself: on every other route `?page=1`
-and a bare `?` are `400 invalid_request`.
+`POST` for the expenses, `GET` for one settlement, `POST` for each operation). Every mutation
+requires the usual same-origin session cookie, `Origin`, `Sec-Fetch-Site` and `X-CSRF-Token`;
+every read requires the session only. A query string is not part of any route here except the
+branch history (`GET /api/closings`), where it is the query itself: on every other route
+`?page=1` and a bare `?` are `400 invalid_request`.
 
 `{id}` and `{branch}` admit only canonical positive integers: `01`, `+1`, `0`, `1.0`, `abc`
 and an integer outside the column range are `400 invalid_request`, never a cleaned or
@@ -87,7 +95,8 @@ backslash, a NUL or an encoded alias (`%31` for `1`, `%2F` for `/`) is `404 not_
 trailing slash is `404 not_found`, never a redirect.
 
 The commission path is a longer literal path than a settlement id, so it is never captured by
-`{id}` and never collides with the suffix of an operation.
+`{id}` and never collides with the suffix of an operation. `expenses` is a literal path beside
+`{id}` for the same reason: it is never read as a settlement id, and it names no settlement at all.
 
 ## Commission rate
 
@@ -222,12 +231,52 @@ identities above. Card, transfer and QR are money the branch collected and never
 drawer, so they are published as their own amounts and are never added to `cash_sales`,
 `expected_cash`, `cash_difference` or `taken_cash`.
 
+From the proposal on, `cash_expenses` is the sum of the `expenses` the same document publishes —
+the ledger of its own window — so the total and its breakdown always describe one period.
+
 While the settlement is `open` or `rejected`, `sales_total`, `cash_sales`, `cash_expenses`,
 `card_total`, `transfer_total`, `qr_total` and `commission_amount` read `"0.00"`: the database
 records the offer of the period when the warehouse proposes (it is the offer the branch will
 accept, and it must not move afterwards). The drawer draft still shows its own identities over
 the facts known at that moment, which is why a draft can show a difference that the proposal
-later restates precisely.
+later restates precisely. `expenses` is the exception in that window: it is the branch's ledger
+and is published while the warehouse holds the settlement, so the admin reads the exact amounts
+the proposal is about to subtract; the proposal then freezes their total in `cash_expenses` and
+the two never disagree again.
+
+## Expenses of the branch
+
+The branch records the small expenses it pays out of its own till as they happen (S12): no approval
+precedes them and no settlement is named, because the settlement that covers an expense is the one
+whose period contains the instant it was recorded.
+
+```
+POST /api/closings/expenses
+{"amount":"45.50","description":"Flete"}
+```
+
+```json
+{"id":12,"branch_location_id":2,"amount":"45.50","description":"Flete",
+ "occurred_at":"2026-03-02T09:15:00Z","created_by_account_id":2}
+```
+
+* Both keys are mandatory and there are no others. `amount` is canonical two-decimal text and is
+  never zero; `description` is valid UTF-8 without NUL, at most 500 characters and never blank
+  once trimmed, and it is published exactly as it is stored, so a padded `" Flete "` is `400
+  invalid_request` instead of a silently trimmed one.
+* The branch is the **session's own**: `branch_location_id` and `created_by_account_id` are the
+  account's, never the body's, and `occurred_at` is the database's, so no caller records an
+  expense in another till nor backdates one into an already settled period.
+* Only the branch records an expense, because the till the money comes out of is the branch's. The
+  warehouse has no till of its own and is refused with `403 forbidden`.
+* While a settlement holds the branch the expense is refused with `409 branch_frozen`: the drawer
+  that would move is the one being counted (S3). A refusal writes nothing at all — no movement, no
+  counter, no change to the settlement.
+* A recorded expense is immutable: it is never edited and never deleted, and a wrong one is
+  corrected with its opposite movement. This contract does not serve that correction yet (see
+  [Not served yet](#not-served-yet)).
+* The expense is not attached to a settlement by the caller: it belongs to the period whose window
+  `[period_start, cut_at)` contains its instant, and that settlement publishes it.
 
 ## Proposal (offer to the branch)
 
@@ -315,14 +364,18 @@ Every route of this contract answers the whole settlement, with exactly these ke
 | `observation` | The free text of the drawer |
 | `opened_by_account_id` | The warehouse account that opened it |
 | `count_lines` | The sheet, ordered by `variant_id`, with `expected_quantity` and a `counted_quantity` that is `null` while pending |
+| `expenses` | The expenses of the branch inside this settlement's own window, in the order they were recorded |
 | `rounds` | The proposal history, oldest first |
 
 Each `count_lines` entry also carries the catalogue identity of its variant — `catalog_entry_id`,
 `brand`, `model`, `capacity_ah` (canonical decimal text) and `polarity` — so the sheet is legible
-without a second read. Each `rounds` entry carries `id`, `round` (the database's own sequence),
-`offer`, `proposed_by_account_id`, `proposed_at`, `decision` (`""` while pending, `accepted` or
-`rejected`), `decision_reason`, `decided_by_account_id` and `decided_at`; a decided round states
-who answered it and when, and a rejected one always states its motive.
+without a second read. Each `expenses` entry carries `id`, `branch_location_id`, `amount`,
+`description`, `occurred_at` and `created_by_account_id`, which is exactly the shape the recording
+route answers, so the branch reads its own expense the same way in both places. Each `rounds`
+entry carries `id`, `round` (the database's own sequence), `offer`, `proposed_by_account_id`,
+`proposed_at`, `decision` (`""` while pending, `accepted` or `rejected`), `decision_reason`,
+`decided_by_account_id` and `decided_at`; a decided round states who answered it and when, and a
+rejected one always states its motive.
 
 The published document is revalidated before it is written: a settlement whose money is not
 canonical, whose derived numbers do not follow their own identity, whose sheet or rounds are out
@@ -346,20 +399,20 @@ GET /api/closings?branch_location_id=2&page=1&page_size=25
   retired one is `409 branch_retired`, exactly like an opening.
 
 ```json
-// abbreviated: every row carries all 26 keys of the settlement document
+// abbreviated: every row carries all 27 keys of the settlement document
 {"page":1,"page_size":25,"total_closings":2,
  "closings":[
   {"id":2,"branch_location_id":2,"branch_name":"Sucursal A","status":"open",
    "period_start":"2026-03-23T18:30:00Z","cut_at":"2026-04-23T18:30:00Z","closed_at":null,
    "commission_rate_percent":null,"expected_cash":"100.00","counted_cash":null,
    "cash_difference":null,"commission_amount":"0.00","closing_cash":null,"taken_cash":null,
-   "count_lines":[],"rounds":[]},
+   "count_lines":[],"rounds":[],"expenses":[]},
   {"id":1,"branch_location_id":2,"branch_name":"Sucursal A","status":"closed",
    "period_start":"2026-02-23T18:00:00Z","cut_at":"2026-03-23T18:30:00Z",
    "closed_at":"2026-03-23T18:31:10Z","commission_rate_percent":"10.00",
    "expected_cash":"0.00","counted_cash":"0.00","cash_difference":"0.00",
    "commission_amount":"0.00","closing_cash":"100.00","taken_cash":"0.00",
-   "count_lines":[],"rounds":[]}]}
+   "count_lines":[],"rounds":[],"expenses":[]}]}
 ```
 
 Rows are ordered by the **cut instant, newest first**, with the newer settlement first when two
@@ -369,9 +422,9 @@ which makes an empty page beyond the last one harmless.
 
 Every row is the **same document projection** the single read publishes — the whole settlement
 shape of the table above, already validated and with its derived money computed from its own
-facts — so a history row and the settlement it summarises can never disagree. The count sheet
-and the proposal rounds belong to the single read: a row publishes them as empty arrays and `GET
-/api/closings/{id}` unfolds them.
+facts — so a history row and the settlement it summarises can never disagree. The count sheet, the
+expenses and the proposal rounds belong to the single read: a row publishes them as empty arrays and
+`GET /api/closings/{id}` unfolds them.
 
 ## Errors
 
@@ -382,7 +435,7 @@ about instead of a generic code.
 |---|---|---|---|
 | 400 | `invalid_request` | — | Malformed body or framing, an unknown or duplicate key, a non-canonical amount, percentage, id, branch or page, an inadmissible query, a query string outside the history, or a body above 32 KiB |
 | 401 | `unauthenticated` | — | No session |
-| 403 | `forbidden` | — | The caller is not the actor of this operation (branch on a warehouse route, warehouse or another branch on a decision) |
+| 403 | `forbidden` | — | The caller is not the actor of this operation (branch on a warehouse route, warehouse on an expense, warehouse or another branch on a decision) |
 | 404 | `not_found` | — | No such settlement for this caller, no setting for that branch, or an aliased path |
 | 409 | `settlement_live` | `branch_location_id`, `closing_id` | The branch already has a live settlement, named by the refusal; only one exists at a time |
 | 409 | `branch_retired` | `branch_location_id` | The branch was retired and is not settled |
@@ -395,6 +448,7 @@ about instead of a generic code.
 | 409 | `closure_refused` | — | The closure's own money rule refused the settlement |
 | 409 | `reserved_stock` | — | A variant of the branch still holds a reservation |
 | 409 | `round_not_accepted` | — | The settlement has no accepted proposal round |
+| 409 | `branch_frozen` | — | The branch is frozen by a live settlement and cannot record an expense |
 | 503 | `service_unavailable` | — | Pool, database, or any unmapped failure |
 
 Failures never leak driver, SQL or configuration details: only the database's own rejection is
@@ -410,7 +464,7 @@ stable SQLSTATEs:
 
 | SQLSTATE | Guard | Published as |
 |---|---|---|
-| `LC001` | The branch is frozen by a live settlement and cannot operate (sale, purchase, transfer, stock ingress or reconciliation) | `409 state_conflict` from the document's own route, never from this one |
+| `LC001` | The branch is frozen by a live settlement and cannot operate (sale, purchase, transfer, stock ingress, reconciliation, expense) | `409 branch_frozen` on the expense route, `409 state_conflict` from the document's own routes |
 | `LC002` | Only the warehouse settles a branch, and the warehouse is never settled | 403 `forbidden` |
 | `LC003` | The branch has no configured commission rate | 409 `commission_rate_missing` |
 | `LC004` | Count lines are written only while the warehouse holds the settlement; only the counted quantity moves | 409 `count_frozen` |
@@ -420,7 +474,7 @@ stable SQLSTATEs:
 | `LC008` | A proposal belongs to a live settlement and only the warehouse proposes | 409 `state_conflict` |
 | `LC009` | Rounds are never deleted and a decided round is final | 409 `state_conflict` |
 | `LC010` | Only a proposed settlement is decided, and only by an enabled account of its branch | 403 `forbidden` or 409 `state_conflict` |
-| `LC011`, `LC020` | The cash ledger's admission and the provenance of a settlement movement (only its closure writes it) | 503 `service_unavailable` from this contract: no route writes ledger rows |
+| `LC011`, `LC020` | The cash ledger's admission (only the branch records its own expenses; only the closure writes the money of a settlement) and the provenance of a settlement movement | `403 forbidden` from the expense route, 503 `service_unavailable` elsewhere |
 | `LC015` | Only the warehouse configures a branch commission, and never to itself | 400 `invalid_request` or 403 `forbidden` |
 | `LC016` | The latest proposal round is not accepted, is still undecided, or is not rejected | 409 `round_not_accepted` |
 | `LC017` | The branch was retired | 409 `branch_retired` |
@@ -444,6 +498,13 @@ journal a correction would apply — a mandatory motive, the branch's approval a
 deltas against the open period — and the documentation of that contract will be written with
 the routes. Until then a closed settlement stays readable, immutable and correctable only by the
 next vertical slice.
+
+The corrective **counter-movement of a recorded expense** (S12: an expense is never edited nor
+deleted, a wrong one is corrected by its opposite) has no route here either: the ledger admits no
+inverting movement of a `gasto` today, exactly as it admits no edit and no deletion of one. What
+this contract does guarantee is the immutable side — a recorded expense is never rewritten and
+never removed — and the reversal belongs to the corrections contract above, which is the only one
+allowed to append movement to a period that is already settled.
 
 ## Wiring
 

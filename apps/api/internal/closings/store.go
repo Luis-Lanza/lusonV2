@@ -465,6 +465,77 @@ func (s *Store) SaveCash(ctx context.Context, actor auth.Identity, id int64, dra
 	return closing, nil
 }
 
+// RecordExpense records one small expense the branch paid out of its own till (S12): the
+// amount and the description, recorded by the branch account that owns the till, as it happens
+// and with no previous approval. The row is appended to the branch's ledger and never attached
+// to a settlement, because the settlement that covers it is the one whose window contains its
+// instant; a recorded expense is immutable and is corrected by its opposite movement.
+//
+// The refusals around it are the domain's own: a frozen branch cannot spend out of the till being
+// counted (the database's LC001, published as ErrBranchFrozen), the ledger refuses a movement that
+// is not the recording branch's own (LC011, published as ErrNotBranchExpense), and the warehouse is
+// refused here, because a 'gasto' row states the branch and the actor of the movement together and
+// deriving that branch from the session would make the ledger's own comparison always agree.
+func (s *Store) RecordExpense(ctx context.Context, actor auth.Identity, amount Money, description string) (Expense, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return Expense{}, ErrUnavailable
+	}
+	canonicalAmount, err := ParseAmount(string(amount))
+	if err != nil {
+		return Expense{}, err
+	}
+	// An expense of zero is not an expense: the ledger admits a positive amount only, and the
+	// same rule is judged here instead of letting the row CHECK answer it.
+	if cents, ok := amountCents(canonicalAmount); !ok || cents < 1 {
+		return Expense{}, ErrInvalid
+	}
+	canonicalDescription, ok := CanonicalDescription(description)
+	if !ok {
+		return Expense{}, ErrInvalid
+	}
+	// The warehouse has no till of its own: it never records an expense, and the refusal is the same
+	// class the ledger raises for a movement that is not the recording branch's own (LC011).
+	if actor.Location.ID < firstBranchID {
+		return Expense{}, ErrNotBranchExpense
+	}
+	// A session still forced to change its password does not move the branch's money, exactly like
+	// the account that decides the settlement.
+	if actor.MustChangePassword {
+		return Expense{}, ErrForbidden
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := checkAccount(ctx, s.pool, actor); err != nil {
+		return Expense{}, err
+	}
+	var expense Expense
+	var stored string
+	// The branch is the account's own location and never a caller value: a branch records in
+	// its own till, and 'gasto' rows are never attached to a settlement.
+	err = s.pool.QueryRow(ctx, `INSERT INTO branch_cash_movements(
+  branch_location_id,kind,amount,description,created_by_account_id)
+ VALUES($1,'gasto',$2,$3,$4)
+ RETURNING id,branch_location_id,amount::text,description,occurred_at,created_by_account_id`,
+		int16(actor.Location.ID), string(canonicalAmount), canonicalDescription,
+		int64(actor.AccountID)).
+		Scan(&expense.ID, &expense.BranchID, &stored, &expense.Description, &expense.OccurredAt,
+			&expense.CreatedByAccountID)
+	if err != nil {
+		return Expense{}, mapFailure(ctx, err)
+	}
+	if expense.Amount, err = ParseAmount(stored); err != nil {
+		return Expense{}, ErrUnavailable
+	}
+	if expense.ID < 1 || expense.BranchID < firstBranchID || expense.BranchID > MaxBranchID ||
+		expense.CreatedByAccountID < 1 || expense.OccurredAt.IsZero() {
+		return Expense{}, ErrUnavailable
+	}
+	if canonical, ok := CanonicalDescription(expense.Description); !ok || canonical != expense.Description {
+		return Expense{}, ErrUnavailable
+	}
+	return expense, nil
+}
+
 // checkVariants refuses a sheet that names a variant outside the catalogue before any line
 // is written: an unknown variant is a request error, and the whole sheet is written or none
 // of it is.
@@ -841,6 +912,9 @@ func loadClosing(ctx context.Context, q querier, id int64) (Closing, error) {
 	if closing.CountLines, err = loadCountLines(ctx, q, id); err != nil {
 		return Closing{}, err
 	}
+	if closing.Expenses, err = loadExpenses(ctx, q, id); err != nil {
+		return Closing{}, err
+	}
 	if closing.Rounds, err = loadRounds(ctx, q, id); err != nil {
 		return Closing{}, err
 	}
@@ -966,6 +1040,58 @@ func loadCountLines(ctx context.Context, q querier, id int64) ([]CountLine, erro
 	return lines, nil
 }
 
+// loadExpenses reads the expenses of the window one settlement covers: the branch's own ledger
+// rows of kind 'gasto' inside [period_start, cut_at), in the order the branch recorded them, so
+// the document states the facts its total was computed from (S12). The window is the same one
+// periodTotals reads, so the list and the total can never describe two different periods.
+func loadExpenses(ctx context.Context, q querier, id int64) ([]Expense, error) {
+	rows, err := q.Query(ctx, `SELECT expense.id,expense.branch_location_id,expense.amount::text,
+  expense.description,expense.occurred_at,expense.created_by_account_id
+ FROM branch_cash_movements expense
+ JOIN branch_closings closing ON closing.branch_location_id=expense.branch_location_id
+ WHERE closing.id=$1 AND expense.kind='gasto'
+   AND expense.occurred_at >= closing.period_start AND expense.occurred_at < closing.cut_at
+ ORDER BY expense.id`, id)
+	if err != nil {
+		return nil, fail(ctx)
+	}
+	defer rows.Close()
+	expenses := make([]Expense, 0, 8)
+	for rows.Next() {
+		var expense Expense
+		var stored string
+		if rows.Scan(&expense.ID, &expense.BranchID, &stored, &expense.Description,
+			&expense.OccurredAt, &expense.CreatedByAccountID) != nil {
+			return nil, fail(ctx)
+		}
+		amount, err := ParseAmount(stored)
+		if err != nil {
+			return nil, ErrUnavailable
+		}
+		expense.Amount = amount
+		// A ledger row this domain did not write is never described: the amount is money, the
+		// description is a real one and the order is the order it was recorded in.
+		if expense.ID < 1 || expense.BranchID < firstBranchID || expense.BranchID > MaxBranchID ||
+			expense.CreatedByAccountID < 1 || expense.OccurredAt.IsZero() {
+			return nil, ErrUnavailable
+		}
+		if canonical, ok := CanonicalDescription(expense.Description); !ok || canonical != expense.Description {
+			return nil, ErrUnavailable
+		}
+		if cents, ok := amountCents(expense.Amount); !ok || cents < 1 {
+			return nil, ErrUnavailable
+		}
+		if previous := len(expenses) - 1; previous >= 0 && expenses[previous].ID >= expense.ID {
+			return nil, ErrUnavailable
+		}
+		expenses = append(expenses, expense)
+	}
+	if rows.Err() != nil {
+		return nil, fail(ctx)
+	}
+	return expenses, nil
+}
+
 // loadRounds reads every proposal round with the payload the branch was shown, oldest
 // first. A payload this domain did not write fails closed instead of being described.
 func loadRounds(ctx context.Context, q querier, id int64) ([]Round, error) {
@@ -1085,6 +1211,10 @@ func mapFailure(ctx context.Context, err error) error {
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) {
 		switch pg.Code {
+		case "LC001":
+			// The branch is frozen by a live settlement and cannot operate (the freeze guards
+			// of migration 035).
+			return ErrBranchFrozen
 		case "LC002", "LC010", "LC015":
 			// Only the warehouse, the branch that owns the settlement or the warehouse
 			// administrator acts.
@@ -1095,6 +1225,10 @@ func mapFailure(ctx context.Context, err error) error {
 			return ErrCountFrozen
 		case "LC005", "LC008", "LC009":
 			return ErrStateConflict
+		case "LC011":
+			// The ledger's admission refused the movement itself: only the branch records its
+			// own expenses, and only its closure moves the money of a settlement.
+			return ErrNotBranchExpense
 		case "LC006":
 			return ErrClosureRefused
 		case "LC007":
