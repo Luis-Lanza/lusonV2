@@ -389,9 +389,15 @@ func TestOpenFreezesThePeriodAndTheSnapshot(t *testing.T) {
 		t.Fatalf("the expected quantity must not follow the live stock: %+v %v", after.CountLines, err)
 	}
 
-	// One live settlement per branch: the branch is frozen from the open on.
+	// One live settlement per branch: the branch is frozen from the open on, and the refusal
+	// names the settlement that already holds it, because that is the document to read or
+	// close before the branch is settled again.
 	_, err = e.store.Open(e.ctx, warehouse(), 2)
 	refused(t, err, closings.ErrLiveConflict)
+	var conflict *closings.LiveConflict
+	if !errors.As(err, &conflict) || conflict.BranchID != 2 || conflict.ClosingID != opened.ID {
+		t.Fatalf("a second open must name the settlement holding the branch: %v", err)
+	}
 	if settlements := e.scalar(t, "SELECT count(*) FROM branch_closings"); settlements != 1 {
 		t.Fatalf("a refused open must write nothing: %d rows", settlements)
 	}
@@ -1199,4 +1205,112 @@ func sheet(closing closings.Closing) string {
 		parts = append(parts, fmt.Sprintf("%d:%d:%s", line.VariantID, line.ExpectedQuantity, counted))
 	}
 	return strings.Join(parts, ",")
+}
+
+// TestListIsTheBranchOwnHistory pins the history read: one branch at a time, newest cut instant
+// first, with the same page contract as the rest of the installation, and with the very same
+// projection the single read publishes, so a row and its document can never disagree.
+func TestListIsTheBranchOwnHistory(t *testing.T) {
+	e := fixture(t)
+	// The branch starts with its bootstrap settlement, which is closed, and then holds a live
+	// one: the history has both states and both are rows of the same branch.
+	first := e.closeFirstSettlement(t, "100.00")
+	second, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the second settlement could not be opened: %v", err)
+	}
+	other, err := e.store.Open(e.ctx, warehouse(), 3)
+	if err != nil {
+		t.Fatalf("the settlement of the other branch could not be opened: %v", err)
+	}
+
+	page, err := e.store.List(e.ctx, warehouse(), 2, 1, 25)
+	if err != nil {
+		t.Fatalf("the warehouse must read the history of a branch: %v", err)
+	}
+	if page.Page != 1 || page.PageSize != 25 || page.TotalClosings != 2 || len(page.Closings) != 2 {
+		t.Fatalf("the history of the branch is not the asked page: %+v", page)
+	}
+	// Newest cut instant first: the live settlement was opened after the closure.
+	if page.Closings[0].ID != second.ID || page.Closings[1].ID != first {
+		t.Fatalf("the history must be newest first: %d %d", page.Closings[0].ID, page.Closings[1].ID)
+	}
+	if page.Closings[0].Status != closings.StatusOpen || page.Closings[1].Status != closings.StatusClosed ||
+		page.Closings[0].BranchID != 2 || page.Closings[1].BranchID != 2 {
+		t.Fatalf("every row must be a settlement of the asked branch: %+v", page.Closings)
+	}
+	// The row is the header projection of the document, so the money is the same money and it
+	// is already derived: the later period inherits the fund the first one left.
+	if page.Closings[0].OpeningCash != "100.00" || page.Closings[0].ExpectedCash != "100.00" ||
+		page.Closings[1].ClosingCash == nil || *page.Closings[1].ClosingCash != "100.00" ||
+		page.Closings[1].CommissionAmount != "0.00" || page.Closings[1].CashDifference == nil ||
+		*page.Closings[1].CashDifference != "0.00" || page.Closings[1].ClosedAt == nil {
+		t.Fatalf("a row must carry the derived money of its own facts: %+v %+v",
+			page.Closings[0], page.Closings[1])
+	}
+	// The sheet and the rounds of a document belong to the single read of it.
+	for _, row := range page.Closings {
+		if len(row.CountLines) != 0 || len(row.Rounds) != 0 {
+			t.Fatalf("a history row must not unfold the document: %+v", row)
+		}
+	}
+	document, err := e.store.Read(e.ctx, warehouse(), first)
+	if err != nil || len(document.CountLines) == 0 || len(document.Rounds) != 1 {
+		t.Fatalf("the single read must unfold the document it summarises: %+v %v", document, err)
+	}
+	if document.ExpectedCash != page.Closings[1].ExpectedCash ||
+		document.CommissionAmount != page.Closings[1].CommissionAmount {
+		t.Fatalf("a row and its document must publish the same money: %+v %+v",
+			page.Closings[1], document)
+	}
+
+	// The total is the branch's own, so a page beyond the last one is legitimately empty.
+	beyond, err := e.store.List(e.ctx, warehouse(), 2, 2, 10)
+	if err != nil || beyond.TotalClosings != 2 || len(beyond.Closings) != 0 {
+		t.Fatalf("a page beyond the last one must be empty: %+v %v", beyond, err)
+	}
+	// A page whose size covers the branch holds the same history, and the page size is echoed as
+	// asked: two settlements never spill into a second page of ten.
+	fits, err := e.store.List(e.ctx, warehouse(), 2, 1, 10)
+	if err != nil || len(fits.Closings) != 2 || fits.PageSize != 10 || fits.TotalClosings != 2 ||
+		fits.Closings[0].ID != page.Closings[0].ID || fits.Closings[1].ID != page.Closings[1].ID {
+		t.Fatalf("a page must be one page of the branch total: %+v %v", fits, err)
+	}
+
+	// The other branch is its own history and never part of this one.
+	otherPage, err := e.store.List(e.ctx, warehouse(), 3, 1, 25)
+	if err != nil || otherPage.TotalClosings != 1 || len(otherPage.Closings) != 1 ||
+		otherPage.Closings[0].ID != other.ID || otherPage.Closings[0].BranchID != 3 {
+		t.Fatalf("each branch reads its own history: %+v %v", otherPage, err)
+	}
+
+	// A branch reads its own history and never another branch's, exactly like its setting.
+	own, err := e.store.List(e.ctx, identity(2), 2, 1, 25)
+	if err != nil || own.TotalClosings != 2 {
+		t.Fatalf("a branch must read its own history: %+v %v", own, err)
+	}
+	refused(t, func() error { _, err := e.store.List(e.ctx, identity(2), 3, 1, 25); return err }(),
+		closings.ErrForbidden)
+	refused(t, func() error { _, err := e.store.List(e.ctx, identity(3), 2, 1, 25); return err }(),
+		closings.ErrForbidden)
+
+	// The page contract is the one of every history of this installation, and an unknown or
+	// impossible branch is refused before any read.
+	for _, bad := range []struct{ page, size int }{{0, 25}, {1_000_001, 25}, {1, 0}, {1, 15},
+		{1, 100}, {1, 51}} {
+		refused(t, func() error {
+			_, err := e.store.List(e.ctx, warehouse(), 2, bad.page, bad.size)
+			return err
+		}(), closings.ErrInvalid)
+	}
+	refused(t, func() error { _, err := e.store.List(e.ctx, warehouse(), 99, 1, 25); return err }(),
+		closings.ErrNotFound)
+	refused(t, func() error { _, err := e.store.List(e.ctx, warehouse(), 1, 1, 25); return err }(),
+		closings.ErrInvalid)
+	// A retired branch is refused by name, exactly like an opening.
+	e.retireBranch(t, 3)
+	var retired *closings.RetiredBranch
+	if _, err := e.store.List(e.ctx, warehouse(), 3, 1, 25); !errors.As(err, &retired) || retired.BranchID != 3 {
+		t.Fatalf("a retired branch has no history: %v", err)
+	}
 }

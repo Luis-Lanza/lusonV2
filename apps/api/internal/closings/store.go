@@ -19,6 +19,34 @@ import (
 // takes (migration 034), which this store reports through a domain error.
 type Store struct{ pool *pgxpool.Pool }
 
+// LiveConflict is the refusal of a second live settlement for one branch: open, proposed and
+// rejected all keep the branch frozen, so only one of them may exist. The settlement that
+// already holds the branch is named, because it is the document the operator has to read or
+// close before the branch is settled again; it unwraps to ErrLiveConflict, so a caller that
+// only knows the class still recognises it.
+type LiveConflict struct{ BranchID, ClosingID int64 }
+
+func (e *LiveConflict) Error() string {
+	return "branch " + digits(e.BranchID) + " already has live account settlement " + digits(e.ClosingID)
+}
+
+// Unwrap keeps errors.Is(err, ErrLiveConflict) true for a named conflict.
+func (e *LiveConflict) Unwrap() error { return ErrLiveConflict }
+
+// Page is one newest-first page of the settlements of one branch plus the total of the branch,
+// which is the branch's own history: the total counts every settlement of the branch,
+// independent of the requested page, so an empty page beyond the last one is harmless.
+type Page struct {
+	Page          int
+	PageSize      int
+	TotalClosings int64
+	// Closings are the header projection of each settlement -- the period, the money of the
+	// period, the drawer and its three derived numbers -- in cut order, newest first. The count
+	// sheet and the proposal rounds belong to the single read of a settlement and are not
+	// unfolded by the history.
+	Closings []Closing
+}
+
 // New returns the settlement store over an existing pool.
 func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 
@@ -181,10 +209,25 @@ func (s *Store) Open(ctx context.Context, actor auth.Identity, branchID int64) (
 	// period_start is supplied only because the column is NOT NULL: the admission trigger
 	// overwrites it with the closure instant of the previous settlement, or with the cut
 	// instant it takes itself. The caller has no value to promise here.
-	err = tx.QueryRow(ctx, `INSERT INTO branch_closings(branch_location_id,period_start,opened_by_account_id)
+	//
+	// The insert runs in a savepoint, so the unique index of the one live settlement per
+	// branch can be answered with the settlement that already holds the branch: a failed
+	// statement aborts its own transaction, and the row the operator has to read is named
+	// from the transaction that is still open around it.
+	savepoint, err := tx.Begin(ctx)
+	if err != nil {
+		return Closing{}, fail(ctx)
+	}
+	err = savepoint.QueryRow(ctx, `INSERT INTO branch_closings(branch_location_id,period_start,opened_by_account_id)
  VALUES($1,now(),$2) RETURNING id`, int16(branchID), int64(actor.AccountID)).Scan(&id)
 	if err != nil {
-		return Closing{}, mapOpenFailure(ctx, err, branchID)
+		if err := savepoint.Rollback(ctx); err != nil {
+			return Closing{}, fail(ctx)
+		}
+		return Closing{}, mapOpenFailure(ctx, tx, err, branchID)
+	}
+	if err := savepoint.Commit(ctx); err != nil {
+		return Closing{}, fail(ctx)
 	}
 	closing, err := loadClosing(ctx, tx, id)
 	if err != nil {
@@ -219,6 +262,77 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Closin
 		return Closing{}, ErrNotFound
 	}
 	return closing, nil
+}
+
+// List reads one newest-first page of the settlements of one branch: its own history, from the
+// most recent closure instant backwards, with the total of the branch beside the page. It is the
+// same projection the single read publishes -- the period, the money of the period, the drawer and
+// its three derived numbers -- so a history row and the document it summarises can never disagree;
+// the count sheet and the proposal rounds belong to the single read and are not unfolded here.
+//
+// A branch reads only its own history: another branch is forbidden, exactly like a setting of
+// another branch. The warehouse reads every branch. An unknown branch does not exist and a retired
+// one is refused by name, exactly like an opening.
+func (s *Store) List(ctx context.Context, actor auth.Identity, branchID int64, page, pageSize int) (Page, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return Page{}, ErrUnavailable
+	}
+	if branchID < firstBranchID || branchID > MaxBranchID || !validHistoryPage(page, pageSize) {
+		return Page{}, ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := checkAccount(ctx, s.pool, actor); err != nil {
+		return Page{}, err
+	}
+	if !warehouseAdmin(actor) && int64(actor.Location.ID) != branchID {
+		return Page{}, ErrForbidden
+	}
+	if err := checkBranch(ctx, s.pool, branchID); err != nil {
+		return Page{}, err
+	}
+	result := Page{Page: page, PageSize: pageSize, Closings: make([]Closing, 0, pageSize)}
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM branch_closings
+ WHERE branch_location_id=$1`, int16(branchID)).Scan(&result.TotalClosings); err != nil {
+		return Page{}, fail(ctx)
+	}
+	rows, err := s.pool.Query(ctx, `SELECT `+closingHeaderColumns+`
+ FROM branch_closings c JOIN locations l ON l.id=c.branch_location_id
+ WHERE c.branch_location_id=$1 ORDER BY c.cut_at DESC, c.id DESC LIMIT $2 OFFSET $3`,
+		int16(branchID), pageSize, int64(page-1)*int64(pageSize))
+	if err != nil {
+		return Page{}, fail(ctx)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		closing, err := scanClosing(ctx, rows)
+		if err != nil {
+			return Page{}, err
+		}
+		// The rows are the database's own order: newest cut instant first, and the newer
+		// settlement first when two share one instant. A page that breaks it is a chart this
+		// domain never wrote, so it is never published as a history.
+		if previous := len(result.Closings) - 1; previous >= 0 &&
+			(result.Closings[previous].CutAt.Before(closing.CutAt) ||
+				(result.Closings[previous].CutAt.Equal(closing.CutAt) &&
+					result.Closings[previous].ID <= closing.ID)) {
+			return Page{}, ErrUnavailable
+		}
+		result.Closings = append(result.Closings, closing)
+	}
+	if rows.Err() != nil {
+		return Page{}, fail(ctx)
+	}
+	return result, nil
+}
+
+// validHistoryPage admits the read contract's page: one to a million, with one of the frozen page
+// sizes of every history of this installation.
+func validHistoryPage(page, pageSize int) bool {
+	if page < 1 || page > 1_000_000 {
+		return false
+	}
+	return pageSize == 10 || pageSize == 25 || pageSize == 50
 }
 
 // Count records what the admin counted: the only quantity a caller supplies. A line of a
@@ -706,19 +820,42 @@ func (s *Store) Decide(ctx context.Context, actor auth.Identity, id int64, decis
 	return closing, nil
 }
 
-// loadClosing reads one settlement with the database's own money, its count sheet and its
-// proposal rounds, and derives the three cash numbers that are never persisted.
-func loadClosing(ctx context.Context, q querier, id int64) (Closing, error) {
-	var closing Closing
-	var status, rate string
-	var counted, fund *string
-	err := q.QueryRow(ctx, `SELECT c.id,c.branch_location_id,l.name,c.status,
+// closingHeaderColumns is the persisted header of one settlement, in the order scanClosing
+// reads it. One projection, so the single read, the history and the derived numbers can never
+// disagree with each other.
+const closingHeaderColumns = `c.id,c.branch_location_id,l.name,c.status,
   c.period_start,c.cut_at,c.closed_at,coalesce(c.commission_rate_percent::text,''),
   c.opening_cash::text,c.cash_sales::text,c.cash_expenses::text,c.sales_total::text,
   c.commission_amount::text,c.card_total::text,c.transfer_total::text,c.qr_total::text,
   c.counted_cash::text,c.contributed_cash::text,c.closing_cash::text,c.observation,
-  c.opened_by_account_id
- FROM branch_closings c JOIN locations l ON l.id=c.branch_location_id WHERE c.id=$1`, id).Scan(
+  c.opened_by_account_id`
+
+// loadClosing reads one settlement with the database's own money, its count sheet and its
+// proposal rounds, and derives the three cash numbers that are never persisted.
+func loadClosing(ctx context.Context, q querier, id int64) (Closing, error) {
+	closing, err := scanClosing(ctx, q.QueryRow(ctx, `SELECT `+closingHeaderColumns+`
+ FROM branch_closings c JOIN locations l ON l.id=c.branch_location_id WHERE c.id=$1`, id))
+	if err != nil {
+		return Closing{}, err
+	}
+	if closing.CountLines, err = loadCountLines(ctx, q, id); err != nil {
+		return Closing{}, err
+	}
+	if closing.Rounds, err = loadRounds(ctx, q, id); err != nil {
+		return Closing{}, err
+	}
+	return closing, nil
+}
+
+// scanClosing reads the persisted header of one settlement and derives the three cash numbers
+// that are never written (S8, S10, L12). It is the projection every read of this package uses,
+// so a history row and a single document are the same settlement and not two descriptions of
+// it.
+func scanClosing(ctx context.Context, row pgx.Row) (Closing, error) {
+	var closing Closing
+	var status, rate string
+	var counted, fund *string
+	err := row.Scan(
 		&closing.ID, &closing.BranchID, &closing.BranchName, &status,
 		&closing.PeriodStart, &closing.CutAt, &closing.ClosedAt, &rate,
 		&closing.OpeningCash, &closing.CashSales, &closing.CashExpenses, &closing.SalesTotal,
@@ -783,12 +920,6 @@ func loadClosing(ctx context.Context, q querier, id int64) (Closing, error) {
 			}
 			closing.TakenCash = &taken
 		}
-	}
-	if closing.CountLines, err = loadCountLines(ctx, q, id); err != nil {
-		return Closing{}, err
-	}
-	if closing.Rounds, err = loadRounds(ctx, q, id); err != nil {
-		return Closing{}, err
 	}
 	return closing, nil
 }
@@ -906,13 +1037,40 @@ func decodePayload(stored string) (ProposalPayload, error) {
 	return payload, nil
 }
 
-// mapOpenFailure publishes the database's own decision for an open and nothing else.
-func mapOpenFailure(ctx context.Context, err error, branchID int64) error {
+// mapOpenFailure publishes the database's own decision for an open and nothing else. A
+// second live settlement of the branch is the one refusal that has to name a document, so
+// the settlement that already holds the branch is read here, inside the transaction that is
+// still open around the failed savepoint.
+func mapOpenFailure(ctx context.Context, q querier, err error, branchID int64) error {
 	var pg *pgconn.PgError
-	if errors.As(err, &pg) && pg.Code == "LC017" {
-		return &RetiredBranch{BranchID: branchID}
+	if errors.As(err, &pg) {
+		switch pg.Code {
+		case "LC017":
+			return &RetiredBranch{BranchID: branchID}
+		case "23505":
+			if strings.Contains(pg.ConstraintName, "branch_closings_one_live") {
+				return liveConflict(ctx, q, branchID)
+			}
+		}
 	}
 	return mapFailure(ctx, err)
+}
+
+// liveConflict names the settlement that holds the branch. A conflict whose document cannot
+// be read stays the plain conflict, because a refusal that invents an id would be worse than
+// one that omits it.
+func liveConflict(ctx context.Context, q querier, branchID int64) error {
+	var id int64
+	err := q.QueryRow(ctx, `SELECT id FROM branch_closings
+ WHERE branch_location_id=$1 AND status <> 'closed' ORDER BY id DESC LIMIT 1`,
+		int16(branchID)).Scan(&id)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrLiveConflict
+		}
+		return fail(ctx)
+	}
+	return &LiveConflict{BranchID: branchID, ClosingID: id}
 }
 
 // mapFailure publishes the database's own decision and nothing else: SQLSTATE is the only

@@ -10,6 +10,7 @@ import (
 	"luson/api/internal/auth"
 	"luson/api/internal/bootstrap"
 	"luson/api/internal/catalogadmin"
+	"luson/api/internal/closings"
 	"luson/api/internal/config"
 	"luson/api/internal/httpapi"
 	"luson/api/internal/inventory"
@@ -128,6 +129,12 @@ func run() (result error) {
 	// The branch purchase ledger mounts last: it is the only money-out document, it
 	// owns only its own path, and every composed surface keeps its exact behavior.
 	api, err = httpapi.NewWithPurchases(api, service, httpCfg, purchases.New(pool))
+	if err != nil {
+		return errors.New("API initialization failed")
+	}
+	// The branch account settlement mounts on top of every document it settles: it owns
+	// only its own path, and the store it is given is the one the whole vertical uses.
+	api, err = httpapi.NewWithClosings(api, service, httpCfg, closings.New(pool))
 	if err != nil {
 		return errors.New("API initialization failed")
 	}
