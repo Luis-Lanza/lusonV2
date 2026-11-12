@@ -129,13 +129,21 @@ func (e *env) sell(t *testing.T, variant, quantity int64, unitPrice string, meth
 	if err != nil {
 		t.Fatalf("sale fixture amount %q is not sellable: %v", unitPrice, err)
 	}
+	e.sellPayments(t, variant, quantity, unitPrice, sales.Payment{Method: method, Amount: total})
+}
+
+// sellPayments issues one real sale in branch 2 with the settlement the test states, so a
+// document paid with more than one method is written through the point of sale's own path
+// and the settlement reads exactly what the counter wrote.
+func (e *env) sellPayments(t *testing.T, variant, quantity int64, unitPrice string, payments ...sales.Payment) {
+	t.Helper()
 	units := make([]sales.Unit, 0, quantity)
 	for i := int64(0); i < quantity; i++ {
 		units = append(units, sales.Unit{SerialNumber: sales.SerialNumber(
 			fmt.Sprintf("BAT-%d", serials.Add(1)))})
 	}
 	if _, err := e.sales.Create(e.ctx, identity(2), sales.CreateInput{
-		Payments: []sales.Payment{{Method: method, Amount: total}},
+		Payments: payments,
 		Customer: sales.Customer{Name: "Cliente de sucursal"},
 		Lines: []sales.LineInput{{VariantID: variant, Quantity: quantity,
 			UnitPrice: sales.Money(unitPrice), Units: units}},
@@ -1099,6 +1107,66 @@ func TestProposeReadsTheCashExpensesOfThePeriodLedger(t *testing.T) {
 // what it counted, its contribution, the fund it leaves and its observation — because the
 // cash sales and the cash expenses of the period are the ledgers' own facts and no caller can
 // type them (S8, S12).
+// TestProposeReportsTheQRCollected pins S13 at the settlement: the QR money the branch
+// collected in the period is reported on its own, next to the cash, card and transfer
+// totals of the same window, and it is never added to the drawer.
+func TestProposeReportsTheQRCollected(t *testing.T) {
+	e := fixture(t)
+	// The fourth method, stated by the text the database stores and derives.
+	const qr = sales.PaymentMethod("qr")
+	e.closeFirstSettlement(t, "0.00")
+	// The period: one sale paid only by QR and one settled in cash and QR.
+	e.sell(t, 1, 1, "100.00", qr)
+	e.sellPayments(t, 1, 1, "60.00",
+		sales.Payment{Method: qr, Amount: "40.00"},
+		sales.Payment{Method: sales.PaymentCash, Amount: "20.00"})
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+	e.countAll(t, opened.ID)
+	zero, counted, fund := closings.Money("0.00"), closings.Money("20.00"), closings.Money("20.00")
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID, closings.CashDraft{
+		CountedCash: &counted, ContributedCash: zero, ClosingCash: &fund,
+	}); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	proposed, err := e.store.Propose(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	// 140.00 of the period was collected by QR and 20.00 in cash; nothing by card or
+	// transfer. The QR money is a total of its own, never cash.
+	if proposed.QRTotal != "140.00" || proposed.CashSales != "20.00" ||
+		proposed.CardTotal != "0.00" || proposed.TransferTotal != "0.00" {
+		t.Fatalf("the offer must report the QR money on its own: %+v", proposed)
+	}
+	// The drawer only holds what was collected in cash, so the QR money enters no cash
+	// identity: no expected cash, no difference and no settlement transfer.
+	if proposed.ExpectedCash != "20.00" {
+		t.Fatalf("the expected cash must be the cash collected only, got %q", proposed.ExpectedCash)
+	}
+	if proposed.TakenCash == nil || *proposed.TakenCash != "0.00" {
+		t.Fatalf("the QR money must not move the settlement transfer: %v", proposed.TakenCash)
+	}
+	// The round the branch is asked to accept states the same QR money.
+	round := proposed.LatestRound()
+	if round == nil || round.Payload.QRTotal != "140.00" ||
+		round.Payload.CashSales != "20.00" || round.Payload.SalesTotal != "160.00" {
+		t.Fatalf("the offer payload must state the QR money of the period: %+v", round)
+	}
+	// The closure applies exactly the offer the branch accepted.
+	closed, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, "")
+	if err != nil {
+		t.Fatalf("the branch must be able to accept the settlement: %v", err)
+	}
+	if closed.Status != closings.StatusClosed || closed.QRTotal != "140.00" ||
+		closed.CashSales != "20.00" || closed.CardTotal != "0.00" ||
+		closed.TransferTotal != "0.00" {
+		t.Fatalf("the closed settlement must keep the QR total it offered: %+v", closed)
+	}
+}
+
 func draft(counted, contributed, fund string) closings.CashDraft {
 	return closings.CashDraft{CountedCash: moneyPtr(counted), ContributedCash: money(contributed),
 		ClosingCash: moneyPtr(fund), Observation: "borrador de la mesa"}

@@ -475,7 +475,7 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 		PeriodStart: periodStart, CutAt: cutAt,
 		SalesTotal: totals.salesTotal, CommissionRatePercent: rate, CommissionAmount: commission,
 		CashSales: totals.cash, CashExpenses: totals.expenses,
-		CardTotal: totals.card, TransferTotal: totals.transfer, QRTotal: zeroAmount,
+		CardTotal: totals.card, TransferTotal: totals.transfer, QRTotal: totals.qr,
 		CountedCash: draft.CountedCash, ContributedCash: draft.ContributedCash,
 		ClosingCash: draft.ClosingCash, Observation: draft.Observation,
 		CountLines: make([]ProposalCountLine, 0, len(lines)),
@@ -516,16 +516,16 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 }
 
 // periodTotals reads the money of one period from the ledgers: the sales total that is the
-// commission base (the sum of the sold subtotals, S6), the cash the branch collected, the card
-// and transfer amounts, and the cash expenses the branch recorded as they happened (S12).
-// One statement, so every number describes the same window of the same transaction, and both
-// the proposal and the closure call it, so an offered period can never differ from the closed
-// one.
+// commission base (the sum of the sold subtotals, S6), the cash the branch collected, the
+// card, transfer and QR amounts of the same sales (S13), and the cash expenses the branch
+// recorded as they happened (S12). One statement, so every number describes the same window
+// of the same transaction, and both the proposal and the closure call it, so an offered
+// period can never differ from the closed one.
 func periodTotals(ctx context.Context, q querier, branch int16, from, to time.Time) (periodTotalsResult, error) {
 	var result periodTotalsResult
-	var total, cash, card, transfer, expenses string
+	var total, cash, card, transfer, qr, expenses string
 	err := q.QueryRow(ctx, `WITH settled AS (
-    SELECT id,cash_amount,card_amount,transfer_amount FROM sales
+    SELECT id,cash_amount,card_amount,transfer_amount,qr_amount FROM sales
     WHERE branch_location_id=$1 AND created_at >= $2 AND created_at < $3
 )
  SELECT coalesce((SELECT sum(line.subtotal) FROM sale_lines line
@@ -533,17 +533,18 @@ func periodTotals(ctx context.Context, q querier, branch int16, from, to time.Ti
        coalesce((SELECT sum(sale.cash_amount) FROM settled sale),0)::numeric(12,2)::text,
        coalesce((SELECT sum(sale.card_amount) FROM settled sale),0)::numeric(12,2)::text,
        coalesce((SELECT sum(sale.transfer_amount) FROM settled sale),0)::numeric(12,2)::text,
+       coalesce((SELECT sum(sale.qr_amount) FROM settled sale),0)::numeric(12,2)::text,
        coalesce((SELECT sum(expense.amount) FROM branch_cash_movements expense
         WHERE expense.branch_location_id=$1 AND expense.kind='gasto'
           AND expense.occurred_at >= $2 AND expense.occurred_at < $3),0)::numeric(12,2)::text`,
-		branch, from, to).Scan(&total, &cash, &card, &transfer, &expenses)
+		branch, from, to).Scan(&total, &cash, &card, &transfer, &qr, &expenses)
 	if err != nil {
 		return periodTotalsResult{}, fail(ctx)
 	}
-	result.salesTotal, result.cash, result.card, result.transfer, result.expenses =
-		Money(total), Money(cash), Money(card), Money(transfer), Money(expenses)
+	result.salesTotal, result.cash, result.card, result.transfer, result.qr, result.expenses =
+		Money(total), Money(cash), Money(card), Money(transfer), Money(qr), Money(expenses)
 	for _, amount := range []Money{result.salesTotal, result.cash, result.card, result.transfer,
-		result.expenses} {
+		result.qr, result.expenses} {
 		if _, ok := amountCents(amount); !ok {
 			return periodTotalsResult{}, ErrUnavailable
 		}
@@ -552,11 +553,9 @@ func periodTotals(ctx context.Context, q querier, branch int16, from, to time.Ti
 }
 
 // periodTotalsResult is the money of one settled period: the commission base, the collection
-// by payment method and the expenses the branch paid out of the drawer.
-type periodTotalsResult struct{ salesTotal, cash, card, transfer, expenses Money }
-
-// zeroAmount is the canonical text of a money column the period did not use.
-const zeroAmount Money = "0.00"
+// by payment method -- cash in the drawer, card, transfer and QR outside it -- and the
+// expenses the branch paid out of the drawer.
+type periodTotalsResult struct{ salesTotal, cash, card, transfer, qr, expenses Money }
 
 // configuredRate reads the rate the branch is configured with. A branch without one cannot
 // be proposed (S6, LC003).

@@ -19,10 +19,11 @@
 // cents, and the database derives them again and refuses a document that does not
 // add up.
 //
-// A sale also records how much was paid with each admitted method, so one document can
-// be settled partly in cash and partly by transfer. The payments must close against the
-// total exactly, and the payment label is derived by the database from the amounts
-// instead of being chosen by a client.
+// A sale also records how much was paid with each admitted method -- cash, card, transfer
+// and QR -- so one document can be settled partly in cash and partly by transfer, or leave
+// the branch with electronic money it never holds in its drawer. The payments must close
+// against the total exactly, and the payment label is derived by the database from the
+// amounts instead of being chosen by a client.
 package sales
 
 import (
@@ -152,7 +153,7 @@ const (
 	maxBranchLocationID = math.MaxInt16
 	maxSearch           = 128
 	// maxPayments is the number of admitted methods: one payment per method at most.
-	maxPayments = 3
+	maxPayments = 4
 	// maxCents is the whole range of numeric(12,2) expressed in cents.
 	maxCents = int64(999_999_999_999)
 )
@@ -174,18 +175,21 @@ const (
 	PaymentCash     PaymentMethod = "cash"
 	PaymentCard     PaymentMethod = "card"
 	PaymentTransfer PaymentMethod = "transfer"
+	// PaymentQR is the fourth admitted method: money the branch collected electronically
+	// and never holds in its drawer (S13).
+	PaymentQR PaymentMethod = "qr"
 	// PaymentMixed is the label of a sale settled with more than one method. The database
-	// derives it from the three amounts, so it is never an input and no client chooses it.
+	// derives it from the four amounts, so it is never an input and no client chooses it.
 	PaymentMixed PaymentMethod = "mixed"
 )
 
-// Valid reports whether the method is one of the frozen three a client may state. The
+// Valid reports whether the method is one of the frozen four a client may state. The
 // derived 'mixed' is deliberately not one of them: it is a consequence of the amounts.
 func (p PaymentMethod) Valid() bool {
-	return p == PaymentCash || p == PaymentCard || p == PaymentTransfer
+	return p == PaymentCash || p == PaymentCard || p == PaymentTransfer || p == PaymentQR
 }
 
-// Recorded reports whether the method is a label a persisted sale can carry: the three
+// Recorded reports whether the method is a label a persisted sale can carry: the four
 // admitted inputs plus the derived 'mixed'. Reads and the history filter use this
 // predicate, so a mixed sale is legible and filterable, while an input still has to name
 // one real method.
@@ -193,7 +197,7 @@ func (p PaymentMethod) Recorded() bool { return p.Valid() || p == PaymentMixed }
 
 // PaymentMethods lists the admitted input methods in their frozen order.
 func PaymentMethods() []PaymentMethod {
-	return []PaymentMethod{PaymentCash, PaymentCard, PaymentTransfer}
+	return []PaymentMethod{PaymentCash, PaymentCard, PaymentTransfer, PaymentQR}
 }
 
 // Payment is one way a sale was paid and the amount paid with it. A sale admits at most
@@ -307,7 +311,7 @@ type LineInput struct {
 }
 
 // CreateInput is one sale to register in the actor's own branch. Payments state how the
-// total was settled: one to three entries, each method at most once, in any order.
+// total was settled: one to four entries, each method at most once, in any order.
 type CreateInput struct {
 	Payments []Payment
 	Customer Customer
@@ -327,7 +331,7 @@ type Line struct {
 
 // Payload is the canonical document used to persist and to answer: the canonical client,
 // the lines in ascending variant order (also the database's lock order), the payments in
-// the frozen order cash, card, transfer with only the methods that paid, and the exact
+// the frozen order cash, card, transfer, QR with only the methods that paid, and the exact
 // total those payments must close against.
 type Payload struct {
 	Payments []Payment
@@ -349,7 +353,7 @@ type SaleLine struct {
 
 // Sale is one persisted sale document. Both the branch correlative and the warranty
 // number are the database's own allocation. PaymentMethod is the label the database
-// derived from the amounts -- cash, card, transfer or mixed -- and Payments is how much
+// derived from the amounts -- cash, card, transfer, QR or mixed -- and Payments is how much
 // was paid with each method that actually paid.
 type Sale struct {
 	ID                 int64
@@ -540,9 +544,9 @@ func LineTotal(unit Money, quantity int64) (Money, error) {
 	return moneyFromCents(cents * quantity)
 }
 
-// canonicalPayments admits the settlement of one sale: one to three payments, each method
+// canonicalPayments admits the settlement of one sale: one to four payments, each method
 // at most once, every amount canonical two-decimal text above zero. It answers the
-// payments in the frozen order cash, card, transfer together with the amount paid, in
+// payments in the frozen order cash, card, transfer, QR together with the amount paid, in
 // integer cents, so the sum is compared exactly and never as a float.
 func canonicalPayments(input []Payment) ([]Payment, int64, bool) {
 	if len(input) < 1 || len(input) > maxPayments {
@@ -578,10 +582,10 @@ func canonicalPayments(input []Payment) ([]Payment, int64, bool) {
 	return payments, paid, true
 }
 
-// amountsOf maps the frozen-order payments of a document onto the three stored amount
+// amountsOf maps the frozen-order payments of a document onto the four stored amount
 // columns, with the canonical zero for a method that was not used.
-func amountsOf(payments []Payment) (cash, card, transfer Money) {
-	cash, card, transfer = zeroAmount, zeroAmount, zeroAmount
+func amountsOf(payments []Payment) (cash, card, transfer, qr Money) {
+	cash, card, transfer, qr = zeroAmount, zeroAmount, zeroAmount, zeroAmount
 	for _, payment := range payments {
 		switch payment.Method {
 		case PaymentCash:
@@ -590,23 +594,25 @@ func amountsOf(payments []Payment) (cash, card, transfer Money) {
 			card = payment.Amount
 		case PaymentTransfer:
 			transfer = payment.Amount
+		case PaymentQR:
+			qr = payment.Amount
 		}
 	}
-	return cash, card, transfer
+	return cash, card, transfer, qr
 }
 
-// paymentsOf rebuilds the frozen-order payments of a persisted sale from its three amount
-// columns: only the methods that actually paid, cash then card then transfer. Each amount
-// is read back as canonical text, and a stored shape this domain never wrote is refused
-// instead of being described.
-func paymentsOf(cash, card, transfer string) ([]Payment, int64, bool) {
+// paymentsOf rebuilds the frozen-order payments of a persisted sale from its four amount
+// columns: only the methods that actually paid, cash then card then transfer then QR. Each
+// amount is read back as canonical text, and a stored shape this domain never wrote is
+// refused instead of being described.
+func paymentsOf(cash, card, transfer, qr string) ([]Payment, int64, bool) {
 	payments := make([]Payment, 0, maxPayments)
 	var paid int64
 	for _, column := range []struct {
 		method PaymentMethod
 		text   string
 	}{
-		{PaymentCash, cash}, {PaymentCard, card}, {PaymentTransfer, transfer},
+		{PaymentCash, cash}, {PaymentCard, card}, {PaymentTransfer, transfer}, {PaymentQR, qr},
 	} {
 		if column.text == string(zeroAmount) {
 			continue

@@ -95,11 +95,11 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 	// column. created_by_account_id is the session identity, never a value from the
 	// request, and each amount is written under its own method so the database can judge
 	// the sum.
-	cash, card, transfer := amountsOf(payload.Payments)
-	err = tx.QueryRow(ctx, `INSERT INTO sales(branch_location_id,cash_amount,card_amount,transfer_amount,
+	cash, card, transfer, qr := amountsOf(payload.Payments)
+	err = tx.QueryRow(ctx, `INSERT INTO sales(branch_location_id,cash_amount,card_amount,transfer_amount,qr_amount,
   customer_name,customer_phone,customer_document,customer_address,total,created_by_account_id)
- VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-		branch, string(cash), string(card), string(transfer), payload.Customer.Name,
+ VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+		branch, string(cash), string(card), string(transfer), string(qr), payload.Customer.Name,
 		payload.Customer.Phone, payload.Customer.Document, payload.Customer.Address,
 		string(payload.Total), int64(actor.AccountID)).Scan(&id)
 	if err != nil {
@@ -304,12 +304,12 @@ func loadSale(ctx context.Context, q querier, id int64) (Sale, error) {
 }
 
 // readHeader reads one sale header. A non-zero branch is the read scope: a sale of
-// another branch is not found, exactly like an unknown document. The three amount columns
+// another branch is not found, exactly like an unknown document. The four amount columns
 // are read back as canonical text and rebuilt into the frozen-order payments, and the
 // label is the generated column the database derived from them.
 func readHeader(ctx context.Context, q querier, id, branch int64) (Sale, error) {
 	var sale Sale
-	var method, cash, card, transfer, total string
+	var method, cash, card, transfer, qr, total string
 	scope := ""
 	args := []any{id}
 	if branch != 0 {
@@ -318,10 +318,10 @@ func readHeader(ctx context.Context, q querier, id, branch int64) (Sale, error) 
 	}
 	err := q.QueryRow(ctx, `SELECT s.id,s.branch_location_id,s.branch_sequence,s.warranty_number,
   s.payment_method,s.cash_amount::text,s.card_amount::text,s.transfer_amount::text,
-  s.customer_name,s.customer_phone,s.customer_document,s.customer_address,s.total::text,
-  s.created_by_account_id,s.created_at FROM sales s WHERE s.id=$1`+scope, args...).Scan(
+  s.qr_amount::text,s.customer_name,s.customer_phone,s.customer_document,s.customer_address,
+  s.total::text,s.created_by_account_id,s.created_at FROM sales s WHERE s.id=$1`+scope, args...).Scan(
 		&sale.ID, &sale.BranchLocationID, &sale.BranchSequence, &sale.WarrantyNumber, &method,
-		&cash, &card, &transfer, &sale.Customer.Name, &sale.Customer.Phone,
+		&cash, &card, &transfer, &qr, &sale.Customer.Name, &sale.Customer.Phone,
 		&sale.Customer.Document, &sale.Customer.Address, &total, &sale.CreatedByAccountID,
 		&sale.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -330,12 +330,12 @@ func readHeader(ctx context.Context, q querier, id, branch int64) (Sale, error) 
 	if err != nil {
 		return Sale{}, fail(ctx)
 	}
-	payments, paid, ok := paymentsOf(cash, card, transfer)
+	payments, paid, ok := paymentsOf(cash, card, transfer, qr)
 	sale.PaymentMethod = PaymentMethod(method)
 	sale.Payments = payments
 	sale.Total = Money(total)
 	totalCents, canonical := centsOf(sale.Total)
-	// A persisted sale always carries one to three payments that close against its total,
+	// A persisted sale always carries one to four payments that close against its total,
 	// and its derived label agrees with them: a record outside that shape is not what this
 	// domain wrote, so the read fails closed instead of describing it.
 	if !ok || !canonical || sale.Total.String() != total || len(payments) < 1 ||
