@@ -86,8 +86,11 @@ func TestSaleDecoder(t *testing.T) {
 			// admitted here and the store decides whether the amounts close.
 			`{"payments":[{"method":"cash","amount":"40000.00"},{"method":"transfer","amount":"56000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"A5","warranty_months":6}]}]}`,
 			`{"payments":[{"method":"transfer","amount":"56000.00"},{"method":"cash","amount":"40000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"A6","warranty_months":6}]}]}`,
-			// The three admitted methods, each paying once, is the widest settlement.
-			`{"payments":[{"method":"cash","amount":"32000.00"},{"method":"card","amount":"32000.00"},{"method":"transfer","amount":"32000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"A7","warranty_months":6}]}]}`,
+			// The four admitted methods, each paying once, is the widest settlement: QR is the
+			// fourth payment of a sale, so the decode admits the whole range.
+			`{"payments":[{"method":"cash","amount":"24000.00"},{"method":"card","amount":"24000.00"},{"method":"transfer","amount":"24000.00"},{"method":"qr","amount":"24000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"A7","warranty_months":6}]}]}`,
+			// The settlement may be stated in any order: the frozen one is the store's.
+			`{"payments":[{"method":"qr","amount":"24000.00"},{"method":"transfer","amount":"24000.00"},{"method":"card","amount":"24000.00"},{"method":"cash","amount":"24000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"A8","warranty_months":6}]}]}`,
 			// The two admitted polarities of one battery are two lines of one document,
 			// each with the units the seller registers for it.
 			`{"payments":[{"method":"cash","amount":"351000.50"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[` +
@@ -168,12 +171,13 @@ func TestSaleDecoder(t *testing.T) {
 		"missing_payments": replace(`"payments":[{"method":"card","amount":"192000.00"}],`, ``),
 		"missing_customer": replace(`"customer":{"name":"Ana Pérez","phone":"700-00000","document":"V-123","address":"Barrio Norte"},`, ``),
 		"missing_lines":    replace(`,"lines":[{"variant_id":1,"quantity":2,"unit_price":"96000.00","units":[{"serial_number":"ABC123","warranty_months":6},{"serial_number":"ABC124","warranty_months":null}]}]`, ``),
-		// The settlement itself is exact: one to three payments of exactly `method` and
-		// `amount`, each method once, and the amounts canonical two-decimal text.
+		// The settlement itself is exact: at most one payment per admitted method, each method
+		// once, and the amounts canonical two-decimal text. A fifth payment is refused because
+		// there is no fifth method to pay with, which is the real bound of the shape.
 		"payments_null":          replace(`[{"method":"card","amount":"192000.00"}]`, `null`),
 		"payments_not_array":     replace(`[{"method":"card","amount":"192000.00"}]`, `{"method":"card","amount":"192000.00"}`),
 		"payments_empty":         replace(`[{"method":"card","amount":"192000.00"}]`, `[]`),
-		"payments_four":          replace(`[{"method":"card","amount":"192000.00"}]`, `[{"method":"cash","amount":"1.00"},{"method":"card","amount":"1.00"},{"method":"transfer","amount":"1.00"},{"method":"cash","amount":"1.00"}]`),
+		"payments_five":          replace(`[{"method":"card","amount":"192000.00"}]`, `[{"method":"cash","amount":"1.00"},{"method":"card","amount":"1.00"},{"method":"transfer","amount":"1.00"},{"method":"qr","amount":"1.00"},{"method":"cash","amount":"1.00"}]`),
 		"payment_null":           replace(`{"method":"card","amount":"192000.00"}`, `null`),
 		"payment_not_object":     replace(`{"method":"card","amount":"192000.00"}`, `[]`),
 		"payment_unknown":        replace(`"method":"card"`, `"method":"card","change":"0.00"`),
@@ -566,6 +570,24 @@ func TestSaleDocumentRecord(t *testing.T) {
 		mixedRecord.PaymentMethod != "mixed" {
 		t.Fatalf("a mixed settlement must publish both amounts in order: %+v %v", mixedRecord.Payments, err)
 	}
+	// The widest settlement a document can carry is all four methods paying at once: the label the
+	// database derives from four positive amounts is 'mixed', and every amount is published in the
+	// frozen order, QR last. This is exactly the combination a three-method label published as an
+	// unavailable document.
+	four := saleDocumentValue()
+	four.PaymentMethod = sales.PaymentMixed
+	four.Payments = []sales.Payment{{Method: sales.PaymentCash, Amount: "80000.00"},
+		{Method: sales.PaymentCard, Amount: "40000.00"},
+		{Method: sales.PaymentTransfer, Amount: "40000.00"},
+		{Method: sales.PaymentQR, Amount: "32000.00"}}
+	fourRecord, err := saleDocument(four)
+	if err != nil || fourRecord.PaymentMethod != "mixed" || len(fourRecord.Payments) != 4 ||
+		fourRecord.Payments[0].Method != "cash" || fourRecord.Payments[1].Method != "card" ||
+		fourRecord.Payments[2].Method != "transfer" || fourRecord.Payments[3].Method != "qr" ||
+		fourRecord.Payments[3].Amount != "32000.00" {
+		t.Fatalf("a four-method sale must publish all four payments under mixed: %+v %v",
+			fourRecord.Payments, err)
+	}
 	// The number format is the frozen <branch id>-<sequence padded to 6 digits>.
 	for _, tc := range []struct {
 		branch, sequence int64
@@ -629,6 +651,16 @@ func TestSaleDocumentRecord(t *testing.T) {
 			v.PaymentMethod = sales.PaymentMixed
 			v.Payments = []sales.Payment{{Method: sales.PaymentCash, Amount: "96000.00"},
 				{Method: sales.PaymentCash, Amount: "96000.00"}}
+		}),
+		// A settlement cannot carry more payments than admitted methods: the fifth one has no
+		// method to pay with, so the document is a stored shape this domain never wrote.
+		"payments_five": mutate(func(v *sales.Sale) {
+			v.PaymentMethod = sales.PaymentMixed
+			v.Payments = []sales.Payment{{Method: sales.PaymentCash, Amount: "40000.00"},
+				{Method: sales.PaymentCard, Amount: "40000.00"},
+				{Method: sales.PaymentTransfer, Amount: "40000.00"},
+				{Method: sales.PaymentQR, Amount: "40000.00"},
+				{Method: sales.PaymentCash, Amount: "32000.00"}}
 		}),
 		"money_digits":   mutate(func(v *sales.Sale) { v.Total = "192000" }),
 		"money_float":    mutate(func(v *sales.Sale) { v.Total = "192000.5" }),
@@ -1266,16 +1298,20 @@ var saleCapacityWire = regexp.MustCompile(`^"[1-9][0-9]*(\.[0-9]*[1-9])?"$`)
 
 // saleCreatedWire admits only the frozen creation shape: one key holding ten document
 // keys, a three-key client, six-key lines and canonical money.
-// salePaymentsWire admits only the published settlement: one to three objects of exactly
-// `method` and `amount`, each admitted method once, in the frozen order cash, card,
-// transfer, with canonical money.
+// salePaymentsWire admits only the published settlement: one payment per admitted method at
+// most, each admitted method once, in the frozen order cash, card, transfer, QR, with canonical
+// money. The order and the count are read from the domain, so the fourth method is legible here
+// without restating it.
 func salePaymentsWire(t *testing.T, raw json.RawMessage) []salePaymentDTO {
 	t.Helper()
 	var rows []map[string]json.RawMessage
-	if json.Unmarshal(raw, &rows) != nil || len(rows) < 1 || len(rows) > 3 {
-		t.Fatalf("settlement must be an array of one to three payments: %s", raw)
+	if json.Unmarshal(raw, &rows) != nil || len(rows) < 1 || len(rows) > len(sales.PaymentMethods()) {
+		t.Fatalf("settlement must be an array of at most one payment per admitted method: %s", raw)
 	}
-	frozen := map[string]int{"cash": 0, "card": 1, "transfer": 2}
+	frozen := make(map[string]int, len(sales.PaymentMethods()))
+	for rank, method := range sales.PaymentMethods() {
+		frozen[string(method)] = rank
+	}
 	previous := -1
 	for _, row := range rows {
 		if len(row) != 2 {
@@ -2062,6 +2098,64 @@ func TestSaleHTTPMixedPayment(t *testing.T) {
 	f.rejectedMismatch(t, f.request(2, "POST", "/api/sales",
 		saleMixedBody(1, 1, "40000.00", "60000.00")),
 		`{"error":"payments_mismatch","excess":"4000.00"}`)
+}
+
+// saleFourMethodBody is one document settled with all four admitted methods, stated QR first so
+// the frozen order of the answer is proven to be the store's and not the client's.
+func saleFourMethodBody(variantID, quantity int64, cash, card, transfer, qr string) string {
+	return fmt.Sprintf(`{"payments":[{"method":"qr","amount":%q},{"method":"transfer","amount":%q},`+
+		`{"method":"card","amount":%q},{"method":"cash","amount":%q}],`+
+		`"customer":{"name":"Cliente Mostrador","phone":"700-00000","document":"V-123","address":"Barrio Norte"},`+
+		`"lines":[{"variant_id":%d,"quantity":%d,"unit_price":"96000.00","units":%s}]}`,
+		qr, transfer, card, cash, variantID, quantity, saleUnitsJSON(quantity, 6))
+}
+
+// TestSaleHTTPFourMethods pins S13 over HTTP: a sale can pay with all four admitted methods at
+// once, the published label is the 'mixed' the four amounts derive, all four amounts come back in
+// the frozen order cash, card, transfer, QR, and the same settlement is read back from the detail
+// and filtered from the history. The label used to be derived for one, two and three payments
+// only, so this reachable document was published as unavailable.
+func TestSaleHTTPFourMethods(t *testing.T) {
+	f := saleFixture(t)
+	f.price(t, f.entryOf(t, 1), "85000", "96000", 2)
+	body := saleFourMethodBody(1, 1, "20000.00", "20000.00", "28000.00", "28000.00")
+	created := saleCreatedWire(t, f.serve(t, f.request(2, "POST", "/api/sales", body)))
+	want := []salePaymentDTO{{Method: "cash", Amount: "20000.00"}, {Method: "card", Amount: "20000.00"},
+		{Method: "transfer", Amount: "28000.00"}, {Method: "qr", Amount: "28000.00"}}
+	if created.PaymentMethod != "mixed" || created.Total != "96000.00" || len(created.Payments) != len(want) {
+		t.Fatalf("a four-method sale must publish what it was paid with: %+v", created)
+	}
+	for i, payment := range want {
+		if created.Payments[i] != payment {
+			t.Fatalf("payment %d must be %+v, got %+v", i, payment, created.Payments[i])
+		}
+	}
+	// The detail carries the same settlement, so the warranty prints one row per method.
+	detail := saleDetailWire(t, f.serve(t, f.request(2, "GET", fmt.Sprintf("/api/sales/%d", created.ID), "")))
+	if detail.PaymentMethod != "mixed" || len(detail.Payments) != len(want) {
+		t.Fatalf("the detail must carry the settlement of the sale: %+v", detail.Payments)
+	}
+	for i, payment := range want {
+		if detail.Payments[i] != payment {
+			t.Fatalf("detail payment %d must be %+v, got %+v", i, payment, detail.Payments[i])
+		}
+	}
+	// The history filters the derived label, and no single method selects the row: the label of
+	// the document is 'mixed' and its money is four amounts.
+	if mixed := salePageWire(t, f.serve(t, f.request(2, "GET", "/api/sales?payment_method=mixed", ""))); mixed.TotalSales != 1 ||
+		len(mixed.Sales) != 1 || mixed.Sales[0].PaymentMethod != "mixed" || mixed.Sales[0].ID != created.ID {
+		t.Fatalf("the history must filter a four-method sale by its label: %+v", mixed)
+	}
+	for _, method := range []string{"cash", "card", "transfer", "qr"} {
+		if other := salePageWire(t, f.serve(t, f.request(2, "GET", "/api/sales?payment_method="+method, ""))); other.TotalSales != 0 {
+			t.Fatalf("a %s filter must not select a mixed sale: %+v", method, other)
+		}
+	}
+	// The exact sum still holds with four sides: the same document one cent short is refused and
+	// writes nothing.
+	f.rejectedMismatch(t, f.request(2, "POST", "/api/sales",
+		saleFourMethodBody(1, 1, "20000.00", "20000.00", "28000.00", "27999.99")),
+		`{"error":"payments_mismatch","missing":"0.01"}`)
 }
 
 // TestSaleHTTPWarrantyPDF pins S10 and S11 over HTTP: the warranty of one sale downloads as
