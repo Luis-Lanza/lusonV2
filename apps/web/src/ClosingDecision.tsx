@@ -197,8 +197,11 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
   const acceptance = closing === null ? null : acceptanceOf(closing);
   const mismatch = closing !== null && closing.status === 'proposed' && acceptance === null;
   const rail: ClosingRail | null = acceptance?.rail ?? (closing === null ? null : closingRail(closing));
+  // A settlement the warehouse still holds has no offer: its sheet is the draft of an offer the
+  // branch was not asked to accept, so the panel waits for the proposal instead of rendering it.
+  const offerPending = closing !== null && closing.status === 'open';
   const changes: readonly ClosingStockChange[] = acceptance?.changes
-    ?? (closing === null ? [] : closingSheetChanges(closing));
+    ?? (closing === null || offerPending ? [] : closingSheetChanges(closing));
   const changesCount = changes.filter(change => change.difference !== 0).length;
   const awaiting = readiness?.awaiting === true && acceptance !== null;
   const currentRound = acceptance?.round ?? (closing === null ? null : closing.rounds[closing.rounds.length - 1] ?? null);
@@ -389,15 +392,17 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
           <section className="closing-panel" aria-labelledby="closing-decision-changes">
             <header className="closing-panel-head">
               <h2 id="closing-decision-changes">Qué cambia si aceptás</h2>
-              <span className={`closing-tag ${changesCount === 0 ? 'ok' : 'warn'}`}>
+              {!offerPending && <span className={`closing-tag ${changesCount === 0 ? 'ok' : 'warn'}`}>
                 {changesCount === 0 ? 'Sin diferencias de stock'
                   : `${changesCount} ${changesCount === 1 ? 'diferencia' : 'diferencias'} de stock`}
-              </span>
+              </span>}
             </header>
             {changes.length === 0
               ? <p className="closing-help">{awaiting
                 ? 'La propuesta no cambia ninguna existencia.'
-                : 'El Almacén todavía no cargó el conteo de esta rendición.'}</p>
+                : offerPending
+                  ? 'El Almacén todavía no propuso esta rendición: cuando lo haga vas a ver acá qué cambia.'
+                  : 'La rendición no tiene conteo que mostrar.'}</p>
               : <div className="closing-table-wrap">
                 <table className="closing-table">
                   <caption className="sr-only">Existencias que cambian al aceptar</caption>

@@ -51,7 +51,9 @@ const open = () => proposed({
   closing_cash: null, taken_cash: null, cash_sales: '0.00', cash_expenses: '0.00',
   expected_cash: '800.00', sales_total: '0.00', commission_amount: '0.00', card_total: '0.00',
   transfer_total: '0.00', qr_total: '0.00', observation: '',
-  count_lines: sheet().map(entry => ({ ...entry, counted_quantity: null })), rounds: [], expenses: [], corrections: [] });
+  // The sheet opens aligned with the system, so a held settlement already states a quantity for
+  // every line: the branch sees the seeded count, not an empty one.
+  count_lines: sheet().map(entry => ({ ...entry, counted_quantity: entry.expected_quantity })), rounds: [], expenses: [], corrections: [] });
 
 const closed = (overrides: Record<string, unknown> = {}) => proposed({ status: 'closed',
   closed_at: '2026-09-12T18:31:00Z',
@@ -155,6 +157,24 @@ describe('what the branch is accepting (S14)', () => {
     expect(within(blue).getByText('14')).toBeInTheDocument();
     expect(within(blue).getAllByText('13')).toHaveLength(2);
     expect(within(panel).getByText('2 diferencias de stock')).toBeInTheDocument();
+  });
+
+  it('waits for the offer instead of rendering the draft sheet of a held settlement', async () => {
+    const h = server(open());
+    await ready(h);
+    const panel = await changes();
+    expect(within(panel).getByText(/todavía no propuso esta rendición/)).toBeInTheDocument();
+    expect(within(panel).queryByText('Sistema')).not.toBeInTheDocument();
+    expect(within(panel).queryByText(/diferencia/)).not.toBeInTheDocument();
+  });
+
+  it('lists the offered sheet even when no existence changes', async () => {
+    const h = server(proposed({ count_lines: sheet()
+      .map(entry => ({ ...entry, counted_quantity: entry.expected_quantity })) }));
+    await ready(h);
+    const panel = await changes();
+    expect(within(panel).getByText('Sistema')).toBeInTheDocument();
+    expect(within(panel).getByText('Sin diferencias de stock')).toBeInTheDocument();
   });
 
   it('shows the drawer, its difference, the commission and the fund the branch is left with', async () => {
