@@ -2,10 +2,12 @@ package migrations_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/testpg"
 	"luson/api/migrations"
@@ -92,17 +94,25 @@ func TestClosingAssumedCountMigrationShape(t *testing.T) {
 // vertical.
 func assumedCountFixture(t *testing.T) (context.Context, *pgxpool.Pool) {
 	t.Helper()
+	return assumedCountDB(t, 43)
+}
+
+// assumedCountDB provisions the same block at any version, because the behaviour this
+// version replaces is compared against the state that already had it: 042 is the base and
+// 043 is the candidate, and both need the stock of branches 2 and 3 with their rates.
+func assumedCountDB(t *testing.T, last int) (context.Context, *pgxpool.Pool) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	t.Cleanup(cancel)
 	p := testpg.Open(t)
-	applyMigrationRange(t, ctx, p, 43)
+	applyMigrationRange(t, ctx, p, last)
 	seedPrefixCatalog(t, ctx, p)
 	if _, err := p.Exec(ctx, `INSERT INTO auth_accounts(location_id,username,password_hash)
  VALUES(1,'almacen','x'),(2,'sucursal_a','x'),(3,'sucursal_b','x')`); err != nil {
 		t.Fatal("the accounts could not be provisioned")
 	}
 	if _, err := p.Exec(ctx, `INSERT INTO inventory_balances(location_id,variant_id,existing,reserved)
- VALUES(2,1,10,0),(2,2,4,0)`); err != nil {
+ VALUES(2,1,10,0),(2,2,4,0),(3,1,5,0),(3,2,2,0)`); err != nil {
 		t.Fatal("the branch stock could not be provisioned")
 	}
 	if _, err := p.Exec(ctx, `INSERT INTO branch_settings(branch_location_id,commission_rate_percent,updated_by_account_id)
@@ -148,6 +158,22 @@ func settlementsState(t *testing.T, ctx context.Context, p *pgxpool.Pool) string
 		t.Fatalf("the settlements could not be read: %v", err)
 	}
 	return state
+}
+
+// closureCapture is the whole effect of one closure as one value: the settlements, the sheet
+// it applied, the stock of its branch and the cash ledger it wrote. It is settlementsState with
+// the instant of the closure stated as a flag instead of a timestamp, because the two runs that
+// compare a closure against itself close at different instants by construction.
+func closureCapture(t *testing.T, ctx context.Context, p *pgxpool.Pool, closing int64, branch int) string {
+	t.Helper()
+	var settled string
+	if err := p.QueryRow(ctx, `SELECT coalesce(string_agg(id||':'||status||':'||
+         coalesce(counted_cash::text,'-')||':'||coalesce(closing_cash::text,'-')||':'||
+         (closed_at IS NOT NULL)::text,',' ORDER BY id),'') FROM branch_closings`).Scan(&settled); err != nil {
+		t.Fatalf("the settlements could not be read: %v", err)
+	}
+	return settled + "|" + countSheet(t, ctx, p, closing) + "|" + stockSheet(t, ctx, p, branch) +
+		"|" + cashLedger(t, ctx, p)
 }
 
 // TestClosingAssumedCountSeedsTheSystemQuantity proves S1 on a live database: opening a
@@ -235,23 +261,7 @@ func TestClosingAssumedCountAppliesTheDifferences(t *testing.T) {
 // version are the ones this migration has to seed, so they are written by the seeding of
 // 035 as it was, and read back after 043 is applied over them.
 func TestClosingAssumedCountSeedsLiveSheets(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-	t.Cleanup(cancel)
-	p := testpg.Open(t)
-	applyMigrationRange(t, ctx, p, 42)
-	seedPrefixCatalog(t, ctx, p)
-	if _, err := p.Exec(ctx, `INSERT INTO auth_accounts(location_id,username,password_hash)
- VALUES(1,'almacen','x'),(2,'sucursal_a','x'),(3,'sucursal_b','x')`); err != nil {
-		t.Fatal("the accounts could not be provisioned")
-	}
-	if _, err := p.Exec(ctx, `INSERT INTO inventory_balances(location_id,variant_id,existing,reserved)
- VALUES(2,1,10,0),(2,2,4,0),(3,1,5,0),(3,2,2,0)`); err != nil {
-		t.Fatal("the branch stock could not be provisioned")
-	}
-	if _, err := p.Exec(ctx, `INSERT INTO branch_settings(branch_location_id,commission_rate_percent,updated_by_account_id)
- VALUES(2,12.50,1),(3,10.00,1)`); err != nil {
-		t.Fatal("the branch commissions could not be configured")
-	}
+	ctx, p := assumedCountDB(t, 42)
 
 	// A settlement the branch already signed: its sheet is the history it accepted, and the
 	// count it applied differs from the expected snapshot (5 counted 3), so a backfill that
@@ -332,6 +342,105 @@ func TestClosingAssumedCountSeedsLiveSheets(t *testing.T) {
 		t.Fatalf("the seeded sheet of an open settlement must close without moving stock, got %q", stock)
 	}
 	t.Logf("043: open and rejected sheets are seeded and the closed one is left byte-identical")
+}
+
+// TestClosingAssumedCountClosesTheSameWithRestatedAndAssumedSheets proves S5 against S7 on a
+// live database: the closure is identical whether the sheet was restated line by line or left
+// exactly as the system seeded it, which is what makes this version a removal of work and not a
+// change of behavior.
+//
+// The base is the same database at 042, the last version before this one: its sheet opens
+// pending, so the only way to propose and close there is to state every line with the quantity
+// the system already holds. The candidate is 043 with no count edit at all. Both sides close
+// through the same walk and both captures carry the settlements, the sheet the closure applied,
+// the stock of the branch and the cash ledger it wrote.
+func TestClosingAssumedCountClosesTheSameWithRestatedAndAssumedSheets(t *testing.T) {
+	walk := func(last int, restateTheSheet bool) (sheet, capture string) {
+		ctx, p := assumedCountDB(t, last)
+		closing := openSettlement(t, ctx, p, 2)
+		if restateTheSheet {
+			countAll(t, ctx, p, closing, map[int]int{1: 10, 2: 4})
+		}
+		closeSettlement(t, ctx, p, closing, "100.00", "0.00", "60.00")
+		return countSheet(t, ctx, p, closing), closureCapture(t, ctx, p, closing, 2)
+	}
+	baseSheet, baseCapture := walk(42, true)
+	assumedSheet, assumedCapture := walk(43, false)
+
+	// Both sheets state the same count: the one the warehouse typed in at 042 and the one the
+	// opening seeded at 043 are the same numbers, line by line.
+	if baseSheet != "1:10:10,2:4:4" {
+		t.Fatalf("the base closure must read the restated sheet, got %q", baseSheet)
+	}
+	if assumedSheet != "1:10:10,2:4:4" {
+		t.Fatalf("an assumed sheet must read exactly the restated one, got %q", assumedSheet)
+	}
+	// And what the closure did with it is byte-identical: no settlement, no stock and no cash
+	// entry moved because the count was written by the database instead of by the warehouse.
+	if assumedCapture != baseCapture {
+		t.Fatalf("the closure must not change with the restated sheet:\n043: %s\n042: %s",
+			assumedCapture, baseCapture)
+	}
+	t.Logf("043: the restated and the assumed sheet close identically: %s", assumedCapture)
+}
+
+// TestClosingAssumedCountRefusesASheetThatAlreadyExceedsTheCountedBound proves the one bound
+// this version documents: counted_quantity is checked against 1000000 by 034 while
+// inventory_balances.existing is an unbounded bigint, so a branch may legally hold more than a
+// million units of a variant and a sheet opened before this version may legally state that
+// quantity. Seeding such a line writes a value the check refuses, and this file must abort
+// loudly with the check violation instead of clamping a count the closure would then apply as
+// stock.
+func TestClosingAssumedCountRefusesASheetThatAlreadyExceedsTheCountedBound(t *testing.T) {
+	ctx, p := assumedCountDB(t, 42)
+	// Above 034's ceiling, and legal: the balance is a bigint and nothing bounds it.
+	if _, err := p.Exec(ctx, `UPDATE inventory_balances SET existing=1000001
+ WHERE location_id=3 AND variant_id=1`); err != nil {
+		t.Fatalf("the oversized stock could not be provisioned: %v", err)
+	}
+	closing := openSettlement(t, ctx, p, 3)
+	if sheet := countSheet(t, ctx, p, closing); sheet != "1:1000001:-,2:2:-" {
+		t.Fatalf("a sheet may state a quantity above the counted bound, got %q", sheet)
+	}
+
+	// Everything this migration could write, including the seeding function it replaces first,
+	// is captured before it runs: a failure that left the new function installed would be a
+	// half-applied version even with every stored row intact.
+	seedFunction := func() string {
+		t.Helper()
+		var definition string
+		if err := p.QueryRow(ctx, `SELECT pg_get_functiondef('seed_closing_count_lines()'::regprocedure)`).Scan(&definition); err != nil {
+			t.Fatalf("the seeding function could not be read: %v", err)
+		}
+		return definition
+	}
+	before := closureCapture(t, ctx, p, closing, 3)
+	beforeSeed := seedFunction()
+
+	backfill, err := migrations.Files.ReadFile(migration043)
+	if err != nil {
+		t.Fatal("the assumed count migration must be embedded", err)
+	}
+	_, applyErr := p.Exec(ctx, string(backfill))
+	var pgErr *pgconn.PgError
+	if !errors.As(applyErr, &pgErr) {
+		t.Fatalf("seeding a sheet above the counted bound must abort the migration, got %v", applyErr)
+	}
+	// The counted-quantity check of 034, on the count sheet: the count it would have to invent
+	// is refused by the database, not corrected by the migration.
+	if pgErr.Code != "23514" || pgErr.TableName != "closing_count_lines" {
+		t.Fatalf("the refusal must be the counted-quantity check 23514 on the sheet, got %s on %q",
+			pgErr.Code, pgErr.TableName)
+	}
+	// Aborting means writing nothing: the statements of this file land in one batch, so the
+	// replacement of the seeding function rolls back with the update that failed.
+	if after := closureCapture(t, ctx, p, closing, 3); after != before {
+		t.Fatalf("a refused migration must write nothing:\n before: %s\n after:  %s", before, after)
+	}
+	if after := seedFunction(); after != beforeSeed {
+		t.Fatalf("a refused migration must leave the seeding function of 035 installed")
+	}
+	t.Logf("043 over a sheet above the bound aborted with %s and wrote nothing", pgErr.Code)
 }
 
 // closeSettlementDraft moves an open settlement to 'proposed' with the money it counted,
