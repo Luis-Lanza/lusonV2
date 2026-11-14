@@ -2660,9 +2660,13 @@ func TestSettlementCycleEndToEnd(t *testing.T) {
 	next := closingWire(t, f.serve(t, f.request(1, "POST", "/api/closings",
 		fmt.Sprintf(`{"branch_location_id":%d}`, branch))), 201)
 	// The period boundary is the closure instant, and the fund the closure left is this opening.
+	// The money of the period is published from the moment the settlement opens, derived from the
+	// window it covers, so the warehouse counts the drawer against it before proposing anything
+	// (S1); the commission percentage itself is only frozen by the proposal, so it is still null.
 	if next.ID == first || next.Status != "open" || next.PeriodStart != *closed.ClosedAt ||
-		next.OpeningCash != "300.00" || next.CashSales != "0.00" || next.ExpectedCash != "300.00" ||
-		next.SalesTotal != "0.00" || next.CommissionRatePercent != nil || len(next.Rounds) != 0 {
+		next.OpeningCash != "300.00" || next.CashSales != "96000.00" || next.ExpectedCash != "96254.50" ||
+		next.SalesTotal != "96000.00" || next.CashExpenses != "45.50" ||
+		next.CommissionAmount != "9600.00" || next.CommissionRatePercent != nil || len(next.Rounds) != 0 {
 		t.Fatalf("step 5: the next period starts where the closure ended, holding its fund: %+v", next)
 	}
 	f.countAll(t, next.ID)
