@@ -125,7 +125,9 @@ func (e *FundExceedsDrawer) Unwrap() error { return ErrClosureRefused }
 
 // CountPending is the refusal of a proposal or a closure while a variant of the count
 // sheet has no counted quantity. The variant is named, because the admin has to know
-// which line is missing (S4).
+// which line is missing (S4). No writer of this version can leave a line pending — the
+// opener seeds the counted quantity with the expected one (S1) — so this is the safety net
+// of a sheet written before that seeding, kept instead of removed (S3).
 type CountPending struct{ VariantID int64 }
 
 func (e *CountPending) Error() string {
@@ -259,8 +261,11 @@ type Counted struct {
 }
 
 // CountLine is one persisted line of the count sheet with the catalogue identity of its
-// variant, so the sheet is legible without a second lookup. CountedQuantity is nil while
-// the variant is still pending, which is what blocks the proposal and the closure.
+// variant, so the sheet is legible without a second lookup. The opener seeds CountedQuantity
+// with the ExpectedQuantity it photographs, so a live sheet never states a missing quantity
+// (S1): the warehouse only edits the lines that disagree with the system. CountedQuantity is
+// nil only on a sheet written before that seeding, which is the state the pending refusal
+// still guards.
 type CountLine struct {
 	VariantID        int64           `json:"variant_id"`
 	CatalogEntryID   int64           `json:"catalog_entry_id"`

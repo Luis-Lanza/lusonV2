@@ -171,6 +171,10 @@ func closingFailure(w http.ResponseWriter, err error) {
 	var notClosed *closings.CorrectionNotClosed
 	switch {
 	case errors.As(err, &pending):
+		// The sheet of a live settlement never lacks a counted quantity: the opener seeds it with
+		// the expected one (S1), so this refusal is the safety net of a document written before
+		// that seeding (S3). It keeps its own code instead of folding into closure_refused, so a
+		// receipt of that shape still names the one line it has to state.
 		closingFailureRecord(w, 409, "count_pending", "variant_id", pending.VariantID)
 	case errors.As(err, &excess):
 		closingFailureRecord(w, 409, "fund_exceeds_drawer", "excess", string(excess.Excess))
@@ -187,8 +191,9 @@ func closingFailure(w http.ResponseWriter, err error) {
 		// that line instead of reading an outage (S5).
 		closingFailureRecord(w, 409, "stock_moved", "variant_id", moved.VariantID)
 	case errors.As(err, &stale):
-		// The count sheet changed while the offer was being recorded, so the settlement is
-		// re-read and proposed again; the refusal names the variant that is pending again.
+		// The line lost the counted quantity the opener seeded while the offer was being
+		// recorded, so the settlement is re-read and proposed again; the refusal names that
+		// variant, whichever of the two ways the loss was reached.
 		closingFailureRecord(w, 409, "proposal_stale", "variant_id", stale.VariantID)
 	case errors.As(err, &notClosed):
 		// A correction belongs to a closed settlement, and a live one is corrected by its own

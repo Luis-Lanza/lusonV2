@@ -151,7 +151,7 @@ POST /api/closings
  "taken_cash":null,"sales_total":"0.00","commission_amount":"0.00","card_total":"0.00",
  "transfer_total":"0.00","qr_total":"0.00","observation":"","opened_by_account_id":1,
  "count_lines":[{"variant_id":1,"catalog_entry_id":1,"brand":"TOYO","model":"NS40ZL",
-  "capacity_ah":"45","polarity":"L","expected_quantity":28,"counted_quantity":null}],
+  "capacity_ah":"45","polarity":"L","expected_quantity":28,"counted_quantity":28}],
  "rounds":[]}
 ```
 
@@ -162,8 +162,9 @@ POST /api/closings
   `400 invalid_request`.
 * Opening freezes the branch (it can no longer sell, load an expense, receive a transfer,
   receive stock or reconcile), freezes the cut instant of the period, seeds the count sheet
-  with the branch's own stock at that instant and inherits the fund left by the previous
-  closure (`opening_cash`; `"0.00"` for the first settlement).
+  with the branch's own stock at that instant — every line already stating the quantity the
+  system expects — and inherits the fund left by the previous closure (`opening_cash`;
+  `"0.00"` for the first settlement).
 * **A branch holds one live settlement at a time**: a second opening is
   `409 {"error":"settlement_live","branch_location_id":2}` and writes nothing. `open`,
   `proposed` and `rejected` are all live, so only a closed settlement leaves the branch free.
@@ -193,9 +194,14 @@ POST /api/closings/1/count
 * The sheet may be written **only while the warehouse holds the settlement**: `open` and
   `rejected`. While the branch is deciding (`proposed`) it is `409 count_frozen`, and forever
   after the closure too. No line is ever removed.
-* Every variant the branch held at the cut is seeded as a line with a null
-  `counted_quantity`; a line that stays pending is what blocks the proposal and the closure,
-  and the refusal names it.
+* The sheet opens **aligned with the system**: every variant the branch held at the cut is
+  seeded with `counted_quantity` equal to the `expected_quantity` the database photographed. No
+  variant is pending, so the warehouse writes only the lines where its count disagrees with the
+  system and proposing needs no count edit at all. A line it never writes stays exactly as the
+  system read it, so an untouched variant and one counted at that same number are one and the
+  same row: this contract keeps no mark of "counted" or "assumed". A line without a counted
+  quantity can only come from a sheet written before that seeding, and the defensive refusal
+  that names it is documented with the proposal.
 
 ## Drawer draft
 
@@ -308,18 +314,23 @@ The proposal is refused, naming what is missing, when:
 
 | Refusal | Status and body |
 |---|---|
-| A variant of the sheet is still pending | `409 {"error":"count_pending","variant_id":7}` |
-| The count sheet changed while the offer was being recorded | `409 {"error":"proposal_stale","variant_id":7}` |
+| A sheet written before the count is seeded still has a pending variant (defensive) | `409 {"error":"count_pending","variant_id":7}` |
+| A line lost its counted quantity while the offer was being recorded | `409 {"error":"proposal_stale","variant_id":7}` |
 | The drawer is not stated | `409 {"error":"cash_not_stated"}` |
 | The fund exceeds the drawer | `409 {"error":"fund_exceeds_drawer","excess":"50.00"}` |
 | The branch has no configured rate | `409 {"error":"commission_rate_missing"}` |
 | The settlement is not held (already proposed or closed) | `409 {"error":"state_conflict"}` |
 
-`count_pending` and `proposal_stale` are the two sides of the same fact. `count_pending` is
-what the store answers when it reads the sheet before proposing; `proposal_stale` is the
-database's own `LC019`, raised when a line of the sheet lost its counted quantity between that
-read and the transition that records the offer. Both are conflicts: the warehouse re-reads the
-settlement and proposes again, and neither is an outage.
+The proposal asks for nothing but the drawer. The count sheet is already complete when the
+settlement opens, because the opener seeds each counted quantity with the expected one, so
+there is no pending variant to resolve and no step between drafting the drawer and proposing.
+
+`count_pending` and `proposal_stale` are kept as **defensive** refusals of the same fact, and
+neither is a step of this contract. `count_pending` is what the store answers when it reads a
+sheet that still states a missing quantity, which only a document written before that seeding
+can do; `proposal_stale` is the database's own `LC019`, raised when a line loses its counted
+quantity between that read and the transition that records the offer. Both are conflicts: the
+warehouse re-reads the settlement and proposes again, and neither is an outage.
 
 On success the database freezes the configured rate on the settlement, records the period
 totals and the commission and the warehouse's round is added to the history:
@@ -479,7 +490,7 @@ Every route of this contract answers the whole settlement, with exactly these ke
 | `card_total`, `transfer_total`, `qr_total` | The electronic collection of the period, published on its own |
 | `observation` | The free text of the drawer |
 | `opened_by_account_id` | The warehouse account that opened it |
-| `count_lines` | The sheet, ordered by `variant_id`, with `expected_quantity` and a `counted_quantity` that is `null` while pending |
+| `count_lines` | The sheet, ordered by `variant_id`, with `expected_quantity` and the `counted_quantity` the opener seeded from it, which is the warehouse's own number where it disagreed; `null` only on a sheet written before that seeding |
 | `expenses` | The expenses of the branch inside this settlement's own window, in the order they were recorded |
 | `rounds` | The proposal history, oldest first |
 | `corrections` | The corrections of the closed settlement, oldest first: the accepted ones with the deltas they applied and the pending one, if any, with its status |
@@ -572,7 +583,7 @@ about instead of a generic code.
 | 404 | `not_found` | — | No such settlement for this caller, no setting for that branch, or an aliased path |
 | 409 | `settlement_live` | `branch_location_id`, `closing_id` | The branch already has a live settlement, named by the refusal; only one exists at a time |
 | 409 | `branch_retired` | `branch_location_id` | The branch was retired and is not settled |
-| 409 | `count_pending` | `variant_id` | A variant of the sheet has no counted quantity |
+| 409 | `count_pending` | `variant_id` | A sheet written before the count is seeded still states a variant with no counted quantity (defensive) |
 | 409 | `proposal_stale` | `variant_id` | The count sheet lost a counted quantity while the offer was being recorded; re-read and propose again |
 | 409 | `cash_not_stated` | — | The proposal needs the counted cash and the fund |
 | 409 | `fund_exceeds_drawer` | `excess` | The fund exceeds the counted cash plus the contribution by that amount |
@@ -616,7 +627,7 @@ stable SQLSTATEs:
 | `LC003` | The branch has no configured commission rate | 409 `commission_rate_missing` |
 | `LC004` | Count lines are written only while the warehouse holds the settlement; only the counted quantity moves | 409 `count_frozen` |
 | `LC005` | Unsupported transition, frozen identity, draft of a proposed or closed settlement, period totals that are not drafts | 409 `state_conflict` |
-| `LC006` | The closure's money rule: the fund above the drawer, the drawer not stated, a pending variant | 409 `fund_exceeds_drawer`, `cash_not_stated`, `count_pending` or `closure_refused` |
+| `LC006` | The closure's money rule: the fund above the drawer, the drawer not stated, a pending variant of a sheet written before the count is seeded | 409 `fund_exceeds_drawer`, `cash_not_stated`, `count_pending` or `closure_refused` |
 | `LC007` | A variant still holds reserved stock | 409 `reserved_stock` with `variant_id` |
 | `LC008` | A proposal belongs to a live settlement and only the warehouse proposes | 409 `state_conflict` |
 | `LC009` | Rounds are never deleted and a decided round is final | 409 `state_conflict` |
@@ -626,7 +637,7 @@ stable SQLSTATEs:
 | `LC016` | The latest proposal round is not accepted, is still undecided, or is not rejected | 409 `round_not_accepted` |
 | `LC017` | The branch was retired | 409 `branch_retired` |
 | `LC018` | A variant moved during the settlement | 409 `stock_moved` with `variant_id` |
-| `LC019` | A variant has no counted quantity at the proposal | 409 `proposal_stale` with `variant_id` when the store's own read missed it; `409 count_pending` when the store refuses first |
+| `LC019` | A variant of a sheet written before the count is seeded has no counted quantity at the proposal (defensive) | 409 `proposal_stale` with `variant_id` when the store's own read missed it; `409 count_pending` when the store refuses first |
 | `LC012` | Only a closed settlement is corrected | 409 `correction_not_closed` with `closing_id` |
 | `LC013` | A decided correction is final, and a correction states what the warehouse offered, unchanged | 409 `correction_decided` |
 | `LC014` | Only an enabled account of the branch decides a correction | 403 `forbidden` |

@@ -368,10 +368,12 @@ func TestOpenFreezesThePeriodAndTheSnapshot(t *testing.T) {
 	if len(opened.CountLines) != 2 {
 		t.Fatalf("the count sheet must cover the branch stock: %+v", opened.CountLines)
 	}
+	// The snapshot opens counted at its own number (S1): the sheet of a live settlement never
+	// states a missing quantity, so the warehouse only writes the lines that disagree.
 	for _, line := range opened.CountLines {
 		want := map[int64]int64{1: 10, 2: 4}[line.VariantID]
-		if line.ExpectedQuantity != want || line.CountedQuantity != nil {
-			t.Fatalf("variant %d: expected %d pending, got %+v", line.VariantID, want, line)
+		if line.ExpectedQuantity != want || line.CountedQuantity == nil || *line.CountedQuantity != want {
+			t.Fatalf("variant %d: expected %d counted at the open, got %+v", line.VariantID, want, line)
 		}
 		if line.Brand == "" || line.Model == "" || line.Polarity == "" || line.Capacity == "" {
 			t.Fatalf("the sheet must be legible by catalogue identity: %+v", line)
@@ -444,20 +446,21 @@ func TestCountUsesTheDatabaseSnapshot(t *testing.T) {
 	_, err = e.store.Count(e.ctx, warehouse(), 0, []closings.Counted{{VariantID: 1, Quantity: 7}})
 	refused(t, err, closings.ErrNotFound)
 
-	// The admin counts a seeded line and a variant the system did not have at all: the
-	// snapshot of the second one is zero, and it was never a caller value.
+	// The admin counts a seeded line and a variant the system did not have at all: the snapshot
+	// of the second one is zero, and it was never a caller value. The line it never names keeps
+	// the quantity the opener seeded into it (S1), so it is the agreement, not a pending duty.
 	counted, err := e.store.Count(e.ctx, warehouse(), opened.ID,
 		[]closings.Counted{{VariantID: 1, Quantity: 7}, {VariantID: 3, Quantity: 2}})
 	if err != nil {
 		t.Fatalf("the warehouse must record what it counted: %v", err)
 	}
-	if got := sheet(counted); got != "1:10:7,2:4:-,3:0:2" {
+	if got := sheet(counted); got != "1:10:7,2:4:4,3:0:2" {
 		t.Fatalf("the count sheet is not the snapshot plus the counted quantities: %q", got)
 	}
 
 	// A recount only changes what was counted, never the expected snapshot.
 	again, err := e.store.Count(e.ctx, warehouse(), opened.ID, []closings.Counted{{VariantID: 1, Quantity: 8}})
-	if err != nil || sheet(again) != "1:10:8,2:4:-,3:0:2" {
+	if err != nil || sheet(again) != "1:10:8,2:4:4,3:0:2" {
 		t.Fatalf("a recount must keep the snapshot: %q %v", sheet(again), err)
 	}
 
@@ -730,28 +733,19 @@ func TestClosurePersistsTheCommissionItOffered(t *testing.T) {
 	}
 }
 
-// TestProposeRefusesAnIncompleteCountOrNoRate pins the proposal's own refusals (rule 5 with
-// S4 and S6): a pending variant or an uncounted drawer blocks the offer by name instead of
-// creating a round the closure would refuse, and a branch without a configured rate opens
-// its settlement but cannot propose it.
-func TestProposeRefusesAnIncompleteCountOrNoRate(t *testing.T) {
+// TestProposeRefusesAnUndrawnDrawerOrNoRate pins the proposal's own refusals that the assumed
+// count leaves standing (rule 5 with S4 and S6): an uncounted drawer blocks the offer by name
+// instead of creating a round the closure would refuse, and a branch without a configured rate
+// opens its settlement but cannot propose it. The sheet is no longer one of them, because the
+// opener seeds it: the pending refusal is pinned on its own true footing below.
+func TestProposeRefusesAnUndrawnDrawerOrNoRate(t *testing.T) {
 	e := fixture(t)
 	opened, err := e.store.Open(e.ctx, warehouse(), 2)
 	if err != nil {
 		t.Fatalf("the settlement could not be opened: %v", err)
 	}
-	// A pending line blocks the offer and no round is written.
-	if _, err := e.store.Count(e.ctx, warehouse(), opened.ID, []closings.Counted{{VariantID: 1, Quantity: 10}}); err != nil {
-		t.Fatalf("the first line could not be counted: %v", err)
-	}
-	_, err = e.store.Propose(e.ctx, warehouse(), opened.ID)
-	var pending *closings.CountPending
-	if !errors.As(err, &pending) || pending.VariantID != 2 {
-		t.Fatalf("a pending variant must be named: %v", err)
-	}
-	refused(t, err, closings.ErrClosureRefused)
-	// The drawer must be counted too: a proposal states the cash it counted and the fund.
-	e.countAll(t, opened.ID)
+	// The drawer must be counted: a proposal states the cash it counted and the fund, and a
+	// draft that states the fund alone blocks it with no round written.
 	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID, closings.CashDraft{
 		ContributedCash: "0.00", ClosingCash: moneyPtr("10.00")}); err != nil {
 		t.Fatalf("the cash draft could not be saved: %v", err)
@@ -787,6 +781,88 @@ func TestProposeRefusesAnIncompleteCountOrNoRate(t *testing.T) {
 	proposed, err := e.store.Propose(e.ctx, warehouse(), third.ID)
 	if err != nil || proposed.CommissionRatePercent == nil || *proposed.CommissionRatePercent != "8.75" {
 		t.Fatalf("each branch freezes the rate it was configured with: %+v %v", proposed, err)
+	}
+}
+
+// TestProposeRefusesAPendingLineOfASheetWrittenBeforeTheSeeding pins the pending refusal for what
+// it now is (S1, S3): the opener seeds every line with the expected quantity, so no writer of this
+// version can leave a line pending and the guards survive as the safety net of a document written
+// before that seeding. The line is made pending by the same direct statement the raced proposal
+// uses, because that is the only way left to reach the state.
+func TestProposeRefusesAPendingLineOfASheetWrittenBeforeTheSeeding(t *testing.T) {
+	e := fixture(t)
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+	// The drawer is stated, so the sheet is the only fact that can refuse the offer.
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("100.00", "0.00", "20.00")); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	if _, err := e.pool.Exec(e.ctx, `UPDATE closing_count_lines SET counted_quantity=NULL
+ WHERE closing_id=$1 AND variant_id=2`, opened.ID); err != nil {
+		t.Fatalf("the seeded line could not be made pending again: %v", err)
+	}
+	_, err = e.store.Propose(e.ctx, warehouse(), opened.ID)
+	var pending *closings.CountPending
+	if !errors.As(err, &pending) || pending.VariantID != 2 {
+		t.Fatalf("a pending variant must be named: %v", err)
+	}
+	refused(t, err, closings.ErrClosureRefused)
+	if rounds := e.scalar(t, "SELECT count(*) FROM closing_proposals"); rounds != 0 {
+		t.Fatalf("a refused proposal must write nothing: %d rounds", rounds)
+	}
+	if state := e.text(t, "SELECT status FROM branch_closings WHERE id=$1", opened.ID); state != "open" {
+		t.Fatalf("a refused proposal must leave the settlement where it was: %q", state)
+	}
+	// Counting the one line lifts the guard and the very same settlement is offered.
+	if _, err := e.store.Count(e.ctx, warehouse(), opened.ID,
+		[]closings.Counted{{VariantID: 2, Quantity: 4}}); err != nil {
+		t.Fatalf("the pending line could not be counted: %v", err)
+	}
+	proposed, err := e.store.Propose(e.ctx, warehouse(), opened.ID)
+	if err != nil || proposed.Status != closings.StatusProposed || len(proposed.Rounds) != 1 {
+		t.Fatalf("the settlement must be proposable once the line is counted: %+v %v", proposed, err)
+	}
+}
+
+// TestProposeNeedsNoCountEdit pins the new default at the store level (S1, S3): a settlement is
+// opened, its drawer is drafted and it is proposed with no Count call at all, and the offer carries
+// the quantity the opener seeded for every line. Proposing therefore never asks the warehouse to
+// rewrite the sheet with what the system already had, and the document the branch decides states
+// no missing quantity.
+func TestProposeNeedsNoCountEdit(t *testing.T) {
+	e := fixture(t)
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("100.00", "0.00", "20.00")); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	proposed, err := e.store.Propose(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("a settlement whose drawer is stated must be proposable without a count edit: %v", err)
+	}
+	round := proposed.LatestRound()
+	if proposed.Status != closings.StatusProposed || round == nil || len(proposed.Rounds) != 1 {
+		t.Fatalf("the proposal must leave the settlement proposed with its round: %+v", proposed)
+	}
+	want := map[int64]int64{1: 10, 2: 4}
+	if len(round.Payload.CountLines) != len(want) {
+		t.Fatalf("the offer must state every seeded line: %+v", round.Payload.CountLines)
+	}
+	for _, line := range round.Payload.CountLines {
+		if line.ExpectedQuantity != want[line.VariantID] || line.CountedQuantity != line.ExpectedQuantity {
+			t.Fatalf("variant %d: the offer must carry the seeded quantity, got %+v", line.VariantID, line)
+		}
+	}
+	for _, line := range proposed.CountLines {
+		if line.CountedQuantity == nil || *line.CountedQuantity != want[line.VariantID] {
+			t.Fatalf("variant %d: no live sheet states a missing quantity, got %+v", line.VariantID, line)
+		}
 	}
 }
 

@@ -572,9 +572,12 @@ func nullable(amount *Money) any {
 //
 // The round is mandatory and ordered before the state change: the database refuses a closure
 // whose latest round is not accepted (LC016), so nothing could ever close without it. The
-// count must be complete and the drawer counted, because the database refuses an incomplete
-// closure (LC006) and a settlement whose round the branch had accepted could no longer be
-// corrected: no transition leaves a proposed settlement with an accepted round.
+// opener seeds every line of the sheet with the quantity the system expects (S1), so the count
+// is already complete when the warehouse proposes and only the drawer has to be counted: the
+// pending check below and the database's own LC006 and LC019 are the unreachable safety net of
+// a sheet written before that seeding. The drawer is not optional, because the database refuses
+// a closure without it (LC006) and a settlement whose round the branch had accepted could no
+// longer be corrected: no transition leaves a proposed settlement with an accepted round.
 func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Closing, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return Closing{}, ErrUnavailable
@@ -617,8 +620,10 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 	if !Status(status).Held() {
 		return Closing{}, ErrStateConflict
 	}
-	// The sheet must be complete and the drawer counted: the offer states both, and the
-	// closure admits neither a pending variant nor a missing amount (LC006).
+	// The sheet reads as seeded and the only fact this offer still needs is the drawer, because
+	// the opener writes the expected quantity into every counted quantity (S1). A line that reads
+	// pending here can only come from a sheet written before that seeding, and the refusal is
+	// kept as the safety net it becomes instead of being removed (S3, LC006).
 	pending, err := pendingVariant(ctx, tx, id)
 	if err == nil {
 		return Closing{}, &CountPending{VariantID: pending}
@@ -665,6 +670,8 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 	}
 	for _, line := range lines {
 		if line.CountedQuantity == nil {
+			// The same safety net as above, read on the rows the offer publishes: only a sheet
+			// written before the opener seeded the counted quantity can reach it.
 			return Closing{}, &CountPending{VariantID: line.VariantID}
 		}
 		payload.CountLines = append(payload.CountLines, ProposalCountLine{VariantID: line.VariantID,
@@ -861,7 +868,9 @@ func (s *Store) Decide(ctx context.Context, actor auth.Identity, id int64, decis
 			return Closing{}, mapFailure(ctx, err)
 		}
 	} else {
-		// The closure states the count and the drawer, so the offer it accepts must state both.
+		// The closure states the count and the drawer, and the count is already seeded with the
+		// expected quantity (S1), so a pending line here is the safety net of a sheet written
+		// before that seeding: what the offer must still state is the drawer.
 		pending, err := pendingVariant(ctx, tx, id)
 		if err == nil {
 			return Closing{}, &CountPending{VariantID: pending}
@@ -1587,8 +1596,10 @@ func liveConflict(ctx context.Context, q querier, branchID int64) error {
 }
 
 // pendingVariant reads the first variant of a count sheet that has no counted quantity, which is
-// the line both the proposal (LC019) and the closure (LC006) refuse by. It reports pgx.ErrNoRows
-// when every line is counted, so a caller keeps its own answer for a read that fails.
+// the line both the proposal (LC019) and the closure (LC006) refuse by. The opener seeds every
+// line with its expected quantity (S1), so no live sheet reaches it and this read is the safety
+// net of a document written before that seeding (S3). It reports pgx.ErrNoRows when every line
+// is counted, so a caller keeps its own answer for a read that fails.
 func pendingVariant(ctx context.Context, q querier, id int64) (int64, error) {
 	var variant int64
 	err := q.QueryRow(ctx, `SELECT variant_id FROM closing_count_lines
@@ -1598,10 +1609,11 @@ func pendingVariant(ctx context.Context, q querier, id int64) (int64, error) {
 
 // mapProposalFailure publishes the database's own refusal of a proposal transition. LC019 is "a
 // variant has no counted quantity" read at the transition: the store already checked the sheet,
-// so what the database answered is the count changing between that check and its own statement.
-// The reaction is to re-read the settlement and propose again, never to report an outage, and
-// only the database knows which variant lost its line -- so the pending line is read back instead
-// of the message the trigger composed. Every other refusal keeps the plain mapping.
+// and the opener seeded it (S1), so what the database answered is a sheet written before that
+// seeding or the count changing between that check and its own statement. The reaction is to
+// re-read the settlement and propose again, never to report an outage, and only the database
+// knows which variant lost its line -- so the pending line is read back instead of the message
+// the trigger composed. Every other refusal keeps the plain mapping.
 func mapProposalFailure(ctx context.Context, q querier, err error, id int64) error {
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && pg.Code == "LC019" {

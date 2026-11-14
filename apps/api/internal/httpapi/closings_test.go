@@ -1247,15 +1247,9 @@ func TestClosingsOneLiveSettlement(t *testing.T) {
 func TestClosingsRefusalsNameWhatIsMissing(t *testing.T) {
 	f := closingFixture(t)
 	id := f.open(t, 2)
-	// One line counted and the rest pending: the proposal names the first variant still to count.
-	sheet := f.sheet(t, id)
-	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/count", id),
-		closingCountBody(sheet[:1]))); w.Code != 200 {
-		t.Fatalf("a partial count is a legitimate draft: %d %s", w.Code, w.Body.String())
-	}
-	pending := sheet[1].VariantID
-	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/propose", id), ""), 409,
-		fmt.Sprintf(`{"error":"count_pending","variant_id":%d}`, pending))
+	// The sheet opens aligned with the system, so the warehouse proposes without writing a single
+	// quantity (S1, S3) and the pending refusal is not part of this path: its mapping has its own
+	// test, and it survives only for a sheet written before the seeding.
 	// The drawer states a fund the counted cash cannot hold: the refusal names the excess, so the
 	// admin corrects the exact amount.
 	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", id),
@@ -1267,7 +1261,6 @@ func TestClosingsRefusalsNameWhatIsMissing(t *testing.T) {
 		`{"counted_cash":"100.00","contributed_cash":"0.00","closing_cash":"40.00","observation":"contado"}`)); w.Code != 200 {
 		t.Fatalf("a fund inside the drawer must be saved: %d %s", w.Code, w.Body.String())
 	}
-	f.countAll(t, id)
 	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/propose", id), ""), 409,
 		`{"error":"commission_rate_missing"}`)
 	// With the rate configured the same proposal is offered, so the refusal above was the rate and
@@ -1423,10 +1416,12 @@ func TestClosingsDraftAndDerivedMoney(t *testing.T) {
 		opened.CashDifference != nil || opened.TakenCash != nil {
 		t.Fatalf("a settlement inherits the fund and the period, not the numbers of it: %+v", opened)
 	}
-	// The sheet is the database's own snapshot of the cut and no line is counted yet.
+	// The sheet is the database's own snapshot of the cut, and it opens aligned with the system:
+	// every line states the quantity the database expects, so the warehouse only edits the
+	// variants whose count disagrees (S1).
 	for _, line := range opened.CountLines {
-		if line.CountedQuantity != nil {
-			t.Fatalf("a seeded line is pending until it is counted: %+v", line)
+		if line.CountedQuantity == nil || *line.CountedQuantity != line.ExpectedQuantity {
+			t.Fatalf("a seeded line must state the expected quantity: %+v", line)
 		}
 	}
 	sheet := f.sheet(t, id)
