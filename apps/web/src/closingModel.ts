@@ -69,7 +69,11 @@ export interface ClosingCountLine {
   readonly polarity: ClosingPolarity;
   /** Frozen at the cut and never recalculated: the sheet stays a fact of the opening (S4). */
   readonly expected_quantity: number;
-  /** `null` while the variant is pending, which is what blocks the proposal and the closure. */
+  /**
+   * The quantity the sheet opens with, which the seed writes equal to the expected one: the admin
+   * only overwrites the variants that do not coincide (S1). `null` is a leftover of a settlement
+   * opened before that seed (L3) and is read as coinciding, never as a hole to fill.
+   */
   readonly counted_quantity: number | null;
 }
 
@@ -396,27 +400,29 @@ export function closingLineLabel(line: ClosingCountLine): string {
   return `${line.brand} ${line.model} ${line.polarity} · ${line.capacity_ah} Ah`;
 }
 
-export function closingPendingLines(lines: readonly ClosingCountLine[]): readonly ClosingCountLine[] {
-  return lines.filter(line => line.counted_quantity === null);
+/**
+ * The quantity the sheet assumes for a line: the count the document holds or, when it holds none,
+ * the expected one. Every line opens seeded with `counted_quantity = expected_quantity`, so a line
+ * without a count can only come from a settlement opened before that seed (L3) — it is read as
+ * coinciding, never as an empty cell the admin has to fill and never as a reason to refuse (S1).
+ */
+export function closingAssumedQuantity(line: ClosingCountLine): number {
+  return line.counted_quantity ?? line.expected_quantity;
 }
 
-export interface ClosingProgress {
-  readonly total: number;
-  readonly counted: number;
-  readonly pending: number;
+/**
+ * The text the sheet starts a row from: the quantity the document already publishes, so the admin
+ * only types where the count differs (S1, L2). A row the cut did not know publishes nothing — its
+ * quantity is the admin's to state (S4).
+ */
+export function closingSeedQuantity(line: ClosingCountLine): string {
+  if (line.counted_quantity !== null) return String(line.counted_quantity);
+  return closingLineIsOutsideSystem(line) ? '' : String(line.expected_quantity);
 }
 
-/** `9 de 11 contadas`: the progress of the sheet over every variant the branch held at the cut. */
-export function closingProgress(lines: readonly ClosingCountLine[]): ClosingProgress {
-  const total = lines.length;
-  const pending = closingPendingLines(lines).length;
-  return Object.freeze({ total, counted: total - pending, pending });
-}
-
-/** The difference of one row, with its sign; `null` while the row is pending. */
-export function closingLineDifference(line: ClosingCountLine): number | null {
-  if (line.counted_quantity === null) return null;
-  return line.counted_quantity - line.expected_quantity;
+/** The difference of one row, with its sign; a row nobody counted coincides, so it is a zero. */
+export function closingLineDifference(line: ClosingCountLine): number {
+  return closingAssumedQuantity(line) - line.expected_quantity;
 }
 
 /** A counted difference is shown with its sign, and a match is shown as a dash, not zero. */
@@ -426,8 +432,15 @@ export function closingQuantityText(value: number | null): string {
   return `−${-value}`;
 }
 
-/** The pending row is visibly pending, in words, and not only through a colour. */
-export const closingPendingTag = 'Pendiente';
+/** The count of the sheet against the system, in words: nothing is read from a colour alone (S2). */
+export const closingCountMatchTag = 'Conteo coincidente';
+/** A row whose count does not coincide with the system says so in words, beside its difference. */
+export const closingChangedTag = 'No coincide';
+
+/** `1 diferencia contra el sistema` / `3 diferencias contra el sistema`, for the rail and the bar. */
+export function closingCountDifferenceText(differing: number): string {
+  return `${differing} ${differing === 1 ? 'diferencia' : 'diferencias'} contra el sistema`;
+}
 
 /** The search of the sheet: the sheet is already here, so the filter never asks the server. */
 export function filterCountLines(lines: readonly ClosingCountLine[], search: string): readonly ClosingCountLine[] {
@@ -606,17 +619,64 @@ export function closingLineIsOutsideSystem(line: { readonly expected_quantity: n
 
 /**
  * The lines the admin is about to save: every row whose count changed, the rows added by hand
- * included, and nothing else. A row that was not typed is not a count and is never sent (S4).
+ * included, and nothing else. A row that was not typed is not a count and is never sent (S4), and
+ * the quantity it is compared against is the one the sheet was seeded with (S1).
  */
 export function closingCountChanges(rows: readonly ClosingCountLine[],
   draft: Readonly<Record<number, string>>): readonly CountedLineInput[] {
   const changes: CountedLineInput[] = [];
   for (const row of rows) {
     const typed = typeof draft[row.variant_id] === 'string' ? draft[row.variant_id] : '';
-    const saved = row.counted_quantity === null ? '' : String(row.counted_quantity);
-    if (typed !== saved) changes.push(Object.freeze({ variant_id: row.variant_id, counted: typed }));
+    if (typed !== closingSeedQuantity(row)) {
+      changes.push(Object.freeze({ variant_id: row.variant_id, counted: typed }));
+    }
   }
   return Object.freeze(changes);
+}
+
+/** One row of the sheet whose count does not coincide with the quantity the system expected (S2). */
+export interface ClosingCountDifference {
+  readonly variant_id: number;
+  readonly label: string;
+  readonly expected_quantity: number;
+  readonly counted_quantity: number;
+  readonly difference: number;
+}
+
+/** The whole quantity a text states, or `null` when it states none the sheet could save. */
+function wholeQuantity(text: string | undefined): number | null {
+  const raw = typeof text === 'string' ? text.trim() : '';
+  if (!/^(0|[1-9]\d{0,6})$/.test(raw)) return null;
+  const quantity = Number(raw);
+  return quantity > closingMaxCounted ? null : quantity;
+}
+
+/** The count of the sheet as the admin's draft states it: which rows differ and how many. */
+export interface ClosingCountReading {
+  readonly total: number;
+  /** How many rows differ from the expected quantity; `0` is a sheet that coincides (S1). */
+  readonly differing: number;
+  readonly differences: readonly ClosingCountDifference[];
+}
+
+/**
+ * The rows whose count does not coincide with the expected quantity, as the draft states them: a
+ * row edited back to the expected quantity is not a difference, and a row the admin did not type
+ * keeps the quantity the document publishes. It is a reading of the client's own draft and nothing
+ * else: no column, no document field and no request carries it (S2).
+ */
+export function closingCountReading(rows: readonly ClosingCountLine[],
+  draft: Readonly<Record<number, string>>): ClosingCountReading {
+  const differences: ClosingCountDifference[] = [];
+  for (const row of rows) {
+    const counted = wholeQuantity(draft[row.variant_id]) ?? closingAssumedQuantity(row);
+    const difference = counted - row.expected_quantity;
+    if (difference === 0) continue;
+    differences.push(Object.freeze({ variant_id: row.variant_id, label: closingLineLabel(row),
+      expected_quantity: row.expected_quantity, counted_quantity: counted, difference }));
+  }
+  return Object.freeze({ total: rows.length, differing: differences.length,
+    differences: Object.freeze(differences) });
 }
 
 // ---------------------------------------------------------------------------------
@@ -625,32 +685,21 @@ export function closingCountChanges(rows: readonly ClosingCountLine[],
 
 export interface ClosingBlocker { readonly code: string; readonly message: string }
 
-const listedNames = 4;
-
 /** `a, b y c`: the sides a statement is missing, named in the order they are stated. */
 function listedSides(sides: readonly string[]): string {
   if (sides.length <= 1) return sides.join('');
   return `${sides.slice(0, -1).join(', ')} y ${sides[sides.length - 1]}`;
 }
 
-function pendingBlocker(lines: readonly ClosingCountLine[]): ClosingBlocker {
-  const names = lines.map(closingLineLabel);
-  const listed = names.slice(0, listedNames).join(', ');
-  const rest = names.length > listedNames ? ` y ${names.length - listedNames} más` : '';
-  return Object.freeze({
-    code: 'count_pending',
-    message: `Faltan ${names.length} ${names.length === 1 ? 'variante' : 'variantes'} por contar: ${listed}${rest}.`,
-  });
-}
-
 /**
  * What still blocks the proposal, in the order the warehouse can act on it. Every blocker is a
  * fact of the settlement it already holds or of the draft it typed; the refusal itself is the
- * server's, and this list never replaces it. `sheet` is the sheet the admin is working on, which
- * carries the rows added by hand beside the snapshot of the cut.
+ * server's, and this list never replaces it. The count side has no arm of its own: the sheet opens
+ * coinciding with the system, so a variant waiting to be counted is not a fact any more (S1, S3),
+ * and no confirmation step is added in its place (S2).
  */
 export function closingBlockers(closing: Closing, view: DrawerView,
-  unsaved = false, sheet: readonly ClosingCountLine[] = closing.count_lines): readonly ClosingBlocker[] {
+  unsaved = false): readonly ClosingBlocker[] {
   if (!closingIsEditable(closing.status)) {
     return Object.freeze([Object.freeze({
       code: closing.status === 'proposed' ? 'state_conflict' : 'closed',
@@ -660,8 +709,6 @@ export function closingBlockers(closing: Closing, view: DrawerView,
     })]);
   }
   const blockers: ClosingBlocker[] = [];
-  const pending = closingPendingLines(sheet);
-  if (pending.length > 0) blockers.push(pendingBlocker(pending));
   if (view.problem !== '') {
     blockers.push(Object.freeze({ code: 'invalid_amount', message: view.problem }));
   }
@@ -695,7 +742,7 @@ export function closingBlockers(closing: Closing, view: DrawerView,
 
 /** The state of the sheet and the drawer as the action bar announces it. */
 export function closingBlockReason(blockers: readonly ClosingBlocker[]): string {
-  if (blockers.length === 0) return 'La rendición se puede proponer: el conteo cubre toda variante con existencia y la caja está contada.';
+  if (blockers.length === 0) return 'La rendición se puede proponer: la caja está declarada.';
   return blockers.map(blocker => blocker.message).join(' ');
 }
 

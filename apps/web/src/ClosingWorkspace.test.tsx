@@ -42,17 +42,21 @@ const cataloguePage = (search: string) => {
  * screen sends, so a save, a refusal and a reload are the real conversation and not a stub.
  * `bootstrap` is the first settlement of the branch (S11): no inherited fund, no sales, an
  * empty till, where only a contribution the Admin declares can leave a fund behind.
+ * `uncounted` leaves one line without a quantity on purpose: the sheet is seeded with the expected
+ * one on every opening (S1), so that shape is only the leftover of a settlement older than the
+ * seed and it is read defensively (L3).
  */
 function server(options: { opened?: boolean, status?: string, refuse?: unknown, bootstrap?: boolean,
-  contributed?: string, countedCash?: string, fund?: string,
+  contributed?: string, countedCash?: string, fund?: string, uncounted?: number,
   corrections?: unknown[] } = {}) {
+  const seeded: readonly (readonly [number, number])[] = [[1, 12], [2, 9], [3, 14]];
   const state = {
     opened: options.opened ?? true,
     status: options.status ?? 'open',
     bootstrap: options.bootstrap ?? false,
-    // A closed settlement states every counted quantity; a live one still has pending lines.
-    counted: new Map<number, number | null>((options.status ?? 'open') === 'closed'
-      ? [[1, 12], [2, 9], [3, 14]] : [[1, 12], [2, null], [3, null]]),
+    // The seed of the count sheet: every line carries the quantity the system expected (S1).
+    counted: new Map<number, number | null>(seeded.map(([id, value]) =>
+      [id, id === options.uncounted ? null : value])),
     // A settlement that was already proposed states its drawer; an open one does not.
     countedCash: options.countedCash
       ?? ((options.status ?? 'open') === 'open' ? null : '6980.00'),
@@ -192,10 +196,8 @@ const rail = () => screen.getByRole('complementary', { name: 'Números de la ren
 const actionBar = () => screen.getByRole('region', { name: 'Acciones de la rendición' });
 const proposeButton = () => within(actionBar()).getByRole('button', { name: 'Proponer a la sucursal' });
 
-/** Counts the two pending variants and states the drawer of the artboard. */
+/** States the drawer of the artboard; the sheet already coincides with the system (S1). */
 async function completeTheSheet() {
-  fireEvent.change(await screen.findByLabelText('Contado de Bosch Power R · 110 Ah'), { target: { value: '9' } });
-  fireEvent.change(screen.getByLabelText('Contado de Bosch Blue L · 60 Ah'), { target: { value: '14' } });
   fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '6.980,00' } });
   fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '900,00' } });
   fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
@@ -213,8 +215,9 @@ describe('opening and resuming a settlement', () => {
     expect(h.posts('/api/closings')).toHaveLength(1);
     expect(h.posts('/api/closings')[0].init.body).toBe('{"branch_location_id":2}');
     expect(new Headers(h.posts('/api/closings')[0].init.headers).get('X-CSRF-Token')).toBe(csrf);
-    // The sheet is the one the opening returned, not a client copy of it.
-    expect(within(await sheet()).getByLabelText('Contado de Bosch Power R · 110 Ah')).toHaveValue('');
+    // The sheet is the one the opening returned, not a client copy of it: every line arrives with
+    // the quantity the system expected, so the admin writes nothing to make it coincide (S1).
+    expect(within(await sheet()).getByLabelText('Contado de Bosch Power R · 110 Ah')).toHaveValue('9');
   });
 
   it('resumes the live settlement of a branch and says it holds the branch', async () => {
@@ -253,20 +256,83 @@ describe('opening and resuming a settlement', () => {
 });
 
 describe('the count sheet (S4)', () => {
-  it('shows the frozen expected quantity, the counted one and the running difference', async () => {
+  it('shows the frozen expected quantity, the seeded count and the running difference', async () => {
     const h = server();
     await ready(h);
     const count = await sheet();
     const power = within(count).getByLabelText('Contado de Bosch Power R · 110 Ah').closest('tr')!;
-    expect(within(power).getByText('9')).toBeInTheDocument();
-    expect(within(power).getByText('Pendiente')).toBeInTheDocument();
-    expect(power).toHaveClass('pending');
+    // The row opens carrying the expected quantity: it is no longer a cell waiting to be filled.
+    expect(within(power).getByLabelText('Contado de Bosch Power R · 110 Ah')).toHaveValue('9');
+    expect(within(power).getAllByRole('cell')[1]).toHaveTextContent('9');
+    expect(within(power).getByText('—')).toBeInTheDocument();
+    expect(within(power).queryByText('Pendiente')).not.toBeInTheDocument();
+    expect(power).not.toHaveClass('pending');
     fireEvent.change(within(power).getByLabelText('Contado de Bosch Power R · 110 Ah'), { target: { value: '8' } });
     expect(within(power).getByText('−1')).toBeInTheDocument();
     fireEvent.change(within(power).getByLabelText('Contado de Bosch Power R · 110 Ah'), { target: { value: '11' } });
     expect(within(power).getByText('+2')).toBeInTheDocument();
     // The expected quantity is the database's snapshot and never follows the count (S4).
     expect(within(power).getByText('9')).toBeInTheDocument();
+  });
+
+  it('counts the differences against the system in the draft and marks the changed rows (S2)', async () => {
+    const h = server();
+    await ready(h);
+    const count = await sheet();
+    const power = within(count).getByLabelText('Contado de Bosch Power R · 110 Ah').closest('tr')!;
+    // Nothing was written yet: the sheet coincides with the system, and the rail says so (S1).
+    expect(within(count).getByText('Conteo coincidente')).toBeInTheDocument();
+    expect(within(actionBar()).getByText('Conteo coincidente')).toBeInTheDocument();
+    expect(power).not.toHaveClass('changed');
+    fireEvent.change(within(power).getByLabelText('Contado de Bosch Power R · 110 Ah'), { target: { value: '8' } });
+    // One difference: the rail counts it and the row itself says it, in words and not by colour (S2).
+    expect(within(count).getByText('1 diferencia contra el sistema')).toBeInTheDocument();
+    expect(within(actionBar()).getByText('1 diferencia contra el sistema')).toBeInTheDocument();
+    expect(power).toHaveClass('changed');
+    expect(within(power).getByText('No coincide')).toBeInTheDocument();
+    // A line edited back to the expected quantity is not a difference any more.
+    fireEvent.change(within(power).getByLabelText('Contado de Bosch Power R · 110 Ah'), { target: { value: '9' } });
+    expect(within(count).getByText('Conteo coincidente')).toBeInTheDocument();
+    expect(power).not.toHaveClass('changed');
+    expect(within(power).queryByText('No coincide')).not.toBeInTheDocument();
+    // The count is the client's own draft: nothing of it was sent to the server (S2).
+    expect(h.posts('/api/closings/1/count')).toHaveLength(0);
+  });
+
+  it('reads a line the document does not state as the expected quantity (S1)', async () => {
+    // Defensive only: the seed gives every line a quantity, so a line without one is the leftover
+    // of a settlement opened before the seed (L3), and it is read as coinciding.
+    const h = server({ uncounted: 3 });
+    await ready(h);
+    const count = await sheet();
+    const blue = within(count).getByLabelText('Contado de Bosch Blue L · 60 Ah').closest('tr')!;
+    expect(within(blue).getByLabelText('Contado de Bosch Blue L · 60 Ah')).toHaveValue('14');
+    expect(within(blue).getByText('—')).toBeInTheDocument();
+    expect(within(blue).queryByText('Pendiente')).not.toBeInTheDocument();
+    expect(within(count).getByText('Conteo coincidente')).toBeInTheDocument();
+    // The drawer alone gates the offer: the line that carries no quantity blocks nothing (S1, S3).
+    fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '800,00' } });
+    fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '500,00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
+    await waitFor(() => expect(proposeButton()).toBeEnabled());
+    expect(proposeButton()).not.toHaveAccessibleDescription(/por contar/);
+  });
+
+  it('writes a zero the admin counted as an explicit zero (S4)', async () => {
+    const h = server();
+    await ready(h);
+    const count = await sheet();
+    const blue = within(count).getByLabelText('Contado de Bosch Blue L · 60 Ah').closest('tr')!;
+    fireEvent.change(within(blue).getByLabelText('Contado de Bosch Blue L · 60 Ah'), { target: { value: '0' } });
+    expect(within(blue).getByText('−14')).toBeInTheDocument();
+    expect(within(count).getByText('1 diferencia contra el sistema')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '6.980,00' } });
+    fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '900,00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
+    await waitFor(() => expect(h.posts('/api/closings/1/count')).toHaveLength(1));
+    // Zero is a count like any other: it leaves the screen as the explicit 0, never as an absent one.
+    expect(JSON.parse(String(h.posts('/api/closings/1/count')[0].init.body)))
+      .toEqual({ lines: [{ variant_id: 3, counted_quantity: 0 }] });
   });
 
   it('filters the sheet locally, without reading the server again', async () => {
@@ -282,32 +348,29 @@ describe('the count sheet (S4)', () => {
 });
 
 describe('proposing (S14)', () => {
-  it('blocks the proposal while rows are pending and names the variants still to count', async () => {
+  it('blocks the proposal only for the drawer it does not have, never for a sheet line (S1, S3)', async () => {
     const h = server();
     await ready(h);
     await sheet();
+    // The sheet of the cut coincides with the system: the count side of the gate has no arm at all.
     expect(proposeButton()).toBeDisabled();
-    expect(proposeButton()).toHaveAccessibleDescription(
-      /Faltan 2 variantes por contar: Bosch Power R · 110 Ah, Bosch Blue L · 60 Ah/);
     expect(proposeButton()).toHaveAccessibleDescription(/Falta la caja contada y el fondo/);
+    expect(proposeButton()).not.toHaveAccessibleDescription(/por contar/);
     expect(h.posts('/api/closings/1/propose')).toHaveLength(0);
   });
 
-  it('enables the proposal once the sheet is covered and the drawer is saved', async () => {
+  it('enables the proposal without a single quantity written once the drawer is declared (S1, S3)', async () => {
     const h = server();
     await ready(h);
-    fireEvent.change(await screen.findByLabelText('Contado de Bosch Power R · 110 Ah'), { target: { value: '8' } });
-    fireEvent.change(screen.getByLabelText('Contado de Bosch Blue L · 60 Ah'), { target: { value: '14' } });
-    // Unsaved work is not an offer: the count and the drawer are saved explicitly first.
+    fireEvent.change(await screen.findByLabelText('Caja contada (Bs)'), { target: { value: '6.980,00' } });
+    fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '900,00' } });
+    // Unsaved work is not an offer: the drawer is saved explicitly first.
     expect(proposeButton()).toBeDisabled();
     expect(proposeButton()).toHaveAccessibleDescription(/cambios sin guardar/);
-    fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '6.980,00' } });
-    fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '900,00' } });
     fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
     await waitFor(() => expect(proposeButton()).toBeEnabled());
-    expect(h.posts('/api/closings/1/count')).toHaveLength(1);
-    expect(JSON.parse(String(h.posts('/api/closings/1/count')[0].init.body))).toEqual({
-      lines: [{ variant_id: 2, counted_quantity: 8 }, { variant_id: 3, counted_quantity: 14 }] });
+    // Not one line changed, so not one line is sent: the sheet already coincides with the system.
+    expect(h.posts('/api/closings/1/count')).toHaveLength(0);
     expect(JSON.parse(String(h.posts('/api/closings/1/cash')[0].init.body))).toEqual({
       counted_cash: '6980.00', contributed_cash: '0.00', closing_cash: '900.00', observation: '' });
     fireEvent.click(proposeButton());
@@ -460,13 +523,6 @@ describe('the drawer draft (S10)', () => {
 describe('the contribution the Admin declares (S10, S11)', () => {
   const contributionField = () => screen.getByLabelText('Aporte del Almacén (Bs)');
 
-  /** Counts the two pending variants of the fixture, so only the drawer is left to state. */
-  async function countTheSheet() {
-    fireEvent.change(await screen.findByLabelText('Contado de Bosch Power R · 110 Ah'),
-      { target: { value: '9' } });
-    fireEvent.change(screen.getByLabelText('Contado de Bosch Blue L · 60 Ah'), { target: { value: '14' } });
-  }
-
   it('starts from the contribution the settlement already reports and keeps it on save', async () => {
     const h = server({ contributed: '500.00' });
     await ready(h);
@@ -486,7 +542,6 @@ describe('the contribution the Admin declares (S10, S11)', () => {
       const h = server({ bootstrap: true });
       await ready(h);
       await sheet();
-      await countTheSheet();
       fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '0,00' } });
       fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '500,00' } });
       // An empty till bounds the fund at zero, and the screen names the excess before the server.
@@ -510,7 +565,6 @@ describe('the contribution the Admin declares (S10, S11)', () => {
     const h = server({ bootstrap: true });
     const view = await ready(h);
     await sheet();
-    await countTheSheet();
     fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '0,00' } });
     fireEvent.change(contributionField(), { target: { value: '500,00' } });
     fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '500,00' } });
@@ -530,7 +584,6 @@ describe('the contribution the Admin declares (S10, S11)', () => {
     const h = server({ bootstrap: true });
     await ready(h);
     await sheet();
-    await countTheSheet();
     fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '0,00' } });
     fireEvent.change(contributionField(), { target: { value: '300,00' } });
     fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '500,00' } });
@@ -545,7 +598,6 @@ describe('the contribution the Admin declares (S10, S11)', () => {
     const h = server({ bootstrap: true });
     await ready(h);
     await sheet();
-    await countTheSheet();
     fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '0,00' } });
     fireEvent.change(contributionField(), { target: { value: '500,00' } });
     fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '500,00' } });
@@ -712,10 +764,11 @@ describe('a battery the system did not have (S4, S5)', () => {
     // It carries no expected quantity at all, and says why it is different from a sheet row.
     expect(within(row).getAllByRole('cell')[1]).toHaveTextContent('—');
     expect(within(row).getByText('Fuera del sistema')).toBeInTheDocument();
-    // An uncounted added row is a pending line and blocks the proposal by name, beside the rest.
+    // The row is a change of the draft and not a line waiting to be counted: what holds the offer
+    // back is that it is not saved yet, never a variant the sheet has to cover (S1, S3).
     expect(proposeButton()).toBeDisabled();
-    expect(proposeButton()).toHaveAccessibleDescription(
-      /Faltan 3 variantes por contar: Bosch Power R · 110 Ah, Bosch Blue L · 60 Ah, Toyo NS60 R · 65 Ah/);
+    expect(proposeButton()).toHaveAccessibleDescription(/cambios sin guardar/);
+    expect(proposeButton()).not.toHaveAccessibleDescription(/por contar/);
     fireEvent.change(within(row).getByLabelText('Contado de Toyo NS60 R · 65 Ah'),
       { target: { value: '4' } });
     fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
@@ -767,20 +820,19 @@ describe('a battery the system did not have (S4, S5)', () => {
     expect(h.posts('/api/closings/1/count')).toHaveLength(0);
   });
 
-  it('takes the offer back while the added row is uncounted or not saved', async () => {
+  it('takes the offer back while the added row travels unsaved', async () => {
     const h = server();
     await ready(h);
-    fireEvent.change(await screen.findByLabelText('Contado de Bosch Power R · 110 Ah'),
-      { target: { value: '9' } });
-    fireEvent.change(screen.getByLabelText('Contado de Bosch Blue L · 60 Ah'), { target: { value: '14' } });
     fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '800,00' } });
     fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '500,00' } });
     fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
     await waitFor(() => expect(proposeButton()).toBeEnabled());
     const count = await catalogueSearch();
     fireEvent.click(within(count).getByRole('button', { name: 'Agregar Toyo NS60 R · 65 Ah' }));
+    // The added row is not of the cut, so it is no variant to count: it is an unsaved change.
     expect(proposeButton()).toBeDisabled();
-    expect(proposeButton()).toHaveAccessibleDescription(/Faltan 1 variante por contar: Toyo NS60 R · 65 Ah/);
+    expect(proposeButton()).toHaveAccessibleDescription(/cambios sin guardar/);
+    expect(proposeButton()).not.toHaveAccessibleDescription(/por contar/);
     fireEvent.change(screen.getByLabelText('Contado de Toyo NS60 R · 65 Ah'), { target: { value: '4' } });
     // Counted and unsaved is still not an offer: the closure has no count for it yet.
     expect(proposeButton()).toBeDisabled();

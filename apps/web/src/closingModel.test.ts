@@ -4,7 +4,9 @@ import {
   canonicalCountPayload, canonicalDrawerPayload, closingAcceptance, closingAccountLabel,
   closingBlockers, closingBlockReason, closingCents, closingDecisionPayload, closingDecisionReadiness,
   closingDifferenceName, closingLineDifference, closingLineLabel, closingMomentText,
-  closingPendingLines, closingPeriod, closingPeriodLabel, closingProgress, closingQuantityText,
+  closingAssumedQuantity, closingChangedTag, closingCountDifferenceText, closingCountMatchTag,
+  closingCountReading, closingSeedQuantity,
+  closingPeriod, closingPeriodLabel, closingQuantityText,
   closingRail, closingMoneyText, closingRoundStateLabel, closingSheetChanges, closingSignedCents,
   closingSignedText, drawerDraftFrom, drawerView, emptyDrawerDraft, filterCountLines,
   canonicalCorrection, canonicalCorrectionBody, closingAcceptedCorrections, closingCorrectedAmounts,
@@ -152,17 +154,23 @@ describe('S9 the commission is reported beside the drawer and inside no cash ide
 });
 
 describe('S4 the count sheet is not blind and never recalculates the expected quantity', () => {
-  it('states the progress of the sheet and which rows are still pending', () => {
-    const progress = closingProgress(lines);
-    expect(progress).toEqual({ total: 11, counted: 9, pending: 2 });
-    expect(closingPendingLines(lines).map(entry => entry.variant_id)).toEqual([10, 11]);
+  it('assumes a line without a count coincides with the system, with no hole in the sheet (S1)', () => {
+    // A line that carries no count can only come from a settlement opened before the seed (L3):
+    // it is read as coinciding, so it is neither an empty cell nor a difference.
+    expect(closingAssumedQuantity(line(10, 3, null))).toBe(3);
+    expect(closingLineDifference(line(10, 3, null))).toBe(0);
+    expect(closingSeedQuantity(line(10, 3, null))).toBe('3');
+    expect(closingSeedQuantity(line(2, 9, 8))).toBe('8');
+    expect(closingSeedQuantity(line(2, 9, 9))).toBe('9');
+    // A row the cut did not know publishes nothing: its quantity is the admin's to state (S4).
+    expect(closingSeedQuantity(line(20, 0, null))).toBe('');
   });
 
-  it('shows the difference of a counted row with its sign and a pending row without one', () => {
+  it('shows the difference of a row with its sign, and a dash for a row that coincides', () => {
     expect(closingLineDifference(line(2, 9, 8))).toBe(-1);
     expect(closingLineDifference(line(4, 11, 13))).toBe(2);
     expect(closingLineDifference(line(1, 12, 12))).toBe(0);
-    expect(closingLineDifference(line(10, 3, null))).toBeNull();
+    expect(closingLineDifference(line(10, 3, null))).toBe(0);
     expect(closingQuantityText(-1)).toBe('−1');
     expect(closingQuantityText(2)).toBe('+2');
     expect(closingQuantityText(0)).toBe('—');
@@ -201,6 +209,58 @@ describe('S4 the count sheet is not blind and never recalculates the expected qu
   it('labels a row with its battery, polarity and capacity', () => {
     expect(closingLineLabel(line(10, 3, null, { model: 'Power', capacity_ah: '110' })))
       .toBe('Bosch Power R · 110 Ah');
+  });
+});
+
+// ---------------------------------------------------------------------------------
+// The count of the sheet against the system: a purely local reading of the draft (S2)
+// ---------------------------------------------------------------------------------
+
+describe('S2 the count the admin writes is a difference of the draft only', () => {
+  /** The sheet of a live settlement as the seed leaves it: every line carries the expected one. */
+  const seeded = closing({ count_lines: lines.map(entry => Object.freeze({ ...entry,
+    counted_quantity: entry.expected_quantity })) });
+  const rows = closingSheetRows(seeded);
+  const seededDraft = (subject: readonly ClosingCountLine[]) => Object.fromEntries(
+    subject.map(row => [row.variant_id, closingSeedQuantity(row)]));
+
+  it('counts the rows the draft moves away from the expected quantity, and only those (S2)', () => {
+    const draft = seededDraft(rows);
+    // A sheet nobody touched coincides with the system: no difference at all (S1).
+    expect(closingCountReading(rows, draft)).toEqual({ total: 11, differing: 0, differences: [] });
+    const edited = closingCountReading(rows, { ...draft, 2: '8' });
+    expect(edited.differing).toBe(1);
+    expect(edited.differences).toEqual([{ variant_id: 2, label: 'Bosch S4 R · 45 Ah',
+      expected_quantity: 9, counted_quantity: 8, difference: -1 }]);
+    expect(closingCountDifferenceText(edited.differing)).toBe('1 diferencia contra el sistema');
+    expect(closingCountDifferenceText(2)).toBe('2 diferencias contra el sistema');
+    // A line edited back to the expected quantity is a line that coincides again.
+    expect(closingCountReading(rows, { ...draft, 2: '9' }).differing).toBe(0);
+    expect(closingCountReading(rows, { ...draft, 2: '8', 4: '13' }).differing).toBe(2);
+    // The two words the screen uses are the same ones the tests read (S2).
+    expect(closingCountMatchTag).toBe('Conteo coincidente');
+    expect(closingChangedTag).toBe('No coincide');
+  });
+
+  it('keeps a zero the admin wrote explicitly, in the reading and in the payload (S4)', () => {
+    const draft = { ...seededDraft(rows), 5: '0' };
+    expect(closingCountReading(rows, draft).differences).toEqual([{ variant_id: 5,
+      label: 'Bosch S4 L · 45 Ah', expected_quantity: 7, counted_quantity: 0, difference: -7 }]);
+    // Zero is a count like any other: it is written whole and never dropped as an absent one.
+    expect(closingCountChanges(rows, draft)).toEqual([{ variant_id: 5, counted: '0' }]);
+    expect(canonicalCountPayload(closingCountChanges(rows, draft)))
+      .toEqual([{ variant_id: 5, counted_quantity: 0 }]);
+  });
+
+  it('leaves the offer to the declared drawer alone, with or without differences (S1, S3)', () => {
+    const stated = (subject: Closing) => drawerView(closingRail(subject), { counted: '7.015,00',
+      contribution: '0,00', fund: '900,00', observation: '' });
+    // The unseeded shape is read as coinciding too, so nothing on the count side blocks it.
+    const unseeded = closing();
+    expect(closingBlockers(unseeded, stated(unseeded))).toEqual([]);
+    // The sheet that only differs keeps the same gate: the count adds no arm and no step (S2).
+    expect(closingBlockers(seeded, stated(seeded))).toEqual([]);
+    expect(closingBlockReason([])).toBe('La rendición se puede proponer: la caja está declarada.');
   });
 });
 
@@ -346,15 +406,13 @@ describe('S14 what still blocks the offer, named', () => {
   const view = (subject: Closing, draft: DrawerDraft = { counted: '6.980,00', contribution: '0,00',
     fund: '900,00', observation: '' }) => drawerView(closingRail(subject), draft);
 
-  it('names the variants still to count and the drawer that is not stated', () => {
+  it('names only the drawer that is not stated, never a variant to count', () => {
     const subject = closing();
     const blockers = closingBlockers(subject, view(subject, emptyDrawerDraft));
-    expect(blockers.map(blocker => blocker.code)).toEqual(['count_pending', 'cash_not_stated']);
-    expect(blockers[0].message).toContain('Faltan 2 variantes por contar');
-    expect(blockers[0].message).toContain('Bosch Power R · 110 Ah');
-    expect(blockers[0].message).toContain('Bosch S5 L · 100 Ah');
-    expect(blockers[1].message).toBe('Falta la caja contada y el fondo que queda en la caja: el cierre no puede proponerse sin eso.');
-    expect(closingBlockReason(blockers)).toContain('Faltan 2 variantes por contar');
+    // The count side has no arm: the sheet opens coinciding with the system (S1, S3).
+    expect(blockers.map(blocker => blocker.code)).toEqual(['cash_not_stated']);
+    expect(blockers[0].message).toBe('Falta la caja contada y el fondo que queda en la caja: el cierre no puede proponerse sin eso.');
+    expect(closingBlockReason(blockers)).not.toContain('por contar');
   });
 
   it('names the contribution it does not have and never guesses the bound without it', () => {
@@ -383,7 +441,7 @@ describe('S14 what still blocks the offer, named', () => {
   it('lets the offer through only when the sheet is covered, the drawer is stated and nothing is unsaved', () => {
     const subject = complete();
     expect(closingBlockers(subject, view(subject), false)).toEqual([]);
-    expect(closingBlockReason([])).toBe('La rendición se puede proponer: el conteo cubre toda variante con existencia y la caja está contada.');
+    expect(closingBlockReason([])).toBe('La rendición se puede proponer: la caja está declarada.');
     expect(closingBlockers(subject, view(subject), true).map(blocker => blocker.code)).toEqual(['unsaved']);
   });
 
@@ -764,8 +822,7 @@ describe('S4, S5 a battery the system did not have', () => {
   it('sends only what the admin counted, the added row included and nothing else', () => {
     const rows = closingSheetRows(closing(), [catalogueVariant(20)]);
     // The screen seeds the draft from the sheet, so a row the admin did not touch is not a change.
-    const seeded = Object.fromEntries(rows.map(row =>
-      [row.variant_id, row.counted_quantity === null ? '' : String(row.counted_quantity)]));
+    const seeded = Object.fromEntries(rows.map(row => [row.variant_id, closingSeedQuantity(row)]));
     const changes = closingCountChanges(rows, { ...seeded, 1: '11', 20: '3' });
     // The added row travels exactly like a sheet row: its counted quantity and its variant.
     expect(changes).toEqual([{ variant_id: 1, counted: '11' }, { variant_id: 20, counted: '3' }]);
@@ -773,18 +830,23 @@ describe('S4, S5 a battery the system did not have', () => {
       { variant_id: 1, counted_quantity: 11 }, { variant_id: 20, counted_quantity: 3 }]);
     // What was not counted is not sent: no row invents a zero for the admin (S4).
     expect(closingCountChanges(rows, { ...seeded, 1: '11' })).toEqual([{ variant_id: 1, counted: '11' }]);
+    // The lines of the cut that arrive without a count are sent only when the admin writes one.
+    expect(closingCountChanges(rows, seeded)).toEqual([]);
   });
 
-  it('blocks the proposal while the added row is uncounted, naming it', () => {
+  it('never blocks on the added row itself: a row with no count asserts nothing (S1, S3)', () => {
     const sheetless = closing({ count_lines: [] });
     const stated = drawerView(closingRail(sheetless), { counted: '7.015,00', contribution: '0,00',
       fund: '900,00', observation: '' });
     const rows = closingSheetRows(sheetless, [catalogueVariant(20)]);
-    const blocked = closingBlockers(sheetless, stated, false, rows);
-    expect(blocked.map(blocker => blocker.code)).toEqual(['count_pending']);
-    expect(blocked[0].message).toBe('Faltan 1 variante por contar: Toyo NS60 R · 65 Ah.');
-    // Without the added row, and with the drawer stated, nothing blocks the offer.
-    expect(closingBlockers(sheetless, stated, false, [])).toEqual([]);
+    // A row the cut did not know assumes nothing, so the gate is the drawer's alone; what holds the
+    // offer back is that the row is still an unsaved change of the draft.
+    expect(closingBlockers(sheetless, stated)).toEqual([]);
+    expect(closingBlockers(sheetless, stated, true).map(blocker => blocker.code)).toEqual(['unsaved']);
+    // Once the admin states its count it is a difference of the sheet, read in the draft only (S2).
+    expect(closingCountReading(rows, { 20: '4' }).differences).toEqual([{ variant_id: 20,
+      label: 'Toyo NS60 R · 65 Ah', expected_quantity: 0, counted_quantity: 4, difference: 4 }]);
+    expect(closingCountReading(rows, {})).toEqual({ total: 1, differing: 0, differences: [] });
   });
 
   it('keeps the added row of a reloaded draft, still outside the system', () => {
@@ -794,7 +856,7 @@ describe('S4, S5 a battery the system did not have', () => {
     expect(closingLineIsOutsideSystem(added)).toBe(true);
     expect(added.counted_quantity).toBe(3);
     expect(closingLineDifference(added)).toBe(3);
-    // The reloaded sheet covers the added row like any other line of the count.
-    expect(closingProgress(reloaded.count_lines).total).toBe(lines.length + 1);
+    // The reloaded sheet carries the added row like any other line of the count.
+    expect(closingSheetRows(reloaded)).toHaveLength(lines.length + 1);
   });
 });

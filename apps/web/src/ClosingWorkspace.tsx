@@ -12,11 +12,13 @@ import {
   closingCountChanges, closingDifferenceName, closingIsEditable, closingIsLive, closingLineDifference,
   closingLineIsOutsideSystem, closingLineLabel,
   closingCountBatches, closingMoneyText, closingMomentText, closingObservationMessage,
-  closingPendingCorrection, closingPendingTag, closingPeriod,
+  closingPendingCorrection, closingPeriod,
   closingPeriodLabel,
-  closingProgress, closingQuantityMessage, closingQuantityText, closingRateText, closingRail,
+  closingQuantityMessage, closingQuantityText, closingRateText, closingRail,
   closingRemoveLine, closingSearchMessage, closingSheetRows, closingSheetVariantIDs,
   closingSignedText, closingStatusLabels, closingOutsideSystemHelp, closingOutsideSystemTag,
+  closingChangedTag, closingCountDifferenceText, closingCountMatchTag, closingCountReading,
+  closingSeedQuantity,
   correctionDraftFrom, drawerDraftFrom,
   drawerView,
   emptyDrawerDraft, filterCountLines,
@@ -39,12 +41,10 @@ export interface ClosingWorkspaceProps {
   fetcher?: typeof globalThis.fetch;
 }
 
-/** The fields the admin is typing; a field the settlement already holds is restored on load. */
+/** The fields the admin is typing; every row starts from the quantity the settlement publishes. */
 function countDraftFrom(closing: Closing): Record<number, string> {
   const draft: Record<number, string> = {};
-  for (const line of closing.count_lines) {
-    draft[line.variant_id] = line.counted_quantity === null ? '' : String(line.counted_quantity);
-  }
+  for (const line of closing.count_lines) draft[line.variant_id] = closingSeedQuantity(line);
   return draft;
 }
 
@@ -331,8 +331,10 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
 
   function setCountedValue(line: ClosingCountLine, value: string) {
     if (!/^\d{0,7}$/.test(value)) return;
-    if (value === '' && line.counted_quantity !== null) {
-      setProblem('Una variante ya contada conserva su cantidad: el conteo no se borra, se corrige.');
+    // A row the document already states is never blanked: an empty cell is exactly the "still to
+    // count" marker this contract does not have, and the closure always reads a quantity (S1, S2).
+    if (value === '' && closingSeedQuantity(line) !== '') {
+      setProblem('La cantidad de una variante no se borra, se corrige: la planilla arranca coincidiendo con el sistema.');
       return;
     }
     setProblem('');
@@ -372,11 +374,15 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   const changed = closing === null ? [] : closingCountChanges(rows, counted);
   const unsaved = closing !== null
     && (changed.length > 0 || added.length > 0 || !sameDrawer(draft, drawerDraftFrom(closing)));
-  const blockers = closing === null || view === null ? [] : closingBlockers(closing, view, unsaved, rows);
+  const blockers = closing === null || view === null ? [] : closingBlockers(closing, view, unsaved);
   const blocked = blockers.length > 0;
   const searchValid = validSearch(search);
   const visibleRows = searchValid ? filterCountLines(rows, search) : rows;
-  const progress = closingProgress(rows);
+  // The count of the draft against the system: purely local, it is neither sent nor stored (S2).
+  const countReading = closingCountReading(rows, counted);
+  const changedIDs = new Set(countReading.differences.map(entry => entry.variant_id));
+  const countTag = countReading.differing === 0
+    ? closingCountMatchTag : closingCountDifferenceText(countReading.differing);
   const reasonID = 'closing-block-reason';
   const period = closing === null ? null : closingPeriod(closing.period_start, closing.cut_at);
   // The rail answers to what is typed, over the facts the settlement holds: the difference and
@@ -457,12 +463,13 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
         <section className="closing-panel" aria-labelledby="closing-count-title">
           <header className="closing-panel-head">
             <h2 id="closing-count-title">Conteo de stock</h2>
-            <span className={`closing-tag ${progress.pending === 0 ? 'ok' : 'warn'}`}>
-              {progress.counted} de {progress.total} {progress.total === 1 ? 'contada' : 'contadas'}
+            <span className={`closing-tag ${countReading.differing === 0 ? 'ok' : 'warn'}`}>
+              {countTag}
             </span>
             <small className="closing-muted">
-              {progress.pending === 0 ? 'Todas las variantes con existencia están contadas'
-                : `Quedan ${progress.pending} ${progress.pending === 1 ? 'variante' : 'variantes'} por contar`}
+              {countReading.differing === 0
+                ? 'La planilla arranca coincidiendo con el sistema: escribí sólo las variantes que no coincidan'
+                : 'Las filas marcadas mueven la existencia al cerrar: el resto queda como el sistema lo tiene'}
             </small>
           </header>
           <div className="closing-search">
@@ -528,7 +535,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
               <tbody onKeyDown={moveFocus}>{visibleRows.map(line => {
                 const typed = counted[line.variant_id];
                 const difference = draftDifference(line, typed);
-                const pendingRow = line.counted_quantity === null && (typed ?? '') === '';
+                const changedRow = changedIDs.has(line.variant_id);
                 // A row added by hand is not a row of the cut: the system had none of it, so it
                 // carries no expected quantity and says so at a glance.
                 const outside = closingLineIsOutsideSystem(line);
@@ -537,14 +544,15 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
                   : difference < 0 ? 'neg' : 'pos';
                 return <tr key={line.variant_id} data-variant-id={line.variant_id}
                   data-outside={outside ? 'true' : undefined}
-                  className={[pendingRow ? 'pending' : '', outside ? 'outside' : '']
+                  data-changed={changedRow ? 'true' : undefined}
+                  className={[changedRow ? 'changed' : '', outside ? 'outside' : '']
                     .filter(name => name !== '').join(' ') || undefined}>
                   <td>
                     {line.brand}{' '}
                     <small>{line.model} · {line.capacity_ah} Ah · {line.polarity}</small>
                     {outside && <span className="closing-outside" title={closingOutsideSystemHelp}>
                       {closingOutsideSystemTag}</span>}
-                    {pendingRow && <span className="closing-pending">{closingPendingTag}</span>}
+                    {changedRow && <span className="closing-changed">{closingChangedTag}</span>}
                     {editable && removal && <button type="button" className="closing-unadd" disabled={busy}
                       aria-label={`Quitar ${closingLineLabel(line)} del borrador`}
                       onClick={() => setAdded(current => closingRemoveLine(current, line.variant_id))}>
@@ -563,9 +571,10 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
             </table>
           </div>
           <p className="closing-help">
-            Al cerrar, cada variante contada queda con su existencia <b>exactamente igual a lo contado</b>.
-            Las filas marcadas como pendientes todavía no permiten proponer. Una fila agregada por vos
-            queda <b>fuera del sistema</b>: no lleva cantidad esperada porque la sucursal no la tenía.
+            La planilla arranca <b>coincidiendo con el sistema</b>: escribí sólo las variantes que contaste
+            distintas y la fila queda marcada como diferencia. Al cerrar, cada variante contada queda con su
+            existencia <b>exactamente igual a lo contado</b>. Una fila agregada por vos queda
+            <b>fuera del sistema</b>: no lleva cantidad esperada porque la sucursal no la tenía.
           </p>
         </section>
 
@@ -840,8 +849,8 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
 
       <div className="closing-bar" role="region" aria-label="Acciones de la rendición">
         <div className="closing-bar-state">
-          <span className={`closing-tag ${progress.pending === 0 ? 'ok' : 'warn'}`}>
-            {progress.pending === 0 ? 'Conteo completo' : `Faltan ${progress.pending} ${progress.pending === 1 ? 'variante' : 'variantes'} por contar`}
+          <span className={`closing-tag ${countReading.differing === 0 ? 'ok' : 'warn'}`}>
+            {countTag}
           </span>
           {liveDifference !== null && <span className={`closing-tag ${liveDifference < 0n ? 'short' : 'ok'}`}>
             {`Diferencia de caja ${closingSignedText(liveDifference)}`}
