@@ -170,6 +170,12 @@ POST /api/closings
   `proposed` and `rejected` are all live, so only a closed settlement leaves the branch free.
 * A retired branch is refused by name: `409 {"error":"branch_retired","branch_location_id":3}`.
 
+The answer is the whole settlement document, so a period the branch already sold shows its money
+here too: the settlement above is the first one of a branch, whose window is empty, and a later
+one publishes the derived `cash_sales`, `cash_expenses`, `sales_total`, `card_total`,
+`transfer_total`, `qr_total` and `commission_amount` of its own window (see
+[Frozen from the proposal, derived before it](#frozen-from-the-proposal-derived-before-it)).
+
 The first settlement of a branch is the bootstrap: it settles an empty period (`period_start`
 equals `cut_at`), pays no commission and leaves the fund the warehouse declares as a
 contribution (`contributed_cash`) — the drawer starts at zero, so nothing else could leave a
@@ -255,17 +261,43 @@ drawer, so they are published as their own amounts and are never added to `cash_
 `expected_cash`, `cash_difference` or `taken_cash`.
 
 From the proposal on, `cash_expenses` is the sum of the `expenses` the same document publishes —
-the ledger of its own window — so the total and its breakdown always describe one period.
+the ledger of its own window — so the total and its breakdown always describe one period. While the
+settlement is `open`, the same document publishes the `expenses` of its window and derives that
+total from them, so the operator reads the exact amounts the proposal is about to subtract.
 
-While the settlement is `open` or `rejected`, `sales_total`, `cash_sales`, `cash_expenses`,
-`card_total`, `transfer_total`, `qr_total` and `commission_amount` read `"0.00"`: the database
-records the offer of the period when the warehouse proposes (it is the offer the branch will
-accept, and it must not move afterwards). The drawer draft still shows its own identities over
-the facts known at that moment, which is why a draft can show a difference that the proposal
-later restates precisely. `expenses` is the exception in that window: it is the branch's ledger
-and is published while the warehouse holds the settlement, so the admin reads the exact amounts
-the proposal is about to subtract; the proposal then freezes their total in `cash_expenses` and
-the two never disagree again.
+### Frozen from the proposal, derived before it
+
+`sales_total`, `cash_sales`, `cash_expenses`, `card_total`, `transfer_total`, `qr_total` and
+`commission_amount` are **frozen by the database when the warehouse proposes**, over the window
+`[period_start, cut_at)` of the settlement: they are the offer the branch is asked to accept, so
+nothing rewrites them afterwards — not a later sale, not a later change of the configured rate, not
+the closure.
+
+| State | What those seven fields publish |
+|---|---|
+| `open` | **Derived**, from the same ledgers and the same window the proposal uses: the sale subtotals, the collection by payment method and the branch's expense ledger. Nothing is written; the row still holds its zeros. |
+| `proposed` | The columns the proposal froze: the offer the branch is deciding. |
+| `rejected` | The columns the proposal froze: the offer the branch answered. A later read never re-derives it, so a rejection keeps showing exactly what was rejected. |
+| `closed` | The columns the closure froze: the history its branch signed. |
+
+Before the proposal there is nothing to freeze, so an `open` settlement publishes the period its
+ledgers hold at that instant — the cash in the drawer, the expenses of the window, the total sold,
+the electronic collection and the commission — and `expected_cash` follows from it
+(`opening_cash + cash_sales - cash_expenses`). This is what makes the expectation of an open
+settlement real instead of zero, and it is the same arithmetic, over the same window, that the
+proposal records: the draft is a preview of exactly the numbers the branch will be asked to accept.
+
+The previewed commission uses the branch's **currently configured** rate, which is the one a
+proposal made at that instant would freeze; `commission_rate_percent` itself stays `null` while
+the settlement is `open`, because nothing is frozen yet. Only a rate change *between* the read and
+the proposal makes the preview differ from the offer, and the proposal then publishes the frozen
+rate and amount. A branch without a configured rate has no commission to preview: the settlement
+opens anyway, publishes its period with `commission_amount` `"0.00"`, and the proposal is the
+route that refuses it with `409 commission_rate_missing`.
+
+The values of a `rejected` or `closed` settlement are never re-derived, and this is deliberate: a
+rejection keeps the offer the branch answered, and a closure is the history its branch signed, so
+deriving them would let a later rate change rewrite what was accepted.
 
 ## Expenses of the branch
 
@@ -483,12 +515,12 @@ Every route of this contract answers the whole settlement, with exactly these ke
 | `period_start`, `cut_at`, `closed_at` | The period it settles; `closed_at` is `null` until the closure |
 | `commission_rate_percent` | The frozen rate; `null` while the settlement is `open` |
 | `opening_cash` | The fund inherited from the previous closure (`"0.00"` for the first) |
-| `cash_sales`, `cash_expenses` | The cash the branch collected and the expenses it recorded in the period |
+| `cash_sales`, `cash_expenses` | The cash the branch collected and the expenses it recorded in the period: derived from the ledgers while the settlement is `open`, frozen from the proposal on |
 | `expected_cash` | Derived, see above |
 | `counted_cash`, `cash_difference` | What was counted and its sign against the expected drawer; `null` while uncounted |
 | `contributed_cash`, `closing_cash`, `taken_cash` | The contribution, the fund left behind and what the warehouse takes; see above |
-| `sales_total`, `commission_amount` | The commission base and the reported commission of the period |
-| `card_total`, `transfer_total`, `qr_total` | The electronic collection of the period, published on its own |
+| `sales_total`, `commission_amount` | The commission base and the reported commission of the period: derived from the ledgers and the configured rate while the settlement is `open`, frozen from the proposal on |
+| `card_total`, `transfer_total`, `qr_total` | The electronic collection of the period, published on its own, with the same frozen-or-derived rule |
 | `observation` | The free text of the drawer |
 | `opened_by_account_id` | The warehouse account that opened it |
 | `count_lines` | The sheet, ordered by `variant_id`, with `expected_quantity` and the `counted_quantity` the opener seeded from it, which is the warehouse's own number where it disagreed; `null` only on a sheet written before that seeding |
@@ -547,9 +579,11 @@ GET /api/closings?branch_location_id=2&page=1&page_size=25
  "closings":[
   {"id":2,"branch_location_id":2,"branch_name":"Sucursal A","status":"open",
    "period_start":"2026-03-23T18:30:00Z","cut_at":"2026-04-23T18:30:00Z","closed_at":null,
-   "commission_rate_percent":null,"expected_cash":"100.00","counted_cash":null,
-   "cash_difference":null,"commission_amount":"0.00","closing_cash":null,"taken_cash":null,
-   "count_lines":[],"rounds":[],"expenses":[],"corrections":[]},
+   "commission_rate_percent":null,"opening_cash":"100.00","cash_sales":"40.00",
+   "cash_expenses":"10.00","expected_cash":"130.00","counted_cash":null,
+   "cash_difference":null,"sales_total":"40.00","commission_amount":"5.00",
+   "card_total":"0.00","transfer_total":"0.00","qr_total":"0.00","closing_cash":null,
+   "taken_cash":null,"count_lines":[],"rounds":[],"expenses":[],"corrections":[]},
   {"id":1,"branch_location_id":2,"branch_name":"Sucursal A","status":"closed",
    "period_start":"2026-02-23T18:00:00Z","cut_at":"2026-03-23T18:30:00Z",
    "closed_at":"2026-03-23T18:31:10Z","commission_rate_percent":"10.00",
@@ -565,11 +599,15 @@ which makes an empty page beyond the last one harmless.
 
 Every row is the **same document projection** the single read publishes — the whole settlement
 shape of the table above, already validated and with its derived money computed from its own
-facts — so a history row and the settlement it summarises can never disagree. The count sheet, the
-expenses, the proposal rounds and the corrections belong to the single read: a row publishes them as
-empty arrays and `GET /api/closings/{id}` unfolds them. A row of a corrected settlement therefore
-publishes the corrected drawer with `"corrections":[]`; the document of that settlement is where the
-deltas are.
+facts — so a history row and the settlement it summarises can never disagree. A row of a
+settlement the warehouse still holds therefore publishes the **derived** money of its period, the
+same way its document does: `cash_sales`, `cash_expenses`, `sales_total`, `commission_amount`,
+`card_total`, `transfer_total` and `qr_total` are filled in from the ledgers of its own window, and
+`commission_rate_percent` stays `null` because nothing is frozen before the proposal. The count
+sheet, the expenses, the proposal rounds and the corrections belong to the single read: a row
+publishes them as empty arrays and `GET /api/closings/{id}` unfolds them. A row of a corrected
+settlement therefore publishes the corrected drawer with `"corrections":[]`; the document of that
+settlement is where the deltas are.
 
 ## Errors
 

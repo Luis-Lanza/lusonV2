@@ -1407,14 +1407,16 @@ func TestClosingsDraftAndDerivedMoney(t *testing.T) {
 	if w := f.serve(t, f.request(2, "POST", "/api/sales", saleBody(1, 1, "96000.00", 6))); w.Code != 201 {
 		t.Fatalf("the branch must sell between settlements: %d %s", w.Code, w.Body.String())
 	}
-	// The next settlement inherits the fund and starts where the previous one closed.
+	// The next settlement inherits the fund and starts where the previous one closed, and it
+	// publishes the period it already contains: a settlement the warehouse holds states the money
+	// of its own window instead of the zeros nobody wrote yet (S1).
 	id := f.open(t, 2)
 	opened := closingWire(t, f.serve(t, f.request(1, "GET", fmt.Sprintf("/api/closings/%d", id), "")), 200)
 	if opened.OpeningCash != "100.00" || opened.PeriodStart != *firstClosed.ClosedAt ||
-		opened.SalesTotal != "0.00" || opened.CashSales != "0.00" || opened.ExpectedCash != "100.00" ||
+		opened.SalesTotal != "96000.00" || opened.CashSales != "96000.00" || opened.ExpectedCash != "96100.00" ||
 		opened.CommissionRatePercent != nil || opened.CountedCash != nil ||
 		opened.CashDifference != nil || opened.TakenCash != nil {
-		t.Fatalf("a settlement inherits the fund and the period, not the numbers of it: %+v", opened)
+		t.Fatalf("a settlement inherits the fund and publishes the period of its window: %+v", opened)
 	}
 	// The sheet is the database's own snapshot of the cut, and it opens aligned with the system:
 	// every line states the quantity the database expects, so the warehouse only edits the
@@ -1439,15 +1441,16 @@ func TestClosingsDraftAndDerivedMoney(t *testing.T) {
 		record.CountLines[0].ExpectedQuantity != sheet[0].Quantity {
 		t.Fatalf("the count must be recorded against the snapshot: %+v", record.CountLines[0])
 	}
-	// The drawer is a draft that is read back with what it states. Until the warehouse proposes,
-	// the period totals are still zero, because the database records them with the proposal.
+	// The drawer is a draft that is read back with what it states, counted against the period of
+	// its own window: the expected drawer is the inherited fund plus the cash collected, even
+	// though the database only records that period when the warehouse proposes (S1).
 	draft := closingWire(t, f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", id),
 		`{"counted_cash":"96000.00","contributed_cash":"0.00","closing_cash":"6000.00","observation":"contado en persona"}`)), 200)
 	if draft.CountedCash == nil || *draft.CountedCash != "96000.00" ||
 		draft.ClosingCash == nil || *draft.ClosingCash != "6000.00" ||
 		draft.TakenCash == nil || *draft.TakenCash != "90000.00" ||
-		draft.ExpectedCash != "100.00" || draft.CashDifference == nil ||
-		*draft.CashDifference != "95900.00" || draft.Observation != "contado en persona" {
+		draft.ExpectedCash != "96100.00" || draft.CashDifference == nil ||
+		*draft.CashDifference != "-100.00" || draft.Observation != "contado en persona" {
 		t.Fatalf("the drawer draft must be published with its derived numbers: %+v", draft)
 	}
 	f.countAll(t, id)
@@ -1813,8 +1816,8 @@ func TestClosingsExpenses(t *testing.T) {
 	}
 
 	// The settlement that covers the two expenses of this branch publishes them, so the warehouse
-	// sees what it is subtracting and the branch what it is being charged for. The total is the
-	// offer's and is still unfrozen while the warehouse holds the settlement.
+	// sees what it is subtracting and the branch what it is being charged for. Both the list and
+	// the total are derived from the window while the warehouse holds the settlement (S1).
 	id := f.open(t, 2)
 	document := closingWire(t, f.serve(t, f.request(1, "GET",
 		fmt.Sprintf("/api/closings/%d", id), "")), 200)
@@ -1824,8 +1827,9 @@ func TestClosingsExpenses(t *testing.T) {
 		document.Expenses[0].BranchLocationID != 2 || document.Expenses[0].OccurredAt == "" {
 		t.Fatalf("the document must list the expenses of its window: %+v", document.Expenses)
 	}
-	if document.CashExpenses != "0.00" {
-		t.Fatalf("a held settlement states no period total yet: %q", document.CashExpenses)
+	if document.CashExpenses != "55.50" || document.ExpectedCash != "44.50" {
+		t.Fatalf("a held settlement publishes the period of its window: %q %q",
+			document.CashExpenses, document.ExpectedCash)
 	}
 	// A history row publishes the expenses as an empty list, exactly like the sheet and the rounds.
 	page := closingPageWire(t, f.serve(t, f.request(2, "GET",

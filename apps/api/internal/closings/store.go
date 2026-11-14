@@ -270,6 +270,11 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Closin
 // its three derived numbers -- so a history row and the document it summarises can never disagree;
 // the count sheet and the proposal rounds belong to the single read and are not unfolded here.
 //
+// The money of a period the warehouse still holds is derived per row, by the same helper of the
+// single read, so a list row cannot state a period its own document denies. It costs one extra
+// ledger statement and at most one rate statement per page, and never more: a branch holds one
+// live settlement at a time, so a page of one branch has at most one open row in it.
+//
 // A branch reads only its own history: another branch is forbidden, exactly like a setting of
 // another branch. The warehouse reads every branch. An unknown branch does not exist and a retired
 // one is refused by name, exactly like an opening.
@@ -305,7 +310,7 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, branchID int64, p
 	}
 	defer rows.Close()
 	for rows.Next() {
-		closing, err := scanClosing(ctx, rows)
+		closing, err := scanClosing(ctx, s.pool, rows)
 		if err != nil {
 			return Page{}, err
 		}
@@ -1091,6 +1096,10 @@ func (s *Store) DecideCorrection(ctx context.Context, actor auth.Identity, corre
 // same corrected numbers from the same signed ones. The stock and the commission are journalled
 // too, but neither of them changes a number of this projection: the stock is the branch's
 // inventory and the commission is published beside the corrections that changed it.
+//
+// The money of the period is read as the database stores it, because that is what the offer
+// froze; a row that is still open is published from its own ledgers afterwards (draftPeriod), so
+// the projection keeps one shape for every state and only the open one is filled in on read.
 const closingHeaderColumns = `c.id,c.branch_location_id,l.name,c.status,
   c.period_start,c.cut_at,c.closed_at,coalesce(c.commission_rate_percent::text,''),
   c.opening_cash::text,c.cash_sales::text,c.cash_expenses::text,c.sales_total::text,
@@ -1106,7 +1115,7 @@ const closingHeaderColumns = `c.id,c.branch_location_id,l.name,c.status,
 // its proposal rounds and the corrections it accepted, and derives the numbers that are never
 // persisted.
 func loadClosing(ctx context.Context, q querier, id int64) (Closing, error) {
-	closing, err := scanClosing(ctx, q.QueryRow(ctx, `SELECT `+closingHeaderColumns+`
+	closing, err := scanClosing(ctx, q, q.QueryRow(ctx, `SELECT `+closingHeaderColumns+`
  FROM branch_closings c JOIN locations l ON l.id=c.branch_location_id WHERE c.id=$1`, id))
 	if err != nil {
 		return Closing{}, err
@@ -1126,11 +1135,14 @@ func loadClosing(ctx context.Context, q querier, id int64) (Closing, error) {
 	return closing, nil
 }
 
-// scanClosing reads the persisted header of one settlement and derives the three cash numbers
-// that are never written (S8, S10, L12). It is the projection every read of this package uses,
-// so a history row and a single document are the same settlement and not two descriptions of
-// it.
-func scanClosing(ctx context.Context, row pgx.Row) (Closing, error) {
+// scanClosing reads the persisted header of one settlement and derives the numbers that are never
+// written: the money of the period while the settlement is open (S1, S3) and the three cash
+// numbers (S8, S10, L12). It is the projection every read of this package uses, so a history row
+// and a single document are the same settlement and not two descriptions of it.
+//
+// The querier is the one the header came from, because a settlement the warehouse still holds
+// needs the ledgers of its own period to be published truthfully.
+func scanClosing(ctx context.Context, q querier, row pgx.Row) (Closing, error) {
 	var closing Closing
 	var status, rate string
 	var counted, fund *string
@@ -1180,6 +1192,14 @@ func scanClosing(ctx context.Context, row pgx.Row) (Closing, error) {
 			return Closing{}, ErrUnavailable
 		}
 	}
+	// The columns of the period are drafts until the warehouse proposes, so an open settlement is
+	// published with the money the ledgers hold for its window instead of with the zeros nobody
+	// wrote (S1). Proposed, rejected and closed rows keep the columns the database froze.
+	if closing.Status == StatusOpen {
+		if err := draftPeriod(ctx, q, &closing); err != nil {
+			return Closing{}, err
+		}
+	}
 	// The drawer and the fund are the signed numbers plus the deltas the branch accepted (036,
 	// 040). Applying them here, on read, is what keeps one copy of the truth: the row states
 	// what the branch signed and the journal states what moved, so a corrected drawer can never
@@ -1216,6 +1236,55 @@ func scanClosing(ctx context.Context, row pgx.Row) (Closing, error) {
 		}
 	}
 	return closing, nil
+}
+
+// draftPeriod replaces the period columns of an open settlement with the money its own window
+// holds, read by the very helper the proposal uses (S1, S3): the same ledgers, the same window
+// and the same single rounding, so the drawer expectation the warehouse reads before proposing is
+// the one the branch will be asked to accept.
+//
+// Only an open settlement is derived, because only an open one has period columns nobody wrote:
+// the database records them on the transition the warehouse proposes, and from then on they are
+// the frozen offer. A proposed or rejected row is exactly the offer the branch is answering or
+// answered, and a closed one is the history its branch signed; deriving either of them would let
+// a later sale or a later change of the configured rate rewrite a number that was already
+// accepted, which is the immutability of the closure (S16).
+//
+// The commission of the draft uses the rate frozen on the row when it has one, and the branch's
+// configured rate otherwise -- which is what every open row is today, because the database
+// freezes the rate only on the proposal transition. The configured rate cannot disagree with the
+// offer: Propose freezes the very rate it reads from the same table at that instant, and both
+// sides apply it to the same period total with this package's one rounding (S6, S20), so the
+// draft is a preview of exactly the amount a proposal made now would freeze.
+func draftPeriod(ctx context.Context, q querier, closing *Closing) error {
+	branch := int16(closing.BranchID)
+	totals, err := periodTotals(ctx, q, branch, closing.PeriodStart, closing.CutAt)
+	if err != nil {
+		return err
+	}
+	closing.SalesTotal, closing.CashSales, closing.CashExpenses = totals.salesTotal, totals.cash,
+		totals.expenses
+	closing.CardTotal, closing.TransferTotal, closing.QRTotal = totals.card, totals.transfer, totals.qr
+	rate := closing.CommissionRatePercent
+	if rate == nil {
+		configured, err := configuredRate(ctx, q, branch)
+		if errors.Is(err, ErrNoCommissionRate) {
+			// A branch without a configured rate has no commission to preview. The database admits
+			// its settlement anyway and the proposal is what names the missing rate (LC003), so the
+			// read publishes the period it can instead of hiding the whole document.
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		rate = &configured
+	}
+	commission, err := Commission(totals.salesTotal, *rate)
+	if err != nil {
+		return ErrUnavailable
+	}
+	closing.CommissionAmount = commission
+	return nil
 }
 
 // loadCountLines reads the count sheet with the catalogue identity of every variant, in

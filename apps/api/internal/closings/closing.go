@@ -428,11 +428,13 @@ type Round struct {
 }
 
 // Closing is one persisted settlement exactly as this vertical reads it. The money of the
-// period is the database's; the three derived numbers are computed here on read and never
-// written. SalesTotal, CommissionAmount, CardTotal, TransferTotal and QRTotal are written
-// by the proposal transition, which records the offer the branch is asked to accept, and
-// the closure freezes them: a closed settlement can never state a period other than the
-// one it was accepted on.
+// period is the database's; the derived numbers are computed here on read and never written.
+// SalesTotal, CommissionAmount, CardTotal, TransferTotal, QRTotal and CashExpenses are written
+// by the proposal transition, which records the offer the branch is asked to accept, and the
+// closure freezes them: a closed settlement can never state a period other than the one it was
+// accepted on. Before that transition nothing has written them, so a settlement the warehouse
+// still holds publishes the period derived from its own window instead of the insert zeros
+// (S1): the number the warehouse counts against is the number the branch is asked to accept.
 type Closing struct {
 	ID                    int64      `json:"id"`
 	BranchID              int64      `json:"branch_location_id"`
@@ -445,8 +447,9 @@ type Closing struct {
 	OpeningCash           Money      `json:"opening_cash"`
 	// CashSales and CashExpenses are the money of the period by source: the cash the branch
 	// collected, read from its immutable sales, and the expenses it recorded as they
-	// happened, read from the cash ledger over the same window. The proposal writes both, so
-	// they are zero only before it (S8, S12).
+	// happened, read from the cash ledger over the same window. The proposal writes both and
+	// the closure freezes them; before it, both are derived from that same window, so the
+	// warehouse never counts against a zero (S8, S12).
 	CashSales         Money  `json:"cash_sales"`
 	CashExpenses      Money  `json:"cash_expenses"`
 	SalesTotal        Money  `json:"sales_total"`
@@ -481,8 +484,8 @@ type Closing struct {
 	// settlement covers, read from its ledger in the order they were recorded. They are
 	// published beside the total, so the warehouse sees what it is subtracting and the branch
 	// what it is being charged for (S12). A closed settlement's window never grows, so its
-	// list is fixed; the list is the ledger and the total is the offer's, so while the
-	// warehouse still holds the settlement the list is stated and CashExpenses is zero.
+	// list is fixed; while the warehouse still holds the settlement the list is the ledger and
+	// CashExpenses is derived from that same ledger, so the two cannot disagree.
 	Expenses []Expense `json:"expenses"`
 	Rounds   []Round   `json:"rounds"`
 }

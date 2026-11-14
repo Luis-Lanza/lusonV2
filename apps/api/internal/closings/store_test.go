@@ -274,6 +274,32 @@ func (e *env) closeFirstSettlement(t *testing.T, fund string) int64 {
 	return opened.ID
 }
 
+// livePeriod walks the branch to a settlement the warehouse still holds over a period that has
+// money of every source: one sale paid in cash and one by each electronic method, and one expense
+// the branch recorded before the cut. It is the state a read has to fill in from the ledgers.
+func (e *env) livePeriod(t *testing.T) closings.Closing {
+	t.Helper()
+	e.closeFirstSettlement(t, "500.00")
+	const qr = sales.PaymentMethod("qr")
+	e.sell(t, 1, 1, "100.00", sales.PaymentCash)
+	e.sell(t, 2, 1, "50.00", sales.PaymentCard)
+	e.sell(t, 1, 1, "20.00", sales.PaymentTransfer)
+	e.sell(t, 2, 1, "30.00", qr)
+	// The expense is recorded before the cut, because the ledger of the branch is closed while its
+	// settlement holds it: the period's only expense is the one already spent out of the till.
+	e.expense(t, 2, "12.50", "Flete del período")
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	e.countAll(t, opened.ID)
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("610.00", "0.00", "110.00")); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	return opened
+}
+
 // TestConfigureCommissionIsTheWarehouseOwn pins S6 rule 1: the rate is configured per
 // branch, only by the warehouse (the database refuses anything else with LC015), and a
 // branch without a configured rate has nothing to read.
@@ -1295,6 +1321,159 @@ func sheet(closing closings.Closing) string {
 	return strings.Join(parts, ",")
 }
 
+// assertPeriodMoney pins the money of the period of livePeriod as a settlement publishes it:
+// 200.00 sold in all, of which 100.00 was collected in cash and the rest by card, transfer and QR
+// (50.00, 20.00 and 30.00), one expense of 12.50 and the 12.50% the fixture configures, which is
+// 25.00 of commission. The drawer identity follows from those facts alone: 500.00 inherited plus
+// 100.00 collected minus 12.50 spent is 587.50 of expected cash, and no electronic method enters
+// it (S2, S8, S13).
+func assertPeriodMoney(t *testing.T, closing closings.Closing, state string) {
+	t.Helper()
+	if closing.SalesTotal != "200.00" || closing.CashSales != "100.00" ||
+		closing.CashExpenses != "12.50" || closing.CardTotal != "50.00" ||
+		closing.TransferTotal != "20.00" || closing.QRTotal != "30.00" ||
+		closing.CommissionAmount != "25.00" {
+		t.Fatalf("a %s settlement must publish the money of its period: %+v", state, closing)
+	}
+	if closing.ExpectedCash != "587.50" {
+		t.Fatalf("a %s settlement must expect 500.00 + 100.00 - 12.50, got %q", state,
+			closing.ExpectedCash)
+	}
+}
+
+// TestOpenSettlementPublishesThePeriodOfItsWindow pins S1 and the first half of S3 on the read:
+// while the warehouse has not proposed, the six period columns of the row are drafts the database
+// never wrote, so the read publishes them derived from the same window the proposal will use
+// instead of repeating their zeros -- the drawer expectation of a period the branch did sell can
+// no longer read zero.
+func TestOpenSettlementPublishesThePeriodOfItsWindow(t *testing.T) {
+	e := fixture(t)
+	opened := e.livePeriod(t)
+
+	// The columns of the row are still the zeros the insert left: nothing was frozen by opening.
+	if stored := e.text(t, `SELECT sales_total::text||'/'||cash_sales::text||'/'||cash_expenses::text
+  ||'/'||card_total::text||'/'||transfer_total::text||'/'||qr_total::text||'/'||commission_amount::text
+ FROM branch_closings WHERE id=$1`, opened.ID); stored != "0.00/0.00/0.00/0.00/0.00/0.00/0.00" {
+		t.Fatalf("an open row holds no frozen offer: %q", stored)
+	}
+
+	live, err := e.store.Read(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be read: %v", err)
+	}
+	if live.Status != closings.StatusOpen || live.CommissionRatePercent != nil {
+		t.Fatalf("nothing is frozen before the proposal: %+v", live)
+	}
+	assertPeriodMoney(t, live, "open")
+	// The drawer is the number the admin counted against the derived expectation, and the
+	// commission is reported beside it, never subtracted (S9).
+	if live.CashDifference == nil || string(*live.CashDifference) != "22.50" ||
+		live.TakenCash == nil || string(*live.TakenCash) != "500.00" {
+		t.Fatalf("the derived drawer must follow the derived period: %+v", live)
+	}
+	// The branch reads the same document before the proposal: one row, one period (S3).
+	branch, err := e.store.Read(e.ctx, identity(2), opened.ID)
+	if err != nil || branch.ExpectedCash != live.ExpectedCash ||
+		branch.SalesTotal != live.SalesTotal || branch.CashSales != live.CashSales ||
+		branch.CashExpenses != live.CashExpenses || branch.CommissionAmount != live.CommissionAmount {
+		t.Fatalf("both surfaces must read the period of the same ledgers: %+v %v", branch, err)
+	}
+}
+
+// TestProposalFreezesThePeriodTheDraftPublished pins the second half of S3 -- the discrepancy the
+// operator reported -- and S4: the numbers the warehouse reads while the settlement is open are
+// exactly the ones the proposal freezes, so the two surfaces agree before and after proposing; and
+// a closed settlement keeps publishing the frozen columns even after the configured rate changes,
+// because what the branch signed is history.
+func TestProposalFreezesThePeriodTheDraftPublished(t *testing.T) {
+	e := fixture(t)
+	opened := e.livePeriod(t)
+	drafted, err := e.store.Read(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the open settlement could not be read: %v", err)
+	}
+	assertPeriodMoney(t, drafted, "open")
+
+	proposed, err := e.store.Propose(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	if proposed.Status != closings.StatusProposed || proposed.CommissionRatePercent == nil ||
+		*proposed.CommissionRatePercent != "12.50" {
+		t.Fatalf("the proposal must freeze the configured rate: %+v", proposed)
+	}
+	// The frozen row states the very numbers the draft derived, and so does the offer the branch
+	// is asked to accept.
+	assertPeriodMoney(t, proposed, "proposed")
+	offer := proposed.LatestRound().Payload
+	if offer.SalesTotal != drafted.SalesTotal || offer.CashSales != drafted.CashSales ||
+		offer.CashExpenses != drafted.CashExpenses || offer.CardTotal != drafted.CardTotal ||
+		offer.TransferTotal != drafted.TransferTotal || offer.QRTotal != drafted.QRTotal ||
+		offer.CommissionAmount != drafted.CommissionAmount {
+		t.Fatalf("the offer must state the period the draft published: %+v %+v", offer, drafted)
+	}
+
+	closed, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, "")
+	if err != nil || closed.Status != closings.StatusClosed {
+		t.Fatalf("the branch must accept the offer: %+v %v", closed, err)
+	}
+	assertPeriodMoney(t, closed, "closed")
+
+	// S4: the settled period is the history its branch signed. A later rate would pay 198.00 on the
+	// same 200.00, and the closed settlement keeps the 25.00 it froze, with the rate it froze.
+	if _, err := e.store.ConfigureCommission(e.ctx, warehouse(), 2, "99.00"); err != nil {
+		t.Fatalf("the configured rate could not be changed: %v", err)
+	}
+	if settings, err := e.store.ReadSettings(e.ctx, warehouse(), 2); err != nil ||
+		settings.CommissionRatePercent != "99.00" {
+		t.Fatalf("the branch must be configured with the new rate: %+v %v", settings, err)
+	}
+	if naive, err := closings.Commission("200.00", "99.00"); err != nil || naive != "198.00" {
+		t.Fatalf("the changed rate must be a different commission, not the same one: %q %v", naive, err)
+	}
+	after, err := e.store.Read(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the closed settlement could not be read again: %v", err)
+	}
+	assertPeriodMoney(t, after, "closed")
+	if after.CommissionRatePercent == nil || *after.CommissionRatePercent != "12.50" {
+		t.Fatalf("a closed settlement keeps the rate it signed: %+v", after)
+	}
+	if frozen := e.text(t, `SELECT commission_amount::text||'/'||commission_rate_percent::text
+ FROM branch_closings WHERE id=$1`, opened.ID); frozen != "25.00/12.50" {
+		t.Fatalf("a closed row must keep the offer it frozen: %q", frozen)
+	}
+}
+
+// TestListPublishesTheOpenPeriodOfTheDocument pins that the history of a branch publishes, row by
+// row, the same derived period as the document it summarises: a list row that disagreed with its
+// own settlement would be a defect of the surface and not a cheaper read (S1, S3).
+func TestListPublishesTheOpenPeriodOfTheDocument(t *testing.T) {
+	e := fixture(t)
+	opened := e.livePeriod(t)
+
+	page, err := e.store.List(e.ctx, warehouse(), 2, 1, 25)
+	if err != nil {
+		t.Fatalf("the history of the branch could not be read: %v", err)
+	}
+	if len(page.Closings) != 2 || page.Closings[0].ID != opened.ID ||
+		page.Closings[0].Status != closings.StatusOpen {
+		t.Fatalf("the live settlement must be the newest row of the history: %+v", page.Closings)
+	}
+	row := page.Closings[0]
+	assertPeriodMoney(t, row, "listed open")
+	document, err := e.store.Read(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be read: %v", err)
+	}
+	if row.SalesTotal != document.SalesTotal || row.CashSales != document.CashSales ||
+		row.CashExpenses != document.CashExpenses || row.CardTotal != document.CardTotal ||
+		row.TransferTotal != document.TransferTotal || row.QRTotal != document.QRTotal ||
+		row.CommissionAmount != document.CommissionAmount || row.ExpectedCash != document.ExpectedCash {
+		t.Fatalf("a list row must publish the period of its document: %+v %+v", row, document)
+	}
+}
+
 // TestListIsTheBranchOwnHistory pins the history read: one branch at a time, newest cut instant
 // first, with the same page contract as the rest of the installation, and with the very same
 // projection the single read publishes, so a row and its document can never disagree.
@@ -1636,10 +1815,11 @@ func TestReadPublishesTheExpensesOfItsWindow(t *testing.T) {
 	}
 	assertExpenses(opened)
 
-	// The list is the ledger, not the total: the total is the offer's, so it is still zero while
-	// the warehouse holds the settlement, and the proposal freezes it.
-	if opened.CashExpenses != "0.00" {
-		t.Fatalf("a held settlement states no period total: %q", opened.CashExpenses)
+	// The list is the ledger, and the total of a settlement the warehouse still holds is derived
+	// from it (S1), so the admin reads the exact amount the proposal is about to freeze instead of a
+	// zero that would understate the drawer; the proposal then freezes that same 55.50.
+	if opened.CashExpenses != "55.50" || opened.ExpectedCash != "44.50" {
+		t.Fatalf("a held settlement publishes the total of its own ledger: %+v", opened)
 	}
 	e.countAll(t, opened.ID)
 	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
