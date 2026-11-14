@@ -452,6 +452,19 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
               </dl>
               <p className="closing-help">La comisión se informa aparte y no se descuenta de la caja. La diferencia de caja queda registrada tal cual: no se borra al cerrar y no se reparte.</p>
             </div>
+            {/* The same block the warehouse reads (ClosingWorkspace), with the offer's own rail: the
+                electronic collection is reported on its own and enters no cash identity of the
+                drawer, so a branch that collected by transfer never reads an unexplained sobrante
+                (S2, S3). */}
+            <div className="closing-group">
+              <h2>Electrónico · fuera de la caja</h2>
+              <dl className="closing-summary">
+                <div><dt>Tarjeta</dt><dd>{closingMoneyText(rail.card_cents)}</dd></div>
+                <div><dt>Transferencia</dt><dd>{closingMoneyText(rail.transfer_cents)}</dd></div>
+                <div><dt>QR</dt><dd>{closingMoneyText(rail.qr_cents)}</dd></div>
+              </dl>
+              <small className="closing-muted">Ese dinero no está en la caja física: se informa y no se suma a ninguna igualdad de caja.</small>
+            </div>
           </section>
 
           {observation !== '' && <section className="closing-panel" aria-labelledby="closing-decision-observation">

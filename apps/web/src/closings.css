@@ -120,6 +120,9 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
   overflow-wrap: anywhere; }
 .closing-summary .total { padding-top: 10px; }
 .closing-summary .total dt, .closing-summary .total dd { font-size: 15px; font-weight: 700; color: #242124; }
+/* The difference tag sits beside its amount and takes the same separation as every other tag of
+   the panel: without it a narrow viewport glues the word to the figure (`− Bs 2.500,00FALTANTE`). */
+.closing-summary dd .closing-difference-name { margin-left: 6px; white-space: nowrap; }
 .closing-field { display: grid; gap: 6px; margin-top: 12px; }
 .closing-field label { color: var(--muted); font-size: 12px; font-weight: 600; }
 .closing-field input { min-height: 44px; border-color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }

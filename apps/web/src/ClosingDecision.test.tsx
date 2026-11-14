@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import ClosingDecision from './ClosingDecision';
 
@@ -189,6 +190,70 @@ describe('what the branch is accepting (S14)', () => {
     expect(within(panel).getByText('Fondo que queda en la caja').parentElement).toHaveTextContent('Bs 900,00');
     // The commission is reported beside the drawer and is inside no cash identity (S9).
     expect(within(panel).getByText('Caja esperada').parentElement).not.toHaveTextContent('1.461,60');
+  });
+});
+
+/**
+ * The electronic collection of the offer: card, transfer and QR are money the branch collected and
+ * that is reported on its own. It is inside no cash identity of the drawer (S2), and a settlement
+ * without electronic collection states three zeroes instead of looking like missing data.
+ */
+describe('the electronic collection of the offer (S2)', () => {
+  const collected = (card: string, transfer: string, qr: string) => proposed({
+    card_total: card, transfer_total: transfer, qr_total: qr,
+    rounds: [round(1, { offer: offer({
+      card_total: card, transfer_total: transfer, qr_total: qr }) })] });
+  const electronic = () => within(cash())
+    .getByText('Electrónico · fuera de la caja').closest('.closing-group') as HTMLElement;
+
+  it('reports card, transfer and QR of the offer outside the drawer it never enters', async () => {
+    const h = server(collected('2500.00', '1000.00', '500.00'));
+    await ready(h);
+    const panel = cash();
+    const block = electronic();
+    expect(within(block).getByText('Tarjeta').parentElement).toHaveTextContent('Bs 2.500,00');
+    expect(within(block).getByText('Transferencia').parentElement).toHaveTextContent('Bs 1.000,00');
+    expect(within(block).getByText('QR').parentElement).toHaveTextContent('Bs 500,00');
+    expect(block).toHaveTextContent(/no se suma a ninguna igualdad de caja/);
+    // S2: none of the three is inside the expected drawer, the difference or the fund left behind.
+    const expected = within(panel).getByText('Caja esperada').parentElement!;
+    expect(expected).toHaveTextContent('Bs 7.015,00');
+    for (const amount of ['2.500,00', '1.000,00', '500,00']) {
+      expect(expected).not.toHaveTextContent(amount);
+      expect(within(panel).getByText('Diferencia').parentElement).not.toHaveTextContent(amount);
+      expect(within(panel).getByText('Fondo que queda en la caja').parentElement)
+        .not.toHaveTextContent(amount);
+    }
+  });
+
+  it('renders a zero electronic collection as Bs 0,00 and not as missing data', async () => {
+    const h = server(open());
+    await ready(h);
+    const block = electronic();
+    for (const label of ['Tarjeta', 'Transferencia', 'QR']) {
+      const row = within(block).getByText(label).parentElement!;
+      expect(row).toHaveTextContent('Bs 0,00');
+      expect(row).not.toHaveTextContent('Sin contar');
+    }
+  });
+});
+
+// The difference row is not a rule of its own: it is what makes the panel legible, so the tag keeps
+// the separation every other tag of the panel has (S2).
+describe('the difference row of the branch panel', () => {
+  const styles = () => readFileSync(`${import.meta.dirname}/closings.css`, 'utf8');
+
+  it('separates the missing/over tag from its amount without gluing it to the figure', async () => {
+    const h = server();
+    await ready(h);
+    const difference = within(cash()).getByText('Diferencia').parentElement!;
+    expect(difference).toHaveTextContent('− Bs 35,00');
+    const tag = within(difference).getByText('Faltante');
+    // jsdom does not apply this package's stylesheet to computed styles, so the separation is
+    // pinned on the class the tag carries and on the rule the sheet gives that class inside a
+    // summary row: the text and the markup stay exactly as they were, only the spacing is CSS's.
+    expect(tag).toHaveClass('closing-difference-name');
+    expect(styles()).toMatch(/\.closing-summary dd \.closing-difference-name\s*\{[^}]*margin-left:\s*\d+px/);
   });
 });
 
