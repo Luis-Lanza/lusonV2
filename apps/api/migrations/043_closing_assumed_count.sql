@@ -63,6 +63,11 @@
 -- the same check. The limit is 034's and is not rewritten here; a variant that reached it
 -- would be a catalogue error to fix, not a count to clamp, because clamping would make the
 -- closure set the stock to an invented number.
+--
+-- The backfill below inherits that ceiling and can fail because of it: a sheet written before this
+-- version that already holds a line above the bound makes this file abort with the same check
+-- violation and roll back whole, seed function included. That is the loud half of the same
+-- decision -- never a clamped count, and never a half-applied migration.
 CREATE OR REPLACE FUNCTION seed_closing_count_lines() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     -- The count starts aligned: the admin states the differences, never the whole sheet
