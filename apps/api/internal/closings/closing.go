@@ -127,7 +127,8 @@ func (e *FundExceedsDrawer) Unwrap() error { return ErrClosureRefused }
 // sheet has no counted quantity. The variant is named, because the admin has to know
 // which line is missing (S4). No writer of this version can leave a line pending — the
 // opener seeds the counted quantity with the expected one (S1) — so this is the safety net
-// of a sheet written before that seeding, kept instead of removed (S3).
+// of a sheet written before that seeding, or of a line emptied out of band, kept instead of
+// removed (S3).
 type CountPending struct{ VariantID int64 }
 
 func (e *CountPending) Error() string {

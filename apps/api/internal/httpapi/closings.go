@@ -172,8 +172,8 @@ func closingFailure(w http.ResponseWriter, err error) {
 	switch {
 	case errors.As(err, &pending):
 		// The sheet of a live settlement never lacks a counted quantity: the opener seeds it with
-		// the expected one (S1), so this refusal is the safety net of a document written before
-		// that seeding (S3). It keeps its own code instead of folding into closure_refused, so a
+		// the expected one (S1), so this refusal is the safety net of a sheet written before that
+		// seeding, or of a line emptied out of band (S3). It keeps its own code instead of folding into closure_refused, so a
 		// receipt of that shape still names the one line it has to state.
 		closingFailureRecord(w, 409, "count_pending", "variant_id", pending.VariantID)
 	case errors.As(err, &excess):

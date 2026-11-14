@@ -1598,7 +1598,8 @@ func liveConflict(ctx context.Context, q querier, branchID int64) error {
 // pendingVariant reads the first variant of a count sheet that has no counted quantity, which is
 // the line both the proposal (LC019) and the closure (LC006) refuse by. The opener seeds every
 // line with its expected quantity (S1), so no live sheet reaches it and this read is the safety
-// net of a document written before that seeding (S3). It reports pgx.ErrNoRows when every line
+// net of a sheet written before that seeding, or of a line emptied out of band (S3). It reports
+// pgx.ErrNoRows when every line
 // is counted, so a caller keeps its own answer for a read that fails.
 func pendingVariant(ctx context.Context, q querier, id int64) (int64, error) {
 	var variant int64

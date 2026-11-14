@@ -327,8 +327,9 @@ there is no pending variant to resolve and no step between drafting the drawer a
 
 `count_pending` and `proposal_stale` are kept as **defensive** refusals of the same fact, and
 neither is a step of this contract. `count_pending` is what the store answers when it reads a
-sheet that still states a missing quantity, which only a document written before that seeding
-can do; `proposal_stale` is the database's own `LC019`, raised when a line loses its counted
+sheet that still states a missing quantity, which the seeding makes unreachable from the
+contract: only a sheet written before that seeding, or a line emptied out of band, can present
+it; `proposal_stale` is the database's own `LC019`, raised when a line loses its counted
 quantity between that read and the transition that records the offer. Both are conflicts: the
 warehouse re-reads the settlement and proposes again, and neither is an outage.
 
@@ -583,7 +584,7 @@ about instead of a generic code.
 | 404 | `not_found` | — | No such settlement for this caller, no setting for that branch, or an aliased path |
 | 409 | `settlement_live` | `branch_location_id`, `closing_id` | The branch already has a live settlement, named by the refusal; only one exists at a time |
 | 409 | `branch_retired` | `branch_location_id` | The branch was retired and is not settled |
-| 409 | `count_pending` | `variant_id` | A sheet written before the count is seeded still states a variant with no counted quantity (defensive) |
+| 409 | `count_pending` | `variant_id` | A sheet still states a variant with no counted quantity; out of band only, because the opener seeds every line (defensive) |
 | 409 | `proposal_stale` | `variant_id` | The count sheet lost a counted quantity while the offer was being recorded; re-read and propose again |
 | 409 | `cash_not_stated` | — | The proposal needs the counted cash and the fund |
 | 409 | `fund_exceeds_drawer` | `excess` | The fund exceeds the counted cash plus the contribution by that amount |
@@ -627,7 +628,7 @@ stable SQLSTATEs:
 | `LC003` | The branch has no configured commission rate | 409 `commission_rate_missing` |
 | `LC004` | Count lines are written only while the warehouse holds the settlement; only the counted quantity moves | 409 `count_frozen` |
 | `LC005` | Unsupported transition, frozen identity, draft of a proposed or closed settlement, period totals that are not drafts | 409 `state_conflict` |
-| `LC006` | The closure's money rule: the fund above the drawer, the drawer not stated, a pending variant of a sheet written before the count is seeded | 409 `fund_exceeds_drawer`, `cash_not_stated`, `count_pending` or `closure_refused` |
+| `LC006` | The closure's money rule: the fund above the drawer, the drawer not stated, a pending variant — which only out-of-band state produces | 409 `fund_exceeds_drawer`, `cash_not_stated`, `count_pending` or `closure_refused` |
 | `LC007` | A variant still holds reserved stock | 409 `reserved_stock` with `variant_id` |
 | `LC008` | A proposal belongs to a live settlement and only the warehouse proposes | 409 `state_conflict` |
 | `LC009` | Rounds are never deleted and a decided round is final | 409 `state_conflict` |
@@ -637,7 +638,7 @@ stable SQLSTATEs:
 | `LC016` | The latest proposal round is not accepted, is still undecided, or is not rejected | 409 `round_not_accepted` |
 | `LC017` | The branch was retired | 409 `branch_retired` |
 | `LC018` | A variant moved during the settlement | 409 `stock_moved` with `variant_id` |
-| `LC019` | A variant of a sheet written before the count is seeded has no counted quantity at the proposal (defensive) | 409 `proposal_stale` with `variant_id` when the store's own read missed it; `409 count_pending` when the store refuses first |
+| `LC019` | A variant has no counted quantity at the proposal; out of band only (defensive) | 409 `proposal_stale` with `variant_id` when the store's own read missed it; `409 count_pending` when the store refuses first |
 | `LC012` | Only a closed settlement is corrected | 409 `correction_not_closed` with `closing_id` |
 | `LC013` | A decided correction is final, and a correction states what the warehouse offered, unchanged | 409 `correction_decided` |
 | `LC014` | Only an enabled account of the branch decides a correction | 403 `forbidden` |
