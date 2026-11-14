@@ -1474,6 +1474,41 @@ func TestListPublishesTheOpenPeriodOfTheDocument(t *testing.T) {
 	}
 }
 
+// TestListDerivesTheOpenPeriodAfterItsCursorIsClosed pins the deadlock a page of one connection
+// exposes: a derivation issued inside the loop that still holds the cursor of the same pool waits
+// for a connection the cursor itself holds, so the list endpoint never answers. The store reads
+// every row of the page first and derives afterwards, so one connection is enough, and the open
+// row still publishes the money of its period (S1, S3).
+func TestListDerivesTheOpenPeriodAfterItsCursorIsClosed(t *testing.T) {
+	e := fixture(t)
+	opened := e.livePeriod(t)
+	// A pool of a single connection: the page holds a row cursor on it, so a derivation that ran
+	// while that cursor was open would have nothing left to run on.
+	config := e.pool.Config().Copy()
+	config.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(e.ctx, config)
+	if err != nil {
+		t.Fatalf("the single-connection pool could not be built: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	// A short deadline, so the regression fails the test instead of hanging the suite.
+	ctx, cancel := context.WithTimeout(e.ctx, 5*time.Second)
+	defer cancel()
+	page, err := closings.New(pool).List(ctx, warehouse(), 2, 1, 25)
+	if err != nil {
+		t.Fatalf("a page must be read on one connection: %v", err)
+	}
+	if len(page.Closings) != 2 || page.Closings[0].ID != opened.ID ||
+		page.Closings[0].Status != closings.StatusOpen {
+		t.Fatalf("the live settlement must be the newest row of the history: %+v", page.Closings)
+	}
+	// The derivation still runs after the cursor is closed: dropping it would make the deadlock
+	// disappear by publishing the zeros nobody wrote.
+	if row := page.Closings[0]; row.CashSales != "100.00" || row.ExpectedCash != "587.50" {
+		t.Fatalf("an open row must publish the money of its period: %+v", row)
+	}
+}
+
 // TestListIsTheBranchOwnHistory pins the history read: one branch at a time, newest cut instant
 // first, with the same page contract as the rest of the installation, and with the very same
 // projection the single read publishes, so a row and its document can never disagree.

@@ -270,10 +270,11 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Closin
 // its three derived numbers -- so a history row and the document it summarises can never disagree;
 // the count sheet and the proposal rounds belong to the single read and are not unfolded here.
 //
-// The money of a period the warehouse still holds is derived per row, by the same helper of the
-// single read, so a list row cannot state a period its own document denies. It costs one extra
-// ledger statement and at most one rate statement per page, and never more: a branch holds one
-// live settlement at a time, so a page of one branch has at most one open row in it.
+// The money of a period the warehouse still holds is derived per row once the whole page has been
+// read, by the same helper of the single read, so a list row cannot state a period its own document
+// denies. It costs one extra ledger statement and at most one rate statement per page, and never
+// more: a branch holds one live settlement at a time, so a page of one branch has at most one open
+// row in it.
 //
 // A branch reads only its own history: another branch is forbidden, exactly like a setting of
 // another branch. The warehouse reads every branch. An unknown branch does not exist and a retired
@@ -310,7 +311,7 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, branchID int64, p
 	}
 	defer rows.Close()
 	for rows.Next() {
-		closing, err := scanClosing(ctx, s.pool, rows)
+		closing, err := scanClosing(ctx, rows)
 		if err != nil {
 			return Page{}, err
 		}
@@ -327,6 +328,18 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, branchID int64, p
 	}
 	if rows.Err() != nil {
 		return Page{}, fail(ctx)
+	}
+	// Every row of the page is in memory and the cursor is closed before the first open row derives
+	// its period, and that order is the finding this read answers, not a style preference: the
+	// derivation reads the ledgers through this same pool, and a statement issued while this cursor
+	// still holds a connection waits for a connection the cursor itself holds. On a pool of N
+	// connections, N concurrent list requests would hold every connection with a cursor and every one
+	// of them would wait for a second connection instead of returning its page.
+	rows.Close()
+	for i := range result.Closings {
+		if err := deriveClosing(ctx, s.pool, &result.Closings[i]); err != nil {
+			return Page{}, err
+		}
 	}
 	return result, nil
 }
@@ -1098,7 +1111,7 @@ func (s *Store) DecideCorrection(ctx context.Context, actor auth.Identity, corre
 // inventory and the commission is published beside the corrections that changed it.
 //
 // The money of the period is read as the database stores it, because that is what the offer
-// froze; a row that is still open is published from its own ledgers afterwards (draftPeriod), so
+// froze; a row that is still open is published from its own ledgers afterwards (deriveClosing), so
 // the projection keeps one shape for every state and only the open one is filled in on read.
 const closingHeaderColumns = `c.id,c.branch_location_id,l.name,c.status,
   c.period_start,c.cut_at,c.closed_at,coalesce(c.commission_rate_percent::text,''),
@@ -1115,9 +1128,15 @@ const closingHeaderColumns = `c.id,c.branch_location_id,l.name,c.status,
 // its proposal rounds and the corrections it accepted, and derives the numbers that are never
 // persisted.
 func loadClosing(ctx context.Context, q querier, id int64) (Closing, error) {
-	closing, err := scanClosing(ctx, q, q.QueryRow(ctx, `SELECT `+closingHeaderColumns+`
+	closing, err := scanClosing(ctx, q.QueryRow(ctx, `SELECT `+closingHeaderColumns+`
  FROM branch_closings c JOIN locations l ON l.id=c.branch_location_id WHERE c.id=$1`, id))
 	if err != nil {
+		return Closing{}, err
+	}
+	// The row of a single read is scanned and released, so the derivation can run on the same
+	// querier without holding a cursor of it (a page of the history derives after its cursor is
+	// closed, see List).
+	if err := deriveClosing(ctx, q, &closing); err != nil {
 		return Closing{}, err
 	}
 	if closing.CountLines, err = loadCountLines(ctx, q, id); err != nil {
@@ -1135,14 +1154,11 @@ func loadClosing(ctx context.Context, q querier, id int64) (Closing, error) {
 	return closing, nil
 }
 
-// scanClosing reads the persisted header of one settlement and derives the numbers that are never
-// written: the money of the period while the settlement is open (S1, S3) and the three cash
-// numbers (S8, S10, L12). It is the projection every read of this package uses, so a history row
-// and a single document are the same settlement and not two descriptions of it.
-//
-// The querier is the one the header came from, because a settlement the warehouse still holds
-// needs the ledgers of its own period to be published truthfully.
-func scanClosing(ctx context.Context, q querier, row pgx.Row) (Closing, error) {
+// scanClosing reads the persisted header of one settlement, and only that: a pure scan of the row
+// it is given, needing no querier of its own. The numbers that are never written are derived by
+// deriveClosing afterwards, so a caller holding a row cursor can read its whole page in before
+// anything else is asked of the pool (List).
+func scanClosing(ctx context.Context, row pgx.Row) (Closing, error) {
 	var closing Closing
 	var status, rate string
 	var counted, fund *string
@@ -1192,14 +1208,6 @@ func scanClosing(ctx context.Context, q querier, row pgx.Row) (Closing, error) {
 			return Closing{}, ErrUnavailable
 		}
 	}
-	// The columns of the period are drafts until the warehouse proposes, so an open settlement is
-	// published with the money the ledgers hold for its window instead of with the zeros nobody
-	// wrote (S1). Proposed, rejected and closed rows keep the columns the database froze.
-	if closing.Status == StatusOpen {
-		if err := draftPeriod(ctx, q, &closing); err != nil {
-			return Closing{}, err
-		}
-	}
 	// The drawer and the fund are the signed numbers plus the deltas the branch accepted (036,
 	// 040). Applying them here, on read, is what keeps one copy of the truth: the row states
 	// what the branch signed and the journal states what moved, so a corrected drawer can never
@@ -1214,28 +1222,47 @@ func scanClosing(ctx context.Context, q querier, row pgx.Row) (Closing, error) {
 		return Closing{}, ErrUnavailable
 	}
 	closing.ClosingCash = funded
+	return closing, nil
+}
+
+// deriveClosing publishes the numbers of one scanned settlement that are never written: the money
+// of the period while the settlement is open (S1, S3) and the three cash numbers (S8, S10, L12). It
+// is the projection every read of this package uses, so a history row and a single document are the
+// same settlement and not two descriptions of it.
+//
+// It reads the ledgers of the period through the querier, which is why it is a step of its own: a
+// caller that is still holding a row cursor of that querier has to close it first (List).
+func deriveClosing(ctx context.Context, q querier, closing *Closing) error {
+	// The columns of the period are drafts until the warehouse proposes, so an open settlement is
+	// published with the money the ledgers hold for its window instead of with the zeros nobody
+	// wrote (S1). Proposed, rejected and closed rows keep the columns the database froze.
+	if closing.Status == StatusOpen {
+		if err := draftPeriod(ctx, q, closing); err != nil {
+			return err
+		}
+	}
 	// The three numbers of S8 and S10 are derived here, never stored, so they cannot
 	// disagree with the facts that produce them (L12).
 	expected, err := ExpectedCash(closing.OpeningCash, closing.CashSales, closing.CashExpenses)
 	if err != nil {
-		return Closing{}, ErrUnavailable
+		return ErrUnavailable
 	}
 	closing.ExpectedCash = expected
 	if closing.CountedCash != nil {
 		difference, err := CashDifference(*closing.CountedCash, expected)
 		if err != nil {
-			return Closing{}, ErrUnavailable
+			return ErrUnavailable
 		}
 		closing.CashDifference = &difference
 		if closing.ClosingCash != nil {
 			taken, err := TakenCash(*closing.CountedCash, closing.ContributedCash, *closing.ClosingCash)
 			if err != nil {
-				return Closing{}, ErrUnavailable
+				return ErrUnavailable
 			}
 			closing.TakenCash = &taken
 		}
 	}
-	return closing, nil
+	return nil
 }
 
 // draftPeriod replaces the period columns of an open settlement with the money its own window
