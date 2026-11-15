@@ -25,6 +25,8 @@ const offer = (overrides: Record<string, unknown> = {}) => ({
   commission_rate_percent: '4.50', commission_amount: '1461.60', cash_sales: '6430.00',
   cash_expenses: '215.00', card_total: '3240.00', transfer_total: '1180.00', qr_total: '2760.00',
   counted_cash: '6980.00', contributed_cash: '0.00', closing_cash: '900.00', observation: '',
+  // The envelope of the offer: what the warehouse counted and what it leaves (S1, S5, S6).
+  purchase_fund_counted: '375.00', purchase_fund_cash: '1500.00',
   count_lines: [
     { variant_id: 1, expected_quantity: 12, counted_quantity: 12 },
     { variant_id: 2, expected_quantity: 9, counted_quantity: 8 },
@@ -44,6 +46,11 @@ const proposed = (overrides: Record<string, unknown> = {}) => ({
   cash_difference: '-35.00', contributed_cash: '0.00', closing_cash: '900.00',
   taken_cash: '6080.00', sales_total: '32480.00', commission_amount: '1461.60',
   card_total: '3240.00', transfer_total: '1180.00', qr_total: '2760.00',
+  // The second envelope of the document: Bs 2.000,00 inherited, Bs 1.621,00 spent in cash,
+  // Bs 379,00 expected, Bs 375,00 counted, Bs 1.500,00 left for the next period (S1, S5, S6).
+  purchase_fund_opening: '2000.00', purchases_total: '1621.00', purchases_cash: '1621.00',
+  purchase_fund_expected: '379.00', purchase_fund_counted: '375.00',
+  purchase_fund_difference: '-4.00', purchase_fund_cash: '1500.00',
   observation: 'Faltan dos baterías que el encargado dice haber vendido sin registrar.',
   opened_by_account_id: 1, count_lines: sheet(), rounds: [round(1)], expenses: [], corrections: [], ...overrides });
 
@@ -52,6 +59,8 @@ const open = () => proposed({
   closing_cash: null, taken_cash: null, cash_sales: '0.00', cash_expenses: '0.00',
   expected_cash: '800.00', sales_total: '0.00', commission_amount: '0.00', card_total: '0.00',
   transfer_total: '0.00', qr_total: '0.00', observation: '',
+  // A held settlement has an envelope nobody counted yet and no frozen offer to read it from.
+  purchase_fund_counted: null, purchase_fund_difference: null, purchase_fund_cash: null,
   // The sheet opens aligned with the system, so a held settlement already states a quantity for
   // every line: the branch sees the seeded count, not an empty one.
   count_lines: sheet().map(entry => ({ ...entry, counted_quantity: entry.expected_quantity })), rounds: [], expenses: [], corrections: [] });
@@ -195,6 +204,50 @@ describe('what the branch is accepting (S14)', () => {
     expect(within(panel).getByText('Fondo que queda en la caja').parentElement).toHaveTextContent('Bs 900,00');
     // The commission is reported beside the drawer and is inside no cash identity (S9).
     expect(within(panel).getByText('Caja esperada').parentElement).not.toHaveTextContent('1.461,60');
+  });
+});
+
+/**
+ * The second envelope of the settlement (S1, S5, S6): the branch reads the envelope of the offer it
+ * is accepting, without an input of its own, and the line that says what acceptance makes of it.
+ */
+describe('the purchase fund the branch is accepting (S1, S5, S6)', () => {
+  const envelope = () => screen.getByRole('region', { name: 'Fondo de compras' });
+
+  it('shows the frozen envelope of the offer, read-only, with its difference', async () => {
+    const h = server();
+    await ready(h);
+    const panel = envelope();
+    expect(within(panel).getByText('Saldo heredado').parentElement).toHaveTextContent('Bs 2.000,00');
+    expect(within(panel).getByText('Compras del período').parentElement)
+      .toHaveTextContent('− Bs 1.621,00');
+    expect(within(panel).getByText('Fondo esperado').parentElement).toHaveTextContent('Bs 379,00');
+    // The count and the amount it leaves are the ones the warehouse offered, not today's columns.
+    expect(within(panel).getByText('Fondo contado').parentElement).toHaveTextContent('Bs 375,00');
+    const difference = within(panel).getByText('Diferencia').parentElement!;
+    expect(difference).toHaveTextContent('− Bs 4,00');
+    expect(within(difference).getByText('Faltante')).toBeInTheDocument();
+    // The branch decides on it and never types into it: the envelope is the warehouse's count.
+    expect(within(panel).queryByRole('textbox')).not.toBeInTheDocument();
+    expect(within(panel).queryByLabelText('Fondo contado (Bs)')).not.toBeInTheDocument();
+    expect(h.posts('/api/closings/1/decision')).toHaveLength(0);
+  });
+
+  it('says that accepting makes the new amount its purchase fund for the next period', async () => {
+    const h = server();
+    await ready(h);
+    const panel = envelope();
+    expect(within(panel).getByText('Tu fondo de compras arranca con').parentElement)
+      .toHaveTextContent('Bs 1.500,00');
+    expect(panel).toHaveTextContent(/pasa a ser tu fondo de compras/i);
+    // The envelope is apart from the till, and no money of a sale feeds it (S1, S12).
+    expect(panel).toHaveTextContent(/sobre aparte/i);
+    expect(panel).toHaveTextContent(/ninguna venta lo alimenta/i);
+    // The closed settlement keeps the envelope the branch accepted.
+    fireEvent.click(acceptButton());
+    await screen.findByText('Rendición cerrada: la sucursal vuelve a operar.');
+    expect(within(envelope()).getByText('Tu fondo de compras arranca con').parentElement)
+      .toHaveTextContent('Bs 1.500,00');
   });
 });
 

@@ -9,7 +9,8 @@ import {
   closingCorrectedAmounts, closingCorrectedCounts, closingCorrectionDeltaText,
   closingCorrectionKindLabels, closingCorrectionPreview, closingCorrectionQuantityDeltaText,
   closingCorrectionReasonMessage, closingCorrectionStatusLabels, closingCorrectionValueMessage,
-  closingCountChanges, closingDifferenceName, closingIsEditable, closingIsLive, closingLineDifference,
+  closingCountChanges, closingDifferenceName, closingEnvelopeApartHelp, closingEnvelopeNewHelp,
+  closingIsEditable, closingIsLive, closingLineDifference,
   closingLineIsOutsideSystem, closingLineLabel,
   closingCountBatches, closingMoneyText, closingMomentText, closingObservationMessage,
   closingPendingCorrection, closingPeriod,
@@ -21,10 +22,10 @@ import {
   closingSeedQuantity,
   correctionDraftFrom, drawerDraftFrom,
   drawerView,
-  emptyDrawerDraft, filterCountLines,
+  emptyDrawerDraft, emptyPurchaseFundDraft, filterCountLines, purchaseFundDraftFrom, purchaseFundView,
   type Closing, type ClosingCatalogueVariant, type ClosingCountLine, type ClosingRail,
   type CorrectionDraft, type CorrectionBody,
-  type DrawerDraft,
+  type DrawerDraft, type PurchaseFundDraft,
 } from './closingModel';
 import {
   ClosingAPIError, closingErrorMessages, closingHistoryUnavailable, closingRefusalMessage,
@@ -57,9 +58,12 @@ interface CatalogueState {
 
 const emptyCatalogue: CatalogueState = Object.freeze({ phase: 'idle', variants: [], problem: '' });
 
-function sameDrawer(left: DrawerDraft, right: DrawerDraft): boolean {
+function sameDrawer(left: DrawerDraft, right: DrawerDraft, leftEnvelope: PurchaseFundDraft,
+  rightEnvelope: PurchaseFundDraft): boolean {
   return left.counted === right.counted && left.contribution === right.contribution
-    && left.fund === right.fund && left.observation === right.observation;
+    && left.fund === right.fund && left.observation === right.observation
+    && leftEnvelope.counted === rightEnvelope.counted
+    && leftEnvelope.cash === rightEnvelope.cash;
 }
 
 /** The difference of a row over what is typed, so the running difference is never a step behind. */
@@ -96,6 +100,8 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   const [closing, setClosing] = useState<Closing | null>(null);
   const [counted, setCounted] = useState<Record<number, string>>({});
   const [draft, setDraft] = useState<DrawerDraft>(emptyDrawerDraft);
+  // The second envelope: its own draft, saved through the same cash draft as the drawer (S1, S5).
+  const [envelope, setEnvelope] = useState<PurchaseFundDraft>(emptyPurchaseFundDraft);
   const [correction, setCorrection] = useState<CorrectionDraft | null>(null);
   const [search, setSearch] = useState('');
   // The battery the admin counted and the cut did not know: a row the closure honours upward (S5).
@@ -120,7 +126,8 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   useEffect(() => {
     if (branch === 0) {
       setPhase('idle'); setClosing(null); setHistoryTotal(0); setResumed(null); setClosedView(null);
-      setCounted({}); setDraft(emptyDrawerDraft); setCorrection(null); setProblem(''); setStatus('');
+      setCounted({}); setDraft(emptyDrawerDraft); setEnvelope(emptyPurchaseFundDraft);
+      setCorrection(null); setProblem(''); setStatus('');
       setAdded([]); setCatalogue(emptyCatalogue); setCatalogueSearch('');
       return;
     }
@@ -164,6 +171,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
     setClosing(document);
     setCounted(countDraftFrom(document));
     setDraft(drawerDraftFrom(document));
+    setEnvelope(purchaseFundDraftFrom(document));
     setCorrection(document.status === 'closed' ? correctionDraftFrom(document) : null);
     // A row the server now holds is a line of the sheet, so it is no longer a local addition.
     setAdded(current => current.filter(line =>
@@ -243,7 +251,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
       return;
     }
     let drawer;
-    try { drawer = canonicalDrawerPayload(draft); }
+    try { drawer = canonicalDrawerPayload(draft, envelope); }
     catch (failure) {
       setStatus('');
       setProblem(failure instanceof Error && failure.message ? failure.message : closingObservationMessage);
@@ -354,6 +362,9 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
 
   const rail: ClosingRail | null = closing === null ? null : closingRail(closing);
   const view = rail === null ? null : drawerView(rail, draft);
+  // The second envelope, over the facts the document publishes and the draft it typed (S1, S5).
+  const fund = closing === null ? null : closing.purchase_fund;
+  const fundView = fund === null ? null : purchaseFundView(fund, envelope);
   const editable = closing !== null && closingIsEditable(closing.status);
   // The sheet the admin works on: the snapshot of the cut plus the rows added by hand (S5).
   const rows = closing === null ? [] : closingSheetRows(closing, added);
@@ -373,7 +384,8 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
 
   const changed = closing === null ? [] : closingCountChanges(rows, counted);
   const unsaved = closing !== null
-    && (changed.length > 0 || added.length > 0 || !sameDrawer(draft, drawerDraftFrom(closing)));
+    && (changed.length > 0 || added.length > 0
+      || !sameDrawer(draft, drawerDraftFrom(closing), envelope, purchaseFundDraftFrom(closing)));
   const blockers = closing === null || view === null ? [] : closingBlockers(closing, view, unsaved);
   const blocked = blockers.length > 0;
   const searchValid = validSearch(search);
@@ -618,6 +630,50 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
               </dl>
               <small className="closing-muted">Ese dinero no está en la caja física: se informa, no se suma a ninguna igualdad de caja y sí cuenta para la comisión.</small>
             </div>
+
+            {/* The purchase fund is the branch's second envelope: counted apart from the drawer, fed by
+                no sale and inside no cash identity (S1, S12). Its count and the amount the warehouse
+                leaves are drafted here and travel in the same cash draft as the drawer (S5, S6). */}
+            {fund !== null && fundView !== null && <div className="closing-group">
+              <h2>Fondo de compras</h2>
+              <dl className="closing-summary">
+                <div><dt>Saldo heredado</dt><dd>{closingMoneyText(fund.opening_cents)}</dd></div>
+                <div><dt>Compras del período</dt>
+                  <dd>{fund.purchases_cash_cents === 0n ? closingMoneyText(0n)
+                    : `− ${closingMoneyText(fund.purchases_cash_cents)}`}</dd></div>
+                <div className="total"><dt>Fondo esperado</dt><dd>{closingMoneyText(fundView.expected_cents)}</dd></div>
+              </dl>
+              <div className="closing-field">
+                <label htmlFor="closing-purchase-counted">Fondo contado (Bs)</label>
+                {editable
+                  ? <input id="closing-purchase-counted" inputMode="decimal" value={envelope.counted}
+                    onChange={event => setEnvelope(current => ({ ...current, counted: event.target.value }))} />
+                  : <strong>{fundView.counted_cents === null ? 'Sin contar'
+                    : closingMoneyText(fundView.counted_cents)}</strong>}
+                <div className="closing-difference">
+                  <small>Diferencia</small>
+                  <strong className={fundView.difference_cents === null || fundView.difference_cents === 0n
+                    ? 'zero' : fundView.difference_cents < 0n ? 'neg' : 'pos'} aria-live="polite">
+                    <span>{fundView.difference_cents === null ? 'Sin contar'
+                      : closingSignedText(fundView.difference_cents)}</span>
+                    {fundView.difference_cents !== null
+                      && <span className="closing-difference-name">
+                        {closingDifferenceName(fundView.difference_cents)}</span>}
+                  </strong>
+                </div>
+                {fundView.problem !== '' && <small className="closing-muted">{fundView.problem}</small>}
+              </div>
+              <div className="closing-field">
+                <label htmlFor="closing-purchase-cash">Monto nuevo que dejás (Bs)</label>
+                {editable
+                  ? <input id="closing-purchase-cash" inputMode="decimal" value={envelope.cash}
+                    onChange={event => setEnvelope(current => ({ ...current, cash: event.target.value }))} />
+                  : <strong>{fundView.new_cents === null ? 'Sin declarar'
+                    : closingMoneyText(fundView.new_cents)}</strong>}
+                <small className="closing-muted">{closingEnvelopeNewHelp}</small>
+              </div>
+              <small className="closing-muted">{closingEnvelopeApartHelp}</small>
+            </div>}
 
             <div className="closing-group">
               <h2>Comisión del período</h2>

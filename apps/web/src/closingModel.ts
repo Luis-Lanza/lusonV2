@@ -99,6 +99,13 @@ export interface ClosingOffer {
   readonly counted_cash_cents: bigint;
   readonly contributed_cash_cents: bigint;
   readonly closing_cash_cents: bigint;
+  /**
+   * The envelope of the offer (S1, S5, S6): what the warehouse counted in the purchase fund and the
+   * amount it leaves there for the next period. Both are `null` in an offer made before the warehouse
+   * stated the envelope, and the contract omits them entirely in that case.
+   */
+  readonly purchase_fund_counted_cents: bigint | null;
+  readonly purchase_fund_cash_cents: bigint | null;
   readonly observation: string;
   readonly count_lines: readonly ClosingOfferLine[];
 }
@@ -148,6 +155,10 @@ export interface Closing {
   readonly count_lines: readonly ClosingCountLine[];
   readonly rounds: readonly ClosingRound[];
   /**
+   * The branch's second envelope, or `null` when the payload does not publish it (S1, S5, S6).
+   */
+  readonly purchase_fund: ClosingPurchaseFund | null;
+  /**
    * The corrections of this settlement, oldest first: the accepted ones with the deltas they applied
    * and, when there is one, the correction that still waits for the branch's decision. A live
    * settlement carries none — it is corrected by its own rounds — and a rejected one applied nothing,
@@ -162,6 +173,31 @@ export interface ClosingPage {
   readonly page_size: number;
   readonly total_closings: number;
   readonly closings: readonly Closing[];
+}
+
+/**
+ * The branch's purchase fund, its second envelope (S1, S2): the money it keeps apart from the
+ * operating drawer to buy used batteries and scrap. The inherited balance, the purchases of the
+ * window and the expectation are derived by the server on every read; the count and the amount it
+ * leaves are the warehouse's drafts, frozen by the proposal. None of these amounts enters the
+ * drawer's identities nor the commission, and no money of a sale feeds the envelope (S12).
+ */
+export interface ClosingPurchaseFund {
+  /** What the previous closure left in the envelope; `0.00` when there is none (S5, S6). */
+  readonly opening_cents: bigint;
+  /** The purchases of the window, counter-documents included, so they already subtract (S11). */
+  readonly purchases_total_cents: bigint;
+  readonly purchases_cash_cents: bigint;
+  /** `opening − purchases paid in cash`, signed: a period that spent more than it had is short. */
+  readonly expected_cents: bigint;
+  readonly counted_cents: bigint | null;
+  readonly difference_cents: bigint | null;
+  /**
+   * The amount the warehouse leaves in the envelope (`purchase_fund_cash`): the "monto nuevo" that
+   * opens the next period. It is not bounded by the count — the warehouse brings money from outside
+   * the branch, so it may leave more than it found (S5, S6).
+   */
+  readonly new_cents: bigint | null;
 }
 
 // ---------------------------------------------------------------------------------
@@ -268,6 +304,88 @@ export function closingRail(closing: Closing): ClosingRail {
 }
 
 // ---------------------------------------------------------------------------------
+// The purchase fund: the second envelope (S1, S5, S6)
+// ---------------------------------------------------------------------------------
+
+/**
+ * The envelope is settled apart from the drawer: it is counted on its own, no money of a sale feeds
+ * it and it is inside no cash identity nor the commission (S1, S12).
+ */
+export const closingEnvelopeApartHelp =
+  'El fondo de compras vive en un sobre aparte de la caja operativa: se cuenta por separado, ninguna venta lo alimenta y no entra en la comisión ni en ninguna igualdad de la caja.';
+/** What the amount the warehouse leaves is for: it opens the next period (S5, S6). */
+export const closingEnvelopeNewHelp =
+  'El monto nuevo abre el período siguiente y sólo sirve para comprar baterías usadas y chatarra.';
+/** What acceptance makes of the new amount, in the branch's own words (S5, S6). */
+export const closingEnvelopeAcceptanceHelp =
+  'Al aceptar, el monto nuevo pasa a ser tu fondo de compras: abre el período siguiente y el Almacén se lleva todo lo que contó en el sobre.';
+
+/**
+ * The envelope the settlement publishes, or the one the offer froze when the branch is deciding it
+ * (S5, S6). The inherited balance, the purchases and the expectation are always the document's, and
+ * the two amounts the warehouse states are the offer's own once there is one, so a proposal is read
+ * exactly as it was offered. A payload that does not publish the envelope publishes none here.
+ */
+export function closingEnvelope(closing: Closing,
+  offer: ClosingOffer | null = null): ClosingPurchaseFund | null {
+  const fund = closing.purchase_fund;
+  if (fund === null || offer === null) return fund;
+  const counted_cents = offer.purchase_fund_counted_cents;
+  return Object.freeze({ ...fund, counted_cents,
+    difference_cents: counted_cents === null ? null : counted_cents - fund.expected_cents,
+    new_cents: offer.purchase_fund_cash_cents });
+}
+
+/**
+ * What the warehouse typed into the second envelope: the count and the amount it leaves, before
+ * they are canonical. Both are optional, because an envelope nobody counted states neither — the
+ * amount the warehouse leaves is a decision it takes at the closure, not a zero by default (S5).
+ */
+export interface PurchaseFundDraft {
+  readonly counted: string;
+  readonly cash: string;
+}
+
+export const emptyPurchaseFundDraft: PurchaseFundDraft = Object.freeze({ counted: '', cash: '' });
+
+/** The envelope draft the settlement already holds, so a reload restores the admin's work. */
+export function purchaseFundDraftFrom(closing: Closing): PurchaseFundDraft {
+  const fund = closing.purchase_fund;
+  return Object.freeze({
+    counted: fund === null || fund.counted_cents === null ? '' : typedMoney(fund.counted_cents),
+    cash: fund === null || fund.new_cents === null ? '' : typedMoney(fund.new_cents),
+  });
+}
+
+/** The envelope as the rail shows it while the warehouse types, over the facts it holds. */
+export interface PurchaseFundView {
+  readonly counted_cents: bigint | null;
+  readonly new_cents: bigint | null;
+  readonly expected_cents: bigint;
+  readonly difference_cents: bigint | null;
+  readonly problem: string;
+}
+
+/**
+ * The envelope over the draft the warehouse typed. The difference is published with its sign and
+ * never blocks the proposal, exactly like the drawer's (S8), and the new amount is deliberately not
+ * bounded by the count: the warehouse may leave more than it found (S5).
+ */
+export function purchaseFundView(fund: ClosingPurchaseFund,
+  draft: PurchaseFundDraft): PurchaseFundView {
+  let counted_cents: bigint | null = null;
+  let new_cents: bigint | null = null;
+  let problem = '';
+  try { counted_cents = typedCents(draft.counted); } catch { problem = closingAmountMessage; }
+  try { new_cents = typedCents(draft.cash); } catch { problem = closingAmountMessage; }
+  if (problem !== '') { counted_cents = null; new_cents = null; }
+  const difference_cents = counted_cents === null ? null : counted_cents - fund.expected_cents;
+  return Object.freeze({
+    counted_cents, new_cents, expected_cents: fund.expected_cents, difference_cents, problem,
+  });
+}
+
+// ---------------------------------------------------------------------------------
 // The drawer draft the warehouse states
 // ---------------------------------------------------------------------------------
 
@@ -346,12 +464,17 @@ export function drawerView(rail: ClosingRail, draft: DrawerDraft): DrawerView {
   });
 }
 
-/** The exact body of `POST /api/closings/{id}/cash`: four keys, absent amounts as `null`. */
+/**
+ * The exact body of `POST /api/closings/{id}/cash`: the four keys of the drawer, absent amounts as
+ * `null`, and — when the warehouse stated the envelope — the two keys of the purchase fund (S1, S5).
+ */
 export interface DrawerPayload {
   readonly counted_cash: string | null;
   readonly contributed_cash: string;
   readonly closing_cash: string | null;
   readonly observation: string;
+  readonly purchase_fund_counted?: string | null;
+  readonly purchase_fund_cash?: string | null;
 }
 
 export const closingObservationMessage = `La observación lleva hasta ${closingMaxObservation} caracteres.`;
@@ -363,15 +486,25 @@ export const closingContributionMessage =
  * counted is the explicit `null`, and the contribution is the money the warehouse states it put
  * into the till. It is a fact of the settlement, so an empty field is refused instead of being
  * sent as a zero the admin never declared (S10).
+ *
+ * The envelope travels in the same body: its two keys are stated when the warehouse wrote them,
+ * each as canonical non-negative text or as the explicit `null` of the side it did not state, and
+ * both are absent when it stated neither — an envelope nobody counted is never an invented zero
+ * (S1, S5).
  */
-export function canonicalDrawerPayload(draft: DrawerDraft): DrawerPayload {
+export function canonicalDrawerPayload(draft: DrawerDraft,
+  envelope: PurchaseFundDraft = emptyPurchaseFundDraft): DrawerPayload {
   let counted_cash: string | null;
   let closing_cash: string | null;
+  let envelopeCounted: bigint | null;
+  let envelopeCash: bigint | null;
   try {
     const counted = typedCents(draft.counted);
     const fund = typedCents(draft.fund);
     counted_cash = counted === null ? null : centsToMoney(counted);
     closing_cash = fund === null ? null : centsToMoney(fund);
+    envelopeCounted = typedCents(envelope.counted);
+    envelopeCash = typedCents(envelope.cash);
   } catch { return invalidMoney(); }
   const contribution = typedCents(draft.contribution);
   if (contribution === null) throw new Error(closingContributionMessage);
@@ -380,8 +513,14 @@ export function canonicalDrawerPayload(draft: DrawerDraft): DrawerPayload {
     || Array.from(observation).length > closingMaxObservation) {
     throw new Error(closingObservationMessage);
   }
-  return Object.freeze({
+  const drawer = {
     counted_cash, contributed_cash: centsToMoney(contribution), closing_cash, observation,
+  };
+  if (envelopeCounted === null && envelopeCash === null) return Object.freeze(drawer);
+  return Object.freeze({
+    ...drawer,
+    purchase_fund_counted: envelopeCounted === null ? null : centsToMoney(envelopeCounted),
+    purchase_fund_cash: envelopeCash === null ? null : centsToMoney(envelopeCash),
   });
 }
 
@@ -916,10 +1055,17 @@ export function closingAcceptance(closing: Closing): ClosingAcceptance | null {
   if (round === undefined || round.decision !== '') return null;
   const rail = closingOfferRail(closing, round.offer);
   const published = closingRail(closing);
+  // The envelope of the offer is the one the closure applies, so an offer that disagrees with the
+  // envelope the document publishes is never described as acceptable either (S5, S6).
+  const fund = closing.purchase_fund;
+  const envelopeDrifted = fund !== null
+    && (round.offer.purchase_fund_counted_cents !== fund.counted_cents
+      || round.offer.purchase_fund_cash_cents !== fund.new_cents);
   if (rail.expected_cents !== published.expected_cents
     || rail.difference_cents !== published.difference_cents
     || rail.taken_cents !== published.taken_cents
     || rail.commission_cents !== published.commission_cents
+    || envelopeDrifted
     || !sameOfferLines(round.offer.count_lines, closing.count_lines)) {
     throw new Error(closingAcceptanceMismatchMessage);
   }

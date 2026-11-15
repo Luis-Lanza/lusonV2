@@ -19,8 +19,9 @@ import {
   type ClosingCorrectionPayload, type ClosingCorrectionQuantity, type ClosingCorrectionStatus,
   type ClosingCountLine, type ClosingDecision, type ClosingDecisionPayload, type CorrectionBody,
   type ClosingOffer, type ClosingOfferLine,
-  type ClosingPage, type ClosingPolarity, type ClosingRail, type ClosingRound, type ClosingStatus,
-  type CountPayloadLine,
+  type ClosingPage, type ClosingPolarity, type ClosingPurchaseFund, type ClosingRail,
+  type ClosingRound, type ClosingStatus,
+  type CountPayloadLine, type DrawerPayload,
 } from './closingModel';
 import { formatMoney } from './pointOfSaleModel';
 
@@ -121,12 +122,20 @@ function decode(raw: string): unknown {
   } catch { return invalidResponse(); }
 }
 
-function fields(value: unknown, keys: readonly string[]): Record<string, unknown> {
+/**
+ * The keys of one document: every key of `required` and nothing outside `required` plus `optional`.
+ * A key a payload may omit is still the only set the contract publishes, so an unknown key is never
+ * tolerated: the optional ones are exactly the amounts the server itself publishes as optional.
+ */
+function fields(value: unknown, keys: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value) || value instanceof LosslessNumber) {
     return invalidResponse();
   }
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).length !== keys.length || keys.some(key => !Object.hasOwn(record, key))) {
+  const published = Object.keys(record);
+  if (published.length < keys.length || published.length > keys.length + optional.length
+    || keys.some(key => !Object.hasOwn(record, key))
+    || published.some(key => !keys.includes(key) && !optional.includes(key))) {
     return invalidResponse();
   }
   return record;
@@ -269,7 +278,8 @@ function commissionOf(sales_total_cents: bigint, rate: string): bigint {
 function offer(value: unknown): ClosingOffer {
   const record = fields(value, ['period_start', 'cut_at', 'sales_total', 'commission_rate_percent',
     'commission_amount', 'cash_sales', 'cash_expenses', 'card_total', 'transfer_total', 'qr_total',
-    'counted_cash', 'contributed_cash', 'closing_cash', 'observation', 'count_lines']);
+    'counted_cash', 'contributed_cash', 'closing_cash', 'observation', 'count_lines'],
+  ['purchase_fund_counted', 'purchase_fund_cash']);
   const period_start = timestamp(record.period_start);
   const cut_at = timestamp(record.cut_at);
   if (Date.parse(cut_at) < Date.parse(period_start)) return invalidResponse();
@@ -304,6 +314,10 @@ function offer(value: unknown): ClosingOffer {
     counted_cash_cents: counted_cash,
     contributed_cash_cents: amount(record.contributed_cash),
     closing_cash_cents: closing_cash,
+    // The envelope of the offer is published only once the warehouse stated it, so an absent key is
+    // an envelope nobody counted and never a zero (S1, S5, S6).
+    purchase_fund_counted_cents: optionalAmount(record.purchase_fund_counted ?? null),
+    purchase_fund_cash_cents: optionalAmount(record.purchase_fund_cash ?? null),
     observation: freeText(record.observation, 1000),
     count_lines: Object.freeze(count_lines),
   });
@@ -505,6 +519,51 @@ function status(value: unknown): ClosingStatus {
   return value as ClosingStatus;
 }
 
+/** The seven amounts the purchase fund publishes, in the order they are read (S1, S5, S6). */
+const purchaseFundKeys: readonly string[] = ['purchase_fund_opening', 'purchases_total',
+  'purchases_cash', 'purchase_fund_expected', 'purchase_fund_counted', 'purchase_fund_difference',
+  'purchase_fund_cash'];
+
+/**
+ * The purchase fund as the document publishes it: the seven amounts of the second envelope, all of
+ * them stated or none. The count and the amount the warehouse leaves are nullable and stay so; the
+ * other five are published amounts, the difference signed. The expectation and the difference are
+ * revalidated against their own identities, exactly like the drawer's, so the rail can never read an
+ * envelope that disagrees with its facts (S1, S3, S5).
+ *
+ * A payload that publishes none of them is read as a settlement without an envelope instead of being
+ * refused: its drawer is complete and correct without it, and the live contract always publishes the
+ * seven. A payload that states some of them but not the rest is refused, because a half-published
+ * envelope is not a shape this contract has.
+ */
+function purchaseFund(record: Record<string, unknown>): ClosingPurchaseFund | null {
+  const stated = purchaseFundKeys.filter(key => Object.hasOwn(record, key));
+  if (stated.length === 0) return null;
+  if (stated.length !== purchaseFundKeys.length) return invalidResponse();
+  const opening_cents = amount(record.purchase_fund_opening);
+  const purchases_cash_cents = amount(record.purchases_cash);
+  const expected_cents = amount(record.purchase_fund_expected);
+  if (expected_cents !== opening_cents - purchases_cash_cents) return invalidResponse();
+  const counted_cents = optionalAmount(record.purchase_fund_counted);
+  const difference_cents = record.purchase_fund_difference === null
+    ? null : signedAmount(record.purchase_fund_difference);
+  // The difference exists exactly when the envelope was counted, and it is that count against the
+  // expectation with its sign (S8).
+  if ((counted_cents === null) !== (difference_cents === null)) return invalidResponse();
+  if (counted_cents !== null && difference_cents !== counted_cents - expected_cents) {
+    return invalidResponse();
+  }
+  return Object.freeze({
+    opening_cents,
+    purchases_total_cents: amount(record.purchases_total),
+    purchases_cash_cents,
+    expected_cents,
+    counted_cents,
+    difference_cents,
+    new_cents: optionalAmount(record.purchase_fund_cash),
+  });
+}
+
 /**
  * Reads one settlement. The derived numbers are recomputed here from the facts that produce
  * them and must agree with what the server published, so the rail can never show a drawer that
@@ -516,7 +575,7 @@ function readClosing(value: unknown): Closing {
     'cash_expenses', 'expected_cash', 'counted_cash', 'cash_difference', 'contributed_cash',
     'closing_cash', 'taken_cash', 'sales_total', 'commission_amount', 'card_total',
     'transfer_total', 'qr_total', 'observation', 'opened_by_account_id', 'count_lines', 'rounds',
-    'expenses', 'corrections']);
+    'expenses', 'corrections'], purchaseFundKeys);
   // The branch's own expenses of the window. They are still not rendered, but the document is
   // only accepted when the field is the array the contract publishes, so a shape change cannot
   // reach the rail unnoticed.
@@ -570,6 +629,7 @@ function readClosing(value: unknown): Closing {
     opened_by_account_id: integer(record.opened_by_account_id, 1, Number.MAX_SAFE_INTEGER),
     count_lines: Object.freeze(count_lines),
     rounds: Object.freeze(rounds),
+    purchase_fund: purchaseFund(record),
     corrections,
   });
   const rail: ClosingRail = closingRail(closing);
@@ -874,10 +934,8 @@ export function createClosingAPI(fetch: typeof globalThis.fetch = globalThis.fet
     },
 
     /** Saves the drawer draft explicitly, so a reload does not lose the admin's work. */
-    async cash(id: number, draft: {
-      counted_cash: string | null; contributed_cash: string;
-      closing_cash: string | null; observation: string;
-    }, csrf: string, signal?: AbortSignal): Promise<Closing> {
+    async cash(id: number, draft: DrawerPayload, csrf: string,
+      signal?: AbortSignal): Promise<Closing> {
       let body: string;
       let path: string;
       let wanted: number;
@@ -886,10 +944,15 @@ export function createClosingAPI(fetch: typeof globalThis.fetch = globalThis.fet
         path = closingCashPath(id);
         wanted = closingID(id);
         const keys = Object.keys(draft);
-        if (keys.length !== 4) throw new Error('borrador inválido');
+        // Four keys of the drawer, plus the two of the purchase envelope when it was stated (S1, S5).
+        const envelope = keys.length === 6 && Object.hasOwn(draft, 'purchase_fund_counted')
+          && Object.hasOwn(draft, 'purchase_fund_cash');
+        if (keys.length !== 4 && !envelope) throw new Error('borrador inválido');
         body = JSON.stringify({
           counted_cash: draft.counted_cash, contributed_cash: draft.contributed_cash,
           closing_cash: draft.closing_cash, observation: draft.observation,
+          ...(envelope ? { purchase_fund_counted: draft.purchase_fund_counted,
+            purchase_fund_cash: draft.purchase_fund_cash } : {}),
         });
       } catch { throw new ClosingAPIError('invalid_request', null); }
       const closing = await send('POST', path, 200, parseClosing, body, csrf, signal);

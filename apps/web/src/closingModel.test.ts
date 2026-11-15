@@ -14,8 +14,10 @@ import {
   closingCorrectionReadiness, closingPendingCorrection, correctionDraftFrom,
   closingAddLine, closingCatalogueOptions, closingCountChanges, closingLineIsOutsideSystem,
   closingSheetRows, closingSheetVariantIDs,
+  closingEnvelope, emptyPurchaseFundDraft, purchaseFundDraftFrom, purchaseFundView,
   type Closing, type ClosingCatalogueVariant, type ClosingCountLine, type ClosingCorrection,
-  type ClosingOffer, type ClosingRound, type CorrectionDraft, type DrawerDraft,
+  type ClosingOffer, type ClosingPurchaseFund, type ClosingRound, type CorrectionDraft,
+  type DrawerDraft, type PurchaseFundDraft,
 } from './closingModel';
 
 // The numbers of the chosen artboard (design/rendicion-de-cuentas/03-mesa-conteo.html), read as
@@ -33,6 +35,18 @@ const lines: readonly ClosingCountLine[] = [
   line(11, 2, null, { model: 'S5', capacity_ah: '100' }),
 ];
 
+/**
+ * The purchase fund of the artboard (design/rendicion-caja-y-chatarra/01-mesa-dos-pestanas.html):
+ * Bs 2.000,00 inherited, Bs 1.621,00 spent in cash, Bs 379,00 expected, Bs 375,00 counted and
+ * Bs 1.500,00 left for the next period (S1, S5, S6).
+ */
+const purchaseFund = (overrides: Partial<ClosingPurchaseFund> = {}): ClosingPurchaseFund =>
+  Object.freeze({
+    opening_cents: 200000n, purchases_total_cents: 162100n, purchases_cash_cents: 162100n,
+    expected_cents: 37900n, counted_cents: 37500n, difference_cents: -400n, new_cents: 150000n,
+    ...overrides,
+  });
+
 const closing = (overrides: Partial<Closing> = {}): Closing => Object.freeze({
   id: 1, branch_location_id: 2, branch_name: 'Sopocachi', status: 'open',
   period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z', closed_at: null,
@@ -42,6 +56,7 @@ const closing = (overrides: Partial<Closing> = {}): Closing => Object.freeze({
   sales_total_cents: 3248000n, commission_amount_cents: 146160n,
   card_total_cents: 324000n, transfer_total_cents: 118000n, qr_total_cents: 276000n,
   observation: '', opened_by_account_id: 1, count_lines: lines, rounds: [], corrections: [],
+  purchase_fund: purchaseFund(),
   ...overrides,
 });
 
@@ -150,6 +165,108 @@ describe('S9 the commission is reported beside the drawer and inside no cash ide
     expect(rail.card_cents + rail.transfer_cents + rail.qr_cents).toBe(718000n);
     expect(rail.expected_cents).not.toBe(rail.opening_cents + rail.cash_sales_cents
       - rail.cash_expenses_cents + rail.qr_cents);
+  });
+});
+
+describe('S1, S5, S6 the purchase fund is the branch\'s second envelope', () => {
+  it('reads the inherited balance, the purchases, the expectation and the difference', () => {
+    const fund = closing().purchase_fund!;
+    expect(closingMoneyText(fund.opening_cents)).toBe('Bs 2.000,00');
+    expect(closingMoneyText(fund.purchases_cash_cents)).toBe('Bs 1.621,00');
+    expect(closingMoneyText(fund.expected_cents)).toBe('Bs 379,00');
+    // The expectation is the inherited balance minus the purchases paid in cash (S3).
+    expect(fund.expected_cents).toBe(fund.opening_cents - fund.purchases_cash_cents);
+    expect(closingMoneyText(fund.counted_cents!)).toBe('Bs 375,00');
+    expect(closingSignedText(fund.difference_cents!)).toBe('− Bs 4,00');
+    expect(closingDifferenceName(fund.difference_cents!)).toBe('Faltante');
+    // The amount the warehouse leaves opens the next period and is not the one it counted (S5, S6).
+    expect(closingMoneyText(fund.new_cents!)).toBe('Bs 1.500,00');
+    // A payload that does not publish the envelope leaves the settlement without one.
+    expect(closing({ purchase_fund: null }).purchase_fund).toBeNull();
+  });
+
+  it('keeps the envelope inside no cash identity and out of the commission (S12)', () => {
+    const without = closing({ purchase_fund: null });
+    const heavy = closing({ purchase_fund: purchaseFund({ opening_cents: 900000n,
+      purchases_cash_cents: 100000n, expected_cents: 800000n, counted_cents: 0n,
+      difference_cents: -800000n, new_cents: 999900n }) });
+    // Not one number of the drawer moves: the envelope is settled apart from it (S1, S12).
+    expect(closingRail(heavy)).toEqual(closingRail(without));
+    expect(closingRail(heavy).expected_cents).toBe(701500n);
+    expect(closingRail(heavy).difference_cents).toBeNull();
+    expect(closingRail(heavy).commission_cents).toBe(146160n);
+  });
+
+  it('reads the envelope the warehouse types and publishes its difference with its sign (S5, S8)', () => {
+    const fund = closing().purchase_fund!;
+    const empty = purchaseFundView(fund, emptyPurchaseFundDraft);
+    expect(empty.counted_cents).toBeNull();
+    expect(empty.new_cents).toBeNull();
+    expect(empty.difference_cents).toBeNull();
+    expect(empty.expected_cents).toBe(37900n);
+    expect(empty.problem).toBe('');
+    const typed = purchaseFundView(fund, { counted: '375,00', cash: '1.500,00' });
+    expect(typed.counted_cents).toBe(37500n);
+    expect(typed.new_cents).toBe(150000n);
+    expect(typed.difference_cents).toBe(-400n);
+    // A count above the expectation is a surplus, published with its sign like the drawer's.
+    expect(purchaseFundView(fund, { counted: '400,00', cash: '' }).difference_cents).toBe(2100n);
+    expect(closingDifferenceName(purchaseFundView(fund, { counted: '400,00', cash: '' })
+      .difference_cents!)).toBe('Sobrante');
+  });
+
+  it('never bounds the new amount by what was counted (S5)', () => {
+    const fund = closing().purchase_fund!;
+    // The warehouse brings money from outside the branch, so it may leave more than it found.
+    const more = purchaseFundView(fund, { counted: '375,00', cash: '5.000,00' });
+    expect(more.new_cents).toBe(500000n);
+    expect(more.difference_cents).toBe(-400n);
+    expect(more.problem).toBe('');
+    expect(canonicalDrawerPayload(emptyDrawerDraft, { counted: '375,00', cash: '5.000,00' }))
+      .toMatchObject({ purchase_fund_counted: '375.00', purchase_fund_cash: '5000.00' });
+  });
+
+  it('refuses an amount of the envelope it cannot read (S5)', () => {
+    const unreadable = purchaseFundView(closing().purchase_fund!, { counted: '375,001', cash: '' });
+    expect(unreadable.problem).toBe(model.closingAmountMessage);
+    expect(unreadable.counted_cents).toBeNull();
+    expect(unreadable.difference_cents).toBeNull();
+    // The envelope is a non-negative amount, exactly like the rest of the drawer draft.
+    expect(() => canonicalDrawerPayload(emptyDrawerDraft, { counted: '-1', cash: '' }))
+      .toThrow(model.closingAmountMessage);
+  });
+
+  it('states both keys of the envelope in the drawer draft, and neither when it states none', () => {
+    expect(canonicalDrawerPayload({ counted: '6.980,00', contribution: '0,00', fund: '900,00',
+      observation: '' }, { counted: '375,00', cash: '1.500,00' })).toEqual({
+      counted_cash: '6980.00', contributed_cash: '0.00', closing_cash: '900.00', observation: '',
+      purchase_fund_counted: '375.00', purchase_fund_cash: '1500.00' });
+    // An envelope nobody counted states neither key: an absent one is not an invented zero.
+    expect(canonicalDrawerPayload(emptyDrawerDraft, emptyPurchaseFundDraft)).toEqual({
+      counted_cash: null, contributed_cash: '0.00', closing_cash: null, observation: '' });
+    // The two sides are independent: a counted envelope with no new amount yet is stated as such.
+    expect(canonicalDrawerPayload(emptyDrawerDraft, { counted: '375,00', cash: '' })).toEqual({
+      counted_cash: null, contributed_cash: '0.00', closing_cash: null, observation: '',
+      purchase_fund_counted: '375.00', purchase_fund_cash: null });
+  });
+
+  it('seeds the envelope draft from the settlement, count and new amount included', () => {
+    expect(purchaseFundDraftFrom(closing())).toEqual<PurchaseFundDraft>({ counted: '375,00',
+      cash: '1.500,00' });
+    // An uncounted envelope reopens empty, never with an invented zero.
+    expect(purchaseFundDraftFrom(closing({ purchase_fund: purchaseFund({ counted_cents: null,
+      difference_cents: null, new_cents: null }) }))).toEqual<PurchaseFundDraft>({ counted: '',
+        cash: '' });
+    expect(purchaseFundDraftFrom(closing({ purchase_fund: null }))).toEqual<PurchaseFundDraft>({
+      counted: '', cash: '' });
+  });
+
+  it('says in words that the envelope is apart and what the new amount is for (S1, S5)', () => {
+    expect(model.closingEnvelopeApartHelp).toContain('sobre aparte');
+    expect(model.closingEnvelopeApartHelp).toContain('ninguna venta lo alimenta');
+    expect(model.closingEnvelopeNewHelp).toContain('baterías usadas y chatarra');
+    expect(model.closingEnvelopeNewHelp).toContain('período siguiente');
+    expect(model.closingEnvelopeAcceptanceHelp).toContain('pasa a ser tu fondo de compras');
   });
 });
 
@@ -484,6 +601,7 @@ const offer = (overrides: Partial<ClosingOffer> = {}): ClosingOffer => Object.fr
   cash_sales_cents: 643000n, cash_expenses_cents: 21500n, card_total_cents: 324000n,
   transfer_total_cents: 118000n, qr_total_cents: 276000n,
   counted_cash_cents: 698000n, contributed_cash_cents: 0n, closing_cash_cents: 90000n,
+  purchase_fund_counted_cents: 37500n, purchase_fund_cash_cents: 150000n,
   observation: '', count_lines: offerLines, ...overrides,
 });
 
@@ -548,6 +666,19 @@ describe('S14 the branch only accepts or rejects, with a mandatory motive', () =
     expect(acceptance.rail.expected_cents).toBe(80000n + 643000n - 21500n);
     // An open settlement has no offer to accept.
     expect(closingAcceptance(closing())).toBeNull();
+  });
+
+  it('reads the envelope the branch accepts from the offer that froze it (S5, S6)', () => {
+    expect(closingEnvelope(proposed(), answer().offer)).toMatchObject({ counted_cents: 37500n,
+      difference_cents: -400n, new_cents: 150000n });
+    // Without an offer the document's own envelope is the one read.
+    expect(closingEnvelope(proposed())!.counted_cents).toBe(37500n);
+    // A document that publishes no envelope offers none to read either.
+    expect(closingEnvelope(closing({ purchase_fund: null }))).toBeNull();
+    // An offer whose envelope disagrees with the document is never described as acceptable.
+    const drifted = proposed({ rounds: [answer({
+      offer: offer({ purchase_fund_cash_cents: 90000n }) })] });
+    expect(() => closingAcceptance(drifted)).toThrow(model.closingAcceptanceMismatchMessage);
   });
 
   it('refuses an offer that does not agree with the settlement it belongs to', () => {

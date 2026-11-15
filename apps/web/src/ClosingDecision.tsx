@@ -3,7 +3,8 @@ import {
   closingAcceptance, closingAccountLabel, closingAcceptedCorrections, closingCorrectedAmounts,
   closingCorrectedCounts, closingCorrectionDeltaText, closingCorrectionPreview,
   closingCorrectionQuantityDeltaText, closingCorrectionStatusLabels, closingDecisionPayload,
-  closingDecisionReadiness, closingDifferenceName, closingIsLive, closingMoneyText,
+  closingDecisionReadiness, closingDifferenceName, closingEnvelope, closingEnvelopeAcceptanceHelp,
+  closingEnvelopeApartHelp, closingIsLive, closingMoneyText,
   closingMomentText, closingPendingCorrection, closingPeriod, closingPeriodLabel, closingRail,
   closingRateText, closingRoundStateLabel, closingSheetChanges, closingSignedText,
   closingStatusLabels, closingAcceptanceMismatchMessage,
@@ -195,6 +196,8 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
   const correctedCounts = closing === null ? [] : closingCorrectedCounts(closing);
   const canRejectCorrection = !busy && correctionMotive.trim() !== '';
   const acceptance = closing === null ? null : acceptanceOf(closing);
+  // The envelope the branch is accepting: the offer's own frozen count and new amount (S5, S6).
+  const envelope = closing === null ? null : closingEnvelope(closing, acceptance?.offer ?? null);
   const mismatch = closing !== null && closing.status === 'proposed' && acceptance === null;
   const rail: ClosingRail | null = acceptance?.rail ?? (closing === null ? null : closingRail(closing));
   // A settlement the warehouse still holds has no offer: its sheet is the draft of an offer the
@@ -468,6 +471,48 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
               <small className="closing-muted">Ese dinero no está en la caja física: se informa y no se suma a ninguna igualdad de caja.</small>
             </div>
           </section>
+
+          {/* The second envelope the branch accepts, read-only: the warehouse counts it and leaves the
+              amount that opens the next period; here the branch reads what it is accepting of it and
+              what its purchase fund becomes (S1, S5, S6). */}
+          {envelope !== null && <section className="closing-panel"
+            aria-labelledby="closing-decision-envelope">
+            <header className="closing-panel-head">
+              <h2 id="closing-decision-envelope">Fondo de compras</h2>
+              <span className="closing-muted">Sobre aparte de la caja</span>
+            </header>
+            <div className="closing-group">
+              <dl className="closing-summary">
+                <div><dt>Saldo heredado</dt><dd>{closingMoneyText(envelope.opening_cents)}</dd></div>
+                <div><dt>Compras del período</dt>
+                  <dd>{envelope.purchases_cash_cents === 0n ? closingMoneyText(0n)
+                    : `− ${closingMoneyText(envelope.purchases_cash_cents)}`}</dd></div>
+                <div><dt>Fondo esperado</dt><dd>{closingMoneyText(envelope.expected_cents)}</dd></div>
+                <div><dt>Fondo contado</dt>
+                  <dd>{envelope.counted_cents === null ? 'Sin contar'
+                    : closingMoneyText(envelope.counted_cents)}</dd></div>
+                <div className="total"><dt>Diferencia</dt>
+                  <dd className={envelope.difference_cents === null || envelope.difference_cents === 0n
+                    ? 'zero' : envelope.difference_cents < 0n ? 'neg' : 'pos'}>
+                    <span>{envelope.difference_cents === null ? 'Sin contar'
+                      : closingSignedText(envelope.difference_cents)}</span>
+                    {envelope.difference_cents !== null
+                      && <span className="closing-difference-name">
+                        {closingDifferenceName(envelope.difference_cents)}</span>}
+                  </dd></div>
+              </dl>
+              <small className="closing-muted">{closingEnvelopeApartHelp}</small>
+            </div>
+            <div className="closing-group">
+              <h2>Si aceptás</h2>
+              <dl className="closing-summary">
+                <div className="total"><dt>Tu fondo de compras arranca con</dt>
+                  <dd>{envelope.new_cents === null ? 'Sin declarar'
+                    : closingMoneyText(envelope.new_cents)}</dd></div>
+              </dl>
+              <small className="closing-muted">{closingEnvelopeAcceptanceHelp}</small>
+            </div>
+          </section>}
 
           {observation !== '' && <section className="closing-panel" aria-labelledby="closing-decision-observation">
             <header className="closing-panel-head"><h2 id="closing-decision-observation">Observación del Almacén</h2></header>

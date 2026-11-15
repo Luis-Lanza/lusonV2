@@ -48,6 +48,7 @@ const cataloguePage = (search: string) => {
  */
 function server(options: { opened?: boolean, status?: string, refuse?: unknown, bootstrap?: boolean,
   contributed?: string, countedCash?: string, fund?: string, uncounted?: number,
+  purchaseCounted?: string | null, purchaseCash?: string | null,
   corrections?: unknown[] } = {}) {
   const seeded: readonly (readonly [number, number])[] = [[1, 12], [2, 9], [3, 14]];
   const state = {
@@ -62,6 +63,11 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
       ?? ((options.status ?? 'open') === 'open' ? null : '6980.00'),
     contributedCash: options.contributed ?? '0.00',
     fund: options.fund ?? ((options.status ?? 'open') === 'open' ? null : '900.00'),
+    // The second envelope: the warehouse's own draft, frozen by the proposal (S1, S5, S6).
+    purchaseCounted: options.purchaseCounted
+      ?? ((options.status ?? 'open') === 'open' ? null : '375.00'),
+    purchaseCash: options.purchaseCash
+      ?? ((options.status ?? 'open') === 'open' ? null : '1500.00'),
     observation: '',
     closed: (options.status ?? 'open') === 'closed',
     rounds: [] as unknown[],
@@ -95,6 +101,14 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
     // counted + contribution − fund: the contribution lifts the bound the fund is taken from.
     const taken = countedCash === null || fund === null
       ? null : (Number(countedCash) + Number(contributedCash) - Number(fund)).toFixed(2);
+    // The purchase fund is derived on every read: the previous closure's new amount, the purchases
+    // of the window paid in cash and the expectation those two produce (S3, S5).
+    const purchaseOpening = bootstrap ? '0.00' : '2000.00';
+    const purchases = bootstrap ? '0.00' : '1621.00';
+    const purchaseExpected = (Number(purchaseOpening) - Number(purchases)).toFixed(2);
+    const purchaseCounted = state.purchaseCounted;
+    const purchaseDifference = purchaseCounted === null ? null
+      : (Number(purchaseCounted) - Number(purchaseExpected)).toFixed(2);
     return {
       id: 1, branch_location_id: 2, branch_name: 'Sopocachi', status: state.closed ? 'closed' : state.status,
       period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z',
@@ -115,6 +129,9 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
       transfer_total: !bootstrap && opened ? '1180.00' : '0.00',
       qr_total: !bootstrap && opened ? '2760.00' : '0.00',
       observation: state.observation, opened_by_account_id: 1,
+      purchase_fund_opening: purchaseOpening, purchases_total: purchases, purchases_cash: purchases,
+      purchase_fund_expected: purchaseExpected, purchase_fund_counted: purchaseCounted,
+      purchase_fund_difference: purchaseDifference, purchase_fund_cash: state.purchaseCash,
       count_lines: lines, rounds: state.rounds, expenses: [], corrections: state.corrections,
     };
   };
@@ -145,11 +162,15 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
     }
     if (url === '/api/closings/1/cash' && init.method === 'POST') {
       const body = JSON.parse(String(init.body)) as { counted_cash: string | null;
-        contributed_cash: string; closing_cash: string | null; observation: string };
+        contributed_cash: string; closing_cash: string | null; observation: string;
+        purchase_fund_counted?: string | null; purchase_fund_cash?: string | null };
       state.countedCash = body.counted_cash;
       state.contributedCash = body.contributed_cash;
       state.fund = body.closing_cash;
       state.observation = body.observation;
+      // An absent key is the contract's own "nobody counted the envelope", never a zero.
+      state.purchaseCounted = body.purchase_fund_counted ?? null;
+      state.purchaseCash = body.purchase_fund_cash ?? null;
       return json(document());
     }
     if (url === '/api/closings/1/propose' && init.method === 'POST') {
@@ -164,6 +185,7 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
         transfer_total: '1180.00', qr_total: '2760.00',
         counted_cash: state.countedCash, contributed_cash: state.contributedCash,
         closing_cash: state.fund,
+        purchase_fund_counted: state.purchaseCounted, purchase_fund_cash: state.purchaseCash,
         observation: '', count_lines: [] }, proposed_by_account_id: 1,
         proposed_at: '2026-09-12T18:31:00Z', decision: '', decision_reason: '',
         decided_by_account_id: null, decided_at: null }];
@@ -488,9 +510,105 @@ describe('the numbers rail (S8, S9, S13)', () => {
     expect(within(aside).getByText('Caja contada').parentElement).toHaveTextContent('Bs 6.980,00');
     expect(within(aside).getByText('Fondo que queda en la caja').parentElement).toHaveTextContent('− Bs 900,00');
     expect(within(aside).getByText('Te llevás al Almacén').parentElement).toHaveTextContent('Bs 6.080,00');
-    // The difference of the drawer is not discounted from the fund nor absorbed by anything.
-    expect(within(aside).getByText('− Bs 35,00')).toBeInTheDocument();
-    expect(within(aside).getByText('Faltante')).toBeInTheDocument();
+    // The difference of the drawer is not discounted from the fund nor absorbed by anything. The
+    // drawer's block is scoped because the envelope below it publishes its own difference (S1, S8).
+    const drawer = within(aside).getByText('Caja').closest('.closing-group') as HTMLElement;
+    expect(within(drawer).getByText('− Bs 35,00')).toBeInTheDocument();
+    expect(within(drawer).getByText('Faltante')).toBeInTheDocument();
+  });
+});
+
+describe('the purchase fund, the second envelope (S1, S5, S6)', () => {
+  const envelope = () => within(rail()).getByText('Fondo de compras').closest('.closing-group') as HTMLElement;
+  const countedField = () => screen.getByLabelText('Fondo contado (Bs)');
+  const newField = () => screen.getByLabelText('Monto nuevo que dejás (Bs)');
+
+  it('shows the inherited balance, the purchases and the expectation of the envelope', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    const group = envelope();
+    expect(within(group).getByText('Saldo heredado').parentElement).toHaveTextContent('Bs 2.000,00');
+    expect(within(group).getByText('Compras del período').parentElement)
+      .toHaveTextContent('− Bs 1.621,00');
+    // 2.000,00 inherited − 1.621,00 spent in cash: the envelope's own identity (S3).
+    expect(within(group).getByText('Fondo esperado').parentElement).toHaveTextContent('Bs 379,00');
+    // The envelope is settled apart from the till, and it says so where the warehouse reads it.
+    expect(group).toHaveTextContent(/sobre aparte/i);
+    expect(group).toHaveTextContent(/ninguna venta lo alimenta/i);
+    // Not one of its numbers is inside the drawer above it (S12).
+    const aside = rail();
+    expect(within(aside).getByText('Caja esperada').parentElement).toHaveTextContent('Bs 800,00');
+    expect(within(aside).getByText('Caja esperada').parentElement).not.toHaveTextContent('379,00');
+  });
+
+  it('publishes the difference of the envelope with its sign and its name, like the drawer\'s', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    fireEvent.change(countedField(), { target: { value: '375,00' } });
+    expect(within(envelope()).getByText('− Bs 4,00')).toBeInTheDocument();
+    expect(within(envelope()).getByText('Faltante')).toBeInTheDocument();
+    fireEvent.change(countedField(), { target: { value: '400,00' } });
+    expect(within(envelope()).getByText('+ Bs 21,00')).toBeInTheDocument();
+    expect(within(envelope()).getByText('Sobrante')).toBeInTheDocument();
+    // It is a reading of the draft: nothing of it left the screen yet.
+    expect(h.posts('/api/closings/1/cash')).toHaveLength(0);
+  });
+
+  it('posts both keys of the envelope through the drawer draft', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '6.980,00' } });
+    fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '900,00' } });
+    fireEvent.change(countedField(), { target: { value: '375,00' } });
+    fireEvent.change(newField(), { target: { value: '1.500,00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
+    await screen.findByText(/Borrador guardado/);
+    expect(JSON.parse(String(h.posts('/api/closings/1/cash')[0].init.body))).toEqual({
+      counted_cash: '6980.00', contributed_cash: '0.00', closing_cash: '900.00', observation: '',
+      purchase_fund_counted: '375.00', purchase_fund_cash: '1500.00' });
+    // The envelope the server now holds is the one the rail reads back after the save.
+    expect(countedField()).toHaveValue('375,00');
+    expect(newField()).toHaveValue('1.500,00');
+    expect(within(envelope()).getByText('− Bs 4,00')).toBeInTheDocument();
+    // The new amount opens the next period and buys used batteries and scrap only (S5, S6).
+    expect(envelope()).toHaveTextContent(/baterías usadas y chatarra/i);
+    expect(envelope()).toHaveTextContent(/período siguiente/i);
+  });
+
+  it('shows an envelope nobody counted as empty, with no difference text at all', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    expect(h.state.purchaseCounted).toBeNull();
+    expect(countedField()).toHaveValue('');
+    expect(newField()).toHaveValue('');
+    const group = envelope();
+    expect(within(group).getByText('Sin contar')).toBeInTheDocument();
+    // No name of a difference is published for an amount nobody counted (S8).
+    expect(within(group).queryByText('Faltante')).not.toBeInTheDocument();
+    expect(within(group).queryByText('Sobrante')).not.toBeInTheDocument();
+    expect(within(group).queryByText('Sin diferencia')).not.toBeInTheDocument();
+  });
+
+  it('never blocks the proposal for the envelope (S5)', async () => {
+    // The warehouse counted Bs 375,00 over an expectation of Bs 379,00: a shortage of Bs 4,00.
+    const h = server({ purchaseCounted: '375.00' });
+    await ready(h);
+    await sheet();
+    expect(within(envelope()).getByText('− Bs 4,00')).toBeInTheDocument();
+    await completeTheSheet();
+    expect(h.posts('/api/closings/1/cash')[0].init.body).toBe(JSON.stringify({
+      counted_cash: '6980.00', contributed_cash: '0.00', closing_cash: '900.00', observation: '',
+      purchase_fund_counted: '375.00', purchase_fund_cash: null }));
+    // The difference of the envelope is informed and never gates the offer, exactly like the till's
+    // (S8): the proposal is enabled by the drawer alone.
+    expect(proposeButton()).toBeEnabled();
+    expect(proposeButton()).toHaveAccessibleDescription(
+      'La rendición se puede proponer: la caja está declarada.');
+    expect(h.posts('/api/closings/1/propose')).toHaveLength(0);
   });
 });
 
