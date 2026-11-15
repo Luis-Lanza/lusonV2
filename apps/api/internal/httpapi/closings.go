@@ -22,10 +22,11 @@ import (
 
 // This file is the HTTP contract of the branch account settlement ("rendición de
 // cuentas"): the warehouse configures a branch's commission rate, opens the period, counts
-// the stock, drafts the drawer, proposes the settlement and reads it, the branch accepts
-// or rejects the offer and records the small expenses of its own till. Everything below is
-// either a request shape judged before the store is touched or the store's own decision
-// published as one status and one stable code; no rule of the vertical is restated here.
+// the stock and the materials, drafts the drawer, proposes the settlement and reads it, the
+// branch accepts or rejects the offer and records the small expenses of its own till.
+// Everything below is either a request shape judged before the store is touched or the store's
+// own decision published as one status and one stable code; no rule of the vertical is restated
+// here.
 //
 // Two things the surface must always say, because they are what an operator acts on: a
 // refusal names what is missing (the variant still to count, the excess of a fund over the
@@ -61,6 +62,11 @@ const (
 	// and the branch decides it, exactly like a round of a live settlement (S16). `corrections` is a
 	// literal suffix of the settlement id, so it is never read as one.
 	closingsCorrectionsPath = closingsCollectionPath + "/{id}/corrections"
+	// closingsMaterialsPath is the material sheet of one settlement: the used batteries in units per
+	// model and the scrap in kilograms per material that the warehouse counted at the cut (S8). It is
+	// a literal suffix of the settlement id like the count sheet of the stock, so the counts of the
+	// third account are one request of their own and never a field of the drawer.
+	closingsMaterialsPath = closingsCollectionPath + "/{id}/materials"
 	// closingsCorrectionDecisionPath is the branch's answer to one correction. A correction is named
 	// by its own id and not below its settlement, because the correction is what the branch decides
 	// and the database answers for the correction it locked, never for a document the path guessed.
@@ -147,6 +153,7 @@ func (a *API) closingRoutes(store *closings.Store) http.Handler {
 	mux.HandleFunc(closingsCorrectionsPath, a.closingCorrections(store))
 	mux.HandleFunc(closingsCorrectionDecisionPath, a.closingCorrectionDecision(store))
 	mux.HandleFunc(closingsCollectionPath+"/{id}/count", a.closingCount(store))
+	mux.HandleFunc(closingsMaterialsPath, a.closingMaterials(store))
 	mux.HandleFunc(closingsCollectionPath+"/{id}/cash", a.closingCash(store))
 	mux.HandleFunc(closingsCollectionPath+"/{id}/propose", a.closingPropose(store))
 	mux.HandleFunc(closingsCollectionPath+"/{id}/decision", a.closingDecision(store))
@@ -638,6 +645,123 @@ func decodeClosingCash(r *http.Request) (closings.CashDraft, error) {
 	return draft, nil
 }
 
+// decodeClosingMaterials reads the counted quantities of the material sheet: one line per model of a
+// used battery or per material of scrap, and nothing else. The expected quantity, the difference and
+// the delivery are not part of this body at all -- the first is the fact of the opening and the
+// other two are derived from it on read -- so a blinded count of this sheet cannot even be expressed,
+// exactly like the count sheet of the stock (S7, S8).
+//
+// A line names its kind and the one key that kind names -- `model` for a used line and
+// `material_id` for a scrap one -- plus what was counted as the canonical text of its unit: whole
+// units for a battery and kilograms with exactly three decimals for scrap. Every quantity of this
+// contract is text and never a JSON number, because a weight with three decimals has no exact
+// spelling as a binary float.
+func decodeClosingMaterials(r *http.Request) ([]closings.MaterialCounted, error) {
+	d, err := closingDecoder(r)
+	if err != nil || !closingDelimiter(d, '{') {
+		return nil, closings.ErrInvalid
+	}
+	var lines []closings.MaterialCounted
+	seen := map[string]bool{}
+	for d.More() {
+		key, err := closingString(d)
+		if err != nil || seen[key] {
+			return nil, closings.ErrInvalid
+		}
+		seen[key] = true
+		if key != "lines" {
+			return nil, closings.ErrInvalid
+		}
+		if lines, err = closingMaterialLines(d); err != nil {
+			return nil, closings.ErrInvalid
+		}
+	}
+	if !seen["lines"] || !closingDelimiter(d, '}') {
+		return nil, closings.ErrInvalid
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return nil, closings.ErrInvalid
+	}
+	return lines, nil
+}
+
+// closingMaterialLines reads the counted lines of that sheet: exact names, presence, types and
+// duplicate keys at every object level, the one key the kind names, and the canonical quantity of
+// its unit. One request states at most MaxMaterialLines lines, which is the bound of a count of the
+// stock, and the request is accepted or refused whole.
+func closingMaterialLines(d *json.Decoder) ([]closings.MaterialCounted, error) {
+	if !closingDelimiter(d, '[') {
+		return nil, closings.ErrInvalid
+	}
+	lines := make([]closings.MaterialCounted, 0)
+	for d.More() {
+		if len(lines) >= closings.MaxMaterialLines || !closingDelimiter(d, '{') {
+			return nil, closings.ErrInvalid
+		}
+		var line closings.MaterialCounted
+		seen := map[string]bool{}
+		for d.More() {
+			key, err := closingString(d)
+			if err != nil || seen[key] {
+				return nil, closings.ErrInvalid
+			}
+			seen[key] = true
+			switch key {
+			case "kind":
+				var text string
+				if text, err = closingString(d); err == nil {
+					line.Kind = closings.MaterialKind(text)
+					if !line.Kind.Valid() {
+						err = closings.ErrInvalid
+					}
+				}
+			case "model":
+				line.Model, err = closingString(d)
+			case "material_id":
+				line.MaterialID, err = closingID(d, closings.MaxMaterialID)
+			case "counted_quantity":
+				var text string
+				if text, err = closingString(d); err == nil {
+					line.Quantity = closings.Quantity(text)
+				}
+			default:
+				return nil, closings.ErrInvalid
+			}
+			if err != nil {
+				return nil, closings.ErrInvalid
+			}
+		}
+		if len(seen) != 3 || !closingDelimiter(d, '}') {
+			return nil, closings.ErrInvalid
+		}
+		// The key of a line is exactly the one its kind names: a used line states its model and never a
+		// material, and a scrap line the other way round. The count is the canonical quantity of that
+		// kind, so an uncounted line is a line the request does not state at all (S8).
+		switch line.Kind {
+		case closings.MaterialKindUsed:
+			if !seen["model"] || seen["material_id"] {
+				return nil, closings.ErrInvalid
+			}
+		case closings.MaterialKindScrap:
+			if !seen["material_id"] || seen["model"] {
+				return nil, closings.ErrInvalid
+			}
+		default:
+			return nil, closings.ErrInvalid
+		}
+		quantity, err := closings.ParseQuantity(line.Kind, string(line.Quantity))
+		if err != nil || quantity != line.Quantity {
+			return nil, closings.ErrInvalid
+		}
+		line.Quantity = quantity
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 || !closingDelimiter(d, ']') {
+		return nil, closings.ErrInvalid
+	}
+	return lines, nil
+}
+
 // decodeClosingExpense reads the expense of a branch: the amount it paid out of its till and what
 // for, and nothing else. The branch is the session's own account and the instant is the database's,
 // so neither is part of this body: a caller can never record an expense in another till nor
@@ -910,6 +1034,24 @@ type closingExpenseDTO struct {
 	CreatedByAccountID int64  `json:"created_by_account_id"`
 }
 
+// closingMaterialLineDTO is one line of the material sheet: what the period bought of one model or
+// material and what the warehouse counted at the cut, with the difference between them and the
+// quantity that goes to the warehouse. A used line states its model and a scrap line its material id
+// and name -- the other side of each is JSON null, so every line carries the same keys -- and the
+// unit states the scale of every quantity of the line: whole units or kilograms with three decimals.
+// An uncounted line states null in counted_quantity, difference and delivered_quantity.
+type closingMaterialLineDTO struct {
+	Kind       string  `json:"kind"`
+	Model      *string `json:"model"`
+	MaterialID *int64  `json:"material_id"`
+	Material   *string `json:"material"`
+	Unit       string  `json:"unit"`
+	Expected   string  `json:"expected_quantity"`
+	Counted    *string `json:"counted_quantity"`
+	Difference *string `json:"difference"`
+	Delivered  *string `json:"delivered_quantity"`
+}
+
 // closingOfferLineDTO is one line of an offer: what the system expected at the cut and what the
 // warehouse counted, both stated, because the branch is accepting that arithmetic.
 type closingOfferLineDTO struct {
@@ -1038,6 +1180,16 @@ type closingDTO struct {
 	Observation           string                `json:"observation"`
 	OpenedByAccountID     int64                 `json:"opened_by_account_id"`
 	CountLines            []closingCountLineDTO `json:"count_lines"`
+	// MaterialLines is the third account of the document (S7, S8, S9): what the period bought of every
+	// used model and of every scrap material, what the warehouse counted of it, the difference between
+	// the two and the quantity that goes to the warehouse. The expected quantity is the fact of the
+	// opening, the counted one is the warehouse's draft and is null while it has not counted the line,
+	// and the difference and the delivery are derived on read: a pending line states null in all three
+	// and blocks nothing, because the stock count sheet is the only gate of the proposal. It is
+	// published by every read, the single document and each row of the history alike, ordered by model
+	// for the used lines and by material id for the scrap ones. None of it is money and none of it
+	// enters the drawer or the commission (S12).
+	MaterialLines []closingMaterialLineDTO `json:"material_lines"`
 	// The purchase fund is the branch's second envelope, counted and settled apart from the drawer
 	// (S1). purchase_fund_opening is the amount the previous closure left in it, purchases_total and
 	// purchases_cash are the sums of the purchases of the window — counter-documents included, so they
@@ -1315,6 +1467,23 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 		previous = line.VariantID
 		lines = append(lines, record)
 	}
+	// The material sheet is revalidated with the same discipline: the key every kind names, the unit of
+	// that kind, and the difference and the delivery recomputed from the expected and the counted
+	// quantity, so a number can never reach the screen without being rederived from its facts (S7,
+	// S8, S9). The rows are published in the order the store reads them: the used lines by model and
+	// then the scrap ones by material id.
+	sheet := make([]closingMaterialLineDTO, 0, len(closing.MaterialLines))
+	for index, line := range closing.MaterialLines {
+		var previousLine *closings.MaterialLine
+		if index > 0 {
+			previousLine = &closing.MaterialLines[index-1]
+		}
+		record, ok := closingMaterialLineRecord(line, previousLine)
+		if !ok {
+			return unavailable()
+		}
+		sheet = append(sheet, record)
+	}
 	rounds := make([]closingRoundDTO, 0, len(closing.Rounds))
 	for index, round := range closing.Rounds {
 		record, ok := closingRoundRecord(round, index+1)
@@ -1383,8 +1552,101 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 		PurchasesCash: purchasesCash, PurchaseFundExpected: purchaseFundExpectedText,
 		PurchaseFundCounted: purchaseFundCounted, PurchaseFundDifference: purchaseFundDifferenceText,
 		PurchaseFundCash: purchaseFundCash,
-		CountLines:       lines, Rounds: rounds, Expenses: expenses, Corrections: corrections,
+		CountLines:       lines, MaterialLines: sheet, Rounds: rounds, Expenses: expenses,
+		Corrections: corrections,
 	}, nil
+}
+
+// closingMaterialLineRecord admits one line of the material sheet: the key its kind names, the unit
+// that kind is counted in, the expected quantity of the opening, the counted one or null while the
+// line is pending, and -- only against a counted line -- the difference and the delivery, both
+// recomputed here from the same arithmetic the store derived them with. It also admits the order the
+// sheet is published in, so a line that came back in another order is never described.
+func closingMaterialLineRecord(line closings.MaterialLine, previous *closings.MaterialLine) (closingMaterialLineDTO, bool) {
+	if !line.Kind.Valid() || line.Unit != line.Kind.Unit() || len(line.Expected) == 0 {
+		return closingMaterialLineDTO{}, false
+	}
+	expected, err := closings.ParseQuantity(line.Kind, string(line.Expected))
+	if err != nil || expected != line.Expected {
+		return closingMaterialLineDTO{}, false
+	}
+	record := closingMaterialLineDTO{Kind: string(line.Kind), Unit: line.Unit,
+		Expected: string(expected)}
+	switch line.Kind {
+	case closings.MaterialKindUsed:
+		if line.Model == nil || line.MaterialID != nil || line.Material != nil ||
+			!closings.ValidMaterialModel(*line.Model) {
+			return closingMaterialLineDTO{}, false
+		}
+		model := *line.Model
+		record.Model = &model
+	case closings.MaterialKindScrap:
+		if line.Model != nil || line.MaterialID == nil || line.Material == nil ||
+			*line.MaterialID < 1 || *line.MaterialID > closings.MaxMaterialID ||
+			*line.Material == "" || !closingText(*line.Material) {
+			return closingMaterialLineDTO{}, false
+		}
+		materialID, name := *line.MaterialID, *line.Material
+		record.MaterialID, record.Material = &materialID, &name
+	}
+	// The order is the sheet's own: the used lines first and by model, then the scrap ones by material id.
+	if previous != nil {
+		switch {
+		case line.Kind != previous.Kind:
+			if previous.Kind != closings.MaterialKindUsed || line.Kind != closings.MaterialKindScrap {
+				return closingMaterialLineDTO{}, false
+			}
+		case line.Kind == closings.MaterialKindUsed:
+			if record.Model == nil || previous.Model == nil || *record.Model <= *previous.Model {
+				return closingMaterialLineDTO{}, false
+			}
+		default:
+			if record.MaterialID == nil || previous.MaterialID == nil ||
+				*record.MaterialID <= *previous.MaterialID {
+				return closingMaterialLineDTO{}, false
+			}
+		}
+	}
+	if line.Counted != nil {
+		counted, err := closings.ParseQuantity(line.Kind, string(*line.Counted))
+		if err != nil || counted != *line.Counted {
+			return closingMaterialLineDTO{}, false
+		}
+		text := string(counted)
+		record.Counted = &text
+	}
+	difference, err := closings.MaterialDifference(line.Counted, expected, line.Kind)
+	if err != nil || (difference == nil) != (line.Difference == nil) ||
+		(difference != nil && *difference != *line.Difference) {
+		return closingMaterialLineDTO{}, false
+	}
+	delivered, ok := closingDelivered(line)
+	if !ok {
+		return closingMaterialLineDTO{}, false
+	}
+	record.Delivered = delivered
+	if difference != nil {
+		text := difference.String()
+		record.Difference = &text
+	}
+	return record, true
+}
+
+// closingDelivered recomputes the quantity that goes to the warehouse at the closure: everything that
+// was counted, because the previous closure took everything and nothing is left behind (S9). It is
+// derived on read and never stored, so a delivery that disagrees with the count is a shape this
+// domain never wrote and is never published.
+func closingDelivered(line closings.MaterialLine) (*string, bool) {
+	delivered := closings.MaterialDelivery(line.Counted)
+	if delivered == nil {
+		return nil, line.Delivered == nil
+	}
+	quantity, err := closings.ParseQuantity(line.Kind, string(*delivered))
+	if err != nil || quantity != *delivered || line.Delivered == nil || *line.Delivered != quantity {
+		return nil, false
+	}
+	text := string(quantity)
+	return &text, true
 }
 
 // closingCountLineRecord admits one line of the count sheet: the catalogue identity of its
@@ -2025,6 +2287,47 @@ func (a *API) closingCount(store *closings.Store) http.HandlerFunc {
 			return
 		}
 		closing, err := store.Count(r.Context(), actor, id, counted)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		record, err := closingRecord(closing)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		respond(w, 200, record)
+	}
+}
+
+// closingMaterials records what the warehouse counted of the material sheet: the used batteries in
+// units per model and the scrap in kilograms per material, in one request, exactly in the shape of the
+// count sheet of the stock rather than as a field of the drawer (S8). A line it does not state keeps
+// the count it has, so the same request written twice states the same sheet, and a line nobody counted
+// stays pending without blocking anything: the stock count sheet is the only gate of the proposal.
+func (a *API) closingMaterials(store *closings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, http.MethodPost) {
+			return
+		}
+		actor, ok := a.inventoryIdentity(w, r)
+		if !ok {
+			return
+		}
+		if !a.closingMutation(w, r) {
+			return
+		}
+		id, err := closingPathID(r.PathValue("id"), math.MaxInt64)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		counted, err := decodeClosingMaterials(r)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		closing, err := store.CountMaterials(r.Context(), actor, id, counted)
 		if err != nil {
 			closingFailure(w, err)
 			return

@@ -2968,3 +2968,235 @@ func TestPurchaseFundDifferenceDoesNotBlockButAPendingCountStillDoes(t *testing.
 		t.Fatalf("a difference of the envelope must not block the closure: %+v %v", closed, err)
 	}
 }
+
+// purchaseLines registers one purchase of branch 2 with the lines the test states, paid in cash for
+// the amount it states -- which is the sum of the line amounts the document derives -- so a fixture
+// writes the documents the branch really writes, scrap and used lines alike.
+func (e *env) purchaseLines(t *testing.T, key, cash string,
+	used []purchases.UsedLineInput, scrap []purchases.ScrapLineInput) purchases.Document {
+	t.Helper()
+	document, err := e.purchases.Create(e.ctx, identity(2), purchases.CreateInput{
+		OperationKey: key,
+		UsedLines:    used,
+		ScrapLines:   scrap,
+		PaidCash:     purchases.Money(cash),
+		PaidTransfer: "0.00",
+	})
+	if err != nil {
+		t.Fatalf("the purchase %q could not be registered: %v", key, err)
+	}
+	return document
+}
+
+// materialSheet is one settlement's sheet as a value, so a test proves the whole published shape with
+// one comparison: the kind, the key, the unit, the expected quantity, the counted one and the two
+// derived numbers, line by line in the order the document publishes them.
+func materialSheet(t *testing.T, closing closings.Closing) []string {
+	t.Helper()
+	sheet := make([]string, 0, len(closing.MaterialLines))
+	for _, line := range closing.MaterialLines {
+		key := ""
+		switch {
+		case line.Model != nil:
+			key = *line.Model
+		case line.MaterialID != nil:
+			key = fmt.Sprintf("%d/%s", *line.MaterialID, *line.Material)
+		}
+		sheet = append(sheet, fmt.Sprintf("%s:%s:%s:%s:%s:%s:%s", line.Kind, key, line.Unit,
+			line.Expected, optionalQuantity(line.Counted), optionalDifference(line.Difference),
+			optionalQuantity(line.Delivered)))
+	}
+	return sheet
+}
+
+// optionalQuantity renders a quantity that may still be pending, which is exactly the JSON null of
+// the contract.
+func optionalQuantity(quantity *closings.Quantity) string {
+	if quantity == nil {
+		return "-"
+	}
+	return string(*quantity)
+}
+
+// optionalDifference renders a difference that may still be unknown.
+func optionalDifference(difference *closings.SignedQuantity) string {
+	if difference == nil {
+		return "-"
+	}
+	return difference.String()
+}
+
+// TestMaterialSheetIsTheThirdAccountOfTheDocument pins S7 and S8 at the store: the sheet of a
+// settlement is what its period bought -- the sum of the used quantity per model and of the kilos per
+// material of the purchases of its own window -- against what the warehouse counted, in the order the
+// document publishes (the used lines by model, then the scrap ones by material id), with the
+// difference of every counted line and the quantity that goes to the warehouse. A line nobody counted
+// stays pending and states no difference and no delivery, and it blocks nothing: the settlement closes
+// with it and keeps exactly the count it signed.
+func TestMaterialSheetIsTheThirdAccountOfTheDocument(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	// The period buys two used models in one document and two materials in another: 6 + 4 units and
+	// 12.500 + 4.250 kilograms, which is what the shelf is expected to hold at the cut.
+	e.purchaseLines(t, "closings-materials-used-01", "80.00", []purchases.UsedLineInput{
+		{Model: "NS60ZL", Quantity: 6, UnitPrice: "10.00"},
+		{Model: "12N6,5_3B", Quantity: 4, UnitPrice: "5.00"},
+	}, nil)
+	e.purchaseLines(t, "closings-materials-scrap-01", "33.50", nil, []purchases.ScrapLineInput{
+		{MaterialID: 1, Kg: "12.500", PricePerKg: "2.00"},
+		{MaterialID: 3, Kg: "4.250", PricePerKg: "2.00"},
+	})
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+	e.countAll(t, opened.ID)
+	read, err := e.store.Read(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be read: %v", err)
+	}
+	// The expected quantity is the period's own purchases, the order is the document's, and a line the
+	// warehouse has not counted states a count, a difference and a delivery of null.
+	want := []string{
+		"used:12N6,5_3B:unit:4:-:-:-",
+		"used:NS60ZL:unit:6:-:-:-",
+		"scrap:1/Cobre:kg:12.500:-:-:-",
+		"scrap:3/Plomo:kg:4.250:-:-:-",
+	}
+	if got := materialSheet(t, read); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("the sheet must be the purchases of the period, got %v want %v", got, want)
+	}
+	// The history publishes the same sheet: one derivation for the document and its rows (S8).
+	page, err := e.store.List(e.ctx, warehouse(), 2, 1, 25)
+	if err != nil || len(page.Closings) != 2 {
+		t.Fatalf("the history could not be read: %+v %v", page, err)
+	}
+	if got := materialSheet(t, page.Closings[0]); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("a history row must publish the sheet of its own document, got %v want %v", got, want)
+	}
+
+	// The warehouse counts: one model short, one exactly, one material over, and the lead left
+	// pending. The difference is informed with its sign and the delivery is everything counted (S8, S9).
+	counted, err := e.store.CountMaterials(e.ctx, warehouse(), read.ID, []closings.MaterialCounted{
+		{Kind: closings.MaterialKindUsed, Model: "12N6,5_3B", Quantity: "3"},
+		{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "6"},
+		{Kind: closings.MaterialKindScrap, MaterialID: 1, Quantity: "13.500"},
+	})
+	if err != nil {
+		t.Fatalf("the material sheet could not be counted: %v", err)
+	}
+	want = []string{
+		"used:12N6,5_3B:unit:4:3:-1:3",
+		"used:NS60ZL:unit:6:6:0:6",
+		"scrap:1/Cobre:kg:12.500:13.500:1.000:13.500",
+		"scrap:3/Plomo:kg:4.250:-:-:-",
+	}
+	if got := materialSheet(t, counted); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("the counted sheet is not the one the warehouse stated, got %v want %v", got, want)
+	}
+	// The same request stated twice leaves the same sheet: counting this sheet is idempotent.
+	again, err := e.store.CountMaterials(e.ctx, warehouse(), read.ID, []closings.MaterialCounted{
+		{Kind: closings.MaterialKindScrap, MaterialID: 1, Quantity: "13.500"},
+	})
+	if err != nil || strings.Join(materialSheet(t, again), ",") != strings.Join(want, ",") {
+		t.Fatalf("the same count twice must leave the same sheet: %v %v", materialSheet(t, again), err)
+	}
+	// The pending lead line blocks nothing: the settlement is proposed and closed with it, and the
+	// closure publishes exactly the counts the branch signed (S9).
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), read.ID,
+		draft("500.00", "0.00", "100.00")); err != nil {
+		t.Fatalf("the drawer draft could not be saved: %v", err)
+	}
+	if _, err := e.store.Propose(e.ctx, warehouse(), read.ID); err != nil {
+		t.Fatalf("a pending material line must never block the proposal: %v", err)
+	}
+	closed, err := e.store.Decide(e.ctx, identity(2), read.ID, closings.DecisionAccepted, "")
+	if err != nil || closed.Status != closings.StatusClosed {
+		t.Fatalf("the branch must accept the settlement: %+v %v", closed, err)
+	}
+	if got := materialSheet(t, closed); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("the closure must keep the sheet it was offered, got %v want %v", got, want)
+	}
+	// A closed settlement's sheet never moves, and the store refuses the write by its own state.
+	refused(t, func() error {
+		_, err := e.store.CountMaterials(e.ctx, warehouse(), read.ID, []closings.MaterialCounted{
+			{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "5"},
+		})
+		return err
+	}(), closings.ErrCountFrozen)
+	if got := e.text(t, `SELECT coalesce(counted_quantity::text,'-') FROM closing_material_lines
+ WHERE closing_id=$1 AND model='NS60ZL'`, read.ID); got != "6.000" {
+		t.Fatalf("a refused count must leave the sheet as it was: %q", got)
+	}
+}
+
+// TestMaterialDraftIsValidatedLikeTheCountSheet pins the shape half of S8 at the store: the request
+// states the key of each line and its count and nothing else, every line is the canonical quantity of
+// its unit, a material outside the reference table is refused, and the sheet of a settlement is
+// written whole or not at all. Only the warehouse counts it, and only while it holds the settlement.
+func TestMaterialDraftIsValidatedLikeTheCountSheet(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	e.purchaseLines(t, "closings-materials-draft-01", "20.00",
+		[]purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 2, UnitPrice: "10.00"}}, nil)
+	e.purchaseLines(t, "closings-materials-draft-02", "3.00", nil,
+		[]purchases.ScrapLineInput{{MaterialID: 2, Kg: "1.500", PricePerKg: "2.00"}})
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+	seeded := materialSheet(t, opened)
+	// Every refusal below is a request error, and none of them writes a line: the sheet is the seed.
+	for name, wrong := range map[string][]closings.MaterialCounted{
+		"a negative count":           {{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "-1"}},
+		"a fraction of a battery":    {{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "1.5"}},
+		"a padded unit count":        {{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "02"}},
+		"two decimals of scrap":      {{Kind: closings.MaterialKindScrap, MaterialID: 2, Quantity: "1.50"}},
+		"a model that is not one":    {{Kind: closings.MaterialKindUsed, Model: "ns60zl", Quantity: "2"}},
+		"a material that is not one": {{Kind: closings.MaterialKindScrap, MaterialID: 99, Quantity: "1.500"}},
+		"the key of the other kind":  {{Kind: closings.MaterialKindUsed, MaterialID: 2, Quantity: "2"}},
+		"an unknown kind":            {{Kind: closings.MaterialKind("battery"), Model: "NS60ZL", Quantity: "2"}},
+		"the same key twice": {
+			{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "2"},
+			{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "1"},
+		},
+		"nothing at all": {},
+	} {
+		if _, err := e.store.CountMaterials(e.ctx, warehouse(), opened.ID, wrong); !errors.Is(err, closings.ErrInvalid) {
+			t.Fatalf("%s must be refused as a request error, got %v", name, err)
+		}
+	}
+	if got := materialSheet(t, mustRead(t, e, opened.ID)); strings.Join(got, ",") != strings.Join(seeded, ",") {
+		t.Fatalf("a refused count must write nothing, got %v want %v", got, seeded)
+	}
+	// The sheet belongs to the warehouse and to a settlement that exists.
+	valid := []closings.MaterialCounted{{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "2"}}
+	if _, err := e.store.CountMaterials(e.ctx, identity(2), opened.ID, valid); !errors.Is(err, closings.ErrForbidden) {
+		t.Fatalf("only the warehouse counts this sheet, got %v", err)
+	}
+	if _, err := e.store.CountMaterials(e.ctx, warehouse(), opened.ID+1, valid); !errors.Is(err, closings.ErrNotFound) {
+		t.Fatalf("an unknown settlement has no sheet, got %v", err)
+	}
+	// Once proposed the sheet is the offer the branch decides, exactly like the count sheet of the
+	// stock (LC004, LC025).
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("500.00", "0.00", "100.00")); err != nil {
+		t.Fatalf("the drawer draft could not be saved: %v", err)
+	}
+	if _, err := e.store.Propose(e.ctx, warehouse(), opened.ID); err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	if _, err := e.store.CountMaterials(e.ctx, warehouse(), opened.ID, valid); !errors.Is(err, closings.ErrCountFrozen) {
+		t.Fatalf("a proposed settlement's sheet is frozen, got %v", err)
+	}
+}
+
+// mustRead reads one settlement of the fixture, failing the test when it cannot.
+func mustRead(t *testing.T, e *env, id int64) closings.Closing {
+	t.Helper()
+	closing, err := e.store.Read(e.ctx, warehouse(), id)
+	if err != nil {
+		t.Fatalf("the settlement could not be read: %v", err)
+	}
+	return closing
+}

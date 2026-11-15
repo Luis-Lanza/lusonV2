@@ -22,6 +22,8 @@ package closings
 import (
 	"errors"
 	"math"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -211,6 +213,10 @@ const (
 	MaxCounted     = 1_000_000
 	MaxObservation = 1000
 	MaxReason      = 1000
+	// MaxMaterialLines is the bound of one material count, which is the bound the count sheet of
+	// the stock admits (S8): the sheet of a period holds one line per model and per material it
+	// bought, and a request states at most that many lines at once.
+	MaxMaterialLines = 190
 	// MaxDescription is the bound of the description of an expense, which is the database's
 	// own: the ledger admits between 1 and 500 characters once trimmed (S12).
 	MaxDescription = 500
@@ -303,6 +309,270 @@ type CashDraft struct {
 	// are frozen by the proposal, exactly like the drawer (S5, S6).
 	PurchaseFundCounted *Money
 	PurchaseFundCash    *Money
+}
+
+// MaterialKind is the unit one row of the material sheet is counted in (S8): a used battery is
+// counted in whole units per model and scrap in kilograms per material. The kind is also the key
+// of the row, because it decides which of the two columns names it.
+type MaterialKind string
+
+const (
+	MaterialKindUsed  MaterialKind = "used"
+	MaterialKindScrap MaterialKind = "scrap"
+)
+
+// Valid reports whether the kind is one this vertical stores.
+func (k MaterialKind) Valid() bool { return k == MaterialKindUsed || k == MaterialKindScrap }
+
+// Unit is the unit the sheet publishes for the kind, which is the unit both of its quantities are
+// counted in: a used battery is a whole thing and a material of the reference table is weighed in
+// kilograms.
+func (k MaterialKind) Unit() string {
+	if k == MaterialKindScrap {
+		return "kg"
+	}
+	return "unit"
+}
+
+// Quantity is the canonical quantity of one material line: the whole units of a used line, which
+// is never a fraction, and the kilograms of a scrap line with exactly three decimals, which is the
+// scale the weight of a purchase already stores. It is decimal text end to end, so no binary float
+// ever touches a count, and the unit of the line is the only thing that decides its scale.
+type Quantity string
+
+// SignedQuantity is a difference of the material sheet with its sign: negative is less material
+// than the period bought and positive is more. Like the cash difference it is informed and never
+// blocks, which is why it is signed and why it is never written back (S8).
+type SignedQuantity string
+
+var (
+	// unitsPattern is a whole quantity of the sheet: at most nine integral digits, which is the
+	// whole range of numeric(12,3) without a fraction, never padded and never a fraction, because
+	// a battery is not divisible.
+	unitsPattern = regexp.MustCompile(`^(0|[1-9][0-9]{0,8})$`)
+	// kilogramsPattern is a weight of the sheet: the same integral part with exactly three
+	// decimals, so the text of a count is the text of the column it is stored in.
+	kilogramsPattern = regexp.MustCompile(`^(0|[1-9][0-9]{0,8})\.[0-9]{3}$`)
+	// materialModelPattern is the frozen model code of a used line: the same one a purchase line
+	// stores, comma included, because the sheet counts the models the branch bought by that name.
+	materialModelPattern = regexp.MustCompile(`^[A-Z0-9][A-Z0-9 .,_/-]{0,39}$`)
+)
+
+const (
+	// MaxMaterialID is the range of the material id, which is the smallint of the reference table.
+	MaxMaterialID = math.MaxInt16
+	// maxMilli is the whole range of numeric(12,3) expressed in thousandths, which is the column of
+	// both quantities of the sheet.
+	maxMilli = int64(999_999_999_999)
+)
+
+// ParseQuantity admits the counted quantity of one line: a whole number of units for a used line
+// and kilograms with exactly three decimals for a scrap line, each as the canonical text the
+// sheet publishes. An uncounted quantity is the JSON null of this contract and never a zero, so a
+// padded, fractional-unit or over-precision value is refused instead of normalized.
+func ParseQuantity(kind MaterialKind, text string) (Quantity, error) {
+	switch kind {
+	case MaterialKindUsed:
+		if !unitsPattern.MatchString(text) {
+			return "", ErrInvalid
+		}
+	case MaterialKindScrap:
+		if !kilogramsPattern.MatchString(text) {
+			return "", ErrInvalid
+		}
+	default:
+		return "", ErrInvalid
+	}
+	return Quantity(text), nil
+}
+
+// quantityMilli reads a canonical quantity as integer thousandths, the scale that holds units and
+// kilograms exactly: a unit is a thousand thousandths and a kilogram is one. Text that is not
+// canonical is refused, so nothing is approximated.
+func quantityMilli(quantity Quantity) (int64, bool) {
+	text := string(quantity)
+	whole, fraction, _ := strings.Cut(text, ".")
+	if len(whole) == 0 || len(whole) > 9 || (len(whole) > 1 && whole[0] == '0') || len(fraction) > 3 {
+		return 0, false
+	}
+	var value int64
+	for _, ch := range whole {
+		if ch < '0' || ch > '9' {
+			return 0, false
+		}
+		value = value*10 + int64(ch-'0')
+	}
+	for i := 0; i < 3; i++ {
+		value *= 10
+		if i < len(fraction) {
+			ch := fraction[i]
+			if ch < '0' || ch > '9' {
+				return 0, false
+			}
+			value += int64(ch - '0')
+		}
+	}
+	return value, true
+}
+
+// quantityFromMilli renders integer thousandths as the canonical quantity of one kind: the whole
+// units of a used line and the three-decimal kilograms of a scrap line. A fraction of a unit is
+// not a battery, so it is refused instead of rounded.
+func quantityFromMilli(milli int64, kind MaterialKind) (Quantity, error) {
+	if milli < 0 || milli > maxMilli || !kind.Valid() {
+		return "", ErrInvalid
+	}
+	whole, fraction := milli/1000, milli%1000
+	if kind == MaterialKindUsed {
+		if fraction != 0 {
+			return "", ErrInvalid
+		}
+		return ParseQuantity(kind, strconv.FormatInt(whole, 10))
+	}
+	text := strconv.FormatInt(whole, 10) + "." +
+		string([]byte{byte('0' + fraction/100), byte('0' + fraction/10%10), byte('0' + fraction%10)})
+	if quantity, err := ParseQuantity(kind, text); err != nil || string(quantity) != text {
+		return "", ErrInvalid
+	}
+	return Quantity(text), nil
+}
+
+// signedQuantityFromMilli renders a signed quantity from integer thousandths, with the scale of
+// its kind. A value outside the column renders as the empty text, which no caller stores.
+func signedQuantityFromMilli(milli int64, kind MaterialKind) SignedQuantity {
+	negative := milli < 0
+	if negative {
+		milli = -milli
+	}
+	quantity, err := quantityFromMilli(milli, kind)
+	if err != nil {
+		return ""
+	}
+	if negative {
+		return SignedQuantity("-" + string(quantity))
+	}
+	return SignedQuantity(quantity)
+}
+
+// String renders the difference of one line, or the empty text when it is not canonical text of
+// either scale. A difference of zero is never published with a sign: the arithmetic of the sheet
+// renders it as the zero of its own kind.
+func (s SignedQuantity) String() string {
+	text := string(s)
+	magnitude := strings.TrimPrefix(text, "-")
+	if (!unitsPattern.MatchString(magnitude) && !kilogramsPattern.MatchString(magnitude)) ||
+		(magnitude == "0" || magnitude == "0.000") && magnitude != text {
+		return ""
+	}
+	if _, ok := quantityMilli(Quantity(magnitude)); !ok {
+		return ""
+	}
+	return text
+}
+
+// MaterialDifference is what was counted against what the period bought, with its sign: negative
+// is material missing from the shelf and positive is material the period did not buy. It is
+// informed exactly like the cash difference and blocks nothing (S8), and it is null while the line
+// is uncounted, because a difference of zero would be a count nobody made.
+func MaterialDifference(counted *Quantity, expected Quantity, kind MaterialKind) (*SignedQuantity, error) {
+	if counted == nil {
+		return nil, nil
+	}
+	countedMilli, ok := quantityMilli(*counted)
+	if !ok {
+		return nil, ErrInvalid
+	}
+	expectedMilli, ok := quantityMilli(expected)
+	if !ok {
+		return nil, ErrInvalid
+	}
+	difference := signedQuantityFromMilli(countedMilli-expectedMilli, kind)
+	if difference == "" {
+		return nil, ErrInvalid
+	}
+	return &difference, nil
+}
+
+// MaterialDelivery is the quantity that goes to the warehouse at the closure: everything that was
+// counted, because the previous closure already took everything and the shelf starts at zero by
+// construction (S7, S9). There is no remnant field and no column: it is the counted quantity, and
+// it is derived on read so it can never disagree with the count.
+func MaterialDelivery(counted *Quantity) *Quantity {
+	if counted == nil {
+		return nil
+	}
+	delivered := *counted
+	return &delivered
+}
+
+// ValidMaterialModel reports whether the model of a used line is one this vertical stores: the same
+// frozen code a purchase line names, comma included, because the sheet counts the models the branch
+// bought by that name.
+func ValidMaterialModel(model string) bool { return materialModelPattern.MatchString(model) }
+
+// MaterialCounted is one line the warehouse counted: the key of the row -- the model of a used
+// battery or the material of a scrap line -- and what was found. The expected quantity is the
+// database's own fact of the opening, so it is not part of this request at all (S7), and the
+// difference and the delivery are derived from it on read.
+type MaterialCounted struct {
+	Kind       MaterialKind
+	Model      string
+	MaterialID int64
+	Quantity   Quantity
+}
+
+// MaterialLine is one row of the material sheet (S8): what the period bought of one model or
+// material and what the warehouse counted at the cut, with the difference between the two and the
+// quantity that goes to the warehouse. A used line names its Model and a scrap line its
+// MaterialID and Material -- exactly one of them, per kind -- and Unit is the unit both quantities
+// are counted in. Expected is a fact of the opening, Counted is null while the line is uncounted,
+// and Difference and Delivered are derived on every read, never written.
+type MaterialLine struct {
+	Kind       MaterialKind    `json:"kind"`
+	Model      *string         `json:"model"`
+	MaterialID *int64          `json:"material_id"`
+	Material   *string         `json:"material"`
+	Unit       string          `json:"unit"`
+	Expected   Quantity        `json:"expected_quantity"`
+	Counted    *Quantity       `json:"counted_quantity"`
+	Difference *SignedQuantity `json:"difference"`
+	Delivered  *Quantity       `json:"delivered_quantity"`
+}
+
+// canonicalMaterials admits the counted sheet of one request: one to MaxMaterialLines lines, each
+// naming one row of the sheet once, with the key its kind names and the canonical quantity of its
+// unit. The lines are copied in the caller's order; the caller's slice is never modified.
+func canonicalMaterials(counted []MaterialCounted) ([]MaterialCounted, error) {
+	if len(counted) < 1 || len(counted) > MaxMaterialLines {
+		return nil, ErrInvalid
+	}
+	seen := make(map[string]bool, len(counted))
+	lines := make([]MaterialCounted, 0, len(counted))
+	for _, line := range counted {
+		var key string
+		switch line.Kind {
+		case MaterialKindUsed:
+			if line.MaterialID != 0 || !materialModelPattern.MatchString(line.Model) {
+				return nil, ErrInvalid
+			}
+			key = string(line.Kind) + "/" + line.Model
+		case MaterialKindScrap:
+			if line.Model != "" || line.MaterialID < 1 || line.MaterialID > MaxMaterialID {
+				return nil, ErrInvalid
+			}
+			key = string(line.Kind) + "/" + digits(line.MaterialID)
+		default:
+			return nil, ErrInvalid
+		}
+		quantity, err := ParseQuantity(line.Kind, string(line.Quantity))
+		if err != nil || quantity != line.Quantity || seen[key] {
+			return nil, ErrInvalid
+		}
+		seen[key] = true
+		lines = append(lines, MaterialCounted{Kind: line.Kind, Model: line.Model,
+			MaterialID: line.MaterialID, Quantity: quantity})
+	}
+	return lines, nil
 }
 
 // CorrectionStatus is the state of one correction of a closed settlement: the warehouse
@@ -488,6 +758,14 @@ type Closing struct {
 	CashDifference *Signed     `json:"cash_difference"`
 	TakenCash      *Signed     `json:"taken_cash"`
 	CountLines     []CountLine `json:"count_lines"`
+	// MaterialLines is the third account of the document: what the period bought of every model and
+	// material and what the warehouse counted of it, with the difference and the quantity that goes
+	// to the warehouse (S7, S8, S9). The expected quantity is seeded when the settlement opens, from
+	// the purchases of its own window, and the counted one is the warehouse's draft; the difference
+	// and the delivery are derived on read, so neither can disagree with the facts that produce
+	// them, and a line still uncounted states no difference and no delivery at all. It is published
+	// by every read of this package, the single document and each row of the history alike.
+	MaterialLines []MaterialLine `json:"material_lines"`
 	// The purchase fund is the branch's second envelope of physical money, counted and settled
 	// apart from the drawer (S1). PurchaseFundOpening is the amount the previous closure left in it,
 	// PurchasesTotal and PurchasesCash are the sums of the purchases of the window — the only money

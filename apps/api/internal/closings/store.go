@@ -274,7 +274,8 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Closin
 // read, by the same helper of the single read, so a list row cannot state a period its own document
 // denies. It costs one extra ledger statement, one statement for the purchase envelope and at most
 // one rate statement per row, and never more: a branch holds one live settlement at a time, so a
-// page of one branch has at most one open row in it.
+// page of one branch has at most one open row in it. The material sheet of the whole page is one
+// further statement, which is why it is read after the page cursor is closed and never per row.
 //
 // A branch reads only its own history: another branch is forbidden, exactly like a setting of
 // another branch. The warehouse reads every branch. An unknown branch does not exist and a retired
@@ -340,6 +341,15 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, branchID int64, p
 		if err := deriveClosing(ctx, s.pool, &result.Closings[i]); err != nil {
 			return Page{}, err
 		}
+	}
+	// The material sheet is part of the same derivation: the third account of the document is
+	// published by the single read and by every row of a page, one statement for the page (S8).
+	documents := make([]*Closing, len(result.Closings))
+	for i := range result.Closings {
+		documents[i] = &result.Closings[i]
+	}
+	if err := attachMaterialLines(ctx, s.pool, documents); err != nil {
+		return Page{}, err
 	}
 	return result, nil
 }
@@ -410,6 +420,96 @@ func (s *Store) Count(ctx context.Context, actor auth.Identity, id int64, counte
  VALUES($1,$2,0,$3)
  ON CONFLICT (closing_id,variant_id) DO UPDATE SET counted_quantity=EXCLUDED.counted_quantity`,
 			id, int32(line.VariantID), line.Quantity); err != nil {
+			return Closing{}, mapFailure(ctx, err)
+		}
+	}
+	closing, err := loadClosing(ctx, tx, id)
+	if err != nil {
+		return Closing{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Closing{}, mapFailure(ctx, err)
+	}
+	return closing, nil
+}
+
+// CountMaterials records what the warehouse counted of the material sheet: used batteries in whole
+// units per model and scrap in kilograms per material, and nothing else. It is the count sheet's own
+// shape -- one request states the lines it counted, a line that already exists only changes its
+// count, and a line the period did not buy is added with the database's own expected quantity of
+// zero -- so writing the same request twice leaves the same sheet. The expected quantity of every
+// line is the snapshot the opener seeded from the purchases of the window and is never a caller
+// promise, and a line nobody counted stays pending and blocks nothing: the stock count sheet is the
+// only gate of the proposal (S8). The database refuses a write while the branch is deciding or after
+// the closure (LC025), exactly like the count sheet of the stock (LC004).
+func (s *Store) CountMaterials(ctx context.Context, actor auth.Identity, id int64, counted []MaterialCounted) (Closing, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return Closing{}, ErrUnavailable
+	}
+	if !warehouseAdmin(actor) {
+		return Closing{}, ErrForbidden
+	}
+	if id < 1 {
+		return Closing{}, ErrNotFound
+	}
+	lines, err := canonicalMaterials(counted)
+	if err != nil {
+		return Closing{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return Closing{}, fail(ctx)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = tx.Rollback(cleanup)
+	}()
+	if err := checkAccount(ctx, tx, actor); err != nil {
+		return Closing{}, err
+	}
+	// The header is locked before the sheet is judged, so a proposal cannot slip between the state
+	// check and the write, and a refused line leaves the sheet exactly as it was.
+	var status string
+	err = tx.QueryRow(ctx, `SELECT status FROM branch_closings WHERE id=$1 FOR UPDATE`, id).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Closing{}, ErrNotFound
+	}
+	if err != nil {
+		return Closing{}, fail(ctx)
+	}
+	if !Status(status).Held() {
+		return Closing{}, ErrCountFrozen
+	}
+	if err := checkMaterials(ctx, tx, lines); err != nil {
+		return Closing{}, err
+	}
+	for _, line := range lines {
+		// expected_quantity is supplied only because the column is NOT NULL on insert: the admission
+		// trigger would write its own zero anyway, because the expected is the fact of the opening and
+		// never a caller promise. The conflict branch leaves it untouched, so only the counted
+		// quantity of an existing line ever moves.
+		switch line.Kind {
+		case MaterialKindUsed:
+			_, err = tx.Exec(ctx, `INSERT INTO closing_material_lines(
+  closing_id,kind,model,expected_quantity,counted_quantity)
+ VALUES($1,'used',$2,0,$3)
+ ON CONFLICT (closing_id,model) WHERE kind='used'
+ DO UPDATE SET counted_quantity=EXCLUDED.counted_quantity`,
+				id, line.Model, string(line.Quantity))
+		case MaterialKindScrap:
+			_, err = tx.Exec(ctx, `INSERT INTO closing_material_lines(
+  closing_id,kind,material_id,expected_quantity,counted_quantity)
+ VALUES($1,'scrap',$2,0,$3)
+ ON CONFLICT (closing_id,material_id) WHERE kind='scrap'
+ DO UPDATE SET counted_quantity=EXCLUDED.counted_quantity`,
+				id, int16(line.MaterialID), string(line.Quantity))
+		default:
+			return Closing{}, ErrInvalid
+		}
+		if err != nil {
 			return Closing{}, mapFailure(ctx, err)
 		}
 	}
@@ -589,6 +689,30 @@ func nullable(amount *Money) any {
 		return nil
 	}
 	return string(*amount)
+}
+
+// checkMaterials refuses a sheet that names a material of the reference table that does not exist,
+// before any line is written: the whole sheet is written or none of it is. A material is reference
+// data of the installation and never a value a caller invents, exactly like the variant of a count
+// line of the stock.
+func checkMaterials(ctx context.Context, q querier, lines []MaterialCounted) error {
+	ids := make([]int16, 0, len(lines))
+	for _, line := range lines {
+		if line.Kind == MaterialKindScrap {
+			ids = append(ids, int16(line.MaterialID))
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	var known int64
+	if err := q.QueryRow(ctx, `SELECT count(*) FROM materials WHERE id=ANY($1)`, ids).Scan(&known); err != nil {
+		return fail(ctx)
+	}
+	if known != int64(len(ids)) {
+		return ErrInvalid
+	}
+	return nil
 }
 
 // Propose is the warehouse's offer. In one transaction it freezes the period numbers from
@@ -1169,6 +1293,9 @@ func loadClosing(ctx context.Context, q querier, id int64) (Closing, error) {
 	if closing.CountLines, err = loadCountLines(ctx, q, id); err != nil {
 		return Closing{}, err
 	}
+	if err := attachMaterialLines(ctx, q, []*Closing{&closing}); err != nil {
+		return Closing{}, err
+	}
 	if closing.Expenses, err = loadExpenses(ctx, q, id); err != nil {
 		return Closing{}, err
 	}
@@ -1469,6 +1596,144 @@ func loadCountLines(ctx context.Context, q querier, id int64) ([]CountLine, erro
 		return nil, fail(ctx)
 	}
 	return lines, nil
+}
+
+// attachMaterialLines publishes the material sheet of every settlement of one read: the rows the
+// opener seeded and the warehouse counted, with the difference and the delivery derived on read
+// (S7, S8, S9). It is one statement for the whole read, which is what keeps the single document and
+// each row of a page of the history describing their sheets the same way -- and it is called once
+// every cursor of that read is closed, because a statement issued while another one is still open
+// waits for a connection the cursor itself holds (List).
+func attachMaterialLines(ctx context.Context, q querier, closings []*Closing) error {
+	if len(closings) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(closings))
+	for _, closing := range closings {
+		ids = append(ids, closing.ID)
+	}
+	sheet, err := loadMaterialLines(ctx, q, ids)
+	if err != nil {
+		return err
+	}
+	for _, closing := range closings {
+		lines, ok := sheet[closing.ID]
+		if !ok {
+			// A settlement whose period bought nothing has an empty sheet, never a missing one: the
+			// document publishes `[]` so a client reads a count of zero rows instead of a null.
+			lines = make([]MaterialLine, 0)
+		}
+		closing.MaterialLines = lines
+	}
+	return nil
+}
+
+// loadMaterialLines reads the material sheet of the asked settlements, in the order it is
+// published: the used lines by model and then the scrap lines by material id (S8), which is the
+// order of the columns the two partial unique indexes of the sheet key on. A used line carries its
+// model and a scrap line the name of its material, joined from the reference table, so the sheet is
+// legible without a second read; the expected quantity is the snapshot of the opening and the
+// counted one is null while the warehouse has not counted the line.
+func loadMaterialLines(ctx context.Context, q querier, ids []int64) (map[int64][]MaterialLine, error) {
+	rows, err := q.Query(ctx, `SELECT line.closing_id,line.kind,coalesce(line.model,''),
+  line.material_id,coalesce(material.name,''),line.expected_quantity::text,
+  line.counted_quantity::text
+ FROM closing_material_lines line
+ LEFT JOIN materials material ON material.id=line.material_id
+ WHERE line.closing_id=ANY($1)
+ ORDER BY line.closing_id,(line.kind<>'used'),line.model,line.material_id`, ids)
+	if err != nil {
+		return nil, fail(ctx)
+	}
+	defer rows.Close()
+	sheet := make(map[int64][]MaterialLine, len(ids))
+	for rows.Next() {
+		var closingID int64
+		var kind, model, name, expected string
+		var materialID *int64
+		var counted *string
+		if rows.Scan(&closingID, &kind, &model, &materialID, &name, &expected, &counted) != nil {
+			return nil, fail(ctx)
+		}
+		line := MaterialLine{Kind: MaterialKind(kind)}
+		if line.Kind == MaterialKindUsed {
+			// A used line names its model and has no material at all, on either side of the join.
+			if materialID != nil || name != "" || !materialModelPattern.MatchString(model) {
+				return nil, ErrUnavailable
+			}
+			key := model
+			line.Model = &key
+		} else {
+			// A scrap line names its material and no model, and the reference table always answers
+			// the name of a material: a row that lost it is a state this domain never wrote.
+			if materialID == nil || *materialID < 1 || *materialID > MaxMaterialID || model != "" ||
+				name == "" {
+				return nil, ErrUnavailable
+			}
+			key := *materialID
+			material := name
+			line.MaterialID, line.Material = &key, &material
+		}
+		line.Unit = line.Kind.Unit()
+		if line.Expected, err = storedQuantity(line.Kind, expected); err != nil {
+			return nil, ErrUnavailable
+		}
+		if counted != nil {
+			value, err := storedQuantity(line.Kind, *counted)
+			if err != nil {
+				return nil, ErrUnavailable
+			}
+			line.Counted = &value
+		}
+		if line.Difference, err = MaterialDifference(line.Counted, line.Expected, line.Kind); err != nil {
+			return nil, ErrUnavailable
+		}
+		line.Delivered = MaterialDelivery(line.Counted)
+		// The rows are the database's own order -- the used lines by model, the scrap ones by
+		// material, never mixed -- so a sheet that breaks it is a chart this domain never wrote.
+		if previous := sheet[closingID]; len(previous) > 0 {
+			last := previous[len(previous)-1]
+			if last.Kind != line.Kind {
+				if last.Kind != MaterialKindUsed || line.Kind != MaterialKindScrap {
+					return nil, ErrUnavailable
+				}
+			} else if !materialKeyAfter(last, line) {
+				return nil, ErrUnavailable
+			}
+		}
+		sheet[closingID] = append(sheet[closingID], line)
+	}
+	if rows.Err() != nil {
+		return nil, fail(ctx)
+	}
+	return sheet, nil
+}
+
+// storedQuantity reads one quantity of the sheet as the canonical text of its kind. The column is
+// numeric(12,3) for both kinds, so a used line reads "4.000" and is published as the whole "4" its
+// unit states, while a scrap line keeps its three decimals; a fraction of a unit is a state this
+// domain never wrote and is never described.
+func storedQuantity(kind MaterialKind, stored string) (Quantity, error) {
+	milli, ok := quantityMilli(Quantity(stored))
+	if !ok {
+		return "", ErrUnavailable
+	}
+	quantity, err := quantityFromMilli(milli, kind)
+	if err != nil {
+		return "", ErrUnavailable
+	}
+	return quantity, nil
+}
+
+// materialKeyAfter reports whether the key of one material line sorts after another's, which is the
+// order the sheet is read and published in: the models of the used lines and the ids of the scrap
+// ones, each strictly ascending inside its kind.
+func materialKeyAfter(previous, line MaterialLine) bool {
+	if line.Kind == MaterialKindScrap {
+		return previous.MaterialID != nil && line.MaterialID != nil &&
+			*line.MaterialID > *previous.MaterialID
+	}
+	return previous.Model != nil && line.Model != nil && *line.Model > *previous.Model
 }
 
 // loadExpenses reads the expenses of the window one settlement covers: the branch's own ledger
@@ -1906,7 +2171,9 @@ func mapFailure(ctx context.Context, err error) error {
 			return ErrForbidden
 		case "LC003":
 			return ErrNoCommissionRate
-		case "LC004":
+		case "LC004", "LC025":
+			// The sheet of the stock and the sheet of the materials are written while the warehouse
+			// holds the settlement, and only the counted quantity moves in either (LC004, LC025).
 			return ErrCountFrozen
 		case "LC005", "LC008", "LC009":
 			return ErrStateConflict

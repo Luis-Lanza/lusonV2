@@ -80,6 +80,7 @@ route takes an actor, a location or a role from JSON.
 | `/api/closings/branches/{branch}/commission` | POST | 200 with the written percentage |
 | `/api/closings/{id}` | GET | 200 with the whole settlement |
 | `/api/closings/{id}/count` | POST | 200 with the settlement and its count sheet |
+| `/api/closings/{id}/materials` | POST | 200 with the settlement and its material sheet |
 | `/api/closings/{id}/cash` | POST | 200 with the settlement and its drawer |
 | `/api/closings/{id}/propose` | POST | 200 with the settlement and the round it now offers |
 | `/api/closings/{id}/decision` | POST | 200 with the settlement and the branch's answer |
@@ -106,7 +107,9 @@ The commission path is a longer literal path than a settlement id, so it is neve
 `{id}` and never collides with the suffix of an operation. `expenses` is a literal path beside
 `{id}` for the same reason: it is never read as a settlement id, and it names no settlement at all.
 `corrections` is the literal suffix of one settlement's own collection, so it is never read as an
-id either, and the decision of a correction is named by the correction's **own** id:
+id either, and `count`, `materials` and `cash` are the same kind of literal suffix, which is why the
+three sheets of a settlement are never confused with a document id. The decision of a correction is
+named by the correction's **own** id:
 `corrections/{correction}/decision`. The branch decides the correction the database locked, and
 the settlement it belongs to is stated in its body, so no route has to guess which document the
 path meant.
@@ -163,8 +166,9 @@ POST /api/closings
 * Opening freezes the branch (it can no longer sell, load an expense, receive a transfer,
   receive stock or reconcile), freezes the cut instant of the period, seeds the count sheet
   with the branch's own stock at that instant — every line already stating the quantity the
-  system expects — and inherits the fund left by the previous closure (`opening_cash`;
-  `"0.00"` for the first settlement).
+  system expects — seeds the material sheet with what the period bought (see
+  [the third account](#the-third-account-materials)) and inherits the fund left by the previous
+  closure (`opening_cash`; `"0.00"` for the first settlement).
 * **A branch holds one live settlement at a time**: a second opening is
   `409 {"error":"settlement_live","branch_location_id":2}` and writes nothing. `open`,
   `proposed` and `rejected` are all live, so only a closed settlement leaves the branch free.
@@ -343,6 +347,69 @@ adds, drafted through the drawer draft and frozen by the proposal:
 * The envelope is **not required at the closure**: a settlement whose warehouse has not counted it
   closes with `null` in both columns, which is why a branch whose last closure predates this version
   keeps operating exactly as before.
+
+## The third account: materials
+
+The purchase fund above says how much money the envelope still holds; this account says what that
+money bought (S7). A branch buys used batteries by the unit, one model at a time, and scrap by
+weight, one material at a time — the four materials of the reference table, all of them weighed in
+kilograms — and at the cut the warehouse counts both against what the period bought.
+
+| Field | Identity |
+|---|---|
+| `kind` | `used` for a model counted in whole units, `scrap` for a material weighed in kilograms |
+| `model`, `material_id`, `material` | The key of the line: a used line names its model and no material, a scrap line the id and the name of its material from the reference table and no model. The side that is not the key is `null`, so every line carries the same keys |
+| `unit` | `unit` or `kg`: the unit every quantity of the line is counted in, which is also the scale it is published with |
+| `expected_quantity` | What the period bought: the `sum(quantity)` per model and the `sum(kg)` per material of the branch purchases inside `[period_start, cut_at)`. Counter-documents are stored with negative quantities and kilograms, so a reversal inside the period subtracts by itself (S11) and no document is filtered out |
+| `counted_quantity` | What the warehouse counted at the cut: the column, `null` while it has not counted the line |
+| `difference` | `counted_quantity - expected_quantity` with its sign, at the scale of the unit: `-1` is a battery the period bought and nobody found, `-1.250` a kilogram and a quarter of scrap. `null` while the line is uncounted |
+| `delivered_quantity` | Everything that was counted, because the warehouse takes it all and the branch keeps nothing (S9). Derived on every read and never stored: there is no remnant field and no column, and an uncounted line delivers `null` |
+
+The expected quantity is a **fact of the opening**, not something the warehouse types. The previous
+closure took every battery and every kilogram to the warehouse, so the shelf starts at zero by
+construction and what must be on it at this cut is exactly what the period bought, no more and no
+less (S7). The opener therefore seeds one line per model and per material of its own window with
+that sum, and a key the period did not buy gets no line at all — one that nets zero because it was
+returned whole, and one the period only returned. An empty sheet is the truth of a period that
+bought nothing, and it is published as `[]` and never as a missing key.
+
+The counted quantities are written in one route, in the shape of the count sheet rather than as
+fields of the drawer (S8):
+
+```
+POST /api/closings/1/materials
+{"lines":[{"kind":"used","model":"NS60ZL","counted_quantity":"7"},
+          {"kind":"scrap","material_id":1,"counted_quantity":"12.500"}]}
+```
+
+* The body states **only** what was counted. `expected_quantity`, `difference` and
+  `delivered_quantity` are not part of it at all — the first is the fact of the opening and the
+  other two are derived from it — so a blinded count of this sheet cannot even be expressed,
+  exactly like the count sheet of the stock.
+* `lines` holds 1 to 190 entries, one per line of the sheet, each with the one key its kind names
+  (`model` for a used line and `material_id` for a scrap one, and never both) and a
+  `counted_quantity` that is the canonical text of that kind's unit: a whole number of units for a
+  used line and kilograms with exactly three decimals for a scrap one, which is the scale the
+  weight of a purchase already stores. A quantity of the other scale — `"7.5"` for a battery or
+  `"12.5"` for a kilogram — is `400 invalid_request`, and so is a JSON number, a padded or
+  negative value, a material outside the reference table and a key stated twice.
+* A line that already exists only changes its counted quantity, and a line the period did not buy
+  is added with an expected quantity of **zero**, which is the database's own fact of the opening
+  for that key and never a promise of the client. A line the request does not state keeps the count
+  it has, so writing the same request twice leaves the same sheet.
+* The sheet may be written **only while the warehouse holds the settlement**: `open` and
+  `rejected`. While the branch is deciding (`proposed`) it is `409 count_frozen`, and forever after
+  the closure too. No line is ever removed and the expected quantity of a line never moves.
+* A line nobody counted is **published as `null` and never blocks the proposal**: the stock count
+  sheet stays the only gate of the offer. A difference is informed, exactly like the cash one
+  (S8), and it is informed in both directions: material missing from the shelf and material the
+  period did not buy are both published with their sign and neither refuses anything.
+* The closure **keeps the counts** the branch signed and publishes the delivery of every counted
+  line, which is the whole count because the warehouse takes everything (S9). After the closure
+  the sheet is history: no route moves it and no correction touches it.
+* None of this is money. The used units and the kilograms enter no identity of the drawer, no part
+  of the commission and none of the envelope of the purchase fund (S12): they are the register of
+  what the money of that envelope bought, published beside it.
 
 ## Expenses of the branch
 
@@ -572,13 +639,19 @@ Every route of this contract answers the whole settlement, with exactly these ke
 | `observation` | The free text of the drawer |
 | `opened_by_account_id` | The warehouse account that opened it |
 | `count_lines` | The sheet, ordered by `variant_id`, with `expected_quantity` and the `counted_quantity` the opener seeded from it, which is the warehouse's own number where it disagreed; `null` only on a sheet written before that seeding |
+| `material_lines` | The third account: what the period bought of every used model and every scrap material, what the warehouse counted, the difference and the quantity that goes to the warehouse; ordered by model for the used lines and by material id for the scrap ones, the used ones first. See [the third account](#the-third-account-materials) |
 | `expenses` | The expenses of the branch inside this settlement's own window, in the order they were recorded |
 | `rounds` | The proposal history, oldest first |
 | `corrections` | The corrections of the closed settlement, oldest first: the accepted ones with the deltas they applied and the pending one, if any, with its status |
 
 Each `count_lines` entry also carries the catalogue identity of its variant — `catalog_entry_id`,
 `brand`, `model`, `capacity_ah` (canonical decimal text) and `polarity` — so the sheet is legible
-without a second read. Each `expenses` entry carries `id`, `branch_location_id`, `amount`,
+without a second read. Each `material_lines` entry carries `kind`, its key — `model`, or `material_id` and `material` —
+`unit`, `expected_quantity`, `counted_quantity`, `difference` and `delivered_quantity`, every
+quantity as decimal text: whole units for a used line and kilograms with exactly three decimals for
+a scrap one, which is what its `unit` states. The counted quantity, the difference and the delivery
+are `null` together, and only while the line is uncounted. Each `expenses` entry carries `id`,
+`branch_location_id`, `amount`,
 `description`, `occurred_at` and `created_by_account_id`, which is exactly the shape the recording
 route answers, so the branch reads its own expense the same way in both places. Each `rounds`
 entry carries `id`, `round` (the database's own sequence), `offer`, `proposed_by_account_id`,
@@ -604,8 +677,8 @@ tell a corrected number from the signed one and the signed one is `corrected - d
 
 The published document is revalidated before it is written: a settlement whose money is not
 canonical, whose derived numbers do not follow their own identity — including the opening, the
-purchases and the expectation of the purchase fund — whose sheet or rounds are out
-of order, or whose round states a decision it cannot have, is answered `503
+purchases and the expectation of the purchase fund — whose count sheet, material sheet or rounds
+are out of order, or whose round states a decision it cannot have, is answered `503
 service_unavailable` instead of being described.
 
 ## History of a branch
@@ -625,7 +698,7 @@ GET /api/closings?branch_location_id=2&page=1&page_size=25
   retired one is `409 branch_retired`, exactly like an opening.
 
 ```json
-// abbreviated: every row carries all 35 keys of the settlement document
+// abbreviated: every row carries all 36 keys of the settlement document
 {"page":1,"page_size":25,"total_closings":2,
  "closings":[
   {"id":2,"branch_location_id":2,"branch_name":"Sucursal A","status":"open",
@@ -656,9 +729,12 @@ same way its document does: `cash_sales`, `cash_expenses`, `sales_total`, `commi
 `card_total`, `transfer_total` and `qr_total` are filled in from the ledgers of its own window, and
 `commission_rate_percent` stays `null` because nothing is frozen before the proposal. The count
 sheet, the expenses, the proposal rounds and the corrections belong to the single read: a row
-publishes them as empty arrays and `GET /api/closings/{id}` unfolds them. A row of a corrected
-settlement therefore publishes the corrected drawer with `"corrections":[]`; the document of that
-settlement is where the deltas are.
+publishes them as empty arrays and `GET /api/closings/{id}` unfolds them. The material sheet, unlike
+those four, is part of the same derivation as the money, so **every row publishes its own
+`material_lines`**: a page of a branch states what each period bought and what the warehouse counted
+of it without a second request per settlement. A row of a corrected settlement therefore publishes
+the corrected drawer with `"corrections":[]`; the document of that settlement is where the deltas
+are.
 
 ## Errors
 
@@ -678,7 +754,7 @@ about instead of a generic code.
 | 409 | `cash_not_stated` | — | The proposal needs the counted cash and the fund |
 | 409 | `fund_exceeds_drawer` | `excess` | The fund exceeds the counted cash plus the contribution by that amount |
 | 409 | `commission_rate_missing` | — | The branch has no configured commission rate |
-| 409 | `count_frozen` | — | The count sheet is not writable in this state |
+| 409 | `count_frozen` | — | The count sheet or the material sheet is not writable in this state |
 | 409 | `state_conflict` | — | The settlement's state does not admit this operation |
 | 409 | `closure_refused` | — | The closure's own money rule refused the settlement |
 | 409 | `reserved_stock` | `variant_id` | A variant of the branch still holds a reservation |
@@ -704,10 +780,10 @@ only the closure's own trigger writes.
 
 ## Database invariants
 
-`branch_closings`, `closing_count_lines`, `closing_proposals`, `closing_corrections`,
-`closing_correction_effects`, `branch_cash_movements` and `branch_settings` are the settlement's
-own tables; the closed settlement, its rounds, its corrections, the journal of their deltas and
-the cash ledger are immutable. The database, not the application, decides the following, with
+`branch_closings`, `closing_count_lines`, `closing_material_lines`, `closing_proposals`,
+`closing_corrections`, `closing_correction_effects`, `branch_cash_movements` and `branch_settings`
+are the settlement's own tables; the closed settlement, its rounds, its corrections, the journal of
+their deltas, the sheets of its materials and the cash ledger are immutable. The database, not the application, decides the following, with
 stable SQLSTATEs:
 
 | SQLSTATE | Guard | Published as |
@@ -716,6 +792,7 @@ stable SQLSTATEs:
 | `LC002` | Only the warehouse settles a branch, and the warehouse is never settled | 403 `forbidden` |
 | `LC003` | The branch has no configured commission rate | 409 `commission_rate_missing` |
 | `LC004` | Count lines are written only while the warehouse holds the settlement; only the counted quantity moves | 409 `count_frozen` |
+| `LC025` | Material lines obey the same window, only the counted quantity of one moves, the expected quantity is written by the seed of the opening alone, and a line is never removed | 409 `count_frozen` |
 | `LC005` | Unsupported transition, frozen identity, draft of a proposed or closed settlement, period totals that are not drafts | 409 `state_conflict` |
 | `LC006` | The closure's money rule: the fund above the drawer, the drawer not stated, a pending variant — which only out-of-band state produces | 409 `fund_exceeds_drawer`, `cash_not_stated`, `count_pending` or `closure_refused` |
 | `LC007` | A variant still holds reserved stock | 409 `reserved_stock` with `variant_id` |
