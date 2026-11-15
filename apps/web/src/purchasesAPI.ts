@@ -30,7 +30,7 @@ export const purchaseAdmittedErrors: ReadonlyMap<number, readonly PurchaseErrorC
 
 /** Spanish message for every failure, including the transport ones. */
 export const purchaseErrorMessages: Record<PurchaseErrorCode, string> = {
-  invalid_request: 'El servidor rechazó la compra: revisá las líneas, los montos y la nota. No se registró nada.',
+  invalid_request: 'El servidor rechazó la compra: revisá las líneas, los montos y la nota. Se paga en efectivo del fondo de compras, que no puede gastar más de lo que tiene. No se registró nada.',
   forbidden: 'No tenés permiso para registrar compras en esta sucursal. No se registró nada.',
   not_found: 'La compra ya no existe en esta sucursal. Actualizá el historial.',
   retry_conflict: 'La clave de esta compra ya se usó con otro contenido. No se aplicó ningún cambio: revisá el documento.',

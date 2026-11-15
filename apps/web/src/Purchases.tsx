@@ -141,7 +141,6 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
   const [kgText, setKgText] = useState('');
   const [scrapPriceText, setScrapPriceText] = useState('');
   const [cashText, setCashText] = useState('');
-  const [transferText, setTransferText] = useState('');
   const [draftMessage, setDraftMessage] = useState('');
   const [draftFailure, setDraftFailure] = useState('');
   const [busy, setBusy] = useState(false);
@@ -281,7 +280,7 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
   function openDraft() {
     if (busy) return;
     forgetAttempt();
-    setLines([]); setNote(''); setCashText(''); setTransferText('');
+    setLines([]); setNote(''); setCashText('');
     setDraftMessage(''); setDraftFailure('');
     // The document opens on the kind the operator was looking at.
     setKind(tab === 'scrap' ? 'scrap' : 'used');
@@ -360,15 +359,17 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
   const totalCents = purchaseTotalCents(parsed.filter((line): line is PurchaseLine => line !== null));
   const noteValid = Array.from(note).length <= purchaseMaxNote;
   const cashCents = typedCents(cashText);
-  const transferCents = typedCents(transferText);
-  const split: PaymentSplit | null = cashCents !== null && transferCents !== null
-    ? { cash_cents: cashCents, transfer_cents: transferCents } : null;
+  // A branch purchase is paid in cash from the purchase fund, so the transfer side of the
+  // settlement is always zero and the total is derived from the cash actually paid: the two
+  // amounts of the document are not interchangeable.
+  const split: PaymentSplit | null = cashCents === null
+    ? null : { cash_cents: cashCents, transfer_cents: 0n };
   const settlementState = split === null ? null : settlement(totalCents, split);
   const settled = settlementState?.status === 'exact';
   const canConfirm = !busy && lines.length > 0 && allLinesValid && noteValid && settled && totalCents > 0n;
 
   const settlementMessage = split === null
-    ? 'Escribí montos válidos, con hasta dos decimales.'
+    ? 'Escribí un monto válido, con hasta dos decimales.'
     : settlementState?.status === 'exact'
       ? `Suma ${formatMoney(totalCents)} · cubre el total`
       : settlementState?.status === 'missing'
@@ -402,11 +403,11 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
     if (!lines.length) { setDraftFailure('Agregá al menos una línea antes de confirmar la compra.'); return; }
     if (!allLinesValid) { setDraftFailure(draftProblem); return; }
     if (!noteValid) { setDraftFailure(`La nota lleva hasta ${purchaseMaxNote} caracteres.`); return; }
-    if (cashCents === null || transferCents === null) {
-      setDraftFailure('Escribí montos válidos para el efectivo y la transferencia.'); return;
+    if (cashCents === null) {
+      setDraftFailure('Escribí un monto válido para el efectivo del fondo de compras.'); return;
     }
     const draft: PurchaseDraft = { lines: parsed.filter((line): line is PurchaseLine => line !== null), note,
-      cash_cents: cashCents, transfer_cents: transferCents };
+      cash_cents: cashCents, transfer_cents: 0n };
     const problem = purchaseDraftProblem(draft);
     if (problem !== null) { setDraftFailure(problem); return; }
     if (operationKey.current === null) {
@@ -859,21 +860,18 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
             <span>Total a pagar</span><strong>{formatMoney(totalCents)}</strong>
           </div>
           <div className="purchase-field">
-            <label htmlFor="purchase-cash">Efectivo</label>
+            <label htmlFor="purchase-cash">Efectivo del fondo de compras</label>
             <input id="purchase-cash" className="num" inputMode="decimal" value={cashText}
               onChange={event => { forgetAttempt(); setCashText(event.target.value); }} />
-          </div>
-          <div className="purchase-field">
-            <label htmlFor="purchase-transfer">Transferencia</label>
-            <input id="purchase-transfer" className="num" inputMode="decimal" value={transferText}
-              onChange={event => { forgetAttempt(); setTransferText(event.target.value); }} />
+            <span className="stock-hint">no se paga por transferencia</span>
           </div>
           <div className="purchase-field">
             <span>Diferencia</span>
             <p className={settled ? 'stock-hint' : 'stock-status'} role="status">{settlementMessage}</p>
           </div>
         </div>
-        <p className="stock-hint">Efectivo + transferencia tienen que sumar el total exacto. Se registra a
+        <p className="stock-hint">La compra se paga en efectivo del fondo de compras: el efectivo tiene
+          que ser el total exacto y nunca más de lo que el fondo tiene disponible. Se registra a
           nombre de la sucursal, no de la persona.</p>
         {draftMessage && <p role="status" className="stock-status">{draftMessage}</p>}
         {draftFailure && <p role="alert" className="stock-status">{draftFailure}</p>}

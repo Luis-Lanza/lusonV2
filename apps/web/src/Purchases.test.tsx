@@ -264,20 +264,42 @@ describe('purchases section', () => {
     addUsed(dialog, 'NS60ZL', '1', '25.000,00');
     const submit = within(dialog).getByRole('button', { name: 'Registrar compra' });
     expect(submit).toBeDisabled();
-    fireEvent.change(within(dialog).getByLabelText('Efectivo'), { target: { value: '20.000,00' } });
+    fireEvent.change(within(dialog).getByLabelText('Efectivo del fondo de compras'), { target: { value: '20.000,00' } });
     expect(within(dialog).getByText(/Faltan Bs 5.000,00/)).toBeInTheDocument();
     expect(submit).toBeDisabled();
-    fireEvent.change(within(dialog).getByLabelText('Efectivo'), { target: { value: '24.500,00' } });
-    fireEvent.change(within(dialog).getByLabelText('Transferencia'), { target: { value: '500,00' } });
+    fireEvent.change(within(dialog).getByLabelText('Efectivo del fondo de compras'), { target: { value: '26.000,00' } });
+    expect(within(dialog).getByText(/Sobran Bs 1.000,00/)).toBeInTheDocument();
+    expect(submit).toBeDisabled();
+    fireEvent.change(within(dialog).getByLabelText('Efectivo del fondo de compras'), { target: { value: '25.000,00' } });
     expect(within(dialog).getByText(/cubre el total/i)).toBeInTheDocument();
     expect(submit).toBeEnabled();
+  });
+
+  it('pays a purchase in cash from the purchase fund and never posts a transfer amount', async () => {
+    const { fetch } = setup({ create: () => json(documentBody({ note: '' }), 201) });
+    const dialog = await openDraft();
+    // The fund is cash: the document offers no transfer amount to fill in, and it says where
+    // the money comes from.
+    expect(within(dialog).queryByLabelText(/transferencia/i)).not.toBeInTheDocument();
+    expect(within(dialog).getByLabelText('Efectivo del fondo de compras')).toBeInTheDocument();
+    expect(within(dialog).getAllByText(/fondo de compras/).length).toBeGreaterThan(0);
+    addUsed(dialog, 'NS60ZL', '1', '25.000,00');
+    fireEvent.change(within(dialog).getByLabelText('Efectivo del fondo de compras'), { target: { value: '25.000,00' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Registrar compra' }));
+    await screen.findByRole('dialog', { name: 'Comprobante de compra #7' });
+    const body = JSON.parse(String(fetch.mock.calls
+      .find(([url]) => String(url) === '/api/purchases')?.[1]?.body));
+    expect(body.paid_cash).toBe('25000.00');
+    expect(body.paid_transfer).toBe('0.00');
+    // The total is derived from what is actually paid, so the two sides still close.
+    expect(body.used_lines).toEqual([{ model: 'NS60ZL', quantity: 1, unit_price: '25000.00' }]);
   });
 
   it('records the purchase and shows a printable receipt', async () => {
     const { fetch } = setup({ create: () => json(documentBody({ note: '' }), 201) });
     const dialog = await openDraft();
     addUsed(dialog, 'NS60ZL', '1', '25.000,00');
-    fireEvent.change(within(dialog).getByLabelText('Efectivo'), { target: { value: '25.000,00' } });
+    fireEvent.change(within(dialog).getByLabelText('Efectivo del fondo de compras'), { target: { value: '25.000,00' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Registrar compra' }));
     const receipt = await screen.findByRole('dialog', { name: 'Comprobante de compra #7' });
     expect(JSON.parse(String(fetch.mock.calls.find(([url]) => String(url) === '/api/purchases')
@@ -349,7 +371,7 @@ describe('purchases section', () => {
     });
     const dialog = await openDraft();
     addUsed(dialog, 'NS60ZL', '1', '25.000,00');
-    fireEvent.change(within(dialog).getByLabelText('Efectivo'), { target: { value: '25.000,00' } });
+    fireEvent.change(within(dialog).getByLabelText('Efectivo del fondo de compras'), { target: { value: '25.000,00' } });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Registrar compra' }));
     expect(await within(dialog).findByText(/No tenés permiso para registrar compras/)).toBeInTheDocument();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancelar' }));
