@@ -3,7 +3,8 @@ import { closingRail } from './closingModel';
 import {
   ClosingAPIError, closingCashPath, closingCorrectionDecisionPath, closingCorrectionPath,
   closingCountPath, closingDecisionPath, closingDetailPath,
-  closingHistoryPath, closingProposePath, closingRefusalMessage, createClosingAPI, parseClosing,
+  closingHistoryPath, closingMaterialsPath, closingProposePath, closingRefusalMessage,
+  createClosingAPI, parseClosing,
   parseClosingCorrection, parseClosingPage, parseClosingRefusal,
 } from './closingsAPI';
 
@@ -107,7 +108,6 @@ describe('the settlement document', () => {
     expect(closingRail(parseClosing(JSON.stringify(half))).commission_cents).toBe(1n);
     expect(() => parseClosing(JSON.stringify({ ...half, commission_amount: '0.00' }))).toThrow();
   });
-
   it('rejects a shape this contract never publishes', () => {
     expect(() => parseClosing(JSON.stringify({ ...document(), total: '6080.00' }))).toThrow();
     const missing: Record<string, unknown> = document();
@@ -130,6 +130,81 @@ describe('the settlement document', () => {
         period_start: '2026-09-12T18:30:00Z' })] }))).toThrow();
   });
 
+  it('reads the material sheet the document publishes (S7, S8, S9)', () => {
+    const closing = parseClosing(JSON.stringify(document({ material_lines: materialLines() })));
+    expect(closing.material_lines).toHaveLength(4);
+    const [used, countedUsed, scrap, plomo] = closing.material_lines!;
+    expect(used).toMatchObject({ kind: 'used', model: '27-60', material_id: null, material: null,
+      unit: 'unit', expected_quantity: '12', counted_quantity: '12', difference: '0',
+      delivered_quantity: '12' });
+    expect(countedUsed.difference).toBe('-1');
+    expect(scrap).toMatchObject({ kind: 'scrap', model: null, material_id: 1, material: 'Cobre',
+      unit: 'kg', expected_quantity: '12.400' });
+    // The difference is published with the scale of its own kind, and the delivery is the count.
+    expect(plomo.difference).toBe('-4.300');
+    expect(plomo.delivered_quantity).toBe('80.200');
+  });
+
+  it('reads a document that publishes no material sheet at all, and an empty one (S7)', () => {
+    // An older document has no key: it is a settlement without a sheet, never an invalid answer.
+    expect(parseClosing(JSON.stringify(document())).material_lines).toBeNull();
+    // A period that bought nothing publishes the empty array, which is a truth of its own.
+    expect(parseClosing(JSON.stringify(document({ material_lines: [] }))).material_lines)
+      .toEqual([]);
+  });
+
+  it('reads an uncounted line with its count, difference and delivery null together (S8)', () => {
+    const pending = [usedLine('31-100', '9', null), scrapLine(3, 'Plomo', '84.500', null)];
+    const closing = parseClosing(JSON.stringify(document({ material_lines: pending })));
+    expect(closing.material_lines![0].counted_quantity).toBeNull();
+    expect(closing.material_lines![0].difference).toBeNull();
+    expect(closing.material_lines![0].delivered_quantity).toBeNull();
+  });
+
+  it('refuses a sheet that is not the one this contract publishes (S8, S9)', () => {
+    const line = usedLine('27-60', '12', '12');
+    // The used lines sort by model, then the scrap ones by material id, and never the other way.
+    expect(() => parseClosing(JSON.stringify(document({ material_lines: [usedLine('31-100', '9', '8'),
+      usedLine('27-60', '12', '12')] })))).toThrow();
+    expect(() => parseClosing(JSON.stringify(document({ material_lines: [scrapLine(3, 'Plomo',
+      '84.500', '80.200'), usedLine('27-60', '12', '12')] })))).toThrow();
+    expect(() => parseClosing(JSON.stringify(document({ material_lines: [scrapLine(3, 'Plomo',
+      '84.500', '80.200'), scrapLine(1, 'Cobre', '12.400', '12.400')] })))).toThrow();
+    // A key is exactly the one its kind names.
+    expect(() => parseClosing(JSON.stringify(document({ material_lines: [
+      { ...line, material_id: 1 }] })))).toThrow();
+    expect(() => parseClosing(JSON.stringify(document({ material_lines: [
+      { ...line, model: null }] })))).toThrow();
+    expect(() => parseClosing(JSON.stringify(document({ material_lines: [
+      { ...scrapLine(1, 'Cobre', '12.400', '12.400'), model: '27-60' }] })))).toThrow();
+    // The scale belongs to the unit: a fraction of a unit and a weight without its three decimals
+    // are both refused instead of being rounded.
+    expect(() => parseClosing(JSON.stringify(document({ material_lines: [
+      usedLine('27-60', '12.5', '12')] })))).toThrow();
+    expect(() => parseClosing(JSON.stringify(document({ material_lines: [
+      scrapLine(1, 'Cobre', '12.4', '12.400')] })))).toThrow();
+    // The unit a kind publishes is the only one that kind can be counted in.
+    expect(() => parseClosing(JSON.stringify(document({ material_lines: [
+      { ...line, unit: 'kg' }] })))).toThrow();
+  });
+
+  it('refuses a difference or a delivery that disagrees with the count (S8, S9)', () => {
+    const line = usedLine('27-60', '12', '12');
+    expect(() => parseClosing(JSON.stringify(document({ material_lines: [
+      { ...line, difference: '-1' }] })))).toThrow();
+    expect(() => parseClosing(JSON.stringify(document({ material_lines: [
+      { ...line, delivered_quantity: '11' }] })))).toThrow();
+    // The three of them are stated together or not at all.
+    expect(() => parseClosing(JSON.stringify(document({ material_lines: [
+      { ...line, counted_quantity: null }] })))).toThrow();
+    expect(() => parseClosing(JSON.stringify(document({ material_lines: [
+      { ...line, counted_quantity: null, difference: null, delivered_quantity: null,
+        expected_quantity: '12' }] })))).not.toThrow();
+    // A key this contract does not publish is never tolerated.
+    expect(() => parseClosing(JSON.stringify(document({ material_lines: [
+      { ...line, material: 'Cobre' }] })))).toThrow();
+  });
+
   it('builds only the paths of this contract', () => {
     expect(closingHistoryPath(2, 1, 25)).toBe('/api/closings?branch_location_id=2&page=1&page_size=25');
     expect(closingDetailPath(7)).toBe('/api/closings/7');
@@ -138,6 +213,8 @@ describe('the settlement document', () => {
     expect(closingProposePath(7)).toBe('/api/closings/7/propose');
     expect(closingDecisionPath(7)).toBe('/api/closings/7/decision');
     expect(closingCorrectionPath(7)).toBe('/api/closings/7/corrections');
+    expect(closingMaterialsPath(7)).toBe('/api/closings/7/materials');
+    expect(() => closingMaterialsPath(0)).toThrow();
     expect(closingCorrectionDecisionPath(8)).toBe('/api/closings/corrections/8/decision');
     expect(() => closingCorrectionPath(0)).toThrow();
     expect(() => closingCorrectionDecisionPath(-1)).toThrow();
@@ -251,6 +328,50 @@ describe('the transport of the warehouse side', () => {
     expect(new Headers(h.calls[0].init.headers).get('X-CSRF-Token')).toBe(csrf);
   });
 
+  it('writes the counted materials in the shape each kind takes (S8)', async () => {
+    const h = harness(() => json(document({ material_lines: materialLines() })));
+    const closing = await h.api.materials(1, [
+      { kind: 'used', model: '31-100', material_id: null, counted_quantity: '7' },
+      { kind: 'scrap', model: null, material_id: 3, counted_quantity: '12.500' },
+    ], csrf);
+    expect(closing.id).toBe(1);
+    expect(h.calls[0].url).toBe('/api/closings/1/materials');
+    expect(h.calls[0].init).toMatchObject({ method: 'POST', credentials: 'same-origin',
+      cache: 'no-store' });
+    // Only what was counted: the expected quantity and the derived ones cannot even be sent.
+    expect(h.calls[0].init.body).toBe('{"lines":[{"kind":"used","model":"31-100",'
+      + '"counted_quantity":"7"},{"kind":"scrap","material_id":3,'
+      + '"counted_quantity":"12.500"}]}');
+    expect(new Headers(h.calls[0].init.headers).get('X-CSRF-Token')).toBe(csrf);
+  });
+
+  it('never sends a material count the contract does not take (S8)', async () => {
+    const h = harness(() => json(document({ material_lines: materialLines() })));
+    const line = { kind: 'scrap' as const, model: null, material_id: 3, counted_quantity: '12.500' };
+    expect((await refusalOf(h.api.materials(1, [], csrf))).code).toBe('invalid_request');
+    expect((await refusalOf(h.api.materials(1,
+      [{ ...line, counted_quantity: '12.5' }], csrf))).code).toBe('invalid_request');
+    expect((await refusalOf(h.api.materials(1,
+      [{ ...line, counted_quantity: '-12.500' }], csrf))).code).toBe('invalid_request');
+    expect((await refusalOf(h.api.materials(1,
+      [{ ...line, material_id: 0 }], csrf))).code).toBe('invalid_request');
+    expect((await refusalOf(h.api.materials(1,
+      [{ ...line, model: '27-60' }], csrf))).code).toBe('invalid_request');
+    expect((await refusalOf(h.api.materials(1,
+      [{ kind: 'used', model: '', material_id: null, counted_quantity: '7' }], csrf))).code)
+      .toBe('invalid_request');
+    expect((await refusalOf(h.api.materials(1, [line], 'not a token'))).code).toBe('invalid_request');
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it('names the frozen sheet of a settlement the branch is deciding (S8)', async () => {
+    const h = harness(() => json({ error: 'count_frozen' }, 409));
+    const failure = await refusalOf(h.api.materials(1, [{ kind: 'used', model: '27-60',
+      material_id: null, counted_quantity: '12' }], csrf));
+    expect(failure.code).toBe('count_frozen');
+    expect(closingRefusalMessage(failure)).toContain('ya no se puede editar');
+  });
+
   it('surfaces the variant a frozen sheet refuses to change', async () => {
     const h = harness(() => json({ error: 'count_pending', variant_id: 9 }, 409));
     const failure = await refusalOf(h.api.count(1, [{ variant_id: 2, counted_quantity: 8 }], csrf));
@@ -357,7 +478,28 @@ describe('the transport of the warehouse side', () => {
   });
 });
 
+/**
+ * The material sheet of the document (S7, S8, S9): the used lines by model and then the scrap ones
+ * by material id, each with the count, the difference and the delivery derived from it.
+ */
+const usedLine = (model: string, expected: string, counted: string | null) => ({
+  kind: 'used', model, material_id: null, material: null, unit: 'unit', expected_quantity: expected,
+  counted_quantity: counted,
+  difference: counted === null ? null : String(Number(counted) - Number(expected)),
+  delivered_quantity: counted });
+
+const scrapLine = (material_id: number, material: string, expected: string, counted: string | null) =>
+  ({ kind: 'scrap', model: null, material_id, material, unit: 'kg', expected_quantity: expected,
+    counted_quantity: counted,
+    difference: counted === null ? null
+      : (Number(counted) - Number(expected)).toFixed(3),
+    delivered_quantity: counted });
+
+const materialLines = () => [usedLine('27-60', '12', '12'), usedLine('31-100', '9', '8'),
+  scrapLine(1, 'Cobre', '12.400', '12.400'), scrapLine(3, 'Plomo', '84.500', '80.200')];
+
 /** The accepted correction of a closed settlement: the drawer moved, and its delta is published. */
+
 const acceptedCorrection = (overrides: Record<string, unknown> = {}) => ({
   id: 3, closing_id: 1, status: 'accepted', reason: 'conté mal el cajón',
   payload: { counted_cash: '6950.00' },

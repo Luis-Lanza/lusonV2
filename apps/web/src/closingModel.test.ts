@@ -15,9 +15,15 @@ import {
   closingAddLine, closingCatalogueOptions, closingCountChanges, closingLineIsOutsideSystem,
   closingSheetRows, closingSheetVariantIDs,
   closingEnvelope, emptyPurchaseFundDraft, purchaseFundDraftFrom, purchaseFundView,
+  closingBalanceStrip, closingBalancesLabel, closingMaterialDeliveryHelp, closingMaterialDifferenceText,
+  closingMaterialEmptySheet, closingMaterialKindLabels, closingMaterialLines,
+  closingMaterialMilli, closingMaterialQuantityIsCanonical, closingMaterialQuantityLabel,
+  closingMaterialQuantityText, closingMaterialReading, closingMaterialSeed,
+  closingMaterialSignedText, closingMaterialWireText, closingTabAfter, closingTabLabels,
+  closingTabMarker, closingTabOrder, closingTabsLabel, emptyMaterialDraft, materialDraftFrom,
   type Closing, type ClosingCatalogueVariant, type ClosingCountLine, type ClosingCorrection,
-  type ClosingOffer, type ClosingPurchaseFund, type ClosingRound, type CorrectionDraft,
-  type DrawerDraft, type PurchaseFundDraft,
+  type ClosingMaterialLine, type ClosingOffer, type ClosingPurchaseFund, type ClosingRound,
+  type CorrectionDraft, type DrawerDraft, type PurchaseFundDraft,
 } from './closingModel';
 
 // The numbers of the chosen artboard (design/rendicion-de-cuentas/03-mesa-conteo.html), read as
@@ -56,6 +62,7 @@ const closing = (overrides: Partial<Closing> = {}): Closing => Object.freeze({
   sales_total_cents: 3248000n, commission_amount_cents: 146160n,
   card_total_cents: 324000n, transfer_total_cents: 118000n, qr_total_cents: 276000n,
   observation: '', opened_by_account_id: 1, count_lines: lines, rounds: [], corrections: [],
+  material_lines: null,
   purchase_fund: purchaseFund(),
   ...overrides,
 });
@@ -275,6 +282,253 @@ describe('S1, S5, S6 the purchase fund is the branch\'s second envelope', () => 
     expect(model.closingEnvelopeNewHelp).toContain('baterías usadas y chatarra');
     expect(model.closingEnvelopeNewHelp).toContain('período siguiente');
     expect(model.closingEnvelopeAcceptanceHelp).toContain('pasa a ser tu fondo de compras');
+  });
+});
+
+/**
+ * The material sheet of the chosen artboard (design/rendicion-caja-y-chatarra/01-mesa-dos-pestanas.html):
+ * three used models in units and four scrap materials in kilograms, with one shortage of each kind.
+ */
+const usedMaterial = (model: string, expected: string, counted: string | null,
+  overrides: Partial<ClosingMaterialLine> = {}): ClosingMaterialLine => Object.freeze({
+  kind: 'used', model, material_id: null, material: null, unit: 'unit', expected_quantity: expected,
+  counted_quantity: counted,
+  difference: counted === null ? null : String(Number(counted) - Number(expected)),
+  delivered_quantity: counted, ...overrides,
+});
+
+const scrapMaterial = (material_id: number, material: string, expected: string,
+  counted: string | null, overrides: Partial<ClosingMaterialLine> = {}): ClosingMaterialLine =>
+  Object.freeze({ kind: 'scrap', model: null, material_id, material, unit: 'kg',
+    expected_quantity: expected, counted_quantity: counted,
+    difference: counted === null ? null
+      : closingMaterialWireText('kg', closingMaterialMilli('kg', counted)
+        - closingMaterialMilli('kg', expected)),
+    delivered_quantity: counted, ...overrides });
+
+const materialLines: readonly ClosingMaterialLine[] = [
+  usedMaterial('24F-45', '6', '6'),
+  usedMaterial('27-60', '12', '12'),
+  usedMaterial('31-100', '9', '8'),
+  scrapMaterial(1, 'Cobre', '12.400', '12.400'),
+  scrapMaterial(2, 'Aluminio', '8.750', '8.750'),
+  scrapMaterial(3, 'Plomo', '84.500', '80.200'),
+  scrapMaterial(4, 'Bronce', '3.100', '3.100'),
+];
+
+describe('S7, S8, S9 the materials the purchase fund bought', () => {
+  it('reads a quantity of either kind in exact thousandths, never as a float', () => {
+    expect(closingMaterialMilli('kg', '84.500')).toBe(84500n);
+    expect(closingMaterialMilli('unit', '12')).toBe(12000n);
+    expect(closingMaterialQuantityText('kg', 84500n)).toBe('84,500');
+    expect(closingMaterialQuantityText('unit', 12000n)).toBe('12');
+    expect(closingMaterialQuantityLabel('kg', '12.400')).toBe('12,400 kg');
+    // A quantity of the other scale, a padded one and a fraction of a unit are all refused (S8).
+    expect(closingMaterialQuantityIsCanonical('unit', '7')).toBe(true);
+    expect(closingMaterialQuantityIsCanonical('unit', '7.5')).toBe(false);
+    expect(closingMaterialQuantityIsCanonical('kg', '7.5')).toBe(false);
+    expect(closingMaterialQuantityIsCanonical('kg', '07.500')).toBe(false);
+    expect(() => closingMaterialMilli('unit', '7.5')).toThrow(model.closingMaterialQuantityMessage);
+    // A published quantity is unsigned: only a difference carries a sign.
+    expect(closingMaterialQuantityIsCanonical('kg', '-1.000')).toBe(false);
+  });
+
+  it('shows a difference with its sign and the unit it is counted in (S13)', () => {
+    expect(closingMaterialSignedText('kg', -4300n)).toBe('−4,300');
+    expect(closingMaterialSignedText('unit', 2000n)).toBe('+2');
+    expect(closingMaterialSignedText('unit', 0n)).toBe('—');
+    expect(closingMaterialDifferenceText('kg', -4300n)).toBe('− 4,300 kg');
+    expect(closingMaterialDifferenceText('unit', -1000n)).toBe('− 1 unidad');
+    expect(closingMaterialDifferenceText('unit', 2000n)).toBe('+ 2 unidades');
+  });
+
+  it('reads the sheet of the artboard with each kind total and the whole delivery (S9)', () => {
+    const reading = closingMaterialReading(materialLines, emptyMaterialDraft);
+    expect(reading.empty).toBe(false);
+    expect(reading.total).toBe(7);
+    expect(reading.counted).toBe(7);
+    // One used battery and 4,300 kg of lead are missing: two lines, in two units (S8).
+    expect(reading.differing).toBe(2);
+    expect(reading.used.counted_milli).toBe(26000n);
+    expect(reading.used.expected_milli).toBe(27000n);
+    expect(reading.used.difference_milli).toBe(-1000n);
+    expect(reading.used.complete).toBe(true);
+    expect(reading.scrap.expected_milli).toBe(108750n);
+    expect(reading.scrap.counted_milli).toBe(104450n);
+    expect(reading.scrap.difference_milli).toBe(-4300n);
+    // Everything counted goes to the warehouse and the shelf starts the next period at zero.
+    expect(reading.delivery).toBe('Se lleva todo lo contado: 26 usadas y 104,450 kg de chatarra.');
+    expect(closingMaterialDeliveryHelp).toContain('la sucursal queda en cero');
+  });
+
+  it('never adds a kilogram to a unit: it names the kind when only one differs (S13)', () => {
+    const both = closingMaterialReading(materialLines, emptyMaterialDraft);
+    expect(both.value).toBe('2 cuentas con diferencia');
+    expect(both.tone).toBe('mixed');
+    expect(both.detail).toContain('chatarra');
+    const scrapOnly = closingMaterialReading(materialLines.map(entry => entry.kind === 'used'
+      ? Object.freeze({ ...entry, counted_quantity: entry.expected_quantity,
+        difference: '0', delivered_quantity: entry.expected_quantity }) : entry),
+    emptyMaterialDraft);
+    expect(scrapOnly.value).toBe('− 4,300 kg');
+    expect(scrapOnly.tone).toBe('neg');
+    expect(scrapOnly.detail).toContain('Chatarra');
+    const usedOnly = closingMaterialReading(materialLines.map(entry => entry.kind === 'scrap'
+      ? Object.freeze({ ...entry, counted_quantity: entry.expected_quantity,
+        difference: '0.000', delivered_quantity: entry.expected_quantity }) : entry),
+    emptyMaterialDraft);
+    expect(usedOnly.value).toBe('− 1 unidad');
+    expect(usedOnly.detail).toContain('Baterías usadas');
+  });
+
+  it('reads a sheet without a single difference as a coinciding shelf', () => {
+    const even = materialLines.map(entry => Object.freeze({ ...entry,
+      counted_quantity: entry.expected_quantity, delivered_quantity: entry.expected_quantity,
+      difference: entry.unit === 'kg' ? '0.000' : '0' }));
+    const reading = closingMaterialReading(even, emptyMaterialDraft);
+    expect(reading.differing).toBe(0);
+    expect(reading.value).toBe('Sin diferencia');
+    expect(reading.tone).toBe('zero');
+    expect(reading.difference).toBe(false);
+    expect(reading.delivery).toContain('27 usadas');
+  });
+
+  it('says plainly that a period bought no materials, instead of showing an empty table (S7)', () => {
+    const reading = closingMaterialReading([], emptyMaterialDraft);
+    expect(reading.empty).toBe(true);
+    expect(reading.value).toBe('Sin materiales');
+    expect(reading.delivery).toBe(closingMaterialEmptySheet);
+    expect(closingMaterialEmptySheet).toContain('no compró materiales');
+    // A payload that publishes no sheet at all is read as a sheet without lines, never as a crash.
+    expect(closingMaterialLines(closing())).toEqual([]);
+    expect(closingMaterialLines(closing({ material_lines: [] }))).toEqual([]);
+  });
+
+  it('reads an uncounted line as pending, with no difference and no delivery of its own (S8)', () => {
+    const pending = [usedMaterial('31-100', '9', null), scrapMaterial(3, 'Plomo', '84.500', null)];
+    const reading = closingMaterialReading(pending, emptyMaterialDraft);
+    expect(reading.rows[0].counted_milli).toBeNull();
+    expect(reading.rows[0].difference_milli).toBeNull();
+    expect(reading.rows[0].delivered_milli).toBeNull();
+    expect(reading.counted).toBe(0);
+    expect(reading.used.counted_milli).toBeNull();
+    expect(reading.used.complete).toBe(false);
+    // Nothing counted is nothing delivered, and the delivery says what is still to count.
+    expect(reading.delivery).toContain('contá la estantería');
+    expect(reading.value).toBe('Sin diferencia');
+  });
+
+  it('reads what the warehouse typed, in the unit of each line (S8)', () => {
+    const typed = closingMaterialReading(materialLines, { 'scrap:3': '80,2', 'used:31-100': '7' });
+    expect(typed.rows.find(row => row.key === 'scrap:3')!.counted_milli).toBe(80200n);
+    expect(typed.rows.find(row => row.key === 'scrap:3')!.difference_milli).toBe(-4300n);
+    expect(typed.rows.find(row => row.key === 'used:31-100')!.counted_milli).toBe(7000n);
+    expect(typed.rows.find(row => row.key === 'used:31-100')!.difference_milli).toBe(-2000n);
+    expect(typed.unsaved).toBe(true);
+    // Only the lines whose count changed are sent, with the canonical text of their unit (S8).
+    expect(typed.changes).toEqual([
+      { kind: 'used', model: '31-100', material_id: null, counted_quantity: '7' },
+      { kind: 'scrap', model: null, material_id: 3, counted_quantity: '80.200' },
+    ]);
+    expect(typed.problem).toBe('');
+  });
+
+  it('refuses a fraction of a battery and a cleared count instead of inventing one (S8, S9)', () => {
+    const fraction = closingMaterialReading(materialLines, { 'used:31-100': '7,5' });
+    expect(fraction.problem).toBe(model.closingMaterialQuantityMessage);
+    expect(fraction.changes).toEqual([]);
+    expect(fraction.rows.find(row => row.key === 'used:31-100')!.counted_milli).toBeNull();
+    const cleared = closingMaterialReading(materialLines, { 'scrap:3': '' });
+    expect(cleared.problem).toBe(model.closingMaterialClearedMessage);
+    expect(cleared.changes).toEqual([]);
+  });
+
+  it('seeds the counted cells from the document, kilograms in the text the screen writes (S8)', () => {
+    expect(closingMaterialSeed(usedMaterial('27-60', '12', '12'))).toBe('12');
+    expect(closingMaterialSeed(scrapMaterial(3, 'Plomo', '84.500', '80.200'))).toBe('80,200');
+    // An uncounted line opens empty: the sheet counts what the warehouse found, never a seed.
+    expect(closingMaterialSeed(scrapMaterial(3, 'Plomo', '84.500', null))).toBe('');
+    const draft = materialDraftFrom(closing({ material_lines: materialLines }));
+    expect(draft['scrap:3']).toBe('80,200');
+    expect(draft['used:31-100']).toBe('8');
+    // A reload of the saved counts is not an unsaved change.
+    expect(closingMaterialReading(materialLines, draft).unsaved).toBe(false);
+    expect(closingMaterialReading(materialLines, draft).changes).toEqual([]);
+  });
+});
+
+describe('S10, S13 the two tabs and the three balances of one settlement', () => {
+  const facts = (overrides: Partial<Parameters<typeof closingBalanceStrip>[0]> = {}) => ({
+    cash_counted_cents: 698000n,
+    cash_expected_cents: 701500n,
+    cash_difference_cents: -3500n,
+    fund_counted_cents: 37500n,
+    fund_expected_cents: 37900n,
+    fund_difference_cents: -400n,
+    materials: closingMaterialReading(materialLines, emptyMaterialDraft),
+    ...overrides,
+  });
+
+  it('states the three balances above the tabs, each in its own unit (S13)', () => {
+    const balances = closingBalanceStrip(facts());
+    expect(balances.map(balance => balance.key)).toEqual(['cash', 'fund', 'materials']);
+    expect(balances.map(balance => balance.label)).toEqual(['Caja operativa', 'Fondo de compras',
+      'Materiales']);
+    expect(balances[0].value).toBe('− Bs 35,00');
+    expect(balances[0].detail).toBe('contada 6.980,00 · esperada 7.015,00');
+    expect(balances[1].value).toBe('− Bs 4,00');
+    expect(balances[1].detail).toBe('contado 375,00 · esperado 379,00');
+    // The materials are named in their own unit and never added to any money figure.
+    expect(balances[2].value).toBe('2 cuentas con diferencia');
+    expect(balances[0].tab).toBe('caja');
+    expect(balances[1].tab).toBe('chatarra');
+    expect(balances[2].tab).toBe('chatarra');
+    expect(balances[0].tone).toBe('neg');
+    for (const balance of balances) expect(balance.difference).toBe(true);
+  });
+
+  it('says there is no difference instead of showing a zero (S13)', () => {
+    const balances = closingBalanceStrip(facts({ cash_difference_cents: 0n,
+      fund_difference_cents: 0n, materials: closingMaterialReading([], emptyMaterialDraft) }));
+    expect(balances[0].value).toBe('Sin diferencia');
+    expect(balances[1].value).toBe('Sin diferencia');
+    expect(balances[2].value).toBe('Sin materiales');
+    for (const balance of balances) {
+      expect(balance.difference).toBe(false);
+      expect(closingTabMarker(balances, balance.tab)).toBeNull();
+    }
+    // A drawer nobody counted is not a zero: it says it was not counted.
+    expect(closingBalanceStrip(facts({ cash_counted_cents: null, cash_difference_cents: null,
+      fund_counted_cents: null, fund_difference_cents: null }))[0].value).toBe('Sin contar');
+    // A document without an envelope says so instead of inventing an expectation.
+    expect(closingBalanceStrip(facts({ fund_expected_cents: null, fund_counted_cents: null,
+      fund_difference_cents: null }))[1].value).toBe('Sin sobre');
+  });
+
+  it('marks each tab with the difference of its accounts, in words (S13)', () => {
+    const balances = closingBalanceStrip(facts());
+    expect(closingTabMarker(balances, 'caja')).toBe('− Bs 35,00');
+    // Two accounts of one tab carry a difference: the marker is their count, never a bare dot.
+    expect(closingTabMarker(balances, 'chatarra')).toBe('2 con diferencia');
+    const materialsOnly = closingBalanceStrip(facts({ fund_difference_cents: 0n }));
+    expect(closingTabMarker(materialsOnly, 'chatarra')).toBe('2 cuentas con diferencia');
+  });
+
+  it('moves between the two tabs with the arrows and wraps around (S10)', () => {
+    expect(closingTabOrder).toEqual(['caja', 'chatarra']);
+    expect(closingTabLabels.caja).toBe('Caja');
+    expect(closingTabLabels.chatarra).toBe('Chatarra');
+    expect(closingTabsLabel).toBe('Rendición');
+    expect(closingBalancesLabel).toBe('Saldos de la rendición');
+    expect(closingTabAfter('caja', 'ArrowRight')).toBe('chatarra');
+    expect(closingTabAfter('chatarra', 'ArrowLeft')).toBe('caja');
+    expect(closingTabAfter('caja', 'ArrowLeft')).toBe('chatarra');
+    expect(closingTabAfter('chatarra', 'ArrowRight')).toBe('caja');
+    // Nothing else moves the selection: the tabs are the only thing the arrows change.
+    expect(closingTabAfter('caja', 'Enter')).toBeNull();
+    expect(closingTabAfter('caja', 'Tab')).toBeNull();
+    expect(closingMaterialKindLabels.used).toBe('Baterías usadas');
+    expect(closingMaterialKindLabels.scrap).toBe('Chatarra');
   });
 });
 

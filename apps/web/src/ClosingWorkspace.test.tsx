@@ -19,6 +19,31 @@ const catalogueItem = (overrides: Record<string, unknown> = {}) => ({
   polarity: 'L', existing: 12, reserved: 0, available: 12, ...overrides,
 });
 
+/** One used line of the material sheet: whole units per model (S7, S8). */
+const usedMaterial = (model: string, expected: string, counted: string | null) => ({
+  kind: 'used', model, material_id: null, material: null, unit: 'unit', expected_quantity: expected,
+  counted_quantity: counted,
+  difference: counted === null ? null : String(Number(counted) - Number(expected)),
+  delivered_quantity: counted });
+
+/** One scrap line of the material sheet: kilograms per material, at three decimals (S7, S8). */
+const scrapMaterial = (material_id: number, material: string, expected: string,
+  counted: string | null) => ({ kind: 'scrap', model: null, material_id, material, unit: 'kg',
+  expected_quantity: expected, counted_quantity: counted,
+  difference: counted === null ? null : (Number(counted) - Number(expected)).toFixed(3),
+  delivered_quantity: counted });
+
+/** The sheet of the artboard: one battery of the 31-100 and 4,300 kg of lead are missing (S8). */
+const materialSheet = (counts: ReadonlyMap<string, string | null>) => [
+  usedMaterial('24F-45', '6', counts.get('used:24F-45') ?? null),
+  usedMaterial('27-60', '12', counts.get('used:27-60') ?? null),
+  usedMaterial('31-100', '9', counts.get('used:31-100') ?? null),
+  scrapMaterial(1, 'Cobre', '12.400', counts.get('scrap:1') ?? null),
+  scrapMaterial(2, 'Aluminio', '8.750', counts.get('scrap:2') ?? null),
+  scrapMaterial(3, 'Plomo', '84.500', counts.get('scrap:3') ?? null),
+  scrapMaterial(4, 'Bronce', '3.100', counts.get('scrap:4') ?? null),
+];
+
 /**
  * The branch catalogue as the screen reads it (`/api/inventory`): the three variants the sheet of
  * the cut already holds, the battery the branch counted and the system had none of (variant 20) and
@@ -49,6 +74,7 @@ const cataloguePage = (search: string) => {
 function server(options: { opened?: boolean, status?: string, refuse?: unknown, bootstrap?: boolean,
   contributed?: string, countedCash?: string, fund?: string, uncounted?: number,
   purchaseCounted?: string | null, purchaseCash?: string | null,
+  materials?: 'sheet' | 'empty',
   corrections?: unknown[] } = {}) {
   const seeded: readonly (readonly [number, number])[] = [[1, 12], [2, 9], [3, 14]];
   const state = {
@@ -73,6 +99,12 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
     rounds: [] as unknown[],
     // The published corrections of the closed settlement: the accepted ones and the pending one.
     corrections: (options.corrections ?? []) as unknown[],
+    // The third account: what the warehouse typed into the material sheet (S7, S8, S9).
+    materialCounts: options.materials === 'empty' ? null
+      : new Map<string, string | null>([
+        ['used:24F-45', '6'], ['used:27-60', '12'], ['used:31-100', '8'],
+        ['scrap:1', '12.400'], ['scrap:2', '8.750'], ['scrap:3', '80.200'], ['scrap:4', '3.100'],
+      ]),
     // The rows the admin added by hand: a variant the cut did not know, so no expected quantity.
     added: new Map<number, number>(),
   };
@@ -132,7 +164,9 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
       purchase_fund_opening: purchaseOpening, purchases_total: purchases, purchases_cash: purchases,
       purchase_fund_expected: purchaseExpected, purchase_fund_counted: purchaseCounted,
       purchase_fund_difference: purchaseDifference, purchase_fund_cash: state.purchaseCash,
-      count_lines: lines, rounds: state.rounds, expenses: [], corrections: state.corrections,
+      count_lines: lines,
+      material_lines: state.materialCounts === null ? [] : materialSheet(state.materialCounts),
+      rounds: state.rounds, expenses: [], corrections: state.corrections,
     };
   };
   const fetcher = vi.fn<typeof fetch>(async (input, init = {}) => {
@@ -159,6 +193,18 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
     if (url.startsWith('/api/inventory?')) {
       const search = new URLSearchParams(url.slice(url.indexOf('?') + 1)).get('search') ?? '';
       return json(cataloguePage(search));
+    }
+    if (url === '/api/closings/1/materials' && init.method === 'POST') {
+      const body = JSON.parse(String(init.body)) as { lines: { kind: string; model?: string;
+        material_id?: number; counted_quantity: string }[] };
+      // A sheet the period bought nothing into is the sheet this route writes into: the line the
+      // warehouse counted is added to it, never refused for being new.
+      state.materialCounts ??= new Map<string, string | null>();
+      for (const line of body.lines) {
+        const key = line.kind === 'used' ? `used:${line.model}` : `scrap:${line.material_id}`;
+        state.materialCounts.set(key, line.counted_quantity);
+      }
+      return json(document());
     }
     if (url === '/api/closings/1/cash' && init.method === 'POST') {
       const body = JSON.parse(String(init.body)) as { counted_cash: string | null;
@@ -214,9 +260,18 @@ async function ready(h: ReturnType<typeof server>, branch = 2) {
   return view;
 }
 const sheet = () => screen.findByRole('region', { name: 'Conteo de stock' });
-const rail = () => screen.getByRole('complementary', { name: 'Números de la rendición' });
+const rail = () => screen.getByRole('complementary', { name: 'Números de la caja' });
+const chatarraRail = () => screen.getByRole('complementary', { name: 'Números del fondo de compras' });
 const actionBar = () => screen.getByRole('region', { name: 'Acciones de la rendición' });
 const proposeButton = () => within(actionBar()).getByRole('button', { name: 'Proponer a la sucursal' });
+const tabList = () => screen.getByRole('tablist', { name: 'Rendición' });
+const cashTab = () => within(tabList()).getByRole('tab', { name: /^Caja/ });
+const scrapTab = () => within(tabList()).getByRole('tab', { name: /^Chatarra/ });
+const balanceStrip = () => screen.getByRole('group', { name: 'Saldos de la rendición' });
+const materials = () => screen.findByRole('region', { name: 'Materiales rendidos' });
+/** The scrap tab of the settlement: the envelope and the material sheet live there (S10, S13). */
+function openScrapTab() { fireEvent.click(scrapTab()); }
+function openCashTab() { fireEvent.click(cashTab()); }
 
 /** States the drawer of the artboard; the sheet already coincides with the system (S1). */
 async function completeTheSheet() {
@@ -519,7 +574,9 @@ describe('the numbers rail (S8, S9, S13)', () => {
 });
 
 describe('the purchase fund, the second envelope (S1, S5, S6)', () => {
-  const envelope = () => within(rail()).getByText('Fondo de compras').closest('.closing-group') as HTMLElement;
+  // The envelope lives in the scrap tab, beside the material sheet it bought (S10, S13).
+  const envelope = () => within(chatarraRail()).getByText('Fondo de compras')
+    .closest('.closing-group') as HTMLElement;
   const countedField = () => screen.getByLabelText('Fondo contado (Bs)');
   const newField = () => screen.getByLabelText('Monto nuevo que dejás (Bs)');
 
@@ -527,6 +584,11 @@ describe('the purchase fund, the second envelope (S1, S5, S6)', () => {
     const h = server();
     await ready(h);
     await sheet();
+    // Not one number of the envelope is inside the drawer of the other tab (S12).
+    const aside = rail();
+    expect(within(aside).getByText('Caja esperada').parentElement).toHaveTextContent('Bs 800,00');
+    expect(within(aside).getByText('Caja esperada').parentElement).not.toHaveTextContent('379,00');
+    openScrapTab();
     const group = envelope();
     expect(within(group).getByText('Saldo heredado').parentElement).toHaveTextContent('Bs 2.000,00');
     expect(within(group).getByText('Compras del período').parentElement)
@@ -536,16 +598,13 @@ describe('the purchase fund, the second envelope (S1, S5, S6)', () => {
     // The envelope is settled apart from the till, and it says so where the warehouse reads it.
     expect(group).toHaveTextContent(/sobre aparte/i);
     expect(group).toHaveTextContent(/ninguna venta lo alimenta/i);
-    // Not one of its numbers is inside the drawer above it (S12).
-    const aside = rail();
-    expect(within(aside).getByText('Caja esperada').parentElement).toHaveTextContent('Bs 800,00');
-    expect(within(aside).getByText('Caja esperada').parentElement).not.toHaveTextContent('379,00');
   });
 
   it('publishes the difference of the envelope with its sign and its name, like the drawer\'s', async () => {
     const h = server();
     await ready(h);
     await sheet();
+    openScrapTab();
     fireEvent.change(countedField(), { target: { value: '375,00' } });
     expect(within(envelope()).getByText('− Bs 4,00')).toBeInTheDocument();
     expect(within(envelope()).getByText('Faltante')).toBeInTheDocument();
@@ -562,6 +621,7 @@ describe('the purchase fund, the second envelope (S1, S5, S6)', () => {
     await sheet();
     fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '6.980,00' } });
     fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '900,00' } });
+    openScrapTab();
     fireEvent.change(countedField(), { target: { value: '375,00' } });
     fireEvent.change(newField(), { target: { value: '1.500,00' } });
     fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
@@ -582,6 +642,7 @@ describe('the purchase fund, the second envelope (S1, S5, S6)', () => {
     const h = server();
     await ready(h);
     await sheet();
+    openScrapTab();
     expect(h.state.purchaseCounted).toBeNull();
     expect(countedField()).toHaveValue('');
     expect(newField()).toHaveValue('');
@@ -598,6 +659,7 @@ describe('the purchase fund, the second envelope (S1, S5, S6)', () => {
     const h = server({ purchaseCounted: '375.00' });
     await ready(h);
     await sheet();
+    openScrapTab();
     expect(within(envelope()).getByText('− Bs 4,00')).toBeInTheDocument();
     await completeTheSheet();
     expect(h.posts('/api/closings/1/cash')[0].init.body).toBe(JSON.stringify({
@@ -609,6 +671,224 @@ describe('the purchase fund, the second envelope (S1, S5, S6)', () => {
     expect(proposeButton()).toHaveAccessibleDescription(
       'La rendición se puede proponer: la caja está declarada.');
     expect(h.posts('/api/closings/1/propose')).toHaveLength(0);
+  });
+});
+
+describe('the two tabs and the three balances (S10, S13)', () => {
+  it('opens on the cash tab and switches with the mouse, one panel at a time', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    expect(cashTab()).toHaveAttribute('aria-selected', 'true');
+    expect(cashTab()).toHaveAttribute('tabindex', '0');
+    expect(cashTab()).toHaveAttribute('aria-controls', 'closing-panel-caja');
+    expect(scrapTab()).toHaveAttribute('aria-selected', 'false');
+    expect(scrapTab()).toHaveAttribute('tabindex', '-1');
+    expect(scrapTab()).toHaveAttribute('aria-controls', 'closing-panel-chatarra');
+    expect(screen.getByRole('tabpanel', { name: 'Caja' })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Materiales rendidos' })).not.toBeInTheDocument();
+    openScrapTab();
+    expect(scrapTab()).toHaveAttribute('aria-selected', 'true');
+    expect(cashTab()).toHaveAttribute('aria-selected', 'false');
+    expect(await materials()).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Conteo de stock' })).not.toBeInTheDocument();
+    // One document, one closure, one acceptance: the tabs are navigation, never two life cycles
+    // (S10), so switching between them writes nothing at all.
+    expect(h.posts('/api/closings/1/count')).toHaveLength(0);
+    expect(h.posts('/api/closings/1/materials')).toHaveLength(0);
+    openCashTab();
+    expect(await sheet()).toBeInTheDocument();
+  });
+
+  it('moves between the tabs with the arrows and takes the focus with it', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    cashTab().focus();
+    fireEvent.keyDown(tabList(), { key: 'ArrowRight' });
+    expect(scrapTab()).toHaveAttribute('aria-selected', 'true');
+    expect(document.activeElement).toBe(scrapTab());
+    fireEvent.keyDown(tabList(), { key: 'ArrowLeft' });
+    expect(cashTab()).toHaveAttribute('aria-selected', 'true');
+    expect(document.activeElement).toBe(cashTab());
+    // The arrows wrap around the two tabs, and nothing else moves the selection.
+    fireEvent.keyDown(tabList(), { key: 'ArrowLeft' });
+    expect(scrapTab()).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(tabList(), { key: 'Enter' });
+    expect(scrapTab()).toHaveAttribute('aria-selected', 'true');
+    expect(h.posts('/api/closings/1/materials')).toHaveLength(0);
+  });
+
+  it('states the three balances above the tabs and takes each one to its own tab', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    const balances = () => within(balanceStrip()).getAllByRole('button');
+    expect(balances().map(button => button.textContent)).toEqual([
+      expect.stringContaining('Caja operativa'), expect.stringContaining('Fondo de compras'),
+      expect.stringContaining('Materiales')]);
+    // An amount nobody counted says so instead of showing a zero.
+    expect(balances()[0]).toHaveTextContent('Sin contar');
+    expect(balances()[1]).toHaveTextContent('Sin contar');
+    // The materials are named in their own unit and never summed with the money (S13).
+    expect(balances()[2]).toHaveTextContent('2 cuentas con diferencia');
+    expect(balances()[0]).toHaveAttribute('aria-pressed', 'true');
+    expect(balances()[1]).toHaveAttribute('aria-pressed', 'false');
+    // A difference of the drawer is stated in the strip and marked on its tab, in words (S13).
+    fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '795,00' } });
+    expect(balances()[0]).toHaveTextContent('− Bs 5,00');
+    expect(balances()[0]).toHaveTextContent('contada 795,00 · esperada 800,00');
+    expect(cashTab()).toHaveTextContent('− Bs 5,00');
+    expect(scrapTab()).toHaveTextContent('2 cuentas con diferencia');
+    // Every balance selects the tab it belongs to, and both accounts of the scrap tab agree on it.
+    fireEvent.click(balances()[1]);
+    expect(scrapTab()).toHaveAttribute('aria-selected', 'true');
+    expect(balances()[1]).toHaveAttribute('aria-pressed', 'true');
+    expect(balances()[2]).toHaveAttribute('aria-pressed', 'true');
+    expect(balances()[0]).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(balances()[0]);
+    expect(cashTab()).toHaveAttribute('aria-selected', 'true');
+    expect(balances()[0]).toHaveAttribute('aria-pressed', 'true');
+    expect(balances()[1]).toHaveAttribute('aria-pressed', 'false');
+    expect(h.posts('/api/closings/1/cash')).toHaveLength(0);
+  });
+});
+
+describe('the material sheet of the scrap tab (S7, S8, S9)', () => {
+  const table = async (name: string) => within(await materials()).getByRole('table', { name });
+
+  it('renders both tables with their totals and the sign of every difference (S8)', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    openScrapTab();
+    const used = await table('Baterías usadas · unidades por modelo');
+    expect(within(used).getByText('Modelo')).toBeInTheDocument();
+    expect(within(used).getByText('Compradas')).toBeInTheDocument();
+    expect(within(used).getByText('Contadas')).toBeInTheDocument();
+    const missing = within(used).getByLabelText('Contadas modelo 31-100').closest('tr')!;
+    expect(within(missing).getByText('9')).toBeInTheDocument();
+    expect(within(missing).getByLabelText('Contadas modelo 31-100')).toHaveValue('8');
+    expect(within(missing).getByText('−1')).toBeInTheDocument();
+    // The total row of a kind sums its own kind only, and only when it has more than one line.
+    const usedTotal = used.querySelector('tfoot')!;
+    expect(usedTotal).toHaveTextContent('27');
+    expect(usedTotal).toHaveTextContent('26');
+    expect(usedTotal).toHaveTextContent('−1');
+    expect(usedTotal).not.toHaveTextContent('kg');
+    const scrap = await table('Chatarra · kilogramos por material');
+    const plomo = within(scrap).getByLabelText('Contados kg de Plomo').closest('tr')!;
+    expect(within(plomo).getByText('84,500 kg')).toBeInTheDocument();
+    expect(within(plomo).getByLabelText('Contados kg de Plomo')).toHaveValue('80,200');
+    expect(within(plomo).getByText('−4,300')).toBeInTheDocument();
+    // A line that coincides shows a dash, never a zero dressed as a difference.
+    expect(within(scrap).getByLabelText('Contados kg de Cobre').closest('tr')).toHaveTextContent('—');
+    const scrapTotal = scrap.querySelector('tfoot')!;
+    expect(scrapTotal).toHaveTextContent('108,750 kg');
+    expect(scrapTotal).toHaveTextContent('104,450 kg');
+    expect(scrapTotal).toHaveTextContent('−4,300');
+    // A kilogram and a unit are never added together: each total row stays in its own kind.
+    expect(scrapTotal).not.toHaveTextContent('26');
+    expect(usedTotal).not.toHaveTextContent('108,750');
+    // What was counted goes to the warehouse and the branch starts the next period at zero (S9).
+    expect(await materials()).toHaveTextContent(
+      'Se lleva todo lo contado: 26 usadas y 104,450 kg de chatarra.');
+    expect(await materials()).toHaveTextContent(/la sucursal queda en cero/);
+  });
+
+  it('reads the typed counts and the difference they leave, in the unit of the line (S8)', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    openScrapTab();
+    const used = await table('Baterías usadas · unidades por modelo');
+    fireEvent.change(within(used).getByLabelText('Contadas modelo 31-100'),
+      { target: { value: '11' } });
+    const row = within(used).getByLabelText('Contadas modelo 31-100').closest('tr')!;
+    expect(within(row).getByText('+2')).toBeInTheDocument();
+    expect(used.querySelector('tfoot')).toHaveTextContent('+2');
+    // A fraction of a battery is not a count and is never typed into the cell.
+    fireEvent.change(within(used).getByLabelText('Contadas modelo 31-100'),
+      { target: { value: '7,5' } });
+    expect(within(used).getByLabelText('Contadas modelo 31-100')).toHaveValue('11');
+    const scrap = await table('Chatarra · kilogramos por material');
+    // A weight is typed with the decimal comma of the screen; the dot is not a separator here.
+    fireEvent.change(within(scrap).getByLabelText('Contados kg de Plomo'),
+      { target: { value: '84.5' } });
+    expect(within(scrap).getByLabelText('Contados kg de Plomo')).toHaveValue('80,200');
+    fireEvent.change(within(scrap).getByLabelText('Contados kg de Plomo'),
+      { target: { value: '84,5' } });
+    expect(within(scrap).getByLabelText('Contados kg de Plomo')).toHaveValue('84,5');
+    expect(within(scrap).getByLabelText('Contados kg de Plomo').closest('tr'))
+      .toHaveTextContent('—');
+    // Nothing of the draft left the screen.
+    expect(h.posts('/api/closings/1/materials')).toHaveLength(0);
+  });
+
+  it('says plainly that the period bought no materials, instead of an empty table (S7)', async () => {
+    const h = server({ materials: 'empty' });
+    await ready(h);
+    await sheet();
+    openScrapTab();
+    const panel = await materials();
+    expect(within(panel).getByText(/El período no compró materiales/)).toBeInTheDocument();
+    expect(within(panel).queryByRole('table')).not.toBeInTheDocument();
+    // The balance and the tab say the same, and no marker is invented for a sheet that is empty.
+    expect(within(balanceStrip()).getAllByRole('button')[2]).toHaveTextContent('Sin materiales');
+    expect(scrapTab()).not.toHaveTextContent('con diferencia');
+    expect(h.posts('/api/closings/1/materials')).toHaveLength(0);
+  });
+
+  it('posts the material counts beside the drawer, in the shape each kind takes (S8, S10)', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '6.980,00' } });
+    fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'),
+      { target: { value: '900,00' } });
+    openScrapTab();
+    const used = await table('Baterías usadas · unidades por modelo');
+    fireEvent.change(within(used).getByLabelText('Contadas modelo 31-100'),
+      { target: { value: '7' } });
+    fireEvent.change(screen.getByLabelText('Contados kg de Plomo'), { target: { value: '80,1' } });
+    // The counts of the third account are unsaved work exactly like the drawer's, and the offer
+    // waits for them: one draft, one save, both sheets (S10).
+    expect(proposeButton()).toBeDisabled();
+    expect(proposeButton()).toHaveAccessibleDescription(/cambios sin guardar/);
+    expect(h.posts('/api/closings/1/materials')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
+    await screen.findByText(/Borrador guardado/);
+    expect(h.posts('/api/closings/1/materials')).toHaveLength(1);
+    expect(JSON.parse(String(h.posts('/api/closings/1/materials')[0].init.body))).toEqual({
+      lines: [
+        { kind: 'used', model: '31-100', counted_quantity: '7' },
+        { kind: 'scrap', material_id: 3, counted_quantity: '80.100' },
+      ] });
+    // The drawer travelled in the same save, and the sheet on screen is now the server's own.
+    expect(h.posts('/api/closings/1/cash')).toHaveLength(1);
+    const plomo = (await table('Chatarra · kilogramos por material'))
+      .querySelector('[data-material-key="scrap:3"]')!;
+    expect(within(plomo as HTMLElement).getByText('−4,400')).toBeInTheDocument();
+    await waitFor(() => expect(proposeButton()).toBeEnabled());
+  });
+
+  it('never blocks the proposal for a material difference (S8)', async () => {
+    const h = server();
+    await ready(h);
+    await sheet();
+    openScrapTab();
+    expect(await materials()).toHaveTextContent('−4,300');
+    await completeTheSheet();
+    // The sheet of the shelf differs in two kinds and the offer is still made: the difference is
+    // informed exactly like the drawer's, and the stock count sheet stays the only gate (S8).
+    expect(proposeButton()).toBeEnabled();
+    expect(proposeButton()).toHaveAccessibleDescription(
+      'La rendición se puede proponer: la caja está declarada.');
+    fireEvent.click(proposeButton());
+    await waitFor(() => expect(h.posts('/api/closings/1/propose')).toHaveLength(1));
+    expect(await screen.findByText(/espera su aceptación o su rechazo/)).toBeInTheDocument();
+    // The difference stays published after the offer: it is recorded, not corrected away.
+    expect(await materials()).toHaveTextContent('−4,300');
   });
 });
 

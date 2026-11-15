@@ -38,6 +38,35 @@ const round = (number: number, overrides: Record<string, unknown> = {}) => ({
   proposed_at: `2026-09-12T14:5${number}:00Z`, decision: '', decision_reason: '',
   decided_by_account_id: null, decided_at: null, ...overrides });
 
+/** One used line of the material sheet: whole units per model (S7, S8). */
+const usedMaterial = (model: string, expected: string, counted: string | null) => ({
+  kind: 'used', model, material_id: null, material: null, unit: 'unit', expected_quantity: expected,
+  counted_quantity: counted,
+  difference: counted === null ? null : String(Number(counted) - Number(expected)),
+  delivered_quantity: counted });
+
+/** One scrap line of the material sheet: kilograms per material, at three decimals (S7, S8). */
+const scrapMaterial = (material_id: number, material: string, expected: string,
+  counted: string | null) => ({ kind: 'scrap', model: null, material_id, material, unit: 'kg',
+  expected_quantity: expected, counted_quantity: counted,
+  difference: counted === null ? null : (Number(counted) - Number(expected)).toFixed(3),
+  delivered_quantity: counted });
+
+/**
+ * The material sheet of the artboard (design/rendicion-caja-y-chatarra/04-decision-dos-pestanas.html):
+ * three used models in units and four scrap materials in kilograms, one shortage of each kind, in
+ * the order the contract freezes — the used lines by model, then the scrap ones by material id.
+ */
+const materialLines = () => [
+  usedMaterial('24F-45', '6', '6'),
+  usedMaterial('27-60', '12', '12'),
+  usedMaterial('31-100', '9', '8'),
+  scrapMaterial(1, 'Cobre', '12.400', '12.400'),
+  scrapMaterial(2, 'Aluminio', '8.750', '8.750'),
+  scrapMaterial(3, 'Plomo', '84.500', '80.200'),
+  scrapMaterial(4, 'Bronce', '3.100', '3.100'),
+];
+
 const proposed = (overrides: Record<string, unknown> = {}) => ({
   id: 1, branch_location_id: 2, branch_name: 'Sopocachi', status: 'proposed',
   period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z', closed_at: null,
@@ -52,7 +81,8 @@ const proposed = (overrides: Record<string, unknown> = {}) => ({
   purchase_fund_expected: '379.00', purchase_fund_counted: '375.00',
   purchase_fund_difference: '-4.00', purchase_fund_cash: '1500.00',
   observation: 'Faltan dos baterías que el encargado dice haber vendido sin registrar.',
-  opened_by_account_id: 1, count_lines: sheet(), rounds: [round(1)], expenses: [], corrections: [], ...overrides });
+  opened_by_account_id: 1, count_lines: sheet(), material_lines: materialLines(),
+  rounds: [round(1)], expenses: [], corrections: [], ...overrides });
 
 const open = () => proposed({
   status: 'open', commission_rate_percent: null, counted_cash: null, cash_difference: null,
@@ -139,6 +169,14 @@ async function ready(h: ReturnType<typeof server>) {
   return view;
 }
 
+const tabList = () => screen.getByRole('tablist', { name: 'Rendición' });
+const cashTab = () => within(tabList()).getByRole('tab', { name: /^Caja/ });
+const scrapTab = () => within(tabList()).getByRole('tab', { name: /^Chatarra/ });
+const balanceStrip = () => screen.getByRole('group', { name: 'Saldos de la rendición' });
+const materials = () => screen.findByRole('region', { name: 'Materiales rendidos' });
+/** The scrap tab holds the envelope and the material sheet of the same document (S10, S13). */
+function openScrapTab() { fireEvent.click(scrapTab()); }
+
 const changes = () => screen.findByRole('region', { name: 'Qué cambia si aceptás' });
 const cash = () => screen.getByRole('region', { name: 'Caja y pago' });
 const rounds = () => screen.getByRole('region', { name: 'Rondas de esta rendición' });
@@ -217,6 +255,7 @@ describe('the purchase fund the branch is accepting (S1, S5, S6)', () => {
   it('shows the frozen envelope of the offer, read-only, with its difference', async () => {
     const h = server();
     await ready(h);
+    openScrapTab();
     const panel = envelope();
     expect(within(panel).getByText('Saldo heredado').parentElement).toHaveTextContent('Bs 2.000,00');
     expect(within(panel).getByText('Compras del período').parentElement)
@@ -236,6 +275,7 @@ describe('the purchase fund the branch is accepting (S1, S5, S6)', () => {
   it('says that accepting makes the new amount its purchase fund for the next period', async () => {
     const h = server();
     await ready(h);
+    openScrapTab();
     const panel = envelope();
     expect(within(panel).getByText('Tu fondo de compras arranca con').parentElement)
       .toHaveTextContent('Bs 1.500,00');
@@ -248,6 +288,126 @@ describe('the purchase fund the branch is accepting (S1, S5, S6)', () => {
     await screen.findByText('Rendición cerrada: la sucursal vuelve a operar.');
     expect(within(envelope()).getByText('Tu fondo de compras arranca con').parentElement)
       .toHaveTextContent('Bs 1.500,00');
+  });
+});
+
+describe('the two tabs and the three balances of the decision (S10, S13)', () => {
+  const balances = () => within(balanceStrip()).getAllByRole('button');
+
+  it('opens on the cash tab with the three balances of the offer above it', async () => {
+    const h = server();
+    await ready(h);
+    expect(balances()).toHaveLength(3);
+    expect(balances()[0]).toHaveTextContent('Caja operativa');
+    expect(balances()[0]).toHaveTextContent('− Bs 35,00');
+    expect(balances()[0]).toHaveTextContent('contada 6.980,00 · esperada 7.015,00');
+    expect(balances()[1]).toHaveTextContent('Fondo de compras');
+    expect(balances()[1]).toHaveTextContent('− Bs 4,00');
+    expect(balances()[2]).toHaveTextContent('Materiales');
+    // The materials are named in their own unit and never added to any money figure (S13).
+    expect(balances()[2]).toHaveTextContent('2 cuentas con diferencia');
+    expect(balances()[0]).toHaveAttribute('aria-pressed', 'true');
+    expect(cashTab()).toHaveAttribute('aria-selected', 'true');
+    expect(scrapTab()).toHaveAttribute('aria-selected', 'false');
+    // The marker of each tab is the difference of its accounts, in words and never a bare dot.
+    expect(cashTab()).toHaveTextContent('− Bs 35,00');
+    expect(scrapTab()).toHaveTextContent('2 con diferencia');
+    // Nothing of it is a field: the branch confirms, it never types (S14).
+    expect(within(balanceStrip()).queryByRole('textbox')).not.toBeInTheDocument();
+    expect(h.posts('/api/closings/1/decision')).toHaveLength(0);
+  });
+
+  it('switches with the mouse and with the arrows, and the answer stays reachable', async () => {
+    const h = server();
+    await ready(h);
+    await changes();
+    openScrapTab();
+    expect(scrapTab()).toHaveAttribute('aria-selected', 'true');
+    expect(await materials()).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Qué cambia si aceptás' })).not.toBeInTheDocument();
+    // The decision is the same document seen from either tab: one acceptance, never two (S10).
+    expect(decision()).toBeInTheDocument();
+    expect(acceptButton()).toBeEnabled();
+    fireEvent.click(balances()[0]);
+    expect(cashTab()).toHaveAttribute('aria-selected', 'true');
+    expect(await changes()).toBeInTheDocument();
+    cashTab().focus();
+    fireEvent.keyDown(tabList(), { key: 'ArrowRight' });
+    expect(scrapTab()).toHaveAttribute('aria-selected', 'true');
+    expect(document.activeElement).toBe(scrapTab());
+    fireEvent.keyDown(tabList(), { key: 'ArrowLeft' });
+    expect(cashTab()).toHaveAttribute('aria-selected', 'true');
+    expect(h.posts('/api/closings/1/decision')).toHaveLength(0);
+  });
+
+  it('reads the material sheet read-only, in the frozen order and with the delivery (S7, S8, S9)',
+    async () => {
+      const h = server();
+      await ready(h);
+      openScrapTab();
+      const panel = await materials();
+      const used = within(panel).getByRole('table',
+        { name: 'Baterías usadas · unidades por modelo' });
+      // The order the document freezes: the used lines by model and then the scrap ones by id.
+      expect(within(used).getAllByRole('row')
+        .map(row => row.querySelector('th,td')?.textContent))
+        .toEqual(['Modelo', '24F-45', '27-60', '31-100', 'Total']);
+      const scrap = within(panel).getByRole('table',
+        { name: 'Chatarra · kilogramos por material' });
+      expect(within(scrap).getAllByRole('row')
+        .map(row => row.querySelector('th,td')?.textContent))
+        .toEqual(['Material', 'Cobre', 'Aluminio', 'Plomo', 'Bronce', 'Total']);
+      const missing = within(used).getByText('31-100').closest('tr')!;
+      expect(within(missing).getByText('9')).toBeInTheDocument();
+      expect(within(missing).getByText('8')).toBeInTheDocument();
+      expect(within(missing).getByText('−1')).toBeInTheDocument();
+      const plomo = within(scrap).getByText('Plomo').closest('tr')!;
+      expect(within(plomo).getByText('84,500 kg')).toBeInTheDocument();
+      expect(within(plomo).getByText('80,200 kg')).toBeInTheDocument();
+      expect(within(plomo).getByText('−4,300')).toBeInTheDocument();
+      // The branch reads the sheet and types into none of it.
+      expect(within(panel).queryByRole('textbox')).not.toBeInTheDocument();
+      expect(within(panel).queryByRole('spinbutton')).not.toBeInTheDocument();
+      // What acceptance delivers: everything counted, and the shelf back at zero (S9).
+      expect(within(panel).getByText('Usadas que se lleva el Almacén').parentElement)
+        .toHaveTextContent('26');
+      expect(within(panel).getByText('Chatarra que se lleva el Almacén').parentElement)
+        .toHaveTextContent('104,450 kg');
+      expect(within(panel).getByText('Queda en tu estantería').parentElement)
+        .toHaveTextContent('cero');
+      expect(panel).toHaveTextContent(
+        'Se lleva todo lo contado: 26 usadas y 104,450 kg de chatarra.');
+      expect(panel).toHaveTextContent(/la sucursal queda en cero/);
+      expect(h.posts('/api/closings/1/decision')).toHaveLength(0);
+    });
+
+  it('says plainly that the period bought no materials, instead of an empty table (S7)', async () => {
+    const h = server(proposed({ material_lines: [] }));
+    await ready(h);
+    openScrapTab();
+    const panel = await materials();
+    expect(within(panel).getByText(/El período no compró materiales/)).toBeInTheDocument();
+    expect(within(panel).queryByRole('table')).not.toBeInTheDocument();
+    expect(within(balanceStrip()).getAllByRole('button')[2]).toHaveTextContent('Sin materiales');
+    // An empty sheet is no reason to keep the branch from accepting.
+    expect(acceptButton()).toBeEnabled();
+  });
+
+  it('never blocks the acceptance for a material difference, counted or not (S8)', async () => {
+    const h = server(proposed({ material_lines: [
+      usedMaterial('31-100', '9', '8'), scrapMaterial(3, 'Plomo', '84.500', null)] }));
+    await ready(h);
+    openScrapTab();
+    const panel = await materials();
+    // A line nobody counted is informed as pending and blocks nothing either.
+    const plomo = within(panel).getByText('Plomo').closest('tr')!;
+    expect(within(plomo).getByText('Sin contar')).toBeInTheDocument();
+    expect(within(plomo).getAllByRole('cell')[3]).toHaveTextContent('—');
+    expect(acceptButton()).toBeEnabled();
+    fireEvent.click(acceptButton());
+    await waitFor(() => expect(h.posts('/api/closings/1/decision')).toHaveLength(1));
+    expect(h.posts('/api/closings/1/decision')[0].init.body).toBe('{"decision":"accepted"}');
+    expect(await screen.findByText('Rendición cerrada: la sucursal vuelve a operar.')).toBeInTheDocument();
   });
 });
 

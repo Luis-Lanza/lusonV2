@@ -1,14 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { KeyboardEvent } from 'react';
 import {
-  closingAcceptance, closingAccountLabel, closingAcceptedCorrections, closingCorrectedAmounts,
+  closingAcceptance, closingAccountLabel, closingAcceptedCorrections, closingBalanceStrip,
+  closingBalancesLabel, closingCorrectedAmounts,
   closingCorrectedCounts, closingCorrectionDeltaText, closingCorrectionPreview,
   closingCorrectionQuantityDeltaText, closingCorrectionStatusLabels, closingDecisionPayload,
   closingDecisionReadiness, closingDifferenceName, closingEnvelope, closingEnvelopeAcceptanceHelp,
-  closingEnvelopeApartHelp, closingIsLive, closingMoneyText,
+  closingEnvelopeApartHelp, closingIsLive, closingMaterialDeliveryHelp, closingMaterialEmptySheet,
+  closingMaterialLines, closingMaterialQuantityLabel, closingMaterialQuantityText,
+  closingMaterialReading, closingMaterialShelfHelp, closingMaterialSignedText,
+  closingMaterialWireText, closingMoneyText,
   closingMomentText, closingPendingCorrection, closingPeriod, closingPeriodLabel, closingRail,
   closingRateText, closingRoundStateLabel, closingSheetChanges, closingSignedText,
-  closingStatusLabels, closingAcceptanceMismatchMessage,
+  closingStatusLabels, closingAcceptanceMismatchMessage, closingTabAfter, closingTabLabels,
+  closingTabMarker, closingTabOrder, closingTabsLabel,
+  emptyMaterialDraft,
   type Closing, type ClosingAcceptance, type ClosingRail, type ClosingStockChange,
+  type ClosingTab,
 } from './closingModel';
 import {
   ClosingAPIError, closingDocumentUnavailable, closingErrorMessages, closingRefusalMessage,
@@ -55,6 +63,8 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
   const [phase, setPhase] = useState<'loading' | 'ready' | 'empty' | 'error'>('loading');
   const [revision, setRevision] = useState(0);
   const [closing, setClosing] = useState<Closing | null>(null);
+  // The two tabs are navigation over one document, never two decisions (S10).
+  const [tab, setTab] = useState<ClosingTab>('caja');
   const [motive, setMotive] = useState('');
   const [rejecting, setRejecting] = useState(false);
   const [correctionMotive, setCorrectionMotive] = useState('');
@@ -65,6 +75,8 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
   const mounted = useRef(true);
   const lifetime = useRef(new AbortController());
   const pending = useRef(false);
+  // The roving tab index of the two tabs, the same one the purchases screen uses.
+  const tabButtons = useRef<Record<ClosingTab, HTMLButtonElement | null>>({ caja: null, chatarra: null });
 
   useEffect(() => {
     const flight = lifetime.current;
@@ -211,6 +223,30 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
   const period = closing === null ? null : closingPeriod(closing.period_start, closing.cut_at);
   const observation = acceptance?.offer.observation ?? closing?.observation ?? '';
   const canReject = !busy && motive.trim() !== '';
+  // The third account as the branch reads it: the sheet of the document, with no input and no
+  // draft, so a count it never typed is never invented (S8, S9).
+  const materialReading = closingMaterialReading(closing === null ? [] : closingMaterialLines(closing),
+    emptyMaterialDraft);
+  // The same three balances the warehouse reads, over the offer the branch is deciding (S13): the
+  // drawer of the offer, the envelope of the offer and the materials it delivers.
+  const balances = closingBalanceStrip({
+    cash_counted_cents: rail === null ? null : rail.counted_cents,
+    cash_expected_cents: rail === null ? 0n : rail.expected_cents,
+    cash_difference_cents: rail === null ? null : rail.difference_cents,
+    fund_counted_cents: envelope === null ? null : envelope.counted_cents,
+    fund_expected_cents: envelope === null ? null : envelope.expected_cents,
+    fund_difference_cents: envelope === null ? null : envelope.difference_cents,
+    materials: materialReading,
+  });
+
+  /** The arrows move the two tabs of the decision, exactly like the purchases tabs. */
+  function moveTab(event: KeyboardEvent<HTMLDivElement>) {
+    const next = closingTabAfter(tab, event.key);
+    if (next === null) return;
+    event.preventDefault();
+    setTab(next);
+    tabButtons.current[next]?.focus();
+  }
 
   return <section className="closing-workspace closing-decision" aria-labelledby="closing-decision-title">
     <header className="closing-heading">
@@ -390,8 +426,38 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
           </li>)}</ol>
         </section>}
 
+      {balances.length > 0 && <>
+        {/* S13: the branch confirms the three accounts before accepting, and every balance leads to
+            the tab it belongs to. No money figure and no kilogram is ever added to another. */}
+        <div className="closing-balances" role="group" aria-label={closingBalancesLabel}>
+          {balances.map(balance => <button key={balance.key} type="button"
+            className={`closing-balance ${balance.tone}`} aria-pressed={tab === balance.tab}
+            onClick={() => setTab(balance.tab)}>
+            <small>{balance.label}</small>
+            <strong className={balance.tone}>{balance.value}</strong>
+            <em>{balance.detail}</em>
+          </button>)}
+        </div>
+
+        <div className="closing-tabs" role="tablist" aria-label={closingTabsLabel} onKeyDown={moveTab}>
+          {closingTabOrder.map(key => {
+            const marker = closingTabMarker(balances, key);
+            return <button key={key} type="button" role="tab" id={`closing-decision-tab-${key}`}
+              aria-selected={tab === key} aria-controls={`closing-decision-panel-${key}`}
+              tabIndex={tab === key ? 0 : -1}
+              ref={element => { tabButtons.current[key] = element; }}
+              onClick={() => setTab(key)}>
+              {closingTabLabels[key]}
+              {marker !== null && <span className="closing-tab-marker">{marker}</span>}
+            </button>;
+          })}
+        </div>
+      </>}
+
       <div className="closing-layout">
         <div>
+          <div id="closing-decision-panel-caja" role="tabpanel"
+            aria-labelledby="closing-decision-tab-caja" hidden={tab !== 'caja'}>
           <section className="closing-panel" aria-labelledby="closing-decision-changes">
             <header className="closing-panel-head">
               <h2 id="closing-decision-changes">Qué cambia si aceptás</h2>
@@ -472,6 +538,16 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
             </div>
           </section>
 
+          {observation !== '' && <section className="closing-panel" aria-labelledby="closing-decision-observation">
+            <header className="closing-panel-head"><h2 id="closing-decision-observation">Observación del Almacén</h2></header>
+            <div className="closing-group"><p className="closing-motive-note">{observation}</p></div>
+          </section>}
+          </div>
+
+          {/* The other tab of the same document: the envelope the branch accepts and the material
+              sheet the warehouse counted, both read-only and both inside the one acceptance (S9, S10). */}
+          <div id="closing-decision-panel-chatarra" role="tabpanel"
+            aria-labelledby="closing-decision-tab-chatarra" hidden={tab !== 'chatarra'}>
           {/* The second envelope the branch accepts, read-only: the warehouse counts it and leaves the
               amount that opens the next period; here the branch reads what it is accepting of it and
               what its purchase fund becomes (S1, S5, S6). */}
@@ -513,10 +589,83 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
             </div>
           </section>}
 
-          {observation !== '' && <section className="closing-panel" aria-labelledby="closing-decision-observation">
-            <header className="closing-panel-head"><h2 id="closing-decision-observation">Observación del Almacén</h2></header>
-            <div className="closing-group"><p className="closing-motive-note">{observation}</p></div>
-          </section>}
+          {/* The third account the branch is accepting (S7, S8, S9): what the period bought against
+              what the warehouse counted, and what acceptance delivers to the warehouse. */}
+          <section className="closing-panel" aria-labelledby="closing-decision-materials">
+            <header className="closing-panel-head">
+              <h2 id="closing-decision-materials">Materiales rendidos</h2>
+              <span className={`closing-tag ${materialReading.differing === 0 ? 'ok' : 'warn'}`}>
+                {materialReading.empty ? 'Sin materiales'
+                  : materialReading.differing === 0 ? 'Sin diferencia'
+                    : `${materialReading.differing} ${materialReading.differing === 1
+                      ? 'diferencia' : 'diferencias'}`}
+              </span>
+              <small className="closing-muted">No editable desde la sucursal</small>
+            </header>
+            {materialReading.empty
+              ? <p className="closing-help">{closingMaterialEmptySheet}</p>
+              : <>
+                <p className="closing-help">{closingMaterialShelfHelp}</p>
+                {materialReading.groups.map(group => <div className="closing-materials" key={group.kind}>
+                  <table className="closing-table closing-materials-table">
+                    <caption>{group.unit === 'kg'
+                      ? `${group.label} · kilogramos por material`
+                      : `${group.label} · unidades por modelo`}</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">{group.unit === 'kg' ? 'Material' : 'Modelo'}</th>
+                        <th scope="col" className="num">{group.unit === 'kg' ? 'Comprados' : 'Compradas'}</th>
+                        <th scope="col" className="num">{group.unit === 'kg' ? 'Contados' : 'Contadas'}</th>
+                        <th scope="col" className="num">Dif.</th>
+                      </tr>
+                    </thead>
+                    <tbody>{group.lines.map(row => {
+                      const differenceClass = row.difference_milli === null || row.difference_milli === 0n
+                        ? 'zero' : row.difference_milli < 0n ? 'neg' : 'pos';
+                      return <tr key={row.key} data-material-key={row.key}>
+                        <td>{row.label}</td>
+                        <td className="num">
+                          {closingMaterialQuantityLabel(row.unit, row.line.expected_quantity)}</td>
+                        <td className="num">{row.counted_milli === null ? 'Sin contar'
+                          : closingMaterialQuantityLabel(row.unit,
+                            closingMaterialWireText(row.unit, row.counted_milli))}</td>
+                        <td className={`num ${differenceClass}`}>
+                          {closingMaterialSignedText(row.unit, row.difference_milli ?? 0n)}</td>
+                      </tr>;
+                    })}</tbody>
+                    {group.lines.length > 1 && <tfoot>
+                      <tr>
+                        <td>Total</td>
+                        <td className="num">{closingMaterialQuantityLabel(group.unit,
+                          closingMaterialWireText(group.unit, group.expected_milli))}</td>
+                        <td className="num">{group.counted_milli === null ? 'Sin contar'
+                          : closingMaterialQuantityLabel(group.unit,
+                            closingMaterialWireText(group.unit, group.counted_milli))}</td>
+                        <td className={`num ${group.difference_milli === 0n ? 'zero'
+                          : group.difference_milli < 0n ? 'neg' : 'pos'}`}>
+                          {group.complete
+                            ? closingMaterialSignedText(group.unit, group.difference_milli) : '—'}</td>
+                      </tr>
+                    </tfoot>}
+                  </table>
+                </div>)}
+                <div className="closing-group">
+                  <h2>Si aceptás</h2>
+                  <dl className="closing-summary">
+                    <div><dt>Usadas que se lleva el Almacén</dt>
+                      <dd>{materialReading.used.counted_milli === null ? 'Sin contar'
+                        : closingMaterialQuantityText('unit', materialReading.used.counted_milli)}</dd></div>
+                    <div><dt>Chatarra que se lleva el Almacén</dt>
+                      <dd>{materialReading.scrap.counted_milli === null ? 'Sin contar'
+                        : `${closingMaterialQuantityText('kg', materialReading.scrap.counted_milli)} kg`}</dd></div>
+                    <div className="total"><dt>Queda en tu estantería</dt><dd>cero</dd></div>
+                  </dl>
+                  <small className="closing-muted">{materialReading.delivery}
+                    {' '}{closingMaterialDeliveryHelp}</small>
+                </div>
+              </>}
+          </section>
+          </div>
         </div>
 
         <aside>

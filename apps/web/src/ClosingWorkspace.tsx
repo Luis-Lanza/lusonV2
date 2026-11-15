@@ -3,7 +3,8 @@ import type { KeyboardEvent } from 'react';
 import { validSearch, type Location } from './model';
 import {
   canonicalCorrection, canonicalCountPayload, canonicalDrawerPayload, closingAccountLabel,
-  closingAcceptedCorrections, closingAddLine, closingBlockReason, closingBlockers,
+  closingAcceptedCorrections, closingAddLine, closingBalanceStrip, closingBalancesLabel,
+  closingBlockReason, closingBlockers,
   closingCatalogueEmpty, closingCatalogueHelp, closingCatalogueHeldTag, closingCatalogueListedTag,
   closingCatalogueOptions, closingCatalogueUnavailable,
   closingCorrectedAmounts, closingCorrectedCounts, closingCorrectionDeltaText,
@@ -12,20 +13,27 @@ import {
   closingCountChanges, closingDifferenceName, closingEnvelopeApartHelp, closingEnvelopeNewHelp,
   closingIsEditable, closingIsLive, closingLineDifference,
   closingLineIsOutsideSystem, closingLineLabel,
-  closingCountBatches, closingMoneyText, closingMomentText, closingObservationMessage,
+  closingCountBatches, closingMaterialClearedMessage, closingMaterialDeliveryHelp,
+  closingMaterialEmptySheet, closingMaterialLines, closingMaterialQuantityLabel,
+  closingMaterialQuantityText, closingMaterialReading, closingMaterialSeed,
+  closingMaterialShelfHelp, closingMaterialSignedText, closingMaterialWireText,
+  closingMoneyText, closingMomentText, closingObservationMessage,
   closingPendingCorrection, closingPeriod,
   closingPeriodLabel,
   closingQuantityMessage, closingQuantityText, closingRateText, closingRail,
   closingRemoveLine, closingSearchMessage, closingSheetRows, closingSheetVariantIDs,
   closingSignedText, closingStatusLabels, closingOutsideSystemHelp, closingOutsideSystemTag,
   closingChangedTag, closingCountDifferenceText, closingCountMatchTag, closingCountReading,
-  closingSeedQuantity,
+  closingSeedQuantity, closingTabAfter, closingTabLabels, closingTabMarker, closingTabOrder,
+  closingTabsLabel,
   correctionDraftFrom, drawerDraftFrom,
   drawerView,
-  emptyDrawerDraft, emptyPurchaseFundDraft, filterCountLines, purchaseFundDraftFrom, purchaseFundView,
-  type Closing, type ClosingCatalogueVariant, type ClosingCountLine, type ClosingRail,
+  emptyDrawerDraft, emptyMaterialDraft, emptyPurchaseFundDraft, filterCountLines,
+  materialDraftFrom, purchaseFundDraftFrom, purchaseFundView,
+  type Closing, type ClosingCatalogueVariant, type ClosingCountLine, type ClosingMaterialRow,
+  type ClosingRail, type ClosingTab,
   type CorrectionDraft, type CorrectionBody,
-  type DrawerDraft, type PurchaseFundDraft,
+  type DrawerDraft, type MaterialDraft, type PurchaseFundDraft,
 } from './closingModel';
 import {
   ClosingAPIError, closingErrorMessages, closingHistoryUnavailable, closingRefusalMessage,
@@ -98,10 +106,13 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   const [resumed, setResumed] = useState<number | null>(null);
   const [closedView, setClosedView] = useState<number | null>(null);
   const [closing, setClosing] = useState<Closing | null>(null);
+  const [tab, setTab] = useState<ClosingTab>('caja');
   const [counted, setCounted] = useState<Record<number, string>>({});
   const [draft, setDraft] = useState<DrawerDraft>(emptyDrawerDraft);
   // The second envelope: its own draft, saved through the same cash draft as the drawer (S1, S5).
   const [envelope, setEnvelope] = useState<PurchaseFundDraft>(emptyPurchaseFundDraft);
+  // The third account: the counts of the material sheet, saved beside the drawer (S8).
+  const [materials, setMaterials] = useState<MaterialDraft>(emptyMaterialDraft);
   const [correction, setCorrection] = useState<CorrectionDraft | null>(null);
   const [search, setSearch] = useState('');
   // The battery the admin counted and the cut did not know: a row the closure honours upward (S5).
@@ -114,6 +125,8 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   const mounted = useRef(true);
   const lifetime = useRef(new AbortController());
   const pending = useRef(false);
+  // The roving tab index of the two tabs: the tabs are navigation, never two life cycles (S10).
+  const tabButtons = useRef<Record<ClosingTab, HTMLButtonElement | null>>({ caja: null, chatarra: null });
 
   useEffect(() => {
     const flight = lifetime.current;
@@ -126,7 +139,9 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   useEffect(() => {
     if (branch === 0) {
       setPhase('idle'); setClosing(null); setHistoryTotal(0); setResumed(null); setClosedView(null);
+      setTab('caja');
       setCounted({}); setDraft(emptyDrawerDraft); setEnvelope(emptyPurchaseFundDraft);
+      setMaterials(emptyMaterialDraft);
       setCorrection(null); setProblem(''); setStatus('');
       setAdded([]); setCatalogue(emptyCatalogue); setCatalogueSearch('');
       return;
@@ -172,6 +187,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
     setCounted(countDraftFrom(document));
     setDraft(drawerDraftFrom(document));
     setEnvelope(purchaseFundDraftFrom(document));
+    setMaterials(materialDraftFrom(document));
     setCorrection(document.status === 'closed' ? correctionDraftFrom(document) : null);
     // A row the server now holds is a line of the sheet, so it is no longer a local addition.
     setAdded(current => current.filter(line =>
@@ -257,12 +273,24 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
       setProblem(failure instanceof Error && failure.message ? failure.message : closingObservationMessage);
       return;
     }
+    // A count of the material sheet that cannot be read is named instead of being saved: the two
+    // sheets travel together, so the drawer is never written without the counts beside it (S8).
+    if (materialReading.problem !== '') {
+      setStatus(''); setProblem(materialReading.problem);
+      return;
+    }
     pending.current = true; setBusy(true); setStatus('Guardando el borrador…'); setProblem('');
     let saved: Closing | null = null;
     try {
       // A sheet longer than one request is saved in order, so no counted line is ever left out.
       for (const batch of closingCountBatches(lines)) {
         saved = await api.count(current.id, batch, csrf, lifetime.current.signal);
+        if (!mounted.current || lifetime.current.signal.aborted) return;
+      }
+      // The counts of the materials go in the same draft as the drawer, in their own route: only
+      // the lines the warehouse typed, in the shape each kind takes (S8, S10).
+      if (materialReading.changes.length > 0) {
+        saved = await api.materials(current.id, materialReading.changes, csrf, lifetime.current.signal);
         if (!mounted.current || lifetime.current.signal.aborted) return;
       }
       const document = await api.cash(current.id, drawer, csrf, lifetime.current.signal);
@@ -360,6 +388,34 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
     inputs[next].focus();
   }
 
+  /**
+   * Moves the selection between the two tabs with the arrows, the one interaction model the screens
+   * share with the purchases tabs: the focus follows the tab the arrow selects.
+   */
+  function moveTab(event: KeyboardEvent<HTMLDivElement>) {
+    const next = closingTabAfter(tab, event.key);
+    if (next === null) return;
+    event.preventDefault();
+    setTab(next);
+    tabButtons.current[next]?.focus();
+  }
+
+  /**
+   * Types one counted quantity of the material sheet. A count the document already holds is never
+   * blanked — the delivery is exactly what was counted — and a cell that cannot be read is left as
+   * it is, so the difference on screen never disagrees with what would be saved (S8, S9).
+   */
+  function setMaterialValue(row: ClosingMaterialRow, value: string) {
+    const shape = row.unit === 'kg' ? /^\d{0,9}(,\d{0,3})?$/ : /^\d{0,9}$/;
+    if (!shape.test(value)) return;
+    if (value.trim() === '' && closingMaterialSeed(row.line) !== '') {
+      setProblem(closingMaterialClearedMessage);
+      return;
+    }
+    setProblem('');
+    setMaterials(current => ({ ...current, [row.key]: value }));
+  }
+
   const rail: ClosingRail | null = closing === null ? null : closingRail(closing);
   const view = rail === null ? null : drawerView(rail, draft);
   // The second envelope, over the facts the document publishes and the draft it typed (S1, S5).
@@ -383,8 +439,23 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   }
 
   const changed = closing === null ? [] : closingCountChanges(rows, counted);
+  // The third account over the draft: its rows, its totals, the head the strip names and the lines
+  // that are about to travel with the drawer (S7, S8, S9).
+  const materialReading = closingMaterialReading(closing === null ? [] : closingMaterialLines(closing),
+    materials);
+  // The three balances above the tabs: the drawer, the envelope and the materials, live over the
+  // draft and never summed into one another (S13).
+  const balances = closingBalanceStrip({
+    cash_counted_cents: view === null ? null : view.counted_cents,
+    cash_expected_cents: view === null ? 0n : view.expected_cents,
+    cash_difference_cents: view === null ? null : view.difference_cents,
+    fund_counted_cents: fundView === null ? null : fundView.counted_cents,
+    fund_expected_cents: fundView === null ? null : fundView.expected_cents,
+    fund_difference_cents: fundView === null ? null : fundView.difference_cents,
+    materials: materialReading,
+  });
   const unsaved = closing !== null
-    && (changed.length > 0 || added.length > 0
+    && (changed.length > 0 || added.length > 0 || materialReading.unsaved
       || !sameDrawer(draft, drawerDraftFrom(closing), envelope, purchaseFundDraftFrom(closing)));
   const blockers = closing === null || view === null ? [] : closingBlockers(closing, view, unsaved);
   const blocked = blockers.length > 0;
@@ -471,6 +542,37 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
     </p>}
 
     {closing !== null && rail !== null && view !== null && <>
+      {/* S13: the three balances above the tabs. Each one names its difference — or says there is
+          none — in its own unit, and each one selects the tab it belongs to, so the warehouse
+          verifies without changing tabs. A kilogram is never added to a peso or to a unit. */}
+      <div className="closing-balances" role="group" aria-label={closingBalancesLabel}>
+        {balances.map(balance => <button key={balance.key} type="button"
+          className={`closing-balance ${balance.tone}`} aria-pressed={tab === balance.tab}
+          onClick={() => setTab(balance.tab)}>
+          <small>{balance.label}</small>
+          <strong className={balance.tone}>{balance.value}</strong>
+          <em>{balance.detail}</em>
+        </button>)}
+      </div>
+
+      {/* One settlement, one closure, one acceptance: the two tabs are navigation (S10). The marker
+          of a tab is the difference of its accounts in words, never a bare dot (S13). */}
+      <div className="closing-tabs" role="tablist" aria-label={closingTabsLabel} onKeyDown={moveTab}>
+        {closingTabOrder.map(key => {
+          const marker = closingTabMarker(balances, key);
+          return <button key={key} type="button" role="tab" id={`closing-tab-${key}`}
+            aria-selected={tab === key} aria-controls={`closing-panel-${key}`}
+            tabIndex={tab === key ? 0 : -1}
+            ref={element => { tabButtons.current[key] = element; }}
+            onClick={() => setTab(key)}>
+            {closingTabLabels[key]}
+            {marker !== null && <span className="closing-tab-marker">{marker}</span>}
+          </button>;
+        })}
+      </div>
+
+      <div id="closing-panel-caja" role="tabpanel" aria-labelledby="closing-tab-caja"
+        hidden={tab !== 'caja'}>
       <div className="closing-layout">
         <section className="closing-panel" aria-labelledby="closing-count-title">
           <header className="closing-panel-head">
@@ -590,7 +692,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
           </p>
         </section>
 
-        <aside className="closing-rail" aria-label="Números de la rendición">
+        <aside className="closing-rail" aria-label="Números de la caja">
           <section className="closing-panel">
             <div className="closing-group">
               <h2>Caja</h2>
@@ -630,49 +732,6 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
               </dl>
               <small className="closing-muted">Ese dinero no está en la caja física: se informa, no se suma a ninguna igualdad de caja y sí cuenta para la comisión.</small>
             </div>
-
-            {/* The purchase fund is the branch's second envelope: counted apart from the drawer, fed by
-                no sale and inside no cash identity (S1, S12). Its count and the amount the warehouse
-                leaves are drafted here and travel in the same cash draft as the drawer (S5, S6). */}
-            {fund !== null && fundView !== null && <div className="closing-group">
-              <h2>Fondo de compras</h2>
-              <dl className="closing-summary">
-                <div><dt>Saldo heredado</dt><dd>{closingMoneyText(fund.opening_cents)}</dd></div>
-                <div><dt>Compras del período</dt>
-                  <dd>{closingSignedText(-fund.purchases_cash_cents)}</dd></div>
-                <div className="total"><dt>Fondo esperado</dt><dd>{closingMoneyText(fundView.expected_cents)}</dd></div>
-              </dl>
-              <div className="closing-field">
-                <label htmlFor="closing-purchase-counted">Fondo contado (Bs)</label>
-                {editable
-                  ? <input id="closing-purchase-counted" inputMode="decimal" value={envelope.counted}
-                    onChange={event => setEnvelope(current => ({ ...current, counted: event.target.value }))} />
-                  : <strong>{fundView.counted_cents === null ? 'Sin contar'
-                    : closingMoneyText(fundView.counted_cents)}</strong>}
-                <div className="closing-difference">
-                  <small>Diferencia</small>
-                  <strong className={fundView.difference_cents === null || fundView.difference_cents === 0n
-                    ? 'zero' : fundView.difference_cents < 0n ? 'neg' : 'pos'} aria-live="polite">
-                    <span>{fundView.difference_cents === null ? 'Sin contar'
-                      : closingSignedText(fundView.difference_cents)}</span>
-                    {fundView.difference_cents !== null
-                      && <span className="closing-difference-name">
-                        {closingDifferenceName(fundView.difference_cents)}</span>}
-                  </strong>
-                </div>
-                {fundView.problem !== '' && <small className="closing-muted">{fundView.problem}</small>}
-              </div>
-              <div className="closing-field">
-                <label htmlFor="closing-purchase-cash">Monto nuevo que dejás (Bs)</label>
-                {editable
-                  ? <input id="closing-purchase-cash" inputMode="decimal" value={envelope.cash}
-                    onChange={event => setEnvelope(current => ({ ...current, cash: event.target.value }))} />
-                  : <strong>{fundView.new_cents === null ? 'Sin declarar'
-                    : closingMoneyText(fundView.new_cents)}</strong>}
-                <small className="closing-muted">{closingEnvelopeNewHelp}</small>
-              </div>
-              <small className="closing-muted">{closingEnvelopeApartHelp}</small>
-            </div>}
 
             <div className="closing-group">
               <h2>Comisión del período</h2>
@@ -729,6 +788,138 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
             </div>
           </section>
         </aside>
+      </div>
+      </div>
+
+      {/* The third account, read beside the envelope that bought it: the materials of the period
+          against what the shelf holds, and the fund the warehouse counted and leaves behind. Both
+          are one account of the same settlement, never a second life cycle (S10, S14). */}
+      <div id="closing-panel-chatarra" role="tabpanel" aria-labelledby="closing-tab-chatarra"
+        hidden={tab !== 'chatarra'}>
+        <div className="closing-layout">
+          <section className="closing-panel" aria-labelledby="closing-materials-title">
+            <header className="closing-panel-head">
+              <h2 id="closing-materials-title">Materiales rendidos</h2>
+              <span className={`closing-tag ${materialReading.differing === 0 ? 'ok' : 'warn'}`}>
+                {materialReading.empty ? 'Sin materiales'
+                  : materialReading.differing === 0 ? 'Sin diferencia'
+                    : `${materialReading.differing} ${materialReading.differing === 1
+                      ? 'diferencia' : 'diferencias'}`}
+              </span>
+              <small className="closing-muted">Comprado en el período contra lo que hay en la estantería</small>
+            </header>
+            {materialReading.empty
+              ? <p className="closing-help">{closingMaterialEmptySheet}</p>
+              : <>
+                <p className="closing-help">{closingMaterialShelfHelp}</p>
+                {materialReading.groups.map(group => <div className="closing-materials" key={group.kind}>
+                  <table className="closing-table closing-materials-table">
+                    <caption>{group.unit === 'kg'
+                      ? `${group.label} · kilogramos por material`
+                      : `${group.label} · unidades por modelo`}</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">{group.unit === 'kg' ? 'Material' : 'Modelo'}</th>
+                        <th scope="col" className="num">{group.unit === 'kg' ? 'Comprados' : 'Compradas'}</th>
+                        <th scope="col" className="num">{group.unit === 'kg' ? 'Contados' : 'Contadas'}</th>
+                        <th scope="col" className="num">Dif.</th>
+                      </tr>
+                    </thead>
+                    <tbody>{group.lines.map(row => {
+                      const differenceClass = row.difference_milli === null || row.difference_milli === 0n
+                        ? 'zero' : row.difference_milli < 0n ? 'neg' : 'pos';
+                      return <tr key={row.key} data-material-key={row.key}>
+                        <td>{row.label}</td>
+                        <td className="num">
+                          {closingMaterialQuantityLabel(row.unit, row.line.expected_quantity)}</td>
+                        <td className="num">{editable
+                          ? <input className="count"
+                            inputMode={row.unit === 'kg' ? 'decimal' : 'numeric'} placeholder="—"
+                            aria-label={row.unit === 'kg'
+                              ? `Contados kg de ${row.label}` : `Contadas modelo ${row.label}`}
+                            value={materials[row.key] ?? ''}
+                            onChange={event => setMaterialValue(row, event.target.value)} />
+                          : <span>{row.counted_milli === null ? 'Sin contar'
+                            : closingMaterialQuantityLabel(row.unit,
+                              closingMaterialWireText(row.unit, row.counted_milli))}</span>}</td>
+                        <td className={`num ${differenceClass}`}>
+                          {closingMaterialSignedText(row.unit, row.difference_milli ?? 0n)}</td>
+                      </tr>;
+                    })}</tbody>
+                    {group.lines.length > 1 && <tfoot>
+                      <tr>
+                        <td>Total</td>
+                        <td className="num">{closingMaterialQuantityLabel(group.unit,
+                          closingMaterialWireText(group.unit, group.expected_milli))}</td>
+                        <td className="num">{group.counted_milli === null ? 'Sin contar'
+                          : closingMaterialQuantityLabel(group.unit,
+                            closingMaterialWireText(group.unit, group.counted_milli))}</td>
+                        <td className={`num ${group.difference_milli === 0n ? 'zero'
+                          : group.difference_milli < 0n ? 'neg' : 'pos'}`}>
+                          {group.complete
+                            ? closingMaterialSignedText(group.unit, group.difference_milli) : '—'}</td>
+                      </tr>
+                    </tfoot>}
+                  </table>
+                </div>)}
+                <p className="closing-help">{materialReading.delivery} {closingMaterialDeliveryHelp}</p>
+              </>}
+          </section>
+
+          <aside className="closing-rail" aria-label="Números del fondo de compras">
+            <section className="closing-panel">
+              {/* The purchase fund is the branch's second envelope: counted apart from the drawer, fed
+                  by no sale and inside no cash identity (S1, S12). Its count and the amount the
+                  warehouse leaves are drafted here and travel in the same cash draft (S5, S6). */}
+              {fund !== null && fundView !== null
+                ? <div className="closing-group">
+                  <h2>Fondo de compras</h2>
+                  <dl className="closing-summary">
+                    <div><dt>Saldo heredado</dt><dd>{closingMoneyText(fund.opening_cents)}</dd></div>
+                    <div><dt>Compras del período</dt>
+                      <dd>{closingSignedText(-fund.purchases_cash_cents)}</dd></div>
+                    <div className="total"><dt>Fondo esperado</dt>
+                      <dd>{closingMoneyText(fundView.expected_cents)}</dd></div>
+                  </dl>
+                  <div className="closing-field">
+                    <label htmlFor="closing-purchase-counted">Fondo contado (Bs)</label>
+                    {editable
+                      ? <input id="closing-purchase-counted" inputMode="decimal" value={envelope.counted}
+                        onChange={event => setEnvelope(current => ({ ...current, counted: event.target.value }))} />
+                      : <strong>{fundView.counted_cents === null ? 'Sin contar'
+                        : closingMoneyText(fundView.counted_cents)}</strong>}
+                    <div className="closing-difference">
+                      <small>Diferencia</small>
+                      <strong className={fundView.difference_cents === null
+                        || fundView.difference_cents === 0n ? 'zero'
+                        : fundView.difference_cents < 0n ? 'neg' : 'pos'} aria-live="polite">
+                        <span>{fundView.difference_cents === null ? 'Sin contar'
+                          : closingSignedText(fundView.difference_cents)}</span>
+                        {fundView.difference_cents !== null
+                          && <span className="closing-difference-name">
+                            {closingDifferenceName(fundView.difference_cents)}</span>}
+                      </strong>
+                    </div>
+                    {fundView.problem !== '' && <small className="closing-muted">{fundView.problem}</small>}
+                  </div>
+                  <div className="closing-field">
+                    <label htmlFor="closing-purchase-cash">Monto nuevo que dejás (Bs)</label>
+                    {editable
+                      ? <input id="closing-purchase-cash" inputMode="decimal" value={envelope.cash}
+                        onChange={event => setEnvelope(current => ({ ...current, cash: event.target.value }))} />
+                      : <strong>{fundView.new_cents === null ? 'Sin declarar'
+                        : closingMoneyText(fundView.new_cents)}</strong>}
+                    <small className="closing-muted">{closingEnvelopeNewHelp}</small>
+                  </div>
+                  <small className="closing-muted">{closingEnvelopeApartHelp}</small>
+                </div>
+                : <div className="closing-group">
+                  <h2>Fondo de compras</h2>
+                  <p className="closing-muted">Esta rendición no publica el sobre del fondo de compras.</p>
+                </div>}
+            </section>
+          </aside>
+        </div>
       </div>
 
       {closing.status === 'closed' && <section className="closing-panel closing-corrections"

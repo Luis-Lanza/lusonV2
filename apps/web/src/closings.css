@@ -173,6 +173,49 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
   .closing-bar-action button { width: 100%; }
 }
 
+/* The two tabs and the three balances of one settlement (design/rendicion-caja-y-chatarra/
+   01-mesa-dos-pestanas.html, S10, S13): the header states the three accounts with their
+   differences — each one selecting the tab it belongs to — and the tabs are navigation over the
+   one document, never two life cycles. Only tokens of the app's flag/ short / over pairs are used:
+   no new colour and no new spacing scale, and every control keeps the 44px touch minimum. */
+.closing-balances { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.closing-balances .closing-balance { display: grid; gap: 4px; text-align: left; min-height: 44px;
+  padding: 12px; background: white; border: 1px solid var(--border); border-radius: 4px; }
+.closing-balances .closing-balance:hover { background: var(--page); }
+.closing-balances .closing-balance[aria-pressed="true"] { border-color: var(--wine);
+  box-shadow: inset 0 0 0 1px var(--wine); background: var(--tint); }
+.closing-balances small { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; }
+.closing-balances strong { font-size: 16px; font-variant-numeric: tabular-nums; }
+.closing-balances em { color: var(--muted); font-size: 12px; font-style: normal; line-height: 16px; }
+.closing-balances .neg { color: #991515; }
+.closing-balances .pos { color: #047857; }
+.closing-balances .zero { color: var(--muted); }
+.closing-balances .mixed { color: #805400; }
+
+.closing-tabs { display: flex; flex-wrap: wrap; gap: 0; border-bottom: 1px solid var(--border); }
+.closing-tabs button { appearance: none; min-height: 44px; padding: 12px 14px; border: 0;
+  border-bottom: 2px solid transparent; border-radius: 0; background: transparent;
+  color: var(--muted); font-size: 13px; font-weight: 600; }
+.closing-tabs button:hover { background: transparent; color: var(--wine); }
+.closing-tabs button[aria-selected="true"] { border-bottom-color: var(--wine); color: var(--wine); }
+/* The marker of a tab is the difference of its accounts in words: a mark alone is not a reading. */
+.closing-tab-marker { display: inline-block; margin-left: 8px; padding: 2px 6px; border-radius: 999px;
+  background: #FFF0F0; border: 1px solid #FFDAD6; color: #991515; font-size: 11px; font-weight: 700;
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* The material sheet: the two kinds of the third account, each with its total row when it has more
+   than one line, and the delivery reading under them (S7, S8, S9). */
+.closing-materials + .closing-materials { border-top: 1px solid var(--border); }
+.closing-materials-table caption { padding: 12px 12px 4px; color: var(--muted); font-size: 11px;
+  font-weight: 600; letter-spacing: .04em; text-align: left; text-transform: uppercase; }
+.closing-materials-table tfoot td { border-bottom: 0; font-weight: 700; }
+
+@media (max-width: 767px) {
+  .closing-balances { grid-template-columns: minmax(0, 1fr); }
+  .closing-tabs button { flex: 1 1 auto; }
+}
+
 /* The branch's side of the settlement (design/rendicion-de-cuentas/04-decision-sucursal.html):
    the offer the warehouse composed on the left and the answer on the right, with the rounds of
    the settlement under it. It reuses the workspace's panel, tag and summary language. */

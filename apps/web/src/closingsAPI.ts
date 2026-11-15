@@ -11,17 +11,19 @@ import { LosslessNumber, parse as parseJSON } from 'lossless-json';
 import { parseInventory, queryURL, validSearch } from './model';
 import {
   canonicalCorrectionBody, closingCataloguePageSize, closingCents, closingDecisionPayload,
-  closingMaxCountLines, closingMaxCounted,
-  closingMaxID, closingMaxPage, closingPageSizes, closingRail, closingSignedCents, closingStatuses,
+  closingMaterialMilli, closingMaterialQuantityIsCanonical, closingMaxCountLines, closingMaxCounted,
+  closingMaxID, closingMaxMaterialID, closingMaxMaterialLines, closingMaxPage, closingPageSizes,
+  closingRail, closingSignedCents, closingStatuses,
   closingFirstBranch, closingMaxBranch,
   type Closing, type ClosingCatalogueVariant, type ClosingCorrection,
   type ClosingCorrectionEffect, type ClosingCorrectionKind,
   type ClosingCorrectionPayload, type ClosingCorrectionQuantity, type ClosingCorrectionStatus,
   type ClosingCountLine, type ClosingDecision, type ClosingDecisionPayload, type CorrectionBody,
+  type ClosingMaterialKind, type ClosingMaterialLine, type ClosingMaterialUnit,
   type ClosingOffer, type ClosingOfferLine,
   type ClosingPage, type ClosingPolarity, type ClosingPurchaseFund, type ClosingRail,
   type ClosingRound, type ClosingStatus,
-  type CountPayloadLine, type DrawerPayload,
+  type CountPayloadLine, type DrawerPayload, type MaterialCountedInput,
 } from './closingModel';
 import { formatMoney } from './pointOfSaleModel';
 
@@ -267,6 +269,95 @@ function offerLine(value: unknown, previous: number): ClosingOfferLine {
     expected_quantity: counted(line.expected_quantity),
     counted_quantity: counted(line.counted_quantity),
   });
+}
+
+/**
+ * One line of the material sheet (S7, S8, S9): the key its kind names — the model of a used battery
+ * or the id and the name of a scrap material, the other side `null` on every line — the unit every
+ * quantity of it is counted in and the four quantities of the line. The quantity of the count, the
+ * difference and the delivery are `null` together, and once they are stated they follow their own
+ * arithmetic: the difference is the count against what the period bought and the warehouse takes
+ * exactly what was counted, so a sheet that disagrees with its own facts is never described.
+ */
+function materialLine(value: unknown, previous: ClosingMaterialLine | null): ClosingMaterialLine {
+  const record = fields(value, ['kind', 'model', 'material_id', 'material', 'unit',
+    'expected_quantity', 'counted_quantity', 'difference', 'delivered_quantity']);
+  const kind: ClosingMaterialKind = record.kind === 'used' || record.kind === 'scrap'
+    ? record.kind : invalidResponse();
+  const unit: ClosingMaterialUnit = kind === 'scrap' ? 'kg' : 'unit';
+  if (record.unit !== unit) return invalidResponse();
+  const model = record.model === null ? null : text(record.model);
+  const material_id = optionalInteger(record.material_id, 1, closingMaxMaterialID);
+  const material = record.material === null ? null : text(record.material);
+  // The key of a line is exactly the one its kind names, and the side it does not name is null.
+  if (kind === 'used') {
+    if (model === null || material_id !== null || material !== null) return invalidResponse();
+  } else if (model !== null || material_id === null || material === null) {
+    return invalidResponse();
+  }
+  // The sheet is read in the order it is published: the used lines by model, the scrap ones by
+  // material id and never one kind after the other (S8, S10).
+  if (previous !== null) {
+    if (previous.kind !== kind) {
+      if (previous.kind !== 'used' || kind !== 'scrap') return invalidResponse();
+    } else if (kind === 'used') {
+      if (model === null || previous.model === null || model <= previous.model) {
+        return invalidResponse();
+      }
+    } else if (material_id === null || previous.material_id === null
+      || material_id <= previous.material_id) {
+      return invalidResponse();
+    }
+  }
+  const quantity = (raw: unknown): string => {
+    if (typeof raw !== 'string' || !closingMaterialQuantityIsCanonical(unit, raw)) {
+      return invalidResponse();
+    }
+    return raw;
+  };
+  const optionalQuantity = (raw: unknown): string | null => (raw === null ? null : quantity(raw));
+  // A difference carries its sign, at the scale of its unit; a published quantity never does.
+  const optionalSigned = (raw: unknown): string | null => {
+    if (raw === null) return null;
+    if (typeof raw !== 'string') return invalidResponse();
+    try { closingMaterialMilli(unit, raw); } catch { return invalidResponse(); }
+    return raw;
+  };
+  const expected_quantity = quantity(record.expected_quantity);
+  const counted_quantity = optionalQuantity(record.counted_quantity);
+  const difference = optionalSigned(record.difference);
+  const delivered_quantity = optionalQuantity(record.delivered_quantity);
+  // The count, the difference and the delivery are stated together or not at all (S8, S9).
+  if ((counted_quantity === null) !== (difference === null)
+    || (counted_quantity === null) !== (delivered_quantity === null)) {
+    return invalidResponse();
+  }
+  if (counted_quantity !== null && difference !== null && delivered_quantity !== null) {
+    const counted_milli = closingMaterialMilli(unit, counted_quantity);
+    if (delivered_quantity !== counted_quantity) return invalidResponse();
+    if (closingMaterialMilli(unit, difference)
+      !== counted_milli - closingMaterialMilli(unit, expected_quantity)) {
+      return invalidResponse();
+    }
+  }
+  return Object.freeze({ kind, model, material_id, material, unit, expected_quantity,
+    counted_quantity, difference, delivered_quantity });
+}
+
+/**
+ * The sheet of one settlement. A payload that does not publish `material_lines` is read as a
+ * document without a sheet — an older one — and one that publishes it reads every line in the order
+ * the contract writes it; an empty array is a period that bought nothing, never a missing key.
+ */
+function materialLines(record: Record<string, unknown>): readonly ClosingMaterialLine[] | null {
+  if (!Object.hasOwn(record, 'material_lines')) return null;
+  const value = record.material_lines;
+  if (!Array.isArray(value) || value.length > closingMaxMaterialLines) return invalidResponse();
+  const lines: ClosingMaterialLine[] = [];
+  for (const entry of value) {
+    lines.push(materialLine(entry, lines.length === 0 ? null : lines[lines.length - 1]));
+  }
+  return Object.freeze(lines);
 }
 
 /** The commission is the frozen rate over the offer's own total, rounded once, half up (S6, S20). */
@@ -577,7 +668,7 @@ function readClosing(value: unknown): Closing {
     'cash_expenses', 'expected_cash', 'counted_cash', 'cash_difference', 'contributed_cash',
     'closing_cash', 'taken_cash', 'sales_total', 'commission_amount', 'card_total',
     'transfer_total', 'qr_total', 'observation', 'opened_by_account_id', 'count_lines', 'rounds',
-    'expenses', 'corrections'], purchaseFundKeys);
+    'expenses', 'corrections'], [...purchaseFundKeys, 'material_lines']);
   // The branch's own expenses of the window. They are still not rendered, but the document is
   // only accepted when the field is the array the contract publishes, so a shape change cannot
   // reach the rail unnoticed.
@@ -630,6 +721,9 @@ function readClosing(value: unknown): Closing {
     observation: freeText(record.observation, 1000),
     opened_by_account_id: integer(record.opened_by_account_id, 1, Number.MAX_SAFE_INTEGER),
     count_lines: Object.freeze(count_lines),
+    // The third account of the document (S7, S8, S9): a payload that does not publish it is read
+    // as a document without a sheet, and one that does is revalidated against its own arithmetic.
+    material_lines: materialLines(record),
     rounds: Object.freeze(rounds),
     purchase_fund: purchaseFund(record),
     corrections,
@@ -738,6 +832,36 @@ export function closingFailureIsDefinite(code: ClosingErrorCode): boolean {
     && code !== 'network' && code !== 'aborted';
 }
 
+/** One line of the material request, in the exact shape each kind takes (S8). */
+type MaterialBodyLine = { readonly kind: 'used'; readonly model: string;
+  readonly counted_quantity: string }
+  | { readonly kind: 'scrap'; readonly material_id: number; readonly counted_quantity: string };
+
+/**
+ * One line of `POST /api/closings/{id}/materials`: the kind, the one key that kind names and the
+ * canonical count of its unit, and nothing else. The expected quantity is the fact of the opening
+ * and the difference and the delivery are derived from it, so none of them can even be expressed
+ * here — a blinded count of this sheet is refused on the screen, exactly like the stock one (S8).
+ */
+function materialBody(line: MaterialCountedInput): MaterialBodyLine {
+  const unit: ClosingMaterialUnit = line.kind === 'scrap' ? 'kg' : 'unit';
+  if (typeof line.counted_quantity !== 'string'
+    || !closingMaterialQuantityIsCanonical(unit, line.counted_quantity)) {
+    return invalidPayload();
+  }
+  if (line.kind === 'used') {
+    if (typeof line.model !== 'string' || line.model === '' || line.material_id !== null) {
+      return invalidPayload();
+    }
+    return { kind: 'used', model: line.model, counted_quantity: line.counted_quantity };
+  }
+  if (line.kind !== 'scrap' || line.model !== null || !Number.isInteger(line.material_id)
+    || line.material_id === null || line.material_id < 1 || line.material_id > closingMaxMaterialID) {
+    return invalidPayload();
+  }
+  return { kind: 'scrap', material_id: line.material_id, counted_quantity: line.counted_quantity };
+}
+
 // ---------------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------------
@@ -772,6 +896,11 @@ export function closingDetailPath(id: number): string {
 
 export function closingCountPath(id: number): string {
   return `/api/closings/${closingID(id)}/count`;
+}
+
+/** The material sheet of one settlement: the counts of the third account (S8). */
+export function closingMaterialsPath(id: number): string {
+  return `/api/closings/${closingID(id)}/materials`;
 }
 
 export function closingCashPath(id: number): string {
@@ -929,6 +1058,31 @@ export function createClosingAPI(fetch: typeof globalThis.fetch = globalThis.fet
         body = JSON.stringify({ lines: lines.map(line => ({
           variant_id: line.variant_id, counted_quantity: line.counted_quantity,
         })) });
+      } catch { throw new ClosingAPIError('invalid_request', null); }
+      const closing = await send('POST', path, 200, parseClosing, body, csrf, signal);
+      if (closing.id !== wanted) throw new ClosingAPIError('invalid_response', 200);
+      return closing;
+    },
+
+    /**
+     * Writes the counted quantities of the material sheet: only what was counted, one line per key,
+     * in the shape the contract takes — the one key its kind names and the canonical quantity of its
+     * unit. The request is whole-set and idempotent: a line it does not state keeps the count it has
+     * (S8).
+     */
+    async materials(id: number, lines: readonly MaterialCountedInput[], csrf: string,
+      signal?: AbortSignal): Promise<Closing> {
+      let body: string;
+      let path: string;
+      let wanted: number;
+      try {
+        token(csrf);
+        path = closingMaterialsPath(id);
+        wanted = closingID(id);
+        if (!Array.isArray(lines) || lines.length === 0 || lines.length > closingMaxMaterialLines) {
+          throw new Error('materiales inválidos');
+        }
+        body = JSON.stringify({ lines: lines.map(line => materialBody(line)) });
       } catch { throw new ClosingAPIError('invalid_request', null); }
       const closing = await send('POST', path, 200, parseClosing, body, csrf, signal);
       if (closing.id !== wanted) throw new ClosingAPIError('invalid_response', 200);
