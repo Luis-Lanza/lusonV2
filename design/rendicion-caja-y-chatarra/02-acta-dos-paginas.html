@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Acta de dos páginas · Rendición de cuentas · Luson</title>
+<style>
+*{box-sizing:border-box}
+:root{font-family:Inter,system-ui,sans-serif;color:#242124;background:#F8F6F4;font-size:14px;
+--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;--ink:#242124;
+--ok-bg:#ECFDF5;--ok-ink:#047857;--ok-border:#A7F3D0;
+--warn-bg:#FFFBEF;--warn-ink:#805400;--warn-border:#E8CF86;
+--short-bg:#FFF0F0;--short-ink:#991515;--short-border:#FFDAD6}
+body{margin:0;padding-bottom:96px}
+h1,h2,h3,p,dl,dd,dt,ul,li,ol,table,caption{margin:0}
+h1{font-size:22px}
+h2{font-size:16px}
+p{line-height:1.6}
+small,.muted{color:var(--muted);font-size:12px}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;padding:10px 12px;min-height:44px}
+button:hover{background:var(--tint)}
+button.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF;font-weight:600}
+button.primary:hover{background:var(--hover)}
+button:disabled{background:#EFEDEF;border-color:#AAA5AA;color:#595459;cursor:not-allowed}
+:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+input,textarea{padding:10px 12px;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;width:100%;min-height:44px}
+label{display:grid;gap:6px;font-size:12px;color:var(--muted)}
+aside.nav{position:fixed;width:240px;inset:0 auto 0 0;background:#FFFFFF;border-right:1px solid var(--border);padding:12px;display:flex;flex-direction:column;justify-content:space-between}
+.brand{display:flex;gap:10px;align-items:center;padding:4px 8px 16px;border-bottom:1px solid var(--border)}
+.logo{background:var(--wine);color:#FFFFFF;border-radius:4px;padding:8px;font-weight:700;font-size:18px}
+.brand strong{color:var(--wine);font-size:18px}
+.brand small{display:block}
+nav{display:grid;gap:4px;margin-top:12px}
+nav a{text-align:left;padding:12px;color:inherit;text-decoration:none;border-left:2px solid transparent}
+nav a:hover{background:var(--page)}
+nav .active{background:var(--tint);color:var(--wine);border-left:2px solid var(--wine);font-weight:600}
+.identity{padding:12px;background:var(--page);border:1px solid var(--border)}
+.identity small{display:block;margin-top:6px}
+.top{margin-left:240px;height:56px;background:#FFFFFF;border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;justify-content:space-between}
+main{margin-left:240px;padding:20px 24px 24px}
+.doc{max-width:1000px;margin:0 auto}
+.acta{background:#FFFFFF;border:1px solid var(--border);border-radius:4px}
+.acta>header{padding:24px 32px 20px;border-bottom:2px solid var(--ink)}
+.acta>header .eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600}
+.acta>header h1{margin-top:6px}
+.acta>header .meta{display:flex;gap:20px;flex-wrap:wrap;margin-top:10px}
+.tag{display:inline-block;border:1px solid var(--border);background:var(--page);padding:4px 8px;border-radius:3px;font-size:11px;font-weight:600}
+.tag.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-border)}
+.tag.warn{background:var(--warn-bg);color:var(--warn-ink);border-color:var(--warn-border)}
+.tag.short{background:var(--short-bg);color:var(--short-ink);border-color:var(--short-border)}
+.tag.frozen{background:var(--tint);color:var(--wine);border-color:var(--wine)}
+.pages{display:flex;gap:4px;border-bottom:1px solid var(--border);padding:0 32px}
+.pages button{background:none;border:0;border-bottom:2px solid transparent;border-radius:0;padding:12px 0;margin-right:28px;min-height:44px;font-weight:600;color:var(--muted)}
+.pages button:hover{background:none;color:var(--wine)}
+.pages button[aria-selected=true]{color:var(--wine);border-bottom-color:var(--wine)}
+.page{padding:8px 32px 32px}
+section.clause{padding:20px 0;border-bottom:1px solid var(--border);display:grid;grid-template-columns:52px minmax(0,1fr);gap:16px}
+section.clause:last-child{border-bottom:0}
+section.clause>.n{font-size:20px;font-weight:700;color:var(--wine);font-variant-numeric:tabular-nums;line-height:1.2}
+section.clause .body{display:grid;gap:12px}
+section.clause header{display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap}
+dl.rows{display:grid;gap:0}
+dl.rows div{display:flex;justify-content:space-between;gap:16px;padding:8px 0;border-bottom:1px dashed var(--border)}
+dl.rows div:last-child{border-bottom:0}
+dl.rows dt{color:var(--muted)}
+dl.rows dd{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+dl.rows .total{padding-top:10px}
+dl.rows .total dt,dl.rows .total dd{font-size:15px;font-weight:700;color:var(--ink)}
+.neg{color:var(--short-ink)}
+.pos{color:var(--ok-ink)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:600;border-bottom:1px solid var(--border);padding:8px 10px}
+td{padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
+tfoot td{font-weight:700;border-bottom:0}
+.num{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+th.num{text-align:right}
+.count{width:88px;text-align:right;font-variant-numeric:tabular-nums}
+.dif{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+.zero{color:var(--muted)}
+tr.pending td{background:var(--warn-bg)}
+tr.pending input{border-color:var(--warn-border)}
+.field{display:grid;gap:6px;max-width:280px}
+.help{display:flex;gap:8px;align-items:flex-start;padding:10px 12px;background:var(--page);border:1px solid var(--border);border-radius:4px;font-size:12px;color:var(--muted);line-height:1.5}
+.help b{color:var(--ink)}
+.sign{margin-top:28px;padding-top:16px;border-top:1px solid var(--border);display:grid;grid-template-columns:1fr 1fr;gap:24px}
+.sign p{font-size:12px;color:var(--muted)}
+.sign .line{margin-top:28px;border-bottom:1px solid var(--ink);height:1px}
+.bar{position:fixed;left:240px;right:0;bottom:0;background:#FFFFFF;border-top:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;gap:16px;box-shadow:0 -2px 10px #2421240D}
+.bar .state{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.bar .action{display:flex;align-items:center;gap:12px}
+@media (prefers-reduced-motion:no-preference){button{transition:background .12s ease}}
+</style>
+
+<aside class="nav">
+  <div>
+    <div class="brand"><span class="logo">L</span><div><strong>Luson</strong><small>Almacén</small></div></div>
+    <nav aria-label="Secciones">
+      <a href="#">Inventario</a>
+      <a href="#">Transferencias</a>
+      <a href="#">Ingresos</a>
+      <a href="#">Compras</a>
+      <a href="#">Catálogo</a>
+      <a class="active" href="#" aria-current="page">Rendiciones</a>
+    </nav>
+  </div>
+  <div class="identity"><strong>Almacén</strong><small>Cuenta administrativa</small></div>
+</aside>
+
+<div class="top">
+  <span class="muted">Rendición · Sopocachi · 12 ago → 12 sep 2026</span>
+  <span class="tag frozen">Sucursal congelada</span>
+</div>
+
+<main>
+  <div class="doc">
+    <article class="acta">
+      <header>
+        <div class="eyebrow">Acta de rendición · propuesta del Almacén · ronda 1</div>
+        <h1>Rendición de cuentas · Sopocachi</h1>
+        <div class="meta">
+          <span class="muted">Corte 12 sep 2026, 19:40</span>
+          <span class="tag short">Caja − Bs 35,00</span>
+          <span class="tag short">Fondo de compras − Bs 4,00</span>
+          <span class="tag short">Plomo − 4,300 kg</span>
+        </div>
+      </header>
+
+      <div class="pages" role="tablist" aria-label="Páginas del acta">
+        <button role="tab" id="tab-caja" aria-controls="panel-caja" aria-selected="true">Página 1 · Caja</button>
+        <button role="tab" id="tab-chatarra" aria-controls="panel-chatarra" aria-selected="false">Página 2 · Chatarra</button>
+      </div>
+
+      <div class="page" role="tabpanel" id="panel-caja" aria-labelledby="tab-caja">
+        <section class="clause" aria-labelledby="c1">
+          <div class="n">1</div>
+          <div class="body">
+            <header>
+              <h2 id="c1">Conteo de stock</h2>
+              <span class="tag warn">9 de 11 contadas</span>
+            </header>
+            <table>
+              <thead><tr><th scope="col">Batería</th><th scope="col" class="num">Sistema</th><th scope="col" class="num">Contado</th><th scope="col" class="num">Dif.</th></tr></thead>
+              <tbody>
+                <tr><td>Bosch <small>S4 45Ah · L</small></td><td class="num">12</td><td><input class="count" inputmode="numeric" value="12" aria-label="Contado Bosch S4 45Ah L"></td><td class="dif zero">—</td></tr>
+                <tr><td>Bosch <small>S4 45Ah · R</small></td><td class="num">9</td><td><input class="count" inputmode="numeric" value="8" aria-label="Contado Bosch S4 45Ah R"></td><td class="dif neg">−1</td></tr>
+                <tr><td>Varta <small>Blue 60Ah · L</small></td><td class="num">14</td><td><input class="count" inputmode="numeric" value="14" aria-label="Contado Varta Blue 60Ah L"></td><td class="dif zero">—</td></tr>
+                <tr><td>Varta <small>Blue 60Ah · R</small></td><td class="num">11</td><td><input class="count" inputmode="numeric" value="13" aria-label="Contado Varta Blue 60Ah R"></td><td class="dif pos">+2</td></tr>
+                <tr><td>Moura <small>Clean 75Ah · L</small></td><td class="num">7</td><td><input class="count" inputmode="numeric" value="7" aria-label="Contado Moura Clean 75Ah L"></td><td class="dif zero">—</td></tr>
+                <tr><td>Willard <small>Max 90Ah · L</small></td><td class="num">4</td><td><input class="count" inputmode="numeric" value="3" aria-label="Contado Willard Max 90Ah L"></td><td class="dif neg">−1</td></tr>
+                <tr class="pending"><td>Record <small>Power 110Ah · R</small></td><td class="num">3</td><td><input class="count" inputmode="numeric" placeholder="—" aria-label="Contado Record Power 110Ah R"></td><td class="dif zero">—</td></tr>
+                <tr class="pending"><td>Bosch <small>S5 100Ah · L</small></td><td class="num">2</td><td><input class="count" inputmode="numeric" placeholder="—" aria-label="Contado Bosch S5 100Ah L"></td><td class="dif zero">—</td></tr>
+              </tbody>
+            </table>
+            <div class="help"><span aria-hidden="true">▸</span><span>Al cerrar, cada variante queda con su existencia <b>exactamente igual a lo contado</b>.</span></div>
+          </div>
+        </section>
+
+        <section class="clause" aria-labelledby="c2">
+          <div class="n">2</div>
+          <div class="body">
+            <header><h2 id="c2">Caja de la sucursal</h2></header>
+            <dl class="rows">
+              <div><dt>Fondo heredado</dt><dd>Bs 800,00</dd></div>
+              <div><dt>Ventas en efectivo</dt><dd>Bs 6.430,00</dd></div>
+              <div><dt>Gastos del período (3)</dt><dd>− Bs 215,00</dd></div>
+              <div class="total"><dt>Caja esperada</dt><dd>Bs 7.015,00</dd></div>
+              <div><dt>Caja contada</dt><dd>Bs 6.980,00</dd></div>
+              <div class="total"><dt>Diferencia</dt><dd class="neg">− Bs 35,00</dd></div>
+            </dl>
+            <div class="help"><span aria-hidden="true">▸</span><span>La diferencia se registra y <b>no impide</b> aceptar ni proponer.</span></div>
+          </div>
+        </section>
+
+        <section class="clause" aria-labelledby="c3">
+          <div class="n">3</div>
+          <div class="body">
+            <header><h2 id="c3">Cobro electrónico · fuera de la caja</h2></header>
+            <dl class="rows">
+              <div><dt>Tarjeta</dt><dd>Bs 3.240,00</dd></div>
+              <div><dt>Transferencia</dt><dd>Bs 1.180,00</dd></div>
+              <div><dt>QR</dt><dd>Bs 2.760,00</dd></div>
+            </dl>
+            <p class="muted">Ese dinero no está en la caja física: se informa, no entra en ninguna igualdad de caja y sí cuenta para la comisión.</p>
+          </div>
+        </section>
+
+        <section class="clause" aria-labelledby="c4">
+          <div class="n">4</div>
+          <div class="body">
+            <header><h2 id="c4">Comisión del período</h2></header>
+            <dl class="rows">
+              <div><dt>Ventas sobre precio de venta</dt><dd>Bs 32.480,00</dd></div>
+              <div><dt>Porcentaje de Sopocachi</dt><dd>4,5 %</dd></div>
+              <div class="total"><dt>Comisión</dt><dd>Bs 1.461,60</dd></div>
+            </dl>
+          </div>
+        </section>
+
+        <section class="clause" aria-labelledby="c5">
+          <div class="n">5</div>
+          <div class="body">
+            <header><h2 id="c5">Fondo que queda en la sucursal</h2></header>
+            <div class="field"><label for="fondo">Monto que dejás en la caja (Bs)</label><input id="fondo" inputmode="decimal" value="900,00"></div>
+            <dl class="rows">
+              <div><dt>Caja contada</dt><dd>Bs 6.980,00</dd></div>
+              <div><dt>Fondo que queda</dt><dd>− Bs 900,00</dd></div>
+              <div class="total"><dt>Se lleva el Almacén</dt><dd>Bs 6.080,00</dd></div>
+            </dl>
+          </div>
+        </section>
+      </div>
+
+      <div class="page" role="tabpanel" id="panel-chatarra" aria-labelledby="tab-chatarra" hidden>
+        <section class="clause" aria-labelledby="c6">
+          <div class="n">6</div>
+          <div class="body">
+            <header><h2 id="c6">Fondo de compras</h2><span class="tag short">− Bs 4,00</span></header>
+            <dl class="rows">
+              <div><dt>Saldo heredado</dt><dd>Bs 2.000,00</dd></div>
+              <div><dt>Compras del período (7)</dt><dd>− Bs 1.621,00</dd></div>
+              <div class="total"><dt>Fondo esperado</dt><dd>Bs 379,00</dd></div>
+              <div><dt>Fondo contado</dt><dd>Bs 375,00</dd></div>
+              <div class="total"><dt>Diferencia</dt><dd class="neg">− Bs 4,00</dd></div>
+            </dl>
+            <div class="help"><span aria-hidden="true">▸</span><span>Este dinero vive en un <b>sobre aparte</b>, sólo para comprar usadas y chatarra. Ninguna venta lo alimenta.</span></div>
+          </div>
+        </section>
+
+        <section class="clause" aria-labelledby="c7">
+          <div class="n">7</div>
+          <div class="body">
+            <header><h2 id="c7">Baterías usadas</h2><span class="muted">Compradas en el período contra lo contado</span></header>
+            <table>
+              <thead><tr><th scope="col">Modelo</th><th scope="col" class="num">Compradas</th><th scope="col" class="num">Contadas</th><th scope="col" class="num">Dif.</th></tr></thead>
+              <tbody>
+                <tr><td>27-60</td><td class="num">12</td><td><input class="count" inputmode="numeric" value="12" aria-label="Contadas modelo 27-60"></td><td class="dif zero">—</td></tr>
+                <tr><td>31-100</td><td class="num">9</td><td><input class="count" inputmode="numeric" value="8" aria-label="Contadas modelo 31-100"></td><td class="dif neg">−1</td></tr>
+                <tr><td>24F-45</td><td class="num">6</td><td><input class="count" inputmode="numeric" value="6" aria-label="Contadas modelo 24F-45"></td><td class="dif zero">—</td></tr>
+              </tbody>
+              <tfoot><tr><td>Total</td><td class="num">27</td><td class="num">26</td><td class="dif neg">−1</td></tr></tfoot>
+            </table>
+          </div>
+        </section>
+
+        <section class="clause" aria-labelledby="c8">
+          <div class="n">8</div>
+          <div class="body">
+            <header><h2 id="c8">Chatarra</h2><span class="muted">Kilogramos por material</span></header>
+            <table>
+              <thead><tr><th scope="col">Material</th><th scope="col" class="num">Comprados</th><th scope="col" class="num">Contados</th><th scope="col" class="num">Dif.</th></tr></thead>
+              <tbody>
+                <tr><td>Cobre</td><td class="num">12,400 kg</td><td><input class="count" inputmode="decimal" value="12,400" aria-label="Contados kg de cobre"></td><td class="dif zero">—</td></tr>
+                <tr><td>Aluminio</td><td class="num">8,750 kg</td><td><input class="count" inputmode="decimal" value="8,750" aria-label="Contados kg de aluminio"></td><td class="dif zero">—</td></tr>
+                <tr><td>Plomo</td><td class="num">84,500 kg</td><td><input class="count" inputmode="decimal" value="80,200" aria-label="Contados kg de plomo"></td><td class="dif neg">−4,300</td></tr>
+                <tr><td>Bronce</td><td class="num">3,100 kg</td><td><input class="count" inputmode="decimal" value="3,100" aria-label="Contados kg de bronce"></td><td class="dif zero">—</td></tr>
+              </tbody>
+              <tfoot><tr><td>Total</td><td class="num">108,750 kg</td><td class="num">104,450 kg</td><td class="dif neg">−4,300</td></tr></tfoot>
+            </table>
+            <div class="help"><span aria-hidden="true">▸</span><span>La estantería arranca en cero: la rendición anterior se llevó todo. Lo que debe haber es <b>lo comprado en este período</b>.</span></div>
+          </div>
+        </section>
+
+        <section class="clause" aria-labelledby="c9">
+          <div class="n">9</div>
+          <div class="body">
+            <header><h2 id="c9">Entrega al Almacén y recambio</h2></header>
+            <dl class="rows">
+              <div><dt>Baterías usadas que se lleva</dt><dd>26 (todo lo contado)</dd></div>
+              <div><dt>Chatarra que se lleva</dt><dd>104,450 kg (todo lo contado)</dd></div>
+              <div><dt>Sobrante del fondo que se lleva</dt><dd>Bs 375,00</dd></div>
+              <div class="total"><dt>Queda en la sucursal</dt><dd>0 usadas · 0 kg</dd></div>
+            </dl>
+            <div class="field"><label for="nuevo-monto">Monto nuevo para compras (Bs)</label><input id="nuevo-monto" inputmode="decimal" value="1.500,00"></div>
+            <div class="help"><span aria-hidden="true">▸</span><span>El monto nuevo abre el período siguiente y sólo sirve para comprar usadas y chatarra.</span></div>
+          </div>
+        </section>
+
+        <div class="sign">
+          <div>
+            <p>Propone · Almacén</p>
+            <div class="line"></div>
+            <p style="margin-top:6px">Cuenta administrativa · 12 sep 2026</p>
+          </div>
+          <div>
+            <p>Conforma · Sucursal Sopocachi</p>
+            <div class="line"></div>
+            <p style="margin-top:6px">Encargado de sucursal</p>
+          </div>
+        </div>
+      </div>
+    </article>
+  </div>
+</main>
+
+<div class="bar" role="region" aria-label="Acciones de la rendición">
+  <div class="state">
+    <span class="tag warn">Faltan 2 variantes por contar</span>
+    <span class="tag short">Caja − Bs 35,00</span>
+    <span class="tag short">Compras − Bs 4,00</span>
+    <small id="motivo-bloqueo">Las tres cuentas van en el mismo acto: una sola visita, una sola aceptación.</small>
+  </div>
+  <div class="action">
+    <button type="button">Guardar y salir</button>
+    <button class="primary" type="button" disabled aria-describedby="motivo-bloqueo">Proponer a la sucursal</button>
+  </div>
+</div>
+
+<script>
+const tabs=[...document.querySelectorAll('[role=tab]')];
+function show(id){
+  tabs.forEach(t=>{
+    const on=t.getAttribute('aria-controls')===id;
+    t.setAttribute('aria-selected',on);
+    t.tabIndex=on?0:-1;
+  });
+  document.querySelectorAll('[role=tabpanel]').forEach(p=>{p.hidden=p.id!==id;});
+}
+tabs.forEach(t=>t.addEventListener('click',()=>show(t.getAttribute('aria-controls'))));
+show('panel-caja');
+</script>
+</html>

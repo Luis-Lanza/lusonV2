@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chatarra en tres pasos · Rendición de cuentas · Luson</title>
+<style>
+*{box-sizing:border-box}
+:root{font-family:Inter,system-ui,sans-serif;color:#242124;background:#F8F6F4;font-size:14px;
+--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;--ink:#242124;
+--ok-bg:#ECFDF5;--ok-ink:#047857;--ok-border:#A7F3D0;
+--warn-bg:#FFFBEF;--warn-ink:#805400;--warn-border:#E8CF86;
+--short-bg:#FFF0F0;--short-ink:#991515;--short-border:#FFDAD6}
+body{margin:0;padding-bottom:96px}
+h1,h2,h3,p,dl,dd,dt,ul,li,ol,table,caption{margin:0}
+h1{font-size:22px}
+h2{font-size:15px}
+h3{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+p{line-height:1.6}
+small,.muted{color:var(--muted);font-size:12px}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;padding:10px 12px;min-height:44px}
+button:hover{background:var(--tint)}
+button.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF;font-weight:600}
+button.primary:hover{background:var(--hover)}
+button:disabled{background:#EFEDEF;border-color:#AAA5AA;color:#595459;cursor:not-allowed}
+:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+input,textarea{padding:10px 12px;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;width:100%;min-height:44px}
+label{display:grid;gap:6px;font-size:12px;color:var(--muted)}
+aside.nav{position:fixed;width:240px;inset:0 auto 0 0;background:#FFFFFF;border-right:1px solid var(--border);padding:12px;display:flex;flex-direction:column;justify-content:space-between}
+.brand{display:flex;gap:10px;align-items:center;padding:4px 8px 16px;border-bottom:1px solid var(--border)}
+.logo{background:var(--wine);color:#FFFFFF;border-radius:4px;padding:8px;font-weight:700;font-size:18px}
+.brand strong{color:var(--wine);font-size:18px}
+.brand small{display:block}
+nav{display:grid;gap:4px;margin-top:12px}
+nav a{text-align:left;padding:12px;color:inherit;text-decoration:none;border-left:2px solid transparent}
+nav a:hover{background:var(--page)}
+nav .active{background:var(--tint);color:var(--wine);border-left:2px solid var(--wine);font-weight:600}
+.identity{padding:12px;background:var(--page);border:1px solid var(--border)}
+.identity small{display:block;margin-top:6px}
+.top{margin-left:240px;height:56px;background:#FFFFFF;border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;justify-content:space-between}
+main{margin-left:240px;padding:20px 24px 24px}
+.heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px;flex-wrap:wrap}
+.heading p{color:var(--muted);margin-top:4px}
+.tag{display:inline-block;border:1px solid var(--border);background:var(--page);padding:4px 8px;border-radius:3px;font-size:11px;font-weight:600}
+.tag.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-border)}
+.tag.warn{background:var(--warn-bg);color:var(--warn-ink);border-color:var(--warn-border)}
+.tag.short{background:var(--short-bg);color:var(--short-ink);border-color:var(--short-border)}
+.tag.frozen{background:var(--tint);color:var(--wine);border-color:var(--wine)}
+.balances{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:18px}
+.balances button{display:grid;gap:4px;text-align:left;padding:12px 14px;background:#FFFFFF;border:1px solid var(--border);border-radius:4px;min-height:0}
+.balances button:hover{background:var(--page)}
+.balances button[aria-pressed=true]{border-color:var(--wine);box-shadow:inset 0 0 0 1px var(--wine);background:var(--tint)}
+.balances small{font-size:11px;text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+.balances strong{font-size:16px;font-variant-numeric:tabular-nums}
+.balances em{font-style:normal;color:var(--muted);font-size:12px}
+.neg{color:var(--short-ink)}
+.pos{color:var(--ok-ink)}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:16px}
+.tabs button{background:none;border:0;border-bottom:2px solid transparent;border-radius:0;padding:12px 0;margin-right:28px;min-height:44px;font-weight:600;color:var(--muted)}
+.tabs button:hover{background:none;color:var(--wine)}
+.tabs button[aria-selected=true]{color:var(--wine);border-bottom-color:var(--wine)}
+.tabs .n{display:inline-block;margin-left:8px;font-size:11px;font-weight:700;padding:2px 6px;border-radius:999px;background:var(--short-bg);color:var(--short-ink);border:1px solid var(--short-border)}
+.steps{list-style:none;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:0;margin:0 0 18px}
+.steps li{display:flex;gap:10px;align-items:center;padding:12px 14px;border:1px solid var(--border);border-radius:4px;background:#FFFFFF}
+.steps li.current{border-color:var(--wine);background:var(--tint)}
+.steps .n{flex:0 0 26px;height:26px;border-radius:999px;background:var(--page);border:1px solid var(--border);display:grid;place-items:center;font-size:12px;font-weight:700}
+.steps li.current .n{background:var(--wine);color:#FFFFFF;border-color:var(--wine)}
+.steps li.done .n{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-border)}
+.steps strong{display:block;font-size:13px}
+.steps small{display:block}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:20px;align-items:start}
+.panel{background:#FFFFFF;border:1px solid var(--border);border-radius:4px}
+.panel>header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:16px}
+.panel>header h2{font-size:15px}
+.panel .body{padding:16px 20px}
+.group{padding:14px 20px;border-bottom:1px solid var(--border)}
+.group:last-child{border-bottom:0}
+.group h2{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:10px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+caption{text-align:left;padding:14px 12px 6px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:600}
+th{text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:600;border-bottom:1px solid var(--border);padding:8px 10px}
+td{padding:8px 10px;border-bottom:1px solid var(--border);vertical-align:middle}
+tfoot td{font-weight:700;border-bottom:0}
+.num{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+th.num{text-align:right}
+.count{width:92px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+.dif{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+.zero{color:var(--muted)}
+.summary{display:grid;gap:0}
+.summary div{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px dashed var(--border)}
+.summary div:last-child{border-bottom:0}
+.summary dt{color:var(--muted)}
+.summary dd{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+.summary .total{padding-top:10px}
+.summary .total dt,.summary .total dd{font-size:15px;font-weight:700;color:var(--ink)}
+.field{display:grid;gap:6px;margin-top:10px}
+.help{display:flex;gap:8px;align-items:flex-start;padding:10px 12px;background:var(--page);border:1px solid var(--border);border-radius:4px;font-size:12px;color:var(--muted);line-height:1.5}
+.help b{color:var(--ink)}
+.bar{position:fixed;left:240px;right:0;bottom:0;background:#FFFFFF;border-top:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;gap:16px;box-shadow:0 -2px 10px #2421240D}
+.bar .state{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.bar .action{display:flex;align-items:center;gap:12px}
+@media (prefers-reduced-motion:no-preference){button{transition:background .12s ease}}
+</style>
+
+<aside class="nav">
+  <div>
+    <div class="brand"><span class="logo">L</span><div><strong>Luson</strong><small>Almacén</small></div></div>
+    <nav aria-label="Secciones">
+      <a href="#">Inventario</a>
+      <a href="#">Transferencias</a>
+      <a href="#">Ingresos</a>
+      <a href="#">Compras</a>
+      <a href="#">Catálogo</a>
+      <a class="active" href="#" aria-current="page">Rendiciones</a>
+    </nav>
+  </div>
+  <div class="identity"><strong>Almacén</strong><small>Cuenta administrativa</small></div>
+</aside>
+
+<div class="top">
+  <span class="muted">Rendición · Sopocachi · 12 ago → 12 sep 2026</span>
+  <span class="tag frozen">Sucursal congelada</span>
+</div>
+
+<main>
+  <div class="heading">
+    <div>
+      <h1>Rendición de cuentas · Sopocachi</h1>
+      <p>La pestaña Caja funciona como hoy. La pestaña Chatarra es nueva y se recorre en tres pasos.</p>
+    </div>
+    <span class="tag warn">9 de 11 contadas</span>
+  </div>
+
+  <div class="balances" aria-label="Saldos del cierre">
+    <button type="button" aria-pressed="false" data-goto="panel-caja">
+      <small>Caja operativa</small>
+      <strong class="neg">− Bs 35,00</strong>
+      <em>contada 6.980,00 · esperada 7.015,00</em>
+    </button>
+    <button type="button" aria-pressed="true" data-goto="panel-chatarra">
+      <small>Fondo de compras</small>
+      <strong class="neg">− Bs 4,00</strong>
+      <em>contado 375,00 · esperado 379,00</em>
+    </button>
+    <button type="button" aria-pressed="true" data-goto="panel-chatarra">
+      <small>Materiales</small>
+      <strong class="neg">− 4,300 kg</strong>
+      <em>plomo · más 1 batería usada</em>
+    </button>
+  </div>
+
+  <div class="tabs" role="tablist" aria-label="Rendición">
+    <button role="tab" id="tab-caja" aria-controls="panel-caja" aria-selected="false">Caja<span class="n">−35</span></button>
+    <button role="tab" id="tab-chatarra" aria-controls="panel-chatarra" aria-selected="true">Chatarra<span class="n">−4</span></button>
+  </div>
+
+  <div role="tabpanel" id="panel-caja" aria-labelledby="tab-caja" hidden>
+    <section class="panel">
+      <div class="body">
+        <p>Esta pestaña es la rendición que ya existe: conteo de stock a la izquierda y caja, comisión y fondo a la derecha.</p>
+        <p class="muted" style="margin-top:8px">Es la dirección ya diseñada e implementada. Esta vertical no la cambia.</p>
+      </div>
+    </section>
+  </div>
+
+  <div role="tabpanel" id="panel-chatarra" aria-labelledby="tab-chatarra">
+    <ol class="steps" aria-label="Pasos de la rendición de chatarra">
+      <li class="done">
+        <span class="n" aria-hidden="true">✓</span>
+        <span><strong>1 · Fondo de compras</strong><small>Esperado Bs 379,00 · contado 375,00</small></span>
+      </li>
+      <li class="current" aria-current="step">
+        <span class="n" aria-hidden="true">2</span>
+        <span><strong>2 · Materiales</strong><small>27 usadas y 108,750 kg comprados</small></span>
+      </li>
+      <li>
+        <span class="n" aria-hidden="true">3</span>
+        <span><strong>3 · Entrega y recambio</strong><small>Se lleva todo, deja Bs 1.500,00</small></span>
+      </li>
+    </ol>
+
+    <div class="layout">
+      <section class="panel" aria-labelledby="h-materiales">
+        <header>
+          <h2 id="h-materiales">Paso 2 · qué hay en la estantería</h2>
+          <span class="muted">La rendición anterior se llevó todo</span>
+        </header>
+        <table>
+          <caption>Baterías usadas · unidades por modelo</caption>
+          <thead><tr><th scope="col">Modelo</th><th scope="col" class="num">Compradas</th><th scope="col" class="num">Contadas</th><th scope="col" class="num">Dif.</th></tr></thead>
+          <tbody>
+            <tr><td>27-60</td><td class="num">12</td><td><input class="count" inputmode="numeric" value="12" aria-label="Contadas modelo 27-60"></td><td class="dif zero">—</td></tr>
+            <tr><td>31-100</td><td class="num">9</td><td><input class="count" inputmode="numeric" value="8" aria-label="Contadas modelo 31-100"></td><td class="dif neg">−1</td></tr>
+            <tr><td>24F-45</td><td class="num">6</td><td><input class="count" inputmode="numeric" value="6" aria-label="Contadas modelo 24F-45"></td><td class="dif zero">—</td></tr>
+          </tbody>
+          <tfoot><tr><td>Total</td><td class="num">27</td><td class="num">26</td><td class="dif neg">−1</td></tr></tfoot>
+        </table>
+        <table>
+          <caption>Chatarra · kilogramos por material</caption>
+          <thead><tr><th scope="col">Material</th><th scope="col" class="num">Comprados</th><th scope="col" class="num">Contados</th><th scope="col" class="num">Dif.</th></tr></thead>
+          <tbody>
+            <tr><td>Cobre</td><td class="num">12,400 kg</td><td><input class="count" inputmode="decimal" value="12,400" aria-label="Contados kg de cobre"></td><td class="dif zero">—</td></tr>
+            <tr><td>Aluminio</td><td class="num">8,750 kg</td><td><input class="count" inputmode="decimal" value="8,750" aria-label="Contados kg de aluminio"></td><td class="dif zero">—</td></tr>
+            <tr><td>Plomo</td><td class="num">84,500 kg</td><td><input class="count" inputmode="decimal" value="80,200" aria-label="Contados kg de plomo"></td><td class="dif neg">−4,300</td></tr>
+            <tr><td>Bronce</td><td class="num">3,100 kg</td><td><input class="count" inputmode="decimal" value="3,100" aria-label="Contados kg de bronce"></td><td class="dif zero">—</td></tr>
+          </tbody>
+          <tfoot><tr><td>Total</td><td class="num">108,750 kg</td><td class="num">104,450 kg</td><td class="dif neg">−4,300</td></tr></tfoot>
+        </table>
+        <div class="body">
+          <div class="help">
+            <span aria-hidden="true">▸</span>
+            <span>Lo que debe haber es <b>lo comprado en el período</b>, porque el cierre anterior se llevó todo. La diferencia se informa y no bloquea el paso.</span>
+          </div>
+        </div>
+      </section>
+
+      <aside aria-label="Resumen del paso">
+        <section class="panel">
+          <div class="group">
+            <h2>Lo que se lleva el Almacén</h2>
+            <dl class="summary">
+              <div><dt>Baterías usadas</dt><dd>26</dd></div>
+              <div><dt>Chatarra</dt><dd>104,450 kg</dd></div>
+              <div><dt>Sobrante del fondo</dt><dd>Bs 375,00</dd></div>
+              <div class="total"><dt>Queda en la sucursal</dt><dd>0 · 0 kg</dd></div>
+            </dl>
+          </div>
+          <div class="group">
+            <h2>Diferencias del paso</h2>
+            <dl class="summary">
+              <div><dt>31-100</dt><dd class="neg">−1 unidad</dd></div>
+              <div><dt>Plomo</dt><dd class="neg">−4,300 kg</dd></div>
+              <div><dt>Fondo de compras</dt><dd class="neg">− Bs 4,00</dd></div>
+            </dl>
+            <small style="display:block;margin-top:8px">Se informan en la propuesta. La sucursal las ve antes de aceptar.</small>
+          </div>
+          <div class="group">
+            <h2>Monto nuevo</h2>
+            <div class="field">
+              <label for="nuevo-monto">Para compras del próximo período (Bs)</label>
+              <input id="nuevo-monto" inputmode="decimal" value="1.500,00">
+            </div>
+            <small style="display:block;margin-top:8px">Se escribe en el paso 3, junto con la entrega.</small>
+          </div>
+        </section>
+      </aside>
+    </div>
+  </div>
+</main>
+
+<div class="bar" role="region" aria-label="Acciones del paso">
+  <div class="state">
+    <span class="tag warn">Faltan 2 variantes por contar</span>
+    <span class="tag">Paso 2 de 3 · materiales contados</span>
+    <small id="motivo-bloqueo">El paso 3 cierra la entrega: se lleva todo lo contado y deja el monto nuevo.</small>
+  </div>
+  <div class="action">
+    <button type="button">Volver al fondo</button>
+    <button class="primary" type="button" aria-describedby="motivo-bloqueo">Ir a la entrega</button>
+  </div>
+</div>
+
+<script>
+const tabs=[...document.querySelectorAll('[role=tab]')];
+function show(id){
+  tabs.forEach(t=>{
+    const on=t.getAttribute('aria-controls')===id;
+    t.setAttribute('aria-selected',on);
+    t.tabIndex=on?0:-1;
+  });
+  document.querySelectorAll('[role=tabpanel]').forEach(p=>{p.hidden=p.id!==id;});
+  document.querySelectorAll('.balances button').forEach(b=>{b.setAttribute('aria-pressed',b.dataset.goto===id);});
+}
+tabs.forEach(t=>t.addEventListener('click',()=>show(t.getAttribute('aria-controls'))));
+document.querySelectorAll('[data-goto]').forEach(b=>b.addEventListener('click',()=>show(b.dataset.goto)));
+show('panel-chatarra');
+</script>
+</html>
