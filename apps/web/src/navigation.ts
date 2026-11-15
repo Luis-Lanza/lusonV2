@@ -1,10 +1,13 @@
 import { transferDetailPath } from './transferModel';
 
-export type NavigationRoute = { section: 'inventory' } | { section: 'administration' } | { section: 'password' } | { section: 'stock' } | { section: 'adjustments' } | { section: 'catalog'; screen?: 'prices' | 'batteries' } | { section: 'sales' } | { section: 'salesHistory' } | { section: 'purchases' } | { section: 'settlements' } | { section: 'settlementDecision' } | { section: 'transfers'; id: string | null };
+export type NavigationRoute = { section: 'inventory' } | { section: 'administration'; screen?: 'branches' } | { section: 'password' } | { section: 'stock' } | { section: 'adjustments' } | { section: 'catalog'; screen?: 'prices' | 'batteries' } | { section: 'sales' } | { section: 'salesHistory' } | { section: 'purchases' } | { section: 'settlements' } | { section: 'settlementDecision' } | { section: 'transfers'; id: string | null };
 
 export function readNavigation(): NavigationRoute {
   const hash = window.location.hash;
   if (hash === '#/administracion') return { section: 'administration' };
+  // The branches tab of the panel is its own screen: the settlement sends the warehouse there
+  // when the branch has no commission to settle with.
+  if (hash === '#/administracion/sucursales') return { section: 'administration', screen: 'branches' };
   if (hash === '#/mi-contrasena') return { section: 'password' };
   if (hash === '#/ingresos') return { section: 'stock' };
   if (hash === '#/ajustes') return { section: 'adjustments' };
@@ -33,7 +36,7 @@ export function readNavigation(): NavigationRoute {
 }
 
 export function navigationHash(route: NavigationRoute): string {
-  if (route.section === 'administration') return '#/administracion';
+  if (route.section === 'administration') return route.screen === 'branches' ? '#/administracion/sucursales' : '#/administracion';
   if (route.section === 'password') return '#/mi-contrasena';
   if (route.section === 'inventory') return '#/inventario';
   if (route.section === 'stock') return '#/ingresos';

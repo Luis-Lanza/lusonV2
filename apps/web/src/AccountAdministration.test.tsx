@@ -306,3 +306,18 @@ describe('the commission of each branch', () => {
     expect(h.fetcher.mock.calls.some(([url]) => String(url).includes('/commission') && String(url) !== '/api/closings/branches/commissions')).toBe(false);
   });
 });
+
+describe('the panel arrives where the settlement sends it', () => {
+  it('opens the branches screen directly from the hash the blocker links to', async () => {
+    const h = setup(undefined, [{ branch_location_id: 2, commission_rate_percent: '4.50',
+      updated_at: '2026-11-15T04:48:56Z', updated_by: 'Admin' }]);
+    window.location.hash = '#/administracion/sucursales';
+    render(<App />);
+    // The tab is already the branches one: the operator lands where the rate is fixed, not on
+    // the accounts directory to find it.
+    expect(await screen.findByRole('button', { name: 'Sucursales' })).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() => expect(screen.getAllByText('Sin configurar')).toHaveLength(2));
+    expect(h.commissions).toHaveLength(1);
+    window.location.hash = '';
+  });
+});

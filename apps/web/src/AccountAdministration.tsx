@@ -114,10 +114,12 @@ function AccountEditor({ account, branches, controller, owner, onClose, onSaved,
     {busy && <p role="status">Guardando…</p>}{error && <p role="alert">{error}</p>}
   </section>;
 }
-export default function AccountAdministration({ controller, owner }: { controller: PrivateController; owner: string }) {
+export default function AccountAdministration({ controller, owner, initialTab = 'accounts' }: {
+  controller: PrivateController; owner: string; initialTab?: 'accounts' | 'branches';
+}) {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [branches, setBranches] = useState<Location[]>([]);
-  const [tab, setTab] = useState<'accounts' | 'branches'>('accounts');
+  const [tab, setTab] = useState<'accounts' | 'branches'>(initialTab);
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('all');
   const [branchFilter, setBranchFilter] = useState(0);

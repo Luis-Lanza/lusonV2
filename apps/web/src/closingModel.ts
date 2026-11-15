@@ -1374,7 +1374,7 @@ function listedSides(sides: readonly string[]): string {
  * and no confirmation step is added in its place (S2).
  */
 export function closingBlockers(closing: Closing, view: DrawerView,
-  unsaved = false): readonly ClosingBlocker[] {
+  unsaved = false, commissionMissing = false): readonly ClosingBlocker[] {
   if (!closingIsEditable(closing.status)) {
     return Object.freeze([Object.freeze({
       code: closing.status === 'proposed' ? 'state_conflict' : 'closed',
@@ -1404,6 +1404,14 @@ export function closingBlockers(closing: Closing, view: DrawerView,
     blockers.push(Object.freeze({
       code: 'fund_exceeds_drawer',
       message: `El fondo supera la caja contada más el aporte en ${formatMoney(view.excess_cents)}.`,
+    }));
+  }
+  // A branch without a commission has nothing to settle: the server refuses the proposal, so
+  // the screen says it before the button is pressed instead of showing the refusal afterwards.
+  if (commissionMissing) {
+    blockers.push(Object.freeze({
+      code: 'commission_missing',
+      message: 'La sucursal no tiene porcentaje de comisión configurado: sin eso no se puede proponer.',
     }));
   }
   if (unsaved) {

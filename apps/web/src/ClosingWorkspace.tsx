@@ -107,6 +107,9 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   const [closedView, setClosedView] = useState<number | null>(null);
   const [closing, setClosing] = useState<Closing | null>(null);
   const [tab, setTab] = useState<ClosingTab>('caja');
+  // Whether the branch has a commission the warehouse fixed: read beside the document because
+  // the document carries the rate it froze, not the one configured for the next proposal (S5).
+  const [commissionMissing, setCommissionMissing] = useState(false);
   const [counted, setCounted] = useState<Record<number, string>>({});
   const [draft, setDraft] = useState<DrawerDraft>(emptyDrawerDraft);
   // The second envelope: its own draft, saved through the same cash draft as the drawer (S1, S5).
@@ -157,6 +160,11 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
         const page = await api.history(branch, 1, 25, controller.signal);
         if (!alive()) return;
         setHistoryTotal(page.total_closings);
+        // A branch without a configured commission cannot propose: the rail says so, and the
+        // button waits for the administration panel instead of a refusal.
+        const commission = await api.commission(branch, controller.signal).catch(() => 'unknown' as const);
+        if (!alive()) return;
+        setCommissionMissing(commission === null);
         const live = page.closings.find(row => closingIsLive(row.status));
         // The live settlement is the work of the warehouse; without one, the last closure is what it
         // reads, because that is the document a correction is proposed against (S16).
@@ -457,7 +465,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   const unsaved = closing !== null
     && (changed.length > 0 || added.length > 0 || materialReading.unsaved
       || !sameDrawer(draft, drawerDraftFrom(closing), envelope, purchaseFundDraftFrom(closing)));
-  const blockers = closing === null || view === null ? [] : closingBlockers(closing, view, unsaved);
+  const blockers = closing === null || view === null ? [] : closingBlockers(closing, view, unsaved, commissionMissing);
   const blocked = blockers.length > 0;
   const searchValid = validSearch(search);
   const visibleRows = searchValid ? filterCountLines(rows, search) : rows;
@@ -1105,6 +1113,10 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
             {`Diferencia de caja ${closingSignedText(liveDifference)}`}
           </span>}
           <small id={reasonID}>{closingBlockReason(blockers)}</small>
+          {/* The blocker names its own fix: the panel where the warehouse fixes the rate. */}
+          {commissionMissing && <a className="closing-block-link" href="#/administracion/sucursales">
+            Configurar la comisión de esta sucursal
+          </a>}
           {problem !== '' && <small role="alert" className="closing-bar-problem">{problem}</small>}
         </div>
         <div className="closing-bar-action">

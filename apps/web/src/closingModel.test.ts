@@ -640,6 +640,12 @@ describe('S2 the count the admin writes is a difference of the draft only', () =
     // The sheet that only differs keeps the same gate: the count adds no arm and no step (S2).
     expect(closingBlockers(seeded, stated(seeded))).toEqual([]);
     expect(closingBlockReason([])).toBe('La rendición se puede proponer: la caja está declarada.');
+    // The branch without a commission cannot propose either, and the reason is the sentence the
+    // server would answer with, said before the button is pressed (S5).
+    expect(closingBlockers(unseeded, stated(unseeded), false, true)).toEqual([{
+      code: 'commission_missing',
+      message: 'La sucursal no tiene porcentaje de comisión configurado: sin eso no se puede proponer.',
+    }]);
   });
 });
 

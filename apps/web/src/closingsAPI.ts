@@ -915,6 +915,22 @@ export function closingDecisionPath(id: number): string {
   return `/api/closings/${closingID(id)}/decision`;
 }
 
+/** The configured commission of one branch: the rate its settlement pays on the period sales. */
+export function closingCommissionPath(branch: number): string {
+  return `/api/closings/branches/${closingID(branch)}/commission`;
+}
+
+/** The configured rate of one branch as the server stores it. Only the canonical percentage is
+ *  an answer this server could have produced. */
+export function parseConfiguredRate(raw: string): string {
+  const record = fields(decode(raw), ['branch_location_id', 'commission_rate_percent']);
+  integer(record.branch_location_id, 2, 32767);
+  const rate = record.commission_rate_percent;
+  if (typeof rate !== 'string' || !/^(?:0|[1-9][0-9]{0,2})\.[0-9]{2}$/.test(rate)
+    || Number(rate.replace('.', '')) > 10000) return invalidResponse();
+  return rate;
+}
+
 /** The corrections of one closed settlement: the warehouse appends one to it. */
 export function closingCorrectionPath(id: number): string {
   return `/api/closings/${closingID(id)}/corrections`;
@@ -997,6 +1013,19 @@ export function createClosingAPI(fetch: typeof globalThis.fetch = globalThis.fet
       const closing = await send('GET', path, 200, parseClosing, null, '', signal);
       if (closing.id !== id) throw new ClosingAPIError('invalid_response', 200);
       return closing;
+    },
+
+    /** The commission configured for one branch, or `null` when the warehouse never fixed one:
+     *  that absence is not a failure of the screen but the reason it cannot propose. */
+    async commission(branch: number, signal?: AbortSignal): Promise<string | null> {
+      let path: string;
+      try { path = closingCommissionPath(branch); } catch { throw new ClosingAPIError('invalid_request', null); }
+      try {
+        return await send('GET', path, 200, parseConfiguredRate, null, '', signal);
+      } catch (error) {
+        if (error instanceof ClosingAPIError && error.status === 404) return null;
+        throw error;
+      }
     },
 
     /** Opens the settlement of a branch; the cut instant and the inherited fund are the server's. */

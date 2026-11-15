@@ -75,6 +75,8 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
   contributed?: string, countedCash?: string, fund?: string, uncounted?: number,
   purchaseCounted?: string | null, purchaseCash?: string | null,
   materials?: 'sheet' | 'empty',
+  // Whether the branch has a commission the warehouse fixed: without one it cannot propose.
+  commission?: string | null,
   corrections?: unknown[] } = {}) {
   const seeded: readonly (readonly [number, number])[] = [[1, 12], [2, 9], [3, 14]];
   const state = {
@@ -181,6 +183,11 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
       return json(document(), 201);
     }
     if (url === '/api/closings/1') return json(document());
+    if (url === '/api/closings/branches/2/commission') {
+      const rate = options.commission === undefined ? '4.50' : options.commission;
+      return rate === null ? json({ error: 'not_found' }, 404)
+        : json({ branch_location_id: 2, commission_rate_percent: rate });
+    }
     if (url === '/api/closings/1/count' && init.method === 'POST') {
       const body = JSON.parse(String(init.body)) as { lines: { variant_id: number; counted_quantity: number }[] };
       for (const line of body.lines) {
@@ -1258,5 +1265,37 @@ describe('a battery the system did not have (S4, S5)', () => {
     fireEvent.click(within(count).getByRole('button', { name: 'Quitar Toyo NS60 R · 65 Ah del borrador' }));
     expect(within(count).queryByLabelText('Contado de Toyo NS60 R · 65 Ah')).not.toBeInTheDocument();
     expect(h.posts('/api/closings/1/count')).toHaveLength(0);
+  });
+});
+
+describe('S5 the commission a branch needs to be settled', () => {
+  it('blocks the proposal and names where the rate is fixed when the branch has none', async () => {
+    const h = server({ commission: null });
+    await ready(h);
+    // The drawer is stated and saved; the proposal is what the missing rate holds back.
+    fireEvent.change(screen.getByLabelText('Caja contada (Bs)'), { target: { value: '6.980,00' } });
+    fireEvent.change(screen.getByLabelText('Monto que dejás en la caja (Bs)'), { target: { value: '900,00' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
+    await waitFor(() => expect(within(actionBar()).getByText(/comisión configurado/)).toBeInTheDocument());
+
+    // The rate the branch lacks is a blocker of the bar, not a refusal after pressing: the button
+    // is disabled, the reason is the sentence the panel answers with, and the way to fix it is a
+    // link to the screen that writes it.
+    expect(proposeButton()).toBeDisabled();
+    expect(within(actionBar()).getByText(
+      'La sucursal no tiene porcentaje de comisión configurado: sin eso no se puede proponer.')).toBeInTheDocument();
+    const link = within(actionBar()).getByRole('link', { name: 'Configurar la comisión de esta sucursal' });
+    expect(link).toHaveAttribute('href', '#/administracion/sucursales');
+    expect(h.posts('/api/closings/1/propose')).toHaveLength(0);
+  });
+
+  it('offers the proposal when the warehouse did fix a rate, with no link and no blocker', async () => {
+    const h = server({ commission: '4.50' });
+    await ready(h);
+    await completeTheSheet();
+
+    expect(proposeButton()).toBeEnabled();
+    expect(within(actionBar()).queryByRole('link')).toBeNull();
+    expect(within(actionBar()).queryByText(/comisión configurado/)).toBeNull();
   });
 });

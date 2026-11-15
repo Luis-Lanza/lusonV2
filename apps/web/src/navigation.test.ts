@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { navigationHash, readNavigation, writeNavigation } from './navigation';
 
 describe('T6 private navigation and existing transfer paths', () => {
+  it('roundtrips the branches screen of the panel without private data in the URL', () => {
+    writeNavigation({ section: 'administration', screen: 'branches' });
+    expect(window.location.hash).toBe('#/administracion/sucursales');
+    expect(readNavigation()).toEqual({ section: 'administration', screen: 'branches' });
+  });
   it.each([['administration', '#/administracion'], ['password', '#/mi-contrasena'], ['inventory', '#/inventario'], ['stock', '#/ingresos'], ['catalog', '#/catalogo'], ['sales', '#/ventas'], ['salesHistory', '#/ventas/historial'], ['purchases', '#/compras']] as const)('roundtrips %s without private data in the URL', (section, hash) => {
     writeNavigation({ section }); expect(window.location.hash).toBe(hash); expect(readNavigation()).toEqual({ section });
   });
