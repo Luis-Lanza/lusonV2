@@ -255,13 +255,17 @@ describe('purchase reads', () => {
       scrap_kg: '0.000' } })],
     ['a pending weight that is not the balance', listingBody({ totals: { money: null, used_units: '0',
       scrap_kg: '1.000' } })],
-    ['a negative unit count in a window', listingBody({ period: allPeriod, balance: null,
-      totals: { money: '0.00', used_units: '-1', scrap_kg: '0.000' } })],
-    ['a negative weight in a window', listingBody({ period: allPeriod, balance: null,
-      totals: { money: '0.00', used_units: '0', scrap_kg: '-1.000' } })],
     ['a padded total weight', listingBody({ totals: { money: null, used_units: '0', scrap_kg: '0.00' } })],
   ])('rejects the listing with %s', (_, raw) => {
     expect(() => parsePurchaseListing(raw)).toThrow('Respuesta inválida del servidor.');
+  });
+
+  it('reads a window as the net of its documents, which may end below zero', () => {
+    // A period whose only document is a counter-document reversing an earlier purchase nets a
+    // negative reading; refusing it would make that period unlistable.
+    const listing = parsePurchaseListing(listingBody({ period: allPeriod, balance: null,
+      totals: { money: '-124200.00', used_units: '-1', scrap_kg: '-12.400' } }));
+    expect(listing.totals).toEqual({ money_cents: -12420000n, used_units: -1, scrap_kg_milli: -12400n });
   });
 
   it('builds the listing path with the chosen period and without one', () => {

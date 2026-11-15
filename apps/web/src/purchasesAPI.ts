@@ -527,8 +527,9 @@ function totalsValue(value: unknown, kind: PurchasePeriodKind, balance: Purchase
   const record = fields(value, ['money', 'used_units', 'scrap_kg']);
   const pending = kind === 'pending';
   const money_cents = record.money === null ? null : wireMoney(record.money);
-  const used_units = wireInteger(record.used_units, pending,
-    pending ? -Number.MAX_SAFE_INTEGER : 0, Number.MAX_SAFE_INTEGER);
+  // Both the balance and a window may read negative: a window is the net of its documents, so a
+  // counter-document reversing a purchase of an earlier period leaves it below zero.
+  const used_units = wireInteger(record.used_units, true, -Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
   const scrap_kg_milli = wireWeight(record.scrap_kg);
   if (pending) {
     // A balance is material, never money, and its header is the sum of its own rows.
@@ -536,8 +537,8 @@ function totalsValue(value: unknown, kind: PurchasePeriodKind, balance: Purchase
     const units = balance.used.reduce((sum, row) => sum + row.balance, 0);
     const milli = balance.scrap.reduce((sum, row) => sum + row.balance_milli, 0n);
     if (used_units !== units || scrap_kg_milli !== milli) return invalidResponse();
-  } else if (money_cents === null || scrap_kg_milli < 0n) {
-    // A window states an amount, and it is the sum of published rows: never a negative reading.
+  } else if (money_cents === null) {
+    // A window always states an amount; its sign is the net of what its documents did.
     return invalidResponse();
   }
   return Object.freeze({ money_cents, used_units, scrap_kg_milli });
