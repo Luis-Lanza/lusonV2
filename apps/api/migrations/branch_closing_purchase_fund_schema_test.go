@@ -437,3 +437,66 @@ func TestPurchaseFundIsADraftUntilProposed(t *testing.T) {
 	}
 	t.Logf("044: the envelope drafts while the settlement is live and freezes once proposed")
 }
+
+// TestPurchaseFundAdmitsTheCounterDocumentOfALegacyTransferPayment proves the correction path
+// of the documents this version did not write: before 044 a purchase could be paid by transfer,
+// and its counter-document mirrors that split. The cash rule belongs to originals only, so the
+// mirror of such a purchase is admitted and the envelope never sees it.
+func TestPurchaseFundAdmitsTheCounterDocumentOfALegacyTransferPayment(t *testing.T) {
+	ctx, p := purchaseFundFixture(t)
+	settlePurchaseFund(t, ctx, p, 2, "100.00", "100.00")
+
+	// One document as a live database already stores it: the guard of this version is off for
+	// this insert only, which is exactly the state of every row written before 044.
+	// The trigger changes its own table, so each ALTER is its own transaction: PostgreSQL refuses
+	// to touch a table with pending trigger events.
+	if _, err := p.Exec(ctx, `ALTER TABLE purchases DISABLE TRIGGER admit_purchase_against_fund`); err != nil {
+		t.Fatal("the guard of 044 could not be disabled for the setup")
+	}
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		t.Fatal("the setup transaction could not start")
+	}
+	var legacy int64
+	if err := tx.QueryRow(ctx, `INSERT INTO purchases(operation_key,location_id,total,paid_cash,paid_transfer,created_by_account_id)
+ VALUES('purchase-fund-legacy-01',2,100.00,40.00,60.00,2) RETURNING id`).Scan(&legacy); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal("a purchase paid by transfer must be storable before this version")
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO purchase_used_lines(purchase_id,model,quantity,unit_price)
+ VALUES($1,'NS60ZL',1,100.00)`, legacy); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal("the line of the legacy purchase must be admitted")
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal("the legacy purchase must commit")
+	}
+	if _, err := p.Exec(ctx, `ALTER TABLE purchases ENABLE TRIGGER admit_purchase_against_fund`); err != nil {
+		t.Fatalf("the guard of 044 could not be enabled again: %v", err)
+	}
+
+	// Its mirror carries the same split negated, and the cash rule does not judge it.
+	mirror, err := p.Begin(ctx)
+	if err != nil {
+		t.Fatal("the counter-document transaction could not start")
+	}
+	defer func() { _ = mirror.Rollback(context.Background()) }()
+	var counter int64
+	if err := mirror.QueryRow(ctx, `INSERT INTO purchases(operation_key,location_id,total,paid_cash,paid_transfer,
+ reverses_purchase_id,reason,created_by_account_id)
+ VALUES('purchase-fund-legacy-02',2,-100.00,-40.00,-60.00,$1,'se tipeó dos veces',2) RETURNING id`, legacy).Scan(&counter); err != nil {
+		t.Fatalf("the counter-document of a transfer-paid purchase must be admitted: %v", err)
+	}
+	if _, err := mirror.Exec(ctx, `INSERT INTO purchase_used_lines(purchase_id,model,quantity,unit_price)
+ VALUES($1,'NS60ZL',-1,100.00)`, counter); err != nil {
+		t.Fatalf("the mirrored line must be admitted: %v", err)
+	}
+	if err := mirror.Commit(ctx); err != nil {
+		t.Fatalf("the counter-document must commit: %v", err)
+	}
+	var net string
+	if err := p.QueryRow(ctx, `SELECT sum(paid_cash)::text FROM purchases WHERE location_id=2`).Scan(&net); err != nil || net != "0.00" {
+		t.Fatalf("the mirror must return what the legacy purchase paid in cash: %q %v", net, err)
+	}
+	t.Logf("044: a counter-document of a transfer-paid legacy purchase is admitted")
+}

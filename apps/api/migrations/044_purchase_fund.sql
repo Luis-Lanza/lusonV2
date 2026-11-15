@@ -282,18 +282,21 @@ DECLARE
     spent numeric(12,2);
     available numeric(12,2);
 BEGIN
-    -- S2: the envelope is cash, so no part of a purchase is paid by transfer. The refusal is
-    -- the document's own and it is raised before any balance is read: a document that is not
-    -- paid in cash from the fund is refused whatever the fund holds.
+    -- A counter-document returns the money of its original: it charges no envelope, needs no
+    -- balance and is never judged by the cash rule. It must mirror its original's payment
+    -- split, and an original written before this version could have been paid by transfer, so
+    -- judging it here would leave those purchases without their correction path. It is read as
+    -- a spend of the period by the sum below, where its negative amounts subtract what its
+    -- original charged.
+    IF NEW.reverses_purchase_id IS NOT NULL THEN
+        RETURN NEW;
+    END IF;
+    -- S2: the envelope is cash, so no part of an original purchase is paid by transfer. The
+    -- refusal is the document's own and it is raised before any balance is read: a document
+    -- that is not paid in cash from the fund is refused whatever the fund holds.
     IF NEW.paid_transfer <> 0 THEN
         RAISE EXCEPTION USING ERRCODE='LP006',
             MESSAGE='A branch purchase is paid in cash from the purchase fund';
-    END IF;
-    -- A counter-document returns the money of its original: it charges no envelope and needs
-    -- no balance to be admitted. It is read as a spend of the period by the sum below, where
-    -- its negative amounts subtract what its original charged.
-    IF NEW.reverses_purchase_id IS NOT NULL THEN
-        RETURN NEW;
     END IF;
     -- The balance is read under the per-branch lock of this envelope, so two purchases of one
     -- branch cannot both pass against the same remaining amount.
