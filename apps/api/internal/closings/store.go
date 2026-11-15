@@ -272,9 +272,9 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Closin
 //
 // The money of a period the warehouse still holds is derived per row once the whole page has been
 // read, by the same helper of the single read, so a list row cannot state a period its own document
-// denies. It costs one extra ledger statement and at most one rate statement per page, and never
-// more: a branch holds one live settlement at a time, so a page of one branch has at most one open
-// row in it.
+// denies. It costs one extra ledger statement, one statement for the purchase envelope and at most
+// one rate statement per row, and never more: a branch holds one live settlement at a time, so a
+// page of one branch has at most one open row in it.
 //
 // A branch reads only its own history: another branch is forbidden, exactly like a setting of
 // another branch. The warehouse reads every branch. An unknown branch does not exist and a retired
@@ -428,6 +428,13 @@ func (s *Store) Count(ctx context.Context, actor auth.Identity, id int64, counte
 // cash sales and the cash expenses of the period are the ledgers' own facts, so no draft can
 // state them; the period snapshots and the frozen rate belong to the proposal and the
 // closure (migration 034).
+//
+// The purchase envelope is drafted here too, as the same kind of fact: the amount the warehouse
+// counted in it and the amount it leaves in it, both optional and both non-negative (S1, S5, S6).
+// The draft states the envelope whole, exactly like the drawer: a draft that states neither leaves
+// both columns null, which is the honest state of an envelope nobody counted. The new amount is not
+// bounded by the counted one, because the warehouse brings money from outside the branch and that
+// money is not in the envelope it counted.
 func (s *Store) SaveCash(ctx context.Context, actor auth.Identity, id int64, draft CashDraft) (Closing, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return Closing{}, ErrUnavailable
@@ -468,9 +475,10 @@ func (s *Store) SaveCash(ctx context.Context, actor auth.Identity, id int64, dra
 		return Closing{}, ErrStateConflict
 	}
 	if _, err := tx.Exec(ctx, `UPDATE branch_closings SET counted_cash=$2,contributed_cash=$3,
-  closing_cash=$4,observation=$5 WHERE id=$1`,
+  closing_cash=$4,observation=$5,purchase_fund_counted=$6,purchase_fund_cash=$7 WHERE id=$1`,
 		id, nullable(canonical.CountedCash), string(canonical.ContributedCash),
-		nullable(canonical.ClosingCash), canonical.Observation); err != nil {
+		nullable(canonical.ClosingCash), canonical.Observation, nullable(canonical.PurchaseFundCounted),
+		nullable(canonical.PurchaseFundCash)); err != nil {
 		return Closing{}, mapFailure(ctx, err)
 	}
 	closing, err := loadClosing(ctx, tx, id)
@@ -623,12 +631,14 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 	var branch int16
 	var status string
 	var periodStart, cutAt time.Time
-	var countedCash, closingCash *string
+	var countedCash, closingCash, purchaseCounted, purchaseCash *string
 	var draft CashDraft
 	err = tx.QueryRow(ctx, `SELECT branch_location_id,status,period_start,cut_at,
-  counted_cash::text,contributed_cash::text,closing_cash::text,observation
+  counted_cash::text,contributed_cash::text,closing_cash::text,observation,
+  purchase_fund_counted::text,purchase_fund_cash::text
  FROM branch_closings WHERE id=$1 FOR UPDATE`, id).Scan(&branch, &status, &periodStart, &cutAt,
-		&countedCash, &draft.ContributedCash, &closingCash, &draft.Observation)
+		&countedCash, &draft.ContributedCash, &closingCash, &draft.Observation, &purchaseCounted,
+		&purchaseCash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Closing{}, ErrNotFound
 	}
@@ -677,6 +687,17 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 	if err != nil {
 		return Closing{}, err
 	}
+	// The envelope is the offer's too: the amount the warehouse counted in the purchase fund and the
+	// amount it leaves there (S5, S6). They are the columns the draft wrote, and the transition below
+	// freezes them, so the branch is offered exactly the envelope it is being asked to accept.
+	if purchaseCounted != nil {
+		amount := Money(*purchaseCounted)
+		draft.PurchaseFundCounted = &amount
+	}
+	if purchaseCash != nil {
+		amount := Money(*purchaseCash)
+		draft.PurchaseFundCash = &amount
+	}
 	payload := ProposalPayload{
 		PeriodStart: periodStart, CutAt: cutAt,
 		SalesTotal: totals.salesTotal, CommissionRatePercent: rate, CommissionAmount: commission,
@@ -684,6 +705,7 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 		CardTotal: totals.card, TransferTotal: totals.transfer, QRTotal: totals.qr,
 		CountedCash: draft.CountedCash, ContributedCash: draft.ContributedCash,
 		ClosingCash: draft.ClosingCash, Observation: draft.Observation,
+		PurchaseFundCounted: draft.PurchaseFundCounted, PurchaseFundCash: draft.PurchaseFundCash,
 		CountLines: make([]ProposalCountLine, 0, len(lines)),
 	}
 	for _, line := range lines {
@@ -1110,6 +1132,11 @@ func (s *Store) DecideCorrection(ctx context.Context, actor auth.Identity, corre
 // too, but neither of them changes a number of this projection: the stock is the branch's
 // inventory and the commission is published beside the corrections that changed it.
 //
+// purchase_fund_counted and purchase_fund_cash are the second envelope (044): what the warehouse
+// counted in it and the amount it leaves there, both drafted while the settlement is held and
+// frozen by the proposal. They are the only money of this vertical that comes from the purchases
+// and not from the cash ledger, and they participate in no identity of the drawer (S1, S12).
+//
 // The money of the period is read as the database stores it, because that is what the offer
 // froze; a row that is still open is published from its own ledgers afterwards (deriveClosing), so
 // the projection keeps one shape for every state and only the open one is filled in on read.
@@ -1118,7 +1145,7 @@ const closingHeaderColumns = `c.id,c.branch_location_id,l.name,c.status,
   c.opening_cash::text,c.cash_sales::text,c.cash_expenses::text,c.sales_total::text,
   c.commission_amount::text,c.card_total::text,c.transfer_total::text,c.qr_total::text,
   c.counted_cash::text,c.contributed_cash::text,c.closing_cash::text,c.observation,
-  c.opened_by_account_id,
+  c.opened_by_account_id,c.purchase_fund_counted::text,c.purchase_fund_cash::text,
   coalesce((SELECT sum(effect.amount_delta) FROM closing_correction_effects effect
     WHERE effect.closing_id=c.id AND effect.kind='counted_cash'),0)::numeric(12,2)::text,
   coalesce((SELECT sum(effect.amount_delta) FROM closing_correction_effects effect
@@ -1161,7 +1188,7 @@ func loadClosing(ctx context.Context, q querier, id int64) (Closing, error) {
 func scanClosing(ctx context.Context, row pgx.Row) (Closing, error) {
 	var closing Closing
 	var status, rate string
-	var counted, fund *string
+	var counted, fund, purchaseCounted, purchaseCash *string
 	var countedDelta, fundDelta string
 	err := row.Scan(
 		&closing.ID, &closing.BranchID, &closing.BranchName, &status,
@@ -1169,7 +1196,7 @@ func scanClosing(ctx context.Context, row pgx.Row) (Closing, error) {
 		&closing.OpeningCash, &closing.CashSales, &closing.CashExpenses, &closing.SalesTotal,
 		&closing.CommissionAmount, &closing.CardTotal, &closing.TransferTotal, &closing.QRTotal,
 		&counted, &closing.ContributedCash, &fund, &closing.Observation,
-		&closing.OpenedByAccountID, &countedDelta, &fundDelta)
+		&closing.OpenedByAccountID, &purchaseCounted, &purchaseCash, &countedDelta, &fundDelta)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Closing{}, ErrNotFound
 	}
@@ -1201,6 +1228,22 @@ func scanClosing(ctx context.Context, row pgx.Row) (Closing, error) {
 		}
 		closing.ClosingCash = &amount
 	}
+	// The envelope is scanned as the database stores it: null while the warehouse has not counted
+	// it or has not stated the amount it leaves behind (S5).
+	if purchaseCounted != nil {
+		amount := Money(*purchaseCounted)
+		if _, ok := amountCents(amount); !ok {
+			return Closing{}, ErrUnavailable
+		}
+		closing.PurchaseFundCounted = &amount
+	}
+	if purchaseCash != nil {
+		amount := Money(*purchaseCash)
+		if _, ok := amountCents(amount); !ok {
+			return Closing{}, ErrUnavailable
+		}
+		closing.PurchaseFundCash = &amount
+	}
 	for _, stored := range []Money{closing.OpeningCash, closing.CashSales, closing.CashExpenses,
 		closing.SalesTotal, closing.CommissionAmount, closing.CardTotal, closing.TransferTotal,
 		closing.QRTotal, closing.ContributedCash} {
@@ -1226,7 +1269,8 @@ func scanClosing(ctx context.Context, row pgx.Row) (Closing, error) {
 }
 
 // deriveClosing publishes the numbers of one scanned settlement that are never written: the money
-// of the period while the settlement is open (S1, S3) and the three cash numbers (S8, S10, L12). It
+// of the period while the settlement is open (S1, S3), the three cash numbers (S8, S10, L12) and the
+// purchase envelope (S3, S5, S11). It
 // is the projection every read of this package uses, so a history row and a single document are the
 // same settlement and not two descriptions of it.
 //
@@ -1262,6 +1306,71 @@ func deriveClosing(ctx context.Context, q querier, closing *Closing) error {
 			closing.TakenCash = &taken
 		}
 	}
+	// The purchase envelope is the second envelope of the branch (S1). Its opening, the purchases of
+	// the window and its expectation are derived here for every state, because none of them is a
+	// column: they are read from the same two tables, so a number can never be published that the
+	// facts deny. The counted amount and the new amount are the database's columns, and the
+	// difference is published only once the envelope was counted (S3, S5, S11).
+	return derivePurchaseFund(ctx, q, closing)
+}
+
+// derivePurchaseFund publishes the purchase envelope of one scanned settlement: the amount the
+// previous closure left in it, the sums of the purchases of its own window and the expectation
+// they produce, plus the difference of the counted envelope against that expectation.
+//
+// It reads two things and never invents a third. The opening is the purchase_fund_cash of the
+// previous closed settlement of the same branch, read from branch_closings and never from the live
+// branch state: a closed row is immutable, so the number a period inherited cannot move afterwards.
+// "Previous" is the closure at or before this settlement's own period start, which is the instant the
+// opener inherited, so a history row of an old period never reads the envelope of a later one. The
+// purchases are the documents of the window `[period_start, cut_at)` of the branch, with their
+// counter-documents included as they are stored — negative amounts, so they subtract by
+// construction (S3, S11). Zero when there is none of either, which is the state of a branch that has
+// never closed and of a period with no purchases.
+//
+// One statement for both facts, so the envelope of one row describes one instant of one window, and
+// the derivation stays the pure read every other derived number of this document is.
+func derivePurchaseFund(ctx context.Context, q querier, closing *Closing) error {
+	var opening, total, cash string
+	err := q.QueryRow(ctx, `SELECT
+  coalesce((SELECT previous.purchase_fund_cash FROM branch_closings previous
+    WHERE previous.branch_location_id=$1 AND previous.status='closed'
+      AND previous.closed_at <= $4
+    ORDER BY previous.closed_at DESC LIMIT 1),0)::numeric(12,2)::text,
+  coalesce((SELECT sum(purchase.total) FROM purchases purchase
+    WHERE purchase.location_id=$1 AND purchase.created_at >= $2
+      AND purchase.created_at < $3),0)::numeric(12,2)::text,
+  coalesce((SELECT sum(purchase.paid_cash) FROM purchases purchase
+    WHERE purchase.location_id=$1 AND purchase.created_at >= $2
+      AND purchase.created_at < $3),0)::numeric(12,2)::text`,
+		int16(closing.BranchID), closing.PeriodStart, closing.CutAt, closing.PeriodStart).
+		Scan(&opening, &total, &cash)
+	if err != nil {
+		return fail(ctx)
+	}
+	closing.PurchaseFundOpening, closing.PurchasesTotal, closing.PurchasesCash =
+		Money(opening), Money(total), Money(cash)
+	for _, amount := range []Money{closing.PurchaseFundOpening, closing.PurchasesTotal,
+		closing.PurchasesCash} {
+		if _, ok := amountCents(amount); !ok {
+			return ErrUnavailable
+		}
+	}
+	expected, err := PurchaseFundExpected(closing.PurchaseFundOpening, closing.PurchasesCash)
+	if err != nil {
+		return ErrUnavailable
+	}
+	closing.PurchaseFundExpected = expected
+	if closing.PurchaseFundCounted == nil {
+		// An envelope the warehouse has not counted states no difference: the count sheet of the
+		// drawer is the only thing that blocks, and an uncounted envelope is not a difference of zero.
+		return nil
+	}
+	difference, err := CashDifference(*closing.PurchaseFundCounted, expected)
+	if err != nil {
+		return ErrUnavailable
+	}
+	closing.PurchaseFundDifference = &difference
 	return nil
 }
 
@@ -1457,7 +1566,8 @@ func decodePayload(stored string) (ProposalPayload, error) {
 			return ProposalPayload{}, ErrUnavailable
 		}
 	}
-	for _, amount := range []*Money{payload.CountedCash, payload.ClosingCash} {
+	for _, amount := range []*Money{payload.CountedCash, payload.ClosingCash, payload.PurchaseFundCounted,
+		payload.PurchaseFundCash} {
 		if amount != nil {
 			if _, ok := amountCents(*amount); !ok {
 				return ProposalPayload{}, ErrUnavailable

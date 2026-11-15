@@ -214,13 +214,20 @@ POST /api/closings/1/count
 ```
 POST /api/closings/1/cash
 {"counted_cash":"96000.00","contributed_cash":"0.00","closing_cash":"6000.00",
- "observation":"contado en persona"}
+ "observation":"contado en persona","purchase_fund_counted":"240.00",
+ "purchase_fund_cash":"400.00"}
 ```
 
-All four keys are mandatory: an amount the warehouse has not counted yet is the explicit JSON
-`null`, never an absent key and never an invented zero. `contributed_cash` is the money the
-warehouse puts into the drawer (it is `"0.00"` in the normal case and the declared fund in the
-first settlement); `observation` is free text of at most 1000 characters, persisted verbatim.
+The four keys of the drawer are mandatory: an amount the warehouse has not counted yet is the
+explicit JSON `null`, never an absent key and never an invented zero. `contributed_cash` is the
+money the warehouse puts into the drawer (it is `"0.00"` in the normal case and the declared fund
+in the first settlement); `observation` is free text of at most 1000 characters, persisted
+verbatim.
+
+The two keys of the purchase envelope are the only optional ones (see
+[the purchase fund](#the-purchase-fund-the-second-envelope)): a body without them states an
+envelope nobody counted, which is exactly the state of a settlement whose warehouse has not opened
+the envelope yet.
 
 * The cash sales and the cash expenses of the period are **not** part of this body: they are
   facts of the ledgers — the branch's immutable sales and the expenses it recorded as they
@@ -298,6 +305,44 @@ route that refuses it with `409 commission_rate_missing`.
 The values of a `rejected` or `closed` settlement are never re-derived, and this is deliberate: a
 rejection keeps the offer the branch answered, and a closure is the history its branch signed, so
 deriving them would let a later rate change rewrite what was accepted.
+
+## The purchase fund: the second envelope
+
+The branch holds a second envelope of physical money, apart from the operating drawer: the purchase
+fund ("fondo de compras"), which pays for used batteries and scrap and for nothing else (S1, S2).
+It is counted apart from the drawer, it is settled in the same document, and it participates in
+**none** of the drawer's three identities and in no part of the commission: no money of a sale
+feeds it, and the drawer above is exactly what it was before this envelope existed (S12). A branch
+purchase is charged by the document itself, never by a ledger row of this vertical: there is no
+`branch_cash_movements` movement for the envelope.
+
+| Field | Identity |
+|---|---|
+| `purchase_fund_opening` | The `purchase_fund_cash` of the previous `closed` settlement of the same branch — the last closure at or before this settlement's `period_start`, by `closed_at` descending; `"0.00"` when there is none. Read from the settlements themselves, never from the live branch state, and a closed row never changes, so a period's opening is frozen by construction, and a history row of an old period never reads the envelope of a later one |
+| `purchases_total`, `purchases_cash` | The sums of `total` and `paid_cash` of the branch purchases inside `[period_start, cut_at)`. Counter-documents are stored with negative amounts, so they subtract by themselves and are never filtered out (S11) |
+| `purchase_fund_expected` | `purchase_fund_opening - purchases_cash`, signed: a period that spent more than it inherited is a shortage |
+| `purchase_fund_counted` | What the warehouse counted in the envelope: the column, `null` while it has not counted |
+| `purchase_fund_difference` | `purchase_fund_counted - purchase_fund_expected`, with its sign; `null` while `purchase_fund_counted` is `null` |
+| `purchase_fund_cash` | The amount the warehouse leaves in the envelope: the column, `null` until it states one, and the amount that opens the next period (S5, S6) |
+
+The opening, the purchases and the expectation are **derived on every read** from those two tables,
+exactly like the drawer's three numbers, so a published amount can never disagree with the facts
+that produce it. `purchase_fund_counted` and `purchase_fund_cash` are the two columns migration 044
+adds, drafted through the drawer draft and frozen by the proposal:
+
+* **While `open` or `rejected`** both are drafts of the warehouse, exactly like the drawer. Both are
+  optional and both are canonical non-negative amounts. The new amount is **not** bounded by the
+  counted one: the warehouse brings money from outside the branch, so it may leave more than it
+  found.
+* **From `proposed` on** both are the offer the branch decides, and the database freezes them with
+  the rest of the drawer (LC005): the closure applies exactly the envelope that was offered, and
+  there is no route that writes them afterwards.
+* The **difference never blocks**. Like `cash_difference` it is informational and published with its
+  sign; a proposal is refused by a pending line of the count sheet, never by an envelope counted
+  above or below its expectation (S8).
+* The envelope is **not required at the closure**: a settlement whose warehouse has not counted it
+  closes with `null` in both columns, which is why a branch whose last closure predates this version
+  keeps operating exactly as before.
 
 ## Expenses of the branch
 
@@ -519,6 +564,9 @@ Every route of this contract answers the whole settlement, with exactly these ke
 | `expected_cash` | Derived, see above |
 | `counted_cash`, `cash_difference` | What was counted and its sign against the expected drawer; `null` while uncounted |
 | `contributed_cash`, `closing_cash`, `taken_cash` | The contribution, the fund left behind and what the warehouse takes; see above |
+| `purchase_fund_opening`, `purchases_total`, `purchases_cash` | The second envelope: what it inherited, and the sums of the purchases of the window (counter-documents included); derived on read, see [the purchase fund](#the-purchase-fund-the-second-envelope) |
+| `purchase_fund_expected`, `purchase_fund_counted`, `purchase_fund_difference` | The expectation of the envelope, what the warehouse counted in it and the sign of the difference; the count and the difference are `null` until it is counted, and the difference never blocks |
+| `purchase_fund_cash` | The amount the warehouse leaves in the envelope, which opens the next period; `null` until it states one |
 | `sales_total`, `commission_amount` | The commission base and the reported commission of the period: derived from the ledgers and the configured rate while the settlement is `open`, frozen from the proposal on |
 | `card_total`, `transfer_total`, `qr_total` | The electronic collection of the period, published on its own, with the same frozen-or-derived rule |
 | `observation` | The free text of the drawer |
@@ -536,7 +584,9 @@ route answers, so the branch reads its own expense the same way in both places. 
 entry carries `id`, `round` (the database's own sequence), `offer`, `proposed_by_account_id`,
 `proposed_at`, `decision` (`""` while pending, `accepted` or `rejected`), `decision_reason`,
 `decided_by_account_id` and `decided_at`; a decided round states who answered it and when, and a
-rejected one always states its motive.
+rejected one always states its motive. The `offer` carries the drawer and, when the warehouse stated
+it, the envelope of the purchase fund (`purchase_fund_counted` and `purchase_fund_cash`), which are
+absent from an offer made before the envelope existed.
 
 Each `corrections` entry carries `id`, `closing_id`, `status` (`accepted`, or `proposed` for the
 one correction that still waits for the branch's decision — a rejected one applied nothing and is
@@ -553,7 +603,8 @@ corrected number and the delta that produced it, so a client never needs a secon
 tell a corrected number from the signed one and the signed one is `corrected - delta`.
 
 The published document is revalidated before it is written: a settlement whose money is not
-canonical, whose derived numbers do not follow their own identity, whose sheet or rounds are out
+canonical, whose derived numbers do not follow their own identity — including the opening, the
+purchases and the expectation of the purchase fund — whose sheet or rounds are out
 of order, or whose round states a decision it cannot have, is answered `503
 service_unavailable` instead of being described.
 
@@ -574,7 +625,7 @@ GET /api/closings?branch_location_id=2&page=1&page_size=25
   retired one is `409 branch_retired`, exactly like an opening.
 
 ```json
-// abbreviated: every row carries all 28 keys of the settlement document
+// abbreviated: every row carries all 35 keys of the settlement document
 {"page":1,"page_size":25,"total_closings":2,
  "closings":[
   {"id":2,"branch_location_id":2,"branch_name":"Sucursal A","status":"open",

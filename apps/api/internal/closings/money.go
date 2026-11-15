@@ -196,9 +196,31 @@ func ExpectedCash(opening, cashSales, cashExpenses Money) (Signed, error) {
 	return signedFromCents(openingCents + salesCents - expensesCents), nil
 }
 
+// PurchaseFundExpected derives what the purchase envelope should hold at the cut: the amount the
+// previous closure left in it minus the cash the branch spent on purchases of the period, net of
+// the counter-documents that returned money — those are stored with negative amounts, so they
+// subtract by construction (S3, S11). The envelope is money of its own: no contribution of the
+// warehouse and no money of a sale enters this identity, and the commission and the three cash
+// identities of the drawer are untouched by it (S12). An envelope that spent more than it inherited
+// is a shortage, which is why the result is signed like the drawer's expectation.
+func PurchaseFundExpected(opening, purchasesCash Money) (Signed, error) {
+	openingCents, ok := amountCents(opening)
+	if !ok {
+		return "", ErrInvalid
+	}
+	spentCents, ok := amountCents(purchasesCash)
+	if !ok {
+		return "", ErrInvalid
+	}
+	// Both terms are bounded by numeric(12,2), so the difference stays inside int64.
+	return signedFromCents(openingCents - spentCents), nil
+}
+
 // CashDifference is the counted cash against the expected one: negative is a shortage and
 // positive a surplus, and the closure is admitted either way (S8). Both sides are canonical
-// amounts, so the difference is exact.
+// amounts, so the difference is exact. The purchase envelope is counted against its own
+// expectation with this same arithmetic, so the drawer and the envelope can never disagree about
+// what a difference is.
 func CashDifference(counted Money, expected Signed) (Signed, error) {
 	countedCents, ok := amountCents(counted)
 	if !ok {

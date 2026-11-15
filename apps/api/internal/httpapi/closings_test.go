@@ -351,13 +351,17 @@ func TestClosingDecoders(t *testing.T) {
 }
 
 // closingValue is one complete persisted settlement, used to prove that what this layer publishes
-// is revalidated and never trusted as is.
+// is revalidated and never trusted as is. Both envelopes are stated: the drawer and the purchase
+// fund of the branch, which is a count of its own against an expectation of its own.
 func closingValue() closings.Closing {
 	rate := closings.Percent("10.00")
 	counted := closings.Money("96000.00")
 	fund := closings.Money("6000.00")
 	difference := closings.Signed("0.00")
 	taken := closings.Signed("90000.00")
+	purchaseCounted := closings.Money("240.00")
+	purchaseDifference := closings.Signed("-10.00")
+	purchaseCash := closings.Money("400.00")
 	closed := time.Date(2026, 3, 23, 18, 30, 0, 0, time.UTC)
 	decided := closed.Add(-2 * time.Minute)
 	decidedBy := int64(2)
@@ -370,7 +374,10 @@ func closingValue() closings.Closing {
 		CommissionAmount: "9600.00", CardTotal: "0.00", TransferTotal: "0.00", QRTotal: "0.00",
 		CountedCash: &counted, ContributedCash: "0.00", ClosingCash: &fund,
 		OpenedByAccountID: 1, ExpectedCash: "96000.00", CashDifference: &difference,
-		TakenCash: &taken,
+		TakenCash:           &taken,
+		PurchaseFundOpening: "300.00", PurchasesTotal: "120.50", PurchasesCash: "50.00",
+		PurchaseFundExpected: "250.00", PurchaseFundCounted: &purchaseCounted,
+		PurchaseFundDifference: &purchaseDifference, PurchaseFundCash: &purchaseCash,
 		CountLines: []closings.CountLine{{VariantID: 3, CatalogEntryID: 2, Brand: "TOYO",
 			Model: "NS60L", Capacity: catalog.Decimal("45"), Polarity: "L",
 			ExpectedQuantity: 12, CountedQuantity: ptrInt64(12)}},
@@ -382,6 +389,7 @@ func closingValue() closings.Closing {
 				CommissionAmount: "9600.00", CashSales: "96000.00", CashExpenses: "0.00",
 				CardTotal: "0.00", TransferTotal: "0.00", QRTotal: "0.00",
 				CountedCash: &counted, ContributedCash: "0.00", ClosingCash: &fund,
+				PurchaseFundCounted: &purchaseCounted, PurchaseFundCash: &purchaseCash,
 				CountLines: []closings.ProposalCountLine{{VariantID: 3, ExpectedQuantity: 12,
 					CountedQuantity: 12}},
 			}},
@@ -413,6 +421,21 @@ func TestClosingRecord(t *testing.T) {
 	if offer := record.Rounds[0].Offer; offer.CommissionAmount != "9600.00" ||
 		offer.SalesTotal != "96000.00" || offer.QRTotal != "0.00" || len(offer.CountLines) != 1 {
 		t.Fatalf("the round must publish the offer it was answered with: %+v", offer)
+	}
+	// The purchase fund is the second envelope: it publishes its opening, the purchases of its
+	// window, its expectation, the count the warehouse made with its difference, and the amount that
+	// opens the next period. None of them moves the drawer above (S1, S3, S12).
+	if record.PurchaseFundOpening != "300.00" || record.PurchasesTotal != "120.50" ||
+		record.PurchasesCash != "50.00" || record.PurchaseFundExpected != "250.00" ||
+		record.PurchaseFundCounted == nil || *record.PurchaseFundCounted != "240.00" ||
+		record.PurchaseFundDifference == nil || *record.PurchaseFundDifference != "-10.00" ||
+		record.PurchaseFundCash == nil || *record.PurchaseFundCash != "400.00" {
+		t.Fatalf("the purchase fund of the settlement does not match the published contract: %+v", record)
+	}
+	if offer := record.Rounds[0].Offer; offer.PurchaseFundCounted == nil ||
+		*offer.PurchaseFundCounted != "240.00" || offer.PurchaseFundCash == nil ||
+		*offer.PurchaseFundCash != "400.00" {
+		t.Fatalf("the round must publish the envelope of its offer: %+v", offer)
 	}
 	// A held settlement is drafted: no rate yet, and the drawer may still be uncounted.
 	open := closingValue()
@@ -464,6 +487,28 @@ func TestClosingRecord(t *testing.T) {
 		"taken_stale":        mutate(func(v *closings.Closing) { signed := closings.Signed("1.00"); v.TakenCash = &signed }),
 		"difference_lost":    mutate(func(v *closings.Closing) { v.CashDifference = nil }),
 		"taken_without_fund": mutate(func(v *closings.Closing) { v.ClosingCash = nil }),
+		// The purchase envelope follows the same discipline: every derived number it publishes is
+		// rederived here, and a count without its difference (or a difference without its count) is a
+		// shape this domain never wrote.
+		"fund_opening_stale":   mutate(func(v *closings.Closing) { v.PurchaseFundOpening = "301.00" }),
+		"fund_purchases_stale": mutate(func(v *closings.Closing) { v.PurchasesCash = "50" }),
+		"fund_total_empty":     mutate(func(v *closings.Closing) { v.PurchasesTotal = "" }),
+		"fund_expected_stale":  mutate(func(v *closings.Closing) { v.PurchaseFundExpected = "1.00" }),
+		"fund_counted_float":   mutate(func(v *closings.Closing) { counted := closings.Money("240.0"); v.PurchaseFundCounted = &counted }),
+		"fund_difference_stale": mutate(func(v *closings.Closing) {
+			difference := closings.Signed("1.00")
+			v.PurchaseFundDifference = &difference
+		}),
+		"fund_counted_without_difference": mutate(func(v *closings.Closing) {
+			v.PurchaseFundDifference = nil
+		}),
+		"fund_difference_without_count": mutate(func(v *closings.Closing) {
+			v.PurchaseFundCounted = nil
+		}),
+		"fund_cash_short": mutate(func(v *closings.Closing) {
+			amount := closings.Money("400.0")
+			v.PurchaseFundCash = &amount
+		}),
 		"counted_without_difference": mutate(func(v *closings.Closing) {
 			v.CashDifference = nil
 		}),
@@ -1045,7 +1090,16 @@ type closingWireRecord struct {
 	QRTotal               string  `json:"qr_total"`
 	Observation           string  `json:"observation"`
 	OpenedByAccountID     int64   `json:"opened_by_account_id"`
-	CountLines            []struct {
+	// The purchase fund is the second envelope: what it inherited, the purchases of the window, its
+	// expectation, the count, its difference and the amount that opens the next period.
+	PurchaseFundOpening    string  `json:"purchase_fund_opening"`
+	PurchasesTotal         string  `json:"purchases_total"`
+	PurchasesCash          string  `json:"purchases_cash"`
+	PurchaseFundExpected   string  `json:"purchase_fund_expected"`
+	PurchaseFundCounted    *string `json:"purchase_fund_counted"`
+	PurchaseFundDifference *string `json:"purchase_fund_difference"`
+	PurchaseFundCash       *string `json:"purchase_fund_cash"`
+	CountLines             []struct {
 		VariantID        int64  `json:"variant_id"`
 		ExpectedQuantity int64  `json:"expected_quantity"`
 		CountedQuantity  *int64 `json:"counted_quantity"`
@@ -1069,6 +1123,8 @@ type closingWireRecord struct {
 			CountedCash           *string `json:"counted_cash"`
 			ContributedCash       string  `json:"contributed_cash"`
 			ClosingCash           *string `json:"closing_cash"`
+			PurchaseFundCounted   *string `json:"purchase_fund_counted"`
+			PurchaseFundCash      *string `json:"purchase_fund_cash"`
 		} `json:"offer"`
 	} `json:"rounds"`
 }
@@ -1077,7 +1133,9 @@ var closingWireKeys = []string{"id", "branch_location_id", "branch_name", "statu
 	"cut_at", "closed_at", "commission_rate_percent", "opening_cash", "cash_sales", "cash_expenses",
 	"expected_cash", "counted_cash", "cash_difference", "contributed_cash", "closing_cash",
 	"taken_cash", "sales_total", "commission_amount", "card_total", "transfer_total", "qr_total",
-	"observation", "opened_by_account_id", "count_lines", "rounds", "expenses", "corrections"}
+	"observation", "opened_by_account_id", "purchase_fund_opening", "purchases_total",
+	"purchases_cash", "purchase_fund_expected", "purchase_fund_counted", "purchase_fund_difference",
+	"purchase_fund_cash", "count_lines", "rounds", "expenses", "corrections"}
 
 // closingWire admits only the frozen settlement shape: one object with exactly the published keys.
 func closingWire(t *testing.T, w *httptest.ResponseRecorder, status int) closingWireRecord {
@@ -2785,4 +2843,121 @@ func (f *closingHTTPFixture) absentVariant(t *testing.T, branch, closingID int64
 		t.Fatalf("the fixture needs a variant the branch does not hold: %v", err)
 	}
 	return variant
+}
+
+// TestClosingsPurchaseFundDraftAndDerivedMoney pins S1, S3, S5, S6 and S12 over HTTP: the document
+// publishes the second envelope with the same cents shape as the rest of the payload, the drawer's
+// four keys are still mandatory and the two keys of the envelope are optional, and the envelope is a
+// draft while the warehouse holds the settlement and the offer once it is proposed.
+func TestClosingsPurchaseFundDraftAndDerivedMoney(t *testing.T) {
+	f := closingFixture(t)
+	// The first settlement closes with an envelope of its own, stated in the same draft as the
+	// drawer: 300.00 counted in the purchase fund and 300.00 left in it.
+	first := f.closeSettlement(t, 2, `{"counted_cash":"0.00","contributed_cash":"500.00",`+
+		`"closing_cash":"500.00","observation":"fondo inicial",`+
+		`"purchase_fund_counted":"300.00","purchase_fund_cash":"300.00"}`)
+	if first.PurchaseFundOpening != "0.00" || first.PurchasesTotal != "0.00" ||
+		first.PurchasesCash != "0.00" || first.PurchaseFundExpected != "0.00" ||
+		first.PurchaseFundCounted == nil || *first.PurchaseFundCounted != "300.00" ||
+		first.PurchaseFundDifference == nil || *first.PurchaseFundDifference != "300.00" ||
+		first.PurchaseFundCash == nil || *first.PurchaseFundCash != "300.00" {
+		t.Fatalf("the envelope of the first settlement is not published: %+v", first)
+	}
+	if len(first.Rounds) != 1 || first.Rounds[0].Offer.PurchaseFundCounted == nil ||
+		*first.Rounds[0].Offer.PurchaseFundCounted != "300.00" ||
+		first.Rounds[0].Offer.PurchaseFundCash == nil ||
+		*first.Rounds[0].Offer.PurchaseFundCash != "300.00" {
+		t.Fatalf("the round must publish the envelope of its offer: %+v", first.Rounds)
+	}
+
+	// The next settlement opens with the amount the previous closure left in the envelope, and a
+	// period with no purchases reports zero and no difference, because nobody counted it yet.
+	id := f.open(t, 2)
+	opened := closingWire(t, f.serve(t, f.request(1, "GET", fmt.Sprintf("/api/closings/%d", id), "")), 200)
+	if opened.PurchaseFundOpening != "300.00" || opened.PurchasesTotal != "0.00" ||
+		opened.PurchasesCash != "0.00" || opened.PurchaseFundExpected != "300.00" ||
+		opened.PurchaseFundCounted != nil || opened.PurchaseFundDifference != nil ||
+		opened.PurchaseFundCash != nil {
+		t.Fatalf("a held settlement publishes the envelope of its own window: %+v", opened)
+	}
+	// The drawer is untouched by the second envelope: it still inherits its own fund.
+	if opened.OpeningCash != "500.00" || opened.ExpectedCash != "500.00" {
+		t.Fatalf("the purchase fund must not move the drawer: %+v", opened)
+	}
+
+	// Neither amount of the envelope admits a negative or a non-canonical value, and the two keys are
+	// optional while the drawer's four are not.
+	for name, body := range map[string]string{
+		"counted_negative": `{"counted_cash":"500.00","contributed_cash":"0.00","closing_cash":"100.00",` +
+			`"observation":"","purchase_fund_counted":"-1.00","purchase_fund_cash":"10.00"}`,
+		"cash_negative": `{"counted_cash":"500.00","contributed_cash":"0.00","closing_cash":"100.00",` +
+			`"observation":"","purchase_fund_counted":"10.00","purchase_fund_cash":"-10.00"}`,
+		"counted_short": `{"counted_cash":"500.00","contributed_cash":"0.00","closing_cash":"100.00",` +
+			`"observation":"","purchase_fund_counted":"240.0"}`,
+		"cash_number": `{"counted_cash":"500.00","contributed_cash":"0.00","closing_cash":"100.00",` +
+			`"observation":"","purchase_fund_cash":400}`,
+		"unknown_key": `{"counted_cash":"500.00","contributed_cash":"0.00","closing_cash":"100.00",` +
+			`"observation":"","purchase_fund":"10.00"}`,
+		"drawer_key_missing": `{"counted_cash":"500.00","contributed_cash":"0.00",` +
+			`"purchase_fund_counted":"10.00"}`,
+	} {
+		f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", id), body), 400,
+			`{"error":"invalid_request"}`)
+		if name == "" {
+			t.Fatal("unreachable")
+		}
+	}
+
+	// A draft that states neither key is accepted: an envelope nobody counted is a legitimate draft,
+	// exactly like an uncounted drawer.
+	withoutEnvelope := closingWire(t, f.serve(t, f.request(1, "POST",
+		fmt.Sprintf("/api/closings/%d/cash", id),
+		`{"counted_cash":"500.00","contributed_cash":"0.00","closing_cash":"100.00","observation":""}`)), 200)
+	if withoutEnvelope.PurchaseFundCounted != nil || withoutEnvelope.PurchaseFundCash != nil ||
+		withoutEnvelope.PurchaseFundDifference != nil || withoutEnvelope.PurchaseFundExpected != "300.00" {
+		t.Fatalf("a draft without the envelope must leave it unstated: %+v", withoutEnvelope)
+	}
+	if withoutEnvelope.TakenCash == nil || *withoutEnvelope.TakenCash != "400.00" {
+		t.Fatalf("the drawer of the draft must keep its own arithmetic: %+v", withoutEnvelope)
+	}
+
+	// The envelope is stated with the cents shape of the rest of the payload, and the new amount is
+	// not capped by what was counted: it is money the warehouse brings from outside the branch.
+	drafted := closingWire(t, f.serve(t, f.request(1, "POST",
+		fmt.Sprintf("/api/closings/%d/cash", id),
+		`{"counted_cash":"500.00","contributed_cash":"0.00","closing_cash":"100.00",`+
+			`"observation":"contado","purchase_fund_counted":"280.00","purchase_fund_cash":"450.00"}`)), 200)
+	if drafted.PurchaseFundCounted == nil || *drafted.PurchaseFundCounted != "280.00" ||
+		drafted.PurchaseFundDifference == nil || *drafted.PurchaseFundDifference != "-20.00" ||
+		drafted.PurchaseFundCash == nil || *drafted.PurchaseFundCash != "450.00" ||
+		drafted.PurchaseFundExpected != "300.00" || drafted.PurchaseFundOpening != "300.00" {
+		t.Fatalf("the draft must publish the envelope with the cents shape of the payload: %+v", drafted)
+	}
+
+	// Proposing turns the draft into the offer the branch decides, envelope included, and no route
+	// moves it afterwards.
+	f.countAll(t, id)
+	proposed := closingWire(t, f.serve(t, f.request(1, "POST",
+		fmt.Sprintf("/api/closings/%d/propose", id), "")), 200)
+	if proposed.Status != "proposed" || proposed.PurchaseFundCounted == nil ||
+		*proposed.PurchaseFundCounted != "280.00" || proposed.PurchaseFundCash == nil ||
+		*proposed.PurchaseFundCash != "450.00" || len(proposed.Rounds) != 1 ||
+		proposed.Rounds[0].Offer.PurchaseFundCounted == nil ||
+		*proposed.Rounds[0].Offer.PurchaseFundCounted != "280.00" ||
+		proposed.Rounds[0].Offer.PurchaseFundCash == nil ||
+		*proposed.Rounds[0].Offer.PurchaseFundCash != "450.00" {
+		t.Fatalf("the proposal must offer the envelope: %+v", proposed)
+	}
+	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", id),
+		`{"counted_cash":"500.00","contributed_cash":"0.00","closing_cash":"100.00",`+
+			`"observation":"","purchase_fund_counted":"1.00","purchase_fund_cash":"1.00"}`),
+		409, `{"error":"state_conflict"}`)
+	closed := closingWire(t, f.serve(t, f.request(2, "POST",
+		fmt.Sprintf("/api/closings/%d/decision", id), `{"decision":"accepted"}`)), 200)
+	if closed.Status != "closed" || closed.PurchaseFundCounted == nil ||
+		*closed.PurchaseFundCounted != "280.00" || closed.PurchaseFundCash == nil ||
+		*closed.PurchaseFundCash != "450.00" || closed.PurchaseFundDifference == nil ||
+		*closed.PurchaseFundDifference != "-20.00" {
+		t.Fatalf("the closure must keep the envelope the branch accepted: %+v", closed)
+	}
 }

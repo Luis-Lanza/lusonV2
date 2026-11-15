@@ -287,11 +287,22 @@ type CountLine struct {
 // draft either: they are derived from the facts on read. A nil CountedCash or ClosingCash
 // means the admin has not counted the drawer yet, which is a legitimate draft and blocks
 // the proposal; the period's numbers and the commission rate are not draftable at all.
+//
+// PurchaseFundCounted and PurchaseFundCash are the second envelope (S1): what the warehouse counted
+// in the purchase fund and the amount it leaves in it for the next period. Both are optional — a
+// draft that states neither leaves the envelope unstated, exactly like an uncounted drawer — and
+// the new amount is deliberately not bounded by the counted one, because the warehouse brings money
+// from outside the branch (S5, S6).
 type CashDraft struct {
 	CountedCash     *Money
 	ContributedCash Money
 	ClosingCash     *Money
 	Observation     string
+	// PurchaseFundCounted is the envelope the warehouse counted; PurchaseFundCash is the amount
+	// that opens the next period. Both are drafts while the warehouse holds the settlement and both
+	// are frozen by the proposal, exactly like the drawer (S5, S6).
+	PurchaseFundCounted *Money
+	PurchaseFundCash    *Money
 }
 
 // CorrectionStatus is the state of one correction of a closed settlement: the warehouse
@@ -395,21 +406,27 @@ type ProposalCountLine struct {
 // accepted (S14, S15). It carries no seller and no manager name: the commission of a
 // period is one amount for the whole branch (S7).
 type ProposalPayload struct {
-	PeriodStart           time.Time           `json:"period_start"`
-	CutAt                 time.Time           `json:"cut_at"`
-	SalesTotal            Money               `json:"sales_total"`
-	CommissionRatePercent Percent             `json:"commission_rate_percent"`
-	CommissionAmount      Money               `json:"commission_amount"`
-	CashSales             Money               `json:"cash_sales"`
-	CashExpenses          Money               `json:"cash_expenses"`
-	CardTotal             Money               `json:"card_total"`
-	TransferTotal         Money               `json:"transfer_total"`
-	QRTotal               Money               `json:"qr_total"`
-	CountedCash           *Money              `json:"counted_cash"`
-	ContributedCash       Money               `json:"contributed_cash"`
-	ClosingCash           *Money              `json:"closing_cash"`
-	Observation           string              `json:"observation"`
-	CountLines            []ProposalCountLine `json:"count_lines"`
+	PeriodStart           time.Time `json:"period_start"`
+	CutAt                 time.Time `json:"cut_at"`
+	SalesTotal            Money     `json:"sales_total"`
+	CommissionRatePercent Percent   `json:"commission_rate_percent"`
+	CommissionAmount      Money     `json:"commission_amount"`
+	CashSales             Money     `json:"cash_sales"`
+	CashExpenses          Money     `json:"cash_expenses"`
+	CardTotal             Money     `json:"card_total"`
+	TransferTotal         Money     `json:"transfer_total"`
+	QRTotal               Money     `json:"qr_total"`
+	CountedCash           *Money    `json:"counted_cash"`
+	ContributedCash       Money     `json:"contributed_cash"`
+	ClosingCash           *Money    `json:"closing_cash"`
+	Observation           string    `json:"observation"`
+	// PurchaseFundCounted and PurchaseFundCash are the second envelope of the offer: what the
+	// warehouse counted in the purchase fund and the amount it leaves there for the next period.
+	// They are absent from an offer made before the envelope was stated, which is why they are
+	// omitted instead of being invented as zero (S1, S5, S6).
+	PurchaseFundCounted *Money              `json:"purchase_fund_counted,omitempty"`
+	PurchaseFundCash    *Money              `json:"purchase_fund_cash,omitempty"`
+	CountLines          []ProposalCountLine `json:"count_lines"`
 }
 
 // Round is one proposal of the warehouse with the branch's answer, if it has one. Rounds
@@ -471,6 +488,24 @@ type Closing struct {
 	CashDifference *Signed     `json:"cash_difference"`
 	TakenCash      *Signed     `json:"taken_cash"`
 	CountLines     []CountLine `json:"count_lines"`
+	// The purchase fund is the branch's second envelope of physical money, counted and settled
+	// apart from the drawer (S1). PurchaseFundOpening is the amount the previous closure left in it,
+	// PurchasesTotal and PurchasesCash are the sums of the purchases of the window — the only money
+	// reading of this document that comes from the purchases and not from the cash ledger — and
+	// PurchaseFundExpected is opening minus that cash, net of the counter-documents that return
+	// money (S3, S11). PurchaseFundCounted is what the warehouse counted, and PurchaseFundDifference
+	// is that count against the expectation: it is informational and blocks nothing, exactly like the
+	// cash difference, and is null while the envelope is uncounted. PurchaseFundCash is the amount
+	// the warehouse leaves in it, which opens the next period (S5, S6). Opening, purchases and
+	// expectation are derived on read; the counted amount and the new amount are the database's
+	// columns, drafted through CashDraft and frozen by the proposal.
+	PurchaseFundOpening    Money   `json:"purchase_fund_opening"`
+	PurchasesTotal         Money   `json:"purchases_total"`
+	PurchasesCash          Money   `json:"purchases_cash"`
+	PurchaseFundExpected   Signed  `json:"purchase_fund_expected"`
+	PurchaseFundCounted    *Money  `json:"purchase_fund_counted"`
+	PurchaseFundDifference *Signed `json:"purchase_fund_difference"`
+	PurchaseFundCash       *Money  `json:"purchase_fund_cash"`
 	// Corrections are the corrections of the closed settlement, oldest first, each one with the reason
 	// the warehouse stated, its status and -- once the branch accepted it -- the deltas it applied. The
 	// row above keeps the numbers it was signed with; the derived numbers of this document are
@@ -659,6 +694,11 @@ func canonicalCount(counted []Counted) ([]Counted, error) {
 // bound, and the fund bound the closure enforces (S10, L13). The fund is compared against
 // the drawer only when both sides are known, because a draft may still be missing the
 // count.
+//
+// The purchase envelope is canonicalized the same way and bounded by nothing but its own column
+// check: it is a second envelope of physical money, so its new amount is not compared against what
+// was counted — the warehouse brings money from outside the branch — and it enters the drawer's
+// identities in no way (S1, S5, S12).
 func canonicalCash(draft CashDraft) (CashDraft, error) {
 	contributed, err := ParseAmount(string(draft.ContributedCash))
 	if err != nil {
@@ -686,6 +726,12 @@ func canonicalCash(draft CashDraft) (CashDraft, error) {
 		if err := checkFund(*canonical.CountedCash, canonical.ContributedCash, *canonical.ClosingCash); err != nil {
 			return CashDraft{}, err
 		}
+	}
+	if canonical.PurchaseFundCounted, err = canonicalOptionalAmount(draft.PurchaseFundCounted); err != nil {
+		return CashDraft{}, err
+	}
+	if canonical.PurchaseFundCash, err = canonicalOptionalAmount(draft.PurchaseFundCash); err != nil {
+		return CashDraft{}, err
 	}
 	return canonical, nil
 }

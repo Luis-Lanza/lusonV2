@@ -583,6 +583,11 @@ func closingCountLines(d *json.Decoder) ([]closings.Counted, error) {
 // it made, the fund it leaves behind and its observation. The cash sales and the cash expenses
 // of the period are the ledgers' own facts, so they are not part of this body at all, exactly
 // like the derived amounts the store computes on read.
+//
+// purchase_fund_counted and purchase_fund_cash are the second envelope (S1, S5): both are optional,
+// because a warehouse that has not counted the envelope yet states neither, and both are amounts of
+// the same canonical shape as every other money of this contract. An absent key leaves the envelope
+// unstated instead of inventing a zero.
 func decodeClosingCash(r *http.Request) (closings.CashDraft, error) {
 	draft := closings.CashDraft{}
 	d, err := closingDecoder(r)
@@ -605,6 +610,10 @@ func decodeClosingCash(r *http.Request) (closings.CashDraft, error) {
 			draft.ClosingCash, err = closingOptionalAmount(d)
 		case "observation":
 			draft.Observation, err = closingString(d)
+		case "purchase_fund_counted":
+			draft.PurchaseFundCounted, err = closingOptionalAmount(d)
+		case "purchase_fund_cash":
+			draft.PurchaseFundCash, err = closingOptionalAmount(d)
 		default:
 			return closings.CashDraft{}, closings.ErrInvalid
 		}
@@ -612,9 +621,12 @@ func decodeClosingCash(r *http.Request) (closings.CashDraft, error) {
 			return closings.CashDraft{}, closings.ErrInvalid
 		}
 	}
-	// Every key is mandatory, so a draft states the drawer whole: an absent key would be an
-	// omitted fact and not an uncounted amount, which is the JSON null of this contract.
-	if len(seen) != 4 || !closingDelimiter(d, '}') {
+	// The four keys of the drawer are mandatory, so a draft states the drawer whole: an absent key
+	// would be an omitted fact and not an uncounted amount, which is the JSON null of this contract.
+	// The two keys of the purchase envelope are the only optional ones: they are its own draft and an
+	// absent one leaves the envelope unstated (S1, S5).
+	if !seen["counted_cash"] || !seen["contributed_cash"] || !seen["closing_cash"] ||
+		!seen["observation"] || !closingDelimiter(d, '}') {
 		return closings.CashDraft{}, closings.ErrInvalid
 	}
 	if _, err := d.Token(); err != io.EOF {
@@ -958,21 +970,26 @@ type closingCorrectionDTO struct {
 // collected and never holds in its drawer (S13). The offer's own period is frozen, so the
 // drawer it states is published as it was offered and never recomputed against today's rates.
 type closingOfferDTO struct {
-	PeriodStart           string                `json:"period_start"`
-	CutAt                 string                `json:"cut_at"`
-	SalesTotal            string                `json:"sales_total"`
-	CommissionRatePercent string                `json:"commission_rate_percent"`
-	CommissionAmount      string                `json:"commission_amount"`
-	CashSales             string                `json:"cash_sales"`
-	CashExpenses          string                `json:"cash_expenses"`
-	CardTotal             string                `json:"card_total"`
-	TransferTotal         string                `json:"transfer_total"`
-	QRTotal               string                `json:"qr_total"`
-	CountedCash           *string               `json:"counted_cash"`
-	ContributedCash       string                `json:"contributed_cash"`
-	ClosingCash           *string               `json:"closing_cash"`
-	Observation           string                `json:"observation"`
-	CountLines            []closingOfferLineDTO `json:"count_lines"`
+	PeriodStart           string  `json:"period_start"`
+	CutAt                 string  `json:"cut_at"`
+	SalesTotal            string  `json:"sales_total"`
+	CommissionRatePercent string  `json:"commission_rate_percent"`
+	CommissionAmount      string  `json:"commission_amount"`
+	CashSales             string  `json:"cash_sales"`
+	CashExpenses          string  `json:"cash_expenses"`
+	CardTotal             string  `json:"card_total"`
+	TransferTotal         string  `json:"transfer_total"`
+	QRTotal               string  `json:"qr_total"`
+	CountedCash           *string `json:"counted_cash"`
+	ContributedCash       string  `json:"contributed_cash"`
+	ClosingCash           *string `json:"closing_cash"`
+	Observation           string  `json:"observation"`
+	// PurchaseFundCounted and PurchaseFundCash are the envelope of the offer: what the warehouse
+	// counted in the purchase fund and the amount it leaves there for the next period. They are
+	// absent from an offer made before the warehouse stated the envelope (S1, S5, S6).
+	PurchaseFundCounted *string               `json:"purchase_fund_counted,omitempty"`
+	PurchaseFundCash    *string               `json:"purchase_fund_cash,omitempty"`
+	CountLines          []closingOfferLineDTO `json:"count_lines"`
 }
 
 // closingRoundDTO is one proposal round with the branch's answer, if it has one. Rounds are
@@ -1021,6 +1038,21 @@ type closingDTO struct {
 	Observation           string                `json:"observation"`
 	OpenedByAccountID     int64                 `json:"opened_by_account_id"`
 	CountLines            []closingCountLineDTO `json:"count_lines"`
+	// The purchase fund is the branch's second envelope, counted and settled apart from the drawer
+	// (S1). purchase_fund_opening is the amount the previous closure left in it, purchases_total and
+	// purchases_cash are the sums of the purchases of the window — counter-documents included, so they
+	// already subtract — and purchase_fund_expected is opening minus that cash (S3, S11).
+	// purchase_fund_counted is what the warehouse counted and purchase_fund_difference is that count
+	// against the expectation: informational, never a block, and null while uncounted. purchase_fund_cash
+	// is the amount the warehouse leaves in it, which opens the next period (S5, S6). None of these
+	// amounts enters the drawer's identities nor the commission (S12).
+	PurchaseFundOpening    string  `json:"purchase_fund_opening"`
+	PurchasesTotal         string  `json:"purchases_total"`
+	PurchasesCash          string  `json:"purchases_cash"`
+	PurchaseFundExpected   string  `json:"purchase_fund_expected"`
+	PurchaseFundCounted    *string `json:"purchase_fund_counted"`
+	PurchaseFundDifference *string `json:"purchase_fund_difference"`
+	PurchaseFundCash       *string `json:"purchase_fund_cash"`
 	// Expenses are the small expenses of the window this settlement covers, in the order the branch
 	// recorded them (S12). They are the facts its cash_expenses total was computed from, so the
 	// warehouse sees what it subtracts and the branch what it is charged for.
@@ -1217,6 +1249,58 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 		}
 		takenText = &amount
 	}
+	// The purchase envelope is revalidated with the same discipline as the drawer: its opening, the
+	// sums of the purchases of the window and the expectation they produce are recomputed here, so a
+	// number can never reach the screen without being rederived from the facts that produce it (S1,
+	// S3, S11). The difference is published only against an envelope that was counted, exactly like
+	// the cash difference, and its identity is the same arithmetic.
+	purchaseFundOpening, ok := closingAmountText(closing.PurchaseFundOpening)
+	if !ok {
+		return unavailable()
+	}
+	purchasesTotal, ok := closingAmountText(closing.PurchasesTotal)
+	if !ok {
+		return unavailable()
+	}
+	purchasesCash, ok := closingAmountText(closing.PurchasesCash)
+	if !ok {
+		return unavailable()
+	}
+	purchaseFundExpected, err := closings.PurchaseFundExpected(closing.PurchaseFundOpening,
+		closing.PurchasesCash)
+	if err != nil || purchaseFundExpected != closing.PurchaseFundExpected {
+		return unavailable()
+	}
+	purchaseFundExpectedText, ok := closingSignedText(purchaseFundExpected)
+	if !ok {
+		return unavailable()
+	}
+	purchaseFundCounted, ok := closingOptionalAmountRecord(closing.PurchaseFundCounted)
+	if !ok {
+		return unavailable()
+	}
+	purchaseFundCash, ok := closingOptionalAmountRecord(closing.PurchaseFundCash)
+	if !ok {
+		return unavailable()
+	}
+	var purchaseFundDifferenceText *string
+	if closing.PurchaseFundCounted == nil {
+		// An uncounted envelope states no difference: a difference of zero would be a count nobody made.
+		if closing.PurchaseFundDifference != nil {
+			return unavailable()
+		}
+	} else {
+		difference, err := closings.CashDifference(*closing.PurchaseFundCounted, purchaseFundExpected)
+		if err != nil || closing.PurchaseFundDifference == nil ||
+			difference != *closing.PurchaseFundDifference {
+			return unavailable()
+		}
+		text, ok := closingSignedText(difference)
+		if !ok {
+			return unavailable()
+		}
+		purchaseFundDifferenceText = &text
+	}
 	lines := make([]closingCountLineDTO, 0, len(closing.CountLines))
 	var previous int64
 	for _, line := range closing.CountLines {
@@ -1291,7 +1375,11 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 		TakenCash: takenText, SalesTotal: amounts[3], CommissionAmount: amounts[4],
 		CardTotal: amounts[5], TransferTotal: amounts[6], QRTotal: amounts[7],
 		Observation: closing.Observation, OpenedByAccountID: closing.OpenedByAccountID,
-		CountLines: lines, Rounds: rounds, Expenses: expenses, Corrections: corrections,
+		PurchaseFundOpening: purchaseFundOpening, PurchasesTotal: purchasesTotal,
+		PurchasesCash: purchasesCash, PurchaseFundExpected: purchaseFundExpectedText,
+		PurchaseFundCounted: purchaseFundCounted, PurchaseFundDifference: purchaseFundDifferenceText,
+		PurchaseFundCash: purchaseFundCash,
+		CountLines:       lines, Rounds: rounds, Expenses: expenses, Corrections: corrections,
 	}, nil
 }
 
@@ -1413,6 +1501,17 @@ func closingOfferRecord(payload closings.ProposalPayload) (closingOfferDTO, bool
 	if !ok || countedCash == nil || closingCash == nil {
 		return closingOfferDTO{}, false
 	}
+	// The purchase envelope of the offer is optional: an offer made before the warehouse stated it
+	// carries neither amount, and one that states the counted amount does not have to state what it
+	// leaves behind. Both are revalidated as the canonical money of this contract (S1, S5).
+	purchaseCounted, ok := closingOptionalAmountRecord(payload.PurchaseFundCounted)
+	if !ok {
+		return closingOfferDTO{}, false
+	}
+	purchaseCash, ok := closingOptionalAmountRecord(payload.PurchaseFundCash)
+	if !ok {
+		return closingOfferDTO{}, false
+	}
 	if payload.Observation != "" && !closings.ValidObservation(payload.Observation) {
 		return closingOfferDTO{}, false
 	}
@@ -1432,6 +1531,7 @@ func closingOfferRecord(payload closings.ProposalPayload) (closingOfferDTO, bool
 		CommissionRatePercent: string(rate), CommissionAmount: amounts[1], CashSales: amounts[2],
 		CashExpenses: amounts[3], CardTotal: amounts[4], TransferTotal: amounts[5], QRTotal: qrTotal,
 		CountedCash: countedCash, ContributedCash: contributed, ClosingCash: closingCash,
+		PurchaseFundCounted: purchaseCounted, PurchaseFundCash: purchaseCash,
 		Observation: payload.Observation, CountLines: lines}, true
 }
 

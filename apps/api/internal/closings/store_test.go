@@ -9,12 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/auth"
 	"luson/api/internal/bootstrap"
 	"luson/api/internal/closings"
 	"luson/api/internal/config"
 	"luson/api/internal/pricing"
+	"luson/api/internal/purchases"
 	"luson/api/internal/sales"
 	"luson/api/internal/testpg"
 	"luson/api/internal/transfers"
@@ -24,11 +26,12 @@ import (
 // Without an admitted LUSON_TEST_PG_MANIFEST every test below fails closed at testpg.Open
 // and that is the expected local outcome.
 type env struct {
-	ctx    context.Context
-	pool   *pgxpool.Pool
-	store  *closings.Store
-	sales  *sales.Store
-	prices *pricing.Store
+	ctx       context.Context
+	pool      *pgxpool.Pool
+	store     *closings.Store
+	sales     *sales.Store
+	prices    *pricing.Store
+	purchases *purchases.Store
 }
 
 // serials numbers the batteries of the fixtures below, so one database never sees a
@@ -50,7 +53,8 @@ func fixture(t *testing.T) *env {
 	if bootstrap.Provision(ctx, p, credentials) != nil {
 		t.Fatal("test account provisioning failed")
 	}
-	e := &env{ctx: ctx, pool: p, store: closings.New(p), sales: sales.New(p), prices: pricing.New(p)}
+	e := &env{ctx: ctx, pool: p, store: closings.New(p), sales: sales.New(p), prices: pricing.New(p),
+		purchases: purchases.New(p)}
 	// The trial catalogue gives every variant a fictional quantity in every location, and
 	// the count sheet of an open settlement covers all of them. A settlement test needs
 	// two known rows, so the branch starts from a count sheet of its own.
@@ -2655,5 +2659,254 @@ func TestCorrectionFundLandsOnce(t *testing.T) {
 	// The delta lands once: the period that already started keeps the fund it inherited.
 	if opening := e.text(t, "SELECT opening_cash::text FROM branch_closings WHERE id=$1", next.ID); opening != "60.00" {
 		t.Fatalf("the started period must keep its opening cash: %q", opening)
+	}
+}
+
+// purchase registers one real purchase of branch 2 through the purchase store, paid in cash from
+// the purchase fund, so the settlement reads the documents exactly as the branch wrote them. One
+// used battery at the price the test states makes the total and the cash of the document the same
+// number, which is what the envelope of the settlement has to sum.
+func (e *env) purchase(t *testing.T, key, cash string) purchases.Document {
+	t.Helper()
+	document, err := e.purchases.Create(e.ctx, identity(2), purchases.CreateInput{
+		OperationKey: key,
+		UsedLines:    []purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 1, UnitPrice: purchases.Money(cash)}},
+		PaidCash:     purchases.Money(cash),
+		PaidTransfer: "0.00",
+	})
+	if err != nil {
+		t.Fatalf("the purchase %q could not be registered: %v", key, err)
+	}
+	return document
+}
+
+// TestPurchaseFundDerivesOpeningPurchasesAndDifference pins S1, S3, S5 and S11 at the store: the
+// envelope of one settlement opens with the amount the previous closure left in it, its purchases
+// are the documents of its own window net of their counter-documents, its expectation follows from
+// those two numbers, and its difference is published only once the envelope was counted. The
+// envelope is drafted through the drawer draft, becomes the offer when the settlement is proposed
+// and is refused afterwards, and the amount left behind is what opens the next period.
+func TestPurchaseFundDerivesOpeningPurchasesAndDifference(t *testing.T) {
+	e := fixture(t)
+	// The first settlement of the branch closes with an envelope of its own: the drawer is settled
+	// as every other test settles it, and the purchase fund is counted and left at 300.00.
+	first, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the first settlement could not be opened: %v", err)
+	}
+	e.countAll(t, first.ID)
+	zero, contribution, envelope := closings.Money("0.00"), closings.Money("500.00"), closings.Money("300.00")
+	drafted, err := e.store.SaveCash(e.ctx, warehouse(), first.ID, closings.CashDraft{
+		CountedCash: &zero, ContributedCash: contribution, ClosingCash: &contribution,
+		Observation: "arranque de la sucursal", PurchaseFundCounted: &envelope,
+		PurchaseFundCash: &envelope,
+	})
+	if err != nil {
+		t.Fatalf("the draft must state the purchase fund: %v", err)
+	}
+	// Before the proposal the envelope is a draft, and its difference is derived against the
+	// expectation of its own window: no previous closure and no purchases, so 0.00 of expectation.
+	if drafted.PurchaseFundOpening != "0.00" || drafted.PurchasesTotal != "0.00" ||
+		drafted.PurchasesCash != "0.00" || drafted.PurchaseFundExpected != "0.00" ||
+		drafted.PurchaseFundCounted == nil || *drafted.PurchaseFundCounted != "300.00" ||
+		drafted.PurchaseFundDifference == nil || *drafted.PurchaseFundDifference != "300.00" ||
+		drafted.PurchaseFundCash == nil || *drafted.PurchaseFundCash != "300.00" {
+		t.Fatalf("the envelope of a first settlement is not derived: %+v", drafted)
+	}
+	// The drawer is untouched by the second envelope: its three identities are still its own.
+	if drafted.ExpectedCash != "0.00" || *drafted.CashDifference != "0.00" ||
+		*drafted.TakenCash != "0.00" || drafted.ClosingCash == nil || *drafted.ClosingCash != "500.00" {
+		t.Fatalf("the purchase fund must not move the drawer: %+v", drafted)
+	}
+	if _, err := e.store.Propose(e.ctx, warehouse(), first.ID); err != nil {
+		t.Fatalf("the first settlement could not be proposed: %v", err)
+	}
+	closed, err := e.store.Decide(e.ctx, identity(2), first.ID, closings.DecisionAccepted, "")
+	if err != nil {
+		t.Fatalf("the branch must accept the first settlement: %v", err)
+	}
+	if closed.PurchaseFundCounted == nil || *closed.PurchaseFundCounted != "300.00" ||
+		closed.PurchaseFundCash == nil || *closed.PurchaseFundCash != "300.00" {
+		t.Fatalf("the closure must keep the envelope of the offer: %+v", closed)
+	}
+
+	// The branch buys inside the period: two documents and the counter-document of the first one,
+	// which is stored with its negative amounts and therefore subtracts from both sums (S3, S11).
+	charged := e.purchase(t, "closings-fund-period-01", "120.50")
+	e.purchase(t, "closings-fund-period-02", "50.00")
+	if _, err := e.purchases.Reverse(e.ctx, identity(2), charged.ID, "closings-fund-reverse-01",
+		"la batería no servía"); err != nil {
+		t.Fatalf("the counter-document could not be registered: %v", err)
+	}
+
+	// The next settlement opens with the amount the previous closure left and states the purchases
+	// of its own window: 120.50 - 120.50 + 50.00 of cash, and 250.00 of expectation.
+	second, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the second settlement could not be opened: %v", err)
+	}
+	e.countAll(t, second.ID)
+	read, err := e.store.Read(e.ctx, warehouse(), second.ID)
+	if err != nil {
+		t.Fatalf("the second settlement could not be read: %v", err)
+	}
+	if read.PurchaseFundOpening != "300.00" || read.PurchasesTotal != "50.00" ||
+		read.PurchasesCash != "50.00" || read.PurchaseFundExpected != "250.00" {
+		t.Fatalf("the envelope of the period is not the one its own documents state: %+v", read)
+	}
+	if read.PurchaseFundCounted != nil || read.PurchaseFundDifference != nil ||
+		read.PurchaseFundCash != nil {
+		t.Fatalf("an envelope nobody counted states no count, no difference and no new amount: %+v", read)
+	}
+	if read.OpeningCash != "500.00" {
+		t.Fatalf("the drawer must still inherit its own fund: %q", read.OpeningCash)
+	}
+
+	// The envelope is drafted through the drawer draft, and the new amount is not capped by what was
+	// counted: the warehouse brings money from outside the branch (S5, S6).
+	drafter, err := e.store.SaveCash(e.ctx, warehouse(), second.ID, closings.CashDraft{
+		CountedCash: moneyPtr("500.00"), ContributedCash: "0.00", ClosingCash: moneyPtr("100.00"),
+		Observation: "contado en persona", PurchaseFundCounted: moneyPtr("240.00"),
+		PurchaseFundCash: moneyPtr("400.00"),
+	})
+	if err != nil {
+		t.Fatalf("the drawer draft must state the envelope: %v", err)
+	}
+	if drafter.PurchaseFundCounted == nil || *drafter.PurchaseFundCounted != "240.00" ||
+		drafter.PurchaseFundDifference == nil || *drafter.PurchaseFundDifference != "-10.00" ||
+		drafter.PurchaseFundCash == nil || *drafter.PurchaseFundCash != "400.00" ||
+		drafter.PurchaseFundExpected != "250.00" {
+		t.Fatalf("the difference of the envelope is the count against its expectation: %+v", drafter)
+	}
+
+	// Proposing turns the draft into the offer, and the round states the envelope the branch decides.
+	proposed, err := e.store.Propose(e.ctx, warehouse(), second.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	round := proposed.LatestRound()
+	if proposed.PurchaseFundCounted == nil || *proposed.PurchaseFundCounted != "240.00" ||
+		proposed.PurchaseFundCash == nil || *proposed.PurchaseFundCash != "400.00" || round == nil ||
+		round.Payload.PurchaseFundCounted == nil || *round.Payload.PurchaseFundCounted != "240.00" ||
+		round.Payload.PurchaseFundCash == nil || *round.Payload.PurchaseFundCash != "400.00" {
+		t.Fatalf("the proposal must offer the envelope it froze: %+v", proposed)
+	}
+	// Nothing changes the envelope after the offer: the draft is closed and the database refuses a
+	// write that would move it with the state machine.
+	_, err = e.store.SaveCash(e.ctx, warehouse(), second.ID, closings.CashDraft{
+		CountedCash: moneyPtr("500.00"), ContributedCash: "0.00", ClosingCash: moneyPtr("100.00"),
+		PurchaseFundCounted: moneyPtr("1.00"), PurchaseFundCash: moneyPtr("1.00"),
+	})
+	refused(t, err, closings.ErrStateConflict)
+	var database *pgconn.PgError
+	_, err = e.pool.Exec(e.ctx, `UPDATE branch_closings
+ SET status='closed',purchase_fund_cash=999.00 WHERE id=$1`, second.ID)
+	if !errors.As(err, &database) || database.Code != "LC005" {
+		t.Fatalf("the database must refuse an envelope that moves with the closure: %v", err)
+	}
+	if stored := e.text(t, `SELECT coalesce(purchase_fund_cash::text,'')||'/'||coalesce(purchase_fund_counted::text,'')
+ FROM branch_closings WHERE id=$1`, second.ID); stored != "400.00/240.00" {
+		t.Fatalf("a refused write must leave the envelope as it was: %q", stored)
+	}
+	accepted, err := e.store.Decide(e.ctx, identity(2), second.ID, closings.DecisionAccepted, "")
+	if err != nil {
+		t.Fatalf("the branch must accept the offer: %v", err)
+	}
+	if accepted.Status != closings.StatusClosed || accepted.PurchaseFundCounted == nil ||
+		*accepted.PurchaseFundCounted != "240.00" || accepted.PurchaseFundCash == nil ||
+		*accepted.PurchaseFundCash != "400.00" {
+		t.Fatalf("the closed settlement must keep the envelope it offered: %+v", accepted)
+	}
+
+	// What the warehouse left opens the next period, and a period with no purchases of its own
+	// reports zero and no difference at all.
+	third, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the third settlement could not be opened: %v", err)
+	}
+	empty, err := e.store.Read(e.ctx, warehouse(), third.ID)
+	if err != nil {
+		t.Fatalf("the third settlement could not be read: %v", err)
+	}
+	if empty.PurchaseFundOpening != "400.00" || empty.PurchasesTotal != "0.00" ||
+		empty.PurchasesCash != "0.00" || empty.PurchaseFundExpected != "400.00" {
+		t.Fatalf("the amount left behind opens the next period: %+v", empty)
+	}
+	if empty.PurchaseFundCounted != nil || empty.PurchaseFundDifference != nil {
+		t.Fatalf("a period with no purchases and no count states no difference: %+v", empty)
+	}
+	// A history row reads its own predecessor and never the envelope of a later closure: the first
+	// settlement of the branch has none and the second one inherited 300.00, whatever closed after
+	// them.
+	firstAgain, err := e.store.Read(e.ctx, warehouse(), first.ID)
+	if err != nil {
+		t.Fatalf("the first settlement could not be read again: %v", err)
+	}
+	if firstAgain.PurchaseFundOpening != "0.00" || firstAgain.PurchasesTotal != "0.00" ||
+		firstAgain.PurchaseFundExpected != "0.00" {
+		t.Fatalf("a history row must read its own predecessor: %+v", firstAgain)
+	}
+	secondAgain, err := e.store.Read(e.ctx, warehouse(), second.ID)
+	if err != nil {
+		t.Fatalf("the second settlement could not be read again: %v", err)
+	}
+	if secondAgain.PurchaseFundOpening != "300.00" || secondAgain.PurchasesCash != "50.00" ||
+		secondAgain.PurchaseFundExpected != "250.00" {
+		t.Fatalf("the second settlement must keep the envelope of its own period: %+v", secondAgain)
+	}
+}
+
+// TestPurchaseFundDifferenceDoesNotBlockButAPendingCountStillDoes pins the informational character
+// of the envelope's difference (S8, S5): a fund counted below its expectation never blocks the
+// proposal, exactly like the cash difference, while a pending line of the count sheet still does.
+func TestPurchaseFundDifferenceDoesNotBlockButAPendingCountStillDoes(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	e.countAll(t, opened.ID)
+	// The envelope is counted short: 20.00 against an expectation of 0.00, because the previous
+	// closure left no purchase fund and the period bought nothing.
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID, closings.CashDraft{
+		CountedCash: moneyPtr("500.00"), ContributedCash: "0.00", ClosingCash: moneyPtr("100.00"),
+		PurchaseFundCounted: moneyPtr("20.00"), PurchaseFundCash: moneyPtr("20.00"),
+	}); err != nil {
+		t.Fatalf("the envelope must be draftable: %v", err)
+	}
+	// A pending line still refuses the offer, and the envelope has no part in that refusal.
+	if _, err := e.pool.Exec(e.ctx, `UPDATE closing_count_lines SET counted_quantity=NULL
+ WHERE closing_id=$1 AND variant_id=2`, opened.ID); err != nil {
+		t.Fatalf("the seeded line could not be made pending again: %v", err)
+	}
+	_, err = e.store.Propose(e.ctx, warehouse(), opened.ID)
+	var pending *closings.CountPending
+	if !errors.As(err, &pending) || pending.VariantID != 2 {
+		t.Fatalf("a pending variant must still refuse the offer: %v", err)
+	}
+	refused(t, err, closings.ErrClosureRefused)
+	// The same settlement, with the line counted, is offered with the difference of the envelope
+	// published and unblocking.
+	if _, err := e.store.Count(e.ctx, warehouse(), opened.ID,
+		[]closings.Counted{{VariantID: 2, Quantity: 4}}); err != nil {
+		t.Fatalf("the pending line could not be counted: %v", err)
+	}
+	proposed, err := e.store.Propose(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("a fund difference must never block the proposal: %v", err)
+	}
+	if proposed.PurchaseFundCounted == nil || *proposed.PurchaseFundCounted != "20.00" ||
+		proposed.PurchaseFundDifference == nil || *proposed.PurchaseFundDifference != "20.00" ||
+		proposed.PurchaseFundExpected != "0.00" {
+		t.Fatalf("the difference of the envelope must be published with its sign: %+v", proposed)
+	}
+	// The branch accepts it: the difference is reported, never a refusal, and the drawer keeps its
+	// own identities untouched by the second envelope.
+	closed, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, "")
+	if err != nil || closed.Status != closings.StatusClosed ||
+		closed.PurchaseFundDifference == nil || *closed.PurchaseFundDifference != "20.00" ||
+		*closed.CashDifference != "0.00" || *closed.TakenCash != "400.00" {
+		t.Fatalf("a difference of the envelope must not block the closure: %+v %v", closed, err)
 	}
 }
