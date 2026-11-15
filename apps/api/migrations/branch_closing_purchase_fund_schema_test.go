@@ -51,7 +51,7 @@ func TestPurchaseFundMigrationShape(t *testing.T) {
 		"IF NEW.paid_transfer <> 0 THEN",
 		"MESSAGE='A branch purchase is paid in cash from the purchase fund'",
 		"IF NEW.reverses_purchase_id IS NOT NULL THEN",
-		"PERFORM pg_advisory_xact_lock(340252, NEW.location_id::integer);",
+		"PERFORM pg_advisory_xact_lock(340251, NEW.location_id::integer);",
 		"SELECT settlement.purchase_fund_cash, settlement.closed_at INTO opening, since",
 		"FROM branch_closings settlement",
 		"AND settlement.status = 'closed'",
@@ -499,4 +499,78 @@ func TestPurchaseFundAdmitsTheCounterDocumentOfALegacyTransferPayment(t *testing
 		t.Fatalf("the mirror must return what the legacy purchase paid in cash: %q %v", net, err)
 	}
 	t.Logf("044: a counter-document of a transfer-paid legacy purchase is admitted")
+}
+
+// TestPurchaseFundWaitsForTheSettlementLockOfItsBranch proves the fund is serialized with the
+// closure that replaces it: a purchase takes the closure's own advisory key, so while a settlement
+// is closing, no purchase of that branch can read the envelope it is about to replace. With a key
+// of its own the purchase would read the previous closure and the new envelope could be overspent.
+func TestPurchaseFundWaitsForTheSettlementLockOfItsBranch(t *testing.T) {
+	ctx, p := purchaseFundFixture(t)
+	settlePurchaseFund(t, ctx, p, 2, "100.00", "100.00")
+
+	// The closure of branch 2, held open in its own transaction.
+	closing, err := p.Begin(ctx)
+	if err != nil {
+		t.Fatal("the closing transaction could not start")
+	}
+	if _, err := closing.Exec(ctx, `SELECT pg_advisory_xact_lock(340251, 2)`); err != nil {
+		_ = closing.Rollback(ctx)
+		t.Fatal("the lock of the closure could not be taken")
+	}
+
+	// A purchase of the same branch waits for it instead of reading the envelope it replaces: the
+	// statement times out rather than passing the balance check beside the closure.
+	waiting, err := p.Begin(ctx)
+	if err != nil {
+		_ = closing.Rollback(ctx)
+		t.Fatal("the purchase transaction could not start")
+	}
+	if _, err := waiting.Exec(ctx, `SET LOCAL statement_timeout = '500ms'`); err != nil {
+		_ = waiting.Rollback(ctx)
+		_ = closing.Rollback(ctx)
+		t.Fatal("the statement timeout could not be set")
+	}
+	_, err = waiting.Exec(ctx, `INSERT INTO purchases(operation_key,location_id,total,paid_cash,paid_transfer,created_by_account_id)
+ VALUES('purchase-fund-lock-01',2,10.00,10.00,0.00,2)`)
+	_ = waiting.Rollback(ctx)
+	if err == nil {
+		_ = closing.Rollback(ctx)
+		t.Fatal("a purchase must wait for the lock of the closure, not pass beside it")
+	}
+	if !strings.Contains(err.Error(), "statement timeout") {
+		// Any other refusal would mean the wait is not on the closure's lock at all.
+		_ = closing.Rollback(ctx)
+		t.Fatalf("the purchase must block on the closure's lock, got %v", err)
+	}
+	if err := closing.Rollback(ctx); err != nil {
+		t.Fatal("the closing transaction could not be rolled back")
+	}
+
+	// With the closure gone the same purchase is admitted, and the envelope is intact.
+	buy(t, ctx, p, "purchase-fund-lock-02", "10.00")
+	var available string
+	if err := p.QueryRow(ctx, `SELECT purchase_fund_cash - coalesce(sum(paid_cash),0)
+ FROM branch_closings c LEFT JOIN purchases pu ON pu.location_id=c.branch_location_id
+ WHERE c.status='closed' AND c.branch_location_id=2 GROUP BY c.id, c.purchase_fund_cash
+ ORDER BY c.closed_at DESC LIMIT 1`).Scan(&available); err != nil || available != "90.00" {
+		t.Fatalf("the envelope must be charged once: %q %v", available, err)
+	}
+	t.Logf("044: a purchase waits for the closure's lock and charges the envelope once")
+}
+
+// TestPurchaseFundLockIsTheClosureKey pins the key itself: the two rules must share one namespace,
+// and a guard that invented its own would silently reopen the race this version closes.
+func TestPurchaseFundLockIsTheClosureKey(t *testing.T) {
+	b, err := migrations.Files.ReadFile(migration044)
+	if err != nil {
+		t.Fatal("the purchase fund migration must be embedded", err)
+	}
+	sql := string(b)
+	if !strings.Contains(sql, "pg_advisory_xact_lock(340251, NEW.location_id::integer);") {
+		t.Error("044 must take the lock the closure of the branch already takes")
+	}
+	if strings.Contains(sql, "340252") {
+		t.Error("044 must not hold a lock namespace of its own")
+	}
 }

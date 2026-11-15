@@ -47,10 +47,11 @@
 -- the purchases already stored stay exactly as they are, and a branch corrects one with the
 -- counter-document of the document itself.
 --
--- The lock: the balance is read under the per-branch advisory lock 340252, the one this
--- envelope owns, while 034 and 035 take 340251 for the settlement of the same branch. It is
--- taken before anything is read, so two purchases of one branch can never both fit in the same
--- remaining amount.
+-- The lock: the balance is read under the per-branch advisory lock 340251, the same key 034 and
+-- 035 take for the settlement of that branch, and it is taken before anything is read. Sharing
+-- the key is the point: two purchases of one branch can never both fit in the same remaining
+-- amount, and a purchase can never read the envelope that a closure is replacing in the same
+-- moment. A key of its own would leave exactly that window open.
 --
 -- The one case the balance cannot measure: a settlement that closed before this version, or
 -- one that closes before the screen that states the envelope, holds NULL in
@@ -298,9 +299,12 @@ BEGIN
         RAISE EXCEPTION USING ERRCODE='LP006',
             MESSAGE='A branch purchase is paid in cash from the purchase fund';
     END IF;
-    -- The balance is read under the per-branch lock of this envelope, so two purchases of one
-    -- branch cannot both pass against the same remaining amount.
-    PERFORM pg_advisory_xact_lock(340252, NEW.location_id::integer);
+    -- The balance is read under the lock the closure of this branch already takes, so two
+    -- purchases of one branch cannot both pass against the same remaining amount AND a purchase
+    -- can never run beside the closure that replaces the envelope: with a lock of its own it
+    -- would read the previous settlement, and a closure committing in between would leave the
+    -- new envelope overspent. The key is the closure's own (340251), deliberately shared.
+    PERFORM pg_advisory_xact_lock(340251, NEW.location_id::integer);
     -- The envelope that opens the period is the amount the last closure left behind, and the
     -- period is everything the branch spent since that closure (S3). An envelope that was never
     -- declared is not enforced: a branch whose last closure predates this version, or that has
