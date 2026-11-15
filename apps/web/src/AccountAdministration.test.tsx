@@ -270,9 +270,25 @@ describe('the commission of each branch', () => {
     expect(screen.getAllByText('sin eso la sucursal no puede proponer su rendición', { exact: false })).toHaveLength(2);
     // The warehouse is never a branch that pays a commission.
     expect(screen.getByText('Almacén protegido')).toBeTruthy();
+    // The audit of a money parameter says who fixed it and when (S4).
+    expect(screen.getByText(/\d{2}\/\d{2}\/\d{4},? \d{2}:\d{2}/)).toBeTruthy();
     // Two branches still have no rate; the configured one offers to change it instead.
     expect(screen.getAllByRole('button', { name: 'Configurar comisión' })).toHaveLength(2);
     expect(screen.getAllByRole('button', { name: 'Cambiar comisión' })).toHaveLength(1);
+  });
+
+  it('keeps working when a rate names a branch the directory no longer lists', async () => {
+    // The server filters retired branches, so this is the defensive read of a list that carries
+    // one anyway: the extra entry is not a broken answer, it is a branch that no longer exists.
+    setup(undefined, [...configured, { branch_location_id: 3, commission_rate_percent: '5.00',
+      updated_at: '2026-11-15T04:48:56Z', updated_by: 'Admin' }]);
+    await open(); fireEvent.click(screen.getByRole('button', { name: 'Sucursales' }));
+
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(screen.getByText('Sucursal A')).toBeTruthy();
+    expect(screen.getByText('4,50 % · Admin', { exact: false })).toBeTruthy();
+    // The branch that does exist and has no rate is the one the panel flags.
+    expect(screen.getAllByText('Sin configurar')).toHaveLength(1);
   });
 
   it('writes the rate through the settlement surface that owns the rule and refetches the panel', async () => {

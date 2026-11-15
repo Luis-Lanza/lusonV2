@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { Location } from './model';
 import type { PrivateController } from './useInventory';
-import { accountPatch, commissionInput, commissionText, parseAccount, parseAccounts, parseBranch, parseBranches, parseCommissions, validName, type Account, type Commission } from './administrationModel';
+import { accountPatch, commissionInput, commissionMoment, commissionText, parseAccount, parseAccounts, parseBranch, parseBranches, parseCommissions, validName, type Account, type Commission } from './administrationModel';
 import { generateTemporaryPassword, validPassword } from './passwordModel';
 import './administration.css';
 
@@ -146,7 +146,6 @@ export default function AccountAdministration({ controller, owner, initialTab = 
     ]).then(([users, locations, rates]) => {
       if (read.signal.aborted || !current()) return;
       if (users.some(user => !locations.some(location => user.location_id === location.id))) throw new Error('Respuesta inválida del servidor.');
-      if (rates.some(rate => !locations.some(location => location.id === rate.branch_id))) throw new Error('Respuesta inválida del servidor.');
       setAccounts(users); setBranches(locations); setCommissions(rates);
     }).catch(failure => { if (!read.signal.aborted && current()) setError(publicError(failure)); })
       .finally(() => { if (!read.signal.aborted && current()) setBusy(false); });
@@ -218,7 +217,7 @@ export default function AccountAdministration({ controller, owner, initialTab = 
           return <article key={branch.id}><h3>{branch.name}</h3><p>{branch.id === 1 ? 'Almacén protegido' : `${accounts.filter(account => account.location_id === branch.id).length} cuentas asignadas`}</p>
             {branch.id !== 1 && <p className="admin-commission">Comisión: {rate === undefined
               ? <strong>Sin configurar</strong>
-              : <>{commissionText(rate.rate)}{rate.updated_by ? ` · ${rate.updated_by}` : ''}</>}
+              : <>{commissionText(rate.rate)}{rate.updated_by ? ` · ${rate.updated_by}` : ''}{` · ${commissionMoment(rate.updated_at)}`}</>}
               {rate === undefined && <span> · sin eso la sucursal no puede proponer su rendición</span>}</p>}
             {branch.id !== 1 && (editingRate?.branch === branch.id
               ? <form onSubmit={event => void saveCommission(event)}><label>Porcentaje de comisión

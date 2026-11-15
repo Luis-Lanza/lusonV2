@@ -160,9 +160,13 @@ func (s *Store) Commissions(ctx context.Context, actor auth.Identity) ([]BranchC
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	// A retired branch keeps its setting but is no longer a branch: the panel lists the ones the
+	// directory still shows, so deleting a branch never leaves a rate the panel cannot place.
 	rows, err := s.pool.Query(ctx, `SELECT s.branch_location_id, s.commission_rate_percent::text,
  s.updated_at, a.display_name
- FROM branch_settings s JOIN auth_accounts a ON a.id = s.updated_by_account_id
+ FROM branch_settings s
+ JOIN auth_accounts a ON a.id = s.updated_by_account_id
+ JOIN locations l ON l.id = s.branch_location_id AND l.deleted_at IS NULL
  ORDER BY s.branch_location_id`)
 	if err != nil {
 		return nil, fail(ctx)

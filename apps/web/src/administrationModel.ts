@@ -82,6 +82,12 @@ export function parseCommissions(raw: string): Commission[] {
   if (items.some((item, index) => index > 0 && items[index - 1].branch_id >= item.branch_id)) return invalid();
   return items;
 }
+/** The moment the rate was fixed, in the operator's own clock and short form: the audit half
+ *  of S4 that says when, beside the account that says who. */
+export function commissionMoment(moment: string): string {
+  return new Date(moment).toLocaleString('es-BO', { day: '2-digit', month: '2-digit',
+    year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
 /** The rate as the operator reads it: the canonical percentage with a decimal comma. */
 export function commissionText(rate: string): string { return rate.replace('.', ',') + ' %'; }
 /** What the operator types turned into the canonical wire rate, or null when it is not a

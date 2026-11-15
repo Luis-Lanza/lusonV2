@@ -418,6 +418,14 @@ func TestCommissionsAreWhatThePanelReads(t *testing.T) {
 	if err != nil || len(configured) != 2 || configured[0].Rate != "5.00" {
 		t.Fatalf("the changed commission is not what the warehouse wrote: %+v %v", configured, err)
 	}
+
+	// A retired branch keeps no place in the panel: deleting it from the directory takes its rate
+	// out of the list instead of leaving an entry the panel cannot place.
+	e.retireBranch(t, 3)
+	configured, err = e.store.Commissions(e.ctx, warehouse())
+	if err != nil || len(configured) != 1 || configured[0].BranchID != 2 {
+		t.Fatalf("a retired branch is not a configured branch: %+v %v", configured, err)
+	}
 }
 
 // TestOpenFreezesThePeriodAndTheSnapshot pins rule 2: only the warehouse opens a settlement,
