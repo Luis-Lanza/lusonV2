@@ -606,6 +606,19 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
               </div>
             </div>
 
+            {/* The electronic collection sits with the drawer it explains, before the commission that
+                is calculated over it: it is the answer to "the sales say 2,500 and the till holds
+                3,000" while the warehouse is counting, not a footnote below the fold. */}
+            <div className="closing-group">
+              <h2>Electrónico · fuera de la caja</h2>
+              <dl className="closing-summary">
+                <div><dt>Tarjeta</dt><dd>{closingMoneyText(rail.card_cents)}</dd></div>
+                <div><dt>Transferencia</dt><dd>{closingMoneyText(rail.transfer_cents)}</dd></div>
+                <div><dt>QR</dt><dd>{closingMoneyText(rail.qr_cents)}</dd></div>
+              </dl>
+              <small className="closing-muted">Ese dinero no está en la caja física: se informa, no se suma a ninguna igualdad de caja y sí cuenta para la comisión.</small>
+            </div>
+
             <div className="closing-group">
               <h2>Comisión del período</h2>
               <dl className="closing-summary">
@@ -647,16 +660,6 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
                 <div className="total"><dt>Te llevás al Almacén</dt>
                   <dd>{liveTaken === null ? 'Sin contar' : closingMoneyText(liveTaken)}</dd></div>
               </dl>
-            </div>
-
-            <div className="closing-group">
-              <h2>Electrónico · fuera de la caja</h2>
-              <dl className="closing-summary">
-                <div><dt>Tarjeta</dt><dd>{closingMoneyText(rail.card_cents)}</dd></div>
-                <div><dt>Transferencia</dt><dd>{closingMoneyText(rail.transfer_cents)}</dd></div>
-                <div><dt>QR</dt><dd>{closingMoneyText(rail.qr_cents)}</dd></div>
-              </dl>
-              <small className="closing-muted">Ese dinero no está en la caja física: se informa y no se suma a ninguna igualdad de caja.</small>
             </div>
 
             <div className="closing-group">

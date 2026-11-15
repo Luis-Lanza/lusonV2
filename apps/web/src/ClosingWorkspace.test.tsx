@@ -473,6 +473,11 @@ describe('the numbers rail (S8, S9, S13)', () => {
     expect(within(electronic as HTMLElement).getByText('Tarjeta').parentElement).toHaveTextContent('Bs 3.240,00');
     expect(within(aside).getByText('Caja esperada').parentElement).not.toHaveTextContent('2.760,00');
     expect(within(aside).getByText('Caja contada').parentElement).not.toHaveTextContent('2.760,00');
+    // The block is read with the drawer it explains, before the commission it is calculated over:
+    // the warehouse sees the QR amount while it counts, not after scrolling past the fund (S13).
+    const commission = within(aside).getByText('Comisión del período').closest('.closing-group')!;
+    expect(electronic.compareDocumentPosition(commission) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
   });
 
   it('takes the fund out of the counted drawer and leaves the difference alone', async () => {
