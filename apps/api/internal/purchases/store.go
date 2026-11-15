@@ -417,11 +417,14 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, page, pageSize in
 		}
 		result.Balance, result.Totals = &balance, totals
 	} else {
-		received, err := readReceived(ctx, tx, where, args)
+		// A window total is the net of every document in the window: it may be negative when a
+		// counter-document reverses an earlier period, and one model may count more units than any
+		// single document can hold, so the listing sums it by the window's rule and not the route's.
+		received, err := readReceived(ctx, tx, where, args, true)
 		if err != nil {
 			return Listing{}, err
 		}
-		totals, err := totalsOfReceived(received)
+		totals, err := totalsOfReceived(received, true)
 		if err != nil {
 			return Listing{}, err
 		}
@@ -950,7 +953,7 @@ func (s *Store) Received(ctx context.Context, actor auth.Identity) (Received, er
 	}()
 	// The whole history is the window of this route, and it is the same window a listing of the whole
 	// history reads: one set of statements, so the two answers cannot disagree.
-	result, err := readReceived(ctx, tx, "WHERE p.location_id=$1", []any{branch})
+	result, err := readReceived(ctx, tx, "WHERE p.location_id=$1", []any{branch}, false)
 	if err != nil {
 		return Received{}, err
 	}
@@ -964,7 +967,10 @@ func (s *Store) Received(ctx context.Context, actor auth.Identity) (Received, er
 // the net weight and value of every material, grouped by the database so a counter-document nets out
 // by construction. The window is the caller's own WHERE fragment and arguments, which is why the
 // whole history of the received route and one period's window of the listing are the same reading.
-func readReceived(ctx context.Context, q querier, where string, args []any) (Received, error) {
+// A signed reading is a window's net: a window holding only a counter-document reverses an earlier
+// period, so its quantity, weight and value are negative and may outgrow a single document. The
+// received route reads one original netted by its counter-documents, so it stays unsigned.
+func readReceived(ctx context.Context, q querier, where string, args []any, signed bool) (Received, error) {
 	result := Received{Used: []ReceivedUsed{}, Scrap: []ReceivedScrap{}}
 	rows, err := q.Query(ctx, `SELECT line.model,sum(line.quantity)::text,sum(line.amount)::text
  FROM purchase_used_lines line
@@ -984,10 +990,12 @@ func readReceived(ctx context.Context, q querier, where string, args []any) (Rec
 		}
 		row.Value = Money(value)
 		units, err := strconv.ParseInt(quantity, 10, 64)
+		cents, centsOK := centsOf(value)
 		// A received row is an original document netted by its counter-documents, so a
-		// positive quantity and a positive value are the only shape this domain wrote.
-		if err != nil || units < 1 || units > MaxLines*MaxQuantity ||
-			!boundedText(row.Model, 1, maxCategoryText) || !positiveMoney(row.Value) ||
+		// positive quantity and a positive value are the only shape this domain wrote. A window
+		// total is the net of every document in it instead, signed and unbounded per document.
+		if err != nil || !centsOK || (!signed && (units < 1 || units > MaxLines*MaxQuantity || cents < 1)) ||
+			!boundedText(row.Model, 1, maxCategoryText) ||
 			len(result.Used) >= maxCatalogueRows ||
 			(len(result.Used) > 0 && row.Model <= result.Used[len(result.Used)-1].Model) {
 			rows.Close()
@@ -1022,12 +1030,17 @@ func readReceived(ctx context.Context, q querier, where string, args []any) (Rec
 		milli, kgOK := milliOf(kg)
 		weight, _ := weightOfMilli(milli)
 		// A weight whose kilogram price rounds to the cent can net to a zero value, so a
-		// scrap row admits 0.00: what it may never be is negative or out of range.
-		if !kgOK || milli < 1 || milli > maxMilli || weight == "" {
+		// scrap row admits 0.00: what it may never be is negative or out of range, unless the
+		// caller reads a window's net, whose sign and magnitude are the window's own.
+		floor := int64(1)
+		if signed {
+			floor = -maxMilli
+		}
+		if !kgOK || milli < floor || milli > maxMilli || weight == "" {
 			return Received{}, ErrUnavailable
 		}
 		valueCents, valueOK := centsOf(value)
-		if !valueOK || valueCents < 0 || row.MaterialID < 1 || row.MaterialID > maxMaterialID ||
+		if !valueOK || (!signed && valueCents < 0) || row.MaterialID < 1 || row.MaterialID > maxMaterialID ||
 			!boundedText(row.Name, 1, maxCategoryText) ||
 			(len(result.Scrap) > 0 && row.MaterialID <= result.Scrap[len(result.Scrap)-1].MaterialID) {
 			return Received{}, ErrUnavailable
@@ -1044,30 +1057,39 @@ func readReceived(ctx context.Context, q querier, where string, args []any) (Rec
 // totalsOfReceived sums one received reading into the three header numbers of its window. It sums
 // exactly the rows that reading publishes, so the totals of the listing and the rows of the received
 // route are one same answer, and it bounds every sum here so an amount outside the published formats
-// fails closed instead of being rendered.
-func totalsOfReceived(received Received) (Totals, error) {
+// fails closed instead of being rendered. An unsigned sum is the received route's: one original
+// netted by its counter-documents, so every row is positive and inside one document's bound. A signed
+// sum is a window's net, which is negative when the window reverses an earlier period and which
+// nothing per document bounds; only the published formats and int64 itself do.
+func totalsOfReceived(received Received, signed bool) (Totals, error) {
 	unavailable := func() (Totals, error) { return Totals{}, ErrUnavailable }
 	var cents, units, milli int64
 	for _, row := range received.Used {
 		value, ok := centsOf(string(row.Value))
-		if !ok || value < 1 || row.Quantity < 1 || row.Quantity > MaxLines*MaxQuantity ||
-			cents > maxCents-value || units > math.MaxInt64-row.Quantity {
+		if !ok || (!signed && (value < 1 || row.Quantity < 1 || row.Quantity > MaxLines*MaxQuantity)) {
 			return unavailable()
 		}
-		cents += value
-		units += row.Quantity
+		if cents, ok = addInto(cents, value); !ok {
+			return unavailable()
+		}
+		if units, ok = addInto(units, row.Quantity); !ok {
+			return unavailable()
+		}
 	}
 	for _, row := range received.Scrap {
 		value, ok := centsOf(string(row.Value))
 		weight, kgOK := milliOf(string(row.Kg))
 		// A material whose kilogram price rounds to the cent can net to a zero value, so a scrap row
-		// admits 0.00; what it may never be is negative.
-		if !ok || value < 0 || !kgOK || weight < 1 || weight > maxMilli ||
-			cents > maxCents-value || milli > math.MaxInt64-weight {
+		// admits 0.00; what it may never be is negative, unless the caller sums a window's net.
+		if !ok || !kgOK || (!signed && (value < 0 || weight < 1 || weight > maxMilli)) {
 			return unavailable()
 		}
-		cents += value
-		milli += weight
+		if cents, ok = addInto(cents, value); !ok {
+			return unavailable()
+		}
+		if milli, ok = addInto(milli, weight); !ok {
+			return unavailable()
+		}
 	}
 	money, ok := moneyOfCents(cents)
 	if !ok {
@@ -1078,6 +1100,14 @@ func totalsOfReceived(received Received) (Totals, error) {
 		return unavailable()
 	}
 	return Totals{Money: money, UsedUnits: units, ScrapKg: kg}, nil
+}
+
+// addInto adds one signed quantity, refusing a sum int64 cannot hold.
+func addInto(total, addend int64) (int64, bool) {
+	if (addend > 0 && total > math.MaxInt64-addend) || (addend < 0 && total < math.MinInt64-addend) {
+		return total, false
+	}
+	return total + addend, true
 }
 
 // totalsOfBalance is the pending period's own reading in the header's three numbers: how many used

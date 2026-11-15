@@ -1139,6 +1139,50 @@ func (f *purchaseFixture) listingOf(t *testing.T, selection purchases.PeriodSele
 	return listing
 }
 
+// TestStorePurchaseHistoryOutgrowsOneDocument pins the whole-history listing on a branch whose history
+// holds more units of one model than any single document can: the bound belongs to a document, not to a
+// window, so the default listing answers instead of failing closed.
+func TestStorePurchaseHistoryOutgrowsOneDocument(t *testing.T) {
+	f := newPurchaseFixture(t)
+	// MaxLines documents of MaxQuantity units are exactly the per-document bound, so the history buys
+	// one document more to exceed it.
+	for i := int64(0); i <= purchases.MaxLines; i++ {
+		input := document("store-history-key-" + strconv.FormatInt(i, 10))
+		input.UsedLines = []purchases.UsedLineInput{{Model: "NS60ZL",
+			Quantity: purchases.MaxQuantity, UnitPrice: "0.01"}}
+		input.ScrapLines, input.PaidCash, input.PaidTransfer = nil, "10000.00", "0.00"
+		if _, err := f.store.Create(f.ctx, f.branch, input); err != nil {
+			t.Fatalf("the purchase %d must be admitted: %v", i, err)
+		}
+	}
+	history := f.listingOf(t, allHistory)
+	if history.Totals.UsedUnits != purchases.MaxQuantity*(purchases.MaxLines+1) ||
+		history.Totals.Money != "1910000.00" || history.Totals.ScrapKg != "0.000" {
+		t.Fatalf("the history must sum every document: %+v", history.Totals)
+	}
+}
+
+// TestStorePurchaseCounterPeriodListsItsNet pins the other side of the same rule: a window holding only
+// a counter-document reverses an earlier period, so it nets negative money, units and kilos instead of
+// refusing to be listed.
+func TestStorePurchaseCounterPeriodListsItsNet(t *testing.T) {
+	f := newPurchaseFixture(t)
+	bought, err := f.store.Create(f.ctx, f.branch, document("store-counter-key-01"))
+	if err != nil {
+		t.Fatalf("the purchase must be admitted: %v", err)
+	}
+	f.closeSettlement(t, 2, f.branch, nil)
+	if _, err := f.store.Reverse(f.ctx, f.branch, bought.ID, "store-counter-key-02", "pesaje mal tipeado"); err != nil {
+		t.Fatalf("the purchase must be reversible: %v", err)
+	}
+	net := f.closeSettlement(t, 2, f.branch, nil)
+	period := f.listingOf(t, purchases.PeriodSelection{Kind: purchases.PeriodSettlement, ClosingID: net})
+	if period.Page.TotalPurchases != 1 || period.Totals !=
+		(purchases.Totals{Money: "-124200.00", UsedUnits: -1, ScrapKg: "-12.400"}) {
+		t.Fatalf("a counter period must publish its negative net: %+v %+v", period.Page, period.Totals)
+	}
+}
+
 // TestStorePurchaseTotalsFollowThePeriod pins S3 at the store: the three header numbers of the
 // listing are the totals of the chosen period, so a closed settlement states its own money, units
 // and kilos instead of the accumulated history, and the whole history states exactly what the

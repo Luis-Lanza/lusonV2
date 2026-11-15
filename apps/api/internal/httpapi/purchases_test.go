@@ -1292,6 +1292,20 @@ func TestPurchaseListingRecord(t *testing.T) {
 	if _, err := time.Parse(time.RFC3339, *record.Period.From); err != nil {
 		t.Fatalf("from is not an RFC3339 instant: %q", *record.Period.From)
 	}
+	// A window total is the net of every document in it: a period whose only document is a
+	// counter-document publishes a negative amount, unit count and weight.
+	signed := history
+	signed.Totals = purchases.Totals{Money: "-36400.00", UsedUnits: -3, ScrapKg: "-15.400"}
+	record, err = purchaseListingRecord(signed)
+	if err != nil || record.Totals.Money == nil || *record.Totals.Money != "-36400.00" ||
+		record.Totals.UsedUnits != "-3" || record.Totals.ScrapKg != "-15.400" {
+		t.Fatalf("a window must publish its negative net: %+v %v", record, err)
+	}
+	// The pending period is a balance and not a window: the same signed reading is still refused.
+	signed.Period, signed.Balance = periods[0], balance
+	if _, err := purchaseListingRecord(signed); !errors.Is(err, purchases.ErrUnavailable) {
+		t.Fatalf("a pending period must refuse a signed reading: %v", err)
+	}
 	broken := map[string]func(*purchases.Listing){
 		"no_selector": func(l *purchases.Listing) { l.Periods = nil },
 		"first_not_pending": func(l *purchases.Listing) {
@@ -1330,8 +1344,8 @@ func TestPurchaseListingRecord(t *testing.T) {
 		},
 		"pending_without_balance": func(l *purchases.Listing) { l.Balance = nil },
 		// The totals are part of the answer: a pending period that states money, a window that states
-		// none, a pending reading that is not the balance's own sum and a reading outside the published
-		// formats are all refused whole, never half rendered.
+		// none and a pending reading that is not the balance's own sum are all refused whole, never half
+		// rendered.
 		"pending_with_money": func(l *purchases.Listing) { l.Totals.Money = "100.00" },
 		"window_without_money": func(l *purchases.Listing) {
 			l.Period = l.Periods[2]
@@ -1341,18 +1355,6 @@ func TestPurchaseListingRecord(t *testing.T) {
 		"pending_kg_not_the_balance":    func(l *purchases.Listing) { l.Totals.ScrapKg = "5.000" },
 		"pending_kg_unpadded":           func(l *purchases.Listing) { l.Totals.ScrapKg = "6.00" },
 		"pending_kg_negative_zero":      func(l *purchases.Listing) { l.Totals.ScrapKg = "-0.000" },
-		"window_negative_units": func(l *purchases.Listing) {
-			l.Period, l.Balance = l.Periods[2], nil
-			l.Totals = purchases.Totals{Money: "1.00", UsedUnits: -1, ScrapKg: "0.000"}
-		},
-		"window_negative_kg": func(l *purchases.Listing) {
-			l.Period, l.Balance = l.Periods[2], nil
-			l.Totals = purchases.Totals{Money: "1.00", UsedUnits: 1, ScrapKg: "-1.000"}
-		},
-		"window_negative_money": func(l *purchases.Listing) {
-			l.Period, l.Balance = l.Periods[2], nil
-			l.Totals = purchases.Totals{Money: "-1.00", UsedUnits: 1, ScrapKg: "0.000"}
-		},
 		"window_unpadded_money": func(l *purchases.Listing) {
 			l.Period, l.Balance = l.Periods[2], nil
 			l.Totals = purchases.Totals{Money: "1.0", UsedUnits: 1, ScrapKg: "0.000"}

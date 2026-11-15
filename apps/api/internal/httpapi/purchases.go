@@ -1189,9 +1189,11 @@ type purchaseTotalsDTO struct {
 }
 
 // purchaseTotalsRecord publishes the totals of one period and refuses a reading this server could not
-// have produced. A window states an amount, a non-negative unit count and a non-negative weight; the
-// pending period states no money at all and repeats the balance, so the header of the screen and the
-// rows under it are one same reading and never two numbers that could drift apart (S3, S4).
+// have produced. A window states a canonical amount, a unit count and a canonical weight, any of them
+// negative: the window is the net of every document in it, so a period holding only a counter-document
+// reverses an earlier one. The pending period states no money at all and repeats the balance, so the
+// header of the screen and the rows under it are one same reading and never two numbers that could drift
+// apart (S3, S4).
 func purchaseTotalsRecord(kind purchases.PeriodKind, totals purchases.Totals,
 	balance *purchases.Balance) (purchaseTotalsDTO, error) {
 	unavailable := func() (purchaseTotalsDTO, error) {
@@ -1220,11 +1222,10 @@ func purchaseTotalsRecord(kind purchases.PeriodKind, totals purchases.Totals,
 		return purchaseTotalsDTO{UsedUnits: strconv.FormatInt(units, 10), ScrapKg: kgText}, nil
 	case purchases.PeriodSettlement, purchases.PeriodOpen, purchases.PeriodAll:
 		money, ok := purchaseMoneyText(totals.Money)
-		cents, moneyOK := purchaseCents(totals.Money)
-		_, kgText, kgOK := purchaseBalanceKg(totals.ScrapKg, false)
-		// A window is the sum of published rows: neither the amount nor the weights it states can be
-		// negative, and a counter-document already netted itself out inside the rows.
-		if !ok || !moneyOK || cents < 0 || !kgOK || totals.UsedUnits < 0 {
+		_, kgText, kgOK := purchaseBalanceKg(totals.ScrapKg, true)
+		// A window total is the net of every document in the window, so a counter-document reversing an
+		// earlier period legitimately leaves the money, the units and the kilos below zero.
+		if !ok || !kgOK {
 			return unavailable()
 		}
 		return purchaseTotalsDTO{Money: &money,
