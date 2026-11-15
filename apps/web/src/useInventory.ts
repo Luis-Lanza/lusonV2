@@ -541,9 +541,13 @@ export function useInventory() {
   }
   async function privateRequest(owner: string, scope: PrivateScope, path: string, signal: AbortSignal,
     method: 'GET' | 'POST' | 'PATCH' | 'DELETE' = 'GET', body?: object, expected = 200): Promise<string> {
+    // The panel reads and writes the branch commission through the settlement surface that owns
+    // the rule: it is the warehouse's own configuration, refused by the server for any other actor.
+    const commission = path === '/api/closings/branches/commissions' ? method === 'GET'
+      : method === 'POST' && /^\/api\/closings\/branches\/[1-9]\d{0,4}\/commission$/.test(path);
     const allowed = scope === 'password' ? path === '/api/auth/password' && method === 'POST'
       : method === 'DELETE' ? /^\/api\/admin\/(accounts|branches)\/[1-9]\d*$/.test(path)
-      : /^\/api\/admin\/(accounts(?:\/[1-9]\d*(?:\/password)?)?|branches)$/.test(path);
+      : commission || /^\/api\/admin\/(accounts(?:\/[1-9]\d*(?:\/password)?)?|branches)$/.test(path);
     if (!allowed || signal.aborted || privateOwner(scope) !== owner) throw new Error('La sesión cambió. Cerrá esta pantalla.');
     const controller = new AbortController();
     const abort = () => controller.abort();

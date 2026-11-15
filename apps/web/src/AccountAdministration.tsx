@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { Location } from './model';
 import type { PrivateController } from './useInventory';
-import { accountPatch, parseAccount, parseAccounts, parseBranch, parseBranches, validName, type Account } from './administrationModel';
+import { accountPatch, commissionInput, commissionText, parseAccount, parseAccounts, parseBranch, parseBranches, parseCommissions, validName, type Account, type Commission } from './administrationModel';
 import { generateTemporaryPassword, validPassword } from './passwordModel';
 import './administration.css';
 
@@ -125,6 +125,8 @@ export default function AccountAdministration({ controller, owner }: { controlle
   const [handoff, setHandoff] = useState('');
   const [branchName, setBranchName] = useState('');
   const [deleteBranch, setDeleteBranch] = useState<Location | null>(null);
+  const [commissions, setCommissions] = useState<Commission[]>([]);
+  const [editingRate, setEditingRate] = useState<{ branch: number; value: string } | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
@@ -134,21 +136,23 @@ export default function AccountAdministration({ controller, owner }: { controlle
   useEffect(() => { const signal = lifetime.current; return () => { signal.abort(); }; }, []);
   const current = () => !lifetime.current.signal.aborted && controller.privateOwner('admin') === owner;
   useEffect(() => {
-    const read = new AbortController(); setBusy(true); setError(''); setAccounts([]); setBranches([]);
+    const read = new AbortController(); setBusy(true); setError(''); setAccounts([]); setBranches([]); setCommissions([]);
     void Promise.all([
       controller.privateRequest(owner, 'admin', '/api/admin/accounts', read.signal).then(parseAccounts),
       controller.privateRequest(owner, 'admin', '/api/admin/branches', read.signal).then(parseBranches),
-    ]).then(([users, locations]) => {
+      controller.privateRequest(owner, 'admin', '/api/closings/branches/commissions', read.signal).then(parseCommissions),
+    ]).then(([users, locations, rates]) => {
       if (read.signal.aborted || !current()) return;
       if (users.some(user => !locations.some(location => user.location_id === location.id))) throw new Error('Respuesta inválida del servidor.');
-      setAccounts(users); setBranches(locations);
+      if (rates.some(rate => !locations.some(location => location.id === rate.branch_id))) throw new Error('Respuesta inválida del servidor.');
+      setAccounts(users); setBranches(locations); setCommissions(rates);
     }).catch(failure => { if (!read.signal.aborted && current()) setError(publicError(failure)); })
       .finally(() => { if (!read.signal.aborted && current()) setBusy(false); });
     return () => read.abort();
     // A revision is an explicit refetch, not an automatic mutation retry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owner, revision]);
-  function closePrivate() { setEditor(null); setHandoff(''); setDeleteBranch(null); }
+  function closePrivate() { setEditor(null); setHandoff(''); setDeleteBranch(null); setEditingRate(null); }
   async function retireBranch() {
     if (pending.current || !current() || !deleteBranch || deleteBranch.id === 1) return;
     pending.current = true; setBusy(true); setError(''); setNotice('');
@@ -158,6 +162,23 @@ export default function AccountAdministration({ controller, owner }: { controlle
       closePrivate(); setNotice('Sucursal eliminada del directorio. Se conserva su historial.');
       controller.refreshBranches(owner); setRevision(previous => previous + 1);
     } catch (failure) { if (current()) { setDeleteBranch(null); setError(publicError(failure)); } }
+    finally { pending.current = false; if (current()) setBusy(false); }
+  }
+  async function saveCommission(event: FormEvent) {
+    event.preventDefault();
+    if (pending.current || !current() || !editingRate) return;
+    const rate = commissionInput(editingRate.value);
+    if (rate === null) { setError('Ingresá un porcentaje entre 0 y 100, con hasta dos decimales.'); return; }
+    pending.current = true; setBusy(true); setError(''); setNotice('');
+    try {
+      await controller.privateRequest(owner, 'admin',
+        `/api/closings/branches/${editingRate.branch}/commission`, lifetime.current.signal, 'POST',
+        { commission_rate_percent: rate }, 200);
+      if (!current()) return;
+      closePrivate();
+      setNotice('Comisión actualizada: rige para la próxima rendición que se proponga.');
+      setRevision(previous => previous + 1);
+    } catch (failure) { if (current()) setError(publicError(failure)); }
     finally { pending.current = false; if (current()) setBusy(false); }
   }
   async function createBranch(event: FormEvent) {
@@ -190,6 +211,22 @@ export default function AccountAdministration({ controller, owner }: { controlle
       {!busy && !filtered.length && <p>No hay cuentas para estos filtros.</p>}
     </section>{editor ? <AccountEditor key={editor === 'create' ? 'create' : editor.id} account={editor === 'create' ? null : editor} branches={branches} controller={controller} owner={owner} onClose={() => setEditor(null)} onSaved={() => { setNotice('Cuenta actualizada.'); setRevision(previous => previous + 1); }} onHandoff={secret => { setEditor(null); setHandoff(secret); }} onDeleted={() => { closePrivate(); setNotice('Usuario eliminado del directorio. Se conserva su historial.'); setRevision(previous => previous + 1); }} />
       : <aside className="admin-panel"><span className="admin-tag">Acceso bajo control</span><h2>Ciclo de una cuenta</h2><ol><li>Creás el usuario y asignás su sucursal.</li><li>Entregás una contraseña temporal en privado.</li><li>La persona la cambia antes de operar.</li></ol><p>Podés reasignar, desactivar o reactivar el acceso. Cada operador tiene todas las operaciones de su sucursal.</p><p>La actividad y el último ingreso no están disponibles en este directorio.</p></aside>}</div>
-      : <><section className="admin-panel"><h2>Sucursales</h2><p>El almacén único es contexto, no una sucursal asignable.</p><div className="admin-branches">{branches.map(branch => <article key={branch.id}><h3>{branch.name}</h3><p>{branch.id === 1 ? 'Almacén protegido' : `${accounts.filter(account => account.location_id === branch.id).length} cuentas asignadas`}</p>{branch.id !== 1 && <button type="button" disabled={busy} onClick={() => { if (current()) { closePrivate(); setNotice(''); setDeleteBranch(branch); } }}>Eliminar sucursal</button>}</article>)}</div>{deleteBranch && <div className="admin-actions"><p>Eliminar {deleteBranch.name} la oculta de las operaciones nuevas. Se conserva su historial. Resolvé stock, usuarios y operaciones pendientes antes de eliminarla.</p><button type="button" disabled={busy} onClick={() => void retireBranch()}>Confirmar eliminación</button><button type="button" disabled={busy} onClick={() => setDeleteBranch(null)}>Cancelar</button></div>}</section><section className="admin-panel"><h2>Crear sucursal</h2><p>Empieza con stock cero. Recibe mercadería mediante transferencias.</p><form onSubmit={event => void createBranch(event)}><label>Nombre de sucursal<input required value={branchName} disabled={busy} onChange={event => setBranchName(event.target.value)} /></label><button className="primary" disabled={busy}>Crear sucursal</button></form></section></>}
+      : <><section className="admin-panel"><h2>Sucursales</h2><p>El almacén único es contexto, no una sucursal asignable.</p><div className="admin-branches">{branches.map(branch => {
+          const rate = commissions.find(item => item.branch_id === branch.id);
+          return <article key={branch.id}><h3>{branch.name}</h3><p>{branch.id === 1 ? 'Almacén protegido' : `${accounts.filter(account => account.location_id === branch.id).length} cuentas asignadas`}</p>
+            {branch.id !== 1 && <p className="admin-commission">Comisión: {rate === undefined
+              ? <strong>Sin configurar</strong>
+              : <>{commissionText(rate.rate)}{rate.updated_by ? ` · ${rate.updated_by}` : ''}</>}
+              {rate === undefined && <span> · sin eso la sucursal no puede proponer su rendición</span>}</p>}
+            {branch.id !== 1 && (editingRate?.branch === branch.id
+              ? <form onSubmit={event => void saveCommission(event)}><label>Porcentaje de comisión
+                <input value={editingRate.value} disabled={busy} inputMode="decimal" autoComplete="off"
+                  onChange={event => setEditingRate({ branch: branch.id, value: event.target.value })} /></label>
+                <button className="primary" disabled={busy}>Guardar comisión</button>
+                <button type="button" disabled={busy} onClick={() => setEditingRate(null)}>Cancelar</button></form>
+              : <button type="button" disabled={busy} onClick={() => { if (current()) { closePrivate(); setNotice(''); setEditingRate({ branch: branch.id, value: rate ? rate.rate.replace('.', ',') : '' }); } }}>{rate ? 'Cambiar comisión' : 'Configurar comisión'}</button>)}
+            {branch.id !== 1 && <button type="button" disabled={busy} onClick={() => { if (current()) { closePrivate(); setNotice(''); setDeleteBranch(branch); } }}>Eliminar sucursal</button>}
+          </article>;
+        })}</div>{deleteBranch && <div className="admin-actions"><p>Eliminar {deleteBranch.name} la oculta de las operaciones nuevas. Se conserva su historial. Resolvé stock, usuarios y operaciones pendientes antes de eliminarla.</p><button type="button" disabled={busy} onClick={() => void retireBranch()}>Confirmar eliminación</button><button type="button" disabled={busy} onClick={() => setDeleteBranch(null)}>Cancelar</button></div>}</section><section className="admin-panel"><h2>Crear sucursal</h2><p>Empieza con stock cero. Recibe mercadería mediante transferencias.</p><form onSubmit={event => void createBranch(event)}><label>Nombre de sucursal<input required value={branchName} disabled={busy} onChange={event => setBranchName(event.target.value)} /></label><button className="primary" disabled={busy}>Crear sucursal</button></form></section></>}
   </section>;
 }
