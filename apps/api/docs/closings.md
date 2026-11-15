@@ -78,6 +78,7 @@ route takes an actor, a location or a role from JSON.
 | `/api/closings` | POST | 201 with the opened settlement |
 | `/api/closings/branches/{branch}/commission` | GET | 200 with the configured percentage |
 | `/api/closings/branches/{branch}/commission` | POST | 200 with the written percentage |
+| `/api/closings/branches/commissions` | GET | 200 with every configured commission, its author and its moment |
 | `/api/closings/{id}` | GET | 200 with the whole settlement |
 | `/api/closings/{id}/count` | POST | 200 with the settlement and its count sheet |
 | `/api/closings/{id}/materials` | POST | 200 with the settlement and its material sheet |
