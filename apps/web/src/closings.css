@@ -148,6 +148,9 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
   border-radius: 4px; box-shadow: 0 -2px 10px #2421240D; }
 .closing-bar-state { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; flex: 1 1 320px; }
 .closing-bar-state small { flex-basis: 100%; color: var(--muted); font-size: 12px; line-height: 16px; overflow-wrap: anywhere; }
+/* The blocker names its own fix: the panel where the warehouse writes the rate the branch lacks. */
+.closing-block-link { flex-basis: 100%; color: var(--wine); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.closing-block-link:hover { text-decoration: none; }
 .closing-bar-action { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .closing-bar-action button { min-height: 44px; }
 .closing-bar-action .primary:disabled { opacity: .6; }

@@ -41,3 +41,10 @@
   .bottom-nav { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .bottom-nav button { min-width: 0; overflow-wrap: anywhere; }
 }
+
+/* The commission of a branch: the settlement's own parameter, read beside what the branch has. */
+.admin-commission { color: var(--muted); font-size: 13px; line-height: 18px; overflow-wrap: anywhere; }
+.admin-commission strong { color: var(--wine); }
+.admin-branches form { display: grid; gap: 8px; margin-top: 8px; }
+.admin-branches form label { font-size: 13px; }
+.admin-branches form input { width: 100%; }
