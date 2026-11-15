@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -16,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/auth"
 	"luson/api/internal/bootstrap"
+	"luson/api/internal/closings"
 	"luson/api/internal/config"
 	"luson/api/internal/purchases"
 	"luson/api/internal/testpg"
@@ -168,8 +170,9 @@ func TestPurchasePageQuery(t *testing.T) {
 		"page=7&page_size=25":       {7, 25},
 		"page_size=25&page=1000000": {1000000, 25},
 	} {
-		page, size, err := purchasePageQuery(raw)
-		if err != nil || page != want[0] || size != want[1] {
+		page, size, selection, err := purchasePageQuery(raw)
+		if err != nil || page != want[0] || size != want[1] ||
+			selection != (purchases.PeriodSelection{Kind: purchases.PeriodAll}) {
 			t.Fatalf("%q reads as %d/%d (want %d/%d): %v", raw, page, size, want[0], want[1], err)
 		}
 	}
@@ -186,7 +189,7 @@ func TestPurchasePageQuery(t *testing.T) {
 		"duplicate":     "page=1&page=1",
 		"separator":     "&",
 	} {
-		if _, _, err := purchasePageQuery(raw); !errors.Is(err, purchases.ErrInvalid) {
+		if _, _, _, err := purchasePageQuery(raw); !errors.Is(err, purchases.ErrInvalid) {
 			t.Errorf("a %s query must be refused, got %v", name, err)
 		}
 	}
@@ -638,6 +641,64 @@ func purchaseFixture(t *testing.T) *purchaseHTTPFixture {
 	return f
 }
 
+// openSettlement walks one settlement of branch 2 to the moment the warehouse holds it: the
+// count sheet is counted as the system expects it and the material sheet as the test states, so
+// the period a listing reads is a fact the database decided.
+func (f *purchaseHTTPFixture) openSettlement(t *testing.T, counted []closings.MaterialCounted) int64 {
+	t.Helper()
+	settlements := closings.New(f.p)
+	warehouse := auth.Identity{AccountID: 1, Location: auth.Location{ID: 1}}
+	if _, err := settlements.ConfigureCommission(f.ctx, warehouse, 2, "10.00"); err != nil {
+		t.Fatalf("the branch commission could not be configured: %v", err)
+	}
+	opened, err := settlements.Open(f.ctx, warehouse, 2)
+	if err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+	read, err := settlements.Read(f.ctx, warehouse, opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be read: %v", err)
+	}
+	stock := make([]closings.Counted, 0, len(read.CountLines))
+	for _, line := range read.CountLines {
+		stock = append(stock, closings.Counted{VariantID: line.VariantID, Quantity: line.ExpectedQuantity})
+	}
+	if len(stock) > 0 {
+		if _, err := settlements.Count(f.ctx, warehouse, opened.ID, stock); err != nil {
+			t.Fatalf("the count sheet could not be counted: %v", err)
+		}
+	}
+	if len(counted) > 0 {
+		if _, err := settlements.CountMaterials(f.ctx, warehouse, opened.ID, counted); err != nil {
+			t.Fatalf("the material sheet could not be counted: %v", err)
+		}
+	}
+	zero, contribution := closings.Money("0.00"), closings.Money("500.00")
+	if _, err := settlements.SaveCash(f.ctx, warehouse, opened.ID, closings.CashDraft{
+		CountedCash: &zero, ContributedCash: contribution, ClosingCash: &contribution,
+	}); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	return opened.ID
+}
+
+// closeSettlement opens a settlement and closes it the way the branch does, so the closed period
+// exists only through the database's own state machine.
+func (f *purchaseHTTPFixture) closeSettlement(t *testing.T, counted []closings.MaterialCounted) int64 {
+	t.Helper()
+	settlements := closings.New(f.p)
+	warehouse := auth.Identity{AccountID: 1, Location: auth.Location{ID: 1}}
+	branch := auth.Identity{AccountID: 2, Location: auth.Location{ID: 2}}
+	id := f.openSettlement(t, counted)
+	if _, err := settlements.Propose(f.ctx, warehouse, id); err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	if _, err := settlements.Decide(f.ctx, branch, id, closings.DecisionAccepted, ""); err != nil {
+		t.Fatalf("the branch could not accept the settlement: %v", err)
+	}
+	return id
+}
+
 // request builds one authenticated request of the frozen mutation framing.
 func (f *purchaseHTTPFixture) request(actor int, verb, path, body string) *http.Request {
 	r := httptest.NewRequest(verb, path, strings.NewReader(body))
@@ -1085,4 +1146,523 @@ func TestPurchaseMoneyAndWeightRoundTrip(t *testing.T) {
 		document.ScrapLines[0].Amount != "10503.50" || document.Total != "10503.50" {
 		t.Fatalf("the weight and the amount are not canonical: %+v", document)
 	}
+}
+
+// TestPurchasePeriodQuery pins the period token of the wire: the two literals the selector
+// publishes beside the closing id of a closed settlement, and nothing else. A query without a
+// period reads the whole history, so a client that does not know the selector keeps its answer.
+func TestPurchasePeriodQuery(t *testing.T) {
+	for raw, want := range map[string]struct {
+		page, size int
+		selection  purchases.PeriodSelection
+	}{
+		"":                           {1, 25, purchases.PeriodSelection{Kind: purchases.PeriodAll}},
+		"period=all":                 {1, 25, purchases.PeriodSelection{Kind: purchases.PeriodAll}},
+		"period=pending":             {1, 25, purchases.PeriodSelection{Kind: purchases.PeriodPending}},
+		"period=7":                   {1, 25, purchases.PeriodSelection{Kind: purchases.PeriodSettlement, ClosingID: 7}},
+		"page=2&period=pending":      {2, 25, purchases.PeriodSelection{Kind: purchases.PeriodPending}},
+		"period=7&page_size=10":      {1, 10, purchases.PeriodSelection{Kind: purchases.PeriodSettlement, ClosingID: 7}},
+		"period=9223372036854775807": {1, 25, purchases.PeriodSelection{Kind: purchases.PeriodSettlement, ClosingID: math.MaxInt64}},
+	} {
+		page, size, selection, err := purchasePageQuery(raw)
+		if err != nil || page != want.page || size != want.size || selection != want.selection {
+			t.Fatalf("%q reads as %d/%d %+v (want %d/%d %+v): %v", raw, page, size, selection,
+				want.page, want.size, want.selection, err)
+		}
+	}
+	for name, raw := range map[string]string{
+		"empty_value":     "period=",
+		"zero":            "period=0",
+		"negative":        "period=-1",
+		"padded":          "period=07",
+		"text":            "period=abierta",
+		"open_literal":    "period=open",
+		"settlement":      "period=settlement",
+		"duplicate":       "period=1&period=1",
+		"overflow":        "period=9223372036854775808",
+		"unknown_key":     "period=pending&search=NS60",
+		"empty_with_page": "page=1&period=",
+	} {
+		if _, _, _, err := purchasePageQuery(raw); !errors.Is(err, purchases.ErrInvalid) {
+			t.Fatalf("a %s period query must be refused, got %v", name, err)
+		}
+	}
+}
+
+type purchasePeriodWire struct {
+	Kind      string  `json:"kind"`
+	ClosingID *int64  `json:"closing_id"`
+	From      *string `json:"from"`
+	To        *string `json:"to"`
+	Label     string  `json:"label"`
+}
+
+type purchaseTotalsWire struct {
+	Money     *string `json:"money"`
+	UsedUnits string  `json:"used_units"`
+	ScrapKg   string  `json:"scrap_kg"`
+}
+
+type purchaseListingWire struct {
+	Page           int                  `json:"page"`
+	PageSize       int                  `json:"page_size"`
+	TotalPurchases int64                `json:"total_purchases"`
+	Purchases      []map[string]any     `json:"purchases"`
+	Periods        []purchasePeriodWire `json:"periods"`
+	Period         purchasePeriodWire   `json:"period"`
+	Totals         purchaseTotalsWire   `json:"totals"`
+	Balance        *purchaseBalanceWire `json:"balance"`
+}
+
+type purchaseBalanceUsedWire struct {
+	Model     string `json:"model"`
+	Bought    string `json:"bought"`
+	Delivered string `json:"delivered"`
+	Balance   string `json:"balance"`
+}
+
+type purchaseBalanceScrapWire struct {
+	MaterialID int64  `json:"material_id"`
+	Bought     string `json:"bought"`
+	Delivered  string `json:"delivered"`
+	Balance    string `json:"balance"`
+}
+
+type purchaseBalanceWire struct {
+	Used  []purchaseBalanceUsedWire  `json:"used"`
+	Scrap []purchaseBalanceScrapWire `json:"scrap"`
+}
+
+// TestPurchaseListingRecord proves the published answer of the listing: the page keeps its
+// frozen shape, and the selector, the chosen period and the balance obey the contract. Anything
+// this server could not have produced fails closed instead of being described to the screen.
+func TestPurchaseListingRecord(t *testing.T) {
+	moment := time.Date(2026, 11, 10, 14, 2, 0, 0, time.UTC)
+	later := moment.Add(2 * time.Hour)
+	closedID := int64(7)
+	periods := []purchases.Period{
+		{Kind: purchases.PeriodPending, Label: "Pendiente"},
+		{Kind: purchases.PeriodSettlement, ClosingID: &closedID, From: &moment, To: &later,
+			Label: "Rendición #7"},
+		{Kind: purchases.PeriodAll, Label: "Todo el historial"},
+	}
+	page := purchases.Page{Page: 1, PageSize: 25, TotalPurchases: 1, Purchases: []purchases.Summary{
+		{ID: 6, CreatedAt: moment, Total: "27000.00", UsedUnits: 3, ScrapLines: 0},
+	}}
+	balance := &purchases.Balance{
+		Used: []purchases.BalanceUsed{{Model: "NS60ZL", Bought: 3, Delivered: 2, Balance: 1}},
+		Scrap: []purchases.BalanceScrap{{MaterialID: 1, Bought: "10.000", Delivered: "4.000",
+			Balance: "6.000"}},
+	}
+	listing := purchases.Listing{Page: page, Periods: periods, Period: periods[0], Balance: balance,
+		Totals: purchases.Totals{UsedUnits: 1, ScrapKg: "6.000"}}
+	record, err := purchaseListingRecord(listing)
+	if err != nil || record.Balance == nil || len(record.Periods) != 3 ||
+		record.Period.Kind != "pending" || record.Balance.Used[0].Bought != "3" ||
+		record.Balance.Scrap[0].Balance != "6.000" {
+		t.Fatalf("a complete pending listing must be published: %+v %v", record, err)
+	}
+	// The pending header numbers carry no money at all and repeat the balance, in the published
+	// formats.
+	if record.Totals.Money != nil || record.Totals.UsedUnits != "1" || record.Totals.ScrapKg != "6.000" {
+		t.Fatalf("the pending totals must be the balance and no money: %+v", record.Totals)
+	}
+	// The whole history carries no balance at all, its windows are null and it states the money that
+	// left the cash box beside the units and the kilos it received.
+	history := listing
+	history.Period, history.Balance = periods[2], nil
+	history.Totals = purchases.Totals{Money: "36400.00", UsedUnits: 3, ScrapKg: "15.400"}
+	record, err = purchaseListingRecord(history)
+	if err != nil || record.Balance != nil || record.Period.ClosingID != nil ||
+		record.Period.From != nil || record.Period.To != nil {
+		t.Fatalf("the whole history must be published without a balance: %+v %v", record, err)
+	}
+	if record.Totals.Money == nil || *record.Totals.Money != "36400.00" ||
+		record.Totals.UsedUnits != "3" || record.Totals.ScrapKg != "15.400" {
+		t.Fatalf("the whole history must state its own totals: %+v", record.Totals)
+	}
+	// A closed settlement publishes its window as RFC3339 instants.
+	closed := history
+	closed.Period = periods[1]
+	record, err = purchaseListingRecord(closed)
+	if err != nil || record.Period.ClosingID == nil || *record.Period.ClosingID != closedID ||
+		record.Period.From == nil || record.Period.To == nil {
+		t.Fatalf("a closed settlement must publish its window: %+v %v", record, err)
+	}
+	if _, err := time.Parse(time.RFC3339, *record.Period.From); err != nil {
+		t.Fatalf("from is not an RFC3339 instant: %q", *record.Period.From)
+	}
+	broken := map[string]func(*purchases.Listing){
+		"no_selector": func(l *purchases.Listing) { l.Periods = nil },
+		"first_not_pending": func(l *purchases.Listing) {
+			l.Periods[0] = l.Periods[1]
+		},
+		"last_not_all": func(l *purchases.Listing) {
+			l.Periods[2] = l.Periods[1]
+		},
+		"ascending_settlements": func(l *purchases.Listing) {
+			second := int64(9)
+			l.Periods = append(append([]purchases.Period{l.Periods[0], l.Periods[1]}, purchases.Period{
+				Kind: purchases.PeriodSettlement, ClosingID: &second, From: &moment, To: &later,
+				Label: "Rendición #9"}), l.Periods[2])
+		},
+		"settlement_after_open": func(l *purchases.Listing) {
+			l.Periods[1].Kind, l.Periods[1].Label = purchases.PeriodOpen, "En curso"
+			l.Periods = append(append([]purchases.Period{l.Periods[0], l.Periods[1]}, purchases.Period{
+				Kind: purchases.PeriodSettlement, ClosingID: &closedID, From: &moment, To: &later,
+				Label: "Rendición #7"}), l.Periods[2])
+		},
+		"open_without_closing": func(l *purchases.Listing) {
+			l.Periods[1].Kind, l.Periods[1].Label = purchases.PeriodOpen, "En curso"
+			l.Periods[1].ClosingID = nil
+		},
+		"settlement_without_window": func(l *purchases.Listing) { l.Periods[1].From = nil },
+		"reversed_window": func(l *purchases.Listing) {
+			l.Periods[1].From, l.Periods[1].To = &later, &moment
+		},
+		"pending_with_window": func(l *purchases.Listing) { l.Periods[0].From = &moment },
+		"no_label":            func(l *purchases.Listing) { l.Periods[0].Label = "" },
+		"long_label":          func(l *purchases.Listing) { l.Periods[0].Label = strings.Repeat("ñ", 201) },
+		"period_not_offered": func(l *purchases.Listing) {
+			other := int64(8)
+			l.Period = purchases.Period{Kind: purchases.PeriodSettlement, ClosingID: &other,
+				From: &moment, To: &later, Label: "Rendición #8"}
+		},
+		"pending_without_balance": func(l *purchases.Listing) { l.Balance = nil },
+		// The totals are part of the answer: a pending period that states money, a window that states
+		// none, a pending reading that is not the balance's own sum and a reading outside the published
+		// formats are all refused whole, never half rendered.
+		"pending_with_money": func(l *purchases.Listing) { l.Totals.Money = "100.00" },
+		"window_without_money": func(l *purchases.Listing) {
+			l.Period = l.Periods[2]
+			l.Balance = nil
+		},
+		"pending_units_not_the_balance": func(l *purchases.Listing) { l.Totals.UsedUnits = 2 },
+		"pending_kg_not_the_balance":    func(l *purchases.Listing) { l.Totals.ScrapKg = "5.000" },
+		"pending_kg_unpadded":           func(l *purchases.Listing) { l.Totals.ScrapKg = "6.00" },
+		"pending_kg_negative_zero":      func(l *purchases.Listing) { l.Totals.ScrapKg = "-0.000" },
+		"window_negative_units": func(l *purchases.Listing) {
+			l.Period, l.Balance = l.Periods[2], nil
+			l.Totals = purchases.Totals{Money: "1.00", UsedUnits: -1, ScrapKg: "0.000"}
+		},
+		"window_negative_kg": func(l *purchases.Listing) {
+			l.Period, l.Balance = l.Periods[2], nil
+			l.Totals = purchases.Totals{Money: "1.00", UsedUnits: 1, ScrapKg: "-1.000"}
+		},
+		"window_negative_money": func(l *purchases.Listing) {
+			l.Period, l.Balance = l.Periods[2], nil
+			l.Totals = purchases.Totals{Money: "-1.00", UsedUnits: 1, ScrapKg: "0.000"}
+		},
+		"window_unpadded_money": func(l *purchases.Listing) {
+			l.Period, l.Balance = l.Periods[2], nil
+			l.Totals = purchases.Totals{Money: "1.0", UsedUnits: 1, ScrapKg: "0.000"}
+		},
+		"balance_under_window": func(l *purchases.Listing) {
+			l.Period = l.Periods[2]
+		},
+		"used_negative": func(l *purchases.Listing) {
+			l.Balance.Used[0].Bought, l.Balance.Used[0].Balance = -1, -3
+		},
+		"used_lied": func(l *purchases.Listing) { l.Balance.Used[0].Balance = 0 },
+		"used_order": func(l *purchases.Listing) {
+			l.Balance.Used = append([]purchases.BalanceUsed{{Model: "ZZ", Bought: 1}}, l.Balance.Used...)
+		},
+		"used_zero_row": func(l *purchases.Listing) {
+			l.Balance.Used[0] = purchases.BalanceUsed{Model: "NS60ZL"}
+		},
+		"scrap_negative_bought": func(l *purchases.Listing) { l.Balance.Scrap[0].Bought = "-1.000" },
+		"scrap_unpadded":        func(l *purchases.Listing) { l.Balance.Scrap[0].Balance = "6.00" },
+		"scrap_lied":            func(l *purchases.Listing) { l.Balance.Scrap[0].Balance = "5.000" },
+		"scrap_negative_zero": func(l *purchases.Listing) {
+			l.Balance.Scrap[0].Bought = "0.000"
+			l.Balance.Scrap[0].Balance = "-0.000"
+		},
+		"scrap_order": func(l *purchases.Listing) {
+			l.Balance.Scrap = append([]purchases.BalanceScrap{{MaterialID: 2, Bought: "1.000",
+				Delivered: "0.000", Balance: "1.000"}}, l.Balance.Scrap...)
+		},
+		"scrap_material_out": func(l *purchases.Listing) { l.Balance.Scrap[0].MaterialID = 0 },
+	}
+	for name, transform := range broken {
+		brokenListing := listing
+		brokenListing.Periods = append([]purchases.Period(nil), periods...)
+		brokenListing.Period = periods[0]
+		brokenListing.Totals = purchases.Totals{UsedUnits: 1, ScrapKg: "6.000"}
+		brokenBalance := *balance
+		brokenBalance.Used = append([]purchases.BalanceUsed(nil), balance.Used...)
+		brokenBalance.Scrap = append([]purchases.BalanceScrap(nil), balance.Scrap...)
+		brokenListing.Balance = &brokenBalance
+		transform(&brokenListing)
+		if _, err := purchaseListingRecord(brokenListing); !errors.Is(err, purchases.ErrUnavailable) {
+			t.Errorf("a %s listing must fail closed, got %v", name, err)
+		}
+	}
+}
+
+// TestPurchaseHTTPPeriods proves the listing on the wire: the selector, the chosen period and the
+// balance, with the documents filtered by the period's window and the balance derived only from
+// the closed settlements.
+func TestPurchaseHTTPPeriods(t *testing.T) {
+	f := purchaseFixture(t)
+	decode := func(w *httptest.ResponseRecorder) (map[string]json.RawMessage, purchaseListingWire) {
+		t.Helper()
+		var body map[string]json.RawMessage
+		var wire purchaseListingWire
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &body) != nil ||
+			json.Unmarshal(w.Body.Bytes(), &wire) != nil {
+			t.Fatalf("the listing answer is not JSON: %d %s", w.Code, w.Body.String())
+		}
+		if len(body) != 8 {
+			t.Fatalf("the listing answer has %d keys, want 8: %s", len(body), w.Body.String())
+		}
+		for _, key := range []string{"page", "page_size", "total_purchases", "purchases",
+			"periods", "period", "totals", "balance"} {
+			if _, ok := body[key]; !ok {
+				t.Fatalf("the listing answer is missing %q: %s", key, w.Body.String())
+			}
+		}
+		return body, wire
+	}
+	// Every period entry is exactly the five published keys, whatever its kind.
+	periodKeys := func(t *testing.T, raw map[string]json.RawMessage) {
+		t.Helper()
+		var entries []map[string]json.RawMessage
+		if json.Unmarshal(raw["periods"], &entries) != nil || len(entries) == 0 {
+			t.Fatalf("the selector is not an array: %s", raw["periods"])
+		}
+		for _, entry := range entries {
+			if len(entry) != 5 {
+				t.Fatalf("a period entry is not the frozen shape: %v", entry)
+			}
+			for _, key := range []string{"kind", "closing_id", "from", "to", "label"} {
+				if _, ok := entry[key]; !ok {
+					t.Fatalf("a period entry is missing %q: %v", key, entry)
+				}
+			}
+		}
+		var chosen map[string]json.RawMessage
+		if json.Unmarshal(raw["period"], &chosen) != nil || len(chosen) != 5 {
+			t.Fatalf("the chosen period is not the frozen shape: %s", raw["period"])
+		}
+	}
+
+	// The totals of a period are exactly the three published keys, whatever the period.
+	totalsKeys := func(t *testing.T, raw map[string]json.RawMessage) map[string]json.RawMessage {
+		t.Helper()
+		var totals map[string]json.RawMessage
+		if json.Unmarshal(raw["totals"], &totals) != nil || len(totals) != 3 {
+			t.Fatalf("the totals are not the frozen shape: %s", raw["totals"])
+		}
+		for _, key := range []string{"money", "used_units", "scrap_kg"} {
+			if _, ok := totals[key]; !ok {
+				t.Fatalf("the totals are missing %q: %v", key, totals)
+			}
+		}
+		return totals
+	}
+
+	// An empty branch publishes its two periods, an empty balance and no documents.
+	body, wire := decode(f.serve(t, f.request(2, "GET", "/api/purchases?period=pending", "")))
+	periodKeys(t, body)
+	if len(wire.Periods) != 2 || wire.Periods[0].Kind != "pending" || wire.Periods[0].Label != "Pendiente" ||
+		wire.Periods[0].ClosingID != nil || wire.Periods[0].From != nil || wire.Periods[0].To != nil ||
+		wire.Periods[1].Kind != "all" || wire.Periods[1].Label != "Todo el historial" ||
+		wire.Period.Kind != "pending" || wire.TotalPurchases != 0 {
+		t.Fatalf("an empty branch must publish its two periods: %s", body)
+	}
+	if wire.Balance == nil || len(wire.Balance.Used) != 0 || len(wire.Balance.Scrap) != 0 {
+		t.Fatalf("an empty balance must be an empty reading: %s", body["balance"])
+	}
+	// An empty branch states three zeros and no money: the pending period is a balance, not a window.
+	totals := totalsKeys(t, body)
+	if string(totals["money"]) != "null" || string(totals["used_units"]) != `"0"` ||
+		string(totals["scrap_kg"]) != `"0.000"` {
+		t.Fatalf("an empty branch must state three zeros: %s", body["totals"])
+	}
+	// The query without a period is the whole history, exactly as before periods existed.
+	beforeBody, before := decode(f.serve(t, f.request(2, "GET", "/api/purchases", "")))
+	periodKeys(t, beforeBody)
+	if before.Period.Kind != "all" || before.Balance != nil {
+		t.Fatalf("a query without a period must read the whole history: %s", beforeBody)
+	}
+	// The whole history of an empty branch is a window, so it states a canonical amount and never a
+	// null one.
+	if before.Totals.Money == nil || *before.Totals.Money != "0.00" || before.Totals.UsedUnits != "0" ||
+		before.Totals.ScrapKg != "0.000" {
+		t.Fatalf("an empty window must state three zeros: %s", beforeBody["totals"])
+	}
+
+	// The first settlement of a branch opens with a window of its own, so it takes nothing and
+	// the period that follows starts with the purchase below (S5).
+	firstClosed := f.closeSettlement(t, nil)
+	// The period buys one battery and twelve kilos of copper.
+	first := purchaseDocumentWire(t, f.serve(t, f.request(2, "POST", "/api/purchases", validPurchaseJSON)), 201)
+	body, wire = decode(f.serve(t, f.request(2, "GET", "/api/purchases?period=pending", "")))
+	if wire.TotalPurchases != 1 || len(wire.Purchases) != 1 ||
+		string(body["balance"]) == "null" || len(wire.Balance.Used) != 1 ||
+		wire.Balance.Used[0].Model != "NS60ZL" || wire.Balance.Used[0].Bought != "1" ||
+		wire.Balance.Used[0].Delivered != "0" || wire.Balance.Used[0].Balance != "1" ||
+		len(wire.Balance.Scrap) != 1 || wire.Balance.Scrap[0].Bought != "12.400" ||
+		wire.Balance.Scrap[0].Delivered != "0.000" || wire.Balance.Scrap[0].Balance != "12.400" {
+		t.Fatalf("the pending balance must be what the branch bought: %s", body)
+	}
+	// A settlement that counted everything takes it to the warehouse: the balance reads zero and
+	// the documents stay listed.
+	closedID := f.closeSettlement(t, []closings.MaterialCounted{
+		{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "1"},
+		{Kind: closings.MaterialKindScrap, MaterialID: 1, Quantity: "12.400"},
+	})
+	body, wire = decode(f.serve(t, f.request(2, "GET", "/api/purchases?period=pending", "")))
+	if wire.TotalPurchases != 1 || wire.Balance == nil || len(wire.Balance.Used) != 1 ||
+		wire.Balance.Used[0].Delivered != "1" || wire.Balance.Used[0].Balance != "0" ||
+		wire.Balance.Scrap[0].Balance != "0.000" {
+		t.Fatalf("a settlement that counted everything must read zero: %s", body)
+	}
+
+	// The branch buys again after the closure, and the settlement period keeps its own documents.
+	after := purchaseDocumentWire(t, f.serve(t, f.request(2, "POST", "/api/purchases",
+		`{"operation_key":"http-purchase-key-periods","used_lines":[{"model":"NS60ZL","quantity":2,"unit_price":"10000.00"}],"scrap_lines":[{"material_id":1,"kg":"3.000","price_per_kg":"1000.00"}],"paid_cash":"23000.00","paid_transfer":"0.00"}`)), 201)
+	body, wire = decode(f.serve(t, f.request(2, "GET", "/api/purchases?period=pending", "")))
+	if wire.TotalPurchases != 2 || len(wire.Purchases) != 2 ||
+		wire.Balance.Used[0].Bought != "3" || wire.Balance.Used[0].Delivered != "1" ||
+		wire.Balance.Used[0].Balance != "2" || wire.Balance.Scrap[0].Bought != "15.400" ||
+		wire.Balance.Scrap[0].Delivered != "12.400" || wire.Balance.Scrap[0].Balance != "3.000" {
+		t.Fatalf("a purchase after the closure must raise the balance again: %s", body)
+	}
+	// The pending header states the balance and no money: one window's money is not a position.
+	if wire.Totals.Money != nil || wire.Totals.UsedUnits != "2" || wire.Totals.ScrapKg != "3.000" {
+		t.Fatalf("the pending totals must be the balance: %s", body["totals"])
+	}
+	body, wire = decode(f.serve(t, f.request(2, "GET",
+		"/api/purchases?period="+strconv.FormatInt(closedID, 10), "")))
+	periodKeys(t, body)
+	if wire.Period.Kind != "settlement" || wire.Period.ClosingID == nil ||
+		*wire.Period.ClosingID != closedID || wire.Period.From == nil || wire.Period.To == nil ||
+		wire.Balance != nil || string(body["balance"]) != "null" {
+		t.Fatalf("a closed settlement must publish its window and no balance: %s", body)
+	}
+	if _, err := time.Parse(time.RFC3339, *wire.Period.From); err != nil {
+		t.Fatalf("from is not an RFC3339 instant: %q", *wire.Period.From)
+	}
+	if len(wire.Periods) != 4 || wire.Periods[1].Kind != "settlement" ||
+		wire.Periods[1].Label != "Rendición #"+strconv.FormatInt(closedID, 10) ||
+		wire.Periods[2].Label != "Rendición #"+strconv.FormatInt(firstClosed, 10) {
+		t.Fatalf("the closed settlement must be its own period: %s", body["periods"])
+	}
+	if wire.TotalPurchases != 1 || len(wire.Purchases) != 1 ||
+		jsonNumber(t, wire.Purchases[0]["id"]) != first.ID {
+		t.Fatalf("a closed period must list only its own documents: %s", body["purchases"])
+	}
+	// The closed period states its own window and never the accumulated history: the document it
+	// contains is one battery at 25000.00 and 12.400 kilos of copper at 8000.00.
+	if wire.Totals.Money == nil || *wire.Totals.Money != "124200.00" ||
+		wire.Totals.UsedUnits != "1" || wire.Totals.ScrapKg != "12.400" {
+		t.Fatalf("a closed period must state its own totals: %s", body["totals"])
+	}
+	// The whole history states every document, and it is exactly what the received route publishes for
+	// the same history: the two routes can never disagree about the same documents.
+	body, wire = decode(f.serve(t, f.request(2, "GET", "/api/purchases?period=all", "")))
+	if wire.Period.Kind != "all" || wire.Balance != nil || wire.TotalPurchases != 2 ||
+		len(wire.Purchases) != 2 || jsonNumber(t, wire.Purchases[0]["id"]) != after.ID {
+		t.Fatalf("the whole history must list every document: %s", body)
+	}
+	var received struct {
+		Used []struct {
+			Quantity int64  `json:"quantity"`
+			Value    string `json:"value"`
+		} `json:"used"`
+		Scrap []struct {
+			Kg    string `json:"kg"`
+			Value string `json:"value"`
+		} `json:"scrap"`
+	}
+	reply := f.serve(t, f.request(2, "GET", "/api/purchases/received", ""))
+	if reply.Code != 200 || json.Unmarshal(reply.Body.Bytes(), &received) != nil {
+		t.Fatalf("the received route must stay readable: %d %s", reply.Code, reply.Body.String())
+	}
+	wantCents, wantUnits := int64(0), int64(0)
+	for _, row := range received.Used {
+		wantCents += centsOfWire(t, row.Value)
+		wantUnits += row.Quantity
+	}
+	wantMilli := int64(0)
+	for _, row := range received.Scrap {
+		wantCents += centsOfWire(t, row.Value)
+		wantMilli += milliOfWire(t, row.Kg)
+	}
+	if wire.Totals.Money == nil || centsOfWire(t, *wire.Totals.Money) != wantCents ||
+		wire.Totals.UsedUnits != strconv.FormatInt(wantUnits, 10) || milliOfWire(t, wire.Totals.ScrapKg) != wantMilli {
+		t.Fatalf("the whole history must agree with the received route: %s %s", body["totals"], reply.Body.String())
+	}
+	if wantUnits != 3 || wantMilli != 15400 || wantCents != 14_720_000 {
+		t.Fatalf("the published history is not the one the fixture wrote: %d %d %d",
+			wantUnits, wantMilli, wantCents)
+	}
+
+	// The live settlement is a period the selector publishes, and the client opens it by its
+	// closing id: it lists the documents of its own window and never a balance.
+	live := f.openSettlement(t, nil)
+	body, wire = decode(f.serve(t, f.request(2, "GET", "/api/purchases?period="+strconv.FormatInt(live, 10), "")))
+	if wire.Period.Kind != "open" || wire.Period.ClosingID == nil || *wire.Period.ClosingID != live ||
+		wire.Period.Label != "En curso" || wire.Balance != nil || len(wire.Periods) != 5 {
+		t.Fatalf("the period in progress must be selectable by its closing id: %s", body)
+	}
+	if wire.TotalPurchases != 1 || len(wire.Purchases) != 1 ||
+		jsonNumber(t, wire.Purchases[0]["id"]) != after.ID {
+		t.Fatalf("the period in progress must list the documents of its window: %s", body["purchases"])
+	}
+
+	// A period this branch does not have is an invalid request, never an empty list.
+	for _, period := range []string{"0", "-1", "07", "abc", "open", "settlement", "999999",
+		strconv.FormatInt(closedID, 10) + "0"} {
+		f.rejected(t, f.request(2, "GET", "/api/purchases?period="+period, ""), 400, "invalid_request")
+	}
+	f.rejected(t, f.request(2, "GET", "/api/purchases?period=", ""), 400, "invalid_request")
+	f.rejected(t, f.request(2, "GET", "/api/purchases?period=1&period=1", ""), 400, "invalid_request")
+}
+
+// centsOfWire reads one published amount as integer cents.
+func centsOfWire(t *testing.T, text string) int64 {
+	t.Helper()
+	negative := strings.HasPrefix(text, "-")
+	whole, fraction, ok := strings.Cut(strings.TrimPrefix(text, "-"), ".")
+	if !ok || len(fraction) != 2 {
+		t.Fatalf("a published amount is not canonical: %q", text)
+	}
+	value, err := strconv.ParseInt(whole+fraction, 10, 64)
+	if err != nil {
+		t.Fatalf("a published amount is not a number: %q", text)
+	}
+	if negative {
+		value = -value
+	}
+	return value
+}
+
+// milliOfWire reads one published weight as integer thousandths.
+func milliOfWire(t *testing.T, text string) int64 {
+	t.Helper()
+	negative := strings.HasPrefix(text, "-")
+	whole, fraction, ok := strings.Cut(strings.TrimPrefix(text, "-"), ".")
+	if !ok || len(fraction) != 3 {
+		t.Fatalf("a published weight is not canonical: %q", text)
+	}
+	value, err := strconv.ParseInt(whole+fraction, 10, 64)
+	if err != nil {
+		t.Fatalf("a published weight is not a number: %q", text)
+	}
+	if negative {
+		value = -value
+	}
+	return value
+}
+
+// jsonNumber reads one integer of a decoded answer.
+func jsonNumber(t *testing.T, raw any) int64 {
+	t.Helper()
+	number, ok := raw.(float64)
+	if !ok || number != math.Trunc(number) {
+		t.Fatalf("a published number is not an integer: %v", raw)
+	}
+	return int64(number)
 }

@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"math"
 	"strconv"
 	"time"
 
@@ -298,49 +299,73 @@ func (s *Store) Reverse(ctx context.Context, actor auth.Identity, targetID int64
 	return document, nil
 }
 
-// List reads one newest-first page of the actor's own branch history. The page is one
-// count plus one page statement: the unit total and the scrap line count of each row are
-// summed by the database, never by a Go loop over every line, and the unit total is cast
-// to text before it becomes an int64 so an out-of-range sum fails closed.
-func (s *Store) List(ctx context.Context, actor auth.Identity, page, pageSize int) (Page, error) {
-	result := Page{Page: page, PageSize: pageSize, Purchases: []Summary{}}
+// List reads one newest-first page of the chosen period of the actor's own branch, the
+// selector the screen shows and, when the period is the pending one, the balance of the
+// branch. The page is one count plus one page statement: the unit total and the scrap line
+// count of each row are summed by the database, never by a Go loop over every line, and the
+// unit total is cast to text before it becomes an int64 so an out-of-range sum fails closed.
+//
+// The selector, the page and the balance are read in one repeatable-read transaction, so the
+// period the screen says it is showing and the documents it lists are the same answer. A
+// period the branch does not have is an invalid request, never an empty list: an operator who
+// kept a link to a settlement of another branch must not read a zero that looks like a fact.
+func (s *Store) List(ctx context.Context, actor auth.Identity, page, pageSize int, selection PeriodSelection) (Listing, error) {
+	result := Listing{Page: Page{Page: page, PageSize: pageSize, Purchases: []Summary{}}}
 	if ctx == nil || s == nil || s.pool == nil {
-		return Page{}, ErrUnavailable
+		return Listing{}, ErrUnavailable
 	}
 	if !branchClerk(actor) {
-		return Page{}, ErrForbidden
+		return Listing{}, ErrForbidden
 	}
-	// Every rejected page or size stops here, before the first statement.
-	if !ValidPage(page, pageSize) {
-		return Page{}, ErrInvalid
+	// Every rejected page, size or period stops here, before the first statement.
+	if !ValidPage(page, pageSize) || !ValidSelection(selection) {
+		return Listing{}, ErrInvalid
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	branch, err := resolveBranch(ctx, s.pool, actor)
 	if err != nil {
-		return Page{}, err
+		return Listing{}, err
 	}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		return Page{}, fail(ctx)
+		return Listing{}, fail(ctx)
 	}
 	defer func() {
 		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
 		defer done()
 		_ = tx.Rollback(cleanup)
 	}()
-	if tx.QueryRow(ctx, "SELECT count(*) FROM purchases WHERE location_id=$1", branch).Scan(&result.TotalPurchases) != nil {
-		return Page{}, fail(ctx)
+	periods, err := loadPeriods(ctx, tx, branch)
+	if err != nil {
+		return Listing{}, err
+	}
+	period, ok := chosenPeriod(periods, selection)
+	if !ok {
+		return Listing{}, ErrInvalid
+	}
+	// The window of a settlement is [period_start, cut_at); the balance and the whole history
+	// are not a window, so they list every document of the branch (S6).
+	where, args := "WHERE p.location_id=$1", []any{branch}
+	if period.Kind == PeriodSettlement || period.Kind == PeriodOpen {
+		if period.From == nil || period.To == nil {
+			return Listing{}, ErrUnavailable
+		}
+		where += " AND p.created_at >= $2 AND p.created_at < $3"
+		args = append(args, *period.From, *period.To)
+	}
+	if tx.QueryRow(ctx, "SELECT count(*) FROM purchases p "+where, args...).Scan(&result.Page.TotalPurchases) != nil {
+		return Listing{}, fail(ctx)
 	}
 	rows, err := tx.Query(ctx, `SELECT p.id,p.created_at,p.total::text,p.reverses_purchase_id,
   (SELECT counter.id FROM purchases counter WHERE counter.reverses_purchase_id=p.id),
   coalesce((SELECT sum(unit.quantity) FROM purchase_used_lines unit WHERE unit.purchase_id=p.id),0)::text,
   (SELECT count(*) FROM purchase_scrap_lines scrap WHERE scrap.purchase_id=p.id)
- FROM purchases p WHERE p.location_id=$1
- ORDER BY p.id DESC LIMIT $2 OFFSET $3`,
-		branch, int64(pageSize), int64(page-1)*int64(pageSize))
+ FROM purchases p `+where+`
+ ORDER BY p.id DESC LIMIT $`+strconv.Itoa(len(args)+1)+` OFFSET $`+strconv.Itoa(len(args)+2),
+		append(args, int64(pageSize), int64(page-1)*int64(pageSize))...)
 	if err != nil {
-		return Page{}, fail(ctx)
+		return Listing{}, fail(ctx)
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -349,37 +374,298 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, page, pageSize in
 		var scrap int64
 		if rows.Scan(&summary.ID, &summary.CreatedAt, &total, &summary.ReversesPurchaseID,
 			&summary.ReversedBy, &units, &scrap) != nil {
-			return Page{}, fail(ctx)
+			return Listing{}, fail(ctx)
 		}
 		summary.Total = Money(total)
 		if _, ok := centsOf(total); !ok || summary.ID < 1 || summary.CreatedAt.IsZero() ||
 			scrap < 0 || scrap > MaxLines ||
-			(len(result.Purchases) > 0 && summary.ID >= result.Purchases[len(result.Purchases)-1].ID) {
-			return Page{}, ErrUnavailable
+			(len(result.Page.Purchases) > 0 && summary.ID >= result.Page.Purchases[len(result.Page.Purchases)-1].ID) {
+			return Listing{}, ErrUnavailable
 		}
 		// A document carries at most MaxLines used lines of at most MaxQuantity units, so a
 		// unit total outside that range is not a document this domain wrote.
 		value, err := strconv.ParseInt(units, 10, 64)
 		if err != nil || value > MaxLines*MaxQuantity || value < -MaxLines*MaxQuantity {
-			return Page{}, ErrUnavailable
+			return Listing{}, ErrUnavailable
 		}
 		if !signOf(summary.Total, summary.ReversesPurchaseID) {
-			return Page{}, ErrUnavailable
+			return Listing{}, ErrUnavailable
 		}
 		if summary.ReversedBy != nil && (*summary.ReversedBy <= summary.ID || summary.ReversesPurchaseID != nil) {
-			return Page{}, ErrUnavailable
+			return Listing{}, ErrUnavailable
 		}
 		summary.UsedUnits = value
 		summary.ScrapLines = int(scrap)
-		result.Purchases = append(result.Purchases, summary)
+		result.Page.Purchases = append(result.Page.Purchases, summary)
 	}
 	if rows.Err() != nil {
-		return Page{}, fail(ctx)
+		return Listing{}, fail(ctx)
+	}
+	rows.Close()
+	// The header numbers are the period's own. A window is summed from the very rows the received
+	// route publishes — read here by the same statements over the period's window — so the two
+	// answers can never disagree about the same documents. The pending period is not a window: its
+	// numbers are the balance, which is what the branch still holds (S4).
+	if period.Kind == PeriodPending {
+		balance, err := loadBalance(ctx, tx, branch)
+		if err != nil {
+			return Listing{}, err
+		}
+		totals, err := totalsOfBalance(balance)
+		if err != nil {
+			return Listing{}, err
+		}
+		result.Balance, result.Totals = &balance, totals
+	} else {
+		received, err := readReceived(ctx, tx, where, args)
+		if err != nil {
+			return Listing{}, err
+		}
+		totals, err := totalsOfReceived(received)
+		if err != nil {
+			return Listing{}, err
+		}
+		result.Totals = totals
 	}
 	if tx.Commit(ctx) != nil {
-		return Page{}, fail(ctx)
+		return Listing{}, fail(ctx)
+	}
+	result.Periods, result.Period = periods, period
+	return result, nil
+}
+
+// loadPeriods reads the selector of one branch: the pending balance first, then every closed
+// settlement newest first, then the live settlement when the branch has one, then the whole
+// history. A period is a settlement and never a calendar month, so the identifier of a closed
+// settlement is the closing id itself; the live one is named by its kind because it is the one
+// the branch is still inside.
+func loadPeriods(ctx context.Context, q querier, branch int16) ([]Period, error) {
+	rows, err := q.Query(ctx, `SELECT id,status,period_start,cut_at,closed_at
+ FROM branch_closings WHERE branch_location_id=$1 ORDER BY cut_at DESC,id DESC`, branch)
+	if err != nil {
+		return nil, fail(ctx)
+	}
+	defer rows.Close()
+	settlements := make([]Period, 0, 8)
+	var live *Period
+	previous := int64(math.MaxInt64)
+	for rows.Next() {
+		var id int64
+		var status string
+		var start, cut time.Time
+		var closed *time.Time
+		if rows.Scan(&id, &status, &start, &cut, &closed) != nil {
+			return nil, fail(ctx)
+		}
+		// The history of one branch is ordered by the moment it settled, which is also the
+		// order of its ids; anything else is not a history this domain wrote.
+		if id < 1 || id >= previous || start.IsZero() || cut.IsZero() || start.After(cut) {
+			return nil, ErrUnavailable
+		}
+		previous = id
+		closingID, from, to := id, start, cut
+		switch status {
+		case "closed":
+			// A closed settlement is the only period that has already taken material away, so
+			// it is the only settlement period the selector offers as a fact.
+			if closed == nil || closed.IsZero() || closed.Before(cut) {
+				return nil, ErrUnavailable
+			}
+			settlements = append(settlements, Period{Kind: PeriodSettlement,
+				ClosingID: &closingID, From: &from, To: &to,
+				Label: "Rendición #" + strconv.FormatInt(id, 10)})
+		case "open", "proposed", "rejected":
+			// open, proposed and rejected all keep the branch frozen: the branch is inside one
+			// settlement at a time, so a second live one is not a state this domain wrote.
+			if live != nil {
+				return nil, ErrUnavailable
+			}
+			live = &Period{Kind: PeriodOpen, ClosingID: &closingID, From: &from, To: &to,
+				Label: "En curso"}
+		default:
+			return nil, ErrUnavailable
+		}
+	}
+	if rows.Err() != nil {
+		return nil, fail(ctx)
+	}
+	periods := make([]Period, 0, len(settlements)+3)
+	periods = append(periods, Period{Kind: PeriodPending, Label: "Pendiente"})
+	periods = append(periods, settlements...)
+	if live != nil {
+		periods = append(periods, *live)
+	}
+	periods = append(periods, Period{Kind: PeriodAll, Label: "Todo el historial"})
+	return periods, nil
+}
+
+// chosenPeriod resolves the requested selection against the selector of the branch. A period
+// the branch does not have — a closing id of another branch, or an id that names no settlement —
+// is not an empty list. A closing id names a closed settlement or the live one the selector
+// offers as the period in progress, because the selector publishes both and an entry nobody can
+// choose would be a period the screen can show and never open.
+func chosenPeriod(periods []Period, selection PeriodSelection) (Period, bool) {
+	for _, period := range periods {
+		if selection.Kind == PeriodSettlement {
+			if (period.Kind == PeriodSettlement || period.Kind == PeriodOpen) &&
+				period.ClosingID != nil && *period.ClosingID == selection.ClosingID {
+				return period, true
+			}
+			continue
+		}
+		if period.Kind == selection.Kind {
+			return period, true
+		}
+	}
+	return Period{}, false
+}
+
+// loadBalance derives the pending balance of one branch from every persisted document and
+// every closed settlement: what was bought and not yet taken to the warehouse. A proposed
+// settlement has taken nothing yet, so only a closed one counts what the warehouse counted.
+// A counter-document subtracts by construction, because its quantity and weight are stored
+// negated; a row whose net bought and delivered are both zero is not a position of the
+// branch and is omitted instead of being published as a zero nobody can act on.
+func loadBalance(ctx context.Context, q querier, branch int16) (Balance, error) {
+	result := Balance{Used: []BalanceUsed{}, Scrap: []BalanceScrap{}}
+	rows, err := q.Query(ctx, `SELECT coalesce(bought.model,delivered.model),
+  bought.units::text,delivered.units::text
+ FROM (
+  SELECT line.model AS model,sum(line.quantity) AS units
+  FROM purchase_used_lines line
+  JOIN purchases p ON p.id=line.purchase_id
+  WHERE p.location_id=$1
+  GROUP BY line.model
+ ) bought
+ FULL OUTER JOIN (
+  SELECT sheet.model AS model,sum(sheet.counted_quantity) AS units
+  FROM closing_material_lines sheet
+  JOIN branch_closings closing ON closing.id=sheet.closing_id
+  WHERE closing.branch_location_id=$1 AND closing.status='closed'
+    AND sheet.kind='used' AND sheet.counted_quantity IS NOT NULL
+  GROUP BY sheet.model
+ ) delivered ON delivered.model=bought.model
+ ORDER BY coalesce(bought.model,delivered.model) COLLATE "C"`, branch)
+	if err != nil {
+		return Balance{}, fail(ctx)
+	}
+	for rows.Next() {
+		var model string
+		var boughtText, deliveredText *string
+		if rows.Scan(&model, &boughtText, &deliveredText) != nil {
+			rows.Close()
+			return Balance{}, fail(ctx)
+		}
+		bought, boughtOK := netUnits(boughtText)
+		delivered, deliveredOK := deliveredUnits(deliveredText)
+		canonical, modelOK := CanonicalModel(model)
+		if !boughtOK || !deliveredOK || !modelOK || canonical != model ||
+			bought < 0 || delivered < 0 ||
+			(len(result.Used) > 0 && model <= result.Used[len(result.Used)-1].Model) {
+			rows.Close()
+			return Balance{}, ErrUnavailable
+		}
+		if bought == 0 && delivered == 0 {
+			continue
+		}
+		result.Used = append(result.Used, BalanceUsed{Model: model, Bought: bought,
+			Delivered: delivered, Balance: bought - delivered})
+	}
+	if rows.Err() != nil {
+		rows.Close()
+		return Balance{}, fail(ctx)
+	}
+	rows.Close()
+	rows, err = q.Query(ctx, `SELECT coalesce(bought.material_id,delivered.material_id),
+  bought.kg::text,delivered.kg::text
+ FROM (
+  SELECT line.material_id AS material_id,sum(line.kg) AS kg
+  FROM purchase_scrap_lines line
+  JOIN purchases p ON p.id=line.purchase_id
+  WHERE p.location_id=$1
+  GROUP BY line.material_id
+ ) bought
+ FULL OUTER JOIN (
+  SELECT sheet.material_id AS material_id,sum(sheet.counted_quantity) AS kg
+  FROM closing_material_lines sheet
+  JOIN branch_closings closing ON closing.id=sheet.closing_id
+  WHERE closing.branch_location_id=$1 AND closing.status='closed'
+    AND sheet.kind='scrap' AND sheet.counted_quantity IS NOT NULL
+  GROUP BY sheet.material_id
+ ) delivered ON delivered.material_id=bought.material_id
+ ORDER BY 1`, branch)
+	if err != nil {
+		return Balance{}, fail(ctx)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var materialID int64
+		var boughtText, deliveredText *string
+		if rows.Scan(&materialID, &boughtText, &deliveredText) != nil {
+			return Balance{}, fail(ctx)
+		}
+		bought, boughtOK := netMilli(boughtText)
+		delivered, deliveredOK := netMilli(deliveredText)
+		if !boughtOK || !deliveredOK || materialID < 1 || materialID > maxMaterialID ||
+			bought < 0 || delivered < 0 || bought > maxMilli || delivered > maxMilli ||
+			(len(result.Scrap) > 0 && materialID <= result.Scrap[len(result.Scrap)-1].MaterialID) {
+			return Balance{}, ErrUnavailable
+		}
+		if bought == 0 && delivered == 0 {
+			continue
+		}
+		balance, ok := weightOfMilli(bought - delivered)
+		if !ok {
+			return Balance{}, ErrUnavailable
+		}
+		result.Scrap = append(result.Scrap, BalanceScrap{MaterialID: materialID,
+			Bought: mustWeight(bought), Delivered: mustWeight(delivered), Balance: balance})
+	}
+	if rows.Err() != nil {
+		return Balance{}, fail(ctx)
 	}
 	return result, nil
+}
+
+// mustWeight renders integer thousandths the caller already bounded.
+func mustWeight(milli int64) Weight {
+	weight, _ := weightOfMilli(milli)
+	return weight
+}
+
+// netUnits reads one summed used quantity as whole units: an absent sum is zero, and a value
+// that is not canonical integer text is not a sum this domain wrote.
+func netUnits(text *string) (int64, bool) {
+	if text == nil {
+		return 0, true
+	}
+	value, err := strconv.ParseInt(*text, 10, 64)
+	if err != nil || strconv.FormatInt(value, 10) != *text {
+		return 0, false
+	}
+	return value, true
+}
+
+// deliveredUnits reads one counted quantity of a closed settlement as whole units: the sheet
+// stores three decimals, and a used line is a whole number of batteries by the table's own
+// rule, so a fraction is not a count this domain wrote.
+func deliveredUnits(text *string) (int64, bool) {
+	if text == nil {
+		return 0, true
+	}
+	milli, ok := milliOf(*text)
+	if !ok || milli%1000 != 0 {
+		return 0, false
+	}
+	return milli / 1000, true
+}
+
+// netMilli reads one summed weight as integer thousandths: an absent sum is zero.
+func netMilli(text *string) (int64, bool) {
+	if text == nil {
+		return 0, true
+	}
+	return milliOf(*text)
 }
 
 // Detail reads one persisted document of the actor's own branch: the header, its used
@@ -641,7 +927,6 @@ func (s *Store) LastPrices(ctx context.Context, actor auth.Identity) (LastPrices
 // the branch so a counter-document nets out by construction: per model and per material,
 // with the money the branch spent. Rows whose net quantity or weight is zero are omitted.
 func (s *Store) Received(ctx context.Context, actor auth.Identity) (Received, error) {
-	result := Received{Used: []ReceivedUsed{}, Scrap: []ReceivedScrap{}}
 	if ctx == nil || s == nil || s.pool == nil {
 		return Received{}, ErrUnavailable
 	}
@@ -663,12 +948,30 @@ func (s *Store) Received(ctx context.Context, actor auth.Identity) (Received, er
 		defer done()
 		_ = tx.Rollback(cleanup)
 	}()
-	rows, err := tx.Query(ctx, `SELECT line.model,sum(line.quantity)::text,sum(line.amount)::text
+	// The whole history is the window of this route, and it is the same window a listing of the whole
+	// history reads: one set of statements, so the two answers cannot disagree.
+	result, err := readReceived(ctx, tx, "WHERE p.location_id=$1", []any{branch})
+	if err != nil {
+		return Received{}, err
+	}
+	if tx.Commit(ctx) != nil {
+		return Received{}, fail(ctx)
+	}
+	return result, nil
+}
+
+// readReceived reads the received rows of one window: the net quantity and value of every model and
+// the net weight and value of every material, grouped by the database so a counter-document nets out
+// by construction. The window is the caller's own WHERE fragment and arguments, which is why the
+// whole history of the received route and one period's window of the listing are the same reading.
+func readReceived(ctx context.Context, q querier, where string, args []any) (Received, error) {
+	result := Received{Used: []ReceivedUsed{}, Scrap: []ReceivedScrap{}}
+	rows, err := q.Query(ctx, `SELECT line.model,sum(line.quantity)::text,sum(line.amount)::text
  FROM purchase_used_lines line
  JOIN purchases p ON p.id=line.purchase_id
- WHERE p.location_id=$1
+ `+where+`
  GROUP BY line.model HAVING sum(line.quantity) <> 0
- ORDER BY line.model COLLATE "C"`, branch)
+ ORDER BY line.model COLLATE "C"`, args...)
 	if err != nil {
 		return Received{}, fail(ctx)
 	}
@@ -698,13 +1001,13 @@ func (s *Store) Received(ctx context.Context, actor auth.Identity) (Received, er
 		return Received{}, fail(ctx)
 	}
 	rows.Close()
-	rows, err = tx.Query(ctx, `SELECT line.material_id,material.name,sum(line.kg)::text,sum(line.amount)::text
+	rows, err = q.Query(ctx, `SELECT line.material_id,material.name,sum(line.kg)::text,sum(line.amount)::text
  FROM purchase_scrap_lines line
  JOIN purchases p ON p.id=line.purchase_id
  JOIN materials material ON material.id=line.material_id
- WHERE p.location_id=$1
+ `+where+`
  GROUP BY line.material_id,material.name HAVING sum(line.kg) <> 0
- ORDER BY line.material_id`, branch)
+ ORDER BY line.material_id`, args...)
 	if err != nil {
 		return Received{}, fail(ctx)
 	}
@@ -735,10 +1038,76 @@ func (s *Store) Received(ctx context.Context, actor auth.Identity) (Received, er
 	if rows.Err() != nil {
 		return Received{}, fail(ctx)
 	}
-	if tx.Commit(ctx) != nil {
-		return Received{}, fail(ctx)
-	}
 	return result, nil
+}
+
+// totalsOfReceived sums one received reading into the three header numbers of its window. It sums
+// exactly the rows that reading publishes, so the totals of the listing and the rows of the received
+// route are one same answer, and it bounds every sum here so an amount outside the published formats
+// fails closed instead of being rendered.
+func totalsOfReceived(received Received) (Totals, error) {
+	unavailable := func() (Totals, error) { return Totals{}, ErrUnavailable }
+	var cents, units, milli int64
+	for _, row := range received.Used {
+		value, ok := centsOf(string(row.Value))
+		if !ok || value < 1 || row.Quantity < 1 || row.Quantity > MaxLines*MaxQuantity ||
+			cents > maxCents-value || units > math.MaxInt64-row.Quantity {
+			return unavailable()
+		}
+		cents += value
+		units += row.Quantity
+	}
+	for _, row := range received.Scrap {
+		value, ok := centsOf(string(row.Value))
+		weight, kgOK := milliOf(string(row.Kg))
+		// A material whose kilogram price rounds to the cent can net to a zero value, so a scrap row
+		// admits 0.00; what it may never be is negative.
+		if !ok || value < 0 || !kgOK || weight < 1 || weight > maxMilli ||
+			cents > maxCents-value || milli > math.MaxInt64-weight {
+			return unavailable()
+		}
+		cents += value
+		milli += weight
+	}
+	money, ok := moneyOfCents(cents)
+	if !ok {
+		return unavailable()
+	}
+	kg, ok := weightOfMilli(milli)
+	if !ok {
+		return unavailable()
+	}
+	return Totals{Money: money, UsedUnits: units, ScrapKg: kg}, nil
+}
+
+// totalsOfBalance is the pending period's own reading in the header's three numbers: how many used
+// units and how many kilograms the branch still holds, summed from the balance rows, which are the
+// position itself rather than a window of it. A balance is material and not money, so it states no
+// amount. The sum follows the sign of the balance, because a settlement that counted more than the
+// branch bought is a real difference and never a zero.
+func totalsOfBalance(balance Balance) (Totals, error) {
+	unavailable := func() (Totals, error) { return Totals{}, ErrUnavailable }
+	var units, milli int64
+	for _, row := range balance.Used {
+		if (row.Balance > 0 && units > math.MaxInt64-row.Balance) ||
+			(row.Balance < 0 && units < math.MinInt64-row.Balance) {
+			return unavailable()
+		}
+		units += row.Balance
+	}
+	for _, row := range balance.Scrap {
+		weight, ok := milliOf(string(row.Balance))
+		if !ok || (weight > 0 && milli > math.MaxInt64-weight) ||
+			(weight < 0 && milli < math.MinInt64-weight) {
+			return unavailable()
+		}
+		milli += weight
+	}
+	kg, ok := weightOfMilli(milli)
+	if !ok {
+		return unavailable()
+	}
+	return Totals{UsedUnits: units, ScrapKg: kg}, nil
 }
 
 // reservedOperation reads the document already persisted under one operation key, if any,

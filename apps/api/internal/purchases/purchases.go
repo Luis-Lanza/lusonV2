@@ -458,6 +458,108 @@ type Page struct {
 	Purchases      []Summary
 }
 
+// PeriodKind is one kind of period the Compras selector offers. A period is never a calendar
+// month: it is a settlement of the branch, so the numbers of one period and the acta of that
+// closure can never speak of different things.
+type PeriodKind string
+
+const (
+	// PeriodPending is the balance the branch holds right now: what it bought minus what the
+	// closed settlements took to the warehouse. It is the selector's default.
+	PeriodPending PeriodKind = "pending"
+	// PeriodSettlement is one closed settlement of the branch, named by its closing id.
+	PeriodSettlement PeriodKind = "settlement"
+	// PeriodOpen is the live settlement of the branch, when it has one.
+	PeriodOpen PeriodKind = "open"
+	// PeriodAll is the whole history: exactly what the screen showed before periods existed.
+	PeriodAll PeriodKind = "all"
+)
+
+// PeriodSelection is the period a listing asks for. ClosingID is positive only for
+// PeriodSettlement, because the other three periods are named by their kind. A closing id names
+// one of the branch's own settlements — a closed one, or the live one the selector offers as the
+// period in progress — and the store resolves it against that branch's history, refusing a
+// period the branch does not have instead of answering an empty list.
+type PeriodSelection struct {
+	Kind      PeriodKind
+	ClosingID int64
+}
+
+// ValidSelection admits the shape of a selection before any database work: a known kind, and
+// the closing id exactly when the kind names one.
+func ValidSelection(selection PeriodSelection) bool {
+	switch selection.Kind {
+	case PeriodPending, PeriodOpen, PeriodAll:
+		return selection.ClosingID == 0
+	case PeriodSettlement:
+		return selection.ClosingID >= 1
+	}
+	return false
+}
+
+// Period is one entry of the selector and the period that was chosen: the kind, the settlement
+// it names, the window its documents follow and the words that say which period is on screen.
+// Pending and all carry no window, because neither is a stretch of time: one is the balance of
+// the branch right now and the other is everything it ever did.
+type Period struct {
+	Kind      PeriodKind
+	ClosingID *int64
+	From      *time.Time
+	To        *time.Time
+	Label     string
+}
+
+// BalanceUsed is one model of the pending balance: what the branch bought of it net of the
+// counter-documents, what the closed settlements counted of it, and the difference in whole
+// units.
+type BalanceUsed struct {
+	Model     string
+	Bought    int64
+	Delivered int64
+	Balance   int64
+}
+
+// BalanceScrap is one material of the pending balance, weighed in kilograms.
+type BalanceScrap struct {
+	MaterialID int64
+	Bought     Weight
+	Delivered  Weight
+	Balance    Weight
+}
+
+// Balance is the pending period's own reading: bought minus delivered, per model and per
+// material, derived from the whole history so a counter-document subtracts by construction and
+// a quantity the warehouse counted short stays visible instead of disappearing.
+type Balance struct {
+	Used  []BalanceUsed
+	Scrap []BalanceScrap
+}
+
+// Totals is the money, the used units and the scrap kilos of one period: the same three readings
+// the received route publishes, summed over exactly the rows that route would publish for the same
+// history, so the header of the screen and the received route can never describe two different
+// numbers of the same documents.
+//
+// Money is empty only for the pending period, which is not a window: a balance is material the
+// branch still holds and the money of a purchase already left the cash box. A window states what it
+// received in money, units and kilos.
+type Totals struct {
+	Money     Money
+	UsedUnits int64
+	ScrapKg   Weight
+}
+
+// Listing is one page of the chosen period with the selector the screen shows, the totals of that
+// period and, for the pending period, the balance of the branch. Page keeps its frozen shape: only
+// the documents of the chosen period are listed, and its total counts exactly those.
+type Listing struct {
+	Page    Page
+	Periods []Period
+	Period  Period
+	Balance *Balance
+	Totals  Totals
+}
+
 // Material is one reference material, bought by the kilogram.
 type Material struct {
 	ID   int64
