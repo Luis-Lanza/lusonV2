@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -3199,4 +3200,64 @@ func mustRead(t *testing.T, e *env, id int64) closings.Closing {
 		t.Fatalf("the settlement could not be read: %v", err)
 	}
 	return closing
+}
+
+// TestMaterialSheetRefusesAKeyThePeriodNeverBought proves the sheet is the opening's own fact: the
+// warehouse counts the lines the period bought, and a key the seed never created is refused instead
+// of stored with a zero expectation that would publish a difference nobody counted against. The
+// case that matters is a settlement already open when the sheet arrived: it has no seeded line, so
+// nothing of it can be counted into a false shortfall.
+func TestMaterialSheetRefusesAKeyThePeriodNeverBought(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	e.purchaseLines(t, "closings-materials-unknown-01", "20.00", []purchases.UsedLineInput{
+		{Model: "NS60ZL", Quantity: 2, UnitPrice: "10.00"},
+	}, nil)
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+	before := e.readMaterialSheet(t, opened.ID)
+	_, err = e.store.CountMaterials(e.ctx, warehouse(), opened.ID, []closings.MaterialCounted{
+		{Kind: closings.MaterialKindUsed, Model: "XX99", Quantity: "1"},
+	})
+	if !errors.Is(err, closings.ErrInvalid) {
+		t.Fatalf("a model the period never bought must be refused, got %v", err)
+	}
+	if after := e.readMaterialSheet(t, opened.ID); after != before {
+		t.Fatalf("a refused count must write nothing, got %q before %q", after, before)
+	}
+	// The key the period did buy is still countable, and only its count moves.
+	if _, err := e.store.CountMaterials(e.ctx, warehouse(), opened.ID, []closings.MaterialCounted{
+		{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "1"},
+	}); err != nil {
+		t.Fatalf("the seeded line must be countable: %v", err)
+	}
+	if got := e.readMaterialSheet(t, opened.ID); got != "used:NS60ZL:unit:2:1:-1:1" {
+		t.Fatalf("the seeded line must keep its expectation, got %q", got)
+	}
+}
+
+// TestMaterialSheetIsReadInByteOrder pins the order the sheet is published in: the models of the used
+// lines sort by bytes, the same comparison the read revalidates with, so a database collation that
+// orders punctuation differently can never turn a valid sheet into an unreadable settlement.
+func TestMaterialSheetIsReadInByteOrder(t *testing.T) {
+	source, err := os.ReadFile("store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(source), `line.model COLLATE "C"`) {
+		t.Fatal("the material sheet must order its models by bytes, the same order it revalidates")
+	}
+}
+
+// readMaterialSheet is the sheet of one settlement as one value, read through the public document so a
+// test compares what the screens are published, never a query of its own.
+func (e *env) readMaterialSheet(t *testing.T, id int64) string {
+	t.Helper()
+	read, err := e.store.Read(e.ctx, warehouse(), id)
+	if err != nil {
+		t.Fatalf("the settlement could not be read: %v", err)
+	}
+	return strings.Join(materialSheet(t, read), ",")
 }

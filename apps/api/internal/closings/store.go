@@ -491,22 +491,24 @@ func (s *Store) CountMaterials(ctx context.Context, actor auth.Identity, id int6
 		// trigger would write its own zero anyway, because the expected is the fact of the opening and
 		// never a caller promise. The conflict branch leaves it untouched, so only the counted
 		// quantity of an existing line ever moves.
+		// The sheet is the opening's own fact: a line exists because the period bought that model or
+		// material, and its expected quantity was seeded then. Counting a key the seed did not create
+		// would store a line with a zero expectation that the update guard then forbids correcting,
+		// which is a false difference, so it is refused instead of invented.
+		var counted int64
 		switch line.Kind {
 		case MaterialKindUsed:
-			_, err = tx.Exec(ctx, `INSERT INTO closing_material_lines(
-  closing_id,kind,model,expected_quantity,counted_quantity)
- VALUES($1,'used',$2,0,$3)
- ON CONFLICT (closing_id,model) WHERE kind='used'
- DO UPDATE SET counted_quantity=EXCLUDED.counted_quantity`,
-				id, line.Model, string(line.Quantity))
+			err = tx.QueryRow(ctx, `UPDATE closing_material_lines SET counted_quantity=$3
+ WHERE closing_id=$1 AND kind='used' AND model=$2 RETURNING expected_quantity::bigint`,
+				id, line.Model, string(line.Quantity)).Scan(&counted)
 		case MaterialKindScrap:
-			_, err = tx.Exec(ctx, `INSERT INTO closing_material_lines(
-  closing_id,kind,material_id,expected_quantity,counted_quantity)
- VALUES($1,'scrap',$2,0,$3)
- ON CONFLICT (closing_id,material_id) WHERE kind='scrap'
- DO UPDATE SET counted_quantity=EXCLUDED.counted_quantity`,
-				id, int16(line.MaterialID), string(line.Quantity))
+			err = tx.QueryRow(ctx, `UPDATE closing_material_lines SET counted_quantity=$3
+ WHERE closing_id=$1 AND kind='scrap' AND material_id=$2 RETURNING expected_quantity::bigint`,
+				id, int16(line.MaterialID), string(line.Quantity)).Scan(&counted)
 		default:
+			return Closing{}, ErrInvalid
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
 			return Closing{}, ErrInvalid
 		}
 		if err != nil {
@@ -1641,7 +1643,7 @@ func loadMaterialLines(ctx context.Context, q querier, ids []int64) (map[int64][
  FROM closing_material_lines line
  LEFT JOIN materials material ON material.id=line.material_id
  WHERE line.closing_id=ANY($1)
- ORDER BY line.closing_id,(line.kind<>'used'),line.model,line.material_id`, ids)
+ ORDER BY line.closing_id,(line.kind<>'used'),line.model COLLATE "C",line.material_id`, ids)
 	if err != nil {
 		return nil, fail(ctx)
 	}
