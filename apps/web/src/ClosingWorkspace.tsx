@@ -613,7 +613,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
                 <div><dt>Porcentaje congelado</dt><dd>{closingRateText(rail.rate_percent)}</dd></div>
                 <div className="total"><dt>Comisión</dt><dd>{closingMoneyText(rail.commission_cents)}</dd></div>
               </dl>
-              <small className="closing-muted">Sólo baterías nuevas. Se informa aparte: no se descuenta de la caja.</small>
+              <small className="closing-muted">Sólo baterías nuevas. La base es todo lo vendido en el período, también lo cobrado por QR: la comisión no depende de cómo se pagó. Se informa aparte: no se descuenta de la caja.</small>
             </div>
 
             <div className="closing-group">

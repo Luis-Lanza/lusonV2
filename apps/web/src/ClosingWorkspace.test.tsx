@@ -457,6 +457,9 @@ describe('the numbers rail (S8, S9, S13)', () => {
     expect(within(aside).getByText('Comisión').parentElement).toHaveTextContent('Bs 1.461,60');
     expect(within(aside).getByText('Porcentaje congelado').parentElement).toHaveTextContent('4,50 %');
     expect(within(aside).getByText('Ventas sobre precio de venta').parentElement).toHaveTextContent('Bs 32.480,00');
+    // The commission base is every sale of the period, so the electronic collection is inside it:
+    // the note states it where the warehouse reads the commission (S13).
+    expect(within(aside).getByText(/también lo cobrado por QR/)).toBeInTheDocument();
     expect(aside).not.toHaveTextContent('8.476,60');
   });
 

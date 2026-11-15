@@ -445,12 +445,14 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
                     <span>{rail.difference_cents === null ? 'Sin contar' : closingSignedText(rail.difference_cents)}</span>
                     {rail.difference_cents !== null && <span className="closing-difference-name">{closingDifferenceName(rail.difference_cents)}</span>}
                   </dd></div>
+                <div><dt>Ventas sobre precio de venta</dt>
+                  <dd>{closingMoneyText(rail.sales_total_cents)}</dd></div>
                 <div><dt>Comisión del período <small>{closingRateText(rail.rate_percent)}</small></dt>
                   <dd>{closingMoneyText(rail.commission_cents)}</dd></div>
                 <div className="total"><dt>Fondo que queda en la caja</dt>
                   <dd>{rail.fund_cents === null ? 'Sin contar' : closingMoneyText(rail.fund_cents)}</dd></div>
               </dl>
-              <p className="closing-help">La comisión se informa aparte y no se descuenta de la caja. La diferencia de caja queda registrada tal cual: no se borra al cerrar y no se reparte.</p>
+              <p className="closing-help">La comisión se calcula sobre todo lo vendido en el período, también lo cobrado por QR: no depende de cómo se pagó. Se informa aparte y no se descuenta de la caja. La diferencia de caja queda registrada tal cual: no se borra al cerrar y no se reparte.</p>
             </div>
             {/* The same block the warehouse reads (ClosingWorkspace), with the offer's own rail: the
                 electronic collection is reported on its own and enters no cash identity of the

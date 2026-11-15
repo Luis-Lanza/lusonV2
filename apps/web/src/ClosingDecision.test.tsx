@@ -187,6 +187,11 @@ describe('what the branch is accepting (S14)', () => {
     expect(within(panel).getByText('Diferencia').parentElement).toHaveTextContent('− Bs 35,00');
     expect(within(panel).getByText('Faltante')).toBeInTheDocument();
     expect(within(panel).getByText('Comisión del período').parentElement).toHaveTextContent('Bs 1.461,60');
+    // The base is stated beside the commission, so the branch reads what the percentage is applied
+    // to, and that the electronic collection counts for it even though it was never in the drawer.
+    expect(within(panel).getByText('Ventas sobre precio de venta').parentElement)
+      .toHaveTextContent('Bs 32.480,00');
+    expect(within(panel).getByText(/también lo cobrado por QR/)).toBeInTheDocument();
     expect(within(panel).getByText('Fondo que queda en la caja').parentElement).toHaveTextContent('Bs 900,00');
     // The commission is reported beside the drawer and is inside no cash identity (S9).
     expect(within(panel).getByText('Caja esperada').parentElement).not.toHaveTextContent('1.461,60');
