@@ -22,6 +22,8 @@ package closings
 import (
 	"errors"
 	"math"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -125,7 +127,10 @@ func (e *FundExceedsDrawer) Unwrap() error { return ErrClosureRefused }
 
 // CountPending is the refusal of a proposal or a closure while a variant of the count
 // sheet has no counted quantity. The variant is named, because the admin has to know
-// which line is missing (S4).
+// which line is missing (S4). No writer of this version can leave a line pending — the
+// opener seeds the counted quantity with the expected one (S1) — so this is the safety net
+// of a sheet written before that seeding, or of a line emptied out of band, kept instead of
+// removed (S3).
 type CountPending struct{ VariantID int64 }
 
 func (e *CountPending) Error() string {
@@ -208,6 +213,10 @@ const (
 	MaxCounted     = 1_000_000
 	MaxObservation = 1000
 	MaxReason      = 1000
+	// MaxMaterialLines is the bound of one material count, which is the bound the count sheet of
+	// the stock admits (S8): the sheet of a period holds one line per model and per material it
+	// bought, and a request states at most that many lines at once.
+	MaxMaterialLines = 190
 	// MaxDescription is the bound of the description of an expense, which is the database's
 	// own: the ledger admits between 1 and 500 characters once trimmed (S12).
 	MaxDescription = 500
@@ -250,6 +259,17 @@ type Settings struct {
 	CommissionRatePercent Percent `json:"commission_rate_percent"`
 }
 
+// BranchCommission is the configured settlement commission of one branch, read the way the
+// administration panel needs it: the rate, the account that fixed it and the moment it did.
+// It is the audit of one money parameter, so a rate is never read without its author, and a
+// branch the warehouse never configured is absent instead of reported with a zero rate.
+type BranchCommission struct {
+	BranchID  int64     `json:"branch_location_id"`
+	Rate      Percent   `json:"commission_rate_percent"`
+	UpdatedAt time.Time `json:"updated_at"`
+	UpdatedBy string    `json:"updated_by"`
+}
+
 // Counted is one line the admin counted: the variant and what was actually found. It is
 // the only quantity a caller supplies — the expected quantity is the database's own
 // snapshot of the cut instant and the difference is never an input.
@@ -259,8 +279,11 @@ type Counted struct {
 }
 
 // CountLine is one persisted line of the count sheet with the catalogue identity of its
-// variant, so the sheet is legible without a second lookup. CountedQuantity is nil while
-// the variant is still pending, which is what blocks the proposal and the closure.
+// variant, so the sheet is legible without a second lookup. The opener seeds CountedQuantity
+// with the ExpectedQuantity it photographs, so a live sheet never states a missing quantity
+// (S1): the warehouse only edits the lines that disagree with the system. CountedQuantity is
+// nil only on a sheet written before that seeding, which is the state the pending refusal
+// still guards.
 type CountLine struct {
 	VariantID        int64           `json:"variant_id"`
 	CatalogEntryID   int64           `json:"catalog_entry_id"`
@@ -281,11 +304,286 @@ type CountLine struct {
 // draft either: they are derived from the facts on read. A nil CountedCash or ClosingCash
 // means the admin has not counted the drawer yet, which is a legitimate draft and blocks
 // the proposal; the period's numbers and the commission rate are not draftable at all.
+//
+// PurchaseFundCounted and PurchaseFundCash are the second envelope (S1): what the warehouse counted
+// in the purchase fund and the amount it leaves in it for the next period. Both are optional — a
+// draft that states neither leaves the envelope unstated, exactly like an uncounted drawer — and
+// the new amount is deliberately not bounded by the counted one, because the warehouse brings money
+// from outside the branch (S5, S6).
 type CashDraft struct {
 	CountedCash     *Money
 	ContributedCash Money
 	ClosingCash     *Money
 	Observation     string
+	// PurchaseFundCounted is the envelope the warehouse counted; PurchaseFundCash is the amount
+	// that opens the next period. Both are drafts while the warehouse holds the settlement and both
+	// are frozen by the proposal, exactly like the drawer (S5, S6).
+	PurchaseFundCounted *Money
+	PurchaseFundCash    *Money
+}
+
+// MaterialKind is the unit one row of the material sheet is counted in (S8): a used battery is
+// counted in whole units per model and scrap in kilograms per material. The kind is also the key
+// of the row, because it decides which of the two columns names it.
+type MaterialKind string
+
+const (
+	MaterialKindUsed  MaterialKind = "used"
+	MaterialKindScrap MaterialKind = "scrap"
+)
+
+// Valid reports whether the kind is one this vertical stores.
+func (k MaterialKind) Valid() bool { return k == MaterialKindUsed || k == MaterialKindScrap }
+
+// Unit is the unit the sheet publishes for the kind, which is the unit both of its quantities are
+// counted in: a used battery is a whole thing and a material of the reference table is weighed in
+// kilograms.
+func (k MaterialKind) Unit() string {
+	if k == MaterialKindScrap {
+		return "kg"
+	}
+	return "unit"
+}
+
+// Quantity is the canonical quantity of one material line: the whole units of a used line, which
+// is never a fraction, and the kilograms of a scrap line with exactly three decimals, which is the
+// scale the weight of a purchase already stores. It is decimal text end to end, so no binary float
+// ever touches a count, and the unit of the line is the only thing that decides its scale.
+type Quantity string
+
+// SignedQuantity is a difference of the material sheet with its sign: negative is less material
+// than the period bought and positive is more. Like the cash difference it is informed and never
+// blocks, which is why it is signed and why it is never written back (S8).
+type SignedQuantity string
+
+var (
+	// unitsPattern is a whole quantity of the sheet: at most nine integral digits, which is the
+	// whole range of numeric(12,3) without a fraction, never padded and never a fraction, because
+	// a battery is not divisible.
+	unitsPattern = regexp.MustCompile(`^(0|[1-9][0-9]{0,8})$`)
+	// kilogramsPattern is a weight of the sheet: the same integral part with exactly three
+	// decimals, so the text of a count is the text of the column it is stored in.
+	kilogramsPattern = regexp.MustCompile(`^(0|[1-9][0-9]{0,8})\.[0-9]{3}$`)
+	// materialModelPattern is the frozen model code of a used line: the same one a purchase line
+	// stores, comma included, because the sheet counts the models the branch bought by that name.
+	materialModelPattern = regexp.MustCompile(`^[A-Z0-9][A-Z0-9 .,_/-]{0,39}$`)
+)
+
+const (
+	// MaxMaterialID is the range of the material id, which is the smallint of the reference table.
+	MaxMaterialID = math.MaxInt16
+	// maxMilli is the whole range of numeric(12,3) expressed in thousandths, which is the column of
+	// both quantities of the sheet.
+	maxMilli = int64(999_999_999_999)
+)
+
+// ParseQuantity admits the counted quantity of one line: a whole number of units for a used line
+// and kilograms with exactly three decimals for a scrap line, each as the canonical text the
+// sheet publishes. An uncounted quantity is the JSON null of this contract and never a zero, so a
+// padded, fractional-unit or over-precision value is refused instead of normalized.
+func ParseQuantity(kind MaterialKind, text string) (Quantity, error) {
+	switch kind {
+	case MaterialKindUsed:
+		if !unitsPattern.MatchString(text) {
+			return "", ErrInvalid
+		}
+	case MaterialKindScrap:
+		if !kilogramsPattern.MatchString(text) {
+			return "", ErrInvalid
+		}
+	default:
+		return "", ErrInvalid
+	}
+	return Quantity(text), nil
+}
+
+// quantityMilli reads a canonical quantity as integer thousandths, the scale that holds units and
+// kilograms exactly: a unit is a thousand thousandths and a kilogram is one. Text that is not
+// canonical is refused, so nothing is approximated.
+func quantityMilli(quantity Quantity) (int64, bool) {
+	text := string(quantity)
+	whole, fraction, _ := strings.Cut(text, ".")
+	if len(whole) == 0 || len(whole) > 9 || (len(whole) > 1 && whole[0] == '0') || len(fraction) > 3 {
+		return 0, false
+	}
+	var value int64
+	for _, ch := range whole {
+		if ch < '0' || ch > '9' {
+			return 0, false
+		}
+		value = value*10 + int64(ch-'0')
+	}
+	for i := 0; i < 3; i++ {
+		value *= 10
+		if i < len(fraction) {
+			ch := fraction[i]
+			if ch < '0' || ch > '9' {
+				return 0, false
+			}
+			value += int64(ch - '0')
+		}
+	}
+	return value, true
+}
+
+// quantityFromMilli renders integer thousandths as the canonical quantity of one kind: the whole
+// units of a used line and the three-decimal kilograms of a scrap line. A fraction of a unit is
+// not a battery, so it is refused instead of rounded.
+func quantityFromMilli(milli int64, kind MaterialKind) (Quantity, error) {
+	if milli < 0 || milli > maxMilli || !kind.Valid() {
+		return "", ErrInvalid
+	}
+	whole, fraction := milli/1000, milli%1000
+	if kind == MaterialKindUsed {
+		if fraction != 0 {
+			return "", ErrInvalid
+		}
+		return ParseQuantity(kind, strconv.FormatInt(whole, 10))
+	}
+	text := strconv.FormatInt(whole, 10) + "." +
+		string([]byte{byte('0' + fraction/100), byte('0' + fraction/10%10), byte('0' + fraction%10)})
+	if quantity, err := ParseQuantity(kind, text); err != nil || string(quantity) != text {
+		return "", ErrInvalid
+	}
+	return Quantity(text), nil
+}
+
+// signedQuantityFromMilli renders a signed quantity from integer thousandths, with the scale of
+// its kind. A value outside the column renders as the empty text, which no caller stores.
+func signedQuantityFromMilli(milli int64, kind MaterialKind) SignedQuantity {
+	negative := milli < 0
+	if negative {
+		milli = -milli
+	}
+	quantity, err := quantityFromMilli(milli, kind)
+	if err != nil {
+		return ""
+	}
+	if negative {
+		return SignedQuantity("-" + string(quantity))
+	}
+	return SignedQuantity(quantity)
+}
+
+// String renders the difference of one line, or the empty text when it is not canonical text of
+// either scale. A difference of zero is never published with a sign: the arithmetic of the sheet
+// renders it as the zero of its own kind.
+func (s SignedQuantity) String() string {
+	text := string(s)
+	magnitude := strings.TrimPrefix(text, "-")
+	if (!unitsPattern.MatchString(magnitude) && !kilogramsPattern.MatchString(magnitude)) ||
+		(magnitude == "0" || magnitude == "0.000") && magnitude != text {
+		return ""
+	}
+	if _, ok := quantityMilli(Quantity(magnitude)); !ok {
+		return ""
+	}
+	return text
+}
+
+// MaterialDifference is what was counted against what the period bought, with its sign: negative
+// is material missing from the shelf and positive is material the period did not buy. It is
+// informed exactly like the cash difference and blocks nothing (S8), and it is null while the line
+// is uncounted, because a difference of zero would be a count nobody made.
+func MaterialDifference(counted *Quantity, expected Quantity, kind MaterialKind) (*SignedQuantity, error) {
+	if counted == nil {
+		return nil, nil
+	}
+	countedMilli, ok := quantityMilli(*counted)
+	if !ok {
+		return nil, ErrInvalid
+	}
+	expectedMilli, ok := quantityMilli(expected)
+	if !ok {
+		return nil, ErrInvalid
+	}
+	difference := signedQuantityFromMilli(countedMilli-expectedMilli, kind)
+	if difference == "" {
+		return nil, ErrInvalid
+	}
+	return &difference, nil
+}
+
+// MaterialDelivery is the quantity that goes to the warehouse at the closure: everything that was
+// counted, because the previous closure already took everything and the shelf starts at zero by
+// construction (S7, S9). There is no remnant field and no column: it is the counted quantity, and
+// it is derived on read so it can never disagree with the count.
+func MaterialDelivery(counted *Quantity) *Quantity {
+	if counted == nil {
+		return nil
+	}
+	delivered := *counted
+	return &delivered
+}
+
+// ValidMaterialModel reports whether the model of a used line is one this vertical stores: the same
+// frozen code a purchase line names, comma included, because the sheet counts the models the branch
+// bought by that name.
+func ValidMaterialModel(model string) bool { return materialModelPattern.MatchString(model) }
+
+// MaterialCounted is one line the warehouse counted: the key of the row -- the model of a used
+// battery or the material of a scrap line -- and what was found. The expected quantity is the
+// database's own fact of the opening, so it is not part of this request at all (S7), and the
+// difference and the delivery are derived from it on read.
+type MaterialCounted struct {
+	Kind       MaterialKind
+	Model      string
+	MaterialID int64
+	Quantity   Quantity
+}
+
+// MaterialLine is one row of the material sheet (S8): what the period bought of one model or
+// material and what the warehouse counted at the cut, with the difference between the two and the
+// quantity that goes to the warehouse. A used line names its Model and a scrap line its
+// MaterialID and Material -- exactly one of them, per kind -- and Unit is the unit both quantities
+// are counted in. Expected is a fact of the opening, Counted is null while the line is uncounted,
+// and Difference and Delivered are derived on every read, never written.
+type MaterialLine struct {
+	Kind       MaterialKind    `json:"kind"`
+	Model      *string         `json:"model"`
+	MaterialID *int64          `json:"material_id"`
+	Material   *string         `json:"material"`
+	Unit       string          `json:"unit"`
+	Expected   Quantity        `json:"expected_quantity"`
+	Counted    *Quantity       `json:"counted_quantity"`
+	Difference *SignedQuantity `json:"difference"`
+	Delivered  *Quantity       `json:"delivered_quantity"`
+}
+
+// canonicalMaterials admits the counted sheet of one request: one to MaxMaterialLines lines, each
+// naming one row of the sheet once, with the key its kind names and the canonical quantity of its
+// unit. The lines are copied in the caller's order; the caller's slice is never modified.
+func canonicalMaterials(counted []MaterialCounted) ([]MaterialCounted, error) {
+	if len(counted) < 1 || len(counted) > MaxMaterialLines {
+		return nil, ErrInvalid
+	}
+	seen := make(map[string]bool, len(counted))
+	lines := make([]MaterialCounted, 0, len(counted))
+	for _, line := range counted {
+		var key string
+		switch line.Kind {
+		case MaterialKindUsed:
+			if line.MaterialID != 0 || !materialModelPattern.MatchString(line.Model) {
+				return nil, ErrInvalid
+			}
+			key = string(line.Kind) + "/" + line.Model
+		case MaterialKindScrap:
+			if line.Model != "" || line.MaterialID < 1 || line.MaterialID > MaxMaterialID {
+				return nil, ErrInvalid
+			}
+			key = string(line.Kind) + "/" + digits(line.MaterialID)
+		default:
+			return nil, ErrInvalid
+		}
+		quantity, err := ParseQuantity(line.Kind, string(line.Quantity))
+		if err != nil || quantity != line.Quantity || seen[key] {
+			return nil, ErrInvalid
+		}
+		seen[key] = true
+		lines = append(lines, MaterialCounted{Kind: line.Kind, Model: line.Model,
+			MaterialID: line.MaterialID, Quantity: quantity})
+	}
+	return lines, nil
 }
 
 // CorrectionStatus is the state of one correction of a closed settlement: the warehouse
@@ -389,21 +687,27 @@ type ProposalCountLine struct {
 // accepted (S14, S15). It carries no seller and no manager name: the commission of a
 // period is one amount for the whole branch (S7).
 type ProposalPayload struct {
-	PeriodStart           time.Time           `json:"period_start"`
-	CutAt                 time.Time           `json:"cut_at"`
-	SalesTotal            Money               `json:"sales_total"`
-	CommissionRatePercent Percent             `json:"commission_rate_percent"`
-	CommissionAmount      Money               `json:"commission_amount"`
-	CashSales             Money               `json:"cash_sales"`
-	CashExpenses          Money               `json:"cash_expenses"`
-	CardTotal             Money               `json:"card_total"`
-	TransferTotal         Money               `json:"transfer_total"`
-	QRTotal               Money               `json:"qr_total"`
-	CountedCash           *Money              `json:"counted_cash"`
-	ContributedCash       Money               `json:"contributed_cash"`
-	ClosingCash           *Money              `json:"closing_cash"`
-	Observation           string              `json:"observation"`
-	CountLines            []ProposalCountLine `json:"count_lines"`
+	PeriodStart           time.Time `json:"period_start"`
+	CutAt                 time.Time `json:"cut_at"`
+	SalesTotal            Money     `json:"sales_total"`
+	CommissionRatePercent Percent   `json:"commission_rate_percent"`
+	CommissionAmount      Money     `json:"commission_amount"`
+	CashSales             Money     `json:"cash_sales"`
+	CashExpenses          Money     `json:"cash_expenses"`
+	CardTotal             Money     `json:"card_total"`
+	TransferTotal         Money     `json:"transfer_total"`
+	QRTotal               Money     `json:"qr_total"`
+	CountedCash           *Money    `json:"counted_cash"`
+	ContributedCash       Money     `json:"contributed_cash"`
+	ClosingCash           *Money    `json:"closing_cash"`
+	Observation           string    `json:"observation"`
+	// PurchaseFundCounted and PurchaseFundCash are the second envelope of the offer: what the
+	// warehouse counted in the purchase fund and the amount it leaves there for the next period.
+	// They are absent from an offer made before the envelope was stated, which is why they are
+	// omitted instead of being invented as zero (S1, S5, S6).
+	PurchaseFundCounted *Money              `json:"purchase_fund_counted,omitempty"`
+	PurchaseFundCash    *Money              `json:"purchase_fund_cash,omitempty"`
+	CountLines          []ProposalCountLine `json:"count_lines"`
 }
 
 // Round is one proposal of the warehouse with the branch's answer, if it has one. Rounds
@@ -422,11 +726,13 @@ type Round struct {
 }
 
 // Closing is one persisted settlement exactly as this vertical reads it. The money of the
-// period is the database's; the three derived numbers are computed here on read and never
-// written. SalesTotal, CommissionAmount, CardTotal, TransferTotal and QRTotal are written
-// by the proposal transition, which records the offer the branch is asked to accept, and
-// the closure freezes them: a closed settlement can never state a period other than the
-// one it was accepted on.
+// period is the database's; the derived numbers are computed here on read and never written.
+// SalesTotal, CommissionAmount, CardTotal, TransferTotal, QRTotal and CashExpenses are written
+// by the proposal transition, which records the offer the branch is asked to accept, and the
+// closure freezes them: a closed settlement can never state a period other than the one it was
+// accepted on. Before that transition nothing has written them, so a settlement the warehouse
+// still holds publishes the period derived from its own window instead of the insert zeros
+// (S1): the number the warehouse counts against is the number the branch is asked to accept.
 type Closing struct {
 	ID                    int64      `json:"id"`
 	BranchID              int64      `json:"branch_location_id"`
@@ -439,8 +745,9 @@ type Closing struct {
 	OpeningCash           Money      `json:"opening_cash"`
 	// CashSales and CashExpenses are the money of the period by source: the cash the branch
 	// collected, read from its immutable sales, and the expenses it recorded as they
-	// happened, read from the cash ledger over the same window. The proposal writes both, so
-	// they are zero only before it (S8, S12).
+	// happened, read from the cash ledger over the same window. The proposal writes both and
+	// the closure freezes them; before it, both are derived from that same window, so the
+	// warehouse never counts against a zero (S8, S12).
 	CashSales         Money  `json:"cash_sales"`
 	CashExpenses      Money  `json:"cash_expenses"`
 	SalesTotal        Money  `json:"sales_total"`
@@ -462,6 +769,32 @@ type Closing struct {
 	CashDifference *Signed     `json:"cash_difference"`
 	TakenCash      *Signed     `json:"taken_cash"`
 	CountLines     []CountLine `json:"count_lines"`
+	// MaterialLines is the third account of the document: what the period bought of every model and
+	// material and what the warehouse counted of it, with the difference and the quantity that goes
+	// to the warehouse (S7, S8, S9). The expected quantity is seeded when the settlement opens, from
+	// the purchases of its own window, and the counted one is the warehouse's draft; the difference
+	// and the delivery are derived on read, so neither can disagree with the facts that produce
+	// them, and a line still uncounted states no difference and no delivery at all. It is published
+	// by every read of this package, the single document and each row of the history alike.
+	MaterialLines []MaterialLine `json:"material_lines"`
+	// The purchase fund is the branch's second envelope of physical money, counted and settled
+	// apart from the drawer (S1). PurchaseFundOpening is the amount the previous closure left in it,
+	// PurchasesTotal and PurchasesCash are the sums of the purchases of the window — the only money
+	// reading of this document that comes from the purchases and not from the cash ledger — and
+	// PurchaseFundExpected is opening minus that cash, net of the counter-documents that return
+	// money (S3, S11). PurchaseFundCounted is what the warehouse counted, and PurchaseFundDifference
+	// is that count against the expectation: it is informational and blocks nothing, exactly like the
+	// cash difference, and is null while the envelope is uncounted. PurchaseFundCash is the amount
+	// the warehouse leaves in it, which opens the next period (S5, S6). Opening, purchases and
+	// expectation are derived on read; the counted amount and the new amount are the database's
+	// columns, drafted through CashDraft and frozen by the proposal.
+	PurchaseFundOpening    Money   `json:"purchase_fund_opening"`
+	PurchasesTotal         Money   `json:"purchases_total"`
+	PurchasesCash          Money   `json:"purchases_cash"`
+	PurchaseFundExpected   Signed  `json:"purchase_fund_expected"`
+	PurchaseFundCounted    *Money  `json:"purchase_fund_counted"`
+	PurchaseFundDifference *Signed `json:"purchase_fund_difference"`
+	PurchaseFundCash       *Money  `json:"purchase_fund_cash"`
 	// Corrections are the corrections of the closed settlement, oldest first, each one with the reason
 	// the warehouse stated, its status and -- once the branch accepted it -- the deltas it applied. The
 	// row above keeps the numbers it was signed with; the derived numbers of this document are
@@ -475,8 +808,8 @@ type Closing struct {
 	// settlement covers, read from its ledger in the order they were recorded. They are
 	// published beside the total, so the warehouse sees what it is subtracting and the branch
 	// what it is being charged for (S12). A closed settlement's window never grows, so its
-	// list is fixed; the list is the ledger and the total is the offer's, so while the
-	// warehouse still holds the settlement the list is stated and CashExpenses is zero.
+	// list is fixed; while the warehouse still holds the settlement the list is the ledger and
+	// CashExpenses is derived from that same ledger, so the two cannot disagree.
 	Expenses []Expense `json:"expenses"`
 	Rounds   []Round   `json:"rounds"`
 }
@@ -650,6 +983,11 @@ func canonicalCount(counted []Counted) ([]Counted, error) {
 // bound, and the fund bound the closure enforces (S10, L13). The fund is compared against
 // the drawer only when both sides are known, because a draft may still be missing the
 // count.
+//
+// The purchase envelope is canonicalized the same way and bounded by nothing but its own column
+// check: it is a second envelope of physical money, so its new amount is not compared against what
+// was counted — the warehouse brings money from outside the branch — and it enters the drawer's
+// identities in no way (S1, S5, S12).
 func canonicalCash(draft CashDraft) (CashDraft, error) {
 	contributed, err := ParseAmount(string(draft.ContributedCash))
 	if err != nil {
@@ -677,6 +1015,12 @@ func canonicalCash(draft CashDraft) (CashDraft, error) {
 		if err := checkFund(*canonical.CountedCash, canonical.ContributedCash, *canonical.ClosingCash); err != nil {
 			return CashDraft{}, err
 		}
+	}
+	if canonical.PurchaseFundCounted, err = canonicalOptionalAmount(draft.PurchaseFundCounted); err != nil {
+		return CashDraft{}, err
+	}
+	if canonical.PurchaseFundCash, err = canonicalOptionalAmount(draft.PurchaseFundCash); err != nil {
+		return CashDraft{}, err
 	}
 	return canonical, nil
 }

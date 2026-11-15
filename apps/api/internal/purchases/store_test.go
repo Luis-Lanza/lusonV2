@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/auth"
 	"luson/api/internal/bootstrap"
+	"luson/api/internal/closings"
 	"luson/api/internal/config"
 	"luson/api/internal/purchases"
 	"luson/api/internal/testpg"
@@ -21,12 +23,13 @@ import (
 // bootstrap.Provision creates: the warehouse (account 1, location 1) and one account
 // per branch.
 type purchaseFixture struct {
-	ctx       context.Context
-	p         *pgxpool.Pool
-	store     *purchases.Store
-	branch    auth.Identity
-	other     auth.Identity
-	warehouse auth.Identity
+	ctx         context.Context
+	p           *pgxpool.Pool
+	store       *purchases.Store
+	settlements *closings.Store
+	branch      auth.Identity
+	other       auth.Identity
+	warehouse   auth.Identity
 }
 
 func newPurchaseFixture(t *testing.T) *purchaseFixture {
@@ -46,14 +49,88 @@ func newPurchaseFixture(t *testing.T) *purchaseFixture {
 		t.Fatal("the purchase fixture provisioning failed")
 	}
 	return &purchaseFixture{
-		ctx:   ctx,
-		p:     p,
-		store: purchases.New(p),
+		ctx:         ctx,
+		p:           p,
+		store:       purchases.New(p),
+		settlements: closings.New(p),
 		// Provision assigns account i+1 to location i+1.
 		branch:    auth.Identity{AccountID: 2, Location: auth.Location{ID: 2}},
 		other:     auth.Identity{AccountID: 3, Location: auth.Location{ID: 3}},
 		warehouse: auth.Identity{AccountID: 1, Location: auth.Location{ID: 1}},
 	}
+}
+
+// allHistory is the period a client that does not choose one reads.
+var allHistory = purchases.PeriodSelection{Kind: purchases.PeriodAll}
+
+// openSettlement walks one settlement of a branch to the moment the warehouse holds it: the
+// commission the proposal needs is configured, the count sheet is counted as the system expects
+// it and the material sheet is counted exactly as the test states, so a test only names the
+// lines it is interested in. The purchase fund is left unstated, which is the honest state of an
+// envelope nobody counted, so a later purchase is not measured against it.
+func (f *purchaseFixture) openSettlement(t *testing.T, branch int64, counted []closings.MaterialCounted) closings.Closing {
+	t.Helper()
+	if _, err := f.settlements.ConfigureCommission(f.ctx, f.warehouse, branch, "10.00"); err != nil {
+		t.Fatalf("the branch commission could not be configured: %v", err)
+	}
+	opened, err := f.settlements.Open(f.ctx, f.warehouse, branch)
+	if err != nil {
+		t.Fatalf("the settlement of branch %d could not be opened: %v", branch, err)
+	}
+	read, err := f.settlements.Read(f.ctx, f.warehouse, opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be read: %v", err)
+	}
+	stock := make([]closings.Counted, 0, len(read.CountLines))
+	for _, line := range read.CountLines {
+		stock = append(stock, closings.Counted{VariantID: line.VariantID, Quantity: line.ExpectedQuantity})
+	}
+	if len(stock) > 0 {
+		if _, err := f.settlements.Count(f.ctx, f.warehouse, opened.ID, stock); err != nil {
+			t.Fatalf("the count sheet could not be counted: %v", err)
+		}
+	}
+	if len(counted) > 0 {
+		if _, err := f.settlements.CountMaterials(f.ctx, f.warehouse, opened.ID, counted); err != nil {
+			t.Fatalf("the material sheet could not be counted: %v", err)
+		}
+	}
+	zero, contribution := closings.Money("0.00"), closings.Money("500.00")
+	if _, err := f.settlements.SaveCash(f.ctx, f.warehouse, opened.ID, closings.CashDraft{
+		CountedCash: &zero, ContributedCash: contribution, ClosingCash: &contribution,
+	}); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	return opened
+}
+
+// proposeSettlement records the offer of a settlement the warehouse holds, which is the state
+// the branch decides against.
+func (f *purchaseFixture) proposeSettlement(t *testing.T, id int64) {
+	t.Helper()
+	if _, err := f.settlements.Propose(f.ctx, f.warehouse, id); err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+}
+
+// decideSettlement is the branch's acceptance, so a closed period exists only through the
+// database's own state machine.
+func (f *purchaseFixture) decideSettlement(t *testing.T, id int64, decider auth.Identity) {
+	t.Helper()
+	closed, err := f.settlements.Decide(f.ctx, decider, id, closings.DecisionAccepted, "")
+	if err != nil || closed.Status != closings.StatusClosed {
+		t.Fatalf("the branch must accept the settlement: %+v %v", closed, err)
+	}
+}
+
+// closeSettlement opens a settlement, counts the material sheet as the test states and closes
+// it, so the period is a closed fact of the branch.
+func (f *purchaseFixture) closeSettlement(t *testing.T, branch int64, decider auth.Identity, counted []closings.MaterialCounted) int64 {
+	t.Helper()
+	opened := f.openSettlement(t, branch, counted)
+	f.proposeSettlement(t, opened.ID)
+	f.decideSettlement(t, opened.ID, decider)
+	return opened.ID
 }
 
 // document is one admitted purchase: a used battery at a typed price and a weight of
@@ -92,7 +169,7 @@ func TestStoreCreateDocument(t *testing.T) {
 		Quantity: 2, UnitPrice: "10000.00"})
 	input.ScrapLines = append(input.ScrapLines, purchases.ScrapLineInput{MaterialID: 2,
 		Kg: "0.5", PricePerKg: "4000.00"})
-	input.PaidCash, input.PaidTransfer = "66000.00", "80200.00"
+	input.PaidCash, input.PaidTransfer = "146200.00", "0.00"
 	created, err := f.store.Create(f.ctx, f.branch, input)
 	if err != nil {
 		t.Fatalf("a complete purchase must be admitted: %v", err)
@@ -102,8 +179,10 @@ func TestStoreCreateDocument(t *testing.T) {
 		created.ReversedBy != nil || created.Reason != "" {
 		t.Fatalf("the persisted header is wrong: %+v", created)
 	}
-	// 25000.00 + 2 * 10000.00 + 12.400 * 8000.00 + 0.500 * 4000.00 = 146200.00
-	if created.Total != "146200.00" || created.PaidCash != "66000.00" || created.PaidTransfer != "80200.00" {
+	// 25000.00 + 2 * 10000.00 + 12.400 * 8000.00 + 0.500 * 4000.00 = 146200.00, paid whole
+	// in cash from the purchase fund: the fund is cash, so no part of a purchase is paid by
+	// transfer.
+	if created.Total != "146200.00" || created.PaidCash != "146200.00" || created.PaidTransfer != "0.00" {
 		t.Fatalf("a document must add up: %+v", created)
 	}
 	if len(created.UsedLines) != 2 || created.UsedLines[0].Model != "55B24L" ||
@@ -195,7 +274,10 @@ func TestStoreCreateReplayAndConflict(t *testing.T) {
 		"note":     func(in *purchases.CreateInput) { in.Note = "otra nota" },
 		"quantity": func(in *purchases.CreateInput) { in.UsedLines[0].Quantity = 2; in.PaidCash = "149200.00" },
 		"weight":   func(in *purchases.CreateInput) { in.ScrapLines[0].Kg = "12.500"; in.PaidCash = "125000.00" },
-		"paid":     func(in *purchases.CreateInput) { in.PaidCash, in.PaidTransfer = "124000.00", "200.00" },
+		// A different settlement under the same key is a conflict before anything is inserted:
+		// the key is already the persisted document's, so the fund rule is never reached
+		// with this payload.
+		"paid": func(in *purchases.CreateInput) { in.PaidCash, in.PaidTransfer = "124000.00", "200.00" },
 	} {
 		input := document("store-replay-key-01")
 		changed(&input)
@@ -310,7 +392,7 @@ func TestStoreIsolation(t *testing.T) {
 			_, err := f.store.Reverse(f.ctx, f.warehouse, original.ID, "store-isolation-03", "motivo")
 			return err
 		},
-		"list":      func() error { _, err := f.store.List(f.ctx, f.warehouse, 1, 25); return err },
+		"list":      func() error { _, err := f.store.List(f.ctx, f.warehouse, 1, 25, allHistory); return err },
 		"detail":    func() error { _, err := f.store.Detail(f.ctx, f.warehouse, original.ID); return err },
 		"models":    func() error { _, err := f.store.Models(f.ctx, f.warehouse); return err },
 		"materials": func() error { _, err := f.store.Materials(f.ctx, f.warehouse); return err },
@@ -328,16 +410,16 @@ func TestStoreIsolation(t *testing.T) {
 		t.Fatalf("a pending password session must be forbidden, got %v", err)
 	}
 	// Another branch never sees this document, neither in the page nor in the detail.
-	page, err := f.store.List(f.ctx, f.other, 1, 25)
-	if err != nil || page.TotalPurchases != 0 || len(page.Purchases) != 0 {
+	page, err := f.store.List(f.ctx, f.other, 1, 25, allHistory)
+	if err != nil || page.Page.TotalPurchases != 0 || len(page.Page.Purchases) != 0 {
 		t.Fatalf("a foreign branch must see no document: %+v %v", page, err)
 	}
 	if _, err := f.store.Detail(f.ctx, f.other, original.ID); !errors.Is(err, purchases.ErrNotFound) {
 		t.Fatalf("a foreign document must be not found, got %v", err)
 	}
 	// The branch's own reads keep working.
-	page, err = f.store.List(f.ctx, f.branch, 1, 25)
-	if err != nil || page.TotalPurchases != 1 || len(page.Purchases) != 1 {
+	page, err = f.store.List(f.ctx, f.branch, 1, 25, allHistory)
+	if err != nil || page.Page.TotalPurchases != 1 || len(page.Page.Purchases) != 1 {
 		t.Fatalf("the branch must see its own document: %+v %v", page, err)
 	}
 }
@@ -362,41 +444,41 @@ func TestStoreList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the first document must be reversible: %v", err)
 	}
-	page, err := f.store.List(f.ctx, f.branch, 1, 10)
+	page, err := f.store.List(f.ctx, f.branch, 1, 10, allHistory)
 	if err != nil {
 		t.Fatalf("the page must be readable: %v", err)
 	}
-	if page.Page != 1 || page.PageSize != 10 || page.TotalPurchases != 3 || len(page.Purchases) != 3 {
+	if page.Page.Page != 1 || page.Page.PageSize != 10 || page.Page.TotalPurchases != 3 || len(page.Page.Purchases) != 3 {
 		t.Fatalf("the page is wrong: %+v", page)
 	}
 	// The page is newest first, so the counter-document leads.
-	if page.Purchases[0].ID != counter.ID || page.Purchases[1].ID != created.ID ||
-		page.Purchases[2].ID != first.ID {
-		t.Fatalf("the page is not newest first: %+v", page.Purchases)
+	if page.Page.Purchases[0].ID != counter.ID || page.Page.Purchases[1].ID != created.ID ||
+		page.Page.Purchases[2].ID != first.ID {
+		t.Fatalf("the page is not newest first: %+v", page.Page.Purchases)
 	}
-	lead := page.Purchases[0]
+	lead := page.Page.Purchases[0]
 	if lead.Total != "-124200.00" || lead.ReversesPurchaseID == nil ||
 		*lead.ReversesPurchaseID != first.ID || lead.ReversedBy != nil ||
 		lead.UsedUnits != -1 || lead.ScrapLines != 1 || lead.CreatedAt.IsZero() {
 		t.Fatalf("the counter-document row is wrong: %+v", lead)
 	}
-	if page.Purchases[1].UsedUnits != 3 || page.Purchases[1].ScrapLines != 0 ||
-		page.Purchases[1].Total != "27000.00" || page.Purchases[1].ReversedBy != nil {
-		t.Fatalf("the used-only row is wrong: %+v", page.Purchases[1])
+	if page.Page.Purchases[1].UsedUnits != 3 || page.Page.Purchases[1].ScrapLines != 0 ||
+		page.Page.Purchases[1].Total != "27000.00" || page.Page.Purchases[1].ReversedBy != nil {
+		t.Fatalf("the used-only row is wrong: %+v", page.Page.Purchases[1])
 	}
-	row := page.Purchases[2]
+	row := page.Page.Purchases[2]
 	if row.UsedUnits != 1 || row.ScrapLines != 1 || row.Total != "124200.00" ||
 		row.ReversedBy == nil || *row.ReversedBy != counter.ID {
 		t.Fatalf("the reversed original row is wrong: %+v", row)
 	}
 	// A page beyond the last one is legitimately empty, and the total still counts.
-	beyond, err := f.store.List(f.ctx, f.branch, 2, 10)
-	if err != nil || beyond.TotalPurchases != 3 || len(beyond.Purchases) != 0 {
+	beyond, err := f.store.List(f.ctx, f.branch, 2, 10, allHistory)
+	if err != nil || beyond.Page.TotalPurchases != 3 || len(beyond.Page.Purchases) != 0 {
 		t.Fatalf("a page beyond the last one must be empty: %+v %v", beyond, err)
 	}
 	// The frozen page contract refuses anything else before the database is touched.
 	for _, tc := range [][2]int{{0, 25}, {1, 20}, {1, 100}, {1_000_001, 25}} {
-		if _, err := f.store.List(f.ctx, f.branch, tc[0], tc[1]); !errors.Is(err, purchases.ErrInvalid) {
+		if _, err := f.store.List(f.ctx, f.branch, tc[0], tc[1], allHistory); !errors.Is(err, purchases.ErrInvalid) {
 			t.Fatalf("page %d/%d must be refused, got %v", tc[0], tc[1], err)
 		}
 	}
@@ -670,6 +752,49 @@ func TestStoreRefusesUnknownMaterial(t *testing.T) {
 	}
 }
 
+// TestStoreRefusesTransferPayment proves S2: a branch purchase is paid in cash from the
+// purchase fund, so a document that pays any part of it by transfer is refused with the
+// fund's own refusal and neither a header nor a line is written.
+func TestStoreRefusesTransferPayment(t *testing.T) {
+	f := newPurchaseFixture(t)
+	for name, paid := range map[string][2]string{
+		"whole": {"0.00", "124200.00"},
+		"part":  {"124000.00", "200.00"},
+		"cent":  {"124199.99", "0.01"},
+	} {
+		input := document(fmt.Sprintf("store-fund-%s-payment", name))
+		input.PaidCash, input.PaidTransfer = purchases.Money(paid[0]), purchases.Money(paid[1])
+		_, err := f.store.Create(f.ctx, f.branch, input)
+		var refusal *purchases.FundRefusal
+		if !errors.As(err, &refusal) {
+			t.Fatalf("a %s transfer payment must be the fund's own refusal, got %v", name, err)
+		}
+		// The boundary publishes only its own token for a document that cannot be admitted
+		// as it stands, so the refusal stays an invalid request.
+		if !errors.Is(err, purchases.ErrInvalid) {
+			t.Fatalf("a %s fund refusal must stay an invalid request, got %v", name, err)
+		}
+		// The refusal speaks of the fund, never of a SQLSTATE or of the database's text.
+		if message := err.Error(); strings.Contains(message, "LP006") ||
+			!strings.Contains(message, "cash") || !strings.Contains(message, "purchase fund") ||
+			!strings.Contains(message, "envelope") {
+			t.Fatalf("the %s refusal must speak in the domain's words, got %q", name, message)
+		}
+	}
+	if count := f.countDocuments(t, 2); count != 0 {
+		t.Fatalf("a refused fund payment wrote %d documents", count)
+	}
+	var lines int64
+	if err := f.p.QueryRow(f.ctx, "SELECT count(*) FROM purchase_used_lines").Scan(&lines); err != nil || lines != 0 {
+		t.Fatalf("a refused fund payment wrote %d lines: %v", lines, err)
+	}
+	// The same document paid in cash is admitted: what the fund refuses is the method, not
+	// the purchase.
+	if _, err := f.store.Create(f.ctx, f.branch, document("store-fund-cash-only")); err != nil {
+		t.Fatalf("the same purchase paid in cash must be admitted: %v", err)
+	}
+}
+
 // TestStoreUnavailable proves the store fails closed without a pool and that an unknown
 // document is not found instead of described.
 func TestStoreUnavailable(t *testing.T) {
@@ -681,4 +806,523 @@ func TestStoreUnavailable(t *testing.T) {
 	if _, err := store.Detail(context.Background(), auth.Identity{}, 1); !errors.Is(err, purchases.ErrUnavailable) {
 		t.Fatalf("a store without a pool must fail closed, got %v", err)
 	}
+}
+
+// TestStorePurchasePeriods pins S2, S5 and S4's happy consequence at the store: the listing
+// publishes the selector of the branch in its frozen order, the period it was asked for, and,
+// for the pending period, the balance derived from the whole history. A settlement that counted
+// everything the period bought leaves a zero balance: that is the reset the human asked for,
+// and it happens without deleting a single document.
+func TestStorePurchasePeriods(t *testing.T) {
+	f := newPurchaseFixture(t)
+	// The first settlement of a branch opens with a window of its own: it takes nothing, and the
+	// purchases of the period that follows are the ones the next settlement counts (S5).
+	firstClosed := f.closeSettlement(t, 2, f.branch, nil)
+	first := document("store-periods-key-01")
+	first.UsedLines = []purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 2, UnitPrice: "10000.00"}}
+	first.ScrapLines = []purchases.ScrapLineInput{{MaterialID: 1, Kg: "12.400", PricePerKg: "1000.00"}}
+	first.PaidCash, first.PaidTransfer = "32400.00", "0.00"
+	created, err := f.store.Create(f.ctx, f.branch, first)
+	if err != nil {
+		t.Fatalf("the purchase must be admitted: %v", err)
+	}
+	closedID := f.closeSettlement(t, 2, f.branch, []closings.MaterialCounted{
+		{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "2"},
+		{Kind: closings.MaterialKindScrap, MaterialID: 1, Quantity: "12.400"},
+	})
+
+	// Pending: the default reading of the screen. The documents are the whole history (S6) and
+	// the header numbers are the balance, which is zero because the settlement took everything.
+	pending, err := f.store.List(f.ctx, f.branch, 1, 25,
+		purchases.PeriodSelection{Kind: purchases.PeriodPending})
+	if err != nil {
+		t.Fatalf("the pending period must be readable: %v", err)
+	}
+	if len(pending.Periods) != 4 {
+		t.Fatalf("the selector is pending, the two closed settlements and all: %+v", pending.Periods)
+	}
+	pendingEntry, settlement, earlier, all := pending.Periods[0], pending.Periods[1],
+		pending.Periods[2], pending.Periods[3]
+	if pendingEntry.Kind != purchases.PeriodPending || pendingEntry.Label != "Pendiente" ||
+		pendingEntry.ClosingID != nil || pendingEntry.From != nil || pendingEntry.To != nil {
+		t.Fatalf("the first period must be the pending balance with no window: %+v", pendingEntry)
+	}
+	if settlement.Kind != purchases.PeriodSettlement || settlement.ClosingID == nil ||
+		*settlement.ClosingID != closedID || settlement.From == nil || settlement.To == nil ||
+		settlement.Label != "Rendición #"+strconv.FormatInt(closedID, 10) {
+		t.Fatalf("the closed settlement must be its own period: %+v", settlement)
+	}
+	if earlier.Kind != purchases.PeriodSettlement || earlier.ClosingID == nil ||
+		*earlier.ClosingID != firstClosed {
+		t.Fatalf("the closed settlements must be newest first: %+v", pending.Periods)
+	}
+	if all.Kind != purchases.PeriodAll || all.Label != "Todo el historial" ||
+		all.ClosingID != nil || all.From != nil || all.To != nil {
+		t.Fatalf("the last period must be the whole history with no window: %+v", all)
+	}
+	if pending.Period.Kind != purchases.PeriodPending || pending.Period.Label != "Pendiente" {
+		t.Fatalf("the chosen period must repeat the selector's entry: %+v", pending.Period)
+	}
+	if pending.Page.TotalPurchases != 1 || len(pending.Page.Purchases) != 1 || pending.Page.Purchases[0].ID != created.ID {
+		t.Fatalf("the pending period lists the whole history: %+v", pending.Page)
+	}
+	if pending.Balance == nil {
+		t.Fatal("the pending period must publish the balance of the branch")
+	}
+	if len(pending.Balance.Used) != 1 ||
+		pending.Balance.Used[0] != (purchases.BalanceUsed{Model: "NS60ZL", Bought: 2, Delivered: 2}) {
+		t.Fatalf("a settlement that counted everything leaves a zero balance: %+v", pending.Balance.Used)
+	}
+	if len(pending.Balance.Scrap) != 1 || pending.Balance.Scrap[0] != (purchases.BalanceScrap{
+		MaterialID: 1, Bought: "12.400", Delivered: "12.400", Balance: "0.000"}) {
+		t.Fatalf("the copper balance is not zero: %+v", pending.Balance.Scrap)
+	}
+	// The header of the pending period reads zero in its three numbers: nothing it bought is still here.
+	if pending.Totals != (purchases.Totals{UsedUnits: 0, ScrapKg: "0.000"}) || pending.Totals.Money != "" {
+		t.Fatalf("a settlement that counted everything must read zero: %+v", pending.Totals)
+	}
+
+	// The whole history is exactly what the screen showed before periods existed, and it carries
+	// no balance: a window has nothing to say about what the branch holds now.
+	history, err := f.store.List(f.ctx, f.branch, 1, 25, allHistory)
+	if err != nil || history.Balance != nil || history.Period.Kind != purchases.PeriodAll ||
+		history.Page.TotalPurchases != 1 || len(history.Page.Purchases) != 1 {
+		t.Fatalf("the whole history must be published without a balance: %+v %v", history, err)
+	}
+
+	// One closed settlement lists its own window and never a balance.
+	period, err := f.store.List(f.ctx, f.branch, 1, 25,
+		purchases.PeriodSelection{Kind: purchases.PeriodSettlement, ClosingID: closedID})
+	if err != nil {
+		t.Fatalf("a closed settlement must be readable as a period: %v", err)
+	}
+	if period.Period.Kind != purchases.PeriodSettlement || period.Balance != nil ||
+		period.Page.TotalPurchases != 1 || len(period.Page.Purchases) != 1 || period.Page.Purchases[0].ID != created.ID {
+		t.Fatalf("the closed period must list its own documents: %+v", period)
+	}
+	// The window is the settlement's own: the purchase was made before it and is inside it.
+	if period.Period.From == nil || period.Period.To == nil || period.Period.From.After(*period.Period.To) {
+		t.Fatalf("the closed period must state its window: %+v", period.Period)
+	}
+	// Its three numbers are its own window's and never the pending or the whole history's.
+	if period.Totals != (purchases.Totals{Money: "32400.00", UsedUnits: 2, ScrapKg: "12.400"}) {
+		t.Fatalf("the closed period must state its own totals: %+v", period.Totals)
+	}
+}
+
+// TestStorePurchaseBalanceKeepsTheRemainder pins the defect the human reported: a settlement
+// that counts less than the period bought must leave the rest visible as balance instead of
+// making it disappear, and a later purchase must raise the balance again (S4, S1).
+func TestStorePurchaseBalanceKeepsTheRemainder(t *testing.T) {
+	f := newPurchaseFixture(t)
+	f.closeSettlement(t, 2, f.branch, nil)
+	first := document("store-remainder-key-01")
+	first.UsedLines = []purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 3, UnitPrice: "10000.00"}}
+	first.ScrapLines = []purchases.ScrapLineInput{{MaterialID: 1, Kg: "10.000", PricePerKg: "1000.00"}}
+	first.PaidCash, first.PaidTransfer = "40000.00", "0.00"
+	if _, err := f.store.Create(f.ctx, f.branch, first); err != nil {
+		t.Fatalf("the purchase must be admitted: %v", err)
+	}
+	// The warehouse counted one battery less and six kilograms less than the period bought.
+	f.closeSettlement(t, 2, f.branch, []closings.MaterialCounted{
+		{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "2"},
+		{Kind: closings.MaterialKindScrap, MaterialID: 1, Quantity: "4.000"},
+	})
+	pending := func() purchases.Listing {
+		t.Helper()
+		listing, err := f.store.List(f.ctx, f.branch, 1, 25,
+			purchases.PeriodSelection{Kind: purchases.PeriodPending})
+		if err != nil {
+			t.Fatalf("the pending period must be readable: %v", err)
+		}
+		if listing.Balance == nil {
+			t.Fatal("the pending period must publish the balance of the branch")
+		}
+		return listing
+	}
+	listing := pending()
+	if len(listing.Balance.Used) != 1 ||
+		listing.Balance.Used[0] != (purchases.BalanceUsed{Model: "NS60ZL", Bought: 3, Delivered: 2, Balance: 1}) {
+		t.Fatalf("what was counted short must stay in the balance: %+v", listing.Balance.Used)
+	}
+	if len(listing.Balance.Scrap) != 1 || listing.Balance.Scrap[0] != (purchases.BalanceScrap{
+		MaterialID: 1, Bought: "10.000", Delivered: "4.000", Balance: "6.000"}) {
+		t.Fatalf("the copper that was counted short must stay in the balance: %+v", listing.Balance.Scrap)
+	}
+	// The header numbers are that same remainder, never the history: one battery and six kilos.
+	if listing.Totals != (purchases.Totals{UsedUnits: 1, ScrapKg: "6.000"}) {
+		t.Fatalf("what was counted short must stay in the totals: %+v", listing.Totals)
+	}
+
+	// Buying again after the closure raises the balance from where it was, and a model the
+	// settlement never saw starts from zero.
+	second := document("store-remainder-key-02")
+	second.UsedLines = []purchases.UsedLineInput{
+		{Model: "55B24L", Quantity: 1, UnitPrice: "1000.00"},
+		{Model: "NS60ZL", Quantity: 2, UnitPrice: "1000.00"},
+	}
+	second.ScrapLines = []purchases.ScrapLineInput{{MaterialID: 1, Kg: "3.000", PricePerKg: "1000.00"}}
+	second.PaidCash, second.PaidTransfer = "6000.00", "0.00"
+	created, err := f.store.Create(f.ctx, f.branch, second)
+	if err != nil {
+		t.Fatalf("a purchase after the closure must be admitted: %v", err)
+	}
+	listing = pending()
+	if len(listing.Balance.Used) != 2 ||
+		listing.Balance.Used[0] != (purchases.BalanceUsed{Model: "55B24L", Bought: 1, Delivered: 0, Balance: 1}) ||
+		listing.Balance.Used[1] != (purchases.BalanceUsed{Model: "NS60ZL", Bought: 5, Delivered: 2, Balance: 3}) {
+		t.Fatalf("a purchase after the closure must raise the balance: %+v", listing.Balance.Used)
+	}
+	if listing.Balance.Scrap[0].Bought != "13.000" || listing.Balance.Scrap[0].Balance != "9.000" {
+		t.Fatalf("the copper balance must rise again: %+v", listing.Balance.Scrap)
+	}
+	if listing.Totals != (purchases.Totals{UsedUnits: 4, ScrapKg: "9.000"}) {
+		t.Fatalf("a purchase after the closure must raise the totals: %+v", listing.Totals)
+	}
+
+	// A counter-document subtracts like every other document (S7): the model it reversed nets
+	// back to nothing and is not a row of this answer, and the quantities return to where they
+	// were before the second purchase.
+	if _, err := f.store.Reverse(f.ctx, f.branch, created.ID, "store-remainder-key-03", "pesaje mal tipeado"); err != nil {
+		t.Fatalf("the purchase must be reversible: %v", err)
+	}
+	listing = pending()
+	if len(listing.Balance.Used) != 1 ||
+		listing.Balance.Used[0] != (purchases.BalanceUsed{Model: "NS60ZL", Bought: 3, Delivered: 2, Balance: 1}) {
+		t.Fatalf("a counter-document must subtract from the balance: %+v", listing.Balance.Used)
+	}
+	if len(listing.Balance.Scrap) != 1 || listing.Balance.Scrap[0].Bought != "10.000" ||
+		listing.Balance.Scrap[0].Balance != "6.000" {
+		t.Fatalf("a counter-document must subtract from the copper balance: %+v", listing.Balance.Scrap)
+	}
+	if listing.Totals != (purchases.Totals{UsedUnits: 1, ScrapKg: "6.000"}) {
+		t.Fatalf("a counter-document must subtract from the totals: %+v", listing.Totals)
+	}
+}
+
+// TestStorePurchaseBalanceCountsClosedSettlementsOnly pins S4's third consequence and the rule
+// that delivered means counted in a closed settlement: while the settlement is only open or
+// proposed it has taken nothing, and the period it belongs to is the live one, published as
+// "En curso".
+func TestStorePurchaseBalanceCountsClosedSettlementsOnly(t *testing.T) {
+	f := newPurchaseFixture(t)
+	f.closeSettlement(t, 2, f.branch, nil)
+	first := document("store-closed-only-key-01")
+	first.UsedLines = []purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 2, UnitPrice: "10000.00"}}
+	first.ScrapLines = []purchases.ScrapLineInput{{MaterialID: 2, Kg: "5.000", PricePerKg: "1000.00"}}
+	first.PaidCash, first.PaidTransfer = "25000.00", "0.00"
+	if _, err := f.store.Create(f.ctx, f.branch, first); err != nil {
+		t.Fatalf("the purchase must be admitted: %v", err)
+	}
+	opened := f.openSettlement(t, 2, []closings.MaterialCounted{
+		{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "2"},
+		{Kind: closings.MaterialKindScrap, MaterialID: 2, Quantity: "5.000"},
+	})
+	f.proposeSettlement(t, opened.ID)
+
+	// A proposed settlement has taken nothing yet: the whole purchase is still the balance.
+	pending, err := f.store.List(f.ctx, f.branch, 1, 25,
+		purchases.PeriodSelection{Kind: purchases.PeriodPending})
+	if err != nil || pending.Balance == nil {
+		t.Fatalf("the pending period must be readable: %+v %v", pending, err)
+	}
+	if len(pending.Balance.Used) != 1 ||
+		pending.Balance.Used[0] != (purchases.BalanceUsed{Model: "NS60ZL", Bought: 2, Delivered: 0, Balance: 2}) {
+		t.Fatalf("a proposed settlement has taken nothing: %+v", pending.Balance.Used)
+	}
+	if len(pending.Balance.Scrap) != 1 || pending.Balance.Scrap[0] != (purchases.BalanceScrap{
+		MaterialID: 2, Bought: "5.000", Delivered: "0.000", Balance: "5.000"}) {
+		t.Fatalf("a proposed settlement has taken no material: %+v", pending.Balance.Scrap)
+	}
+	// The selector offers the live settlement after the closed ones and before the whole
+	// history, named by its kind because it is the period the branch is still inside.
+	if len(pending.Periods) != 4 || pending.Periods[0].Kind != purchases.PeriodPending ||
+		pending.Periods[1].Kind != purchases.PeriodSettlement ||
+		pending.Periods[2].Kind != purchases.PeriodOpen || pending.Periods[2].ClosingID == nil ||
+		*pending.Periods[2].ClosingID != opened.ID || pending.Periods[2].Label != "En curso" ||
+		pending.Periods[3].Kind != purchases.PeriodAll {
+		t.Fatalf("the live settlement must be the period in progress: %+v", pending.Periods)
+	}
+	// Its own period lists the documents of its window and never a balance.
+	inProgress, err := f.store.List(f.ctx, f.branch, 1, 25,
+		purchases.PeriodSelection{Kind: purchases.PeriodOpen})
+	if err != nil || inProgress.Period.Kind != purchases.PeriodOpen || inProgress.Balance != nil ||
+		inProgress.Page.TotalPurchases != 1 || len(inProgress.Page.Purchases) != 1 {
+		t.Fatalf("the period in progress must list its own documents: %+v %v", inProgress, err)
+	}
+
+	// The closure is what takes the material to the warehouse: from then on the balance is zero
+	// and the live period is gone from the selector.
+	f.decideSettlement(t, opened.ID, f.branch)
+	closed, err := f.store.List(f.ctx, f.branch, 1, 25,
+		purchases.PeriodSelection{Kind: purchases.PeriodPending})
+	if err != nil || closed.Balance == nil {
+		t.Fatalf("the pending period must stay readable: %+v %v", closed, err)
+	}
+	if len(closed.Balance.Used) != 1 || closed.Balance.Used[0].Delivered != 2 ||
+		closed.Balance.Used[0].Balance != 0 || closed.Balance.Scrap[0].Balance != "0.000" {
+		t.Fatalf("a closed settlement must take the counted material: %+v", closed.Balance)
+	}
+	if len(closed.Periods) != 4 || closed.Periods[1].Kind != purchases.PeriodSettlement ||
+		closed.Periods[1].ClosingID == nil || *closed.Periods[1].ClosingID != opened.ID {
+		t.Fatalf("the closed settlement must replace the live period: %+v", closed.Periods)
+	}
+	if _, err := f.store.List(f.ctx, f.branch, 1, 25,
+		purchases.PeriodSelection{Kind: purchases.PeriodOpen}); !errors.Is(err, purchases.ErrInvalid) {
+		t.Fatalf("the period in progress must not exist once the settlement closed: %v", err)
+	}
+}
+
+// TestStorePurchaseSelectionRefusals pins the selector's own refusals: a period the branch does
+// not have is an invalid request, never an empty list, and a period shape this contract does not
+// admit never reaches the database.
+func TestStorePurchaseSelectionRefusals(t *testing.T) {
+	f := newPurchaseFixture(t)
+	// An empty branch still offers its two periods, and its balance is an empty reading instead
+	// of an absent one.
+	empty, err := f.store.List(f.ctx, f.branch, 1, 25,
+		purchases.PeriodSelection{Kind: purchases.PeriodPending})
+	if err != nil || empty.Balance == nil || empty.Balance.Used == nil || empty.Balance.Scrap == nil ||
+		len(empty.Periods) != 2 || empty.Page.TotalPurchases != 0 || len(empty.Page.Purchases) != 0 {
+		t.Fatalf("an empty branch must publish its two periods and an empty balance: %+v %v", empty, err)
+	}
+	first := document("store-selection-key-01")
+	if _, err := f.store.Create(f.ctx, f.branch, first); err != nil {
+		t.Fatalf("the purchase must be admitted: %v", err)
+	}
+	// One closed settlement of another branch exists, and it is not a period of this branch.
+	foreign := f.closeSettlement(t, 3, f.other, nil)
+	own := f.closeSettlement(t, 2, f.branch, nil)
+	// The live settlement of this branch exists too, and its id is not a closed period.
+	live := f.openSettlement(t, 2, nil)
+	for name, selection := range map[string]purchases.PeriodSelection{
+		"unknown settlement":     {Kind: purchases.PeriodSettlement, ClosingID: 999_999},
+		"foreign settlement":     {Kind: purchases.PeriodSettlement, ClosingID: foreign},
+		"no closing id":          {Kind: purchases.PeriodSettlement},
+		"negative closing id":    {Kind: purchases.PeriodSettlement, ClosingID: -1},
+		"unknown kind":           {Kind: purchases.PeriodKind("month")},
+		"kind with a closing id": {Kind: purchases.PeriodAll, ClosingID: own},
+	} {
+		if _, err := f.store.List(f.ctx, f.branch, 1, 25, selection); !errors.Is(err, purchases.ErrInvalid) {
+			t.Fatalf("a %s selection must be refused as an invalid request, got %v", name, err)
+		}
+	}
+	// The periods the branch does have keep being readable, and the foreign settlement is not
+	// one of them.
+	for _, selection := range []purchases.PeriodSelection{
+		{Kind: purchases.PeriodPending}, {Kind: purchases.PeriodAll}, {Kind: purchases.PeriodOpen},
+		{Kind: purchases.PeriodSettlement, ClosingID: own},
+	} {
+		if _, err := f.store.List(f.ctx, f.branch, 1, 25, selection); err != nil {
+			t.Fatalf("the selection %+v must be readable: %v", selection, err)
+		}
+	}
+	// A closing id names the live settlement too, because the selector publishes it as the
+	// period in progress: an entry nobody could choose would be a period the screen shows and
+	// never opens.
+	inProgress, err := f.store.List(f.ctx, f.branch, 1, 25,
+		purchases.PeriodSelection{Kind: purchases.PeriodSettlement, ClosingID: live.ID})
+	if err != nil || inProgress.Period.Kind != purchases.PeriodOpen ||
+		inProgress.Period.ClosingID == nil || *inProgress.Period.ClosingID != live.ID ||
+		inProgress.Balance != nil {
+		t.Fatalf("the live settlement must be selectable by its closing id: %+v %v", inProgress, err)
+	}
+}
+
+// listingOf reads one period of this branch, so a test states the selection and nothing else.
+func (f *purchaseFixture) listingOf(t *testing.T, selection purchases.PeriodSelection) purchases.Listing {
+	t.Helper()
+	listing, err := f.store.List(f.ctx, f.branch, 1, 25, selection)
+	if err != nil {
+		t.Fatalf("the listing of %+v must be readable: %v", selection, err)
+	}
+	return listing
+}
+
+// TestStorePurchaseHistoryOutgrowsOneDocument pins the whole-history listing on a branch whose history
+// holds more units of one model than any single document can: the bound belongs to a document, not to a
+// window, so the default listing answers instead of failing closed.
+func TestStorePurchaseHistoryOutgrowsOneDocument(t *testing.T) {
+	f := newPurchaseFixture(t)
+	// MaxLines documents of MaxQuantity units are exactly the per-document bound, so the history buys
+	// one document more to exceed it.
+	for i := int64(0); i <= purchases.MaxLines; i++ {
+		input := document("store-history-key-" + strconv.FormatInt(i, 10))
+		input.UsedLines = []purchases.UsedLineInput{{Model: "NS60ZL",
+			Quantity: purchases.MaxQuantity, UnitPrice: "0.01"}}
+		input.ScrapLines, input.PaidCash, input.PaidTransfer = nil, "10000.00", "0.00"
+		if _, err := f.store.Create(f.ctx, f.branch, input); err != nil {
+			t.Fatalf("the purchase %d must be admitted: %v", i, err)
+		}
+	}
+	history := f.listingOf(t, allHistory)
+	if history.Totals.UsedUnits != purchases.MaxQuantity*(purchases.MaxLines+1) ||
+		history.Totals.Money != "1910000.00" || history.Totals.ScrapKg != "0.000" {
+		t.Fatalf("the history must sum every document: %+v", history.Totals)
+	}
+}
+
+// TestStorePurchaseCounterPeriodListsItsNet pins the other side of the same rule: a window holding only
+// a counter-document reverses an earlier period, so it nets negative money, units and kilos instead of
+// refusing to be listed.
+func TestStorePurchaseCounterPeriodListsItsNet(t *testing.T) {
+	f := newPurchaseFixture(t)
+	bought, err := f.store.Create(f.ctx, f.branch, document("store-counter-key-01"))
+	if err != nil {
+		t.Fatalf("the purchase must be admitted: %v", err)
+	}
+	f.closeSettlement(t, 2, f.branch, nil)
+	if _, err := f.store.Reverse(f.ctx, f.branch, bought.ID, "store-counter-key-02", "pesaje mal tipeado"); err != nil {
+		t.Fatalf("the purchase must be reversible: %v", err)
+	}
+	net := f.closeSettlement(t, 2, f.branch, nil)
+	period := f.listingOf(t, purchases.PeriodSelection{Kind: purchases.PeriodSettlement, ClosingID: net})
+	if period.Page.TotalPurchases != 1 || period.Totals !=
+		(purchases.Totals{Money: "-124200.00", UsedUnits: -1, ScrapKg: "-12.400"}) {
+		t.Fatalf("a counter period must publish its negative net: %+v %+v", period.Page, period.Totals)
+	}
+}
+
+// TestStorePurchaseTotalsFollowThePeriod pins S3 at the store: the three header numbers of the
+// listing are the totals of the chosen period, so a closed settlement states its own money, units
+// and kilos instead of the accumulated history, and the whole history states exactly what the
+// received route already published for that same history.
+func TestStorePurchaseTotalsFollowThePeriod(t *testing.T) {
+	f := newPurchaseFixture(t)
+	pending := purchases.PeriodSelection{Kind: purchases.PeriodPending}
+	// The first settlement of a branch is an empty period of its own: it states three zeros, never
+	// the history.
+	firstClosed := f.closeSettlement(t, 2, f.branch, nil)
+	first := document("store-totals-key-01")
+	first.UsedLines = []purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 2, UnitPrice: "10000.00"}}
+	first.ScrapLines = []purchases.ScrapLineInput{{MaterialID: 1, Kg: "12.400", PricePerKg: "1000.00"}}
+	first.PaidCash, first.PaidTransfer = "32400.00", "0.00"
+	created, err := f.store.Create(f.ctx, f.branch, first)
+	if err != nil {
+		t.Fatalf("the purchase must be admitted: %v", err)
+	}
+	closedID := f.closeSettlement(t, 2, f.branch, []closings.MaterialCounted{
+		{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "2"},
+		{Kind: closings.MaterialKindScrap, MaterialID: 1, Quantity: "12.400"},
+	})
+	// A purchase after the closure belongs to no closed period: only the pending balance and the whole
+	// history know about it.
+	after := document("store-totals-key-02")
+	after.UsedLines = []purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 1, UnitPrice: "1000.00"}}
+	after.ScrapLines = []purchases.ScrapLineInput{{MaterialID: 1, Kg: "3.000", PricePerKg: "1000.00"}}
+	after.PaidCash, after.PaidTransfer = "4000.00", "0.00"
+	latest, err := f.store.Create(f.ctx, f.branch, after)
+	if err != nil {
+		t.Fatalf("the purchase after the closure must be admitted: %v", err)
+	}
+
+	// The closed settlement states its own window: the purchase that happened inside it, with its
+	// money (32400.00), its two batteries and its 12.400 kilos of copper.
+	period := f.listingOf(t, purchases.PeriodSelection{Kind: purchases.PeriodSettlement, ClosingID: closedID})
+	if period.Page.TotalPurchases != 1 || len(period.Page.Purchases) != 1 ||
+		period.Page.Purchases[0].ID != created.ID {
+		t.Fatalf("the closed period must list its own document: %+v", period.Page)
+	}
+	if period.Totals != (purchases.Totals{Money: "32400.00", UsedUnits: 2, ScrapKg: "12.400"}) {
+		t.Fatalf("a closed period must state its own totals: %+v", period.Totals)
+	}
+	// The settlement that bought nothing states three zeros instead of the history.
+	empty := f.listingOf(t, purchases.PeriodSelection{Kind: purchases.PeriodSettlement, ClosingID: firstClosed})
+	if empty.Totals != (purchases.Totals{Money: "0.00", UsedUnits: 0, ScrapKg: "0.000"}) {
+		t.Fatalf("an empty period must state three zeros: %+v", empty.Totals)
+	}
+	// The whole history states every document of the branch.
+	history := f.listingOf(t, allHistory)
+	if history.Totals != (purchases.Totals{Money: "36400.00", UsedUnits: 3, ScrapKg: "15.400"}) {
+		t.Fatalf("the whole history must state every document: %+v", history.Totals)
+	}
+	if history.Page.TotalPurchases != 2 || len(history.Page.Purchases) != 2 {
+		t.Fatalf("the whole history must list every document: %+v", history.Page)
+	}
+	// The received route reads the same whole history, and the two answers agree row by row: the money
+	// of the used rows plus the money of the scrap rows, their units and their kilos.
+	received, err := f.store.Received(f.ctx, f.branch)
+	if err != nil {
+		t.Fatalf("the received totals must be readable: %v", err)
+	}
+	var cents, units, milli int64
+	for _, row := range received.Used {
+		if row.Model != "NS60ZL" {
+			t.Fatalf("the received used row is not what the history states: %+v", row)
+		}
+		cents += moneyCentsOf(t, row.Value)
+		units += row.Quantity
+	}
+	for _, row := range received.Scrap {
+		if row.MaterialID != 1 {
+			t.Fatalf("the received scrap row is not what the history states: %+v", row)
+		}
+		cents += moneyCentsOf(t, row.Value)
+		milli += weightKgMilli(t, row.Kg)
+	}
+	if units != 3 || cents != 3_640_000 || milli != 15_400 {
+		t.Fatalf("the received route disagrees with the history: %d units, %d cents, %d milli",
+			units, cents, milli)
+	}
+	// And the listing of the same whole history states exactly those numbers, in its own formats.
+	if history.Totals.Money != "36400.00" || history.Totals.UsedUnits != units ||
+		weightKgMilli(t, history.Totals.ScrapKg) != milli {
+		t.Fatalf("the listing must state the same history the received route reads: %+v", history.Totals)
+	}
+
+	// The pending period is not a window: it states what the branch still holds — one battery and three
+	// kilos — and no money at all, because the money of a purchase already left the cash box (S4).
+	balance := f.listingOf(t, pending)
+	if balance.Balance == nil {
+		t.Fatal("the pending period must publish the balance of the branch")
+	}
+	if balance.Totals != (purchases.Totals{UsedUnits: 1, ScrapKg: "3.000"}) || balance.Totals.Money != "" {
+		t.Fatalf("the pending period must state the balance and no money: %+v", balance.Totals)
+	}
+
+	// A counter-document subtracts from both readings (S7): the whole history falls back to the closed
+	// period and the balance returns to zero, while every document stays listed.
+	if _, err := f.store.Reverse(f.ctx, f.branch, latest.ID, "store-totals-key-03", "pesaje mal tipeado"); err != nil {
+		t.Fatalf("the purchase after the closure must be reversible: %v", err)
+	}
+	if history = f.listingOf(t, allHistory); history.Totals !=
+		(purchases.Totals{Money: "32400.00", UsedUnits: 2, ScrapKg: "12.400"}) {
+		t.Fatalf("a counter-document must subtract from the totals: %+v", history.Totals)
+	}
+	if history.Page.TotalPurchases != 3 || len(history.Page.Purchases) != 3 {
+		t.Fatalf("a counter-document must stay listed: %+v", history.Page)
+	}
+	balance = f.listingOf(t, pending)
+	if balance.Totals != (purchases.Totals{UsedUnits: 0, ScrapKg: "0.000"}) {
+		t.Fatalf("a delivered branch must read zero: %+v", balance.Totals)
+	}
+}
+
+// moneyCentsOf reads one canonical amount of the contract as integer cents.
+func moneyCentsOf(t *testing.T, amount purchases.Money) int64 {
+	t.Helper()
+	whole, fraction, ok := strings.Cut(string(amount), ".")
+	if !ok || len(fraction) != 2 {
+		t.Fatalf("a published amount is not canonical: %q", amount)
+	}
+	value, err := strconv.ParseInt(whole+fraction, 10, 64)
+	if err != nil {
+		t.Fatalf("a published amount is not a number: %q", amount)
+	}
+	return value
+}
+
+// weightKgMilli reads one canonical weight of the contract as integer thousandths.
+func weightKgMilli(t *testing.T, weight purchases.Weight) int64 {
+	t.Helper()
+	text := string(weight)
+	whole, fraction, ok := strings.Cut(text, ".")
+	if !ok || len(fraction) != 3 {
+		t.Fatalf("a published weight is not canonical: %q", text)
+	}
+	value, err := strconv.ParseInt(whole+fraction, 10, 64)
+	if err != nil {
+		t.Fatalf("a published weight is not a number: %q", text)
+	}
+	return value
 }

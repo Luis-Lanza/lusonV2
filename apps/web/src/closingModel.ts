@@ -69,7 +69,11 @@ export interface ClosingCountLine {
   readonly polarity: ClosingPolarity;
   /** Frozen at the cut and never recalculated: the sheet stays a fact of the opening (S4). */
   readonly expected_quantity: number;
-  /** `null` while the variant is pending, which is what blocks the proposal and the closure. */
+  /**
+   * The quantity the sheet opens with, which the seed writes equal to the expected one: the admin
+   * only overwrites the variants that do not coincide (S1). `null` is a leftover of a settlement
+   * opened before that seed (L3) and is read as coinciding, never as a hole to fill.
+   */
   readonly counted_quantity: number | null;
 }
 
@@ -95,6 +99,13 @@ export interface ClosingOffer {
   readonly counted_cash_cents: bigint;
   readonly contributed_cash_cents: bigint;
   readonly closing_cash_cents: bigint;
+  /**
+   * The envelope of the offer (S1, S5, S6): what the warehouse counted in the purchase fund and the
+   * amount it leaves there for the next period. Both are `null` in an offer made before the warehouse
+   * stated the envelope, and the contract omits them entirely in that case.
+   */
+  readonly purchase_fund_counted_cents: bigint | null;
+  readonly purchase_fund_cash_cents: bigint | null;
   readonly observation: string;
   readonly count_lines: readonly ClosingOfferLine[];
 }
@@ -142,7 +153,18 @@ export interface Closing {
   readonly observation: string;
   readonly opened_by_account_id: number;
   readonly count_lines: readonly ClosingCountLine[];
+  /**
+   * The third account (S7, S8, S9): what the period bought of every used model and every scrap
+   * material, what the warehouse counted, the difference and what goes to the warehouse. `null` is
+   * a payload that publishes no sheet at all — an older document — and `[]` is a period that bought
+   * no materials, which is a truth of its own and never a missing key.
+   */
+  readonly material_lines: readonly ClosingMaterialLine[] | null;
   readonly rounds: readonly ClosingRound[];
+  /**
+   * The branch's second envelope, or `null` when the payload does not publish it (S1, S5, S6).
+   */
+  readonly purchase_fund: ClosingPurchaseFund | null;
   /**
    * The corrections of this settlement, oldest first: the accepted ones with the deltas they applied
    * and, when there is one, the correction that still waits for the branch's decision. A live
@@ -158,6 +180,36 @@ export interface ClosingPage {
   readonly page_size: number;
   readonly total_closings: number;
   readonly closings: readonly Closing[];
+}
+
+/**
+ * The branch's purchase fund, its second envelope (S1, S2): the money it keeps apart from the
+ * operating drawer to buy used batteries and scrap. The inherited balance, the purchases of the
+ * window and the expectation are derived by the server on every read; the count and the amount it
+ * leaves are the warehouse's drafts, frozen by the proposal. None of these amounts enters the
+ * drawer's identities nor the commission, and no money of a sale feeds the envelope (S12).
+ */
+export interface ClosingPurchaseFund {
+  /** What the previous closure left in the envelope; `0.00` when there is none (S5, S6). It is money
+   * the branch holds, so it is never negative. */
+  readonly opening_cents: bigint;
+  /**
+   * The purchases of the window, counter-documents included, so they already subtract (S11). A net
+   * sum that keeps its sign: a counter-document of an earlier purchase leaves it negative.
+   */
+  readonly purchases_total_cents: bigint;
+  /** The cash of those purchases, with the same sign and for the same reason (S3, S11). */
+  readonly purchases_cash_cents: bigint;
+  /** `opening − purchases paid in cash`, signed: a period that spent more than it had is short. */
+  readonly expected_cents: bigint;
+  readonly counted_cents: bigint | null;
+  readonly difference_cents: bigint | null;
+  /**
+   * The amount the warehouse leaves in the envelope (`purchase_fund_cash`): the "monto nuevo" that
+   * opens the next period. It is not bounded by the count — the warehouse brings money from outside
+   * the branch, so it may leave more than it found (S5, S6).
+   */
+  readonly new_cents: bigint | null;
 }
 
 // ---------------------------------------------------------------------------------
@@ -191,9 +243,15 @@ export function closingSignedText(cents: bigint): string {
   return formatMoney(0n);
 }
 
-/** A published amount that is never negative: the expected drawer, the fund, what is taken. */
+/**
+ * A published amount rendered as it is. Most of them are never negative, but the second envelope is
+ * the exception the sign exists for: its purchases are a net sum that a counter-document can leave
+ * negative and its expectation is negative whenever the envelope spent more than it inherited, so
+ * both are shown with their sign instead of failing to render a settlement the server published
+ * (S3, S11).
+ */
 export function closingMoneyText(cents: bigint): string {
-  return formatMoney(cents);
+  return cents < 0n ? closingSignedText(cents) : formatMoney(cents);
 }
 
 /** The name of a difference, never only its sign (S8). */
@@ -261,6 +319,606 @@ export function closingRail(closing: Closing): ClosingRail {
     transfer_cents: closing.transfer_total_cents,
     qr_cents: closing.qr_total_cents,
   });
+}
+
+// ---------------------------------------------------------------------------------
+// The purchase fund: the second envelope (S1, S5, S6)
+// ---------------------------------------------------------------------------------
+
+/**
+ * The envelope is settled apart from the drawer: it is counted on its own, no money of a sale feeds
+ * it and it is inside no cash identity nor the commission (S1, S12).
+ */
+export const closingEnvelopeApartHelp =
+  'El fondo de compras vive en un sobre aparte de la caja operativa: se cuenta por separado, ninguna venta lo alimenta y no entra en la comisión ni en ninguna igualdad de la caja.';
+/** What the amount the warehouse leaves is for: it opens the next period (S5, S6). */
+export const closingEnvelopeNewHelp =
+  'El monto nuevo abre el período siguiente y sólo sirve para comprar baterías usadas y chatarra.';
+/** What acceptance makes of the new amount, in the branch's own words (S5, S6). */
+export const closingEnvelopeAcceptanceHelp =
+  'Al aceptar, el monto nuevo pasa a ser tu fondo de compras: abre el período siguiente y el Almacén se lleva todo lo que contó en el sobre.';
+
+/**
+ * The envelope the settlement publishes, or the one the offer froze when the branch is deciding it
+ * (S5, S6). The inherited balance, the purchases and the expectation are always the document's, and
+ * the two amounts the warehouse states are the offer's own once there is one, so a proposal is read
+ * exactly as it was offered. A payload that does not publish the envelope publishes none here.
+ */
+export function closingEnvelope(closing: Closing,
+  offer: ClosingOffer | null = null): ClosingPurchaseFund | null {
+  const fund = closing.purchase_fund;
+  if (fund === null || offer === null) return fund;
+  const counted_cents = offer.purchase_fund_counted_cents;
+  return Object.freeze({ ...fund, counted_cents,
+    difference_cents: counted_cents === null ? null : counted_cents - fund.expected_cents,
+    new_cents: offer.purchase_fund_cash_cents });
+}
+
+/**
+ * What the warehouse typed into the second envelope: the count and the amount it leaves, before
+ * they are canonical. Both are optional, because an envelope nobody counted states neither — the
+ * amount the warehouse leaves is a decision it takes at the closure, not a zero by default (S5).
+ */
+export interface PurchaseFundDraft {
+  readonly counted: string;
+  readonly cash: string;
+}
+
+export const emptyPurchaseFundDraft: PurchaseFundDraft = Object.freeze({ counted: '', cash: '' });
+
+/** The envelope draft the settlement already holds, so a reload restores the admin's work. */
+export function purchaseFundDraftFrom(closing: Closing): PurchaseFundDraft {
+  const fund = closing.purchase_fund;
+  return Object.freeze({
+    counted: fund === null || fund.counted_cents === null ? '' : typedMoney(fund.counted_cents),
+    cash: fund === null || fund.new_cents === null ? '' : typedMoney(fund.new_cents),
+  });
+}
+
+/** The envelope as the rail shows it while the warehouse types, over the facts it holds. */
+export interface PurchaseFundView {
+  readonly counted_cents: bigint | null;
+  readonly new_cents: bigint | null;
+  readonly expected_cents: bigint;
+  readonly difference_cents: bigint | null;
+  readonly problem: string;
+}
+
+/**
+ * The envelope over the draft the warehouse typed. The difference is published with its sign and
+ * never blocks the proposal, exactly like the drawer's (S8), and the new amount is deliberately not
+ * bounded by the count: the warehouse may leave more than it found (S5).
+ */
+export function purchaseFundView(fund: ClosingPurchaseFund,
+  draft: PurchaseFundDraft): PurchaseFundView {
+  let counted_cents: bigint | null = null;
+  let new_cents: bigint | null = null;
+  let problem = '';
+  try { counted_cents = typedCents(draft.counted); } catch { problem = closingAmountMessage; }
+  try { new_cents = typedCents(draft.cash); } catch { problem = closingAmountMessage; }
+  if (problem !== '') { counted_cents = null; new_cents = null; }
+  const difference_cents = counted_cents === null ? null : counted_cents - fund.expected_cents;
+  return Object.freeze({
+    counted_cents, new_cents, expected_cents: fund.expected_cents, difference_cents, problem,
+  });
+}
+
+// ---------------------------------------------------------------------------------
+// The third account: the materials the fund bought (S7, S8, S9, S10)
+// ---------------------------------------------------------------------------------
+
+/** The two kinds of one sheet: used batteries by the unit and scrap by the kilogram (S7, S8). */
+export type ClosingMaterialKind = 'used' | 'scrap';
+
+/** The unit every quantity of a line is counted — and published — in: whole units or kilograms. */
+export type ClosingMaterialUnit = 'unit' | 'kg';
+
+export const closingMaterialKindLabels: Readonly<Record<ClosingMaterialKind, string>> =
+  Object.freeze({ used: 'Baterías usadas', scrap: 'Chatarra' });
+
+/** The unit a kind is counted in, which is the scale of both of its quantities (S8). */
+export function closingMaterialUnitOf(kind: ClosingMaterialKind): ClosingMaterialUnit {
+  return kind === 'scrap' ? 'kg' : 'unit';
+}
+
+/** The bound of one request: the same 190 lines a count of the stock states. */
+export const closingMaxMaterialLines = 190;
+/** The range of a material id, which is the smallint of the reference table. */
+export const closingMaxMaterialID = 32767;
+
+/**
+ * One line of the material sheet, as the document publishes it (S7, S8, S9): what the period bought
+ * of one used model or one scrap material, what the warehouse counted at the cut, the difference
+ * between the two and the quantity that goes to the warehouse. The expected quantity is the fact of
+ * the opening, and the count, the difference and the delivery are `null` together while the line is
+ * uncounted. Quantities are canonical text — whole units or kilograms with three decimals — and
+ * never a float, so a count of 84,500 kg is never an approximation.
+ */
+export interface ClosingMaterialLine {
+  readonly kind: ClosingMaterialKind;
+  readonly model: string | null;
+  readonly material_id: number | null;
+  readonly material: string | null;
+  readonly unit: ClosingMaterialUnit;
+  readonly expected_quantity: string;
+  readonly counted_quantity: string | null;
+  readonly difference: string | null;
+  readonly delivered_quantity: string | null;
+}
+
+/** The sheet of one settlement: `null` is a document that publishes no sheet at all. */
+export function closingMaterialLines(closing: Closing): readonly ClosingMaterialLine[] {
+  return closing.material_lines ?? [];
+}
+
+export const closingMaterialQuantityMessage =
+  'Contá un número entero de unidades o kilogramos con hasta tres decimales.';
+export const closingMaterialClearedMessage =
+  'La cantidad contada no se borra, se corrige: la entrega es exactamente lo que contaste.';
+
+export const closingMaterialShelfHelp =
+  'La estantería arranca en cero: la rendición anterior se llevó todo, así que lo que debe haber es exactamente lo comprado en este período.';
+export const closingMaterialDeliveryHelp =
+  'Se lleva todo lo contado: la sucursal queda en cero y la próxima rendición arranca limpia.';
+export const closingMaterialEmptySheet =
+  'El período no compró materiales: la estantería no tiene nada que contar ni entregar.';
+
+const wholeQuantityShape = /^(0|[1-9]\d{0,8})$/;
+const kilogramQuantityShape = /^(0|[1-9]\d{0,8})\.\d{3}$/;
+const typedQuantityShape = /^\d{1,9}([,.]\d{1,3})?$/;
+
+/** Whether a published quantity is the canonical text of its own unit (S8). */
+export function closingMaterialQuantityIsCanonical(unit: ClosingMaterialUnit,
+  text: string): boolean {
+  if (typeof text !== 'string') return false;
+  return unit === 'kg' ? kilogramQuantityShape.test(text) : wholeQuantityShape.test(text);
+}
+
+/**
+ * Exact thousandths of one quantity of the sheet: a unit is a thousand thousandths. Text that is
+ * not canonical is refused instead of normalized, so a count is never approximated (S8).
+ */
+export function closingMaterialMilli(unit: ClosingMaterialUnit, text: string): bigint {
+  const negative = typeof text === 'string' && text.startsWith('-');
+  const magnitude = negative ? text.slice(1) : text;
+  if (!closingMaterialQuantityIsCanonical(unit, magnitude) || (negative && !/[1-9]/.test(magnitude))) {
+    throw new Error(closingMaterialQuantityMessage);
+  }
+  const [whole, fraction = ''] = magnitude.split('.');
+  const milli = BigInt(whole) * 1000n + BigInt((fraction + '000').slice(0, 3));
+  return negative ? -milli : milli;
+}
+
+/** The text of a quantity the way the screen writes it: `12` units and `12,400` kilograms. */
+export function closingMaterialQuantityText(unit: ClosingMaterialUnit, milli: bigint): string {
+  const magnitude = milli < 0n ? -milli : milli;
+  if (unit === 'unit') {
+    if (magnitude % 1000n !== 0n) throw new Error(closingMaterialQuantityMessage);
+    return String(magnitude / 1000n);
+  }
+  return `${magnitude / 1000n},${String(magnitude % 1000n).padStart(3, '0')}`;
+}
+
+/** The canonical wire text of a quantity: `7` units and `12.500` kilograms (S8). */
+export function closingMaterialWireText(unit: ClosingMaterialUnit, milli: bigint): string {
+  return closingMaterialQuantityText(unit, milli).replace(',', '.');
+}
+
+/** A quantity with the unit it is counted in, for a table cell: `12,400 kg` and `12`. */
+export function closingMaterialQuantityLabel(unit: ClosingMaterialUnit, text: string): string {
+  const shown = unit === 'kg'
+    ? closingMaterialQuantityText(unit, closingMaterialMilli(unit, text))
+    : text;
+  return unit === 'kg' ? `${shown} kg` : shown;
+}
+
+/** `−4,300` / `+2`, and a dash for a difference that is zero, like every other one (S8). */
+export function closingMaterialSignedText(unit: ClosingMaterialUnit, milli: bigint): string {
+  if (milli === 0n) return '—';
+  const magnitude = closingMaterialQuantityText(unit, milli < 0n ? -milli : milli);
+  return milli < 0n ? `−${magnitude}` : `+${magnitude}`;
+}
+
+/** `− 4,300 kg` / `− 1 unidad`: the difference with its unit, which is what the strip names (S13). */
+export function closingMaterialDifferenceText(unit: ClosingMaterialUnit, milli: bigint): string {
+  if (milli === 0n) return closingMaterialSignedText(unit, milli);
+  const magnitude = milli < 0n ? -milli : milli;
+  const quantity = closingMaterialQuantityText(unit, magnitude);
+  const unitText = unit === 'kg' ? 'kg' : magnitude === 1000n ? 'unidad' : 'unidades';
+  return `${milli < 0n ? '−' : '+'} ${quantity} ${unitText}`;
+}
+
+/** One line of the sheet read over the draft: what the period bought and what is counted now. */
+export interface ClosingMaterialRow {
+  readonly key: string;
+  readonly line: ClosingMaterialLine;
+  readonly label: string;
+  readonly unit: ClosingMaterialUnit;
+  readonly expected_milli: bigint;
+  /** The count the draft states; `null` while the line is uncounted. */
+  readonly counted_milli: bigint | null;
+  /** `counted − expected`, with its sign, and `null` while the line is uncounted (S8). */
+  readonly difference_milli: bigint | null;
+  /** Everything counted goes to the warehouse, so the delivery is the whole count (S9). */
+  readonly delivered_milli: bigint | null;
+}
+
+/** One kind of the sheet with its own total, which is only stated for more than one line. */
+export interface ClosingMaterialGroup {
+  readonly kind: ClosingMaterialKind;
+  readonly label: string;
+  readonly unit: ClosingMaterialUnit;
+  readonly lines: readonly ClosingMaterialRow[];
+  readonly differing: number;
+  readonly counted: number;
+  readonly expected_milli: bigint;
+  /** The counted total, or `null` while a line of the kind is still uncounted. */
+  readonly counted_milli: bigint | null;
+  /** The difference of the lines already counted, with its sign; partial until the kind is whole. */
+  readonly difference_milli: bigint;
+  /** Whether every line of the kind is counted, which is what its total row needs. */
+  readonly complete: boolean;
+}
+
+export type ClosingMaterialTone = 'zero' | 'neg' | 'pos' | 'mixed';
+
+/** One line the screen is about to send: the key its kind names and what was counted. */
+export interface MaterialCountedInput {
+  readonly kind: ClosingMaterialKind;
+  readonly model: string | null;
+  readonly material_id: number | null;
+  readonly counted_quantity: string;
+}
+
+/** The body of `POST /api/closings/{id}/materials`: only what was counted (S8). */
+export interface MaterialPayload { readonly lines: readonly MaterialCountedInput[] }
+
+/** The typed counted quantity of one line, keyed by the key its kind names. */
+export type MaterialDraft = Readonly<Record<string, string>>;
+
+export const emptyMaterialDraft: MaterialDraft = Object.freeze({});
+
+/** `used:NS60ZL` / `scrap:1`: the key of one line, which is also the key of its draft cell. */
+export function closingMaterialKey(line: ClosingMaterialLine): string {
+  return line.kind === 'used' ? `used:${line.model ?? ''}` : `scrap:${line.material_id ?? 0}`;
+}
+
+/** The name a row and a cell share: the model of a used line or the material of a scrap one. */
+export function closingMaterialLabel(line: ClosingMaterialLine): string {
+  return line.kind === 'used' ? line.model ?? '' : line.material ?? '';
+}
+
+/** The text the counted cell starts from: the count the document holds and nothing invented (S8). */
+export function closingMaterialSeed(line: ClosingMaterialLine): string {
+  if (line.counted_quantity === null) return '';
+  return line.unit === 'kg'
+    ? closingMaterialQuantityText('kg', closingMaterialMilli('kg', line.counted_quantity))
+    : line.counted_quantity;
+}
+
+/** The draft the settlement already holds, so a reload restores the counts the server has (S8). */
+export function materialDraftFrom(closing: Closing): MaterialDraft {
+  const draft: Record<string, string> = {};
+  for (const line of closingMaterialLines(closing)) {
+    draft[closingMaterialKey(line)] = closingMaterialSeed(line);
+  }
+  return Object.freeze(draft);
+}
+
+/** One typed quantity of the sheet, in exact thousandths; `null` is a cell nobody filled. */
+function typedMaterial(unit: ClosingMaterialUnit, text: string): bigint | null {
+  const raw = typeof text === 'string' ? text.trim().replace(/^0+(?=\d)/, '') : '';
+  if (raw === '') return null;
+  if (!typedQuantityShape.test(raw)) throw new Error(closingMaterialQuantityMessage);
+  // A battery is not divisible: a fractional unit is refused instead of rounded (S8).
+  if (unit === 'unit' && /[,.]/.test(raw)) throw new Error(closingMaterialQuantityMessage);
+  const [whole, fraction = ''] = raw.replace(',', '.').split('.');
+  if (unit === 'unit') return closingMaterialMilli('unit', whole);
+  // A weight is typed with as many decimals as the warehouse writes, and is read at the scale of
+  // its column: `80,2` and `80,200` are the same 80,200 kg and never two different counts (S8).
+  return closingMaterialMilli('kg', `${whole}.${(fraction + '000').slice(0, 3)}`);
+}
+
+/**
+ * The material sheet read over the draft the warehouse typed, which is also the reading the branch
+ * sees with no inputs at all: the counts of the document are the draft it starts from. Nothing here
+ * is a difference the client gates the offer with — the stock count sheet stays the only gate
+ * (S8) — and a difference is published with its sign, in the unit of its own kind, never summed
+ * across units (S8, S13).
+ */
+export interface ClosingMaterialReading {
+  readonly rows: readonly ClosingMaterialRow[];
+  readonly groups: readonly ClosingMaterialGroup[];
+  readonly used: ClosingMaterialGroup;
+  readonly scrap: ClosingMaterialGroup;
+  readonly total: number;
+  readonly counted: number;
+  readonly differing: number;
+  readonly empty: boolean;
+  /** The mere head of the account, as the strip and the tabs name it (S13). */
+  readonly value: string;
+  readonly detail: string;
+  readonly tone: ClosingMaterialTone;
+  readonly difference: boolean;
+  readonly delivery: string;
+  /** A quantity the screen cannot read, named instead of being saved (S8). */
+  readonly problem: string;
+  readonly unsaved: boolean;
+  readonly changes: readonly MaterialCountedInput[];
+}
+
+/** `a, b y c`, the same listing the blockers of the drawer use. */
+function materialGroup(kind: ClosingMaterialKind,
+  rows: readonly ClosingMaterialRow[]): ClosingMaterialGroup {
+  const unit = closingMaterialUnitOf(kind);
+  let expected_milli = 0n;
+  let difference_milli = 0n;
+  let differing = 0;
+  let counted = 0;
+  for (const row of rows) {
+    expected_milli += row.expected_milli;
+    if (row.counted_milli === null) continue;
+    counted += 1;
+    difference_milli += row.difference_milli ?? 0n;
+    if (row.difference_milli !== null && row.difference_milli !== 0n) differing += 1;
+  }
+  const complete = rows.every(row => row.counted_milli !== null);
+  return Object.freeze({
+    kind, label: closingMaterialKindLabels[kind], unit, lines: rows, differing, counted,
+    expected_milli, difference_milli,
+    counted_milli: complete ? rows.reduce((sum, row) => sum + (row.counted_milli ?? 0n), 0n) : null,
+    complete,
+  });
+}
+
+/** The head of the third account: the kind when only one differs and the count when several do. */
+function materialBalance(groups: readonly ClosingMaterialGroup[], counted: number,
+  total: number): { value: string; detail: string; tone: ClosingMaterialTone; difference: boolean } {
+  const differing = groups.filter(group => group.differing > 0);
+  if (groups.length === 0) {
+    return { value: 'Sin materiales', detail: 'El período no compró materiales', tone: 'zero',
+      difference: false };
+  }
+  const countedText = `${counted} de ${total} ${total === 1 ? 'línea contada' : 'líneas contadas'}`;
+  if (differing.length === 0) {
+    return { value: 'Sin diferencia', detail: countedText, tone: 'zero', difference: false };
+  }
+  if (differing.length === 1) {
+    const [group] = differing;
+    const tone: ClosingMaterialTone = group.difference_milli === 0n ? 'mixed'
+      : group.difference_milli < 0n ? 'neg' : 'pos';
+    // Two lines of the same kind that cancel each other leave a zero total, which is not a
+    // difference the head can state: the count of lines is what is left to say (S13).
+    const value = group.difference_milli === 0n
+      ? `${group.differing} ${group.differing === 1 ? 'línea' : 'líneas'} con diferencia`
+      : closingMaterialDifferenceText(group.unit, group.difference_milli);
+    return { value, tone, difference: true,
+      detail: `${group.label} · ${group.differing} de ${group.lines.length} con diferencia` };
+  }
+  return {
+    value: `${differing.length} cuentas con diferencia`,
+    detail: differing.map(group =>
+      `${group.label.toLocaleLowerCase('es')} ${closingMaterialDifferenceText(group.unit, group.difference_milli)}`).join(' · '),
+    tone: 'mixed',
+    difference: true,
+  };
+}
+
+/** What the warehouse takes at the closure, in the words of the artboard (S9). */
+function materialDelivery(groups: readonly ClosingMaterialGroup[], counted: number,
+  total: number): string {
+  if (groups.length === 0) return closingMaterialEmptySheet;
+  if (counted === 0) {
+    return 'Se lleva todo lo contado: contá la estantería y lo que cuentes se entrega entero.';
+  }
+  if (counted < total) {
+    return `Se lleva todo lo contado: ${counted} de ${total} líneas ya contadas se entregan enteras y el resto, cuando lo cuentes.`;
+  }
+  const parts: string[] = [];
+  for (const group of groups) {
+    if (group.counted_milli === null) continue;
+    if (group.kind === 'scrap') {
+      parts.push(`${closingMaterialQuantityText('kg', group.counted_milli)} kg de chatarra`);
+    } else {
+      const units = group.counted_milli / 1000n;
+      parts.push(`${units} ${units === 1n ? 'usada' : 'usadas'}`);
+    }
+  }
+  return `Se lleva todo lo contado: ${listedSides(parts)}.`;
+}
+
+/**
+ * The material sheet over the draft, with the three things the screen needs from one reading: the
+ * rows and their totals, the head the strip names, and the lines that are about to be sent. It never
+ * throws: a quantity it cannot read is named in `problem` and left uncounted, and a change that is
+ * not a readable count is never part of `changes` (S8).
+ */
+export function closingMaterialReading(lines: readonly ClosingMaterialLine[],
+  draft: MaterialDraft): ClosingMaterialReading {
+  let problem = '';
+  let unsaved = false;
+  const changes: MaterialCountedInput[] = [];
+  const rows: ClosingMaterialRow[] = [];
+  for (const line of lines) {
+    const key = closingMaterialKey(line);
+    const unit = line.unit;
+    const seed = closingMaterialSeed(line);
+    const typed = Object.hasOwn(draft, key) ? draft[key] : seed;
+    if (Object.hasOwn(draft, key) && typed !== seed) unsaved = true;
+    let expected_milli: bigint;
+    try { expected_milli = closingMaterialMilli(unit, line.expected_quantity); }
+    catch { problem = closingMaterialQuantityMessage; continue; }
+    let counted_milli: bigint | null = null;
+    try { counted_milli = typedMaterial(unit, typed); }
+    catch {
+      if (problem === '') problem = closingMaterialQuantityMessage;
+    }
+    // A count that is cleared is not a count that is absent: the delivery is what was counted, so
+    // a saved line is corrected and never blanked (S9).
+    if (counted_milli === null && seed !== '') {
+      if (problem === '') problem = closingMaterialClearedMessage;
+    }
+    const difference_milli = counted_milli === null ? null : counted_milli - expected_milli;
+    rows.push(Object.freeze({ key, line, label: closingMaterialLabel(line), unit,
+      expected_milli, counted_milli, difference_milli, delivered_milli: counted_milli }));
+    // Only a line whose typed count changed is sent, and only when it reads as a count: the
+    // request states what was counted and nothing else (S8).
+    if (Object.hasOwn(draft, key) && typed !== seed && counted_milli !== null) {
+      changes.push(Object.freeze({ kind: line.kind, model: line.model, material_id: line.material_id,
+        counted_quantity: closingMaterialWireText(unit, counted_milli) }));
+    }
+  }
+  const used = materialGroup('used', rows.filter(row => row.line.kind === 'used'));
+  const scrap = materialGroup('scrap', rows.filter(row => row.line.kind === 'scrap'));
+  const groups = [used, scrap].filter(group => group.lines.length > 0);
+  const counted = rows.filter(row => row.counted_milli !== null).length;
+  const differing = rows.filter(row => row.difference_milli !== null && row.difference_milli !== 0n).length;
+  const balance = materialBalance(groups, counted, rows.length);
+  return Object.freeze({
+    rows: Object.freeze(rows),
+    groups: Object.freeze(groups),
+    used, scrap,
+    total: rows.length,
+    counted,
+    differing,
+    empty: rows.length === 0,
+    value: balance.value,
+    detail: balance.detail,
+    tone: balance.tone,
+    difference: balance.difference,
+    delivery: materialDelivery(groups, counted, rows.length),
+    problem,
+    unsaved,
+    changes: Object.freeze(changes),
+  });
+}
+
+// ---------------------------------------------------------------------------------
+// The two tabs and the three balances of one settlement (S10, S13, S14)
+// ---------------------------------------------------------------------------------
+
+/** The two tabs are navigation, never two life cycles: one cut, one offer, one acceptance (S10). */
+export type ClosingTab = 'caja' | 'chatarra';
+
+export const closingTabOrder: readonly ClosingTab[] = Object.freeze(['caja', 'chatarra']);
+export const closingTabLabels: Readonly<Record<ClosingTab, string>> = Object.freeze({
+  caja: 'Caja', chatarra: 'Chatarra',
+});
+/** The name the tab list and its panels share. */
+export const closingTabsLabel = 'Rendición';
+/** The name of the header with the three balances, which is above the tabs (S13). */
+export const closingBalancesLabel = 'Saldos de la rendición';
+
+export const closingBalanceLabels: Readonly<Record<'cash' | 'fund' | 'materials', string>> =
+  Object.freeze({ cash: 'Caja operativa', fund: 'Fondo de compras', materials: 'Materiales' });
+
+/**
+ * The tab an arrow key moves to, which is the one interaction model the screens share with the
+ * purchases tabs: the arrows wrap around the two tabs and nothing else moves the selection.
+ */
+export function closingTabAfter(tab: ClosingTab, key: string): ClosingTab | null {
+  if (key !== 'ArrowRight' && key !== 'ArrowLeft') return null;
+  const index = closingTabOrder.indexOf(tab);
+  return closingTabOrder[(index + (key === 'ArrowRight' ? 1 : closingTabOrder.length - 1))
+    % closingTabOrder.length];
+}
+
+/** One balance of the header: its difference in words and the tab it belongs to (S13). */
+export interface ClosingBalance {
+  readonly key: 'cash' | 'fund' | 'materials';
+  readonly label: string;
+  /** `− Bs 35,00`, `− 4,300 kg` or `Sin diferencia`; `Sin contar` before the count exists. */
+  readonly value: string;
+  /** The facts under it: `contada 6.980,00 · esperada 7.015,00`. */
+  readonly detail: string;
+  readonly tone: ClosingMaterialTone;
+  /** Whether the account carries a difference, which is what the tab marker states. */
+  readonly difference: boolean;
+  readonly tab: ClosingTab;
+}
+
+/** The facts the three balances read: the drawer, the envelope and the material sheet, live. */
+export interface ClosingBalanceFacts {
+  readonly cash_counted_cents: bigint | null;
+  readonly cash_expected_cents: bigint;
+  readonly cash_difference_cents: bigint | null;
+  /** `null` when the document publishes no envelope at all. */
+  readonly fund_counted_cents: bigint | null;
+  readonly fund_expected_cents: bigint | null;
+  readonly fund_difference_cents: bigint | null;
+  readonly materials: ClosingMaterialReading;
+}
+
+/** `6.980,00`: an amount without its currency, for a line whose headline already carries it. */
+function moneyFigure(cents: bigint): string {
+  return formatMoney(cents).slice(3);
+}
+
+function moneyBalance(difference: bigint | null,
+  expected: bigint): { value: string; tone: ClosingMaterialTone; difference: boolean } {
+  if (difference === null) return { value: 'Sin contar', tone: 'zero', difference: false };
+  if (difference === 0n) return { value: closingDifferenceName(difference), tone: 'zero', difference: false };
+  return { value: closingSignedText(difference), tone: difference < 0n ? 'neg' : 'pos', difference: true };
+}
+
+/**
+ * The three balances of the settlement, above the tabs (S13): the operating drawer, the purchase
+ * fund and the materials, each with its difference or with the words that say there is none. The
+ * materials are never added to any money figure and a kilogram is never added to a unit: each
+ * account is read in its own unit and named on its own.
+ */
+export function closingBalanceStrip(facts: ClosingBalanceFacts): readonly ClosingBalance[] {
+  const cash = moneyBalance(facts.cash_difference_cents, facts.cash_expected_cents);
+  const fund = facts.fund_expected_cents === null
+    ? { value: 'Sin sobre', tone: 'zero' as ClosingMaterialTone, difference: false }
+    : moneyBalance(facts.fund_difference_cents, facts.fund_expected_cents);
+  return Object.freeze([
+    Object.freeze({
+      key: 'cash' as const,
+      label: closingBalanceLabels.cash,
+      value: cash.value,
+      tone: cash.tone,
+      difference: cash.difference,
+      tab: 'caja' as ClosingTab,
+      detail: facts.cash_counted_cents === null
+        ? `esperada ${moneyFigure(facts.cash_expected_cents)}`
+        : `contada ${moneyFigure(facts.cash_counted_cents)} · esperada ${moneyFigure(facts.cash_expected_cents)}`,
+    }),
+    Object.freeze({
+      key: 'fund' as const,
+      label: closingBalanceLabels.fund,
+      value: fund.value,
+      tone: fund.tone,
+      difference: fund.difference,
+      tab: 'chatarra' as ClosingTab,
+      detail: facts.fund_expected_cents === null
+        ? 'La rendición no publica el sobre'
+        : facts.fund_counted_cents === null
+          ? `esperado ${moneyFigure(facts.fund_expected_cents)}`
+          : `contado ${moneyFigure(facts.fund_counted_cents)} · esperado ${moneyFigure(facts.fund_expected_cents)}`,
+    }),
+    Object.freeze({
+      key: 'materials' as const,
+      label: closingBalanceLabels.materials,
+      value: facts.materials.value,
+      detail: facts.materials.detail,
+      tone: facts.materials.tone,
+      difference: facts.materials.difference,
+      tab: 'chatarra' as ClosingTab,
+    }),
+  ]);
+}
+
+/**
+ * The marker one tab carries: the difference of its accounts in words — `− Bs 35,00`, `− 4,300 kg`
+ * or `2 con diferencia` — and `null` when none of them carries one. It is never a bare dot, because
+ * a colour or a mark alone is not a reading (S13).
+ */
+export function closingTabMarker(balances: readonly ClosingBalance[], tab: ClosingTab): string | null {
+  const carrying = balances.filter(balance => balance.tab === tab && balance.difference);
+  if (carrying.length === 0) return null;
+  if (carrying.length === 1) return carrying[0].value;
+  return `${carrying.length} con diferencia`;
 }
 
 // ---------------------------------------------------------------------------------
@@ -342,12 +1000,17 @@ export function drawerView(rail: ClosingRail, draft: DrawerDraft): DrawerView {
   });
 }
 
-/** The exact body of `POST /api/closings/{id}/cash`: four keys, absent amounts as `null`. */
+/**
+ * The exact body of `POST /api/closings/{id}/cash`: the four keys of the drawer, absent amounts as
+ * `null`, and — when the warehouse stated the envelope — the two keys of the purchase fund (S1, S5).
+ */
 export interface DrawerPayload {
   readonly counted_cash: string | null;
   readonly contributed_cash: string;
   readonly closing_cash: string | null;
   readonly observation: string;
+  readonly purchase_fund_counted?: string | null;
+  readonly purchase_fund_cash?: string | null;
 }
 
 export const closingObservationMessage = `La observación lleva hasta ${closingMaxObservation} caracteres.`;
@@ -359,15 +1022,25 @@ export const closingContributionMessage =
  * counted is the explicit `null`, and the contribution is the money the warehouse states it put
  * into the till. It is a fact of the settlement, so an empty field is refused instead of being
  * sent as a zero the admin never declared (S10).
+ *
+ * The envelope travels in the same body: its two keys are stated when the warehouse wrote them,
+ * each as canonical non-negative text or as the explicit `null` of the side it did not state, and
+ * both are absent when it stated neither — an envelope nobody counted is never an invented zero
+ * (S1, S5).
  */
-export function canonicalDrawerPayload(draft: DrawerDraft): DrawerPayload {
+export function canonicalDrawerPayload(draft: DrawerDraft,
+  envelope: PurchaseFundDraft = emptyPurchaseFundDraft): DrawerPayload {
   let counted_cash: string | null;
   let closing_cash: string | null;
+  let envelopeCounted: bigint | null;
+  let envelopeCash: bigint | null;
   try {
     const counted = typedCents(draft.counted);
     const fund = typedCents(draft.fund);
     counted_cash = counted === null ? null : centsToMoney(counted);
     closing_cash = fund === null ? null : centsToMoney(fund);
+    envelopeCounted = typedCents(envelope.counted);
+    envelopeCash = typedCents(envelope.cash);
   } catch { return invalidMoney(); }
   const contribution = typedCents(draft.contribution);
   if (contribution === null) throw new Error(closingContributionMessage);
@@ -376,8 +1049,14 @@ export function canonicalDrawerPayload(draft: DrawerDraft): DrawerPayload {
     || Array.from(observation).length > closingMaxObservation) {
     throw new Error(closingObservationMessage);
   }
-  return Object.freeze({
+  const drawer = {
     counted_cash, contributed_cash: centsToMoney(contribution), closing_cash, observation,
+  };
+  if (envelopeCounted === null && envelopeCash === null) return Object.freeze(drawer);
+  return Object.freeze({
+    ...drawer,
+    purchase_fund_counted: envelopeCounted === null ? null : centsToMoney(envelopeCounted),
+    purchase_fund_cash: envelopeCash === null ? null : centsToMoney(envelopeCash),
   });
 }
 
@@ -396,27 +1075,29 @@ export function closingLineLabel(line: ClosingCountLine): string {
   return `${line.brand} ${line.model} ${line.polarity} · ${line.capacity_ah} Ah`;
 }
 
-export function closingPendingLines(lines: readonly ClosingCountLine[]): readonly ClosingCountLine[] {
-  return lines.filter(line => line.counted_quantity === null);
+/**
+ * The quantity the sheet assumes for a line: the count the document holds or, when it holds none,
+ * the expected one. Every line opens seeded with `counted_quantity = expected_quantity`, so a line
+ * without a count can only come from a settlement opened before that seed (L3) — it is read as
+ * coinciding, never as an empty cell the admin has to fill and never as a reason to refuse (S1).
+ */
+export function closingAssumedQuantity(line: ClosingCountLine): number {
+  return line.counted_quantity ?? line.expected_quantity;
 }
 
-export interface ClosingProgress {
-  readonly total: number;
-  readonly counted: number;
-  readonly pending: number;
+/**
+ * The text the sheet starts a row from: the quantity the document already publishes, so the admin
+ * only types where the count differs (S1, L2). A row the cut did not know publishes nothing — its
+ * quantity is the admin's to state (S4).
+ */
+export function closingSeedQuantity(line: ClosingCountLine): string {
+  if (line.counted_quantity !== null) return String(line.counted_quantity);
+  return closingLineIsOutsideSystem(line) ? '' : String(line.expected_quantity);
 }
 
-/** `9 de 11 contadas`: the progress of the sheet over every variant the branch held at the cut. */
-export function closingProgress(lines: readonly ClosingCountLine[]): ClosingProgress {
-  const total = lines.length;
-  const pending = closingPendingLines(lines).length;
-  return Object.freeze({ total, counted: total - pending, pending });
-}
-
-/** The difference of one row, with its sign; `null` while the row is pending. */
-export function closingLineDifference(line: ClosingCountLine): number | null {
-  if (line.counted_quantity === null) return null;
-  return line.counted_quantity - line.expected_quantity;
+/** The difference of one row, with its sign; a row nobody counted coincides, so it is a zero. */
+export function closingLineDifference(line: ClosingCountLine): number {
+  return closingAssumedQuantity(line) - line.expected_quantity;
 }
 
 /** A counted difference is shown with its sign, and a match is shown as a dash, not zero. */
@@ -426,8 +1107,15 @@ export function closingQuantityText(value: number | null): string {
   return `−${-value}`;
 }
 
-/** The pending row is visibly pending, in words, and not only through a colour. */
-export const closingPendingTag = 'Pendiente';
+/** The count of the sheet against the system, in words: nothing is read from a colour alone (S2). */
+export const closingCountMatchTag = 'Conteo coincidente';
+/** A row whose count does not coincide with the system says so in words, beside its difference. */
+export const closingChangedTag = 'No coincide';
+
+/** `1 diferencia contra el sistema` / `3 diferencias contra el sistema`, for the rail and the bar. */
+export function closingCountDifferenceText(differing: number): string {
+  return `${differing} ${differing === 1 ? 'diferencia' : 'diferencias'} contra el sistema`;
+}
 
 /** The search of the sheet: the sheet is already here, so the filter never asks the server. */
 export function filterCountLines(lines: readonly ClosingCountLine[], search: string): readonly ClosingCountLine[] {
@@ -606,17 +1294,64 @@ export function closingLineIsOutsideSystem(line: { readonly expected_quantity: n
 
 /**
  * The lines the admin is about to save: every row whose count changed, the rows added by hand
- * included, and nothing else. A row that was not typed is not a count and is never sent (S4).
+ * included, and nothing else. A row that was not typed is not a count and is never sent (S4), and
+ * the quantity it is compared against is the one the sheet was seeded with (S1).
  */
 export function closingCountChanges(rows: readonly ClosingCountLine[],
   draft: Readonly<Record<number, string>>): readonly CountedLineInput[] {
   const changes: CountedLineInput[] = [];
   for (const row of rows) {
     const typed = typeof draft[row.variant_id] === 'string' ? draft[row.variant_id] : '';
-    const saved = row.counted_quantity === null ? '' : String(row.counted_quantity);
-    if (typed !== saved) changes.push(Object.freeze({ variant_id: row.variant_id, counted: typed }));
+    if (typed !== closingSeedQuantity(row)) {
+      changes.push(Object.freeze({ variant_id: row.variant_id, counted: typed }));
+    }
   }
   return Object.freeze(changes);
+}
+
+/** One row of the sheet whose count does not coincide with the quantity the system expected (S2). */
+export interface ClosingCountDifference {
+  readonly variant_id: number;
+  readonly label: string;
+  readonly expected_quantity: number;
+  readonly counted_quantity: number;
+  readonly difference: number;
+}
+
+/** The whole quantity a text states, or `null` when it states none the sheet could save. */
+function wholeQuantity(text: string | undefined): number | null {
+  const raw = typeof text === 'string' ? text.trim() : '';
+  if (!/^(0|[1-9]\d{0,6})$/.test(raw)) return null;
+  const quantity = Number(raw);
+  return quantity > closingMaxCounted ? null : quantity;
+}
+
+/** The count of the sheet as the admin's draft states it: which rows differ and how many. */
+export interface ClosingCountReading {
+  readonly total: number;
+  /** How many rows differ from the expected quantity; `0` is a sheet that coincides (S1). */
+  readonly differing: number;
+  readonly differences: readonly ClosingCountDifference[];
+}
+
+/**
+ * The rows whose count does not coincide with the expected quantity, as the draft states them: a
+ * row edited back to the expected quantity is not a difference, and a row the admin did not type
+ * keeps the quantity the document publishes. It is a reading of the client's own draft and nothing
+ * else: no column, no document field and no request carries it (S2).
+ */
+export function closingCountReading(rows: readonly ClosingCountLine[],
+  draft: Readonly<Record<number, string>>): ClosingCountReading {
+  const differences: ClosingCountDifference[] = [];
+  for (const row of rows) {
+    const counted = wholeQuantity(draft[row.variant_id]) ?? closingAssumedQuantity(row);
+    const difference = counted - row.expected_quantity;
+    if (difference === 0) continue;
+    differences.push(Object.freeze({ variant_id: row.variant_id, label: closingLineLabel(row),
+      expected_quantity: row.expected_quantity, counted_quantity: counted, difference }));
+  }
+  return Object.freeze({ total: rows.length, differing: differences.length,
+    differences: Object.freeze(differences) });
 }
 
 // ---------------------------------------------------------------------------------
@@ -625,32 +1360,21 @@ export function closingCountChanges(rows: readonly ClosingCountLine[],
 
 export interface ClosingBlocker { readonly code: string; readonly message: string }
 
-const listedNames = 4;
-
 /** `a, b y c`: the sides a statement is missing, named in the order they are stated. */
 function listedSides(sides: readonly string[]): string {
   if (sides.length <= 1) return sides.join('');
   return `${sides.slice(0, -1).join(', ')} y ${sides[sides.length - 1]}`;
 }
 
-function pendingBlocker(lines: readonly ClosingCountLine[]): ClosingBlocker {
-  const names = lines.map(closingLineLabel);
-  const listed = names.slice(0, listedNames).join(', ');
-  const rest = names.length > listedNames ? ` y ${names.length - listedNames} más` : '';
-  return Object.freeze({
-    code: 'count_pending',
-    message: `Faltan ${names.length} ${names.length === 1 ? 'variante' : 'variantes'} por contar: ${listed}${rest}.`,
-  });
-}
-
 /**
  * What still blocks the proposal, in the order the warehouse can act on it. Every blocker is a
  * fact of the settlement it already holds or of the draft it typed; the refusal itself is the
- * server's, and this list never replaces it. `sheet` is the sheet the admin is working on, which
- * carries the rows added by hand beside the snapshot of the cut.
+ * server's, and this list never replaces it. The count side has no arm of its own: the sheet opens
+ * coinciding with the system, so a variant waiting to be counted is not a fact any more (S1, S3),
+ * and no confirmation step is added in its place (S2).
  */
 export function closingBlockers(closing: Closing, view: DrawerView,
-  unsaved = false, sheet: readonly ClosingCountLine[] = closing.count_lines): readonly ClosingBlocker[] {
+  unsaved = false, commissionMissing = false): readonly ClosingBlocker[] {
   if (!closingIsEditable(closing.status)) {
     return Object.freeze([Object.freeze({
       code: closing.status === 'proposed' ? 'state_conflict' : 'closed',
@@ -660,8 +1384,6 @@ export function closingBlockers(closing: Closing, view: DrawerView,
     })]);
   }
   const blockers: ClosingBlocker[] = [];
-  const pending = closingPendingLines(sheet);
-  if (pending.length > 0) blockers.push(pendingBlocker(pending));
   if (view.problem !== '') {
     blockers.push(Object.freeze({ code: 'invalid_amount', message: view.problem }));
   }
@@ -684,6 +1406,14 @@ export function closingBlockers(closing: Closing, view: DrawerView,
       message: `El fondo supera la caja contada más el aporte en ${formatMoney(view.excess_cents)}.`,
     }));
   }
+  // A branch without a commission has nothing to settle: the server refuses the proposal, so
+  // the screen says it before the button is pressed instead of showing the refusal afterwards.
+  if (commissionMissing) {
+    blockers.push(Object.freeze({
+      code: 'commission_missing',
+      message: 'La sucursal no tiene porcentaje de comisión configurado: sin eso no se puede proponer.',
+    }));
+  }
   if (unsaved) {
     blockers.push(Object.freeze({
       code: 'unsaved',
@@ -695,7 +1425,7 @@ export function closingBlockers(closing: Closing, view: DrawerView,
 
 /** The state of the sheet and the drawer as the action bar announces it. */
 export function closingBlockReason(blockers: readonly ClosingBlocker[]): string {
-  if (blockers.length === 0) return 'La rendición se puede proponer: el conteo cubre toda variante con existencia y la caja está contada.';
+  if (blockers.length === 0) return 'La rendición se puede proponer: la caja está declarada.';
   return blockers.map(blocker => blocker.message).join(' ');
 }
 
@@ -869,10 +1599,17 @@ export function closingAcceptance(closing: Closing): ClosingAcceptance | null {
   if (round === undefined || round.decision !== '') return null;
   const rail = closingOfferRail(closing, round.offer);
   const published = closingRail(closing);
+  // The envelope of the offer is the one the closure applies, so an offer that disagrees with the
+  // envelope the document publishes is never described as acceptable either (S5, S6).
+  const fund = closing.purchase_fund;
+  const envelopeDrifted = fund !== null
+    && (round.offer.purchase_fund_counted_cents !== fund.counted_cents
+      || round.offer.purchase_fund_cash_cents !== fund.new_cents);
   if (rail.expected_cents !== published.expected_cents
     || rail.difference_cents !== published.difference_cents
     || rail.taken_cents !== published.taken_cents
     || rail.commission_cents !== published.commission_cents
+    || envelopeDrifted
     || !sameOfferLines(round.offer.count_lines, closing.count_lines)) {
     throw new Error(closingAcceptanceMismatchMessage);
   }

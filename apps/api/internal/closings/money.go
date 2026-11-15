@@ -196,9 +196,32 @@ func ExpectedCash(opening, cashSales, cashExpenses Money) (Signed, error) {
 	return signedFromCents(openingCents + salesCents - expensesCents), nil
 }
 
+// PurchaseFundExpected derives what the purchase envelope should hold at the cut: the amount the
+// previous closure left in it minus the cash the branch spent on purchases of the period, net of
+// the counter-documents that returned money — those are stored with negative amounts, so they
+// subtract by construction and can make the net itself negative (S3, S11). That is why the cash of
+// the purchases is read as a signed amount while the inherited balance is not: an envelope that
+// spent more than it inherited is a shortage, exactly as a negative expectation states. The
+// envelope is money of its own: no contribution of the warehouse and no money of a sale enters this
+// identity, and the commission and the three cash identities of the drawer are untouched (S12).
+func PurchaseFundExpected(opening Money, purchasesCash Signed) (Signed, error) {
+	openingCents, ok := amountCents(opening)
+	if !ok {
+		return "", ErrInvalid
+	}
+	spentCents, ok := purchasesCash.Cents()
+	if !ok {
+		return "", ErrInvalid
+	}
+	// Both terms are bounded by numeric(12,2), so the difference stays inside int64.
+	return signedFromCents(openingCents - spentCents), nil
+}
+
 // CashDifference is the counted cash against the expected one: negative is a shortage and
 // positive a surplus, and the closure is admitted either way (S8). Both sides are canonical
-// amounts, so the difference is exact.
+// amounts, so the difference is exact. The purchase envelope is counted against its own
+// expectation with this same arithmetic, so the drawer and the envelope can never disagree about
+// what a difference is.
 func CashDifference(counted Money, expected Signed) (Signed, error) {
 	countedCents, ok := amountCents(counted)
 	if !ok {
@@ -247,7 +270,13 @@ func signedFromCents(cents int64) Signed {
 	return Signed(magnitude)
 }
 
-// Cents reads a signed amount back as integer cents, refusing text that is not canonical.
+// Cents reads a signed amount back as integer cents, refusing text that is not canonical: exactly
+// the digits amountCents admits, with at most one leading minus, so "-12.50" is minus twelve and
+// fifty. A leading plus, a padded or an over-precision amount is refused, so nothing is ever
+// approximated. The purchases of a period are the net sum of its documents and a counter-document is
+// stored with negative amounts, so a window that returned more than it bought has a negative net
+// that must be read, published and settled instead of refused as an invalid amount (S3, S11); the
+// envelope's opening is money the branch physically holds and stays on amountCents.
 func (s Signed) Cents() (int64, bool) {
 	text := string(s)
 	negative := strings.HasPrefix(text, "-")

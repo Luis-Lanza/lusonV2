@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Decisión de la sucursal · Rendición de cuentas · Luson</title>
+<style>
+*{box-sizing:border-box}
+:root{font-family:Inter,system-ui,sans-serif;color:#242124;background:#F8F6F4;font-size:14px;
+--wine:#7A1F3D;--hover:#5B162D;--tint:#F5E8ED;--page:#F8F6F4;--border:#DED7DA;--muted:#6B6267;--ink:#242124;
+--ok-bg:#ECFDF5;--ok-ink:#047857;--ok-border:#A7F3D0;
+--warn-bg:#FFFBEF;--warn-ink:#805400;--warn-border:#E8CF86;
+--short-bg:#FFF0F0;--short-ink:#991515;--short-border:#FFDAD6}
+body{margin:0;padding-bottom:120px}
+h1,h2,h3,p,dl,dd,dt,ul,li,ol,table,caption{margin:0}
+h1{font-size:22px}
+h2{font-size:15px}
+p{line-height:1.6}
+small,.muted{color:var(--muted);font-size:12px}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;padding:10px 12px;min-height:44px}
+button:hover{background:var(--tint)}
+button.primary{background:var(--wine);border-color:var(--wine);color:#FFFFFF;font-weight:600}
+button.primary:hover{background:var(--hover)}
+button:disabled{background:#EFEDEF;border-color:#AAA5AA;color:#595459;cursor:not-allowed}
+:focus-visible{outline:2px solid var(--wine);outline-offset:3px}
+input,textarea{padding:10px 12px;background:#FFFFFF;border:1px solid var(--muted);border-radius:4px;width:100%;min-height:44px}
+textarea{min-height:72px;resize:vertical}
+label{display:grid;gap:6px;font-size:12px;color:var(--muted)}
+aside.nav{position:fixed;width:240px;inset:0 auto 0 0;background:#FFFFFF;border-right:1px solid var(--border);padding:12px;display:flex;flex-direction:column;justify-content:space-between}
+.brand{display:flex;gap:10px;align-items:center;padding:4px 8px 16px;border-bottom:1px solid var(--border)}
+.logo{background:var(--wine);color:#FFFFFF;border-radius:4px;padding:8px;font-weight:700;font-size:18px}
+.brand strong{color:var(--wine);font-size:18px}
+.brand small{display:block}
+nav{display:grid;gap:4px;margin-top:12px}
+nav a{text-align:left;padding:12px;color:inherit;text-decoration:none;border-left:2px solid transparent}
+nav a:hover{background:var(--page)}
+nav .active{background:var(--tint);color:var(--wine);border-left:2px solid var(--wine);font-weight:600}
+.identity{padding:12px;background:var(--page);border:1px solid var(--border)}
+.identity small{display:block;margin-top:6px}
+.top{margin-left:240px;height:56px;background:#FFFFFF;border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;justify-content:space-between}
+main{margin-left:240px;padding:20px 24px 24px}
+.heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px;flex-wrap:wrap}
+.heading p{color:var(--muted);margin-top:4px}
+.tag{display:inline-block;border:1px solid var(--border);background:var(--page);padding:4px 8px;border-radius:3px;font-size:11px;font-weight:600}
+.tag.ok{background:var(--ok-bg);color:var(--ok-ink);border-color:var(--ok-border)}
+.tag.warn{background:var(--warn-bg);color:var(--warn-ink);border-color:var(--warn-border)}
+.tag.short{background:var(--short-bg);color:var(--short-ink);border-color:var(--short-border)}
+.tag.frozen{background:var(--tint);color:var(--wine);border-color:var(--wine)}
+.balances{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:18px}
+.balances button{display:grid;gap:4px;text-align:left;padding:12px 14px;background:#FFFFFF;border:1px solid var(--border);border-radius:4px;min-height:0}
+.balances button:hover{background:var(--page)}
+.balances button[aria-pressed=true]{border-color:var(--wine);box-shadow:inset 0 0 0 1px var(--wine);background:var(--tint)}
+.balances small{font-size:11px;text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+.balances strong{font-size:16px;font-variant-numeric:tabular-nums}
+.balances em{font-style:normal;color:var(--muted);font-size:12px}
+.neg{color:var(--short-ink)}
+.pos{color:var(--ok-ink)}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin-bottom:16px}
+.tabs button{background:none;border:0;border-bottom:2px solid transparent;border-radius:0;padding:12px 0;margin-right:28px;min-height:44px;font-weight:600;color:var(--muted)}
+.tabs button:hover{background:none;color:var(--wine)}
+.tabs button[aria-selected=true]{color:var(--wine);border-bottom-color:var(--wine)}
+.tabs .n{display:inline-block;margin-left:8px;font-size:11px;font-weight:700;padding:2px 6px;border-radius:999px;background:var(--short-bg);color:var(--short-ink);border:1px solid var(--short-border)}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:20px;align-items:start}
+.panel{background:#FFFFFF;border:1px solid var(--border);border-radius:4px}
+.panel>header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:16px}
+.panel .body{padding:16px 20px}
+.group{padding:14px 20px;border-bottom:1px solid var(--border)}
+.group:last-child{border-bottom:0}
+.group h2{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:10px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+caption{text-align:left;padding:14px 20px 6px;font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:600}
+th{text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;font-weight:600;border-bottom:1px solid var(--border);padding:8px 20px}
+td{padding:8px 20px;border-bottom:1px solid var(--border);vertical-align:middle}
+tfoot td{font-weight:700;border-bottom:0}
+.num{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+th.num{text-align:right}
+.dif{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+.zero{color:var(--muted)}
+.summary{display:grid;gap:0}
+.summary div{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px dashed var(--border)}
+.summary div:last-child{border-bottom:0}
+.summary dt{color:var(--muted)}
+.summary dd{font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+.summary .total{padding-top:10px}
+.summary .total dt,.summary .total dd{font-size:15px;font-weight:700;color:var(--ink)}
+.help{display:flex;gap:8px;align-items:flex-start;padding:10px 12px;background:var(--page);border:1px solid var(--border);border-radius:4px;font-size:12px;color:var(--muted);line-height:1.5}
+.help b{color:var(--ink)}
+.changes{display:grid;gap:8px;padding:0;margin:0;list-style:none}
+.changes li{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px dashed var(--border);font-size:14px}
+.changes li:last-child{border-bottom:0}
+.changes strong{font-variant-numeric:tabular-nums}
+.history{list-style:none;padding:0;margin:0;display:grid;gap:8px}
+.history li{display:grid;gap:2px;padding-left:14px;border-left:2px solid var(--border)}
+.history li:first-child{border-left-color:var(--wine)}
+.bar{position:fixed;left:240px;right:0;bottom:0;background:#FFFFFF;border-top:1px solid var(--border);padding:12px 24px;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:20px;box-shadow:0 -2px 10px #2421240D}
+.bar .state{display:grid;gap:8px}
+.bar .chips{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.bar .reason{display:grid;gap:6px;max-width:520px}
+.bar .action{display:flex;align-items:center;gap:12px}
+@media (prefers-reduced-motion:no-preference){button{transition:background .12s ease}}
+</style>
+
+<aside class="nav">
+  <div>
+    <div class="brand"><span class="logo">L</span><div><strong>Luson</strong><small>Sopocachi</small></div></div>
+    <nav aria-label="Secciones">
+      <a href="#">Mostrador</a>
+      <a href="#">Inventario</a>
+      <a href="#" class="active" aria-current="page">Rendiciones</a>
+      <a href="#">Compras</a>
+      <a href="#">Garantías</a>
+    </nav>
+  </div>
+  <div class="identity"><strong>Sopocachi</strong><small>Encargado de sucursal</small></div>
+</aside>
+
+<div class="top">
+  <span class="muted">Rendición · 12 ago → 12 sep 2026 · corte 12 sep 19:40</span>
+  <span class="tag frozen">Sucursal congelada</span>
+</div>
+
+<main>
+  <div class="heading">
+    <div>
+      <h1>El Almacén propone cerrar tu rendición</h1>
+      <p>Podés aceptar o rechazar una vez más. Si algo no cuadra, rechazá y explicá por qué.</p>
+    </div>
+    <span class="tag warn">Ronda 1</span>
+  </div>
+
+  <div class="balances" aria-label="Saldos de la rendición">
+    <button type="button" aria-pressed="true" data-goto="panel-caja">
+      <small>Caja operativa</small>
+      <strong class="neg">− Bs 35,00</strong>
+      <em>contada 6.980,00 · esperada 7.015,00</em>
+    </button>
+    <button type="button" aria-pressed="false" data-goto="panel-chatarra">
+      <small>Fondo de compras</small>
+      <strong class="neg">− Bs 4,00</strong>
+      <em>contado 375,00 · esperado 379,00</em>
+    </button>
+    <button type="button" aria-pressed="false" data-goto="panel-chatarra">
+      <small>Materiales</small>
+      <strong class="neg">− 4,300 kg</strong>
+      <em>plomo · más 1 batería usada</em>
+    </button>
+  </div>
+
+  <div class="tabs" role="tablist" aria-label="Rendición">
+    <button role="tab" id="tab-caja" aria-controls="panel-caja" aria-selected="true">Caja<span class="n">−35</span></button>
+    <button role="tab" id="tab-chatarra" aria-controls="panel-chatarra" aria-selected="false">Chatarra<span class="n">−4</span></button>
+  </div>
+
+  <div role="tabpanel" id="panel-caja" aria-labelledby="tab-caja">
+    <div class="layout">
+      <section class="panel" aria-labelledby="h-caja">
+        <header><h2 id="h-caja">Lo que el Almacén contó en tu caja</h2><span class="muted">No editable desde la sucursal</span></header>
+        <table>
+          <caption>Caja</caption>
+          <thead><tr><th scope="col">Concepto</th><th scope="col" class="num">Importe</th></tr></thead>
+          <tbody>
+            <tr><td>Fondo heredado</td><td class="num">Bs 800,00</td></tr>
+            <tr><td>Ventas en efectivo</td><td class="num">Bs 6.430,00</td></tr>
+            <tr><td>Gastos del período (3)</td><td class="num">− Bs 215,00</td></tr>
+            <tr><td><strong>Caja esperada</strong></td><td class="num"><strong>Bs 7.015,00</strong></td></tr>
+            <tr><td>Caja contada</td><td class="num">Bs 6.980,00</td></tr>
+            <tr><td><strong>Diferencia</strong></td><td class="num neg">− Bs 35,00</td></tr>
+          </tbody>
+        </table>
+        <table>
+          <caption>Cobro electrónico · fuera de la caja</caption>
+          <thead><tr><th scope="col">Concepto</th><th scope="col" class="num">Importe</th></tr></thead>
+          <tbody>
+            <tr><td>Tarjeta</td><td class="num">Bs 3.240,00</td></tr>
+            <tr><td>Transferencia</td><td class="num">Bs 1.180,00</td></tr>
+            <tr><td>QR</td><td class="num">Bs 2.760,00</td></tr>
+          </tbody>
+        </table>
+        <table>
+          <caption>Stock contado · 11 variantes</caption>
+          <thead><tr><th scope="col">Batería</th><th scope="col" class="num">Sistema</th><th scope="col" class="num">Contado</th><th scope="col" class="num">Dif.</th></tr></thead>
+          <tbody>
+            <tr><td>Bosch S4 45Ah · L</td><td class="num">12</td><td class="num">12</td><td class="dif zero">—</td></tr>
+            <tr><td>Bosch S4 45Ah · R</td><td class="num">9</td><td class="num">8</td><td class="dif neg">−1</td></tr>
+            <tr><td>Varta Blue 60Ah · L</td><td class="num">14</td><td class="num">14</td><td class="dif zero">—</td></tr>
+            <tr><td>Varta Blue 60Ah · R</td><td class="num">11</td><td class="num">13</td><td class="dif pos">+2</td></tr>
+            <tr><td>Moura Clean 75Ah · L</td><td class="num">7</td><td class="num">7</td><td class="dif zero">—</td></tr>
+            <tr><td>Willard Max 90Ah · L</td><td class="num">4</td><td class="num">3</td><td class="dif neg">−1</td></tr>
+          </tbody>
+        </table>
+        <div class="body">
+          <div class="help">
+            <span aria-hidden="true">▸</span>
+            <span>La comisión no se toca: <b>Bs 1.461,60</b> sobre Bs 32.480,00 de ventas, al 4,5 %. No se descuenta de la caja.</span>
+          </div>
+        </div>
+      </section>
+
+      <aside aria-label="Qué cambia si aceptás">
+        <section class="panel">
+          <div class="group">
+            <h2>Si aceptás, esto queda así</h2>
+            <ul class="changes">
+              <li><span>Tu caja arranca con</span><strong>Bs 900,00</strong></li>
+              <li><span>Tu fondo de compras arranca con</span><strong>Bs 1.500,00</strong></li>
+              <li><span>Usadas en tu estantería</span><strong>0</strong></li>
+              <li><span>Chatarra en tu estantería</span><strong>0 kg</strong></li>
+            </ul>
+            <small style="display:block;margin-top:10px">La diferencia de caja queda registrada a tu nombre.</small>
+          </div>
+          <div class="group">
+            <h2>Rondas</h2>
+            <ol class="history">
+              <li>
+                <span>Ronda 1 · propuesta del Almacén</span>
+                <small>12 sep 2026, 19:40 · esperando tu decisión</small>
+              </li>
+            </ol>
+          </div>
+          <div class="group">
+            <h2>Compras que pagaste del fondo</h2>
+            <dl class="summary">
+              <div><dt>3 ago · 12 usadas</dt><dd>Bs 216,00</dd></div>
+              <div><dt>4 ago · 84,500 kg plomo</dt><dd>Bs 676,00</dd></div>
+              <div><dt>5 ago · 12,400 kg cobre</dt><dd>Bs 310,00</dd></div>
+              <div><dt>7 ago · 3,100 kg bronce</dt><dd>Bs 62,00</dd></div>
+              <div><dt>9 ago · 8,750 kg aluminio</dt><dd>Bs 87,50</dd></div>
+              <div class="total"><dt>7 compras en efectivo</dt><dd>Bs 1.621,00</dd></div>
+            </dl>
+          </div>
+        </section>
+      </aside>
+    </div>
+  </div>
+
+  <div role="tabpanel" id="panel-chatarra" aria-labelledby="tab-chatarra" hidden>
+    <div class="layout">
+      <section class="panel" aria-labelledby="h-chatarra">
+        <header><h2 id="h-chatarra">Lo que el Almacén contó en tu estantería</h2><span class="muted">No editable desde la sucursal</span></header>
+        <table>
+          <caption>Baterías usadas · compradas en el período contra lo contado</caption>
+          <thead><tr><th scope="col">Modelo</th><th scope="col" class="num">Compradas</th><th scope="col" class="num">Contadas</th><th scope="col" class="num">Dif.</th></tr></thead>
+          <tbody>
+            <tr><td>27-60</td><td class="num">12</td><td class="num">12</td><td class="dif zero">—</td></tr>
+            <tr><td>31-100</td><td class="num">9</td><td class="num">8</td><td class="dif neg">−1</td></tr>
+            <tr><td>24F-45</td><td class="num">6</td><td class="num">6</td><td class="dif zero">—</td></tr>
+          </tbody>
+          <tfoot><tr><td>Total</td><td class="num">27</td><td class="num">26</td><td class="dif neg">−1</td></tr></tfoot>
+        </table>
+        <table>
+          <caption>Chatarra · kilogramos por material</caption>
+          <thead><tr><th scope="col">Material</th><th scope="col" class="num">Comprados</th><th scope="col" class="num">Contados</th><th scope="col" class="num">Dif.</th></tr></thead>
+          <tbody>
+            <tr><td>Cobre</td><td class="num">12,400 kg</td><td class="num">12,400 kg</td><td class="dif zero">—</td></tr>
+            <tr><td>Aluminio</td><td class="num">8,750 kg</td><td class="num">8,750 kg</td><td class="dif zero">—</td></tr>
+            <tr><td>Plomo</td><td class="num">84,500 kg</td><td class="num">80,200 kg</td><td class="dif neg">−4,300</td></tr>
+            <tr><td>Bronce</td><td class="num">3,100 kg</td><td class="num">3,100 kg</td><td class="dif zero">—</td></tr>
+          </tbody>
+          <tfoot><tr><td>Total</td><td class="num">108,750 kg</td><td class="num">104,450 kg</td><td class="dif neg">−4,300</td></tr></tfoot>
+        </table>
+        <div class="body">
+          <div class="help">
+            <span aria-hidden="true">▸</span>
+            <span>Como la rendición anterior se llevó todo, lo que debe haber es <b>lo comprado en este período</b>. Faltó 1 batería del 31-100 y 4,300 kg de plomo: eso es la diferencia que aparece arriba.</span>
+          </div>
+        </div>
+      </section>
+
+      <aside aria-label="Fondo de compras y qué cambia">
+        <section class="panel">
+          <div class="group">
+            <h2>Fondo de compras</h2>
+            <dl class="summary">
+              <div><dt>Saldo heredado</dt><dd>Bs 2.000,00</dd></div>
+              <div><dt>Compras del período (7)</dt><dd>− Bs 1.621,00</dd></div>
+              <div><dt>Fondo esperado</dt><dd>Bs 379,00</dd></div>
+              <div><dt>Fondo contado</dt><dd>Bs 375,00</dd></div>
+              <div class="total"><dt>Diferencia</dt><dd class="neg">− Bs 4,00</dd></div>
+            </dl>
+            <small style="display:block;margin-top:10px">Ese dinero vive en un sobre aparte: sólo sirve para comprar usadas y chatarra, y ninguna venta lo alimenta.</small>
+          </div>
+          <div class="group">
+            <h2>Si aceptás, esto queda así</h2>
+            <ul class="changes">
+              <li><span>Tu fondo de compras arranca con</span><strong>Bs 1.500,00</strong></li>
+              <li><span>Se lleva el Almacén</span><strong>Bs 375,00</strong></li>
+              <li><span>Usadas que se lleva</span><strong>26</strong></li>
+              <li><span>Chatarra que se lleva</span><strong>104,450 kg</strong></li>
+              <li><span>Queda en tu estantería</span><strong>cero</strong></li>
+            </ul>
+          </div>
+          <div class="group">
+            <h2>Lo que conviene revisar</h2>
+            <div class="help">
+              <span aria-hidden="true">▸</span>
+              <span>Si las 4,300 kg de plomo o la batería del 31-100 no coinciden con lo que tenías, <b>rechazá y explicá</b>. El conteo se vuelve a hacer con tu motivo a la vista.</span>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </div>
+  </div>
+</main>
+
+<div class="bar" role="region" aria-label="Decisión de la sucursal">
+  <div class="state">
+    <div class="chips">
+      <span class="tag short">Caja − Bs 35,00</span>
+      <span class="tag short">Compras − Bs 4,00</span>
+      <span class="tag short">Plomo − 4,300 kg</span>
+      <span class="tag">También se entrega el stock contado</span>
+    </div>
+    <div class="reason">
+      <label for="motivo">Motivo, si rechazás (obligatorio para rechazar)</label>
+      <textarea id="motivo" placeholder="Ej.: las 4,300 kg de plomo quedaron en el taller, no se las llevó nadie."></textarea>
+    </div>
+    <small id="nota-bloqueo">Las diferencias no impiden aceptar: quedan registradas. Aceptar cierra la rendición y libera la sucursal.</small>
+  </div>
+  <div class="action">
+    <button type="button">Rechazar</button>
+    <button class="primary" type="button" aria-describedby="nota-bloqueo">Aceptar la rendición</button>
+  </div>
+</div>
+
+<script>
+const tabs=[...document.querySelectorAll('[role=tab]')];
+function show(id){
+  tabs.forEach(t=>{
+    const on=t.getAttribute('aria-controls')===id;
+    t.setAttribute('aria-selected',on);
+    t.tabIndex=on?0:-1;
+  });
+  document.querySelectorAll('[role=tabpanel]').forEach(p=>{p.hidden=p.id!==id;});
+  document.querySelectorAll('.balances button').forEach(b=>{b.setAttribute('aria-pressed',b.dataset.goto===id);});
+}
+tabs.forEach(t=>t.addEventListener('click',()=>show(t.getAttribute('aria-controls'))));
+document.querySelectorAll('[data-goto]').forEach(b=>b.addEventListener('click',()=>show(b.dataset.goto)));
+show('panel-caja');
+</script>
+</html>

@@ -4,17 +4,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/auth"
 	"luson/api/internal/bootstrap"
 	"luson/api/internal/closings"
 	"luson/api/internal/config"
 	"luson/api/internal/pricing"
+	"luson/api/internal/purchases"
 	"luson/api/internal/sales"
 	"luson/api/internal/testpg"
 	"luson/api/internal/transfers"
@@ -24,11 +27,12 @@ import (
 // Without an admitted LUSON_TEST_PG_MANIFEST every test below fails closed at testpg.Open
 // and that is the expected local outcome.
 type env struct {
-	ctx    context.Context
-	pool   *pgxpool.Pool
-	store  *closings.Store
-	sales  *sales.Store
-	prices *pricing.Store
+	ctx       context.Context
+	pool      *pgxpool.Pool
+	store     *closings.Store
+	sales     *sales.Store
+	prices    *pricing.Store
+	purchases *purchases.Store
 }
 
 // serials numbers the batteries of the fixtures below, so one database never sees a
@@ -50,7 +54,8 @@ func fixture(t *testing.T) *env {
 	if bootstrap.Provision(ctx, p, credentials) != nil {
 		t.Fatal("test account provisioning failed")
 	}
-	e := &env{ctx: ctx, pool: p, store: closings.New(p), sales: sales.New(p), prices: pricing.New(p)}
+	e := &env{ctx: ctx, pool: p, store: closings.New(p), sales: sales.New(p), prices: pricing.New(p),
+		purchases: purchases.New(p)}
 	// The trial catalogue gives every variant a fictional quantity in every location, and
 	// the count sheet of an open settlement covers all of them. A settlement test needs
 	// two known rows, so the branch starts from a count sheet of its own.
@@ -274,6 +279,32 @@ func (e *env) closeFirstSettlement(t *testing.T, fund string) int64 {
 	return opened.ID
 }
 
+// livePeriod walks the branch to a settlement the warehouse still holds over a period that has
+// money of every source: one sale paid in cash and one by each electronic method, and one expense
+// the branch recorded before the cut. It is the state a read has to fill in from the ledgers.
+func (e *env) livePeriod(t *testing.T) closings.Closing {
+	t.Helper()
+	e.closeFirstSettlement(t, "500.00")
+	const qr = sales.PaymentMethod("qr")
+	e.sell(t, 1, 1, "100.00", sales.PaymentCash)
+	e.sell(t, 2, 1, "50.00", sales.PaymentCard)
+	e.sell(t, 1, 1, "20.00", sales.PaymentTransfer)
+	e.sell(t, 2, 1, "30.00", qr)
+	// The expense is recorded before the cut, because the ledger of the branch is closed while its
+	// settlement holds it: the period's only expense is the one already spent out of the till.
+	e.expense(t, 2, "12.50", "Flete del período")
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	e.countAll(t, opened.ID)
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("610.00", "0.00", "110.00")); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	return opened
+}
+
 // TestConfigureCommissionIsTheWarehouseOwn pins S6 rule 1: the rate is configured per
 // branch, only by the warehouse (the database refuses anything else with LC015), and a
 // branch without a configured rate has nothing to read.
@@ -329,6 +360,74 @@ func TestConfigureCommissionIsTheWarehouseOwn(t *testing.T) {
 	}
 }
 
+// TestCommissionsAreWhatThePanelReads pins S2 and S4 of the commission panel: the configured
+// commissions of every branch come back in one call, with the account that fixed each rate and
+// the moment it did, and a branch the warehouse never configured is absent instead of invented.
+func TestCommissionsAreWhatThePanelReads(t *testing.T) {
+	e := fixture(t)
+
+	// The panel of a fresh installation has nothing to show, never one entry per branch with
+	// no rate: a branch without a configuration is what blocks its settlement.
+	if _, err := e.pool.Exec(e.ctx, `DELETE FROM branch_settings`); err != nil {
+		t.Fatalf("the fixture settings could not be cleared: %v", err)
+	}
+	if _, err := e.pool.Exec(e.ctx, `UPDATE auth_accounts SET display_name='Almacén' WHERE id=1`); err != nil {
+		t.Fatalf("the fixture name could not be set: %v", err)
+	}
+	configured, err := e.store.Commissions(e.ctx, warehouse())
+	if err != nil || len(configured) != 0 {
+		t.Fatalf("no branch has a configured commission yet: %+v %v", configured, err)
+	}
+
+	for _, branch := range []struct {
+		id   int64
+		rate string
+	}{{2, "4.5"}, {3, "100.00"}} {
+		if _, err := e.store.ConfigureCommission(e.ctx, warehouse(), branch.id, closings.Percent(branch.rate)); err != nil {
+			t.Fatalf("the warehouse must configure branch %d: %v", branch.id, err)
+		}
+	}
+	configured, err = e.store.Commissions(e.ctx, warehouse())
+	if err != nil {
+		t.Fatalf("the warehouse must read the configured commissions: %v", err)
+	}
+	if len(configured) != 2 {
+		t.Fatalf("the panel reads one entry per configured branch: %+v", configured)
+	}
+	if configured[0].BranchID != 2 || configured[0].Rate != "4.50" ||
+		configured[1].BranchID != 3 || configured[1].Rate != "100.00" {
+		t.Fatalf("the configured rates are not what the warehouse wrote: %+v", configured)
+	}
+	// The audit the panel shows beside each rate: which account fixed it, and when.
+	if configured[0].UpdatedBy != "Almacén" || configured[0].UpdatedAt.IsZero() {
+		t.Fatalf("the commission does not say who fixed it and when: %+v", configured[0])
+	}
+
+	// Only the warehouse reads the panel: a branch reads no list of rates, and neither does
+	// an identity that is not an account at all.
+	_, err = e.store.Commissions(e.ctx, identity(2))
+	refused(t, err, closings.ErrForbidden)
+	_, err = e.store.Commissions(e.ctx, auth.Identity{})
+	refused(t, err, closings.ErrForbidden)
+
+	// A changed rate replaces the configured one: the list never grows a second entry.
+	if _, err := e.store.ConfigureCommission(e.ctx, warehouse(), 2, "5"); err != nil {
+		t.Fatalf("the warehouse must change a configured commission: %v", err)
+	}
+	configured, err = e.store.Commissions(e.ctx, warehouse())
+	if err != nil || len(configured) != 2 || configured[0].Rate != "5.00" {
+		t.Fatalf("the changed commission is not what the warehouse wrote: %+v %v", configured, err)
+	}
+
+	// A retired branch keeps no place in the panel: deleting it from the directory takes its rate
+	// out of the list instead of leaving an entry the panel cannot place.
+	e.retireBranch(t, 3)
+	configured, err = e.store.Commissions(e.ctx, warehouse())
+	if err != nil || len(configured) != 1 || configured[0].BranchID != 2 {
+		t.Fatalf("a retired branch is not a configured branch: %+v %v", configured, err)
+	}
+}
+
 // TestOpenFreezesThePeriodAndTheSnapshot pins rule 2: only the warehouse opens a settlement,
 // only for a branch that exists, is not retired and is not the warehouse itself; the period,
 // the cut instant, the inherited fund and the expected snapshot are the database's answers;
@@ -368,10 +467,12 @@ func TestOpenFreezesThePeriodAndTheSnapshot(t *testing.T) {
 	if len(opened.CountLines) != 2 {
 		t.Fatalf("the count sheet must cover the branch stock: %+v", opened.CountLines)
 	}
+	// The snapshot opens counted at its own number (S1): the sheet of a live settlement never
+	// states a missing quantity, so the warehouse only writes the lines that disagree.
 	for _, line := range opened.CountLines {
 		want := map[int64]int64{1: 10, 2: 4}[line.VariantID]
-		if line.ExpectedQuantity != want || line.CountedQuantity != nil {
-			t.Fatalf("variant %d: expected %d pending, got %+v", line.VariantID, want, line)
+		if line.ExpectedQuantity != want || line.CountedQuantity == nil || *line.CountedQuantity != want {
+			t.Fatalf("variant %d: expected %d counted at the open, got %+v", line.VariantID, want, line)
 		}
 		if line.Brand == "" || line.Model == "" || line.Polarity == "" || line.Capacity == "" {
 			t.Fatalf("the sheet must be legible by catalogue identity: %+v", line)
@@ -444,20 +545,21 @@ func TestCountUsesTheDatabaseSnapshot(t *testing.T) {
 	_, err = e.store.Count(e.ctx, warehouse(), 0, []closings.Counted{{VariantID: 1, Quantity: 7}})
 	refused(t, err, closings.ErrNotFound)
 
-	// The admin counts a seeded line and a variant the system did not have at all: the
-	// snapshot of the second one is zero, and it was never a caller value.
+	// The admin counts a seeded line and a variant the system did not have at all: the snapshot
+	// of the second one is zero, and it was never a caller value. The line it never names keeps
+	// the quantity the opener seeded into it (S1), so it is the agreement, not a pending duty.
 	counted, err := e.store.Count(e.ctx, warehouse(), opened.ID,
 		[]closings.Counted{{VariantID: 1, Quantity: 7}, {VariantID: 3, Quantity: 2}})
 	if err != nil {
 		t.Fatalf("the warehouse must record what it counted: %v", err)
 	}
-	if got := sheet(counted); got != "1:10:7,2:4:-,3:0:2" {
+	if got := sheet(counted); got != "1:10:7,2:4:4,3:0:2" {
 		t.Fatalf("the count sheet is not the snapshot plus the counted quantities: %q", got)
 	}
 
 	// A recount only changes what was counted, never the expected snapshot.
 	again, err := e.store.Count(e.ctx, warehouse(), opened.ID, []closings.Counted{{VariantID: 1, Quantity: 8}})
-	if err != nil || sheet(again) != "1:10:8,2:4:-,3:0:2" {
+	if err != nil || sheet(again) != "1:10:8,2:4:4,3:0:2" {
 		t.Fatalf("a recount must keep the snapshot: %q %v", sheet(again), err)
 	}
 
@@ -730,28 +832,19 @@ func TestClosurePersistsTheCommissionItOffered(t *testing.T) {
 	}
 }
 
-// TestProposeRefusesAnIncompleteCountOrNoRate pins the proposal's own refusals (rule 5 with
-// S4 and S6): a pending variant or an uncounted drawer blocks the offer by name instead of
-// creating a round the closure would refuse, and a branch without a configured rate opens
-// its settlement but cannot propose it.
-func TestProposeRefusesAnIncompleteCountOrNoRate(t *testing.T) {
+// TestProposeRefusesAnUndrawnDrawerOrNoRate pins the proposal's own refusals that the assumed
+// count leaves standing (rule 5 with S4 and S6): an uncounted drawer blocks the offer by name
+// instead of creating a round the closure would refuse, and a branch without a configured rate
+// opens its settlement but cannot propose it. The sheet is no longer one of them, because the
+// opener seeds it: the pending refusal is pinned on its own true footing below.
+func TestProposeRefusesAnUndrawnDrawerOrNoRate(t *testing.T) {
 	e := fixture(t)
 	opened, err := e.store.Open(e.ctx, warehouse(), 2)
 	if err != nil {
 		t.Fatalf("the settlement could not be opened: %v", err)
 	}
-	// A pending line blocks the offer and no round is written.
-	if _, err := e.store.Count(e.ctx, warehouse(), opened.ID, []closings.Counted{{VariantID: 1, Quantity: 10}}); err != nil {
-		t.Fatalf("the first line could not be counted: %v", err)
-	}
-	_, err = e.store.Propose(e.ctx, warehouse(), opened.ID)
-	var pending *closings.CountPending
-	if !errors.As(err, &pending) || pending.VariantID != 2 {
-		t.Fatalf("a pending variant must be named: %v", err)
-	}
-	refused(t, err, closings.ErrClosureRefused)
-	// The drawer must be counted too: a proposal states the cash it counted and the fund.
-	e.countAll(t, opened.ID)
+	// The drawer must be counted: a proposal states the cash it counted and the fund, and a
+	// draft that states the fund alone blocks it with no round written.
 	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID, closings.CashDraft{
 		ContributedCash: "0.00", ClosingCash: moneyPtr("10.00")}); err != nil {
 		t.Fatalf("the cash draft could not be saved: %v", err)
@@ -787,6 +880,88 @@ func TestProposeRefusesAnIncompleteCountOrNoRate(t *testing.T) {
 	proposed, err := e.store.Propose(e.ctx, warehouse(), third.ID)
 	if err != nil || proposed.CommissionRatePercent == nil || *proposed.CommissionRatePercent != "8.75" {
 		t.Fatalf("each branch freezes the rate it was configured with: %+v %v", proposed, err)
+	}
+}
+
+// TestProposeRefusesAPendingLineOfASheetWrittenBeforeTheSeeding pins the pending refusal for what
+// it now is (S1, S3): the opener seeds every line with the expected quantity, so no writer of this
+// version can leave a line pending and the guards survive as the safety net of a document written
+// before that seeding. The line is made pending by the same direct statement the raced proposal
+// uses, because that is the only way left to reach the state.
+func TestProposeRefusesAPendingLineOfASheetWrittenBeforeTheSeeding(t *testing.T) {
+	e := fixture(t)
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+	// The drawer is stated, so the sheet is the only fact that can refuse the offer.
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("100.00", "0.00", "20.00")); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	if _, err := e.pool.Exec(e.ctx, `UPDATE closing_count_lines SET counted_quantity=NULL
+ WHERE closing_id=$1 AND variant_id=2`, opened.ID); err != nil {
+		t.Fatalf("the seeded line could not be made pending again: %v", err)
+	}
+	_, err = e.store.Propose(e.ctx, warehouse(), opened.ID)
+	var pending *closings.CountPending
+	if !errors.As(err, &pending) || pending.VariantID != 2 {
+		t.Fatalf("a pending variant must be named: %v", err)
+	}
+	refused(t, err, closings.ErrClosureRefused)
+	if rounds := e.scalar(t, "SELECT count(*) FROM closing_proposals"); rounds != 0 {
+		t.Fatalf("a refused proposal must write nothing: %d rounds", rounds)
+	}
+	if state := e.text(t, "SELECT status FROM branch_closings WHERE id=$1", opened.ID); state != "open" {
+		t.Fatalf("a refused proposal must leave the settlement where it was: %q", state)
+	}
+	// Counting the one line lifts the guard and the very same settlement is offered.
+	if _, err := e.store.Count(e.ctx, warehouse(), opened.ID,
+		[]closings.Counted{{VariantID: 2, Quantity: 4}}); err != nil {
+		t.Fatalf("the pending line could not be counted: %v", err)
+	}
+	proposed, err := e.store.Propose(e.ctx, warehouse(), opened.ID)
+	if err != nil || proposed.Status != closings.StatusProposed || len(proposed.Rounds) != 1 {
+		t.Fatalf("the settlement must be proposable once the line is counted: %+v %v", proposed, err)
+	}
+}
+
+// TestProposeNeedsNoCountEdit pins the new default at the store level (S1, S3): a settlement is
+// opened, its drawer is drafted and it is proposed with no Count call at all, and the offer carries
+// the quantity the opener seeded for every line. Proposing therefore never asks the warehouse to
+// rewrite the sheet with what the system already had, and the document the branch decides states
+// no missing quantity.
+func TestProposeNeedsNoCountEdit(t *testing.T) {
+	e := fixture(t)
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("100.00", "0.00", "20.00")); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	proposed, err := e.store.Propose(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("a settlement whose drawer is stated must be proposable without a count edit: %v", err)
+	}
+	round := proposed.LatestRound()
+	if proposed.Status != closings.StatusProposed || round == nil || len(proposed.Rounds) != 1 {
+		t.Fatalf("the proposal must leave the settlement proposed with its round: %+v", proposed)
+	}
+	want := map[int64]int64{1: 10, 2: 4}
+	if len(round.Payload.CountLines) != len(want) {
+		t.Fatalf("the offer must state every seeded line: %+v", round.Payload.CountLines)
+	}
+	for _, line := range round.Payload.CountLines {
+		if line.ExpectedQuantity != want[line.VariantID] || line.CountedQuantity != line.ExpectedQuantity {
+			t.Fatalf("variant %d: the offer must carry the seeded quantity, got %+v", line.VariantID, line)
+		}
+	}
+	for _, line := range proposed.CountLines {
+		if line.CountedQuantity == nil || *line.CountedQuantity != want[line.VariantID] {
+			t.Fatalf("variant %d: no live sheet states a missing quantity, got %+v", line.VariantID, line)
+		}
 	}
 }
 
@@ -1219,6 +1394,194 @@ func sheet(closing closings.Closing) string {
 	return strings.Join(parts, ",")
 }
 
+// assertPeriodMoney pins the money of the period of livePeriod as a settlement publishes it:
+// 200.00 sold in all, of which 100.00 was collected in cash and the rest by card, transfer and QR
+// (50.00, 20.00 and 30.00), one expense of 12.50 and the 12.50% the fixture configures, which is
+// 25.00 of commission. The drawer identity follows from those facts alone: 500.00 inherited plus
+// 100.00 collected minus 12.50 spent is 587.50 of expected cash, and no electronic method enters
+// it (S2, S8, S13).
+func assertPeriodMoney(t *testing.T, closing closings.Closing, state string) {
+	t.Helper()
+	if closing.SalesTotal != "200.00" || closing.CashSales != "100.00" ||
+		closing.CashExpenses != "12.50" || closing.CardTotal != "50.00" ||
+		closing.TransferTotal != "20.00" || closing.QRTotal != "30.00" ||
+		closing.CommissionAmount != "25.00" {
+		t.Fatalf("a %s settlement must publish the money of its period: %+v", state, closing)
+	}
+	if closing.ExpectedCash != "587.50" {
+		t.Fatalf("a %s settlement must expect 500.00 + 100.00 - 12.50, got %q", state,
+			closing.ExpectedCash)
+	}
+}
+
+// TestOpenSettlementPublishesThePeriodOfItsWindow pins S1 and the first half of S3 on the read:
+// while the warehouse has not proposed, the six period columns of the row are drafts the database
+// never wrote, so the read publishes them derived from the same window the proposal will use
+// instead of repeating their zeros -- the drawer expectation of a period the branch did sell can
+// no longer read zero.
+func TestOpenSettlementPublishesThePeriodOfItsWindow(t *testing.T) {
+	e := fixture(t)
+	opened := e.livePeriod(t)
+
+	// The columns of the row are still the zeros the insert left: nothing was frozen by opening.
+	if stored := e.text(t, `SELECT sales_total::text||'/'||cash_sales::text||'/'||cash_expenses::text
+  ||'/'||card_total::text||'/'||transfer_total::text||'/'||qr_total::text||'/'||commission_amount::text
+ FROM branch_closings WHERE id=$1`, opened.ID); stored != "0.00/0.00/0.00/0.00/0.00/0.00/0.00" {
+		t.Fatalf("an open row holds no frozen offer: %q", stored)
+	}
+
+	live, err := e.store.Read(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be read: %v", err)
+	}
+	if live.Status != closings.StatusOpen || live.CommissionRatePercent != nil {
+		t.Fatalf("nothing is frozen before the proposal: %+v", live)
+	}
+	assertPeriodMoney(t, live, "open")
+	// The drawer is the number the admin counted against the derived expectation, and the
+	// commission is reported beside it, never subtracted (S9).
+	if live.CashDifference == nil || string(*live.CashDifference) != "22.50" ||
+		live.TakenCash == nil || string(*live.TakenCash) != "500.00" {
+		t.Fatalf("the derived drawer must follow the derived period: %+v", live)
+	}
+	// The branch reads the same document before the proposal: one row, one period (S3).
+	branch, err := e.store.Read(e.ctx, identity(2), opened.ID)
+	if err != nil || branch.ExpectedCash != live.ExpectedCash ||
+		branch.SalesTotal != live.SalesTotal || branch.CashSales != live.CashSales ||
+		branch.CashExpenses != live.CashExpenses || branch.CommissionAmount != live.CommissionAmount {
+		t.Fatalf("both surfaces must read the period of the same ledgers: %+v %v", branch, err)
+	}
+}
+
+// TestProposalFreezesThePeriodTheDraftPublished pins the second half of S3 -- the discrepancy the
+// operator reported -- and S4: the numbers the warehouse reads while the settlement is open are
+// exactly the ones the proposal freezes, so the two surfaces agree before and after proposing; and
+// a closed settlement keeps publishing the frozen columns even after the configured rate changes,
+// because what the branch signed is history.
+func TestProposalFreezesThePeriodTheDraftPublished(t *testing.T) {
+	e := fixture(t)
+	opened := e.livePeriod(t)
+	drafted, err := e.store.Read(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the open settlement could not be read: %v", err)
+	}
+	assertPeriodMoney(t, drafted, "open")
+
+	proposed, err := e.store.Propose(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	if proposed.Status != closings.StatusProposed || proposed.CommissionRatePercent == nil ||
+		*proposed.CommissionRatePercent != "12.50" {
+		t.Fatalf("the proposal must freeze the configured rate: %+v", proposed)
+	}
+	// The frozen row states the very numbers the draft derived, and so does the offer the branch
+	// is asked to accept.
+	assertPeriodMoney(t, proposed, "proposed")
+	offer := proposed.LatestRound().Payload
+	if offer.SalesTotal != drafted.SalesTotal || offer.CashSales != drafted.CashSales ||
+		offer.CashExpenses != drafted.CashExpenses || offer.CardTotal != drafted.CardTotal ||
+		offer.TransferTotal != drafted.TransferTotal || offer.QRTotal != drafted.QRTotal ||
+		offer.CommissionAmount != drafted.CommissionAmount {
+		t.Fatalf("the offer must state the period the draft published: %+v %+v", offer, drafted)
+	}
+
+	closed, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, "")
+	if err != nil || closed.Status != closings.StatusClosed {
+		t.Fatalf("the branch must accept the offer: %+v %v", closed, err)
+	}
+	assertPeriodMoney(t, closed, "closed")
+
+	// S4: the settled period is the history its branch signed. A later rate would pay 198.00 on the
+	// same 200.00, and the closed settlement keeps the 25.00 it froze, with the rate it froze.
+	if _, err := e.store.ConfigureCommission(e.ctx, warehouse(), 2, "99.00"); err != nil {
+		t.Fatalf("the configured rate could not be changed: %v", err)
+	}
+	if settings, err := e.store.ReadSettings(e.ctx, warehouse(), 2); err != nil ||
+		settings.CommissionRatePercent != "99.00" {
+		t.Fatalf("the branch must be configured with the new rate: %+v %v", settings, err)
+	}
+	if naive, err := closings.Commission("200.00", "99.00"); err != nil || naive != "198.00" {
+		t.Fatalf("the changed rate must be a different commission, not the same one: %q %v", naive, err)
+	}
+	after, err := e.store.Read(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the closed settlement could not be read again: %v", err)
+	}
+	assertPeriodMoney(t, after, "closed")
+	if after.CommissionRatePercent == nil || *after.CommissionRatePercent != "12.50" {
+		t.Fatalf("a closed settlement keeps the rate it signed: %+v", after)
+	}
+	if frozen := e.text(t, `SELECT commission_amount::text||'/'||commission_rate_percent::text
+ FROM branch_closings WHERE id=$1`, opened.ID); frozen != "25.00/12.50" {
+		t.Fatalf("a closed row must keep the offer it frozen: %q", frozen)
+	}
+}
+
+// TestListPublishesTheOpenPeriodOfTheDocument pins that the history of a branch publishes, row by
+// row, the same derived period as the document it summarises: a list row that disagreed with its
+// own settlement would be a defect of the surface and not a cheaper read (S1, S3).
+func TestListPublishesTheOpenPeriodOfTheDocument(t *testing.T) {
+	e := fixture(t)
+	opened := e.livePeriod(t)
+
+	page, err := e.store.List(e.ctx, warehouse(), 2, 1, 25)
+	if err != nil {
+		t.Fatalf("the history of the branch could not be read: %v", err)
+	}
+	if len(page.Closings) != 2 || page.Closings[0].ID != opened.ID ||
+		page.Closings[0].Status != closings.StatusOpen {
+		t.Fatalf("the live settlement must be the newest row of the history: %+v", page.Closings)
+	}
+	row := page.Closings[0]
+	assertPeriodMoney(t, row, "listed open")
+	document, err := e.store.Read(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be read: %v", err)
+	}
+	if row.SalesTotal != document.SalesTotal || row.CashSales != document.CashSales ||
+		row.CashExpenses != document.CashExpenses || row.CardTotal != document.CardTotal ||
+		row.TransferTotal != document.TransferTotal || row.QRTotal != document.QRTotal ||
+		row.CommissionAmount != document.CommissionAmount || row.ExpectedCash != document.ExpectedCash {
+		t.Fatalf("a list row must publish the period of its document: %+v %+v", row, document)
+	}
+}
+
+// TestListDerivesTheOpenPeriodAfterItsCursorIsClosed pins the deadlock a page of one connection
+// exposes: a derivation issued inside the loop that still holds the cursor of the same pool waits
+// for a connection the cursor itself holds, so the list endpoint never answers. The store reads
+// every row of the page first and derives afterwards, so one connection is enough, and the open
+// row still publishes the money of its period (S1, S3).
+func TestListDerivesTheOpenPeriodAfterItsCursorIsClosed(t *testing.T) {
+	e := fixture(t)
+	opened := e.livePeriod(t)
+	// A pool of a single connection: the page holds a row cursor on it, so a derivation that ran
+	// while that cursor was open would have nothing left to run on.
+	config := e.pool.Config().Copy()
+	config.MaxConns = 1
+	pool, err := pgxpool.NewWithConfig(e.ctx, config)
+	if err != nil {
+		t.Fatalf("the single-connection pool could not be built: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	// A short deadline, so the regression fails the test instead of hanging the suite.
+	ctx, cancel := context.WithTimeout(e.ctx, 5*time.Second)
+	defer cancel()
+	page, err := closings.New(pool).List(ctx, warehouse(), 2, 1, 25)
+	if err != nil {
+		t.Fatalf("a page must be read on one connection: %v", err)
+	}
+	if len(page.Closings) != 2 || page.Closings[0].ID != opened.ID ||
+		page.Closings[0].Status != closings.StatusOpen {
+		t.Fatalf("the live settlement must be the newest row of the history: %+v", page.Closings)
+	}
+	// The derivation still runs after the cursor is closed: dropping it would make the deadlock
+	// disappear by publishing the zeros nobody wrote.
+	if row := page.Closings[0]; row.CashSales != "100.00" || row.ExpectedCash != "587.50" {
+		t.Fatalf("an open row must publish the money of its period: %+v", row)
+	}
+}
+
 // TestListIsTheBranchOwnHistory pins the history read: one branch at a time, newest cut instant
 // first, with the same page contract as the rest of the installation, and with the very same
 // projection the single read publishes, so a row and its document can never disagree.
@@ -1560,10 +1923,11 @@ func TestReadPublishesTheExpensesOfItsWindow(t *testing.T) {
 	}
 	assertExpenses(opened)
 
-	// The list is the ledger, not the total: the total is the offer's, so it is still zero while
-	// the warehouse holds the settlement, and the proposal freezes it.
-	if opened.CashExpenses != "0.00" {
-		t.Fatalf("a held settlement states no period total: %q", opened.CashExpenses)
+	// The list is the ledger, and the total of a settlement the warehouse still holds is derived
+	// from it (S1), so the admin reads the exact amount the proposal is about to freeze instead of a
+	// zero that would understate the drawer; the proposal then freezes that same 55.50.
+	if opened.CashExpenses != "55.50" || opened.ExpectedCash != "44.50" {
+		t.Fatalf("a held settlement publishes the total of its own ledger: %+v", opened)
 	}
 	e.countAll(t, opened.ID)
 	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
@@ -2365,4 +2729,603 @@ func TestCorrectionFundLandsOnce(t *testing.T) {
 	if opening := e.text(t, "SELECT opening_cash::text FROM branch_closings WHERE id=$1", next.ID); opening != "60.00" {
 		t.Fatalf("the started period must keep its opening cash: %q", opening)
 	}
+}
+
+// purchase registers one real purchase of branch 2 through the purchase store, paid in cash from
+// the purchase fund, so the settlement reads the documents exactly as the branch wrote them. One
+// used battery at the price the test states makes the total and the cash of the document the same
+// number, which is what the envelope of the settlement has to sum.
+func (e *env) purchase(t *testing.T, key, cash string) purchases.Document {
+	t.Helper()
+	document, err := e.purchases.Create(e.ctx, identity(2), purchases.CreateInput{
+		OperationKey: key,
+		UsedLines:    []purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 1, UnitPrice: purchases.Money(cash)}},
+		PaidCash:     purchases.Money(cash),
+		PaidTransfer: "0.00",
+	})
+	if err != nil {
+		t.Fatalf("the purchase %q could not be registered: %v", key, err)
+	}
+	return document
+}
+
+// TestPurchaseFundDerivesOpeningPurchasesAndDifference pins S1, S3, S5 and S11 at the store: the
+// envelope of one settlement opens with the amount the previous closure left in it, its purchases
+// are the documents of its own window net of their counter-documents, its expectation follows from
+// those two numbers, and its difference is published only once the envelope was counted. The
+// envelope is drafted through the drawer draft, becomes the offer when the settlement is proposed
+// and is refused afterwards, and the amount left behind is what opens the next period.
+func TestPurchaseFundDerivesOpeningPurchasesAndDifference(t *testing.T) {
+	e := fixture(t)
+	// The first settlement of the branch closes with an envelope of its own: the drawer is settled
+	// as every other test settles it, and the purchase fund is counted and left at 300.00.
+	first, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the first settlement could not be opened: %v", err)
+	}
+	e.countAll(t, first.ID)
+	zero, contribution, envelope := closings.Money("0.00"), closings.Money("500.00"), closings.Money("300.00")
+	drafted, err := e.store.SaveCash(e.ctx, warehouse(), first.ID, closings.CashDraft{
+		CountedCash: &zero, ContributedCash: contribution, ClosingCash: &contribution,
+		Observation: "arranque de la sucursal", PurchaseFundCounted: &envelope,
+		PurchaseFundCash: &envelope,
+	})
+	if err != nil {
+		t.Fatalf("the draft must state the purchase fund: %v", err)
+	}
+	// Before the proposal the envelope is a draft, and its difference is derived against the
+	// expectation of its own window: no previous closure and no purchases, so 0.00 of expectation.
+	if drafted.PurchaseFundOpening != "0.00" || drafted.PurchasesTotal != "0.00" ||
+		drafted.PurchasesCash != "0.00" || drafted.PurchaseFundExpected != "0.00" ||
+		drafted.PurchaseFundCounted == nil || *drafted.PurchaseFundCounted != "300.00" ||
+		drafted.PurchaseFundDifference == nil || *drafted.PurchaseFundDifference != "300.00" ||
+		drafted.PurchaseFundCash == nil || *drafted.PurchaseFundCash != "300.00" {
+		t.Fatalf("the envelope of a first settlement is not derived: %+v", drafted)
+	}
+	// The drawer is untouched by the second envelope: its three identities are still its own.
+	if drafted.ExpectedCash != "0.00" || *drafted.CashDifference != "0.00" ||
+		*drafted.TakenCash != "0.00" || drafted.ClosingCash == nil || *drafted.ClosingCash != "500.00" {
+		t.Fatalf("the purchase fund must not move the drawer: %+v", drafted)
+	}
+	if _, err := e.store.Propose(e.ctx, warehouse(), first.ID); err != nil {
+		t.Fatalf("the first settlement could not be proposed: %v", err)
+	}
+	closed, err := e.store.Decide(e.ctx, identity(2), first.ID, closings.DecisionAccepted, "")
+	if err != nil {
+		t.Fatalf("the branch must accept the first settlement: %v", err)
+	}
+	if closed.PurchaseFundCounted == nil || *closed.PurchaseFundCounted != "300.00" ||
+		closed.PurchaseFundCash == nil || *closed.PurchaseFundCash != "300.00" {
+		t.Fatalf("the closure must keep the envelope of the offer: %+v", closed)
+	}
+
+	// The branch buys inside the period: two documents and the counter-document of the first one,
+	// which is stored with its negative amounts and therefore subtracts from both sums (S3, S11).
+	charged := e.purchase(t, "closings-fund-period-01", "120.50")
+	e.purchase(t, "closings-fund-period-02", "50.00")
+	if _, err := e.purchases.Reverse(e.ctx, identity(2), charged.ID, "closings-fund-reverse-01",
+		"la batería no servía"); err != nil {
+		t.Fatalf("the counter-document could not be registered: %v", err)
+	}
+
+	// The next settlement opens with the amount the previous closure left and states the purchases
+	// of its own window: 120.50 - 120.50 + 50.00 of cash, and 250.00 of expectation.
+	second, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the second settlement could not be opened: %v", err)
+	}
+	e.countAll(t, second.ID)
+	read, err := e.store.Read(e.ctx, warehouse(), second.ID)
+	if err != nil {
+		t.Fatalf("the second settlement could not be read: %v", err)
+	}
+	if read.PurchaseFundOpening != "300.00" || read.PurchasesTotal != "50.00" ||
+		read.PurchasesCash != "50.00" || read.PurchaseFundExpected != "250.00" {
+		t.Fatalf("the envelope of the period is not the one its own documents state: %+v", read)
+	}
+	if read.PurchaseFundCounted != nil || read.PurchaseFundDifference != nil ||
+		read.PurchaseFundCash != nil {
+		t.Fatalf("an envelope nobody counted states no count, no difference and no new amount: %+v", read)
+	}
+	if read.OpeningCash != "500.00" {
+		t.Fatalf("the drawer must still inherit its own fund: %q", read.OpeningCash)
+	}
+
+	// The envelope is drafted through the drawer draft, and the new amount is not capped by what was
+	// counted: the warehouse brings money from outside the branch (S5, S6).
+	drafter, err := e.store.SaveCash(e.ctx, warehouse(), second.ID, closings.CashDraft{
+		CountedCash: moneyPtr("500.00"), ContributedCash: "0.00", ClosingCash: moneyPtr("100.00"),
+		Observation: "contado en persona", PurchaseFundCounted: moneyPtr("240.00"),
+		PurchaseFundCash: moneyPtr("400.00"),
+	})
+	if err != nil {
+		t.Fatalf("the drawer draft must state the envelope: %v", err)
+	}
+	if drafter.PurchaseFundCounted == nil || *drafter.PurchaseFundCounted != "240.00" ||
+		drafter.PurchaseFundDifference == nil || *drafter.PurchaseFundDifference != "-10.00" ||
+		drafter.PurchaseFundCash == nil || *drafter.PurchaseFundCash != "400.00" ||
+		drafter.PurchaseFundExpected != "250.00" {
+		t.Fatalf("the difference of the envelope is the count against its expectation: %+v", drafter)
+	}
+
+	// Proposing turns the draft into the offer, and the round states the envelope the branch decides.
+	proposed, err := e.store.Propose(e.ctx, warehouse(), second.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	round := proposed.LatestRound()
+	if proposed.PurchaseFundCounted == nil || *proposed.PurchaseFundCounted != "240.00" ||
+		proposed.PurchaseFundCash == nil || *proposed.PurchaseFundCash != "400.00" || round == nil ||
+		round.Payload.PurchaseFundCounted == nil || *round.Payload.PurchaseFundCounted != "240.00" ||
+		round.Payload.PurchaseFundCash == nil || *round.Payload.PurchaseFundCash != "400.00" {
+		t.Fatalf("the proposal must offer the envelope it froze: %+v", proposed)
+	}
+	// Nothing changes the envelope after the offer: the draft is closed and the database refuses a
+	// write that would move it with the state machine.
+	_, err = e.store.SaveCash(e.ctx, warehouse(), second.ID, closings.CashDraft{
+		CountedCash: moneyPtr("500.00"), ContributedCash: "0.00", ClosingCash: moneyPtr("100.00"),
+		PurchaseFundCounted: moneyPtr("1.00"), PurchaseFundCash: moneyPtr("1.00"),
+	})
+	refused(t, err, closings.ErrStateConflict)
+	var database *pgconn.PgError
+	_, err = e.pool.Exec(e.ctx, `UPDATE branch_closings
+ SET status='closed',purchase_fund_cash=999.00 WHERE id=$1`, second.ID)
+	if !errors.As(err, &database) || database.Code != "LC005" {
+		t.Fatalf("the database must refuse an envelope that moves with the closure: %v", err)
+	}
+	if stored := e.text(t, `SELECT coalesce(purchase_fund_cash::text,'')||'/'||coalesce(purchase_fund_counted::text,'')
+ FROM branch_closings WHERE id=$1`, second.ID); stored != "400.00/240.00" {
+		t.Fatalf("a refused write must leave the envelope as it was: %q", stored)
+	}
+	accepted, err := e.store.Decide(e.ctx, identity(2), second.ID, closings.DecisionAccepted, "")
+	if err != nil {
+		t.Fatalf("the branch must accept the offer: %v", err)
+	}
+	if accepted.Status != closings.StatusClosed || accepted.PurchaseFundCounted == nil ||
+		*accepted.PurchaseFundCounted != "240.00" || accepted.PurchaseFundCash == nil ||
+		*accepted.PurchaseFundCash != "400.00" {
+		t.Fatalf("the closed settlement must keep the envelope it offered: %+v", accepted)
+	}
+
+	// What the warehouse left opens the next period, and a period with no purchases of its own
+	// reports zero and no difference at all.
+	third, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the third settlement could not be opened: %v", err)
+	}
+	empty, err := e.store.Read(e.ctx, warehouse(), third.ID)
+	if err != nil {
+		t.Fatalf("the third settlement could not be read: %v", err)
+	}
+	if empty.PurchaseFundOpening != "400.00" || empty.PurchasesTotal != "0.00" ||
+		empty.PurchasesCash != "0.00" || empty.PurchaseFundExpected != "400.00" {
+		t.Fatalf("the amount left behind opens the next period: %+v", empty)
+	}
+	if empty.PurchaseFundCounted != nil || empty.PurchaseFundDifference != nil {
+		t.Fatalf("a period with no purchases and no count states no difference: %+v", empty)
+	}
+	// A history row reads its own predecessor and never the envelope of a later closure: the first
+	// settlement of the branch has none and the second one inherited 300.00, whatever closed after
+	// them.
+	firstAgain, err := e.store.Read(e.ctx, warehouse(), first.ID)
+	if err != nil {
+		t.Fatalf("the first settlement could not be read again: %v", err)
+	}
+	if firstAgain.PurchaseFundOpening != "0.00" || firstAgain.PurchasesTotal != "0.00" ||
+		firstAgain.PurchaseFundExpected != "0.00" {
+		t.Fatalf("a history row must read its own predecessor: %+v", firstAgain)
+	}
+	secondAgain, err := e.store.Read(e.ctx, warehouse(), second.ID)
+	if err != nil {
+		t.Fatalf("the second settlement could not be read again: %v", err)
+	}
+	if secondAgain.PurchaseFundOpening != "300.00" || secondAgain.PurchasesCash != "50.00" ||
+		secondAgain.PurchaseFundExpected != "250.00" {
+		t.Fatalf("the second settlement must keep the envelope of its own period: %+v", secondAgain)
+	}
+}
+
+// TestPurchaseFundKeepsTheSignOfANegativeNet pins S3 and S11 where the sign is the answer: a window
+// that spent more than it inherited reports a negative expectation, and a window whose counter-document
+// is larger than its purchases gives money back, so both sums are negative and the expectation that
+// follows is larger than the inheritance. Both are read, never refused as an outage.
+func TestPurchaseFundKeepsTheSignOfANegativeNet(t *testing.T) {
+	e := fixture(t)
+	// The first settlement declares no envelope, so nothing caps what the second window spends.
+	e.closeFirstSettlement(t, "500.00")
+	bought := e.purchase(t, "closings-fund-negative-01", "120.50")
+	second, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the second settlement could not be opened: %v", err)
+	}
+	short, err := e.store.Read(e.ctx, warehouse(), second.ID)
+	if err != nil {
+		t.Fatalf("a window that spent more than it inherited must be readable: %v", err)
+	}
+	// 0.00 inherited minus 120.50 of purchases: a shortage states its negative expectation.
+	if short.PurchaseFundOpening != "0.00" || short.PurchasesCash != "120.50" ||
+		short.PurchaseFundExpected != "-120.50" {
+		t.Fatalf("an envelope that spent more than it inherited is short: %+v", short)
+	}
+	// The closure leaves 300.00 in the envelope, which is what the next period inherits.
+	e.countAll(t, second.ID)
+	zero, contribution, left := closings.Money("0.00"), closings.Money("500.00"), closings.Money("300.00")
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), second.ID, closings.CashDraft{
+		CountedCash: &zero, ContributedCash: contribution, ClosingCash: &contribution,
+		PurchaseFundCash: &left,
+	}); err != nil {
+		t.Fatalf("the second cash draft could not be saved: %v", err)
+	}
+	if _, err := e.store.Propose(e.ctx, warehouse(), second.ID); err != nil {
+		t.Fatalf("the second settlement could not be proposed: %v", err)
+	}
+	if _, err := e.store.Decide(e.ctx, identity(2), second.ID, closings.DecisionAccepted, ""); err != nil {
+		t.Fatalf("the branch must accept the second settlement: %v", err)
+	}
+	// The branch returns that battery once its period is closed, so the counter-document is the only
+	// document of the new window and both sums are negative by construction (S3, S11).
+	if _, err := e.purchases.Reverse(e.ctx, identity(2), bought.ID,
+		"closings-fund-negative-reverse", "la batería no servía"); err != nil {
+		t.Fatalf("the counter-document could not be registered: %v", err)
+	}
+	third, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the third settlement could not be opened: %v", err)
+	}
+	read, err := e.store.Read(e.ctx, warehouse(), third.ID)
+	if err != nil {
+		t.Fatalf("a window net of counter-documents must stay readable: %v", err)
+	}
+	// 300.00 inherited plus the 120.50 the period gave back: the expectation follows the signed net.
+	if read.PurchasesTotal != "-120.50" || read.PurchasesCash != "-120.50" ||
+		read.PurchaseFundOpening != "300.00" || read.PurchaseFundExpected != "420.50" {
+		t.Fatalf("the expectation must follow the signed purchases: %+v", read)
+	}
+}
+
+// TestPurchaseFundDifferenceDoesNotBlockButAPendingCountStillDoes pins the informational character
+// of the envelope's difference (S8, S5): a fund counted below its expectation never blocks the
+// proposal, exactly like the cash difference, while a pending line of the count sheet still does.
+func TestPurchaseFundDifferenceDoesNotBlockButAPendingCountStillDoes(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	e.countAll(t, opened.ID)
+	// The envelope is counted short: 20.00 against an expectation of 0.00, because the previous
+	// closure left no purchase fund and the period bought nothing.
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID, closings.CashDraft{
+		CountedCash: moneyPtr("500.00"), ContributedCash: "0.00", ClosingCash: moneyPtr("100.00"),
+		PurchaseFundCounted: moneyPtr("20.00"), PurchaseFundCash: moneyPtr("20.00"),
+	}); err != nil {
+		t.Fatalf("the envelope must be draftable: %v", err)
+	}
+	// A pending line still refuses the offer, and the envelope has no part in that refusal.
+	if _, err := e.pool.Exec(e.ctx, `UPDATE closing_count_lines SET counted_quantity=NULL
+ WHERE closing_id=$1 AND variant_id=2`, opened.ID); err != nil {
+		t.Fatalf("the seeded line could not be made pending again: %v", err)
+	}
+	_, err = e.store.Propose(e.ctx, warehouse(), opened.ID)
+	var pending *closings.CountPending
+	if !errors.As(err, &pending) || pending.VariantID != 2 {
+		t.Fatalf("a pending variant must still refuse the offer: %v", err)
+	}
+	refused(t, err, closings.ErrClosureRefused)
+	// The same settlement, with the line counted, is offered with the difference of the envelope
+	// published and unblocking.
+	if _, err := e.store.Count(e.ctx, warehouse(), opened.ID,
+		[]closings.Counted{{VariantID: 2, Quantity: 4}}); err != nil {
+		t.Fatalf("the pending line could not be counted: %v", err)
+	}
+	proposed, err := e.store.Propose(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("a fund difference must never block the proposal: %v", err)
+	}
+	if proposed.PurchaseFundCounted == nil || *proposed.PurchaseFundCounted != "20.00" ||
+		proposed.PurchaseFundDifference == nil || *proposed.PurchaseFundDifference != "20.00" ||
+		proposed.PurchaseFundExpected != "0.00" {
+		t.Fatalf("the difference of the envelope must be published with its sign: %+v", proposed)
+	}
+	// The branch accepts it: the difference is reported, never a refusal, and the drawer keeps its
+	// own identities untouched by the second envelope.
+	closed, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, "")
+	if err != nil || closed.Status != closings.StatusClosed ||
+		closed.PurchaseFundDifference == nil || *closed.PurchaseFundDifference != "20.00" ||
+		*closed.CashDifference != "0.00" || *closed.TakenCash != "400.00" {
+		t.Fatalf("a difference of the envelope must not block the closure: %+v %v", closed, err)
+	}
+}
+
+// purchaseLines registers one purchase of branch 2 with the lines the test states, paid in cash for
+// the amount it states -- which is the sum of the line amounts the document derives -- so a fixture
+// writes the documents the branch really writes, scrap and used lines alike.
+func (e *env) purchaseLines(t *testing.T, key, cash string,
+	used []purchases.UsedLineInput, scrap []purchases.ScrapLineInput) purchases.Document {
+	t.Helper()
+	document, err := e.purchases.Create(e.ctx, identity(2), purchases.CreateInput{
+		OperationKey: key,
+		UsedLines:    used,
+		ScrapLines:   scrap,
+		PaidCash:     purchases.Money(cash),
+		PaidTransfer: "0.00",
+	})
+	if err != nil {
+		t.Fatalf("the purchase %q could not be registered: %v", key, err)
+	}
+	return document
+}
+
+// materialSheet is one settlement's sheet as a value, so a test proves the whole published shape with
+// one comparison: the kind, the key, the unit, the expected quantity, the counted one and the two
+// derived numbers, line by line in the order the document publishes them.
+func materialSheet(t *testing.T, closing closings.Closing) []string {
+	t.Helper()
+	sheet := make([]string, 0, len(closing.MaterialLines))
+	for _, line := range closing.MaterialLines {
+		key := ""
+		switch {
+		case line.Model != nil:
+			key = *line.Model
+		case line.MaterialID != nil:
+			key = fmt.Sprintf("%d/%s", *line.MaterialID, *line.Material)
+		}
+		sheet = append(sheet, fmt.Sprintf("%s:%s:%s:%s:%s:%s:%s", line.Kind, key, line.Unit,
+			line.Expected, optionalQuantity(line.Counted), optionalDifference(line.Difference),
+			optionalQuantity(line.Delivered)))
+	}
+	return sheet
+}
+
+// optionalQuantity renders a quantity that may still be pending, which is exactly the JSON null of
+// the contract.
+func optionalQuantity(quantity *closings.Quantity) string {
+	if quantity == nil {
+		return "-"
+	}
+	return string(*quantity)
+}
+
+// optionalDifference renders a difference that may still be unknown.
+func optionalDifference(difference *closings.SignedQuantity) string {
+	if difference == nil {
+		return "-"
+	}
+	return difference.String()
+}
+
+// TestMaterialSheetIsTheThirdAccountOfTheDocument pins S7 and S8 at the store: the sheet of a
+// settlement is what its period bought -- the sum of the used quantity per model and of the kilos per
+// material of the purchases of its own window -- against what the warehouse counted, in the order the
+// document publishes (the used lines by model, then the scrap ones by material id), with the
+// difference of every counted line and the quantity that goes to the warehouse. A line nobody counted
+// stays pending and states no difference and no delivery, and it blocks nothing: the settlement closes
+// with it and keeps exactly the count it signed.
+func TestMaterialSheetIsTheThirdAccountOfTheDocument(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	// The period buys two used models in one document and two materials in another: 6 + 4 units and
+	// 12.500 + 4.250 kilograms, which is what the shelf is expected to hold at the cut.
+	e.purchaseLines(t, "closings-materials-used-01", "80.00", []purchases.UsedLineInput{
+		{Model: "NS60ZL", Quantity: 6, UnitPrice: "10.00"},
+		{Model: "12N6,5_3B", Quantity: 4, UnitPrice: "5.00"},
+	}, nil)
+	e.purchaseLines(t, "closings-materials-scrap-01", "33.50", nil, []purchases.ScrapLineInput{
+		{MaterialID: 1, Kg: "12.500", PricePerKg: "2.00"},
+		{MaterialID: 3, Kg: "4.250", PricePerKg: "2.00"},
+	})
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+	e.countAll(t, opened.ID)
+	read, err := e.store.Read(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be read: %v", err)
+	}
+	// The expected quantity is the period's own purchases, the order is the document's, and a line the
+	// warehouse has not counted states a count, a difference and a delivery of null.
+	want := []string{
+		"used:12N6,5_3B:unit:4:-:-:-",
+		"used:NS60ZL:unit:6:-:-:-",
+		"scrap:1/Cobre:kg:12.500:-:-:-",
+		"scrap:3/Plomo:kg:4.250:-:-:-",
+	}
+	if got := materialSheet(t, read); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("the sheet must be the purchases of the period, got %v want %v", got, want)
+	}
+	// The history publishes the same sheet: one derivation for the document and its rows (S8).
+	page, err := e.store.List(e.ctx, warehouse(), 2, 1, 25)
+	if err != nil || len(page.Closings) != 2 {
+		t.Fatalf("the history could not be read: %+v %v", page, err)
+	}
+	if got := materialSheet(t, page.Closings[0]); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("a history row must publish the sheet of its own document, got %v want %v", got, want)
+	}
+
+	// The warehouse counts: one model short, one exactly, one material over, and the lead left
+	// pending. The difference is informed with its sign and the delivery is everything counted (S8, S9).
+	counted, err := e.store.CountMaterials(e.ctx, warehouse(), read.ID, []closings.MaterialCounted{
+		{Kind: closings.MaterialKindUsed, Model: "12N6,5_3B", Quantity: "3"},
+		{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "6"},
+		{Kind: closings.MaterialKindScrap, MaterialID: 1, Quantity: "13.500"},
+	})
+	if err != nil {
+		t.Fatalf("the material sheet could not be counted: %v", err)
+	}
+	want = []string{
+		"used:12N6,5_3B:unit:4:3:-1:3",
+		"used:NS60ZL:unit:6:6:0:6",
+		"scrap:1/Cobre:kg:12.500:13.500:1.000:13.500",
+		"scrap:3/Plomo:kg:4.250:-:-:-",
+	}
+	if got := materialSheet(t, counted); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("the counted sheet is not the one the warehouse stated, got %v want %v", got, want)
+	}
+	// The same request stated twice leaves the same sheet: counting this sheet is idempotent.
+	again, err := e.store.CountMaterials(e.ctx, warehouse(), read.ID, []closings.MaterialCounted{
+		{Kind: closings.MaterialKindScrap, MaterialID: 1, Quantity: "13.500"},
+	})
+	if err != nil || strings.Join(materialSheet(t, again), ",") != strings.Join(want, ",") {
+		t.Fatalf("the same count twice must leave the same sheet: %v %v", materialSheet(t, again), err)
+	}
+	// The pending lead line blocks nothing: the settlement is proposed and closed with it, and the
+	// closure publishes exactly the counts the branch signed (S9).
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), read.ID,
+		draft("500.00", "0.00", "100.00")); err != nil {
+		t.Fatalf("the drawer draft could not be saved: %v", err)
+	}
+	if _, err := e.store.Propose(e.ctx, warehouse(), read.ID); err != nil {
+		t.Fatalf("a pending material line must never block the proposal: %v", err)
+	}
+	closed, err := e.store.Decide(e.ctx, identity(2), read.ID, closings.DecisionAccepted, "")
+	if err != nil || closed.Status != closings.StatusClosed {
+		t.Fatalf("the branch must accept the settlement: %+v %v", closed, err)
+	}
+	if got := materialSheet(t, closed); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("the closure must keep the sheet it was offered, got %v want %v", got, want)
+	}
+	// A closed settlement's sheet never moves, and the store refuses the write by its own state.
+	refused(t, func() error {
+		_, err := e.store.CountMaterials(e.ctx, warehouse(), read.ID, []closings.MaterialCounted{
+			{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "5"},
+		})
+		return err
+	}(), closings.ErrCountFrozen)
+	if got := e.text(t, `SELECT coalesce(counted_quantity::text,'-') FROM closing_material_lines
+ WHERE closing_id=$1 AND model='NS60ZL'`, read.ID); got != "6.000" {
+		t.Fatalf("a refused count must leave the sheet as it was: %q", got)
+	}
+}
+
+// TestMaterialDraftIsValidatedLikeTheCountSheet pins the shape half of S8 at the store: the request
+// states the key of each line and its count and nothing else, every line is the canonical quantity of
+// its unit, a material outside the reference table is refused, and the sheet of a settlement is
+// written whole or not at all. Only the warehouse counts it, and only while it holds the settlement.
+func TestMaterialDraftIsValidatedLikeTheCountSheet(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	e.purchaseLines(t, "closings-materials-draft-01", "20.00",
+		[]purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 2, UnitPrice: "10.00"}}, nil)
+	e.purchaseLines(t, "closings-materials-draft-02", "3.00", nil,
+		[]purchases.ScrapLineInput{{MaterialID: 2, Kg: "1.500", PricePerKg: "2.00"}})
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+	seeded := materialSheet(t, opened)
+	// Every refusal below is a request error, and none of them writes a line: the sheet is the seed.
+	for name, wrong := range map[string][]closings.MaterialCounted{
+		"a negative count":           {{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "-1"}},
+		"a fraction of a battery":    {{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "1.5"}},
+		"a padded unit count":        {{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "02"}},
+		"two decimals of scrap":      {{Kind: closings.MaterialKindScrap, MaterialID: 2, Quantity: "1.50"}},
+		"a model that is not one":    {{Kind: closings.MaterialKindUsed, Model: "ns60zl", Quantity: "2"}},
+		"a material that is not one": {{Kind: closings.MaterialKindScrap, MaterialID: 99, Quantity: "1.500"}},
+		"the key of the other kind":  {{Kind: closings.MaterialKindUsed, MaterialID: 2, Quantity: "2"}},
+		"an unknown kind":            {{Kind: closings.MaterialKind("battery"), Model: "NS60ZL", Quantity: "2"}},
+		"the same key twice": {
+			{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "2"},
+			{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "1"},
+		},
+		"nothing at all": {},
+	} {
+		if _, err := e.store.CountMaterials(e.ctx, warehouse(), opened.ID, wrong); !errors.Is(err, closings.ErrInvalid) {
+			t.Fatalf("%s must be refused as a request error, got %v", name, err)
+		}
+	}
+	if got := materialSheet(t, mustRead(t, e, opened.ID)); strings.Join(got, ",") != strings.Join(seeded, ",") {
+		t.Fatalf("a refused count must write nothing, got %v want %v", got, seeded)
+	}
+	// The sheet belongs to the warehouse and to a settlement that exists.
+	valid := []closings.MaterialCounted{{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "2"}}
+	if _, err := e.store.CountMaterials(e.ctx, identity(2), opened.ID, valid); !errors.Is(err, closings.ErrForbidden) {
+		t.Fatalf("only the warehouse counts this sheet, got %v", err)
+	}
+	if _, err := e.store.CountMaterials(e.ctx, warehouse(), opened.ID+1, valid); !errors.Is(err, closings.ErrNotFound) {
+		t.Fatalf("an unknown settlement has no sheet, got %v", err)
+	}
+	// Once proposed the sheet is the offer the branch decides, exactly like the count sheet of the
+	// stock (LC004, LC025).
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("500.00", "0.00", "100.00")); err != nil {
+		t.Fatalf("the drawer draft could not be saved: %v", err)
+	}
+	if _, err := e.store.Propose(e.ctx, warehouse(), opened.ID); err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	if _, err := e.store.CountMaterials(e.ctx, warehouse(), opened.ID, valid); !errors.Is(err, closings.ErrCountFrozen) {
+		t.Fatalf("a proposed settlement's sheet is frozen, got %v", err)
+	}
+}
+
+// mustRead reads one settlement of the fixture, failing the test when it cannot.
+func mustRead(t *testing.T, e *env, id int64) closings.Closing {
+	t.Helper()
+	closing, err := e.store.Read(e.ctx, warehouse(), id)
+	if err != nil {
+		t.Fatalf("the settlement could not be read: %v", err)
+	}
+	return closing
+}
+
+// TestMaterialSheetRefusesAKeyThePeriodNeverBought proves the sheet is the opening's own fact: the
+// warehouse counts the lines the period bought, and a key the seed never created is refused instead
+// of stored with a zero expectation that would publish a difference nobody counted against. The
+// case that matters is a settlement already open when the sheet arrived: it has no seeded line, so
+// nothing of it can be counted into a false shortfall.
+func TestMaterialSheetRefusesAKeyThePeriodNeverBought(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	e.purchaseLines(t, "closings-materials-unknown-01", "20.00", []purchases.UsedLineInput{
+		{Model: "NS60ZL", Quantity: 2, UnitPrice: "10.00"},
+	}, nil)
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+	before := e.readMaterialSheet(t, opened.ID)
+	_, err = e.store.CountMaterials(e.ctx, warehouse(), opened.ID, []closings.MaterialCounted{
+		{Kind: closings.MaterialKindUsed, Model: "XX99", Quantity: "1"},
+	})
+	if !errors.Is(err, closings.ErrInvalid) {
+		t.Fatalf("a model the period never bought must be refused, got %v", err)
+	}
+	if after := e.readMaterialSheet(t, opened.ID); after != before {
+		t.Fatalf("a refused count must write nothing, got %q before %q", after, before)
+	}
+	// The key the period did buy is still countable, and only its count moves.
+	if _, err := e.store.CountMaterials(e.ctx, warehouse(), opened.ID, []closings.MaterialCounted{
+		{Kind: closings.MaterialKindUsed, Model: "NS60ZL", Quantity: "1"},
+	}); err != nil {
+		t.Fatalf("the seeded line must be countable: %v", err)
+	}
+	if got := e.readMaterialSheet(t, opened.ID); got != "used:NS60ZL:unit:2:1:-1:1" {
+		t.Fatalf("the seeded line must keep its expectation, got %q", got)
+	}
+}
+
+// TestMaterialSheetIsReadInByteOrder pins the order the sheet is published in: the models of the used
+// lines sort by bytes, the same comparison the read revalidates with, so a database collation that
+// orders punctuation differently can never turn a valid sheet into an unreadable settlement.
+func TestMaterialSheetIsReadInByteOrder(t *testing.T) {
+	source, err := os.ReadFile("store.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(source), `line.model COLLATE "C"`) {
+		t.Fatal("the material sheet must order its models by bytes, the same order it revalidates")
+	}
+}
+
+// readMaterialSheet is the sheet of one settlement as one value, read through the public document so a
+// test compares what the screens are published, never a query of its own.
+func (e *env) readMaterialSheet(t *testing.T, id int64) string {
+	t.Helper()
+	read, err := e.store.Read(e.ctx, warehouse(), id)
+	if err != nil {
+		t.Fatalf("the settlement could not be read: %v", err)
+	}
+	return strings.Join(materialSheet(t, read), ",")
 }

@@ -64,10 +64,14 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
 .closing-table td small { display: block; margin-top: 2px; color: var(--muted); }
 .closing-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .closing-table tbody tr:last-child td { border-bottom: 0; }
-.closing-table tr.pending td { background: #FFFBEF; }
-.closing-table tr.pending input { border-color: #E8CF86; }
-.closing-pending { display: inline-block; margin-left: 8px; padding: 2px 6px; border: 1px solid #E8CF86;
-  border-radius: 3px; background: #FFFBEF; color: #805400; font-size: 11px; font-weight: 600; }
+/* A row whose count differs from the system's own quantity is the only kind of row the admin
+   writes: it carries a rule and a word beside its difference, never a colour on its own (S1, S2). */
+.closing-table tr.changed td { background: #FFFBEF; }
+.closing-table tr.changed td:first-child { box-shadow: inset 3px 0 0 #E8CF86; }
+.closing-table tr.changed .count { border-color: #E8CF86; }
+.closing-changed, .closing-pending { display: inline-block; margin-left: 8px; padding: 2px 6px;
+  border: 1px solid #E8CF86; border-radius: 3px; background: #FFFBEF; color: #805400;
+  font-size: 11px; font-weight: 600; }
 .closing-table .count { width: 76px; min-height: 36px; padding: 6px 8px; text-align: right;
   font-variant-numeric: tabular-nums; border-color: var(--muted); }
 .closing-table .neg { color: #991515; font-weight: 600; }
@@ -116,6 +120,9 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
   overflow-wrap: anywhere; }
 .closing-summary .total { padding-top: 10px; }
 .closing-summary .total dt, .closing-summary .total dd { font-size: 15px; font-weight: 700; color: #242124; }
+/* The difference tag sits beside its amount and takes the same separation as every other tag of
+   the panel: without it a narrow viewport glues the word to the figure (`− Bs 2.500,00FALTANTE`). */
+.closing-summary dd .closing-difference-name { margin-left: 6px; white-space: nowrap; }
 .closing-field { display: grid; gap: 6px; margin-top: 12px; }
 .closing-field label { color: var(--muted); font-size: 12px; font-weight: 600; }
 .closing-field input { min-height: 44px; border-color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
@@ -141,6 +148,9 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
   border-radius: 4px; box-shadow: 0 -2px 10px #2421240D; }
 .closing-bar-state { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; flex: 1 1 320px; }
 .closing-bar-state small { flex-basis: 100%; color: var(--muted); font-size: 12px; line-height: 16px; overflow-wrap: anywhere; }
+/* The blocker names its own fix: the panel where the warehouse writes the rate the branch lacks. */
+.closing-block-link { flex-basis: 100%; color: var(--wine); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.closing-block-link:hover { text-decoration: none; }
 .closing-bar-action { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .closing-bar-action button { min-height: 44px; }
 .closing-bar-action .primary:disabled { opacity: .6; }
@@ -164,6 +174,49 @@ kbd { font-family: inherit; font-size: 11px; padding: 2px 6px; margin-right: 2px
   .closing-bar { flex-direction: column; align-items: stretch; }
   .closing-bar-action { display: grid; grid-template-columns: minmax(0, 1fr); }
   .closing-bar-action button { width: 100%; }
+}
+
+/* The two tabs and the three balances of one settlement (design/rendicion-caja-y-chatarra/
+   01-mesa-dos-pestanas.html, S10, S13): the header states the three accounts with their
+   differences — each one selecting the tab it belongs to — and the tabs are navigation over the
+   one document, never two life cycles. Only tokens of the app's flag/ short / over pairs are used:
+   no new colour and no new spacing scale, and every control keeps the 44px touch minimum. */
+.closing-balances { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.closing-balances .closing-balance { display: grid; gap: 4px; text-align: left; min-height: 44px;
+  padding: 12px; background: white; border: 1px solid var(--border); border-radius: 4px; }
+.closing-balances .closing-balance:hover { background: var(--page); }
+.closing-balances .closing-balance[aria-pressed="true"] { border-color: var(--wine);
+  box-shadow: inset 0 0 0 1px var(--wine); background: var(--tint); }
+.closing-balances small { color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; }
+.closing-balances strong { font-size: 16px; font-variant-numeric: tabular-nums; }
+.closing-balances em { color: var(--muted); font-size: 12px; font-style: normal; line-height: 16px; }
+.closing-balances .neg { color: #991515; }
+.closing-balances .pos { color: #047857; }
+.closing-balances .zero { color: var(--muted); }
+.closing-balances .mixed { color: #805400; }
+
+.closing-tabs { display: flex; flex-wrap: wrap; gap: 0; border-bottom: 1px solid var(--border); }
+.closing-tabs button { appearance: none; min-height: 44px; padding: 12px 14px; border: 0;
+  border-bottom: 2px solid transparent; border-radius: 0; background: transparent;
+  color: var(--muted); font-size: 13px; font-weight: 600; }
+.closing-tabs button:hover { background: transparent; color: var(--wine); }
+.closing-tabs button[aria-selected="true"] { border-bottom-color: var(--wine); color: var(--wine); }
+/* The marker of a tab is the difference of its accounts in words: a mark alone is not a reading. */
+.closing-tab-marker { display: inline-block; margin-left: 8px; padding: 2px 6px; border-radius: 999px;
+  background: #FFF0F0; border: 1px solid #FFDAD6; color: #991515; font-size: 11px; font-weight: 700;
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* The material sheet: the two kinds of the third account, each with its total row when it has more
+   than one line, and the delivery reading under them (S7, S8, S9). */
+.closing-materials + .closing-materials { border-top: 1px solid var(--border); }
+.closing-materials-table caption { padding: 12px 12px 4px; color: var(--muted); font-size: 11px;
+  font-weight: 600; letter-spacing: .04em; text-align: left; text-transform: uppercase; }
+.closing-materials-table tfoot td { border-bottom: 0; font-weight: 700; }
+
+@media (max-width: 767px) {
+  .closing-balances { grid-template-columns: minmax(0, 1fr); }
+  .closing-tabs button { flex: 1 1 auto; }
 }
 
 /* The branch's side of the settlement (design/rendicion-de-cuentas/04-decision-sucursal.html):

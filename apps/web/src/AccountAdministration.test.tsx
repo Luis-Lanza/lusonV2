@@ -10,8 +10,10 @@ const seed = [
   { id: '4', username: 'legacy.c', display_name: '', location_id: 4, enabled: false, must_change_password: false },
 ];
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
-function setup(override?: (url: string, init: RequestInit) => Promise<Response> | undefined) {
+function setup(override?: (url: string, init: RequestInit) => Promise<Response> | undefined,
+  configured: { branch_location_id: number; commission_rate_percent: string; updated_at: string; updated_by: string }[] = []) {
   const accounts = structuredClone(seed);
+  const commissions = [...configured];
   const branches = [{ id: 1, name: 'Almacén' }, { id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }, { id: 4, name: 'Sucursal C' }];
   let current: unknown = administrator;
   class Events { addEventListener() {} removeEventListener() {} close() {} }
@@ -36,10 +38,20 @@ function setup(override?: (url: string, init: RequestInit) => Promise<Response> 
     if (url === '/api/admin/accounts/4' && init.method === 'PATCH') { Object.assign(accounts[1], JSON.parse(String(init.body))); return Promise.resolve(new Response(null, { status: 204 })); }
     if (url === '/api/admin/accounts/4/password' && init.method === 'POST') { accounts[1].must_change_password = true; return Promise.resolve(new Response(null, { status: 204 })); }
     if (url === '/api/admin/branches' && init.method === 'POST') { const branch = { id: 5, name: JSON.parse(String(init.body)).name }; branches.push(branch); return Promise.resolve(json(branch, 201)); }
+    if (url === '/api/closings/branches/commissions' && init.method === 'GET') return Promise.resolve(json(commissions));
+    const commission = /^\/api\/closings\/branches\/(\d+)\/commission$/.exec(url);
+    if (commission && init.method === 'POST') {
+      const rate = JSON.parse(String(init.body)).commission_rate_percent;
+      const branch = Number(commission[1]);
+      const existing = commissions.findIndex(item => item.branch_location_id === branch);
+      const entry = { branch_location_id: branch, commission_rate_percent: rate, updated_at: '2026-11-15T04:48:56Z', updated_by: 'Admin' };
+      if (existing < 0) commissions.push(entry); else commissions[existing] = entry;
+      return Promise.resolve(json({ branch_location_id: branch, commission_rate_percent: rate }));
+    }
     throw new Error('Unexpected request');
   });
   vi.stubGlobal('fetch', fetcher);
-  return { fetcher, accounts, branches };
+  return { fetcher, accounts, branches, commissions };
 }
 async function open() {
   render(<App />); await screen.findByRole('heading', { name: 'Inventario' });
@@ -238,5 +250,90 @@ describe('T6 directory real API workflows', () => {
     expect(screen.queryByText('legacy.c')).not.toBeInTheDocument(); expect(screen.queryByLabelText('Usuario')).not.toBeInTheDocument();
     expect(h.fetcher.mock.calls.filter(([url]) => url === '/api/auth/session')).toHaveLength(2);
     expect(h.fetcher.mock.calls.find(([url]) => url === '/api/admin/accounts')![1]?.signal?.aborted).toBe(true);
+  });
+});
+
+describe('the commission of each branch', () => {
+  const configured = [{
+    branch_location_id: 2, commission_rate_percent: '4.50',
+    updated_at: '2026-11-15T04:48:56Z', updated_by: 'Admin',
+  }];
+
+  it('shows the configured rate with its author and marks every branch that has none', async () => {
+    setup(undefined, configured);
+    await open(); fireEvent.click(screen.getByRole('button', { name: 'Sucursales' }));
+
+    // The configured branch states its rate and who fixed it; the rest say they have none,
+    // which is the same state that blocks their settlement.
+    await waitFor(() => expect(screen.getAllByText('Sin configurar')).toHaveLength(2));
+    expect(screen.getByText('4,50 % · Admin', { exact: false })).toBeTruthy();
+    expect(screen.getAllByText('sin eso la sucursal no puede proponer su rendición', { exact: false })).toHaveLength(2);
+    // The warehouse is never a branch that pays a commission.
+    expect(screen.getByText('Almacén protegido')).toBeTruthy();
+    // The audit of a money parameter says who fixed it and when (S4).
+    expect(screen.getByText(/\d{2}\/\d{2}\/\d{4},? \d{2}:\d{2}/)).toBeTruthy();
+    // Two branches still have no rate; the configured one offers to change it instead.
+    expect(screen.getAllByRole('button', { name: 'Configurar comisión' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Cambiar comisión' })).toHaveLength(1);
+  });
+
+  it('keeps working when a rate names a branch the directory no longer lists', async () => {
+    // The server filters retired branches, so this is the defensive read of a list that carries
+    // one anyway: the extra entry is not a broken answer, it is a branch that no longer exists.
+    setup(undefined, [...configured, { branch_location_id: 3, commission_rate_percent: '5.00',
+      updated_at: '2026-11-15T04:48:56Z', updated_by: 'Admin' }]);
+    await open(); fireEvent.click(screen.getByRole('button', { name: 'Sucursales' }));
+
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(screen.getByText('Sucursal A')).toBeTruthy();
+    expect(screen.getByText('4,50 % · Admin', { exact: false })).toBeTruthy();
+    // The branch that does exist and has no rate is the one the panel flags.
+    expect(screen.getAllByText('Sin configurar')).toHaveLength(1);
+  });
+
+  it('writes the rate through the settlement surface that owns the rule and refetches the panel', async () => {
+    const h = setup();
+    await open(); fireEvent.click(screen.getByRole('button', { name: 'Sucursales' }));
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Configurar comisión' }))[0]);
+    const input = screen.getByLabelText('Porcentaje de comisión');
+    fireEvent.change(input, { target: { value: '4,5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar comisión' }));
+
+    await waitFor(() => expect(h.commissions).toEqual([{
+      branch_location_id: 2, commission_rate_percent: '4.50',
+      updated_at: '2026-11-15T04:48:56Z', updated_by: 'Admin',
+    }]));
+    const write = h.fetcher.mock.calls.find(([url]) => String(url) === '/api/closings/branches/2/commission');
+    expect(write?.[1]).toMatchObject({ method: 'POST', body: JSON.stringify({ commission_rate_percent: '4.50' }) });
+    // The panel reads the list again and shows the rate it just fixed.
+    await waitFor(() => expect(screen.getAllByText('Sin configurar')).toHaveLength(2));
+    expect(await screen.findByText('4,50 % · Admin', { exact: false })).toBeTruthy();
+    expect(screen.getByText('Comisión actualizada: rige para la próxima rendición que se proponga.')).toBeTruthy();
+  });
+
+  it('refuses a percentage the server would not admit without writing anything', async () => {
+    const h = setup();
+    await open(); fireEvent.click(screen.getByRole('button', { name: 'Sucursales' }));
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Configurar comisión' }))[0]);
+    fireEvent.change(screen.getByLabelText('Porcentaje de comisión'), { target: { value: '100,01' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar comisión' }));
+
+    expect(await screen.findByText('Ingresá un porcentaje entre 0 y 100, con hasta dos decimales.')).toBeTruthy();
+    expect(h.fetcher.mock.calls.some(([url]) => String(url).includes('/commission') && String(url) !== '/api/closings/branches/commissions')).toBe(false);
+  });
+});
+
+describe('the panel arrives where the settlement sends it', () => {
+  it('opens the branches screen directly from the hash the blocker links to', async () => {
+    const h = setup(undefined, [{ branch_location_id: 2, commission_rate_percent: '4.50',
+      updated_at: '2026-11-15T04:48:56Z', updated_by: 'Admin' }]);
+    window.location.hash = '#/administracion/sucursales';
+    render(<App />);
+    // The tab is already the branches one: the operator lands where the rate is fixed, not on
+    // the accounts directory to find it.
+    expect(await screen.findByRole('button', { name: 'Sucursales' })).toHaveAttribute('aria-pressed', 'true');
+    await waitFor(() => expect(screen.getAllByText('Sin configurar')).toHaveLength(2));
+    expect(h.commissions).toHaveLength(1);
+    window.location.hash = '';
   });
 });

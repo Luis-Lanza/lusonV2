@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "chosen": "01-mesa-dos-pestanas.html",
+  "handoffs": {
+    "01-mesa-dos-pestanas.html": {
+      "status": "implemented",
+      "queued": false,
+      "sentAt": "2026-11-15T01:17:27.562Z",
+      "startedAt": "2026-11-15T01:17:49.100Z",
+      "implementedAt": "2026-11-15T02:43:56.633Z",
+      "feature": "odd/tasks/fondo-compras-y-materiales.md",
+      "note": "Implementado en el stack real: el fondo de compras es un sobre aparte cobrado por la compra misma, la rendición publica las tres cuentas, y las dos pantallas tienen pestañas Caja/Chatarra con la franja de tres saldos. Falta correr las suites completas y la revisión nativa.",
+      "previewUrl": "http://127.0.0.1:8081/"
+    }
+  }
+}

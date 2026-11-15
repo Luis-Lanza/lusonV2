@@ -144,6 +144,52 @@ func (s *Store) ConfigureCommission(ctx context.Context, actor auth.Identity, br
 	return settings, nil
 }
 
+// Commissions reads the configured commission of every branch, which is what the
+// administration panel lists: the rate of each branch that has one, the account that fixed
+// it and when. Only the warehouse reads it, and a branch without a configured rate is
+// absent from the answer, so the panel tells "not configured" apart from a rate of zero.
+func (s *Store) Commissions(ctx context.Context, actor auth.Identity) ([]BranchCommission, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return nil, ErrUnavailable
+	}
+	if !warehouseAdmin(actor) {
+		return nil, ErrForbidden
+	}
+	if err := checkAccount(ctx, s.pool, actor); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	// A retired branch keeps its setting but is no longer a branch: the panel lists the ones the
+	// directory still shows, so deleting a branch never leaves a rate the panel cannot place.
+	rows, err := s.pool.Query(ctx, `SELECT s.branch_location_id, s.commission_rate_percent::text,
+ s.updated_at, a.display_name
+ FROM branch_settings s
+ JOIN auth_accounts a ON a.id = s.updated_by_account_id
+ JOIN locations l ON l.id = s.branch_location_id AND l.deleted_at IS NULL
+ ORDER BY s.branch_location_id`)
+	if err != nil {
+		return nil, fail(ctx)
+	}
+	defer rows.Close()
+	configured := []BranchCommission{}
+	for rows.Next() {
+		var item BranchCommission
+		var stored string
+		if err := rows.Scan(&item.BranchID, &stored, &item.UpdatedAt, &item.UpdatedBy); err != nil {
+			return nil, fail(ctx)
+		}
+		if item.Rate, err = ParsePercent(stored); err != nil {
+			return nil, ErrUnavailable
+		}
+		configured = append(configured, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fail(ctx)
+	}
+	return configured, nil
+}
+
 // ReadSettings reads the commission rate of one branch. The warehouse reads every branch
 // and a branch reads only its own; a branch without a configured rate has no setting.
 func (s *Store) ReadSettings(ctx context.Context, actor auth.Identity, branchID int64) (Settings, error) {
@@ -270,6 +316,13 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Closin
 // its three derived numbers -- so a history row and the document it summarises can never disagree;
 // the count sheet and the proposal rounds belong to the single read and are not unfolded here.
 //
+// The money of a period the warehouse still holds is derived per row once the whole page has been
+// read, by the same helper of the single read, so a list row cannot state a period its own document
+// denies. It costs one extra ledger statement, one statement for the purchase envelope and at most
+// one rate statement per row, and never more: a branch holds one live settlement at a time, so a
+// page of one branch has at most one open row in it. The material sheet of the whole page is one
+// further statement, which is why it is read after the page cursor is closed and never per row.
+//
 // A branch reads only its own history: another branch is forbidden, exactly like a setting of
 // another branch. The warehouse reads every branch. An unknown branch does not exist and a retired
 // one is refused by name, exactly like an opening.
@@ -322,6 +375,27 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, branchID int64, p
 	}
 	if rows.Err() != nil {
 		return Page{}, fail(ctx)
+	}
+	// Every row of the page is in memory and the cursor is closed before the first open row derives
+	// its period, and that order is the finding this read answers, not a style preference: the
+	// derivation reads the ledgers through this same pool, and a statement issued while this cursor
+	// still holds a connection waits for a connection the cursor itself holds. On a pool of N
+	// connections, N concurrent list requests would hold every connection with a cursor and every one
+	// of them would wait for a second connection instead of returning its page.
+	rows.Close()
+	for i := range result.Closings {
+		if err := deriveClosing(ctx, s.pool, &result.Closings[i]); err != nil {
+			return Page{}, err
+		}
+	}
+	// The material sheet is part of the same derivation: the third account of the document is
+	// published by the single read and by every row of a page, one statement for the page (S8).
+	documents := make([]*Closing, len(result.Closings))
+	for i := range result.Closings {
+		documents[i] = &result.Closings[i]
+	}
+	if err := attachMaterialLines(ctx, s.pool, documents); err != nil {
+		return Page{}, err
 	}
 	return result, nil
 }
@@ -405,11 +479,110 @@ func (s *Store) Count(ctx context.Context, actor auth.Identity, id int64, counte
 	return closing, nil
 }
 
+// CountMaterials records what the warehouse counted of the material sheet: used batteries in whole
+// units per model and scrap in kilograms per material, and nothing else. It is the count sheet's own
+// shape -- one request states the lines it counted, a line that already exists only changes its
+// count, and a line the period did not buy is added with the database's own expected quantity of
+// zero -- so writing the same request twice leaves the same sheet. The expected quantity of every
+// line is the snapshot the opener seeded from the purchases of the window and is never a caller
+// promise, and a line nobody counted stays pending and blocks nothing: the stock count sheet is the
+// only gate of the proposal (S8). The database refuses a write while the branch is deciding or after
+// the closure (LC025), exactly like the count sheet of the stock (LC004).
+func (s *Store) CountMaterials(ctx context.Context, actor auth.Identity, id int64, counted []MaterialCounted) (Closing, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return Closing{}, ErrUnavailable
+	}
+	if !warehouseAdmin(actor) {
+		return Closing{}, ErrForbidden
+	}
+	if id < 1 {
+		return Closing{}, ErrNotFound
+	}
+	lines, err := canonicalMaterials(counted)
+	if err != nil {
+		return Closing{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return Closing{}, fail(ctx)
+	}
+	defer func() {
+		cleanup, done := context.WithTimeout(context.Background(), 5*time.Second)
+		defer done()
+		_ = tx.Rollback(cleanup)
+	}()
+	if err := checkAccount(ctx, tx, actor); err != nil {
+		return Closing{}, err
+	}
+	// The header is locked before the sheet is judged, so a proposal cannot slip between the state
+	// check and the write, and a refused line leaves the sheet exactly as it was.
+	var status string
+	err = tx.QueryRow(ctx, `SELECT status FROM branch_closings WHERE id=$1 FOR UPDATE`, id).Scan(&status)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Closing{}, ErrNotFound
+	}
+	if err != nil {
+		return Closing{}, fail(ctx)
+	}
+	if !Status(status).Held() {
+		return Closing{}, ErrCountFrozen
+	}
+	if err := checkMaterials(ctx, tx, lines); err != nil {
+		return Closing{}, err
+	}
+	for _, line := range lines {
+		// expected_quantity is supplied only because the column is NOT NULL on insert: the admission
+		// trigger would write its own zero anyway, because the expected is the fact of the opening and
+		// never a caller promise. The conflict branch leaves it untouched, so only the counted
+		// quantity of an existing line ever moves.
+		// The sheet is the opening's own fact: a line exists because the period bought that model or
+		// material, and its expected quantity was seeded then. Counting a key the seed did not create
+		// would store a line with a zero expectation that the update guard then forbids correcting,
+		// which is a false difference, so it is refused instead of invented.
+		var counted int64
+		switch line.Kind {
+		case MaterialKindUsed:
+			err = tx.QueryRow(ctx, `UPDATE closing_material_lines SET counted_quantity=$3
+ WHERE closing_id=$1 AND kind='used' AND model=$2 RETURNING expected_quantity::bigint`,
+				id, line.Model, string(line.Quantity)).Scan(&counted)
+		case MaterialKindScrap:
+			err = tx.QueryRow(ctx, `UPDATE closing_material_lines SET counted_quantity=$3
+ WHERE closing_id=$1 AND kind='scrap' AND material_id=$2 RETURNING expected_quantity::bigint`,
+				id, int16(line.MaterialID), string(line.Quantity)).Scan(&counted)
+		default:
+			return Closing{}, ErrInvalid
+		}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Closing{}, ErrInvalid
+		}
+		if err != nil {
+			return Closing{}, mapFailure(ctx, err)
+		}
+	}
+	closing, err := loadClosing(ctx, tx, id)
+	if err != nil {
+		return Closing{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Closing{}, mapFailure(ctx, err)
+	}
+	return closing, nil
+}
+
 // SaveCash saves the draft of the drawer while the warehouse holds the settlement: what was
 // counted, the contribution, the fund left behind and the observation, and nothing else. The
 // cash sales and the cash expenses of the period are the ledgers' own facts, so no draft can
 // state them; the period snapshots and the frozen rate belong to the proposal and the
 // closure (migration 034).
+//
+// The purchase envelope is drafted here too, as the same kind of fact: the amount the warehouse
+// counted in it and the amount it leaves in it, both optional and both non-negative (S1, S5, S6).
+// The draft states the envelope whole, exactly like the drawer: a draft that states neither leaves
+// both columns null, which is the honest state of an envelope nobody counted. The new amount is not
+// bounded by the counted one, because the warehouse brings money from outside the branch and that
+// money is not in the envelope it counted.
 func (s *Store) SaveCash(ctx context.Context, actor auth.Identity, id int64, draft CashDraft) (Closing, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return Closing{}, ErrUnavailable
@@ -450,9 +623,10 @@ func (s *Store) SaveCash(ctx context.Context, actor auth.Identity, id int64, dra
 		return Closing{}, ErrStateConflict
 	}
 	if _, err := tx.Exec(ctx, `UPDATE branch_closings SET counted_cash=$2,contributed_cash=$3,
-  closing_cash=$4,observation=$5 WHERE id=$1`,
+  closing_cash=$4,observation=$5,purchase_fund_counted=$6,purchase_fund_cash=$7 WHERE id=$1`,
 		id, nullable(canonical.CountedCash), string(canonical.ContributedCash),
-		nullable(canonical.ClosingCash), canonical.Observation); err != nil {
+		nullable(canonical.ClosingCash), canonical.Observation, nullable(canonical.PurchaseFundCounted),
+		nullable(canonical.PurchaseFundCash)); err != nil {
 		return Closing{}, mapFailure(ctx, err)
 	}
 	closing, err := loadClosing(ctx, tx, id)
@@ -565,6 +739,30 @@ func nullable(amount *Money) any {
 	return string(*amount)
 }
 
+// checkMaterials refuses a sheet that names a material of the reference table that does not exist,
+// before any line is written: the whole sheet is written or none of it is. A material is reference
+// data of the installation and never a value a caller invents, exactly like the variant of a count
+// line of the stock.
+func checkMaterials(ctx context.Context, q querier, lines []MaterialCounted) error {
+	ids := make([]int16, 0, len(lines))
+	for _, line := range lines {
+		if line.Kind == MaterialKindScrap {
+			ids = append(ids, int16(line.MaterialID))
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	var known int64
+	if err := q.QueryRow(ctx, `SELECT count(*) FROM materials WHERE id=ANY($1)`, ids).Scan(&known); err != nil {
+		return fail(ctx)
+	}
+	if known != int64(len(ids)) {
+		return ErrInvalid
+	}
+	return nil
+}
+
 // Propose is the warehouse's offer. In one transaction it freezes the period numbers from
 // the sale ledger of the branch — the sales total that is the commission base, the cash
 // amount and the card and transfer amounts — inserts the round that carries the whole offer
@@ -572,9 +770,12 @@ func nullable(amount *Money) any {
 //
 // The round is mandatory and ordered before the state change: the database refuses a closure
 // whose latest round is not accepted (LC016), so nothing could ever close without it. The
-// count must be complete and the drawer counted, because the database refuses an incomplete
-// closure (LC006) and a settlement whose round the branch had accepted could no longer be
-// corrected: no transition leaves a proposed settlement with an accepted round.
+// opener seeds every line of the sheet with the quantity the system expects (S1), so the count
+// is already complete when the warehouse proposes and only the drawer has to be counted: the
+// pending check below and the database's own LC006 and LC019 are the unreachable safety net of
+// a sheet written before that seeding. The drawer is not optional, because the database refuses
+// a closure without it (LC006) and a settlement whose round the branch had accepted could no
+// longer be corrected: no transition leaves a proposed settlement with an accepted round.
 func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Closing, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return Closing{}, ErrUnavailable
@@ -602,12 +803,14 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 	var branch int16
 	var status string
 	var periodStart, cutAt time.Time
-	var countedCash, closingCash *string
+	var countedCash, closingCash, purchaseCounted, purchaseCash *string
 	var draft CashDraft
 	err = tx.QueryRow(ctx, `SELECT branch_location_id,status,period_start,cut_at,
-  counted_cash::text,contributed_cash::text,closing_cash::text,observation
+  counted_cash::text,contributed_cash::text,closing_cash::text,observation,
+  purchase_fund_counted::text,purchase_fund_cash::text
  FROM branch_closings WHERE id=$1 FOR UPDATE`, id).Scan(&branch, &status, &periodStart, &cutAt,
-		&countedCash, &draft.ContributedCash, &closingCash, &draft.Observation)
+		&countedCash, &draft.ContributedCash, &closingCash, &draft.Observation, &purchaseCounted,
+		&purchaseCash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Closing{}, ErrNotFound
 	}
@@ -617,8 +820,10 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 	if !Status(status).Held() {
 		return Closing{}, ErrStateConflict
 	}
-	// The sheet must be complete and the drawer counted: the offer states both, and the
-	// closure admits neither a pending variant nor a missing amount (LC006).
+	// The sheet reads as seeded and the only fact this offer still needs is the drawer, because
+	// the opener writes the expected quantity into every counted quantity (S1). A line that reads
+	// pending here can only come from a sheet written before that seeding, and the refusal is
+	// kept as the safety net it becomes instead of being removed (S3, LC006).
 	pending, err := pendingVariant(ctx, tx, id)
 	if err == nil {
 		return Closing{}, &CountPending{VariantID: pending}
@@ -654,6 +859,17 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 	if err != nil {
 		return Closing{}, err
 	}
+	// The envelope is the offer's too: the amount the warehouse counted in the purchase fund and the
+	// amount it leaves there (S5, S6). They are the columns the draft wrote, and the transition below
+	// freezes them, so the branch is offered exactly the envelope it is being asked to accept.
+	if purchaseCounted != nil {
+		amount := Money(*purchaseCounted)
+		draft.PurchaseFundCounted = &amount
+	}
+	if purchaseCash != nil {
+		amount := Money(*purchaseCash)
+		draft.PurchaseFundCash = &amount
+	}
 	payload := ProposalPayload{
 		PeriodStart: periodStart, CutAt: cutAt,
 		SalesTotal: totals.salesTotal, CommissionRatePercent: rate, CommissionAmount: commission,
@@ -661,10 +877,13 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 		CardTotal: totals.card, TransferTotal: totals.transfer, QRTotal: totals.qr,
 		CountedCash: draft.CountedCash, ContributedCash: draft.ContributedCash,
 		ClosingCash: draft.ClosingCash, Observation: draft.Observation,
+		PurchaseFundCounted: draft.PurchaseFundCounted, PurchaseFundCash: draft.PurchaseFundCash,
 		CountLines: make([]ProposalCountLine, 0, len(lines)),
 	}
 	for _, line := range lines {
 		if line.CountedQuantity == nil {
+			// The same safety net as above, read on the rows the offer publishes: only a sheet
+			// written before the opener seeded the counted quantity can reach it.
 			return Closing{}, &CountPending{VariantID: line.VariantID}
 		}
 		payload.CountLines = append(payload.CountLines, ProposalCountLine{VariantID: line.VariantID,
@@ -861,7 +1080,9 @@ func (s *Store) Decide(ctx context.Context, actor auth.Identity, id int64, decis
 			return Closing{}, mapFailure(ctx, err)
 		}
 	} else {
-		// The closure states the count and the drawer, so the offer it accepts must state both.
+		// The closure states the count and the drawer, and the count is already seeded with the
+		// expected quantity (S1), so a pending line here is the safety net of a sheet written
+		// before that seeding: what the offer must still state is the drawer.
 		pending, err := pendingVariant(ctx, tx, id)
 		if err == nil {
 			return Closing{}, &CountPending{VariantID: pending}
@@ -1082,12 +1303,21 @@ func (s *Store) DecideCorrection(ctx context.Context, actor auth.Identity, corre
 // same corrected numbers from the same signed ones. The stock and the commission are journalled
 // too, but neither of them changes a number of this projection: the stock is the branch's
 // inventory and the commission is published beside the corrections that changed it.
+//
+// purchase_fund_counted and purchase_fund_cash are the second envelope (044): what the warehouse
+// counted in it and the amount it leaves there, both drafted while the settlement is held and
+// frozen by the proposal. They are the only money of this vertical that comes from the purchases
+// and not from the cash ledger, and they participate in no identity of the drawer (S1, S12).
+//
+// The money of the period is read as the database stores it, because that is what the offer
+// froze; a row that is still open is published from its own ledgers afterwards (deriveClosing), so
+// the projection keeps one shape for every state and only the open one is filled in on read.
 const closingHeaderColumns = `c.id,c.branch_location_id,l.name,c.status,
   c.period_start,c.cut_at,c.closed_at,coalesce(c.commission_rate_percent::text,''),
   c.opening_cash::text,c.cash_sales::text,c.cash_expenses::text,c.sales_total::text,
   c.commission_amount::text,c.card_total::text,c.transfer_total::text,c.qr_total::text,
   c.counted_cash::text,c.contributed_cash::text,c.closing_cash::text,c.observation,
-  c.opened_by_account_id,
+  c.opened_by_account_id,c.purchase_fund_counted::text,c.purchase_fund_cash::text,
   coalesce((SELECT sum(effect.amount_delta) FROM closing_correction_effects effect
     WHERE effect.closing_id=c.id AND effect.kind='counted_cash'),0)::numeric(12,2)::text,
   coalesce((SELECT sum(effect.amount_delta) FROM closing_correction_effects effect
@@ -1102,7 +1332,16 @@ func loadClosing(ctx context.Context, q querier, id int64) (Closing, error) {
 	if err != nil {
 		return Closing{}, err
 	}
+	// The row of a single read is scanned and released, so the derivation can run on the same
+	// querier without holding a cursor of it (a page of the history derives after its cursor is
+	// closed, see List).
+	if err := deriveClosing(ctx, q, &closing); err != nil {
+		return Closing{}, err
+	}
 	if closing.CountLines, err = loadCountLines(ctx, q, id); err != nil {
+		return Closing{}, err
+	}
+	if err := attachMaterialLines(ctx, q, []*Closing{&closing}); err != nil {
 		return Closing{}, err
 	}
 	if closing.Expenses, err = loadExpenses(ctx, q, id); err != nil {
@@ -1117,14 +1356,14 @@ func loadClosing(ctx context.Context, q querier, id int64) (Closing, error) {
 	return closing, nil
 }
 
-// scanClosing reads the persisted header of one settlement and derives the three cash numbers
-// that are never written (S8, S10, L12). It is the projection every read of this package uses,
-// so a history row and a single document are the same settlement and not two descriptions of
-// it.
+// scanClosing reads the persisted header of one settlement, and only that: a pure scan of the row
+// it is given, needing no querier of its own. The numbers that are never written are derived by
+// deriveClosing afterwards, so a caller holding a row cursor can read its whole page in before
+// anything else is asked of the pool (List).
 func scanClosing(ctx context.Context, row pgx.Row) (Closing, error) {
 	var closing Closing
 	var status, rate string
-	var counted, fund *string
+	var counted, fund, purchaseCounted, purchaseCash *string
 	var countedDelta, fundDelta string
 	err := row.Scan(
 		&closing.ID, &closing.BranchID, &closing.BranchName, &status,
@@ -1132,7 +1371,7 @@ func scanClosing(ctx context.Context, row pgx.Row) (Closing, error) {
 		&closing.OpeningCash, &closing.CashSales, &closing.CashExpenses, &closing.SalesTotal,
 		&closing.CommissionAmount, &closing.CardTotal, &closing.TransferTotal, &closing.QRTotal,
 		&counted, &closing.ContributedCash, &fund, &closing.Observation,
-		&closing.OpenedByAccountID, &countedDelta, &fundDelta)
+		&closing.OpenedByAccountID, &purchaseCounted, &purchaseCash, &countedDelta, &fundDelta)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Closing{}, ErrNotFound
 	}
@@ -1164,6 +1403,22 @@ func scanClosing(ctx context.Context, row pgx.Row) (Closing, error) {
 		}
 		closing.ClosingCash = &amount
 	}
+	// The envelope is scanned as the database stores it: null while the warehouse has not counted
+	// it or has not stated the amount it leaves behind (S5).
+	if purchaseCounted != nil {
+		amount := Money(*purchaseCounted)
+		if _, ok := amountCents(amount); !ok {
+			return Closing{}, ErrUnavailable
+		}
+		closing.PurchaseFundCounted = &amount
+	}
+	if purchaseCash != nil {
+		amount := Money(*purchaseCash)
+		if _, ok := amountCents(amount); !ok {
+			return Closing{}, ErrUnavailable
+		}
+		closing.PurchaseFundCash = &amount
+	}
 	for _, stored := range []Money{closing.OpeningCash, closing.CashSales, closing.CashExpenses,
 		closing.SalesTotal, closing.CommissionAmount, closing.CardTotal, closing.TransferTotal,
 		closing.QRTotal, closing.ContributedCash} {
@@ -1185,28 +1440,168 @@ func scanClosing(ctx context.Context, row pgx.Row) (Closing, error) {
 		return Closing{}, ErrUnavailable
 	}
 	closing.ClosingCash = funded
+	return closing, nil
+}
+
+// deriveClosing publishes the numbers of one scanned settlement that are never written: the money
+// of the period while the settlement is open (S1, S3), the three cash numbers (S8, S10, L12) and the
+// purchase envelope (S3, S5, S11). It
+// is the projection every read of this package uses, so a history row and a single document are the
+// same settlement and not two descriptions of it.
+//
+// It reads the ledgers of the period through the querier, which is why it is a step of its own: a
+// caller that is still holding a row cursor of that querier has to close it first (List).
+func deriveClosing(ctx context.Context, q querier, closing *Closing) error {
+	// The columns of the period are drafts until the warehouse proposes, so an open settlement is
+	// published with the money the ledgers hold for its window instead of with the zeros nobody
+	// wrote (S1). Proposed, rejected and closed rows keep the columns the database froze.
+	if closing.Status == StatusOpen {
+		if err := draftPeriod(ctx, q, closing); err != nil {
+			return err
+		}
+	}
 	// The three numbers of S8 and S10 are derived here, never stored, so they cannot
 	// disagree with the facts that produce them (L12).
 	expected, err := ExpectedCash(closing.OpeningCash, closing.CashSales, closing.CashExpenses)
 	if err != nil {
-		return Closing{}, ErrUnavailable
+		return ErrUnavailable
 	}
 	closing.ExpectedCash = expected
 	if closing.CountedCash != nil {
 		difference, err := CashDifference(*closing.CountedCash, expected)
 		if err != nil {
-			return Closing{}, ErrUnavailable
+			return ErrUnavailable
 		}
 		closing.CashDifference = &difference
 		if closing.ClosingCash != nil {
 			taken, err := TakenCash(*closing.CountedCash, closing.ContributedCash, *closing.ClosingCash)
 			if err != nil {
-				return Closing{}, ErrUnavailable
+				return ErrUnavailable
 			}
 			closing.TakenCash = &taken
 		}
 	}
-	return closing, nil
+	// The purchase envelope is the second envelope of the branch (S1). Its opening, the purchases of
+	// the window and its expectation are derived here for every state, because none of them is a
+	// column: they are read from the same two tables, so a number can never be published that the
+	// facts deny. The counted amount and the new amount are the database's columns, and the
+	// difference is published only once the envelope was counted (S3, S5, S11).
+	return derivePurchaseFund(ctx, q, closing)
+}
+
+// derivePurchaseFund publishes the purchase envelope of one scanned settlement: the amount the
+// previous closure left in it, the sums of the purchases of its own window and the expectation
+// they produce, plus the difference of the counted envelope against that expectation.
+//
+// It reads two things and never invents a third. The opening is the purchase_fund_cash of the
+// previous closed settlement of the same branch, read from branch_closings and never from the live
+// branch state: a closed row is immutable, so the number a period inherited cannot move afterwards.
+// "Previous" is the closure at or before this settlement's own period start, which is the instant the
+// opener inherited, so a history row of an old period never reads the envelope of a later one. The
+// purchases are the documents of the window `[period_start, cut_at)` of the branch, with their
+// counter-documents included as they are stored — negative amounts, so they subtract by
+// construction (S3, S11). Zero when there is none of either, which is the state of a branch that has
+// never closed and of a period with no purchases.
+//
+// One statement for both facts, so the envelope of one row describes one instant of one window, and
+// the derivation stays the pure read every other derived number of this document is.
+func derivePurchaseFund(ctx context.Context, q querier, closing *Closing) error {
+	var opening, total, cash string
+	err := q.QueryRow(ctx, `SELECT
+  coalesce((SELECT previous.purchase_fund_cash FROM branch_closings previous
+    WHERE previous.branch_location_id=$1 AND previous.status='closed'
+      AND previous.closed_at <= $4
+    ORDER BY previous.closed_at DESC LIMIT 1),0)::numeric(12,2)::text,
+  coalesce((SELECT sum(purchase.total) FROM purchases purchase
+    WHERE purchase.location_id=$1 AND purchase.created_at >= $2
+      AND purchase.created_at < $3),0)::numeric(12,2)::text,
+  coalesce((SELECT sum(purchase.paid_cash) FROM purchases purchase
+    WHERE purchase.location_id=$1 AND purchase.created_at >= $2
+      AND purchase.created_at < $3),0)::numeric(12,2)::text`,
+		int16(closing.BranchID), closing.PeriodStart, closing.CutAt, closing.PeriodStart).
+		Scan(&opening, &total, &cash)
+	if err != nil {
+		return fail(ctx)
+	}
+	closing.PurchaseFundOpening, closing.PurchasesTotal, closing.PurchasesCash =
+		Money(opening), Money(total), Money(cash)
+	// The opening is money the branch holds, so it is read as an amount and never negative. The two
+	// sums of the window are net figures that keep their sign: a counter-document is stored with
+	// negative amounts, so a window that returned more than it bought publishes a negative net and a
+	// settlement whose expectation follows from it, instead of becoming unreadable (S3, S11).
+	if _, ok := amountCents(closing.PurchaseFundOpening); !ok {
+		return ErrUnavailable
+	}
+	for _, amount := range []Signed{Signed(closing.PurchasesTotal), Signed(closing.PurchasesCash)} {
+		if _, ok := amount.Cents(); !ok {
+			return ErrUnavailable
+		}
+	}
+	expected, err := PurchaseFundExpected(closing.PurchaseFundOpening, Signed(closing.PurchasesCash))
+	if err != nil {
+		return ErrUnavailable
+	}
+	closing.PurchaseFundExpected = expected
+	if closing.PurchaseFundCounted == nil {
+		// An envelope the warehouse has not counted states no difference: the count sheet of the
+		// drawer is the only thing that blocks, and an uncounted envelope is not a difference of zero.
+		return nil
+	}
+	difference, err := CashDifference(*closing.PurchaseFundCounted, expected)
+	if err != nil {
+		return ErrUnavailable
+	}
+	closing.PurchaseFundDifference = &difference
+	return nil
+}
+
+// draftPeriod replaces the period columns of an open settlement with the money its own window
+// holds, read by the very helper the proposal uses (S1, S3): the same ledgers, the same window
+// and the same single rounding, so the drawer expectation the warehouse reads before proposing is
+// the one the branch will be asked to accept.
+//
+// Only an open settlement is derived, because only an open one has period columns nobody wrote:
+// the database records them on the transition the warehouse proposes, and from then on they are
+// the frozen offer. A proposed or rejected row is exactly the offer the branch is answering or
+// answered, and a closed one is the history its branch signed; deriving either of them would let
+// a later sale or a later change of the configured rate rewrite a number that was already
+// accepted, which is the immutability of the closure (S16).
+//
+// The commission of the draft uses the rate frozen on the row when it has one, and the branch's
+// configured rate otherwise -- which is what every open row is today, because the database
+// freezes the rate only on the proposal transition. The configured rate cannot disagree with the
+// offer: Propose freezes the very rate it reads from the same table at that instant, and both
+// sides apply it to the same period total with this package's one rounding (S6, S20), so the
+// draft is a preview of exactly the amount a proposal made now would freeze.
+func draftPeriod(ctx context.Context, q querier, closing *Closing) error {
+	branch := int16(closing.BranchID)
+	totals, err := periodTotals(ctx, q, branch, closing.PeriodStart, closing.CutAt)
+	if err != nil {
+		return err
+	}
+	closing.SalesTotal, closing.CashSales, closing.CashExpenses = totals.salesTotal, totals.cash,
+		totals.expenses
+	closing.CardTotal, closing.TransferTotal, closing.QRTotal = totals.card, totals.transfer, totals.qr
+	rate := closing.CommissionRatePercent
+	if rate == nil {
+		configured, err := configuredRate(ctx, q, branch)
+		if errors.Is(err, ErrNoCommissionRate) {
+			// A branch without a configured rate has no commission to preview. The database admits
+			// its settlement anyway and the proposal is what names the missing rate (LC003), so the
+			// read publishes the period it can instead of hiding the whole document.
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		rate = &configured
+	}
+	commission, err := Commission(totals.salesTotal, *rate)
+	if err != nil {
+		return ErrUnavailable
+	}
+	closing.CommissionAmount = commission
+	return nil
 }
 
 // loadCountLines reads the count sheet with the catalogue identity of every variant, in
@@ -1249,6 +1644,144 @@ func loadCountLines(ctx context.Context, q querier, id int64) ([]CountLine, erro
 		return nil, fail(ctx)
 	}
 	return lines, nil
+}
+
+// attachMaterialLines publishes the material sheet of every settlement of one read: the rows the
+// opener seeded and the warehouse counted, with the difference and the delivery derived on read
+// (S7, S8, S9). It is one statement for the whole read, which is what keeps the single document and
+// each row of a page of the history describing their sheets the same way -- and it is called once
+// every cursor of that read is closed, because a statement issued while another one is still open
+// waits for a connection the cursor itself holds (List).
+func attachMaterialLines(ctx context.Context, q querier, closings []*Closing) error {
+	if len(closings) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(closings))
+	for _, closing := range closings {
+		ids = append(ids, closing.ID)
+	}
+	sheet, err := loadMaterialLines(ctx, q, ids)
+	if err != nil {
+		return err
+	}
+	for _, closing := range closings {
+		lines, ok := sheet[closing.ID]
+		if !ok {
+			// A settlement whose period bought nothing has an empty sheet, never a missing one: the
+			// document publishes `[]` so a client reads a count of zero rows instead of a null.
+			lines = make([]MaterialLine, 0)
+		}
+		closing.MaterialLines = lines
+	}
+	return nil
+}
+
+// loadMaterialLines reads the material sheet of the asked settlements, in the order it is
+// published: the used lines by model and then the scrap lines by material id (S8), which is the
+// order of the columns the two partial unique indexes of the sheet key on. A used line carries its
+// model and a scrap line the name of its material, joined from the reference table, so the sheet is
+// legible without a second read; the expected quantity is the snapshot of the opening and the
+// counted one is null while the warehouse has not counted the line.
+func loadMaterialLines(ctx context.Context, q querier, ids []int64) (map[int64][]MaterialLine, error) {
+	rows, err := q.Query(ctx, `SELECT line.closing_id,line.kind,coalesce(line.model,''),
+  line.material_id,coalesce(material.name,''),line.expected_quantity::text,
+  line.counted_quantity::text
+ FROM closing_material_lines line
+ LEFT JOIN materials material ON material.id=line.material_id
+ WHERE line.closing_id=ANY($1)
+ ORDER BY line.closing_id,(line.kind<>'used'),line.model COLLATE "C",line.material_id`, ids)
+	if err != nil {
+		return nil, fail(ctx)
+	}
+	defer rows.Close()
+	sheet := make(map[int64][]MaterialLine, len(ids))
+	for rows.Next() {
+		var closingID int64
+		var kind, model, name, expected string
+		var materialID *int64
+		var counted *string
+		if rows.Scan(&closingID, &kind, &model, &materialID, &name, &expected, &counted) != nil {
+			return nil, fail(ctx)
+		}
+		line := MaterialLine{Kind: MaterialKind(kind)}
+		if line.Kind == MaterialKindUsed {
+			// A used line names its model and has no material at all, on either side of the join.
+			if materialID != nil || name != "" || !materialModelPattern.MatchString(model) {
+				return nil, ErrUnavailable
+			}
+			key := model
+			line.Model = &key
+		} else {
+			// A scrap line names its material and no model, and the reference table always answers
+			// the name of a material: a row that lost it is a state this domain never wrote.
+			if materialID == nil || *materialID < 1 || *materialID > MaxMaterialID || model != "" ||
+				name == "" {
+				return nil, ErrUnavailable
+			}
+			key := *materialID
+			material := name
+			line.MaterialID, line.Material = &key, &material
+		}
+		line.Unit = line.Kind.Unit()
+		if line.Expected, err = storedQuantity(line.Kind, expected); err != nil {
+			return nil, ErrUnavailable
+		}
+		if counted != nil {
+			value, err := storedQuantity(line.Kind, *counted)
+			if err != nil {
+				return nil, ErrUnavailable
+			}
+			line.Counted = &value
+		}
+		if line.Difference, err = MaterialDifference(line.Counted, line.Expected, line.Kind); err != nil {
+			return nil, ErrUnavailable
+		}
+		line.Delivered = MaterialDelivery(line.Counted)
+		// The rows are the database's own order -- the used lines by model, the scrap ones by
+		// material, never mixed -- so a sheet that breaks it is a chart this domain never wrote.
+		if previous := sheet[closingID]; len(previous) > 0 {
+			last := previous[len(previous)-1]
+			if last.Kind != line.Kind {
+				if last.Kind != MaterialKindUsed || line.Kind != MaterialKindScrap {
+					return nil, ErrUnavailable
+				}
+			} else if !materialKeyAfter(last, line) {
+				return nil, ErrUnavailable
+			}
+		}
+		sheet[closingID] = append(sheet[closingID], line)
+	}
+	if rows.Err() != nil {
+		return nil, fail(ctx)
+	}
+	return sheet, nil
+}
+
+// storedQuantity reads one quantity of the sheet as the canonical text of its kind. The column is
+// numeric(12,3) for both kinds, so a used line reads "4.000" and is published as the whole "4" its
+// unit states, while a scrap line keeps its three decimals; a fraction of a unit is a state this
+// domain never wrote and is never described.
+func storedQuantity(kind MaterialKind, stored string) (Quantity, error) {
+	milli, ok := quantityMilli(Quantity(stored))
+	if !ok {
+		return "", ErrUnavailable
+	}
+	quantity, err := quantityFromMilli(milli, kind)
+	if err != nil {
+		return "", ErrUnavailable
+	}
+	return quantity, nil
+}
+
+// materialKeyAfter reports whether the key of one material line sorts after another's, which is the
+// order the sheet is read and published in: the models of the used lines and the ids of the scrap
+// ones, each strictly ascending inside its kind.
+func materialKeyAfter(previous, line MaterialLine) bool {
+	if line.Kind == MaterialKindScrap {
+		return previous.MaterialID != nil && line.MaterialID != nil &&
+			*line.MaterialID > *previous.MaterialID
+	}
+	return previous.Model != nil && line.Model != nil && *line.Model > *previous.Model
 }
 
 // loadExpenses reads the expenses of the window one settlement covers: the branch's own ledger
@@ -1352,7 +1885,8 @@ func decodePayload(stored string) (ProposalPayload, error) {
 			return ProposalPayload{}, ErrUnavailable
 		}
 	}
-	for _, amount := range []*Money{payload.CountedCash, payload.ClosingCash} {
+	for _, amount := range []*Money{payload.CountedCash, payload.ClosingCash, payload.PurchaseFundCounted,
+		payload.PurchaseFundCash} {
 		if amount != nil {
 			if _, ok := amountCents(*amount); !ok {
 				return ProposalPayload{}, ErrUnavailable
@@ -1587,8 +2121,11 @@ func liveConflict(ctx context.Context, q querier, branchID int64) error {
 }
 
 // pendingVariant reads the first variant of a count sheet that has no counted quantity, which is
-// the line both the proposal (LC019) and the closure (LC006) refuse by. It reports pgx.ErrNoRows
-// when every line is counted, so a caller keeps its own answer for a read that fails.
+// the line both the proposal (LC019) and the closure (LC006) refuse by. The opener seeds every
+// line with its expected quantity (S1), so no live sheet reaches it and this read is the safety
+// net of a sheet written before that seeding, or of a line emptied out of band (S3). It reports
+// pgx.ErrNoRows when every line
+// is counted, so a caller keeps its own answer for a read that fails.
 func pendingVariant(ctx context.Context, q querier, id int64) (int64, error) {
 	var variant int64
 	err := q.QueryRow(ctx, `SELECT variant_id FROM closing_count_lines
@@ -1598,10 +2135,11 @@ func pendingVariant(ctx context.Context, q querier, id int64) (int64, error) {
 
 // mapProposalFailure publishes the database's own refusal of a proposal transition. LC019 is "a
 // variant has no counted quantity" read at the transition: the store already checked the sheet,
-// so what the database answered is the count changing between that check and its own statement.
-// The reaction is to re-read the settlement and propose again, never to report an outage, and
-// only the database knows which variant lost its line -- so the pending line is read back instead
-// of the message the trigger composed. Every other refusal keeps the plain mapping.
+// and the opener seeded it (S1), so what the database answered is a sheet written before that
+// seeding or the count changing between that check and its own statement. The reaction is to
+// re-read the settlement and propose again, never to report an outage, and only the database
+// knows which variant lost its line -- so the pending line is read back instead of the message
+// the trigger composed. Every other refusal keeps the plain mapping.
 func mapProposalFailure(ctx context.Context, q querier, err error, id int64) error {
 	var pg *pgconn.PgError
 	if errors.As(err, &pg) && pg.Code == "LC019" {
@@ -1681,7 +2219,9 @@ func mapFailure(ctx context.Context, err error) error {
 			return ErrForbidden
 		case "LC003":
 			return ErrNoCommissionRate
-		case "LC004":
+		case "LC004", "LC025":
+			// The sheet of the stock and the sheet of the materials are written while the warehouse
+			// holds the settlement, and only the counted quantity moves in either (LC004, LC025).
 			return ErrCountFrozen
 		case "LC005", "LC008", "LC009":
 			return ErrStateConflict

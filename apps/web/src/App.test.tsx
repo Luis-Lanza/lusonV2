@@ -1394,6 +1394,8 @@ describe('safe retirement inventory selection', () => {
   const mock = setup(session, (url, init) => {
    if (url === '/api/inventory/metadata' || url === '/api/admin/branches') return Promise.resolve(response(url === '/api/admin/branches' ? locations() : { ...metadata, locations: locations() }));
    if (url === '/api/admin/accounts') return Promise.resolve(response([{ id: '1', username: 'almacen', display_name: 'Admin', location_id: 1, enabled: true, must_change_password: false }]));
+   // The panel reads the configured commissions of the branches it lists.
+   if (url === '/api/closings/branches/commissions') return Promise.resolve(response([]));
    if (url === '/api/admin/branches/4' && init.method === 'DELETE') { retired = true; return Promise.resolve(new Response(null, { status: 204 })); }
    if (url.startsWith('/api/inventory?') && new URL(url, 'http://localhost').searchParams.get('location_id') === '4')
     return Promise.resolve(retired ? response({ error: 'not_found' }, 404) : response(pageJSON().replace('"location":{"id":1,"name":"Almacén"}', '"location":' + JSON.stringify(branch))));
@@ -1423,7 +1425,8 @@ describe('T6 administration directory', () => {
   const branches = [...metadata.locations, { id: 4, name: 'Sucursal C' }];
   function directorySetup() {
     return setup(session, url => url === '/api/admin/accounts' ? Promise.resolve(response(accounts))
-      : url === '/api/admin/branches' ? Promise.resolve(response(branches)) : undefined);
+      : url === '/api/admin/branches' ? Promise.resolve(response(branches))
+      : url === '/api/closings/branches/commissions' ? Promise.resolve(response([])) : undefined);
   }
   it.each(['Administración', 'Mi contraseña'])('renders a matching decorative icon for %s', async name => {
     directorySetup(); render(<App />); await inventory();
@@ -1806,7 +1809,16 @@ describe('branch purchases', () => {
     if (url === '/api/purchases/last-prices') return Promise.resolve(purchasesResponse({ models: [], materials: [] }));
     if (url === '/api/purchases/received') return Promise.resolve(purchasesResponse({ used: [], scrap: [] }));
     if (url.startsWith('/api/purchases?page=')) return Promise.resolve(purchasesResponse({
-      page: 1, page_size: 25, total_purchases: 0, purchases: [] }));
+      page: 1, page_size: 25, total_purchases: 0, purchases: [],
+      // The screen opens on the pending period, so the answer carries the selector, that period, the
+      // three zeros of a branch that bought nothing and the empty balance they read.
+      periods: [
+        { kind: 'pending', closing_id: null, from: null, to: null, label: 'Pendiente' },
+        { kind: 'all', closing_id: null, from: null, to: null, label: 'Todo el historial' },
+      ],
+      period: { kind: 'pending', closing_id: null, from: null, to: null, label: 'Pendiente' },
+      totals: { money: null, used_units: '0', scrap_kg: '0.000' },
+      balance: { used: [], scrap: [] } }));
     return undefined;
   });
   const purchaseCalls = (mock: ReturnType<typeof setup>) =>

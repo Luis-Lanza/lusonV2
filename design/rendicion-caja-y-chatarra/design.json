@@ -1,0 +1,35 @@
+{
+  "title": "Rendición con dos pestañas: caja y chatarra",
+  "brief": "La rendición de cuentas suma dos cosas que hoy no existen: el fondo de compras —un sobre aparte de dinero físico, sólo para comprar baterías usadas y chatarra— y el registro de materiales comprados. Una sola rendición con dos pestañas, Caja y Chatarra: un corte, un congelamiento, una propuesta y una aceptación, porque la visita del Almacén es un solo acto. Los materiales se rinden contra lo comprado en el período (el cierre anterior se llevó todo), se entrega todo lo contado al Almacén, y el fondo se recambia: se lleva el sobrante y deja un monto nuevo que él escribe. Las diferencias se informan y no bloquean, igual que la diferencia de caja. Mismo shell, paleta vino y tokens de design/system.md.",
+  "feature": "odd/tasks/fondo-compras-y-materiales.md",
+  "artboards": [
+    {
+      "file": "01-mesa-dos-pestanas.html",
+      "title": "Mesa con dos pestañas y saldos arriba",
+      "tradeoff": "Extiende la mesa de conteo ya implementada: pestañas para cambiar de superficie de trabajo y una franja de tres saldos que se ve siempre y lleva a su pestaña. La ventaja es que las tres cuentas se verifican sin cambiar de pestaña. El costo es densidad: pide 1280 px y deja una pestaña entera fuera de la vista mientras se trabaja en la otra.",
+      "width": 1440,
+      "height": 1560
+    },
+    {
+      "file": "02-acta-dos-paginas.html",
+      "title": "Acta de dos páginas",
+      "tradeoff": "El cierre se lee como un acta firmada: cláusulas numeradas, pestañas como páginas y lugar para las dos conformidades. Es la más auditable y la más fácil de imprimir o archivar. A cambio, hay que scrollear para comprobar un número y los totales del cierre no acompañan al conteo.",
+      "width": 1440,
+      "height": 2400
+    },
+    {
+      "file": "03-chatarra-guiada.html",
+      "title": "Chatarra en tres pasos",
+      "tradeoff": "La pestaña nueva se recorre como un flujo guiado —fondo, materiales, entrega— porque nadie la conoce todavía, y la pestaña Caja queda exactamente como está hoy. Enseña sin documentación y evita olvidar la entrega. El costo es que la rendición termina con dos modelos de interacción distintos en el mismo documento.",
+      "width": 1440,
+      "height": 1260
+    },
+    {
+      "file": "04-decision-dos-pestanas.html",
+      "title": "Decisión de la sucursal",
+      "tradeoff": "Muestra lo que ve el encargado: las mismas dos pestañas en modo lectura, qué queda exactamente si acepta, y el motivo obligatorio para rechazar. Deja claro que una diferencia no bloquea. Superficie complementaria: funciona igual con las tres direcciones del lado del Almacén.",
+      "width": 1440,
+      "height": 1720
+    }
+  ]
+}

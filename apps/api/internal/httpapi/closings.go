@@ -22,10 +22,11 @@ import (
 
 // This file is the HTTP contract of the branch account settlement ("rendición de
 // cuentas"): the warehouse configures a branch's commission rate, opens the period, counts
-// the stock, drafts the drawer, proposes the settlement and reads it, the branch accepts
-// or rejects the offer and records the small expenses of its own till. Everything below is
-// either a request shape judged before the store is touched or the store's own decision
-// published as one status and one stable code; no rule of the vertical is restated here.
+// the stock and the materials, drafts the drawer, proposes the settlement and reads it, the
+// branch accepts or rejects the offer and records the small expenses of its own till.
+// Everything below is either a request shape judged before the store is touched or the store's
+// own decision published as one status and one stable code; no rule of the vertical is restated
+// here.
 //
 // Two things the surface must always say, because they are what an operator acts on: a
 // refusal names what is missing (the variant still to count, the excess of a fund over the
@@ -52,6 +53,11 @@ const (
 	// settlement id, so it can never be read as one nor collide with the literal suffix of a
 	// settlement operation.
 	closingsCommissionPath = closingsCollectionPath + "/branches/{branch}/commission"
+	// closingsCommissionsPath is every configured commission in one answer: the administration
+	// panel lists the rate of each branch with its author and moment, and a branch the warehouse
+	// never configured is absent instead of reported as zero. It is a literal path beside
+	// {branch}/commission, never a branch id.
+	closingsCommissionsPath = closingsCollectionPath + "/branches/commissions"
 	// closingsExpensesPath is the branch's own till: the small expenses it pays out of it while
 	// it operates. It is a literal path beside {id}, so it is never read as a settlement id, and
 	// it names no settlement because the settlement that covers an expense is decided by the
@@ -61,6 +67,11 @@ const (
 	// and the branch decides it, exactly like a round of a live settlement (S16). `corrections` is a
 	// literal suffix of the settlement id, so it is never read as one.
 	closingsCorrectionsPath = closingsCollectionPath + "/{id}/corrections"
+	// closingsMaterialsPath is the material sheet of one settlement: the used batteries in units per
+	// model and the scrap in kilograms per material that the warehouse counted at the cut (S8). It is
+	// a literal suffix of the settlement id like the count sheet of the stock, so the counts of the
+	// third account are one request of their own and never a field of the drawer.
+	closingsMaterialsPath = closingsCollectionPath + "/{id}/materials"
 	// closingsCorrectionDecisionPath is the branch's answer to one correction. A correction is named
 	// by its own id and not below its settlement, because the correction is what the branch decides
 	// and the database answers for the correction it locked, never for a document the path guessed.
@@ -143,10 +154,12 @@ func (a *API) closingRoutes(store *closings.Store) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(closingsCollectionPath, a.closingCollection(store))
 	mux.HandleFunc(closingsCommissionPath, a.closingSettings(store))
+	mux.HandleFunc(closingsCommissionsPath, a.closingCommissions(store))
 	mux.HandleFunc(closingsExpensesPath, a.closingExpenses(store))
 	mux.HandleFunc(closingsCorrectionsPath, a.closingCorrections(store))
 	mux.HandleFunc(closingsCorrectionDecisionPath, a.closingCorrectionDecision(store))
 	mux.HandleFunc(closingsCollectionPath+"/{id}/count", a.closingCount(store))
+	mux.HandleFunc(closingsMaterialsPath, a.closingMaterials(store))
 	mux.HandleFunc(closingsCollectionPath+"/{id}/cash", a.closingCash(store))
 	mux.HandleFunc(closingsCollectionPath+"/{id}/propose", a.closingPropose(store))
 	mux.HandleFunc(closingsCollectionPath+"/{id}/decision", a.closingDecision(store))
@@ -171,6 +184,10 @@ func closingFailure(w http.ResponseWriter, err error) {
 	var notClosed *closings.CorrectionNotClosed
 	switch {
 	case errors.As(err, &pending):
+		// The sheet of a live settlement never lacks a counted quantity: the opener seeds it with
+		// the expected one (S1), so this refusal is the safety net of a sheet written before that
+		// seeding, or of a line emptied out of band (S3). It keeps its own code instead of folding into closure_refused, so a
+		// receipt of that shape still names the one line it has to state.
 		closingFailureRecord(w, 409, "count_pending", "variant_id", pending.VariantID)
 	case errors.As(err, &excess):
 		closingFailureRecord(w, 409, "fund_exceeds_drawer", "excess", string(excess.Excess))
@@ -187,8 +204,9 @@ func closingFailure(w http.ResponseWriter, err error) {
 		// that line instead of reading an outage (S5).
 		closingFailureRecord(w, 409, "stock_moved", "variant_id", moved.VariantID)
 	case errors.As(err, &stale):
-		// The count sheet changed while the offer was being recorded, so the settlement is
-		// re-read and proposed again; the refusal names the variant that is pending again.
+		// The line lost the counted quantity the opener seeded while the offer was being
+		// recorded, so the settlement is re-read and proposed again; the refusal names that
+		// variant, whichever of the two ways the loss was reached.
 		closingFailureRecord(w, 409, "proposal_stale", "variant_id", stale.VariantID)
 	case errors.As(err, &notClosed):
 		// A correction belongs to a closed settlement, and a live one is corrected by its own
@@ -578,6 +596,11 @@ func closingCountLines(d *json.Decoder) ([]closings.Counted, error) {
 // it made, the fund it leaves behind and its observation. The cash sales and the cash expenses
 // of the period are the ledgers' own facts, so they are not part of this body at all, exactly
 // like the derived amounts the store computes on read.
+//
+// purchase_fund_counted and purchase_fund_cash are the second envelope (S1, S5): both are optional,
+// because a warehouse that has not counted the envelope yet states neither, and both are amounts of
+// the same canonical shape as every other money of this contract. An absent key leaves the envelope
+// unstated instead of inventing a zero.
 func decodeClosingCash(r *http.Request) (closings.CashDraft, error) {
 	draft := closings.CashDraft{}
 	d, err := closingDecoder(r)
@@ -600,6 +623,10 @@ func decodeClosingCash(r *http.Request) (closings.CashDraft, error) {
 			draft.ClosingCash, err = closingOptionalAmount(d)
 		case "observation":
 			draft.Observation, err = closingString(d)
+		case "purchase_fund_counted":
+			draft.PurchaseFundCounted, err = closingOptionalAmount(d)
+		case "purchase_fund_cash":
+			draft.PurchaseFundCash, err = closingOptionalAmount(d)
 		default:
 			return closings.CashDraft{}, closings.ErrInvalid
 		}
@@ -607,9 +634,12 @@ func decodeClosingCash(r *http.Request) (closings.CashDraft, error) {
 			return closings.CashDraft{}, closings.ErrInvalid
 		}
 	}
-	// Every key is mandatory, so a draft states the drawer whole: an absent key would be an
-	// omitted fact and not an uncounted amount, which is the JSON null of this contract.
-	if len(seen) != 4 || !closingDelimiter(d, '}') {
+	// The four keys of the drawer are mandatory, so a draft states the drawer whole: an absent key
+	// would be an omitted fact and not an uncounted amount, which is the JSON null of this contract.
+	// The two keys of the purchase envelope are the only optional ones: they are its own draft and an
+	// absent one leaves the envelope unstated (S1, S5).
+	if !seen["counted_cash"] || !seen["contributed_cash"] || !seen["closing_cash"] ||
+		!seen["observation"] || !closingDelimiter(d, '}') {
 		return closings.CashDraft{}, closings.ErrInvalid
 	}
 	if _, err := d.Token(); err != io.EOF {
@@ -619,6 +649,123 @@ func decodeClosingCash(r *http.Request) (closings.CashDraft, error) {
 		return closings.CashDraft{}, closings.ErrInvalid
 	}
 	return draft, nil
+}
+
+// decodeClosingMaterials reads the counted quantities of the material sheet: one line per model of a
+// used battery or per material of scrap, and nothing else. The expected quantity, the difference and
+// the delivery are not part of this body at all -- the first is the fact of the opening and the
+// other two are derived from it on read -- so a blinded count of this sheet cannot even be expressed,
+// exactly like the count sheet of the stock (S7, S8).
+//
+// A line names its kind and the one key that kind names -- `model` for a used line and
+// `material_id` for a scrap one -- plus what was counted as the canonical text of its unit: whole
+// units for a battery and kilograms with exactly three decimals for scrap. Every quantity of this
+// contract is text and never a JSON number, because a weight with three decimals has no exact
+// spelling as a binary float.
+func decodeClosingMaterials(r *http.Request) ([]closings.MaterialCounted, error) {
+	d, err := closingDecoder(r)
+	if err != nil || !closingDelimiter(d, '{') {
+		return nil, closings.ErrInvalid
+	}
+	var lines []closings.MaterialCounted
+	seen := map[string]bool{}
+	for d.More() {
+		key, err := closingString(d)
+		if err != nil || seen[key] {
+			return nil, closings.ErrInvalid
+		}
+		seen[key] = true
+		if key != "lines" {
+			return nil, closings.ErrInvalid
+		}
+		if lines, err = closingMaterialLines(d); err != nil {
+			return nil, closings.ErrInvalid
+		}
+	}
+	if !seen["lines"] || !closingDelimiter(d, '}') {
+		return nil, closings.ErrInvalid
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return nil, closings.ErrInvalid
+	}
+	return lines, nil
+}
+
+// closingMaterialLines reads the counted lines of that sheet: exact names, presence, types and
+// duplicate keys at every object level, the one key the kind names, and the canonical quantity of
+// its unit. One request states at most MaxMaterialLines lines, which is the bound of a count of the
+// stock, and the request is accepted or refused whole.
+func closingMaterialLines(d *json.Decoder) ([]closings.MaterialCounted, error) {
+	if !closingDelimiter(d, '[') {
+		return nil, closings.ErrInvalid
+	}
+	lines := make([]closings.MaterialCounted, 0)
+	for d.More() {
+		if len(lines) >= closings.MaxMaterialLines || !closingDelimiter(d, '{') {
+			return nil, closings.ErrInvalid
+		}
+		var line closings.MaterialCounted
+		seen := map[string]bool{}
+		for d.More() {
+			key, err := closingString(d)
+			if err != nil || seen[key] {
+				return nil, closings.ErrInvalid
+			}
+			seen[key] = true
+			switch key {
+			case "kind":
+				var text string
+				if text, err = closingString(d); err == nil {
+					line.Kind = closings.MaterialKind(text)
+					if !line.Kind.Valid() {
+						err = closings.ErrInvalid
+					}
+				}
+			case "model":
+				line.Model, err = closingString(d)
+			case "material_id":
+				line.MaterialID, err = closingID(d, closings.MaxMaterialID)
+			case "counted_quantity":
+				var text string
+				if text, err = closingString(d); err == nil {
+					line.Quantity = closings.Quantity(text)
+				}
+			default:
+				return nil, closings.ErrInvalid
+			}
+			if err != nil {
+				return nil, closings.ErrInvalid
+			}
+		}
+		if len(seen) != 3 || !closingDelimiter(d, '}') {
+			return nil, closings.ErrInvalid
+		}
+		// The key of a line is exactly the one its kind names: a used line states its model and never a
+		// material, and a scrap line the other way round. The count is the canonical quantity of that
+		// kind, so an uncounted line is a line the request does not state at all (S8).
+		switch line.Kind {
+		case closings.MaterialKindUsed:
+			if !seen["model"] || seen["material_id"] {
+				return nil, closings.ErrInvalid
+			}
+		case closings.MaterialKindScrap:
+			if !seen["material_id"] || seen["model"] {
+				return nil, closings.ErrInvalid
+			}
+		default:
+			return nil, closings.ErrInvalid
+		}
+		quantity, err := closings.ParseQuantity(line.Kind, string(line.Quantity))
+		if err != nil || quantity != line.Quantity {
+			return nil, closings.ErrInvalid
+		}
+		line.Quantity = quantity
+		lines = append(lines, line)
+	}
+	if len(lines) == 0 || !closingDelimiter(d, ']') {
+		return nil, closings.ErrInvalid
+	}
+	return lines, nil
 }
 
 // decodeClosingExpense reads the expense of a branch: the amount it paid out of its till and what
@@ -867,6 +1014,38 @@ func closingSettingsRecord(settings closings.Settings) (closingSettingsDTO, erro
 	return closingSettingsDTO{BranchID: settings.BranchID, CommissionRate: string(rate)}, nil
 }
 
+// closingCommissionDTO is one configured commission as the administration panel reads it: the
+// branch, the percentage its settlement pays, the moment the rate was fixed and the account that
+// fixed it. The author is the point of the shape -- a money parameter is never shown anonymous.
+type closingCommissionDTO struct {
+	BranchID  int64  `json:"branch_location_id"`
+	Rate      string `json:"commission_rate_percent"`
+	UpdatedAt string `json:"updated_at"`
+	UpdatedBy string `json:"updated_by"`
+}
+
+// closingCommissionRecord admits only a canonical entry: a branch inside the column range, the
+// exact percentage the database stores and an instant that reads back as itself. Anything else is
+// an answer this server could not have produced, so it is refused as unavailable instead of
+// published as a rate the panel would show and the settlement would not pay.
+func closingCommissionRecord(item closings.BranchCommission) (closingCommissionDTO, error) {
+	unavailable := func() (closingCommissionDTO, error) { return closingCommissionDTO{}, closings.ErrUnavailable }
+	rate, err := closings.ParsePercent(string(item.Rate))
+	if item.BranchID < closingsFirstBranch || item.BranchID > closings.MaxBranchID || err != nil ||
+		string(rate) != string(item.Rate) || item.UpdatedAt.IsZero() {
+		return unavailable()
+	}
+	// The panel reads an instant to the second: the fractional part the database keeps is not
+	// a fact the operator acts on, and the roundtrip is checked at that precision.
+	moment := item.UpdatedAt.UTC().Format(time.RFC3339)
+	if parsed, err := time.Parse(time.RFC3339, moment); err != nil ||
+		!parsed.Equal(item.UpdatedAt.Truncate(time.Second)) {
+		return unavailable()
+	}
+	return closingCommissionDTO{BranchID: item.BranchID, Rate: string(rate),
+		UpdatedAt: moment, UpdatedBy: item.UpdatedBy}, nil
+}
+
 // closingCountLineDTO is one line of the count sheet with the catalogue identity of its variant,
 // so the sheet is legible without a second lookup. counted_quantity is JSON null while the
 // variant is still pending, which is what blocks the proposal.
@@ -891,6 +1070,24 @@ type closingExpenseDTO struct {
 	Description        string `json:"description"`
 	OccurredAt         string `json:"occurred_at"`
 	CreatedByAccountID int64  `json:"created_by_account_id"`
+}
+
+// closingMaterialLineDTO is one line of the material sheet: what the period bought of one model or
+// material and what the warehouse counted at the cut, with the difference between them and the
+// quantity that goes to the warehouse. A used line states its model and a scrap line its material id
+// and name -- the other side of each is JSON null, so every line carries the same keys -- and the
+// unit states the scale of every quantity of the line: whole units or kilograms with three decimals.
+// An uncounted line states null in counted_quantity, difference and delivered_quantity.
+type closingMaterialLineDTO struct {
+	Kind       string  `json:"kind"`
+	Model      *string `json:"model"`
+	MaterialID *int64  `json:"material_id"`
+	Material   *string `json:"material"`
+	Unit       string  `json:"unit"`
+	Expected   string  `json:"expected_quantity"`
+	Counted    *string `json:"counted_quantity"`
+	Difference *string `json:"difference"`
+	Delivered  *string `json:"delivered_quantity"`
 }
 
 // closingOfferLineDTO is one line of an offer: what the system expected at the cut and what the
@@ -953,21 +1150,26 @@ type closingCorrectionDTO struct {
 // collected and never holds in its drawer (S13). The offer's own period is frozen, so the
 // drawer it states is published as it was offered and never recomputed against today's rates.
 type closingOfferDTO struct {
-	PeriodStart           string                `json:"period_start"`
-	CutAt                 string                `json:"cut_at"`
-	SalesTotal            string                `json:"sales_total"`
-	CommissionRatePercent string                `json:"commission_rate_percent"`
-	CommissionAmount      string                `json:"commission_amount"`
-	CashSales             string                `json:"cash_sales"`
-	CashExpenses          string                `json:"cash_expenses"`
-	CardTotal             string                `json:"card_total"`
-	TransferTotal         string                `json:"transfer_total"`
-	QRTotal               string                `json:"qr_total"`
-	CountedCash           *string               `json:"counted_cash"`
-	ContributedCash       string                `json:"contributed_cash"`
-	ClosingCash           *string               `json:"closing_cash"`
-	Observation           string                `json:"observation"`
-	CountLines            []closingOfferLineDTO `json:"count_lines"`
+	PeriodStart           string  `json:"period_start"`
+	CutAt                 string  `json:"cut_at"`
+	SalesTotal            string  `json:"sales_total"`
+	CommissionRatePercent string  `json:"commission_rate_percent"`
+	CommissionAmount      string  `json:"commission_amount"`
+	CashSales             string  `json:"cash_sales"`
+	CashExpenses          string  `json:"cash_expenses"`
+	CardTotal             string  `json:"card_total"`
+	TransferTotal         string  `json:"transfer_total"`
+	QRTotal               string  `json:"qr_total"`
+	CountedCash           *string `json:"counted_cash"`
+	ContributedCash       string  `json:"contributed_cash"`
+	ClosingCash           *string `json:"closing_cash"`
+	Observation           string  `json:"observation"`
+	// PurchaseFundCounted and PurchaseFundCash are the envelope of the offer: what the warehouse
+	// counted in the purchase fund and the amount it leaves there for the next period. They are
+	// absent from an offer made before the warehouse stated the envelope (S1, S5, S6).
+	PurchaseFundCounted *string               `json:"purchase_fund_counted,omitempty"`
+	PurchaseFundCash    *string               `json:"purchase_fund_cash,omitempty"`
+	CountLines          []closingOfferLineDTO `json:"count_lines"`
 }
 
 // closingRoundDTO is one proposal round with the branch's answer, if it has one. Rounds are
@@ -1016,6 +1218,31 @@ type closingDTO struct {
 	Observation           string                `json:"observation"`
 	OpenedByAccountID     int64                 `json:"opened_by_account_id"`
 	CountLines            []closingCountLineDTO `json:"count_lines"`
+	// MaterialLines is the third account of the document (S7, S8, S9): what the period bought of every
+	// used model and of every scrap material, what the warehouse counted of it, the difference between
+	// the two and the quantity that goes to the warehouse. The expected quantity is the fact of the
+	// opening, the counted one is the warehouse's draft and is null while it has not counted the line,
+	// and the difference and the delivery are derived on read: a pending line states null in all three
+	// and blocks nothing, because the stock count sheet is the only gate of the proposal. It is
+	// published by every read, the single document and each row of the history alike, ordered by model
+	// for the used lines and by material id for the scrap ones. None of it is money and none of it
+	// enters the drawer or the commission (S12).
+	MaterialLines []closingMaterialLineDTO `json:"material_lines"`
+	// The purchase fund is the branch's second envelope, counted and settled apart from the drawer
+	// (S1). purchase_fund_opening is the amount the previous closure left in it, purchases_total and
+	// purchases_cash are the sums of the purchases of the window — counter-documents included, so they
+	// already subtract — and purchase_fund_expected is opening minus that cash (S3, S11).
+	// purchase_fund_counted is what the warehouse counted and purchase_fund_difference is that count
+	// against the expectation: informational, never a block, and null while uncounted. purchase_fund_cash
+	// is the amount the warehouse leaves in it, which opens the next period (S5, S6). None of these
+	// amounts enters the drawer's identities nor the commission (S12).
+	PurchaseFundOpening    string  `json:"purchase_fund_opening"`
+	PurchasesTotal         string  `json:"purchases_total"`
+	PurchasesCash          string  `json:"purchases_cash"`
+	PurchaseFundExpected   string  `json:"purchase_fund_expected"`
+	PurchaseFundCounted    *string `json:"purchase_fund_counted"`
+	PurchaseFundDifference *string `json:"purchase_fund_difference"`
+	PurchaseFundCash       *string `json:"purchase_fund_cash"`
 	// Expenses are the small expenses of the window this settlement covers, in the order the branch
 	// recorded them (S12). They are the facts its cash_expenses total was computed from, so the
 	// warehouse sees what it subtracts and the branch what it is charged for.
@@ -1212,6 +1439,62 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 		}
 		takenText = &amount
 	}
+	// The purchase envelope is revalidated with the same discipline as the drawer: its opening, the
+	// sums of the purchases of the window and the expectation they produce are recomputed here, so a
+	// number can never reach the screen without being rederived from the facts that produce it (S1,
+	// S3, S11). The difference is published only against an envelope that was counted, exactly like
+	// the cash difference, and its identity is the same arithmetic.
+	purchaseFundOpening, ok := closingAmountText(closing.PurchaseFundOpening)
+	if !ok {
+		return unavailable()
+	}
+	// The two sums of the window are net figures that keep their sign — a counter-document is stored
+	// with negative amounts — so they are published with the same signed validation the expectation
+	// and the difference already get, and a window that returned more than it bought is published
+	// negative instead of failing closed (S3, S11).
+	purchasesTotal, ok := closingSignedText(closings.Signed(closing.PurchasesTotal))
+	if !ok {
+		return unavailable()
+	}
+	purchasesCash, ok := closingSignedText(closings.Signed(closing.PurchasesCash))
+	if !ok {
+		return unavailable()
+	}
+	purchaseFundExpected, err := closings.PurchaseFundExpected(closing.PurchaseFundOpening,
+		closings.Signed(closing.PurchasesCash))
+	if err != nil || purchaseFundExpected != closing.PurchaseFundExpected {
+		return unavailable()
+	}
+	purchaseFundExpectedText, ok := closingSignedText(purchaseFundExpected)
+	if !ok {
+		return unavailable()
+	}
+	purchaseFundCounted, ok := closingOptionalAmountRecord(closing.PurchaseFundCounted)
+	if !ok {
+		return unavailable()
+	}
+	purchaseFundCash, ok := closingOptionalAmountRecord(closing.PurchaseFundCash)
+	if !ok {
+		return unavailable()
+	}
+	var purchaseFundDifferenceText *string
+	if closing.PurchaseFundCounted == nil {
+		// An uncounted envelope states no difference: a difference of zero would be a count nobody made.
+		if closing.PurchaseFundDifference != nil {
+			return unavailable()
+		}
+	} else {
+		difference, err := closings.CashDifference(*closing.PurchaseFundCounted, purchaseFundExpected)
+		if err != nil || closing.PurchaseFundDifference == nil ||
+			difference != *closing.PurchaseFundDifference {
+			return unavailable()
+		}
+		text, ok := closingSignedText(difference)
+		if !ok {
+			return unavailable()
+		}
+		purchaseFundDifferenceText = &text
+	}
 	lines := make([]closingCountLineDTO, 0, len(closing.CountLines))
 	var previous int64
 	for _, line := range closing.CountLines {
@@ -1221,6 +1504,23 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 		}
 		previous = line.VariantID
 		lines = append(lines, record)
+	}
+	// The material sheet is revalidated with the same discipline: the key every kind names, the unit of
+	// that kind, and the difference and the delivery recomputed from the expected and the counted
+	// quantity, so a number can never reach the screen without being rederived from its facts (S7,
+	// S8, S9). The rows are published in the order the store reads them: the used lines by model and
+	// then the scrap ones by material id.
+	sheet := make([]closingMaterialLineDTO, 0, len(closing.MaterialLines))
+	for index, line := range closing.MaterialLines {
+		var previousLine *closings.MaterialLine
+		if index > 0 {
+			previousLine = &closing.MaterialLines[index-1]
+		}
+		record, ok := closingMaterialLineRecord(line, previousLine)
+		if !ok {
+			return unavailable()
+		}
+		sheet = append(sheet, record)
 	}
 	rounds := make([]closingRoundDTO, 0, len(closing.Rounds))
 	for index, round := range closing.Rounds {
@@ -1286,8 +1586,105 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 		TakenCash: takenText, SalesTotal: amounts[3], CommissionAmount: amounts[4],
 		CardTotal: amounts[5], TransferTotal: amounts[6], QRTotal: amounts[7],
 		Observation: closing.Observation, OpenedByAccountID: closing.OpenedByAccountID,
-		CountLines: lines, Rounds: rounds, Expenses: expenses, Corrections: corrections,
+		PurchaseFundOpening: purchaseFundOpening, PurchasesTotal: purchasesTotal,
+		PurchasesCash: purchasesCash, PurchaseFundExpected: purchaseFundExpectedText,
+		PurchaseFundCounted: purchaseFundCounted, PurchaseFundDifference: purchaseFundDifferenceText,
+		PurchaseFundCash: purchaseFundCash,
+		CountLines:       lines, MaterialLines: sheet, Rounds: rounds, Expenses: expenses,
+		Corrections: corrections,
 	}, nil
+}
+
+// closingMaterialLineRecord admits one line of the material sheet: the key its kind names, the unit
+// that kind is counted in, the expected quantity of the opening, the counted one or null while the
+// line is pending, and -- only against a counted line -- the difference and the delivery, both
+// recomputed here from the same arithmetic the store derived them with. It also admits the order the
+// sheet is published in, so a line that came back in another order is never described.
+func closingMaterialLineRecord(line closings.MaterialLine, previous *closings.MaterialLine) (closingMaterialLineDTO, bool) {
+	if !line.Kind.Valid() || line.Unit != line.Kind.Unit() || len(line.Expected) == 0 {
+		return closingMaterialLineDTO{}, false
+	}
+	expected, err := closings.ParseQuantity(line.Kind, string(line.Expected))
+	if err != nil || expected != line.Expected {
+		return closingMaterialLineDTO{}, false
+	}
+	record := closingMaterialLineDTO{Kind: string(line.Kind), Unit: line.Unit,
+		Expected: string(expected)}
+	switch line.Kind {
+	case closings.MaterialKindUsed:
+		if line.Model == nil || line.MaterialID != nil || line.Material != nil ||
+			!closings.ValidMaterialModel(*line.Model) {
+			return closingMaterialLineDTO{}, false
+		}
+		model := *line.Model
+		record.Model = &model
+	case closings.MaterialKindScrap:
+		if line.Model != nil || line.MaterialID == nil || line.Material == nil ||
+			*line.MaterialID < 1 || *line.MaterialID > closings.MaxMaterialID ||
+			*line.Material == "" || !closingText(*line.Material) {
+			return closingMaterialLineDTO{}, false
+		}
+		materialID, name := *line.MaterialID, *line.Material
+		record.MaterialID, record.Material = &materialID, &name
+	}
+	// The order is the sheet's own: the used lines first and by model, then the scrap ones by material id.
+	if previous != nil {
+		switch {
+		case line.Kind != previous.Kind:
+			if previous.Kind != closings.MaterialKindUsed || line.Kind != closings.MaterialKindScrap {
+				return closingMaterialLineDTO{}, false
+			}
+		case line.Kind == closings.MaterialKindUsed:
+			if record.Model == nil || previous.Model == nil || *record.Model <= *previous.Model {
+				return closingMaterialLineDTO{}, false
+			}
+		default:
+			if record.MaterialID == nil || previous.MaterialID == nil ||
+				*record.MaterialID <= *previous.MaterialID {
+				return closingMaterialLineDTO{}, false
+			}
+		}
+	}
+	if line.Counted != nil {
+		counted, err := closings.ParseQuantity(line.Kind, string(*line.Counted))
+		if err != nil || counted != *line.Counted {
+			return closingMaterialLineDTO{}, false
+		}
+		text := string(counted)
+		record.Counted = &text
+	}
+	difference, err := closings.MaterialDifference(line.Counted, expected, line.Kind)
+	if err != nil || (difference == nil) != (line.Difference == nil) ||
+		(difference != nil && *difference != *line.Difference) {
+		return closingMaterialLineDTO{}, false
+	}
+	delivered, ok := closingDelivered(line)
+	if !ok {
+		return closingMaterialLineDTO{}, false
+	}
+	record.Delivered = delivered
+	if difference != nil {
+		text := difference.String()
+		record.Difference = &text
+	}
+	return record, true
+}
+
+// closingDelivered recomputes the quantity that goes to the warehouse at the closure: everything that
+// was counted, because the previous closure took everything and nothing is left behind (S9). It is
+// derived on read and never stored, so a delivery that disagrees with the count is a shape this
+// domain never wrote and is never published.
+func closingDelivered(line closings.MaterialLine) (*string, bool) {
+	delivered := closings.MaterialDelivery(line.Counted)
+	if delivered == nil {
+		return nil, line.Delivered == nil
+	}
+	quantity, err := closings.ParseQuantity(line.Kind, string(*delivered))
+	if err != nil || quantity != *delivered || line.Delivered == nil || *line.Delivered != quantity {
+		return nil, false
+	}
+	text := string(quantity)
+	return &text, true
 }
 
 // closingCountLineRecord admits one line of the count sheet: the catalogue identity of its
@@ -1408,6 +1805,17 @@ func closingOfferRecord(payload closings.ProposalPayload) (closingOfferDTO, bool
 	if !ok || countedCash == nil || closingCash == nil {
 		return closingOfferDTO{}, false
 	}
+	// The purchase envelope of the offer is optional: an offer made before the warehouse stated it
+	// carries neither amount, and one that states the counted amount does not have to state what it
+	// leaves behind. Both are revalidated as the canonical money of this contract (S1, S5).
+	purchaseCounted, ok := closingOptionalAmountRecord(payload.PurchaseFundCounted)
+	if !ok {
+		return closingOfferDTO{}, false
+	}
+	purchaseCash, ok := closingOptionalAmountRecord(payload.PurchaseFundCash)
+	if !ok {
+		return closingOfferDTO{}, false
+	}
 	if payload.Observation != "" && !closings.ValidObservation(payload.Observation) {
 		return closingOfferDTO{}, false
 	}
@@ -1427,6 +1835,7 @@ func closingOfferRecord(payload closings.ProposalPayload) (closingOfferDTO, bool
 		CommissionRatePercent: string(rate), CommissionAmount: amounts[1], CashSales: amounts[2],
 		CashExpenses: amounts[3], CardTotal: amounts[4], TransferTotal: amounts[5], QRTotal: qrTotal,
 		CountedCash: countedCash, ContributedCash: contributed, ClosingCash: closingCash,
+		PurchaseFundCounted: purchaseCounted, PurchaseFundCash: purchaseCash,
 		Observation: payload.Observation, CountLines: lines}, true
 }
 
@@ -1769,6 +2178,39 @@ func (a *API) closingCollection(store *closings.Store) http.HandlerFunc {
 // closingSettings serves the commission configuration of one branch: the warehouse reads and
 // writes it, and a branch reads only its own. The branch in the path is the scope the store
 // enforces, so a branch that names another one is refused there.
+// closingCommissions answers the configured commission of every branch in one call, which is
+// what the administration panel lists. It is a read: it writes nothing, admits no query and only
+// the warehouse may ask.
+func (a *API) closingCommissions(store *closings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, http.MethodGet) {
+			return
+		}
+		actor, ok := a.inventoryIdentity(w, r)
+		if !ok {
+			return
+		}
+		if !closingQueryAbsent(w, r) {
+			return
+		}
+		configured, err := store.Commissions(r.Context(), actor)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		records := make([]closingCommissionDTO, 0, len(configured))
+		for _, item := range configured {
+			record, err := closingCommissionRecord(item)
+			if err != nil {
+				closingFailure(w, err)
+				return
+			}
+			records = append(records, record)
+		}
+		respond(w, 200, records)
+	}
+}
+
 func (a *API) closingSettings(store *closings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {
@@ -1916,6 +2358,47 @@ func (a *API) closingCount(store *closings.Store) http.HandlerFunc {
 			return
 		}
 		closing, err := store.Count(r.Context(), actor, id, counted)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		record, err := closingRecord(closing)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		respond(w, 200, record)
+	}
+}
+
+// closingMaterials records what the warehouse counted of the material sheet: the used batteries in
+// units per model and the scrap in kilograms per material, in one request, exactly in the shape of the
+// count sheet of the stock rather than as a field of the drawer (S8). A line it does not state keeps
+// the count it has, so the same request written twice states the same sheet, and a line nobody counted
+// stays pending without blocking anything: the stock count sheet is the only gate of the proposal.
+func (a *API) closingMaterials(store *closings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, http.MethodPost) {
+			return
+		}
+		actor, ok := a.inventoryIdentity(w, r)
+		if !ok {
+			return
+		}
+		if !a.closingMutation(w, r) {
+			return
+		}
+		id, err := closingPathID(r.PathValue("id"), math.MaxInt64)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		counted, err := decodeClosingMaterials(r)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		closing, err := store.CountMaterials(r.Context(), actor, id, counted)
 		if err != nil {
 			closingFailure(w, err)
 			return

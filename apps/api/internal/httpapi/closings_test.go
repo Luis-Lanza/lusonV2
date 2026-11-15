@@ -140,6 +140,8 @@ func TestClosingRoutes(t *testing.T) {
 		{"DELETE", "/api/closings", "GET, POST", 405, "method_not_allowed"},
 		{"GET", "/api/closings/branches/2/commission", "", 401, "unauthenticated"},
 		{"PUT", "/api/closings/branches/2/commission", "GET, POST", 405, "method_not_allowed"},
+		{"GET", "/api/closings/branches/commissions", "", 401, "unauthenticated"},
+		{"POST", "/api/closings/branches/commissions", "GET", 405, "method_not_allowed"},
 		{"GET", "/api/closings/1", "", 401, "unauthenticated"},
 		{"POST", "/api/closings/1", "GET", 405, "method_not_allowed"},
 		{"POST", "/api/closings/1/count", "", 401, "unauthenticated"},
@@ -184,6 +186,64 @@ func TestClosingRoutes(t *testing.T) {
 	if base.calls != 0 {
 		t.Fatalf("a settlement path must never be forwarded: %d", base.calls)
 	}
+}
+
+// TestClosingCommissionsListThePanelReads pins S2 and S4 at the HTTP boundary: the warehouse reads
+// every configured commission in one answer, with its author and its moment; a branch reads none;
+// a method that would write through a read path is refused; and reading leaves nothing behind.
+func TestClosingCommissionsListThePanelReads(t *testing.T) {
+	f := closingFixture(t)
+
+	// A fresh installation configures nothing, so the panel lists nothing.
+	empty := f.serve(t, f.request(1, "GET", "/api/closings/branches/commissions", ""))
+	if empty.Code != 200 || strings.TrimSpace(empty.Body.String()) != "[]" {
+		t.Fatalf("an installation without commissions lists none: %d %s", empty.Code, empty.Body.String())
+	}
+
+	// The author the panel shows is the account's own name, so the fixture names the warehouse
+	// the way provisioning does in a real installation.
+	if _, err := f.p.Exec(f.ctx, `UPDATE auth_accounts SET display_name='Almacén' WHERE id=1`); err != nil {
+		t.Fatal("the settlement HTTP fixture could not name the warehouse")
+	}
+	// The warehouse configures one branch and the panel reads it with its author and moment.
+	post := f.serve(t, f.request(1, "POST", "/api/closings/branches/2/commission",
+		`{"commission_rate_percent":"12.50"}`))
+	if post.Code != 200 {
+		t.Fatalf("the warehouse must configure a commission: %d %s", post.Code, post.Body.String())
+	}
+	before := f.snapshot(t)
+	listed := f.serve(t, f.request(1, "GET", "/api/closings/branches/commissions", ""))
+	if listed.Code != 200 {
+		t.Fatalf("the warehouse must read the configured commissions: %d %s", listed.Code, listed.Body.String())
+	}
+	var records []struct {
+		BranchID  int64  `json:"branch_location_id"`
+		Rate      string `json:"commission_rate_percent"`
+		UpdatedAt string `json:"updated_at"`
+		UpdatedBy string `json:"updated_by"`
+	}
+	if err := json.Unmarshal(listed.Body.Bytes(), &records); err != nil || len(records) != 1 {
+		t.Fatalf("the panel reads one entry per configured branch: %s %v", listed.Body.String(), err)
+	}
+	if records[0].BranchID != 2 || records[0].Rate != "12.50" {
+		t.Fatalf("the listed commission is not the configured one: %+v", records[0])
+	}
+	if moment, err := time.Parse(time.RFC3339, records[0].UpdatedAt); err != nil || moment.IsZero() {
+		t.Fatalf("the listed commission does not say when it was fixed: %+v", records[0])
+	}
+	if records[0].UpdatedBy != "Almacén" {
+		t.Fatalf("the listed commission does not say who fixed it: %+v", records[0])
+	}
+	if after := f.snapshot(t); after != before {
+		t.Fatalf("reading the commissions wrote something: %s -> %s", before, after)
+	}
+
+	// Only the warehouse reads the panel, and the read path never writes.
+	f.refused(t, f.request(2, "GET", "/api/closings/branches/commissions", ""), 403, `{"error":"forbidden"}`)
+	f.refused(t, f.request(1, "POST", "/api/closings/branches/commissions", `{"commission_rate_percent":"1.00"}`),
+		405, `{"error":"method_not_allowed"}`)
+	f.refused(t, f.request(1, "GET", "/api/closings/branches/commissions?branch=2", ""), 400,
+		`{"error":"invalid_request"}`)
 }
 
 func TestClosingDecoders(t *testing.T) {
@@ -351,13 +411,17 @@ func TestClosingDecoders(t *testing.T) {
 }
 
 // closingValue is one complete persisted settlement, used to prove that what this layer publishes
-// is revalidated and never trusted as is.
+// is revalidated and never trusted as is. Both envelopes are stated: the drawer and the purchase
+// fund of the branch, which is a count of its own against an expectation of its own.
 func closingValue() closings.Closing {
 	rate := closings.Percent("10.00")
 	counted := closings.Money("96000.00")
 	fund := closings.Money("6000.00")
 	difference := closings.Signed("0.00")
 	taken := closings.Signed("90000.00")
+	purchaseCounted := closings.Money("240.00")
+	purchaseDifference := closings.Signed("-10.00")
+	purchaseCash := closings.Money("400.00")
 	closed := time.Date(2026, 3, 23, 18, 30, 0, 0, time.UTC)
 	decided := closed.Add(-2 * time.Minute)
 	decidedBy := int64(2)
@@ -370,7 +434,10 @@ func closingValue() closings.Closing {
 		CommissionAmount: "9600.00", CardTotal: "0.00", TransferTotal: "0.00", QRTotal: "0.00",
 		CountedCash: &counted, ContributedCash: "0.00", ClosingCash: &fund,
 		OpenedByAccountID: 1, ExpectedCash: "96000.00", CashDifference: &difference,
-		TakenCash: &taken,
+		TakenCash:           &taken,
+		PurchaseFundOpening: "300.00", PurchasesTotal: "120.50", PurchasesCash: "50.00",
+		PurchaseFundExpected: "250.00", PurchaseFundCounted: &purchaseCounted,
+		PurchaseFundDifference: &purchaseDifference, PurchaseFundCash: &purchaseCash,
 		CountLines: []closings.CountLine{{VariantID: 3, CatalogEntryID: 2, Brand: "TOYO",
 			Model: "NS60L", Capacity: catalog.Decimal("45"), Polarity: "L",
 			ExpectedQuantity: 12, CountedQuantity: ptrInt64(12)}},
@@ -382,6 +449,7 @@ func closingValue() closings.Closing {
 				CommissionAmount: "9600.00", CashSales: "96000.00", CashExpenses: "0.00",
 				CardTotal: "0.00", TransferTotal: "0.00", QRTotal: "0.00",
 				CountedCash: &counted, ContributedCash: "0.00", ClosingCash: &fund,
+				PurchaseFundCounted: &purchaseCounted, PurchaseFundCash: &purchaseCash,
 				CountLines: []closings.ProposalCountLine{{VariantID: 3, ExpectedQuantity: 12,
 					CountedQuantity: 12}},
 			}},
@@ -413,6 +481,31 @@ func TestClosingRecord(t *testing.T) {
 	if offer := record.Rounds[0].Offer; offer.CommissionAmount != "9600.00" ||
 		offer.SalesTotal != "96000.00" || offer.QRTotal != "0.00" || len(offer.CountLines) != 1 {
 		t.Fatalf("the round must publish the offer it was answered with: %+v", offer)
+	}
+	// The purchase fund is the second envelope: it publishes its opening, the purchases of its
+	// window, its expectation, the count the warehouse made with its difference, and the amount that
+	// opens the next period. None of them moves the drawer above (S1, S3, S12).
+	if record.PurchaseFundOpening != "300.00" || record.PurchasesTotal != "120.50" ||
+		record.PurchasesCash != "50.00" || record.PurchaseFundExpected != "250.00" ||
+		record.PurchaseFundCounted == nil || *record.PurchaseFundCounted != "240.00" ||
+		record.PurchaseFundDifference == nil || *record.PurchaseFundDifference != "-10.00" ||
+		record.PurchaseFundCash == nil || *record.PurchaseFundCash != "400.00" {
+		t.Fatalf("the purchase fund of the settlement does not match the published contract: %+v", record)
+	}
+	if offer := record.Rounds[0].Offer; offer.PurchaseFundCounted == nil ||
+		*offer.PurchaseFundCounted != "240.00" || offer.PurchaseFundCash == nil ||
+		*offer.PurchaseFundCash != "400.00" {
+		t.Fatalf("the round must publish the envelope of its offer: %+v", offer)
+	}
+	// The sums of the window keep their sign, so a period net of its reversals is published rather
+	// than refused (S3, S11): both texts come out negative and the expectation follows them.
+	signed := closingValue()
+	signed.PurchasesTotal, signed.PurchasesCash, signed.PurchaseFundExpected = "-120.50", "-120.50", "420.50"
+	shortfall := closings.Signed("-180.50")
+	signed.PurchaseFundDifference = &shortfall
+	signedRecord, err := closingRecord(signed)
+	if err != nil || signedRecord.PurchasesTotal != "-120.50" || signedRecord.PurchasesCash != "-120.50" {
+		t.Fatalf("a net of reversals must be published with its sign: %+v %v", signedRecord, err)
 	}
 	// A held settlement is drafted: no rate yet, and the drawer may still be uncounted.
 	open := closingValue()
@@ -464,6 +557,29 @@ func TestClosingRecord(t *testing.T) {
 		"taken_stale":        mutate(func(v *closings.Closing) { signed := closings.Signed("1.00"); v.TakenCash = &signed }),
 		"difference_lost":    mutate(func(v *closings.Closing) { v.CashDifference = nil }),
 		"taken_without_fund": mutate(func(v *closings.Closing) { v.ClosingCash = nil }),
+		// The purchase envelope follows the same discipline: every derived number it publishes is
+		// rederived here, and a count without its difference (or a difference without its count) is a
+		// shape this domain never wrote.
+		"fund_opening_stale":   mutate(func(v *closings.Closing) { v.PurchaseFundOpening = "301.00" }),
+		"fund_purchases_stale": mutate(func(v *closings.Closing) { v.PurchasesCash = "50" }),
+		"fund_total_empty":     mutate(func(v *closings.Closing) { v.PurchasesTotal = "" }),
+		"fund_total_plus":      mutate(func(v *closings.Closing) { v.PurchasesTotal = "+120.50" }),
+		"fund_expected_stale":  mutate(func(v *closings.Closing) { v.PurchaseFundExpected = "1.00" }),
+		"fund_counted_float":   mutate(func(v *closings.Closing) { counted := closings.Money("240.0"); v.PurchaseFundCounted = &counted }),
+		"fund_difference_stale": mutate(func(v *closings.Closing) {
+			difference := closings.Signed("1.00")
+			v.PurchaseFundDifference = &difference
+		}),
+		"fund_counted_without_difference": mutate(func(v *closings.Closing) {
+			v.PurchaseFundDifference = nil
+		}),
+		"fund_difference_without_count": mutate(func(v *closings.Closing) {
+			v.PurchaseFundCounted = nil
+		}),
+		"fund_cash_short": mutate(func(v *closings.Closing) {
+			amount := closings.Money("400.0")
+			v.PurchaseFundCash = &amount
+		}),
 		"counted_without_difference": mutate(func(v *closings.Closing) {
 			v.CashDifference = nil
 		}),
@@ -1045,12 +1161,25 @@ type closingWireRecord struct {
 	QRTotal               string  `json:"qr_total"`
 	Observation           string  `json:"observation"`
 	OpenedByAccountID     int64   `json:"opened_by_account_id"`
-	CountLines            []struct {
+	// The purchase fund is the second envelope: what it inherited, the purchases of the window, its
+	// expectation, the count, its difference and the amount that opens the next period.
+	PurchaseFundOpening    string  `json:"purchase_fund_opening"`
+	PurchasesTotal         string  `json:"purchases_total"`
+	PurchasesCash          string  `json:"purchases_cash"`
+	PurchaseFundExpected   string  `json:"purchase_fund_expected"`
+	PurchaseFundCounted    *string `json:"purchase_fund_counted"`
+	PurchaseFundDifference *string `json:"purchase_fund_difference"`
+	PurchaseFundCash       *string `json:"purchase_fund_cash"`
+	CountLines             []struct {
 		VariantID        int64  `json:"variant_id"`
 		ExpectedQuantity int64  `json:"expected_quantity"`
 		CountedQuantity  *int64 `json:"counted_quantity"`
 	} `json:"count_lines"`
-	Expenses []closingExpenseWireRecord `json:"expenses"`
+	// MaterialLines is the third account of the document: what the period bought of every model and
+	// material, what the warehouse counted of it, the difference between the two and the quantity that
+	// goes to the warehouse (S7, S8, S9).
+	MaterialLines []closingMaterialLineWireRecord `json:"material_lines"`
+	Expenses      []closingExpenseWireRecord      `json:"expenses"`
 	// Corrections are the accepted corrections of the closed settlement, oldest first: each one with
 	// the reason the warehouse stated, the branch's answer and the deltas it applied (S16).
 	Corrections []closingCorrectionWireRecord `json:"corrections"`
@@ -1069,6 +1198,8 @@ type closingWireRecord struct {
 			CountedCash           *string `json:"counted_cash"`
 			ContributedCash       string  `json:"contributed_cash"`
 			ClosingCash           *string `json:"closing_cash"`
+			PurchaseFundCounted   *string `json:"purchase_fund_counted"`
+			PurchaseFundCash      *string `json:"purchase_fund_cash"`
 		} `json:"offer"`
 	} `json:"rounds"`
 }
@@ -1077,7 +1208,9 @@ var closingWireKeys = []string{"id", "branch_location_id", "branch_name", "statu
 	"cut_at", "closed_at", "commission_rate_percent", "opening_cash", "cash_sales", "cash_expenses",
 	"expected_cash", "counted_cash", "cash_difference", "contributed_cash", "closing_cash",
 	"taken_cash", "sales_total", "commission_amount", "card_total", "transfer_total", "qr_total",
-	"observation", "opened_by_account_id", "count_lines", "rounds", "expenses", "corrections"}
+	"observation", "opened_by_account_id", "purchase_fund_opening", "purchases_total",
+	"purchases_cash", "purchase_fund_expected", "purchase_fund_counted", "purchase_fund_difference",
+	"purchase_fund_cash", "count_lines", "material_lines", "rounds", "expenses", "corrections"}
 
 // closingWire admits only the frozen settlement shape: one object with exactly the published keys.
 func closingWire(t *testing.T, w *httptest.ResponseRecorder, status int) closingWireRecord {
@@ -1095,12 +1228,48 @@ func closingWire(t *testing.T, w *httptest.ResponseRecorder, status int) closing
 			t.Fatalf("settlement key %q missing: %s", key, w.Body.String())
 		}
 	}
+	// Every line of the material sheet carries exactly the nine keys of its shape: the kind, its
+	// one key on each side -- model, material_id and material -- the unit and the four quantities.
+	var sheet []map[string]json.RawMessage
+	if json.Unmarshal(value["material_lines"], &sheet) != nil {
+		t.Fatalf("material lines are not decodable: %s", w.Body.String())
+	}
+	for _, line := range sheet {
+		if len(line) != len(closingMaterialLineWireKeys) {
+			t.Fatalf("material line whitelist changed: %s", w.Body.String())
+		}
+		for _, key := range closingMaterialLineWireKeys {
+			if _, ok := line[key]; !ok {
+				t.Fatalf("material line key %q missing: %s", key, w.Body.String())
+			}
+		}
+	}
 	var record closingWireRecord
 	if json.Unmarshal(w.Body.Bytes(), &record) != nil {
 		t.Fatalf("settlement is not decodable: %s", w.Body.String())
 	}
 	return record
 }
+
+// closingMaterialLineWireRecord is one line of the material sheet exactly as the contract publishes
+// it: the kind, the key that kind names -- the model of a used line or the material of a scrap one,
+// with the other side at JSON null -- the unit of the line and its four quantities, of which the
+// counted one, the difference and the delivery are null while the warehouse has not counted it.
+type closingMaterialLineWireRecord struct {
+	Kind       string  `json:"kind"`
+	Model      *string `json:"model"`
+	MaterialID *int64  `json:"material_id"`
+	Material   *string `json:"material"`
+	Unit       string  `json:"unit"`
+	Expected   string  `json:"expected_quantity"`
+	Counted    *string `json:"counted_quantity"`
+	Difference *string `json:"difference"`
+	Delivered  *string `json:"delivered_quantity"`
+}
+
+// closingMaterialLineWireKeys is the frozen key set of one line of the material sheet.
+var closingMaterialLineWireKeys = []string{"kind", "model", "material_id", "material", "unit",
+	"expected_quantity", "counted_quantity", "difference", "delivered_quantity"}
 
 // closingCorrectionEffectWireRecord is one delta an accepted correction applied, exactly as the
 // contract publishes it: the unit it moves and the exact difference, with the other unit's keys at
@@ -1247,15 +1416,9 @@ func TestClosingsOneLiveSettlement(t *testing.T) {
 func TestClosingsRefusalsNameWhatIsMissing(t *testing.T) {
 	f := closingFixture(t)
 	id := f.open(t, 2)
-	// One line counted and the rest pending: the proposal names the first variant still to count.
-	sheet := f.sheet(t, id)
-	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/count", id),
-		closingCountBody(sheet[:1]))); w.Code != 200 {
-		t.Fatalf("a partial count is a legitimate draft: %d %s", w.Code, w.Body.String())
-	}
-	pending := sheet[1].VariantID
-	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/propose", id), ""), 409,
-		fmt.Sprintf(`{"error":"count_pending","variant_id":%d}`, pending))
+	// The sheet opens aligned with the system, so the warehouse proposes without writing a single
+	// quantity (S1, S3) and the pending refusal is not part of this path: its mapping has its own
+	// test, and it survives only for a sheet written before the seeding.
 	// The drawer states a fund the counted cash cannot hold: the refusal names the excess, so the
 	// admin corrects the exact amount.
 	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", id),
@@ -1267,7 +1430,6 @@ func TestClosingsRefusalsNameWhatIsMissing(t *testing.T) {
 		`{"counted_cash":"100.00","contributed_cash":"0.00","closing_cash":"40.00","observation":"contado"}`)); w.Code != 200 {
 		t.Fatalf("a fund inside the drawer must be saved: %d %s", w.Code, w.Body.String())
 	}
-	f.countAll(t, id)
 	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/propose", id), ""), 409,
 		`{"error":"commission_rate_missing"}`)
 	// With the rate configured the same proposal is offered, so the refusal above was the rate and
@@ -1414,19 +1576,23 @@ func TestClosingsDraftAndDerivedMoney(t *testing.T) {
 	if w := f.serve(t, f.request(2, "POST", "/api/sales", saleBody(1, 1, "96000.00", 6))); w.Code != 201 {
 		t.Fatalf("the branch must sell between settlements: %d %s", w.Code, w.Body.String())
 	}
-	// The next settlement inherits the fund and starts where the previous one closed.
+	// The next settlement inherits the fund and starts where the previous one closed, and it
+	// publishes the period it already contains: a settlement the warehouse holds states the money
+	// of its own window instead of the zeros nobody wrote yet (S1).
 	id := f.open(t, 2)
 	opened := closingWire(t, f.serve(t, f.request(1, "GET", fmt.Sprintf("/api/closings/%d", id), "")), 200)
 	if opened.OpeningCash != "100.00" || opened.PeriodStart != *firstClosed.ClosedAt ||
-		opened.SalesTotal != "0.00" || opened.CashSales != "0.00" || opened.ExpectedCash != "100.00" ||
+		opened.SalesTotal != "96000.00" || opened.CashSales != "96000.00" || opened.ExpectedCash != "96100.00" ||
 		opened.CommissionRatePercent != nil || opened.CountedCash != nil ||
 		opened.CashDifference != nil || opened.TakenCash != nil {
-		t.Fatalf("a settlement inherits the fund and the period, not the numbers of it: %+v", opened)
+		t.Fatalf("a settlement inherits the fund and publishes the period of its window: %+v", opened)
 	}
-	// The sheet is the database's own snapshot of the cut and no line is counted yet.
+	// The sheet is the database's own snapshot of the cut, and it opens aligned with the system:
+	// every line states the quantity the database expects, so the warehouse only edits the
+	// variants whose count disagrees (S1).
 	for _, line := range opened.CountLines {
-		if line.CountedQuantity != nil {
-			t.Fatalf("a seeded line is pending until it is counted: %+v", line)
+		if line.CountedQuantity == nil || *line.CountedQuantity != line.ExpectedQuantity {
+			t.Fatalf("a seeded line must state the expected quantity: %+v", line)
 		}
 	}
 	sheet := f.sheet(t, id)
@@ -1444,15 +1610,16 @@ func TestClosingsDraftAndDerivedMoney(t *testing.T) {
 		record.CountLines[0].ExpectedQuantity != sheet[0].Quantity {
 		t.Fatalf("the count must be recorded against the snapshot: %+v", record.CountLines[0])
 	}
-	// The drawer is a draft that is read back with what it states. Until the warehouse proposes,
-	// the period totals are still zero, because the database records them with the proposal.
+	// The drawer is a draft that is read back with what it states, counted against the period of
+	// its own window: the expected drawer is the inherited fund plus the cash collected, even
+	// though the database only records that period when the warehouse proposes (S1).
 	draft := closingWire(t, f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", id),
 		`{"counted_cash":"96000.00","contributed_cash":"0.00","closing_cash":"6000.00","observation":"contado en persona"}`)), 200)
 	if draft.CountedCash == nil || *draft.CountedCash != "96000.00" ||
 		draft.ClosingCash == nil || *draft.ClosingCash != "6000.00" ||
 		draft.TakenCash == nil || *draft.TakenCash != "90000.00" ||
-		draft.ExpectedCash != "100.00" || draft.CashDifference == nil ||
-		*draft.CashDifference != "95900.00" || draft.Observation != "contado en persona" {
+		draft.ExpectedCash != "96100.00" || draft.CashDifference == nil ||
+		*draft.CashDifference != "-100.00" || draft.Observation != "contado en persona" {
 		t.Fatalf("the drawer draft must be published with its derived numbers: %+v", draft)
 	}
 	f.countAll(t, id)
@@ -1818,8 +1985,8 @@ func TestClosingsExpenses(t *testing.T) {
 	}
 
 	// The settlement that covers the two expenses of this branch publishes them, so the warehouse
-	// sees what it is subtracting and the branch what it is being charged for. The total is the
-	// offer's and is still unfrozen while the warehouse holds the settlement.
+	// sees what it is subtracting and the branch what it is being charged for. Both the list and
+	// the total are derived from the window while the warehouse holds the settlement (S1).
 	id := f.open(t, 2)
 	document := closingWire(t, f.serve(t, f.request(1, "GET",
 		fmt.Sprintf("/api/closings/%d", id), "")), 200)
@@ -1829,8 +1996,9 @@ func TestClosingsExpenses(t *testing.T) {
 		document.Expenses[0].BranchLocationID != 2 || document.Expenses[0].OccurredAt == "" {
 		t.Fatalf("the document must list the expenses of its window: %+v", document.Expenses)
 	}
-	if document.CashExpenses != "0.00" {
-		t.Fatalf("a held settlement states no period total yet: %q", document.CashExpenses)
+	if document.CashExpenses != "55.50" || document.ExpectedCash != "44.50" {
+		t.Fatalf("a held settlement publishes the period of its window: %q %q",
+			document.CashExpenses, document.ExpectedCash)
 	}
 	// A history row publishes the expenses as an empty list, exactly like the sheet and the rounds.
 	page := closingPageWire(t, f.serve(t, f.request(2, "GET",
@@ -2661,9 +2829,13 @@ func TestSettlementCycleEndToEnd(t *testing.T) {
 	next := closingWire(t, f.serve(t, f.request(1, "POST", "/api/closings",
 		fmt.Sprintf(`{"branch_location_id":%d}`, branch))), 201)
 	// The period boundary is the closure instant, and the fund the closure left is this opening.
+	// The money of the period is published from the moment the settlement opens, derived from the
+	// window it covers, so the warehouse counts the drawer against it before proposing anything
+	// (S1); the commission percentage itself is only frozen by the proposal, so it is still null.
 	if next.ID == first || next.Status != "open" || next.PeriodStart != *closed.ClosedAt ||
-		next.OpeningCash != "300.00" || next.CashSales != "0.00" || next.ExpectedCash != "300.00" ||
-		next.SalesTotal != "0.00" || next.CommissionRatePercent != nil || len(next.Rounds) != 0 {
+		next.OpeningCash != "300.00" || next.CashSales != "96000.00" || next.ExpectedCash != "96254.50" ||
+		next.SalesTotal != "96000.00" || next.CashExpenses != "45.50" ||
+		next.CommissionAmount != "9600.00" || next.CommissionRatePercent != nil || len(next.Rounds) != 0 {
 		t.Fatalf("step 5: the next period starts where the closure ended, holding its fund: %+v", next)
 	}
 	f.countAll(t, next.ID)
@@ -2782,4 +2954,327 @@ func (f *closingHTTPFixture) absentVariant(t *testing.T, branch, closingID int64
 		t.Fatalf("the fixture needs a variant the branch does not hold: %v", err)
 	}
 	return variant
+}
+
+// TestClosingsPurchaseFundDraftAndDerivedMoney pins S1, S3, S5, S6 and S12 over HTTP: the document
+// publishes the second envelope with the same cents shape as the rest of the payload, the drawer's
+// four keys are still mandatory and the two keys of the envelope are optional, and the envelope is a
+// draft while the warehouse holds the settlement and the offer once it is proposed.
+func TestClosingsPurchaseFundDraftAndDerivedMoney(t *testing.T) {
+	f := closingFixture(t)
+	// The first settlement closes with an envelope of its own, stated in the same draft as the
+	// drawer: 300.00 counted in the purchase fund and 300.00 left in it.
+	first := f.closeSettlement(t, 2, `{"counted_cash":"0.00","contributed_cash":"500.00",`+
+		`"closing_cash":"500.00","observation":"fondo inicial",`+
+		`"purchase_fund_counted":"300.00","purchase_fund_cash":"300.00"}`)
+	if first.PurchaseFundOpening != "0.00" || first.PurchasesTotal != "0.00" ||
+		first.PurchasesCash != "0.00" || first.PurchaseFundExpected != "0.00" ||
+		first.PurchaseFundCounted == nil || *first.PurchaseFundCounted != "300.00" ||
+		first.PurchaseFundDifference == nil || *first.PurchaseFundDifference != "300.00" ||
+		first.PurchaseFundCash == nil || *first.PurchaseFundCash != "300.00" {
+		t.Fatalf("the envelope of the first settlement is not published: %+v", first)
+	}
+	if len(first.Rounds) != 1 || first.Rounds[0].Offer.PurchaseFundCounted == nil ||
+		*first.Rounds[0].Offer.PurchaseFundCounted != "300.00" ||
+		first.Rounds[0].Offer.PurchaseFundCash == nil ||
+		*first.Rounds[0].Offer.PurchaseFundCash != "300.00" {
+		t.Fatalf("the round must publish the envelope of its offer: %+v", first.Rounds)
+	}
+
+	// The next settlement opens with the amount the previous closure left in the envelope, and a
+	// period with no purchases reports zero and no difference, because nobody counted it yet.
+	id := f.open(t, 2)
+	opened := closingWire(t, f.serve(t, f.request(1, "GET", fmt.Sprintf("/api/closings/%d", id), "")), 200)
+	if opened.PurchaseFundOpening != "300.00" || opened.PurchasesTotal != "0.00" ||
+		opened.PurchasesCash != "0.00" || opened.PurchaseFundExpected != "300.00" ||
+		opened.PurchaseFundCounted != nil || opened.PurchaseFundDifference != nil ||
+		opened.PurchaseFundCash != nil {
+		t.Fatalf("a held settlement publishes the envelope of its own window: %+v", opened)
+	}
+	// The drawer is untouched by the second envelope: it still inherits its own fund.
+	if opened.OpeningCash != "500.00" || opened.ExpectedCash != "500.00" {
+		t.Fatalf("the purchase fund must not move the drawer: %+v", opened)
+	}
+
+	// Neither amount of the envelope admits a negative or a non-canonical value, and the two keys are
+	// optional while the drawer's four are not.
+	for name, body := range map[string]string{
+		"counted_negative": `{"counted_cash":"500.00","contributed_cash":"0.00","closing_cash":"100.00",` +
+			`"observation":"","purchase_fund_counted":"-1.00","purchase_fund_cash":"10.00"}`,
+		"cash_negative": `{"counted_cash":"500.00","contributed_cash":"0.00","closing_cash":"100.00",` +
+			`"observation":"","purchase_fund_counted":"10.00","purchase_fund_cash":"-10.00"}`,
+		"counted_short": `{"counted_cash":"500.00","contributed_cash":"0.00","closing_cash":"100.00",` +
+			`"observation":"","purchase_fund_counted":"240.0"}`,
+		"cash_number": `{"counted_cash":"500.00","contributed_cash":"0.00","closing_cash":"100.00",` +
+			`"observation":"","purchase_fund_cash":400}`,
+		"unknown_key": `{"counted_cash":"500.00","contributed_cash":"0.00","closing_cash":"100.00",` +
+			`"observation":"","purchase_fund":"10.00"}`,
+		"drawer_key_missing": `{"counted_cash":"500.00","contributed_cash":"0.00",` +
+			`"purchase_fund_counted":"10.00"}`,
+	} {
+		f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", id), body), 400,
+			`{"error":"invalid_request"}`)
+		if name == "" {
+			t.Fatal("unreachable")
+		}
+	}
+
+	// A draft that states neither key is accepted: an envelope nobody counted is a legitimate draft,
+	// exactly like an uncounted drawer.
+	withoutEnvelope := closingWire(t, f.serve(t, f.request(1, "POST",
+		fmt.Sprintf("/api/closings/%d/cash", id),
+		`{"counted_cash":"500.00","contributed_cash":"0.00","closing_cash":"100.00","observation":""}`)), 200)
+	if withoutEnvelope.PurchaseFundCounted != nil || withoutEnvelope.PurchaseFundCash != nil ||
+		withoutEnvelope.PurchaseFundDifference != nil || withoutEnvelope.PurchaseFundExpected != "300.00" {
+		t.Fatalf("a draft without the envelope must leave it unstated: %+v", withoutEnvelope)
+	}
+	if withoutEnvelope.TakenCash == nil || *withoutEnvelope.TakenCash != "400.00" {
+		t.Fatalf("the drawer of the draft must keep its own arithmetic: %+v", withoutEnvelope)
+	}
+
+	// The envelope is stated with the cents shape of the rest of the payload, and the new amount is
+	// not capped by what was counted: it is money the warehouse brings from outside the branch.
+	drafted := closingWire(t, f.serve(t, f.request(1, "POST",
+		fmt.Sprintf("/api/closings/%d/cash", id),
+		`{"counted_cash":"500.00","contributed_cash":"0.00","closing_cash":"100.00",`+
+			`"observation":"contado","purchase_fund_counted":"280.00","purchase_fund_cash":"450.00"}`)), 200)
+	if drafted.PurchaseFundCounted == nil || *drafted.PurchaseFundCounted != "280.00" ||
+		drafted.PurchaseFundDifference == nil || *drafted.PurchaseFundDifference != "-20.00" ||
+		drafted.PurchaseFundCash == nil || *drafted.PurchaseFundCash != "450.00" ||
+		drafted.PurchaseFundExpected != "300.00" || drafted.PurchaseFundOpening != "300.00" {
+		t.Fatalf("the draft must publish the envelope with the cents shape of the payload: %+v", drafted)
+	}
+
+	// Proposing turns the draft into the offer the branch decides, envelope included, and no route
+	// moves it afterwards.
+	f.countAll(t, id)
+	proposed := closingWire(t, f.serve(t, f.request(1, "POST",
+		fmt.Sprintf("/api/closings/%d/propose", id), "")), 200)
+	if proposed.Status != "proposed" || proposed.PurchaseFundCounted == nil ||
+		*proposed.PurchaseFundCounted != "280.00" || proposed.PurchaseFundCash == nil ||
+		*proposed.PurchaseFundCash != "450.00" || len(proposed.Rounds) != 1 ||
+		proposed.Rounds[0].Offer.PurchaseFundCounted == nil ||
+		*proposed.Rounds[0].Offer.PurchaseFundCounted != "280.00" ||
+		proposed.Rounds[0].Offer.PurchaseFundCash == nil ||
+		*proposed.Rounds[0].Offer.PurchaseFundCash != "450.00" {
+		t.Fatalf("the proposal must offer the envelope: %+v", proposed)
+	}
+	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", id),
+		`{"counted_cash":"500.00","contributed_cash":"0.00","closing_cash":"100.00",`+
+			`"observation":"","purchase_fund_counted":"1.00","purchase_fund_cash":"1.00"}`),
+		409, `{"error":"state_conflict"}`)
+	closed := closingWire(t, f.serve(t, f.request(2, "POST",
+		fmt.Sprintf("/api/closings/%d/decision", id), `{"decision":"accepted"}`)), 200)
+	if closed.Status != "closed" || closed.PurchaseFundCounted == nil ||
+		*closed.PurchaseFundCounted != "280.00" || closed.PurchaseFundCash == nil ||
+		*closed.PurchaseFundCash != "450.00" || closed.PurchaseFundDifference == nil ||
+		*closed.PurchaseFundDifference != "-20.00" {
+		t.Fatalf("the closure must keep the envelope the branch accepted: %+v", closed)
+	}
+}
+
+// buyUsed registers one purchase of branch 2 with a used line of one model, paid in cash for the
+// amount it states, straight through the database documents the settlement reads: the material sheet
+// of a period is the purchases of its window, whatever route wrote them.
+func (f *closingHTTPFixture) buyUsed(t *testing.T, key, model string, quantity int, total string) {
+	t.Helper()
+	tx, err := f.p.Begin(f.ctx)
+	if err != nil {
+		t.Fatal("the purchase transaction could not start")
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var id int64
+	if err := tx.QueryRow(f.ctx, `INSERT INTO purchases(operation_key,location_id,total,paid_cash,
+ paid_transfer,created_by_account_id) VALUES($1,2,$2::numeric,$2::numeric,0.00,2) RETURNING id`,
+		key, total).Scan(&id); err != nil {
+		t.Fatalf("the purchase %s must be admitted: %v", key, err)
+	}
+	price := "10.00"
+	if _, err := tx.Exec(f.ctx, `INSERT INTO purchase_used_lines(purchase_id,model,quantity,unit_price)
+ VALUES($1,$2,$3,$4::numeric)`, id, model, quantity, price); err != nil {
+		t.Fatalf("the used line of %s must be admitted: %v", key, err)
+	}
+	if err := tx.Commit(f.ctx); err != nil {
+		t.Fatalf("the purchase %s must commit: %v", key, err)
+	}
+}
+
+// buyScrap registers one purchase of branch 2 with a scrap line of one material, paid in cash for the
+// amount it states.
+func (f *closingHTTPFixture) buyScrap(t *testing.T, key string, material int, kg, total string) {
+	t.Helper()
+	tx, err := f.p.Begin(f.ctx)
+	if err != nil {
+		t.Fatal("the purchase transaction could not start")
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var id int64
+	if err := tx.QueryRow(f.ctx, `INSERT INTO purchases(operation_key,location_id,total,paid_cash,
+ paid_transfer,created_by_account_id) VALUES($1,2,$2::numeric,$2::numeric,0.00,2) RETURNING id`,
+		key, total).Scan(&id); err != nil {
+		t.Fatalf("the purchase %s must be admitted: %v", key, err)
+	}
+	if _, err := tx.Exec(f.ctx, `INSERT INTO purchase_scrap_lines(purchase_id,material_id,kg,price_per_kg)
+ VALUES($1,$2,$3::numeric,2.00)`, id, material, kg); err != nil {
+		t.Fatalf("the scrap line of %s must be admitted: %v", key, err)
+	}
+	if err := tx.Commit(f.ctx); err != nil {
+		t.Fatalf("the purchase %s must commit: %v", key, err)
+	}
+}
+
+// materialLineOf reads one line of the published material sheet by its key.
+func materialLineOf(t *testing.T, record closingWireRecord, key string) closingMaterialLineWireRecord {
+	t.Helper()
+	for _, line := range record.MaterialLines {
+		switch {
+		case line.Model != nil && *line.Model == key:
+			return line
+		case line.Material != nil && *line.Material == key:
+			return line
+		}
+	}
+	t.Fatalf("the material sheet must publish the line %q: %+v", key, record.MaterialLines)
+	return closingMaterialLineWireRecord{}
+}
+
+// TestClosingsMaterialSheetAndItsDraft pins S7, S8 and S9 over HTTP: the document publishes the third
+// account with the key set and the shapes of this payload -- the expected quantity from the purchases
+// of the period, the counted one from the warehouse, the difference with its sign and the delivery,
+// all as decimal text and never as JSON numbers -- and the draft route accepts exactly the counts the
+// sheet can hold and refuses everything else without writing anything. The history publishes the same
+// sheet, and an uncounted line blocks nothing.
+func TestClosingsMaterialSheetAndItsDraft(t *testing.T) {
+	f := closingFixture(t)
+	// The bootstrap settlement of branch 2 closes, so the purchases that follow fall inside the
+	// window of the next period.
+	f.closeSettlement(t, 2, `{"counted_cash":"0.00","contributed_cash":"500.00",`+
+		`"closing_cash":"500.00","observation":"arranque de la sucursal"}`)
+	f.buyUsed(t, "closings-materials-http-used-01", "NS60ZL", 6, "60.00")
+	f.buyUsed(t, "closings-materials-http-used-02", "NS60ZL", 2, "20.00")
+	f.buyScrap(t, "closings-materials-http-scrap-01", 1, "12.500", "25.00")
+	id := f.open(t, 2)
+	opened := closingWire(t, f.serve(t, f.request(1, "GET", fmt.Sprintf("/api/closings/%d", id), "")), 200)
+	// Two documents of one model are one line with their sum, the scrap line carries the name of its
+	// material from the reference table, and nothing is counted yet: null, null and null.
+	if len(opened.MaterialLines) != 2 {
+		t.Fatalf("the sheet must publish the one model and the one material: %+v", opened.MaterialLines)
+	}
+	used := materialLineOf(t, opened, "NS60ZL")
+	if used.Kind != "used" || used.Unit != "unit" || used.Expected != "8" ||
+		used.MaterialID != nil || used.Material != nil || used.Counted != nil ||
+		used.Difference != nil || used.Delivered != nil {
+		t.Fatalf("the used line must be the whole units of the period, uncounted: %+v", used)
+	}
+	scrap := materialLineOf(t, opened, "Cobre")
+	if scrap.Kind != "scrap" || scrap.Unit != "kg" || scrap.Expected != "12.500" ||
+		scrap.Model != nil || scrap.MaterialID == nil || *scrap.MaterialID != 1 ||
+		scrap.Counted != nil || scrap.Difference != nil || scrap.Delivered != nil {
+		t.Fatalf("the scrap line must be the kilograms of the period, uncounted: %+v", scrap)
+	}
+	// The history publishes the same sheet: one derivation for the document and its rows.
+	page := closingPageWire(t, f.serve(t, f.request(1, "GET",
+		"/api/closings?branch_location_id=2&page=1", "")), 200)
+	if page.Closings[0].ID != id || len(page.Closings[0].MaterialLines) != 2 {
+		t.Fatalf("a history row must publish the sheet of its document: %+v", page.Closings[0])
+	}
+
+	// The draft rejects what the sheet cannot hold: a quantity of the wrong shape or scale, a key of
+	// the other kind, a key the sheet does not name, and the expected quantity itself, which is the
+	// fact of the opening and never a promise of the client.
+	for name, body := range map[string]string{
+		"expected_quantity": `{"lines":[{"kind":"used","model":"NS60ZL","counted_quantity":"8",` +
+			`"expected_quantity":"8"}]}`,
+		"fractional_unit":  `{"lines":[{"kind":"used","model":"NS60ZL","counted_quantity":"7.5"}]}`,
+		"negative":         `{"lines":[{"kind":"used","model":"NS60ZL","counted_quantity":"-1"}]}`,
+		"two_decimals":     `{"lines":[{"kind":"scrap","material_id":1,"counted_quantity":"12.5"}]}`,
+		"number":           `{"lines":[{"kind":"used","model":"NS60ZL","counted_quantity":8}]}`,
+		"wrong_key":        `{"lines":[{"kind":"used","material_id":1,"counted_quantity":"8"}]}`,
+		"unknown_kind":     `{"lines":[{"kind":"battery","model":"NS60ZL","counted_quantity":"8"}]}`,
+		"unknown_material": `{"lines":[{"kind":"scrap","material_id":9,"counted_quantity":"1.500"}]}`,
+		"same_key_twice": `{"lines":[{"kind":"used","model":"NS60ZL","counted_quantity":"8"},` +
+			`{"kind":"used","model":"NS60ZL","counted_quantity":"7"}]}`,
+		"no_lines": `{"lines":[]}`,
+		"empty":    `{}`,
+	} {
+		f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/materials", id), body), 400,
+			`{"error":"invalid_request"}`)
+		if name == "" {
+			t.Fatal("unreachable")
+		}
+	}
+	// Only the warehouse counts this sheet, and a query string is not part of the route.
+	f.refused(t, f.request(2, "POST", fmt.Sprintf("/api/closings/%d/materials", id),
+		`{"lines":[{"kind":"used","model":"NS60ZL","counted_quantity":"8"}]}`), 403,
+		`{"error":"forbidden"}`)
+	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/materials?page=1", id),
+		`{"lines":[{"kind":"used","model":"NS60ZL","counted_quantity":"8"}]}`), 400,
+		`{"error":"invalid_request"}`)
+
+	// The counts are written, and the difference of every counted line is published with its sign while
+	// the lead nobody counted stays null and blocks nothing (S8).
+	counted := closingWire(t, f.serve(t, f.request(1, "POST",
+		fmt.Sprintf("/api/closings/%d/materials", id),
+		`{"lines":[{"kind":"used","model":"NS60ZL","counted_quantity":"7"},`+
+			`{"kind":"scrap","material_id":1,"counted_quantity":"12.500"}]}`)), 200)
+	used = materialLineOf(t, counted, "NS60ZL")
+	if used.Counted == nil || *used.Counted != "7" || used.Difference == nil || *used.Difference != "-1" ||
+		used.Delivered == nil || *used.Delivered != "7" || used.Expected != "8" {
+		t.Fatalf("the difference of a used line is counted minus expected: %+v", used)
+	}
+	scrap = materialLineOf(t, counted, "Cobre")
+	if scrap.Counted == nil || *scrap.Counted != "12.500" || scrap.Difference == nil ||
+		*scrap.Difference != "0.000" || scrap.Delivered == nil || *scrap.Delivered != "12.500" {
+		t.Fatalf("the difference of a scrap line keeps the scale of its unit: %+v", scrap)
+	}
+	// The same request twice writes the same sheet: the route is idempotent.
+	again := closingWire(t, f.serve(t, f.request(1, "POST",
+		fmt.Sprintf("/api/closings/%d/materials", id),
+		`{"lines":[{"kind":"used","model":"NS60ZL","counted_quantity":"7"}]}`)), 200)
+	if got := materialLineOf(t, again, "NS60ZL"); got.Counted == nil || *got.Counted != "7" {
+		t.Fatalf("the same count written twice must leave the same sheet: %+v", got)
+	}
+	// Once proposed the sheet is the offer the branch decides, exactly like the count sheet.
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", id),
+		`{"counted_cash":"500.00","contributed_cash":"0.00","closing_cash":"100.00",`+
+			`"observation":"contado en persona"}`)); w.Code != 200 {
+		t.Fatalf("the drawer must be drafted: %d %s", w.Code, w.Body.String())
+	}
+	f.countAll(t, id)
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/propose", id), "")); w.Code != 200 {
+		t.Fatalf("the settlement must be proposed: %d %s", w.Code, w.Body.String())
+	}
+	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/materials", id),
+		`{"lines":[{"kind":"used","model":"NS60ZL","counted_quantity":"8"}]}`), 409,
+		`{"error":"count_frozen"}`)
+	// The closure keeps the counts the branch signed and publishes the delivery of every counted line.
+	closed := closingWire(t, f.serve(t, f.request(2, "POST",
+		fmt.Sprintf("/api/closings/%d/decision", id), `{"decision":"accepted"}`)), 200)
+	if closed.Status != "closed" {
+		t.Fatalf("the settlement must close: %+v", closed)
+	}
+	used = materialLineOf(t, closed, "NS60ZL")
+	if used.Counted == nil || *used.Counted != "7" || used.Delivered == nil || *used.Delivered != "7" {
+		t.Fatalf("a closed settlement keeps exactly the counts it signed: %+v", used)
+	}
+	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/materials", id),
+		`{"lines":[{"kind":"used","model":"NS60ZL","counted_quantity":"6"}]}`), 409,
+		`{"error":"count_frozen"}`)
+}
+
+// TestClosingsMaterialSheetOfAPeriodWithoutPurchases pins the empty side of S7 over HTTP: a period
+// that bought nothing publishes an empty sheet rather than a missing one, so a client always reads
+// the key and never has to tell an absent sheet from a period with no material.
+func TestClosingsMaterialSheetOfAPeriodWithoutPurchases(t *testing.T) {
+	f := closingFixture(t)
+	// The first settlement of a branch settles an empty period, and so does the one that follows it
+	// when the branch bought nothing in between.
+	id := f.open(t, 2)
+	opened := closingWire(t, f.serve(t, f.request(1, "GET", fmt.Sprintf("/api/closings/%d", id), "")), 200)
+	if opened.MaterialLines == nil || len(opened.MaterialLines) != 0 {
+		t.Fatalf("a period that bought nothing publishes an empty sheet: %+v", opened.MaterialLines)
+	}
+	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/materials", id+1),
+		`{"lines":[{"kind":"used","model":"NS60ZL","counted_quantity":"8"}]}`), 404,
+		`{"error":"not_found"}`)
 }

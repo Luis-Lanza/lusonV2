@@ -4,7 +4,9 @@ import {
   canonicalCountPayload, canonicalDrawerPayload, closingAcceptance, closingAccountLabel,
   closingBlockers, closingBlockReason, closingCents, closingDecisionPayload, closingDecisionReadiness,
   closingDifferenceName, closingLineDifference, closingLineLabel, closingMomentText,
-  closingPendingLines, closingPeriod, closingPeriodLabel, closingProgress, closingQuantityText,
+  closingAssumedQuantity, closingChangedTag, closingCountDifferenceText, closingCountMatchTag,
+  closingCountReading, closingSeedQuantity,
+  closingPeriod, closingPeriodLabel, closingQuantityText,
   closingRail, closingMoneyText, closingRoundStateLabel, closingSheetChanges, closingSignedCents,
   closingSignedText, drawerDraftFrom, drawerView, emptyDrawerDraft, filterCountLines,
   canonicalCorrection, canonicalCorrectionBody, closingAcceptedCorrections, closingCorrectedAmounts,
@@ -12,8 +14,16 @@ import {
   closingCorrectionReadiness, closingPendingCorrection, correctionDraftFrom,
   closingAddLine, closingCatalogueOptions, closingCountChanges, closingLineIsOutsideSystem,
   closingSheetRows, closingSheetVariantIDs,
+  closingEnvelope, emptyPurchaseFundDraft, purchaseFundDraftFrom, purchaseFundView,
+  closingBalanceStrip, closingBalancesLabel, closingMaterialDeliveryHelp, closingMaterialDifferenceText,
+  closingMaterialEmptySheet, closingMaterialKindLabels, closingMaterialLines,
+  closingMaterialMilli, closingMaterialQuantityIsCanonical, closingMaterialQuantityLabel,
+  closingMaterialQuantityText, closingMaterialReading, closingMaterialSeed,
+  closingMaterialSignedText, closingMaterialWireText, closingTabAfter, closingTabLabels,
+  closingTabMarker, closingTabOrder, closingTabsLabel, emptyMaterialDraft, materialDraftFrom,
   type Closing, type ClosingCatalogueVariant, type ClosingCountLine, type ClosingCorrection,
-  type ClosingOffer, type ClosingRound, type CorrectionDraft, type DrawerDraft,
+  type ClosingMaterialLine, type ClosingOffer, type ClosingPurchaseFund, type ClosingRound,
+  type CorrectionDraft, type DrawerDraft, type PurchaseFundDraft,
 } from './closingModel';
 
 // The numbers of the chosen artboard (design/rendicion-de-cuentas/03-mesa-conteo.html), read as
@@ -31,6 +41,18 @@ const lines: readonly ClosingCountLine[] = [
   line(11, 2, null, { model: 'S5', capacity_ah: '100' }),
 ];
 
+/**
+ * The purchase fund of the artboard (design/rendicion-caja-y-chatarra/01-mesa-dos-pestanas.html):
+ * Bs 2.000,00 inherited, Bs 1.621,00 spent in cash, Bs 379,00 expected, Bs 375,00 counted and
+ * Bs 1.500,00 left for the next period (S1, S5, S6).
+ */
+const purchaseFund = (overrides: Partial<ClosingPurchaseFund> = {}): ClosingPurchaseFund =>
+  Object.freeze({
+    opening_cents: 200000n, purchases_total_cents: 162100n, purchases_cash_cents: 162100n,
+    expected_cents: 37900n, counted_cents: 37500n, difference_cents: -400n, new_cents: 150000n,
+    ...overrides,
+  });
+
 const closing = (overrides: Partial<Closing> = {}): Closing => Object.freeze({
   id: 1, branch_location_id: 2, branch_name: 'Sopocachi', status: 'open',
   period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z', closed_at: null,
@@ -40,6 +62,8 @@ const closing = (overrides: Partial<Closing> = {}): Closing => Object.freeze({
   sales_total_cents: 3248000n, commission_amount_cents: 146160n,
   card_total_cents: 324000n, transfer_total_cents: 118000n, qr_total_cents: 276000n,
   observation: '', opened_by_account_id: 1, count_lines: lines, rounds: [], corrections: [],
+  material_lines: null,
+  purchase_fund: purchaseFund(),
   ...overrides,
 });
 
@@ -151,18 +175,381 @@ describe('S9 the commission is reported beside the drawer and inside no cash ide
   });
 });
 
-describe('S4 the count sheet is not blind and never recalculates the expected quantity', () => {
-  it('states the progress of the sheet and which rows are still pending', () => {
-    const progress = closingProgress(lines);
-    expect(progress).toEqual({ total: 11, counted: 9, pending: 2 });
-    expect(closingPendingLines(lines).map(entry => entry.variant_id)).toEqual([10, 11]);
+describe('S1, S5, S6 the purchase fund is the branch\'s second envelope', () => {
+  it('reads the inherited balance, the purchases, the expectation and the difference', () => {
+    const fund = closing().purchase_fund!;
+    expect(closingMoneyText(fund.opening_cents)).toBe('Bs 2.000,00');
+    expect(closingMoneyText(fund.purchases_cash_cents)).toBe('Bs 1.621,00');
+    expect(closingMoneyText(fund.expected_cents)).toBe('Bs 379,00');
+    // The expectation is the inherited balance minus the purchases paid in cash (S3).
+    expect(fund.expected_cents).toBe(fund.opening_cents - fund.purchases_cash_cents);
+    expect(closingMoneyText(fund.counted_cents!)).toBe('Bs 375,00');
+    expect(closingSignedText(fund.difference_cents!)).toBe('− Bs 4,00');
+    expect(closingDifferenceName(fund.difference_cents!)).toBe('Faltante');
+    // The amount the warehouse leaves opens the next period and is not the one it counted (S5, S6).
+    expect(closingMoneyText(fund.new_cents!)).toBe('Bs 1.500,00');
+    // A payload that does not publish the envelope leaves the settlement without one.
+    expect(closing({ purchase_fund: null }).purchase_fund).toBeNull();
   });
 
-  it('shows the difference of a counted row with its sign and a pending row without one', () => {
+  it('keeps the envelope inside no cash identity and out of the commission (S12)', () => {
+    const without = closing({ purchase_fund: null });
+    const heavy = closing({ purchase_fund: purchaseFund({ opening_cents: 900000n,
+      purchases_cash_cents: 100000n, expected_cents: 800000n, counted_cents: 0n,
+      difference_cents: -800000n, new_cents: 999900n }) });
+    // Not one number of the drawer moves: the envelope is settled apart from it (S1, S12).
+    expect(closingRail(heavy)).toEqual(closingRail(without));
+    expect(closingRail(heavy).expected_cents).toBe(701500n);
+    expect(closingRail(heavy).difference_cents).toBeNull();
+    expect(closingRail(heavy).commission_cents).toBe(146160n);
+  });
+
+  it('reads the envelope the warehouse types and publishes its difference with its sign (S5, S8)', () => {
+    const fund = closing().purchase_fund!;
+    const empty = purchaseFundView(fund, emptyPurchaseFundDraft);
+    expect(empty.counted_cents).toBeNull();
+    expect(empty.new_cents).toBeNull();
+    expect(empty.difference_cents).toBeNull();
+    expect(empty.expected_cents).toBe(37900n);
+    expect(empty.problem).toBe('');
+    const typed = purchaseFundView(fund, { counted: '375,00', cash: '1.500,00' });
+    expect(typed.counted_cents).toBe(37500n);
+    expect(typed.new_cents).toBe(150000n);
+    expect(typed.difference_cents).toBe(-400n);
+    // A count above the expectation is a surplus, published with its sign like the drawer's.
+    expect(purchaseFundView(fund, { counted: '400,00', cash: '' }).difference_cents).toBe(2100n);
+    expect(closingDifferenceName(purchaseFundView(fund, { counted: '400,00', cash: '' })
+      .difference_cents!)).toBe('Sobrante');
+  });
+
+  it('never bounds the new amount by what was counted (S5)', () => {
+    const fund = closing().purchase_fund!;
+    // The warehouse brings money from outside the branch, so it may leave more than it found.
+    const more = purchaseFundView(fund, { counted: '375,00', cash: '5.000,00' });
+    expect(more.new_cents).toBe(500000n);
+    expect(more.difference_cents).toBe(-400n);
+    expect(more.problem).toBe('');
+    expect(canonicalDrawerPayload(emptyDrawerDraft, { counted: '375,00', cash: '5.000,00' }))
+      .toMatchObject({ purchase_fund_counted: '375.00', purchase_fund_cash: '5000.00' });
+  });
+
+  it('renders an envelope amount with its own sign, because it can be negative (S3)', () => {
+    // The expectation is negative whenever the envelope spent more than it inherited, and it is
+    // shown as it is instead of failing to render a settlement the server published.
+    expect(closingMoneyText(purchaseFund({ expected_cents: -12050n }).expected_cents))
+      .toBe('− Bs 120,50');
+    expect(closingMoneyText(-120500n)).toBe('− Bs 1.205,00');
+  });
+
+  it('refuses an amount of the envelope it cannot read (S5)', () => {
+    const unreadable = purchaseFundView(closing().purchase_fund!, { counted: '375,001', cash: '' });
+    expect(unreadable.problem).toBe(model.closingAmountMessage);
+    expect(unreadable.counted_cents).toBeNull();
+    expect(unreadable.difference_cents).toBeNull();
+    // The envelope is a non-negative amount, exactly like the rest of the drawer draft.
+    expect(() => canonicalDrawerPayload(emptyDrawerDraft, { counted: '-1', cash: '' }))
+      .toThrow(model.closingAmountMessage);
+  });
+
+  it('states both keys of the envelope in the drawer draft, and neither when it states none', () => {
+    expect(canonicalDrawerPayload({ counted: '6.980,00', contribution: '0,00', fund: '900,00',
+      observation: '' }, { counted: '375,00', cash: '1.500,00' })).toEqual({
+      counted_cash: '6980.00', contributed_cash: '0.00', closing_cash: '900.00', observation: '',
+      purchase_fund_counted: '375.00', purchase_fund_cash: '1500.00' });
+    // An envelope nobody counted states neither key: an absent one is not an invented zero.
+    expect(canonicalDrawerPayload(emptyDrawerDraft, emptyPurchaseFundDraft)).toEqual({
+      counted_cash: null, contributed_cash: '0.00', closing_cash: null, observation: '' });
+    // The two sides are independent: a counted envelope with no new amount yet is stated as such.
+    expect(canonicalDrawerPayload(emptyDrawerDraft, { counted: '375,00', cash: '' })).toEqual({
+      counted_cash: null, contributed_cash: '0.00', closing_cash: null, observation: '',
+      purchase_fund_counted: '375.00', purchase_fund_cash: null });
+  });
+
+  it('seeds the envelope draft from the settlement, count and new amount included', () => {
+    expect(purchaseFundDraftFrom(closing())).toEqual<PurchaseFundDraft>({ counted: '375,00',
+      cash: '1.500,00' });
+    // An uncounted envelope reopens empty, never with an invented zero.
+    expect(purchaseFundDraftFrom(closing({ purchase_fund: purchaseFund({ counted_cents: null,
+      difference_cents: null, new_cents: null }) }))).toEqual<PurchaseFundDraft>({ counted: '',
+        cash: '' });
+    expect(purchaseFundDraftFrom(closing({ purchase_fund: null }))).toEqual<PurchaseFundDraft>({
+      counted: '', cash: '' });
+  });
+
+  it('says in words that the envelope is apart and what the new amount is for (S1, S5)', () => {
+    expect(model.closingEnvelopeApartHelp).toContain('sobre aparte');
+    expect(model.closingEnvelopeApartHelp).toContain('ninguna venta lo alimenta');
+    expect(model.closingEnvelopeNewHelp).toContain('baterías usadas y chatarra');
+    expect(model.closingEnvelopeNewHelp).toContain('período siguiente');
+    expect(model.closingEnvelopeAcceptanceHelp).toContain('pasa a ser tu fondo de compras');
+  });
+});
+
+/**
+ * The material sheet of the chosen artboard (design/rendicion-caja-y-chatarra/01-mesa-dos-pestanas.html):
+ * three used models in units and four scrap materials in kilograms, with one shortage of each kind.
+ */
+const usedMaterial = (model: string, expected: string, counted: string | null,
+  overrides: Partial<ClosingMaterialLine> = {}): ClosingMaterialLine => Object.freeze({
+  kind: 'used', model, material_id: null, material: null, unit: 'unit', expected_quantity: expected,
+  counted_quantity: counted,
+  difference: counted === null ? null : String(Number(counted) - Number(expected)),
+  delivered_quantity: counted, ...overrides,
+});
+
+const scrapMaterial = (material_id: number, material: string, expected: string,
+  counted: string | null, overrides: Partial<ClosingMaterialLine> = {}): ClosingMaterialLine =>
+  Object.freeze({ kind: 'scrap', model: null, material_id, material, unit: 'kg',
+    expected_quantity: expected, counted_quantity: counted,
+    difference: counted === null ? null
+      : closingMaterialWireText('kg', closingMaterialMilli('kg', counted)
+        - closingMaterialMilli('kg', expected)),
+    delivered_quantity: counted, ...overrides });
+
+const materialLines: readonly ClosingMaterialLine[] = [
+  usedMaterial('24F-45', '6', '6'),
+  usedMaterial('27-60', '12', '12'),
+  usedMaterial('31-100', '9', '8'),
+  scrapMaterial(1, 'Cobre', '12.400', '12.400'),
+  scrapMaterial(2, 'Aluminio', '8.750', '8.750'),
+  scrapMaterial(3, 'Plomo', '84.500', '80.200'),
+  scrapMaterial(4, 'Bronce', '3.100', '3.100'),
+];
+
+describe('S7, S8, S9 the materials the purchase fund bought', () => {
+  it('reads a quantity of either kind in exact thousandths, never as a float', () => {
+    expect(closingMaterialMilli('kg', '84.500')).toBe(84500n);
+    expect(closingMaterialMilli('unit', '12')).toBe(12000n);
+    expect(closingMaterialQuantityText('kg', 84500n)).toBe('84,500');
+    expect(closingMaterialQuantityText('unit', 12000n)).toBe('12');
+    expect(closingMaterialQuantityLabel('kg', '12.400')).toBe('12,400 kg');
+    // A quantity of the other scale, a padded one and a fraction of a unit are all refused (S8).
+    expect(closingMaterialQuantityIsCanonical('unit', '7')).toBe(true);
+    expect(closingMaterialQuantityIsCanonical('unit', '7.5')).toBe(false);
+    expect(closingMaterialQuantityIsCanonical('kg', '7.5')).toBe(false);
+    expect(closingMaterialQuantityIsCanonical('kg', '07.500')).toBe(false);
+    expect(() => closingMaterialMilli('unit', '7.5')).toThrow(model.closingMaterialQuantityMessage);
+    // A published quantity is unsigned: only a difference carries a sign.
+    expect(closingMaterialQuantityIsCanonical('kg', '-1.000')).toBe(false);
+  });
+
+  it('shows a difference with its sign and the unit it is counted in (S13)', () => {
+    expect(closingMaterialSignedText('kg', -4300n)).toBe('−4,300');
+    expect(closingMaterialSignedText('unit', 2000n)).toBe('+2');
+    expect(closingMaterialSignedText('unit', 0n)).toBe('—');
+    expect(closingMaterialDifferenceText('kg', -4300n)).toBe('− 4,300 kg');
+    expect(closingMaterialDifferenceText('unit', -1000n)).toBe('− 1 unidad');
+    expect(closingMaterialDifferenceText('unit', 2000n)).toBe('+ 2 unidades');
+  });
+
+  it('reads the sheet of the artboard with each kind total and the whole delivery (S9)', () => {
+    const reading = closingMaterialReading(materialLines, emptyMaterialDraft);
+    expect(reading.empty).toBe(false);
+    expect(reading.total).toBe(7);
+    expect(reading.counted).toBe(7);
+    // One used battery and 4,300 kg of lead are missing: two lines, in two units (S8).
+    expect(reading.differing).toBe(2);
+    expect(reading.used.counted_milli).toBe(26000n);
+    expect(reading.used.expected_milli).toBe(27000n);
+    expect(reading.used.difference_milli).toBe(-1000n);
+    expect(reading.used.complete).toBe(true);
+    expect(reading.scrap.expected_milli).toBe(108750n);
+    expect(reading.scrap.counted_milli).toBe(104450n);
+    expect(reading.scrap.difference_milli).toBe(-4300n);
+    // Everything counted goes to the warehouse and the shelf starts the next period at zero.
+    expect(reading.delivery).toBe('Se lleva todo lo contado: 26 usadas y 104,450 kg de chatarra.');
+    expect(closingMaterialDeliveryHelp).toContain('la sucursal queda en cero');
+  });
+
+  it('never adds a kilogram to a unit: it names the kind when only one differs (S13)', () => {
+    const both = closingMaterialReading(materialLines, emptyMaterialDraft);
+    expect(both.value).toBe('2 cuentas con diferencia');
+    expect(both.tone).toBe('mixed');
+    expect(both.detail).toContain('chatarra');
+    const scrapOnly = closingMaterialReading(materialLines.map(entry => entry.kind === 'used'
+      ? Object.freeze({ ...entry, counted_quantity: entry.expected_quantity,
+        difference: '0', delivered_quantity: entry.expected_quantity }) : entry),
+    emptyMaterialDraft);
+    expect(scrapOnly.value).toBe('− 4,300 kg');
+    expect(scrapOnly.tone).toBe('neg');
+    expect(scrapOnly.detail).toContain('Chatarra');
+    const usedOnly = closingMaterialReading(materialLines.map(entry => entry.kind === 'scrap'
+      ? Object.freeze({ ...entry, counted_quantity: entry.expected_quantity,
+        difference: '0.000', delivered_quantity: entry.expected_quantity }) : entry),
+    emptyMaterialDraft);
+    expect(usedOnly.value).toBe('− 1 unidad');
+    expect(usedOnly.detail).toContain('Baterías usadas');
+  });
+
+  it('reads a sheet without a single difference as a coinciding shelf', () => {
+    const even = materialLines.map(entry => Object.freeze({ ...entry,
+      counted_quantity: entry.expected_quantity, delivered_quantity: entry.expected_quantity,
+      difference: entry.unit === 'kg' ? '0.000' : '0' }));
+    const reading = closingMaterialReading(even, emptyMaterialDraft);
+    expect(reading.differing).toBe(0);
+    expect(reading.value).toBe('Sin diferencia');
+    expect(reading.tone).toBe('zero');
+    expect(reading.difference).toBe(false);
+    expect(reading.delivery).toContain('27 usadas');
+  });
+
+  it('says plainly that a period bought no materials, instead of showing an empty table (S7)', () => {
+    const reading = closingMaterialReading([], emptyMaterialDraft);
+    expect(reading.empty).toBe(true);
+    expect(reading.value).toBe('Sin materiales');
+    expect(reading.delivery).toBe(closingMaterialEmptySheet);
+    expect(closingMaterialEmptySheet).toContain('no compró materiales');
+    // A payload that publishes no sheet at all is read as a sheet without lines, never as a crash.
+    expect(closingMaterialLines(closing())).toEqual([]);
+    expect(closingMaterialLines(closing({ material_lines: [] }))).toEqual([]);
+  });
+
+  it('reads an uncounted line as pending, with no difference and no delivery of its own (S8)', () => {
+    const pending = [usedMaterial('31-100', '9', null), scrapMaterial(3, 'Plomo', '84.500', null)];
+    const reading = closingMaterialReading(pending, emptyMaterialDraft);
+    expect(reading.rows[0].counted_milli).toBeNull();
+    expect(reading.rows[0].difference_milli).toBeNull();
+    expect(reading.rows[0].delivered_milli).toBeNull();
+    expect(reading.counted).toBe(0);
+    expect(reading.used.counted_milli).toBeNull();
+    expect(reading.used.complete).toBe(false);
+    // Nothing counted is nothing delivered, and the delivery says what is still to count.
+    expect(reading.delivery).toContain('contá la estantería');
+    expect(reading.value).toBe('Sin diferencia');
+  });
+
+  it('reads what the warehouse typed, in the unit of each line (S8)', () => {
+    const typed = closingMaterialReading(materialLines, { 'scrap:3': '80,2', 'used:31-100': '7' });
+    expect(typed.rows.find(row => row.key === 'scrap:3')!.counted_milli).toBe(80200n);
+    expect(typed.rows.find(row => row.key === 'scrap:3')!.difference_milli).toBe(-4300n);
+    expect(typed.rows.find(row => row.key === 'used:31-100')!.counted_milli).toBe(7000n);
+    expect(typed.rows.find(row => row.key === 'used:31-100')!.difference_milli).toBe(-2000n);
+    expect(typed.unsaved).toBe(true);
+    // Only the lines whose count changed are sent, with the canonical text of their unit (S8).
+    expect(typed.changes).toEqual([
+      { kind: 'used', model: '31-100', material_id: null, counted_quantity: '7' },
+      { kind: 'scrap', model: null, material_id: 3, counted_quantity: '80.200' },
+    ]);
+    expect(typed.problem).toBe('');
+  });
+
+  it('refuses a fraction of a battery and a cleared count instead of inventing one (S8, S9)', () => {
+    const fraction = closingMaterialReading(materialLines, { 'used:31-100': '7,5' });
+    expect(fraction.problem).toBe(model.closingMaterialQuantityMessage);
+    expect(fraction.changes).toEqual([]);
+    expect(fraction.rows.find(row => row.key === 'used:31-100')!.counted_milli).toBeNull();
+    const cleared = closingMaterialReading(materialLines, { 'scrap:3': '' });
+    expect(cleared.problem).toBe(model.closingMaterialClearedMessage);
+    expect(cleared.changes).toEqual([]);
+  });
+
+  it('seeds the counted cells from the document, kilograms in the text the screen writes (S8)', () => {
+    expect(closingMaterialSeed(usedMaterial('27-60', '12', '12'))).toBe('12');
+    expect(closingMaterialSeed(scrapMaterial(3, 'Plomo', '84.500', '80.200'))).toBe('80,200');
+    // An uncounted line opens empty: the sheet counts what the warehouse found, never a seed.
+    expect(closingMaterialSeed(scrapMaterial(3, 'Plomo', '84.500', null))).toBe('');
+    const draft = materialDraftFrom(closing({ material_lines: materialLines }));
+    expect(draft['scrap:3']).toBe('80,200');
+    expect(draft['used:31-100']).toBe('8');
+    // A reload of the saved counts is not an unsaved change.
+    expect(closingMaterialReading(materialLines, draft).unsaved).toBe(false);
+    expect(closingMaterialReading(materialLines, draft).changes).toEqual([]);
+  });
+});
+
+describe('S10, S13 the two tabs and the three balances of one settlement', () => {
+  const facts = (overrides: Partial<Parameters<typeof closingBalanceStrip>[0]> = {}) => ({
+    cash_counted_cents: 698000n,
+    cash_expected_cents: 701500n,
+    cash_difference_cents: -3500n,
+    fund_counted_cents: 37500n,
+    fund_expected_cents: 37900n,
+    fund_difference_cents: -400n,
+    materials: closingMaterialReading(materialLines, emptyMaterialDraft),
+    ...overrides,
+  });
+
+  it('states the three balances above the tabs, each in its own unit (S13)', () => {
+    const balances = closingBalanceStrip(facts());
+    expect(balances.map(balance => balance.key)).toEqual(['cash', 'fund', 'materials']);
+    expect(balances.map(balance => balance.label)).toEqual(['Caja operativa', 'Fondo de compras',
+      'Materiales']);
+    expect(balances[0].value).toBe('− Bs 35,00');
+    expect(balances[0].detail).toBe('contada 6.980,00 · esperada 7.015,00');
+    expect(balances[1].value).toBe('− Bs 4,00');
+    expect(balances[1].detail).toBe('contado 375,00 · esperado 379,00');
+    // The materials are named in their own unit and never added to any money figure.
+    expect(balances[2].value).toBe('2 cuentas con diferencia');
+    expect(balances[0].tab).toBe('caja');
+    expect(balances[1].tab).toBe('chatarra');
+    expect(balances[2].tab).toBe('chatarra');
+    expect(balances[0].tone).toBe('neg');
+    for (const balance of balances) expect(balance.difference).toBe(true);
+  });
+
+  it('says there is no difference instead of showing a zero (S13)', () => {
+    const balances = closingBalanceStrip(facts({ cash_difference_cents: 0n,
+      fund_difference_cents: 0n, materials: closingMaterialReading([], emptyMaterialDraft) }));
+    expect(balances[0].value).toBe('Sin diferencia');
+    expect(balances[1].value).toBe('Sin diferencia');
+    expect(balances[2].value).toBe('Sin materiales');
+    for (const balance of balances) {
+      expect(balance.difference).toBe(false);
+      expect(closingTabMarker(balances, balance.tab)).toBeNull();
+    }
+    // A drawer nobody counted is not a zero: it says it was not counted.
+    expect(closingBalanceStrip(facts({ cash_counted_cents: null, cash_difference_cents: null,
+      fund_counted_cents: null, fund_difference_cents: null }))[0].value).toBe('Sin contar');
+    // A document without an envelope says so instead of inventing an expectation.
+    expect(closingBalanceStrip(facts({ fund_expected_cents: null, fund_counted_cents: null,
+      fund_difference_cents: null }))[1].value).toBe('Sin sobre');
+  });
+
+  it('marks each tab with the difference of its accounts, in words (S13)', () => {
+    const balances = closingBalanceStrip(facts());
+    expect(closingTabMarker(balances, 'caja')).toBe('− Bs 35,00');
+    // Two accounts of one tab carry a difference: the marker is their count, never a bare dot.
+    expect(closingTabMarker(balances, 'chatarra')).toBe('2 con diferencia');
+    const materialsOnly = closingBalanceStrip(facts({ fund_difference_cents: 0n }));
+    expect(closingTabMarker(materialsOnly, 'chatarra')).toBe('2 cuentas con diferencia');
+  });
+
+  it('moves between the two tabs with the arrows and wraps around (S10)', () => {
+    expect(closingTabOrder).toEqual(['caja', 'chatarra']);
+    expect(closingTabLabels.caja).toBe('Caja');
+    expect(closingTabLabels.chatarra).toBe('Chatarra');
+    expect(closingTabsLabel).toBe('Rendición');
+    expect(closingBalancesLabel).toBe('Saldos de la rendición');
+    expect(closingTabAfter('caja', 'ArrowRight')).toBe('chatarra');
+    expect(closingTabAfter('chatarra', 'ArrowLeft')).toBe('caja');
+    expect(closingTabAfter('caja', 'ArrowLeft')).toBe('chatarra');
+    expect(closingTabAfter('chatarra', 'ArrowRight')).toBe('caja');
+    // Nothing else moves the selection: the tabs are the only thing the arrows change.
+    expect(closingTabAfter('caja', 'Enter')).toBeNull();
+    expect(closingTabAfter('caja', 'Tab')).toBeNull();
+    expect(closingMaterialKindLabels.used).toBe('Baterías usadas');
+    expect(closingMaterialKindLabels.scrap).toBe('Chatarra');
+  });
+});
+
+describe('S4 the count sheet is not blind and never recalculates the expected quantity', () => {
+  it('assumes a line without a count coincides with the system, with no hole in the sheet (S1)', () => {
+    // A line that carries no count can only come from a settlement opened before the seed (L3):
+    // it is read as coinciding, so it is neither an empty cell nor a difference.
+    expect(closingAssumedQuantity(line(10, 3, null))).toBe(3);
+    expect(closingLineDifference(line(10, 3, null))).toBe(0);
+    expect(closingSeedQuantity(line(10, 3, null))).toBe('3');
+    expect(closingSeedQuantity(line(2, 9, 8))).toBe('8');
+    expect(closingSeedQuantity(line(2, 9, 9))).toBe('9');
+    // A row the cut did not know publishes nothing: its quantity is the admin's to state (S4).
+    expect(closingSeedQuantity(line(20, 0, null))).toBe('');
+  });
+
+  it('shows the difference of a row with its sign, and a dash for a row that coincides', () => {
     expect(closingLineDifference(line(2, 9, 8))).toBe(-1);
     expect(closingLineDifference(line(4, 11, 13))).toBe(2);
     expect(closingLineDifference(line(1, 12, 12))).toBe(0);
-    expect(closingLineDifference(line(10, 3, null))).toBeNull();
+    expect(closingLineDifference(line(10, 3, null))).toBe(0);
     expect(closingQuantityText(-1)).toBe('−1');
     expect(closingQuantityText(2)).toBe('+2');
     expect(closingQuantityText(0)).toBe('—');
@@ -201,6 +588,64 @@ describe('S4 the count sheet is not blind and never recalculates the expected qu
   it('labels a row with its battery, polarity and capacity', () => {
     expect(closingLineLabel(line(10, 3, null, { model: 'Power', capacity_ah: '110' })))
       .toBe('Bosch Power R · 110 Ah');
+  });
+});
+
+// ---------------------------------------------------------------------------------
+// The count of the sheet against the system: a purely local reading of the draft (S2)
+// ---------------------------------------------------------------------------------
+
+describe('S2 the count the admin writes is a difference of the draft only', () => {
+  /** The sheet of a live settlement as the seed leaves it: every line carries the expected one. */
+  const seeded = closing({ count_lines: lines.map(entry => Object.freeze({ ...entry,
+    counted_quantity: entry.expected_quantity })) });
+  const rows = closingSheetRows(seeded);
+  const seededDraft = (subject: readonly ClosingCountLine[]) => Object.fromEntries(
+    subject.map(row => [row.variant_id, closingSeedQuantity(row)]));
+
+  it('counts the rows the draft moves away from the expected quantity, and only those (S2)', () => {
+    const draft = seededDraft(rows);
+    // A sheet nobody touched coincides with the system: no difference at all (S1).
+    expect(closingCountReading(rows, draft)).toEqual({ total: 11, differing: 0, differences: [] });
+    const edited = closingCountReading(rows, { ...draft, 2: '8' });
+    expect(edited.differing).toBe(1);
+    expect(edited.differences).toEqual([{ variant_id: 2, label: 'Bosch S4 R · 45 Ah',
+      expected_quantity: 9, counted_quantity: 8, difference: -1 }]);
+    expect(closingCountDifferenceText(edited.differing)).toBe('1 diferencia contra el sistema');
+    expect(closingCountDifferenceText(2)).toBe('2 diferencias contra el sistema');
+    // A line edited back to the expected quantity is a line that coincides again.
+    expect(closingCountReading(rows, { ...draft, 2: '9' }).differing).toBe(0);
+    expect(closingCountReading(rows, { ...draft, 2: '8', 4: '13' }).differing).toBe(2);
+    // The two words the screen uses are the same ones the tests read (S2).
+    expect(closingCountMatchTag).toBe('Conteo coincidente');
+    expect(closingChangedTag).toBe('No coincide');
+  });
+
+  it('keeps a zero the admin wrote explicitly, in the reading and in the payload (S4)', () => {
+    const draft = { ...seededDraft(rows), 5: '0' };
+    expect(closingCountReading(rows, draft).differences).toEqual([{ variant_id: 5,
+      label: 'Bosch S4 L · 45 Ah', expected_quantity: 7, counted_quantity: 0, difference: -7 }]);
+    // Zero is a count like any other: it is written whole and never dropped as an absent one.
+    expect(closingCountChanges(rows, draft)).toEqual([{ variant_id: 5, counted: '0' }]);
+    expect(canonicalCountPayload(closingCountChanges(rows, draft)))
+      .toEqual([{ variant_id: 5, counted_quantity: 0 }]);
+  });
+
+  it('leaves the offer to the declared drawer alone, with or without differences (S1, S3)', () => {
+    const stated = (subject: Closing) => drawerView(closingRail(subject), { counted: '7.015,00',
+      contribution: '0,00', fund: '900,00', observation: '' });
+    // The unseeded shape is read as coinciding too, so nothing on the count side blocks it.
+    const unseeded = closing();
+    expect(closingBlockers(unseeded, stated(unseeded))).toEqual([]);
+    // The sheet that only differs keeps the same gate: the count adds no arm and no step (S2).
+    expect(closingBlockers(seeded, stated(seeded))).toEqual([]);
+    expect(closingBlockReason([])).toBe('La rendición se puede proponer: la caja está declarada.');
+    // The branch without a commission cannot propose either, and the reason is the sentence the
+    // server would answer with, said before the button is pressed (S5).
+    expect(closingBlockers(unseeded, stated(unseeded), false, true)).toEqual([{
+      code: 'commission_missing',
+      message: 'La sucursal no tiene porcentaje de comisión configurado: sin eso no se puede proponer.',
+    }]);
   });
 });
 
@@ -346,15 +791,13 @@ describe('S14 what still blocks the offer, named', () => {
   const view = (subject: Closing, draft: DrawerDraft = { counted: '6.980,00', contribution: '0,00',
     fund: '900,00', observation: '' }) => drawerView(closingRail(subject), draft);
 
-  it('names the variants still to count and the drawer that is not stated', () => {
+  it('names only the drawer that is not stated, never a variant to count', () => {
     const subject = closing();
     const blockers = closingBlockers(subject, view(subject, emptyDrawerDraft));
-    expect(blockers.map(blocker => blocker.code)).toEqual(['count_pending', 'cash_not_stated']);
-    expect(blockers[0].message).toContain('Faltan 2 variantes por contar');
-    expect(blockers[0].message).toContain('Bosch Power R · 110 Ah');
-    expect(blockers[0].message).toContain('Bosch S5 L · 100 Ah');
-    expect(blockers[1].message).toBe('Falta la caja contada y el fondo que queda en la caja: el cierre no puede proponerse sin eso.');
-    expect(closingBlockReason(blockers)).toContain('Faltan 2 variantes por contar');
+    // The count side has no arm: the sheet opens coinciding with the system (S1, S3).
+    expect(blockers.map(blocker => blocker.code)).toEqual(['cash_not_stated']);
+    expect(blockers[0].message).toBe('Falta la caja contada y el fondo que queda en la caja: el cierre no puede proponerse sin eso.');
+    expect(closingBlockReason(blockers)).not.toContain('por contar');
   });
 
   it('names the contribution it does not have and never guesses the bound without it', () => {
@@ -383,7 +826,7 @@ describe('S14 what still blocks the offer, named', () => {
   it('lets the offer through only when the sheet is covered, the drawer is stated and nothing is unsaved', () => {
     const subject = complete();
     expect(closingBlockers(subject, view(subject), false)).toEqual([]);
-    expect(closingBlockReason([])).toBe('La rendición se puede proponer: el conteo cubre toda variante con existencia y la caja está contada.');
+    expect(closingBlockReason([])).toBe('La rendición se puede proponer: la caja está declarada.');
     expect(closingBlockers(subject, view(subject), true).map(blocker => blocker.code)).toEqual(['unsaved']);
   });
 
@@ -426,6 +869,7 @@ const offer = (overrides: Partial<ClosingOffer> = {}): ClosingOffer => Object.fr
   cash_sales_cents: 643000n, cash_expenses_cents: 21500n, card_total_cents: 324000n,
   transfer_total_cents: 118000n, qr_total_cents: 276000n,
   counted_cash_cents: 698000n, contributed_cash_cents: 0n, closing_cash_cents: 90000n,
+  purchase_fund_counted_cents: 37500n, purchase_fund_cash_cents: 150000n,
   observation: '', count_lines: offerLines, ...overrides,
 });
 
@@ -490,6 +934,19 @@ describe('S14 the branch only accepts or rejects, with a mandatory motive', () =
     expect(acceptance.rail.expected_cents).toBe(80000n + 643000n - 21500n);
     // An open settlement has no offer to accept.
     expect(closingAcceptance(closing())).toBeNull();
+  });
+
+  it('reads the envelope the branch accepts from the offer that froze it (S5, S6)', () => {
+    expect(closingEnvelope(proposed(), answer().offer)).toMatchObject({ counted_cents: 37500n,
+      difference_cents: -400n, new_cents: 150000n });
+    // Without an offer the document's own envelope is the one read.
+    expect(closingEnvelope(proposed())!.counted_cents).toBe(37500n);
+    // A document that publishes no envelope offers none to read either.
+    expect(closingEnvelope(closing({ purchase_fund: null }))).toBeNull();
+    // An offer whose envelope disagrees with the document is never described as acceptable.
+    const drifted = proposed({ rounds: [answer({
+      offer: offer({ purchase_fund_cash_cents: 90000n }) })] });
+    expect(() => closingAcceptance(drifted)).toThrow(model.closingAcceptanceMismatchMessage);
   });
 
   it('refuses an offer that does not agree with the settlement it belongs to', () => {
@@ -764,8 +1221,7 @@ describe('S4, S5 a battery the system did not have', () => {
   it('sends only what the admin counted, the added row included and nothing else', () => {
     const rows = closingSheetRows(closing(), [catalogueVariant(20)]);
     // The screen seeds the draft from the sheet, so a row the admin did not touch is not a change.
-    const seeded = Object.fromEntries(rows.map(row =>
-      [row.variant_id, row.counted_quantity === null ? '' : String(row.counted_quantity)]));
+    const seeded = Object.fromEntries(rows.map(row => [row.variant_id, closingSeedQuantity(row)]));
     const changes = closingCountChanges(rows, { ...seeded, 1: '11', 20: '3' });
     // The added row travels exactly like a sheet row: its counted quantity and its variant.
     expect(changes).toEqual([{ variant_id: 1, counted: '11' }, { variant_id: 20, counted: '3' }]);
@@ -773,18 +1229,23 @@ describe('S4, S5 a battery the system did not have', () => {
       { variant_id: 1, counted_quantity: 11 }, { variant_id: 20, counted_quantity: 3 }]);
     // What was not counted is not sent: no row invents a zero for the admin (S4).
     expect(closingCountChanges(rows, { ...seeded, 1: '11' })).toEqual([{ variant_id: 1, counted: '11' }]);
+    // The lines of the cut that arrive without a count are sent only when the admin writes one.
+    expect(closingCountChanges(rows, seeded)).toEqual([]);
   });
 
-  it('blocks the proposal while the added row is uncounted, naming it', () => {
+  it('never blocks on the added row itself: a row with no count asserts nothing (S1, S3)', () => {
     const sheetless = closing({ count_lines: [] });
     const stated = drawerView(closingRail(sheetless), { counted: '7.015,00', contribution: '0,00',
       fund: '900,00', observation: '' });
     const rows = closingSheetRows(sheetless, [catalogueVariant(20)]);
-    const blocked = closingBlockers(sheetless, stated, false, rows);
-    expect(blocked.map(blocker => blocker.code)).toEqual(['count_pending']);
-    expect(blocked[0].message).toBe('Faltan 1 variante por contar: Toyo NS60 R · 65 Ah.');
-    // Without the added row, and with the drawer stated, nothing blocks the offer.
-    expect(closingBlockers(sheetless, stated, false, [])).toEqual([]);
+    // A row the cut did not know assumes nothing, so the gate is the drawer's alone; what holds the
+    // offer back is that the row is still an unsaved change of the draft.
+    expect(closingBlockers(sheetless, stated)).toEqual([]);
+    expect(closingBlockers(sheetless, stated, true).map(blocker => blocker.code)).toEqual(['unsaved']);
+    // Once the admin states its count it is a difference of the sheet, read in the draft only (S2).
+    expect(closingCountReading(rows, { 20: '4' }).differences).toEqual([{ variant_id: 20,
+      label: 'Toyo NS60 R · 65 Ah', expected_quantity: 0, counted_quantity: 4, difference: 4 }]);
+    expect(closingCountReading(rows, {})).toEqual({ total: 1, differing: 0, differences: [] });
   });
 
   it('keeps the added row of a reloaded draft, still outside the system', () => {
@@ -794,7 +1255,7 @@ describe('S4, S5 a battery the system did not have', () => {
     expect(closingLineIsOutsideSystem(added)).toBe(true);
     expect(added.counted_quantity).toBe(3);
     expect(closingLineDifference(added)).toBe(3);
-    // The reloaded sheet covers the added row like any other line of the count.
-    expect(closingProgress(reloaded.count_lines).total).toBe(lines.length + 1);
+    // The reloaded sheet carries the added row like any other line of the count.
+    expect(closingSheetRows(reloaded)).toHaveLength(lines.length + 1);
   });
 });

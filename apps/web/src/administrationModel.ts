@@ -53,6 +53,53 @@ export function parseBranches(raw: string): Location[] {
   if (items.some((item, index) => index > 0 && items[index - 1].id >= item.id)) return invalid();
   return items;
 }
+/** One configured commission of the panel: the branch, its canonical rate, and the account
+ *  that fixed it with the moment it did. The author is part of the shape because a money
+ *  parameter is never shown anonymous. */
+export interface Commission {
+  branch_id: number; rate: string; updated_at: string; updated_by: string;
+}
+/** The canonical percentage the database stores: two decimals between 0.00 and 100.00. */
+const commissionPattern = /^(0|[1-9][0-9]{0,2})\.([0-9]{2})$/;
+function commission(value: unknown): Commission {
+  const item = object(value, ['branch_location_id', 'commission_rate_percent', 'updated_at', 'updated_by']);
+  const rate = text(item.commission_rate_percent);
+  const match = commissionPattern.exec(rate);
+  const moment = text(item.updated_at);
+  if (!match || Number(match[1] + match[2]) > 10000 || !/^\d{4}-\d{2}-\d{2}T[0-9:.]+Z$/.test(moment)
+    || Number.isNaN(Date.parse(moment))) return invalid();
+  const id = locationID(item.branch_location_id);
+  // The warehouse is location 1 and never settles itself, so it carries no commission.
+  if (id < 2) return invalid();
+  return { branch_id: id, rate, updated_at: moment, updated_by: text(item.updated_by, true) };
+}
+/** Reads the configured commissions of every branch, in branch order. A branch the warehouse
+ *  never configured is absent, which is what the panel shows as "sin configurar". */
+export function parseCommissions(raw: string): Commission[] {
+  const value = decode(raw);
+  if (!Array.isArray(value)) return invalid();
+  const items = value.map(commission);
+  if (items.some((item, index) => index > 0 && items[index - 1].branch_id >= item.branch_id)) return invalid();
+  return items;
+}
+/** The moment the rate was fixed, in the operator's own clock and short form: the audit half
+ *  of S4 that says when, beside the account that says who. */
+export function commissionMoment(moment: string): string {
+  return new Date(moment).toLocaleString('es-BO', { day: '2-digit', month: '2-digit',
+    year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+/** The rate as the operator reads it: the canonical percentage with a decimal comma. */
+export function commissionText(rate: string): string { return rate.replace('.', ',') + ' %'; }
+/** What the operator types turned into the canonical wire rate, or null when it is not a
+ *  percentage the server would admit: comma or dot, at most two decimals, never above 100. */
+export function commissionInput(value: string): string | null {
+  const typed = value.trim().replace(',', '.');
+  const match = /^(0|[1-9][0-9]{0,2})(?:\.([0-9]{1,2}))?$/.exec(typed);
+  if (!match) return null;
+  const hundredths = Number(match[1] + (match[2] ?? '').padEnd(2, '0'));
+  if (hundredths > 10000) return null;
+  return `${match[1]}.${(match[2] ?? '').padEnd(2, '0')}`;
+}
 export function validName(value: string): boolean {
   return !!value.trim() && value.isWellFormed() && !value.includes('\0') && new TextEncoder().encode(value).length <= 128;
 }

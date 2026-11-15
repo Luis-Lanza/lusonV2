@@ -30,7 +30,7 @@ export const purchaseAdmittedErrors: ReadonlyMap<number, readonly PurchaseErrorC
 
 /** Spanish message for every failure, including the transport ones. */
 export const purchaseErrorMessages: Record<PurchaseErrorCode, string> = {
-  invalid_request: 'El servidor rechazó la compra: revisá las líneas, los montos y la nota. No se registró nada.',
+  invalid_request: 'El servidor rechazó la compra: revisá las líneas, los montos y la nota. Se paga en efectivo del fondo de compras, que no puede gastar más de lo que tiene. No se registró nada.',
   forbidden: 'No tenés permiso para registrar compras en esta sucursal. No se registró nada.',
   not_found: 'La compra ya no existe en esta sucursal. Actualizá el historial.',
   retry_conflict: 'La clave de esta compra ya se usó con otro contenido. No se aplicó ningún cambio: revisá el documento.',
@@ -82,6 +82,55 @@ export interface PurchasePage {
   readonly page_size: number;
   readonly total_purchases: number;
   readonly purchases: readonly PurchaseHistoryRow[];
+}
+/**
+ * One entry of the period selector: the kind, the settlement it names and the window its
+ * documents follow. Pending and the whole history are not stretches of time, so they carry
+ * neither a closing id nor a window.
+ */
+export type PurchasePeriodKind = 'pending' | 'settlement' | 'open' | 'all';
+export interface PurchasePeriod {
+  readonly kind: PurchasePeriodKind;
+  readonly closing_id: number | null;
+  readonly from: string | null;
+  readonly to: string | null;
+  readonly label: string;
+}
+/** One model of the pending balance, in whole units. */
+export interface PurchaseBalanceUsed {
+  readonly model: string;
+  readonly bought: number;
+  readonly delivered: number;
+  readonly balance: number;
+}
+/** One material of the pending balance, in integer thousandths of a kilogram. */
+export interface PurchaseBalanceScrap {
+  readonly material_id: number;
+  readonly bought_milli: bigint;
+  readonly delivered_milli: bigint;
+  readonly balance_milli: bigint;
+}
+/** The pending period's own reading: bought minus delivered, per model and per material. */
+export interface PurchaseBalance {
+  readonly used: readonly PurchaseBalanceUsed[];
+  readonly scrap: readonly PurchaseBalanceScrap[];
+}
+/**
+ * The three header numbers of one period: the money it took out of the cash box, the used units and
+ * the scrap kilos it received. `money_cents` is null for the pending period, which is a balance of
+ * material the branch still holds and not a window of money it spent.
+ */
+export interface PurchaseTotals {
+  readonly money_cents: bigint | null;
+  readonly used_units: number;
+  readonly scrap_kg_milli: bigint;
+}
+/** One page of the chosen period plus its selector, its period, its totals and the pending balance. */
+export interface PurchaseListing extends PurchasePage {
+  readonly periods: readonly PurchasePeriod[];
+  readonly period: PurchasePeriod;
+  readonly totals: PurchaseTotals;
+  readonly balance: PurchaseBalance | null;
 }
 export interface PurchaseMaterial { readonly id: number; readonly name: string }
 export interface PurchaseLastPriceModel {
@@ -326,7 +375,11 @@ function historyRow(value: unknown): PurchaseHistoryRow {
 
 /** Parses one newest-first page with counts that fit the page and the document bounds. */
 export function parsePurchasePage(raw: string): PurchasePage {
-  const record = fields(decode(raw), ['page', 'page_size', 'total_purchases', 'purchases']);
+  return pageOf(fields(decode(raw), ['page', 'page_size', 'total_purchases', 'purchases']));
+}
+
+/** The page block is one shape, whether it is answered alone or beside a period. */
+function pageOf(record: Record<string, unknown>): PurchasePage {
   const page = integer(record.page, 1, purchaseHistoryMaxPage);
   const page_size = integer(record.page_size, 10, 50);
   if (!purchaseHistoryPageSizes.includes(page_size)) return invalidResponse();
@@ -342,6 +395,183 @@ export function parsePurchasePage(raw: string): PurchasePage {
     return row;
   });
   return Object.freeze({ page, page_size, total_purchases, purchases: Object.freeze(purchases) });
+}
+
+// ---------------------------------------------------------------------------------
+// The period selector, the chosen period and the pending balance
+// ---------------------------------------------------------------------------------
+
+const periodKinds: readonly PurchasePeriodKind[] = ['pending', 'settlement', 'open', 'all'];
+/** The server generates the words of a period, so this is its own bound, not a client cap. */
+const purchaseMaxPeriodLabel = 200;
+
+/** One period of the selector: the kind decides which fields it is allowed to carry. */
+function periodValue(value: unknown): PurchasePeriod {
+  const record = fields(value, ['kind', 'closing_id', 'from', 'to', 'label']);
+  if (typeof record.kind !== 'string' || !periodKinds.includes(record.kind as PurchasePeriodKind)) {
+    return invalidResponse();
+  }
+  const kind = record.kind as PurchasePeriodKind;
+  const label = text(record.label);
+  if (Array.from(label).length > purchaseMaxPeriodLabel) return invalidResponse();
+  if (kind === 'pending' || kind === 'all') {
+    // Neither is a stretch of time: a closing id or a window here is not this server's answer.
+    if (record.closing_id !== null || record.from !== null || record.to !== null) return invalidResponse();
+    return Object.freeze({ kind, closing_id: null, from: null, to: null, label });
+  }
+  const closing_id = integer(record.closing_id, 1, Number.MAX_SAFE_INTEGER);
+  const from = timestamp(record.from);
+  const to = timestamp(record.to);
+  if (Date.parse(from) > Date.parse(to)) return invalidResponse();
+  return Object.freeze({ kind, closing_id, from, to, label });
+}
+
+/** The wire token of a period: the closing id for a settlement, the kind otherwise. */
+export function purchasePeriodToken(period: PurchasePeriod): string {
+  return period.closing_id === null ? period.kind : String(period.closing_id);
+}
+
+/** Two published periods are the same only when every published field agrees. */
+function samePeriod(left: PurchasePeriod, right: PurchasePeriod): boolean {
+  return left.kind === right.kind && left.closing_id === right.closing_id
+    && left.from === right.from && left.to === right.to && left.label === right.label;
+}
+
+/**
+ * The selector is published in one frozen order: the pending balance, every closed settlement
+ * newest first, the live settlement and the whole history. A list that is not that order, that
+ * repeats a period or that carries two live settlements is not a selector this domain wrote.
+ */
+function periodsValue(value: unknown): readonly PurchasePeriod[] {
+  if (!Array.isArray(value) || value.length < 2) return invalidResponse();
+  const periods = value.map(periodValue);
+  if (periods[0].kind !== 'pending' || periods[periods.length - 1].kind !== 'all') return invalidResponse();
+  const seen = new Set<string>();
+  let live = 0;
+  let previousClosing = Number.POSITIVE_INFINITY;
+  periods.forEach((period, index) => {
+    const identity = [period.kind, period.closing_id ?? '-', period.from ?? '-', period.to ?? '-',
+      period.label].join('|');
+    if (seen.has(identity)) return invalidResponse();
+    seen.add(identity);
+    if (period.kind === 'pending' && index !== 0) return invalidResponse();
+    if (period.kind === 'all' && index !== periods.length - 1) return invalidResponse();
+    if (period.kind === 'settlement') {
+      // The live settlement is the last settlement of the branch: a closed one after it, or an
+      // ascending closing id, is not the history this server read.
+      if (live > 0 || (period.closing_id ?? 0) >= previousClosing) return invalidResponse();
+      previousClosing = period.closing_id ?? 0;
+    }
+    if (period.kind === 'open') {
+      if (live > 0) return invalidResponse();
+      live += 1;
+    }
+  });
+  return Object.freeze(periods);
+}
+
+/**
+ * A balance figure is published as canonical integer text, exactly like a money or weight amount:
+ * a JSON number would let a quantity be read as a binary float.
+ */
+function wireInteger(value: unknown, signed: boolean, min: number, max: number): number {
+  if (typeof value !== 'string') return invalidResponse();
+  if (!(signed ? /^(0|-?[1-9]\d*)$/ : /^(0|[1-9]\d*)$/).test(value)) return invalidResponse();
+  const exact = BigInt(value);
+  if (exact < BigInt(min) || exact > BigInt(max)) return invalidResponse();
+  return Number(exact);
+}
+
+/** One model of the balance: whole units, and the difference is exactly bought minus delivered. */
+function balanceUsed(report: unknown): PurchaseBalanceUsed {
+  const row = fields(report, ['model', 'bought', 'delivered', 'balance']);
+  const bought = wireInteger(row.bought, false, 0, Number.MAX_SAFE_INTEGER);
+  const delivered = wireInteger(row.delivered, false, 0, Number.MAX_SAFE_INTEGER);
+  const balance = wireInteger(row.balance, true, -Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
+  if (bought === 0 && delivered === 0) return invalidResponse();
+  if (balance !== bought - delivered) return invalidResponse();
+  return Object.freeze({ model: modelCode(row.model), bought, delivered, balance });
+}
+
+/** One material of the balance: canonical weights, and a difference that may be negative. */
+function balanceScrap(report: unknown): PurchaseBalanceScrap {
+  const row = fields(report, ['material_id', 'bought', 'delivered', 'balance']);
+  const bought_milli = wireWeight(row.bought);
+  const delivered_milli = wireWeight(row.delivered);
+  const balance_milli = wireWeight(row.balance);
+  if (bought_milli < 0n || delivered_milli < 0n) return invalidResponse();
+  if (bought_milli === 0n && delivered_milli === 0n) return invalidResponse();
+  if (balance_milli !== bought_milli - delivered_milli) return invalidResponse();
+  return Object.freeze({ material_id: integer(row.material_id, 1, purchaseMaxID),
+    bought_milli, delivered_milli, balance_milli });
+}
+
+/** The balance the pending period publishes, in its frozen per-model and per-material order. */
+function balanceValue(value: unknown): PurchaseBalance {
+  const record = fields(value, ['used', 'scrap']);
+  if (!Array.isArray(record.used) || !Array.isArray(record.scrap)) return invalidResponse();
+  if (record.used.length > purchaseMaxLines || record.scrap.length > purchaseMaxLines) return invalidResponse();
+  const used = record.used.map(balanceUsed);
+  ascending(used, row => row.model);
+  const scrap = record.scrap.map(balanceScrap);
+  ascending(scrap, row => row.material_id);
+  return Object.freeze({ used: Object.freeze(used), scrap: Object.freeze(scrap) });
+}
+
+/**
+ * The header of one period. A window states the money that left the cash box, a non-negative unit
+ * count and a non-negative weight; the pending period states no money at all and repeats the balance's
+ * own sum, so the numbers on the band and the rows under it can never be two different readings.
+ */
+function totalsValue(value: unknown, kind: PurchasePeriodKind, balance: PurchaseBalance | null): PurchaseTotals {
+  const record = fields(value, ['money', 'used_units', 'scrap_kg']);
+  const pending = kind === 'pending';
+  const money_cents = record.money === null ? null : wireMoney(record.money);
+  // Both the balance and a window may read negative: a window is the net of its documents, so a
+  // counter-document reversing a purchase of an earlier period leaves it below zero.
+  const used_units = wireInteger(record.used_units, true, -Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
+  const scrap_kg_milli = wireWeight(record.scrap_kg);
+  if (pending) {
+    // A balance is material, never money, and its header is the sum of its own rows.
+    if (money_cents !== null || balance === null) return invalidResponse();
+    const units = balance.used.reduce((sum, row) => sum + row.balance, 0);
+    const milli = balance.scrap.reduce((sum, row) => sum + row.balance_milli, 0n);
+    if (used_units !== units || scrap_kg_milli !== milli) return invalidResponse();
+  } else if (money_cents === null) {
+    // A window always states an amount; its sign is the net of what its documents did.
+    return invalidResponse();
+  }
+  return Object.freeze({ money_cents, used_units, scrap_kg_milli });
+}
+
+/**
+ * Parses the listing whole: the page, the selector, the period that was chosen out of it, the totals of
+ * that period and the balance only the pending period publishes. The chosen period must be one of the
+ * selector's own entries and the listed documents must fall inside its window, so the numbers on screen
+ * and the words that say which period they belong to can never disagree.
+ */
+export function parsePurchaseListing(raw: string): PurchaseListing {
+  const record = fields(decode(raw), ['page', 'page_size', 'total_purchases', 'purchases',
+    'periods', 'period', 'totals', 'balance']);
+  const page = pageOf(record);
+  const periods = periodsValue(record.periods);
+  const period = periodValue(record.period);
+  if (!periods.some(entry => samePeriod(entry, period))) return invalidResponse();
+  const balance = record.balance === null ? null : balanceValue(record.balance);
+  // The balance is what the branch holds now: a period that is a window publishes null instead.
+  if ((period.kind === 'pending') !== (balance !== null)) return invalidResponse();
+  const totals = totalsValue(record.totals, period.kind, balance);
+  if (period.from !== null && period.to !== null) {
+    const from = Date.parse(period.from);
+    const to = Date.parse(period.to);
+    for (const row of page.purchases) {
+      const at = Date.parse(row.created_at);
+      // The server lists the window as [from, to): a document outside it is another answer.
+      if (!(at >= from && at < to)) return invalidResponse();
+    }
+  }
+  return Object.freeze({ page: page.page, page_size: page.page_size,
+    total_purchases: page.total_purchases, purchases: page.purchases, periods, period, totals, balance });
 }
 
 export function parsePurchaseModels(raw: string): readonly string[] {
@@ -431,6 +661,21 @@ export function purchaseHistoryPath(page: number, pageSize: number): string {
     throw new Error('Consulta de compras inválida.');
   }
   return `/api/purchases?page=${page}&page_size=${pageSize}`;
+}
+
+/**
+ * The listing path. Without a selection it is exactly the path this screen always asked for, so a
+ * client that does not know the selector keeps reading the whole history.
+ */
+export function purchaseListingPath(page: number, pageSize: number, period?: string): string {
+  const path = purchaseHistoryPath(page, pageSize);
+  if (period === undefined) return path;
+  if (period !== 'pending' && period !== 'all') {
+    if (!/^[1-9]\d*$/.test(period) || !Number.isSafeInteger(Number(period))) {
+      throw new Error('Consulta de compras inválida.');
+    }
+  }
+  return `${path}&period=${period}`;
 }
 
 function purchaseID(id: number): number {
@@ -573,11 +818,19 @@ export function createPurchaseAPI(fetch: typeof globalThis.fetch = globalThis.fe
       return document;
     },
 
-    async history(page: number, pageSize: number, signal?: AbortSignal): Promise<PurchasePage> {
+    /**
+     * One page of the chosen period. The answer is evidence only when it repeats the page and the
+     * period that were asked for, so the selector can never describe another period's documents.
+     */
+    async listing(page: number, pageSize: number, signal?: AbortSignal,
+      period?: string): Promise<PurchaseListing> {
       let path: string;
-      try { path = purchaseHistoryPath(page, pageSize); } catch { throw new PurchaseAPIError('invalid_request', null); }
-      const parsed = await get(path, parsePurchasePage, signal);
+      try { path = purchaseListingPath(page, pageSize, period); } catch { throw new PurchaseAPIError('invalid_request', null); }
+      const parsed = await get(path, parsePurchaseListing, signal);
       if (parsed.page !== page || parsed.page_size !== pageSize) throw new PurchaseAPIError('invalid_response', 200);
+      if (period !== undefined && purchasePeriodToken(parsed.period) !== period) {
+        throw new PurchaseAPIError('invalid_response', 200);
+      }
       return parsed;
     },
 
