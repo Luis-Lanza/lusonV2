@@ -11,8 +11,9 @@ import {
 } from './purchaseModel';
 import {
   createPurchaseAPI, PurchaseAPIError, purchaseErrorMessages, purchaseFailureIsDefinite, purchaseHistoryUnavailable,
-  purchaseModelsUnavailable, purchaseReceivedUnavailable, type PurchaseDocument, type PurchaseErrorCode,
-  type PurchaseLastPrices, type PurchaseMaterial, type PurchaseReceived,
+  purchaseModelsUnavailable, purchasePeriodToken, purchaseReceivedUnavailable, type PurchaseBalance,
+  type PurchaseDocument, type PurchaseErrorCode, type PurchaseLastPrices, type PurchaseMaterial,
+  type PurchasePeriod, type PurchaseReceived, type PurchaseTotals,
 } from './purchasesAPI';
 import './administration.css';
 import './stock-entry.css';
@@ -50,10 +51,14 @@ interface CatalogState {
   readonly lastPrices: PurchaseLastPrices | null;
   readonly problem: string;
 }
-interface HistoryState {
+interface ListingState {
   readonly phase: 'loading' | 'ready' | 'error';
   readonly rows: readonly PurchaseHistoryRow[];
   readonly total: number;
+  readonly periods: readonly PurchasePeriod[];
+  readonly period: PurchasePeriod | null;
+  readonly totals: PurchaseTotals | null;
+  readonly balance: PurchaseBalance | null;
   readonly problem: string;
 }
 interface ReceiptState {
@@ -125,10 +130,12 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
   const [revision, setRevision] = useState(0);
   const [received, setReceived] = useState<ReceivedState>({ phase: 'loading', received: null, problem: purchaseReceivedUnavailable });
   const [catalog, setCatalog] = useState<CatalogState>({ models: [], materials: [], lastPrices: null, problem: '' });
+  const [periodToken, setPeriodToken] = useState<string>('pending');
   const [historyPage, setHistoryPage] = useState(1);
   const [historySize, setHistorySize] = useState(purchaseHistoryDefaultPageSize);
   const [historyRevision, setHistoryRevision] = useState(0);
-  const [history, setHistory] = useState<HistoryState>({ phase: 'loading', rows: [], total: 0, problem: purchaseHistoryUnavailable });
+  const [listing, setListing] = useState<ListingState>({ phase: 'loading', rows: [], total: 0,
+    periods: [], period: null, totals: null, balance: null, problem: purchaseHistoryUnavailable });
 
   const [draftOpen, setDraftOpen] = useState(false);
   const [kind, setKind] = useState<DraftKind>('used');
@@ -207,19 +214,28 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
   }, [api, revision]);
 
   useEffect(() => {
-    // Both counters are refetch triggers: a new purchase and a retried history.
+    // Both counters are refetch triggers: a new purchase and a retried listing. The period is one
+    // read of its own, so the documents, the count and the balance always belong to one answer.
     void revision; void historyRevision;
     const controller = new AbortController();
     const alive = () => mounted.current && !controller.signal.aborted && !lifetime.current.signal.aborted;
-    setHistory(current => ({ ...current, phase: 'loading', problem: purchaseHistoryUnavailable }));
+    // The selector stays while a period is read; every figure waits for that same answer.
+    setListing(current => ({ phase: 'loading', rows: [], total: 0, periods: current.periods,
+      period: null, totals: null, balance: null, problem: purchaseHistoryUnavailable }));
     void (async () => {
       try {
-        const page = await api.history(historyPage, historySize, controller.signal);
-        if (alive()) setHistory({ phase: 'ready', rows: page.purchases, total: page.total_purchases, problem: '' });
-      } catch { if (alive()) setHistory(current => ({ ...current, phase: 'error', problem: purchaseHistoryUnavailable })); }
+        const answer = await api.listing(historyPage, historySize, controller.signal, periodToken);
+        if (alive()) setListing({ phase: 'ready', rows: answer.purchases, total: answer.total_purchases,
+          periods: answer.periods, period: answer.period, totals: answer.totals,
+          balance: answer.balance, problem: '' });
+      } catch {
+        // An answer this client cannot trust is refused whole: no selector, no figure, no row.
+        if (alive()) setListing({ phase: 'error', rows: [], total: 0, periods: [], period: null,
+          totals: null, balance: null, problem: purchaseHistoryUnavailable });
+      }
     })();
     return () => controller.abort();
-  }, [api, historyPage, historySize, historyRevision, revision]);
+  }, [api, historyPage, historySize, historyRevision, revision, periodToken]);
 
   useEffect(() => {
     // The page behind the open document is attenuated and cannot be reached.
@@ -503,19 +519,52 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
 
   const used = received.received?.used ?? [];
   const scrap = received.received?.scrap ?? [];
-  const rows = history.rows;
+  const rows = listing.rows;
   const receivedReady = received.phase === 'ready';
+  // The listing is the only answer that says which period is on screen, so nothing is described
+  // before it arrives: a figure under the wrong period is worse than no figure.
+  const listingReady = listing.phase === 'ready' && listing.period !== null;
+  const pendingView = listingReady && listing.period?.kind === 'pending';
+  const balance = pendingView ? listing.balance : null;
+  const pendingUsedRows = balance?.used ?? [];
+  const pendingScrapRows = balance?.scrap ?? [];
+  // A key whose balance is zero is not a position: it disappears from the pending reading while
+  // the bought and delivered figures that explain the zero stay in the header.
+  const pendingUsed = pendingUsedRows.filter(row => row.balance !== 0);
+  const pendingScrap = pendingScrapRows.filter(row => row.balance_milli !== 0n);
+  const pendingUnits = pendingUsedRows.reduce((sum, row) => sum + row.balance, 0);
+  const pendingBought = pendingUsedRows.reduce((sum, row) => sum + row.bought, 0);
+  const pendingDelivered = pendingUsedRows.reduce((sum, row) => sum + row.delivered, 0);
+  const pendingKg = pendingScrapRows.reduce((sum, row) => sum + row.balance_milli, 0n);
+  const pendingBoughtKg = pendingScrapRows.reduce((sum, row) => sum + row.bought_milli, 0n);
+  const pendingDeliveredKg = pendingScrapRows.reduce((sum, row) => sum + row.delivered_milli, 0n);
+  // The three numbers of the band are the totals of the chosen period, for every period: a window
+  // states what it received and the pending one what the branch still holds, so nothing on the band is
+  // a number of another period and nothing needs to say "acumulado".
+  const overviewReady = listingReady;
+  const totals = listing.totals;
+  const periodUnits = totals?.used_units ?? 0;
+  const periodKg = totals?.scrap_kg_milli ?? 0n;
+  const periodMoney = totals?.money_cents ?? null;
+  // The tabs still read the received detail row by row, so their counts wait for that answer; the
+  // pending tabs read the balance and need nothing else.
+  const detailReady = pendingView || (listingReady && receivedReady);
   const usedUnits = used.reduce((sum, row) => sum + row.quantity, 0);
   const usedValue = used.reduce((sum, row) => sum + row.value_cents, 0n);
   const scrapKg = scrap.reduce((sum, row) => sum + row.kg_milli, 0n);
   const scrapValue = scrap.reduce((sum, row) => sum + row.value_cents, 0n);
-  const receivedTotal = usedValue + scrapValue;
-  const documentsCount = history.phase === 'ready'
-    ? `${history.total} ${history.total === 1 ? 'documento' : 'documentos'}` : 'Documentos';
-  const historyCount = history.phase === 'ready'
-    ? `${history.total} ${history.total === 1 ? 'compra' : 'compras'}` : 'Sucursal';
+  /** A material of the balance is named by the reference table the catalog already asked for. */
+  const materialName = (id: number): string =>
+    catalog.materials.find(entry => entry.id === id)?.name ?? `Material #${id}`;
+  const documentsCount = listingReady
+    ? `${listing.total} ${listing.total === 1 ? 'documento' : 'documentos'}` : 'Documentos';
+  const historyCount = listingReady
+    ? `${listing.total} ${listing.total === 1 ? 'compra' : 'compras'}` : 'Sucursal';
+  const usedCount = pendingView ? `${pendingUnits} u.` : `${usedUnits} u. · ${formatMoney(usedValue)}`;
+  const scrapCount = pendingView ? formatKg(pendingKg) : `${formatKg(scrapKg)} · ${formatMoney(scrapValue)}`;
+  const documentsTabCount = listingReady ? String(listing.total) : '…';
   const nextHistoryPage = () => {
-    if (historyPage < purchaseHistoryMaxPage && historyPage * historySize < history.total) {
+    if (historyPage < purchaseHistoryMaxPage && historyPage * historySize < listing.total) {
       setHistoryPage(historyPage + 1);
     }
   };
@@ -536,48 +585,106 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
 
     <section className="purchases-received" aria-labelledby="purchase-received-title"
       aria-busy={received.phase === 'loading'}>
-      <h2 id="purchase-received-title" className="sr-only">Recibido</h2>
+      <h2 id="purchase-received-title" className="sr-only">Resumen del período</h2>
 
       <dl className="purchases-metrics">
-        <div className="purchases-metric purchases-metric-total">
-          <dt>Total recibido</dt>
-          <dd>{receivedFigure(formatMoney(receivedTotal), receivedReady)}</dd>
-          <span className="purchases-metric-sub">{`${documentsCount} · lo que salió de caja`}</span>
-        </div>
-        <div className="purchases-metric">
-          <dt>Baterías usadas</dt>
-          <dd>{receivedFigure(`${usedUnits} u.`, receivedReady)}</dd>
-          <span className="purchases-metric-sub">{receivedReady
-            ? `${formatMoney(usedValue)} · no se revenden` : 'Lo que entró por modelo'}</span>
-        </div>
-        <div className="purchases-metric">
-          <dt>Chatarra</dt>
-          <dd>{receivedFigure(formatKg(scrapKg), receivedReady)}</dd>
-          <span className="purchases-metric-sub">{receivedReady
-            ? `${formatMoney(scrapValue)} · cobre, aluminio, plomo y bronce` : 'Materiales por kilogramo'}</span>
-        </div>
+        {pendingView ? <>
+          <div className="purchases-metric purchases-metric-total">
+            <dt>Baterías usadas</dt>
+            <dd>{receivedFigure(`${periodUnits} u.`, overviewReady)}</dd>
+            <span className="purchases-metric-sub">{overviewReady
+              ? `${pendingBought} compradas · ${pendingDelivered} entregadas` : 'Lo que queda en la sucursal'}</span>
+          </div>
+          <div className="purchases-metric">
+            <dt>Chatarra</dt>
+            <dd>{receivedFigure(formatKg(periodKg), overviewReady)}</dd>
+            <span className="purchases-metric-sub">{overviewReady
+              ? `${formatKg(pendingBoughtKg)} compradas · ${formatKg(pendingDeliveredKg)} entregadas`
+              : 'Materiales por kilogramo'}</span>
+          </div>
+          <div className="purchases-metric">
+            <dt>Documentos</dt>
+            <dd>{receivedFigure(String(listing.total), overviewReady)}</dd>
+            <span className="purchases-metric-sub">lo registrado en la sucursal, sin filtro</span>
+          </div>
+        </> : <>
+          <div className="purchases-metric purchases-metric-total">
+            <dt>Total recibido</dt>
+            <dd>{receivedFigure(periodMoney === null ? '—' : formatMoney(periodMoney), overviewReady)}</dd>
+            <span className="purchases-metric-sub">{overviewReady
+              ? `${documentsCount} · lo que salió de caja` : 'Lo que salió de caja'}</span>
+          </div>
+          <div className="purchases-metric">
+            <dt>Baterías usadas</dt>
+            <dd>{receivedFigure(`${periodUnits} u.`, overviewReady)}</dd>
+            <span className="purchases-metric-sub">{overviewReady
+              ? 'no se revenden' : 'Lo que entró por modelo'}</span>
+          </div>
+          <div className="purchases-metric">
+            <dt>Chatarra</dt>
+            <dd>{receivedFigure(formatKg(periodKg), overviewReady)}</dd>
+            <span className="purchases-metric-sub">{overviewReady
+              ? 'cobre, aluminio, plomo y bronce' : 'Materiales por kilogramo'}</span>
+          </div>
+        </>}
       </dl>
 
+      <div className="purchases-period">
+        {listing.phase === 'error' && <p className="stock-message" role="alert">{listing.problem}
+          <button type="button" onClick={() => setHistoryRevision(value => value + 1)}>Reintentar historial</button></p>}
+        {listing.phase !== 'error' && listing.periods.length === 0
+          && <p className="stock-message" role="status">Consultando los períodos de la sucursal…</p>}
+        {listing.phase !== 'error' && listing.periods.length > 0 && <>
+          <div className="page-controls">
+            <label htmlFor="purchases-period">Período</label>
+            <select id="purchases-period" value={periodToken}
+              onChange={event => {
+                const chosen = event.target.value;
+                // Only a period this server published can be asked for.
+                if (!listing.periods.some(entry => purchasePeriodToken(entry) === chosen)) return;
+                setHistoryPage(1);
+                setPeriodToken(chosen);
+              }}>
+              {listing.periods.map(entry => <option key={purchasePeriodToken(entry)}
+                value={purchasePeriodToken(entry)}>{entry.label}</option>)}
+            </select>
+            {/* One line, in words, never a tooltip: which period is on screen, whether it is closed
+                and where it was cut. Nothing on this page is a total of an unnamed period. */}
+            <p className="stock-hint" role="status">
+              {!listingReady ? 'Consultando el período elegido…'
+                : listing.period?.kind === 'pending'
+                  ? `${listing.period.label} · saldo abierto, sin corte: lo comprado menos lo que contaron las rendiciones cerradas.`
+                  : listing.period?.kind === 'all'
+                    ? `${listing.period.label} · sin corte: todos los documentos registrados en la sucursal.`
+                    : <>{`${listing.period?.label} · ${listing.period?.kind === 'settlement' ? 'cerrada' : 'abierta'}`}
+                      {` · ${listing.period?.kind === 'settlement' ? 'corte' : 'corte previsto'} `}
+                      <TransferDate value={listing.period?.to} />
+                      {', período desde '}
+                      <TransferDate value={listing.period?.from} />
+                      {'. Los números y los documentos son los de este período.'}</>}
+            </p>
+          </div>
+        </>}
+      </div>
+
       <div className="purchases-tabs-row">
-        <div className="purchases-tabs" role="tablist" aria-label="Recibido por tipo de material"
+        <div className="purchases-tabs" role="tablist" aria-label="Materiales y documentos del período"
           onKeyDown={moveTab}>
           <button ref={element => { tabButtons.current.used = element; }} type="button" role="tab"
             id="purchases-tab-used" aria-selected={tab === 'used'} aria-controls="purchases-panel-used"
             tabIndex={tab === 'used' ? 0 : -1} onClick={() => setTab('used')}>
-            Baterías usadas <span className="count">{receivedReady
-              ? `${usedUnits} u. · ${formatMoney(usedValue)}` : '…'}</span>
+            Baterías usadas <span className="count">{detailReady ? usedCount : '…'}</span>
           </button>
           <button ref={element => { tabButtons.current.scrap = element; }} type="button" role="tab"
             id="purchases-tab-scrap" aria-selected={tab === 'scrap'} aria-controls="purchases-panel-scrap"
             tabIndex={tab === 'scrap' ? 0 : -1} onClick={() => setTab('scrap')}>
-            Chatarra <span className="count">{receivedReady
-              ? `${formatKg(scrapKg)} · ${formatMoney(scrapValue)}` : '…'}</span>
+            Chatarra <span className="count">{detailReady ? scrapCount : '…'}</span>
           </button>
           <button ref={element => { tabButtons.current.documents = element; }} type="button" role="tab"
             id="purchases-tab-documents" aria-selected={tab === 'documents'}
             aria-controls="purchases-panel-documents" tabIndex={tab === 'documents' ? 0 : -1}
             onClick={() => setTab('documents')}>
-            Documentos <span className="count">{history.phase === 'ready' ? history.total : '…'}</span>
+            Documentos <span className="count">{documentsTabCount}</span>
           </button>
         </div>
         <button ref={registerTrigger} type="button" className="primary purchases-register"
@@ -586,10 +693,36 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
 
       <div className="stock-entry-panel purchases-panel" id="purchases-panel-used" role="tabpanel"
         aria-labelledby="purchases-tab-used" hidden={tab !== 'used'}>
-        {received.phase === 'loading' && <p className="stock-message" role="status">Consultando lo recibido…</p>}
-        {received.phase === 'error' && <p className="stock-message" role="alert">{received.problem}
-          <button type="button" onClick={() => setRevision(value => value + 1)}>Reintentar recibido</button></p>}
-        {receivedReady && (used.length === 0
+        {pendingView && (pendingUsed.length === 0
+          ? <p className="stock-message">No queda saldo pendiente de baterías usadas: todo lo comprado ya se entregó en las rendiciones cerradas.</p>
+          : <div className="stock-table-wrap"><table className="stock-table purchases-table">
+            <caption className="sr-only">Saldo pendiente de baterías usadas por modelo</caption>
+            <thead><tr>
+              <th scope="col">Modelo</th>
+              <th scope="col" className="num">Compradas</th>
+              <th scope="col" className="num">Entregadas</th>
+              <th scope="col" className="num">Saldo</th>
+            </tr></thead>
+            <tbody>{pendingUsed.map(row => <tr key={row.model} data-model={row.model}>
+              <td data-label="Modelo"><strong>{row.model}</strong></td>
+              <td data-label="Compradas" className="num">{row.bought}</td>
+              <td data-label="Entregadas" className="num">{row.delivered}</td>
+              <td data-label="Saldo" className="num">{row.balance}
+                <span className="purchases-unit">unidades</span></td>
+            </tr>)}</tbody>
+            <tfoot><tr>
+              <td className="label">{`${pendingUsed.length} modelos · ${pendingUnits} unidades`}</td>
+              <td className="num">{pendingBought}</td>
+              <td className="num">{pendingDelivered}</td>
+              <td className="num">{pendingUnits}</td>
+            </tr></tfoot>
+          </table></div>)}
+        {listingReady && !pendingView && received.phase === 'loading'
+          && <p className="stock-message" role="status">Consultando lo recibido…</p>}
+        {listingReady && !pendingView && received.phase === 'error'
+          && <p className="stock-message" role="alert">{received.problem}
+            <button type="button" onClick={() => setRevision(value => value + 1)}>Reintentar recibido</button></p>}
+        {listingReady && !pendingView && receivedReady && (used.length === 0
           ? <p className="stock-message">Todavía no se recibieron baterías usadas.</p>
           : <div className="stock-table-wrap"><table className="stock-table purchases-table">
             <caption className="sr-only">Baterías usadas recibidas con su valor</caption>
@@ -621,19 +754,48 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
               <td className="num">100 %</td>
             </tr></tfoot>
           </table></div>)}
-        <p className="purchases-note"><strong>Es recibido, no es stock de venta.</strong> Estas baterías
-          usadas no se revenden, no entran al catálogo ni descuentan stock de venta. La cifra es lo que la
-          sucursal gastó.</p>
-        <p className="purchases-footline">El acumulado sale de las líneas de cada documento: una anulación
-          lo descuenta sola y no hay un saldo aparte que pueda quedar desfasado.</p>
+        <p className="purchases-note">{pendingView
+          ? <><strong>Es saldo, no stock de venta.</strong> Estas baterías usadas no se revenden ni entran al
+            catálogo: el saldo es lo que la sucursal todavía no entregó al almacén.</>
+          : <><strong>Es recibido, no es stock de venta.</strong> Estas baterías
+            usadas no se revenden, no entran al catálogo ni descuentan stock de venta. La cifra es lo que la
+            sucursal gastó.</>}</p>
+        <p className="purchases-footline">{pendingView
+          ? 'El saldo es lo comprado menos lo que contaron las rendiciones cerradas: una anulación lo descuenta sola y lo contado de menos sigue a la vista.'
+          : 'El acumulado sale de las líneas de cada documento: una anulación lo descuenta sola y no hay un saldo aparte que pueda quedar desfasado.'}</p>
       </div>
 
       <div className="stock-entry-panel purchases-panel" id="purchases-panel-scrap" role="tabpanel"
         aria-labelledby="purchases-tab-scrap" hidden={tab !== 'scrap'}>
-        {received.phase === 'loading' && <p className="stock-message" role="status">Consultando lo recibido…</p>}
-        {received.phase === 'error' && <p className="stock-message" role="alert">{received.problem}
-          <button type="button" onClick={() => setRevision(value => value + 1)}>Reintentar recibido</button></p>}
-        {receivedReady && (scrap.length === 0
+        {pendingView && (pendingScrap.length === 0
+          ? <p className="stock-message">No queda saldo pendiente de chatarra: todo lo comprado ya se entregó en las rendiciones cerradas.</p>
+          : <div className="stock-table-wrap"><table className="stock-table purchases-table">
+            <caption className="sr-only">Saldo pendiente de chatarra por material</caption>
+            <thead><tr>
+              <th scope="col">Material</th>
+              <th scope="col" className="num">Compradas</th>
+              <th scope="col" className="num">Entregadas</th>
+              <th scope="col" className="num">Saldo</th>
+            </tr></thead>
+            <tbody>{pendingScrap.map(row => <tr key={row.material_id} data-material-id={row.material_id}>
+              <td data-label="Material"><strong>{materialName(row.material_id)}</strong></td>
+              <td data-label="Compradas" className="num">{formatKg(row.bought_milli)}</td>
+              <td data-label="Entregadas" className="num">{formatKg(row.delivered_milli)}</td>
+              <td data-label="Saldo" className="num">{formatKg(row.balance_milli)}</td>
+            </tr>)}</tbody>
+            <tfoot><tr>
+              <td className="label">{`${pendingScrap.length} materiales · ${formatKg(pendingKg)}`}</td>
+              <td className="num">{formatKg(pendingBoughtKg)}</td>
+              <td className="num">{formatKg(pendingDeliveredKg)}</td>
+              <td className="num">{formatKg(pendingKg)}</td>
+            </tr></tfoot>
+          </table></div>)}
+        {listingReady && !pendingView && received.phase === 'loading'
+          && <p className="stock-message" role="status">Consultando lo recibido…</p>}
+        {listingReady && !pendingView && received.phase === 'error'
+          && <p className="stock-message" role="alert">{received.problem}
+            <button type="button" onClick={() => setRevision(value => value + 1)}>Reintentar recibido</button></p>}
+        {listingReady && !pendingView && receivedReady && (scrap.length === 0
           ? <p className="stock-message">Todavía no se recibió chatarra.</p>
           : <div className="stock-table-wrap"><table className="stock-table purchases-table">
             <caption className="sr-only">Chatarra recibida por material con su valor</caption>
@@ -653,15 +815,19 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
               <td className="num">{formatMoney(scrapValue)}</td>
             </tr></tfoot>
           </table></div>)}
-        <p className="purchases-note"><strong>Se pesa y se compra.</strong> Chatarra solo de entrada en
-          esta fase: no hay documento de salida ni material para vender.</p>
-        <p className="purchases-footline">El precio por kilogramo lo tipea el vendedor; el acumulado sale
-          de las líneas, no de un saldo aparte.</p>
+        <p className="purchases-note">{pendingView
+          ? <><strong>Se pesa y se compra.</strong> El saldo es lo comprado que el almacén todavía no contó;
+            no hay documento de salida ni material para vender.</>
+          : <><strong>Se pesa y se compra.</strong> Chatarra solo de entrada en
+            esta fase: no hay documento de salida ni material para vender.</>}</p>
+        <p className="purchases-footline">{pendingView
+          ? 'El saldo es lo comprado menos lo que contaron las rendiciones cerradas: lo contado de menos sigue a la vista.'
+          : 'El precio por kilogramo lo tipea el vendedor; el acumulado sale de las líneas, no de un saldo aparte.'}</p>
       </div>
 
       <div className="stock-entry-panel purchases-panel" id="purchases-panel-documents" role="tabpanel"
         aria-labelledby="purchases-tab-documents" hidden={tab !== 'documents'}
-        aria-busy={history.phase === 'loading'}>
+        aria-busy={listing.phase === 'loading'}>
         <div className="stock-panel-head">
           <div><h2 id="purchase-history-title">Documentos</h2>
             <p className="stock-hint">Cada compra es un documento con sus líneas y su pago. Se corrige con
@@ -697,11 +863,12 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
             </div></td>
           </tr>)}</tbody>
         </table></div>}
-        {history.phase === 'loading' && <p className="stock-message" role="status">Consultando el historial de compras…</p>}
-        {history.phase === 'error' && <p className="stock-message" role="alert">{history.problem}
-          <button type="button" onClick={() => setHistoryRevision(value => value + 1)}>Reintentar historial</button></p>}
-        {history.phase === 'ready' && rows.length === 0 &&
-          <p className="stock-message">Todavía no hay compras registradas.</p>}
+        {listingReady && rows.length === 0 && <p className="stock-message">
+          {listing.period?.kind === 'pending'
+            ? 'Todavía no hay compras registradas en la sucursal.'
+            : listing.period?.kind === 'all'
+              ? 'Todavía no hay compras registradas.'
+              : 'Este período no tiene compras registradas.'}</p>}
         <footer className="pager"><div className="page-controls">
           <label htmlFor="purchase-history-size">Compras por página</label>
           <select id="purchase-history-size" value={historySize} onChange={event => {
@@ -711,7 +878,8 @@ export default function Purchases({ csrf, branch = 'esta sucursal', fetcher = gl
           <button type="button" disabled={historyPage <= 1}
             onClick={() => { if (historyPage > 1) setHistoryPage(historyPage - 1); }}>Anterior página</button>
           <span aria-current="page">Página {historyPage}</span>
-          <button type="button" disabled={historyPage >= purchaseHistoryMaxPage || historyPage * historySize >= history.total}
+          <button type="button" disabled={!listingReady || historyPage >= purchaseHistoryMaxPage
+            || historyPage * historySize >= listing.total}
             onClick={nextHistoryPage}>Siguiente página</button>
         </div></footer>
       </div>

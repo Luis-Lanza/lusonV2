@@ -1809,7 +1809,16 @@ describe('branch purchases', () => {
     if (url === '/api/purchases/last-prices') return Promise.resolve(purchasesResponse({ models: [], materials: [] }));
     if (url === '/api/purchases/received') return Promise.resolve(purchasesResponse({ used: [], scrap: [] }));
     if (url.startsWith('/api/purchases?page=')) return Promise.resolve(purchasesResponse({
-      page: 1, page_size: 25, total_purchases: 0, purchases: [] }));
+      page: 1, page_size: 25, total_purchases: 0, purchases: [],
+      // The screen opens on the pending period, so the answer carries the selector, that period, the
+      // three zeros of a branch that bought nothing and the empty balance they read.
+      periods: [
+        { kind: 'pending', closing_id: null, from: null, to: null, label: 'Pendiente' },
+        { kind: 'all', closing_id: null, from: null, to: null, label: 'Todo el historial' },
+      ],
+      period: { kind: 'pending', closing_id: null, from: null, to: null, label: 'Pendiente' },
+      totals: { money: null, used_units: '0', scrap_kg: '0.000' },
+      balance: { used: [], scrap: [] } }));
     return undefined;
   });
   const purchaseCalls = (mock: ReturnType<typeof setup>) =>
