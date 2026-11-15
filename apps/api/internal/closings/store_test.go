@@ -360,6 +360,66 @@ func TestConfigureCommissionIsTheWarehouseOwn(t *testing.T) {
 	}
 }
 
+// TestCommissionsAreWhatThePanelReads pins S2 and S4 of the commission panel: the configured
+// commissions of every branch come back in one call, with the account that fixed each rate and
+// the moment it did, and a branch the warehouse never configured is absent instead of invented.
+func TestCommissionsAreWhatThePanelReads(t *testing.T) {
+	e := fixture(t)
+
+	// The panel of a fresh installation has nothing to show, never one entry per branch with
+	// no rate: a branch without a configuration is what blocks its settlement.
+	if _, err := e.pool.Exec(e.ctx, `DELETE FROM branch_settings`); err != nil {
+		t.Fatalf("the fixture settings could not be cleared: %v", err)
+	}
+	if _, err := e.pool.Exec(e.ctx, `UPDATE auth_accounts SET display_name='Almacén' WHERE id=1`); err != nil {
+		t.Fatalf("the fixture name could not be set: %v", err)
+	}
+	configured, err := e.store.Commissions(e.ctx, warehouse())
+	if err != nil || len(configured) != 0 {
+		t.Fatalf("no branch has a configured commission yet: %+v %v", configured, err)
+	}
+
+	for _, branch := range []struct {
+		id   int64
+		rate string
+	}{{2, "4.5"}, {3, "100.00"}} {
+		if _, err := e.store.ConfigureCommission(e.ctx, warehouse(), branch.id, closings.Percent(branch.rate)); err != nil {
+			t.Fatalf("the warehouse must configure branch %d: %v", branch.id, err)
+		}
+	}
+	configured, err = e.store.Commissions(e.ctx, warehouse())
+	if err != nil {
+		t.Fatalf("the warehouse must read the configured commissions: %v", err)
+	}
+	if len(configured) != 2 {
+		t.Fatalf("the panel reads one entry per configured branch: %+v", configured)
+	}
+	if configured[0].BranchID != 2 || configured[0].Rate != "4.50" ||
+		configured[1].BranchID != 3 || configured[1].Rate != "100.00" {
+		t.Fatalf("the configured rates are not what the warehouse wrote: %+v", configured)
+	}
+	// The audit the panel shows beside each rate: which account fixed it, and when.
+	if configured[0].UpdatedBy != "Almacén" || configured[0].UpdatedAt.IsZero() {
+		t.Fatalf("the commission does not say who fixed it and when: %+v", configured[0])
+	}
+
+	// Only the warehouse reads the panel: a branch reads no list of rates, and neither does
+	// an identity that is not an account at all.
+	_, err = e.store.Commissions(e.ctx, identity(2))
+	refused(t, err, closings.ErrForbidden)
+	_, err = e.store.Commissions(e.ctx, auth.Identity{})
+	refused(t, err, closings.ErrForbidden)
+
+	// A changed rate replaces the configured one: the list never grows a second entry.
+	if _, err := e.store.ConfigureCommission(e.ctx, warehouse(), 2, "5"); err != nil {
+		t.Fatalf("the warehouse must change a configured commission: %v", err)
+	}
+	configured, err = e.store.Commissions(e.ctx, warehouse())
+	if err != nil || len(configured) != 2 || configured[0].Rate != "5.00" {
+		t.Fatalf("the changed commission is not what the warehouse wrote: %+v %v", configured, err)
+	}
+}
+
 // TestOpenFreezesThePeriodAndTheSnapshot pins rule 2: only the warehouse opens a settlement,
 // only for a branch that exists, is not retired and is not the warehouse itself; the period,
 // the cut instant, the inherited fund and the expected snapshot are the database's answers;

@@ -259,6 +259,17 @@ type Settings struct {
 	CommissionRatePercent Percent `json:"commission_rate_percent"`
 }
 
+// BranchCommission is the configured settlement commission of one branch, read the way the
+// administration panel needs it: the rate, the account that fixed it and the moment it did.
+// It is the audit of one money parameter, so a rate is never read without its author, and a
+// branch the warehouse never configured is absent instead of reported with a zero rate.
+type BranchCommission struct {
+	BranchID  int64     `json:"branch_location_id"`
+	Rate      Percent   `json:"commission_rate_percent"`
+	UpdatedAt time.Time `json:"updated_at"`
+	UpdatedBy string    `json:"updated_by"`
+}
+
 // Counted is one line the admin counted: the variant and what was actually found. It is
 // the only quantity a caller supplies — the expected quantity is the database's own
 // snapshot of the cut instant and the difference is never an input.

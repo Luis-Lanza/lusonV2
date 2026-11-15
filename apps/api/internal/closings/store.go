@@ -144,6 +144,48 @@ func (s *Store) ConfigureCommission(ctx context.Context, actor auth.Identity, br
 	return settings, nil
 }
 
+// Commissions reads the configured commission of every branch, which is what the
+// administration panel lists: the rate of each branch that has one, the account that fixed
+// it and when. Only the warehouse reads it, and a branch without a configured rate is
+// absent from the answer, so the panel tells "not configured" apart from a rate of zero.
+func (s *Store) Commissions(ctx context.Context, actor auth.Identity) ([]BranchCommission, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return nil, ErrUnavailable
+	}
+	if !warehouseAdmin(actor) {
+		return nil, ErrForbidden
+	}
+	if err := checkAccount(ctx, s.pool, actor); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	rows, err := s.pool.Query(ctx, `SELECT s.branch_location_id, s.commission_rate_percent::text,
+ s.updated_at, a.display_name
+ FROM branch_settings s JOIN auth_accounts a ON a.id = s.updated_by_account_id
+ ORDER BY s.branch_location_id`)
+	if err != nil {
+		return nil, fail(ctx)
+	}
+	defer rows.Close()
+	configured := []BranchCommission{}
+	for rows.Next() {
+		var item BranchCommission
+		var stored string
+		if err := rows.Scan(&item.BranchID, &stored, &item.UpdatedAt, &item.UpdatedBy); err != nil {
+			return nil, fail(ctx)
+		}
+		if item.Rate, err = ParsePercent(stored); err != nil {
+			return nil, ErrUnavailable
+		}
+		configured = append(configured, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fail(ctx)
+	}
+	return configured, nil
+}
+
 // ReadSettings reads the commission rate of one branch. The warehouse reads every branch
 // and a branch reads only its own; a branch without a configured rate has no setting.
 func (s *Store) ReadSettings(ctx context.Context, actor auth.Identity, branchID int64) (Settings, error) {

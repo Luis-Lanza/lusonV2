@@ -140,6 +140,8 @@ func TestClosingRoutes(t *testing.T) {
 		{"DELETE", "/api/closings", "GET, POST", 405, "method_not_allowed"},
 		{"GET", "/api/closings/branches/2/commission", "", 401, "unauthenticated"},
 		{"PUT", "/api/closings/branches/2/commission", "GET, POST", 405, "method_not_allowed"},
+		{"GET", "/api/closings/branches/commissions", "", 401, "unauthenticated"},
+		{"POST", "/api/closings/branches/commissions", "GET", 405, "method_not_allowed"},
 		{"GET", "/api/closings/1", "", 401, "unauthenticated"},
 		{"POST", "/api/closings/1", "GET", 405, "method_not_allowed"},
 		{"POST", "/api/closings/1/count", "", 401, "unauthenticated"},
@@ -184,6 +186,64 @@ func TestClosingRoutes(t *testing.T) {
 	if base.calls != 0 {
 		t.Fatalf("a settlement path must never be forwarded: %d", base.calls)
 	}
+}
+
+// TestClosingCommissionsListThePanelReads pins S2 and S4 at the HTTP boundary: the warehouse reads
+// every configured commission in one answer, with its author and its moment; a branch reads none;
+// a method that would write through a read path is refused; and reading leaves nothing behind.
+func TestClosingCommissionsListThePanelReads(t *testing.T) {
+	f := closingFixture(t)
+
+	// A fresh installation configures nothing, so the panel lists nothing.
+	empty := f.serve(t, f.request(1, "GET", "/api/closings/branches/commissions", ""))
+	if empty.Code != 200 || strings.TrimSpace(empty.Body.String()) != "[]" {
+		t.Fatalf("an installation without commissions lists none: %d %s", empty.Code, empty.Body.String())
+	}
+
+	// The author the panel shows is the account's own name, so the fixture names the warehouse
+	// the way provisioning does in a real installation.
+	if _, err := f.p.Exec(f.ctx, `UPDATE auth_accounts SET display_name='Almacén' WHERE id=1`); err != nil {
+		t.Fatal("the settlement HTTP fixture could not name the warehouse")
+	}
+	// The warehouse configures one branch and the panel reads it with its author and moment.
+	post := f.serve(t, f.request(1, "POST", "/api/closings/branches/2/commission",
+		`{"commission_rate_percent":"12.50"}`))
+	if post.Code != 200 {
+		t.Fatalf("the warehouse must configure a commission: %d %s", post.Code, post.Body.String())
+	}
+	before := f.snapshot(t)
+	listed := f.serve(t, f.request(1, "GET", "/api/closings/branches/commissions", ""))
+	if listed.Code != 200 {
+		t.Fatalf("the warehouse must read the configured commissions: %d %s", listed.Code, listed.Body.String())
+	}
+	var records []struct {
+		BranchID  int64  `json:"branch_location_id"`
+		Rate      string `json:"commission_rate_percent"`
+		UpdatedAt string `json:"updated_at"`
+		UpdatedBy string `json:"updated_by"`
+	}
+	if err := json.Unmarshal(listed.Body.Bytes(), &records); err != nil || len(records) != 1 {
+		t.Fatalf("the panel reads one entry per configured branch: %s %v", listed.Body.String(), err)
+	}
+	if records[0].BranchID != 2 || records[0].Rate != "12.50" {
+		t.Fatalf("the listed commission is not the configured one: %+v", records[0])
+	}
+	if moment, err := time.Parse(time.RFC3339, records[0].UpdatedAt); err != nil || moment.IsZero() {
+		t.Fatalf("the listed commission does not say when it was fixed: %+v", records[0])
+	}
+	if records[0].UpdatedBy != "Almacén" {
+		t.Fatalf("the listed commission does not say who fixed it: %+v", records[0])
+	}
+	if after := f.snapshot(t); after != before {
+		t.Fatalf("reading the commissions wrote something: %s -> %s", before, after)
+	}
+
+	// Only the warehouse reads the panel, and the read path never writes.
+	f.refused(t, f.request(2, "GET", "/api/closings/branches/commissions", ""), 403, `{"error":"forbidden"}`)
+	f.refused(t, f.request(1, "POST", "/api/closings/branches/commissions", `{"commission_rate_percent":"1.00"}`),
+		405, `{"error":"method_not_allowed"}`)
+	f.refused(t, f.request(1, "GET", "/api/closings/branches/commissions?branch=2", ""), 400,
+		`{"error":"invalid_request"}`)
 }
 
 func TestClosingDecoders(t *testing.T) {

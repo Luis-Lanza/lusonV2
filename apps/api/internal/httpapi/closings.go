@@ -53,6 +53,11 @@ const (
 	// settlement id, so it can never be read as one nor collide with the literal suffix of a
 	// settlement operation.
 	closingsCommissionPath = closingsCollectionPath + "/branches/{branch}/commission"
+	// closingsCommissionsPath is every configured commission in one answer: the administration
+	// panel lists the rate of each branch with its author and moment, and a branch the warehouse
+	// never configured is absent instead of reported as zero. It is a literal path beside
+	// {branch}/commission, never a branch id.
+	closingsCommissionsPath = closingsCollectionPath + "/branches/commissions"
 	// closingsExpensesPath is the branch's own till: the small expenses it pays out of it while
 	// it operates. It is a literal path beside {id}, so it is never read as a settlement id, and
 	// it names no settlement because the settlement that covers an expense is decided by the
@@ -149,6 +154,7 @@ func (a *API) closingRoutes(store *closings.Store) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(closingsCollectionPath, a.closingCollection(store))
 	mux.HandleFunc(closingsCommissionPath, a.closingSettings(store))
+	mux.HandleFunc(closingsCommissionsPath, a.closingCommissions(store))
 	mux.HandleFunc(closingsExpensesPath, a.closingExpenses(store))
 	mux.HandleFunc(closingsCorrectionsPath, a.closingCorrections(store))
 	mux.HandleFunc(closingsCorrectionDecisionPath, a.closingCorrectionDecision(store))
@@ -1006,6 +1012,38 @@ func closingSettingsRecord(settings closings.Settings) (closingSettingsDTO, erro
 		return unavailable()
 	}
 	return closingSettingsDTO{BranchID: settings.BranchID, CommissionRate: string(rate)}, nil
+}
+
+// closingCommissionDTO is one configured commission as the administration panel reads it: the
+// branch, the percentage its settlement pays, the moment the rate was fixed and the account that
+// fixed it. The author is the point of the shape -- a money parameter is never shown anonymous.
+type closingCommissionDTO struct {
+	BranchID  int64  `json:"branch_location_id"`
+	Rate      string `json:"commission_rate_percent"`
+	UpdatedAt string `json:"updated_at"`
+	UpdatedBy string `json:"updated_by"`
+}
+
+// closingCommissionRecord admits only a canonical entry: a branch inside the column range, the
+// exact percentage the database stores and an instant that reads back as itself. Anything else is
+// an answer this server could not have produced, so it is refused as unavailable instead of
+// published as a rate the panel would show and the settlement would not pay.
+func closingCommissionRecord(item closings.BranchCommission) (closingCommissionDTO, error) {
+	unavailable := func() (closingCommissionDTO, error) { return closingCommissionDTO{}, closings.ErrUnavailable }
+	rate, err := closings.ParsePercent(string(item.Rate))
+	if item.BranchID < closingsFirstBranch || item.BranchID > closings.MaxBranchID || err != nil ||
+		string(rate) != string(item.Rate) || item.UpdatedAt.IsZero() {
+		return unavailable()
+	}
+	// The panel reads an instant to the second: the fractional part the database keeps is not
+	// a fact the operator acts on, and the roundtrip is checked at that precision.
+	moment := item.UpdatedAt.UTC().Format(time.RFC3339)
+	if parsed, err := time.Parse(time.RFC3339, moment); err != nil ||
+		!parsed.Equal(item.UpdatedAt.Truncate(time.Second)) {
+		return unavailable()
+	}
+	return closingCommissionDTO{BranchID: item.BranchID, Rate: string(rate),
+		UpdatedAt: moment, UpdatedBy: item.UpdatedBy}, nil
 }
 
 // closingCountLineDTO is one line of the count sheet with the catalogue identity of its variant,
@@ -2140,6 +2178,39 @@ func (a *API) closingCollection(store *closings.Store) http.HandlerFunc {
 // closingSettings serves the commission configuration of one branch: the warehouse reads and
 // writes it, and a branch reads only its own. The branch in the path is the scope the store
 // enforces, so a branch that names another one is refused there.
+// closingCommissions answers the configured commission of every branch in one call, which is
+// what the administration panel lists. It is a read: it writes nothing, admits no query and only
+// the warehouse may ask.
+func (a *API) closingCommissions(store *closings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, http.MethodGet) {
+			return
+		}
+		actor, ok := a.inventoryIdentity(w, r)
+		if !ok {
+			return
+		}
+		if !closingQueryAbsent(w, r) {
+			return
+		}
+		configured, err := store.Commissions(r.Context(), actor)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		records := make([]closingCommissionDTO, 0, len(configured))
+		for _, item := range configured {
+			record, err := closingCommissionRecord(item)
+			if err != nil {
+				closingFailure(w, err)
+				return
+			}
+			records = append(records, record)
+		}
+		respond(w, 200, records)
+	}
+}
+
 func (a *API) closingSettings(store *closings.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodPost {
