@@ -27,6 +27,24 @@ func fail(ctx context.Context) error {
 	return ErrUnavailable
 }
 
+// FundRefusal is the refusal of a purchase the purchase fund cannot pay: the fund is cash,
+// so a branch purchase is paid in cash from it, and no document ever spends more than the
+// envelope of its branch holds. It is an invalid request, exactly like every other broken
+// rule of this contract, and it keeps the domain's own words instead of the database's.
+//
+// The two rules the fund enforces share this refusal because both say the same thing to the
+// branch: the money of a purchase is physical, and it is the envelope that limits it.
+type FundRefusal struct{}
+
+// Error names the rule and never the SQLSTATE that raised it.
+func (e *FundRefusal) Error() string {
+	return "a branch purchase is paid in cash from the purchase fund, and it can never exceed" +
+		" what the envelope of its branch holds"
+}
+
+// Unwrap keeps errors.Is(err, ErrInvalid) true.
+func (e *FundRefusal) Unwrap() error { return ErrInvalid }
+
 // purchaseLock serializes one operation key, so an identical concurrent submission
 // resolves to a replay instead of a unique violation. Transaction scoped: the database
 // releases it on commit, rollback or disconnect.
@@ -1046,7 +1064,8 @@ func loadScrapLines(ctx context.Context, q querier, document Document) ([]ScrapL
 // trusted evidence, and cancellation keeps its semantics. LP002 (the settlement), LP003
 // (the mirror) and LP005 (the line and sign rules) are refusals this store already derived,
 // so reaching them means the request broke a rule the contract publishes as an invalid
-// document; LP001 is the branch authority and LP004 the already-reversed document.
+// document; LP001 is the branch authority, LP004 the already-reversed document and LP006 the
+// purchase fund, which is cash and pays only what its envelope holds.
 func mapFailure(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
@@ -1063,6 +1082,10 @@ func mapFailure(ctx context.Context, err error) error {
 			return ErrInvalid
 		case "LP004":
 			return ErrAlreadyReversed
+		// The fund is cash and it pays what it holds: a purchase paid even partly by
+		// transfer, or one beyond the envelope of the branch, is the fund's own refusal.
+		case "LP006":
+			return &FundRefusal{}
 		// A refused amount or a refused document shape is the same public refusal, because
 		// the database decides it. A foreign key is deliberately not mapped: an unknown
 		// material is refused before any line is written, so reaching one means the ledger

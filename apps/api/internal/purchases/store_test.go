@@ -92,7 +92,7 @@ func TestStoreCreateDocument(t *testing.T) {
 		Quantity: 2, UnitPrice: "10000.00"})
 	input.ScrapLines = append(input.ScrapLines, purchases.ScrapLineInput{MaterialID: 2,
 		Kg: "0.5", PricePerKg: "4000.00"})
-	input.PaidCash, input.PaidTransfer = "66000.00", "80200.00"
+	input.PaidCash, input.PaidTransfer = "146200.00", "0.00"
 	created, err := f.store.Create(f.ctx, f.branch, input)
 	if err != nil {
 		t.Fatalf("a complete purchase must be admitted: %v", err)
@@ -102,8 +102,10 @@ func TestStoreCreateDocument(t *testing.T) {
 		created.ReversedBy != nil || created.Reason != "" {
 		t.Fatalf("the persisted header is wrong: %+v", created)
 	}
-	// 25000.00 + 2 * 10000.00 + 12.400 * 8000.00 + 0.500 * 4000.00 = 146200.00
-	if created.Total != "146200.00" || created.PaidCash != "66000.00" || created.PaidTransfer != "80200.00" {
+	// 25000.00 + 2 * 10000.00 + 12.400 * 8000.00 + 0.500 * 4000.00 = 146200.00, paid whole
+	// in cash from the purchase fund: the fund is cash, so no part of a purchase is paid by
+	// transfer.
+	if created.Total != "146200.00" || created.PaidCash != "146200.00" || created.PaidTransfer != "0.00" {
 		t.Fatalf("a document must add up: %+v", created)
 	}
 	if len(created.UsedLines) != 2 || created.UsedLines[0].Model != "55B24L" ||
@@ -195,7 +197,10 @@ func TestStoreCreateReplayAndConflict(t *testing.T) {
 		"note":     func(in *purchases.CreateInput) { in.Note = "otra nota" },
 		"quantity": func(in *purchases.CreateInput) { in.UsedLines[0].Quantity = 2; in.PaidCash = "149200.00" },
 		"weight":   func(in *purchases.CreateInput) { in.ScrapLines[0].Kg = "12.500"; in.PaidCash = "125000.00" },
-		"paid":     func(in *purchases.CreateInput) { in.PaidCash, in.PaidTransfer = "124000.00", "200.00" },
+		// A different settlement under the same key is a conflict before anything is inserted:
+		// the key is already the persisted document's, so the fund rule is never reached
+		// with this payload.
+		"paid": func(in *purchases.CreateInput) { in.PaidCash, in.PaidTransfer = "124000.00", "200.00" },
 	} {
 		input := document("store-replay-key-01")
 		changed(&input)
@@ -667,6 +672,49 @@ func TestStoreRefusesUnknownMaterial(t *testing.T) {
 		if admitted := err == nil; admitted != (material <= 4) {
 			t.Fatalf("material %d: admitted %v, want %v (%v)", material, admitted, material <= 4, err)
 		}
+	}
+}
+
+// TestStoreRefusesTransferPayment proves S2: a branch purchase is paid in cash from the
+// purchase fund, so a document that pays any part of it by transfer is refused with the
+// fund's own refusal and neither a header nor a line is written.
+func TestStoreRefusesTransferPayment(t *testing.T) {
+	f := newPurchaseFixture(t)
+	for name, paid := range map[string][2]string{
+		"whole": {"0.00", "124200.00"},
+		"part":  {"124000.00", "200.00"},
+		"cent":  {"124199.99", "0.01"},
+	} {
+		input := document(fmt.Sprintf("store-fund-%s-payment", name))
+		input.PaidCash, input.PaidTransfer = purchases.Money(paid[0]), purchases.Money(paid[1])
+		_, err := f.store.Create(f.ctx, f.branch, input)
+		var refusal *purchases.FundRefusal
+		if !errors.As(err, &refusal) {
+			t.Fatalf("a %s transfer payment must be the fund's own refusal, got %v", name, err)
+		}
+		// The boundary publishes only its own token for a document that cannot be admitted
+		// as it stands, so the refusal stays an invalid request.
+		if !errors.Is(err, purchases.ErrInvalid) {
+			t.Fatalf("a %s fund refusal must stay an invalid request, got %v", name, err)
+		}
+		// The refusal speaks of the fund, never of a SQLSTATE or of the database's text.
+		if message := err.Error(); strings.Contains(message, "LP006") ||
+			!strings.Contains(message, "cash") || !strings.Contains(message, "purchase fund") ||
+			!strings.Contains(message, "envelope") {
+			t.Fatalf("the %s refusal must speak in the domain's words, got %q", name, message)
+		}
+	}
+	if count := f.countDocuments(t, 2); count != 0 {
+		t.Fatalf("a refused fund payment wrote %d documents", count)
+	}
+	var lines int64
+	if err := f.p.QueryRow(f.ctx, "SELECT count(*) FROM purchase_used_lines").Scan(&lines); err != nil || lines != 0 {
+		t.Fatalf("a refused fund payment wrote %d lines: %v", lines, err)
+	}
+	// The same document paid in cash is admitted: what the fund refuses is the method, not
+	// the purchase.
+	if _, err := f.store.Create(f.ctx, f.branch, document("store-fund-cash-only")); err != nil {
+		t.Fatalf("the same purchase paid in cash must be admitted: %v", err)
 	}
 }
 

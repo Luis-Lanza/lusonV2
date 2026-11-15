@@ -52,6 +52,19 @@ Line and document amounts:
 - the document `total` is the sum of every line amount, and
   `paid_cash + paid_transfer` must equal it exactly.
 
+## The purchase fund
+
+A branch keeps a second envelope of physical money, apart from the till, that only
+buys used batteries and scrap. A purchase is paid from it, so the two amounts are
+not interchangeable: `paid_transfer` is zero and `paid_cash` is the whole total.
+The envelope is charged by the document itself — there is no separate ledger row —
+and it can never pay more than it holds: what is available is the amount the last
+closed settlement left behind (`purchase_fund_cash`) minus every `paid_cash` of the
+branch since that closure. Counter-documents return money, so they are admitted
+without consulting the envelope and their negative amounts give it back. A branch
+whose last closure predates the fund, or that has never closed, has no declared
+envelope and is not charged against one until a closure states it.
+
 ## The document
 
 `purchases` — branch, model, note (≤500), `total`, `paid_cash`, `paid_transfer`,
@@ -71,7 +84,10 @@ immutable and can never be reversed.
 A refused document writes nothing. The database decides the branch, the totals,
 the sign rules and the mirror; the boundary publishes only its SQLSTATE
 (`LP001` branch only, `LP002` totals mismatch, `LP003` reversal does not mirror,
-`LP004` already reversed, `LP005` line or sign rule).
+`LP004` already reversed, `LP005` line or sign rule, `LP006` the purchase fund
+refuses the document because it is not paid in cash or it exceeds what the envelope
+holds). The boundary publishes the fund refusal as `invalid_request`: the amount
+the envelope still holds never leaves the database.
 
 This document moves **no** `inventory_balances` row and extends no realtime
 scope: the received totals are read on request by the screen that shows them.

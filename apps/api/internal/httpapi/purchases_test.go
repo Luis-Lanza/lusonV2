@@ -1019,14 +1019,42 @@ func TestPurchaseHTTPRefusals(t *testing.T) {
 	if err := f.p.QueryRow(f.ctx, "SELECT count(*) FROM purchases").Scan(&count); err != nil || count != 0 {
 		t.Fatalf("a refused document was persisted: %d %v", count, err)
 	}
-	// The same document is admitted once the settlement closes.
+	// The same document is admitted once the settlement closes, and it is paid whole in cash
+	// because a branch purchase is never paid by transfer: the fund is cash.
 	admitted := purchaseDocumentWire(t, f.serve(t, f.request(2, "POST", "/api/purchases",
-		`{"operation_key":"http-purchase-key-08","used_lines":[{"model":"NS60ZL","quantity":1,"unit_price":"100.00"}],"paid_cash":"50.00","paid_transfer":"50.00"}`)), 201)
-	if admitted.Total != "100.00" || admitted.PaidTransfer != "50.00" {
+		`{"operation_key":"http-purchase-key-08","used_lines":[{"model":"NS60ZL","quantity":1,"unit_price":"100.00"}],"paid_cash":"100.00","paid_transfer":"0.00"}`)), 201)
+	if admitted.Total != "100.00" || admitted.PaidCash != "100.00" || admitted.PaidTransfer != "0.00" {
 		t.Fatalf("the admitted document is wrong: %+v", admitted)
 	}
 	if err := f.p.QueryRow(f.ctx, "SELECT count(*) FROM purchases").Scan(&count); err != nil || count != 1 {
 		t.Fatalf("the admitted document must be the only one: %d %v", count, err)
+	}
+}
+
+// TestPurchaseHTTPRefusesTransferPayment proves the published refusal of a purchase paid by
+// transfer: the fund is cash, so the endpoint answers the token this contract already
+// publishes for a document that cannot be admitted as it stands, and it writes nothing and
+// never leaks a SQLSTATE or the database's own text.
+func TestPurchaseHTTPRefusesTransferPayment(t *testing.T) {
+	f := purchaseFixture(t)
+	for name, body := range map[string]string{
+		"whole": `{"operation_key":"http-purchase-fund-01","used_lines":[{"model":"NS60ZL","quantity":1,"unit_price":"25000.00"}],"paid_cash":"0.00","paid_transfer":"25000.00"}`,
+		"part":  `{"operation_key":"http-purchase-fund-02","used_lines":[{"model":"NS60ZL","quantity":1,"unit_price":"25000.00"}],"paid_cash":"24999.99","paid_transfer":"0.01"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f.rejected(t, f.request(2, "POST", "/api/purchases", body), 400, "invalid_request")
+		})
+	}
+	var count int
+	if err := f.p.QueryRow(f.ctx, "SELECT count(*) FROM purchases").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("a refused transfer purchase was persisted: %d %v", count, err)
+	}
+	// The same document paid in cash is admitted: the fund refuses the method, not the
+	// purchase.
+	admitted := purchaseDocumentWire(t, f.serve(t, f.request(2, "POST", "/api/purchases",
+		`{"operation_key":"http-purchase-fund-03","used_lines":[{"model":"NS60ZL","quantity":1,"unit_price":"25000.00"}],"paid_cash":"25000.00","paid_transfer":"0.00"}`)), 201)
+	if admitted.Total != "25000.00" || admitted.PaidCash != "25000.00" || admitted.PaidTransfer != "0.00" {
+		t.Fatalf("the cash document is wrong: %+v", admitted)
 	}
 }
 

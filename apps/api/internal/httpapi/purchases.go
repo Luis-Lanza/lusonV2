@@ -112,7 +112,11 @@ func (a *API) purchaseRoutes(store *purchases.Store) http.Handler {
 }
 
 // purchaseFailure publishes the domain's own decision and nothing else: the contract has one
-// token per class, and anything unexpected fails closed.
+// token per class, and anything unexpected fails closed. The refusal of the purchase fund
+// reaches the invalid-request branch through its own Unwrap, exactly like the refusal of a
+// settlement that does not close against its total: the fund is cash, so a document paid by
+// transfer or beyond the envelope cannot be admitted as it stands, and the answer is the
+// contract's own token and never a SQLSTATE or the database's text.
 func purchaseFailure(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, purchases.ErrInvalid):
