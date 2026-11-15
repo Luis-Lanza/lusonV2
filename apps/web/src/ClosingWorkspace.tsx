@@ -639,8 +639,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
               <dl className="closing-summary">
                 <div><dt>Saldo heredado</dt><dd>{closingMoneyText(fund.opening_cents)}</dd></div>
                 <div><dt>Compras del período</dt>
-                  <dd>{fund.purchases_cash_cents === 0n ? closingMoneyText(0n)
-                    : `− ${closingMoneyText(fund.purchases_cash_cents)}`}</dd></div>
+                  <dd>{closingSignedText(-fund.purchases_cash_cents)}</dd></div>
                 <div className="total"><dt>Fondo esperado</dt><dd>{closingMoneyText(fundView.expected_cents)}</dd></div>
               </dl>
               <div className="closing-field">

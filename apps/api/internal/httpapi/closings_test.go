@@ -437,6 +437,16 @@ func TestClosingRecord(t *testing.T) {
 		*offer.PurchaseFundCash != "400.00" {
 		t.Fatalf("the round must publish the envelope of its offer: %+v", offer)
 	}
+	// The sums of the window keep their sign, so a period net of its reversals is published rather
+	// than refused (S3, S11): both texts come out negative and the expectation follows them.
+	signed := closingValue()
+	signed.PurchasesTotal, signed.PurchasesCash, signed.PurchaseFundExpected = "-120.50", "-120.50", "420.50"
+	shortfall := closings.Signed("-180.50")
+	signed.PurchaseFundDifference = &shortfall
+	signedRecord, err := closingRecord(signed)
+	if err != nil || signedRecord.PurchasesTotal != "-120.50" || signedRecord.PurchasesCash != "-120.50" {
+		t.Fatalf("a net of reversals must be published with its sign: %+v %v", signedRecord, err)
+	}
 	// A held settlement is drafted: no rate yet, and the drawer may still be uncounted.
 	open := closingValue()
 	open.Status = closings.StatusOpen
@@ -493,6 +503,7 @@ func TestClosingRecord(t *testing.T) {
 		"fund_opening_stale":   mutate(func(v *closings.Closing) { v.PurchaseFundOpening = "301.00" }),
 		"fund_purchases_stale": mutate(func(v *closings.Closing) { v.PurchasesCash = "50" }),
 		"fund_total_empty":     mutate(func(v *closings.Closing) { v.PurchasesTotal = "" }),
+		"fund_total_plus":      mutate(func(v *closings.Closing) { v.PurchasesTotal = "+120.50" }),
 		"fund_expected_stale":  mutate(func(v *closings.Closing) { v.PurchaseFundExpected = "1.00" }),
 		"fund_counted_float":   mutate(func(v *closings.Closing) { counted := closings.Money("240.0"); v.PurchaseFundCounted = &counted }),
 		"fund_difference_stale": mutate(func(v *closings.Closing) {

@@ -485,8 +485,7 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
               <dl className="closing-summary">
                 <div><dt>Saldo heredado</dt><dd>{closingMoneyText(envelope.opening_cents)}</dd></div>
                 <div><dt>Compras del período</dt>
-                  <dd>{envelope.purchases_cash_cents === 0n ? closingMoneyText(0n)
-                    : `− ${closingMoneyText(envelope.purchases_cash_cents)}`}</dd></div>
+                  <dd>{closingSignedText(-envelope.purchases_cash_cents)}</dd></div>
                 <div><dt>Fondo esperado</dt><dd>{closingMoneyText(envelope.expected_cents)}</dd></div>
                 <div><dt>Fondo contado</dt>
                   <dd>{envelope.counted_cents === null ? 'Sin contar'

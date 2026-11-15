@@ -147,6 +147,37 @@ describe('the settlement document', () => {
   });
 });
 
+// A window that returned more than it bought (S3, S11): Bs 300,00 inherited, Bs 120,50 of net
+// purchases — a counter-document, so both sums are negative —, Bs 420,50 expected, Bs 420,00
+// counted, a Bs 0,50 shortage and Bs 300,00 left for the next period.
+const signedEnvelope = (overrides: Record<string, unknown> = {}) => document({
+  purchase_fund_opening: '300.00', purchases_total: '-120.50', purchases_cash: '-120.50',
+  purchase_fund_expected: '420.50', purchase_fund_counted: '420.00',
+  purchase_fund_difference: '-0.50', purchase_fund_cash: '300.00', ...overrides });
+
+describe('the purchase fund of the document', () => {
+  it('reads a window whose net purchases are negative, with both identities (S3, S11)', () => {
+    const fund = parseClosing(JSON.stringify(signedEnvelope())).purchase_fund!;
+    expect(fund.purchases_cash_cents).toBe(-12050n);
+    expect(fund.purchases_total_cents).toBe(-12050n);
+    expect(fund.expected_cents).toBe(fund.opening_cents - fund.purchases_cash_cents);
+    expect(fund.difference_cents).toBe(fund.counted_cents! - fund.expected_cents);
+    // An envelope whose period bought more than it returned keeps reading as it always did.
+    expect(parseClosing(JSON.stringify(signedEnvelope({ purchases_total: '120.50',
+      purchases_cash: '120.50', purchase_fund_expected: '179.50', purchase_fund_counted: '179.00',
+      purchase_fund_difference: '-0.50' }))).purchase_fund!.purchases_cash_cents).toBe(12050n);
+  });
+
+  it('refuses an envelope that disagrees with its own identities', () => {
+    // The expectation is the opening minus the cash of the purchases, whatever their sign.
+    expect(() => parseClosing(JSON.stringify(signedEnvelope({ purchase_fund_expected: '179.50' }))))
+      .toThrow();
+    // The inherited balance is money the branch holds: it is never negative.
+    expect(() => parseClosing(JSON.stringify(signedEnvelope({ purchase_fund_opening: '-300.00' }))))
+      .toThrow();
+  });
+});
+
 describe('a refusal of this contract', () => {
   it('names the variant still to count', () => {
     const refusal = parseClosingRefusal('{"error":"count_pending","variant_id":7}', 409);

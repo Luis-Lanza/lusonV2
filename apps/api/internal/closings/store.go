@@ -1350,13 +1350,19 @@ func derivePurchaseFund(ctx context.Context, q querier, closing *Closing) error 
 	}
 	closing.PurchaseFundOpening, closing.PurchasesTotal, closing.PurchasesCash =
 		Money(opening), Money(total), Money(cash)
-	for _, amount := range []Money{closing.PurchaseFundOpening, closing.PurchasesTotal,
-		closing.PurchasesCash} {
-		if _, ok := amountCents(amount); !ok {
+	// The opening is money the branch holds, so it is read as an amount and never negative. The two
+	// sums of the window are net figures that keep their sign: a counter-document is stored with
+	// negative amounts, so a window that returned more than it bought publishes a negative net and a
+	// settlement whose expectation follows from it, instead of becoming unreadable (S3, S11).
+	if _, ok := amountCents(closing.PurchaseFundOpening); !ok {
+		return ErrUnavailable
+	}
+	for _, amount := range []Signed{Signed(closing.PurchasesTotal), Signed(closing.PurchasesCash)} {
+		if _, ok := amount.Cents(); !ok {
 			return ErrUnavailable
 		}
 	}
-	expected, err := PurchaseFundExpected(closing.PurchaseFundOpening, closing.PurchasesCash)
+	expected, err := PurchaseFundExpected(closing.PurchaseFundOpening, Signed(closing.PurchasesCash))
 	if err != nil {
 		return ErrUnavailable
 	}

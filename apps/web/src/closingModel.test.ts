@@ -226,6 +226,14 @@ describe('S1, S5, S6 the purchase fund is the branch\'s second envelope', () => 
       .toMatchObject({ purchase_fund_counted: '375.00', purchase_fund_cash: '5000.00' });
   });
 
+  it('renders an envelope amount with its own sign, because it can be negative (S3)', () => {
+    // The expectation is negative whenever the envelope spent more than it inherited, and it is
+    // shown as it is instead of failing to render a settlement the server published.
+    expect(closingMoneyText(purchaseFund({ expected_cents: -12050n }).expected_cents))
+      .toBe('− Bs 120,50');
+    expect(closingMoneyText(-120500n)).toBe('− Bs 1.205,00');
+  });
+
   it('refuses an amount of the envelope it cannot read (S5)', () => {
     const unreadable = purchaseFundView(closing().purchase_fund!, { counted: '375,001', cash: '' });
     expect(unreadable.problem).toBe(model.closingAmountMessage);

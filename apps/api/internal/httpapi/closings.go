@@ -1258,16 +1258,20 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 	if !ok {
 		return unavailable()
 	}
-	purchasesTotal, ok := closingAmountText(closing.PurchasesTotal)
+	// The two sums of the window are net figures that keep their sign — a counter-document is stored
+	// with negative amounts — so they are published with the same signed validation the expectation
+	// and the difference already get, and a window that returned more than it bought is published
+	// negative instead of failing closed (S3, S11).
+	purchasesTotal, ok := closingSignedText(closings.Signed(closing.PurchasesTotal))
 	if !ok {
 		return unavailable()
 	}
-	purchasesCash, ok := closingAmountText(closing.PurchasesCash)
+	purchasesCash, ok := closingSignedText(closings.Signed(closing.PurchasesCash))
 	if !ok {
 		return unavailable()
 	}
 	purchaseFundExpected, err := closings.PurchaseFundExpected(closing.PurchaseFundOpening,
-		closing.PurchasesCash)
+		closings.Signed(closing.PurchasesCash))
 	if err != nil || purchaseFundExpected != closing.PurchaseFundExpected {
 		return unavailable()
 	}

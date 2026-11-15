@@ -527,7 +527,9 @@ const purchaseFundKeys: readonly string[] = ['purchase_fund_opening', 'purchases
 /**
  * The purchase fund as the document publishes it: the seven amounts of the second envelope, all of
  * them stated or none. The count and the amount the warehouse leaves are nullable and stay so; the
- * other five are published amounts, the difference signed. The expectation and the difference are
+ * inherited balance is a published amount, while the purchases of the window and the expectation are
+ * net sums that keep their sign — a counter-document of an earlier purchase can leave them negative
+ * and an envelope can spend more than it inherited (S3, S11). The expectation and the difference are
  * revalidated against their own identities, exactly like the drawer's, so the rail can never read an
  * envelope that disagrees with its facts (S1, S3, S5).
  *
@@ -541,8 +543,8 @@ function purchaseFund(record: Record<string, unknown>): ClosingPurchaseFund | nu
   if (stated.length === 0) return null;
   if (stated.length !== purchaseFundKeys.length) return invalidResponse();
   const opening_cents = amount(record.purchase_fund_opening);
-  const purchases_cash_cents = amount(record.purchases_cash);
-  const expected_cents = amount(record.purchase_fund_expected);
+  const purchases_cash_cents = signedAmount(record.purchases_cash);
+  const expected_cents = signedAmount(record.purchase_fund_expected);
   if (expected_cents !== opening_cents - purchases_cash_cents) return invalidResponse();
   const counted_cents = optionalAmount(record.purchase_fund_counted);
   const difference_cents = record.purchase_fund_difference === null
@@ -555,7 +557,7 @@ function purchaseFund(record: Record<string, unknown>): ClosingPurchaseFund | nu
   }
   return Object.freeze({
     opening_cents,
-    purchases_total_cents: amount(record.purchases_total),
+    purchases_total_cents: signedAmount(record.purchases_total),
     purchases_cash_cents,
     expected_cents,
     counted_cents,

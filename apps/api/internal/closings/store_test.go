@@ -2856,6 +2856,64 @@ func TestPurchaseFundDerivesOpeningPurchasesAndDifference(t *testing.T) {
 	}
 }
 
+// TestPurchaseFundKeepsTheSignOfANegativeNet pins S3 and S11 where the sign is the answer: a window
+// that spent more than it inherited reports a negative expectation, and a window whose counter-document
+// is larger than its purchases gives money back, so both sums are negative and the expectation that
+// follows is larger than the inheritance. Both are read, never refused as an outage.
+func TestPurchaseFundKeepsTheSignOfANegativeNet(t *testing.T) {
+	e := fixture(t)
+	// The first settlement declares no envelope, so nothing caps what the second window spends.
+	e.closeFirstSettlement(t, "500.00")
+	bought := e.purchase(t, "closings-fund-negative-01", "120.50")
+	second, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the second settlement could not be opened: %v", err)
+	}
+	short, err := e.store.Read(e.ctx, warehouse(), second.ID)
+	if err != nil {
+		t.Fatalf("a window that spent more than it inherited must be readable: %v", err)
+	}
+	// 0.00 inherited minus 120.50 of purchases: a shortage states its negative expectation.
+	if short.PurchaseFundOpening != "0.00" || short.PurchasesCash != "120.50" ||
+		short.PurchaseFundExpected != "-120.50" {
+		t.Fatalf("an envelope that spent more than it inherited is short: %+v", short)
+	}
+	// The closure leaves 300.00 in the envelope, which is what the next period inherits.
+	e.countAll(t, second.ID)
+	zero, contribution, left := closings.Money("0.00"), closings.Money("500.00"), closings.Money("300.00")
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), second.ID, closings.CashDraft{
+		CountedCash: &zero, ContributedCash: contribution, ClosingCash: &contribution,
+		PurchaseFundCash: &left,
+	}); err != nil {
+		t.Fatalf("the second cash draft could not be saved: %v", err)
+	}
+	if _, err := e.store.Propose(e.ctx, warehouse(), second.ID); err != nil {
+		t.Fatalf("the second settlement could not be proposed: %v", err)
+	}
+	if _, err := e.store.Decide(e.ctx, identity(2), second.ID, closings.DecisionAccepted, ""); err != nil {
+		t.Fatalf("the branch must accept the second settlement: %v", err)
+	}
+	// The branch returns that battery once its period is closed, so the counter-document is the only
+	// document of the new window and both sums are negative by construction (S3, S11).
+	if _, err := e.purchases.Reverse(e.ctx, identity(2), bought.ID,
+		"closings-fund-negative-reverse", "la batería no servía"); err != nil {
+		t.Fatalf("the counter-document could not be registered: %v", err)
+	}
+	third, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the third settlement could not be opened: %v", err)
+	}
+	read, err := e.store.Read(e.ctx, warehouse(), third.ID)
+	if err != nil {
+		t.Fatalf("a window net of counter-documents must stay readable: %v", err)
+	}
+	// 300.00 inherited plus the 120.50 the period gave back: the expectation follows the signed net.
+	if read.PurchasesTotal != "-120.50" || read.PurchasesCash != "-120.50" ||
+		read.PurchaseFundOpening != "300.00" || read.PurchaseFundExpected != "420.50" {
+		t.Fatalf("the expectation must follow the signed purchases: %+v", read)
+	}
+}
+
 // TestPurchaseFundDifferenceDoesNotBlockButAPendingCountStillDoes pins the informational character
 // of the envelope's difference (S8, S5): a fund counted below its expectation never blocks the
 // proposal, exactly like the cash difference, while a pending line of the count sheet still does.

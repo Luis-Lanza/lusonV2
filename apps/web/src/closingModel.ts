@@ -183,10 +183,15 @@ export interface ClosingPage {
  * drawer's identities nor the commission, and no money of a sale feeds the envelope (S12).
  */
 export interface ClosingPurchaseFund {
-  /** What the previous closure left in the envelope; `0.00` when there is none (S5, S6). */
+  /** What the previous closure left in the envelope; `0.00` when there is none (S5, S6). It is money
+   * the branch holds, so it is never negative. */
   readonly opening_cents: bigint;
-  /** The purchases of the window, counter-documents included, so they already subtract (S11). */
+  /**
+   * The purchases of the window, counter-documents included, so they already subtract (S11). A net
+   * sum that keeps its sign: a counter-document of an earlier purchase leaves it negative.
+   */
   readonly purchases_total_cents: bigint;
+  /** The cash of those purchases, with the same sign and for the same reason (S3, S11). */
   readonly purchases_cash_cents: bigint;
   /** `opening − purchases paid in cash`, signed: a period that spent more than it had is short. */
   readonly expected_cents: bigint;
@@ -231,9 +236,15 @@ export function closingSignedText(cents: bigint): string {
   return formatMoney(0n);
 }
 
-/** A published amount that is never negative: the expected drawer, the fund, what is taken. */
+/**
+ * A published amount rendered as it is. Most of them are never negative, but the second envelope is
+ * the exception the sign exists for: its purchases are a net sum that a counter-document can leave
+ * negative and its expectation is negative whenever the envelope spent more than it inherited, so
+ * both are shown with their sign instead of failing to render a settlement the server published
+ * (S3, S11).
+ */
 export function closingMoneyText(cents: bigint): string {
-  return formatMoney(cents);
+  return cents < 0n ? closingSignedText(cents) : formatMoney(cents);
 }
 
 /** The name of a difference, never only its sign (S8). */
