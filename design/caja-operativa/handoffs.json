@@ -3,13 +3,13 @@
   "chosen": "01-libro-y-ticket.html",
   "handoffs": {
     "01-libro-y-ticket.html": {
-      "status": "in_progress",
+      "status": "implemented",
       "queued": false,
       "sentAt": "2026-11-16T12:16:33.200Z",
       "startedAt": "2026-11-16T12:16:46.596Z",
-      "implementedAt": null,
+      "implementedAt": "2026-11-16T14:28:33.909Z",
       "feature": "odd/tasks/caja-operativa.md",
-      "note": "Arrancando: migración del tipo corrección, efecto firmado único, endpoints y pantalla."
+      "note": "Implementado: #/caja sobre el artboard, con el libro del período, la banda de cuatro números, el registro de los tres tipos y la corrección con tope. 3799 tests de frontend, la suite completa de Go, typecheck y build en verde."
     }
   }
 }
