@@ -3035,10 +3035,69 @@ func (e *env) closeFundWindow(t *testing.T, counted, envelope string) closings.C
 	return closed
 }
 
+// pastFundSettlement writes a settlement and the fund's book around it the way a database that closed
+// it before a closure settled the fund through its book carries them: a load dated before the
+// closure, the settlement with the envelope it published, and -- when the closure of that database
+// wrote the movement reconciling the book -- the row that names it. The past is written with the
+// guards off on purpose: a closure of this version always writes its movement, so the only way to
+// state a settlement that closed without one is to write the rows it left.
+//
+// The numbers are chosen so the two sources disagree -- the book at the settlement's instant holds
+// 500.00, or 250.00 loaded and 50.00 returned, while the acta states 300.00 -- because that is what
+// tells a reader which of the two a closed acta is published from.
+func (e *env) pastFundSettlement(t *testing.T, branch int, stated string, named bool) int64 {
+	t.Helper()
+	tx, err := e.pool.Begin(e.ctx)
+	if err != nil {
+		t.Fatalf("the settlement of the past could not be written: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(e.ctx)) }()
+	if _, err := tx.Exec(e.ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+		t.Fatalf("the guards could not be stepped around for a settlement of the past: %v", err)
+	}
+	// The book of the branch before the closure: money that settlement did not settle, which is what a
+	// read of the book would publish instead of the number the acta signed.
+	load := "500.00"
+	if named {
+		load = "250.00"
+	}
+	if _, err := tx.Exec(e.ctx, `INSERT INTO branch_fund_movements(branch_location_id,kind,amount,
+ description,occurred_at,created_by_account_id)
+ VALUES($1::smallint,'aporte',$2::numeric,'Carga de fondo anterior a la rendición',
+ now()-interval '3 hours',$3::integer)`, int16(branch), load, branch); err != nil {
+		t.Fatalf("the load of the past could not be written: %v", err)
+	}
+	var id int64
+	var closedAt time.Time
+	if err := tx.QueryRow(e.ctx, `INSERT INTO branch_closings(branch_location_id,status,
+ period_start,cut_at,closed_at,commission_rate_percent,counted_cash,contributed_cash,closing_cash,
+ purchase_fund_counted,purchase_fund_cash,opened_by_account_id)
+ VALUES($1::smallint,'closed',now()-interval '4 hours',now()-interval '2 hours',
+ now()-interval '2 hours',12.50,500.00,0.00,500.00,$2::numeric,$2::numeric,1)
+ RETURNING id,closed_at`, int16(branch), stated).Scan(&id, &closedAt); err != nil {
+		t.Fatalf("the settlement of the past could not be written: %v", err)
+	}
+	if named {
+		// The movement its closure wrote, naming the settlement: the surplus it took back, with the
+		// instant of the closure it shares and the kind that states the direction.
+		description := fmt.Sprintf("Devolución del fondo de la rendición %d", id)
+		if _, err := tx.Exec(e.ctx, `INSERT INTO branch_fund_movements(branch_location_id,kind,amount,
+ description,occurred_at,created_by_account_id,closing_id)
+ VALUES($1::smallint,'devolucion',50.00,$2,$3,$4::integer,$5::bigint)`,
+			int16(branch), description, closedAt, branch, id); err != nil {
+			t.Fatalf("the movement of the closure of the past could not be written: %v", err)
+		}
+	}
+	if err := tx.Commit(e.ctx); err != nil {
+		t.Fatalf("the settlement of the past could not be committed: %v", err)
+	}
+	return id
+}
+
 // TestClosingSettlesTheFundThroughItsLedger proves S9 on a live database: the amount a settlement
-// leaves is a movement of the fund's book -- a `reposicion` of the difference against what the book
-// held, signed by the settlement's own opener -- and the balance after the closure is exactly that
-// amount. The acta publishes the book's sum, so the two numbers of the fund cannot differ.
+// takes back is a movement of the fund's book -- a `devolucion` of the difference against what the
+// book held, signed by the settlement's own opener -- and the balance after the closure is exactly
+// that amount. The acta publishes the book's sum, so the two numbers of the fund cannot differ.
 func TestClosingSettlesTheFundThroughItsLedger(t *testing.T) {
 	e := fixture(t)
 	// The warehouse loads the fund the branch operates with: a book is the only money a branch holds
@@ -3052,13 +3111,14 @@ func TestClosingSettlesTheFundThroughItsLedger(t *testing.T) {
 	var kind, amount, description string
 	var actor int
 	if err := e.pool.QueryRow(e.ctx, `SELECT kind,amount::text,description,created_by_account_id
- FROM branch_fund_movements WHERE branch_location_id=2 AND kind='reposicion'`).
+ FROM branch_fund_movements WHERE branch_location_id=2 AND closing_id IS NOT NULL`).
 		Scan(&kind, &amount, &description, &actor); err != nil {
 		t.Fatalf("the closure must write the fund it leaves: %v", err)
 	}
-	// The movement is the difference, not the stated amount: writing 300.00 would count the fund twice.
-	if kind != "reposicion" || amount != "-200.00" || actor != 1 {
-		t.Fatalf("the closure writes the difference signed by its own opener, got %s %s %d",
+	// The movement is the difference, not the stated amount -- writing 300.00 would count the fund
+	// twice -- and its direction is a kind, so the amount stays positive (S6, migration 052).
+	if kind != "devolucion" || amount != "200.00" || actor != 1 {
+		t.Fatalf("the closure writes the difference as the kind of its direction, got %s %s %d",
 			kind, amount, actor)
 	}
 	if !strings.Contains(description, "rendición") {
@@ -3126,7 +3186,7 @@ func TestUnstatedFundPublishesTheBook(t *testing.T) {
 		t.Fatalf("the acta of an unstated fund must publish the book, got %+v", closed.PurchaseFundCash)
 	}
 	if written := e.scalar(t, `SELECT count(*) FROM branch_fund_movements
- WHERE branch_location_id=2 AND kind='reposicion'`); written != 0 {
+ WHERE branch_location_id=2 AND closing_id IS NOT NULL`); written != 0 {
 		t.Fatalf("an unstated fund writes no movement, got %d", written)
 	}
 	// The history row of the same settlement states the same number, from the same place.
@@ -3138,10 +3198,9 @@ func TestUnstatedFundPublishesTheBook(t *testing.T) {
 }
 
 // TestClosingStatesTheFundDownToZeroAndNeverBelow proves S6 at the closure: a settlement may leave
-// less than the book holds -- the warehouse takes the surplus back, which is a `reposicion` with the
-// sign of the difference -- and the fund follows to the stated amount, down to zero. A statement
-// below zero is refused by the column of the settlement itself, so no closure can drive the fund
-// negative.
+// less than the book holds -- the warehouse takes the surplus back, which is a `devolucion` of the
+// difference -- and the fund follows to the stated amount, down to zero. A statement below zero is
+// refused by the column of the settlement itself, so no closure can drive the fund negative.
 func TestClosingStatesTheFundDownToZeroAndNeverBelow(t *testing.T) {
 	e := fixture(t)
 	e.fundLoad(t, 2, "500.00", "Carga de fondo del período")
@@ -3185,30 +3244,37 @@ func TestClosingStatesTheFundDownToZeroAndNeverBelow(t *testing.T) {
 }
 
 // TestFundCorrectionAfterTheClosureAppendsItsMovement proves the append-only half of S9 and S5: the
-// fund a settlement settled is never rewritten. A correction states the surplus differently by
-// appending its own `correccion` against the `reposicion`, the balance follows the sum, the closed
-// acta keeps the number it settled and the next period inherits the corrected book.
+// fund a settlement settled is never rewritten. A correction states the load differently by
+// appending its own `correccion`, the balance follows the sum, the closed acta keeps the number it
+// settled and the next period inherits the corrected book.
 func TestFundCorrectionAfterTheClosureAppendsItsMovement(t *testing.T) {
 	e := fixture(t)
 	e.fundLoad(t, 2, "500.00", "Carga de fondo del período")
 	closed := e.closeFundWindow(t, "500.00", "300.00")
-	var reposicion int64
-	var amount string
-	if err := e.pool.QueryRow(e.ctx, `SELECT id,amount::text FROM branch_fund_movements
- WHERE branch_location_id=2 AND kind='reposicion'`).Scan(&reposicion, &amount); err != nil {
+	var kind, amount string
+	if err := e.pool.QueryRow(e.ctx, `SELECT kind,amount::text FROM branch_fund_movements
+ WHERE branch_location_id=2 AND closing_id IS NOT NULL`).Scan(&kind, &amount); err != nil {
 		t.Fatalf("the closure must write the fund it leaves: %v", err)
 	}
-	if amount != "-200.00" {
-		t.Fatalf("the closure writes the difference against the book, got %s", amount)
+	// The movement states the difference, not the amount the settlement leaves -- writing 300.00 would
+	// count the fund twice -- and the direction is the kind's, so the amount is positive (052).
+	if kind != "devolucion" || amount != "200.00" {
+		t.Fatalf("the closure writes the difference as the kind of its direction, got %s %s",
+			kind, amount)
+	}
+	var load int64
+	if err := e.pool.QueryRow(e.ctx, `SELECT id FROM branch_fund_movements
+ WHERE branch_location_id=2 AND kind='aporte'`).Scan(&load); err != nil {
+		t.Fatalf("the load of the period must be a row of the book: %v", err)
 	}
 	before := e.text(t, `SELECT coalesce(string_agg(kind||':'||amount,',' ORDER BY id),'')
  FROM branch_fund_movements WHERE branch_location_id=2`)
-	// The branch corrects the surplus it took: 250.00 went back instead of 200.00, so the fund holds
-	// 50.00 less than the settlement stated. The movement answers the reposicion and the row it
-	// answers is left exactly as it was written.
+	// The load of the period was 50.00 less than the book recorded, so the fund holds 50.00 more than
+	// it should: the branch appends the correction that answers it, and the row it answers is left
+	// exactly as it was written.
 	if _, err := e.pool.Exec(e.ctx, `INSERT INTO branch_fund_movements(branch_location_id,kind,
  amount,description,created_by_account_id,corrects_id)
- VALUES(2,'correccion',50.00,'Corrección del fondo devuelto en la rendición',2,$1)`, reposicion); err != nil {
+ VALUES(2,'correccion',50.00,'Corrección de la carga del período',2,$1)`, load); err != nil {
 		t.Fatalf("the branch must be able to correct the fund it settled: %v", err)
 	}
 	if book := e.fundBook(t, 2); book != "250.00" {
@@ -3260,13 +3326,111 @@ func TestFundCorrectionAfterTheClosureAppendsItsMovement(t *testing.T) {
 		t.Fatalf("the next acta must publish the corrected book: %+v", thereafter.PurchaseFundCash)
 	}
 	if written := e.scalar(t, `SELECT count(*) FROM branch_fund_movements
- WHERE branch_location_id=2 AND kind='reposicion'`); written != 1 {
-		t.Fatalf("a settlement that states the book writes no movement, got %d reposiciones", written)
+ WHERE branch_location_id=2 AND closing_id IS NOT NULL`); written != 1 {
+		t.Fatalf("a settlement that states the book writes no movement, got %d statements", written)
 	}
 	if book := e.fundBook(t, 2); book != "250.00" {
 		t.Fatalf("the book must hold the corrected fund after the second closure, got %s", book)
 	}
-	t.Logf("051: a fund correction appends its movement and the balance follows")
+	t.Logf("052: a fund correction appends its movement and the balance follows")
+}
+
+// TestClosedActaIsNeverRecalculated proves finding 3 and S5 on a live database: a closed settlement
+// publishes the fund it settled, and a book that holds other rows never rewrites it. A settlement is
+// read from the book only when its own closure wrote the movement that reconciled the book to it --
+// the row that names it -- so the acta of a settlement closed before that rule existed (051) keeps
+// the number it published, and the opening of the next period is that same number and not the sum of
+// rows the settlement never settled.
+func TestClosedActaIsNeverRecalculated(t *testing.T) {
+	e := fixture(t)
+	// A settlement closed before a closure settled the fund through its book: its closure wrote no
+	// movement of the fund, and the branch's book already held 500.00 at its instant. The acta
+	// published 300.00, and that is the number it keeps.
+	legacy := e.pastFundSettlement(t, 2, "300.00", false)
+	if book := e.fundBook(t, 2); book != "500.00" {
+		t.Fatalf("the book of the past must hold what it held, got %s", book)
+	}
+	acta := mustRead(t, e, legacy)
+	if acta.PurchaseFundCash == nil || string(*acta.PurchaseFundCash) != "300.00" {
+		t.Fatalf("a closed acta keeps the fund it published, got %+v", acta.PurchaseFundCash)
+	}
+	// The next period opens with the same number and never with the book: the acta and the opening are
+	// one read of one closure (S5, S9).
+	next, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the next period could not be opened: %v", err)
+	}
+	opened, err := e.store.Read(e.ctx, warehouse(), next.ID)
+	if err != nil {
+		t.Fatalf("the next period could not be read: %v", err)
+	}
+	if opened.PurchaseFundOpening != "300.00" {
+		t.Fatalf("the next period opens with the fund its predecessor published, got %s",
+			opened.PurchaseFundOpening)
+	}
+	// The history row of the same settlement publishes the same number, from the same read.
+	page, err := e.store.List(e.ctx, warehouse(), 2, 1, 25)
+	if err != nil {
+		t.Fatalf("the history could not be read: %v", err)
+	}
+	listed := false
+	for _, row := range page.Closings {
+		if row.ID != legacy {
+			continue
+		}
+		listed = true
+		if row.PurchaseFundCash == nil || string(*row.PurchaseFundCash) != "300.00" {
+			t.Fatalf("a history row of the past must publish the fund it settled, got %+v",
+				row.PurchaseFundCash)
+		}
+	}
+	if !listed {
+		t.Fatalf("the settlement of the past must be part of the history")
+	}
+
+	// A settlement whose own closure wrote the movement that reconciled the book is published from the
+	// book: the row that names it is the proof that its closure landed the book on what it stated. The
+	// state below disagrees on purpose -- the acta states 300.00 while the book holds 200.00 -- because
+	// a closure of this version makes the two agree by construction, and the source of the number would
+	// then be invisible.
+	settled := e.pastFundSettlement(t, 3, "300.00", true)
+	if book := e.fundBook(t, 3); book != "200.00" {
+		t.Fatalf("the book of the settlement of the past must hold what it held, got %s", book)
+	}
+	fromBook := mustRead(t, e, settled)
+	if fromBook.PurchaseFundCash == nil || string(*fromBook.PurchaseFundCash) != "200.00" {
+		t.Fatalf("the acta of a reconciled closure is published from the book, got %+v",
+			fromBook.PurchaseFundCash)
+	}
+
+	// And the settlements this version closes carry their own movement: the next closure of branch 2
+	// states 300.00, names itself in the row it writes, and its acta publishes the sum at its instant --
+	// which is exactly the amount it left.
+	e.countAll(t, next.ID)
+	zero, contribution, left := closings.Money("0.00"), closings.Money("500.00"),
+		closings.Money("300.00")
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), next.ID, closings.CashDraft{
+		CountedCash: &zero, ContributedCash: contribution, ClosingCash: &contribution,
+		PurchaseFundCounted: &left, PurchaseFundCash: &left, Observation: "fondo del período",
+	}); err != nil {
+		t.Fatalf("the fund of the next period could not be drafted: %v", err)
+	}
+	if _, err := e.store.Propose(e.ctx, warehouse(), next.ID); err != nil {
+		t.Fatalf("the next period could not be proposed: %v", err)
+	}
+	closed, err := e.store.Decide(e.ctx, identity(2), next.ID, closings.DecisionAccepted, "")
+	if err != nil {
+		t.Fatalf("the branch must accept the next period: %v", err)
+	}
+	if written := e.scalar(t, `SELECT count(*) FROM branch_fund_movements WHERE closing_id=$1`,
+		closed.ID); written != 1 {
+		t.Fatalf("the closure must write the movement that names it, got %d rows", written)
+	}
+	if closed.PurchaseFundCash == nil || string(*closed.PurchaseFundCash) != e.fundBook(t, 2) {
+		t.Fatalf("the acta of a closure is the book it left, got %+v with the book at %s",
+			closed.PurchaseFundCash, e.fundBook(t, 2))
+	}
+	t.Logf("052: a closed acta is never recalculated by the book")
 }
 
 // TestPurchaseFundDifferenceDoesNotBlockButAPendingCountStillDoes pins the informational character

@@ -344,17 +344,22 @@ feeds it, and the drawer above is exactly what it was before this envelope exist
 purchase is charged by the document itself, never by a ledger row of this vertical: there is no
 `branch_cash_movements` movement for the envelope. The envelope has a book of its own instead
 (`branch_fund_movements`, migration 048), and **its only balance is the signed sum of
-`purchase_fund_ledger`**: the load of a branch, the `compra` of every purchase document, the
-`reposicion` a closure writes with the fund it leaves, and the `correccion` that answers any of them.
+`purchase_fund_ledger`**: the load of a branch (`aporte`), the `compra` of every purchase
+document, the `reposicion` a closure writes with the fund it leaves, the `devolucion` a closure
+writes with the surplus it takes back, and the `correccion` that answers any of them. The direction
+of a movement is its **kind** and never its amount (migration 052): every amount is positive, so
+`devolucion` is how the book says money left the fund, and the signed effect of a row is computed
+in one place -- `branch_fund_effective` -- which the view publishes and the admission of the ledger
+measures with, so the guard and the balance it guards cannot disagree.
 
 | Field | Identity |
 |---|---|
-| `purchase_fund_opening` | The fund the previous `closed` settlement of the same branch left — the last closure at or before this settlement's `period_start`, by `closed_at` descending; `"0.00"` when there is none. It is the signed sum of `purchase_fund_ledger` at that closure's own `closed_at`, which is the number that closure settled, and never the live branch state: a closed row never changes, so a period's opening is frozen by construction, and a history row of an old period never reads the envelope of a later one |
+| `purchase_fund_opening` | The fund the previous `closed` settlement of the same branch published — the last closure at or before this settlement's `period_start`, by `closed_at` descending; `"0.00"` when there is none. It is that closure's own `purchase_fund_cash`, read by the one rule of a closed settlement's fund (`settled_purchase_fund`, migration 052), and never the live branch state: a closed row never changes, so a period's opening is frozen by construction, and a history row of an old period never reads the envelope of a later one |
 | `purchases_total`, `purchases_cash` | The sums of `total` and `paid_cash` of the branch purchases inside `[period_start, cut_at)`. Counter-documents are stored with negative amounts, so they subtract by themselves and are never filtered out (S11) |
 | `purchase_fund_expected` | `purchase_fund_opening - purchases_cash`, signed: a period that spent more than it inherited is a shortage |
 | `purchase_fund_counted` | What the warehouse counted in the envelope: the column, `null` while it has not counted |
 | `purchase_fund_difference` | `purchase_fund_counted - purchase_fund_expected`, with its sign; `null` while `purchase_fund_counted` is `null` |
-| `purchase_fund_cash` | The amount the warehouse leaves in the envelope, which opens the next period (S5, S6, S9). On a **closed** settlement it is the signed sum of `purchase_fund_ledger` at the settlement's own `closed_at` — the one arithmetic of the fund, the same number the closure wrote as its `reposicion`; on a live one it is the draft or the offer the warehouse stated, `null` until it states one |
+| `purchase_fund_cash` | The amount the warehouse leaves in the envelope, which opens the next period (S5, S6, S9). On a **closed** settlement it is the number that settlement published, read where that rule lives (`settled_purchase_fund`, migration 052): the signed sum of `purchase_fund_ledger` at its own `closed_at` when its closure wrote the movement that reconciled the book to it, and the amount it stated otherwise -- a settlement closed before a closure settled the fund through its book keeps the number it published, and a historical acta is never recalculated; on a live one it is the draft or the offer the warehouse stated, `null` until it states one |
 
 The opening, the purchases and the expectation are **derived on every read** from those tables,
 exactly like the drawer's three numbers, so a published amount can never disagree with the facts
@@ -380,21 +385,24 @@ the branch accepted and never a second number that could differ from it:
   unstated fund is zero and not unknown (S7). No movement is written in that case: the book already
   says what the fund holds.
 * **The closure settles the fund through its book** (S9). The amount the warehouse leaves is written
-  as a `reposicion` of `branch_fund_movements` whose amount is the difference against the book's
-  balance at that instant, read under the lock of the branch (`340251`), and signed by the
-  settlement's own opener. It is the difference and not the stated amount, because writing the
-  amount would count the fund twice; and it is **signed**, because a settlement may leave more than
-  the book holds (the warehouse loads the fund) or less (the warehouse takes the surplus back). The
-  balance after the closure is therefore exactly the stated amount, and `purchase_fund_cash` of a
-  closed settlement is that balance, read on every read. S6 still wins: the statement is a column of
-  044 that is never negative, so no closure can drive the fund below zero, and the difference can
-  only take out what the book holds.
+  as a movement of `branch_fund_movements` whose amount is the difference against the book's balance
+  at that instant, read under the lock of the branch (`340251`), and signed by the settlement's own
+  opener; the row also **names the settlement** it states (`closing_id`, unique), which is what lets
+  that settlement's acta read its own movement later. It is the difference and not the stated amount,
+  because writing the amount would count the fund twice; and the **direction is the kind's**: a
+  settlement that leaves more than the book holds loads the fund with a `reposicion`, and one that
+  leaves less takes the surplus back with a `devolucion`, both with a positive amount. The balance
+  after the closure is therefore exactly the stated amount. S6 still wins: the statement is a column
+  of 044 that is never negative, so no closure can drive the fund below zero, and the difference can
+  only take out what the book holds. The two kinds are the closure's alone: `devolucion` is refused
+  to any other writer, and a movement of the period that names a settlement is refused with it, so
+  no branch can drain its fund with no acta behind it.
 * **A fund that changes after the closure appends its movement** (S5, S9). The ledger is append only
-  and a closed settlement is never rewritten, so a correction of the fund is a new row — a
-  `correccion` that answers the `reposicion` (or the `compra` or `aporte` that made the book wrong)
-  — and the balance follows the sum. The closed acta keeps publishing the fund it settled: it is
-  history, and the correction is a fact of the period that follows, which is the fund the next
-  closure states.
+  and a closed settlement is never rewritten, so a correction of the fund is a new row -- a
+  `correccion` that answers the `reposicion`, the `devolucion`, the `compra` or the `aporte` that
+  made the book wrong -- and the balance follows the sum. The closed acta keeps publishing the fund
+  it settled: it is history, and the correction is a fact of the period that follows, which is the
+  fund the next closure states.
 
 ## The third account: materials
 

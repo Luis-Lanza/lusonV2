@@ -629,9 +629,10 @@ func closingCountLines(d *json.Decoder) ([]closings.Counted, error) {
 // because a warehouse that has not counted the envelope yet states neither, and both are amounts of
 // the same canonical shape as every other money of this contract. An absent key leaves the envelope
 // unstated instead of inventing a zero. What the draft states is the statement the branch will
-// decide: the fund the settlement leaves is written by the closure as the fund's own `reposicion`
-// (migration 051), and from then on the amount every read publishes is the signed sum of the fund's
-// ledger and not this column (S9).
+// decide: the fund the settlement leaves is written by the closure as a movement of the fund's book --
+// a `reposicion` when it loads the fund, a `devolucion` when it takes the surplus back (migrations
+// 051, 052) -- and from then the amount every read publishes is the one rule of a closed
+// settlement's fund and not this column (S9).
 func decodeClosingCash(r *http.Request) (closings.CashDraft, error) {
 	draft := closings.CashDraft{}
 	d, err := closingDecoder(r)
@@ -1425,10 +1426,11 @@ type closingDTO struct {
 	// purchase_fund_counted is what the warehouse counted and purchase_fund_difference is that count
 	// against the expectation: informational, never a block, and null while uncounted. purchase_fund_cash
 	// is the amount the warehouse leaves in it, which opens the next period (S5, S6): on a closed
-	// settlement it is the signed sum of the fund's ledger at the instant the settlement closed, which
-	// is the number its closure wrote as a `reposicion` (S9, migration 051), and a live one publishes
-	// the draft or the offer the warehouse stated. None of these amounts enters the drawer's identities
-	// nor the commission (S12).
+	// settlement it is the number that settlement published -- the book's sum at its own instant when its
+	// closure wrote the movement that reconciled the book to it, and the amount it stated otherwise, so a
+	// historical acta is never recalculated (S9, migration 052) -- and a live one publishes the draft or
+	// the offer the warehouse stated. None of these amounts enters the drawer's identities nor the
+	// commission (S12).
 	PurchaseFundOpening    string  `json:"purchase_fund_opening"`
 	PurchasesTotal         string  `json:"purchases_total"`
 	PurchasesCash          string  `json:"purchases_cash"`
