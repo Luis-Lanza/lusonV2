@@ -128,13 +128,22 @@ func run() (result error) {
 	}
 	// The branch purchase ledger mounts last: it is the only money-out document, it
 	// owns only its own path, and every composed surface keeps its exact behavior.
-	api, err = httpapi.NewWithPurchases(api, service, httpCfg, purchases.New(pool))
+	purchaseStore := purchases.New(pool)
+	api, err = httpapi.NewWithPurchases(api, service, httpCfg, purchaseStore)
 	if err != nil {
 		return errors.New("API initialization failed")
 	}
 	// The branch account settlement mounts on top of every document it settles: it owns
 	// only its own path, and the store it is given is the one the whole vertical uses.
-	api, err = httpapi.NewWithClosings(api, service, httpCfg, closings.New(pool))
+	closingStore := closings.New(pool)
+	api, err = httpapi.NewWithClosings(api, service, httpCfg, closingStore)
+	if err != nil {
+		return errors.New("API initialization failed")
+	}
+	// The branch metrics mount after the settlement: the read projects a period of the two
+	// stores the vertical already uses, it owns only its own path, and every composed surface
+	// keeps its exact behavior.
+	api, err = httpapi.NewWithMetrics(api, service, httpCfg, purchaseStore, closingStore)
 	if err != nil {
 		return errors.New("API initialization failed")
 	}
