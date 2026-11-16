@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "chosen": "01-acta-por-periodo.html",
+  "handoffs": {
+    "01-acta-por-periodo.html": {
+      "status": "implemented",
+      "queued": false,
+      "sentAt": "2026-11-15T21:39:52.345Z",
+      "startedAt": "2026-11-15T21:40:03.132Z",
+      "implementedAt": "2026-11-15T22:43:56.009Z",
+      "note": "Pantalla implementada en #/metricas: selector de período, banda de lo que dejó el período, plata y caja, fondo, top 5 por unidades y recambio. Verificada en forma independiente, tres defectos corregidos.",
+      "previewUrl": "http://127.0.0.1:8081/"
+    }
+  }
+}

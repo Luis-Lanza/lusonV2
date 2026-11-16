@@ -1,0 +1,27 @@
+{
+  "title": "Métricas de la sucursal",
+  "brief": "Pantalla de métricas por sucursal para el encargado: plata del período, caja operativa, fondo de compras, baterías más vendidas por unidades y recambio, cortado por período de rendición con el mismo selector que Compras.",
+  "artboards": [
+    {
+      "file": "01-acta-por-periodo.html",
+      "title": "El período como acta",
+      "tradeoff": "Cada número queda rastreable contra el acta firmada y se comparan períodos leyendo la misma tabla; es la dirección más densa y la que peor responde a la pregunta '¿qué hago ahora?'.",
+      "width": 1440,
+      "height": 1420
+    },
+    {
+      "file": "02-pulso-de-hoy.html",
+      "title": "El pulso de hoy",
+      "tradeoff": "Primero lo accionable —efectivo esperado, fondo disponible, días sin rendir— y el detalle del período después; pierde la lectura comparativa y depende de que el encargado entre con el período en curso elegido.",
+      "width": 1440,
+      "height": 1230
+    },
+    {
+      "file": "03-linea-de-rendiciones.html",
+      "title": "Línea de rendiciones",
+      "tradeoff": "Hace visible la evolución sin agregar gráficos, con cada período como un escalón y la variación contra el anterior; el detalle del período elegido compite por espacio con la comparación.",
+      "width": 1440,
+      "height": 1240
+    }
+  ]
+}

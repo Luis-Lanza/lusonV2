@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Métricas de la sucursal · línea de rendiciones · Luson</title>
+<style>
+  :root{
+    --wine:#7A1F3D; --hover:#5B162D; --tint:#F5E8ED; --page:#F8F6F4;
+    --border:#DED7DA; --muted:#6B6267; --ink:#242124; --surface:#FFFFFF;
+    --received-ink:#047857; --approved-ink:#22633B; --approved-bg:#EDF7F0;
+    --warning-ink:#805400; --warning-bg:#FFFBEF; --warning-border:#E8CF86;
+    --action-alert:#BA1A1A; --shortage-bg:#FFF0F0;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--page); color:var(--ink); font:14px/1.45 sans-serif; -webkit-font-smoothing:antialiased}
+  .app{display:grid; grid-template-columns:240px 1fr; min-height:100vh}
+
+  .sidebar{background:var(--surface); border-right:1px solid var(--border); padding:16px 12px}
+  .brand{display:flex; align-items:center; gap:8px; padding:4px 12px 20px; font-weight:700}
+  .brand span{width:22px; height:22px; border-radius:6px; background:var(--wine); display:grid; place-items:center; color:#fff; font-size:12px}
+  .side-nav{list-style:none; margin:0; padding:0; display:grid; gap:2px}
+  .side-nav a{display:flex; align-items:center; justify-content:space-between; padding:9px 12px; border-radius:6px; color:var(--ink); text-decoration:none; font-size:13.5px; border-left:2px solid transparent}
+  .side-nav a:hover{background:var(--page)}
+  .side-nav a[aria-current="page"]{background:var(--tint); color:var(--wine); font-weight:600; border-left-color:var(--wine)}
+  .badge{background:var(--wine); color:#fff; font-size:11px; font-weight:600; border-radius:999px; padding:1px 7px}
+
+  .app-header{height:56px; background:var(--surface); border-bottom:1px solid var(--border); display:flex; align-items:center; justify-content:space-between; padding:0 24px 0 40px}
+  .app-header .where{font-weight:600; font-size:13.5px}
+  .who{display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13px}
+  .avatar{width:28px; height:28px; border-radius:50%; background:var(--tint); color:var(--wine); display:grid; place-items:center; font-weight:700; font-size:12px}
+
+  main{padding:26px 40px 44px; max-width:1160px}
+  h1{margin:0 0 3px; font-size:22px; font-weight:700; letter-spacing:-.01em}
+  .lede{margin:0 0 22px; color:var(--muted); font-size:13.5px}
+
+  /* the rail: every rendición is a stop */
+  .rail{
+    background:var(--surface); border:1px solid var(--border); border-radius:8px;
+    padding:16px 18px 8px; margin-bottom:20px;
+  }
+  .rail ol{list-style:none; margin:0; padding:0; display:flex; align-items:stretch; gap:0}
+  .rail li{flex:1; position:relative}
+  .rail li::before{
+    content:""; position:absolute; left:0; right:0; top:11px; height:2px; background:var(--border);
+  }
+  .rail li:first-child::before{left:50%}
+  .rail li:last-child::before{right:50%}
+  .rail li.done::before{background:var(--tint)}
+  .rail a{
+    position:relative; display:grid; gap:3px; justify-items:center; text-align:center;
+    padding:0 6px 10px; text-decoration:none; color:var(--muted); font-size:12.5px;
+  }
+  .rail a:focus-visible{outline:2px solid var(--wine); outline-offset:2px; border-radius:6px}
+  .rail .node{
+    width:12px; height:12px; border-radius:50%; background:var(--surface);
+    border:2px solid var(--muted); margin-top:5px; z-index:1;
+  }
+  .rail li.done .node{border-color:var(--wine); background:var(--wine)}
+  .rail .day{font-weight:600; color:var(--ink); font-size:13px}
+  .rail .what{font-size:11.5px; color:var(--muted)}
+  .rail li[aria-current] .node{width:16px; height:16px; margin-top:3px; border-color:var(--wine); background:var(--surface); box-shadow:0 0 0 3px var(--tint)}
+  .rail li[aria-current] .day{color:var(--wine)}
+  .rail li[aria-current] a{color:var(--wine)}
+  .rail li.open .node{border-style:dashed}
+  .rail .flag{font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; font-weight:600; color:var(--wine)}
+
+  section{margin:0 0 18px}
+  h2{margin:0 0 10px; font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--muted)}
+  .cols{display:grid; grid-template-columns:1.05fr .95fr; gap:18px; align-items:start}
+  .panel{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px 18px}
+  .panel h3{margin:0 0 3px; font-size:14px; font-weight:700}
+  .panel .when{margin:0 0 14px; font-size:12.5px; color:var(--muted)}
+
+  .headline{display:flex; align-items:baseline; gap:10px; margin-bottom:2px}
+  .headline .amount{font-size:26px; font-weight:700; letter-spacing:-.02em; font-variant-numeric:tabular-nums}
+  .headline .note{font-size:12.5px; color:var(--muted)}
+  .sub{margin:2px 0 14px; font-size:12.5px; color:var(--muted)}
+
+  table{width:100%; border-collapse:collapse; font-size:13px}
+  th{text-align:left; font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); padding:6px 0; border-bottom:1px solid var(--border)}
+  td{padding:7px 0; border-bottom:1px solid var(--border)}
+  tr:last-child td{border-bottom:none}
+  .num{text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap}
+  th.num{text-align:right}
+  .total td{font-weight:700; border-top:1px solid var(--border); padding-top:9px}
+  .muted{color:var(--muted)}
+  .ok{color:var(--received-ink); font-weight:600}
+  .alert{color:var(--action-alert); font-weight:600}
+
+  /* comparison column: this period against the one before */
+  .delta{display:flex; justify-content:space-between; align-items:baseline; gap:10px; padding:7px 0; border-bottom:1px solid var(--border)}
+  .delta:last-child{border-bottom:none}
+  .delta .lbl{color:var(--muted)}
+  .delta .now{font-weight:600; font-variant-numeric:tabular-nums}
+  .delta .vs{font-size:12px; font-variant-numeric:tabular-nums; display:inline-flex; align-items:center; gap:4px; margin-left:10px}
+  .up{color:var(--received-ink)}
+  .down{color:var(--action-alert)}
+  .flat{color:var(--muted)}
+  .prev{font-size:11.5px; color:var(--muted); display:block; margin-top:1px}
+
+  .move{font-size:12px; font-variant-numeric:tabular-nums; width:44px; text-align:right; color:var(--muted)}
+  .move.up{color:var(--received-ink)}
+  .move.down{color:var(--action-alert)}
+
+  .split{display:flex; justify-content:space-between; gap:12px; padding:7px 0; border-bottom:1px solid var(--border)}
+  .split:last-child{border-bottom:none}
+  .split .num{font-variant-numeric:tabular-nums}
+
+  .footnote{margin-top:22px; padding-top:14px; border-top:1px solid var(--border); font-size:12px; color:var(--muted)}
+  .footnote strong{color:var(--ink); font-weight:600}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><span>L</span> Luson</div>
+    <nav aria-label="Navegación principal">
+      <ul class="side-nav">
+        <li><a href="#">Punto de venta</a></li>
+        <li><a href="#">Inventario</a></li>
+        <li><a href="#">Ventas</a></li>
+        <li><a href="#">Compras <span class="badge">3</span></a></li>
+        <li><a href="#">Rendición de cuentas</a></li>
+        <li><a href="#" aria-current="page">Métricas</a></li>
+        <li><a href="#">Administración</a></li>
+      </ul>
+    </nav>
+  </aside>
+
+  <div>
+    <header class="app-header">
+      <div class="where">Sucursal A</div>
+      <div class="who"><span>Encargada · Romina Sosa</span><span class="avatar" aria-hidden="true">RS</span></div>
+    </header>
+
+    <main>
+      <h1>Métricas de la sucursal</h1>
+      <p class="lede">Cada rendición es un escalón. Elegí uno y ves qué pasó, y cómo se compara con el anterior.</p>
+
+      <nav class="rail" aria-label="Períodos de rendición">
+        <ol>
+          <li class="done"><a href="#"><span class="day">17/09</span><span class="node" aria-hidden="true"></span><span class="what">cerrada</span></a></li>
+          <li class="done"><a href="#"><span class="day">01/10</span><span class="node" aria-hidden="true"></span><span class="what">cerrada</span></a></li>
+          <li class="done"><a href="#"><span class="day">15/10</span><span class="node" aria-hidden="true"></span><span class="what">cerrada</span></a></li>
+          <li class="done"><a href="#"><span class="day">29/10</span><span class="node" aria-hidden="true"></span><span class="what">cerrada</span></a></li>
+          <li aria-current="true"><a href="#"><span class="day">12/11</span><span class="node" aria-hidden="true"></span><span class="what">elegida</span></a></li>
+          <li class="open"><a href="#"><span class="day">en curso</span><span class="node" aria-hidden="true"></span><span class="flag">6 días</span></a></li>
+        </ol>
+      </nav>
+
+      <div class="cols">
+        <section aria-labelledby="elegida">
+          <div class="panel">
+            <h3 id="elegida">Rendición del 12/11/2026</h3>
+            <p class="when">Cerrada el 12/11 a las 18:30 · números congelados en el acta</p>
+
+            <div class="headline">
+              <span class="amount">$&nbsp;4.286.400</span>
+              <span class="note">en 63 ventas</span>
+            </div>
+            <p class="sub">78 baterías · ticket $&nbsp;68.038 · comisión $&nbsp;192.888</p>
+
+            <table>
+              <caption class="muted" style="text-align:left;font-size:12px;padding-bottom:6px">Cómo se cobró</caption>
+              <tbody>
+                <tr><td class="muted">Efectivo</td><td class="num">$&nbsp;1.842.300</td><td class="num muted">43,0&nbsp;%</td></tr>
+                <tr><td class="muted">Tarjeta</td><td class="num">$&nbsp;1.486.900</td><td class="num muted">34,7&nbsp;%</td></tr>
+                <tr><td class="muted">Transferencia</td><td class="num">$&nbsp;612.200</td><td class="num muted">14,3&nbsp;%</td></tr>
+                <tr><td class="muted">QR</td><td class="num">$&nbsp;345.000</td><td class="num muted">8,0&nbsp;%</td></tr>
+              </tbody>
+            </table>
+
+            <table style="margin-top:16px">
+              <caption class="muted" style="text-align:left;font-size:12px;padding-bottom:6px">Caja operativa y fondo, al cerrar</caption>
+              <tbody>
+                <tr><td class="muted">Debería haber en caja</td><td class="num">$&nbsp;1.877.800</td></tr>
+                <tr><td class="muted">Se contó</td><td class="num">$&nbsp;1.877.800</td></tr>
+                <tr><td>Diferencia de caja</td><td class="num ok">$&nbsp;0</td></tr>
+                <tr><td class="muted">Debería haber en el fondo</td><td class="num">$&nbsp;168.000</td></tr>
+                <tr><td class="muted">Se contó</td><td class="num">$&nbsp;168.000</td></tr>
+                <tr><td>Diferencia del fondo</td><td class="num ok">$&nbsp;0</td></tr>
+                <tr class="total"><td>Recambio para el período siguiente</td><td class="num">$&nbsp;200.000</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section aria-labelledby="contra">
+          <div class="panel">
+            <h3 id="contra">Contra la rendición del 29/10</h3>
+            <p class="when">La comparación es contra el período inmediatamente anterior en la línea.</p>
+
+            <div class="delta">
+              <span class="lbl">Ventas</span>
+              <span><span class="now">$&nbsp;4.286.400</span><span class="vs up">▲ 8,4&nbsp;%</span>
+              <span class="prev">antes $&nbsp;3.953.100</span></span>
+            </div>
+            <div class="delta">
+              <span class="lbl">Baterías vendidas</span>
+              <span><span class="now">78 u</span><span class="vs up">▲ 6 u</span>
+              <span class="prev">antes 72 u</span></span>
+            </div>
+            <div class="delta">
+              <span class="lbl">Ticket promedio</span>
+              <span><span class="now">$&nbsp;68.038</span><span class="vs down">▼ 2,1&nbsp;%</span>
+              <span class="prev">antes $&nbsp;69.497</span></span>
+            </div>
+            <div class="delta">
+              <span class="lbl">Comisión</span>
+              <span><span class="now">$&nbsp;192.888</span><span class="vs up">▲ 8,4&nbsp;%</span>
+              <span class="prev">antes $&nbsp;177.890</span></span>
+            </div>
+            <div class="delta">
+              <span class="lbl">Diferencia de caja</span>
+              <span><span class="now ok">$&nbsp;0</span><span class="vs up">mejoró</span>
+              <span class="prev">antes − $&nbsp;2.300</span></span>
+            </div>
+            <div class="delta">
+              <span class="lbl">Comprado en el fondo</span>
+              <span><span class="now">34 documentos</span><span class="vs flat">= igual</span>
+              <span class="prev">antes 34</span></span>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="cols" style="margin-top:18px">
+        <section aria-labelledby="top">
+          <div class="panel">
+            <h3 id="top">Las más vendidas</h3>
+            <p class="when">Por unidades. La columna de la derecha dice cómo se movió contra el período anterior.</p>
+            <table>
+              <thead>
+                <tr><th scope="col" class="muted" aria-label="Puesto"></th><th scope="col">Modelo</th><th scope="col" class="num">Unidades</th><th scope="col" class="num">Puesto antes</th></tr>
+              </thead>
+              <tbody>
+                <tr><td class="muted">1</td><td>Willard UB 12-75<small class="muted" style="display:block;font-size:12px">75 Ah</small></td><td class="num">22</td><td class="num move up">▲ 1</td></tr>
+                <tr><td class="muted">2</td><td>Moura 12-60<small class="muted" style="display:block;font-size:12px">60 Ah</small></td><td class="num">17</td><td class="num move down">▼ 1</td></tr>
+                <tr><td class="muted">3</td><td>Bosch S4 12-45<small class="muted" style="display:block;font-size:12px">45 Ah</small></td><td class="num">11</td><td class="num move flat">= 3</td></tr>
+                <tr><td class="muted">4</td><td>Willard UB 12-100<small class="muted" style="display:block;font-size:12px">100 Ah</small></td><td class="num">9</td><td class="num move up">▲ 2</td></tr>
+                <tr><td class="muted">5</td><td>Rocket 12-55<small class="muted" style="display:block;font-size:12px">55 Ah</small></td><td class="num">4</td><td class="num move down">▼ 2</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section aria-labelledby="recambio">
+          <div class="panel">
+            <h3 id="recambio">Recambio del período</h3>
+            <p class="when">Lo comprado y lo entregado al Almacén al cerrar.</p>
+            <div class="split"><span class="muted">Baterías usadas compradas</span><span class="num">78 u</span></div>
+            <div class="split"><span class="muted">Entregadas</span><span class="num ok">78 u</span></div>
+            <div class="split"><span class="muted">Chatarra: cobre</span><span class="num">92,3 kg</span></div>
+            <div class="split"><span class="muted">Aluminio</span><span class="num">61,0 kg</span></div>
+            <div class="split"><span class="muted">Plomo</span><span class="num">45,7 kg</span></div>
+            <div class="split"><span class="muted">Bronce</span><span class="num">15,5 kg</span></div>
+            <div class="split" style="border-top:1px solid var(--border); margin-top:2px; padding-top:9px">
+              <span style="font-weight:600">Chatarra total</span><span class="num" style="font-weight:700">214,5 kg</span>
+            </div>
+            <div class="split"><span class="muted">Diferencia contra lo comprado</span><span class="num ok">nada pendiente</span></div>
+          </div>
+        </section>
+      </div>
+
+      <p class="footnote">
+        <strong>Por qué acá no hay gráficos:</strong> con cinco rendiciones, un número y su variación dicen más que
+        una línea. Cuando haya veinte, la línea se gana su lugar.
+      </p>
+    </main>
+  </div>
+</div>
+</body>
+</html>

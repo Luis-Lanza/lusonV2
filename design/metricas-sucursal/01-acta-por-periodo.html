@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Métricas de la sucursal · el período como acta · Luson</title>
+<style>
+  :root{
+    --wine:#7A1F3D; --hover:#5B162D; --tint:#F5E8ED; --page:#F8F6F4;
+    --border:#DED7DA; --muted:#6B6267; --ink:#242124; --surface:#FFFFFF;
+    --received-ink:#047857; --approved-ink:#22633B; --warning-ink:#805400; --warning-bg:#FFFBEF; --warning-border:#E8CF86;
+    --shortage-bg:#FFF0F0; --shortage-border:#FFDAD6; --action-alert:#BA1A1A;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--page); color:var(--ink); font:14px/1.45 sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  .app{display:grid; grid-template-columns:240px 1fr; min-height:100vh}
+  /* sidebar */
+  .sidebar{background:var(--surface); border-right:1px solid var(--border); padding:16px 12px}
+  .brand{display:flex; align-items:center; gap:8px; padding:4px 12px 20px; font-weight:700; letter-spacing:.02em}
+  .brand span{width:22px; height:22px; border-radius:6px; background:var(--wine); display:grid; place-items:center; color:#fff; font-size:12px}
+  .side-nav{list-style:none; margin:0; padding:0; display:grid; gap:2px}
+  .side-nav a{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:9px 12px; border-radius:6px; color:var(--ink); text-decoration:none; font-size:13.5px;
+    border-left:2px solid transparent;
+  }
+  .side-nav a:hover{background:var(--page)}
+  .side-nav a[aria-current="page"]{background:var(--tint); color:var(--wine); font-weight:600; border-left-color:var(--wine)}
+  .side-nav .badge{background:var(--wine); color:#fff; font-size:11px; font-weight:600; border-radius:999px; padding:1px 7px}
+  .side-nav a[aria-current="page"] .badge{background:var(--wine)}
+
+  /* header */
+  .app-header{
+    height:56px; background:var(--surface); border-bottom:1px solid var(--border);
+    display:flex; align-items:center; justify-content:space-between; padding:0 24px 0 40px;
+  }
+  .app-header .where{font-weight:600; font-size:13.5px}
+  .app-header .who{display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13px}
+  .avatar{width:28px; height:28px; border-radius:50%; background:var(--tint); color:var(--wine); display:grid; place-items:center; font-weight:700; font-size:12px}
+
+  main{padding:28px 40px 48px 40px; max-width:1180px}
+
+  h1{margin:0 0 4px; font-size:22px; font-weight:700; letter-spacing:-.01em}
+  .lede{margin:0; color:var(--muted); font-size:13.5px}
+
+  /* period control */
+  .period-bar{
+    margin:18px 0 20px; display:flex; align-items:flex-end; gap:16px; flex-wrap:wrap;
+    padding:14px 16px; background:var(--surface); border:1px solid var(--border); border-radius:8px;
+  }
+  .field{display:grid; gap:4px}
+  .field label{font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--muted)}
+  .field select{
+    font:inherit; font-size:13.5px; color:var(--ink); background:var(--surface);
+    border:1px solid var(--muted); border-radius:4px; padding:7px 30px 7px 10px; min-width:320px;
+    appearance:none;
+    background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236B6267'/%3E%3C/svg%3E");
+    background-repeat:no-repeat; background-position:right 10px center;
+  }
+  .field select:focus-visible{outline:2px solid var(--wine); outline-offset:3px}
+  .provenance{
+    display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--muted);
+    border:1px solid var(--border); border-radius:999px; padding:3px 10px; background:var(--page);
+  }
+  .provenance b{color:var(--ink); font-weight:600}
+  .dot{width:7px; height:7px; border-radius:50%; background:var(--approved-ink)}
+
+  /* what the period left */
+  section{margin:0 0 22px}
+  h2{
+    margin:0 0 10px; font-size:11px; font-weight:700; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--muted);
+  }
+  .left-band{
+    display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--border);
+    border:1px solid var(--border); border-radius:8px; overflow:hidden;
+  }
+  .left-band > div{background:var(--surface); padding:16px 18px}
+  .left-band .k{font-size:12px; color:var(--muted); display:flex; align-items:center; gap:6px}
+  .left-band .v{font-size:24px; font-weight:700; letter-spacing:-.02em; font-variant-numeric:tabular-nums; margin:6px 0 2px}
+  .left-band .s{font-size:12.5px; color:var(--muted)}
+
+  .cols{display:grid; grid-template-columns:1.15fr 1fr; gap:20px; align-items:start}
+
+  .panel{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px 18px}
+  .panel h3{margin:0 0 12px; font-size:13.5px; font-weight:600}
+
+  .big{display:flex; align-items:baseline; gap:10px; margin-bottom:2px}
+  .big .amount{font-size:26px; font-weight:700; letter-spacing:-.02em; font-variant-numeric:tabular-nums}
+  .big .note{font-size:12.5px; color:var(--muted)}
+  .sub{margin:0 0 14px; font-size:12.5px; color:var(--muted)}
+
+  table{width:100%; border-collapse:collapse; font-size:13px}
+  th{
+    text-align:left; font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
+    color:var(--muted); padding:6px 0; border-bottom:1px solid var(--border);
+  }
+  td{padding:7px 0; border-bottom:1px solid var(--border)}
+  tr:last-child td{border-bottom:none}
+  .num{text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap}
+  th.num{text-align:right}
+  .total td{font-weight:700; border-top:1px solid var(--border); border-bottom:none; padding-top:9px}
+  .muted{color:var(--muted)}
+  .ok{color:var(--received-ink); font-weight:600}
+  .alert{color:var(--action-alert); font-weight:600}
+
+  .split{display:flex; justify-content:space-between; gap:12px; padding:6px 0; border-bottom:1px solid var(--border)}
+  .split:last-child{border-bottom:none}
+  .split .lbl{color:var(--muted)}
+
+  /* share bar */
+  .share{display:flex; align-items:center; gap:8px}
+  .share .track{flex:1; height:6px; background:var(--tint); border-radius:3px; overflow:hidden; min-width:48px}
+  .share .fill{display:block; height:100%; background:var(--wine); border-radius:3px}
+  .share .pct{width:34px; text-align:right; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums}
+  .rank{width:18px; color:var(--muted); font-variant-numeric:tabular-nums}
+  .model{font-weight:600}
+  .model small{display:block; font-weight:400; color:var(--muted); font-size:12px}
+
+  .note-line{margin:0; font-size:12px; color:var(--muted)}
+  .footnote{margin-top:26px; padding-top:14px; border-top:1px solid var(--border); font-size:12px; color:var(--muted)}
+  .footnote strong{color:var(--ink); font-weight:600}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><span>L</span> Luson</div>
+    <nav aria-label="Navegación principal">
+      <ul class="side-nav">
+        <li><a href="#">Punto de venta</a></li>
+        <li><a href="#">Inventario</a></li>
+        <li><a href="#">Ventas</a></li>
+        <li><a href="#">Compras <span class="badge">3</span></a></li>
+        <li><a href="#">Rendición de cuentas</a></li>
+        <li><a href="#" aria-current="page">Métricas</a></li>
+        <li><a href="#">Administración</a></li>
+      </ul>
+    </nav>
+  </aside>
+
+  <div>
+    <header class="app-header">
+      <div class="where">Sucursal A</div>
+      <div class="who"><span>Encargada · Romina Sosa</span><span class="avatar" aria-hidden="true">RS</span></div>
+    </header>
+
+    <main>
+      <h1>Métricas de la sucursal</h1>
+      <p class="lede">Todo lo que pasó en un período de rendición, con la misma numeración del acta.</p>
+
+      <div class="period-bar">
+        <div class="field">
+          <label for="period">Período</label>
+          <select id="period">
+            <option>Rendición del 12/11/2026 — cerrada</option>
+            <option>Rendición del 29/10/2026 — cerrada</option>
+            <option>Rendición del 15/10/2026 — cerrada</option>
+            <option>Período en curso</option>
+            <option>Todo el historial</option>
+          </select>
+        </div>
+        <p class="provenance"><span class="dot" aria-hidden="true"></span> Números al cierre del <b>12/11/2026 18:30</b></p>
+      </div>
+
+      <section aria-labelledby="left">
+        <h2 id="left">Lo que dejó el período</h2>
+        <div class="left-band">
+          <div>
+            <div class="k">Caja operativa entregada</div>
+            <div class="v">$&nbsp;1.877.800</div>
+            <div class="s">Contada y rendida al Almacén</div>
+          </div>
+          <div>
+            <div class="k">Fondo de compras que queda</div>
+            <div class="v">$&nbsp;200.000</div>
+            <div class="s">Monto nuevo que escribió el Almacén</div>
+          </div>
+          <div>
+            <div class="k">Material entregado</div>
+            <div class="v">78 u · 214,5 kg</div>
+            <div class="s">Baterías usadas y chatarra</div>
+          </div>
+        </div>
+      </section>
+
+      <div class="cols">
+        <section aria-labelledby="plata">
+          <div class="panel">
+            <h3 id="plata">Plata del período</h3>
+            <div class="big">
+              <span class="amount">$&nbsp;4.286.400</span>
+              <span class="note">en 63 ventas</span>
+            </div>
+            <p class="sub">Ticket promedio $&nbsp;68.038 · 78 baterías vendidas · comisión $&nbsp;192.888 (4,50&nbsp;%)</p>
+            <table>
+              <caption class="muted" style="text-align:left;font-size:12px;padding-bottom:6px">Cómo se cobró</caption>
+              <thead>
+                <tr><th scope="col">Medio</th><th scope="col" class="num">Monto</th><th scope="col" class="num">Parte</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Efectivo</td><td class="num">$&nbsp;1.842.300</td><td class="num">43,0&nbsp;%</td></tr>
+                <tr><td>Tarjeta</td><td class="num">$&nbsp;1.486.900</td><td class="num">34,7&nbsp;%</td></tr>
+                <tr><td>Transferencia</td><td class="num">$&nbsp;612.200</td><td class="num">14,3&nbsp;%</td></tr>
+                <tr><td>QR</td><td class="num">$&nbsp;345.000</td><td class="num">8,0&nbsp;%</td></tr>
+                <tr class="total"><td>Total</td><td class="num">$&nbsp;4.286.400</td><td class="num">100&nbsp;%</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section aria-labelledby="caja">
+          <div class="panel">
+            <h3 id="caja">Caja operativa</h3>
+            <table>
+              <tbody>
+                <tr><td class="lbl muted">Apertura declarada</td><td class="num">$&nbsp;120.000</td></tr>
+                <tr><td class="lbl muted">Ventas en efectivo</td><td class="num">+ $&nbsp;1.842.300</td></tr>
+                <tr><td class="lbl muted">Gastos del período</td><td class="num">− $&nbsp;84.500</td></tr>
+                <tr><td class="lbl muted">Retiros</td><td class="num">− $&nbsp;0</td></tr>
+                <tr class="total"><td>Debería haber</td><td class="num">$&nbsp;1.877.800</td></tr>
+                <tr><td class="lbl muted">Se contó</td><td class="num">$&nbsp;1.877.800</td></tr>
+                <tr><td class="lbl">Diferencia</td><td class="num ok">$&nbsp;0 &nbsp;justa</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <section aria-labelledby="fondo" style="margin-top:20px">
+        <div class="panel">
+          <h3 id="fondo">Fondo de compras</h3>
+          <div class="cols" style="gap:28px">
+            <table>
+              <tbody>
+                <tr><td class="lbl muted">Saldo con el que arrancó</td><td class="num">$&nbsp;480.000</td></tr>
+                <tr><td class="lbl muted">Aporte del Almacén</td><td class="num">+ $&nbsp;200.000</td></tr>
+                <tr><td class="lbl muted">Compras en efectivo del período</td><td class="num">− $&nbsp;512.000</td></tr>
+                <tr class="total"><td>Debería haber</td><td class="num">$&nbsp;168.000</td></tr>
+                <tr><td class="lbl muted">Se contó</td><td class="num">$&nbsp;168.000</td></tr>
+                <tr><td class="lbl">Diferencia</td><td class="num ok">$&nbsp;0 &nbsp;justa</td></tr>
+              </tbody>
+            </table>
+            <div>
+              <p class="note-line" style="margin-bottom:8px">Compras del período: <strong>34 documentos</strong> — 78 baterías usadas y 214,5 kg de chatarra.</p>
+              <div class="split"><span class="lbl">Baterías usadas</span><span class="num">$&nbsp;318.400</span></div>
+              <div class="split"><span class="lbl">Chatarra (cobre, aluminio, plomo, bronce)</span><span class="num">$&nbsp;193.600</span></div>
+              <div class="split" style="border-top:1px solid var(--border); margin-top:4px; padding-top:9px">
+                <span class="lbl">Recambio que dejó el Almacén</span><span class="num"><strong>$&nbsp;200.000</strong></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="cols" style="margin-top:20px">
+        <section aria-labelledby="producto">
+          <div class="panel">
+            <h3 id="producto">Baterías más vendidas</h3>
+            <table>
+              <thead>
+                <tr><th scope="col" class="rank" aria-label="Puesto"></th><th scope="col">Modelo</th><th scope="col" class="num">Unidades</th><th scope="col" style="width:130px">Parte</th><th scope="col" class="num">Plata</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="rank">1</td>
+                  <td class="model">Willard UB 12-75<small>75 Ah · bornes estándar</small></td>
+                  <td class="num">22</td>
+                  <td><span class="share"><span class="track"><span class="fill" style="width:100%"></span></span><span class="pct">28&nbsp;%</span></span></td>
+                  <td class="num">$&nbsp;1.221.000</td>
+                </tr>
+                <tr>
+                  <td class="rank">2</td>
+                  <td class="model">Moura 12-60<small>60 Ah · bornes estándar</small></td>
+                  <td class="num">17</td>
+                  <td><span class="share"><span class="track"><span class="fill" style="width:77%"></span></span><span class="pct">22&nbsp;%</span></span></td>
+                  <td class="num">$&nbsp;782.000</td>
+                </tr>
+                <tr>
+                  <td class="rank">3</td>
+                  <td class="model">Bosch S4 12-45<small>45 Ah · bornes estándar</small></td>
+                  <td class="num">11</td>
+                  <td><span class="share"><span class="track"><span class="fill" style="width:50%"></span></span><span class="pct">14&nbsp;%</span></span></td>
+                  <td class="num">$&nbsp;396.000</td>
+                </tr>
+                <tr>
+                  <td class="rank">4</td>
+                  <td class="model">Willard UB 12-100<small>100 Ah · borne izquierdo</small></td>
+                  <td class="num">9</td>
+                  <td><span class="share"><span class="track"><span class="fill" style="width:41%"></span></span><span class="pct">12&nbsp;%</span></span></td>
+                  <td class="num">$&nbsp;1.035.000</td>
+                </tr>
+                <tr>
+                  <td class="rank">5</td>
+                  <td class="model">Rocket 12-55<small>55 Ah · bornes estándar</small></td>
+                  <td class="num">4</td>
+                  <td><span class="share"><span class="track"><span class="fill" style="width:18%"></span></span><span class="pct">5&nbsp;%</span></span></td>
+                  <td class="num">$&nbsp;208.000</td>
+                </tr>
+              </tbody>
+            </table>
+            <p class="note-line" style="margin-top:10px">El top 5 son <strong>63 de 78</strong> unidades. El primer modelo es el 28&nbsp;% del volumen: es el que no puede faltar.</p>
+          </div>
+        </section>
+
+        <section aria-labelledby="recambio">
+          <div class="panel">
+            <h3 id="recambio">Recambio</h3>
+            <table>
+              <caption class="muted" style="text-align:left;font-size:12px;padding-bottom:6px">Chatarra comprada y entregada, en kilos</caption>
+              <thead>
+                <tr><th scope="col">Material</th><th scope="col" class="num">Comprado</th><th scope="col" class="num">Entregado</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>Cobre</td><td class="num">92,3</td><td class="num">92,3</td></tr>
+                <tr><td>Aluminio</td><td class="num">61,0</td><td class="num">61,0</td></tr>
+                <tr><td>Plomo</td><td class="num">45,7</td><td class="num">45,7</td></tr>
+                <tr><td>Bronce</td><td class="num">15,5</td><td class="num">15,5</td></tr>
+                <tr class="total"><td>Total</td><td class="num">214,5</td><td class="num">214,5</td></tr>
+              </tbody>
+            </table>
+            <div style="margin-top:12px">
+              <div class="split"><span class="lbl">Baterías usadas compradas</span><span class="num">78 u</span></div>
+              <div class="split"><span class="lbl">Entregadas al Almacén</span><span class="num ok">78 u &nbsp;todo</span></div>
+              <div class="split"><span class="lbl">Stock en estantería hoy</span><span class="num">214 u</span></div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <p class="footnote">
+        <strong>Cómo leer estos números:</strong> todo lo de arriba está congelado en el cierre del 12/11 y no
+        cambia. El período en curso es el único que se mueve, y lo dice su etiqueta.
+      </p>
+    </main>
+  </div>
+</div>
+</body>
+</html>
