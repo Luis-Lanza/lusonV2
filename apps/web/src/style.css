@@ -1023,6 +1023,10 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   align-items: start; }
 /* Each card ends where its own reading ends: the fund's rows are fewer than the drawer's movements, and
    stretching it to the drawer's height would leave an empty panel pretending to say something. */
+/* The commission is not a box, so it does not take a third column: it closes the band of today across
+   both, and the drawer keeps the width its movements table needs. */
+.metrics-today-pair > .metrics-commission-today { grid-column: 1 / -1; }
+.metrics-commission-empty { color: var(--wine); font-weight: 600; }
 .metrics-fund-today .metrics-big + .metrics-note { margin-bottom: 12px; }
 .metrics-fund-today .metrics-summary { margin-top: 0; margin-bottom: 12px; }
 /* The end of the branch's buying, said with words beside the figure it follows from. */

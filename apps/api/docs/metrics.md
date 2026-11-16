@@ -77,6 +77,7 @@ no value is ever guessed.
   "today": {
     "since": "2026-11-01T12:00:00Z", "opening": "500.00", "sales": "240.00",
     "expenses": "12.50", "expected": "727.50",
+    "rate": "4.50", "sold": "3200.00", "commission": "144.00",
     "movements": [
       {"kind": "aporte", "amount": "100.00", "occurred_at": "2026-11-01T12:00:00Z"},
       {"kind": "recaudacion", "amount": "150.00", "occurred_at": "2026-11-03T09:15:00Z"},
@@ -189,6 +190,24 @@ contribution the warehouse made and the money it took, so adding them here would
 card contradict the settlement it describes. The list is bounded to the newest 50 rows, kept
 in chronological order, so a long history cannot flood the answer; the expectation is
 derived from the ledgers and not from the list, so the bound never changes it.
+
+`rate`, `sold` and `commission` are what the branch is **earning so far**: the commission
+rate the warehouse configured for it, the total it sold in the same window and the commission
+that rate produces on that total, rounded exactly once — the rule the settlement itself applies,
+so the card and the acta of a period being lived cannot disagree on the arithmetic.
+
+`sold` is the **total sold**, not the cash: a card sale never enters the drawer and is still
+part of the base the commission is computed on, which is why `sold` is never equal to `sales`
+when the window collected by more than one method.
+
+`rate` is **null** for a branch the warehouse never configured, and then `commission` is
+`"0.00"`: the absence of a rate is a state of its own and never a zero percentage dressed as a
+rate. A commission that is not its rate times `sold`, or a commission above zero with no rate
+behind it, is a shape this server never wrote and the answer fails closed instead.
+
+The commission is **not money in a box**: it is settled when the settlement is proposed and
+until then it is a projection. It is never a term of `expected` and it is not part of
+`fund_today` either — nothing in a drawer or in the purchase envelope holds it.
 
 `today` is **not** required to equal `cash.expected` of a live period: the two are separate
 statements of the same drawer and a sale landing between them moves one and not the other.

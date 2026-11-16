@@ -116,12 +116,21 @@ type MetricsMovement struct {
 // Expected is the settlement's own identity, Opening + Sales − Expenses, so the card and the acta of
 // the same drawer cannot state two different numbers.
 type MetricsToday struct {
-	Since     *time.Time
-	Opening   Money
-	Sales     Money
-	Expenses  Money
-	Expected  Signed
-	Movements []MetricsMovement
+	Since    *time.Time
+	Opening  Money
+	Sales    Money
+	Expenses Money
+	Expected Signed
+	// Rate is the commission the warehouse configured for this branch, or nil when it never gave it
+	// one: a rate that does not exist is stated as its absence and never as a zero percentage (S20).
+	Rate *Percent
+	// Sold is the total the branch sold since that cut, the exact term the commission is computed on,
+	// and Commission is that rate times that total rounded once -- the settlement's own rule (S18).
+	// Neither is money in a box: the commission is settled when the settlement is proposed and until
+	// then it is what the branch is earning, not what it holds (S19).
+	Sold       Money
+	Commission Money
+	Movements  []MetricsMovement
 }
 
 // MetricsFundToday is the purchase envelope of the branch as it stands today, stated whatever period
@@ -485,21 +494,28 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 		}
 		today.Opening, today.Since = opening, &cut
 	}
-	var sales, expenses string
+	// The cash that reached the drawer, the expenses paid out of it and the total the branch sold:
+	// the third one is not a term of the drawer -- a card sale never enters it -- but it is the base
+	// the commission of the window is computed on, read over the same predicate as the other two so
+	// the three describe one window and not three (S18).
+	var sales, expenses, sold string
 	if err := q.QueryRow(ctx, `SELECT
  coalesce((SELECT sum(sale.cash_amount) FROM sales sale
         WHERE sale.branch_location_id=$1
           AND ($2::timestamptz IS NULL OR sale.created_at >= $2)),0)::numeric(12,2)::text,
  coalesce((SELECT sum(expense.amount) FROM branch_cash_movements expense
         WHERE expense.branch_location_id=$1 AND expense.kind='`+metricsMovementExpense+`'
-          AND ($2::timestamptz IS NULL OR expense.occurred_at >= $2)),0)::numeric(12,2)::text`,
-		int16(branch), today.Since).Scan(&sales, &expenses); err != nil {
+          AND ($2::timestamptz IS NULL OR expense.occurred_at >= $2)),0)::numeric(12,2)::text,
+ coalesce((SELECT sum(line.subtotal) FROM sale_lines line JOIN sales sale ON sale.id=line.sale_id
+        WHERE sale.branch_location_id=$1
+          AND ($2::timestamptz IS NULL OR sale.created_at >= $2)),0)::numeric(12,2)::text`,
+		int16(branch), today.Since).Scan(&sales, &expenses, &sold); err != nil {
 		return MetricsToday{}, fail(ctx)
 	}
-	today.Sales, today.Expenses = Money(sales), Money(expenses)
+	today.Sales, today.Expenses, today.Sold = Money(sales), Money(expenses), Money(sold)
 	// The three terms are amounts the branch holds or spent, never a signed reading: anything else
 	// is a persisted state this answer could not have been produced from.
-	for _, amount := range []Money{today.Opening, today.Sales, today.Expenses} {
+	for _, amount := range []Money{today.Opening, today.Sales, today.Expenses, today.Sold} {
 		if _, ok := amountCents(amount); !ok {
 			return MetricsToday{}, ErrUnavailable
 		}
@@ -509,6 +525,25 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 		return MetricsToday{}, ErrUnavailable
 	}
 	today.Expected = expected
+	// What the branch is earning so far: the rate the warehouse froze for it times the total it sold
+	// in this window, rounded exactly once by the settlement's own rule, so the card and the acta of
+	// the period being lived cannot disagree on the arithmetic (S18). A branch the warehouse never
+	// gave a rate to states no rate and earns no commission -- an absence, never a zero percentage
+	// dressed as a rate (S20) -- and the read still answers, because the window itself is a fact.
+	rate, err := configuredRate(ctx, q, int16(branch))
+	switch {
+	case errors.Is(err, ErrNoCommissionRate):
+		today.Commission = Money("0.00")
+	case err != nil:
+		return MetricsToday{}, fail(ctx)
+	default:
+		commission, err := Commission(today.Sold, rate)
+		if err != nil {
+			return MetricsToday{}, ErrUnavailable
+		}
+		configured := rate
+		today.Rate, today.Commission = &configured, commission
+	}
 	// The list is read newest first so the bound keeps the newest rows of a long history, and it is
 	// published oldest first because a ledger is read in the order it happened.
 	rows, err := q.Query(ctx, `SELECT kind,amount::text,occurred_at FROM branch_cash_movements

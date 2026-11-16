@@ -53,6 +53,8 @@ const stock = { units: 214 };
 const today = {
   since: '2026-11-01T12:00:00Z', opening: '500000.00', sales: '1842300.00',
   expenses: '84500.00', expected: '2257800.00',
+  // What the branch is earning so far: 2100000.00 sold since the cut at 12.50% is 262500.00 (S18).
+  rate: '12.50', sold: '2100000.00', commission: '262500.00',
   movements: [
     { kind: 'aporte', amount: '10000.00', occurred_at: '2026-11-01T12:00:00Z' },
     { kind: 'gasto', amount: '2500.00', occurred_at: '2026-11-02T09:30:00Z' },
@@ -335,6 +337,44 @@ describe('branch metrics screen', () => {
       .toBeLessThan(regions.indexOf('metrics-left-title'));
   });
 
+  it('renders what the branch is earning today, with the rate and the base it applies to', async () => {
+    setup(token => token === '4' ? json(settlementBody()) : json(historyBody()));
+    await selectPeriod('4');
+    const card = panel('Comisión de hoy');
+    // The commission devengada, the rate the warehouse configured and the total it applies to (S18).
+    expect(within(card).getByText('Bs 262.500,00')).toBeInTheDocument();
+    expect(card).toHaveTextContent('12,50 %');
+    expect(within(card).getByText('Bs 2.100.000,00')).toBeInTheDocument();
+    // It is not money in a box: the card says so with words instead of leaving it to the figure (S19).
+    expect(card).toHaveTextContent(/no está liquidada/i);
+    expect(card).toHaveTextContent(/no entra en el cajón ni en el fondo/i);
+    // The window it covers is the same one the drawer states.
+    expect(card).toHaveTextContent(/Desde el corte del/);
+  });
+
+  it('states the absence of a rate and of earning with words, never with a zero', async () => {
+    // The band of today travels in every source, and an answer has to repeat the period that was asked
+    // for: the closed settlement is the period the card is read on.
+    setup(token => token === '4'
+      ? json(settlementBody({ today: { ...today, rate: null, sold: '0.00', commission: '0.00' } }))
+      : json(historyBody()));
+    await selectPeriod('4');
+    const card = await screen.findByRole('region', { name: 'Comisión de hoy' });
+    expect(card).toHaveTextContent(/todavía no fijó una tasa/i);
+    expect(card).toHaveTextContent(/sin tasa no hay comisión que mostrar/i);
+    expect(within(card).queryByText('Bs 0,00')).toBeNull();
+  });
+
+  it('states a window without sales as the start of the commission, not as a zero', async () => {
+    setup(token => token === '4'
+      ? json(settlementBody({ today: { ...today, sold: '0.00', commission: '0.00' } }))
+      : json(historyBody()));
+    await selectPeriod('4');
+    const card = await screen.findByRole('region', { name: 'Comisión de hoy' });
+    expect(card).toHaveTextContent(/todavía no hay ventas desde el corte/i);
+    expect(within(card).getByText('Sin comisión todavía')).toBeInTheDocument();
+  });
+
   it('renders the purchase fund of today beside the drawer, with the breakdown of its window', async () => {
     setup(token => token === '4' ? json(settlementBody()) : json(historyBody()));
     await selectPeriod('4');
@@ -422,7 +462,7 @@ describe('branch metrics screen', () => {
   });
 
   it('says that today starts at the beginning of the branch when there is no cut', async () => {
-    const noCut = { since: null, opening: '0.00', sales: '100.00', expenses: '20.00',
+    const noCut = { ...today, since: null, opening: '0.00', sales: '100.00', expenses: '20.00',
       expected: '80.00', movements: [{ kind: 'gasto', amount: '20.00',
         occurred_at: '2026-11-02T09:30:00Z' }] };
     // The whole history is the period the screen opens on, and today is stated there too: a branch
@@ -436,7 +476,7 @@ describe('branch metrics screen', () => {
   });
 
   it('renders the cash of today even when the period on screen is the history', async () => {
-    const noCut = { since: null, opening: '0.00', sales: '0.00', expenses: '0.00',
+    const noCut = { ...today, since: null, opening: '0.00', sales: '0.00', expenses: '0.00',
       expected: '0.00', movements: [] };
     setup(token => token === 'all' ? json(historyBody({ today: noCut })) : json(settlementBody()));
     // The history has no drawer of its own and still shows today's drawer of the branch.

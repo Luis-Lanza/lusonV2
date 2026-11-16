@@ -57,6 +57,14 @@ operativa, fondo de compras, baterías más vendidas por unidades, recambio y es
   chatarra— y cuánto dejó el Almacén en el último cierre, para cerrar el ciclo. Si el saldo no alcanza para
   seguir comprando, lo dice con palabras; no inventa un pronóstico.
 
+- **S18** La pantalla muestra, en la banda de hoy, **lo que la sucursal está ganando hasta el momento**: la
+  tasa de comisión que fijó el Almacén y la comisión devengada sobre lo vendido desde el último corte, con la
+  base a la vista para que la cuenta se pueda rehacer. Decisión del humano: «vamos con la A».
+- **S19** Esa comisión **no está liquidada**: no entró en ninguna caja y se congela cuando la rendición se
+  propone. La tarjeta lo dice con palabras y no la suma al cajón ni al fondo.
+- **S20** Sin tasa configurada, o sin ventas desde el corte, la tarjeta lo dice con palabras y nunca con un
+  `Bs 0,00` que parezca una comisión ganada.
+
 ## Tasks
 
 - **T1** API de métricas: `GET /api/metrics?branch_location_id=…&period=…` publica `periods`, `period`,
@@ -189,3 +197,8 @@ operativa, fondo de compras, baterías más vendidas por unidades, recambio y es
   (`review-7ad044e882431f20`), que salió **aprobada** con una observación informativa y la autoridad quedó
   quemada. Lección para el registro: cuando el validador cita evidencia de la versión anterior, la salida es
   una revisión nueva del árbol corregido, nunca reencuadrar la corrección.
+- **T6** Comisión de hoy: el contrato publica, dentro de `today`, la tasa configurada de la sucursal, lo
+  vendido desde el corte y la comisión devengada (redondeada una sola vez sobre el total); la pantalla lo
+  muestra en la banda de hoy como tercera pieza, a ancho completo bajo las dos cajas, con la tasa, la base y
+  el aviso de que todavía no está liquidada. Pruebas de store, de contrato, de parser y de pantalla. — Spec:
+  S18-S20.

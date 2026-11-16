@@ -139,6 +139,18 @@ export interface MetricsToday {
   readonly sales_cents: bigint;
   readonly expenses_cents: bigint;
   readonly expected_cents: bigint;
+  /**
+   * The rate the warehouse configured for this branch, or null when it never gave it one: the absence
+   * of a rate is a state of its own and never a zero percentage (S20).
+   */
+  readonly rate_percent: string | null;
+  /** The total the branch sold in that window: the base the commission is computed on (S18). */
+  readonly sold_cents: bigint;
+  /**
+   * What the branch is earning so far, not what it holds: the amount is settled when the settlement is
+   * proposed and never enters the drawer or the fund (S19).
+   */
+  readonly commission_cents: bigint;
   readonly movements: readonly MetricsMovement[];
 }
 
@@ -236,6 +248,21 @@ function timestamp(value: unknown): string {
 /** The database writes `numeric(12,2)`, so this is the largest amount it can publish. */
 const metricsMaxMoneyCents = 999_999_999_999n;
 const wireMoneyShape = /^-?(0|[1-9]\d{0,9})\.\d{2}$/;
+
+/**
+ * A published commission rate is the canonical percentage the database writes: two decimals between
+ * zero and one hundred. It is read together with its integer hundredths because the commission behind
+ * it is one integer multiplication, never a float (S20).
+ */
+const wirePercentShape = /^(0|[1-9]\d{0,2})\.\d{2}$/;
+
+function wirePercent(value: unknown): { text: string; hundredths: bigint } {
+  if (typeof value !== 'string' || !wirePercentShape.test(value)) return invalidResponse();
+  const [whole, fraction] = value.split('.');
+  const hundredths = BigInt(whole) * 100n + BigInt(fraction);
+  if (hundredths > 10000n) return invalidResponse();
+  return { text: value, hundredths };
+}
 
 /**
  * A published amount is the canonical two-decimal text the database writes. An expectation or a
@@ -560,12 +587,25 @@ function movementValue(value: unknown): MetricsMovement {
  * other, and refusing that answer would refuse a payload this server really wrote (S12, S14).
  */
 function todayValue(value: unknown): MetricsToday {
-  const record = fields(value, ['since', 'opening', 'sales', 'expenses', 'expected', 'movements']);
+  const record = fields(value, ['since', 'opening', 'sales', 'expenses', 'expected', 'rate', 'sold',
+    'commission', 'movements']);
   const opening_cents = wireMoney(record.opening, false);
   const sales_cents = wireMoney(record.sales, false);
   const expenses_cents = wireMoney(record.expenses, false);
   const expected_cents = wireMoney(record.expected, true);
   if (expected_cents !== opening_cents + sales_cents - expenses_cents) return invalidResponse();
+  const sold_cents = wireMoney(record.sold, false);
+  const commission_cents = wireMoney(record.commission, false);
+  const rate = record.rate === null ? null : wirePercent(record.rate);
+  // The commission is the rate times the total sold, rounded exactly once on that total: the mirror of
+  // the server's own arithmetic, so a card that does not add up is refused here instead of being shown
+  // as if someone had written it (S18). A branch without a rate earns nothing, and a commission with no
+  // rate behind it is not a reading this server could have produced (S20).
+  if (rate === null) {
+    if (commission_cents !== 0n) return invalidResponse();
+  } else if (commission_cents !== (sold_cents * rate.hundredths + 5000n) / 10000n) {
+    return invalidResponse();
+  }
   if (!Array.isArray(record.movements) || record.movements.length > metricsTodayMovements) {
     return invalidResponse();
   }
@@ -580,6 +620,8 @@ function todayValue(value: unknown): MetricsToday {
     // A branch that never closed a settlement has no cut: its window is everything it ever did.
     since: record.since === null ? null : timestamp(record.since),
     opening_cents, sales_cents, expenses_cents, expected_cents,
+    rate_percent: rate === null ? null : rate.text,
+    sold_cents, commission_cents,
     movements: Object.freeze(movements),
   });
 }

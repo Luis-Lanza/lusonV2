@@ -33,7 +33,7 @@ var (
 	metricsMaterialWireKeys  = []string{"material_id", "material", "bought_milli", "delivered_milli"}
 	metricsModelWireKeys     = []string{"catalog_entry_id", "brand", "model", "capacity_ah", "units", "money"}
 	metricsStockWireKeys     = []string{"units"}
-	metricsTodayWireKeys     = []string{"since", "opening", "sales", "expenses", "expected", "movements"}
+	metricsTodayWireKeys     = []string{"since", "opening", "sales", "expenses", "expected", "rate", "sold", "commission", "movements"}
 	metricsFundTodayWireKeys = []string{"since", "opening", "purchases", "balance", "documents", "used_units", "scrap_milli"}
 	metricsMovementWireKeys  = []string{"kind", "amount", "occurred_at"}
 	metricsPeriodWireKeys    = []string{"kind", "closing_id", "from", "to", "label"}
@@ -157,12 +157,17 @@ type metricsAnswerWire struct {
 		Units int64 `json:"units"`
 	} `json:"stock"`
 	Today struct {
-		Since     *string `json:"since"`
-		Opening   string  `json:"opening"`
-		Sales     string  `json:"sales"`
-		Expenses  string  `json:"expenses"`
-		Expected  string  `json:"expected"`
-		Movements []struct {
+		Since    *string `json:"since"`
+		Opening  string  `json:"opening"`
+		Sales    string  `json:"sales"`
+		Expenses string  `json:"expenses"`
+		Expected string  `json:"expected"`
+		// The rate is null for a branch the warehouse never configured, so the absence of a rate is
+		// a state of its own and never a zero percentage (S20).
+		Rate       *string `json:"rate"`
+		Sold       string  `json:"sold"`
+		Commission string  `json:"commission"`
+		Movements  []struct {
 			Kind       string `json:"kind"`
 			Amount     string `json:"amount"`
 			OccurredAt string `json:"occurred_at"`
@@ -568,8 +573,11 @@ func validMetrics() closings.Metrics {
 		// The drawer of today: what the last cut left, the cash collected after it and the expense
 		// paid out of it -- 5.00 + 10.00 − 2.00 = 13.00 -- with one ledger row of the window beside
 		// them. A branch without a closed settlement states no cut, which is the null this pins.
+		// A branch with no configured rate earns nothing: the base it sold is a fact, the commission it
+		// did not earn is the zero of a rate that does not exist, and the rate itself is the null (S18-S20).
 		Today: closings.MetricsToday{Opening: "5.00", Sales: "10.00", Expenses: "2.00",
-			Expected: "13.00", Movements: []closings.MetricsMovement{
+			Expected: "13.00", Sold: "10.00", Commission: "0.00",
+			Movements: []closings.MetricsMovement{
 				{Kind: "gasto", Amount: "2.00", OccurredAt: metricsTodayMoment()}}},
 		// The purchase envelope of today: what the last cut left in it, the cash spent after it and the
 		// balance the two produce -- 20.00 − 5.00 = 15.00 -- with the volume of those documents.
@@ -915,6 +923,75 @@ func TestMetricsHTTPToday(t *testing.T) {
 		len(history.Today.Movements) != len(answer.Today.Movements) {
 		t.Fatalf("today is the same whatever period is shown: %+v want %+v", history.Today,
 			answer.Today)
+	}
+}
+
+// TestMetricsHTTPTodayCommission proves the reading the screen shows in the window of today (S18-S20):
+// the rate the warehouse configured for the branch, the total it sold since the last cut and the
+// commission those two produce -- rounded once, exactly like the settlement computes it -- published
+// by every source, because the branch is inside one window of its own whatever the screen shows.
+func TestMetricsHTTPTodayCommission(t *testing.T) {
+	f := metricsFixture(t)
+	// The other branch sells after closing a settlement: it is inside a window, so the answer states
+	// the cut the commission runs from and the total the rate applies to.
+	closed := f.closeSettlement(t, 3, `{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","purchase_fund_counted":"50.00","purchase_fund_cash":"50.00","observation":"arranque"}`)
+	read := func(period string) metricsAnswerWire {
+		t.Helper()
+		return metricsAnswer(t, f.serve(t, f.request(3, "GET", "/api/metrics?period="+period, "")), 200)
+	}
+	answer := read(fmt.Sprintf("%d", closed.ID))
+	if answer.Today.Rate != nil && *answer.Today.Rate != "10.00" {
+		t.Fatalf("today must state the rate the warehouse configured: %+v", answer.Today.Rate)
+	}
+	// A branch with no sale since its cut sold nothing; whatever rate it holds, it earned nothing.
+	if answer.Today.Sold != "0.00" || answer.Today.Commission != "0.00" {
+		t.Fatalf("a window without sales states no commission: %+v", answer.Today)
+	}
+	history := read("all")
+	if history.Today.Sold != answer.Today.Sold ||
+		history.Today.Commission != answer.Today.Commission ||
+		(history.Today.Rate == nil) != (answer.Today.Rate == nil) {
+		t.Fatalf("the commission of today is the same whatever period is shown: %+v want %+v",
+			history.Today, answer.Today)
+	}
+}
+
+// TestMetricsHTTPTodayCommissionRefusesAnIdentityItCouldNotHaveWritten proves the contract fails closed
+// on the one reading a client must be able to trust: a commission that is not its rate times the total
+// sold is a number this server never wrote, so it is refused instead of reaching the screen.
+func TestMetricsHTTPTodayCommissionRefusesAnIdentityItCouldNotHaveWritten(t *testing.T) {
+	rate := closings.Percent("12.50")
+	sold := closings.Money("140.00")
+	impossible := closings.Percent("101.00")
+	shapes := map[string]closings.MetricsToday{
+		"a commission that is not its rate times the total": {
+			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Expected: "0.00",
+			Rate: &rate, Sold: sold, Commission: closings.Money("99.00")},
+		"a commission without a rate": {
+			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Expected: "0.00",
+			Rate: nil, Sold: sold, Commission: closings.Money("17.50")},
+		"a zero commission with a rate that produces one": {
+			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Expected: "0.00",
+			Rate: &rate, Sold: sold, Commission: closings.Money("0.00")},
+		"a rate that is not a percentage": {
+			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Expected: "0.00",
+			Rate: &impossible, Sold: sold, Commission: closings.Money("17.50")},
+		"a total sold that is not money": {
+			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Expected: "0.00",
+			Rate: &rate, Sold: closings.Money("-0.001"), Commission: closings.Money("17.50")},
+	}
+	for name, today := range shapes {
+		if _, err := metricsTodayRecord(today); !errors.Is(err, closings.ErrUnavailable) {
+			t.Fatalf("%s must be refused as unavailable, got %v", name, err)
+		}
+	}
+	// The reading the store does write is admitted, and it is the settled rule beside it.
+	admitted, err := metricsTodayRecord(closings.MetricsToday{
+		Opening: "0.00", Sales: "0.00", Expenses: "0.00", Expected: "0.00",
+		Rate: &rate, Sold: sold, Commission: closings.Money("17.50")})
+	if err != nil || admitted.Commission != "17.50" || admitted.Rate == nil ||
+		*admitted.Rate != "12.50" || admitted.Sold != "140.00" {
+		t.Fatalf("a consistent commission must be published: %+v %v", admitted, err)
 	}
 }
 

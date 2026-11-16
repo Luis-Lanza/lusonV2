@@ -56,6 +56,9 @@ const stock = { units: 214 };
 const today = {
   since: '2026-11-01T12:00:00Z', opening: '500000.00', sales: '1842300.00',
   expenses: '84500.00', expected: '2257800.00',
+  // What the branch is earning so far: 2100000.00 sold since the cut at 12.50% is 262500.00, rounded
+  // once on the total, the settlement's own rule (S18).
+  rate: '12.50', sold: '2100000.00', commission: '262500.00',
   movements: [
     { kind: 'aporte', amount: '10000.00', occurred_at: '2026-11-01T12:00:00Z' },
     { kind: 'gasto', amount: '2500.00', occurred_at: '2026-11-02T09:30:00Z' },
@@ -195,6 +198,7 @@ describe('metrics wire contract', () => {
     expect(answer.today).toEqual({
       since: '2026-11-01T12:00:00Z', opening_cents: 50000000n, sales_cents: 184230000n,
       expenses_cents: 8450000n, expected_cents: 225780000n,
+      rate_percent: '12.50', sold_cents: 210000000n, commission_cents: 26250000n,
       movements: [
         { kind: 'aporte', amount_cents: 1000000n, occurred_at: '2026-11-01T12:00:00Z' },
         { kind: 'gasto', amount_cents: 250000n, occurred_at: '2026-11-02T09:30:00Z' },
@@ -207,10 +211,21 @@ describe('metrics wire contract', () => {
       .not.toBe(answer.today.expected_cents - answer.today.opening_cents);
   });
 
+  it('parses a branch the warehouse never gave a rate as a null rate and no commission', () => {
+    const answer = parseMetricsAnswer(settlementBody({
+      today: { ...today, rate: null, commission: '0.00' },
+    }));
+    // The absence of a rate is a state of its own, never a zero percentage that reads as a rate (S20),
+    // and the base it did not apply to is still stated because the window is a fact.
+    expect(answer.today.rate_percent).toBeNull();
+    expect(answer.today.commission_cents).toBe(0n);
+    expect(answer.today.sold_cents).toBe(210000000n);
+  });
+
   it('parses a drawer of today without a cut as the whole life of the branch', () => {
     const answer = parseMetricsAnswer(historyBody({
-      today: { since: null, opening: '0.00', sales: '0.00', expenses: '0.00', expected: '0.00',
-        movements: [] },
+      today: { ...today, since: null, opening: '0.00', sales: '0.00', expenses: '0.00',
+        expected: '0.00', movements: [] },
     }));
     expect(answer.today.since).toBeNull();
     expect(answer.today.opening_cents).toBe(0n);
@@ -334,6 +349,17 @@ describe('metrics wire contract', () => {
       })) },
     })],
     ['an extra field in the drawer of today', settlementBody({ today: { ...today, extra: 1 } })],
+    ['a commission that is not its rate times the total sold', settlementBody({
+      today: { ...today, commission: '1.00' },
+    })],
+    ['a commission with no rate behind it', settlementBody({
+      today: { ...today, rate: null },
+    })],
+    ['a rate that is not a percentage', settlementBody({
+      today: { ...today, rate: '101.00' },
+    })],
+    ['a rate with one decimal', settlementBody({ today: { ...today, rate: '12.5' } })],
+    ['a sold total that is not money', settlementBody({ today: { ...today, sold: '-2100000.00' } })],
     ['a purchase fund of today that does not close', settlementBody({
       fund_today: { ...fundToday, balance: '331000.00' },
     })],

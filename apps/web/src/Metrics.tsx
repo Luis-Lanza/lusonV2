@@ -56,6 +56,11 @@ function moneyShareText(part: bigint, whole: bigint): string {
   return `${tenths / 10n},${tenths % 10n} %`;
 }
 
+/** The rate the warehouse configured, as the settlement writes it: `12,50 %`, never a bare decimal. */
+function rateText(percent: string): string {
+  return `${percent.replace('.', ',')} %`;
+}
+
 /** The share of the period's units a model took, as the bar and the number beside it read it. */
 function unitsShare(part: number, whole: number): number {
   if (whole <= 0) return 0;
@@ -245,6 +250,56 @@ function FundTodayPanel({ fund }: { fund: MetricsFundToday }) {
       {fund.balance_cents === 0n
         ? 'El fondo quedó en cero: la sucursal no puede seguir comprando hasta que el Almacén lo recargue.'
         : 'El fondo está en rojo: la sucursal no puede seguir comprando hasta que el Almacén lo recargue.'}
+    </p>}
+  </section>;
+}
+
+/**
+ * What the branch is earning so far: the rate the warehouse froze for it times the total it sold since
+ * the last cut, rounded once -- the settlement's own arithmetic, so the card and the acta of the period
+ * being lived cannot disagree (S18). It is not a box: the commission is settled when the settlement is
+ * proposed, so the card says with words that nothing here is liquidated yet and that no drawer holds it
+ * (S19). A branch without a configured rate, or one that sold nothing in its window, is stated with
+ * words instead of a zero that would read as an earning (S20).
+ */
+function CommissionTodayPanel({ today }: { today: MetricsToday }) {
+  const rate = today.rate_percent;
+  const earning = today.commission_cents > 0n;
+  return <section className="metrics-panel metrics-today metrics-commission-today"
+    aria-labelledby="metrics-commission-today-title">
+    <h2 id="metrics-commission-today-title" className="metrics-panel-title">Comisión de hoy</h2>
+    <p className="metrics-big">
+      {/* The absence of a rate is the absence of the computation, and a window without a sale is a
+          commission that has not started: neither is a zero amount the branch could collect. */}
+      <span className="metrics-amount">{rate === null
+        ? 'Sin tasa'
+        : earning ? money(today.commission_cents) : 'Sin comisión todavía'}</span>
+      <span className="metrics-big-note">{rate === null
+        ? 'Sin tasa configurada' : 'Comisión devengada'}</span>
+    </p>
+    <p className="metrics-note">
+      La tasa que fijó el Almacén sobre lo vendido desde el último corte. Todavía no está liquidada: se
+      congela cuando se propone la rendición, y no entra en el cajón ni en el fondo.
+    </p>
+    <div className="metrics-split">
+      <span>Cubre</span>
+      <strong>{today.since === null
+        ? 'Desde el comienzo de la sucursal'
+        : <>Desde el corte del <TransferDate value={today.since} /></>}</strong>
+    </div>
+    <dl className="metrics-summary">
+      <div><dt>Tasa vigente</dt>
+        <dd>{rate === null ? 'Sin configurar' : rateText(rate)}</dd></div>
+      {/* The base of a commission that has not started is stated in words too: a window without a sale
+          is not a `Bs 0,00` the branch could read as an earning (S20). */}
+      <div><dt>Vendido desde el corte</dt><dd>{today.sold_cents === 0n
+        ? 'Sin ventas' : money(today.sold_cents)}</dd></div>
+    </dl>
+    {rate === null && <p className="metrics-note metrics-commission-empty">
+      El Almacén todavía no fijó una tasa para esta sucursal: sin tasa no hay comisión que mostrar.
+    </p>}
+    {rate !== null && today.sold_cents === 0n && <p className="metrics-note metrics-commission-empty">
+      Todavía no hay ventas desde el corte: la comisión arranca con la primera.
     </p>}
   </section>;
 }
@@ -486,6 +541,7 @@ export default function Metrics({ branch, fetcher = globalThis.fetch }: MetricsP
       <div className="metrics-today-pair">
         <TodayPanel today={answer.today} live={answer.source === 'live'} />
         <FundTodayPanel fund={answer.fund_today} />
+        <CommissionTodayPanel today={answer.today} />
       </div>
 
       <section className="metrics-band-section" aria-labelledby="metrics-left-title">

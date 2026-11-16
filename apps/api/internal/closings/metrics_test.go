@@ -557,6 +557,64 @@ func TestMetricsTodayFollowsTheSettlementFormula(t *testing.T) {
 	}
 }
 
+// TestMetricsTodayPublishesTheCommissionTheBranchIsEarning pins S18 on the read: the drawer of today
+// states what the branch is earning so far -- the rate the warehouse froze for it, the total it sold
+// since the last cut and the commission those two produce, rounded once -- and it states it whatever
+// period the screen is showing, because the branch is inside exactly one window of its own.
+func TestMetricsTodayPublishesTheCommissionTheBranchIsEarning(t *testing.T) {
+	e := fixture(t)
+	first := e.closeFirstSettlement(t, "500.00")
+	// One cash sale and one by card: the commission is on the total sold, not on what reached the
+	// drawer, so the second one is a term of this reading even though the drawer never sees it.
+	e.sell(t, 1, 1, "100.00", sales.PaymentCash)
+	e.sell(t, 1, 1, "40.00", sales.PaymentCard)
+	read := func(source string) closings.MetricsToday {
+		t.Helper()
+		switch source {
+		case "settlement":
+			return metricsOf(t, e, first).Today
+		case "history":
+			return historyOf(t, e).Today
+		default:
+			opened, err := e.store.Open(e.ctx, warehouse(), 2)
+			if err != nil {
+				t.Fatalf("the period could not be opened: %v", err)
+			}
+			return metricsOf(t, e, opened.ID).Today
+		}
+	}
+	for _, source := range []string{"settlement", "history", "live"} {
+		today := read(source)
+		// 140.00 sold since the cut, at the 12.50% the fixture configures: 17.50 of commission.
+		if today.Rate == nil || *today.Rate != "12.50" {
+			t.Fatalf("%s: today must state the rate the warehouse configured: %+v", source, today.Rate)
+		}
+		if today.Sold != "140.00" || today.Commission != "17.50" {
+			t.Fatalf("%s: today must state the base and the commission it produces: %+v", source, today)
+		}
+	}
+}
+
+// TestMetricsTodayStatesNoCommissionWithoutAConfiguredRate pins S20 on the read: a branch the
+// warehouse never gave a rate to is still earning nothing, and the answer says so instead of
+// inventing a rate or publishing a commission it could not have computed.
+func TestMetricsTodayStatesNoCommissionWithoutAConfiguredRate(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	e.sell(t, 1, 1, "100.00", sales.PaymentCash)
+	if _, err := e.pool.Exec(e.ctx, `DELETE FROM branch_settings WHERE branch_location_id=2`); err != nil {
+		t.Fatalf("the configured rate could not be removed: %v", err)
+	}
+	today := historyOf(t, e).Today
+	if today.Rate != nil {
+		t.Fatalf("a branch without a configured rate states no rate: %+v", *today.Rate)
+	}
+	// The base is a fact of the window whether or not a rate exists; the commission is not.
+	if today.Sold != "100.00" || today.Commission != "0.00" {
+		t.Fatalf("today must state the base and a commission of zero: %+v", today)
+	}
+}
+
 // TestMetricsTodayWindowStartsAtTheCutOfTheLastClosure pins where the window of S12 begins: at the
 // cut of the last closed settlement, which is the instant its period ended and is earlier than its
 // closure. A sale and an expense recorded after that cut are in the drawer of today because no

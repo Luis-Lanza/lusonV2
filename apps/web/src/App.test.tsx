@@ -1865,8 +1865,10 @@ describe('branch metrics', () => {
       commission: '0.00', sales: 0, units: 0 },
     cash: null, fund: null, materials: null, top_models: [], stock: { units: 0 },
     // The drawer of today is published whatever the period is, so even the history states it.
+    // A branch the warehouse never configured and that sold nothing: the drawer, the base and the
+    // commission it did not earn are all stated, and the absence of a rate is a null (S18-S20).
     today: { since: null, opening: '0.00', sales: '0.00', expenses: '0.00', expected: '0.00',
-      movements: [] },
+      rate: null, sold: '0.00', commission: '0.00', movements: [] },
     fund_today: { since: null, opening: '0.00', purchases: '0.00', balance: '0.00', documents: 0,
       used_units: 0, scrap_milli: 0 } };
   const metricsSetup = () => setup(branchSession, url => url.startsWith('/api/metrics?')
