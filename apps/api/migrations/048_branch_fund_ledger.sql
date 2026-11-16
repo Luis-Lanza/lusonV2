@@ -160,19 +160,25 @@ BEGIN
             PERFORM assert_branch_not_frozen(NEW.branch_location_id);
             RETURN NEW;
         END IF;
-        -- The backfill of S12. Its rows are signed by the warehouse account that stated the
-        -- settlement they come from, which belongs to no branch, so they take the same path as a
-        -- founding -- and the marker alone is not accepted as proof: the row must state exactly
-        -- what the branch's last closed settlement left in the fund, and the branch must still
-        -- have no fund movement. A client that sets the marker for a branch that was already
-        -- backfilled, or with numbers no settlement states, is refused.
+        -- The backfill of S12: the marker is not the proof. A row is admitted only when it states
+        -- exactly what the statement below writes, condition for condition -- a live branch (never
+        -- the warehouse, never a retired one), the account that opened the branch's last closed
+        -- settlement, and that settlement's positive fund and closing instant -- so the marker
+        -- cannot backdate an opening for a retired branch or the warehouse, sign one with another
+        -- branch's account, or open a branch that already has a fund movement.
         IF current_setting('luson.fund_backfill', true) = 'on' THEN
             IF NOT EXISTS (
                 SELECT 1 FROM branch_closings settlement
+                JOIN locations branch ON branch.id = settlement.branch_location_id
                 WHERE settlement.branch_location_id = NEW.branch_location_id
+                  AND settlement.branch_location_id > 1
+                  AND branch.deleted_at IS NULL
                   AND settlement.status = 'closed'
+                  AND settlement.purchase_fund_cash IS NOT NULL
+                  AND settlement.purchase_fund_cash > 0
                   AND settlement.purchase_fund_cash = NEW.amount
                   AND settlement.closed_at = NEW.occurred_at
+                  AND settlement.opened_by_account_id = NEW.created_by_account_id
                   AND settlement.closed_at = (
                       SELECT max(later.closed_at) FROM branch_closings later
                       WHERE later.branch_location_id = NEW.branch_location_id
@@ -438,8 +444,12 @@ REVOKE ALL ON FUNCTION create_branch_funded(text,numeric,numeric,integer) FROM P
 
 -- The backfill of S12: the branches that already exist start with the fund their last closed
 -- settlement left behind, and with the instant that settlement closed. A branch that never closed
--- a settlement, or whose settlement declared no fund, gets no row: an unstated fund is zero (S7),
--- and zero is the empty sum of a book, not a movement somebody would have to read.
+-- a settlement, or whose last settlement declared no fund, gets no row: an unstated fund is zero
+-- (S7), and zero is the empty sum of a book, not a movement somebody would have to read.
+--
+-- "Its last closed settlement" is read by `closed_at` and never searched for by a positive fund: a
+-- branch whose last closure left nothing keeps that answer instead of walking back to an earlier
+-- settlement whose instant the admission below refuses, which aborted this version.
 --
 -- The marker lets the stamp skip exactly these rows, and the admission refuses any other row that
 -- claims it, so what the marker opens is the backfill's own numbers and nothing else.
@@ -457,6 +467,10 @@ SELECT DISTINCT ON (settlement.branch_location_id)
    AND branch.deleted_at IS NULL
    AND settlement.purchase_fund_cash IS NOT NULL
    AND settlement.purchase_fund_cash > 0
+   AND settlement.closed_at = (
+       SELECT max(last.closed_at) FROM branch_closings last
+       WHERE last.branch_location_id = settlement.branch_location_id
+         AND last.status = 'closed')
  ORDER BY settlement.branch_location_id, settlement.closed_at DESC;
 SELECT set_config('luson.fund_backfill','',true);
 

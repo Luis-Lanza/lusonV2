@@ -865,3 +865,163 @@ func TestBranchFundLedgerKeepsTheDrawersAdmissionRules(t *testing.T) {
 	execRefusalMessage(t, err, "LC030", "A movement of a settled period is corrected in the settlement")
 	t.Logf("048: the drawer's ledger keeps every rule of 046 and its closure keeps writing it")
 }
+
+// The two refusals the backfill of S12 states, named once: every forged opening is refused by one.
+const (
+	backfillNotLast = "The opening of a fund states its last closed settlement"
+	backfillOnce    = "A branch receives the opening of its fund once"
+)
+
+// closeFund closes one settlement of a branch leaving fund in its purchase fund (044), the only way
+// the guards allow it, and returns the instant the database closed it.
+func closeFund(t *testing.T, ctx context.Context, p *pgxpool.Pool, branch int, fund string) time.Time {
+	t.Helper()
+	closing := openSettlement(t, ctx, p, branch)
+	proposeRound(t, ctx, p, closing, `{"fund":"`+fund+`"}`)
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='proposed',counted_cash=10000.00,
+ closing_cash=5000.00,purchase_fund_counted=$2::numeric,purchase_fund_cash=$2::numeric
+ WHERE id=$1 AND status IN ('open','rejected')`, closing, fund); err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	decideRound(t, ctx, p, closing, "accepted", "")
+	if _, err := p.Exec(ctx, `UPDATE branch_closings SET status='closed' WHERE id=$1`, closing); err != nil {
+		t.Fatalf("the accepted round must close the settlement: %v", err)
+	}
+	var closedAt time.Time
+	if err := p.QueryRow(ctx, `SELECT closed_at FROM branch_closings WHERE id=$1`, closing).
+		Scan(&closedAt); err != nil {
+		t.Fatal("the closure instant could not be read")
+	}
+	return closedAt
+}
+
+// fabricatedSettlement writes a closed settlement of one location with its triggers off, leaving
+// 700,00 in its purchase fund: 034 refuses one for the warehouse and for a retired branch (LC002,
+// LC017), so the numbers a forged opening for them needs are written here as a database that
+// carried such a row from before those guards would carry it.
+func fabricatedSettlement(t *testing.T, ctx context.Context, p *pgxpool.Pool, location int) time.Time {
+	t.Helper()
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		t.Fatal("the fabricated settlement could not be opened")
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	if _, err := tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
+		t.Fatalf("the guards could not be stepped around: %v", err)
+	}
+	var closedAt time.Time
+	if err := tx.QueryRow(ctx, `INSERT INTO branch_closings(branch_location_id,status,period_start,
+ cut_at,closed_at,commission_rate_percent,counted_cash,closing_cash,purchase_fund_counted,
+ purchase_fund_cash,opened_by_account_id) VALUES($1::smallint,'closed',now()-interval '2 hours',
+ now()-interval '10 minutes',now()-interval '10 minutes',0,10000.00,5000.00,700.00,700.00,1)
+ RETURNING closed_at`, location).Scan(&closedAt); err != nil {
+		t.Fatalf("the fabricated settlement of location %d could not be written: %v", location, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("the fabricated settlement could not be committed: %v", err)
+	}
+	return closedAt
+}
+
+// tryBackfillAs writes one opening of the fund as a client that sets the backfill marker by hand,
+// stating the row it wants: the guard is handed the numbers a real settlement carries.
+func tryBackfillAs(ctx context.Context, p *pgxpool.Pool, branch int, amount string,
+	occurred time.Time, account int) error {
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	if _, err := tx.Exec(ctx, `SELECT set_config('luson.fund_backfill','on',true)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO branch_fund_movements(branch_location_id,kind,amount,
+ description,created_by_account_id,occurred_at) VALUES($1::smallint,'aporte',$2::numeric,
+ 'Fondo inicial de compras de la sucursal',$3::integer,$4)`,
+		branch, amount, account, occurred); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// TestBranchFundLedgerBackfillMarkerCannotBeForged proves the backfill of S12 cannot be borrowed
+// with a bare set_config: a client that may insert into the ledger can set the marker, but only a
+// row the migration's own backfill would write -- a live branch, the account that opened its last
+// closed settlement, and that settlement's fund and instant -- is admitted, and the backfill the
+// migration itself writes still lands.
+func TestBranchFundLedgerBackfillMarkerCannotBeForged(t *testing.T) {
+	ctx, p := fundPrefixThrough(t, 47)
+	live := closeFund(t, ctx, p, 2, "2000.00")
+	// A branch that exists and is retired before this version runs: its own settlement keeps the
+	// numbers real, so only its liveness can refuse the forged opening.
+	var retired int
+	if err := p.QueryRow(ctx, `SELECT create_branch('Sucursal F')`).Scan(&retired); err != nil {
+		t.Fatalf("the branch could not be created: %v", err)
+	}
+	if _, err := p.Exec(ctx, `UPDATE locations SET deleted_at=now() WHERE id=$1`, retired); err != nil {
+		t.Fatalf("branch %d could not be retired: %v", retired, err)
+	}
+	retiredAt, warehouseAt := fabricatedSettlement(t, ctx, p, retired), fabricatedSettlement(t, ctx, p, 1)
+
+	applyMigrationFrom(t, ctx, p, 48, 48)
+
+	// The migration's own backfill still lands: the live branch starts with the fund its last
+	// settlement left, signed by the account that opened it and dated by that closing.
+	var kind, amount, actor string
+	var occurred time.Time
+	if err := p.QueryRow(ctx, `SELECT kind,amount::text,created_by_account_id::text,occurred_at
+         FROM branch_fund_movements WHERE branch_location_id=2`).
+		Scan(&kind, &amount, &actor, &occurred); err != nil {
+		t.Fatalf("the backfill of the live branch must still land: %v", err)
+	}
+	if kind != "aporte" || amount != "2000.00" || actor != "1" || !occurred.Equal(live) {
+		t.Fatalf("the backfill states the settlement's fund, account and instant, got %s %s %s %s",
+			kind, amount, actor, occurred)
+	}
+	// Every forged opening states numbers a settlement carries, and breaks exactly one condition.
+	before := fundLedger(t, ctx, p)
+	for _, forged := range []struct {
+		name, message, amount string
+		branch, account       int
+		occurred              time.Time
+	}{
+		{"a retired branch", backfillNotLast, "700.00", retired, 1, retiredAt},
+		{"the warehouse", backfillNotLast, "700.00", 1, 1, warehouseAt},
+		{"another branch's account", backfillNotLast, "2000.00", 2, 3, live},
+		{"the same opening twice", backfillOnce, "2000.00", 2, 1, live},
+	} {
+		err := tryBackfillAs(ctx, p, forged.branch, forged.amount, forged.occurred, forged.account)
+		execRefusalMessage(t, err, "LF001", forged.message)
+		if after := fundLedger(t, ctx, p); after != before {
+			t.Fatalf("%s must write nothing, got %s before %s", forged.name, after, before)
+		}
+	}
+	t.Logf("048: the backfill marker opens the last closed settlement's numbers and nothing else")
+}
+
+// TestBranchFundLedgerBackfillReadsOnlyTheLastSettlement proves the backfill reads the fund of the
+// branch's last closed settlement and never walks back to an earlier one: a branch whose last
+// closure left nothing keeps that answer, so it gets no row and this version completes.
+func TestBranchFundLedgerBackfillReadsOnlyTheLastSettlement(t *testing.T) {
+	ctx, p := fundPrefixThrough(t, 47)
+	// Branch 2 leaves 2.000,00 and then closes again leaving nothing. A backfill that looked for the
+	// latest settlement with a positive fund would emit the first one, whose instant is not the
+	// branch's last closure, and the admission would refuse it: the version would abort on a branch
+	// it is supposed to skip.
+	earlier, last := closeFund(t, ctx, p, 2, "2000.00"), closeFund(t, ctx, p, 2, "0.00")
+	if !last.After(earlier) {
+		t.Fatalf("the second closure is the branch's last one: %s after %s", last, earlier)
+	}
+
+	applyMigrationFrom(t, ctx, p, 48, 48)
+
+	var rows int
+	if err := p.QueryRow(ctx, `SELECT count(*) FROM branch_fund_movements
+         WHERE branch_location_id=2`).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("a branch whose last settlement left nothing gets no opening, got %d %v", rows, err)
+	}
+	if balance := fundBalance(t, ctx, p, 2); balance != "0.00" {
+		t.Fatalf("that branch's fund is zero, got %s", balance)
+	}
+	t.Logf("048: the backfill reads the last closed settlement and never an earlier one")
+}
