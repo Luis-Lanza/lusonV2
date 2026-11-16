@@ -523,6 +523,21 @@ describe('S10, S13 the two tabs and the three balances of one settlement', () =>
       fund_difference_cents: null }))[1].value).toBe('Sin sobre');
   });
 
+  it('reads a signed expectation as it is, instead of failing to render the settlement (S3, S11)', () => {
+    // The drawer's expectation and the envelope's are derived amounts and the model carries their
+    // sign: the second envelope spends more than it inherited whenever a period buys with an empty
+    // opening, and its expectation is then negative. The strip is the head of that reading, so it
+    // shows the sign instead of refusing an amount the model handed it as money.
+    const balances = closingBalanceStrip(facts({ cash_counted_cents: null,
+      cash_difference_cents: null, cash_expected_cents: -10000n,
+      fund_counted_cents: null, fund_difference_cents: null, fund_expected_cents: -12050n }));
+    expect(balances[0].detail).toBe('esperada − 100,00');
+    expect(balances[1].detail).toBe('esperado − 120,50');
+    // The head of each account keeps saying what is not counted, never a signed amount it invents.
+    expect(balances[0].value).toBe('Sin contar');
+    expect(balances[1].value).toBe('Sin contar');
+  });
+
   it('marks each tab with the difference of its accounts, in words (S13)', () => {
     const balances = closingBalanceStrip(facts());
     expect(closingTabMarker(balances, 'caja')).toBe('− Bs 35,00');

@@ -864,9 +864,17 @@ export interface ClosingBalanceFacts {
   readonly materials: ClosingMaterialReading;
 }
 
-/** `6.980,00`: an amount without its currency, for a line whose headline already carries it. */
+/**
+ * `6.980,00` or `− 120,50`: an amount without its currency, for a line whose headline already
+ * carries it. The figure keeps the sign of a derived amount instead of handing a negative number to
+ * a formatter that only takes money: the envelope's expectation is negative whenever it spent more
+ * than it inherited, and that is a settlement the server published, not one the head may refuse
+ * (S3, S11).
+ */
 function moneyFigure(cents: bigint): string {
-  return formatMoney(cents).slice(3);
+  const magnitude = cents < 0n ? -cents : cents;
+  const figure = formatMoney(magnitude).slice(3);
+  return cents < 0n ? `− ${figure}` : figure;
 }
 
 function moneyBalance(difference: bigint | null,

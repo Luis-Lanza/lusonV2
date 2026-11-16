@@ -75,6 +75,9 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
   contributed?: string, countedCash?: string, fund?: string, uncounted?: number,
   purchaseCounted?: string | null, purchaseCash?: string | null,
   materials?: 'sheet' | 'empty',
+  // The cash purchases of the period: a branch with an empty envelope can still spend of it, and
+  // its expectation is then negative — the envelope carries its sign (S3, S11).
+  purchases?: string,
   // Whether the branch has a commission the warehouse fixed: without one it cannot propose.
   commission?: string | null,
   corrections?: unknown[] } = {}) {
@@ -138,7 +141,7 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
     // The purchase fund is derived on every read: the previous closure's new amount, the purchases
     // of the window paid in cash and the expectation those two produce (S3, S5).
     const purchaseOpening = bootstrap ? '0.00' : '2000.00';
-    const purchases = bootstrap ? '0.00' : '1621.00';
+    const purchases = options.purchases ?? (bootstrap ? '0.00' : '1621.00');
     const purchaseExpected = (Number(purchaseOpening) - Number(purchases)).toFixed(2);
     const purchaseCounted = state.purchaseCounted;
     const purchaseDifference = purchaseCounted === null ? null
@@ -1298,5 +1301,28 @@ describe('S5 the commission a branch needs to be settled', () => {
     expect(proposeButton()).toBeEnabled();
     expect(within(actionBar()).queryByRole('link')).toBeNull();
     expect(within(actionBar()).queryByText(/comisión configurado/)).toBeNull();
+  });
+
+  it('renders a live settlement without a rate whose envelope is signed', async () => {
+    // The branch holds a live settlement and no configured rate, so the configured read answers the
+    // 404 the API maps to `null`. The period spent Bs 120,50 of its empty purchase envelope, so the
+    // envelope's expectation is negative — a derived amount that carries its sign (S3, S11) — and
+    // the screen reads it instead of going blank over a money figure it cannot format.
+    const h = server({ commission: null, bootstrap: true, purchases: '120.50' });
+    await ready(h);
+
+    // The document of the live settlement is on screen: the sheet is the one the cut snapshot.
+    expect(await sheet()).toBeInTheDocument();
+    // A signed expectation is shown with its sign in the head of the balance it belongs to.
+    expect(within(balanceStrip()).getByText('esperado − 120,50')).toBeInTheDocument();
+    // The absence of the rate is named, and the action that needs it is refused with the reason at
+    // hand instead of a refusal the warehouse reads after pressing the button.
+    expect(within(actionBar()).getByText(
+      /La sucursal no tiene porcentaje de comisión configurado: sin eso no se puede proponer\./))
+      .toBeInTheDocument();
+    expect(proposeButton()).toBeDisabled();
+    expect(proposeButton()).toHaveAccessibleDescription(/porcentaje de comisión configurado/);
+    expect(within(actionBar()).getByRole('link', { name: 'Configurar la comisión de esta sucursal' }))
+      .toHaveAttribute('href', '#/administracion/sucursales');
   });
 });
