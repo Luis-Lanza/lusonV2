@@ -5,6 +5,7 @@ import (
 	"errors"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -123,11 +124,36 @@ type MetricsToday struct {
 	Movements []MetricsMovement
 }
 
+// MetricsFundToday is the purchase envelope of the branch as it stands today, stated whatever period
+// the screen is showing and whether or not a settlement is open (S15). It is the second money box of
+// the branch and it is not the drawer: what it holds is what the last closure left in it minus the cash
+// the branch spent on purchases after that cut, net of the counter-documents that returned money. Since
+// is the cut of the last closed settlement -- the same instant the drawer of today starts from -- and is
+// null for a branch that never closed one, where the window is everything the branch ever bought.
+//
+// Balance is signed on purpose: an envelope that spent more than it inherited is a shortage the branch
+// must see, exactly as the fund of a settlement states it. Purchases is signed for the same reason the
+// settlement's own fund is: a counter-document after the cut that reversed a purchase of an earlier
+// period leaves the net negative, so the envelope grows instead of shrinking. Documents, UsedUnits and
+// ScrapMilli are the volume of that same window, netted the way every read of the purchases package
+// nets it -- the counter-document is stored negative, so it subtracts by construction.
+type MetricsFundToday struct {
+	Since      *time.Time
+	Opening    Money
+	Purchases  Signed
+	Balance    Signed
+	Documents  int64
+	UsedUnits  int64
+	ScrapMilli int64
+}
+
 // Metrics is the answer of one period of one branch. Source says where the numbers came from --
 // a closed settlement, the live one, or the whole history -- so a reader always knows whether a
 // number is frozen or moving. Cash, Fund and Materials are null for the history: a drawer is
 // closed in each settlement and does not accumulate, so a history states no drawer at all. Today is
-// never null: the drawer of the branch today exists whether or not the period on screen has one.
+// never null: the drawer of the branch today exists whether or not the period on screen has one, and
+// neither is FundToday, the second money box, which a branch without an open settlement has no other
+// screen to read (S15).
 type Metrics struct {
 	Source    string
 	Sales     MetricsSales
@@ -137,6 +163,7 @@ type Metrics struct {
 	Top       []MetricsModel
 	Stock     MetricsStock
 	Today     MetricsToday
+	FundToday MetricsFundToday
 }
 
 const (
@@ -236,6 +263,10 @@ func (s *Store) periodMetrics(ctx context.Context, closing Closing) (Metrics, er
 	if err != nil {
 		return Metrics{}, err
 	}
+	fundToday, err := fundTodayMetrics(ctx, s.pool, closing.BranchID)
+	if err != nil {
+		return Metrics{}, err
+	}
 	return Metrics{
 		Source: source,
 		Sales:  sales,
@@ -252,6 +283,7 @@ func (s *Store) periodMetrics(ctx context.Context, closing Closing) (Metrics, er
 		Top:       top,
 		Stock:     stock,
 		Today:     today,
+		FundToday: fundToday,
 	}, nil
 }
 
@@ -298,11 +330,15 @@ func (s *Store) historyMetrics(ctx context.Context, branch int64) (Metrics, erro
 	if err != nil {
 		return Metrics{}, err
 	}
+	fundToday, err := fundTodayMetrics(ctx, tx, branch)
+	if err != nil {
+		return Metrics{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Metrics{}, fail(ctx)
 	}
-	return Metrics{Source: metricsSourceHistory, Sales: sales, Top: top, Stock: stock, Today: today},
-		nil
+	return Metrics{Source: metricsSourceHistory, Sales: sales, Top: top, Stock: stock, Today: today,
+		FundToday: fundToday}, nil
 }
 
 // valid admits the money and the volume of a period as facts: a negative amount is not a
@@ -508,6 +544,106 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 	return today, nil
 }
 
+// fundTodayMetrics reads the purchase envelope of the branch as it stands today (S15-S17): what the
+// last closed settlement left in it, the cash the branch spent on purchases after that cut, the balance
+// the two produce and the volume those same documents bought. It exists because the envelope is a money
+// box of its own: a branch whose settlements are all closed has no period on screen that states it.
+//
+// The window and the identity are not a second calculation of the fund. The opening is the
+// `purchase_fund_cash` of the last closed settlement, which is exactly the amount the database seeds the
+// next opening from and the amount the fund rule of 044 charges a new purchase against. Missing is not
+// zero in that table -- a closure the warehouse left unstated holds NULL -- so an unstated envelope
+// inherits nothing, with the same coalesce the settlement's own fund derivation applies (S16). The
+// purchases are the `paid_cash` of the branch's documents from that cut on, with no counter-document
+// filter: they are stored with negative amounts, so a reversal subtracts by construction and the net is a
+// signed reading. `PurchaseFundExpected` is the fund's own identity, opening − purchases, and it is
+// reused instead of restated, so the card and the acta of the same envelope cannot disagree (S16).
+//
+// The cut, and not the closure, is where the window starts, for the same reason the drawer of today
+// starts there: the period of a closed settlement ends at its cut. The two instants give the same answer
+// for purchases -- a branch inside a settlement cannot spend (035) -- so nothing falls between them here,
+// and the instant the card names is the one the period of the next settlement inherits.
+func fundTodayMetrics(ctx context.Context, q querier, branch int64) (MetricsFundToday, error) {
+	var stored *string
+	var cut time.Time
+	// The last closed settlement, by the same order the drawer of today reads it, so the two cards of the
+	// same closing state one instant: its cut and the envelope it left behind.
+	fund := MetricsFundToday{Opening: Money("0.00"), Purchases: Signed("0.00"), Balance: Signed("0.00")}
+	err := q.QueryRow(ctx, `SELECT purchase_fund_cash::text,cut_at FROM branch_closings
+ WHERE branch_location_id=$1 AND status='closed'
+ ORDER BY cut_at DESC,id DESC LIMIT 1`, int16(branch)).Scan(&stored, &cut)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// A branch that never closed a settlement states no cut and inherits nothing: the window is
+		// everything it ever bought, and a nil Since is that state instead of a zero instant.
+	case err != nil:
+		return MetricsFundToday{}, fail(ctx)
+	default:
+		if cut.IsZero() {
+			return MetricsFundToday{}, ErrUnavailable
+		}
+		// A closure that stated no envelope is read as the zero a purchase could not have been charged
+		// against, which is the very number the settlement's own fund opens with: the card and the acta
+		// of that envelope still state the same opening.
+		if stored != nil {
+			opening := Money(*stored)
+			if _, ok := amountCents(opening); !ok {
+				return MetricsFundToday{}, ErrUnavailable
+			}
+			fund.Opening = opening
+		}
+		fund.Since = &cut
+	}
+	// The money, the documents and the volume of the window, in one statement over the same predicate:
+	// the four readings describe one window or they are four different windows. The two sums of lines are
+	// the ones the purchases package sums -- the line tables joined to their document and grouped by the
+	// database -- so a counter-document nets out here as it does there.
+	var purchases, kilograms string
+	var documents, used int64
+	if err := q.QueryRow(ctx, `SELECT
+ coalesce((SELECT sum(purchase.paid_cash) FROM purchases purchase
+        WHERE purchase.location_id=$1
+          AND ($2::timestamptz IS NULL OR purchase.created_at >= $2)),0)::numeric(12,2)::text,
+ (SELECT count(*) FROM purchases purchase
+        WHERE purchase.location_id=$1
+          AND ($2::timestamptz IS NULL OR purchase.created_at >= $2)),
+ coalesce((SELECT sum(line.quantity) FROM purchase_used_lines line
+        JOIN purchases purchase ON purchase.id=line.purchase_id
+        WHERE purchase.location_id=$1
+          AND ($2::timestamptz IS NULL OR purchase.created_at >= $2)),0),
+ coalesce((SELECT sum(line.kg) FROM purchase_scrap_lines line
+        JOIN purchases purchase ON purchase.id=line.purchase_id
+        WHERE purchase.location_id=$1
+          AND ($2::timestamptz IS NULL OR purchase.created_at >= $2)),0)::numeric(12,3)::text`,
+		int16(branch), fund.Since).Scan(&purchases, &documents, &used, &kilograms); err != nil {
+		return MetricsFundToday{}, fail(ctx)
+	}
+	spent := Signed(purchases)
+	if _, ok := spent.Cents(); !ok {
+		return MetricsFundToday{}, ErrUnavailable
+	}
+	// The weight is read at the scale the sheet publishes: thousandths of a kilogram, which is the
+	// three-decimal column the purchase lines store. The sum is a NET of the window's documents, so a
+	// counter-document that reversed a purchase made before the cut leaves it negative: the sign is the
+	// reading, and refusing it would answer 503 for a branch that did nothing wrong.
+	milli, ok := signedQuantityMilli(kilograms)
+	if !ok {
+		return MetricsFundToday{}, ErrUnavailable
+	}
+	// The documents are a count; the units, like the kilograms, are the net of those documents.
+	if documents < 0 {
+		return MetricsFundToday{}, ErrUnavailable
+	}
+	// The envelope's own identity, reused and never restated: opening − purchases.
+	balance, err := PurchaseFundExpected(fund.Opening, spent)
+	if err != nil {
+		return MetricsFundToday{}, ErrUnavailable
+	}
+	fund.Purchases, fund.Balance = spent, balance
+	fund.Documents, fund.UsedUnits, fund.ScrapMilli = documents, used, milli
+	return fund, nil
+}
+
 // metricsMovementKind admits the three kinds the ledger writes. Nothing else is a movement of the
 // drawer, so nothing else is listed as one.
 func metricsMovementKind(kind string) bool {
@@ -529,6 +665,23 @@ func closedCommission(ctx context.Context, q querier, branch int64) (Money, erro
 		return "", ErrUnavailable
 	}
 	return amount, nil
+}
+
+// signedQuantityMilli reads a published quantity that may carry a sign, at the three-decimal scale of a
+// weight: the net of a window can fall below zero and that sign is part of the number.
+func signedQuantityMilli(text string) (int64, bool) {
+	negative := strings.HasPrefix(text, "-")
+	if negative {
+		text = text[1:]
+	}
+	milli, ok := quantityMilli(Quantity(text))
+	if !ok || (negative && milli == 0) {
+		return 0, false
+	}
+	if negative {
+		return -milli, true
+	}
+	return milli, true
 }
 
 // windowOf builds the branch predicate of a read, with its window when the period has one. The

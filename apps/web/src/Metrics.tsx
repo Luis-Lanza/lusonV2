@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
-  closingDifferenceName, closingMaterialQuantityText, closingMoneyText, closingSignedText,
-  closingStatusLabels,
+  closingDifferenceName, closingMaterialQuantityText, closingMaterialSignedText, closingMoneyText,
+  closingSignedText, closingStatusLabels,
 } from './closingModel';
 import TransferDate from './shared/TransferDate';
 import {
   createMetricsAPI, metricsErrorMessages, metricsPeriodToken, MetricsAPIError,
-  metricsUnavailable, type MetricsAnswer, type MetricsCash, type MetricsFund,
+  metricsUnavailable, type MetricsAnswer, type MetricsCash, type MetricsFund, type MetricsFundToday,
   type MetricsMaterials, type MetricsModel, type MetricsMovementKind, type MetricsPeriod,
   type MetricsSource, type MetricsToday,
 } from './metricsAPI';
@@ -189,6 +189,62 @@ function TodayPanel({ today, live }: { today: MetricsToday; live: boolean }) {
     {/* The same drawer the period below counts, said in words while the period is the live one. */}
     {live && <p className="metrics-note">
       Es el mismo cajón que cuenta el período de abajo: los dos se mueven con cada venta.
+    </p>}
+  </section>;
+}
+
+/**
+ * The purchase envelope of today, beside the drawer of today: the second money box of the branch, which
+ * a branch whose settlements are all closed has no other screen to read (S15). The balance is the
+ * settlement's own fund identity — what the last cut left in the envelope minus the cash spent on
+ * purchases after it — so the card and the acta of the same envelope cannot state two balances (S16),
+ * and the volume of those same documents closes the cycle the settlement opened (S17).
+ */
+function FundTodayPanel({ fund }: { fund: MetricsFundToday }) {
+  // A balance of zero or below is the end of the branch's buying: the envelope pays what it holds and
+  // nothing more, so the card says it with words instead of leaving the figure to speak alone (S17).
+  const empty = fund.balance_cents <= 0n;
+  return <section className="metrics-panel metrics-today metrics-fund-today"
+    aria-labelledby="metrics-fund-today-title">
+    <h2 id="metrics-fund-today-title" className="metrics-panel-title">Fondo de compras de hoy</h2>
+    <p className="metrics-big">
+      <span className="metrics-amount">{money(fund.balance_cents)}</span>
+      <span className="metrics-big-note">Saldo del fondo</span>
+    </p>
+    <p className="metrics-note">
+      Lo que dejó el Almacén al cerrar el último corte − compras en efectivo desde ese corte.
+    </p>
+    <div className="metrics-split">
+      <span>Cubre</span>
+      {/* A branch without a closed settlement has no cut: its window is everything it ever bought. */}
+      <strong>{fund.since === null
+        ? 'Desde el comienzo de la sucursal'
+        : <>Desde el corte del <TransferDate value={fund.since} /></>}</strong>
+    </div>
+    <dl className="metrics-summary">
+      <div><dt>Lo que dejó el Almacén al cerrar el último corte</dt>
+        <dd>{money(fund.opening_cents)}</dd></div>
+      <div><dt>Compras en efectivo desde el corte</dt>
+        <dd>{closingSignedText(-fund.purchases_cents)}</dd></div>
+    </dl>
+    {fund.documents === 0
+      // No document is not a row of zeros: the card says it with words, the way the drawer says a
+      // window without movements (S17).
+      ? <p className="metrics-note">Sin compras en efectivo desde el último corte.</p>
+      : <dl className="metrics-summary">
+        <div><dt>Documentos</dt><dd>{fund.documents === 1
+          ? '1 documento' : `${fund.documents} documentos`}</dd></div>
+        {/* Both nets can end below zero when a counter-document reversed an earlier purchase, so they
+            are rendered with their sign instead of being read as a plain quantity. */}
+        <div><dt>Baterías usadas compradas</dt>
+          <dd>{closingMaterialSignedText('unit', BigInt(fund.used_units) * 1000n)} u</dd></div>
+        <div><dt>Kilos de chatarra comprados</dt>
+          <dd>{closingMaterialSignedText('kg', fund.scrap_milli)}</dd></div>
+      </dl>}
+    {empty && <p className="metrics-note metrics-fund-empty">
+      {fund.balance_cents === 0n
+        ? 'El fondo quedó en cero: la sucursal no puede seguir comprando hasta que el Almacén lo recargue.'
+        : 'El fondo está en rojo: la sucursal no puede seguir comprando hasta que el Almacén lo recargue.'}
     </p>}
   </section>;
 }
@@ -424,9 +480,13 @@ export default function Metrics({ branch, fetcher = globalThis.fetch }: MetricsP
     </p>}
 
     {answer !== null && <>
-      {/* The drawer of today comes first and is always rendered: it is the one reading a branch that
-          has only closed settlements would otherwise never see (S12). */}
-      <TodayPanel today={answer.today} live={answer.source === 'live'} />
+      {/* The two money boxes of today come first and are always rendered, as a pair: the drawer and the
+          envelope. They are the two readings a branch that has only closed settlements would otherwise
+          never see (S12, S15). */}
+      <div className="metrics-today-pair">
+        <TodayPanel today={answer.today} live={answer.source === 'live'} />
+        <FundTodayPanel fund={answer.fund_today} />
+      </div>
 
       <section className="metrics-band-section" aria-labelledby="metrics-left-title">
         <h2 id="metrics-left-title" className="metrics-section-title">Lo que dejó el período</h2>

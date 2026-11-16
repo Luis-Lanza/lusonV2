@@ -1866,7 +1866,9 @@ describe('branch metrics', () => {
     cash: null, fund: null, materials: null, top_models: [], stock: { units: 0 },
     // The drawer of today is published whatever the period is, so even the history states it.
     today: { since: null, opening: '0.00', sales: '0.00', expenses: '0.00', expected: '0.00',
-      movements: [] } };
+      movements: [] },
+    fund_today: { since: null, opening: '0.00', purchases: '0.00', balance: '0.00', documents: 0,
+      used_units: 0, scrap_milli: 0 } };
   const metricsSetup = () => setup(branchSession, url => url.startsWith('/api/metrics?')
     ? Promise.resolve(metricsAnswer(metricsBody)) : undefined);
   const metricsCalls = (mock: ReturnType<typeof setup>) =>

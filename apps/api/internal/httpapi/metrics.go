@@ -163,8 +163,10 @@ type metricsDTO struct {
 	Top       []metricsModelDTO    `json:"top_models"`
 	Stock     metricsStockDTO      `json:"stock"`
 	// Today is never null: the drawer of the branch today exists whether or not the period on
-	// screen has one (S12).
-	Today metricsTodayDTO `json:"today"`
+	// screen has one (S12). Neither is FundToday, the second money box of the branch, which has no
+	// other screen to be read from (S15).
+	Today     metricsTodayDTO     `json:"today"`
+	FundToday metricsFundTodayDTO `json:"fund_today"`
 }
 
 // metricsMovementDTO is one row of the branch's cash ledger after the last cut: the kind the ledger
@@ -185,6 +187,20 @@ type metricsTodayDTO struct {
 	Expenses  string               `json:"expenses"`
 	Expected  string               `json:"expected"`
 	Movements []metricsMovementDTO `json:"movements"`
+}
+
+// metricsFundTodayDTO is the purchase envelope of today: the cut its window starts from -- null for a
+// branch that never closed a settlement -- what the last closure left in it, the cash the branch spent
+// on purchases after that cut, the balance the two produce and the volume those documents bought
+// (S15-S17). The balance is signed; the counts are not.
+type metricsFundTodayDTO struct {
+	Since      *string `json:"since"`
+	Opening    string  `json:"opening"`
+	Purchases  string  `json:"purchases"`
+	Balance    string  `json:"balance"`
+	Documents  int64   `json:"documents"`
+	UsedUnits  int64   `json:"used_units"`
+	ScrapMilli int64   `json:"scrap_milli"`
 }
 
 type metricsSalesDTO struct {
@@ -275,9 +291,13 @@ func metricsRecord(periods []purchases.Period, chosen purchases.Period,
 	if err != nil {
 		return metricsDTO{}, err
 	}
+	fundToday, err := metricsFundTodayRecord(metrics.FundToday)
+	if err != nil {
+		return metricsDTO{}, err
+	}
 	record := metricsDTO{Periods: selector, Period: period, Source: metrics.Source,
 		Sales: sales, Top: make([]metricsModelDTO, 0, len(metrics.Top)),
-		Stock: metricsStockDTO{Units: metrics.Stock.Units}, Today: today}
+		Stock: metricsStockDTO{Units: metrics.Stock.Units}, Today: today, FundToday: fundToday}
 	if record.Stock.Units < 0 {
 		return metricsDTO{}, closings.ErrUnavailable
 	}
@@ -486,6 +506,58 @@ func metricsTodayRecord(today closings.MetricsToday) (metricsTodayDTO, error) {
 		previous = movement.OccurredAt
 		record.Movements = append(record.Movements,
 			metricsMovementDTO{Kind: movement.Kind, Amount: amount, OccurredAt: moment})
+	}
+	return record, nil
+}
+
+// metricsFundTodayRecord renders the purchase envelope of today and admits every value of it: the cut
+// is an RFC3339 instant or null, the opening is canonical money, the purchases and the balance are
+// signed readings, the balance is exactly opening − purchases and the three counts are non-negative
+// (S15-S17). A branch without a previous closure states no cut and inherits nothing, which is the one
+// pair this contract publishes: a null cut beside an opening somebody wrote is not a state the read
+// produces.
+func metricsFundTodayRecord(fund closings.MetricsFundToday) (metricsFundTodayDTO, error) {
+	unavailable := func() (metricsFundTodayDTO, error) { return metricsFundTodayDTO{}, closings.ErrUnavailable }
+	record := metricsFundTodayDTO{Opening: string(fund.Opening), Purchases: string(fund.Purchases),
+		Balance: string(fund.Balance), Documents: fund.Documents, UsedUnits: fund.UsedUnits,
+		ScrapMilli: fund.ScrapMilli}
+	// What the last closure left in the envelope is money the branch holds, never a signed reading.
+	if !metricsMoneyPattern.MatchString(record.Opening) {
+		return unavailable()
+	}
+	// The cash of a window is a net figure and its balance is a difference: a counter-document can leave
+	// either of them negative and the envelope still closes on its own sign (S16).
+	if !metricsSignedPattern.MatchString(record.Purchases) ||
+		!metricsSignedPattern.MatchString(record.Balance) {
+		return unavailable()
+	}
+	opening, okOpening := metricsSignedCents(closings.Signed(record.Opening))
+	purchases, okPurchases := metricsSignedCents(closings.Signed(record.Purchases))
+	balance, okBalance := metricsSignedCents(closings.Signed(record.Balance))
+	// The identity of the fund is the settlement's own: a balance its terms do not produce is a number
+	// this read could not have written.
+	if !okOpening || !okPurchases || !okBalance || balance != opening-purchases {
+		return unavailable()
+	}
+	// The documents are a count; the units and the kilograms are the NET of those documents, and a
+	// counter-document that reversed a purchase of an earlier period can leave them below zero. Signing
+	// them is the honest reading: refusing them would answer 503 for a branch that did nothing wrong.
+	if record.Documents < 0 {
+		return unavailable()
+	}
+	if fund.Since != nil {
+		if fund.Since.IsZero() {
+			return unavailable()
+		}
+		since := fund.Since.UTC().Format(time.RFC3339)
+		if _, err := time.Parse(time.RFC3339, since); err != nil {
+			return unavailable()
+		}
+		record.Since = &since
+	} else if opening != 0 {
+		// A branch that never closed a settlement inherits nothing: an opening nobody could have left is
+		// not the answer of this read.
+		return unavailable()
 	}
 	return record, nil
 }

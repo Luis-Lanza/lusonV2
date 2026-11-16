@@ -727,3 +727,206 @@ func TestMetricsTodayReadsOnlyItsOwnBranch(t *testing.T) {
 		t.Fatalf("the branch that closed the settlement reads its own drawer: %+v", other.Today)
 	}
 }
+
+// cutOf reads the cut of one closed settlement, so a test states where the window of the envelope of
+// today begins without guessing it.
+func (e *env) cutOf(t *testing.T, id int64) time.Time {
+	t.Helper()
+	var cut time.Time
+	if err := e.pool.QueryRow(e.ctx, `SELECT cut_at FROM branch_closings WHERE id=$1`, id).Scan(&cut); err != nil {
+		t.Fatalf("the cut of settlement %d could not be read: %v", id, err)
+	}
+	return cut
+}
+
+// TestMetricsFundTodayIsTheOpeningMinusThePurchasesAfterTheCut pins S15 and S16 on the read: the
+// purchase fund of today is what the last closed settlement left in the envelope minus the cash the
+// branch spent on purchases after that cut, with the volume those same documents bought -- and the
+// three sources publish the same envelope, whether or not a period is on screen.
+func TestMetricsFundTodayIsTheOpeningMinusThePurchasesAfterTheCut(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	// One purchase of 60.00 belongs to the previous window: the envelope of today must not count it.
+	e.purchase(t, "metrics-fund-today-before-01", "60.00")
+	// The second settlement closes with 250.00 in the envelope, which is what the next period
+	// inherits as its opening.
+	second := e.closeWindow(t, drawerOf("700.00"))
+	cut := e.cutOf(t, second)
+	// The branch buys after that cut: two used batteries at 10.00 and a kilogram and a half of copper
+	// at 10.00, paid out of the envelope in cash. 20.00 + 15.00 = 35.00.
+	e.purchaseLines(t, "metrics-fund-today-after-01", "35.00",
+		[]purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 2, UnitPrice: "10.00"}},
+		[]purchases.ScrapLineInput{{MaterialID: 1, Kg: "1.500", PricePerKg: "10.00"}})
+
+	read := func(source string) closings.MetricsFundToday {
+		t.Helper()
+		switch source {
+		case "settlement":
+			return metricsOf(t, e, second).FundToday
+		case "history":
+			return historyOf(t, e).FundToday
+		default:
+			opened, err := e.store.Open(e.ctx, warehouse(), 2)
+			if err != nil {
+				t.Fatalf("the period could not be opened: %v", err)
+			}
+			return metricsOf(t, e, opened.ID).FundToday
+		}
+	}
+	for _, source := range []string{"settlement", "history", "live"} {
+		fund := read(source)
+		if fund.Since == nil || !fund.Since.Equal(cut) {
+			t.Fatalf("%s: the fund of today must start at the cut of the last closure: %+v",
+				source, fund.Since)
+		}
+		// 250.00 left in the envelope − 35.00 spent after the cut = 215.00, and the volume of those
+		// same documents: one purchase, two batteries and 1.500 kg of scrap.
+		if fund.Opening != "250.00" || fund.Purchases != "35.00" || fund.Balance != "215.00" ||
+			fund.Documents != 1 || fund.UsedUnits != 2 || fund.ScrapMilli != 1500 {
+			t.Fatalf("%s: the fund of today must be the opening minus the purchases after the cut: %+v",
+				source, fund)
+		}
+	}
+}
+
+// TestMetricsFundTodayAddsBackACounterDocumentAfterTheCut pins the sign rule of S16 on the envelope of
+// today: a counter-document is stored with negative amounts, so it subtracts from the purchases of the
+// window by construction -- netting the batteries and the kilograms back with it -- and the balance
+// follows the same identity, as it does in the settlement's own fund.
+func TestMetricsFundTodayAddsBackACounterDocumentAfterTheCut(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	second := e.closeWindow(t, drawerOf("700.00"))
+	_ = second
+	// One purchase the branch later returns, and one it keeps: 35.00 and 30.00 of cash after the cut.
+	returned := e.purchaseLines(t, "metrics-fund-today-returned-01", "35.00",
+		[]purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 2, UnitPrice: "10.00"}},
+		[]purchases.ScrapLineInput{{MaterialID: 1, Kg: "1.500", PricePerKg: "10.00"}})
+	e.purchaseLines(t, "metrics-fund-today-kept-01", "30.00",
+		[]purchases.UsedLineInput{{Model: "48-13", Quantity: 3, UnitPrice: "10.00"}}, nil)
+	if _, err := e.purchases.Reverse(e.ctx, identity(2), returned.ID,
+		"metrics-fund-today-returned-02", "la chatarra no era cobre"); err != nil {
+		t.Fatalf("the counter-document could not be registered: %v", err)
+	}
+
+	fund := historyOf(t, e).FundToday
+	// 35.00 − 35.00 + 30.00 of cash, and the batteries and kilos net back with it: 2 + 3 − 2 used
+	// units and 1.500 − 1.500 kilograms of scrap. The counter-document is a document of the window.
+	if fund.Opening != "250.00" || fund.Purchases != "30.00" || fund.Balance != "220.00" ||
+		fund.Documents != 3 || fund.UsedUnits != 3 || fund.ScrapMilli != 0 {
+		t.Fatalf("the envelope must net its counter-documents: %+v", fund)
+	}
+}
+
+// TestMetricsFundTodayPublishesANegativeNetWhenTheReturnOutweighsTheWindow pins the sign of the volume:
+// a counter-document that returned a purchase made BEFORE the cut leaves the window with fewer units and
+// kilograms than none. The net is published with its sign, never refused, because a 503 would hide a
+// balance the branch can still spend.
+func TestMetricsFundTodayPublishesANegativeNetWhenTheReturnOutweighsTheWindow(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	// The earlier purchase is inside the closed settlement, so it is not part of the window.
+	earlier := e.purchaseLines(t, "metrics-fund-today-earlier-01", "45.00",
+		[]purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 2, UnitPrice: "10.00"}},
+		[]purchases.ScrapLineInput{{MaterialID: 1, Kg: "2.500", PricePerKg: "10.00"}})
+	second := e.closeWindow(t, drawerOf("700.00"))
+	_ = second
+	if _, err := e.purchases.Reverse(e.ctx, identity(2), earlier.ID,
+		"metrics-fund-today-earlier-02", "volvieron las baterias"); err != nil {
+		t.Fatalf("the counter-document could not be registered: %v", err)
+	}
+
+	fund := historyOf(t, e).FundToday
+	if fund.UsedUnits != -2 || fund.ScrapMilli != -2500 {
+		t.Fatalf("the volume of the window must publish its sign: %+v", fund)
+	}
+	if fund.Purchases != "-45.00" || fund.Balance != "295.00" {
+		t.Fatalf("the money of the same window must net back with it: %+v", fund)
+	}
+}
+
+// TestMetricsFundTodayStartsAtZeroWithoutAClosedSettlement pins the other half of S16: a branch that
+// never closed a settlement states no cut and inherits nothing, so its window is everything it ever
+// bought and the card can say where it begins with words instead of an instant.
+func TestMetricsFundTodayStartsAtZeroWithoutAClosedSettlement(t *testing.T) {
+	e := fixture(t)
+	empty := historyOf(t, e).FundToday
+	if empty.Since != nil || empty.Opening != "0.00" || empty.Purchases != "0.00" ||
+		empty.Balance != "0.00" || empty.Documents != 0 || empty.UsedUnits != 0 ||
+		empty.ScrapMilli != 0 {
+		t.Fatalf("a branch without a closed settlement inherits nothing: %+v", empty)
+	}
+	// Nothing was closed, so the window is the whole life of the branch: the document is counted even
+	// though no cut exists to start from.
+	e.purchase(t, "metrics-fund-today-nocut-01", "120.50")
+	fund := historyOf(t, e).FundToday
+	if fund.Since != nil || fund.Documents != 1 || fund.UsedUnits != 1 ||
+		fund.Purchases != "120.50" || fund.Balance != "-120.50" {
+		t.Fatalf("the window without a cut is everything the branch bought: %+v", fund)
+	}
+}
+
+// TestMetricsFundTodayCountsOnlyItsOwnPurchasesAfterTheCut pins S5 and the window of S16 on the new
+// block: the documents, the batteries and the kilograms of the card are the actor's own branch after the
+// cut, so a purchase of another branch and a purchase of the previous period are counted by neither the
+// money nor the volume of this envelope.
+func TestMetricsFundTodayCountsOnlyItsOwnPurchasesAfterTheCut(t *testing.T) {
+	e := fixture(t)
+	// A purchase of 60.00 before the first closure belongs to the window the closure itself settled.
+	e.purchase(t, "metrics-fund-today-previous-01", "60.00")
+	first := e.closeFirstSettlement(t, "500.00")
+	// The purchase of the window: two used batteries and 1.500 kg of copper.
+	e.purchaseLines(t, "metrics-fund-today-own-01", "35.00",
+		[]purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 2, UnitPrice: "10.00"}},
+		[]purchases.ScrapLineInput{{MaterialID: 1, Kg: "1.500", PricePerKg: "10.00"}})
+	// Another branch buys four batteries of its own after its own cut: none of it is branch 2's.
+	e.closeSettlementOf(t, 3)
+	if _, err := e.purchases.Create(e.ctx, identity(3), purchases.CreateInput{
+		OperationKey: "metrics-fund-today-other-01",
+		UsedLines:    []purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 4, UnitPrice: "25.00"}},
+		PaidCash:     "100.00", PaidTransfer: "0.00",
+	}); err != nil {
+		t.Fatalf("the purchase of branch 3 could not be registered: %v", err)
+	}
+
+	fund := historyOf(t, e).FundToday
+	if fund.Since == nil || !fund.Since.Equal(e.cutOf(t, first)) {
+		t.Fatalf("the envelope of today must start at the cut of the last closure: %+v", fund.Since)
+	}
+	if fund.Purchases != "35.00" || fund.Documents != 1 || fund.UsedUnits != 2 ||
+		fund.ScrapMilli != 1500 {
+		t.Fatalf("the envelope must count only its own purchases after the cut: %+v", fund)
+	}
+	// The branch that bought reads its own document and nobody else's.
+	other, err := e.store.Metrics(e.ctx, identity(3), closings.MetricsPeriod{History: true})
+	if err != nil {
+		t.Fatalf("the metrics of branch 3 could not be read: %v", err)
+	}
+	if other.FundToday.Purchases != "100.00" || other.FundToday.Documents != 1 ||
+		other.FundToday.UsedUnits != 4 || other.FundToday.ScrapMilli != 0 {
+		t.Fatalf("the branch that bought reads its own envelope: %+v", other.FundToday)
+	}
+}
+
+// TestMetricsFundTodayPublishesANegativeBalanceWithItsSign pins the signed reading of S16: an envelope
+// that spent more than it inherited is a shortage and not an unreadable number, so the balance is
+// published with its sign -- here a closure that stated no envelope at all, against which the branch
+// still bought 120.50 in cash.
+func TestMetricsFundTodayPublishesANegativeBalanceWithItsSign(t *testing.T) {
+	e := fixture(t)
+	first := e.closeFirstSettlement(t, "500.00")
+	// The closure left no envelope behind, so nothing was inherited and the purchase below is charged
+	// against nothing: a shortage of exactly what it spent.
+	e.purchase(t, "metrics-fund-today-short-01", "120.50")
+
+	fund := metricsOf(t, e, first).FundToday
+	if fund.Since == nil || fund.Opening != "0.00" || fund.Purchases != "120.50" ||
+		fund.Balance != "-120.50" || fund.Documents != 1 {
+		t.Fatalf("a shortage must be published with its sign: %+v", fund)
+	}
+	// The card and the settlement read the same envelope: the history publishes the same shortage.
+	if history := historyOf(t, e).FundToday; history.Balance != fund.Balance ||
+		history.Purchases != fund.Purchases || history.Documents != fund.Documents {
+		t.Fatalf("the three sources must publish the same envelope: %+v want %+v", history, fund)
+	}
+}

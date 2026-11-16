@@ -1015,8 +1015,20 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 }
 .metrics-today-moment { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
+/* The two money boxes of today read as a pair and not as two unrelated panels (S15-S17): the drawer and
+   the purchase envelope share one row, one height of heading and the same wine edge, so a reader sees
+   two boxes of the same branch beside each other. It adds no colour of its own: the same white panel, the
+   same border, the same muted words and the same tabular figures as the block above. */
+.metrics-today-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px;
+  align-items: start; }
+.metrics-today-pair > .metrics-panel { height: 100%; }
+.metrics-fund-today .metrics-big + .metrics-note { margin-bottom: 12px; }
+.metrics-fund-today .metrics-summary { margin-top: 0; margin-bottom: 12px; }
+/* The end of the branch's buying, said with words beside the figure it follows from. */
+.metrics-fund-today .metrics-fund-empty { color: var(--wine); font-weight: 600; }
+
 @media (max-width: 1279px) {
-  .metrics-columns { grid-template-columns: minmax(0, 1fr); }
+  .metrics-columns, .metrics-today-pair { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 767px) {
   .metrics-workspace { gap: 12px; }

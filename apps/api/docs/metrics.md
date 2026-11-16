@@ -82,6 +82,10 @@ no value is ever guessed.
       {"kind": "recaudacion", "amount": "150.00", "occurred_at": "2026-11-03T09:15:00Z"},
       {"kind": "gasto", "amount": "12.50", "occurred_at": "2026-11-04T18:40:00Z"}
     ]
+  },
+  "fund_today": {
+    "since": "2026-11-01T12:00:00Z", "opening": "250.00", "purchases": "35.00",
+    "balance": "215.00", "documents": 1, "used_units": 2, "scrap_milli": 1500
   }
 }
 ```
@@ -190,6 +194,41 @@ derived from the ledgers and not from the list, so the bound never changes it.
 statements of the same drawer and a sale landing between them moves one and not the other.
 The client validates the identity *inside* `today` and never the equality between the two
 reads.
+
+### `fund_today`
+
+The **purchase envelope of the branch today**, published by the three sources — `settlement`, `live`
+and `history` — and never null. It is the second money box of the branch, apart from the drawer, and it
+is the one reading a branch whose settlements are all closed would otherwise never see: the period in
+progress only exists while a settlement is open, and a branch that is not inside one still holds money
+in the envelope it buys with.
+
+`since` is the cut of the **last closed settlement** of the branch, the same instant `today` starts
+from, and it is **null** for a branch that never closed one — there is no cut to start from, so the
+window is everything the branch ever bought and `opening` is `"0.00"`.
+
+`opening`, `purchases` and `balance` are the three terms of the settlement's own fund identity, so the
+card and the acta of the same envelope cannot state two different numbers:
+
+- `opening` is the `purchase_fund_cash` of the last closed settlement: what the warehouse left in the
+  envelope when it closed, which is exactly what the database seeds the next opening from and what a
+  new purchase is charged against. A closure that stated no envelope inherits nothing, and the same
+  `coalesce` is read here as in the fund of that settlement, so both read `"0.00"`;
+- `purchases` is the sum of the `paid_cash` of the branch's purchases with `created_at >= since` — the
+  same column and the same window the settlement's own fund sums, with no counter-document filter, so a
+  counter-document subtracts by construction and can leave the net itself negative;
+- `balance` is signed and is exactly `opening − purchases`. A negative balance is a shortage and not a
+  number to hide: the envelope spent more than it inherited, and the screen says with words that the
+  branch cannot keep buying until the warehouse refills it.
+
+`documents` is how many purchase documents the window holds — counter-documents included, because they
+are documents of the branch — and `used_units` and `scrap_milli` are the batteries and the thousandths
+of a kilogram those same documents bought, net of the counter-documents with the same netting the
+Compras read applies: the counter-document is stored with a negative quantity and weight.
+
+`fund_today` is **not** required to equal `fund` of a live period: the two are separate reads of the
+same envelope and a purchase landing between them moves one and not the other. The client validates the
+identity *inside* `fund_today` and never the equality between the two reads.
 
 ## What this read does not publish
 

@@ -142,6 +142,24 @@ export interface MetricsToday {
   readonly movements: readonly MetricsMovement[];
 }
 
+/**
+ * The purchase fund of the branch today, published whatever period is on screen (S15). `since` is the
+ * cut of the last closed settlement and null for a branch that never closed one, where the window is
+ * everything the branch ever bought. The balance is what the last cut left in the envelope minus the
+ * cash spent on purchases after it -- the settlement's own fund identity -- and is signed: an envelope
+ * that spent more than it inherited is a shortage the branch must see, not a number to hide (S16). The
+ * three counts are the volume of those same documents, net of the counter-documents.
+ */
+export interface MetricsFundToday {
+  readonly since: string | null;
+  readonly opening_cents: bigint;
+  readonly purchases_cents: bigint;
+  readonly balance_cents: bigint;
+  readonly documents: number;
+  readonly used_units: number;
+  readonly scrap_milli: bigint;
+}
+
 /** The whole answer of one period: the selector, the chosen period, its origin and its accounts. */
 export interface MetricsAnswer {
   readonly periods: readonly MetricsPeriod[];
@@ -154,6 +172,7 @@ export interface MetricsAnswer {
   readonly top_models: readonly MetricsModel[];
   readonly stock: MetricsStock;
   readonly today: MetricsToday;
+  readonly fund_today: MetricsFundToday;
 }
 
 // ---------------------------------------------------------------------------------
@@ -244,6 +263,24 @@ function deliveredUnits(value: unknown): number | null {
   // A count larger than the bought quantity is a counted excess, not a shape this server never
   // wrote: it is informed exactly like the cash difference of a drawer.
   return count(value, Number.MAX_SAFE_INTEGER);
+}
+
+/** A signed count is the net of a set of documents: it carries a sign, never padding or a fraction. */
+function signedCount(value: unknown): number {
+  const raw = numeric(value);
+  if (!/^-?(0|[1-9]\d*)$/.test(raw) || raw === '-0') return invalidResponse();
+  const exact = BigInt(raw);
+  if (exact > BigInt(Number.MAX_SAFE_INTEGER) || exact < -BigInt(Number.MAX_SAFE_INTEGER)) {
+    return invalidResponse();
+  }
+  return Number(exact);
+}
+
+/** A signed weight is the net of the same documents, in thousandths of a kilogram. */
+function signedMilli(value: unknown): bigint {
+  const raw = numeric(value);
+  if (!/^-?(0|[1-9]\d*)$/.test(raw) || raw === '-0') return invalidResponse();
+  return BigInt(raw);
 }
 
 /** A weight is published in integer thousandths of a kilogram by a whole, non-negative count. */
@@ -548,6 +585,38 @@ function todayValue(value: unknown): MetricsToday {
 }
 
 /**
+ * The purchase envelope of today. Its balance is the settlement's own fund identity -- what the last cut
+ * left in it minus the cash spent on purchases after it -- so the card and the acta of the same envelope
+ * cannot state two different balances (S16). The purchases are signed because a counter-document after
+ * the cut nets them down, and the balance is signed because a shortage is a fact the branch must see.
+ *
+ * It is deliberately NOT compared with `fund` of a period on screen: the two are separate reads of the
+ * same envelope, so a purchase landing between them would move one and not the other, and refusing that
+ * answer would refuse a payload this server really wrote (S16).
+ */
+function fundTodayValue(value: unknown): MetricsFundToday {
+  const record = fields(value, ['since', 'opening', 'purchases', 'balance', 'documents', 'used_units',
+    'scrap_milli']);
+  const opening_cents = wireMoney(record.opening, false);
+  const purchases_cents = wireMoney(record.purchases, true);
+  const balance_cents = wireMoney(record.balance, true);
+  if (balance_cents !== opening_cents - purchases_cents) return invalidResponse();
+  const since = record.since;
+  // A branch without a previous closure states no cut and inherits nothing: the two facts are one state.
+  if (since === null && opening_cents !== 0n) return invalidResponse();
+  return Object.freeze({
+    // A branch that never closed a settlement has no cut: its window is everything it ever bought.
+    since: since === null ? null : timestamp(since),
+    opening_cents, purchases_cents, balance_cents,
+    documents: count(record.documents, Number.MAX_SAFE_INTEGER),
+    // The units and the kilograms are the net of the same documents: a counter-document that reversed
+    // an earlier purchase may leave them negative, and that is a reading, not a malformed answer.
+    used_units: signedCount(record.used_units),
+    scrap_milli: signedMilli(record.scrap_milli),
+  });
+}
+
+/**
  * Parses the metrics answer whole: the selector, the period that was chosen out of it, where its
  * numbers came from and the accounts themselves. The chosen period must be one of the selector's
  * own entries, and the history states no drawer and no envelope at all, so the words on screen and
@@ -555,7 +624,7 @@ function todayValue(value: unknown): MetricsToday {
  */
 export function parseMetricsAnswer(raw: string): MetricsAnswer {
   const record = fields(decode(raw), ['periods', 'period', 'source', 'sales', 'cash', 'fund',
-    'materials', 'top_models', 'stock', 'today']);
+    'materials', 'top_models', 'stock', 'today', 'fund_today']);
   const periods = periodsValue(record.periods);
   const period = periodValue(record.period);
   if (!periods.some(entry => sameMetricsPeriod(entry, period))) return invalidResponse();
@@ -576,8 +645,11 @@ export function parseMetricsAnswer(raw: string): MetricsAnswer {
   // The drawer of today is stated by every source and is never null: it is the drawer of the branch,
   // not a total of the period, and it is the one reading a branch without a settlement open has.
   const today = todayValue(record.today);
+  // The purchase envelope of today is stated by every source too: it is the second money box of the
+  // branch, and without an open settlement there is no other screen that states it (S15).
+  const fund_today = fundTodayValue(record.fund_today);
   return Object.freeze({ periods, period, source, sales, cash, fund, materials, top_models, stock,
-    today });
+    today, fund_today });
 }
 
 // ---------------------------------------------------------------------------------

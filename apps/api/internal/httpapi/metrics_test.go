@@ -25,7 +25,7 @@ import (
 
 // metricsWireKeys is the frozen key set of the answer, and the key sets of the objects it carries.
 var (
-	metricsWireKeys          = []string{"periods", "period", "source", "sales", "cash", "fund", "materials", "top_models", "stock", "today"}
+	metricsWireKeys          = []string{"periods", "period", "source", "sales", "cash", "fund", "materials", "top_models", "stock", "today", "fund_today"}
 	metricsSalesWireKeys     = []string{"total", "cash", "card", "transfer", "qr", "commission", "sales", "units"}
 	metricsCashWireKeys      = []string{"opening", "sales", "expenses", "expected", "counted", "difference"}
 	metricsFundWireKeys      = []string{"opening", "purchases", "expected", "counted", "difference", "replacement"}
@@ -34,6 +34,7 @@ var (
 	metricsModelWireKeys     = []string{"catalog_entry_id", "brand", "model", "capacity_ah", "units", "money"}
 	metricsStockWireKeys     = []string{"units"}
 	metricsTodayWireKeys     = []string{"since", "opening", "sales", "expenses", "expected", "movements"}
+	metricsFundTodayWireKeys = []string{"since", "opening", "purchases", "balance", "documents", "used_units", "scrap_milli"}
 	metricsMovementWireKeys  = []string{"kind", "amount", "occurred_at"}
 	metricsPeriodWireKeys    = []string{"kind", "closing_id", "from", "to", "label"}
 	// metricsMoneyWire is the strict money parser a client applies to this answer (S8): canonical
@@ -167,6 +168,15 @@ type metricsAnswerWire struct {
 			OccurredAt string `json:"occurred_at"`
 		} `json:"movements"`
 	} `json:"today"`
+	FundToday struct {
+		Since      *string `json:"since"`
+		Opening    string  `json:"opening"`
+		Purchases  string  `json:"purchases"`
+		Balance    string  `json:"balance"`
+		Documents  int64   `json:"documents"`
+		UsedUnits  int64   `json:"used_units"`
+		ScrapMilli int64   `json:"scrap_milli"`
+	} `json:"fund_today"`
 }
 
 // metricsAnswer admits only the frozen metrics shape: exactly the published keys at every level, and
@@ -289,6 +299,25 @@ func metricsAnswer(t *testing.T, w *httptest.ResponseRecorder, status int) metri
 	}
 	if answer.Stock.Units < 0 || answer.Sales.Sales < 0 || answer.Sales.Units < 0 {
 		t.Fatalf("the answer publishes a negative count: %s", w.Body.String())
+	}
+	// The purchase envelope of today is published by every source too, and never as a null block: its cut
+	// is the only field that may be null, its three money figures are canonical, and its identity --
+	// opening − purchases = balance -- is the one the settlement's own fund states (S15-S17).
+	metricsObject(t, root["fund_today"], metricsFundTodayWireKeys)
+	for _, money := range []string{answer.FundToday.Opening, answer.FundToday.Purchases,
+		answer.FundToday.Balance} {
+		if !metricsMoneyWire.MatchString(money) {
+			t.Fatalf("fund today money %q is not canonical: %s", money, w.Body.String())
+		}
+	}
+	if answer.FundToday.Since != nil {
+		if _, err := time.Parse(time.RFC3339, *answer.FundToday.Since); err != nil {
+			t.Fatalf("the cut of the fund of today must be an RFC3339 instant: %q", *answer.FundToday.Since)
+		}
+	}
+	if answer.FundToday.Documents < 0 || answer.FundToday.UsedUnits < 0 ||
+		answer.FundToday.ScrapMilli < 0 {
+		t.Fatalf("the fund of today publishes a negative count: %s", w.Body.String())
 	}
 	return answer
 }
@@ -519,6 +548,9 @@ func validMetrics() closings.Metrics {
 	expected, counted := closings.Signed("10.00"), closings.Money("10.00")
 	replacement := closings.Money("5.00")
 	usedDelivered, scrapDelivered, delivered := int64(2), int64(1000), int64(1000)
+	// The envelope of today starts at the cut of the last closed settlement, which every branch that
+	// closed one states: the null cut of a branch without a previous closure is broken where it belongs.
+	fundCut := metricsTodayMoment()
 	return closings.Metrics{
 		Source: "settlement",
 		Sales: closings.MetricsSales{Total: "10.00", Cash: "10.00", Card: "0.00",
@@ -539,6 +571,10 @@ func validMetrics() closings.Metrics {
 		Today: closings.MetricsToday{Opening: "5.00", Sales: "10.00", Expenses: "2.00",
 			Expected: "13.00", Movements: []closings.MetricsMovement{
 				{Kind: "gasto", Amount: "2.00", OccurredAt: metricsTodayMoment()}}},
+		// The purchase envelope of today: what the last cut left in it, the cash spent after it and the
+		// balance the two produce -- 20.00 − 5.00 = 15.00 -- with the volume of those documents.
+		FundToday: closings.MetricsFundToday{Since: &fundCut, Opening: "20.00", Purchases: "5.00",
+			Balance: "15.00", Documents: 1, UsedUnits: 2, ScrapMilli: 500},
 	}
 }
 
@@ -560,9 +596,48 @@ func TestMetricsRecordsRefuseAShapeTheServerNeverWrote(t *testing.T) {
 		record.Materials == nil || len(record.Top) != 1 {
 		t.Fatalf("a complete answer must be admitted: %+v %v", record, err)
 	}
+	// The volume of the fund of today is the net of its window, so a negative reading is an answer and not
+	// a shape the server never wrote: it is published with its sign.
+	signed := validMetrics()
+	signed.FundToday.ScrapMilli = -1
+	signed.FundToday.UsedUnits = -2
+	if admitted, err := metricsRecord(periods, chosen, signed); err != nil ||
+		admitted.FundToday.ScrapMilli != -1 || admitted.FundToday.UsedUnits != -2 {
+		t.Fatalf("the signed volume of the fund must be admitted: %+v %v", admitted, err)
+	}
 	if record.Today.Since != nil || record.Today.Opening != "5.00" ||
 		record.Today.Expected != "13.00" || len(record.Today.Movements) != 1 {
 		t.Fatalf("the drawer of today must be admitted as it is: %+v %v", record.Today, err)
+	}
+	// The purchase envelope of today is admitted with its own numbers, and its balance follows its terms.
+	if record.FundToday.Opening != "20.00" || record.FundToday.Purchases != "5.00" ||
+		record.FundToday.Balance != "15.00" || record.FundToday.Documents != 1 ||
+		record.FundToday.UsedUnits != 2 || record.FundToday.ScrapMilli != 500 {
+		t.Fatalf("the envelope of today must be admitted as it is: %+v %v", record.FundToday, err)
+	}
+	// The envelope of today states the cut of the last closure as the instant the client reads back.
+	fundCut := metricsTodayMoment()
+	withFundCut := validMetrics()
+	withFundCut.FundToday.Since = &fundCut
+	record, err = metricsRecord(periods, chosen, withFundCut)
+	if err != nil || record.FundToday.Since == nil || *record.FundToday.Since != "2024-11-12T12:00:00Z" {
+		t.Fatalf("the cut of the envelope must be an RFC3339 instant: %+v %v", record.FundToday, err)
+	}
+	// An envelope that spent more than it inherited is short: the balance keeps its sign and the window's
+	// purchases are published as the signed net they are (S16).
+	short := validMetrics()
+	short.FundToday.Opening, short.FundToday.Purchases, short.FundToday.Balance = "0.00", "120.50", "-120.50"
+	short.FundToday.Since = &fundCut
+	record, err = metricsRecord(periods, chosen, short)
+	if err != nil || record.FundToday.Balance != "-120.50" {
+		t.Fatalf("a shortage of the envelope must be published with its sign: %+v %v",
+			record.FundToday, err)
+	}
+	short.FundToday.Purchases, short.FundToday.Balance = "-10.00", "10.00"
+	record, err = metricsRecord(periods, chosen, short)
+	if err != nil || record.FundToday.Purchases != "-10.00" || record.FundToday.Balance != "10.00" {
+		t.Fatalf("a negative purchase net must be published with its sign: %+v %v",
+			record.FundToday, err)
 	}
 	// A branch that did close a settlement states the cut of its last one, as the instant the client
 	// reads back: it is the window the card names in words.
@@ -726,6 +801,25 @@ func TestMetricsRecordsRefuseAShapeTheServerNeverWrote(t *testing.T) {
 					OccurredAt: metricsTodayMoment().Add(time.Duration(i) * time.Minute)}
 			}
 		},
+		"fund today opening not money":    func(m *closings.Metrics) { m.FundToday.Opening = "20" },
+		"fund today opening negative":     func(m *closings.Metrics) { m.FundToday.Opening = "-20.00" },
+		"fund today purchases not signed": func(m *closings.Metrics) { m.FundToday.Purchases = "5" },
+		"fund today balance not signed":   func(m *closings.Metrics) { m.FundToday.Balance = "quince" },
+		"fund today does not close": func(m *closings.Metrics) {
+			m.FundToday.Balance = "16.00"
+		},
+		"fund today with a zero cut": func(m *closings.Metrics) {
+			m.FundToday.Since = &time.Time{}
+		},
+		"fund today with an opening nobody left": func(m *closings.Metrics) {
+			m.FundToday.Since = nil
+		},
+		"fund today with a negative document count": func(m *closings.Metrics) {
+			m.FundToday.Documents = -1
+		},
+		// The units of the window are the net of its documents too, so their sign is a reading.
+		// A negative weight is not a shape the server never wrote: it is the net of a window whose
+		// counter-document returned a purchase made before the cut, and it is published with its sign.
 	} {
 		metrics := validMetrics()
 		breakIt(&metrics)
@@ -821,5 +915,69 @@ func TestMetricsHTTPToday(t *testing.T) {
 		len(history.Today.Movements) != len(answer.Today.Movements) {
 		t.Fatalf("today is the same whatever period is shown: %+v want %+v", history.Today,
 			answer.Today)
+	}
+}
+
+// TestMetricsHTTPFundToday proves the block the screen shows beside the drawer of today (S15-S17): the
+// purchase envelope of the branch is published by the three sources, states its cut as an RFC3339
+// instant or null, and carries the identity of the settlement's own fund -- what the last closure left
+// minus the purchases after that cut -- with the volume those documents bought.
+func TestMetricsHTTPFundToday(t *testing.T) {
+	f := metricsFixture(t)
+	// The branch buys 35.00 in cash before it ever closed a settlement: there is no cut, so the window
+	// is everything it did and the envelope it inherited is nothing. The document is written through the
+	// purchases store, because the chain this fixture mounts serves the read of one period and not the
+	// counter that writes a purchase.
+	buy(t, f, 2, purchases.CreateInput{OperationKey: "http-fund-today-01",
+		UsedLines:  []purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 2, UnitPrice: "10.00"}},
+		ScrapLines: []purchases.ScrapLineInput{{MaterialID: 1, Kg: "1.500", PricePerKg: "10.00"}},
+		PaidCash:   "35.00", PaidTransfer: "0.00"})
+	answer := metricsAnswer(t, f.serve(t, f.request(2, "GET", "/api/metrics?period=all", "")), 200)
+	if answer.FundToday.Since != nil {
+		t.Fatalf("a branch without a closed settlement states no cut: %+v", answer.FundToday)
+	}
+	if answer.FundToday.Opening != "0.00" || answer.FundToday.Purchases != "35.00" ||
+		answer.FundToday.Balance != "-35.00" || answer.FundToday.Documents != 1 ||
+		answer.FundToday.UsedUnits != 2 || answer.FundToday.ScrapMilli != 1500 {
+		t.Fatalf("the envelope without a cut is everything the branch bought: %+v", answer.FundToday)
+	}
+
+	// Another branch closes a settlement with 50.00 left in the envelope, and buys 20.00 out of it after
+	// that cut: the card names the cut and states the balance the two figures produce.
+	closed := f.closeSettlement(t, 3, `{"counted_cash":"0.00","contributed_cash":"0.00","closing_cash":"0.00","purchase_fund_counted":"50.00","purchase_fund_cash":"50.00","observation":"arranque"}`)
+	buy(t, f, 3, purchases.CreateInput{OperationKey: "http-fund-today-02",
+		UsedLines: []purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 1, UnitPrice: "20.00"}},
+		PaidCash:  "20.00", PaidTransfer: "0.00"})
+	answer = metricsAnswer(t, f.serve(t, f.request(3, "GET",
+		fmt.Sprintf("/api/metrics?period=%d", closed.ID), "")), 200)
+	if answer.FundToday.Since == nil {
+		t.Fatalf("a branch that closed a settlement states its cut: %+v", answer.FundToday)
+	}
+	if answer.FundToday.Opening != "50.00" || answer.FundToday.Purchases != "20.00" ||
+		answer.FundToday.Balance != "30.00" || answer.FundToday.Documents != 1 ||
+		answer.FundToday.UsedUnits != 1 || answer.FundToday.ScrapMilli != 0 {
+		t.Fatalf("the envelope must be the opening minus the purchases after the cut: %+v",
+			answer.FundToday)
+	}
+	// The whole history of the same branch publishes the same envelope: it is a state of the branch and
+	// not a total of the period on screen.
+	history := metricsAnswer(t, f.serve(t, f.request(3, "GET", "/api/metrics?period=all", "")), 200)
+	if history.FundToday.Since == nil || *history.FundToday.Since != *answer.FundToday.Since ||
+		history.FundToday.Opening != answer.FundToday.Opening ||
+		history.FundToday.Balance != answer.FundToday.Balance ||
+		history.FundToday.Documents != answer.FundToday.Documents {
+		t.Fatalf("the envelope is the same whatever period is shown: %+v want %+v",
+			history.FundToday, answer.FundToday)
+	}
+}
+
+// buy registers one purchase of the branch the test names through the purchases store, so the envelope of
+// today reads a document the branch really wrote: the fixture of the metrics chain mounts the read and not
+// the counter, and the document is the same one either way.
+func buy(t *testing.T, f *metricsHTTPFixture, branch int, input purchases.CreateInput) {
+	t.Helper()
+	if _, err := purchases.New(f.p).Create(f.ctx,
+		auth.Identity{AccountID: branch, Location: auth.Location{ID: branch}}, input); err != nil {
+		t.Fatalf("the purchase of branch %d could not be registered: %v", branch, err)
 	}
 }

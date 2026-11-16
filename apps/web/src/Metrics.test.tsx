@@ -60,9 +60,17 @@ const today = {
   ],
 };
 
+// The purchase envelope of today, published by every source: what the last cut left in it, the cash the
+// branch spent on purchases after it and the balance the two produce -- 480000 − 150000 = 330000 -- with
+// the volume those same documents bought (S15-S17).
+const fundToday = {
+  since: '2026-11-01T12:00:00Z', opening: '480000.00', purchases: '150000.00',
+  balance: '330000.00', documents: 4, used_units: 11, scrap_milli: 42500,
+};
+
 const settlementBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   periods, period: closed, source: 'settlement', sales, cash, fund, materials,
-  top_models: topModels, stock, today, ...overrides,
+  top_models: topModels, stock, today, fund_today: fundToday, ...overrides,
 });
 const olderBody = () => settlementBody({
   period: older,
@@ -83,11 +91,11 @@ const liveBody = () => JSON.stringify({
   fund: { ...fund, counted: null, difference: null, replacement: null },
   materials: { used_units: 78, used_delivered_units: null, scrap_milli: 214500,
     scrap_delivered_milli: null, materials: scrapRows.map(row => ({ ...row, delivered_milli: null })) },
-  top_models: topModels, stock, today,
+  top_models: topModels, stock, today, fund_today: fundToday,
 });
 const historyBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   periods, period: allPeriod, source: 'history', sales, cash: null, fund: null, materials: null,
-  top_models: topModels, stock, today, ...overrides,
+  top_models: topModels, stock, today, fund_today: fundToday, ...overrides,
 });
 
 type Route = (token: string) => Response;
@@ -325,6 +333,81 @@ describe('branch metrics screen', () => {
     const regions = screen.getAllByRole('region').map(region => region.getAttribute('aria-labelledby'));
     expect(regions.indexOf('metrics-today-title'))
       .toBeLessThan(regions.indexOf('metrics-left-title'));
+  });
+
+  it('renders the purchase fund of today beside the drawer, with the breakdown of its window', async () => {
+    setup(token => token === '4' ? json(settlementBody()) : json(historyBody()));
+    await selectPeriod('4');
+    const card = panel('Fondo de compras de hoy');
+    // The balance is the protagonist, and it is the settlement's own fund identity (S16).
+    expect(within(card).getByText('Bs 330.000,00')).toBeInTheDocument();
+    expect(card).toHaveTextContent('Saldo del fondo');
+    expect(card).toHaveTextContent(/Lo que dejó el Almacén al cerrar el último corte/);
+    expect(card).toHaveTextContent(/compras en efectivo desde ese corte/);
+    // The window it covers, from the cut of the last closed settlement.
+    expect(card).toHaveTextContent(/Desde el corte del/);
+    expect(card).toHaveTextContent('01/11/2026 · 08:00 (hora Bolivia)');
+    // The breakdown: what the warehouse left, what the branch spent and what those documents bought (S17).
+    expect(within(card).getByText('Bs 480.000,00')).toBeInTheDocument();
+    expect(within(card).getByText('− Bs 150.000,00')).toBeInTheDocument();
+    expect(within(card).getByText('4 documentos')).toBeInTheDocument();
+    // The volume of the window is the net of its documents, so it reads with its sign (S17).
+    expect(within(card).getByText('+11 u')).toBeInTheDocument();
+    expect(within(card).getByText('+42,500')).toBeInTheDocument();
+    // A balance that still pays is not a shortage: the card says nothing about buying.
+    expect(within(card).queryByText(/no puede seguir comprando/)).toBeNull();
+    // The drawer and the envelope read as a pair: one row of the same branch, side by side (S15).
+    const drawer = panel('Caja de hoy');
+    expect(drawer.parentElement).toBe(card.parentElement);
+    expect(drawer.parentElement?.className).toContain('metrics-today-pair');
+  });
+
+  it('says that the purchase fund of today starts at the beginning of the branch when there is no cut', async () => {
+    const noCut = { since: null, opening: '0.00', purchases: '0.00', balance: '0.00',
+      documents: 0, used_units: 0, scrap_milli: 0 };
+    setup(() => json(historyBody({ fund_today: noCut })));
+    const card = await screen.findByRole('region', { name: 'Fondo de compras de hoy' });
+    expect(within(card).getByText('Desde el comienzo de la sucursal')).toBeInTheDocument();
+    // Nothing was inherited and nothing was spent, so the balance, the opening and the cash of the window
+    // are the same zero the server wrote -- three stated numbers and no invented one.
+    expect(within(card).getAllByText('Bs 0,00')).toHaveLength(3);
+    // Without a document the card says it with words and never with a row of zeros (S17).
+    expect(within(card).getByText('Sin compras en efectivo desde el último corte.')).toBeInTheDocument();
+    expect(within(card).queryByText('0 documentos')).toBeNull();
+    // A fund of zero is the end of the buying, said in words beside the figure.
+    expect(within(card).getByText(/El fondo quedó en cero/)).toBeInTheDocument();
+    expect(within(card).getByText(/hasta que el Almacén lo recargue/)).toBeInTheDocument();
+  });
+
+  it('renders a purchase fund of today in the red with the words that it cannot keep buying', async () => {
+    setup(token => token === '4'
+      ? json(settlementBody({ fund_today: { ...fundToday, opening: '0.00', purchases: '120500.00',
+        balance: '-120500.00', documents: 1, used_units: 2, scrap_milli: 0 } }))
+      : json(historyBody()));
+    await selectPeriod('4');
+    const card = panel('Fondo de compras de hoy');
+    // A shortage is published with its sign and never clamped to zero (S16): the balance and the cash
+    // spent after the cut are the same magnitude here, because nothing was inherited.
+    expect(within(card).getAllByText('− Bs 120.500,00')).toHaveLength(2);
+    expect(within(card).getByText(/El fondo está en rojo/)).toBeInTheDocument();
+    expect(within(card).getByText(/hasta que el Almacén lo recargue/)).toBeInTheDocument();
+    // The balance is never clamped to zero: what it holds is the signed reading the server wrote.
+    expect(within(card).queryByText('Bs 120.500,00')).toBeNull();
+  });
+
+  it('says with words that the purchase fund of today had no purchases instead of a zero row', async () => {
+    setup(token => token === '4'
+      ? json(settlementBody({ fund_today: { ...fundToday, purchases: '0.00', balance: '480000.00',
+        documents: 0, used_units: 0, scrap_milli: 0 } }))
+      : json(historyBody()));
+    await selectPeriod('4');
+    const card = panel('Fondo de compras de hoy');
+    expect(within(card).getByText('Sin compras en efectivo desde el último corte.')).toBeInTheDocument();
+    expect(within(card).queryByText('0 documentos')).toBeNull();
+    expect(within(card).queryByText('0 u')).toBeNull();
+    // The money it inherited is still stated, and the balance is the whole of it.
+    expect(within(card).getAllByText('Bs 480.000,00')).toHaveLength(2);
+    expect(within(card).queryByText(/no puede seguir comprando/)).toBeNull();
   });
 
   it('says with words that today has no movements instead of a zero row', async () => {
