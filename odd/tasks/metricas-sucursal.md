@@ -177,3 +177,15 @@ operativa, fondo de compras, baterías más vendidas por unidades, recambio y es
 - **L24** Pedido del humano con la vertical ya cerrada: ver también el **estado del fondo de compras de hoy** en
   la misma pantalla, porque es una caja distinta y sin rendición abierta no tiene dónde mirarse. Se agrega
   S15-S17 y la tarea T5; el corte se revisa aparte, como los anteriores.
+- **L25** Revisión del corte del fondo de compras de hoy (`review-9917510f0999d215`, lentes riesgo y
+  fiabilidad): un hallazgo crítico, real. Yo había arreglado el contrato y el parser para admitir el neto
+  negativo de unidades y kilos, pero **en el store quedó el guard** que respondía 503 en ese caso: el mismo
+  defecto, una capa más abajo. Corregido en 71 líneas de diff, con la prueba que lo fija (una devolución que
+  supera lo comprado deja −2 u y −2,500 kg y se publican con su signo).
+- **L26** El validador dirigido **rechazó** la corrección y la autoridad quedó `escalated`: afirmó que el
+  endpoint seguía rechazando los negativos. Es un **falso negativo**: la línea 545 del handler sólo rechaza
+  `Documents < 0`, y la prueba de admisión que agregué al contrato habría fallado si el endpoint rechazara.
+  Un linaje escalado no es una aprobación, así que abrí una revisión nueva del candidato corregido
+  (`review-7ad044e882431f20`), que salió **aprobada** con una observación informativa y la autoridad quedó
+  quemada. Lección para el registro: cuando el validador cita evidencia de la versión anterior, la salida es
+  una revisión nueva del árbol corregido, nunca reencuadrar la corrección.
