@@ -1021,7 +1021,8 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
    same border, the same muted words and the same tabular figures as the block above. */
 .metrics-today-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px;
   align-items: start; }
-.metrics-today-pair > .metrics-panel { height: 100%; }
+/* Each card ends where its own reading ends: the fund's rows are fewer than the drawer's movements, and
+   stretching it to the drawer's height would leave an empty panel pretending to say something. */
 .metrics-fund-today .metrics-big + .metrics-note { margin-bottom: 12px; }
 .metrics-fund-today .metrics-summary { margin-top: 0; margin-bottom: 12px; }
 /* The end of the branch's buying, said with words beside the figure it follows from. */
