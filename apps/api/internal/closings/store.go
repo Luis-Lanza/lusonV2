@@ -483,12 +483,13 @@ func (s *Store) Count(ctx context.Context, actor auth.Identity, id int64, counte
 // CountMaterials records what the warehouse counted of the material sheet: used batteries in whole
 // units per model and scrap in kilograms per material, and nothing else. It is the count sheet's own
 // shape -- one request states the lines it counted, a line that already exists only changes its
-// count, and a line the period did not buy is added with the database's own expected quantity of
-// zero -- so writing the same request twice leaves the same sheet. The expected quantity of every
-// line is the snapshot the opener seeded from the purchases of the window and is never a caller
-// promise, and a line nobody counted stays pending and blocks nothing: the stock count sheet is the
-// only gate of the proposal (S8). The database refuses a write while the branch is deciding or after
-// the closure (LC025), exactly like the count sheet of the stock (LC004).
+// count, and a line the caller adds gets the database's own expected quantity of zero -- so writing
+// the same request twice leaves the same sheet. The expected quantity of every line is the snapshot
+// the opener seeded from the pending backlog of the branch at its cut -- what it bought before the
+// cut minus what its closed settlements delivered (047) -- and is never a caller promise, and a line
+// nobody counted stays pending and blocks nothing: the stock count sheet is the only gate of the
+// proposal (S8). The database refuses a write while the branch is deciding or after the closure
+// (LC025), exactly like the count sheet of the stock (LC004).
 func (s *Store) CountMaterials(ctx context.Context, actor auth.Identity, id int64, counted []MaterialCounted) (Closing, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return Closing{}, ErrUnavailable
@@ -538,10 +539,11 @@ func (s *Store) CountMaterials(ctx context.Context, actor auth.Identity, id int6
 		// trigger would write its own zero anyway, because the expected is the fact of the opening and
 		// never a caller promise. The conflict branch leaves it untouched, so only the counted
 		// quantity of an existing line ever moves.
-		// The sheet is the opening's own fact: a line exists because the period bought that model or
-		// material, and its expected quantity was seeded then. Counting a key the seed did not create
-		// would store a line with a zero expectation that the update guard then forbids correcting,
-		// which is a false difference, so it is refused instead of invented.
+		// The sheet is the opening's own fact: a line exists because the branch still had that model or
+		// material pending at the cut, and its expected quantity was seeded then. Counting a key the
+		// seed did not create would store a line with a zero expectation that the update guard then
+		// forbids correcting -- and a key with nothing pending is not a position of the branch -- so it
+		// is refused instead of invented.
 		var counted int64
 		switch line.Kind {
 		case MaterialKindUsed:
