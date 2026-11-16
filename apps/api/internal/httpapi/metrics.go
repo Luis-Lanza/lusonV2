@@ -170,22 +170,30 @@ type metricsDTO struct {
 }
 
 // metricsMovementDTO is one row of the branch's cash ledger after the last cut: the kind the ledger
-// writes, its amount and the instant it happened.
+// writes, the amount it states, the effect signed the way the drawer moves and the instant it happened.
+// Effective is the very term the expectation of the window sums, so a screen can state a correction as
+// money coming back instead of as a second expense (S4, S13).
 type metricsMovementDTO struct {
-	Kind       string `json:"kind"`
-	Amount     string `json:"amount"`
+	Kind   string `json:"kind"`
+	Amount string `json:"amount"`
+	// Effective is positive into the drawer and negative out of it; a correction carries the opposite
+	// direction of the movement it answers (S6).
+	Effective  string `json:"effective"`
 	OccurredAt string `json:"occurred_at"`
 }
 
 // metricsTodayDTO is the drawer of today: the cut it starts from -- null for a branch that never
-// closed a settlement -- the three terms of the settlement's own identity, the expectation they
-// produce and the ledger rows of the window as information (S12-S14).
+// closed a settlement -- the three terms of the drawer's own identity, the expectation they produce and
+// the ledger rows of the window with their signed effect (S4, S12-S13).
 type metricsTodayDTO struct {
 	Since    *string `json:"since"`
 	Opening  string  `json:"opening"`
 	Sales    string  `json:"sales"`
 	Expenses string  `json:"expenses"`
-	Expected string  `json:"expected"`
+	// Effective is the signed sum of every movement of the window that belongs to no settlement: the
+	// third term of the identity, opening + sales + effective = expected (S4, S13).
+	Effective string `json:"effective"`
+	Expected  string `json:"expected"`
 	// The rate is null for a branch the warehouse never configured: the absence of a rate is a state
 	// of its own and never a zero percentage (S20). Sold is the base the commission was computed on,
 	// and Commission is what the branch is earning -- not what it holds: the amount is settled when
@@ -447,32 +455,31 @@ func metricsCashRecord(cash closings.MetricsCash) (metricsCashDTO, error) {
 }
 
 // metricsTodayRecord renders the drawer of today and admits every value of it: the cut is an
-// RFC3339 instant or null, the three terms and the expectation are canonical money, and every
-// movement is one of the kinds the ledger writes with a positive amount and a real moment. The list
-// is bounded and ordered oldest first, because a list the server never wrote is another answer.
+// RFC3339 instant or null, the amounts and the signed effect are canonical money, the expectation is
+// exactly opening + sales + effective, and every movement is one of the four kinds the ledger writes
+// with a positive amount, the effect its kind states and a real moment. The list is bounded and ordered
+// oldest first, because a list the server never wrote is another answer (S4, S13).
 func metricsTodayRecord(today closings.MetricsToday) (metricsTodayDTO, error) {
 	unavailable := func() (metricsTodayDTO, error) { return metricsTodayDTO{}, closings.ErrUnavailable }
 	record := metricsTodayDTO{Opening: string(today.Opening), Sales: string(today.Sales),
-		Expenses: string(today.Expenses), Expected: string(today.Expected),
+		Expenses: string(today.Expenses), Effective: string(today.Effective),
+		Expected:  string(today.Expected),
 		Movements: make([]metricsMovementDTO, 0, len(today.Movements))}
 	for _, amount := range []closings.Money{today.Opening, today.Sales, today.Expenses} {
 		if !metricsMoneyPattern.MatchString(string(amount)) {
 			return unavailable()
 		}
 	}
-	if !metricsSignedPattern.MatchString(string(today.Expected)) {
+	if !metricsSignedPattern.MatchString(string(today.Effective)) ||
+		!metricsSignedPattern.MatchString(string(today.Expected)) {
 		return unavailable()
 	}
-	// The expectation is the settlement's own identity: a drawer whose terms do not produce it is a
-	// number this read could not have written.
-	expected, ok := metricsSignedCents(today.Expected)
-	if !ok {
-		return unavailable()
-	}
-	opening, okOpening := metricsSignedCents(closings.Signed(today.Opening))
-	sales, okSales := metricsSignedCents(closings.Signed(today.Sales))
-	expenses, okExpenses := metricsSignedCents(closings.Signed(today.Expenses))
-	if !okOpening || !okSales || !okExpenses || expected != opening+sales-expenses {
+	// The expectation is the drawer's ONE rule over every term of the window -- the opening it inherited,
+	// the cash its sales collected and the signed effect of its movements -- applied by the store's own
+	// function: a drawer whose terms do not produce it is a number this read could not have written (S4,
+	// S13).
+	judged, err := closings.DrawerExpected(today.Opening, today.Sales, today.Effective)
+	if err != nil || judged != today.Expected {
 		return unavailable()
 	}
 	// The commission is the settlement's own rule applied to the window the branch is living: its
@@ -514,13 +521,22 @@ func metricsTodayRecord(today closings.MetricsToday) (metricsTodayDTO, error) {
 	}
 	previous := time.Time{}
 	for _, movement := range today.Movements {
-		if !metricsMovementKindValid(movement.Kind) {
+		if !metricsMovementKindPublished(movement.Kind) {
 			return unavailable()
 		}
 		// The ledger writes a positive amount: a movement exists because money moved.
 		amount := string(movement.Amount)
 		cents, ok := metricsSignedCents(closings.Signed(amount))
 		if !metricsMoneyPattern.MatchString(amount) || !ok || cents < 1 {
+			return unavailable()
+		}
+		// The signed effect is the term the expectation reads, so it is judged as the row's own amount in
+		// the direction its kind states: anything else is money this ledger never derived (S4, S13).
+		effect := string(movement.Effective)
+		effectCents, okEffect := metricsSignedCents(movement.Effective)
+		if !metricsSignedPattern.MatchString(effect) || !okEffect ||
+			(effectCents != cents && effectCents != -cents) ||
+			!metricsMovementDirection(movement.Kind, effectCents) {
 			return unavailable()
 		}
 		if movement.OccurredAt.IsZero() {
@@ -537,7 +553,8 @@ func metricsTodayRecord(today closings.MetricsToday) (metricsTodayDTO, error) {
 		}
 		previous = movement.OccurredAt
 		record.Movements = append(record.Movements,
-			metricsMovementDTO{Kind: movement.Kind, Amount: amount, OccurredAt: moment})
+			metricsMovementDTO{Kind: movement.Kind, Amount: amount, Effective: effect,
+				OccurredAt: moment})
 	}
 	return record, nil
 }
@@ -594,9 +611,35 @@ func metricsFundTodayRecord(fund closings.MetricsFundToday) (metricsFundTodayDTO
 	return record, nil
 }
 
-// metricsMovementKindValid admits the three kinds the ledger writes and nothing else.
+// metricsMovementKindValid admits the three kinds the branch records of its own period and nothing
+// else: the expense it pays out, the contribution it receives and the collection it gives up. A
+// correction is not one of them -- it answers another movement instead of stating a direction of its
+// own -- so the write that records a movement of the period refuses it here (S6).
 func metricsMovementKindValid(kind string) bool {
 	return kind == "gasto" || kind == "recaudacion" || kind == "aporte"
+}
+
+// metricsMovementKindPublished admits the four kinds a row of the ledger can be when the drawer of
+// today lists it: the three the branch records of its own period and the correction that answers one
+// of them (S4, S6, S13). It is the read's admission and never the write's: nothing is recorded as a
+// correction through the path above.
+func metricsMovementKindPublished(kind string) bool {
+	return metricsMovementKindValid(kind) || kind == "correccion"
+}
+
+// metricsMovementDirection reports whether one signed effect is the direction the ledger states for a row
+// of that kind: an aporte puts money into the drawer, a gasto or a recaudacion take it out, and a
+// correction states the opposite direction of the movement it answers, so either sign is a reading and
+// the zero is not one (S6, S13).
+func metricsMovementDirection(kind string, cents int64) bool {
+	switch kind {
+	case "aporte":
+		return cents > 0
+	case "gasto", "recaudacion":
+		return cents < 0
+	default:
+		return cents != 0
+	}
 }
 
 // metricsSignedCents reads one canonical amount of the answer as exact integer cents, so every

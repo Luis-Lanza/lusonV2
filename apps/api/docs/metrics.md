@@ -76,7 +76,7 @@ no value is ever guessed.
   "stock": {"units": 11},
   "today": {
     "since": "2026-11-01T12:00:00Z", "opening": "500.00", "sales": "240.00",
-    "expenses": "12.50", "expected": "727.50",
+    "expenses": "12.50", "effective": "-12.50", "expected": "727.50",
     "rate": "4.50", "sold": "3200.00", "commission": "144.00",
     "movements": [
       {"kind": "aporte", "amount": "100.00", "occurred_at": "2026-11-01T12:00:00Z"},
@@ -95,6 +95,12 @@ no value is ever guessed.
 settlement newest first, then the live one when the branch is inside one, then the
 whole history. The pending balance is never an entry. `period` is the chosen one and
 is always one of the entries of `periods`.
+
+`from` and `to` are the instants the database holds, at the precision it holds them:
+the seconds are always stated and the fraction is published whenever the instant has
+one (`2026-11-01T12:00:00.123456Z`). They are the window a screen asks the book of the
+drawer for, so a bound truncated to the whole second would count the rows recorded in
+the last fraction of a second on the wrong side of the window it describes.
 
 `source` says where the numbers came from, and it is the only thing that decides
 whether they move:
@@ -120,8 +126,13 @@ belongs to the next period and never to both.
 
 ### `cash`
 
-The operational drawer: `opening` plus the cash the period collected minus the
-expenses paid out of it is `expected`. `counted` is what the branch counted and
+The operational drawer: `opening` plus the cash the period collected plus the signed
+effect of the movements the branch wrote in the window is `expected` — the drawer's one
+rule, the same one the acta publishes as `expected_cash` and the book as `GET
+/api/closings/cash-ledger`'s `expected`, so the card and the document of one period can
+never state two numbers. For a settlement the effect is the `cash_effective` the acta
+publishes; `expenses` is reported beside the drawer and is never subtracted a second
+time. `counted` is what the branch counted and
 `difference` is that count against the expectation. Both are **null while nobody
 counted**: a difference of zero would be a count that never happened.
 
@@ -169,27 +180,31 @@ inherits as its opening. It is **null** for a branch that never closed a settlem
 is no cut to start from — and in that case the window is everything the branch ever did and
 `opening` is `"0.00"`.
 
-`opening`, `sales` and `expenses` are the three terms of the settlement's own identity, so
-the card and the acta of the same drawer cannot state two different numbers:
+`opening`, `sales`, `expenses` and `effective` are the terms of the drawer's identity, so the
+card and the acta of the same drawer cannot state two different numbers:
 
 - `opening` is the `closing_cash` of the last closed settlement, which is what the database
   seeds a new opening with;
 - `sales` is the sum of the `cash_amount` of the branch's sales with `created_at >= since`;
   card, transfer and QR never entered the drawer and are not terms of this sum;
-- `expenses` is the sum of the branch's `branch_cash_movements` of kind `gasto` with
-  `occurred_at >= since`.
+- `expenses` is the **net** expense of the window: the signed effect of its `gasto` and
+  `correccion` rows, read from `branch_cash_ledger`, so a correction of an expense lowers it;
+- `effective` is the signed effect of **every** row of the window: `+` for an `aporte`, `−`
+  for a `gasto` or a `recaudacion`, and for a `correccion` the direction it returns.
 
-`expected` is signed and is exactly `opening + sales − expenses`, with the same arithmetic
-the drawer of a live period uses.
+`expected` is signed and is exactly `opening + sales + effective`, with the same arithmetic
+the book of the branch uses (`GET /api/closings/cash-ledger`). Rows with a `closing_id` — the
+aporte and the recaudacion a closure writes — are **not** terms of it (S5): those are the
+acta's own contribution and collection, and counting them here would state the same money
+twice.
 
-`movements` lists every row of the branch's cash ledger with `occurred_at >= since` — the
-kinds `aporte`, `recaudacion` and `gasto` — oldest first, with its `kind`, its `amount` and
-the instant it happened as `occurred_at`. Each row is information the screen shows and
-**never a term of `expected`**: a contribution and a collection enter the acta as the
-contribution the warehouse made and the money it took, so adding them here would make the
-card contradict the settlement it describes. The list is bounded to the newest 50 rows, kept
-in chronological order, so a long history cannot flood the answer; the expectation is
-derived from the ledgers and not from the list, so the bound never changes it.
+`movements` lists the rows of the branch's cash ledger with `occurred_at >= since` — the
+kinds `aporte`, `recaudacion`, `gasto` and `correccion` — oldest first, with its `kind`, its
+`amount` (always positive, the stored fact), its `effective` (the signed term it contributes)
+and the instant it happened as `occurred_at`. The list is bounded to the newest 50 rows, kept
+in chronological order, so a long history cannot flood the answer; the expectation is derived
+from the ledger and not from the list, so the bound never changes it — `effective` is the
+window's own aggregate.
 
 `rate`, `sold` and `commission` are what the branch is **earning so far**: the commission
 rate the warehouse configured for it, the total it sold in the same window and the commission

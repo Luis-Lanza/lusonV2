@@ -137,15 +137,16 @@ function CashPanel({ cash }: { cash: MetricsCash }) {
 
 /** The words of every kind the branch's cash ledger writes. */
 const movementKindLabels: Record<MetricsMovementKind, string> = {
-  aporte: 'Aporte', recaudacion: 'Recaudación', gasto: 'Gasto',
+  aporte: 'Aporte', recaudacion: 'Recaudación', gasto: 'Gasto', correccion: 'Corrección',
 };
 
 /**
  * The cash of today: the drawer of the branch as it stands, rendered whatever period is on screen and
  * above the accounts of the period, so a branch that has only closed settlements still reads it
  * (S12). The expectation is the settlement's own identity — what the last cut left in the drawer plus
- * the cash the sales collected after it minus the expenses paid out of it after it — and the movements
- * of the ledger are listed beside it as information, never as terms of that sum (S13, S14).
+ * the cash the sales collected after it, plus the aportes of the window and minus the gastos and the
+ * recaudaciones it paid out of it — and the movements of the ledger are listed beside it as the terms
+ * that sum is made of, with a correction read as the money it returns (S4, S13).
  */
 function TodayPanel({ today, live }: { today: MetricsToday; live: boolean }) {
   return <section className="metrics-panel metrics-today" aria-labelledby="metrics-today-title">
@@ -155,7 +156,7 @@ function TodayPanel({ today, live }: { today: MetricsToday; live: boolean }) {
       <span className="metrics-big-note">Debería haber en el cajón</span>
     </p>
     <p className="metrics-note">
-      Lo que quedó en el cajón al cerrar el último corte + ventas en efectivo − gastos.
+      Lo que quedó en el cajón al cerrar el último corte + ventas en efectivo + aportes − gastos − recaudaciones.
     </p>
     <div className="metrics-split">
       <span>Cubre</span>
@@ -182,13 +183,16 @@ function TodayPanel({ today, live }: { today: MetricsToday; live: boolean }) {
             {today.movements.map((movement, index) => <tr
               key={`${movement.kind}-${movement.occurred_at}-${index}`}>
               <td className="metrics-today-kind">{movementKindLabels[movement.kind]}</td>
-              <td className="num">{money(movement.amount_cents)}</td>
+              <td className="num">{movement.kind === 'correccion'
+                ? closingSignedText(movement.effective_cents)
+                : money(movement.amount_cents)}</td>
               <td className="metrics-today-moment"><TransferDate value={movement.occurred_at} /></td>
             </tr>)}
           </tbody>
         </table>
         <p className="metrics-note">
-          Los movimientos son información: no se suman ni se restan del esperado, que es el de la rendición.
+          Los movimientos son términos del esperado: el aporte suma, el gasto y la recaudación restan, y la
+          corrección devuelve lo que corrige.
         </p>
       </>}
     {/* The same drawer the period below counts, said in words while the period is the live one. */}

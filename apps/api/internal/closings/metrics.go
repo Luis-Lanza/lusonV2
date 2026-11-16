@@ -100,12 +100,18 @@ type MetricsModel struct {
 type MetricsStock struct{ Units int64 }
 
 // MetricsMovement is one row of the branch's cash ledger after the cut of the last closed
-// settlement: an expense the branch paid out of the drawer, a collection the warehouse took from it
-// or a contribution the warehouse left in it. It carries its kind, its amount and its moment, and it
-// is information the card states beside the expectation and never a term of it (S13, S14).
+// settlement: an expense the branch paid out of the drawer, a collection it gave up, a contribution it
+// received or the correction that answers one of them. It carries its kind, its amount, the effect
+// signed the way the drawer moves -- positive into it and negative out of it -- and its moment. The
+// signed effect is the very number the expectation of the window sums (S4, S13), so the card can state
+// a correction as money coming back instead of as a second expense.
 type MetricsMovement struct {
-	Kind       string
-	Amount     Money
+	Kind string
+	// Amount is what the row states, always positive: the ledger never stores a sign.
+	Amount Money
+	// Effective is the signed effect of the row, positive into the drawer and negative out of it. A
+	// correction carries the opposite direction of the movement it answers (S6, S13).
+	Effective  Signed
 	OccurredAt time.Time
 }
 
@@ -113,14 +119,20 @@ type MetricsMovement struct {
 // showing and whether or not a settlement is open (S12). Since is the cut of the last closed
 // settlement -- the instant its period ended, which is earlier than the moment it was closed -- and is
 // null for a branch that never closed one, where the window is everything the branch ever did.
-// Expected is the settlement's own identity, Opening + Sales − Expenses, so the card and the acta of
-// the same drawer cannot state two different numbers.
+//
+// Expenses is the NET expense of the window and Effective is the signed effect of every movement the
+// branch wrote in it that belongs to no settlement (S4, S13). Expected is the drawer's own identity
+// over those terms, Opening + Sales + Effective, which is why an aporte raises it and a recaudación or
+// a gasto lower it: the card, the acta and the book of the same drawer cannot state two numbers.
 type MetricsToday struct {
 	Since    *time.Time
 	Opening  Money
 	Sales    Money
 	Expenses Money
-	Expected Signed
+	// Effective is the signed sum of the movements of the window that belong to no settlement, which
+	// is the same aggregate the book of the drawer publishes (S4, S13).
+	Effective Signed
+	Expected  Signed
 	// Rate is the commission the warehouse configured for this branch, or nil when it never gave it
 	// one: a rate that does not exist is stated as its absence and never as a zero percentage (S20).
 	Rate *Percent
@@ -462,11 +474,13 @@ func stockUnits(ctx context.Context, q querier, branch int64) (MetricsStock, err
 
 // todayMetrics reads the drawer of the branch as it stands today, whatever period the screen is
 // showing and whether or not a settlement is open (S12): what the last closed settlement left in the
-// drawer, the cash the sales collected after that cut, the expenses paid out of it after the same
-// cut, and the expectation the three produce. That is the settlement's own identity -- the opening a
-// closure seeds from the previous `closing_cash`, plus the cash of the window minus its expenses --
-// so the card and the acta can never state two different drawers. The ledger rows of the window are
-// listed beside it and never enter that sum (S13, S14).
+// drawer, the cash the sales collected after that cut, the net expense paid out of it after the same
+// cut and the expectation those terms produce. The expectation is the drawer's own identity over the
+// signed effect of every movement of the window -- opening + cash sales + that effect (S4) -- which is
+// the very arithmetic the book of the same drawer states, so the card and the book can never publish
+// two numbers for one fact (S13). The expense is the net of the window's `gasto` rows, exactly as the
+// acta of a settled period states it, and the transfer rows of a settlement are excluded on both
+// sides because the acta already states them (S5).
 //
 // The window starts at the cut and not at the closure: the period of a closed settlement ends at its
 // cut, so a sale or an expense the branch records between the cut and the closure of that settlement
@@ -494,33 +508,54 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 		}
 		today.Opening, today.Since = opening, &cut
 	}
-	// The cash that reached the drawer, the expenses paid out of it and the total the branch sold:
-	// the third one is not a term of the drawer -- a card sale never enters it -- but it is the base
-	// the commission of the window is computed on, read over the same predicate as the other two so
-	// the three describe one window and not three (S18).
-	var sales, expenses, sold string
+	// The cash that reached the drawer, the NET expense paid out of it, the signed effect of every
+	// movement of the window that belongs to no settlement, and the total the branch sold: the last one
+	// is not a term of the drawer -- a card sale never enters it -- but it is the base the commission of
+	// the window is computed on, read over the same predicate as the others so they describe one window
+	// and not four (S18).
+	//
+	// The expenses and the effect are read from `branch_cash_ledger`, exactly as `periodTotals` reads
+	// them (S4, S13): the view states one signed effect per row, so the expense of the window is
+	// `-sum(effective)` over the rows whose effect is a `gasto` -- a correction of a gasto lowers it --
+	// and the effect of the window is the same sum over every row of the branch's own period. The
+	// transfer rows a settlement writes are excluded by `closing_id IS NULL`: they are the acta's own
+	// facts, already stated by its `contributed_cash` and `taken_cash`, and counting them here as well
+	// would count the same money twice (S5).
+	var sales, expenses, effective, sold string
 	if err := q.QueryRow(ctx, `SELECT
  coalesce((SELECT sum(sale.cash_amount) FROM sales sale
         WHERE sale.branch_location_id=$1
           AND ($2::timestamptz IS NULL OR sale.created_at >= $2)),0)::numeric(12,2)::text,
- coalesce((SELECT sum(expense.amount) FROM branch_cash_movements expense
-        WHERE expense.branch_location_id=$1 AND expense.kind='`+metricsMovementExpense+`'
-          AND ($2::timestamptz IS NULL OR expense.occurred_at >= $2)),0)::numeric(12,2)::text,
+ coalesce(-(SELECT sum(ledger.effective) FROM branch_cash_ledger ledger
+        WHERE ledger.branch_location_id=$1 AND ledger.effect_kind='`+metricsMovementExpense+`'
+          AND ledger.closing_id IS NULL
+          AND ($2::timestamptz IS NULL OR ledger.occurred_at >= $2)),0)::numeric(12,2)::text,
+ coalesce((SELECT sum(ledger.effective) FROM branch_cash_ledger ledger
+        WHERE ledger.branch_location_id=$1 AND ledger.closing_id IS NULL
+          AND ($2::timestamptz IS NULL OR ledger.occurred_at >= $2)),0)::numeric(12,2)::text,
  coalesce((SELECT sum(line.subtotal) FROM sale_lines line JOIN sales sale ON sale.id=line.sale_id
         WHERE sale.branch_location_id=$1
           AND ($2::timestamptz IS NULL OR sale.created_at >= $2)),0)::numeric(12,2)::text`,
-		int16(branch), today.Since).Scan(&sales, &expenses, &sold); err != nil {
+		int16(branch), today.Since).Scan(&sales, &expenses, &effective, &sold); err != nil {
 		return MetricsToday{}, fail(ctx)
 	}
 	today.Sales, today.Expenses, today.Sold = Money(sales), Money(expenses), Money(sold)
-	// The three terms are amounts the branch holds or spent, never a signed reading: anything else
-	// is a persisted state this answer could not have been produced from.
+	// The amounts are what the branch holds or spent, never a signed reading: anything else is a
+	// persisted state this answer could not have been produced from. The effect of the window is signed
+	// on purpose -- it is the net of aportes, recaudaciones and gastos, and a corrected row reverses one
+	// of them -- so it is judged by its own reading.
 	for _, amount := range []Money{today.Opening, today.Sales, today.Expenses, today.Sold} {
 		if _, ok := amountCents(amount); !ok {
 			return MetricsToday{}, ErrUnavailable
 		}
 	}
-	expected, err := ExpectedCash(today.Opening, today.Sales, today.Expenses)
+	today.Effective = Signed(effective)
+	if _, ok := today.Effective.Cents(); !ok {
+		return MetricsToday{}, ErrUnavailable
+	}
+	// The drawer's own identity over every term of the window, reused and never restated (S4): the
+	// opening it inherited, the cash its sales collected and the signed effect of its movements.
+	expected, err := DrawerExpected(today.Opening, today.Sales, today.Effective)
 	if err != nil {
 		return MetricsToday{}, ErrUnavailable
 	}
@@ -546,7 +581,11 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 	}
 	// The list is read newest first so the bound keeps the newest rows of a long history, and it is
 	// published oldest first because a ledger is read in the order it happened.
-	rows, err := q.Query(ctx, `SELECT kind,amount::text,occurred_at FROM branch_cash_movements
+	// The list is the ledger view and not the table, so every row is published with the one signed
+	// effect the expectation of the window sums (S13): a reader that read `amount` by kind instead would
+	// be a second arithmetic of the same drawer.
+	rows, err := q.Query(ctx, `SELECT kind,effect_kind,amount::text,effective::text,occurred_at
+ FROM branch_cash_ledger
  WHERE branch_location_id=$1 AND ($2::timestamptz IS NULL OR occurred_at >= $2)
  ORDER BY occurred_at DESC,id DESC LIMIT `+strconv.Itoa(metricsTodayMovements),
 		int16(branch), today.Since)
@@ -556,18 +595,13 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 	defer rows.Close()
 	for rows.Next() {
 		var movement MetricsMovement
-		var stored string
-		if rows.Scan(&movement.Kind, &stored, &movement.OccurredAt) != nil {
+		var effectKind, stored, effect string
+		if rows.Scan(&movement.Kind, &effectKind, &stored, &effect, &movement.OccurredAt) != nil {
 			return MetricsToday{}, fail(ctx)
 		}
-		amount := Money(stored)
-		// A movement exists because money moved: the ledger writes a positive amount of one of its
-		// three kinds at one real instant, and anything else is a shape it never wrote.
-		if cents, ok := amountCents(amount); !ok || cents < 1 ||
-			!metricsMovementKind(movement.Kind) || movement.OccurredAt.IsZero() {
+		if !movement.stored(effectKind, stored, effect) {
 			return MetricsToday{}, ErrUnavailable
 		}
-		movement.Amount = amount
 		today.Movements = append(today.Movements, movement)
 	}
 	if rows.Err() != nil {
@@ -679,12 +713,39 @@ func fundTodayMetrics(ctx context.Context, q querier, branch int64) (MetricsFund
 	return fund, nil
 }
 
-// metricsMovementKind admits the three kinds the ledger writes. Nothing else is a movement of the
-// drawer, so nothing else is listed as one.
-func metricsMovementKind(kind string) bool {
-	return kind == metricsMovementExpense || kind == metricsMovementCollection ||
-		kind == metricsMovementContribution
+// stored revalidates one row of the ledger view and publishes it as the card states it, returning
+// whether the row is one this domain could have written: the kind is one of the four the ledger admits,
+// the effect kind is a direction and never the correction itself, a correction is the only kind whose
+// effect kind is its own, the amount is canonical and positive, and the effect is canonical money of
+// the same magnitude in the direction that kind states (S4, S6, S13). A row that fails any of them is
+// never published: the caller fails closed.
+func (m *MetricsMovement) stored(effectKind, amount, effect string) bool {
+	if !metricsMovementKind(m.Kind) || !cashMovementEffectKind(effectKind) ||
+		(effectKind != m.Kind) != (m.Kind == cashMovementCorrection) || m.OccurredAt.IsZero() {
+		return false
+	}
+	stored := Money(amount)
+	cents, ok := amountCents(stored)
+	if !ok || cents < 1 {
+		return false
+	}
+	signed := Signed(effect)
+	effectCents, ok := signed.Cents()
+	// The view states the row's own amount in one direction or the other, so a magnitude that is not
+	// the amount of the row is money this ledger never derived.
+	if !ok || (effectCents != cents && effectCents != -cents) ||
+		!cashMovementDirection(m.Kind, effectKind, effectCents) {
+		return false
+	}
+	m.Amount, m.Effective = stored, signed
+	return true
 }
+
+// metricsMovementKind admits the four kinds the ledger writes: the expense the branch paid out of the
+// drawer, the collection it gave up, the contribution it received and the correction that answers one of
+// them. The admission itself is the ledger's own, reused instead of restated, so no two readers spell
+// the four kinds differently (S13).
+func metricsMovementKind(kind string) bool { return cashMovementKind(kind) }
 
 // closedCommission sums the commission the branch earned in the settlements it closed. A live
 // one states its own commission in its document, but it has not been signed yet, so a history of

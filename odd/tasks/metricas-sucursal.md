@@ -42,9 +42,14 @@ operativa, fondo de compras, baterías más vendidas por unidades, recambio y es
   tarjeta lo dice. Texto del humano: «no me sale en ningun lugar en curso» y «dale! hagamos eso!».
 - **S13** La tarjeta lista los movimientos de caja posteriores a ese corte —aporte, recaudación, gasto— con su
   tipo, su monto y su momento, y dice con palabras cuando no hubo ninguno.
-- **S14** Los movimientos son información, no términos de la expectativa: el esperado de una rendición tampoco
-  los resta ni los suma (un aporte y una recaudación entran al acta como contribución y como la plata que se
-  lleva el Almacén). Sumarlos acá haría que la tarjeta contradiga al acta.
+- **S14** Los movimientos del período son términos de la expectativa de hoy: un aporte suma, un gasto y una
+  recaudación restan, y una corrección devuelve la dirección que corrige. **Revisada el 16/11 por la vertical
+  `caja-operativa.md` (S4, S5)**: la redacción original —«los movimientos son información, no términos de la
+  expectativa»— era correcta mientras los aportes y las recaudaciones sólo los escribía el cierre, porque
+  entraban al acta como contribución y como la plata que se lleva el Almacén. Desde que la sucursal los
+  escribe, un movimiento que nadie resta hace que el cajón esperado mienta y que el faltante del corte no
+  tenga causa. Los movimientos que escribe un cierre siguen fuera de esta suma: son esas mismas columnas del
+  acta y contarlos dos veces sería el error contrario.
 - **S15** La pantalla muestra también el estado del **fondo de compras de hoy**, porque es una caja distinta de
   la operativa y una sucursal sin rendición abierta hoy no tiene dónde verlo. Texto del humano: «en esta
   pantalla de metricas igual deberia poder ver en que estado esta la caja de compras, es decir de compras de

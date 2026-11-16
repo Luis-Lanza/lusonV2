@@ -719,10 +719,10 @@ func TestMetricsTodayListsMovementsOldestFirstWithoutMovingTheExpectation(t *tes
 	}
 }
 
-// TestMetricsTodayDoesNotSubtractACollectionAfterTheCut pins S14 at the seam it protects: the
+// TestMetricsTodayDoesNotSubtractACollectionAfterTheCut pins S5 at the seam it protects: the
 // warehouse takes 100.00 out of the drawer at the second closing, so the ledger holds a recaudación
-// of that amount at the instant of the cut. The card lists it, and the expectation is still what the
-// closing left in the drawer -- a collection is not a second subtraction.
+// of that amount at the instant of the cut. That row belongs to the acta, which already stated it in
+// its own columns, so it is listed and never subtracted a second time.
 func TestMetricsTodayDoesNotSubtractACollectionAfterTheCut(t *testing.T) {
 	e := fixture(t)
 	e.closeFirstSettlement(t, "500.00")
@@ -755,8 +755,70 @@ func TestMetricsTodayDoesNotSubtractACollectionAfterTheCut(t *testing.T) {
 		t.Fatalf("a collection after the cut must not reduce the expectation: %+v", today)
 	}
 	if len(today.Movements) != 1 || today.Movements[0].Kind != "recaudacion" ||
-		today.Movements[0].Amount != "100.00" {
-		t.Fatalf("the collection of the cut must be listed as information: %+v", today.Movements)
+		today.Movements[0].Amount != "100.00" || today.Movements[0].Effective != "-100.00" {
+		t.Fatalf("the collection of the cut must be listed with its effect: %+v", today.Movements)
+	}
+}
+
+// TestMetricsTodayNetsTheCorrectionsOfItsWindow pins S4 on the drawer of today: the expense the card
+// states is the NET expense of its window, and the expectation is the drawer's own identity over every
+// movement of that window -- opening + cash sales + the signed effect of the rows -- so a correction of
+// a gasto lowers the expense and raises the expectation by the same amount, an aporte raises it and a
+// recaudación lowers it, exactly as the book of the same drawer states them (S13).
+func TestMetricsTodayNetsTheCorrectionsOfItsWindow(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	e.sell(t, 1, 1, "200.00", sales.PaymentCash)
+	flete := e.expense(t, 2, "100.00", "Flete mal cargado")
+	e.correction(t, 2, flete.ID, "40.00", "Flete corregido")
+	e.book(t, 2, "aporte", "25.00", "Vuelto para cambio", nil)
+	e.book(t, 2, "recaudacion", "15.00", "Recaudación de la sucursal", nil)
+
+	today := historyOf(t, e).Today
+	// 100.00 paid out of the drawer and 40.00 of it returned: 60.00 of expense and never 100.00.
+	if today.Opening != "500.00" || today.Sales != "200.00" || today.Expenses != "60.00" {
+		t.Fatalf("the expense of the card must be the net of its corrections: %+v", today)
+	}
+	// S4: 500.00 inherited + 200.00 collected − 60.00 of net expenses + 25.00 of aportes
+	// − 15.00 of recaudaciones = 650.00, the one arithmetic the book of the drawer states.
+	if today.Effective != "-50.00" || today.Expected != "650.00" {
+		t.Fatalf("the expectation must sum every signed effect of the window: %+v", today)
+	}
+}
+
+// TestMetricsTodayPublishesACorrectionAsMoneyComingBack pins S13 on the list beside the card: a
+// correction row is published with its own kind and the signed effect the ledger states -- the opposite
+// direction of the movement it answers -- and it never makes the read fail closed the way a kind the
+// ledger writes and the read does not know would.
+func TestMetricsTodayPublishesACorrectionAsMoneyComingBack(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	flete := e.expense(t, 2, "10.00", "Flete")
+	e.correction(t, 2, flete.ID, "6.00", "Flete corregido")
+
+	today := historyOf(t, e).Today
+	// The contribution the first closing left in the drawer is listed beside the two rows of the
+	// window: the list is the ledger of the window, oldest first, whatever the expectation sums.
+	want := []struct{ kind, amount, effective string }{
+		{"aporte", "500.00", "500.00"},
+		{"gasto", "10.00", "-10.00"},
+		{"correccion", "6.00", "6.00"},
+	}
+	if len(today.Movements) != len(want) {
+		t.Fatalf("the card must list every movement of the window: %+v", today.Movements)
+	}
+	for i, expected := range want {
+		movement := today.Movements[i]
+		if movement.Kind != expected.kind || movement.Amount != closings.Money(expected.amount) ||
+			movement.Effective != closings.Signed(expected.effective) {
+			t.Fatalf("movement %d is %+v, want %s %s %s", i, movement, expected.kind,
+				expected.amount, expected.effective)
+		}
+	}
+	// The window states the net of those two rows: 10.00 paid out and 6.00 returned is 4.00 of
+	// expense, and the drawer of the branch holds the 500.00 its only settlement left in it minus it.
+	if today.Expenses != "4.00" || today.Effective != "-4.00" || today.Expected != "496.00" {
+		t.Fatalf("the correction must reach the card as money coming back: %+v", today)
 	}
 }
 

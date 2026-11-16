@@ -50,19 +50,20 @@ const topModels = [
 ];
 const stock = { units: 214 };
 
-// The drawer of today: what the last cut left, the cash the sales collected after it and the
-// expenses paid out of it. 500000 + 1842300 − 84500 = 2257800, the settlement's own identity. The
-// movements are information the card lists, never terms of that sum (S12-S14).
+// The drawer of today: what the last cut left, the cash the sales collected after it and the signed
+// effect of the movements of that window. 500000 + 1842300 + (−42500) = 2299800, the drawer's own
+// identity, and the expense is the net of the gasto rows: 2500.00 (S4, S12).
 const today = {
   since: '2026-11-01T12:00:00Z', opening: '500000.00', sales: '1842300.00',
-  expenses: '84500.00', expected: '2257800.00',
+  expenses: '2500.00', effective: '-42500.00', expected: '2299800.00',
   // What the branch is earning so far: 2100000.00 sold since the cut at 12.50% is 262500.00, rounded
   // once on the total, the settlement's own rule (S18).
   rate: '12.50', sold: '2100000.00', commission: '262500.00',
   movements: [
-    { kind: 'aporte', amount: '10000.00', occurred_at: '2026-11-01T12:00:00Z' },
-    { kind: 'gasto', amount: '2500.00', occurred_at: '2026-11-02T09:30:00Z' },
-    { kind: 'recaudacion', amount: '50000.00', occurred_at: '2026-11-03T18:00:00Z' },
+    { kind: 'aporte', amount: '10000.00', effective: '10000.00', occurred_at: '2026-11-01T12:00:00Z' },
+    { kind: 'gasto', amount: '2500.00', effective: '-2500.00', occurred_at: '2026-11-02T09:30:00Z' },
+    { kind: 'recaudacion', amount: '50000.00', effective: '-50000.00',
+      occurred_at: '2026-11-03T18:00:00Z' },
   ],
 };
 // The purchase envelope of today: what the last cut left in it, the cash spent on purchases after it and
@@ -193,22 +194,46 @@ describe('metrics wire contract', () => {
 
   it('parses the drawer of today with its window, its expectation and its movements', () => {
     const answer = parseMetricsAnswer(settlementBody());
-    // The window starts at the cut of the last closed settlement, and the expectation is the
-    // settlement's own identity: 500000 + 1842300 − 84500 = 2257800 (S12).
+    // The window starts at the cut of the last closed settlement, and the expectation is the drawer's
+    // own identity over every term of it: 500000 + 1842300 + (−42500) = 2299800 (S4).
     expect(answer.today).toEqual({
       since: '2026-11-01T12:00:00Z', opening_cents: 50000000n, sales_cents: 184230000n,
-      expenses_cents: 8450000n, expected_cents: 225780000n,
+      expenses_cents: 250000n, effective_cents: -4250000n, expected_cents: 229980000n,
       rate_percent: '12.50', sold_cents: 210000000n, commission_cents: 26250000n,
       movements: [
-        { kind: 'aporte', amount_cents: 1000000n, occurred_at: '2026-11-01T12:00:00Z' },
-        { kind: 'gasto', amount_cents: 250000n, occurred_at: '2026-11-02T09:30:00Z' },
-        { kind: 'recaudacion', amount_cents: 5000000n, occurred_at: '2026-11-03T18:00:00Z' },
+        { kind: 'aporte', amount_cents: 1000000n, effective_cents: 1000000n,
+          occurred_at: '2026-11-01T12:00:00Z' },
+        { kind: 'gasto', amount_cents: 250000n, effective_cents: -250000n,
+          occurred_at: '2026-11-02T09:30:00Z' },
+        { kind: 'recaudacion', amount_cents: 5000000n, effective_cents: -5000000n,
+          occurred_at: '2026-11-03T18:00:00Z' },
       ],
     });
-    // The movements are information: the expectation never reads them, so a collection of 50000
-    // does not reduce it and a contribution of 10000 does not raise it (S14).
-    expect(answer.today.movements.reduce((sum, movement) => sum + movement.amount_cents, 0n))
-      .not.toBe(answer.today.expected_cents - answer.today.opening_cents);
+    // The movements are the terms of that sum: their signed effect is the aggregate the card states,
+    // so the collection of 50000 lowers the expectation and the contribution of 10000 raises it (S4).
+    expect(answer.today.movements.reduce((sum, movement) => sum + movement.effective_cents, 0n))
+      .toBe(answer.today.effective_cents);
+    expect(answer.today.expected_cents).toBe(answer.today.opening_cents
+      + answer.today.sales_cents + answer.today.effective_cents);
+  });
+
+  it('reads a correction of today as money coming back to the drawer', () => {
+    // The branch paid 2500.00 out of the drawer and corrected 1000.00 of it: the expense of the card
+    // is the net of the two rows and the correction raises the expectation with its own sign (S4, S6).
+    const answer = parseMetricsAnswer(settlementBody({
+      today: { ...today, expenses: '1500.00', effective: '-41500.00', expected: '2300800.00',
+        movements: [
+          { kind: 'gasto', amount: '2500.00', effective: '-2500.00',
+            occurred_at: '2026-11-02T09:30:00Z' },
+          { kind: 'correccion', amount: '1000.00', effective: '1000.00',
+            occurred_at: '2026-11-02T10:00:00Z' },
+        ] },
+    }));
+    expect(answer.today.movements[1]).toEqual({ kind: 'correccion', amount_cents: 100000n,
+      effective_cents: 100000n, occurred_at: '2026-11-02T10:00:00Z' });
+    expect(answer.today.expenses_cents).toBe(150000n);
+    expect(answer.today.effective_cents).toBe(-4150000n);
+    expect(answer.today.expected_cents).toBe(230080000n);
   });
 
   it('parses a branch the warehouse never gave a rate as a null rate and no commission', () => {
@@ -225,10 +250,11 @@ describe('metrics wire contract', () => {
   it('parses a drawer of today without a cut as the whole life of the branch', () => {
     const answer = parseMetricsAnswer(historyBody({
       today: { ...today, since: null, opening: '0.00', sales: '0.00', expenses: '0.00',
-        expected: '0.00', movements: [] },
+        effective: '0.00', expected: '0.00', movements: [] },
     }));
     expect(answer.today.since).toBeNull();
     expect(answer.today.opening_cents).toBe(0n);
+    expect(answer.today.effective_cents).toBe(0n);
     expect(answer.today.expected_cents).toBe(0n);
     expect(answer.today.movements).toEqual([]);
   });
@@ -278,9 +304,9 @@ describe('metrics wire contract', () => {
     // The two reads are separate statements: a sale landing between them moves the live drawer and
     // leaves today where it was written, and that is not a contradiction to refuse.
     const answer = parseMetricsAnswer(liveBody({
-      today: { ...today, expected: '2257900.00', sales: '1842400.00' },
+      today: { ...today, expected: '2299900.00', sales: '1842400.00' },
     }));
-    expect(answer.today.expected_cents).toBe(225790000n);
+    expect(answer.today.expected_cents).toBe(229990000n);
     expect(answer.cash?.expected_cents).toBe(187780000n);
   });
 
@@ -319,32 +345,55 @@ describe('metrics wire contract', () => {
     ['a drawer of today that does not close', settlementBody({
       today: { ...today, expected: '2257900.00' },
     })],
+    ['a drawer of today whose expectation leaves its movements out', settlementBody({
+      today: { ...today, expected: '2342300.00' },
+    })],
+    ['a drawer of today without its signed effect', settlementBody({
+      today: { ...today, effective: undefined },
+    })],
     ['a movement of a kind the ledger never writes', settlementBody({
       today: { ...today, movements: [{ kind: 'transferencia', amount: '10000.00',
-        occurred_at: '2026-11-01T12:00:00Z' }] },
+        effective: '10000.00', occurred_at: '2026-11-01T12:00:00Z' }] },
     })],
     ['a non-canonical amount of a movement', settlementBody({
-      today: { ...today, movements: [{ kind: 'gasto', amount: '2500.0',
+      today: { ...today, movements: [{ kind: 'gasto', amount: '2500.0', effective: '-2500.00',
         occurred_at: '2026-11-02T09:30:00Z' }] },
     })],
     ['a movement of a negative amount', settlementBody({
-      today: { ...today, movements: [{ kind: 'gasto', amount: '-2500.00',
+      today: { ...today, movements: [{ kind: 'gasto', amount: '-2500.00', effective: '-2500.00',
+        occurred_at: '2026-11-02T09:30:00Z' }] },
+    })],
+    ['a movement whose effect is not signed money', settlementBody({
+      today: { ...today, movements: [{ kind: 'gasto', amount: '2500.00', effective: '-2500.0',
+        occurred_at: '2026-11-02T09:30:00Z' }] },
+    })],
+    ['a movement whose effect is not its own amount', settlementBody({
+      today: { ...today, movements: [{ kind: 'gasto', amount: '2500.00', effective: '-2600.00',
+        occurred_at: '2026-11-02T09:30:00Z' }] },
+    })],
+    ['a movement whose effect contradicts its kind', settlementBody({
+      today: { ...today, movements: [{ kind: 'gasto', amount: '2500.00', effective: '2500.00',
+        occurred_at: '2026-11-02T09:30:00Z' }] },
+    })],
+    ['a correction of today without a direction', settlementBody({
+      today: { ...today, movements: [{ kind: 'correccion', amount: '2500.00', effective: '0.00',
         occurred_at: '2026-11-02T09:30:00Z' }] },
     })],
     ['a malformed instant of a movement', settlementBody({
-      today: { ...today, movements: [{ kind: 'gasto', amount: '2500.00',
+      today: { ...today, movements: [{ kind: 'gasto', amount: '2500.00', effective: '-2500.00',
         occurred_at: '2026-11-02' }] },
     })],
     ['a malformed cut of today', settlementBody({ today: { ...today, since: '2026-11-01' } })],
     ['a drawer of today without its movements', settlementBody({
-      today: { since: null, opening: '0.00', sales: '0.00', expenses: '0.00', expected: '0.00' },
+      today: { since: null, opening: '0.00', sales: '0.00', expenses: '0.00', effective: '0.00',
+        expected: '0.00' },
     })],
     ['movements out of the order they happened', settlementBody({
       today: { ...today, movements: [today.movements[2], today.movements[0], today.movements[1]] },
     })],
     ['more movements than the server publishes', settlementBody({
       today: { ...today, movements: Array.from({ length: 51 }, (_, index) => ({
-        kind: 'gasto', amount: '100.00',
+        kind: 'gasto', amount: '100.00', effective: '-100.00',
         occurred_at: new Date(Date.UTC(2026, 10, 1, 12, 0, index)).toISOString(),
       })) },
     })],

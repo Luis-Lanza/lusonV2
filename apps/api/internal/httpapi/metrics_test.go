@@ -33,9 +33,9 @@ var (
 	metricsMaterialWireKeys  = []string{"material_id", "material", "bought_milli", "delivered_milli"}
 	metricsModelWireKeys     = []string{"catalog_entry_id", "brand", "model", "capacity_ah", "units", "money"}
 	metricsStockWireKeys     = []string{"units"}
-	metricsTodayWireKeys     = []string{"since", "opening", "sales", "expenses", "expected", "rate", "sold", "commission", "movements"}
+	metricsTodayWireKeys     = []string{"since", "opening", "sales", "expenses", "effective", "expected", "rate", "sold", "commission", "movements"}
 	metricsFundTodayWireKeys = []string{"since", "opening", "purchases", "balance", "documents", "used_units", "scrap_milli"}
-	metricsMovementWireKeys  = []string{"kind", "amount", "occurred_at"}
+	metricsMovementWireKeys  = []string{"kind", "amount", "effective", "occurred_at"}
 	metricsPeriodWireKeys    = []string{"kind", "closing_id", "from", "to", "label"}
 	// metricsMoneyWire is the strict money parser a client applies to this answer (S8): canonical
 	// two-decimal text, signed only where the contract states a difference.
@@ -161,15 +161,21 @@ type metricsAnswerWire struct {
 		Opening  string  `json:"opening"`
 		Sales    string  `json:"sales"`
 		Expenses string  `json:"expenses"`
-		Expected string  `json:"expected"`
+		// Effective is the signed effect of every movement of the window that belongs to no settlement:
+		// the third term of the drawer's own identity, opening + sales + effective = expected (S4).
+		Effective string `json:"effective"`
+		Expected  string `json:"expected"`
 		// The rate is null for a branch the warehouse never configured, so the absence of a rate is
 		// a state of its own and never a zero percentage (S20).
 		Rate       *string `json:"rate"`
 		Sold       string  `json:"sold"`
 		Commission string  `json:"commission"`
 		Movements  []struct {
-			Kind       string `json:"kind"`
-			Amount     string `json:"amount"`
+			Kind   string `json:"kind"`
+			Amount string `json:"amount"`
+			// Effective is the signed effect of the row, positive into the drawer and negative out of
+			// it: a correction carries the opposite direction of the movement it answers (S13).
+			Effective  string `json:"effective"`
 			OccurredAt string `json:"occurred_at"`
 		} `json:"movements"`
 	} `json:"today"`
@@ -284,7 +290,7 @@ func metricsAnswer(t *testing.T, w *httptest.ResponseRecorder, status int) metri
 		metricsObject(t, movement, metricsMovementWireKeys)
 	}
 	for _, money := range []string{answer.Today.Opening, answer.Today.Sales, answer.Today.Expenses,
-		answer.Today.Expected} {
+		answer.Today.Effective, answer.Today.Expected} {
 		if !metricsMoneyWire.MatchString(money) {
 			t.Fatalf("today money %q is not canonical: %s", money, w.Body.String())
 		}
@@ -295,8 +301,10 @@ func metricsAnswer(t *testing.T, w *httptest.ResponseRecorder, status int) metri
 		}
 	}
 	for _, movement := range answer.Today.Movements {
-		if !metricsMoneyWire.MatchString(movement.Amount) {
-			t.Fatalf("movement money %q is not canonical: %s", movement.Amount, w.Body.String())
+		for _, money := range []string{movement.Amount, movement.Effective} {
+			if !metricsMoneyWire.MatchString(money) {
+				t.Fatalf("movement money %q is not canonical: %s", money, w.Body.String())
+			}
 		}
 		if _, err := time.Parse(time.RFC3339, movement.OccurredAt); err != nil {
 			t.Fatalf("a movement states its moment as an RFC3339 instant: %q", movement.OccurredAt)
@@ -570,15 +578,17 @@ func validMetrics() closings.Metrics {
 		Top: []closings.MetricsModel{{CatalogEntryID: 1, Brand: "CAR", Model: "NS40ZL",
 			Capacity: "35", Units: 2, Money: "10.00"}},
 		Stock: closings.MetricsStock{Units: 5},
-		// The drawer of today: what the last cut left, the cash collected after it and the expense
-		// paid out of it -- 5.00 + 10.00 − 2.00 = 13.00 -- with one ledger row of the window beside
-		// them. A branch without a closed settlement states no cut, which is the null this pins.
+		// The drawer of today: what the last cut left, the cash collected after it and the signed effect
+		// of the movements of that window -- 5.00 + 10.00 + (−2.00) = 13.00 -- with one ledger row of the
+		// window beside them, which is the term the expectation read (S4). A branch without a closed
+		// settlement states no cut, which is the null this pins.
 		// A branch with no configured rate earns nothing: the base it sold is a fact, the commission it
 		// did not earn is the zero of a rate that does not exist, and the rate itself is the null (S18-S20).
 		Today: closings.MetricsToday{Opening: "5.00", Sales: "10.00", Expenses: "2.00",
-			Expected: "13.00", Sold: "10.00", Commission: "0.00",
+			Effective: "-2.00", Expected: "13.00", Sold: "10.00", Commission: "0.00",
 			Movements: []closings.MetricsMovement{
-				{Kind: "gasto", Amount: "2.00", OccurredAt: metricsTodayMoment()}}},
+				{Kind: "gasto", Amount: "2.00", Effective: "-2.00",
+					OccurredAt: metricsTodayMoment()}}},
 		// The purchase envelope of today: what the last cut left in it, the cash spent after it and the
 		// balance the two produce -- 20.00 − 5.00 = 15.00 -- with the volume of those documents.
 		FundToday: closings.MetricsFundToday{Since: &fundCut, Opening: "20.00", Purchases: "5.00",
@@ -614,7 +624,8 @@ func TestMetricsRecordsRefuseAShapeTheServerNeverWrote(t *testing.T) {
 		t.Fatalf("the signed volume of the fund must be admitted: %+v %v", admitted, err)
 	}
 	if record.Today.Since != nil || record.Today.Opening != "5.00" ||
-		record.Today.Expected != "13.00" || len(record.Today.Movements) != 1 {
+		record.Today.Effective != "-2.00" || record.Today.Expected != "13.00" ||
+		len(record.Today.Movements) != 1 || record.Today.Movements[0].Effective != "-2.00" {
 		t.Fatalf("the drawer of today must be admitted as it is: %+v %v", record.Today, err)
 	}
 	// The purchase envelope of today is admitted with its own numbers, and its balance follows its terms.
@@ -656,19 +667,25 @@ func TestMetricsRecordsRefuseAShapeTheServerNeverWrote(t *testing.T) {
 	if err != nil || record.Today.Since == nil || *record.Today.Since != "2024-11-12T12:00:00Z" {
 		t.Fatalf("the cut of today must be published as an RFC3339 instant: %+v %v", record.Today, err)
 	}
-	// A collection and a contribution are information of the ledger: a today whose expectation leaves
-	// them out is admitted, with the movements listed and the sum untouched (S14).
+	// A collection, a contribution and a correction are the ledger of the window and its terms: a today
+	// whose expectation sums their signed effect is admitted, and the movements are listed with the
+	// direction each one carries (S4, S13).
 	ledger := validMetrics()
 	ledger.Today.Movements = []closings.MetricsMovement{
-		{Kind: "aporte", Amount: "100.00", OccurredAt: cut},
-		{Kind: "recaudacion", Amount: "150.00", OccurredAt: cut.Add(time.Hour)},
-		{Kind: "gasto", Amount: "2.00", OccurredAt: cut.Add(2 * time.Hour)},
+		{Kind: "aporte", Amount: "100.00", Effective: "100.00", OccurredAt: cut},
+		{Kind: "recaudacion", Amount: "50.00", Effective: "-50.00", OccurredAt: cut.Add(time.Hour)},
+		{Kind: "gasto", Amount: "2.00", Effective: "-2.00", OccurredAt: cut.Add(2 * time.Hour)},
+		{Kind: "correccion", Amount: "1.00", Effective: "1.00", OccurredAt: cut.Add(3 * time.Hour)},
 	}
+	// 5.00 inherited + 10.00 collected + 100.00 − 50.00 − 2.00 + 1.00 = 64.00: the same effect the
+	// rows state, read as one aggregate (S13).
+	ledger.Today.Effective, ledger.Today.Expected = "49.00", "64.00"
 	record, err = metricsRecord(periods, chosen, ledger)
-	if err != nil || len(record.Today.Movements) != 3 || record.Today.Expected != "13.00" ||
-		record.Today.Movements[0].Kind != "aporte" ||
-		record.Today.Movements[2].Amount != "2.00" {
-		t.Fatalf("the movements are information of today: %+v %v", record.Today, err)
+	if err != nil || len(record.Today.Movements) != 4 || record.Today.Expected != "64.00" ||
+		record.Today.Effective != "49.00" || record.Today.Movements[0].Kind != "aporte" ||
+		record.Today.Movements[0].Effective != "100.00" ||
+		record.Today.Movements[3].Effective != "1.00" {
+		t.Fatalf("the movements are the terms of today: %+v %v", record.Today, err)
 	}
 	// A settlement may count more material than the period bought: the delivered figure is the
 	// counted one, so an excess is published with its own value and never refused (S3, L7).
@@ -785,9 +802,13 @@ func TestMetricsRecordsRefuseAShapeTheServerNeverWrote(t *testing.T) {
 		"model without an entry":       func(m *closings.Metrics) { m.Top[0].CatalogEntryID = 0 },
 		"today opening not money":      func(m *closings.Metrics) { m.Today.Opening = "5" },
 		"today sales not money":        func(m *closings.Metrics) { m.Today.Sales = "-10.00" },
+		"today effect not signed":      func(m *closings.Metrics) { m.Today.Effective = "menos" },
 		"today expectation not signed": func(m *closings.Metrics) { m.Today.Expected = "trece" },
 		"today does not close":         func(m *closings.Metrics) { m.Today.Expected = "12.00" },
-		"today with a zero cut":        func(m *closings.Metrics) { m.Today.Since = &time.Time{} },
+		"today leaves its effect out": func(m *closings.Metrics) {
+			m.Today.Expected = "15.00"
+		},
+		"today with a zero cut": func(m *closings.Metrics) { m.Today.Since = &time.Time{} },
 		"today with an unknown kind": func(m *closings.Metrics) {
 			m.Today.Movements[0].Kind = "transferencia"
 		},
@@ -800,12 +821,27 @@ func TestMetricsRecordsRefuseAShapeTheServerNeverWrote(t *testing.T) {
 		},
 		"today with a movement out of order": func(m *closings.Metrics) {
 			m.Today.Movements = append(m.Today.Movements, closings.MetricsMovement{Kind: "gasto",
-				Amount: "1.00", OccurredAt: metricsTodayMoment().Add(-time.Hour)})
+				Amount: "1.00", Effective: "-1.00", OccurredAt: metricsTodayMoment().Add(-time.Hour)})
+		},
+		"today with an effect that is not signed money": func(m *closings.Metrics) {
+			m.Today.Movements[0].Effective = "-2"
+		},
+		"today with an effect larger than its amount": func(m *closings.Metrics) {
+			m.Today.Movements[0].Effective = "-20.00"
+		},
+		"today with an effect that contradicts its kind": func(m *closings.Metrics) {
+			m.Today.Movements[0].Effective = "2.00"
+		},
+		"today with a correction that names no direction": func(m *closings.Metrics) {
+			m.Today.Movements = append(m.Today.Movements, closings.MetricsMovement{Kind: "correccion",
+				Amount: "1.00", Effective: "0.00",
+				OccurredAt: metricsTodayMoment().Add(time.Minute)})
 		},
 		"today beyond the bound of the ledger list": func(m *closings.Metrics) {
 			m.Today.Movements = make([]closings.MetricsMovement, 51)
 			for i := range m.Today.Movements {
 				m.Today.Movements[i] = closings.MetricsMovement{Kind: "gasto", Amount: "1.00",
+					Effective:  "-1.00",
 					OccurredAt: metricsTodayMoment().Add(time.Duration(i) * time.Minute)}
 			}
 		},
@@ -891,7 +927,8 @@ func TestMetricsHTTPToday(t *testing.T) {
 	}
 	if answer.Today.Since != nil || answer.Today.Opening != "0.00" ||
 		answer.Today.Sales != "0.00" || answer.Today.Expenses != "0.00" ||
-		answer.Today.Expected != "0.00" || len(answer.Today.Movements) != 0 {
+		answer.Today.Effective != "0.00" || answer.Today.Expected != "0.00" ||
+		len(answer.Today.Movements) != 0 {
 		t.Fatalf("a branch without a closed settlement states no cut: %+v", answer.Today)
 	}
 
@@ -904,14 +941,17 @@ func TestMetricsHTTPToday(t *testing.T) {
 		t.Fatalf("a branch that closed a settlement states its cut: %+v", answer.Today)
 	}
 	// The same identity the drawer of a live period uses: the closing left 100.00 in the till and
-	// nothing was sold or paid out of it after the cut.
+	// nothing was sold or paid out of it after the cut. Its contribution is a transfer of the acta, so
+	// it is listed with its effect and excluded from the effect of the window (S5).
 	if answer.Today.Opening != "100.00" || answer.Today.Sales != "0.00" ||
-		answer.Today.Expenses != "0.00" || answer.Today.Expected != "100.00" {
-		t.Fatalf("today must follow the settlement's own formula: %+v", answer.Today)
+		answer.Today.Expenses != "0.00" || answer.Today.Effective != "0.00" ||
+		answer.Today.Expected != "100.00" {
+		t.Fatalf("today must follow the drawer's own identity: %+v", answer.Today)
 	}
 	if len(answer.Today.Movements) != 1 || answer.Today.Movements[0].Kind != "aporte" ||
-		answer.Today.Movements[0].Amount != "100.00" {
-		t.Fatalf("the contribution of the closing must be listed as information: %+v",
+		answer.Today.Movements[0].Amount != "100.00" ||
+		answer.Today.Movements[0].Effective != "100.00" {
+		t.Fatalf("the contribution of the closing must be listed with its effect: %+v",
 			answer.Today.Movements)
 	}
 	// The whole history of the same branch publishes the same drawer of today: it is a state of the
@@ -919,6 +959,7 @@ func TestMetricsHTTPToday(t *testing.T) {
 	history := metricsAnswer(t, f.serve(t, f.request(3, "GET", "/api/metrics?period=all", "")), 200)
 	if history.Today.Since == nil || *history.Today.Since != *answer.Today.Since ||
 		history.Today.Opening != answer.Today.Opening ||
+		history.Today.Effective != answer.Today.Effective ||
 		history.Today.Expected != answer.Today.Expected ||
 		len(history.Today.Movements) != len(answer.Today.Movements) {
 		t.Fatalf("today is the same whatever period is shown: %+v want %+v", history.Today,
@@ -965,19 +1006,19 @@ func TestMetricsHTTPTodayCommissionRefusesAnIdentityItCouldNotHaveWritten(t *tes
 	impossible := closings.Percent("101.00")
 	shapes := map[string]closings.MetricsToday{
 		"a commission that is not its rate times the total": {
-			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Expected: "0.00",
+			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
 			Rate: &rate, Sold: sold, Commission: closings.Money("99.00")},
 		"a commission without a rate": {
-			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Expected: "0.00",
+			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
 			Rate: nil, Sold: sold, Commission: closings.Money("17.50")},
 		"a zero commission with a rate that produces one": {
-			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Expected: "0.00",
+			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
 			Rate: &rate, Sold: sold, Commission: closings.Money("0.00")},
 		"a rate that is not a percentage": {
-			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Expected: "0.00",
+			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
 			Rate: &impossible, Sold: sold, Commission: closings.Money("17.50")},
 		"a total sold that is not money": {
-			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Expected: "0.00",
+			Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
 			Rate: &rate, Sold: closings.Money("-0.001"), Commission: closings.Money("17.50")},
 	}
 	for name, today := range shapes {
@@ -987,7 +1028,7 @@ func TestMetricsHTTPTodayCommissionRefusesAnIdentityItCouldNotHaveWritten(t *tes
 	}
 	// The reading the store does write is admitted, and it is the settled rule beside it.
 	admitted, err := metricsTodayRecord(closings.MetricsToday{
-		Opening: "0.00", Sales: "0.00", Expenses: "0.00", Expected: "0.00",
+		Opening: "0.00", Sales: "0.00", Expenses: "0.00", Effective: "0.00", Expected: "0.00",
 		Rate: &rate, Sold: sold, Commission: closings.Money("17.50")})
 	if err != nil || admitted.Commission != "17.50" || admitted.Rate == nil ||
 		*admitted.Rate != "12.50" || admitted.Sold != "140.00" {
@@ -1056,5 +1097,66 @@ func buy(t *testing.T, f *metricsHTTPFixture, branch int, input purchases.Create
 	if _, err := purchases.New(f.p).Create(f.ctx,
 		auth.Identity{AccountID: branch, Location: auth.Location{ID: branch}}, input); err != nil {
 		t.Fatalf("the purchase of branch %d could not be registered: %v", branch, err)
+	}
+}
+
+// TestMetricsPeriodSelectorPublishesTheColumnInstants pins the precision of the selector's window (S4,
+// S13): the `from` and `to` of a period are the instants the database holds, microseconds included,
+// because a screen asks the book for that window and a bound truncated to the whole second would count
+// the rows recorded in the last fraction of a second on the wrong side of it.
+func TestMetricsPeriodSelectorPublishesTheColumnInstants(t *testing.T) {
+	f := metricsFixture(t)
+	// A contribution of the branch's own book is the earliest activity of the branch, so the first period
+	// starts at that row's instant: the selector must publish it as the column holds it.
+	aporte := closingCashMovementReply(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"aporte","amount":"30.00","description":"Cambio para el cajón"}`)), 201,
+		closingCashMovementKeys)
+	closed := f.closeSettlement(t, 2,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo"}`)
+	var storedStart, storedCut, occurred time.Time
+	if err := f.p.QueryRow(f.ctx, `SELECT period_start,cut_at FROM branch_closings WHERE id=$1`,
+		closed.ID).Scan(&storedStart, &storedCut); err != nil {
+		t.Fatalf("the window of the closure is not readable: %v", err)
+	}
+	if err := f.p.QueryRow(f.ctx, `SELECT occurred_at FROM branch_cash_movements WHERE id=$1`,
+		aporte.ID).Scan(&occurred); err != nil {
+		t.Fatalf("the movement of the fixture is not readable: %v", err)
+	}
+	if !occurred.Equal(storedStart) {
+		t.Fatalf("this probe is about the first activity: the period starts at %s and the contribution "+
+			"is stamped %s", storedStart, occurred)
+	}
+	answer := metricsAnswer(t, f.serve(t, f.request(2, "GET",
+		fmt.Sprintf("/api/metrics?period=%d", closed.ID), "")), 200)
+	chosen := answer.Period
+	if chosen.From == nil || chosen.To == nil {
+		t.Fatalf("a settlement period states its window: %+v", chosen)
+	}
+	if want := storedStart.UTC().Format(time.RFC3339Nano); *chosen.From != want {
+		t.Fatalf("the selector starts at %s and published %s", want, *chosen.From)
+	}
+	if want := storedCut.UTC().Format(time.RFC3339Nano); *chosen.To != want {
+		t.Fatalf("the selector ends at %s and published %s", want, *chosen.To)
+	}
+	// The window the selector published is the one the book answers for: the same bounds, the same
+	// expectation and the movement the acta counted.
+	book := closingCashLedgerOf(t, f.closingHTTPFixture, *chosen.From, *chosen.To)
+	if book.Since == nil || *book.Since != *chosen.From || book.Until == nil || *book.Until != *chosen.To {
+		t.Fatalf("the book must echo the window the selector published: %+v", book)
+	}
+	if len(book.Movements) != 1 || book.Movements[0].ID != aporte.ID {
+		t.Fatalf("the window of the selector must hold the movement of the period: %+v", book.Movements)
+	}
+	// Every period of the selector states the same precision, the live one included.
+	for _, period := range answer.Periods {
+		for name, bound := range map[string]*string{"from": period.From, "to": period.To} {
+			if bound == nil {
+				continue
+			}
+			parsed, err := time.Parse(time.RFC3339Nano, *bound)
+			if err != nil || parsed.UTC().Format(time.RFC3339Nano) != *bound {
+				t.Fatalf("%s of %s is not the instant the column holds: %q", name, period.Kind, *bound)
+			}
+		}
 	}
 }

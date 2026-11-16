@@ -116,28 +116,44 @@ export interface MetricsModel {
 
 export interface MetricsStock { readonly units: number }
 
-/** The three kinds the branch's cash ledger writes: the money paid, taken and left in the drawer. */
-export type MetricsMovementKind = 'aporte' | 'recaudacion' | 'gasto';
-const metricsMovementKinds: readonly MetricsMovementKind[] = ['aporte', 'recaudacion', 'gasto'];
+/**
+ * The four kinds the branch's cash ledger writes: the money paid out, the money taken, the money left in
+ * the drawer and the correction that answers one of them (S4, S6).
+ */
+export type MetricsMovementKind = 'aporte' | 'recaudacion' | 'gasto' | 'correccion';
+const metricsMovementKinds: readonly MetricsMovementKind[] = ['aporte', 'recaudacion', 'gasto',
+  'correccion'];
 
-/** One row of the ledger after the last cut: its kind, its amount and the instant it happened. */
+/**
+ * One row of the ledger after the last cut: its kind, its amount, the effect signed the way the drawer
+ * moves and the instant it happened. `effective_cents` is the very term the expectation of the drawer
+ * sums, so a correction reads as money coming back instead of as a second expense (S4, S13).
+ */
 export interface MetricsMovement {
   readonly kind: MetricsMovementKind;
+  /** What the row states, always positive: the ledger never stores a sign. */
   readonly amount_cents: bigint;
+  /** Positive into the drawer and negative out of it; a correction answers the direction it corrects. */
+  readonly effective_cents: bigint;
   readonly occurred_at: string;
 }
 
 /**
  * The drawer of the branch today, published whatever period is on screen (S12). `since` is the cut of
  * the last closed settlement and null for a branch that never closed one, where the window is
- * everything the branch ever did. The expectation is the settlement's own identity and the movements
- * are information the card lists, never terms of that sum (S14).
+ * everything the branch ever did. The expectation is the drawer's own identity over every term of that
+ * window -- opening + cash sales + the signed effect of its movements (S4) -- which is why an aporte
+ * raises it and a recaudación or a gasto lower it: the card, the acta and the book of the same drawer
+ * cannot state two numbers (S13).
  */
 export interface MetricsToday {
   readonly since: string | null;
   readonly opening_cents: bigint;
   readonly sales_cents: bigint;
+  /** The NET expense of the window: the gasto rows net of the corrections that answer them. */
   readonly expenses_cents: bigint;
+  /** The signed sum of every movement of the window that belongs to no settlement (S4, S13). */
+  readonly effective_cents: bigint;
   readonly expected_cents: bigint;
   /**
    * The rate the warehouse configured for this branch, or null when it never gave it one: the absence
@@ -565,35 +581,46 @@ const metricsTodayMovements = 50;
 
 /** One movement of the drawer: a kind the ledger writes, a positive amount and a real instant. */
 function movementValue(value: unknown): MetricsMovement {
-  const record = fields(value, ['kind', 'amount', 'occurred_at']);
+  const record = fields(value, ['kind', 'amount', 'effective', 'occurred_at']);
   if (typeof record.kind !== 'string'
     || !metricsMovementKinds.includes(record.kind as MetricsMovementKind)) {
     return invalidResponse();
   }
+  const kind = record.kind as MetricsMovementKind;
   const amount_cents = wireMoney(record.amount, false);
   // The ledger writes an amount above zero: a movement exists because money moved.
   if (amount_cents <= 0n) return invalidResponse();
-  return Object.freeze({ kind: record.kind as MetricsMovementKind, amount_cents,
+  // The signed effect is the row's own amount in the direction its kind states: an aporte puts money
+  // into the drawer, a gasto or a recaudación take it out, and a correction answers the direction of the
+  // movement it corrects, so either sign is a reading and the zero is not one (S4, S6, S13).
+  const effective_cents = wireMoney(record.effective, true);
+  if (effective_cents !== amount_cents && effective_cents !== -amount_cents) return invalidResponse();
+  if (kind === 'aporte' ? effective_cents <= 0n
+    : kind === 'correccion' ? effective_cents === 0n : effective_cents >= 0n) {
+    return invalidResponse();
+  }
+  return Object.freeze({ kind, amount_cents, effective_cents,
     occurred_at: timestamp(record.occurred_at) });
 }
 
 /**
- * The drawer of today. Its expectation is the settlement's own identity -- what the last cut left plus
- * the cash collected after it minus the expenses paid after it -- so the card and the acta of the same
- * drawer cannot state two different numbers (S12).
+ * The drawer of today. Its expectation is the drawer's own identity -- what the last cut left plus the
+ * cash collected after it plus the signed effect of every movement of that window -- so the card and
+ * the book of the same drawer cannot state two different numbers (S4, S13).
  *
  * It is deliberately NOT compared with `cash.expected` of a live period: the two are separate
  * statements of the same drawer, so a sale landing between the two reads would move one and not the
  * other, and refusing that answer would refuse a payload this server really wrote (S12, S14).
  */
 function todayValue(value: unknown): MetricsToday {
-  const record = fields(value, ['since', 'opening', 'sales', 'expenses', 'expected', 'rate', 'sold',
-    'commission', 'movements']);
+  const record = fields(value, ['since', 'opening', 'sales', 'expenses', 'effective', 'expected',
+    'rate', 'sold', 'commission', 'movements']);
   const opening_cents = wireMoney(record.opening, false);
   const sales_cents = wireMoney(record.sales, false);
   const expenses_cents = wireMoney(record.expenses, false);
+  const effective_cents = wireMoney(record.effective, true);
   const expected_cents = wireMoney(record.expected, true);
-  if (expected_cents !== opening_cents + sales_cents - expenses_cents) return invalidResponse();
+  if (expected_cents !== opening_cents + sales_cents + effective_cents) return invalidResponse();
   const sold_cents = wireMoney(record.sold, false);
   const commission_cents = wireMoney(record.commission, false);
   const rate = record.rate === null ? null : wirePercent(record.rate);
@@ -619,7 +646,7 @@ function todayValue(value: unknown): MetricsToday {
   return Object.freeze({
     // A branch that never closed a settlement has no cut: its window is everything it ever did.
     since: record.since === null ? null : timestamp(record.since),
-    opening_cents, sales_cents, expenses_cents, expected_cents,
+    opening_cents, sales_cents, expenses_cents, effective_cents, expected_cents,
     rate_percent: rate === null ? null : rate.text,
     sold_cents, commission_cents,
     movements: Object.freeze(movements),

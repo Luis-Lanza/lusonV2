@@ -47,18 +47,18 @@ const topModels = [
 ];
 const stock = { units: 214 };
 
-// The drawer of today, published by every source: what the last cut left, the cash sales after it
-// and the expenses paid out of it -- 500000 + 1842300 − 84500 = 2257800 -- with the ledger rows of
-// the window as information (S12-S14).
+// The drawer of today, published by every source: what the last cut left, the cash sales after it and
+// the signed movements of its window -- 500000 + 1842300 + (10000 − 2500 − 50000) = 2299800 -- with the
+// ledger rows beside it as the terms that sum is made of (S12, S4).
 const today = {
   since: '2026-11-01T12:00:00Z', opening: '500000.00', sales: '1842300.00',
-  expenses: '84500.00', expected: '2257800.00',
+  expenses: '2500.00', effective: '-42500.00', expected: '2299800.00',
   // What the branch is earning so far: 2100000.00 sold since the cut at 12.50% is 262500.00 (S18).
   rate: '12.50', sold: '2100000.00', commission: '262500.00',
   movements: [
-    { kind: 'aporte', amount: '10000.00', occurred_at: '2026-11-01T12:00:00Z' },
-    { kind: 'gasto', amount: '2500.00', occurred_at: '2026-11-02T09:30:00Z' },
-    { kind: 'recaudacion', amount: '50000.00', occurred_at: '2026-11-03T18:00:00Z' },
+    { kind: 'aporte', amount: '10000.00', effective: '10000.00', occurred_at: '2026-11-01T12:00:00Z' },
+    { kind: 'gasto', amount: '2500.00', effective: '-2500.00', occurred_at: '2026-11-02T09:30:00Z' },
+    { kind: 'recaudacion', amount: '50000.00', effective: '-50000.00', occurred_at: '2026-11-03T18:00:00Z' },
   ],
 };
 
@@ -313,7 +313,7 @@ describe('branch metrics screen', () => {
     await selectPeriod('4');
     const card = panel('Caja de hoy');
     // The expectation of the drawer as it stands today, with the identity that produces it (S12).
-    expect(within(card).getByText('Bs 2.257.800,00')).toBeInTheDocument();
+    expect(within(card).getByText('Bs 2.299.800,00')).toBeInTheDocument();
     expect(card).toHaveTextContent(/Lo que quedó en el cajón al cerrar el último corte/);
     expect(card).toHaveTextContent(/ventas en efectivo/);
     expect(card).toHaveTextContent(/gastos/);
@@ -463,8 +463,8 @@ describe('branch metrics screen', () => {
 
   it('says that today starts at the beginning of the branch when there is no cut', async () => {
     const noCut = { ...today, since: null, opening: '0.00', sales: '100.00', expenses: '20.00',
-      expected: '80.00', movements: [{ kind: 'gasto', amount: '20.00',
-        occurred_at: '2026-11-02T09:30:00Z' }] };
+      effective: '-20.00', expected: '80.00', movements: [{ kind: 'gasto', amount: '20.00',
+        effective: '-20.00', occurred_at: '2026-11-02T09:30:00Z' }] };
     // The whole history is the period the screen opens on, and today is stated there too: a branch
     // that never closed a settlement still has a drawer (S12).
     setup(() => json(historyBody({ today: noCut })));
@@ -477,7 +477,7 @@ describe('branch metrics screen', () => {
 
   it('renders the cash of today even when the period on screen is the history', async () => {
     const noCut = { ...today, since: null, opening: '0.00', sales: '0.00', expenses: '0.00',
-      expected: '0.00', movements: [] };
+      effective: '0.00', expected: '0.00', movements: [] };
     setup(token => token === 'all' ? json(historyBody({ today: noCut })) : json(settlementBody()));
     // The history has no drawer of its own and still shows today's drawer of the branch.
     expect(await screen.findByText('El acumulado no tiene caja: la caja se cierra en cada rendición.'))
@@ -494,7 +494,7 @@ describe('branch metrics screen', () => {
     await selectPeriod('5');
     const card = panel('Caja de hoy');
     expect(within(card).getByText(/Es el mismo cajón que cuenta el período de abajo/)).toBeInTheDocument();
-    expect(within(card).getByText('Bs 2.257.800,00')).toBeInTheDocument();
+    expect(within(card).getByText('Bs 2.299.800,00')).toBeInTheDocument();
   });
 
   it('refuses a payload the server could not have written and offers the same retry', async () => {
