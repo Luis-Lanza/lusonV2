@@ -22,6 +22,7 @@ import CatalogSectionBoundary from './CatalogSectionBoundary';
 import PointOfSale, { SalesSectionBoundary, salesHistoryFailureMessage } from './PointOfSale';
 import SalesHistory from './SalesHistory';
 import Purchases from './Purchases';
+import Cash from './Cash';
 import Metrics from './Metrics';
 
 function Login({ state }: { state: Controller }) {
@@ -89,7 +90,7 @@ function Pager({ state }: { state: Controller }) {
     </div>
   </footer>;
 }
-function Navigation({ mobile = false, transfers, disabled, actionCount, countUnavailable, onInventory, onPending, privateSection, admin, onAdmin, onPassword, stock, stockActive, onStock, adjustments, adjustmentsActive, onAdjustments, catalog, catalogActive, onCatalog, settlements, settlementsActive, onSettlements, settlementDecision, settlementDecisionActive, onSettlementDecision, sales, salesActive, onSales, salesHistory, salesHistoryActive, onSalesHistory, purchases, purchasesActive, onPurchases, metrics, metricsActive, onMetrics }: {
+function Navigation({ mobile = false, transfers, disabled, actionCount, countUnavailable, onInventory, onPending, privateSection, admin, onAdmin, onPassword, stock, stockActive, onStock, adjustments, adjustmentsActive, onAdjustments, catalog, catalogActive, onCatalog, settlements, settlementsActive, onSettlements, settlementDecision, settlementDecisionActive, onSettlementDecision, sales, salesActive, onSales, salesHistory, salesHistoryActive, onSalesHistory, purchases, purchasesActive, onPurchases, cash, cashActive, onCash, metrics, metricsActive, onMetrics }: {
   mobile?: boolean; transfers: boolean; disabled: boolean; actionCount: string | null; countUnavailable: boolean;
   onInventory: () => void; onPending: () => void; privateSection?: string; admin: boolean;
   onAdmin: () => void; onPassword: () => void; stock: boolean; stockActive: boolean; onStock: () => void;
@@ -100,13 +101,14 @@ function Navigation({ mobile = false, transfers, disabled, actionCount, countUna
   sales: boolean; salesActive: boolean; onSales: () => void;
   salesHistory: boolean; salesHistoryActive: boolean; onSalesHistory: () => void;
   purchases: boolean; purchasesActive: boolean; onPurchases: () => void;
+  cash: boolean; cashActive: boolean; onCash: () => void;
   metrics: boolean; metricsActive: boolean; onMetrics: () => void;
 }) {
   const statusID = mobile ? 'mobile-transfer-count' : 'desktop-transfer-count';
   const countStatus = actionCount !== null ? `Acciones requeridas: ${actionCount}`
     : countUnavailable ? 'Contador de acciones no disponible.' : 'Consultando acciones requeridas…';
   return <nav className={mobile ? 'bottom-nav' : 'side-nav'} aria-label={mobile ? 'Navegación móvil' : 'Navegación principal'}>
-    <a href="#inventario" aria-current={!transfers && !privateSection && !stockActive && !adjustmentsActive && !catalogActive && !settlementsActive && !settlementDecisionActive && !salesActive && !salesHistoryActive && !purchasesActive && !metricsActive ? 'page' : undefined} aria-disabled={disabled} onClick={event => { event.preventDefault(); if (!disabled) onInventory(); }}><Icon name="inventory" /><span>Inventario</span></a>
+    <a href="#inventario" aria-current={!transfers && !privateSection && !stockActive && !adjustmentsActive && !catalogActive && !settlementsActive && !settlementDecisionActive && !salesActive && !salesHistoryActive && !purchasesActive && !cashActive && !metricsActive ? 'page' : undefined} aria-disabled={disabled} onClick={event => { event.preventDefault(); if (!disabled) onInventory(); }}><Icon name="inventory" /><span>Inventario</span></a>
     <button type="button" disabled={disabled} aria-current={transfers ? 'page' : undefined} aria-describedby={statusID} onClick={onPending}><Icon name="transfer" /><span>Transferencias</span>
       <span className={'transfer-action-badge' + (actionCount === null ? ' unknown' : actionCount === '0' ? ' zero' : '')} aria-hidden="true">{actionCount ?? (countUnavailable ? '—' : '…')}</span>
     </button>
@@ -118,6 +120,7 @@ function Navigation({ mobile = false, transfers, disabled, actionCount, countUna
     {sales && <button type="button" disabled={disabled} aria-current={salesActive ? 'page' : undefined} onClick={onSales}><Icon name="sale" /><span>Punto de venta</span></button>}
     {salesHistory && <button type="button" disabled={disabled} aria-current={salesHistoryActive ? 'page' : undefined} onClick={onSalesHistory}><Icon name="history" /><span>Historial de ventas</span></button>}
     {purchases && <button type="button" disabled={disabled} aria-current={purchasesActive ? 'page' : undefined} onClick={onPurchases}><Icon name="sale" /><span>Compras</span></button>}
+    {cash && <button type="button" disabled={disabled} aria-current={cashActive ? 'page' : undefined} onClick={onCash}><Icon name="sale" /><span>Caja</span></button>}
     {metrics && <button type="button" disabled={disabled} aria-current={metricsActive ? 'page' : undefined} onClick={onMetrics}><Icon name="metrics" /><span>Métricas</span></button>}
     {admin && <button type="button" disabled={disabled} aria-current={privateSection === 'administration' ? 'page' : undefined} onClick={onAdmin}><Icon name="administration" /><span>Administración</span></button>}
     <button type="button" disabled={disabled} aria-current={privateSection === 'password' ? 'page' : undefined} onClick={onPassword}><Icon name="password" /><span>Mi contraseña</span></button>
@@ -220,6 +223,8 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
   const salesHistory = branch && route.section === 'salesHistory';
   // Purchases is branch-only too, and never part of a sale (S1, S8).
   const purchases = branch && route.section === 'purchases';
+  // The operational drawer is the branch's own till, so it is branch-only like Compras (S8, S12).
+  const cash = branch && route.section === 'cash';
   // The metrics of the branch publish one branch: its own. The warehouse consolidated read belongs
   // to another vertical, so this identity never sees the section nor reaches it with a typed hash.
   const metrics = branch && route.section === 'metrics';
@@ -311,6 +316,11 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
     if (navDisabled || purchases || latest !== ownerTag) return;
     changeRoute({ section: 'purchases' });
   }
+  function navigateCash() {
+    const latest = transferViewOwner(state.getTransferAuthority());
+    if (navDisabled || cash || latest !== ownerTag) return;
+    changeRoute({ section: 'cash' });
+  }
   function navigateMetrics() {
     const latest = transferViewOwner(state.getTransferAuthority());
     if (navDisabled || metrics || latest !== ownerTag) return;
@@ -326,13 +336,14 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
     sales: branch, salesActive: sales, onSales: navigateSales,
     salesHistory: branch, salesHistoryActive: salesHistory, onSalesHistory: navigateSalesHistory,
     purchases: branch, purchasesActive: purchases, onPurchases: navigatePurchases,
+    cash: branch, cashActive: cash, onCash: navigateCash,
     metrics: branch, metricsActive: metrics, onMetrics: navigateMetrics,
     onAdmin: () => navigatePrivate('administration'), onPassword: () => navigatePrivate('password'), onInventory: () => navigate(false), onPending: () => navigate(true) };
   return <div className={'app-shell' + (warehouse ? ' warehouse' : '') + (privateSection ? ' private-shell' : '')}>
     <aside className="sidebar" hidden={mobile}><div><Brand />{!mobile && <Navigation {...navigation} />}</div><div className="sidebar-footer"><div className="identity"><strong>{identity.username}</strong><small className="assigned-location">{identity.location.name}</small></div><button className="logout" type="button" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" />Cerrar sesión</button></div></aside>
-    <header className="app-header" hidden={mobile}><strong>Luson {administration ? 'Administración' : password ? 'Mi contraseña' : stock ? 'Ingresos' : adjustments ? 'Ajustes de stock' : catalog ? 'Catálogo' : settlements ? 'Rendiciones' : settlementDecision ? 'Rendición de cuentas' : sales ? 'Punto de venta' : salesHistory ? 'Historial de ventas' : purchases ? 'Compras' : metrics ? 'Métricas' : transfers ? 'Transferencias' : 'Inventario'}</strong><span><Icon name="warehouse" />Ubicación asignada: <b>{identity.location.name}</b></span></header>
+    <header className="app-header" hidden={mobile}><strong>Luson {administration ? 'Administración' : password ? 'Mi contraseña' : stock ? 'Ingresos' : adjustments ? 'Ajustes de stock' : catalog ? 'Catálogo' : settlements ? 'Rendiciones' : settlementDecision ? 'Rendición de cuentas' : sales ? 'Punto de venta' : salesHistory ? 'Historial de ventas' : purchases ? 'Compras' : cash ? 'Caja' : metrics ? 'Métricas' : transfers ? 'Transferencias' : 'Inventario'}</strong><span><Icon name="warehouse" />Ubicación asignada: <b>{identity.location.name}</b></span></header>
     <header className="mobile-header" hidden={!mobile}><div><Brand /><button type="button" aria-label="Cerrar sesión" disabled={state.authBusy} onClick={() => void state.logout()}><Icon name="logout" /></button></div><div className="mobile-identity"><span><Icon name="warehouse" />{identity.location.name}</span><span>{identity.username}</span></div></header>
-    <main id={transfers ? 'transferencias' : stock ? 'ingresos' : settlements ? 'rendiciones' : settlementDecision ? 'rendicion' : adjustments ? 'ajustes' : catalog ? 'catalogo' : sales ? 'ventas' : salesHistory ? 'historial-ventas' : purchases ? 'compras' : metrics ? 'metricas' : 'inventario'} className="inventory-main">
+    <main id={transfers ? 'transferencias' : stock ? 'ingresos' : settlements ? 'rendiciones' : settlementDecision ? 'rendicion' : adjustments ? 'ajustes' : catalog ? 'catalogo' : sales ? 'ventas' : salesHistory ? 'historial-ventas' : purchases ? 'compras' : cash ? 'caja' : metrics ? 'metricas' : 'inventario'} className="inventory-main">
       {administration && adminOwner ? <AccountAdministration key={adminOwner} controller={state} owner={adminOwner}
         initialTab={route.section === 'administration' && route.screen === 'branches' ? 'branches' : 'accounts'} />
         : password && passwordOwner ? <PasswordChange key={passwordOwner} controller={state} owner={passwordOwner} onBack={() => navigate(false)} />
@@ -359,6 +370,8 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
         : salesHistory ? <p role="status">Verificando la sesión de la sucursal…</p>
         : purchases && ownerTag ? <Purchases key={`compras-${ownerTag}`} csrf={csrf} branch={identity.location.name} />
         : purchases ? <p role="status">Verificando la sesión de la sucursal…</p>
+        : cash && ownerTag ? <Cash key={`caja-${ownerTag}`} csrf={csrf} branch={identity.location.name} />
+        : cash ? <p role="status">Verificando la sesión de la sucursal…</p>
         : metrics && ownerTag ? <Metrics key={`metricas-${ownerTag}`} branch={identity.location.name} />
         : metrics ? <p role="status">Verificando la sesión de la sucursal…</p>
         : <>

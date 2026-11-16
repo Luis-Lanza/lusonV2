@@ -1044,3 +1044,173 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .metrics-band-cell dd { font-size: 20px; }
   .metrics-amount { font-size: 22px; }
 }
+
+/* Caja operativa: the book of the counter's till (design/caja-operativa/01-libro-y-ticket.html,
+   S1, S2, S8, S11). It speaks the language of the two screens beside it — white panels over the page
+   canvas with a 1px border and the 8px radius, a band of cells joined by a hairline, uppercase muted
+   headings and every figure tabular — and it adds no colour of its own: the wine primary, the page,
+   the tint, the border, the muted text and white, plus the flag/short pair the rest of the shell
+   already uses for a movement that leaves and one that comes back. A kind is never read by colour
+   alone: the badge spells it. The 26px tabular amount is the measuring-screen figure and the 22px
+   band value is the cell of that band, exactly as `.metrics-amount` and `.metrics-band-cell` state
+   them. */
+.cash-workspace { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.cash-workspace h1 { font-size: 22px; font-weight: 700; letter-spacing: -.015em; overflow-wrap: anywhere; }
+.cash-workspace p { margin: 0; }
+.cash-heading { display: grid; gap: 4px; }
+.cash-lede { color: var(--muted); font-size: 13px; line-height: 18px; max-width: 70ch; }
+.cash-lede strong { color: #242124; font-weight: 600; }
+.cash-note { color: var(--muted); font-size: 12px; line-height: 18px; }
+.cash-section-title { margin: 0 0 10px; color: var(--muted); font-size: 12px; font-weight: 600;
+  letter-spacing: .04em; text-transform: uppercase; }
+
+/* The period is chosen once, at the top, with the same control Compras and Métricas use, and it says
+   which window is on screen and where it was cut. A branch without a published settlement keeps the
+   live window and says so in words instead of inventing an instant (S8). */
+.cash-period { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 16px; background: white; border: 1px solid var(--border); border-radius: 8px; }
+.cash-period-field { display: grid; gap: 6px; }
+.cash-period-field label { color: var(--muted); font-size: 12px; font-weight: 600;
+  letter-spacing: .04em; text-transform: uppercase; }
+.cash-period-field select { min-width: 240px; max-width: 100%; min-height: 44px; }
+.cash-provenance { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--page);
+  color: var(--muted); font-size: 12px; line-height: 18px; }
+.cash-dot { width: 7px; height: 7px; border-radius: 50%; background: #047857; flex-shrink: 0; }
+.cash-period-note { flex-basis: 100%; color: var(--muted); font-size: 12px; line-height: 18px; }
+
+/* The band of four readings: the cells meet at the hairline and no cell draws its own card. */
+.cash-band { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; margin: 0;
+  background: var(--border); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.cash-band-cell { background: white; padding: 16px 18px; min-width: 0; }
+.cash-band-cell dt { color: var(--muted); font-size: 12px; }
+.cash-band-cell dd { margin: 6px 0 0; }
+.cash-band-value { display: block; font-size: 22px; font-weight: 700; letter-spacing: -.02em;
+  font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.cash-band-sub { display: block; margin-top: 2px; color: var(--muted); font-size: 12px;
+  font-weight: 400; letter-spacing: 0; }
+/* The money that leaves the drawer and the money that comes back, in the same pair the rest of the
+   shell uses for a shortage and a received amount. The sign is always written beside it. */
+.cash-out { color: #ba1a1a; }
+.cash-in { color: #047857; }
+.cash-lead { color: var(--wine); }
+/* The one figure the screen leads with: what the drawer should hold, at the measuring screen's 26px
+   tabular amount, so the expectation reads before the three readings that produce it. */
+.cash-band-value.cash-lead { font-size: 26px; }
+
+/* The book and the card that writes in it: one column under 1100px, the amount never clipped. */
+.cash-columns { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 372px); gap: 20px;
+  align-items: start; }
+.cash-panel { background: white; border: 1px solid var(--border); border-radius: 8px;
+  padding: 16px 18px; box-shadow: 0 1px 2px #2421240d; min-width: 0; }
+.cash-table-wrap { overflow-x: auto; }
+.cash-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.cash-caption { padding-bottom: 8px; text-align: left; color: var(--muted); font-size: 12px;
+  line-height: 18px; }
+.cash-table th { padding: 6px 8px; border-bottom: 1px solid var(--border); color: var(--muted);
+  font-size: 11px; font-weight: 600; letter-spacing: .04em; text-align: left;
+  text-transform: uppercase; white-space: nowrap; }
+.cash-table td { padding: 10px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.cash-table th:first-child, .cash-table td:first-child { padding-left: 0; }
+.cash-table th:last-child, .cash-table td:last-child { padding-right: 0; }
+.cash-table tbody tr:last-child td, .cash-table tfoot td { border-bottom: 0; }
+.cash-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cash-table th.num { text-align: right; }
+.cash-when { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cash-motive { min-width: 0; overflow-wrap: anywhere; }
+.cash-author { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.cash-amount { font-weight: 600; }
+.cash-total-label, .cash-total { padding-top: 12px; border-top: 1px solid var(--border);
+  font-weight: 700; }
+
+/* A kind is a labelled badge, never a colour alone. */
+.cash-kind { display: inline-block; padding: 2px 6px; border: 1px solid var(--border);
+  border-radius: 3px; font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; white-space: nowrap; }
+.cash-kind-gasto { background: #fff0f0; border-color: #ffdad6; color: #ba1a1a; }
+.cash-kind-aporte { background: #ecfdf5; border-color: #a7f3d0; color: #047857; }
+.cash-kind-recaudacion { background: #fffbef; border-color: #e8cf86; color: #805400; }
+.cash-kind-correccion { background: var(--tint); border-color: #d9b3c1; color: var(--wine); }
+.cash-ref { display: block; color: var(--muted); font-size: 12px; }
+
+/* The per-row action: 44px of target, and the reason it cannot be used written beside it. */
+.cash-action { text-align: right; white-space: nowrap; }
+.cash-fix { min-height: 44px; padding: 8px 12px; background: none; border-color: transparent;
+  color: var(--wine); font-size: 12px; font-weight: 600; text-decoration: underline;
+  text-underline-offset: 3px; }
+.cash-fix:not(:disabled):hover { background: var(--tint); }
+.cash-fix:disabled { color: var(--muted); text-decoration: none; }
+.cash-reason { display: block; max-width: 160px; margin-left: auto; color: var(--muted);
+  font-size: 11px; line-height: 16px; white-space: normal; }
+
+/* The card that writes one movement: the three-way kind, the amount, the motive and the rule that the
+   hour and the author are the system's. */
+.cash-rail .cash-form { display: grid; gap: 8px; }
+.cash-form label { color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; }
+.cash-form input, .cash-form textarea { width: 100%; min-height: 44px; padding: 10px 12px;
+  font-weight: 400; letter-spacing: 0; text-transform: none; }
+.cash-form textarea { min-height: 64px; resize: vertical; }
+.cash-form-title { margin: 0; font-size: 13px; font-weight: 600; }
+.cash-kinds { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px;
+  padding: 4px; background: var(--page); border: 1px solid var(--border); border-radius: 6px; }
+.cash-kinds button { min-height: 44px; padding: 8px 6px; background: none;
+  border-color: transparent; color: var(--muted); font-size: 12px; font-weight: 600; }
+.cash-kinds button[aria-pressed="true"] { background: white; border-color: var(--muted);
+  color: #242124; }
+.cash-stamp { color: var(--muted); font-size: 12px; line-height: 18px; }
+.cash-submit { min-height: 44px; }
+.cash-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.cash-actions button { min-height: 44px; }
+.cash-correction-facts { display: grid; gap: 4px; margin: 0; }
+.cash-correction-facts > div { display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; }
+.cash-correction-facts dt { color: var(--muted); font-size: 12px; }
+.cash-correction-facts dd { margin: 0; font-size: 13px; font-weight: 600; text-align: right;
+  font-variant-numeric: tabular-nums; }
+.cash-notice { margin-top: 8px; color: #047857; font-size: 12px; line-height: 18px; }
+
+/* A refusal and the frozen branch: the card is replaced by the reason the server refused with, so a
+   frozen drawer is never a form that silently fails (S9). */
+.cash-problem { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 8px;
+  padding: 12px; border: 1px solid #ffdad6; border-radius: 4px; background: #fff0f0;
+  color: #991515; font-size: 13px; line-height: 18px; }
+.cash-problem button { min-height: 44px; color: #991515; border-color: #ccaaaa; background: white; }
+.cash-frozen { display: grid; gap: 8px; padding: 12px; border: 1px solid #e8cf86;
+  border-left: 3px solid var(--wine); border-radius: 4px; background: #fffbef; color: #805400;
+  font-size: 13px; line-height: 18px; }
+.cash-frozen strong { color: #242124; font-weight: 600; }
+.cash-truncated { margin-top: 12px; padding: 10px 12px; border: 1px solid #e8cf86;
+  border-radius: 4px; background: #fffbef; color: #805400; font-size: 12px; line-height: 18px; }
+
+/* An empty book says so and offers the first action, instead of a table of nothing. */
+.cash-empty { display: grid; gap: 8px; justify-items: start; padding: 8px 0 16px; }
+.cash-empty p { font-size: 13px; }
+.cash-empty .cash-note { font-size: 12px; }
+.cash-first { min-height: 44px; }
+
+/* The rules of the book, in words, at the foot of the card that writes it. */
+.cash-rule { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border);
+  color: var(--muted); font-size: 12px; line-height: 18px; }
+.cash-rule b { color: #242124; font-weight: 600; }
+.cash-rule ul { margin: 8px 0 0; padding-left: 18px; }
+.cash-rule li { margin-bottom: 4px; }
+.cash-footnote { margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--border);
+  color: var(--muted); font-size: 12px; line-height: 18px; }
+
+@media (max-width: 1100px) {
+  .cash-columns { grid-template-columns: minmax(0, 1fr); }
+  .cash-band { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 820px) {
+  /* The author of a row is the account that signed it, and below this width it is the column that
+     goes: the kind, the motive and the amount are what the book is read for. */
+  .cash-col-author { display: none; }
+  .cash-band { grid-template-columns: minmax(0, 1fr); }
+  .cash-period { padding: 12px; }
+  .cash-period-field, .cash-period-field select { width: 100%; min-width: 0; }
+  .cash-panel { padding: 12px; }
+  .cash-band-cell { padding: 12px 16px; }
+  .cash-band-value { font-size: 20px; }
+  .cash-band-value.cash-lead { font-size: 22px; }
+}

@@ -1,6 +1,6 @@
 import { transferDetailPath } from './transferModel';
 
-export type NavigationRoute = { section: 'inventory' } | { section: 'administration'; screen?: 'branches' } | { section: 'password' } | { section: 'stock' } | { section: 'adjustments' } | { section: 'catalog'; screen?: 'prices' | 'batteries' } | { section: 'sales' } | { section: 'salesHistory' } | { section: 'purchases' } | { section: 'metrics' } | { section: 'settlements' } | { section: 'settlementDecision' } | { section: 'transfers'; id: string | null };
+export type NavigationRoute = { section: 'inventory' } | { section: 'administration'; screen?: 'branches' } | { section: 'password' } | { section: 'stock' } | { section: 'adjustments' } | { section: 'catalog'; screen?: 'prices' | 'batteries' } | { section: 'sales' } | { section: 'salesHistory' } | { section: 'purchases' } | { section: 'cash' } | { section: 'metrics' } | { section: 'settlements' } | { section: 'settlementDecision' } | { section: 'transfers'; id: string | null };
 
 export function readNavigation(): NavigationRoute {
   const hash = window.location.hash;
@@ -20,6 +20,8 @@ export function readNavigation(): NavigationRoute {
   if (hash === '#/ventas/historial') return { section: 'salesHistory' };
   // Compras is a section of its own: used batteries and scrap, never part of a sale.
   if (hash === '#/compras') return { section: 'purchases' };
+  // Caja is the operational drawer of the branch: its own section, never a query of the settlement.
+  if (hash === '#/caja') return { section: 'cash' };
   // The metrics of the branch are cut by settlement period, so they are a section of their own and
   // never a query of the settlement screen.
   if (hash === '#/metricas') return { section: 'metrics' };
@@ -48,6 +50,7 @@ export function navigationHash(route: NavigationRoute): string {
   if (route.section === 'sales') return '#/ventas';
   if (route.section === 'salesHistory') return '#/ventas/historial';
   if (route.section === 'purchases') return '#/compras';
+  if (route.section === 'cash') return '#/caja';
   if (route.section === 'metrics') return '#/metricas';
   if (route.section === 'settlements') return '#/rendiciones';
   if (route.section === 'settlementDecision') return '#/rendicion';
