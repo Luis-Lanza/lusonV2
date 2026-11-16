@@ -135,3 +135,18 @@ operativa, fondo de compras, baterías más vendidas por unidades, recambio y es
 - **L16** Tras la corrección se rearmó la cadena (`git rebase --onto`) sobre el commit enmendado; las tres
   suites de Go (`closings`, `httpapi`, `purchases`) quedaron verdes y el árbol compila. Cortes 2 y 3 sin
   revisar todavía.
+- **L17** Revisión del corte 2 (contrato HTTP y caja de hoy, `review-74d81973d00b2bd7`, lentes riesgo y
+  fiabilidad): **aprobada** sin corrección. Nueve observaciones informativas, todas advertencias o
+  sugerencias. El revisor de fiabilidad murió una vez agotando su salida (65.536 tokens) y el reintento de
+  un solo slot lo resolvió; el grupo se había rechazado entero, así que el slot de riesgo se capturó después.
+- **L18** El corte 3 (pantalla, 2.063 líneas) **no entró**: el proveedor lo rechazó en el arranque con
+  `lens_context_budget_exceeded` y sin crear autoridad, pidiendo partirlo. Quedó en dos cortes: el parser
+  (955 líneas) y la pantalla con su cableado (1.108).
+- **L19** Revisiones de la pantalla: una sola lineage (`review-981c876cb7526546`) cubrió parser y contrato
+  juntos por cómo se resolvió la base, y salió **aprobada** con nueve observaciones informativas. La
+  pantalla sola (`review-2f545bd1751170e0`, base explícita en el commit del parser) también salió
+  **aprobada**, con seis observaciones informativas. Otra vez el revisor de fiabilidad agotó su salida en el
+  grupo y el reintento de un solo slot lo resolvió.
+- **L20** Resultado: **cuatro revisiones nativas aprobadas y quemadas** (lectura con corrección, contrato,
+  parser y pantalla). Ningún corte necesitó una segunda corrección. El espacio de documentos y diseños no es
+  candidato de código.
