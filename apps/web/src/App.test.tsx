@@ -1870,7 +1870,7 @@ describe('branch metrics', () => {
     today: { since: null, opening: '0.00', sales: '0.00', expenses: '0.00', effective: '0.00',
       expected: '0.00',
       rate: null, sold: '0.00', commission: '0.00', movements: [] },
-    fund_today: { since: null, opening: '0.00', purchases: '0.00', balance: '0.00', documents: 0,
+    fund_today: { since: null, opening: '0.00', purchases: '0.00', effective: '0.00', balance: '0.00', documents: 0,
       used_units: 0, scrap_milli: 0 } };
   const metricsSetup = () => setup(branchSession, url => url.startsWith('/api/metrics?')
     ? Promise.resolve(metricsAnswer(metricsBody)) : undefined);

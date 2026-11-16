@@ -205,9 +205,11 @@ function TodayPanel({ today, live }: { today: MetricsToday; live: boolean }) {
 /**
  * The purchase envelope of today, beside the drawer of today: the second money box of the branch, which
  * a branch whose settlements are all closed has no other screen to read (S15). The balance is the
- * settlement's own fund identity — what the last cut left in the envelope minus the cash spent on
- * purchases after it — so the card and the acta of the same envelope cannot state two balances (S16),
- * and the volume of those same documents closes the cycle the settlement opened (S17).
+ * branch's book -- `sum(effective)` of its purchase fund ledger, the same arithmetic the acta and the
+ * purchases' tope read -- so a branch founded with a fund and no settlement states that fund instead of
+ * zero (S5). The breakdown is the amount the last closure left plus the signed effect of the movements
+ * of the window, because an `aporte` or a correction moves the book too; the cash of the purchases is
+ * the volume those documents paid, stated beside it and not as the only term (S16, S17).
  */
 function FundTodayPanel({ fund }: { fund: MetricsFundToday }) {
   // A balance of zero or below is the end of the branch's buying: the envelope pays what it holds and
@@ -221,11 +223,13 @@ function FundTodayPanel({ fund }: { fund: MetricsFundToday }) {
       <span className="metrics-big-note">Saldo del fondo</span>
     </p>
     <p className="metrics-note">
-      Lo que dejó el Almacén al cerrar el último corte − compras en efectivo desde ese corte.
+      Es el saldo del libro del fondo: lo que dejó el Almacén al cerrar el último corte más los
+      movimientos que el libro registró desde ese corte. Las compras en efectivo son una parte de esos
+      movimientos, no la única.
     </p>
     <div className="metrics-split">
       <span>Cubre</span>
-      {/* A branch without a closed settlement has no cut: its window is everything it ever bought. */}
+      {/* A branch without a closed settlement has no cut: its window is everything it ever did. */}
       <strong>{fund.since === null
         ? 'Desde el comienzo de la sucursal'
         : <>Desde el corte del <TransferDate value={fund.since} /></>}</strong>
@@ -233,14 +237,18 @@ function FundTodayPanel({ fund }: { fund: MetricsFundToday }) {
     <dl className="metrics-summary">
       <div><dt>Lo que dejó el Almacén al cerrar el último corte</dt>
         <dd>{money(fund.opening_cents)}</dd></div>
-      <div><dt>Compras en efectivo desde el corte</dt>
-        <dd>{closingSignedText(-fund.purchases_cents)}</dd></div>
+      <div><dt>Movimientos del libro desde el corte</dt>
+        <dd>{closingSignedText(fund.effective_cents)}</dd></div>
+      {/* The two terms above add up to this one with the numbers on screen (S5, S16). */}
+      <div><dt>Saldo del libro del fondo</dt><dd>{money(fund.balance_cents)}</dd></div>
     </dl>
     {fund.documents === 0
       // No document is not a row of zeros: the card says it with words, the way the drawer says a
       // window without movements (S17).
       ? <p className="metrics-note">Sin compras en efectivo desde el último corte.</p>
       : <dl className="metrics-summary">
+        <div><dt>Compras en efectivo desde el corte</dt>
+          <dd>{closingSignedText(-fund.purchases_cents)}</dd></div>
         <div><dt>Documentos</dt><dd>{fund.documents === 1
           ? '1 documento' : `${fund.documents} documentos`}</dd></div>
         {/* Both nets can end below zero when a counter-document reversed an earlier purchase, so they

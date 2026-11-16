@@ -66,12 +66,12 @@ const today = {
       occurred_at: '2026-11-03T18:00:00Z' },
   ],
 };
-// The purchase envelope of today: what the last cut left in it, the cash spent on purchases after it and
-// the balance the two produce -- 480000 − 150000 = 330000, the settlement's own fund identity -- with the
-// volume of those same documents (S15-S17).
+// The purchase envelope of today: what the last cut left in it, the signed effect of the movements of its
+// window and the balance the book holds -- 480000 + (−150000) = 330000, the book's own sum -- with the
+// volume of those same documents (S5, S15-S17).
 const fundToday = {
   since: '2026-11-01T12:00:00Z', opening: '480000.00', purchases: '150000.00',
-  balance: '330000.00', documents: 4, used_units: 11, scrap_milli: 42500,
+  effective: '-150000.00', balance: '330000.00', documents: 4, used_units: 11, scrap_milli: 42500,
 };
 const settlementBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   periods, period: closed, source: 'settlement', sales, cash, fund, materials,
@@ -261,10 +261,12 @@ describe('metrics wire contract', () => {
 
   it('parses the purchase fund of today with its window, its balance and its breakdown', () => {
     const answer = parseMetricsAnswer(settlementBody());
-    // The envelope of today is the settlement's own fund identity: 480000 − 150000 = 330000 (S16).
+    // The envelope of today is the branch's book: 480000 + (−150000) = 330000, with the purchases of the
+    // same window beside it (S5, S16).
     expect(answer.fund_today).toEqual({
       since: '2026-11-01T12:00:00Z', opening_cents: 48000000n, purchases_cents: 15000000n,
-      balance_cents: 33000000n, documents: 4, used_units: 11, scrap_milli: 42500n,
+      effective_cents: -15000000n, balance_cents: 33000000n, documents: 4, used_units: 11,
+      scrap_milli: 42500n,
     });
   });
 
@@ -280,21 +282,35 @@ describe('metrics wire contract', () => {
 
   it('parses a purchase fund of today without a cut as the whole life of the branch', () => {
     const answer = parseMetricsAnswer(historyBody({
-      fund_today: { since: null, opening: '0.00', purchases: '120500.00', balance: '-120500.00',
-        documents: 1, used_units: 2, scrap_milli: 0 },
+      fund_today: { since: null, opening: '0.00', purchases: '120500.00',
+        effective: '-120500.00', balance: '-120500.00', documents: 1, used_units: 2,
+        scrap_milli: 0 },
     }));
-    // A branch that never closed a settlement inherits nothing, and a shortage keeps its sign (S16).
+    // A branch that never closed a settlement inherits nothing, and its window is the whole book (S5).
     expect(answer.fund_today.since).toBeNull();
     expect(answer.fund_today.opening_cents).toBe(0n);
     expect(answer.fund_today.purchases_cents).toBe(12050000n);
+    expect(answer.fund_today.effective_cents).toBe(-12050000n);
     expect(answer.fund_today.balance_cents).toBe(-12050000n);
+  });
+
+  it('parses the fund a branch was founded with and never settled', () => {
+    // The defect the card carried: 5.000,00 in the book and no settlement used to read as Bs 0,00. The
+    // founding is an `aporte` of the window, so the book -- and the card -- states 5.000,00 (S5).
+    const answer = parseMetricsAnswer(historyBody({
+      fund_today: { since: null, opening: '0.00', purchases: '0.00', effective: '5000.00',
+        balance: '5000.00', documents: 0, used_units: 0, scrap_milli: 0 },
+    }));
+    expect(answer.fund_today.balance_cents).toBe(500000n);
+    expect(answer.fund_today.effective_cents).toBe(500000n);
   });
 
   it('keeps the purchase fund of today beside an envelope of the period that says another number', () => {
     // The two reads are separate statements of the same envelope: a purchase landing between them moves
     // the live one and leaves today where it was written, and that is not a contradiction to refuse (S16).
     const answer = parseMetricsAnswer(liveBody({
-      fund_today: { ...fundToday, purchases: '151000.00', balance: '329000.00' },
+      fund_today: { ...fundToday, purchases: '151000.00', effective: '-151000.00',
+        balance: '329000.00' },
     }));
     expect(answer.fund_today.balance_cents).toBe(32900000n);
     expect(answer.fund?.expected_cents).toBe(-3200000n);
@@ -409,8 +425,15 @@ describe('metrics wire contract', () => {
     })],
     ['a rate with one decimal', settlementBody({ today: { ...today, rate: '12.5' } })],
     ['a sold total that is not money', settlementBody({ today: { ...today, sold: '-2100000.00' } })],
-    ['a purchase fund of today that does not close', settlementBody({
+    ['a purchase fund of today whose terms do not produce its balance', settlementBody({
       fund_today: { ...fundToday, balance: '331000.00' },
+    })],
+    ['a purchase fund of today whose effect does not produce its balance', settlementBody({
+      fund_today: { ...fundToday, effective: '0.00' },
+    })],
+    ['a purchase fund of today without the effect of its window', settlementBody({
+      fund_today: { since: '2026-11-01T12:00:00Z', opening: '480000.00', purchases: '150000.00',
+        balance: '330000.00', documents: 4, used_units: 11, scrap_milli: 42500 },
     })],
     ['a non-canonical amount of the purchase fund of today', settlementBody({
       fund_today: { ...fundToday, opening: '480000.0' },

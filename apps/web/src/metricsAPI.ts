@@ -171,17 +171,25 @@ export interface MetricsToday {
 }
 
 /**
- * The purchase fund of the branch today, published whatever period is on screen (S15). `since` is the
- * cut of the last closed settlement and null for a branch that never closed one, where the window is
- * everything the branch ever bought. The balance is what the last cut left in the envelope minus the
- * cash spent on purchases after it -- the settlement's own fund identity -- and is signed: an envelope
- * that spent more than it inherited is a shortage the branch must see, not a number to hide (S16). The
- * three counts are the volume of those same documents, net of the counter-documents.
+ * The purchase fund of the branch today, published whatever period is on screen (S15). It is the
+ * branch's book: `balance_cents` is `sum(effective)` of `purchase_fund_ledger` over the whole history
+ * of the branch -- the same arithmetic the acta and the purchases' tope read -- so a branch that never
+ * closed a settlement publishes the fund it was founded with instead of zero (S5). `since` is the cut
+ * of the last closed settlement and null for a branch that never closed one, where the window is
+ * everything the branch ever did.
+ *
+ * `effective_cents` is the signed effect of the movements of that window that belong to no settlement:
+ * the term that, added to `opening_cents`, produces `balance_cents`. An `aporte`, a `reposicion` or a
+ * correction moves the book too, so the balance is never just the opening minus the purchases.
+ * `purchases_cents` is the cash of the window's purchase documents, net of their counter-documents: the
+ * volume they paid, not a term of the balance. The three counts are the volume of those same documents.
  */
 export interface MetricsFundToday {
   readonly since: string | null;
   readonly opening_cents: bigint;
   readonly purchases_cents: bigint;
+  /** The signed effect of the movements of the window: opening + effective = balance (S5, S16). */
+  readonly effective_cents: bigint;
   readonly balance_cents: bigint;
   readonly documents: number;
   readonly used_units: number;
@@ -654,29 +662,33 @@ function todayValue(value: unknown): MetricsToday {
 }
 
 /**
- * The purchase envelope of today. Its balance is the settlement's own fund identity -- what the last cut
- * left in it minus the cash spent on purchases after it -- so the card and the acta of the same envelope
- * cannot state two different balances (S16). The purchases are signed because a counter-document after
- * the cut nets them down, and the balance is signed because a shortage is a fact the branch must see.
+ * The purchase envelope of today. Its balance is the book's own sum -- `sum(effective)` of the branch's
+ * purchase fund ledger -- and its breakdown is the amount the last closure left plus the signed effect
+ * of the movements of the window, so the card can state the numbers that produce it instead of an
+ * identity the book does not satisfy (S5). The purchases are signed because a counter-document after the
+ * cut nets them down, and they are the cash of the window's documents, not a term of the balance.
  *
  * It is deliberately NOT compared with `fund` of a period on screen: the two are separate reads of the
  * same envelope, so a purchase landing between them would move one and not the other, and refusing that
  * answer would refuse a payload this server really wrote (S16).
  */
 function fundTodayValue(value: unknown): MetricsFundToday {
-  const record = fields(value, ['since', 'opening', 'purchases', 'balance', 'documents', 'used_units',
-    'scrap_milli']);
+  const record = fields(value, ['since', 'opening', 'purchases', 'effective', 'balance', 'documents',
+    'used_units', 'scrap_milli']);
   const opening_cents = wireMoney(record.opening, false);
   const purchases_cents = wireMoney(record.purchases, true);
+  const effective_cents = wireMoney(record.effective, true);
   const balance_cents = wireMoney(record.balance, true);
-  if (balance_cents !== opening_cents - purchases_cents) return invalidResponse();
+  // The breakdown the card states is the book's: what the closure left plus the movements of the window.
+  // A balance its terms do not produce is not an answer this server could have written.
+  if (balance_cents !== opening_cents + effective_cents) return invalidResponse();
   const since = record.since;
   // A branch without a previous closure states no cut and inherits nothing: the two facts are one state.
   if (since === null && opening_cents !== 0n) return invalidResponse();
   return Object.freeze({
-    // A branch that never closed a settlement has no cut: its window is everything it ever bought.
+    // A branch that never closed a settlement has no cut: its window is everything it ever did.
     since: since === null ? null : timestamp(since),
-    opening_cents, purchases_cents, balance_cents,
+    opening_cents, purchases_cents, effective_cents, balance_cents,
     documents: count(record.documents, Number.MAX_SAFE_INTEGER),
     // The units and the kilograms are the net of the same documents: a counter-document that reversed
     // an earlier purchase may leave them negative, and that is a reading, not a malformed answer.

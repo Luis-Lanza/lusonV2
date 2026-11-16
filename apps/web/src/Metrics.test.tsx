@@ -62,12 +62,13 @@ const today = {
   ],
 };
 
-// The purchase envelope of today, published by every source: what the last cut left in it, the cash the
-// branch spent on purchases after it and the balance the two produce -- 480000 − 150000 = 330000 -- with
-// the volume those same documents bought (S15-S17).
+// The purchase envelope of today, published by every source: what the last cut left in it, the signed
+// effect of the movements of its window and the balance of the book -- 480000 + (−120000) = 360000 -- with
+// the volume those same documents bought (S5, S15-S17). The effect and the cash of the purchases differ,
+// because the window also received an aporte: the card states both and adds up with the first one.
 const fundToday = {
   since: '2026-11-01T12:00:00Z', opening: '480000.00', purchases: '150000.00',
-  balance: '330000.00', documents: 4, used_units: 11, scrap_milli: 42500,
+  effective: '-120000.00', balance: '360000.00', documents: 4, used_units: 11, scrap_milli: 42500,
 };
 
 const settlementBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
@@ -379,17 +380,20 @@ describe('branch metrics screen', () => {
     setup(token => token === '4' ? json(settlementBody()) : json(historyBody()));
     await selectPeriod('4');
     const card = panel('Fondo de compras de hoy');
-    // The balance is the protagonist, and it is the settlement's own fund identity (S16).
-    expect(within(card).getByText('Bs 330.000,00')).toBeInTheDocument();
+    // The balance is the protagonist, and it is the branch's book (S5).
+    expect(within(card).getAllByText('Bs 360.000,00')).toHaveLength(2);
     expect(card).toHaveTextContent('Saldo del fondo');
     expect(card).toHaveTextContent(/Lo que dejó el Almacén al cerrar el último corte/);
-    expect(card).toHaveTextContent(/compras en efectivo desde ese corte/);
+    expect(card).toHaveTextContent(/movimientos que el libro registró desde ese corte/);
     // The window it covers, from the cut of the last closed settlement.
     expect(card).toHaveTextContent(/Desde el corte del/);
     expect(card).toHaveTextContent('01/11/2026 · 08:00 (hora Bolivia)');
-    // The breakdown: what the warehouse left, what the branch spent and what those documents bought (S17).
+    // The breakdown: what the warehouse left, the movements of the window that add up to the balance, and
+    // the cash of the documents beside them (S16, S17).
     expect(within(card).getByText('Bs 480.000,00')).toBeInTheDocument();
+    expect(within(card).getByText('− Bs 120.000,00')).toBeInTheDocument();
     expect(within(card).getByText('− Bs 150.000,00')).toBeInTheDocument();
+    expect(within(card).getByText('Saldo del libro del fondo')).toBeInTheDocument();
     expect(within(card).getByText('4 documentos')).toBeInTheDocument();
     // The volume of the window is the net of its documents, so it reads with its sign (S17).
     expect(within(card).getByText('+11 u')).toBeInTheDocument();
@@ -402,15 +406,42 @@ describe('branch metrics screen', () => {
     expect(drawer.parentElement?.className).toContain('metrics-today-pair');
   });
 
+  it('states the fund a branch was founded with and does not warn it is empty', async () => {
+    // A branch created with 5.000,00 in its purchase fund that never closed a settlement used to read
+    // Bs 0,00 and the warning that the fund was empty. The fund is its book, so the card states 5.000,00
+    // and says nothing about buying (S5).
+    setup(() => json(historyBody({ fund_today: { since: null, opening: '0.00', purchases: '0.00',
+      effective: '5000.00', balance: '5000.00', documents: 0, used_units: 0, scrap_milli: 0 } })));
+    const card = await screen.findByRole('region', { name: 'Fondo de compras de hoy' });
+    expect(within(card).getAllByText('Bs 5.000,00')).toHaveLength(2);
+    expect(within(card).getByText('+ Bs 5.000,00')).toBeInTheDocument();
+    expect(within(card).queryByText(/El fondo quedó en cero/)).toBeNull();
+    expect(within(card).queryByText(/El fondo está en rojo/)).toBeNull();
+    expect(within(card).queryByText(/no puede seguir comprando/)).toBeNull();
+  });
+
+  it('adds the window effect to the opening and states the balance the book holds', async () => {
+    // A closure that left 2.000,00, an aporte of 1.000,00 inside the window and a purchase of 500,00: the
+    // breakdown must add up to the 2.500,00 the book holds (S5, S16).
+    setup(() => json(historyBody({ fund_today: { ...fundToday, opening: '2000.00', purchases: '500.00',
+      effective: '500.00', balance: '2500.00', documents: 1, used_units: 1, scrap_milli: 0 } })));
+    const card = await screen.findByRole('region', { name: 'Fondo de compras de hoy' });
+    expect(within(card).getAllByText('Bs 2.500,00')).toHaveLength(2);
+    expect(within(card).getByText('Bs 2.000,00')).toBeInTheDocument();
+    expect(within(card).getByText('+ Bs 500,00')).toBeInTheDocument();
+    expect(within(card).getByText('− Bs 500,00')).toBeInTheDocument();
+    expect(within(card).queryByText(/no puede seguir comprando/)).toBeNull();
+  });
+
   it('says that the purchase fund of today starts at the beginning of the branch when there is no cut', async () => {
-    const noCut = { since: null, opening: '0.00', purchases: '0.00', balance: '0.00',
-      documents: 0, used_units: 0, scrap_milli: 0 };
+    const noCut = { since: null, opening: '0.00', purchases: '0.00', effective: '0.00',
+      balance: '0.00', documents: 0, used_units: 0, scrap_milli: 0 };
     setup(() => json(historyBody({ fund_today: noCut })));
     const card = await screen.findByRole('region', { name: 'Fondo de compras de hoy' });
     expect(within(card).getByText('Desde el comienzo de la sucursal')).toBeInTheDocument();
-    // Nothing was inherited and nothing was spent, so the balance, the opening and the cash of the window
-    // are the same zero the server wrote -- three stated numbers and no invented one.
-    expect(within(card).getAllByText('Bs 0,00')).toHaveLength(3);
+    // Nothing was inherited and nothing moved, so the balance, the opening, the window's effect and the
+    // balance of the breakdown are the same zero the server wrote -- four stated numbers.
+    expect(within(card).getAllByText('Bs 0,00')).toHaveLength(4);
     // Without a document the card says it with words and never with a row of zeros (S17).
     expect(within(card).getByText('Sin compras en efectivo desde el último corte.')).toBeInTheDocument();
     expect(within(card).queryByText('0 documentos')).toBeNull();
@@ -422,13 +453,14 @@ describe('branch metrics screen', () => {
   it('renders a purchase fund of today in the red with the words that it cannot keep buying', async () => {
     setup(token => token === '4'
       ? json(settlementBody({ fund_today: { ...fundToday, opening: '0.00', purchases: '120500.00',
-        balance: '-120500.00', documents: 1, used_units: 2, scrap_milli: 0 } }))
+        effective: '-120500.00', balance: '-120500.00', documents: 1, used_units: 2,
+        scrap_milli: 0 } }))
       : json(historyBody()));
     await selectPeriod('4');
     const card = panel('Fondo de compras de hoy');
-    // A shortage is published with its sign and never clamped to zero (S16): the balance and the cash
-    // spent after the cut are the same magnitude here, because nothing was inherited.
-    expect(within(card).getAllByText('− Bs 120.500,00')).toHaveLength(2);
+    // A signed balance is published with its sign and never clamped to zero (S16): the figure, the
+    // window's effect, the balance of the breakdown and the cash of the documents are the same magnitude.
+    expect(within(card).getAllByText('− Bs 120.500,00')).toHaveLength(4);
     expect(within(card).getByText(/El fondo está en rojo/)).toBeInTheDocument();
     expect(within(card).getByText(/hasta que el Almacén lo recargue/)).toBeInTheDocument();
     // The balance is never clamped to zero: what it holds is the signed reading the server wrote.
@@ -437,8 +469,8 @@ describe('branch metrics screen', () => {
 
   it('says with words that the purchase fund of today had no purchases instead of a zero row', async () => {
     setup(token => token === '4'
-      ? json(settlementBody({ fund_today: { ...fundToday, purchases: '0.00', balance: '480000.00',
-        documents: 0, used_units: 0, scrap_milli: 0 } }))
+      ? json(settlementBody({ fund_today: { ...fundToday, purchases: '0.00', effective: '0.00',
+        balance: '480000.00', documents: 0, used_units: 0, scrap_milli: 0 } }))
       : json(historyBody()));
     await selectPeriod('4');
     const card = panel('Fondo de compras de hoy');
@@ -446,7 +478,7 @@ describe('branch metrics screen', () => {
     expect(within(card).queryByText('0 documentos')).toBeNull();
     expect(within(card).queryByText('0 u')).toBeNull();
     // The money it inherited is still stated, and the balance is the whole of it.
-    expect(within(card).getAllByText('Bs 480.000,00')).toHaveLength(2);
+    expect(within(card).getAllByText('Bs 480.000,00')).toHaveLength(3);
     expect(within(card).queryByText(/no puede seguir comprando/)).toBeNull();
   });
 

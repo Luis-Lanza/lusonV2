@@ -207,12 +207,16 @@ type metricsTodayDTO struct {
 
 // metricsFundTodayDTO is the purchase envelope of today: the cut its window starts from -- null for a
 // branch that never closed a settlement -- what the last closure left in it, the cash the branch spent
-// on purchases after that cut, the balance the two produce and the volume those documents bought
-// (S15-S17). The balance is signed; the counts are not.
+// on purchases after that cut, the signed effect of the movements of that same window, the balance the
+// book holds and the volume those documents bought (S15-S17). The balance and the window's effect are
+// signed; the counts are not. `balance` is the book's own sum and `effective` the term that, added to
+// `opening`, produces it: `purchases` is the cash of the window's documents, a volume and not the second
+// term of the balance.
 type metricsFundTodayDTO struct {
 	Since      *string `json:"since"`
 	Opening    string  `json:"opening"`
 	Purchases  string  `json:"purchases"`
+	Effective  string  `json:"effective"`
 	Balance    string  `json:"balance"`
 	Documents  int64   `json:"documents"`
 	UsedUnits  int64   `json:"used_units"`
@@ -560,32 +564,36 @@ func metricsTodayRecord(today closings.MetricsToday) (metricsTodayDTO, error) {
 }
 
 // metricsFundTodayRecord renders the purchase envelope of today and admits every value of it: the cut
-// is an RFC3339 instant or null, the opening is canonical money, the purchases and the balance are
-// signed readings, the balance is exactly opening − purchases and the three counts are non-negative
-// (S15-S17). A branch without a previous closure states no cut and inherits nothing, which is the one
-// pair this contract publishes: a null cut beside an opening somebody wrote is not a state the read
-// produces.
+// is an RFC3339 instant or null, the opening is canonical money, the purchases, the window's effect and
+// the balance are signed readings, the balance is exactly opening + effective and the counts are
+// non-negative (S15-S17). A branch without a previous closure states no cut and inherits nothing, which
+// is the one pair this contract publishes: a null cut beside an opening somebody wrote is not a state
+// the read produces.
 func metricsFundTodayRecord(fund closings.MetricsFundToday) (metricsFundTodayDTO, error) {
 	unavailable := func() (metricsFundTodayDTO, error) { return metricsFundTodayDTO{}, closings.ErrUnavailable }
 	record := metricsFundTodayDTO{Opening: string(fund.Opening), Purchases: string(fund.Purchases),
-		Balance: string(fund.Balance), Documents: fund.Documents, UsedUnits: fund.UsedUnits,
-		ScrapMilli: fund.ScrapMilli}
+		Effective: string(fund.Effective), Balance: string(fund.Balance), Documents: fund.Documents,
+		UsedUnits: fund.UsedUnits, ScrapMilli: fund.ScrapMilli}
 	// What the last closure left in the envelope is money the branch holds, never a signed reading.
 	if !metricsMoneyPattern.MatchString(record.Opening) {
 		return unavailable()
 	}
-	// The cash of a window is a net figure and its balance is a difference: a counter-document can leave
-	// either of them negative and the envelope still closes on its own sign (S16).
+	// A window's cash, its signed effect and the book's balance are net figures: a counter-document can
+	// leave the cash negative and a correction can move the balance in either direction.
 	if !metricsSignedPattern.MatchString(record.Purchases) ||
+		!metricsSignedPattern.MatchString(record.Effective) ||
 		!metricsSignedPattern.MatchString(record.Balance) {
 		return unavailable()
 	}
 	opening, okOpening := metricsSignedCents(closings.Signed(record.Opening))
-	purchases, okPurchases := metricsSignedCents(closings.Signed(record.Purchases))
+	_, okPurchases := metricsSignedCents(closings.Signed(record.Purchases))
+	effect, okEffect := metricsSignedCents(closings.Signed(record.Effective))
 	balance, okBalance := metricsSignedCents(closings.Signed(record.Balance))
-	// The identity of the fund is the settlement's own: a balance its terms do not produce is a number
-	// this read could not have written.
-	if !okOpening || !okPurchases || !okBalance || balance != opening-purchases {
+	// The breakdown the card states is the book's: the amount the closure left plus the signed effect of
+	// the movements of the window. A balance its terms do not produce, with the numbers on screen, is a
+	// number this read could not have written. `purchases` is the cash of the same window's documents --
+	// the volume they paid, not a term of the balance -- so it is admitted without entering the identity.
+	if !okOpening || !okPurchases || !okEffect || !okBalance || balance != opening+effect {
 		return unavailable()
 	}
 	// The documents are a count; the units and the kilograms are the NET of those documents, and a

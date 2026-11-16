@@ -864,11 +864,12 @@ func (e *env) cutOf(t *testing.T, id int64) time.Time {
 	return cut
 }
 
-// TestMetricsFundTodayIsTheOpeningMinusThePurchasesAfterTheCut pins S15 and S16 on the read: the
-// purchase fund of today is what the last closed settlement left in the envelope minus the cash the
-// branch spent on purchases after that cut, with the volume those same documents bought -- and the
-// three sources publish the same envelope, whether or not a period is on screen.
-func TestMetricsFundTodayIsTheOpeningMinusThePurchasesAfterTheCut(t *testing.T) {
+// TestMetricsFundTodayPublishesTheBookAndItsWindowEffect pins S5, S15 and S16 on the read: the
+// purchase fund of today is the balance of the branch's own book -- sum(effective) of
+// purchase_fund_ledger -- with the signed effect of the movements of the window beside it, the volume
+// those same documents bought, and the same envelope from the three sources, whether or not a period
+// is on screen.
+func TestMetricsFundTodayPublishesTheBookAndItsWindowEffect(t *testing.T) {
 	e := fixture(t)
 	e.closeFirstSettlement(t, "500.00")
 	e.fundLoad(t, 2, "60.00", "Carga de fondo del período")
@@ -905,12 +906,17 @@ func TestMetricsFundTodayIsTheOpeningMinusThePurchasesAfterTheCut(t *testing.T) 
 			t.Fatalf("%s: the fund of today must start at the cut of the last closure: %+v",
 				source, fund.Since)
 		}
-		// 250.00 left in the envelope − 35.00 spent after the cut = 215.00, and the volume of those
-		// same documents: one purchase, two batteries and 1.500 kg of scrap.
-		if fund.Opening != "250.00" || fund.Purchases != "35.00" || fund.Balance != "215.00" ||
-			fund.Documents != 1 || fund.UsedUnits != 2 || fund.ScrapMilli != 1500 {
-			t.Fatalf("%s: the fund of today must be the opening minus the purchases after the cut: %+v",
+		// The book: 250.00 the closure left + the window's movements (the 35.00 purchase) = 215.00, and
+		// the volume of those same documents: one purchase, two batteries and 1.500 kg of scrap.
+		if fund.Opening != "250.00" || fund.Effective != "-35.00" || fund.Purchases != "35.00" ||
+			fund.Balance != "215.00" || fund.Documents != 1 || fund.UsedUnits != 2 ||
+			fund.ScrapMilli != 1500 {
+			t.Fatalf("%s: the fund of today must be the book's balance and its window effect: %+v",
 				source, fund)
+		}
+		if book := e.fundBook(t, 2); string(fund.Balance) != book {
+			t.Fatalf("%s: the card must publish the book's own sum: %s want %s", source,
+				fund.Balance, book)
 		}
 	}
 }
@@ -936,11 +942,16 @@ func TestMetricsFundTodayAddsBackACounterDocumentAfterTheCut(t *testing.T) {
 	}
 
 	fund := historyOf(t, e).FundToday
-	// 35.00 − 35.00 + 30.00 of cash, and the batteries and kilos net back with it: 2 + 3 − 2 used
-	// units and 1.500 − 1.500 kilograms of scrap. The counter-document is a document of the window.
-	if fund.Opening != "250.00" || fund.Purchases != "30.00" || fund.Balance != "220.00" ||
-		fund.Documents != 3 || fund.UsedUnits != 3 || fund.ScrapMilli != 0 {
+	// The book: 250.00 the closure left + (−35.00 + 35.00 − 30.00) of the window = 220.00, and the
+	// batteries and kilos net back with it: 2 + 3 − 2 used units and 1.500 − 1.500 kilograms of scrap.
+	// The counter-document is a document of the window and its correction a movement of the window.
+	if fund.Opening != "250.00" || fund.Effective != "-30.00" || fund.Purchases != "30.00" ||
+		fund.Balance != "220.00" || fund.Documents != 3 || fund.UsedUnits != 3 ||
+		fund.ScrapMilli != 0 {
 		t.Fatalf("the envelope must net its counter-documents: %+v", fund)
+	}
+	if book := e.fundBook(t, 2); string(fund.Balance) != book {
+		t.Fatalf("the card must publish the book's own sum: %s want %s", fund.Balance, book)
 	}
 }
 
@@ -967,8 +978,13 @@ func TestMetricsFundTodayPublishesANegativeNetWhenTheReturnOutweighsTheWindow(t 
 	if fund.UsedUnits != -2 || fund.ScrapMilli != -2500 {
 		t.Fatalf("the volume of the window must publish its sign: %+v", fund)
 	}
-	if fund.Purchases != "-45.00" || fund.Balance != "295.00" {
+	// The book: 250.00 the closure left + the 45.00 the correction returned = 295.00, and the window's
+	// effect is that correction because the purchases of the window net to nothing.
+	if fund.Effective != "45.00" || fund.Purchases != "-45.00" || fund.Balance != "295.00" {
 		t.Fatalf("the money of the same window must net back with it: %+v", fund)
+	}
+	if book := e.fundBook(t, 2); string(fund.Balance) != book {
+		t.Fatalf("the card must publish the book's own sum: %s want %s", fund.Balance, book)
 	}
 }
 
@@ -979,19 +995,23 @@ func TestMetricsFundTodayStartsAtZeroWithoutAClosedSettlement(t *testing.T) {
 	e := fixture(t)
 	empty := historyOf(t, e).FundToday
 	if empty.Since != nil || empty.Opening != "0.00" || empty.Purchases != "0.00" ||
-		empty.Balance != "0.00" || empty.Documents != 0 || empty.UsedUnits != 0 ||
-		empty.ScrapMilli != 0 {
+		empty.Effective != "0.00" || empty.Balance != "0.00" || empty.Documents != 0 ||
+		empty.UsedUnits != 0 || empty.ScrapMilli != 0 {
 		t.Fatalf("a branch without a closed settlement inherits nothing: %+v", empty)
 	}
 	// Nothing was closed, so the window is the whole life of the branch: the document is counted even
 	// though no cut exists to start from, and the load that paid for it belongs to no window of the
-	// card because it is not a purchase.
+	// card because it is not a purchase. The book holds the load minus what the document spent, which is
+	// zero: the stock of the window is not a shortage the card could state.
 	e.fundLoad(t, 2, "120.50", "Carga de fondo sin rendición")
 	e.purchase(t, "metrics-fund-today-nocut-01", "120.50")
 	fund := historyOf(t, e).FundToday
 	if fund.Since != nil || fund.Documents != 1 || fund.UsedUnits != 1 ||
-		fund.Purchases != "120.50" || fund.Balance != "-120.50" {
-		t.Fatalf("the window without a cut is everything the branch bought: %+v", fund)
+		fund.Purchases != "120.50" || fund.Effective != "0.00" || fund.Balance != "0.00" {
+		t.Fatalf("the window without a cut is the whole book of the branch: %+v", fund)
+	}
+	if book := e.fundBook(t, 2); string(fund.Balance) != book {
+		t.Fatalf("the card must publish the book's own sum: %s want %s", fund.Balance, book)
 	}
 }
 
@@ -1026,9 +1046,13 @@ func TestMetricsFundTodayCountsOnlyItsOwnPurchasesAfterTheCut(t *testing.T) {
 	if fund.Since == nil || !fund.Since.Equal(e.cutOf(t, first)) {
 		t.Fatalf("the envelope of today must start at the cut of the last closure: %+v", fund.Since)
 	}
-	if fund.Purchases != "35.00" || fund.Documents != 1 || fund.UsedUnits != 2 ||
-		fund.ScrapMilli != 1500 {
+	// The window loaded the 35.00 it spent, so its effect is zero and the book it leaves holds zero.
+	if fund.Purchases != "35.00" || fund.Effective != "0.00" || fund.Balance != "0.00" ||
+		fund.Documents != 1 || fund.UsedUnits != 2 || fund.ScrapMilli != 1500 {
 		t.Fatalf("the envelope must count only its own purchases after the cut: %+v", fund)
+	}
+	if book := e.fundBook(t, 2); string(fund.Balance) != book {
+		t.Fatalf("the card must publish the book's own sum: %s want %s", fund.Balance, book)
 	}
 	// The branch that bought reads its own document and nobody else's.
 	other, err := e.store.Metrics(e.ctx, identity(3), closings.MetricsPeriod{History: true})
@@ -1041,26 +1065,91 @@ func TestMetricsFundTodayCountsOnlyItsOwnPurchasesAfterTheCut(t *testing.T) {
 	}
 }
 
-// TestMetricsFundTodayPublishesANegativeBalanceWithItsSign pins the signed reading of S16: an envelope
-// that spent more than it inherited is a shortage and not an unreadable number, so the balance is
-// published with its sign -- here a closure that stated no envelope at all, against which the branch
-// still bought 120.50 in cash.
-func TestMetricsFundTodayPublishesANegativeBalanceWithItsSign(t *testing.T) {
+// TestMetricsFundTodayPublishesTheBookAndNotTheOpeningMinusThePurchases fences the defect this read
+// carried: a closure that stated no envelope left nothing as its opening, and the branch loaded exactly
+// what it spent -- the card used to state that as a shortage of 120.50 that the book never held. The
+// balance is the book's sum (S5), the load and the purchase are two movements of the window, and the
+// card publishes the zero the branch can still spend.
+func TestMetricsFundTodayPublishesTheBookAndNotTheOpeningMinusThePurchases(t *testing.T) {
 	e := fixture(t)
 	first := e.closeFirstSettlement(t, "500.00")
-	// The closure left no envelope behind, so nothing was inherited: the branch loads exactly what it
-	// spends, and the window still spent 120.50 more than it inherited -- a shortage of exactly that.
 	e.fundLoad(t, 2, "120.50", "Carga de fondo del período")
-	e.purchase(t, "metrics-fund-today-short-01", "120.50")
+	e.purchase(t, "metrics-fund-today-book-01", "120.50")
 
 	fund := metricsOf(t, e, first).FundToday
 	if fund.Since == nil || fund.Opening != "0.00" || fund.Purchases != "120.50" ||
-		fund.Balance != "-120.50" || fund.Documents != 1 {
-		t.Fatalf("a shortage must be published with its sign: %+v", fund)
+		fund.Effective != "0.00" || fund.Balance != "0.00" || fund.Documents != 1 {
+		t.Fatalf("the balance of the book is not the opening minus the purchases: %+v", fund)
 	}
-	// The card and the settlement read the same envelope: the history publishes the same shortage.
+	// The card and the settlement read the same envelope: the history publishes the same balance.
 	if history := historyOf(t, e).FundToday; history.Balance != fund.Balance ||
 		history.Purchases != fund.Purchases || history.Documents != fund.Documents {
 		t.Fatalf("the three sources must publish the same envelope: %+v want %+v", history, fund)
+	}
+	if book := e.fundBook(t, 2); string(fund.Balance) != book {
+		t.Fatalf("the card must publish the book's own sum: %s want %s", fund.Balance, book)
+	}
+}
+
+// TestMetricsFundTodayPublishesTheFoundingAporteOfABranchThatNeverClosed fences the defect reproduced
+// in the browser: a branch founded with 5.000,00 in its purchase fund and no settlement published
+// Bs 0,00, because the card derived `opening − purchases` and its opening was nothing. The fund of a
+// branch is its book (S5, S7), so the card publishes the 5.000,00 the founding wrote.
+func TestMetricsFundTodayPublishesTheFoundingAporteOfABranchThatNeverClosed(t *testing.T) {
+	e := fixture(t)
+	var branch int16
+	if err := e.pool.QueryRow(e.ctx,
+		`SELECT create_branch_funded('Sucursal con fondo','0.00','5000.00',1)`).Scan(&branch); err != nil {
+		t.Fatalf("the branch could not be founded with its purchase fund: %v", err)
+	}
+	read, err := e.store.Metrics(e.ctx, identity(int(branch)), closings.MetricsPeriod{History: true})
+	if err != nil {
+		t.Fatalf("the metrics of the founded branch could not be read: %v", err)
+	}
+	fund := read.FundToday
+	if fund.Since != nil || fund.Opening != "0.00" || fund.Purchases != "0.00" ||
+		fund.Effective != "5000.00" || fund.Balance != "5000.00" || fund.Documents != 0 {
+		t.Fatalf("a founded branch publishes the book it was born with: %+v", fund)
+	}
+	if book := e.fundBook(t, int(branch)); string(fund.Balance) != book {
+		t.Fatalf("the card must publish the book's own sum: %s want %s", fund.Balance, book)
+	}
+}
+
+// TestMetricsFundTodayAddsTheWindowEffectToTheOpening pins the breakdown the card states (S5, S16):
+// the balance is what the last closure left plus the signed effect of the movements of the window, so
+// an aporte the branch received after the cut appears in the balance and a closure's own statement
+// does not. 2.000,00 left + (1.000,00 loaded − 500,00 spent) = 2.500,00.
+func TestMetricsFundTodayAddsTheWindowEffectToTheOpening(t *testing.T) {
+	e := fixture(t)
+	e.closeFundWindow(t, "0.00", "2000.00")
+	e.fundLoad(t, 2, "1000.00", "Carga del fondo de la ventana")
+	e.purchase(t, "metrics-fund-today-window-01", "500.00")
+
+	fund := historyOf(t, e).FundToday
+	if fund.Since == nil || fund.Opening != "2000.00" || fund.Effective != "500.00" ||
+		fund.Purchases != "500.00" || fund.Balance != "2500.00" || fund.Documents != 1 {
+		t.Fatalf("the balance must be the opening plus the effect of the window: %+v", fund)
+	}
+	if book := e.fundBook(t, 2); string(fund.Balance) != book {
+		t.Fatalf("the card must publish the book's own sum: %s want %s", fund.Balance, book)
+	}
+}
+
+// TestMetricsFundTodayPublishesZeroForAnEmptyBook pins the other end of S5: a branch whose book holds
+// no movement publishes the empty sum, which is what the card states as a fund of zero.
+func TestMetricsFundTodayPublishesZeroForAnEmptyBook(t *testing.T) {
+	e := fixture(t)
+	read, err := e.store.Metrics(e.ctx, identity(3), closings.MetricsPeriod{History: true})
+	if err != nil {
+		t.Fatalf("the metrics of the empty branch could not be read: %v", err)
+	}
+	fund := read.FundToday
+	if fund.Since != nil || fund.Opening != "0.00" || fund.Purchases != "0.00" ||
+		fund.Effective != "0.00" || fund.Balance != "0.00" || fund.Documents != 0 {
+		t.Fatalf("an empty book publishes the empty sum: %+v", fund)
+	}
+	if book := e.fundBook(t, 3); string(fund.Balance) != book {
+		t.Fatalf("the card must publish the book's own sum: %s want %s", fund.Balance, book)
 	}
 }

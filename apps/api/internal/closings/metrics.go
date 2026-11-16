@@ -147,21 +147,27 @@ type MetricsToday struct {
 
 // MetricsFundToday is the purchase envelope of the branch as it stands today, stated whatever period
 // the screen is showing and whether or not a settlement is open (S15). It is the second money box of
-// the branch and it is not the drawer: what it holds is what the last closure left in it minus the cash
-// the branch spent on purchases after that cut, net of the counter-documents that returned money. Since
-// is the cut of the last closed settlement -- the same instant the drawer of today starts from -- and is
-// null for a branch that never closed one, where the window is everything the branch ever bought.
+// the branch and it is not the drawer. Balance is the book's own sum -- sum(effective) of
+// `purchase_fund_ledger` over the whole history of the branch (S5) -- which is the same arithmetic the
+// purchases' tope and the acta read, so a branch that never closed a settlement publishes the fund it
+// was founded with instead of zero. Since is the cut of the last closed settlement -- the same instant
+// the drawer of today starts from -- and is null for a branch that never closed one.
 //
-// Balance is signed on purpose: an envelope that spent more than it inherited is a shortage the branch
-// must see, exactly as the fund of a settlement states it. Purchases is signed for the same reason the
-// settlement's own fund is: a counter-document after the cut that reversed a purchase of an earlier
-// period leaves the net negative, so the envelope grows instead of shrinking. Documents, UsedUnits and
-// ScrapMilli are the volume of that same window, netted the way every read of the purchases package
-// nets it -- the counter-document is stored negative, so it subtracts by construction.
+// Effective is the signed effect of the movements of that window that belong to no settlement: the term
+// the card states beside the opening, because the balance is opening + effective and never opening minus
+// the cash of the purchases. An `aporte`, a `reposicion` or a correction also moves the book, and the
+// cash a purchase document paid is one of the movements of the window rather than its only term.
+// Purchases is the cash of the window's purchase documents, net of their counter-documents, and it is
+// the volume those documents paid, not a term of the balance. Balance keeps the signed shape of the
+// fund's arithmetic even though the book refuses a negative one (S6): the card publishes what the book
+// holds, not a number clamped to zero. Documents, UsedUnits and ScrapMilli are the volume of that same
+// window, netted the way every read of the purchases package nets it -- the counter-document is stored
+// negative, so it subtracts by construction.
 type MetricsFundToday struct {
 	Since      *time.Time
 	Opening    Money
 	Purchases  Signed
+	Effective  Signed
 	Balance    Signed
 	Documents  int64
 	UsedUnits  int64
@@ -615,9 +621,9 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 }
 
 // fundTodayMetrics reads the purchase envelope of the branch as it stands today (S15-S17): what the
-// last closed settlement left in it, the cash the branch spent on purchases after that cut, the balance
-// the two produce and the volume those same documents bought. It exists because the envelope is a money
-// box of its own: a branch whose settlements are all closed has no period on screen that states it.
+// last closed settlement left in it, the signed effect of the movements of its window, the balance the
+// book holds and the volume those same documents bought. It exists because the envelope is a money box
+// of its own: a branch whose settlements are all closed has no period on screen that states it.
 //
 // The opening is not a second calculation of the fund: it is the number the acta of that same closure
 // publishes, read by the same helper -- the signed sum of `purchase_fund_ledger` at the instant the
@@ -626,9 +632,7 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 // number it stated, exactly as its own acta does, so the card and the document of the same envelope can
 // never disagree. The purchases are the `paid_cash` of the branch's documents from that cut on, with no
 // counter-document filter: they are stored with negative amounts, so a reversal subtracts by
-// construction and the net is a signed reading. `PurchaseFundExpected` is the fund's own identity,
-// opening − purchases, and it is reused instead of restated, so the card and the acta of the same
-// envelope state one number (S16).
+// construction and the net is a signed reading.
 //
 // The cut, and not the closure, is where the window starts, for the same reason the drawer of today
 // starts there: the period of a closed settlement ends at its cut. The two instants give the same answer
@@ -639,7 +643,8 @@ func fundTodayMetrics(ctx context.Context, q querier, branch int64) (MetricsFund
 	var cut, settledAt time.Time
 	// The last closed settlement, by the same order the drawer of today reads it, so the two cards of the
 	// same closing state one instant: its cut and the envelope it left behind.
-	fund := MetricsFundToday{Opening: Money("0.00"), Purchases: Signed("0.00"), Balance: Signed("0.00")}
+	fund := MetricsFundToday{Opening: Money("0.00"), Purchases: Signed("0.00"),
+		Effective: Signed("0.00"), Balance: Signed("0.00")}
 	err := q.QueryRow(ctx, `SELECT purchase_fund_cash::text,cut_at,closed_at FROM branch_closings
  WHERE branch_location_id=$1 AND status='closed'
  ORDER BY cut_at DESC,id DESC LIMIT 1`, int16(branch)).Scan(&stored, &cut, &settledAt)
@@ -712,12 +717,36 @@ func fundTodayMetrics(ctx context.Context, q querier, branch int64) (MetricsFund
 	if documents < 0 {
 		return MetricsFundToday{}, ErrUnavailable
 	}
-	// The envelope's own identity, reused and never restated: opening − purchases.
-	balance, err := PurchaseFundExpected(fund.Opening, spent)
-	if err != nil {
-		return MetricsFundToday{}, ErrUnavailable
+	// The balance is the book's and the card publishes it with the term that moves it (S5, S13): the
+	// signed sum of `purchase_fund_ledger` over the whole book of the branch -- never an opening minus a
+	// window of purchases -- and, beside it, the signed effect of the movements of the window that belong
+	// to no settlement. A branch that never closed a settlement is included: its book is the founding
+	// `aporte` and the balance is that sum, not zero.
+	//
+	// The movements a closure wrote are left out of the window by `closing_id`, the fact the view does not
+	// publish: the `reposicion` or `devolucion` of the last settlement is already inside the number it
+	// published as the opening, and counting it again as a movement of the window would count the same
+	// money twice -- exactly as the drawer of today leaves out the transfers of an acta (S5). Nothing is
+	// recomputed from the table: the two sums read the view's own `effective`, and the join only asks
+	// which settlement a row belongs to.
+	var booked, effective string
+	if err := q.QueryRow(ctx, `SELECT
+ coalesce((SELECT sum(ledger.effective) FROM purchase_fund_ledger ledger
+        WHERE ledger.branch_location_id=$1),0)::numeric(12,2)::text,
+ coalesce((SELECT sum(ledger.effective) FROM purchase_fund_ledger ledger
+        JOIN branch_fund_movements movement ON movement.id=ledger.id
+        WHERE ledger.branch_location_id=$1 AND movement.closing_id IS NULL
+          AND ($2::timestamptz IS NULL OR ledger.occurred_at >= $2)),0)::numeric(12,2)::text`,
+		int16(branch), fund.Since).Scan(&booked, &effective); err != nil {
+		return MetricsFundToday{}, fail(ctx)
 	}
-	fund.Purchases, fund.Balance = spent, balance
+	balance, effect := Signed(booked), Signed(effective)
+	for _, amount := range []Signed{balance, effect} {
+		if _, ok := amount.Cents(); !ok {
+			return MetricsFundToday{}, ErrUnavailable
+		}
+	}
+	fund.Purchases, fund.Effective, fund.Balance = spent, effect, balance
 	fund.Documents, fund.UsedUnits, fund.ScrapMilli = documents, used, milli
 	return fund, nil
 }

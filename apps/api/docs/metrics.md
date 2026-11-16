@@ -86,7 +86,8 @@ no value is ever guessed.
   },
   "fund_today": {
     "since": "2026-11-01T12:00:00Z", "opening": "250.00", "purchases": "35.00",
-    "balance": "215.00", "documents": 1, "used_units": 2, "scrap_milli": 1500
+    "effective": "-35.00", "balance": "215.00", "documents": 1, "used_units": 2,
+    "scrap_milli": 1500
   }
 }
 ```
@@ -239,21 +240,36 @@ in the envelope it buys with.
 
 `since` is the cut of the **last closed settlement** of the branch, the same instant `today` starts
 from, and it is **null** for a branch that never closed one — there is no cut to start from, so the
-window is everything the branch ever bought and `opening` is `"0.00"`.
+window is everything the branch ever did and `opening` is `"0.00"`.
 
-`opening`, `purchases` and `balance` are the three terms of the settlement's own fund identity, so the
-card and the acta of the same envelope cannot state two different numbers:
+`balance` is the branch's **book**, and it is the same arithmetic the acta of a settlement and the
+tope of a purchase read (S5): `sum(effective)` of `purchase_fund_ledger` over the whole history of the
+branch — the view that publishes one signed effect per movement. It is **not** derived as `opening −
+purchases`: an `aporte` the warehouse loads, the founding of a branch or a correction also moves the
+book, and a branch founded with a purchase fund and no settlement holds that fund, not zero. This is
+the one place the card's balance comes from, so a branch the screen shows has a number the purchases
+it pays with also honour.
 
-- `opening` is the `purchase_fund_cash` of the last closed settlement: what the warehouse left in the
-  envelope when it closed, which is exactly what the database seeds the next opening from and what a
-  new purchase is charged against. A closure that stated no envelope inherits nothing, and the same
-  `coalesce` is read here as in the fund of that settlement, so both read `"0.00"`;
+`opening` and `effective` are the **breakdown** the card states, and they add up to `balance` with the
+numbers on screen: `balance = opening + effective`.
+
+- `opening` is what the last closed settlement left in the envelope, read by the same helper as its
+  acta (the signed sum of the book at its `closed_at` when its closure wrote the movement that
+  reconciled it, and the amount it stated otherwise). A branch that never closed a settlement
+  inherits nothing, so `opening` is `"0.00"`;
+- `effective` is the **signed effect of the movements of the window that belong to no settlement**:
+  the `aporte`, `compra`, `correccion` and the backfilled rows with `occurred_at >= since` and no
+  `closing_id`. The `reposicion`/`devolucion` a closure writes is left out because it is already
+  inside `opening`, exactly as the drawer of today leaves out the transfers of an acta;
 - `purchases` is the sum of the `paid_cash` of the branch's purchases with `created_at >= since` — the
   same column and the same window the settlement's own fund sums, with no counter-document filter, so a
-  counter-document subtracts by construction and can leave the net itself negative;
-- `balance` is signed and is exactly `opening − purchases`. A negative balance is a shortage and not a
-  number to hide: the envelope spent more than it inherited, and the screen says with words that the
-  branch cannot keep buying until the warehouse refills it.
+  counter-document subtracts by construction and can leave the net itself negative. It is the **cash of
+  the window's documents**, the volume they paid, and **not a term of `balance`**: a correction of a
+  purchase moves `effective` and the document's net moves `purchases`, and the two need not agree.
+
+A `balance` that `opening + effective` does not produce is a number this server never wrote, and the
+answer fails closed. A balance that is zero or below is the end of the branch's buying: the screen says
+with words that the branch cannot keep buying until the warehouse refills it.
 
 `documents` is how many purchase documents the window holds — counter-documents included, because they
 are documents of the branch — and `used_units` and `scrap_milli` are the batteries and the thousandths
@@ -262,7 +278,8 @@ Compras read applies: the counter-document is stored with a negative quantity an
 
 `fund_today` is **not** required to equal `fund` of a live period: the two are separate reads of the
 same envelope and a purchase landing between them moves one and not the other. The client validates the
-identity *inside* `fund_today` and never the equality between the two reads.
+breakdown *inside* `fund_today` (`opening + effective = balance`) and never the equality between the two
+reads.
 
 ## What this read does not publish
 
