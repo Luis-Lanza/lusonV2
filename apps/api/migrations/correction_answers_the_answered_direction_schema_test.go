@@ -19,7 +19,6 @@ func TestFundCorrectionFollowsALegacyRow(t *testing.T) {
 	if err != nil {
 		t.Fatal("the transaction could not be opened")
 	}
-	defer tx.Rollback(ctx)
 	var published string
 	if err := tx.QueryRow(ctx, `SELECT coalesce(sum(effective),0)::numeric(12,2)::text
  FROM purchase_fund_ledger WHERE branch_location_id=2`).Scan(&published); err != nil {
@@ -29,6 +28,11 @@ func TestFundCorrectionFollowsALegacyRow(t *testing.T) {
  description,created_by_account_id,corrects_id)
  VALUES(2,'correccion',300.00,'Carga anulada de más',2,$1)`, load)
 	execRefusalMessage(t, err, "LF003", published+" in it, ")
+	// The refused insert acquired the branch's lock inside this transaction: it has to be released
+	// before the pool asks for the same lock, or the correction below would wait on it forever.
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatal("the refused transaction could not be released")
+	}
 	// Answering the legacy row puts back what it took, and the view publishes the negation of its effect.
 	if err := tryFundCorrection(ctx, p, 2, 2, legacy, "400.00", "Carga de 051 anulada"); err != nil {
 		t.Fatalf("a correction the balance fits must be admitted: %v", err)
