@@ -1004,6 +1004,15 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
 .metrics-today .metrics-summary { margin-bottom: 12px; }
 .metrics-today .metrics-note + .metrics-note { margin-top: 6px; }
 .metrics-today-kind { font-weight: 600; }
+/* The ledger of today: the three columns never touch each other, and the moment is pinned to the
+   right edge so a column of amounts and a column of instants can be read down, not across. */
+.metrics-today .metrics-table th, .metrics-today .metrics-table td { padding-left: 12px; }
+.metrics-today .metrics-table th:first-child, .metrics-today .metrics-table td:first-child {
+  padding-left: 0;
+}
+.metrics-today .metrics-table th:last-child, .metrics-today .metrics-table td:last-child {
+  width: 1%; text-align: right; white-space: nowrap;
+}
 .metrics-today-moment { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 @media (max-width: 1279px) {
