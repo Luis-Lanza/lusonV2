@@ -437,6 +437,27 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, page, pageSize in
 	return result, nil
 }
 
+// ResolvePeriod reads the selector of the actor's own branch and returns it with the entry the
+// selection names. It is the same selector and the same choice the listing publishes, exported so
+// that a second read of the same branch cannot offer a different set of periods: a screen that
+// shows a period the listing does not have would be a screen showing a period nobody can open. A
+// selection the branch does not have is an invalid request, exactly as on the listing.
+func (s *Store) ResolvePeriod(ctx context.Context, actor auth.Identity, selection PeriodSelection) ([]Period, Period, error) {
+	branch, err := resolveBranch(ctx, s.pool, actor)
+	if err != nil {
+		return nil, Period{}, err
+	}
+	periods, err := loadPeriods(ctx, s.pool, branch)
+	if err != nil {
+		return nil, Period{}, err
+	}
+	period, ok := chosenPeriod(periods, selection)
+	if !ok {
+		return nil, Period{}, ErrInvalid
+	}
+	return periods, period, nil
+}
+
 // loadPeriods reads the selector of one branch: the pending balance first, then every closed
 // settlement newest first, then the live settlement when the branch has one, then the whole
 // history. A period is a settlement and never a calendar month, so the identifier of a closed
