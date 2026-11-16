@@ -113,3 +113,25 @@ operativa, fondo de compras, baterías más vendidas por unidades, recambio y es
   separadas y una venta entre las dos daría un rechazo falso.
 - **L12** Verificación: Go `closings` y `httpapi` verdes en el fixture; web 3721 pasan / 1 skip preexistente;
   `tsc`, build y `gofmt` limpios. Preview recompilado en http://127.0.0.1:8081 con la tarjeta nueva.
+- **L13** El candidato completo eran 6.008 líneas y no entraba en el presupuesto del revisor (el techo está
+  cerca de 2.100). Se reorganizaron los commits locales en cuatro cortes: lectura (1.259), contrato (1.643),
+  pantalla (2.063) y documentos (1.043).
+- **L14** Revisión nativa del corte de lectura (`review-af60a7deb5855652`, lentes resiliencia y fiabilidad):
+  dos hallazgos graves, los dos reales, corregidos en **142 líneas** de diff (tope 200).
+  `R3-001`: el historial leía ventas, comisión, ranking, stock y cajón en consultas separadas, sin una
+  transacción; una venta concurrente podía entrar en el ranking y no en los totales, y el documento no
+  describía un solo instante. Se corrigió leyendo todo en **una transacción de sólo lectura con nivel
+  `repeatable read`** — el nivel importa: con el `read committed` por defecto cada sentencia toma su propia
+  foto y la transacción sola no garantizaba nada. `R4-closedAtCutGap`: la caja de hoy arrancaba en el
+  `closed_at` del último cierre cuando el período termina en el `cut_at`, así que lo vendido o gastado entre
+  el corte y la aceptación no estaba en ninguna de las dos cuentas. Ahora arranca en el corte.
+  Aprobada y la autoridad quedó quemada. Cuatro observaciones informativas, ninguna bloqueante.
+- **L15** Lo que la corrección no pudo probar, y conviene saberlo: el escenario literal de `R4` —una venta
+  entre el corte y el cierre— es inalcanzable hoy desde el store, porque mientras una rendición no está
+  cerrada la sucursal está congelada (`035`) y los gastos se escriben con `now()` (`042`). La frontera quedó
+  fijada por el lado alcanzable: el test exige que la ventana empiece en el `cut_at` del último cierre y
+  explícitamente no en su `closed_at`. La prueba de `R3-001` es una invariante bajo un escritor concurrente
+  (el total del ranking nunca supera las unidades vendidas), no una foto determinista.
+- **L16** Tras la corrección se rearmó la cadena (`git rebase --onto`) sobre el commit enmendado; las tres
+  suites de Go (`closings`, `httpapi`, `purchases`) quedaron verdes y el árbol compila. Cortes 2 y 3 sin
+  revisar todavía.
