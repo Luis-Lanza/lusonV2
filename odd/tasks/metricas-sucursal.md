@@ -45,6 +45,17 @@ operativa, fondo de compras, baterías más vendidas por unidades, recambio y es
 - **S14** Los movimientos son información, no términos de la expectativa: el esperado de una rendición tampoco
   los resta ni los suma (un aporte y una recaudación entran al acta como contribución y como la plata que se
   lleva el Almacén). Sumarlos acá haría que la tarjeta contradiga al acta.
+- **S15** La pantalla muestra también el estado del **fondo de compras de hoy**, porque es una caja distinta de
+  la operativa y una sucursal sin rendición abierta hoy no tiene dónde verlo. Texto del humano: «en esta
+  pantalla de metricas igual deberia poder ver en que estado esta la caja de compras, es decir de compras de
+  chatarra, baterias usadas, porque ya hemos dicho que esta caja es diferente!».
+- **S16** El saldo del fondo de hoy es el del fondo y no el de la caja: **lo que dejó el último cierre − las
+  compras en efectivo posteriores al corte**. A diferencia de los movimientos de caja, las compras **sí** restan,
+  porque así es la identidad del fondo en el acta (`esperado = apertura − compras en efectivo`), y la tarjeta y
+  la rendición no pueden decir cosas distintas. Sin ningún cierre previo, arranca en cero.
+- **S17** La tarjeta dice además cuánto se compró desde el corte —documentos, baterías usadas y kilos de
+  chatarra— y cuánto dejó el Almacén en el último cierre, para cerrar el ciclo. Si el saldo no alcanza para
+  seguir comprando, lo dice con palabras; no inventa un pronóstico.
 
 ## Tasks
 
@@ -58,6 +69,10 @@ operativa, fondo de compras, baterías más vendidas por unidades, recambio y es
   — Spec: S1-S9, S11.
 - **T3** Cierre: documentación de la vertical, `odd/tasks` actualizado, preview recompilado y verificación
   independiente. — Spec: S6, S8.
+- **T5** Fondo de compras de hoy: el contrato publica `fund_today` (desde qué corte, lo que quedó en el fondo,
+  compras en efectivo desde el corte, saldo, documentos, baterías usadas y kilos de chatarra comprados) en las
+  tres fuentes, y la pantalla lo muestra al lado de la caja de hoy. Pruebas de store, de contrato y de pantalla.
+  — Spec: S15-S17.
 - **T4** Caja de hoy: el contrato publica el bloque `today` (desde qué corte, apertura que quedó, ventas en
   efectivo, gastos, esperado y los movimientos con su momento) en las tres fuentes, y la pantalla lo muestra
   siempre, arriba, con la lista de movimientos. — Spec: S12-S14.
@@ -159,3 +174,6 @@ operativa, fondo de compras, baterías más vendidas por unidades, recambio y es
   el acta al cerrar. Hasta entonces la tarjeta lee gastos en cero, porque no hay forma de crearlos.
 - **L23** Ajuste visual posterior a la revisión: las columnas del libro de la tarjeta «Caja de hoy» se tocaban
   («MONTONOMENTO», «Bs 5.000,0015/11/2026»). Se separaron con aire y se ancló el momento a la derecha.
+- **L24** Pedido del humano con la vertical ya cerrada: ver también el **estado del fondo de compras de hoy** en
+  la misma pantalla, porque es una caja distinta y sin rendición abierta no tiene dónde mirarse. Se agrega
+  S15-S17 y la tarea T5; el corte se revisa aparte, como los anteriores.
