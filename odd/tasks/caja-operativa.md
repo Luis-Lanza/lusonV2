@@ -52,6 +52,9 @@ y recaudaciones, con corrección trazable y saldo esperado a la vista. Es una ca
 
 ## Tasks
 
+Cortes de entrega en la rama `feat/caja-operativa`: `ec15d6e` el planteo y el diseño (966 líneas, sobre todo
+los tres tableros) · el resto en unidades de código, ver «Commits» al pie de cada tarea.
+
 - **T1** Migración: tipo `correccion` en el CHECK de `branch_cash_movements`, columna de referencia al
   movimiento corregido, y las guardas de S6/S7 (signo contrario, tope en el monto original, sin cadenas, sólo
   movimientos sin cierre). Pruebas de esquema en `apps/api/migrations`. — Spec: S6, S7.
