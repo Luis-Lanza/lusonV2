@@ -1867,7 +1867,8 @@ describe('branch metrics', () => {
     // The drawer of today is published whatever the period is, so even the history states it.
     // A branch the warehouse never configured and that sold nothing: the drawer, the base and the
     // commission it did not earn are all stated, and the absence of a rate is a null (S18-S20).
-    today: { since: null, opening: '0.00', sales: '0.00', expenses: '0.00', expected: '0.00',
+    today: { since: null, opening: '0.00', sales: '0.00', expenses: '0.00', effective: '0.00',
+      expected: '0.00',
       rate: null, sold: '0.00', commission: '0.00', movements: [] },
     fund_today: { since: null, opening: '0.00', purchases: '0.00', balance: '0.00', documents: 0,
       used_units: 0, scrap_milli: 0 } };
@@ -2014,7 +2015,8 @@ describe('branch settlement decision', () => {
     id: 1, branch_location_id: 2, branch_name: 'Sucursal A', status: 'proposed',
     period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z', closed_at: null,
     commission_rate_percent: '4.50', opening_cash: '800.00', cash_sales: '6430.00',
-    cash_expenses: '215.00', expected_cash: '7015.00', counted_cash: '6980.00',
+    cash_expenses: '215.00', cash_effective: '-215.00', expected_cash: '7015.00',
+    counted_cash: '6980.00',
     cash_difference: '-35.00', contributed_cash: '0.00', closing_cash: '900.00',
     taken_cash: '6080.00', sales_total: '32480.00', commission_amount: '1461.60',
     card_total: '3240.00', transfer_total: '1180.00', qr_total: '2760.00', observation: '',

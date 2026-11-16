@@ -71,7 +71,8 @@ const proposed = (overrides: Record<string, unknown> = {}) => ({
   id: 1, branch_location_id: 2, branch_name: 'Sopocachi', status: 'proposed',
   period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z', closed_at: null,
   commission_rate_percent: '4.50', opening_cash: '800.00', cash_sales: '6430.00',
-  cash_expenses: '215.00', expected_cash: '7015.00', counted_cash: '6980.00',
+  cash_expenses: '215.00', cash_effective: '-215.00', expected_cash: '7015.00',
+  counted_cash: '6980.00',
   cash_difference: '-35.00', contributed_cash: '0.00', closing_cash: '900.00',
   taken_cash: '6080.00', sales_total: '32480.00', commission_amount: '1461.60',
   card_total: '3240.00', transfer_total: '1180.00', qr_total: '2760.00',
@@ -87,7 +88,7 @@ const proposed = (overrides: Record<string, unknown> = {}) => ({
 const open = () => proposed({
   status: 'open', commission_rate_percent: null, counted_cash: null, cash_difference: null,
   closing_cash: null, taken_cash: null, cash_sales: '0.00', cash_expenses: '0.00',
-  expected_cash: '800.00', sales_total: '0.00', commission_amount: '0.00', card_total: '0.00',
+  cash_effective: '0.00', expected_cash: '800.00', sales_total: '0.00', commission_amount: '0.00', card_total: '0.00',
   transfer_total: '0.00', qr_total: '0.00', observation: '',
   // A held settlement has an envelope nobody counted yet and no frozen offer to read it from.
   purchase_fund_counted: null, purchase_fund_difference: null, purchase_fund_cash: null,

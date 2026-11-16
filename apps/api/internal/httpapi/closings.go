@@ -63,6 +63,19 @@ const (
 	// it names no settlement because the settlement that covers an expense is decided by the
 	// instant the expense happened (S12).
 	closingsExpensesPath = closingsCollectionPath + "/expenses"
+	// closingsCashMovementsPath is the branch's operational drawer: the movements it writes of its own
+	// period -- the expense it pays out, the contribution it receives and the collection it gives up.
+	// It is a literal path beside {id}, exactly like `expenses`, so it is never read as a settlement id,
+	// and it names no settlement: the one that covers the movement is decided by its instant (S1, S2,
+	// S12).
+	closingsCashMovementsPath = closingsCollectionPath + "/cash-movements"
+	// closingsCashCorrectionsPath is the compensating movement of one row of that drawer: the book is
+	// immutable, so a wrong row is answered by its opposite movement and never edited or deleted (S6).
+	closingsCashCorrectionsPath = closingsCollectionPath + "/cash-corrections"
+	// closingsCashLedgerPath is the book of that drawer over one window, which is what the screen of the
+	// operational till reads (S4, S8). It is the second read of this contract that accepts a query of
+	// its own: the two instants of the window it asks for.
+	closingsCashLedgerPath = closingsCollectionPath + "/cash-ledger"
 	// closingsCorrectionsPath is the corrections of one closed settlement: the warehouse appends one
 	// and the branch decides it, exactly like a round of a live settlement (S16). `corrections` is a
 	// literal suffix of the settlement id, so it is never read as one.
@@ -156,6 +169,9 @@ func (a *API) closingRoutes(store *closings.Store) http.Handler {
 	mux.HandleFunc(closingsCommissionPath, a.closingSettings(store))
 	mux.HandleFunc(closingsCommissionsPath, a.closingCommissions(store))
 	mux.HandleFunc(closingsExpensesPath, a.closingExpenses(store))
+	mux.HandleFunc(closingsCashMovementsPath, a.closingCashMovements(store))
+	mux.HandleFunc(closingsCashCorrectionsPath, a.closingCashCorrections(store))
+	mux.HandleFunc(closingsCashLedgerPath, a.closingCashLedger(store))
 	mux.HandleFunc(closingsCorrectionsPath, a.closingCorrections(store))
 	mux.HandleFunc(closingsCorrectionDecisionPath, a.closingCorrectionDecision(store))
 	mux.HandleFunc(closingsCollectionPath+"/{id}/count", a.closingCount(store))
@@ -182,6 +198,8 @@ func closingFailure(w http.ResponseWriter, err error) {
 	var moved *closings.StockMoved
 	var stale *closings.StaleProposal
 	var notClosed *closings.CorrectionNotClosed
+	var target *closings.CorrectionTargetInvalid
+	var exceeds *closings.CorrectionExceeds
 	switch {
 	case errors.As(err, &pending):
 		// The sheet of a live settlement never lacks a counted quantity: the opener seeds it with
@@ -212,6 +230,16 @@ func closingFailure(w http.ResponseWriter, err error) {
 		// A correction belongs to a closed settlement, and a live one is corrected by its own
 		// proposal rounds: the refusal names the document the operator has to look at (LC012).
 		closingFailureRecord(w, 409, "correction_not_closed", "closing_id", notClosed.ClosingID)
+	case errors.As(err, &target):
+		// A correction of the branch's own book names a movement it may not answer: an unknown movement,
+		// one of another branch, another correction, the transfer of a settlement or a movement of a
+		// period a closure already signed (LC030, S6, S7). It is a request error and never an outage,
+		// because the branch can act on it by naming a movement of its own open period.
+		failure(w, 400, "correction_target_invalid")
+	case errors.As(err, &exceeds):
+		// The corrections of one movement never exceed the amount that movement stated (LC031, S6): the
+		// branch states less, and the book stays the sum of what it states.
+		failure(w, 409, "correction_exceeds")
 	case errors.Is(err, closings.ErrNoCommissionRate):
 		// The missing fact is the rate itself, which is what the code names: without it no
 		// branch can be proposed (S6).
@@ -814,6 +842,107 @@ func decodeClosingExpense(r *http.Request) (closings.Money, string, error) {
 	return amount, canonical, nil
 }
 
+// decodeClosingCashMovement reads one movement the branch writes in its own operational drawer: the kind
+// it states, the amount and what for, and nothing else. The branch is the session's own account and the
+// instant is the database's, so neither is part of this body: a caller records no movement in another
+// drawer and backdates none into a settled period (S12).
+func decodeClosingCashMovement(r *http.Request) (string, closings.Money, string, error) {
+	d, err := closingDecoder(r)
+	if err != nil || !closingDelimiter(d, '{') {
+		return "", "", "", closings.ErrInvalid
+	}
+	var kind string
+	var amount closings.Money
+	var description string
+	seen := map[string]bool{}
+	for d.More() {
+		key, err := closingString(d)
+		if err != nil || seen[key] {
+			return "", "", "", closings.ErrInvalid
+		}
+		seen[key] = true
+		switch key {
+		case "kind":
+			kind, err = closingString(d)
+		case "amount":
+			amount, err = closingAmount(d)
+		case "description":
+			description, err = closingString(d)
+		default:
+			return "", "", "", closings.ErrInvalid
+		}
+		if err != nil {
+			return "", "", "", closings.ErrInvalid
+		}
+	}
+	// The three keys are mandatory and there is no other: a movement states its kind, its amount and what
+	// it was for.
+	if len(seen) != 3 || !closingDelimiter(d, '}') {
+		return "", "", "", closings.ErrInvalid
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return "", "", "", closings.ErrInvalid
+	}
+	// A correction is not a direction of the drawer and is never recorded here: it answers another
+	// movement and has a route of its own (S6).
+	if !metricsMovementKindValid(kind) {
+		return "", "", "", closings.ErrInvalid
+	}
+	// The description is persisted verbatim, so it is exactly the canonical text the ledger admits:
+	// trimmed, never blank and inside its own bound.
+	canonical, ok := closings.CanonicalDescription(description)
+	if !ok || canonical != description {
+		return "", "", "", closings.ErrInvalid
+	}
+	return kind, amount, canonical, nil
+}
+
+// decodeClosingCashCorrection reads the compensating movement of one row of the branch's book: the
+// movement it answers, the amount it states and what for, and nothing else (S6). The sign is the
+// database's own reading and never a caller value: a correction states a positive amount and the book
+// inverts it, so no caller can write money in the direction the error did not.
+func decodeClosingCashCorrection(r *http.Request) (int64, closings.Money, string, error) {
+	d, err := closingDecoder(r)
+	if err != nil || !closingDelimiter(d, '{') {
+		return 0, "", "", closings.ErrInvalid
+	}
+	var corrects int64
+	var amount closings.Money
+	var description string
+	seen := map[string]bool{}
+	for d.More() {
+		key, err := closingString(d)
+		if err != nil || seen[key] {
+			return 0, "", "", closings.ErrInvalid
+		}
+		seen[key] = true
+		switch key {
+		case "corrects_id":
+			corrects, err = closingID(d, math.MaxInt64)
+		case "amount":
+			amount, err = closingAmount(d)
+		case "description":
+			description, err = closingString(d)
+		default:
+			return 0, "", "", closings.ErrInvalid
+		}
+		if err != nil {
+			return 0, "", "", closings.ErrInvalid
+		}
+	}
+	if len(seen) != 3 || !closingDelimiter(d, '}') {
+		return 0, "", "", closings.ErrInvalid
+	}
+	if _, err := d.Token(); err != io.EOF {
+		return 0, "", "", closings.ErrInvalid
+	}
+	canonical, ok := closings.CanonicalDescription(description)
+	if !ok || canonical != description {
+		return 0, "", "", closings.ErrInvalid
+	}
+	return corrects, amount, canonical, nil
+}
+
 // decodeClosingDecision reads the branch's answer: accept, or reject with its mandatory motive.
 // The two decisions are exclusive, so an acceptance that carries a reason is a malformed answer
 // and not an accepted one with a stray field.
@@ -1060,16 +1189,71 @@ type closingCountLineDTO struct {
 	CountedQuantity  *int64 `json:"counted_quantity"`
 }
 
-// closingExpenseDTO is one recorded expense of a branch's till: what it paid out, what for, when it
-// was recorded and by which account. It is the same shape inside the settlement document and in the
-// answer of the route that records it, so the operator reads one thing in both places.
+// closingExpenseDTO is one row of a branch's till as the settlement publishes it: the kind the
+// branch wrote -- a pay-out, or the correction that answers one -- the amount it stated, what for,
+// when it was recorded, by which account and, on a correction only, the movement it answers. It is
+// the same shape inside the settlement document and in the answer of the route that records an
+// expense, so the operator reads one thing in both places, and it is the shape the screen's own
+// decoder reads: the kind and the reference are keys of this row and not of a second contract (S6,
+// S13).
 type closingExpenseDTO struct {
 	ID                 int64  `json:"id"`
 	BranchLocationID   int64  `json:"branch_location_id"`
+	Kind               string `json:"kind"`
 	Amount             string `json:"amount"`
 	Description        string `json:"description"`
 	OccurredAt         string `json:"occurred_at"`
 	CreatedByAccountID int64  `json:"created_by_account_id"`
+	CorrectsID         *int64 `json:"corrects_id"`
+}
+
+// closingCashMovementDTO is one movement of the branch's operational drawer as the route that records it
+// publishes it: the kind the branch stated, the amount it stated, what for, the instant the database
+// stamped it and the account that wrote it. `corrects_id` is present on a correction only, which is the
+// one kind that answers another movement: the answer of a movement of the period states exactly the keys
+// that movement owns and never a target it does not have (S1, S2, S6).
+type closingCashMovementDTO struct {
+	ID                 int64  `json:"id"`
+	BranchLocationID   int64  `json:"branch_location_id"`
+	Kind               string `json:"kind"`
+	Amount             string `json:"amount"`
+	Description        string `json:"description"`
+	OccurredAt         string `json:"occurred_at"`
+	CreatedByAccountID int64  `json:"created_by_account_id"`
+	CorrectsID         *int64 `json:"corrects_id,omitempty"`
+}
+
+// closingCashLedgerMovementDTO is one row of the book as the screen reads it: the kind the branch
+// recorded, the kind whose direction the row carries -- its own, or the one it answers when it is a
+// correction -- the positive amount it stated and the effect signed the way the drawer moves (S4, S13).
+// `effective` is the only signed money of this contract and it is published as the decimal text it is, so
+// a movement out of the drawer starts with `-`.
+type closingCashLedgerMovementDTO struct {
+	ID                 int64  `json:"id"`
+	Kind               string `json:"kind"`
+	EffectKind         string `json:"effect_kind"`
+	Amount             string `json:"amount"`
+	Effective          string `json:"effective"`
+	Description        string `json:"description"`
+	OccurredAt         string `json:"occurred_at"`
+	CreatedByAccountID int64  `json:"created_by_account_id"`
+	CorrectsID         *int64 `json:"corrects_id"`
+}
+
+// closingCashLedgerDTO is the book of the branch's operational drawer over one window (S4, S8): the amount
+// the period inherited, the cash its sales collected, the signed effect of its movements and the
+// expectation those three produce, beside the movements themselves, oldest first. `since` and `until` are
+// the window the numbers describe and are null on the side it leaves open; `truncated` states that the
+// list is the newest movements of a longer window while every number beside it counts the whole window.
+type closingCashLedgerDTO struct {
+	Since     *string                        `json:"since"`
+	Until     *string                        `json:"until"`
+	Opening   string                         `json:"opening"`
+	Sales     string                         `json:"sales"`
+	Effective string                         `json:"effective"`
+	Expected  string                         `json:"expected"`
+	Truncated bool                           `json:"truncated"`
+	Movements []closingCashLedgerMovementDTO `json:"movements"`
 }
 
 // closingMaterialLineDTO is one line of the material sheet: what the period bought of one model or
@@ -1187,11 +1371,13 @@ type closingRoundDTO struct {
 }
 
 // closingDTO is one settlement exactly as this contract publishes it. The derived numbers are the
-// drawer's and are computed on read: expected_cash is the inherited fund plus the cash sales minus
-// the cash expenses of the period, cash_difference is the counted cash against it with its sign
-// (negative is a shortage), and taken_cash is what the warehouse takes out of the till.
-// commission_amount and the electronic collections are reported beside them and are added to none
-// of them.
+// drawer's and are computed on read: `cash_effective` is the signed effect of every movement the branch
+// wrote inside the window, `expected_cash` is the inherited fund plus the cash sales plus that effect --
+// the drawer's one rule, the same one the book and the metrics card state (S4, S13) --, cash_difference
+// is the counted cash against it with its sign (negative is a shortage), and taken_cash is what the
+// warehouse takes out of the till. The net `cash_expenses` the document reports is already one term of
+// `cash_effective` and is never subtracted a second time. commission_amount and the electronic
+// collections are reported beside them and are added to none of them.
 type closingDTO struct {
 	ID                    int64                 `json:"id"`
 	BranchLocationID      int64                 `json:"branch_location_id"`
@@ -1204,6 +1390,7 @@ type closingDTO struct {
 	OpeningCash           string                `json:"opening_cash"`
 	CashSales             string                `json:"cash_sales"`
 	CashExpenses          string                `json:"cash_expenses"`
+	CashEffective         string                `json:"cash_effective"`
 	ExpectedCash          string                `json:"expected_cash"`
 	CountedCash           *string               `json:"counted_cash"`
 	CashDifference        *string               `json:"cash_difference"`
@@ -1274,12 +1461,183 @@ func closingExpenseRecord(expense closings.Expense) (closingExpenseDTO, error) {
 		expense.CreatedByAccountID < 1 {
 		return unavailable()
 	}
+	// The two rows this list holds, and the reference each one states (S6): an expense the branch
+	// paid out names no other movement, and the correction that answers it names exactly one. A row
+	// of any other shape is not a row of this document.
+	switch {
+	case expense.Kind == "gasto":
+		if expense.CorrectsID != nil {
+			return unavailable()
+		}
+	case expense.Kind == "correccion":
+		if expense.CorrectsID == nil || *expense.CorrectsID < 1 {
+			return unavailable()
+		}
+	default:
+		return unavailable()
+	}
 	occurred, ok := closingMoment(expense.OccurredAt)
 	if !ok {
 		return unavailable()
 	}
-	return closingExpenseDTO{ID: expense.ID, BranchLocationID: expense.BranchID, Amount: amount,
-		Description: description, OccurredAt: occurred, CreatedByAccountID: expense.CreatedByAccountID}, nil
+	return closingExpenseDTO{ID: expense.ID, BranchLocationID: expense.BranchID,
+		Kind: expense.Kind, Amount: amount, Description: description, OccurredAt: occurred,
+		CreatedByAccountID: expense.CreatedByAccountID, CorrectsID: expense.CorrectsID}, nil
+}
+
+// closingCashMovementRecord admits only a complete movement of the branch's book: a kind the branch
+// records, an amount the drawer can hold, a canonical description, the branch it belongs to, the account
+// that wrote it and -- for a correction and only for a correction -- the movement it answers.
+func closingCashMovementRecord(movement closings.Expense) (closingCashMovementDTO, error) {
+	unavailable := func() (closingCashMovementDTO, error) {
+		return closingCashMovementDTO{}, closings.ErrUnavailable
+	}
+	amount, ok := closingAmountText(movement.Amount)
+	if !ok {
+		return unavailable()
+	}
+	description, ok := closings.CanonicalDescription(movement.Description)
+	// A canonical amount of exactly "0.00" is the only non-positive amount canonical text can hold, and a
+	// movement of the book always moves the drawer.
+	if !ok || description != movement.Description || amount == "0.00" || movement.ID < 1 ||
+		movement.BranchID < closingsFirstBranch || movement.BranchID > closings.MaxBranchID ||
+		movement.CreatedByAccountID < 1 {
+		return unavailable()
+	}
+	// The two shapes a row of this book states: the three kinds the branch records name no movement, and
+	// the correction names exactly one (S6).
+	switch {
+	case metricsMovementKindValid(movement.Kind):
+		if movement.CorrectsID != nil {
+			return unavailable()
+		}
+	case movement.Kind == "correccion":
+		if movement.CorrectsID == nil || *movement.CorrectsID < 1 {
+			return unavailable()
+		}
+	default:
+		return unavailable()
+	}
+	occurred, ok := closingMoment(movement.OccurredAt)
+	if !ok {
+		return unavailable()
+	}
+	return closingCashMovementDTO{ID: movement.ID, BranchLocationID: movement.BranchID,
+		Kind: movement.Kind, Amount: amount, Description: description, OccurredAt: occurred,
+		CreatedByAccountID: movement.CreatedByAccountID, CorrectsID: movement.CorrectsID}, nil
+}
+
+// closingCashLedgerRecord admits only a complete book of one window: the two instants it describes, its
+// four money numbers published as computed, the movements it lists oldest first and the fact that its list
+// is a window of a longer period. The expectation is recomputed from the terms beside it, so an answer
+// whose numbers do not close is never published (S4, S13).
+func closingCashLedgerRecord(book closings.CashLedger) (closingCashLedgerDTO, error) {
+	unavailable := func() (closingCashLedgerDTO, error) {
+		return closingCashLedgerDTO{}, closings.ErrUnavailable
+	}
+	record := closingCashLedgerDTO{Truncated: book.Truncated,
+		Movements: make([]closingCashLedgerMovementDTO, 0, len(book.Movements))}
+	for _, bound := range []struct {
+		moment *time.Time
+		stored **string
+	}{{book.Since, &record.Since}, {book.Until, &record.Until}} {
+		if bound.moment == nil {
+			continue
+		}
+		moment, ok := closingMoment(*bound.moment)
+		if !ok {
+			return unavailable()
+		}
+		*bound.stored = &moment
+	}
+	opening, ok := closingAmountText(book.Opening)
+	if !ok {
+		return unavailable()
+	}
+	sales, ok := closingAmountText(book.Sales)
+	if !ok {
+		return unavailable()
+	}
+	effective, ok := closingSignedText(book.Effective)
+	if !ok {
+		return unavailable()
+	}
+	expected, ok := closingSignedText(book.Expected)
+	if !ok {
+		return unavailable()
+	}
+	record.Opening, record.Sales, record.Effective, record.Expected = opening, sales, effective, expected
+	// The one identity of the drawer, judged by the store's own rule over the numbers being published: the
+	// expectation is what the period inherited plus the cash its sales collected plus the signed effect of
+	// its movements, and an answer that does not close is not this contract's answer (S4, S13).
+	judged, err := closings.DrawerExpected(book.Opening, book.Sales, book.Effective)
+	if err != nil || judged != book.Expected {
+		return unavailable()
+	}
+	for index, movement := range book.Movements {
+		row, ok := closingCashLedgerMovementRecord(movement)
+		if !ok {
+			return unavailable()
+		}
+		// The book is read in the order it happened: a list whose rows do not advance in
+		// (occurred_at, id) is not one this contract publishes.
+		if index > 0 {
+			previous := book.Movements[index-1]
+			if previous.OccurredAt.After(movement.OccurredAt) ||
+				(previous.OccurredAt.Equal(movement.OccurredAt) && previous.ID >= movement.ID) {
+				return unavailable()
+			}
+		}
+		record.Movements = append(record.Movements, row)
+	}
+	return record, nil
+}
+
+// closingCashLedgerMovementRecord admits one row of the book and publishes it as money: the positive
+// amount the branch stated, the signed effect the row carries and the direction that kind states -- into
+// the drawer for an aporte, out of it for a gasto or a recaudacion, and the opposite of the movement it
+// answers for a correction (S13).
+func closingCashLedgerMovementRecord(movement closings.CashMovement) (closingCashLedgerMovementDTO, bool) {
+	amount, ok := closingAmountText(movement.Amount)
+	if !ok || amount == "0.00" {
+		return closingCashLedgerMovementDTO{}, false
+	}
+	effective, ok := closingSignedText(movement.Effective)
+	if !ok {
+		return closingCashLedgerMovementDTO{}, false
+	}
+	description, ok := closings.CanonicalDescription(movement.Description)
+	if !ok || description != movement.Description || movement.ID < 1 ||
+		movement.CreatedByAccountID < 1 || !closingCashMovementKind(movement.Kind) ||
+		!metricsMovementKindValid(movement.EffectKind) {
+		return closingCashLedgerMovementDTO{}, false
+	}
+	if (movement.Kind == "correccion") != (movement.CorrectsID != nil) ||
+		(movement.CorrectsID != nil && *movement.CorrectsID < 1) {
+		return closingCashLedgerMovementDTO{}, false
+	}
+	cents, ok := closings.Signed(effective).Cents()
+	if !ok || cents == 0 {
+		return closingCashLedgerMovementDTO{}, false
+	}
+	into := (movement.EffectKind == "aporte") != (movement.Kind == "correccion")
+	if into != (cents > 0) {
+		return closingCashLedgerMovementDTO{}, false
+	}
+	occurred, ok := closingMoment(movement.OccurredAt)
+	if !ok {
+		return closingCashLedgerMovementDTO{}, false
+	}
+	return closingCashLedgerMovementDTO{ID: movement.ID, Kind: movement.Kind,
+		EffectKind: movement.EffectKind, Amount: amount, Effective: effective,
+		Description: description, OccurredAt: occurred,
+		CreatedByAccountID: movement.CreatedByAccountID, CorrectsID: movement.CorrectsID}, true
+}
+
+// closingCashMovementKind admits the four kinds of the branch's book: the three the branch records as
+// directions of its drawer and the correction that answers one of them (S6).
+func closingCashMovementKind(kind string) bool {
+	return metricsMovementKindValid(kind) || kind == "correccion"
 }
 
 // closingAmountText admits only the canonical two-decimal text this contract publishes.
@@ -1306,12 +1664,22 @@ func closingText(value string) bool {
 	return utf8.ValidString(value) && !strings.ContainsRune(value, 0)
 }
 
-// closingMoment renders one persisted instant as RFC3339 in UTC, refusing a zero.
+// closingMoment renders one persisted instant as RFC3339 in UTC at the precision the column holds,
+// refusing a zero. The seconds are always stated and the fraction is published whenever the instant has
+// one, because a truncated instant is a different window: a bound derived from a published `period_start`
+// or `cut_at` that dropped the microseconds would describe another half-open interval and count a row
+// recorded in the same second on the wrong side of it. The text is re-read before it is published, so a
+// moment this contract cannot round-trip is never written.
 func closingMoment(moment time.Time) (string, bool) {
 	if moment.IsZero() {
 		return "", false
 	}
-	return moment.UTC().Format(time.RFC3339), true
+	text := moment.UTC().Format(time.RFC3339Nano)
+	parsed, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil || !parsed.Equal(moment) {
+		return "", false
+	}
+	return text, true
 }
 
 // closingOptionalAmountRecord admits one amount the warehouse has not stated yet, which is JSON
@@ -1397,9 +1765,17 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 		return unavailable()
 	}
 	// The derived numbers are published as they are computed, and only from the facts that
-	// produce them: a stored shape that disagrees is never shown to an operator. The commission is
-	// inside none of these identities (S9).
-	expected, err := closings.ExpectedCash(closing.OpeningCash, closing.CashSales, closing.CashExpenses)
+	// produce them: a stored shape that disagrees is never shown to an operator. The expectation is the
+	// drawer's ONE rule over this window -- opening, the cash its sales collected and the signed effect of
+	// the movements the branch wrote in it -- and it is judged here by that same rule instead of by a
+	// second arithmetic of the net expense (S4, S13). The commission is inside none of these identities
+	// (S9).
+	effectiveText, ok := closingSignedText(closing.CashEffective)
+	if !ok {
+		return unavailable()
+	}
+	expected, err := closings.DrawerExpected(closing.OpeningCash, closing.CashSales,
+		closing.CashEffective)
 	if err != nil || expected != closing.ExpectedCash {
 		return unavailable()
 	}
@@ -1581,7 +1957,8 @@ func closingRecord(closing closings.Closing) (closingDTO, error) {
 		ID: closing.ID, BranchLocationID: closing.BranchID, BranchName: closing.BranchName,
 		Status: string(closing.Status), PeriodStart: periodStart, CutAt: cutAt, ClosedAt: closedAt,
 		CommissionRatePercent: rate, OpeningCash: amounts[0], CashSales: amounts[1],
-		CashExpenses: amounts[2], ExpectedCash: expectedText, CountedCash: countedCash,
+		CashExpenses: amounts[2], CashEffective: effectiveText, ExpectedCash: expectedText,
+		CountedCash:    countedCash,
 		CashDifference: differenceText, ContributedCash: amounts[8], ClosingCash: closingCash,
 		TakenCash: takenText, SalesTotal: amounts[3], CommissionAmount: amounts[4],
 		CardTotal: amounts[5], TransferTotal: amounts[6], QRTotal: amounts[7],
@@ -2301,6 +2678,114 @@ func (a *API) closingExpenses(store *closings.Store) http.HandlerFunc {
 	}
 }
 
+// closingCashMovements records one movement the branch writes in its own operational drawer (S1, S2): the
+// kind it states, the amount and what for. The branch is the session's own account and the instant is the
+// database's, so this route names no branch, no settlement and no instant (S12), and a branch frozen by a
+// live settlement is refused by name, exactly like the expense of the same till (S9).
+func (a *API) closingCashMovements(store *closings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, http.MethodPost) {
+			return
+		}
+		actor, ok := a.inventoryIdentity(w, r)
+		if !ok {
+			return
+		}
+		if !a.closingMutation(w, r) {
+			return
+		}
+		kind, amount, description, err := decodeClosingCashMovement(r)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		movement, err := store.RecordCashMovement(r.Context(), actor, kind, amount, description)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		record, err := closingCashMovementRecord(movement)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		respond(w, 201, record)
+	}
+}
+
+// closingCashCorrections records the compensating movement of one row of the branch's book (S6): the book
+// is immutable, so a wrong movement is answered by its opposite and never edited or deleted. The two
+// refusals the branch acts on keep their own code -- a target the book may not answer and an amount above
+// the one corrected -- so neither surfaces as an outage.
+func (a *API) closingCashCorrections(store *closings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, http.MethodPost) {
+			return
+		}
+		actor, ok := a.inventoryIdentity(w, r)
+		if !ok {
+			return
+		}
+		if !a.closingMutation(w, r) {
+			return
+		}
+		corrects, amount, description, err := decodeClosingCashCorrection(r)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		movement, err := store.CorrectCashMovement(r.Context(), actor, corrects, amount, description)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		record, err := closingCashMovementRecord(movement)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		respond(w, 201, record)
+	}
+}
+
+// closingCashLedger reads the book of the branch's drawer over one window (S4, S8): the amount the period
+// inherited, the cash its sales collected, the signed effect of its movements, the expectation they
+// produce and the movements themselves, oldest first. The branch is the session's own and never a query
+// value (S12), and the two instants of the window are optional: an absent bound is the store's own
+// default, which is the cut of the last closed settlement on the left and no end on the right.
+func (a *API) closingCashLedger(store *closings.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !method(w, r, http.MethodGet) {
+			return
+		}
+		actor, ok := a.inventoryIdentity(w, r)
+		if !ok {
+			return
+		}
+		// A bare separator is an ambiguous framing, not the default window.
+		if r.URL.RawQuery == "" && r.URL.ForceQuery {
+			failure(w, 400, "invalid_request")
+			return
+		}
+		from, to, err := closingCashLedgerQueryOf(r.URL.RawQuery)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		book, err := store.CashLedger(r.Context(), actor, from, to)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		record, err := closingCashLedgerRecord(book)
+		if err != nil {
+			closingFailure(w, err)
+			return
+		}
+		respond(w, 200, record)
+	}
+}
+
 // closingDetail serves one settlement: the period, the money, the count sheet, the expenses of its
 // window and every proposal round with the answer it received.
 func (a *API) closingDetail(store *closings.Store) http.HandlerFunc {
@@ -2605,6 +3090,40 @@ func (a *API) closingCorrectionDecision(store *closings.Store) http.HandlerFunc 
 		}
 		respond(w, 200, record)
 	}
+}
+
+// closingCashLedgerQueryOf reads the window of the book: an optional `from` and an optional `to`, each
+// exactly once and each an RFC3339 instant, and nothing else. Order is irrelevant and a bound the query
+// does not state is the store's own default, so an empty query reads the whole open period; a duplicate
+// key, an empty value, an unknown key, a bare separator and an instant that does not parse are rejections
+// and never defaults.
+func closingCashLedgerQueryOf(raw string) (*time.Time, *time.Time, error) {
+	values, err := closingListQueryValues(raw)
+	if err != nil {
+		return nil, nil, closings.ErrInvalid
+	}
+	var from, to *time.Time
+	for key, text := range values {
+		// The instant is read from its decoded spelling, so the offset of a zone is the `+` it means and
+		// never the space a raw `+` would encode.
+		value, err := url.QueryUnescape(text)
+		if err != nil {
+			return nil, nil, closings.ErrInvalid
+		}
+		moment, err := time.Parse(time.RFC3339, value)
+		if err != nil {
+			return nil, nil, closings.ErrInvalid
+		}
+		switch key {
+		case "from":
+			from = &moment
+		case "to":
+			to = &moment
+		default:
+			return nil, nil, closings.ErrInvalid
+		}
+	}
+	return from, to, nil
 }
 
 // closingQueryAbsent refuses a query string on a route where it is not part of the contract: a

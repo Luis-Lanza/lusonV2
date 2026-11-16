@@ -657,6 +657,53 @@ function purchaseFund(record: Record<string, unknown>): ClosingPurchaseFund | nu
   });
 }
 
+/** The four kinds the branch's ledger writes: the expense it paid out of the drawer, the contribution
+ * it received, the collection it gave up and the correction that answers one of them (S2, S6). */
+const expenseKinds: readonly string[] = ['gasto', 'aporte', 'recaudacion', 'correccion'];
+
+/** The bound of the description of an expense, which is the database's own column bound. */
+const expenseMaxDescription = 500;
+
+/**
+ * The branch's own expenses of the settled window, published beside the total they produced so the
+ * warehouse reads what it is subtracting and the branch what it is being charged for (S13). Each row is
+ * the ledger's own shape and every key is validated: the amount is canonical money and strictly
+ * positive — the direction of a row is the ledger view's signed reading and never a sign this document
+ * invents —, the kind is one of the four the ledger admits, the description is the canonical text the
+ * database stores, the instant is the one the database stamped, and the reference is the movement a
+ * correction answers and nothing else, exactly like the shape rule the database itself enforces (S6).
+ * The rows are the order the branch recorded them in, so a list that does not advance in id is refused.
+ *
+ * They are validated and not unfolded here: the rail reads the total, and the book of the screen has its
+ * own read of the ledger.
+ */
+function expensesOf(value: unknown): void {
+  if (!Array.isArray(value) || value.length > closingMaxCountLines) return invalidResponse();
+  let previous = 0;
+  for (const entry of value) {
+    const row = fields(entry, ['id', 'branch_location_id', 'kind', 'amount', 'description',
+      'occurred_at', 'created_by_account_id', 'corrects_id']);
+    const id = integer(row.id, 1, Number.MAX_SAFE_INTEGER);
+    if (id <= previous) return invalidResponse();
+    previous = id;
+    integer(row.branch_location_id, closingFirstBranch, closingMaxBranch);
+    integer(row.created_by_account_id, 1, Number.MAX_SAFE_INTEGER);
+    const kind = row.kind;
+    if (typeof kind !== 'string' || !expenseKinds.includes(kind)) return invalidResponse();
+    if (amount(row.amount) < 1n) return invalidResponse();
+    const description = text(row.description);
+    if (description.trim() !== description
+      || Array.from(description).length > expenseMaxDescription) {
+      return invalidResponse();
+    }
+    timestamp(row.occurred_at);
+    // A correction names exactly one movement and no other kind names one (S6): a row that breaks it is
+    // a cancelation this domain does not read.
+    const corrects = optionalInteger(row.corrects_id, 1, Number.MAX_SAFE_INTEGER);
+    if ((kind === 'correccion') !== (corrects !== null)) return invalidResponse();
+  }
+}
+
 /**
  * Reads one settlement. The derived numbers are recomputed here from the facts that produce
  * them and must agree with what the server published, so the rail can never show a drawer that
@@ -665,14 +712,15 @@ function purchaseFund(record: Record<string, unknown>): ClosingPurchaseFund | nu
 function readClosing(value: unknown): Closing {
   const record = fields(value, ['id', 'branch_location_id', 'branch_name', 'status',
     'period_start', 'cut_at', 'closed_at', 'commission_rate_percent', 'opening_cash', 'cash_sales',
-    'cash_expenses', 'expected_cash', 'counted_cash', 'cash_difference', 'contributed_cash',
+    'cash_expenses', 'cash_effective', 'expected_cash', 'counted_cash', 'cash_difference',
+    'contributed_cash',
     'closing_cash', 'taken_cash', 'sales_total', 'commission_amount', 'card_total',
     'transfer_total', 'qr_total', 'observation', 'opened_by_account_id', 'count_lines', 'rounds',
     'expenses', 'corrections'], [...purchaseFundKeys, 'material_lines']);
-  // The branch's own expenses of the window. They are still not rendered, but the document is
-  // only accepted when the field is the array the contract publishes, so a shape change cannot
-  // reach the rail unnoticed.
-  if (!Array.isArray(record.expenses)) return invalidResponse();
+  // The branch's own expenses of the window. They are still not rendered, but the document is only
+  // accepted when the field is the list the contract publishes, so a shape change cannot reach the
+  // rail unnoticed.
+  expensesOf(record.expenses);
   const id = integer(record.id, 1, Number.MAX_SAFE_INTEGER);
   const state = status(record.status);
   // The corrections of the closed settlement, the pending one included: a settlement whose
@@ -710,6 +758,9 @@ function readClosing(value: unknown): Closing {
     opening_cash_cents: amount(record.opening_cash),
     cash_sales_cents: amount(record.cash_sales),
     cash_expenses_cents: amount(record.cash_expenses),
+    // The signed effect of the movements the branch wrote in the window: the term the drawer's expectation
+    // is built from, published by the server so this screen never re-derives it (S4, S13).
+    cash_effective_cents: signedAmount(record.cash_effective),
     counted_cash_cents,
     contributed_cash_cents: amount(record.contributed_cash),
     closing_cash_cents,

@@ -3329,3 +3329,532 @@ func (e *env) readMaterialSheet(t *testing.T, id int64) string {
 	}
 	return strings.Join(materialSheet(t, read), ",")
 }
+
+// book records one movement of the branch's own book straight into the ledger, with exactly the
+// shape the database's own admission admits: an account of that branch, a positive amount, a real
+// description, the instant the database stamps and -- for a correction -- the movement it answers.
+// The store gains its own paths for aportes, recaudaciones and corrections in T3, so the reads
+// below are tested against a ledger the domain already admits and never against a shape it refuses.
+func (e *env) book(t *testing.T, branch int, kind, amount, description string, corrects *int64) int64 {
+	t.Helper()
+	var id int64
+	if err := e.pool.QueryRow(e.ctx, `INSERT INTO branch_cash_movements(
+  branch_location_id,kind,amount,description,created_by_account_id,corrects_id)
+ VALUES($1,$2,$3,$4,$5,$6) RETURNING id`,
+		branch, kind, amount, description, branch, corrects).Scan(&id); err != nil {
+		t.Fatalf("the ledger movement %q could not be recorded: %v", description, err)
+	}
+	return id
+}
+
+// correction answers one movement of the branch's book with the compensating row of its own kind,
+// which is how an immutable ledger states a wrong row (S6).
+func (e *env) correction(t *testing.T, branch int, corrects int64, amount, description string) int64 {
+	t.Helper()
+	return e.book(t, branch, "correccion", amount, description, &corrects)
+}
+
+// TestPeriodExpensesAreNetOfTheirCorrections pins S4 and S13 on the period totals: the expense of a
+// window is the net of the effects it holds, so a correction of a gasto lowers the expense of the
+// period that holds both, and the proposal and the closure state that same net instead of a total
+// one reader derives and another forgets.
+func TestPeriodExpensesAreNetOfTheirCorrections(t *testing.T) {
+	e := fixture(t)
+	// The previous period closed at 500.00 in the drawer, so the drawer of this one is known.
+	e.closeFirstSettlement(t, "500.00")
+	flete := e.expense(t, 2, "100.00", "Flete")
+	correction := e.correction(t, 2, flete.ID, "40.00", "Flete mal cargado")
+	if correction <= flete.ID {
+		t.Fatalf("the correction must be a later row of the ledger: %d after %d", correction, flete.ID)
+	}
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	e.countAll(t, opened.ID)
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("440.00", "0.00", "40.00")); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+
+	proposed, err := e.store.Propose(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	// 100.00 paid out and 40.00 of it corrected back is 60.00 of the drawer: the correction is not a
+	// second expense and not a number the total can ignore.
+	if proposed.CashExpenses != "60.00" {
+		t.Fatalf("the period expense must be the net of its corrections: %q", proposed.CashExpenses)
+	}
+	if offer := proposed.LatestRound().Payload; offer.CashExpenses != "60.00" {
+		t.Fatalf("the offer must state the net expense it subtracts: %q", offer.CashExpenses)
+	}
+	// S4: expected = 500.00 inherited + 0.00 collected - 60.00 net expense.
+	if proposed.ExpectedCash != "440.00" {
+		t.Fatalf("the drawer must be charged the net expense: %q", proposed.ExpectedCash)
+	}
+
+	// The closure recomputes the same period with the same read, so the closed document states the
+	// net it offered and never the two rows separately.
+	closed, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, "")
+	if err != nil {
+		t.Fatalf("the branch must accept the offer: %v", err)
+	}
+	if closed.CashExpenses != "60.00" || closed.ExpectedCash != "440.00" {
+		t.Fatalf("the closed settlement must keep the net expense it settled: %+v", closed)
+	}
+}
+
+// TestExpensesPublishTheCorrectionsOfTheirWindow pins S13 on the list beside the total: the ledger
+// rows a settlement publishes are the rows its total was computed from, so a correction appears
+// beside the gasto it answers, with its own kind, its own positive amount and the movement it names.
+func TestExpensesPublishTheCorrectionsOfTheirWindow(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	flete := e.expense(t, 2, "100.00", "Flete")
+	correction := e.correction(t, 2, flete.ID, "40.00", "Flete mal cargado")
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	assertExpenses := func(document closings.Closing) {
+		t.Helper()
+		if len(document.Expenses) != 2 {
+			t.Fatalf("the document must list the gasto and its correction: %+v", document.Expenses)
+		}
+		gasto, fixed := document.Expenses[0], document.Expenses[1]
+		if gasto.ID != flete.ID || gasto.Kind != "gasto" || gasto.CorrectsID != nil ||
+			gasto.Amount != "100.00" {
+			t.Fatalf("the first row must be the gasto the branch recorded: %+v", gasto)
+		}
+		// The amount of a correction is the positive amount it states: the sign is the view's own
+		// reading and never a second shape stored in the ledger (S13).
+		if fixed.ID != correction || fixed.Kind != "correccion" || fixed.CorrectsID == nil ||
+			*fixed.CorrectsID != flete.ID || fixed.Amount != "40.00" {
+			t.Fatalf("the second row must be the correction of that gasto: %+v", fixed)
+		}
+		if document.CashExpenses != "60.00" {
+			t.Fatalf("the total of the listed rows must be their net: %q", document.CashExpenses)
+		}
+	}
+	assertExpenses(opened)
+	e.countAll(t, opened.ID)
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID,
+		draft("440.00", "0.00", "40.00")); err != nil {
+		t.Fatalf("the cash draft could not be saved: %v", err)
+	}
+	proposed, err := e.store.Propose(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be proposed: %v", err)
+	}
+	assertExpenses(proposed)
+	read, err := e.store.Read(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement could not be read: %v", err)
+	}
+	assertExpenses(read)
+	closed, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, "")
+	if err != nil {
+		t.Fatalf("the branch must accept the settlement: %v", err)
+	}
+	assertExpenses(closed)
+}
+
+// TestCashLedgerStatesTheDrawerOfTheWindow pins S4 and S13 on the book of the screen: it opens at the
+// amount the last closed settlement left in the drawer, collects the cash sales made after that cut,
+// lists every movement of the period oldest first with the sign the ledger view states, and derives
+// one expectation from exactly those three terms.
+func TestCashLedgerStatesTheDrawerOfTheWindow(t *testing.T) {
+	e := fixture(t)
+	first := e.closeFirstSettlement(t, "500.00")
+	cut, err := e.store.Read(e.ctx, warehouse(), first)
+	if err != nil {
+		t.Fatalf("the closed settlement could not be read: %v", err)
+	}
+	// After the cut the branch sells in cash and writes its book: a gasto, the correction of that
+	// gasto, an aporte and a recaudacion, which is every direction the drawer can move.
+	e.sell(t, 1, 1, "100.00", sales.PaymentCash)
+	flete := e.expense(t, 2, "30.00", "Flete")
+	e.correction(t, 2, flete.ID, "10.00", "Flete mal cargado")
+	e.book(t, 2, "aporte", "50.00", "Cambio para el cajón", nil)
+	e.book(t, 2, "recaudacion", "20.00", "Retiro entre rendiciones", nil)
+
+	book, err := e.store.CashLedger(e.ctx, identity(2), nil, nil)
+	if err != nil {
+		t.Fatalf("the branch must read its own drawer: %v", err)
+	}
+	// The window starts at the cut of the last closed settlement and has no end.
+	if book.Since == nil || !book.Since.Equal(cut.CutAt) || book.Until != nil {
+		t.Fatalf("the book must open at the cut of the last closure: %+v", book)
+	}
+	if book.Opening != "500.00" || book.Sales != "100.00" {
+		t.Fatalf("the book must state the drawer it inherited and the cash it collected: %+v", book)
+	}
+	if len(book.Movements) != 4 {
+		t.Fatalf("the book must list every movement of the period: %+v", book.Movements)
+	}
+	want := []struct{ kind, effect string }{
+		{"gasto", "-30.00"}, {"correccion", "10.00"}, {"aporte", "50.00"}, {"recaudacion", "-20.00"},
+	}
+	for i, expected := range want {
+		movement := book.Movements[i]
+		if movement.Kind != expected.kind || movement.Effective != closings.Signed(expected.effect) {
+			t.Fatalf("row %d is not %s with %s: %+v", i, expected.kind, expected.effect, movement)
+		}
+		if movement.BranchID != 2 || movement.CreatedByAccountID != 2 ||
+			movement.OccurredAt.IsZero() || movement.Description == "" {
+			t.Fatalf("row %d must be a fact of this branch: %+v", i, movement)
+		}
+	}
+	// The correction carries the direction of what it answers, and the amount stays positive.
+	if book.Movements[1].CorrectsID == nil || *book.Movements[1].CorrectsID != flete.ID ||
+		book.Movements[1].EffectKind != "gasto" || book.Movements[1].Amount != "10.00" {
+		t.Fatalf("the correction must name the gasto it answers: %+v", book.Movements[1])
+	}
+	// S13: the expectation is one arithmetic over the rows the book publishes.
+	if book.Effective != "10.00" {
+		t.Fatalf("the signed effect of the window is -30.00 +10.00 +50.00 -20.00: %q", book.Effective)
+	}
+	opening, ok := closings.Signed(book.Opening).Cents()
+	if !ok {
+		t.Fatalf("the published opening is not canonical money: %q", book.Opening)
+	}
+	sold, ok := closings.Signed(book.Sales).Cents()
+	if !ok {
+		t.Fatalf("the published sales are not canonical money: %q", book.Sales)
+	}
+	effect, ok := book.Effective.Cents()
+	if !ok {
+		t.Fatalf("the published effect is not a signed amount: %q", book.Effective)
+	}
+	expected, ok := book.Expected.Cents()
+	if !ok || expected != opening+sold+effect {
+		t.Fatalf("expected must be opening + sales + effective: %q", book.Expected)
+	}
+	if book.Expected != "610.00" {
+		t.Fatalf("500.00 inherited + 100.00 collected + 10.00 of movements: %q", book.Expected)
+	}
+
+	// A window that starts at an explicit instant inherits no drawer: the opening is the amount the
+	// last settled period left and it belongs to the cut, so the book states the window's own
+	// movement and never a balance it cannot know.
+	window, err := e.store.CashLedger(e.ctx, identity(2), book.Since, nil)
+	if err != nil {
+		t.Fatalf("an explicit window must be read: %v", err)
+	}
+	if window.Since == nil || !window.Since.Equal(*book.Since) || window.Opening != "0.00" ||
+		window.Sales != "100.00" || window.Expected != "110.00" {
+		t.Fatalf("an explicit window states no inherited drawer: %+v", window)
+	}
+	// An empty window is an empty book, never a zero that hides a whole history.
+	until := *book.Since
+	empty, err := e.store.CashLedger(e.ctx, identity(2), nil, &until)
+	if err != nil || len(empty.Movements) != 0 || empty.Opening != "500.00" || empty.Sales != "0.00" {
+		t.Fatalf("a window before the cut holds nothing: %+v %v", empty, err)
+	}
+}
+
+// TestCashLedgerLeavesTheSettlementsTransfersOutOfTheBook pins S5: the aporte a closure writes is the
+// contribution of the Almacén and the recaudacion it writes is the money it takes, and both are the
+// acta's own facts. The book of the period is the rows the branch wrote, so a transfer of a
+// settlement is absent from the list and from the expectation -- otherwise the drawer would count
+// that money twice.
+func TestCashLedgerLeavesTheSettlementsTransfersOutOfTheBook(t *testing.T) {
+	e := fixture(t)
+	first := e.closeFirstSettlement(t, "500.00")
+	// The closure did write its own movement: the contribution of 500.00 into the drawer.
+	if transfers := e.scalar(t, `SELECT count(*) FROM branch_cash_movements
+ WHERE closing_id=$1 AND kind='aporte' AND amount=500.00`, first); transfers != 1 {
+		t.Fatalf("the closure must have written the contribution of its settlement: %d", transfers)
+	}
+	book, err := e.store.CashLedger(e.ctx, identity(2), nil, nil)
+	if err != nil {
+		t.Fatalf("the branch must read its own drawer: %v", err)
+	}
+	if len(book.Movements) != 0 {
+		t.Fatalf("a transfer of a settlement is not a movement of the period: %+v", book.Movements)
+	}
+	// 500.00 in the drawer and nothing counted twice: the contribution is already the opening.
+	if book.Opening != "500.00" || book.Effective != "0.00" || book.Expected != "500.00" {
+		t.Fatalf("the acta's contribution must not enter the expectation: %+v", book)
+	}
+
+	// The same kind and amount written by the branch is a movement of the period and does count.
+	e.book(t, 2, "aporte", "50.00", "Cambio para el cajón", nil)
+	book, err = e.store.CashLedger(e.ctx, identity(2), nil, nil)
+	if err != nil {
+		t.Fatalf("the branch must read its own drawer: %v", err)
+	}
+	if len(book.Movements) != 1 || book.Movements[0].Kind != "aporte" ||
+		book.Movements[0].Amount != "50.00" || book.Effective != "50.00" ||
+		book.Expected != "550.00" {
+		t.Fatalf("a movement of the period must enter the book and its expectation: %+v", book)
+	}
+}
+
+// TestCashLedgerIsTheBranchOwn pins S12 on the book: the drawer is the one the session works, so the
+// warehouse has no drawer to read here, an identity the provisioned accounts do not hold is refused,
+// a session still forced to change its password does not read the branch's money, and a window that
+// ends before it starts is an invalid request instead of an empty answer.
+func TestCashLedgerIsTheBranchOwn(t *testing.T) {
+	e := fixture(t)
+	_, err := e.store.CashLedger(e.ctx, warehouse(), nil, nil)
+	refused(t, err, closings.ErrForbidden)
+	_, err = e.store.CashLedger(e.ctx, auth.Identity{}, nil, nil)
+	refused(t, err, closings.ErrForbidden)
+	_, err = e.store.CashLedger(e.ctx, auth.Identity{AccountID: 2, Location: auth.Location{ID: 3}},
+		nil, nil)
+	refused(t, err, closings.ErrForbidden)
+	_, err = e.store.CashLedger(e.ctx, auth.Identity{AccountID: 2, Location: auth.Location{ID: 2},
+		MustChangePassword: true}, nil, nil)
+	refused(t, err, closings.ErrForbidden)
+
+	// A range that ends before it starts describes no period at all.
+	from, to := time.Now(), time.Now().Add(-time.Hour)
+	_, err = e.store.CashLedger(e.ctx, identity(2), &from, &to)
+	refused(t, err, closings.ErrInvalid)
+
+	// A branch that never closed a settlement starts at zero and at no instant, exactly like the
+	// drawer of today: the window is everything it ever did.
+	book, err := e.store.CashLedger(e.ctx, identity(2), nil, nil)
+	if err != nil {
+		t.Fatalf("the branch must read its own drawer: %v", err)
+	}
+	if book.Since != nil || book.Until != nil || book.Opening != "0.00" ||
+		book.Sales != "0.00" || book.Effective != "0.00" || book.Expected != "0.00" ||
+		len(book.Movements) != 0 {
+		t.Fatalf("a branch that never closed inherits nothing: %+v", book)
+	}
+}
+
+// TestCashLedgerTotalCoversTheWholeWindow pins S4 and S13 on a window longer than the book publishes: the
+// list keeps the newest rows and says so, and the signed effect beside it is the sum of every row of the
+// window -- never the sum of the part of the window the list kept, which is a total that looks right and
+// is not.
+func TestCashLedgerTotalCoversTheWholeWindow(t *testing.T) {
+	e := fixture(t)
+	// The oldest row of the window is the one the bound drops and the only amount that differs, so a
+	// total summed over the published rows is off by exactly this amount.
+	oldest := e.book(t, 2, "gasto", "100.00", "Compra de la tienda", nil)
+	if _, err := e.pool.Exec(e.ctx, `INSERT INTO branch_cash_movements(
+  branch_location_id,kind,amount,description,created_by_account_id)
+ SELECT 2,'gasto',1.00,'Gasto '||row,2 FROM generate_series(1,500) row`); err != nil {
+		t.Fatalf("the window could not be filled: %v", err)
+	}
+	if rows := e.scalar(t, `SELECT count(*) FROM branch_cash_movements
+ WHERE branch_location_id=2 AND closing_id IS NULL`); rows != 501 {
+		t.Fatalf("the window must hold 501 rows: %d", rows)
+	}
+
+	book, err := e.store.CashLedger(e.ctx, identity(2), nil, nil)
+	if err != nil {
+		t.Fatalf("the branch must read its own drawer: %v", err)
+	}
+	// The list is the newest rows of the window and states that it is a window of them.
+	if len(book.Movements) != 500 || !book.Truncated {
+		t.Fatalf("the book must publish the newest 500 rows and say it truncated: %d %t",
+			len(book.Movements), book.Truncated)
+	}
+	for _, movement := range book.Movements {
+		if movement.ID == oldest {
+			t.Fatalf("the dropped row must not be published: %+v", movement)
+		}
+	}
+	// The total is the whole window: -100.00 dropped from the list and 500 x 1.00 published.
+	if book.Effective != "-600.00" || book.Expected != "-600.00" {
+		t.Fatalf("the total must cover every row of the window: %q %q", book.Effective, book.Expected)
+	}
+
+	// A window that holds fewer rows than the bound is the whole book and is never truncated.
+	after := time.Now().Add(time.Minute)
+	narrow, err := e.store.CashLedger(e.ctx, identity(2), &after, nil)
+	if err != nil {
+		t.Fatalf("an explicit window must be read: %v", err)
+	}
+	if narrow.Truncated || len(narrow.Movements) != 0 || narrow.Effective != "0.00" ||
+		narrow.Expected != "0.00" {
+		t.Fatalf("an empty window is a book of nothing: %+v", narrow)
+	}
+}
+
+// TestRecordCashMovementIsTheBranchOwn pins S1, S2 and S12 on the write of a movement of the period: the
+// three kinds the branch records are its own rows, the warehouse has no drawer to write, another branch
+// writes only its own, and a malformed shape or a frozen branch writes nothing at all.
+func TestRecordCashMovementIsTheBranchOwn(t *testing.T) {
+	e := fixture(t)
+	for _, kind := range []string{"gasto", "aporte", "recaudacion"} {
+		movement, err := e.store.RecordCashMovement(e.ctx, identity(2), kind,
+			closings.Money("12.50"), "Movimiento de la caja operativa")
+		if err != nil {
+			t.Fatalf("the branch must record its own %q: %v", kind, err)
+		}
+		if movement.ID < 1 || movement.BranchID != 2 || movement.Kind != kind ||
+			movement.Amount != "12.50" || movement.Description != "Movimiento de la caja operativa" ||
+			movement.CreatedByAccountID != 2 || movement.OccurredAt.IsZero() ||
+			movement.CorrectsID != nil {
+			t.Fatalf("the recorded %q is not a movement of this branch's book: %+v", kind, movement)
+		}
+	}
+	// The warehouse has no drawer of its own.
+	_, err := e.store.RecordCashMovement(e.ctx, warehouse(), "gasto",
+		closings.Money("1.00"), "Flete del almacén")
+	refused(t, err, closings.ErrNotBranchExpense)
+	// Every branch writes its own rows and reads them as its own.
+	other, err := e.store.RecordCashMovement(e.ctx, identity(3), "aporte",
+		closings.Money("5.00"), "Cambio de la otra sucursal")
+	if err != nil || other.BranchID != 3 || other.CreatedByAccountID != 3 {
+		t.Fatalf("a branch records only its own movements: %+v %v", other, err)
+	}
+	// A correction is not a direction the branch states here, and a shape the ledger never admits is
+	// refused before the database is touched.
+	for _, tc := range []struct{ kind, amount, description string }{
+		{"correccion", "1.00", "Corrijo el flete"},
+		{"devolucion", "1.00", "Flete"},
+		{"gasto", "0.00", "Flete"},
+		{"gasto", "-1.00", "Flete"},
+		{"gasto", "1.234", "Flete"},
+		{"gasto", "1.00", "   "},
+		{"gasto", "1.00", strings.Repeat("ñ", closings.MaxDescription+1)},
+	} {
+		_, err := e.store.RecordCashMovement(e.ctx, identity(2), tc.kind,
+			closings.Money(tc.amount), tc.description)
+		refused(t, err, closings.ErrInvalid)
+	}
+	// A session still forced to change its password does not move the branch's money.
+	_, err = e.store.RecordCashMovement(e.ctx, auth.Identity{AccountID: 2,
+		Location: auth.Location{ID: 2}, MustChangePassword: true}, "gasto",
+		closings.Money("1.00"), "Flete")
+	refused(t, err, closings.ErrForbidden)
+	// A frozen branch writes no movement of the period, exactly like it records no expense (S9).
+	if _, err := e.store.Open(e.ctx, warehouse(), 2); err != nil {
+		t.Fatalf("the settlement could not be opened: %v", err)
+	}
+	written := e.scalar(t, `SELECT count(*) FROM branch_cash_movements WHERE branch_location_id=2`)
+	_, err = e.store.RecordCashMovement(e.ctx, identity(2), "aporte",
+		closings.Money("1.00"), "Cambio del cajón")
+	refused(t, err, closings.ErrBranchFrozen)
+	if after := e.scalar(t, `SELECT count(*) FROM branch_cash_movements
+ WHERE branch_location_id=2`); after != written {
+		t.Fatalf("a refused movement wrote a row: %d after %d", after, written)
+	}
+}
+
+// TestCashCorrectionRefusalsAreNotOutages pins S6 and S7 on the write of a correction: a target the book
+// may not answer is a request error and a set of corrections above the corrected amount is a conflict,
+// and neither is ever the 503 an unmapped SQLSTATE would produce.
+func TestCashCorrectionRefusalsAreNotOutages(t *testing.T) {
+	e := fixture(t)
+	flete := e.expense(t, 2, "50.00", "Flete")
+	first, err := e.store.CorrectCashMovement(e.ctx, identity(2), flete.ID,
+		closings.Money("30.00"), "Flete mal cargado")
+	if err != nil {
+		t.Fatalf("a movement of its own branch must be correctable: %v", err)
+	}
+	if first.Kind != "correccion" || first.CorrectsID == nil || *first.CorrectsID != flete.ID ||
+		first.Amount != "30.00" || first.BranchID != 2 || first.CreatedByAccountID != 2 {
+		t.Fatalf("the correction is not the row this book states: %+v", first)
+	}
+	// LC031 is the sum of the corrections against the amount the corrected movement stated: 50.00 is
+	// what it can answer, and 30.00 is already used.
+	_, err = e.store.CorrectCashMovement(e.ctx, identity(2), flete.ID,
+		closings.Money("20.01"), "Corrijo de más")
+	refused(t, err, closings.ErrStateConflict)
+	if errors.Is(err, closings.ErrUnavailable) {
+		t.Fatalf("an excess over the corrected amount is a conflict, never an outage: %v", err)
+	}
+	var exceeds *closings.CorrectionExceeds
+	if !errors.As(err, &exceeds) {
+		t.Fatalf("the excess must be named for the route that acts on it: %v", err)
+	}
+	// What still fits under the amount is admitted: the tope is the sum, not a single row.
+	if _, err := e.store.CorrectCashMovement(e.ctx, identity(2), flete.ID,
+		closings.Money("20.00"), "El resto del flete"); err != nil {
+		t.Fatalf("the rest of the movement still fits under its amount: %v", err)
+	}
+	_, err = e.store.CorrectCashMovement(e.ctx, identity(2), flete.ID,
+		closings.Money("0.01"), "Un centavo más")
+	refused(t, err, closings.ErrStateConflict)
+
+	// LC030 is a target the book may not answer: a movement that does not exist, one of another branch
+	// and a correction itself.
+	_, err = e.store.CorrectCashMovement(e.ctx, identity(2), flete.ID+100_000,
+		closings.Money("1.00"), "Movimiento que no existe")
+	refused(t, err, closings.ErrInvalid)
+	if errors.Is(err, closings.ErrUnavailable) {
+		t.Fatalf("a target the book may not answer is a request error, never an outage: %v", err)
+	}
+	var target *closings.CorrectionTargetInvalid
+	if !errors.As(err, &target) {
+		t.Fatalf("the invalid target must be named for the route that acts on it: %v", err)
+	}
+	other := e.expense(t, 3, "10.00", "Flete de la otra sucursal")
+	_, err = e.store.CorrectCashMovement(e.ctx, identity(2), other.ID,
+		closings.Money("5.00"), "No es un movimiento mío")
+	refused(t, err, closings.ErrInvalid)
+	_, err = e.store.CorrectCashMovement(e.ctx, identity(2), first.ID,
+		closings.Money("1.00"), "Corrijo la corrección")
+	refused(t, err, closings.ErrInvalid)
+	// A movement id is never zero, and the refusal is the same class (S6).
+	_, err = e.store.CorrectCashMovement(e.ctx, identity(2), 0,
+		closings.Money("1.00"), "Sin movimiento")
+	refused(t, err, closings.ErrInvalid)
+}
+
+// TestDrawerExpectedIsTheOneRule pins the arithmetic every reader of the drawer shares (S4, S13): the
+// expectation is the inherited fund plus the cash sales plus the signed effect of the window, and the
+// effect carries every kind -- an aporte adds, a gasto and a recaudacion subtract and a correction
+// reverses the row it answers -- so a window that both paid out and received is one number, the same one
+// the acta, the book and the metrics card publish.
+func TestDrawerExpectedIsTheOneRule(t *testing.T) {
+	amount := func(text string) closings.Money { return closings.Money(text) }
+	expect := func(opening, sales, effect string) closings.Signed {
+		t.Helper()
+		expected, err := closings.DrawerExpected(amount(opening), amount(sales), closings.Signed(effect))
+		if err != nil {
+			t.Fatalf("%s + %s + %s must be a drawer this rule states: %v", opening, sales, effect, err)
+		}
+		return expected
+	}
+	// The reproduced case: 100.00 inherited, 45.50 paid out and 30.00 received is 84.50 in the drawer --
+	// not the 54.50 a rule that subtracted the net expense a second time would state.
+	if got := expect("100.00", "0.00", "-15.50"); got != "84.50" {
+		t.Fatalf("the drawer of the reproduced window is %s, want 84.50", got)
+	}
+	// Every kind enters through the one signed term, and a window of nothing is the fund it inherited.
+	for _, tc := range []struct{ opening, sales, effect, want string }{
+		{"100.00", "0.00", "0.00", "100.00"},
+		{"0.00", "96000.00", "0.00", "96000.00"},
+		{"100.00", "20.00", "-45.50", "74.50"},
+		{"100.00", "0.00", "30.00", "130.00"},
+		{"100.00", "0.00", "-20.00", "80.00"},
+		// A correction of an aporte takes money back out of the drawer, and one of a gasto returns it.
+		{"100.00", "0.00", "-10.00", "90.00"},
+		{"100.00", "0.00", "10.00", "110.00"},
+		// A window that spent more than it inherited is a shortage and states its sign.
+		{"0.00", "0.00", "-15.50", "-15.50"},
+	} {
+		if got := expect(tc.opening, tc.sales, tc.effect); string(got) != tc.want {
+			t.Fatalf("%s + %s + %s is %s, want %s", tc.opening, tc.sales, tc.effect, got, tc.want)
+		}
+	}
+	// Every term is the canonical text the database stores: anything else is refused instead of
+	// approximated, and so is an effect that is not a signed amount.
+	for _, tc := range []struct{ opening, sales, effect string }{
+		{"100.0", "0.00", "0.00"},
+		{"-100.00", "0.00", "0.00"},
+		{"100.00", "96.000", "0.00"},
+		{"100.00", "0.00", ""},
+		{"100.00", "0.00", "-15.5"},
+	} {
+		if _, err := closings.DrawerExpected(amount(tc.opening), amount(tc.sales),
+			closings.Signed(tc.effect)); !errors.Is(err, closings.ErrInvalid) {
+			t.Fatalf("%s + %s + %s must be refused", tc.opening, tc.sales, tc.effect)
+		}
+	}
+	// ExpectedCash is the same rule for the degenerate window whose only rows are pay-outs, and it is the
+	// only caller left of that narrower statement.
+	if got, err := closings.ExpectedCash(amount("100.00"), amount("20.00"), amount("45.50")); err != nil ||
+		got != "74.50" {
+		t.Fatalf("the pay-out-only window must be the same rule: %s %v", got, err)
+	}
+}

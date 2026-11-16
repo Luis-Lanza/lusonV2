@@ -174,12 +174,21 @@ func canonicalAmount(amount Money) Money {
 	return canonical
 }
 
-// ExpectedCash derives the cash the drawer should hold at the cut: the fund inherited from
-// the previous settlement plus the cash sales of the period minus its cash expenses (S8).
-// The commission is in no part of this identity (S9). The three amounts are the canonical
-// text the database stores: anything else is a defect of this store, not a number to
-// approximate, so it is refused.
-func ExpectedCash(opening, cashSales, cashExpenses Money) (Signed, error) {
+// DrawerExpected is the ONE rule of the drawer's expectation (S4, S13): the amount the window inherited,
+// plus the cash its sales collected, plus the signed effect of every movement the branch wrote in it --
+// positive for an `aporte`, negative for a `gasto` or a `recaudacion`, and the direction it returns for a
+// correction. The effect is one number read from the ledger view, so no reader of this vertical sums the
+// movements itself and two readers can never disagree.
+//
+// The acta of a period is the same rule over the same window: its `cash_expenses` is the NET expense the
+// document reports -- what the branch paid, corrections included -- and those rows are already one term of
+// the signed effect, so the expense is never subtracted a second time. The commission and the electronic
+// collection are in no part of this identity (S9).
+//
+// The three amounts are the canonical text the database stores: anything else is a defect of the caller,
+// not a number to approximate, so it is refused. Every term is bounded by numeric(12,2), so the sum is
+// exact integer cents and stays inside int64.
+func DrawerExpected(opening, cashSales Money, effective Signed) (Signed, error) {
 	openingCents, ok := amountCents(opening)
 	if !ok {
 		return "", ErrInvalid
@@ -188,12 +197,25 @@ func ExpectedCash(opening, cashSales, cashExpenses Money) (Signed, error) {
 	if !ok {
 		return "", ErrInvalid
 	}
+	effectCents, ok := effective.Cents()
+	if !ok {
+		return "", ErrInvalid
+	}
+	return signedFromCents(openingCents + salesCents + effectCents), nil
+}
+
+// ExpectedCash is DrawerExpected stated for the degenerate window whose only rows are pay-outs:
+// opening + cash sales − expenses is opening + cash sales + (−expenses), the signed effect of a period
+// that recorded no aporte, no recaudacion and no correction. No reader of this vertical calls it any
+// more -- the acta, the book, the metrics card and the HTTP revalidations all read the signed effect of
+// their own window and call DrawerExpected -- and it is kept as that one rule's own statement instead of
+// as a second arithmetic of a narrower window.
+func ExpectedCash(opening, cashSales, cashExpenses Money) (Signed, error) {
 	expensesCents, ok := amountCents(cashExpenses)
 	if !ok {
 		return "", ErrInvalid
 	}
-	// Every term is bounded by numeric(12,2), so the sum stays inside int64.
-	return signedFromCents(openingCents + salesCents - expensesCents), nil
+	return DrawerExpected(opening, cashSales, signedFromCents(-expensesCents))
 }
 
 // PurchaseFundExpected derives what the purchase envelope should hold at the cut: the amount the

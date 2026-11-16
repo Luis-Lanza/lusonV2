@@ -964,10 +964,10 @@ type purchasePeriodDTO struct {
 	Label     string  `json:"label"`
 }
 
-// purchasePeriodRecord admits one period and renders its window as RFC3339 instants. The kind
-// decides which fields a period carries: a settlement or the live settlement states its id and
-// its window, while the pending balance and the whole history are not stretches of time and
-// therefore carry neither. A value this server could not have produced fails closed.
+// purchasePeriodRecord admits one period and renders its window as RFC3339 instants at the precision the
+// column holds. The kind decides which fields a period carries: a settlement or the live settlement
+// states its id and its window, while the pending balance and the whole history are not stretches of time
+// and therefore carry neither. A value this server could not have produced fails closed.
 func purchasePeriodRecord(period purchases.Period) (purchasePeriodDTO, error) {
 	unavailable := func() (purchasePeriodDTO, error) {
 		return purchasePeriodDTO{}, purchases.ErrUnavailable
@@ -983,18 +983,18 @@ func purchasePeriodRecord(period purchases.Period) (purchasePeriodDTO, error) {
 		}
 		return purchasePeriodDTO{Kind: string(period.Kind), Label: period.Label}, nil
 	case purchases.PeriodSettlement, purchases.PeriodOpen:
+		// The window is half-open and its bounds are instants: a period whose end is before its start is
+		// not one this read could have produced.
 		if period.ClosingID == nil || *period.ClosingID < 1 || period.From == nil || period.To == nil ||
 			period.From.IsZero() || period.To.IsZero() || period.From.After(*period.To) {
 			return unavailable()
 		}
-		from := period.From.UTC().Format(time.RFC3339)
-		to := period.To.UTC().Format(time.RFC3339)
-		// The published instant is re-read before it is written: a moment this contract cannot
-		// round-trip is not a window the screen can say in words.
-		if _, err := time.Parse(time.RFC3339, from); err != nil {
+		from, ok := purchaseMoment(*period.From)
+		if !ok {
 			return unavailable()
 		}
-		if _, err := time.Parse(time.RFC3339, to); err != nil || from > to {
+		to, ok := purchaseMoment(*period.To)
+		if !ok {
 			return unavailable()
 		}
 		closingID := *period.ClosingID
@@ -1002,6 +1002,21 @@ func purchasePeriodRecord(period purchases.Period) (purchasePeriodDTO, error) {
 			From: &from, To: &to, Label: period.Label}, nil
 	}
 	return unavailable()
+}
+
+// purchaseMoment renders one persisted instant as RFC3339 in UTC at the precision the column holds: the
+// seconds are always stated and the fraction is published whenever the instant has one. A truncated
+// instant is a different window -- the selector's `from`/`to` are the bounds a screen asks the book and
+// the metrics for, so a period whose cut lost its microseconds would count the rows of its last fraction
+// of a second on the wrong side of the bound. The text is re-read before it is published, so a moment
+// this contract cannot round-trip is never written.
+func purchaseMoment(moment time.Time) (string, bool) {
+	text := moment.UTC().Format(time.RFC3339Nano)
+	parsed, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil || !parsed.Equal(moment) {
+		return "", false
+	}
+	return text, true
 }
 
 // purchasePeriodKey is the comparable identity of one published period, so the chosen period can

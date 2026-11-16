@@ -18,13 +18,21 @@ const countedLine = (overrides: Record<string, unknown> = {}) => ({
   polarity: 'L', expected_quantity: 12, counted_quantity: 12, ...overrides,
 });
 
+// One row of the branch's own ledger as the document publishes it: the expense the branch paid out of
+// its till, with the kind it stated and the movement a correction answers (S6, S13).
+const expense = (overrides: Record<string, unknown> = {}) => ({
+  id: 7, branch_location_id: 2, kind: 'gasto', amount: '100.00', description: 'Flete',
+  occurred_at: '2026-09-12T10:00:00Z', created_by_account_id: 2, corrects_id: null, ...overrides,
+});
+
 // The closed settlement of the chosen artboard: Bs 7.015,00 expected, Bs 6.980,00 counted,
 // Bs 900,00 fund, 4,50 % of Bs 32.480,00 reported beside the drawer.
 const document = (overrides: Record<string, unknown> = {}) => ({
   id: 1, branch_location_id: 2, branch_name: 'Sopocachi', status: 'closed',
   period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z',
   closed_at: '2026-09-12T18:31:00Z', commission_rate_percent: '4.50',
-  opening_cash: '800.00', cash_sales: '6430.00', cash_expenses: '215.00', expected_cash: '7015.00',
+  opening_cash: '800.00', cash_sales: '6430.00', cash_expenses: '215.00', cash_effective: '-215.00',
+  expected_cash: '7015.00',
   counted_cash: '6980.00', cash_difference: '-35.00', contributed_cash: '0.00',
   closing_cash: '900.00', taken_cash: '6080.00', sales_total: '32480.00',
   commission_amount: '1461.60', card_total: '3240.00', transfer_total: '1180.00',
@@ -35,7 +43,8 @@ const document = (overrides: Record<string, unknown> = {}) => ({
 
 const openDocument = (overrides: Record<string, unknown> = {}) => document({
   status: 'open', closed_at: null, commission_rate_percent: null, cash_sales: '0.00',
-  cash_expenses: '0.00', expected_cash: '800.00', counted_cash: null, cash_difference: null,
+  cash_expenses: '0.00', cash_effective: '0.00', expected_cash: '800.00', counted_cash: null,
+  cash_difference: null,
   closing_cash: null, taken_cash: null, sales_total: '0.00', commission_amount: '0.00',
   card_total: '0.00', transfer_total: '0.00', qr_total: '0.00', observation: '',
   count_lines: [countedLine({ counted_quantity: null })], ...overrides,
@@ -128,6 +137,32 @@ describe('the settlement document', () => {
     expect(() => parseClosingPage(JSON.stringify({ page: 1, page_size: 25, total_closings: 2,
       closings: [document({ id: 1 }), document({ id: 2, cut_at: '2026-10-12T18:30:00Z',
         period_start: '2026-09-12T18:30:00Z' })] }))).toThrow();
+  });
+
+  it('reads the expense list of the window with its kind and the movement each row answers (S13)', () => {
+    const closing = parseClosing(JSON.stringify(document({ expenses: [
+      expense(),
+      expense({ id: 9, kind: 'correccion', amount: '40.00', description: 'Flete mal cargado',
+        occurred_at: '2026-09-12T10:05:00Z', corrects_id: 7 }),
+    ] })));
+    // The list is the ledger the total was computed from: the gasto and the correction that answers it.
+    expect(closing.cash_expenses_cents).toBe(21500n);
+  });
+
+  it('refuses an expense list that is not the ledger this contract publishes (S13)', () => {
+    const refused = (expenses: unknown) => expect(() =>
+      parseClosing(JSON.stringify(document({ expenses })))).toThrow();
+    refused([expense({ kind: 'ajuste' })]);
+    refused([expense({ amount: '0.00' })]);
+    refused([expense({ amount: '-40.00' })]);
+    // A correction names exactly one movement and no other kind names one (S6).
+    refused([expense({ kind: 'correccion' })]);
+    refused([expense({ corrects_id: 7 })]);
+    // A key outside the contract, a padded description and a list that does not advance in id.
+    refused([expense({ signed_amount: '100.00' })]);
+    refused([expense({ description: ' Flete' })]);
+    refused([expense({ id: 9 }), expense({ id: 7 })]);
+    refused({ id: 7 });
   });
 
   it('reads the material sheet the document publishes (S7, S8, S9)', () => {
@@ -243,6 +278,33 @@ describe('the purchase fund of the document', () => {
     expect(parseClosing(JSON.stringify(signedEnvelope({ purchases_total: '120.50',
       purchases_cash: '120.50', purchase_fund_expected: '179.50', purchase_fund_counted: '179.00',
       purchase_fund_difference: '-0.50' }))).purchase_fund!.purchases_cash_cents).toBe(12050n);
+  });
+
+  it('reads the published signed effect and refuses a drawer that does not close on it (S4, S13)', () => {
+    // The document publishes the window's signed effect, and the expectation is the server's one rule
+    // over it: opening + cash sales + effect. The screen applies that rule to the numbers the server
+    // published and refuses a document whose terms do not produce its expectation.
+    const settled = parseClosing(JSON.stringify(document({
+      opening_cash: '100.00', cash_sales: '0.00', cash_expenses: '45.50',
+      cash_effective: '-15.50', expected_cash: '84.50',
+      counted_cash: '84.50', cash_difference: '0.00', closing_cash: '84.50', taken_cash: '0.00',
+      sales_total: '0.00', commission_amount: '0.00', card_total: '0.00', transfer_total: '0.00',
+      qr_total: '0.00',
+    })));
+    expect(settled.cash_effective_cents).toBe(-1550n);
+    expect(settled.cash_expenses_cents).toBe(4550n);
+    // The acta's expectation is 84.50 and not the 54.50 a rule that subtracted the net expense a second
+    // time would state.
+    expect(closingRail(settled).expected_cents).toBe(8450n);
+    // A document whose expectation disagrees with its own terms is refused, and so is one that does not
+    // publish the effect at all: the term is part of the contract, not an optional courtesy.
+    expect(() => parseClosing(JSON.stringify(document({
+      opening_cash: '100.00', cash_sales: '0.00', cash_expenses: '45.50',
+      cash_effective: '-15.50', expected_cash: '54.50',
+    })))).toThrow();
+    const withoutEffect: Record<string, unknown> = document();
+    delete withoutEffect.cash_effective;
+    expect(() => parseClosing(JSON.stringify(withoutEffect))).toThrow();
   });
 
   it('refuses an envelope that disagrees with its own identities', () => {

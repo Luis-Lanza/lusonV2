@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -689,15 +690,20 @@ func (s *Store) RecordExpense(ctx context.Context, actor auth.Identity, amount M
 	err = s.pool.QueryRow(ctx, `INSERT INTO branch_cash_movements(
   branch_location_id,kind,amount,description,created_by_account_id)
  VALUES($1,'gasto',$2,$3,$4)
- RETURNING id,branch_location_id,amount::text,description,occurred_at,created_by_account_id`,
+ RETURNING id,branch_location_id,kind,amount::text,description,occurred_at,created_by_account_id`,
 		int16(actor.Location.ID), string(canonicalAmount), canonicalDescription,
 		int64(actor.AccountID)).
-		Scan(&expense.ID, &expense.BranchID, &stored, &expense.Description, &expense.OccurredAt,
-			&expense.CreatedByAccountID)
+		Scan(&expense.ID, &expense.BranchID, &expense.Kind, &stored, &expense.Description,
+			&expense.OccurredAt, &expense.CreatedByAccountID)
 	if err != nil {
 		return Expense{}, mapFailure(ctx, err)
 	}
 	if expense.Amount, err = ParseAmount(stored); err != nil {
+		return Expense{}, ErrUnavailable
+	}
+	// The row is revalidated against the expense this call wrote: the kind of a pay-out and no
+	// movement it answers, because a correction has its own path.
+	if expense.Kind != metricsMovementExpense || expense.CorrectsID != nil {
 		return Expense{}, ErrUnavailable
 	}
 	if expense.ID < 1 || expense.BranchID < firstBranchID || expense.BranchID > MaxBranchID ||
@@ -709,6 +715,467 @@ func (s *Store) RecordExpense(ctx context.Context, actor auth.Identity, amount M
 	}
 	return expense, nil
 }
+
+// RecordCashMovement records one movement the branch writes in its own operational drawer (S1, S2): the
+// small expense it paid out, the contribution it received or the collection it gave up, with its amount
+// and what it was for. It is the same admission as an expense -- the branch of the session, the
+// database's instant, no approval and no settlement named -- stated for the three kinds the branch
+// writes of its own period (S12).
+func (s *Store) RecordCashMovement(ctx context.Context, actor auth.Identity, kind string, amount Money, description string) (Expense, error) {
+	// A correction is not a direction of the drawer: it answers another movement and states which one, so
+	// it is never recorded here and has its own path below (S6).
+	if !cashMovementPeriodKind(kind) {
+		return Expense{}, ErrInvalid
+	}
+	return s.recordMovement(ctx, actor, kind, amount, description, nil)
+}
+
+// CorrectCashMovement records the compensating movement of one row of the branch's book (S6): the
+// amount it states, what for and the movement it answers. The book is immutable -- nothing is edited and
+// nothing is deleted -- so a wrong row is answered by this opposite movement, and the database's own
+// admission decides everything else about the shape: a correction names a movement it may, of its own
+// branch, that no correction and no settlement already answers, and the corrections of one movement
+// never exceed the amount that movement stated (S7).
+func (s *Store) CorrectCashMovement(ctx context.Context, actor auth.Identity, correctsID int64, amount Money, description string) (Expense, error) {
+	// A correction always names the movement it answers, and a movement id is never zero (S6).
+	if correctsID < 1 {
+		return Expense{}, ErrInvalid
+	}
+	return s.recordMovement(ctx, actor, cashMovementCorrection, amount, description, &correctsID)
+}
+
+// recordMovement appends one row to the branch's own book, which is the one write both paths above state:
+// the amount, the description, the kind the branch recorded and -- for a correction -- the movement it
+// answers. The rules of the admission are exactly those of a recorded expense: a positive canonical
+// amount, a canonical description, the branch of the session (never a caller value, S12), the database's
+// instant and no settlement named, because the closure that covers the row is the one whose window
+// contains that instant.
+func (s *Store) recordMovement(ctx context.Context, actor auth.Identity, kind string, amount Money, description string, corrects *int64) (Expense, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return Expense{}, ErrUnavailable
+	}
+	canonicalAmount, err := ParseAmount(string(amount))
+	if err != nil {
+		return Expense{}, err
+	}
+	// A movement of zero is not a movement: the ledger admits a positive amount only, and the same rule
+	// is judged here instead of letting the row CHECK answer it.
+	if cents, ok := amountCents(canonicalAmount); !ok || cents < 1 {
+		return Expense{}, ErrInvalid
+	}
+	canonicalDescription, ok := CanonicalDescription(description)
+	if !ok {
+		return Expense{}, ErrInvalid
+	}
+	// The warehouse has no drawer of its own to write: it never records a movement of a branch's till,
+	// and the refusal is the same class the ledger raises for a row that is not the recording branch's
+	// own (LC011).
+	if actor.Location.ID < firstBranchID {
+		return Expense{}, ErrNotBranchExpense
+	}
+	// A session still forced to change its password does not move the branch's money, exactly like the
+	// account that records an expense.
+	if actor.MustChangePassword {
+		return Expense{}, ErrForbidden
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := checkAccount(ctx, s.pool, actor); err != nil {
+		return Expense{}, err
+	}
+	var movement Expense
+	var stored string
+	// The branch is the account's own location and never a caller value, and the row belongs to no
+	// settlement: `closing_id` stays null, which is what separates a movement of the period from the
+	// transfer of an acta (S5).
+	err = s.pool.QueryRow(ctx, `INSERT INTO branch_cash_movements(
+  branch_location_id,kind,amount,description,corrects_id,created_by_account_id)
+ VALUES($1,$2,$3,$4,$5,$6)
+ RETURNING id,branch_location_id,kind,amount::text,description,occurred_at,created_by_account_id,
+  corrects_id`,
+		int16(actor.Location.ID), kind, string(canonicalAmount), canonicalDescription, corrects,
+		int64(actor.AccountID)).
+		Scan(&movement.ID, &movement.BranchID, &movement.Kind, &stored, &movement.Description,
+			&movement.OccurredAt, &movement.CreatedByAccountID, &movement.CorrectsID)
+	if err != nil {
+		return Expense{}, mapCashCorrectionFailure(ctx, err)
+	}
+	if movement.Amount, err = ParseAmount(stored); err != nil {
+		return Expense{}, ErrUnavailable
+	}
+	if movement.ID < 1 || movement.BranchID < firstBranchID || movement.BranchID > MaxBranchID ||
+		movement.CreatedByAccountID < 1 || movement.OccurredAt.IsZero() {
+		return Expense{}, ErrUnavailable
+	}
+	// The row is revalidated against the very movement this call wrote: the kind it asked for, the amount
+	// it stated, the target a correction names and only a correction, and the canonical text the ledger
+	// admits.
+	if movement.Kind != kind || (movement.CorrectsID != nil) != (corrects != nil) ||
+		(corrects != nil && *movement.CorrectsID != *corrects) {
+		return Expense{}, ErrUnavailable
+	}
+	if movement.Amount != canonicalAmount {
+		return Expense{}, ErrUnavailable
+	}
+	if canonical, ok := CanonicalDescription(movement.Description); !ok || canonical != movement.Description {
+		return Expense{}, ErrUnavailable
+	}
+	return movement, nil
+}
+
+const (
+	// cashMovementCorrection is the kind that answers another movement instead of stating a direction
+	// of its own: its effect is the opposite of the one it corrects, which the ledger view states for
+	// it (S6). It is named once here and reused by every read of the book, so no two readers spell the
+	// same kind differently.
+	cashMovementCorrection = "correccion"
+	// cashLedgerMovements is how many rows the book of a window publishes: the newest ones are kept, so
+	// a long window can never flood the screen. The total of the window is not bounded by it: the
+	// aggregate above reads every row of the window and the book states that its list is truncated.
+	cashLedgerMovements = 500
+)
+
+// CashMovement is one row of the branch's operational drawer as the ledger states it: the kind the
+// branch recorded, the kind whose direction the row carries -- its own, or the one it answers when it
+// is a correction -- the amount it stated, which is always positive because the ledger never stores a
+// sign, and the effect signed the way the view reads money, positive into the drawer and negative out
+// of it (S4, S13). CorrectsID is the movement a correction answers and nil on every other kind (S6).
+type CashMovement struct {
+	ID                 int64
+	BranchID           int64
+	Kind               string
+	EffectKind         string
+	Amount             Money
+	Effective          Signed
+	Description        string
+	OccurredAt         time.Time
+	CreatedByAccountID int64
+	CorrectsID         *int64
+}
+
+// CashLedger is the branch's drawer over one window, which is what the screen of the operational till
+// reads (S8): the amount the period inherited, the cash its sales collected, the signed effect of every
+// movement the branch wrote in it, and the expectation those three produce. Since and Until are the
+// window the numbers describe and are nil on the sides it leaves open; Movements is the list of that
+// window, oldest first, and Effective is the signed sum of the WHOLE window, which is not the sum of
+// the list when the window is longer than the bound. Truncated states exactly that: the list is the
+// newest cashLedgerMovements rows of the window and the numbers beside it count every row.
+type CashLedger struct {
+	Since     *time.Time
+	Until     *time.Time
+	Opening   Money
+	Sales     Money
+	Effective Signed
+	Expected  Signed
+	Movements []CashMovement
+	// Truncated reports that the window holds more rows than Movements publishes, so a screen can say
+	// that it is reading a window of the newest movements instead of the whole period.
+	Truncated bool
+}
+
+// CashLedger reads the branch's operational drawer over one window (S4, S8, S13). The branch is the
+// account's own and never a caller value, exactly like its settlements and its metrics (S12), and the
+// read is one statement per fact so the book, the sales and the expectation describe one window: the
+// cash of the sales and the signed effect of the movements are the two terms the drawer moves by, and
+// the expectation is their identity and not a second arithmetic of it.
+//
+// The window starts at the cut of the last closed settlement, and the amount that closure left in the
+// drawer is what the period inherits -- the same pair todayMetrics reads, for the same reason: a closed
+// period ends at its cut, so what the branch does between the cut and the closure of that settlement
+// belongs to this window and to no acta. A branch that never closed a settlement starts at a nil Since
+// and with an opening of zero, which is that state and not a zero instant. An explicit `from` states
+// the start of the window the caller asks for; when that instant is exactly the start of a closed
+// settlement's period, the window is the one that settlement settled, so the opening is the amount it
+// inherited and the book of a settled window closes with its acta (S4, S13). Any other explicit window
+// inherits nothing and publishes an opening of `0.00`, because there is no balance this store could
+// state for an interval it does not know.
+//
+// The book is the rows the branch wrote (S5): every read of the period filters `closing_id IS NULL`. The
+// `aporte` and the `recaudacion` a closure writes are the acta's own facts -- the contribution of the
+// Almacén and the money it takes, already stated by its `contributed_cash` and `taken_cash` columns --
+// and they are never terms of this expectation, because counting them here as well would count that
+// money twice. The rows are read newest first so the bound keeps the newest ones, published oldest
+// first because a book is read in the order it happened, and the numbers beside the list -- the signed
+// effect of the window and the expectation it produces -- are read from the same filtered rows as the
+// list itself, so a screen can never show a list that disagrees with the number beside it (S13). A
+// window longer than the bound publishes its newest movements and states that it truncated, instead of
+// summing the part of the window the list kept and calling that total the drawer.
+//
+// Every row is revalidated instead of trusted: the amount is canonical money and positive, the kind is
+// one of the four the ledger admits, the effect is the direction that kind states -- inverted for a
+// correction -- the description is a real one, the instant is set and the sequence advances in
+// (occurred_at, id). A row this domain did not write fails closed, so a book that would describe money
+// twice is never published.
+func (s *Store) CashLedger(ctx context.Context, actor auth.Identity, from, to *time.Time) (CashLedger, error) {
+	if ctx == nil || s == nil || s.pool == nil {
+		return CashLedger{}, ErrUnavailable
+	}
+	// The warehouse owns no drawer, and a session still forced to change its password does not read the
+	// branch's money: the same admission as its metrics.
+	if !branchAccount(actor) {
+		return CashLedger{}, ErrForbidden
+	}
+	// A window that ends before it starts describes no period at all: it is a request error and never an
+	// empty book a screen would read as a real answer.
+	if from != nil && to != nil && from.After(*to) {
+		return CashLedger{}, ErrInvalid
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := checkAccount(ctx, s.pool, actor); err != nil {
+		return CashLedger{}, err
+	}
+	branch := int16(actor.Location.ID)
+	book := CashLedger{Opening: Money("0.00"), Until: to, Movements: make([]CashMovement, 0, 8)}
+	if from != nil {
+		since := *from
+		book.Since = &since
+		// The one explicit window this store can state an opening for is the one a closed settlement
+		// settled: its own start and the amount it inherited. The match is on the instant itself, at the
+		// precision the column holds -- a truncated instant is another window -- and a `from` that is the
+		// start of no settled period inherits nothing, which is the zero above and not an invented balance.
+		var inherited string
+		err := s.pool.QueryRow(ctx, `SELECT opening_cash::text FROM branch_closings
+ WHERE branch_location_id=$1 AND status='closed' AND period_start=$2
+ ORDER BY cut_at DESC,id DESC LIMIT 1`, branch, since).Scan(&inherited)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			// A window that starts anywhere else inherits no balance: the opening stays the zero above.
+		case err != nil:
+			return CashLedger{}, fail(ctx)
+		default:
+			opening := Money(inherited)
+			if _, ok := amountCents(opening); !ok {
+				return CashLedger{}, ErrUnavailable
+			}
+			book.Opening = opening
+		}
+	} else {
+		// The cut of the last closed settlement and the cash it left behind are one row of one branch:
+		// the same row the opener of the next settlement inherits its opening from.
+		var stored string
+		var cut time.Time
+		err := s.pool.QueryRow(ctx, `SELECT closing_cash::text,cut_at FROM branch_closings
+ WHERE branch_location_id=$1 AND status='closed'
+ ORDER BY cut_at DESC,id DESC LIMIT 1`, branch).Scan(&stored, &cut)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			// A branch that never closed a settlement states no cut and starts at zero, with a nil Since
+			// instead of a zero instant.
+		case err != nil:
+			return CashLedger{}, fail(ctx)
+		default:
+			opening := Money(stored)
+			if _, ok := amountCents(opening); !ok || cut.IsZero() {
+				return CashLedger{}, ErrUnavailable
+			}
+			book.Opening, book.Since = opening, &cut
+		}
+	}
+	// The cash the sales of the same window collected: a card sale never entered this drawer, so only
+	// the cash amount of the sale is read.
+	var sales string
+	if err := s.pool.QueryRow(ctx, `SELECT coalesce(sum(sale.cash_amount),0)::numeric(12,2)::text
+ FROM sales sale WHERE sale.branch_location_id=$1
+   AND ($2::timestamptz IS NULL OR sale.created_at >= $2)
+   AND ($3::timestamptz IS NULL OR sale.created_at < $3)`,
+		branch, book.Since, book.Until).Scan(&sales); err != nil {
+		return CashLedger{}, fail(ctx)
+	}
+	book.Sales = Money(sales)
+	if _, ok := amountCents(book.Sales); !ok {
+		return CashLedger{}, ErrUnavailable
+	}
+	rows, err := s.pool.Query(ctx, `SELECT id,branch_location_id,kind,effect_kind,amount::text,
+  effective::text,description,occurred_at,created_by_account_id,corrects_id,
+  sum(effective) OVER ()::text,count(*) OVER ()
+ FROM branch_cash_ledger
+ WHERE branch_location_id=$1 AND closing_id IS NULL
+   AND ($2::timestamptz IS NULL OR occurred_at >= $2)
+   AND ($3::timestamptz IS NULL OR occurred_at < $3)
+ ORDER BY occurred_at DESC,id DESC LIMIT `+strconv.Itoa(cashLedgerMovements),
+		branch, book.Since, book.Until)
+	if err != nil {
+		return CashLedger{}, fail(ctx)
+	}
+	defer rows.Close()
+	// The two aggregates are read with every row and are computed over the whole filtered window, before
+	// the bound drops the rows the list does not publish: one statement is one snapshot, so the total and
+	// the list can never come from two different readings of two slightly different predicates.
+	var total string
+	var window int64
+	for rows.Next() {
+		var movement CashMovement
+		var amount, stored string
+		if rows.Scan(&movement.ID, &movement.BranchID, &movement.Kind, &movement.EffectKind,
+			&amount, &stored, &movement.Description, &movement.OccurredAt,
+			&movement.CreatedByAccountID, &movement.CorrectsID, &total, &window) != nil {
+			return CashLedger{}, fail(ctx)
+		}
+		if _, ok := movement.stored(branch, amount, stored); !ok {
+			return CashLedger{}, ErrUnavailable
+		}
+		book.Movements = append(book.Movements, movement)
+	}
+	if rows.Err() != nil {
+		return CashLedger{}, fail(ctx)
+	}
+	// The rows were read newest first and are published oldest first: a book is read in the order it
+	// happened.
+	for left, right := 0, len(book.Movements)-1; left < right; left, right = left+1, right-1 {
+		book.Movements[left], book.Movements[right] = book.Movements[right], book.Movements[left]
+	}
+	// The published sequence is the read's own order, oldest first: a list whose rows do not advance
+	// in (occurred_at, id) is a book this domain did not write.
+	for index := 1; index < len(book.Movements); index++ {
+		if !cashMovementAfter(book.Movements[index-1], book.Movements[index]) {
+			return CashLedger{}, ErrUnavailable
+		}
+	}
+	// The signed effect of the whole window, read by the same statement as the list, so the list and the
+	// number beside it can never disagree (S13). An empty window read no aggregate because it read no
+	// row: it is a book of nothing, and zero is that book and not a missing number.
+	book.Effective = Signed("0.00")
+	if window > 0 {
+		if book.Effective, err = windowEffect(window, total); err != nil {
+			return CashLedger{}, err
+		}
+	}
+	// The aggregate can only cover more rows than the list, never fewer: a window smaller than the rows
+	// already published was not read as one window.
+	if window < int64(len(book.Movements)) {
+		return CashLedger{}, ErrUnavailable
+	}
+	book.Truncated = window > int64(len(book.Movements))
+	expected, err := DrawerExpected(book.Opening, book.Sales, book.Effective)
+	if err != nil {
+		return CashLedger{}, ErrUnavailable
+	}
+	book.Expected = expected
+	return book, nil
+}
+
+// windowSignedEffect reads the signed effect of one window of the branch's own book (S4, S13): the sum of the
+// ledger view's `effective` over every movement the branch wrote inside [from, to), which is the term the
+// expectation is built from. It is the same predicate every read of this package applies -- the rows of
+// the branch that belong to no settlement -- so the acta, the book and the metrics card of one window
+// cannot sum different rows. A window with no rows reads as zero, which is that window and not a missing
+// number.
+func windowSignedEffect(ctx context.Context, q querier, branch int16, from, to time.Time) (Signed, error) {
+	var stored string
+	if err := q.QueryRow(ctx, `SELECT coalesce((SELECT sum(ledger.effective) FROM branch_cash_ledger ledger
+ WHERE ledger.branch_location_id=$1 AND ledger.closing_id IS NULL
+   AND ledger.occurred_at >= $2 AND ledger.occurred_at < $3),0)::numeric(12,2)::text`,
+		branch, from, to).Scan(&stored); err != nil {
+		return "", fail(ctx)
+	}
+	effect := Signed(stored)
+	if _, ok := effect.Cents(); !ok {
+		return "", ErrUnavailable
+	}
+	return effect, nil
+}
+
+// windowEffect publishes the signed sum of a whole window from the text the aggregate rendered. The sum
+// is money this domain publishes, so it is judged before it is read as cents: a total outside the range
+// of a canonical amount is not a number this book can state, and no wrapped int64 is ever published as
+// one. An unreadable or empty total fails closed, exactly like a row this domain did not write.
+func windowEffect(window int64, total string) (Signed, error) {
+	// numeric(12,2) is at most ten integral digits plus the fraction: a shorter magnitude is the only
+	// text the canonical reading below can parse without overflowing the cents of an int64.
+	if window < 1 || len(strings.TrimPrefix(total, "-")) > 13 {
+		return "", ErrUnavailable
+	}
+	cents, ok := Signed(total).Cents()
+	if !ok || cents > maxCents || cents < -maxCents {
+		return "", ErrUnavailable
+	}
+	effect := signedFromCents(cents)
+	if effect == "" {
+		return "", ErrUnavailable
+	}
+	return effect, nil
+}
+
+// stored revalidates one row of the ledger view and publishes it as money, returning the signed effect
+// the row carries. It refuses everything this domain could not have written: the amount is canonical and
+// positive, the row belongs to the branch of the session, the kind is one of the four the ledger admits,
+// the effect carries the direction that kind states, a correction names exactly one movement and no other
+// kind names one, the description is canonical text and the instant is set (S6, S13). A row that fails
+// any of them is never published: the caller fails closed on false.
+func (m *CashMovement) stored(branch int16, amount, effect string) (int64, bool) {
+	if m.ID < 1 || m.BranchID != int64(branch) || m.CreatedByAccountID < 1 || m.OccurredAt.IsZero() {
+		return 0, false
+	}
+	if !cashMovementKind(m.Kind) || !cashMovementEffectKind(m.EffectKind) {
+		return 0, false
+	}
+	if (m.Kind == cashMovementCorrection) != (m.CorrectsID != nil) ||
+		(m.CorrectsID != nil && *m.CorrectsID < 1) {
+		return 0, false
+	}
+	if canonical, ok := CanonicalDescription(m.Description); !ok || canonical != m.Description {
+		return 0, false
+	}
+	stored := Money(amount)
+	if cents, ok := amountCents(stored); !ok || cents < 1 {
+		return 0, false
+	}
+	signed := Signed(effect)
+	cents, ok := signed.Cents()
+	if !ok || !cashMovementDirection(m.Kind, m.EffectKind, cents) {
+		return 0, false
+	}
+	m.Amount, m.Effective = stored, signed
+	return cents, true
+}
+
+// cashMovementKind admits the four kinds the ledger records: the expense the branch paid out of the
+// drawer, the collection it gave up, the contribution it received and the correction that answers one
+// of them.
+func cashMovementKind(kind string) bool {
+	return cashMovementPeriodKind(kind) || kind == cashMovementCorrection
+}
+
+// cashMovementPeriodKind admits the three kinds the branch records of its own period: the expense it
+// paid out, the collection it gave up and the contribution it received. A correction is not one of them:
+// it answers another movement instead of stating a direction of its own (S6).
+func cashMovementPeriodKind(kind string) bool {
+	return kind == metricsMovementExpense || kind == metricsMovementCollection ||
+		kind == metricsMovementContribution
+}
+
+// cashMovementEffectKind admits the three directions a row can carry. A correction carries the kind of
+// the movement it answers, so an effect is never the correction itself: the ledger refuses a correction
+// of a correction (S6) and this read refuses to describe one.
+func cashMovementEffectKind(kind string) bool {
+	return kind == metricsMovementExpense || kind == metricsMovementCollection ||
+		kind == metricsMovementContribution
+}
+
+// cashMovementDirection reports whether one signed effect is the direction the ledger states for it: an
+// aporte puts money into the drawer, a gasto or a recaudacion take it out, and a correction states the
+// opposite direction of the movement it answers -- a corrected gasto returns money to the drawer (S13).
+func cashMovementDirection(kind, effectKind string, cents int64) bool {
+	into := (effectKind == metricsMovementContribution) != (kind == cashMovementCorrection)
+	if into {
+		return cents > 0
+	}
+	return cents < 0
+}
+
+// cashMovementAfter reports whether one row of the book strictly follows another in the order it is
+// published: the instant first and the id among the rows of one instant, which is the inverse of the
+// order the window is read in. A book whose rows do not advance is one this domain did not write.
+func cashMovementAfter(previous, movement CashMovement) bool {
+	if !previous.OccurredAt.Equal(movement.OccurredAt) {
+		return previous.OccurredAt.Before(movement.OccurredAt)
+	}
+	return movement.ID > previous.ID
+}
+
+// The drawer's expectation is DrawerExpected (money.go) and it is not restated here, so no reader of this
+// package can apply a second arithmetic of the same window (S4, S13).
 
 // checkVariants refuses a sheet that names a variant outside the catalogue before any line
 // is written: an unknown variant is a request error, and the whole sheet is written or none
@@ -933,13 +1400,27 @@ func (s *Store) Propose(ctx context.Context, actor auth.Identity, id int64) (Clo
 
 // periodTotals reads the money of one period from the ledgers: the sales total that is the
 // commission base (the sum of the sold subtotals, S6), the cash the branch collected, the
-// card, transfer and QR amounts of the same sales (S13), and the cash expenses the branch
-// recorded as they happened (S12). One statement, so every number describes the same window
-// of the same transaction, and both the proposal and the closure call it, so an offered
-// period can never differ from the closed one.
+// card, transfer and QR amounts of the same sales (S13), the net cash expense the branch
+// recorded as it happened (S12) and the signed effect of every movement of the window (S4, S13).
+// One statement, so every number describes the same window of the same transaction, and both the
+// proposal and the closure call it, so an offered period can never differ from the closed one.
+//
+// The expenses are the NET expense of the window, read from `branch_cash_ledger` (S4): the view
+// states one signed effect per row, so the period's expense is `-sum(effective)` over the rows
+// whose effect is a `gasto` and a correction of a gasto lowers the expense it answers instead of
+// being a second kind one reader subtracts and another forgets (S13). The effect is that same sum
+// over EVERY row of the window, which is the term the drawer's expectation is built from: an
+// aporte adds, a gasto and a recaudacion subtract and a correction reverses the direction of the
+// row it answers, so one signed number carries the four kinds and no reader has to sum them again.
+// The window rule is the same one every read of this package applies (S5): a branch's book is the
+// rows it wrote, so every read of the period filters `closing_id IS NULL`. The transfer rows a
+// settlement writes -- its `aporte`, which is the contribution of the Almacén, and its
+// `recaudacion`, which is the money it takes -- are the acta's own facts, already stated by the
+// columns `contributed_cash` and `taken_cash` of the document, and they are NEVER terms of the
+// period expectation: counting them here as well would count the same money twice.
 func periodTotals(ctx context.Context, q querier, branch int16, from, to time.Time) (periodTotalsResult, error) {
 	var result periodTotalsResult
-	var total, cash, card, transfer, qr, expenses string
+	var total, cash, card, transfer, qr, expenses, effective string
 	err := q.QueryRow(ctx, `WITH settled AS (
     SELECT id,cash_amount,card_amount,transfer_amount,qr_amount FROM sales
     WHERE branch_location_id=$1 AND created_at >= $2 AND created_at < $3
@@ -950,10 +1431,14 @@ func periodTotals(ctx context.Context, q querier, branch int16, from, to time.Ti
        coalesce((SELECT sum(sale.card_amount) FROM settled sale),0)::numeric(12,2)::text,
        coalesce((SELECT sum(sale.transfer_amount) FROM settled sale),0)::numeric(12,2)::text,
        coalesce((SELECT sum(sale.qr_amount) FROM settled sale),0)::numeric(12,2)::text,
-       coalesce((SELECT sum(expense.amount) FROM branch_cash_movements expense
-        WHERE expense.branch_location_id=$1 AND expense.kind='gasto'
-          AND expense.occurred_at >= $2 AND expense.occurred_at < $3),0)::numeric(12,2)::text`,
-		branch, from, to).Scan(&total, &cash, &card, &transfer, &qr, &expenses)
+       coalesce(-(SELECT sum(ledger.effective) FROM branch_cash_ledger ledger
+        WHERE ledger.branch_location_id=$1 AND ledger.effect_kind='gasto'
+          AND ledger.closing_id IS NULL
+          AND ledger.occurred_at >= $2 AND ledger.occurred_at < $3),0)::numeric(12,2)::text,
+       coalesce((SELECT sum(ledger.effective) FROM branch_cash_ledger ledger
+        WHERE ledger.branch_location_id=$1 AND ledger.closing_id IS NULL
+          AND ledger.occurred_at >= $2 AND ledger.occurred_at < $3),0)::numeric(12,2)::text`,
+		branch, from, to).Scan(&total, &cash, &card, &transfer, &qr, &expenses, &effective)
 	if err != nil {
 		return periodTotalsResult{}, fail(ctx)
 	}
@@ -965,13 +1450,21 @@ func periodTotals(ctx context.Context, q querier, branch int16, from, to time.Ti
 			return periodTotalsResult{}, ErrUnavailable
 		}
 	}
+	result.effective = Signed(effective)
+	if _, ok := result.effective.Cents(); !ok {
+		return periodTotalsResult{}, ErrUnavailable
+	}
 	return result, nil
 }
 
 // periodTotalsResult is the money of one settled period: the commission base, the collection
-// by payment method -- cash in the drawer, card, transfer and QR outside it -- and the
-// expenses the branch paid out of the drawer.
-type periodTotalsResult struct{ salesTotal, cash, card, transfer, qr, expenses Money }
+// by payment method -- cash in the drawer, card, transfer and QR outside it --, the expenses the
+// branch paid out of the drawer and the signed effect of every movement of the window, which is the
+// term the drawer's expectation is built from.
+type periodTotalsResult struct {
+	salesTotal, cash, card, transfer, qr, expenses Money
+	effective                                      Signed
+}
 
 // configuredRate reads the rate the branch is configured with. A branch without one cannot
 // be proposed (S6, LC003).
@@ -1461,8 +1954,17 @@ func deriveClosing(ctx context.Context, q querier, closing *Closing) error {
 		}
 	}
 	// The three numbers of S8 and S10 are derived here, never stored, so they cannot
-	// disagree with the facts that produce them (L12).
-	expected, err := ExpectedCash(closing.OpeningCash, closing.CashSales, closing.CashExpenses)
+	// disagree with the facts that produce them (L12). The expectation is the drawer's ONE rule over the
+	// window of this settlement -- opening, the cash its sales collected and the signed effect of the
+	// movements the branch wrote in it -- so the acta and the book of the same window state one number
+	// (S4, S13); the net `CashExpenses` the document reports is already one term of that effect and is
+	// never subtracted a second time.
+	effect, err := windowSignedEffect(ctx, q, int16(closing.BranchID), closing.PeriodStart, closing.CutAt)
+	if err != nil {
+		return err
+	}
+	closing.CashEffective = effect
+	expected, err := DrawerExpected(closing.OpeningCash, closing.CashSales, effect)
 	if err != nil {
 		return ErrUnavailable
 	}
@@ -1785,15 +2287,21 @@ func materialKeyAfter(previous, line MaterialLine) bool {
 }
 
 // loadExpenses reads the expenses of the window one settlement covers: the branch's own ledger
-// rows of kind 'gasto' inside [period_start, cut_at), in the order the branch recorded them, so
-// the document states the facts its total was computed from (S12). The window is the same one
-// periodTotals reads, so the list and the total can never describe two different periods.
+// rows inside [period_start, cut_at) whose effect is a `gasto`, in the order the branch recorded
+// them, so the document states the facts its total was computed from (S12). The window and the
+// reading are the ones periodTotals uses, so the list and the total can never describe two
+// different periods: the rows come from `branch_cash_ledger`, which means the correction of a gasto
+// is listed beside the gasto it answers -- with its own kind, its positive amount and the movement
+// it names -- instead of being a row only the total knew about (S13), and it means the window
+// excludes the transfers a settlement writes (`closing_id IS NULL`, S5), which are the acta's own
+// facts and never an expense of the period.
 func loadExpenses(ctx context.Context, q querier, id int64) ([]Expense, error) {
 	rows, err := q.Query(ctx, `SELECT expense.id,expense.branch_location_id,expense.amount::text,
-  expense.description,expense.occurred_at,expense.created_by_account_id
- FROM branch_cash_movements expense
+  expense.description,expense.occurred_at,expense.created_by_account_id,
+  expense.kind,expense.corrects_id
+ FROM branch_cash_ledger expense
  JOIN branch_closings closing ON closing.branch_location_id=expense.branch_location_id
- WHERE closing.id=$1 AND expense.kind='gasto'
+ WHERE closing.id=$1 AND expense.effect_kind='gasto' AND expense.closing_id IS NULL
    AND expense.occurred_at >= closing.period_start AND expense.occurred_at < closing.cut_at
  ORDER BY expense.id`, id)
 	if err != nil {
@@ -1805,7 +2313,8 @@ func loadExpenses(ctx context.Context, q querier, id int64) ([]Expense, error) {
 		var expense Expense
 		var stored string
 		if rows.Scan(&expense.ID, &expense.BranchID, &stored, &expense.Description,
-			&expense.OccurredAt, &expense.CreatedByAccountID) != nil {
+			&expense.OccurredAt, &expense.CreatedByAccountID, &expense.Kind,
+			&expense.CorrectsID) != nil {
 			return nil, fail(ctx)
 		}
 		amount, err := ParseAmount(stored)
@@ -1817,6 +2326,16 @@ func loadExpenses(ctx context.Context, q querier, id int64) ([]Expense, error) {
 		// description is a real one and the order is the order it was recorded in.
 		if expense.ID < 1 || expense.BranchID < firstBranchID || expense.BranchID > MaxBranchID ||
 			expense.CreatedByAccountID < 1 || expense.OccurredAt.IsZero() {
+			return nil, ErrUnavailable
+		}
+		// The two kinds this list holds: an expense the branch paid out and the correction that
+		// answers one. The correction always names exactly one movement, and no other row names one
+		// (S6), so a shape the ledger's own check refuses is never described here either.
+		if expense.Kind != metricsMovementExpense && expense.Kind != cashMovementCorrection {
+			return nil, ErrUnavailable
+		}
+		if (expense.Kind == cashMovementCorrection) != (expense.CorrectsID != nil) ||
+			(expense.CorrectsID != nil && *expense.CorrectsID < 1) {
 			return nil, ErrUnavailable
 		}
 		if canonical, ok := CanonicalDescription(expense.Description); !ok || canonical != expense.Description {
@@ -2197,6 +2716,49 @@ func closureBlocker(ctx context.Context, q querier, id int64, branch int16) erro
 	return &StockMoved{VariantID: variant}
 }
 
+// CorrectionTargetInvalid is the refusal of a correction that names a movement the book may not answer:
+// an unknown movement, one of another branch, another correction, the transfer of a settlement, or a
+// movement of a period a closure already signed (LC030, S6, S7). It unwraps to ErrInvalid, so a caller
+// that only knows the class still recognises it; the correction route publishes it under its own code
+// because "the target is wrong" is the fact the branch acts on, and a generic invalid request is not.
+type CorrectionTargetInvalid struct{}
+
+func (e *CorrectionTargetInvalid) Error() string {
+	return "the movement this correction names is not one it may answer"
+}
+
+// Unwrap keeps errors.Is(err, ErrInvalid) true for the named refusal.
+func (e *CorrectionTargetInvalid) Unwrap() error { return ErrInvalid }
+
+// CorrectionExceeds is the refusal of a correction that would take the corrections of one movement above
+// the amount that movement stated (LC031, S6). It unwraps to ErrStateConflict, so the class is a
+// conflict and never an outage, and the correction route names the excess the branch wrote.
+type CorrectionExceeds struct{}
+
+func (e *CorrectionExceeds) Error() string {
+	return "the corrections of a movement never exceed the amount it stated"
+}
+
+// Unwrap keeps errors.Is(err, ErrStateConflict) true for the named refusal.
+func (e *CorrectionExceeds) Unwrap() error { return ErrStateConflict }
+
+// mapCashCorrectionFailure publishes the refusal of a movement of the branch's book. The two corrections of
+// this domain are named for the route that acts on them -- a target the book may not answer (LC030) and
+// a set of corrections above the amount corrected (LC031), both of migration 046 -- and every other
+// refusal, including the freeze of the branch and the admission of the ledger, keeps the plain mapping.
+func mapCashCorrectionFailure(ctx context.Context, err error) error {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) {
+		switch pg.Code {
+		case "LC030":
+			return &CorrectionTargetInvalid{}
+		case "LC031":
+			return &CorrectionExceeds{}
+		}
+	}
+	return mapFailure(ctx, err)
+}
+
 // mapFailure publishes the database's own decision and nothing else: SQLSTATE is the only
 // trusted evidence, and cancellation keeps its semantics.
 func mapFailure(ctx context.Context, err error) error {
@@ -2255,6 +2817,17 @@ func mapFailure(ctx context.Context, err error) error {
 		case "LC013":
 			// A correction is decided once, and a decided one is final.
 			return ErrCorrectionDecided
+		case "LC030":
+			// A correction names a movement it may not answer: an unknown movement, one of another
+			// branch, another correction, a settlement's transfer, or a movement of a period a closure
+			// already signed (046, S6, S7). The correction path names the fact itself through
+			// mapCashCorrectionFailure; this is the class of the same refusal.
+			return ErrInvalid
+		case "LC031":
+			// The corrections of one movement exceed the amount it stated (046, S6). The correction
+			// path names the excess through mapCashCorrectionFailure; this is the class of the same
+			// refusal.
+			return ErrStateConflict
 		case "LC014":
 			// Only an enabled account of the branch that owns the settlement decides.
 			return ErrForbidden

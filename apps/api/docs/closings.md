@@ -17,9 +17,11 @@ itself, in one transaction. This contract never restates those rules: it sends t
 publishes the database's own decision as one status and one stable code and reads back what the
 database wrote.
 
-The branch is not only settled: it records the small expenses it pays out of its own till as
-they happen, and the settlement whose period covers them is charged for them. The warehouse
-has no till of its own and records none.
+The branch is not only settled: it writes its own operational drawer as it happens — the small
+expenses it pays out of its till, the aportes it receives and the recaudaciones it gives up —
+corrects a wrong movement with its compensating one, and reads the book of any window with the
+drawer it expects. The settlement whose period covers a movement is charged for it. The warehouse
+has no drawer of its own: it writes no movement there and reads none through that book.
 
 A closed settlement is never reopened. An error is corrected by an appended correction that
 the branch itself approves: the warehouse states what was wrong and why, and only an accepted
@@ -38,7 +40,11 @@ proposed it.
   (`"96000"`), three decimals, a negative amount or a comma are all `400 invalid_request`.
 * Every percentage is canonical two-decimal text between `0` and `100` (`"12.50"`), exactly
   like the `numeric(5,2)` column that stores it.
-* Instants are RFC3339 in UTC.
+* Instants are RFC3339 in UTC, at the precision the column holds: the seconds are always stated and
+  the fraction is published whenever the instant has one (`2026-03-02T09:15:00.123456Z`), never
+  truncated to the whole second. A window bound taken from a published instant is therefore the
+  instant the database holds, so the half-open interval it describes counts the rows recorded in the
+  same second on the side the settlement put them.
 * The commission of a period is the frozen rate over the sum of the sold subtotals of the
   period, rounded **once** on the total, half a cent up (`0.005` up). It is one amount for the
   whole branch: there is no seller and no manager name anywhere in this contract.
@@ -59,6 +65,11 @@ evidence of an assignment; the database refuses a different actor with its own S
 * **Recording an expense** is the branch's alone: the till the money comes out of belongs to the
   branch that records it, so the warehouse is refused (`403 forbidden`) and every branch records
   only in its own.
+* **Recording a movement of the operational drawer** — an expense, an aporte or a recaudación — and
+  **correcting one** is the branch's alone, for the same reason: the drawer is the branch's own and the
+  warehouse has none, so it is refused with `403 forbidden` and every branch writes only its own.
+* **Reading the book of the drawer** is the branch's for its own. The warehouse is refused with `403
+  forbidden`: it sees the movements inside the settlement (S10), never through the branch's own book.
 * **Deciding** is the branch's alone: any enabled account of the branch the settlement
   belongs to accepts or rejects. The warehouse cannot decide (`403 forbidden`), and neither
   can another branch. The same rule decides a correction of that branch's closed settlement.
@@ -88,14 +99,19 @@ route takes an actor, a location or a role from JSON.
 | `/api/closings/{id}/corrections` | POST | 201 with the proposed correction |
 | `/api/closings/corrections/{correction}/decision` | POST | 200 with the correction and the branch's answer |
 | `/api/closings/expenses` | POST | 201 with the recorded expense |
+| `/api/closings/cash-movements` | POST | 201 with the recorded movement of the operational drawer |
+| `/api/closings/cash-corrections` | POST | 201 with the recorded correction of one movement |
+| `/api/closings/cash-ledger` | GET | 200 with the book of the drawer over one window |
 
 No other method and no other path is served by this contract: `405 method_not_allowed` with
 an explicit `Allow` header (`GET, POST` for the collection, `GET, POST` for the commission,
-`POST` for the expenses, `GET` for one settlement, `POST` for each operation). Every mutation
+`POST` for the expenses and for the two writes of the drawer, `GET` for the book of the drawer and
+for one settlement, `POST` for each operation). Every mutation
 requires the usual same-origin session cookie, `Origin`, `Sec-Fetch-Site` and `X-CSRF-Token`;
 every read requires the session only. A query string is not part of any route here except the
-branch history (`GET /api/closings`), where it is the query itself: on every other route
-`?page=1` and a bare `?` are `400 invalid_request`.
+branch history (`GET /api/closings`) and the book of the drawer (`GET
+/api/closings/cash-ledger`), where it is the query itself: on every other route `?page=1` and a
+bare `?` are `400 invalid_request`.
 
 `{id}`, `{branch}` and `{correction}` admit only canonical positive integers: `01`, `+1`, `0`,
 `1.0`, `abc` and an integer outside the column range are `400 invalid_request`, never a cleaned
@@ -150,7 +166,7 @@ POST /api/closings
 {"id":1,"branch_location_id":2,"branch_name":"Sucursal A","status":"open",
  "period_start":"2026-02-23T18:00:00Z","cut_at":"2026-03-23T18:30:00Z","closed_at":null,
  "commission_rate_percent":null,"opening_cash":"100.00",
- "cash_sales":"0.00","cash_expenses":"0.00","expected_cash":"100.00",
+ "cash_sales":"0.00","cash_expenses":"0.00","cash_effective":"0.00","expected_cash":"100.00",
  "counted_cash":null,"cash_difference":null,"contributed_cash":"0.00","closing_cash":null,
  "taken_cash":null,"sales_total":"0.00","commission_amount":"0.00","card_total":"0.00",
  "transfer_total":"0.00","qr_total":"0.00","observation":"","opened_by_account_id":1,
@@ -177,8 +193,8 @@ POST /api/closings
 
 The answer is the whole settlement document, so a period the branch already sold shows its money
 here too: the settlement above is the first one of a branch, whose window is empty, and a later
-one publishes the derived `cash_sales`, `cash_expenses`, `sales_total`, `card_total`,
-`transfer_total`, `qr_total` and `commission_amount` of its own window (see
+one publishes the derived `cash_sales`, `cash_expenses`, `cash_effective`, `sales_total`,
+`card_total`, `transfer_total`, `qr_total` and `commission_amount` of its own window (see
 [Frozen from the proposal, derived before it](#frozen-from-the-proposal-derived-before-it)).
 
 The first settlement of a branch is the bootstrap: it settles an empty period (`period_start`
@@ -248,14 +264,21 @@ the envelope yet.
 
 ## Derived money: published as computed
 
-Three numbers of the drawer are **never persisted**. They are derived from the facts that
+Four numbers of the drawer are **never persisted**. They are derived from the facts that
 produce them on every read, so they cannot disagree with those facts:
 
 | Field | Identity |
 |---|---|
-| `expected_cash` | `opening_cash + cash_sales - cash_expenses` |
+| `cash_effective` | The **signed** effect of every movement the branch wrote inside the window, read from `branch_cash_ledger` over `[period_start, cut_at)` with `closing_id` null: `+` for an `aporte`, `−` for a `gasto` or a `recaudacion`, and for a `correccion` the opposite direction of the movement it answers. It is the same term the book of the drawer publishes as `effective` and the metrics card publishes as `today.effective` |
+| `expected_cash` | `opening_cash + cash_sales + cash_effective` — the drawer's one rule, shared with the book of the same window (`GET /api/closings/cash-ledger`) and with the metrics card, so the acta and the book of one period can never state two numbers (S4, S13) |
 | `cash_difference` | `counted_cash - expected_cash`, with its sign: negative is a shortage (`-100.00`), positive a surplus, zero when it matches |
 | `taken_cash` | `counted_cash + contributed_cash - closing_cash`, never negative by the fund bound |
+
+The net `cash_expenses` of the document is **already one term of `cash_effective`** — the `gasto`
+rows and the corrections that answer them are among the movements that effect sums — so it is
+reported beside the drawer, as what the branch paid, and it is **never subtracted a second time**.
+A period that inherited 100.00, paid out 45.50 and received 30.00 has an effect of `-15.50` and an
+expectation of `84.50`; the same 84.50 the book of that window publishes.
 
 `cash_difference` and `taken_cash` are `null` until the drawer states what they need:
 `cash_difference` needs `counted_cash`, and `taken_cash` needs `counted_cash` and
@@ -293,9 +316,9 @@ the closure.
 | `closed` | The columns the closure froze: the history its branch signed. |
 
 Before the proposal there is nothing to freeze, so an `open` settlement publishes the period its
-ledgers hold at that instant — the cash in the drawer, the expenses of the window, the total sold,
-the electronic collection and the commission — and `expected_cash` follows from it
-(`opening_cash + cash_sales - cash_expenses`). This is what makes the expectation of an open
+ledgers hold at that instant — the cash in the drawer, the expenses of the window, the signed
+effect of its movements, the total sold, the electronic collection and the commission — and
+`expected_cash` follows from it (`opening_cash + cash_sales + cash_effective`). This is what makes the expectation of an open
 settlement real instead of zero, and it is the same arithmetic, over the same window, that the
 proposal records: the draft is a preview of exactly the numbers the branch will be asked to accept.
 
@@ -424,14 +447,20 @@ POST /api/closings/expenses
 ```
 
 ```json
-{"id":12,"branch_location_id":2,"amount":"45.50","description":"Flete",
- "occurred_at":"2026-03-02T09:15:00Z","created_by_account_id":2}
+{"id":12,"branch_location_id":2,"kind":"gasto","amount":"45.50","description":"Flete",
+ "occurred_at":"2026-03-02T09:15:00Z","created_by_account_id":2,"corrects_id":null}
 ```
 
-* Both keys are mandatory and there are no others. `amount` is canonical two-decimal text and is
+* Both keys of the body are mandatory and there are no others. `amount` is canonical two-decimal text and is
   never zero; `description` is valid UTF-8 without NUL, at most 500 characters and never blank
   once trimmed, and it is published exactly as it is stored, so a padded `" Flete "` is `400
   invalid_request` instead of a silently trimmed one.
+* The answer states the eight keys of a row of the branch's till: `id`, `branch_location_id`,
+  `kind`, `amount`, `description`, `occurred_at`, `created_by_account_id` and `corrects_id`. The row
+  this route writes is a `gasto` that names no other movement, so `corrects_id` is `null` — the key is
+  always published and never omitted — and `kind` is what tells this row from the correction of an
+  expense in the acta that lists both (see [the acta's expense
+  list](#the-actas-expense-list-is-the-ledger-it-totals)).
 * The branch is the **session's own**: `branch_location_id` and `created_by_account_id` are the
   account's, never the body's, and `occurred_at` is the database's, so no caller records an
   expense in another till nor backdates one into an already settled period.
@@ -441,10 +470,145 @@ POST /api/closings/expenses
   that would move is the one being counted (S3). A refusal writes nothing at all — no movement, no
   counter, no change to the settlement.
 * A recorded expense is immutable: it is never edited and never deleted, and a wrong one is
-  corrected with its opposite movement. This contract does not serve that correction yet (see
-  [Not served yet](#not-served-yet)).
+  corrected with its opposite movement, which is the [correction of the
+  drawer](#corrections-of-the-drawers-book) below.
 * The expense is not attached to a settlement by the caller: it belongs to the period whose window
   `[period_start, cut_at)` contains its instant, and that settlement publishes it.
+
+### The acta's expense list is the ledger it totals
+
+The settlement publishes in `expenses` the rows of the branch's own ledger inside its window —
+`branch_cash_ledger`, the same view the total is read from — with `closing_id` null, whose effect
+kind is a `gasto`. That is the pay-outs of the period **and** the corrections that answer them
+(S13): a correction is listed beside the expense it corrects, with `kind: "correccion"`, its own
+positive amount and the `corrects_id` of the movement it answers, so a reader of the acta sees the
+direction of every row of the ledger instead of a list only the total knew about. `cash_expenses`
+is the net of exactly those rows — a correction lowers the expense it answers — so the list and the
+total beside it always describe one period and never two readings of it.
+
+The direction of a row is `kind` plus `corrects_id`, never the sign of `amount`: an amount is
+always the positive fact the branch stated, and the ledger's sign is a reading of the view. The
+reference is published on every row, `null` on a pay-out and the corrected movement's id on a
+correction, which is the same shape rule the database enforces; a row of any other shape is refused
+instead of described.
+
+## The operational drawer: aportes, recaudaciones and corrections
+
+The branch's operational drawer is the counter's till, and it is a box of its own: it is not the
+purchase fund (S3) and no movement of one ever moves the other. The branch writes **four** kinds in
+it, and the amount of every row is positive canonical money with two decimals — the direction the
+movement moves the drawer is the ledger's own reading, never a sign the caller stores (S11):
+
+| Kind | Direction of the drawer | Written by |
+|---|---|---|
+| `gasto` | out (it pays for the store: detergent, brooms, a small errand) | the branch |
+| `aporte` | in (the drawer receives cash to work with) | the branch |
+| `recaudacion` | out (the cash is collected and taken away) | the branch |
+| `correccion` | the opposite of the movement it answers | the branch, naming that movement |
+
+```
+POST /api/closings/cash-movements
+{"kind":"aporte","amount":"100.00","description":"Cambio para el cajón"}
+```
+
+```json
+{"id":21,"branch_location_id":2,"kind":"aporte","amount":"100.00",
+ "description":"Cambio para el cajón","occurred_at":"2026-03-02T09:15:00Z",
+ "created_by_account_id":2}
+```
+
+* The three keys are mandatory and there are no others: `kind` is one of `gasto`, `aporte` and
+  `recaudacion`, `amount` is canonical two-decimal text and is never zero, and `description` is the
+  same text the expense route admits (valid UTF-8 without NUL, at most 500 characters, never blank
+  once trimmed, and published exactly as it is stored). An extra key, a `correccion` here, a padded
+  description or a JSON number for an amount is `400 invalid_request`.
+* The branch is the **session's own** (S12): `branch_location_id` and `created_by_account_id` are the
+  account's and never the body's, and `occurred_at` is the database's, so no caller writes another
+  branch's drawer nor backdates a movement into a period that is already settled.
+* The warehouse has no drawer of its own and is refused with `403 forbidden`. While a settlement
+  holds the branch the movement is refused with `409 branch_frozen` (S9), exactly like the expense of
+  the same till. A refusal writes nothing at all.
+* A movement of the period belongs to no settlement: the settlement that covers it is the one whose
+  window `[period_start, cut_at)` contains its instant.
+
+### Corrections of the drawer's book
+
+The book is immutable, so a wrong movement is answered by a compensating one of kind `correccion`
+that names the movement it corrects (S6). Nothing is edited, nothing is deleted, and a correction is
+never corrected.
+
+```
+POST /api/closings/cash-corrections
+{"corrects_id":21,"amount":"20.00","description":"Aporte mal cargado"}
+```
+
+```json
+{"id":22,"branch_location_id":2,"kind":"correccion","amount":"20.00",
+ "description":"Aporte mal cargado","occurred_at":"2026-03-02T09:22:00Z",
+ "created_by_account_id":2,"corrects_id":21}
+```
+
+* The three keys are mandatory and there are no others: `corrects_id` is a canonical positive integer
+  and the answer states it beside the shape of a movement.
+* The amount is **positive** and the sign is the ledger's: a correction carries the opposite direction
+  of the movement it answers, so correcting a `gasto` returns money to the drawer and correcting an
+  `aporte` takes it back out. Writing the sign itself would say the error twice.
+* Refusals: a target the book may not answer — an unknown movement, one of another branch, another
+  correction, the transfer of a settlement, or a movement of a period a closure already signed (S7) —
+  is `400 {"error":"correction_target_invalid"}`; a correction that would take the corrections of one
+  movement above the amount that movement stated is `409 {"error":"correction_exceeds"}`. The tope is
+  the sum, so one movement may be corrected in parts. A frozen branch is `409 branch_frozen` and the
+  warehouse is `403 forbidden`.
+
+### The book of the window
+
+```
+GET /api/closings/cash-ledger
+GET /api/closings/cash-ledger?from=2026-03-01T00:00:00Z&to=2026-03-23T18:30:00Z
+```
+
+```json
+{"since":"2026-02-23T18:00:00Z","until":null,"opening":"100.00","sales":"96000.00",
+ "effective":"44.50","expected":"96144.50","truncated":false,
+ "movements":[
+  {"id":21,"kind":"gasto","effect_kind":"gasto","amount":"45.50","effective":"-45.50",
+   "description":"Detergente","occurred_at":"2026-03-02T09:15:00Z",
+   "created_by_account_id":2,"corrects_id":null},
+  {"id":22,"kind":"correccion","effect_kind":"gasto","amount":"10.00","effective":"10.00",
+   "description":"Detergente mal cargado","occurred_at":"2026-03-02T09:22:00Z",
+   "created_by_account_id":2,"corrects_id":21}]}
+```
+
+* `from` and `to` are both optional and each appears at most once, as an RFC3339 instant. An absent
+  bound is the store's own default: without `from` the window starts at the cut of the last closed
+  settlement and `opening` is the fund that closure left in the drawer; with an explicit `from` that is
+  exactly a closed settlement's `period_start` — the instant itself, microseconds included — the window
+  is the one that settlement settled, so `opening` is the amount that period inherited and the book of a
+  settled window closes with its acta. Any other explicit `from` inherits nothing and `opening` is
+  `"0.00"`. Without `to` the window has no end and `until` is
+  `null`. An unknown key, a repeated bound, an empty value, a bare `?`, an instant that does not parse
+  and a window that ends before it starts are `400 invalid_request` — the branch is never a query value
+  (S12).
+* `expected` is the drawer's **one rule** (`opening + sales + effective`), the same arithmetic the acta
+  of a settlement publishes as `expected_cash` over its own window (`opening_cash + cash_sales +
+  cash_effective`): the book of a period and its acta state one number, never two (S4, S13).
+* `since` and `until` are the window the numbers describe, so a screen reads the period it was given
+  instead of guessing it. `opening` is the money the period inherited, `sales` the cash its sales
+  collected, `effective` the **signed** sum of the movements of the window and `expected` their one
+  identity: `opening + sales + effective` (S4, S13).
+* `effective` is the only signed money of this contract: it is canonical two-decimal **text** and it may
+  start with `-`. The amount of a row is always positive and `effect_kind` states the direction: an
+  `aporte` moves the drawer in, a `gasto` and a `recaudacion` move it out, and a `correccion` carries the
+  kind of the movement it answers with the opposite sign.
+* `movements` is published **oldest first**, because a book is read in the order it happened.
+* `truncated` reports that the window holds more movements than the answer lists: the list is the newest
+  500 rows and every number beside it counts the whole window, so a long period publishes a shorter list
+  without ever publishing a total that is the sum of the part it kept.
+* The book is the movements the **branch** wrote. The `aporte` and the `recaudacion` a closure writes are
+  the acta's own facts — the contribution of the Almacén and the money it takes, already stated by
+  `contributed_cash` and `taken_cash` — so they are never listed here and never enter this expectation:
+  counting them as well would count that money twice (S5). The administrator reads those inside the
+  settlement (S10).
 
 ## Proposal (offer to the branch)
 
@@ -483,7 +647,7 @@ totals and the commission and the warehouse's round is added to the history:
 
 ```json
 {"id":1,"status":"proposed","commission_rate_percent":"10.00",
- "opening_cash":"100.00","cash_sales":"96000.00","expected_cash":"96100.00",
+ "opening_cash":"100.00","cash_sales":"96000.00","cash_effective":"0.00","expected_cash":"96100.00",
  "counted_cash":"96000.00","cash_difference":"-100.00","contributed_cash":"0.00",
  "closing_cash":"6000.00","taken_cash":"90000.00","sales_total":"96000.00",
  "commission_amount":"9600.00","card_total":"0.00","transfer_total":"0.00","qr_total":"0.00",
@@ -629,6 +793,7 @@ Every route of this contract answers the whole settlement, with exactly these ke
 | `commission_rate_percent` | The frozen rate; `null` while the settlement is `open` |
 | `opening_cash` | The fund inherited from the previous closure (`"0.00"` for the first) |
 | `cash_sales`, `cash_expenses` | The cash the branch collected and the expenses it recorded in the period: derived from the ledgers while the settlement is `open`, frozen from the proposal on |
+| `cash_effective` | The signed effect of the movements the branch wrote in the window: derived on every read, see above. It is the term `expected_cash` is built from |
 | `expected_cash` | Derived, see above |
 | `counted_cash`, `cash_difference` | What was counted and its sign against the expected drawer; `null` while uncounted |
 | `contributed_cash`, `closing_cash`, `taken_cash` | The contribution, the fund left behind and what the warehouse takes; see above |
@@ -641,7 +806,7 @@ Every route of this contract answers the whole settlement, with exactly these ke
 | `opened_by_account_id` | The warehouse account that opened it |
 | `count_lines` | The sheet, ordered by `variant_id`, with `expected_quantity` and the `counted_quantity` the opener seeded from it, which is the warehouse's own number where it disagreed; `null` only on a sheet written before that seeding |
 | `material_lines` | The third account: what the period bought of every used model and every scrap material, what the warehouse counted, the difference and the quantity that goes to the warehouse; ordered by model for the used lines and by material id for the scrap ones, the used ones first. See [the third account](#the-third-account-materials) |
-| `expenses` | The expenses of the branch inside this settlement's own window, in the order they were recorded |
+| `expenses` | The expenses of the branch inside this settlement's own window, in the order they were recorded, with the corrections of those expenses among them |
 | `rounds` | The proposal history, oldest first |
 | `corrections` | The corrections of the closed settlement, oldest first: the accepted ones with the deltas they applied and the pending one, if any, with its status |
 
@@ -652,9 +817,10 @@ without a second read. Each `material_lines` entry carries `kind`, its key — `
 quantity as decimal text: whole units for a used line and kilograms with exactly three decimals for
 a scrap one, which is what its `unit` states. The counted quantity, the difference and the delivery
 are `null` together, and only while the line is uncounted. Each `expenses` entry carries `id`,
-`branch_location_id`, `amount`,
-`description`, `occurred_at` and `created_by_account_id`, which is exactly the shape the recording
-route answers, so the branch reads its own expense the same way in both places. Each `rounds`
+`branch_location_id`, `kind`, `amount`, `description`, `occurred_at`, `created_by_account_id` and
+`corrects_id`, which is exactly the shape the recording route answers, so the branch reads its own
+expense the same way in both places; `kind` is `gasto` or `correccion`, and `corrects_id` is the
+movement a correction answers and `null` on every pay-out, always published. Each `rounds`
 entry carries `id`, `round` (the database's own sequence), `offer`, `proposed_by_account_id`,
 `proposed_at`, `decision` (`""` while pending, `accepted` or `rejected`), `decision_reason`,
 `decided_by_account_id` and `decided_at`; a decided round states who answered it and when, and a
@@ -699,13 +865,13 @@ GET /api/closings?branch_location_id=2&page=1&page_size=25
   retired one is `409 branch_retired`, exactly like an opening.
 
 ```json
-// abbreviated: every row carries all 36 keys of the settlement document
+// abbreviated: every row carries all 37 keys of the settlement document
 {"page":1,"page_size":25,"total_closings":2,
  "closings":[
   {"id":2,"branch_location_id":2,"branch_name":"Sucursal A","status":"open",
    "period_start":"2026-03-23T18:30:00Z","cut_at":"2026-04-23T18:30:00Z","closed_at":null,
    "commission_rate_percent":null,"opening_cash":"100.00","cash_sales":"40.00",
-   "cash_expenses":"10.00","expected_cash":"130.00","counted_cash":null,
+   "cash_expenses":"10.00","cash_effective":"-10.00","expected_cash":"130.00","counted_cash":null,
    "cash_difference":null,"sales_total":"40.00","commission_amount":"5.00",
    "card_total":"0.00","transfer_total":"0.00","qr_total":"0.00","closing_cash":null,
    "taken_cash":null,"count_lines":[],"rounds":[],"expenses":[],"corrections":[]},
@@ -744,7 +910,8 @@ about instead of a generic code.
 
 | Status | Code | Companion key | Meaning |
 |---|---|---|---|
-| 400 | `invalid_request` | — | Malformed body or framing, an unknown or duplicate key, a non-canonical amount, percentage, id, branch or page, an inadmissible query, a query string outside the history, or a body above 32 KiB |
+| 400 | `invalid_request` | — | Malformed body or framing, an unknown or duplicate key, a non-canonical amount, percentage, id, branch, page or instant, an inadmissible query, a query string outside the history and the book of the drawer, a window that ends before it starts, or a body above 32 KiB |
+| 400 | `correction_target_invalid` | — | A correction of the drawer names a movement it may not answer: an unknown one, one of another branch, another correction, the transfer of a settlement or a movement of a period a closure already signed (LC030) |
 | 401 | `unauthenticated` | — | No session |
 | 403 | `forbidden` | — | The caller is not the actor of this operation (branch on a warehouse route, warehouse on an expense, warehouse or another branch on a decision) |
 | 404 | `not_found` | — | No such settlement for this caller, no setting for that branch, or an aliased path |
@@ -768,6 +935,7 @@ about instead of a generic code.
 | 409 | `correction_payload` | — | The payload is not a correction this domain applies: a value of the wrong shape or a variant the settlement never counted |
 | 409 | `correction_fund_started` | — | The fund of a settlement is corrected before its next period starts |
 | 409 | `correction_journal` | — | A delta was journalled outside the acceptance of its own correction |
+| 409 | `correction_exceeds` | — | The corrections of one movement of the drawer would exceed the amount that movement stated (LC031) |
 | 503 | `service_unavailable` | — | Pool, database, or any unmapped failure |
 
 Failures never leak driver, SQL or configuration details: only the database's own rejection is
@@ -812,6 +980,8 @@ stable SQLSTATEs:
 | `LC021` | The payload is not a correction this domain applies | 409 `correction_payload` |
 | `LC022` | The fund of a settlement is corrected before the next period starts | 409 `correction_fund_started` |
 | `LC023` | A correction effect is written by the acceptance of its own correction | 409 `correction_journal` |
+| `LC030` | A correction of the drawer names a movement it may not answer: an unknown one, one of another branch, another correction, the transfer of a settlement, or a movement of a period a closure already signed | 400 `correction_target_invalid` |
+| `LC031` | The corrections of one movement of the drawer never exceed the amount that movement stated | 409 `correction_exceeds` |
 | `LC024` | Location 1 is the warehouse: an expense belongs to a branch | `403 forbidden` from the expense route, 503 `service_unavailable` elsewhere |
 
 One live settlement per branch is a unique index, reported as `409 settlement_live`; a
@@ -834,12 +1004,10 @@ rewrites or refreezes anything.
 
 ## Not served yet
 
-The corrective **counter-movement of a recorded expense** (S12: an expense is never edited nor
-deleted, a wrong one is corrected by its opposite) has no route here: the ledger admits no
-inverting movement of a `gasto` today, exactly as it admits no edit and no deletion of one. What
-this contract does guarantee is the immutable side — a recorded expense is never rewritten and
-never removed — and the reversal belongs to the corrections contract above, which is the only one
-allowed to append movement to a period that is already settled.
+The screen of the operational drawer (`#/caja`) is not part of this contract: it is the frontend
+half of the vertical, and every route above is already what it needs. Nothing of the drawer's book
+is left unwritten or unread here: the branch records the three kinds of its period, corrects a wrong
+row with its compensating movement, and reads the book of any window with its expectation.
 
 ## Wiring
 

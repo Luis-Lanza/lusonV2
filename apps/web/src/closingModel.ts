@@ -142,6 +142,13 @@ export interface Closing {
   readonly opening_cash_cents: bigint;
   readonly cash_sales_cents: bigint;
   readonly cash_expenses_cents: bigint;
+  /**
+   * The signed effect of every movement the branch wrote inside this window — its aportes, its
+   * recaudaciones, its gastos and the corrections of them — as the server publishes it (S4, S13). It is
+   * the third term of the drawer's expectation, so this screen adds it instead of subtracting the net
+   * expense a second time.
+   */
+  readonly cash_effective_cents: bigint;
   readonly counted_cash_cents: bigint | null;
   readonly contributed_cash_cents: bigint;
   readonly closing_cash_cents: bigint | null;
@@ -280,6 +287,8 @@ export interface ClosingRail {
   readonly opening_cents: bigint;
   readonly cash_sales_cents: bigint;
   readonly cash_expenses_cents: bigint;
+  /** The signed effect of the window's movements: the third term of the expectation (S4, S13). */
+  readonly cash_effective_cents: bigint;
   readonly expected_cents: bigint;
   readonly counted_cents: bigint | null;
   readonly difference_cents: bigint | null;
@@ -294,10 +303,15 @@ export interface ClosingRail {
   readonly qr_cents: bigint;
 }
 
-/** `expected = opening + cash sales − cash expenses`, computed once, over the settled facts. */
+/**
+ * `expected = opening + cash sales + the signed effect of the window`: the server's own rule, applied
+ * here to the numbers it published and to nothing else. The net `cash_expenses` of the document is
+ * already one term of that effect — the acta's expense is what the branch paid, corrections included —
+ * so it is reported beside the drawer and never subtracted a second time (S4, S13).
+ */
 export function closingRail(closing: Closing): ClosingRail {
   const expected_cents = closing.opening_cash_cents + closing.cash_sales_cents
-    - closing.cash_expenses_cents;
+    + closing.cash_effective_cents;
   const difference_cents = closing.counted_cash_cents === null
     ? null : closing.counted_cash_cents - expected_cents;
   const taken_cents = closing.counted_cash_cents === null || closing.closing_cash_cents === null
@@ -306,6 +320,7 @@ export function closingRail(closing: Closing): ClosingRail {
     opening_cents: closing.opening_cash_cents,
     cash_sales_cents: closing.cash_sales_cents,
     cash_expenses_cents: closing.cash_expenses_cents,
+    cash_effective_cents: closing.cash_effective_cents,
     expected_cents,
     counted_cents: closing.counted_cash_cents,
     difference_cents,
@@ -1545,16 +1560,22 @@ export function closingOfferChanges(closing: Closing,
 }
 
 /**
- * The drawer of the offer: the inherited fund with the offer's own cash facts compute the
- * expected drawer, the difference and what the warehouse takes. The commission is reported
- * beside them and is inside none of those identities (S9).
+ * The drawer of the offer: the inherited fund with the offer's own cash sales and the signed effect the
+ * document published for the window — the same rule the document's own rail applies — produce the
+ * expected drawer, the difference and what the warehouse takes. The offer's window is the document's
+ * window, because the closure froze both from the same proposal, so its effect is the document's; the
+ * acceptance still compares the offer's cash facts with the frozen ones, so a drifted offer is refused
+ * instead of described. The commission is reported beside them and is inside none of those identities
+ * (S9).
  */
 export function closingOfferRail(closing: Closing, offer: ClosingOffer): ClosingRail {
-  const expected_cents = closing.opening_cash_cents + offer.cash_sales_cents - offer.cash_expenses_cents;
+  const expected_cents = closing.opening_cash_cents + offer.cash_sales_cents
+    + closing.cash_effective_cents;
   return Object.freeze({
     opening_cents: closing.opening_cash_cents,
     cash_sales_cents: offer.cash_sales_cents,
     cash_expenses_cents: offer.cash_expenses_cents,
+    cash_effective_cents: closing.cash_effective_cents,
     expected_cents,
     counted_cents: offer.counted_cash_cents,
     difference_cents: offer.counted_cash_cents - expected_cents,
@@ -1609,6 +1630,10 @@ export function closingAcceptance(closing: Closing): ClosingAcceptance | null {
     || rail.difference_cents !== published.difference_cents
     || rail.taken_cents !== published.taken_cents
     || rail.commission_cents !== published.commission_cents
+    // The offer's cash facts are the ones the document froze: they are compared as the published numbers
+    // they are, never through a formula of this screen.
+    || round.offer.cash_sales_cents !== closing.cash_sales_cents
+    || round.offer.cash_expenses_cents !== closing.cash_expenses_cents
     || envelopeDrifted
     || !sameOfferLines(round.offer.count_lines, closing.count_lines)) {
     throw new Error(closingAcceptanceMismatchMessage);

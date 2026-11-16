@@ -665,13 +665,21 @@ type Correction struct {
 // approval; it is never attached to a settlement by the caller, because the settlement that
 // covers it is the one whose window contains its instant. A recorded expense is immutable:
 // a wrong one is corrected by its opposite movement, never edited or deleted.
+//
+// The list is the ledger the total was computed from, so it states the correction of an expense
+// beside the expense it answers (S13): Kind is the kind the row states -- 'gasto' or the
+// 'correccion' that answers one -- and CorrectsID is the movement a correction names, nil on the
+// expense itself (S6). Amount stays the positive amount the ledger stores: the direction of a row
+// is the ledger view's own reading and never a sign this document invents.
 type Expense struct {
 	ID                 int64     `json:"id"`
 	BranchID           int64     `json:"branch_location_id"`
+	Kind               string    `json:"kind"`
 	Amount             Money     `json:"amount"`
 	Description        string    `json:"description"`
 	OccurredAt         time.Time `json:"occurred_at"`
 	CreatedByAccountID int64     `json:"created_by_account_id"`
+	CorrectsID         *int64    `json:"corrects_id"`
 }
 
 // ProposalCountLine is one line of the count sheet as the branch reads it in the offer.
@@ -748,8 +756,16 @@ type Closing struct {
 	// happened, read from the cash ledger over the same window. The proposal writes both and
 	// the closure freezes them; before it, both are derived from that same window, so the
 	// warehouse never counts against a zero (S8, S12).
-	CashSales         Money  `json:"cash_sales"`
-	CashExpenses      Money  `json:"cash_expenses"`
+	CashSales    Money `json:"cash_sales"`
+	CashExpenses Money `json:"cash_expenses"`
+	// CashEffective is the signed effect of every movement the branch wrote inside this window -- its
+	// aportes, its recaudaciones, its gastos and the corrections of them -- read from the same ledger
+	// view the book reads (S4, S13). It is derived on read and never stored: the window of a settled
+	// period is immutable, so the number a closure settled with is also the number every later read
+	// states. It is the third term of the expectation and it is not published by the document's DTO in
+	// so many words for the acta (the DTO publishes `cash_effective`); it is what lets the HTTP
+	// revalidation call the one rule instead of a second arithmetic of the expenses.
+	CashEffective     Signed `json:"-"`
 	SalesTotal        Money  `json:"sales_total"`
 	CommissionAmount  Money  `json:"commission_amount"`
 	CardTotal         Money  `json:"card_total"`
@@ -760,11 +776,12 @@ type Closing struct {
 	ClosingCash       *Money `json:"closing_cash"`
 	Observation       string `json:"observation"`
 	OpenedByAccountID int64  `json:"opened_by_account_id"`
-	// ExpectedCash is opening cash plus the cash sales of the period minus its cash
-	// expenses; CashDifference is the counted cash against it, and TakenCash is what the
-	// warehouse takes from the drawer: counted plus contributed minus the fund left
-	// behind (S8, S10). They are derived on read, so they can never disagree with the
-	// facts that produce them.
+	// ExpectedCash is the drawer's one rule over the window: opening cash plus the cash sales of the
+	// period plus the signed effect of the movements the branch wrote in it; CashDifference is the
+	// counted cash against it, and TakenCash is what the warehouse takes from the drawer: counted plus
+	// contributed minus the fund left behind (S8, S10). They are derived on read, so they can never
+	// disagree with the facts that produce them, and the acta's net `CashExpenses` is already one term
+	// of the effect and is never subtracted a second time (S4, S13).
 	ExpectedCash   Signed      `json:"expected_cash"`
 	CashDifference *Signed     `json:"cash_difference"`
 	TakenCash      *Signed     `json:"taken_cash"`

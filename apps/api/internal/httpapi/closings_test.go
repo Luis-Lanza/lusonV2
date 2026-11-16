@@ -154,6 +154,12 @@ func TestClosingRoutes(t *testing.T) {
 		{"GET", "/api/closings/1/decision", "POST", 405, "method_not_allowed"},
 		{"POST", "/api/closings/expenses", "", 401, "unauthenticated"},
 		{"GET", "/api/closings/expenses", "POST", 405, "method_not_allowed"},
+		{"POST", "/api/closings/cash-movements", "", 401, "unauthenticated"},
+		{"GET", "/api/closings/cash-movements", "POST", 405, "method_not_allowed"},
+		{"POST", "/api/closings/cash-corrections", "", 401, "unauthenticated"},
+		{"GET", "/api/closings/cash-corrections", "POST", 405, "method_not_allowed"},
+		{"GET", "/api/closings/cash-ledger", "", 401, "unauthenticated"},
+		{"POST", "/api/closings/cash-ledger", "GET", 405, "method_not_allowed"},
 		{"POST", "/api/closings/1/corrections", "", 401, "unauthenticated"},
 		{"GET", "/api/closings/1/corrections", "POST", 405, "method_not_allowed"},
 		{"POST", "/api/closings/corrections/1/decision", "", 401, "unauthenticated"},
@@ -177,7 +183,9 @@ func TestClosingRoutes(t *testing.T) {
 		"/api/closings/branches/2", "/api/closings/branches/2/commission/3",
 		"/api/closings/1/corrections/2", "/api/closings/1/Corrections",
 		"/api/closings/corrections/1", "/api/closings/corrections/1/decisions",
-		"/api/closings/corrections/1/decision/2",
+		"/api/closings/corrections/1/decision/2", "/api/closings/cash-movements/2",
+		"/api/closings/cash-corrections/2", "/api/closings/cash-ledger/2",
+		"/api/closings/cash-ledger/",
 	} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest("GET", target, nil))
@@ -430,7 +438,7 @@ func closingValue() closings.Closing {
 		ID: 1, BranchID: 2, BranchName: "Sucursal A", Status: closings.StatusClosed,
 		PeriodStart: time.Date(2026, 2, 23, 18, 0, 0, 0, time.UTC), CutAt: closed,
 		ClosedAt: &closed, CommissionRatePercent: &rate, OpeningCash: "0.00",
-		CashSales: "96000.00", CashExpenses: "0.00", SalesTotal: "96000.00",
+		CashSales: "96000.00", CashExpenses: "0.00", CashEffective: "0.00", SalesTotal: "96000.00",
 		CommissionAmount: "9600.00", CardTotal: "0.00", TransferTotal: "0.00", QRTotal: "0.00",
 		CountedCash: &counted, ContributedCash: "0.00", ClosingCash: &fund,
 		OpenedByAccountID: 1, ExpectedCash: "96000.00", CashDifference: &difference,
@@ -546,17 +554,23 @@ func TestClosingRecord(t *testing.T) {
 			v.Status = closings.StatusOpen
 			v.ClosedAt = nil
 		}),
-		"no_rate":            mutate(func(v *closings.Closing) { v.CommissionRatePercent = nil }),
-		"rate_above":         mutate(func(v *closings.Closing) { rate := closings.Percent("101.00"); v.CommissionRatePercent = &rate }),
-		"rate_short":         mutate(func(v *closings.Closing) { rate := closings.Percent("10.0"); v.CommissionRatePercent = &rate }),
-		"money_digits":       mutate(func(v *closings.Closing) { v.CashSales = "96000" }),
-		"money_float":        mutate(func(v *closings.Closing) { v.CashSales = "96000.5" }),
-		"money_empty":        mutate(func(v *closings.Closing) { v.QRTotal = "" }),
-		"expected_stale":     mutate(func(v *closings.Closing) { signed := closings.Signed("1.00"); v.ExpectedCash = signed }),
-		"difference_stale":   mutate(func(v *closings.Closing) { signed := closings.Signed("1.00"); v.CashDifference = &signed }),
-		"taken_stale":        mutate(func(v *closings.Closing) { signed := closings.Signed("1.00"); v.TakenCash = &signed }),
-		"difference_lost":    mutate(func(v *closings.Closing) { v.CashDifference = nil }),
-		"taken_without_fund": mutate(func(v *closings.Closing) { v.ClosingCash = nil }),
+		"no_rate":        mutate(func(v *closings.Closing) { v.CommissionRatePercent = nil }),
+		"rate_above":     mutate(func(v *closings.Closing) { rate := closings.Percent("101.00"); v.CommissionRatePercent = &rate }),
+		"rate_short":     mutate(func(v *closings.Closing) { rate := closings.Percent("10.0"); v.CommissionRatePercent = &rate }),
+		"money_digits":   mutate(func(v *closings.Closing) { v.CashSales = "96000" }),
+		"money_float":    mutate(func(v *closings.Closing) { v.CashSales = "96000.5" }),
+		"money_empty":    mutate(func(v *closings.Closing) { v.QRTotal = "" }),
+		"expected_stale": mutate(func(v *closings.Closing) { signed := closings.Signed("1.00"); v.ExpectedCash = signed }),
+		"effective_stale": mutate(func(v *closings.Closing) {
+			// The signed effect of the window is what the expectation is built from: an effect that does not
+			// produce the published expectation is a number this read could not have written (S4, S13).
+			v.CashEffective = "1.00"
+		}),
+		"effective_unreadable": mutate(func(v *closings.Closing) { v.CashEffective = "" }),
+		"difference_stale":     mutate(func(v *closings.Closing) { signed := closings.Signed("1.00"); v.CashDifference = &signed }),
+		"taken_stale":          mutate(func(v *closings.Closing) { signed := closings.Signed("1.00"); v.TakenCash = &signed }),
+		"difference_lost":      mutate(func(v *closings.Closing) { v.CashDifference = nil }),
+		"taken_without_fund":   mutate(func(v *closings.Closing) { v.ClosingCash = nil }),
 		// The purchase envelope follows the same discipline: every derived number it publishes is
 		// rederived here, and a count without its difference (or a difference without its count) is a
 		// shape this domain never wrote.
@@ -619,22 +633,42 @@ func TestClosingRecord(t *testing.T) {
 		}
 	}
 
-	// A settlement publishes the expenses of its own window with their amount and description, and
-	// only a canonical list of its own branch is ever described.
+	// A settlement publishes the expenses of its own window with their kind, amount and description,
+	// and only a canonical list of its own branch is ever described. The row states the keys the
+	// screen's decoder reads, the reference included, because the acta's list is the ledger its total
+	// was computed from (S6, S13).
 	withExpenses := closingValue()
 	withExpenses.Expenses = []closings.Expense{
-		{ID: 9, BranchID: 2, Amount: "45.50", Description: "Flete",
+		{ID: 9, BranchID: 2, Kind: "gasto", Amount: "45.50", Description: "Flete",
 			OccurredAt: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC), CreatedByAccountID: 2},
-		{ID: 10, BranchID: 2, Amount: "10.00", Description: "Insumos",
+		{ID: 10, BranchID: 2, Kind: "gasto", Amount: "10.00", Description: "Insumos",
 			OccurredAt: time.Date(2026, 3, 2, 11, 0, 0, 0, time.UTC), CreatedByAccountID: 2},
 	}
 	described, err := closingRecord(withExpenses)
 	if err != nil || len(described.Expenses) != 2 || described.Expenses[0].ID != 9 ||
+		described.Expenses[0].Kind != "gasto" || described.Expenses[0].CorrectsID != nil ||
 		described.Expenses[0].Amount != "45.50" || described.Expenses[0].Description != "Flete" ||
 		described.Expenses[1].ID != 10 || described.Expenses[1].BranchLocationID != 2 ||
 		described.Expenses[0].OccurredAt != "2026-03-01T10:00:00Z" ||
 		described.Expenses[0].CreatedByAccountID != 2 {
 		t.Fatalf("the document must publish the expenses of its window: %+v %v", described, err)
+	}
+	// The correction of an expense is a row of the same list and names the movement it answers, so a
+	// reader sees the direction of every row of the ledger it is reading.
+	withCorrection := closingValue()
+	corrects := int64(9)
+	withCorrection.Expenses = []closings.Expense{
+		{ID: 9, BranchID: 2, Kind: "gasto", Amount: "45.50", Description: "Flete",
+			OccurredAt: time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC), CreatedByAccountID: 2},
+		{ID: 11, BranchID: 2, Kind: "correccion", Amount: "5.50", Description: "Flete mal cargado",
+			OccurredAt: time.Date(2026, 3, 1, 11, 0, 0, 0, time.UTC), CreatedByAccountID: 2,
+			CorrectsID: &corrects},
+	}
+	correctedList, err := closingRecord(withCorrection)
+	if err != nil || len(correctedList.Expenses) != 2 ||
+		correctedList.Expenses[1].Kind != "correccion" || correctedList.Expenses[1].CorrectsID == nil ||
+		*correctedList.Expenses[1].CorrectsID != 9 {
+		t.Fatalf("the acta must publish the correction of its own expense: %+v %v", correctedList, err)
 	}
 	expenseValue := func(change func(*closings.Expense)) closings.Closing {
 		value := withExpenses
@@ -650,6 +684,18 @@ func TestClosingRecord(t *testing.T) {
 		"expense_description":  expenseValue(func(e *closings.Expense) { e.Description = "  " }),
 		"expense_no_account":   expenseValue(func(e *closings.Expense) { e.CreatedByAccountID = 0 }),
 		"expense_no_moment":    expenseValue(func(e *closings.Expense) { e.OccurredAt = time.Time{} }),
+		"expense_no_kind":      expenseValue(func(e *closings.Expense) { e.Kind = "" }),
+		// The two shapes of this list are a pay-out and the correction that answers one: an aporte is
+		// money into the drawer, not an expense of the period, and a correction names exactly one
+		// movement.
+		"expense_other_kind": expenseValue(func(e *closings.Expense) { e.Kind = "aporte" }),
+		"expense_names_target": expenseValue(func(e *closings.Expense) {
+			target := int64(9)
+			e.CorrectsID = &target
+		}),
+		"correction_without_target": expenseValue(func(e *closings.Expense) {
+			e.Kind, e.CorrectsID = "correccion", nil
+		}),
 		"expense_order": func() closings.Closing {
 			value := withExpenses
 			value.Expenses = []closings.Expense{withExpenses.Expenses[1], withExpenses.Expenses[0]}
@@ -798,6 +844,11 @@ func TestClosingFailureMapping(t *testing.T) {
 			`{"error":"correction_fund_started"}`},
 		{"correction_journal", closings.ErrCorrectionJournal, 409,
 			`{"error":"correction_journal"}`},
+		// The two refusals of a correction of the branch's own book answer their own code and are
+		// named by the class they belong to (LC030, LC031).
+		{"correction_target_invalid", &closings.CorrectionTargetInvalid{}, 400,
+			`{"error":"correction_target_invalid"}`},
+		{"correction_exceeds", &closings.CorrectionExceeds{}, 409, `{"error":"correction_exceeds"}`},
 		{"branch_frozen", closings.ErrBranchFrozen, 409, `{"error":"branch_frozen"}`},
 		{"not_branch_expense", closings.ErrNotBranchExpense, 403, `{"error":"forbidden"}`},
 		{"invalid", closings.ErrInvalid, 400, `{"error":"invalid_request"}`},
@@ -1148,6 +1199,7 @@ type closingWireRecord struct {
 	OpeningCash           string  `json:"opening_cash"`
 	CashSales             string  `json:"cash_sales"`
 	CashExpenses          string  `json:"cash_expenses"`
+	CashEffective         string  `json:"cash_effective"`
 	ExpectedCash          string  `json:"expected_cash"`
 	CountedCash           *string `json:"counted_cash"`
 	CashDifference        *string `json:"cash_difference"`
@@ -1206,7 +1258,7 @@ type closingWireRecord struct {
 
 var closingWireKeys = []string{"id", "branch_location_id", "branch_name", "status", "period_start",
 	"cut_at", "closed_at", "commission_rate_percent", "opening_cash", "cash_sales", "cash_expenses",
-	"expected_cash", "counted_cash", "cash_difference", "contributed_cash", "closing_cash",
+	"cash_effective", "expected_cash", "counted_cash", "cash_difference", "contributed_cash", "closing_cash",
 	"taken_cash", "sales_total", "commission_amount", "card_total", "transfer_total", "qr_total",
 	"observation", "opened_by_account_id", "purchase_fund_opening", "purchases_total",
 	"purchases_cash", "purchase_fund_expected", "purchase_fund_counted", "purchase_fund_difference",
@@ -1241,6 +1293,24 @@ func closingWire(t *testing.T, w *httptest.ResponseRecorder, status int) closing
 		for _, key := range closingMaterialLineWireKeys {
 			if _, ok := line[key]; !ok {
 				t.Fatalf("material line key %q missing: %s", key, w.Body.String())
+			}
+		}
+	}
+	// Every row of the acta's expense list carries exactly the eight keys of its shape -- the kind the
+	// branch wrote and the movement a correction answers included -- so the acta publishes the same
+	// row the route of the expense answers and the screen's decoder never reads a shorter one (S6,
+	// S13).
+	var expenses []map[string]json.RawMessage
+	if json.Unmarshal(value["expenses"], &expenses) != nil {
+		t.Fatalf("expenses are not decodable: %s", w.Body.String())
+	}
+	for _, row := range expenses {
+		if len(row) != len(closingExpenseKeys) {
+			t.Fatalf("expense row whitelist changed: %s", w.Body.String())
+		}
+		for _, key := range closingExpenseKeys {
+			if _, ok := row[key]; !ok {
+				t.Fatalf("expense row key %q missing: %s", key, w.Body.String())
 			}
 		}
 	}
@@ -1883,16 +1953,24 @@ func TestClosingsRoundsAreNumbered(t *testing.T) {
 	}
 }
 
-// closingExpenseWireRecord is one recorded expense exactly as this contract publishes it: the same
-// shape inside the settlement document and in the answer of its own route.
+// closingExpenseWireRecord is one row of the branch's till exactly as this contract publishes it: the
+// same shape inside the settlement document and in the answer of its own route, with the kind of the
+// row and -- on a correction only -- the movement it answers (S6, S13).
 type closingExpenseWireRecord struct {
 	ID                 int64  `json:"id"`
 	BranchLocationID   int64  `json:"branch_location_id"`
+	Kind               string `json:"kind"`
 	Amount             string `json:"amount"`
 	Description        string `json:"description"`
 	OccurredAt         string `json:"occurred_at"`
 	CreatedByAccountID int64  `json:"created_by_account_id"`
+	CorrectsID         *int64 `json:"corrects_id"`
 }
+
+// closingExpenseKeys is the frozen shape of one published row of the till: the keys the screen's own
+// decoder admits, so a missing, renamed or extra key of a recorded expense is caught here.
+var closingExpenseKeys = []string{"id", "branch_location_id", "kind", "amount", "description",
+	"occurred_at", "created_by_account_id", "corrects_id"}
 
 // closingExpenseWire admits only the frozen expense shape: one object with exactly the published
 // keys, so a missing or renamed key of a recorded expense is caught.
@@ -1903,18 +1981,25 @@ func closingExpenseWire(t *testing.T, w *httptest.ResponseRecorder, status int) 
 		json.Unmarshal(w.Body.Bytes(), &value) != nil {
 		t.Fatalf("expense response mismatch: status=%d want=%d body=%s", w.Code, status, w.Body.String())
 	}
-	for _, key := range []string{"id", "branch_location_id", "amount", "description", "occurred_at",
-		"created_by_account_id"} {
+	for _, key := range closingExpenseKeys {
 		if _, ok := value[key]; !ok {
 			t.Fatalf("expense key %q missing: %s", key, w.Body.String())
 		}
 	}
-	if len(value) != 6 {
+	if len(value) != len(closingExpenseKeys) {
 		t.Fatalf("expense whitelist changed: %s", w.Body.String())
+	}
+	// The keys every row of this list states, with the null reference of a pay-out and the one a
+	// correction names: the shape the screen reads is the shape the server publishes (S6, S13).
+	if string(value["corrects_id"]) != "null" {
+		t.Fatalf("a recorded expense names no movement: %s", w.Body.String())
 	}
 	var record closingExpenseWireRecord
 	if json.Unmarshal(w.Body.Bytes(), &record) != nil {
 		t.Fatalf("expense is not decodable: %s", w.Body.String())
+	}
+	if record.Kind != "gasto" {
+		t.Fatalf("a recorded expense states its kind: %s", w.Body.String())
 	}
 	return record
 }
@@ -2039,6 +2124,46 @@ func TestClosingsExpenses(t *testing.T) {
 		earlier.CashDifference == nil || *earlier.CashDifference != "0.00" ||
 		len(earlier.Expenses) != 0 {
 		t.Fatalf("an expense must not move a settlement that does not cover it: %+v", earlier)
+	}
+}
+
+// TestClosingsExpenseRowShape pins the row the acta publishes for every movement of its own expense
+// ledger (S6, S13): the pay-out and the correction that answers it state the eight keys the screen's
+// decoder demands -- the kind and the reference included -- because a window whose gasto came out with
+// the six keys of the old shape was a document no client could read, and the amount it published was
+// not enough to say which direction the row moves.
+func TestClosingsExpenseRowShape(t *testing.T) {
+	f := closingFixture(t)
+	f.closeSettlement(t, 2,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo"}`)
+	var gasto closingCashMovementWire
+	closingCashWire(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"gasto","amount":"45.50","description":"Detergente"}`)), 201,
+		closingCashMovementKeys, &gasto)
+	var correction closingCashMovementWire
+	closingCashWire(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-corrections",
+		fmt.Sprintf(`{"corrects_id":%d,"amount":"5.50","description":"Detergente mal cargado"}`,
+			gasto.ID))), 201, closingCashCorrectionKeys, &correction)
+	id := f.open(t, 2)
+	document := closingWire(t, f.serve(t, f.request(2, "GET",
+		fmt.Sprintf("/api/closings/%d", id), "")), 200)
+	if len(document.Expenses) != 2 {
+		t.Fatalf("the acta lists the ledger of its window: %+v", document.Expenses)
+	}
+	paid, answered := document.Expenses[0], document.Expenses[1]
+	if paid.ID != gasto.ID || paid.Kind != "gasto" || paid.CorrectsID != nil ||
+		paid.Amount != "45.50" || paid.Description != "Detergente" {
+		t.Fatalf("the pay-out states its kind and no movement it answers: %+v", paid)
+	}
+	if answered.ID != correction.ID || answered.Kind != "correccion" ||
+		answered.CorrectsID == nil || *answered.CorrectsID != gasto.ID ||
+		answered.Amount != "5.50" {
+		t.Fatalf("the correction of an expense names the movement it answers: %+v", answered)
+	}
+	// The total beside the list is the net of the same two rows, so a reader of the acta reads one
+	// period and not two readings of it: 45.50 paid out and 5.50 returned is 40.00 of expense.
+	if document.CashExpenses != "40.00" {
+		t.Fatalf("the acta's expense is the net of the rows it lists: %q", document.CashExpenses)
 	}
 }
 
@@ -3277,4 +3402,553 @@ func TestClosingsMaterialSheetOfAPeriodWithoutPurchases(t *testing.T) {
 	f.refused(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/materials", id+1),
 		`{"lines":[{"kind":"used","model":"NS60ZL","counted_quantity":"8"}]}`), 404,
 		`{"error":"not_found"}`)
+}
+
+// closingCashMovementWire is one movement of the branch's drawer exactly as this contract publishes it
+// when it records it: the kind, the positive amount it stated, what for, the database's instant, the
+// account that wrote it and -- on a correction only -- the movement it answers.
+type closingCashMovementWire struct {
+	ID                 int64  `json:"id"`
+	BranchLocationID   int64  `json:"branch_location_id"`
+	Kind               string `json:"kind"`
+	Amount             string `json:"amount"`
+	Description        string `json:"description"`
+	OccurredAt         string `json:"occurred_at"`
+	CreatedByAccountID int64  `json:"created_by_account_id"`
+	CorrectsID         *int64 `json:"corrects_id"`
+}
+
+// closingCashLedgerWire is the book of the drawer exactly as the read publishes it, movements included.
+type closingCashLedgerWire struct {
+	Since     *string                    `json:"since"`
+	Until     *string                    `json:"until"`
+	Opening   string                     `json:"opening"`
+	Sales     string                     `json:"sales"`
+	Effective string                     `json:"effective"`
+	Expected  string                     `json:"expected"`
+	Truncated bool                       `json:"truncated"`
+	Movements []closingCashLedgerRowWire `json:"movements"`
+}
+
+// closingCashLedgerRowWire is one row of the book: the kind the branch recorded, the kind whose direction
+// it carries, the positive amount it stated and the signed effect the drawer moves by.
+type closingCashLedgerRowWire struct {
+	ID                 int64  `json:"id"`
+	Kind               string `json:"kind"`
+	EffectKind         string `json:"effect_kind"`
+	Amount             string `json:"amount"`
+	Effective          string `json:"effective"`
+	Description        string `json:"description"`
+	OccurredAt         string `json:"occurred_at"`
+	CreatedByAccountID int64  `json:"created_by_account_id"`
+	CorrectsID         *int64 `json:"corrects_id"`
+}
+
+// The published key sets of the drawer: a missing, renamed or extra key is a change of the contract.
+var (
+	closingCashMovementKeys = []string{"id", "branch_location_id", "kind", "amount", "description",
+		"occurred_at", "created_by_account_id"}
+	closingCashCorrectionKeys = append(append([]string{}, closingCashMovementKeys...), "corrects_id")
+	closingCashLedgerKeys     = []string{"since", "until", "opening", "sales", "effective", "expected",
+		"truncated", "movements"}
+	closingCashLedgerRowKeys = []string{"id", "kind", "effect_kind", "amount", "effective",
+		"description", "occurred_at", "created_by_account_id", "corrects_id"}
+)
+
+// closingCashWire admits an answer of the drawer: it states exactly the published keys and decodes into
+// the record the assertions read.
+func closingCashWire(t *testing.T, w *httptest.ResponseRecorder, status int, keys []string, record any) {
+	t.Helper()
+	var value map[string]json.RawMessage
+	if w.Code != status || w.Header().Get("Content-Type") != "application/json" ||
+		json.Unmarshal(w.Body.Bytes(), &value) != nil {
+		t.Fatalf("drawer response mismatch: status=%d want=%d body=%s", w.Code, status, w.Body.String())
+	}
+	if len(value) != len(keys) {
+		t.Fatalf("the answer states %d keys, want %d: %s", len(value), len(keys), w.Body.String())
+	}
+	for _, key := range keys {
+		if _, ok := value[key]; !ok {
+			t.Fatalf("drawer key %q missing: %s", key, w.Body.String())
+		}
+	}
+	if record != nil && json.Unmarshal(w.Body.Bytes(), record) != nil {
+		t.Fatalf("the answer is not decodable: %s", w.Body.String())
+	}
+}
+
+// closingCashMovementReply reads one recorded movement of the drawer: the answer of the route, its exact
+// key set and the record itself.
+func closingCashMovementReply(t *testing.T, w *httptest.ResponseRecorder, status int,
+	keys []string) closingCashMovementWire {
+	t.Helper()
+	var record closingCashMovementWire
+	closingCashWire(t, w, status, keys, &record)
+	return record
+}
+
+// TestClosingsCashMovementsOfTheDrawer pins S1, S2 and S12 over HTTP: the branch records the three kinds
+// of its own drawer from its own session, the warehouse records none, another branch writes only its own,
+// and a malformed body, a wrong method or a frozen branch writes nothing at all.
+func TestClosingsCashMovementsOfTheDrawer(t *testing.T) {
+	f := closingFixture(t)
+	// The bootstrap settlement of the branch closes leaving a fund of 100.00, so its drawer operates
+	// again and this period is a window of its own.
+	f.closeSettlement(t, 2,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo inicial"}`)
+
+	gasto := closingCashMovementReply(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"gasto","amount":"45.50","description":"Detergente"}`)), 201, closingCashMovementKeys)
+	if gasto.ID < 1 || gasto.BranchLocationID != 2 || gasto.Kind != "gasto" || gasto.Amount != "45.50" ||
+		gasto.Description != "Detergente" || gasto.CreatedByAccountID != 2 || gasto.OccurredAt == "" ||
+		gasto.CorrectsID != nil {
+		t.Fatalf("the recorded expense is not the published movement: %+v", gasto)
+	}
+	aporte := closingCashMovementReply(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"aporte","amount":"100.00","description":"Cambio para el cajón"}`)), 201, closingCashMovementKeys)
+	recaudacion := closingCashMovementReply(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"recaudacion","amount":"20.00","description":"Retiro entre rendiciones"}`)), 201,
+		closingCashMovementKeys)
+	// The three kinds are three rows of the same book, in the order the branch wrote them.
+	if aporte.ID <= gasto.ID || recaudacion.ID <= aporte.ID || aporte.Kind != "aporte" ||
+		recaudacion.Kind != "recaudacion" || aporte.Amount != "100.00" || recaudacion.Amount != "20.00" ||
+		aporte.BranchLocationID != 2 || recaudacion.BranchLocationID != 2 {
+		t.Fatalf("every kind is its own movement of this branch: %+v %+v", aporte, recaudacion)
+	}
+	// The warehouse has no drawer of its own, and another branch writes only its own.
+	f.refused(t, f.request(1, "POST", "/api/closings/cash-movements",
+		`{"kind":"gasto","amount":"10.00","description":"Flete del almacén"}`), 403, `{"error":"forbidden"}`)
+	other := closingCashMovementReply(t, f.serve(t, f.request(3, "POST", "/api/closings/cash-movements",
+		`{"kind":"aporte","amount":"5.00","description":"Cambio de la otra sucursal"}`)), 201,
+		closingCashMovementKeys)
+	if other.BranchLocationID != 3 || other.CreatedByAccountID != 3 {
+		t.Fatalf("a branch records only its own movements: %+v", other)
+	}
+	// A malformed body writes nothing anywhere: the branch is never in the body, the instant is never the
+	// caller's and the kind is never the correction that belongs to its own route (S6).
+	for _, body := range []string{
+		`{"kind":"gasto","amount":"1.00","description":"Agua","branch_location_id":3}`,
+		`{"kind":"gasto","amount":"1.00","description":"Agua","occurred_at":"2026-03-02T09:15:00Z"}`,
+		`{"kind":"gasto","amount":"1.00","description":"Agua","corrects_id":1}`,
+		`{"kind":"gasto","amount":"0.00","description":"Agua"}`,
+		`{"kind":"gasto","amount":"-1.00","description":"Agua"}`,
+		`{"kind":"gasto","amount":"1.5","description":"Agua"}`,
+		`{"kind":"gasto","amount":1.00,"description":"Agua"}`,
+		`{"kind":"gasto","amount":"1.00"}`,
+		`{"kind":"gasto","amount":"1.00","description":" Agua "}`,
+		`{"kind":"gasto","amount":"1.00","description":""}`,
+		`{"kind":"correccion","amount":"1.00","description":"Corrijo el flete"}`,
+		`{"kind":"devolucion","amount":"1.00","description":"Agua"}`,
+		`{"kind":"gasto","amount":"1.00","description":"` + strings.Repeat("ñ", closings.MaxDescription+1) + `"}`,
+		`{"kind":"gasto","amount":"1.00","description":"Agua"} {}`,
+	} {
+		f.refused(t, f.request(2, "POST", "/api/closings/cash-movements", body), 400,
+			`{"error":"invalid_request"}`)
+	}
+	// The route records and never reads.
+	w := f.serve(t, f.request(2, "GET", "/api/closings/cash-movements", ""))
+	closingFailureBody(t, w, 405, `{"error":"method_not_allowed"}`)
+	if allow := w.Header().Get("Allow"); allow != "POST" {
+		t.Fatalf("a POST-only route must advertise POST, got %q", allow)
+	}
+	// While a settlement holds the branch the drawer is frozen: the movement is refused by name and
+	// writes nothing (S9).
+	f.open(t, 2)
+	f.refused(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"aporte","amount":"5.00","description":"Cambio del cajón"}`), 409,
+		`{"error":"branch_frozen"}`)
+}
+
+// TestClosingsCashCorrectionsOfAMovement pins S6 over HTTP: a wrong movement is answered by its opposite
+// and never edited, the refusal of a target the book may not answer and of an amount above the corrected
+// one keep their own codes, and neither is an outage.
+func TestClosingsCashCorrectionsOfAMovement(t *testing.T) {
+	f := closingFixture(t)
+	f.closeSettlement(t, 2,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo inicial"}`)
+	gasto := closingCashMovementReply(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"gasto","amount":"50.00","description":"Flete"}`)), 201, closingCashMovementKeys)
+
+	correction := closingCashMovementReply(t, f.serve(t, f.request(2, "POST",
+		"/api/closings/cash-corrections", fmt.Sprintf(
+			`{"corrects_id":%d,"amount":"20.00","description":"Flete mal cargado"}`, gasto.ID))), 201,
+		closingCashCorrectionKeys)
+	if correction.ID <= gasto.ID || correction.Kind != "correccion" || correction.Amount != "20.00" ||
+		correction.BranchLocationID != 2 || correction.CreatedByAccountID != 2 ||
+		correction.CorrectsID == nil || *correction.CorrectsID != gasto.ID {
+		t.Fatalf("the correction is not the row this book states: %+v", correction)
+	}
+	// A correction of a correction is a target the book may not answer, exactly like another branch's
+	// movement (LC030): a request error that names the fact, never an outage.
+	f.refused(t, f.request(2, "POST", "/api/closings/cash-corrections", fmt.Sprintf(
+		`{"corrects_id":%d,"amount":"1.00","description":"Corrijo la corrección"}`, correction.ID)), 400,
+		`{"error":"correction_target_invalid"}`)
+	foreign := closingCashMovementReply(t, f.serve(t, f.request(3, "POST", "/api/closings/cash-movements",
+		`{"kind":"gasto","amount":"10.00","description":"Flete de la otra sucursal"}`)), 201,
+		closingCashMovementKeys)
+	f.refused(t, f.request(2, "POST", "/api/closings/cash-corrections", fmt.Sprintf(
+		`{"corrects_id":%d,"amount":"5.00","description":"No es un movimiento mío"}`, foreign.ID)), 400,
+		`{"error":"correction_target_invalid"}`)
+	f.refused(t, f.request(2, "POST", "/api/closings/cash-corrections",
+		`{"corrects_id":999999,"amount":"5.00","description":"Movimiento que no existe"}`), 400,
+		`{"error":"correction_target_invalid"}`)
+	// The tope is the whole amount the corrected movement stated: 30.00 of the 50.00 is still free and
+	// 30.01 is not (LC031).
+	f.refused(t, f.request(2, "POST", "/api/closings/cash-corrections", fmt.Sprintf(
+		`{"corrects_id":%d,"amount":"30.01","description":"Corrijo de más"}`, gasto.ID)), 409,
+		`{"error":"correction_exceeds"}`)
+	if w := f.serve(t, f.request(2, "POST", "/api/closings/cash-corrections", fmt.Sprintf(
+		`{"corrects_id":%d,"amount":"30.00","description":"El resto del flete"}`, gasto.ID))); w.Code != 201 {
+		t.Fatalf("the rest of the movement still fits under its amount: %d %s", w.Code, w.Body.String())
+	}
+	// A malformed body writes nothing: the target is a canonical id, the amount is canonical money and the
+	// description is the text the book admits.
+	for _, body := range []string{
+		fmt.Sprintf(`{"corrects_id":%d,"amount":"1.00","description":"Flete","kind":"gasto"}`, gasto.ID),
+		fmt.Sprintf(`{"corrects_id":%d,"amount":"0.00","description":"Flete"}`, gasto.ID),
+		fmt.Sprintf(`{"corrects_id":%d,"amount":"1.00"}`, gasto.ID),
+		fmt.Sprintf(`{"corrects_id":"%d","amount":"1.00","description":"Flete"}`, gasto.ID),
+		fmt.Sprintf(`{"corrects_id":0,"amount":"1.00","description":"Flete"}`),
+		`{"amount":"1.00","description":"Flete"}`,
+	} {
+		f.refused(t, f.request(2, "POST", "/api/closings/cash-corrections", body), 400,
+			`{"error":"invalid_request"}`)
+	}
+	// The warehouse writes no drawer and no correction of one.
+	f.refused(t, f.request(1, "POST", "/api/closings/cash-corrections", fmt.Sprintf(
+		`{"corrects_id":%d,"amount":"1.00","description":"Flete del almacén"}`, gasto.ID)), 403,
+		`{"error":"forbidden"}`)
+	w := f.serve(t, f.request(2, "GET", "/api/closings/cash-corrections", ""))
+	closingFailureBody(t, w, 405, `{"error":"method_not_allowed"}`)
+	if allow := w.Header().Get("Allow"); allow != "POST" {
+		t.Fatalf("a POST-only route must advertise POST, got %q", allow)
+	}
+	// A frozen branch corrects nothing: the drawer that would move is the one being counted (S9).
+	f.open(t, 2)
+	f.refused(t, f.request(2, "POST", "/api/closings/cash-corrections", fmt.Sprintf(
+		`{"corrects_id":%d,"amount":"1.00","description":"Flete"}`, gasto.ID)), 409,
+		`{"error":"branch_frozen"}`)
+}
+
+// TestClosingsCashLedgerRead pins S4, S8 and S11 over HTTP: the book of the window publishes the drawer it
+// inherited, the cash it collected, the signed effect of its movements and the expectation they produce,
+// with or without the optional bounds of the query, one signed decimal text per effect, and the movements
+// oldest first.
+func TestClosingsCashLedgerRead(t *testing.T) {
+	f := closingFixture(t)
+	closed := f.closeSettlement(t, 2,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo inicial"}`)
+	gasto := closingCashMovementReply(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"gasto","amount":"45.50","description":"Detergente"}`)), 201, closingCashMovementKeys)
+	correction := closingCashMovementReply(t, f.serve(t, f.request(2, "POST",
+		"/api/closings/cash-corrections", fmt.Sprintf(
+			`{"corrects_id":%d,"amount":"10.00","description":"Detergente mal cargado"}`, gasto.ID))), 201,
+		closingCashCorrectionKeys)
+	aporte := closingCashMovementReply(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"aporte","amount":"100.00","description":"Cambio para el cajón"}`)), 201, closingCashMovementKeys)
+	recaudacion := closingCashMovementReply(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"recaudacion","amount":"20.00","description":"Retiro entre rendiciones"}`)), 201,
+		closingCashMovementKeys)
+
+	// Without a query the window is the one the store states: the cut of the last closed settlement and no
+	// end, so the book inherits the fund that closure left.
+	read := f.serve(t, f.request(2, "GET", "/api/closings/cash-ledger", ""))
+	var book closingCashLedgerWire
+	closingCashWire(t, read, 200, closingCashLedgerKeys, &book)
+	if book.Since == nil || book.Until != nil || *book.Since != closed.CutAt {
+		t.Fatalf("the book must open at the cut of the last closure and close nowhere: %+v", book)
+	}
+	if book.Opening != "100.00" || book.Sales != "0.00" || book.Effective != "44.50" ||
+		book.Expected != "144.50" || book.Truncated {
+		t.Fatalf("the book must state the drawer and the signed effect of its window: %+v", book)
+	}
+	// Every movement is published oldest first with its own kind, its positive amount and the signed
+	// effect of that kind: out of the drawer for a gasto and a recaudacion, into it for an aporte, and the
+	// opposite of the movement it answers for a correction (S11, S13).
+	want := []struct {
+		row                      closingCashMovementWire
+		kind, effectKind, effect string
+	}{
+		{gasto, "gasto", "gasto", "-45.50"},
+		{correction, "correccion", "gasto", "10.00"},
+		{aporte, "aporte", "aporte", "100.00"},
+		{recaudacion, "recaudacion", "recaudacion", "-20.00"},
+	}
+	if len(book.Movements) != len(want) {
+		t.Fatalf("the book must list every movement of the window: %+v", book.Movements)
+	}
+	var shape struct {
+		Movements []map[string]json.RawMessage `json:"movements"`
+	}
+	if json.Unmarshal(read.Body.Bytes(), &shape) != nil || len(shape.Movements) != len(want) {
+		t.Fatalf("the movements are not decodable as their own key set: %s", read.Body.String())
+	}
+	for index, expected := range want {
+		row := book.Movements[index]
+		if len(shape.Movements[index]) != len(closingCashLedgerRowKeys) {
+			t.Fatalf("row %d states %d keys, want %d: %s", index, len(shape.Movements[index]),
+				len(closingCashLedgerRowKeys), read.Body.String())
+		}
+		for _, key := range closingCashLedgerRowKeys {
+			if _, ok := shape.Movements[index][key]; !ok {
+				t.Fatalf("row %d must state %q: %s", index, key, read.Body.String())
+			}
+		}
+		if row.ID != expected.row.ID || row.Kind != expected.kind ||
+			row.EffectKind != expected.effectKind || row.Effective != expected.effect ||
+			row.Amount != expected.row.Amount || row.Description != expected.row.Description ||
+			row.OccurredAt != expected.row.OccurredAt || row.CreatedByAccountID != 2 {
+			t.Fatalf("row %d is not %s with %s: %+v", index, expected.kind, expected.effect, row)
+		}
+		// The signed effect is a decimal text that parses with its sign, never a number, and the
+		// correction names the movement it answers while no other row names one.
+		cents, ok := closings.Signed(row.Effective).Cents()
+		if !ok || (cents < 0) != strings.HasPrefix(expected.effect, "-") {
+			t.Fatalf("row %d must carry the signed decimal text of its effect: %+v", index, row)
+		}
+		if (row.Kind == "correccion") != (row.CorrectsID != nil) {
+			t.Fatalf("row %d must name a target exactly when it corrects: %+v", index, row)
+		}
+		if row.Kind == "correccion" && *row.CorrectsID != gasto.ID {
+			t.Fatalf("the correction must name the movement it answers: %+v", row)
+		}
+	}
+
+	// An explicit window states the two instants it was asked for, inherits no drawer and publishes the
+	// movement of that window alone.
+	from := url.QueryEscape(*book.Since)
+	until := url.QueryEscape(time.Now().Add(time.Minute).UTC().Format(time.RFC3339))
+	var window closingCashLedgerWire
+	closingCashWire(t, f.serve(t, f.request(2, "GET",
+		"/api/closings/cash-ledger?from="+from+"&to="+until, "")), 200, closingCashLedgerKeys, &window)
+	if window.Since == nil || window.Until == nil || window.Opening != "0.00" ||
+		window.Sales != "0.00" || window.Effective != "44.50" || window.Expected != "44.50" ||
+		len(window.Movements) != len(want) {
+		t.Fatalf("an explicit window states its own bounds and no inherited drawer: %+v", window)
+	}
+	// A window that ends before the cut holds nothing: an empty book, never a zero that hides a history.
+	var empty closingCashLedgerWire
+	closingCashWire(t, f.serve(t, f.request(2, "GET",
+		"/api/closings/cash-ledger?to="+from, "")), 200, closingCashLedgerKeys, &empty)
+	if empty.Until == nil || len(empty.Movements) != 0 || empty.Opening != "100.00" ||
+		empty.Effective != "0.00" || empty.Expected != "100.00" {
+		t.Fatalf("a window before the cut holds nothing: %+v", empty)
+	}
+
+	// A query the contract does not state is a framing error: an inverted window, an unknown key -- the
+	// branch is the session's own and never a query value (S12) --, a duplicated bound and an instant that
+	// does not parse.
+	for _, query := range []string{
+		"?from=" + until + "&to=" + from,
+		"?branch_location_id=2",
+		"?from=" + from + "&from=" + from,
+		"?from=ayer",
+		"?from=",
+		"?",
+	} {
+		f.refused(t, f.request(2, "GET", "/api/closings/cash-ledger"+query, ""), 400,
+			`{"error":"invalid_request"}`)
+	}
+	// The warehouse has no drawer and the route reads only.
+	f.refused(t, f.request(1, "GET", "/api/closings/cash-ledger", ""), 403, `{"error":"forbidden"}`)
+	verb := f.serve(t, f.request(2, "POST", "/api/closings/cash-ledger", ""))
+	closingFailureBody(t, verb, 405, `{"error":"method_not_allowed"}`)
+	if allow := verb.Header().Get("Allow"); allow != "GET" {
+		t.Fatalf("a GET-only route must advertise GET, got %q", allow)
+	}
+}
+
+// closingCashLedgerOf asks for the book of one window that starts and ends on published instants, which
+// is how a screen reads a settled period: the two bounds are the ones the acta published, never an
+// instant this test invented.
+func closingCashLedgerOf(t *testing.T, f *closingHTTPFixture, from, to string) closingCashLedgerWire {
+	t.Helper()
+	var book closingCashLedgerWire
+	closingCashWire(t, f.serve(t, f.request(2, "GET", "/api/closings/cash-ledger?from="+
+		url.QueryEscape(from)+"&to="+url.QueryEscape(to), "")), 200, closingCashLedgerKeys, &book)
+	return book
+}
+
+// TestClosingMomentPublishesTheInstantTheColumnHolds pins the precision of every published instant:
+// the seconds are always stated and the fraction the column holds is published with them, so the text
+// re-reads as the same instant and a window bound taken from it describes the same half-open interval
+// the settlement settled (S4, S13).
+func TestClosingMomentPublishesTheInstantTheColumnHolds(t *testing.T) {
+	stamp := time.Date(2026, 3, 2, 9, 15, 0, 123456000, time.UTC)
+	text, ok := closingMoment(stamp)
+	if !ok || text != "2026-03-02T09:15:00.123456Z" {
+		t.Fatalf("a microsecond instant must be published as the column holds it: %q", text)
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil || !parsed.Equal(stamp) {
+		t.Fatalf("the published instant must re-read as the same one: %q %v", text, err)
+	}
+	// The whole second is still a whole second: the fraction is published when it exists and never as a
+	// padded zero the parser would have to guess about.
+	whole, ok := closingMoment(time.Date(2026, 3, 2, 9, 15, 0, 0, time.UTC))
+	if !ok || whole != "2026-03-02T09:15:00Z" {
+		t.Fatalf("a whole second must be published without a fraction: %q", whole)
+	}
+	// A zero instant states no moment at all, and an instant off UTC is published in UTC.
+	if _, ok := closingMoment(time.Time{}); ok {
+		t.Fatal("a zero instant is never published")
+	}
+	offset := time.Date(2026, 3, 2, 5, 15, 0, 500000000, time.FixedZone("BO", -4*60*60))
+	if rendered, ok := closingMoment(offset); !ok || rendered != "2026-03-02T09:15:00.5Z" {
+		t.Fatalf("an instant must be published in UTC: %q", rendered)
+	}
+}
+
+// TestClosingsCashLedgerOfASettledWindow pins the two facts that make the book of a settled window the
+// book of its acta (S4, S13): the window that starts at a closed settlement's own `period_start`
+// inherits the amount that settlement inherited, and every instant it publishes is the instant the
+// column holds, microseconds included, so the window a screen asks for with the published `period_start`
+// is the interval the closure settled instead of a truncated one around it.
+func TestClosingsCashLedgerOfASettledWindow(t *testing.T) {
+	f := closingFixture(t)
+	// The branch writes a contribution of its own period, which is the earliest activity of the branch:
+	// the first period starts at that row's own instant, stamped by the database.
+	aporte := closingCashMovementReply(t, f.serve(t, f.request(2, "POST", "/api/closings/cash-movements",
+		`{"kind":"aporte","amount":"30.00","description":"Cambio para el cajón"}`)), 201,
+		closingCashMovementKeys)
+	closed := f.closeSettlement(t, 2,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo inicial"}`)
+	// Every instant the document publishes is the instant the database holds: the seconds as the column
+	// states them and the fraction with them, so a bound taken from here is the same half-open window.
+	var storedStart, storedCut time.Time
+	if err := f.p.QueryRow(f.ctx, `SELECT period_start,cut_at FROM branch_closings WHERE id=$1`,
+		closed.ID).Scan(&storedStart, &storedCut); err != nil {
+		t.Fatalf("the window of the closure is not readable: %v", err)
+	}
+	if closed.PeriodStart != storedStart.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("the period starts at %s and was published as %s",
+			storedStart.UTC().Format(time.RFC3339Nano), closed.PeriodStart)
+	}
+	if closed.CutAt != storedCut.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("the cut is %s and was published as %s",
+			storedCut.UTC().Format(time.RFC3339Nano), closed.CutAt)
+	}
+	var stamped time.Time
+	if err := f.p.QueryRow(f.ctx, `SELECT occurred_at FROM branch_cash_movements WHERE id=$1`,
+		aporte.ID).Scan(&stamped); err != nil {
+		t.Fatalf("the movement of the fixture is not readable: %v", err)
+	}
+	if !stamped.Equal(storedStart) {
+		t.Fatalf("this probe is about the first activity: the period starts at %s and the contribution "+
+			"is stamped %s", storedStart, stamped)
+	}
+	// The book of the window the acta settled is that window: the same bounds, the amount the period
+	// inherited, and the contribution the acta counted.
+	first := closingCashLedgerOf(t, f, closed.PeriodStart, closed.CutAt)
+	if first.Since == nil || *first.Since != closed.PeriodStart || first.Until == nil ||
+		*first.Until != closed.CutAt || first.Opening != closed.OpeningCash {
+		t.Fatalf("the book of the settled window must state the window and the opening of its acta: %+v", first)
+	}
+	if len(first.Movements) != 1 || first.Movements[0].ID != aporte.ID || first.Effective != "30.00" {
+		t.Fatalf("the book of the settled window must list the movements of that window: %+v", first.Movements)
+	}
+	// The next period inherits what the closure left, and its book states it: a settled window closes
+	// with the acta of its own period instead of a drawer nobody can find.
+	second := f.closeSettlement(t, 2,
+		`{"counted_cash":"100.00","contributed_cash":"0.00","closing_cash":"100.00","observation":"sigue igual"}`)
+	if second.OpeningCash != "100.00" {
+		t.Fatalf("the second period inherits the fund the first closure left: %+v", second)
+	}
+	inherited := closingCashLedgerOf(t, f, second.PeriodStart, second.CutAt)
+	if inherited.Opening != second.OpeningCash {
+		t.Fatalf("the book of a settled window states opening %q while its acta inherited %q",
+			inherited.Opening, second.OpeningCash)
+	}
+	if inherited.Since == nil || *inherited.Since != second.PeriodStart || inherited.Until == nil ||
+		*inherited.Until != second.CutAt {
+		t.Fatalf("the book must echo the window it was asked for: %+v", inherited)
+	}
+	if len(inherited.Movements) != 0 {
+		t.Fatalf("the second period wrote nothing of its own: %+v", inherited.Movements)
+	}
+	// A window that merely starts somewhere else inherits nothing: the opening is stated for the window
+	// a settlement settled, and never invented for an interval the store does not know.
+	aside := closingCashLedgerOf(t, f, storedStart.Add(time.Microsecond).Format(time.RFC3339Nano),
+		second.CutAt)
+	if aside.Opening != "0.00" {
+		t.Fatalf("a window that is not a settled one inherits no drawer: %+v", aside)
+	}
+}
+
+// TestClosingsActaAndBookAreOneArithmetic pins S4 and S13 over the wire: the acta of a period and the
+// book of the same window state ONE expectation, because both are the drawer's one rule over the same
+// rows. The reproduced case is a drawer that inherited 100.00, paid out 45.50 and received 30.00: the
+// book expected 84.50 while the acta expected 54.50, and the shortage of the cut had no explanation.
+func TestClosingsActaAndBookAreOneArithmetic(t *testing.T) {
+	f := metricsFixture(t)
+	f.closeSettlement(t, 2,
+		`{"counted_cash":"0.00","contributed_cash":"100.00","closing_cash":"100.00","observation":"fondo"}`)
+	for _, body := range []string{
+		`{"kind":"gasto","amount":"45.50","description":"Detergente"}`,
+		`{"kind":"aporte","amount":"30.00","description":"Cambio para el cajón"}`,
+	} {
+		if w := f.serve(t, f.request(2, "POST", "/api/closings/cash-movements", body)); w.Code != 201 {
+			t.Fatalf("the movement of the period must be recorded: %d %s", w.Code, w.Body.String())
+		}
+	}
+	// The live book: 100.00 inherited, no sales, and the window's signed effect of −15.50.
+	var live closingCashLedgerWire
+	closingCashWire(t, f.serve(t, f.request(2, "GET", "/api/closings/cash-ledger", "")), 200,
+		closingCashLedgerKeys, &live)
+	if live.Opening != "100.00" || live.Sales != "0.00" || live.Effective != "-15.50" ||
+		live.Expected != "84.50" {
+		t.Fatalf("the book of the period must state the drawer's one rule: %+v", live)
+	}
+	// The same drawer as the metrics card of today states it: the two readings of one window are one
+	// number, never two (S4, S13).
+	answer := metricsAnswer(t, f.serve(t, f.request(2, "GET", "/api/metrics", "")), 200)
+	if answer.Today.Expected != live.Expected || answer.Today.Effective != live.Effective ||
+		answer.Today.Expenses != "45.50" {
+		t.Fatalf("the card and the book must state one drawer: card=%+v book=%+v", answer.Today, live)
+	}
+	// The acta of the very same period: the expectation is the window's rule, the expense is the net the
+	// branch paid, and the expense is not subtracted a second time.
+	id := f.open(t, 2)
+	document := closingWire(t, f.serve(t, f.request(2, "GET",
+		fmt.Sprintf("/api/closings/%d", id), "")), 200)
+	if document.ExpectedCash != live.Expected {
+		t.Fatalf("the acta expects %s and the book of the same window expects %s",
+			document.ExpectedCash, live.Expected)
+	}
+	if document.CashEffective != "-15.50" || document.CashExpenses != "45.50" ||
+		document.OpeningCash != "100.00" || document.CashSales != "0.00" {
+		t.Fatalf("the acta must publish the window's own terms: %+v", document)
+	}
+	if document.ExpectedCash != "84.50" {
+		t.Fatalf("the acta expects %s, want 84.50 (opening 100.00 + sales 0.00 + effect −15.50)",
+			document.ExpectedCash)
+	}
+	// The closure keeps the rule: what the warehouse takes still comes from the counted cash and the fund
+	// it leaves, and the acta's expectation does not change what it takes (S10).
+	f.countAll(t, id)
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/cash", id),
+		`{"counted_cash":"84.50","contributed_cash":"0.00","closing_cash":"84.50","observation":""}`)); w.Code != 200 {
+		t.Fatalf("the drawer must be drafted: %d %s", w.Code, w.Body.String())
+	}
+	if w := f.serve(t, f.request(1, "POST", fmt.Sprintf("/api/closings/%d/propose", id), "")); w.Code != 200 {
+		t.Fatalf("the settlement must be proposed: %d %s", w.Code, w.Body.String())
+	}
+	closed := closingWire(t, f.serve(t, f.request(2, "POST",
+		fmt.Sprintf("/api/closings/%d/decision", id), `{"decision":"accepted"}`)), 200)
+	if closed.ExpectedCash != "84.50" || closed.CashEffective != "-15.50" ||
+		closed.CashExpenses != "45.50" || closed.CashDifference == nil ||
+		*closed.CashDifference != "0.00" || closed.TakenCash == nil || *closed.TakenCash != "0.00" {
+		t.Fatalf("the closure must publish the drawer's one rule: %+v", closed)
+	}
+	// The book of the window the settled acta describes is that window: the same bounds, the same opening,
+	// the same effect and the same expectation, so the screen of a settled period closes with its acta.
+	window := closingCashLedgerOf(t, f.closingHTTPFixture, closed.PeriodStart, closed.CutAt)
+	if window.Opening != closed.OpeningCash || window.Expected != closed.ExpectedCash ||
+		window.Effective != closed.CashEffective || len(window.Movements) != 2 {
+		t.Fatalf("the book of the settled window must close with its acta: book=%+v acta=%+v",
+			window, closed)
+	}
+	if len(closed.Expenses) != 1 || closed.Expenses[0].Amount != "45.50" {
+		t.Fatalf("the acta lists the pay-out of its window: %+v", closed.Expenses)
+	}
 }

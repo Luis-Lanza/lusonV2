@@ -58,6 +58,7 @@ const closing = (overrides: Partial<Closing> = {}): Closing => Object.freeze({
   period_start: '2026-08-12T18:00:00Z', cut_at: '2026-09-12T18:30:00Z', closed_at: null,
   commission_rate_percent: null,
   opening_cash_cents: 80000n, cash_sales_cents: 643000n, cash_expenses_cents: 21500n,
+  cash_effective_cents: -21500n,
   counted_cash_cents: null, contributed_cash_cents: 0n, closing_cash_cents: null,
   sales_total_cents: 3248000n, commission_amount_cents: 146160n,
   card_total_cents: 324000n, transfer_total_cents: 118000n, qr_total_cents: 276000n,
@@ -70,6 +71,7 @@ const closing = (overrides: Partial<Closing> = {}): Closing => Object.freeze({
 /** The first settlement of a branch (S11): no inherited fund, no sales, an empty till. */
 const bootstrap = (overrides: Partial<Closing> = {}): Closing => closing({
   opening_cash_cents: 0n, cash_sales_cents: 0n, cash_expenses_cents: 0n,
+  cash_effective_cents: 0n,
   sales_total_cents: 0n, commission_amount_cents: 0n,
   card_total_cents: 0n, transfer_total_cents: 0n, qr_total_cents: 0n, ...overrides,
 });
@@ -167,11 +169,27 @@ describe('S9 the commission is reported beside the drawer and inside no cash ide
     const rail = closingRail(closing({ card_total_cents: 324000n, transfer_total_cents: 118000n,
       qr_total_cents: 276000n }));
     expect(rail.expected_cents).toBe(701500n);
-    expect(rail.expected_cents).toBe(rail.opening_cents + rail.cash_sales_cents - rail.cash_expenses_cents);
+    expect(rail.expected_cents).toBe(rail.opening_cents + rail.cash_sales_cents
+      + rail.cash_effective_cents);
     expect(rail.qr_cents).toBe(276000n);
     expect(rail.card_cents + rail.transfer_cents + rail.qr_cents).toBe(718000n);
     expect(rail.expected_cents).not.toBe(rail.opening_cents + rail.cash_sales_cents
-      - rail.cash_expenses_cents + rail.qr_cents);
+      + rail.cash_effective_cents + rail.qr_cents);
+  });
+
+  it('reads the published signed effect and never subtracts the net expense a second time (S4, S13)', () => {
+    // The reproduced drawer: 100.00 inherited, 45.50 paid out and 30.00 received, so the window's signed
+    // effect is −15.50 and the expectation is 84.50. The net expense of 45.50 is one term of that effect
+    // already, so subtracting it as well would state 54.50 and the book would expect 84.50: two numbers
+    // of one till (S13).
+    const rail = closingRail(closing({ opening_cash_cents: 10000n, cash_sales_cents: 0n,
+      cash_expenses_cents: 4550n, cash_effective_cents: -1550n }));
+    expect(rail.expected_cents).toBe(8450n);
+    expect(closingMoneyText(rail.expected_cents)).toBe('Bs 84,50');
+    expect(rail.expected_cents).not.toBe(rail.opening_cents + rail.cash_sales_cents
+      - rail.cash_expenses_cents);
+    // The expense the screen reports is still what the branch paid, not the net of the whole window.
+    expect(rail.cash_expenses_cents).toBe(4550n);
   });
 });
 
