@@ -2749,6 +2749,20 @@ func (e *env) purchase(t *testing.T, key, cash string) purchases.Document {
 	return document
 }
 
+// fundLoad writes one `aporte` of the branch's purchase fund: the money the warehouse loads into it
+// so the branch can buy. The fund of a branch is its book and nothing else (S5, S7), so a test whose
+// period spends from the fund states the load it spends instead of relying on a fund that is not
+// there. It is the ledger's own admission path -- an account of the branch, a positive amount and a
+// branch that is not frozen -- so the row is one the product could have written.
+func (e *env) fundLoad(t *testing.T, branch int, amount, description string) {
+	t.Helper()
+	if _, err := e.pool.Exec(e.ctx, `INSERT INTO branch_fund_movements(branch_location_id,kind,
+ amount,description,created_by_account_id) VALUES($1,'aporte',$2::numeric,$3,$4)`,
+		int16(branch), amount, description, identity(branch).AccountID); err != nil {
+		t.Fatalf("the load of %s into the fund of branch %d must be admitted: %v", amount, branch, err)
+	}
+}
+
 // TestPurchaseFundDerivesOpeningPurchasesAndDifference pins S1, S3, S5 and S11 at the store: the
 // envelope of one settlement opens with the amount the previous closure left in it, its purchases
 // are the documents of its own window net of their counter-documents, its expectation follows from
@@ -2931,8 +2945,11 @@ func TestPurchaseFundDerivesOpeningPurchasesAndDifference(t *testing.T) {
 // follows is larger than the inheritance. Both are read, never refused as an outage.
 func TestPurchaseFundKeepsTheSignOfANegativeNet(t *testing.T) {
 	e := fixture(t)
-	// The first settlement declares no envelope, so nothing caps what the second window spends.
+	// The first settlement declares no envelope, so the branch loads the fund it buys with: the book of
+	// the fund is the only money a purchase can spend (S5, S7), and a branch that loads nothing buys
+	// nothing.
 	e.closeFirstSettlement(t, "500.00")
+	e.fundLoad(t, 2, "120.50", "Carga de fondo para la compra del período")
 	bought := e.purchase(t, "closings-fund-negative-01", "120.50")
 	second, err := e.store.Open(e.ctx, warehouse(), 2)
 	if err != nil {
@@ -2981,6 +2998,275 @@ func TestPurchaseFundKeepsTheSignOfANegativeNet(t *testing.T) {
 		read.PurchaseFundOpening != "300.00" || read.PurchaseFundExpected != "420.50" {
 		t.Fatalf("the expectation must follow the signed purchases: %+v", read)
 	}
+}
+
+// fundBook is the one arithmetic of the purchase fund: the signed sum of `purchase_fund_ledger`, read
+// where it lives, so a test never computes the fund a second way.
+func (e *env) fundBook(t *testing.T, branch int) string {
+	t.Helper()
+	return e.text(t, `SELECT coalesce(sum(effective),0)::numeric(12,2)::text
+ FROM purchase_fund_ledger WHERE branch_location_id=$1`, branch)
+}
+
+// closeFundWindow opens, counts, proposes and closes one settlement of branch 2 with the stated
+// drawer and purchase fund, so a test of the fund states only the two amounts it is about.
+func (e *env) closeFundWindow(t *testing.T, counted, envelope string) closings.Closing {
+	t.Helper()
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	e.countAll(t, opened.ID)
+	zero, contribution, held := closings.Money("0.00"), closings.Money(counted),
+		closings.Money(envelope)
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID, closings.CashDraft{
+		CountedCash: &zero, ContributedCash: contribution, ClosingCash: &contribution,
+		PurchaseFundCounted: &held, PurchaseFundCash: &held, Observation: "fondo del período",
+	}); err != nil {
+		t.Fatalf("the fund of the period could not be drafted: %v", err)
+	}
+	if _, err := e.store.Propose(e.ctx, warehouse(), opened.ID); err != nil {
+		t.Fatalf("the period could not be proposed: %v", err)
+	}
+	closed, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, "")
+	if err != nil {
+		t.Fatalf("the branch must accept the period: %v", err)
+	}
+	return closed
+}
+
+// TestClosingSettlesTheFundThroughItsLedger proves S9 on a live database: the amount a settlement
+// leaves is a movement of the fund's book -- a `reposicion` of the difference against what the book
+// held, signed by the settlement's own opener -- and the balance after the closure is exactly that
+// amount. The acta publishes the book's sum, so the two numbers of the fund cannot differ.
+func TestClosingSettlesTheFundThroughItsLedger(t *testing.T) {
+	e := fixture(t)
+	// The warehouse loads the fund the branch operates with: a book is the only money a branch holds
+	// for purchases (S5, S7).
+	e.fundLoad(t, 2, "500.00", "Carga de fondo del período")
+	if before := e.fundBook(t, 2); before != "500.00" {
+		t.Fatalf("the load must be the fund's whole book, got %s", before)
+	}
+	// The settlement leaves 300.00 of the 500.00 the book holds.
+	closed := e.closeFundWindow(t, "500.00", "300.00")
+	var kind, amount, description string
+	var actor int
+	if err := e.pool.QueryRow(e.ctx, `SELECT kind,amount::text,description,created_by_account_id
+ FROM branch_fund_movements WHERE branch_location_id=2 AND kind='reposicion'`).
+		Scan(&kind, &amount, &description, &actor); err != nil {
+		t.Fatalf("the closure must write the fund it leaves: %v", err)
+	}
+	// The movement is the difference, not the stated amount: writing 300.00 would count the fund twice.
+	if kind != "reposicion" || amount != "-200.00" || actor != 1 {
+		t.Fatalf("the closure writes the difference signed by its own opener, got %s %s %d",
+			kind, amount, actor)
+	}
+	if !strings.Contains(description, "rendición") {
+		t.Fatalf("the movement must name the settlement it comes from, got %q", description)
+	}
+	// The balance after the closure is the amount the acta states, and both are the book's sum.
+	book := e.fundBook(t, 2)
+	if book != "300.00" {
+		t.Fatalf("the fund after the closure must be the amount it leaves, got %s", book)
+	}
+	if closed.PurchaseFundCash == nil || string(*closed.PurchaseFundCash) != book ||
+		closed.PurchaseFundCounted == nil || string(*closed.PurchaseFundCounted) != "300.00" {
+		t.Fatalf("the acta must publish the book it settled: %+v with the book at %s",
+			closed.PurchaseFundCash, book)
+	}
+	// The document of a later read states the same number: the closure is history and the book is one
+	// arithmetic, so nothing recomputes it.
+	again := mustRead(t, e, closed.ID)
+	if again.PurchaseFundCash == nil || string(*again.PurchaseFundCash) != book {
+		t.Fatalf("the acta must keep publishing the book it settled, got %+v", again.PurchaseFundCash)
+	}
+	// And the amount it leaves opens the next period, exactly as the drawer's fund does.
+	next, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the next period could not be opened: %v", err)
+	}
+	if opening := mustRead(t, e, next.ID).PurchaseFundOpening; string(opening) != book {
+		t.Fatalf("the fund left behind must open the next period, got %s want %s", opening, book)
+	}
+	t.Logf("051: the closure writes the fund it leaves and the book is the number")
+}
+
+// TestUnstatedFundPublishesTheBook proves S7 and the one arithmetic of S9 where the two can be told
+// apart: a settlement whose warehouse stated no amount leaves the column of 044 empty, and the acta
+// still publishes what the fund holds, because an unstated fund is zero -- the book's own sum -- and
+// not unknown. No movement is written to say it: the book already says it.
+func TestUnstatedFundPublishesTheBook(t *testing.T) {
+	e := fixture(t)
+	e.fundLoad(t, 2, "500.00", "Carga de fondo del período")
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	e.countAll(t, opened.ID)
+	zero, contribution := closings.Money("0.00"), closings.Money("500.00")
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), opened.ID, closings.CashDraft{
+		CountedCash: &zero, ContributedCash: contribution, ClosingCash: &contribution,
+		Observation: "el fondo no se declaró",
+	}); err != nil {
+		t.Fatalf("the drawer of the period could not be drafted: %v", err)
+	}
+	if _, err := e.store.Propose(e.ctx, warehouse(), opened.ID); err != nil {
+		t.Fatalf("the period could not be proposed: %v", err)
+	}
+	closed, err := e.store.Decide(e.ctx, identity(2), opened.ID, closings.DecisionAccepted, "")
+	if err != nil {
+		t.Fatalf("the branch must accept the period: %v", err)
+	}
+	// The column is empty, as the warehouse left it, and the acta publishes the book: 500.00.
+	if stated := e.text(t, `SELECT coalesce(purchase_fund_cash::text,'-')
+ FROM branch_closings WHERE id=$1`, closed.ID); stated != "-" {
+		t.Fatalf("an unstated fund must stay unstated in the column, got %q", stated)
+	}
+	if closed.PurchaseFundCash == nil || string(*closed.PurchaseFundCash) != "500.00" {
+		t.Fatalf("the acta of an unstated fund must publish the book, got %+v", closed.PurchaseFundCash)
+	}
+	if written := e.scalar(t, `SELECT count(*) FROM branch_fund_movements
+ WHERE branch_location_id=2 AND kind='reposicion'`); written != 0 {
+		t.Fatalf("an unstated fund writes no movement, got %d", written)
+	}
+	// The history row of the same settlement states the same number, from the same place.
+	if again := mustRead(t, e, closed.ID); again.PurchaseFundCash == nil ||
+		string(*again.PurchaseFundCash) != "500.00" {
+		t.Fatalf("a history row must publish the same book, got %+v", again.PurchaseFundCash)
+	}
+	t.Logf("051: an unstated fund is the book's sum and not an unknown")
+}
+
+// TestClosingStatesTheFundDownToZeroAndNeverBelow proves S6 at the closure: a settlement may leave
+// less than the book holds -- the warehouse takes the surplus back, which is a `reposicion` with the
+// sign of the difference -- and the fund follows to the stated amount, down to zero. A statement
+// below zero is refused by the column of the settlement itself, so no closure can drive the fund
+// negative.
+func TestClosingStatesTheFundDownToZeroAndNeverBelow(t *testing.T) {
+	e := fixture(t)
+	e.fundLoad(t, 2, "500.00", "Carga de fondo del período")
+	// The first settlement leaves 120.00: 380.00 go back with the warehouse.
+	first := e.closeFundWindow(t, "500.00", "120.00")
+	if book := e.fundBook(t, 2); book != "120.00" {
+		t.Fatalf("a statement below the book must be written, got %s", book)
+	}
+	if first.PurchaseFundCash == nil || string(*first.PurchaseFundCash) != "120.00" {
+		t.Fatalf("the acta must publish the amount the settlement leaves: %+v", first.PurchaseFundCash)
+	}
+	// The second settlement leaves nothing at all: the fund closes to zero and never below it.
+	second := e.closeFundWindow(t, "120.00", "0.00")
+	if book := e.fundBook(t, 2); book != "0.00" {
+		t.Fatalf("a settlement that leaves nothing closes the fund to zero, got %s", book)
+	}
+	if second.PurchaseFundCash == nil || string(*second.PurchaseFundCash) != "0.00" {
+		t.Fatalf("the acta of a closed fund states zero: %+v", second.PurchaseFundCash)
+	}
+	// The whole history of the book is read as a running balance: no instant of it is negative, which
+	// is the rule S6 states and the admission of the ledger enforces.
+	if negative := e.scalar(t, `SELECT count(*) FROM (SELECT sum(effective) OVER (ORDER BY id)
+   AS running FROM purchase_fund_ledger WHERE branch_location_id=2) history WHERE running < 0`); negative != 0 {
+		t.Fatalf("the fund of the branch must never read negative, got %d instants", negative)
+	}
+	// A statement below zero cannot even be stored: the settlement's own column of 044 refuses it, so
+	// the domain has no way to declare a fund that would take the book under zero.
+	live, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the live period could not be opened: %v", err)
+	}
+	_, err = e.pool.Exec(e.ctx, `UPDATE branch_closings SET purchase_fund_cash=-1.00 WHERE id=$1`, live.ID)
+	var database *pgconn.PgError
+	if !errors.As(err, &database) || database.Code != "23514" {
+		t.Fatalf("a negative fund statement must be refused by the column, got %v", err)
+	}
+	if book := e.fundBook(t, 2); book != "0.00" {
+		t.Fatalf("a refused statement must leave the book as it was, got %s", book)
+	}
+	t.Logf("051: the fund follows the statement down to zero and no statement can pass it")
+}
+
+// TestFundCorrectionAfterTheClosureAppendsItsMovement proves the append-only half of S9 and S5: the
+// fund a settlement settled is never rewritten. A correction states the surplus differently by
+// appending its own `correccion` against the `reposicion`, the balance follows the sum, the closed
+// acta keeps the number it settled and the next period inherits the corrected book.
+func TestFundCorrectionAfterTheClosureAppendsItsMovement(t *testing.T) {
+	e := fixture(t)
+	e.fundLoad(t, 2, "500.00", "Carga de fondo del período")
+	closed := e.closeFundWindow(t, "500.00", "300.00")
+	var reposicion int64
+	var amount string
+	if err := e.pool.QueryRow(e.ctx, `SELECT id,amount::text FROM branch_fund_movements
+ WHERE branch_location_id=2 AND kind='reposicion'`).Scan(&reposicion, &amount); err != nil {
+		t.Fatalf("the closure must write the fund it leaves: %v", err)
+	}
+	if amount != "-200.00" {
+		t.Fatalf("the closure writes the difference against the book, got %s", amount)
+	}
+	before := e.text(t, `SELECT coalesce(string_agg(kind||':'||amount,',' ORDER BY id),'')
+ FROM branch_fund_movements WHERE branch_location_id=2`)
+	// The branch corrects the surplus it took: 250.00 went back instead of 200.00, so the fund holds
+	// 50.00 less than the settlement stated. The movement answers the reposicion and the row it
+	// answers is left exactly as it was written.
+	if _, err := e.pool.Exec(e.ctx, `INSERT INTO branch_fund_movements(branch_location_id,kind,
+ amount,description,created_by_account_id,corrects_id)
+ VALUES(2,'correccion',50.00,'Corrección del fondo devuelto en la rendición',2,$1)`, reposicion); err != nil {
+		t.Fatalf("the branch must be able to correct the fund it settled: %v", err)
+	}
+	if book := e.fundBook(t, 2); book != "250.00" {
+		t.Fatalf("the balance must follow the correction, got %s", book)
+	}
+	// Append only: the closure's own movement is still there with the amount it stated.
+	if after := e.text(t, `SELECT coalesce(string_agg(kind||':'||amount,',' ORDER BY id),'')
+ FROM branch_fund_movements WHERE branch_location_id=2`); !strings.HasPrefix(after, before) ||
+		after == before {
+		t.Fatalf("a correction appends its movement and rewrites none: %q after %q", after, before)
+	}
+	// The closed acta is history: it keeps publishing the fund it settled, because that is the number
+	// the branch signed and the book at its own instant cannot change.
+	if acta := mustRead(t, e, closed.ID); acta.PurchaseFundCash == nil ||
+		string(*acta.PurchaseFundCash) != "300.00" {
+		t.Fatalf("the closed acta must keep the fund it settled, got %+v", acta.PurchaseFundCash)
+	}
+	// The correction is a fact of the period that follows and not a rewrite of the closed one: the new
+	// period opens with the fund the settlement left -- history does not move -- and its own window
+	// carries the corrected book.
+	next, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the next period could not be opened: %v", err)
+	}
+	read := mustRead(t, e, next.ID)
+	if read.PurchaseFundOpening != "300.00" || read.PurchasesCash != "0.00" ||
+		read.PurchaseFundExpected != "300.00" {
+		t.Fatalf("the new period must open with the fund the settlement left: %+v", read)
+	}
+	// The next closure states the fund the book holds, so its acta publishes the corrected number and
+	// no movement is needed to say it: the sum already reaches it.
+	e.countAll(t, next.ID)
+	zero, contribution, held := closings.Money("0.00"), closings.Money("300.00"),
+		closings.Money("250.00")
+	if _, err := e.store.SaveCash(e.ctx, warehouse(), next.ID, closings.CashDraft{
+		CountedCash: &zero, ContributedCash: contribution, ClosingCash: &contribution,
+		PurchaseFundCounted: &held, PurchaseFundCash: &held, Observation: "fondo corregido",
+	}); err != nil {
+		t.Fatalf("the fund of the next period could not be drafted: %v", err)
+	}
+	if _, err := e.store.Propose(e.ctx, warehouse(), next.ID); err != nil {
+		t.Fatalf("the next period could not be proposed: %v", err)
+	}
+	thereafter, err := e.store.Decide(e.ctx, identity(2), next.ID, closings.DecisionAccepted, "")
+	if err != nil {
+		t.Fatalf("the branch must accept the next period: %v", err)
+	}
+	if thereafter.PurchaseFundCash == nil || string(*thereafter.PurchaseFundCash) != "250.00" {
+		t.Fatalf("the next acta must publish the corrected book: %+v", thereafter.PurchaseFundCash)
+	}
+	if written := e.scalar(t, `SELECT count(*) FROM branch_fund_movements
+ WHERE branch_location_id=2 AND kind='reposicion'`); written != 1 {
+		t.Fatalf("a settlement that states the book writes no movement, got %d reposiciones", written)
+	}
+	if book := e.fundBook(t, 2); book != "250.00" {
+		t.Fatalf("the book must hold the corrected fund after the second closure, got %s", book)
+	}
+	t.Logf("051: a fund correction appends its movement and the balance follows")
 }
 
 // TestPurchaseFundDifferenceDoesNotBlockButAPendingCountStillDoes pins the informational character
@@ -3105,6 +3391,7 @@ func optionalDifference(difference *closings.SignedQuantity) string {
 func TestMaterialSheetIsTheThirdAccountOfTheDocument(t *testing.T) {
 	e := fixture(t)
 	e.closeFirstSettlement(t, "500.00")
+	e.fundLoad(t, 2, "200.00", "Carga de fondo para las compras del período")
 	// The period buys two used models in one document and two materials in another: 6 + 4 units and
 	// 12.500 + 4.250 kilograms, which is what the shelf is expected to hold at the cut.
 	e.purchaseLines(t, "closings-materials-used-01", "80.00", []purchases.UsedLineInput{
@@ -3206,6 +3493,7 @@ func TestMaterialSheetIsTheThirdAccountOfTheDocument(t *testing.T) {
 func TestMaterialDraftIsValidatedLikeTheCountSheet(t *testing.T) {
 	e := fixture(t)
 	e.closeFirstSettlement(t, "500.00")
+	e.fundLoad(t, 2, "100.00", "Carga de fondo para las compras del período")
 	e.purchaseLines(t, "closings-materials-draft-01", "20.00",
 		[]purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 2, UnitPrice: "10.00"}}, nil)
 	e.purchaseLines(t, "closings-materials-draft-02", "3.00", nil,
@@ -3278,6 +3566,7 @@ func mustRead(t *testing.T, e *env, id int64) closings.Closing {
 func TestMaterialSheetRefusesAKeyThePeriodNeverBought(t *testing.T) {
 	e := fixture(t)
 	e.closeFirstSettlement(t, "500.00")
+	e.fundLoad(t, 2, "100.00", "Carga de fondo para las compras del período")
 	e.purchaseLines(t, "closings-materials-unknown-01", "20.00", []purchases.UsedLineInput{
 		{Model: "NS60ZL", Quantity: 2, UnitPrice: "10.00"},
 	}, nil)

@@ -342,21 +342,28 @@ It is counted apart from the drawer, it is settled in the same document, and it 
 **none** of the drawer's three identities and in no part of the commission: no money of a sale
 feeds it, and the drawer above is exactly what it was before this envelope existed (S12). A branch
 purchase is charged by the document itself, never by a ledger row of this vertical: there is no
-`branch_cash_movements` movement for the envelope.
+`branch_cash_movements` movement for the envelope. The envelope has a book of its own instead
+(`branch_fund_movements`, migration 048), and **its only balance is the signed sum of
+`purchase_fund_ledger`**: the load of a branch, the `compra` of every purchase document, the
+`reposicion` a closure writes with the fund it leaves, and the `correccion` that answers any of them.
 
 | Field | Identity |
 |---|---|
-| `purchase_fund_opening` | The `purchase_fund_cash` of the previous `closed` settlement of the same branch — the last closure at or before this settlement's `period_start`, by `closed_at` descending; `"0.00"` when there is none. Read from the settlements themselves, never from the live branch state, and a closed row never changes, so a period's opening is frozen by construction, and a history row of an old period never reads the envelope of a later one |
+| `purchase_fund_opening` | The fund the previous `closed` settlement of the same branch left — the last closure at or before this settlement's `period_start`, by `closed_at` descending; `"0.00"` when there is none. It is the signed sum of `purchase_fund_ledger` at that closure's own `closed_at`, which is the number that closure settled, and never the live branch state: a closed row never changes, so a period's opening is frozen by construction, and a history row of an old period never reads the envelope of a later one |
 | `purchases_total`, `purchases_cash` | The sums of `total` and `paid_cash` of the branch purchases inside `[period_start, cut_at)`. Counter-documents are stored with negative amounts, so they subtract by themselves and are never filtered out (S11) |
 | `purchase_fund_expected` | `purchase_fund_opening - purchases_cash`, signed: a period that spent more than it inherited is a shortage |
 | `purchase_fund_counted` | What the warehouse counted in the envelope: the column, `null` while it has not counted |
 | `purchase_fund_difference` | `purchase_fund_counted - purchase_fund_expected`, with its sign; `null` while `purchase_fund_counted` is `null` |
-| `purchase_fund_cash` | The amount the warehouse leaves in the envelope: the column, `null` until it states one, and the amount that opens the next period (S5, S6) |
+| `purchase_fund_cash` | The amount the warehouse leaves in the envelope, which opens the next period (S5, S6, S9). On a **closed** settlement it is the signed sum of `purchase_fund_ledger` at the settlement's own `closed_at` — the one arithmetic of the fund, the same number the closure wrote as its `reposicion`; on a live one it is the draft or the offer the warehouse stated, `null` until it states one |
 
-The opening, the purchases and the expectation are **derived on every read** from those two tables,
+The opening, the purchases and the expectation are **derived on every read** from those tables,
 exactly like the drawer's three numbers, so a published amount can never disagree with the facts
 that produce it. `purchase_fund_counted` and `purchase_fund_cash` are the two columns migration 044
-adds, drafted through the drawer draft and frozen by the proposal:
+adds, drafted through the drawer draft and frozen by the proposal. From the closure on, the second
+one stops being the arithmetic: **the fund's balance is the signed sum of `purchase_fund_ledger`**
+(migration 048) and is computed nowhere else — the closure reconciles the book to the amount the
+warehouse stated (migration 051) and every reader publishes the book, so the column is the statement
+the branch accepted and never a second number that could differ from it:
 
 * **While `open` or `rejected`** both are drafts of the warehouse, exactly like the drawer. Both are
   optional and both are canonical non-negative amounts. The new amount is **not** bounded by the
@@ -368,9 +375,26 @@ adds, drafted through the drawer draft and frozen by the proposal:
 * The **difference never blocks**. Like `cash_difference` it is informational and published with its
   sign; a proposal is refused by a pending line of the count sheet, never by an envelope counted
   above or below its expectation (S8).
-* The envelope is **not required at the closure**: a settlement whose warehouse has not counted it
-  closes with `null` in both columns, which is why a branch whose last closure predates this version
-  keeps operating exactly as before.
+* The envelope is **not required at the closure**: a settlement whose warehouse has not stated an
+  amount closes with `null` in the column, and its acta publishes the book's own sum, because an
+  unstated fund is zero and not unknown (S7). No movement is written in that case: the book already
+  says what the fund holds.
+* **The closure settles the fund through its book** (S9). The amount the warehouse leaves is written
+  as a `reposicion` of `branch_fund_movements` whose amount is the difference against the book's
+  balance at that instant, read under the lock of the branch (`340251`), and signed by the
+  settlement's own opener. It is the difference and not the stated amount, because writing the
+  amount would count the fund twice; and it is **signed**, because a settlement may leave more than
+  the book holds (the warehouse loads the fund) or less (the warehouse takes the surplus back). The
+  balance after the closure is therefore exactly the stated amount, and `purchase_fund_cash` of a
+  closed settlement is that balance, read on every read. S6 still wins: the statement is a column of
+  044 that is never negative, so no closure can drive the fund below zero, and the difference can
+  only take out what the book holds.
+* **A fund that changes after the closure appends its movement** (S5, S9). The ledger is append only
+  and a closed settlement is never rewritten, so a correction of the fund is a new row — a
+  `correccion` that answers the `reposicion` (or the `compra` or `aporte` that made the book wrong)
+  — and the balance follows the sum. The closed acta keeps publishing the fund it settled: it is
+  history, and the correction is a fact of the period that follows, which is the fund the next
+  closure states.
 
 ## The third account: materials
 
@@ -799,7 +823,7 @@ Every route of this contract answers the whole settlement, with exactly these ke
 | `contributed_cash`, `closing_cash`, `taken_cash` | The contribution, the fund left behind and what the warehouse takes; see above |
 | `purchase_fund_opening`, `purchases_total`, `purchases_cash` | The second envelope: what it inherited, and the sums of the purchases of the window (counter-documents included); derived on read, see [the purchase fund](#the-purchase-fund-the-second-envelope) |
 | `purchase_fund_expected`, `purchase_fund_counted`, `purchase_fund_difference` | The expectation of the envelope, what the warehouse counted in it and the sign of the difference; the count and the difference are `null` until it is counted, and the difference never blocks |
-| `purchase_fund_cash` | The amount the warehouse leaves in the envelope, which opens the next period; `null` until it states one |
+| `purchase_fund_cash` | The amount the warehouse leaves in the envelope, which opens the next period; on a `closed` settlement the signed sum of the fund's book at its `closed_at` (migration 051), and on a live one the draft or the offer; `null` while the warehouse has not stated one and the settlement is not closed |
 | `sales_total`, `commission_amount` | The commission base and the reported commission of the period: derived from the ledgers and the configured rate while the settlement is `open`, frozen from the proposal on |
 | `card_total`, `transfer_total`, `qr_total` | The electronic collection of the period, published on its own, with the same frozen-or-derived rule |
 | `observation` | The free text of the drawer |

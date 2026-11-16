@@ -275,9 +275,10 @@ func (s *Store) periodMetrics(ctx context.Context, closing Closing) (Metrics, er
 		Expected:   closing.PurchaseFundExpected,
 		Counted:    closing.PurchaseFundCounted,
 		Difference: closing.PurchaseFundDifference,
-		// The amount the warehouse leaves in the envelope is the column its closure froze, which
-		// is exactly the opening the next period inherits. It is null while the warehouse has not
-		// stated it, because a replacement nobody declared is not a zero.
+		// The amount the warehouse leaves in the envelope is the one its closure settled: the signed sum
+		// of the fund's book at that instant (S5, S9), which is also the opening the next period
+		// inherits. A closure that stated no amount publishes the book's balance, because an unstated
+		// fund is zero and not unknown (S7).
 		Replacement: closing.PurchaseFundCash,
 	}
 	today, err := todayMetrics(ctx, s.pool, closing.BranchID)
@@ -618,15 +619,16 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 // the two produce and the volume those same documents bought. It exists because the envelope is a money
 // box of its own: a branch whose settlements are all closed has no period on screen that states it.
 //
-// The window and the identity are not a second calculation of the fund. The opening is the
-// `purchase_fund_cash` of the last closed settlement, which is exactly the amount the database seeds the
-// next opening from and the amount the fund rule of 044 charges a new purchase against. Missing is not
-// zero in that table -- a closure the warehouse left unstated holds NULL -- so an unstated envelope
-// inherits nothing, with the same coalesce the settlement's own fund derivation applies (S16). The
-// purchases are the `paid_cash` of the branch's documents from that cut on, with no counter-document
-// filter: they are stored with negative amounts, so a reversal subtracts by construction and the net is a
-// signed reading. `PurchaseFundExpected` is the fund's own identity, opening − purchases, and it is
-// reused instead of restated, so the card and the acta of the same envelope cannot disagree (S16).
+// The opening is not a second calculation of the fund: it is the number the acta of that same closure
+// publishes, read by the same helper -- the signed sum of `purchase_fund_ledger` at the instant the
+// settlement closed (S5, S9), which is the amount the closure wrote as its `reposicion` and the amount
+// the next opening inherits. A settlement that closed before its branch's fund had a movement keeps the
+// number it stated, exactly as its own acta does, so the card and the document of the same envelope can
+// never disagree. The purchases are the `paid_cash` of the branch's documents from that cut on, with no
+// counter-document filter: they are stored with negative amounts, so a reversal subtracts by
+// construction and the net is a signed reading. `PurchaseFundExpected` is the fund's own identity,
+// opening − purchases, and it is reused instead of restated, so the card and the acta of the same
+// envelope state one number (S16).
 //
 // The cut, and not the closure, is where the window starts, for the same reason the drawer of today
 // starts there: the period of a closed settlement ends at its cut. The two instants give the same answer
@@ -634,13 +636,13 @@ func todayMetrics(ctx context.Context, q querier, branch int64) (MetricsToday, e
 // and the instant the card names is the one the period of the next settlement inherits.
 func fundTodayMetrics(ctx context.Context, q querier, branch int64) (MetricsFundToday, error) {
 	var stored *string
-	var cut time.Time
+	var cut, settledAt time.Time
 	// The last closed settlement, by the same order the drawer of today reads it, so the two cards of the
 	// same closing state one instant: its cut and the envelope it left behind.
 	fund := MetricsFundToday{Opening: Money("0.00"), Purchases: Signed("0.00"), Balance: Signed("0.00")}
-	err := q.QueryRow(ctx, `SELECT purchase_fund_cash::text,cut_at FROM branch_closings
+	err := q.QueryRow(ctx, `SELECT purchase_fund_cash::text,cut_at,closed_at FROM branch_closings
  WHERE branch_location_id=$1 AND status='closed'
- ORDER BY cut_at DESC,id DESC LIMIT 1`, int16(branch)).Scan(&stored, &cut)
+ ORDER BY cut_at DESC,id DESC LIMIT 1`, int16(branch)).Scan(&stored, &cut, &settledAt)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		// A branch that never closed a settlement states no cut and inherits nothing: the window is
@@ -648,13 +650,20 @@ func fundTodayMetrics(ctx context.Context, q querier, branch int64) (MetricsFund
 	case err != nil:
 		return MetricsFundToday{}, fail(ctx)
 	default:
-		if cut.IsZero() {
+		if cut.IsZero() || settledAt.IsZero() {
 			return MetricsFundToday{}, ErrUnavailable
 		}
-		// A closure that stated no envelope is read as the zero a purchase could not have been charged
-		// against, which is the very number the settlement's own fund opens with: the card and the acta
-		// of that envelope still state the same opening.
-		if stored != nil {
+		// The fund the closure left is the book's own sum at that instant, and only a settlement that
+		// closed before its branch's fund had a ledger falls back to the column it stated: the same
+		// rule, read by the same helper, as the acta of that very settlement.
+		settled, err := settledPurchaseFund(ctx, q, branch, &settledAt)
+		if err != nil {
+			return MetricsFundToday{}, err
+		}
+		switch {
+		case settled != nil:
+			fund.Opening = *settled
+		case stored != nil:
 			opening := Money(*stored)
 			if _, ok := amountCents(opening); !ok {
 				return MetricsFundToday{}, ErrUnavailable

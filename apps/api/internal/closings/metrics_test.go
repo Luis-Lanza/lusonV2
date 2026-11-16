@@ -269,7 +269,9 @@ func TestMetricsOfTheLiveSettlementPublishesNoCount(t *testing.T) {
 	e.closeFirstSettlement(t, "500.00")
 	e.sell(t, 1, 1, "100.00", sales.PaymentCash)
 	// Two used batteries bought inside the window: the sheet is seeded by the opener and stays
-	// uncounted, which is the state a live period publishes.
+	// uncounted, which is the state a live period publishes, and the load below is the money the
+	// fund of the branch spent on them (S5, S7).
+	e.fundLoad(t, 2, "10.00", "Carga de fondo del período")
 	e.purchaseLines(t, "metrics-live-material-01", "10.00",
 		[]purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 2, UnitPrice: "5.00"}}, nil)
 	opened, err := e.store.Open(e.ctx, warehouse(), 2)
@@ -309,6 +311,7 @@ func TestMetricsOfTheWholeHistoryStatesNoEnvelope(t *testing.T) {
 	e.closeFirstSettlement(t, "500.00")
 	e.sell(t, 1, 2, "100.00", sales.PaymentCash)
 	e.sell(t, 2, 1, "50.00", sales.PaymentCard)
+	e.fundLoad(t, 2, "10.00", "Carga de fondo del período")
 	e.purchaseLines(t, "metrics-history-material-01", "10.00",
 		[]purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 2, UnitPrice: "5.00"}}, nil)
 
@@ -393,6 +396,7 @@ func TestMetricsHistoryIsOneSnapshot(t *testing.T) {
 func TestMetricsRefusesAFractionalUnitOfAUsedLine(t *testing.T) {
 	e := fixture(t)
 	e.closeFirstSettlement(t, "500.00")
+	e.fundLoad(t, 2, "10.00", "Carga de fondo del período")
 	e.purchaseLines(t, "metrics-fraction-material-01", "10.00",
 		[]purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 2, UnitPrice: "5.00"}}, nil)
 	opened, err := e.store.Open(e.ctx, warehouse(), 2)
@@ -425,6 +429,7 @@ func TestMetricsPublishesACountedQuantityAboveTheSheet(t *testing.T) {
 	e := fixture(t)
 	e.closeFirstSettlement(t, "500.00")
 	// Two used batteries of NS60ZL are bought inside the window: the sheet expects two.
+	e.fundLoad(t, 2, "10.00", "Carga de fondo del período")
 	e.purchaseLines(t, "metrics-over-material-01", "10.00",
 		[]purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 2, UnitPrice: "5.00"}}, nil)
 	opened, err := e.store.Open(e.ctx, warehouse(), 2)
@@ -866,6 +871,7 @@ func (e *env) cutOf(t *testing.T, id int64) time.Time {
 func TestMetricsFundTodayIsTheOpeningMinusThePurchasesAfterTheCut(t *testing.T) {
 	e := fixture(t)
 	e.closeFirstSettlement(t, "500.00")
+	e.fundLoad(t, 2, "60.00", "Carga de fondo del período")
 	// One purchase of 60.00 belongs to the previous window: the envelope of today must not count it.
 	e.purchase(t, "metrics-fund-today-before-01", "60.00")
 	// The second settlement closes with 250.00 in the envelope, which is what the next period
@@ -945,6 +951,7 @@ func TestMetricsFundTodayAddsBackACounterDocumentAfterTheCut(t *testing.T) {
 func TestMetricsFundTodayPublishesANegativeNetWhenTheReturnOutweighsTheWindow(t *testing.T) {
 	e := fixture(t)
 	e.closeFirstSettlement(t, "500.00")
+	e.fundLoad(t, 2, "45.00", "Carga de fondo del período")
 	// The earlier purchase is inside the closed settlement, so it is not part of the window.
 	earlier := e.purchaseLines(t, "metrics-fund-today-earlier-01", "45.00",
 		[]purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 2, UnitPrice: "10.00"}},
@@ -977,7 +984,9 @@ func TestMetricsFundTodayStartsAtZeroWithoutAClosedSettlement(t *testing.T) {
 		t.Fatalf("a branch without a closed settlement inherits nothing: %+v", empty)
 	}
 	// Nothing was closed, so the window is the whole life of the branch: the document is counted even
-	// though no cut exists to start from.
+	// though no cut exists to start from, and the load that paid for it belongs to no window of the
+	// card because it is not a purchase.
+	e.fundLoad(t, 2, "120.50", "Carga de fondo sin rendición")
 	e.purchase(t, "metrics-fund-today-nocut-01", "120.50")
 	fund := historyOf(t, e).FundToday
 	if fund.Since != nil || fund.Documents != 1 || fund.UsedUnits != 1 ||
@@ -992,15 +1001,19 @@ func TestMetricsFundTodayStartsAtZeroWithoutAClosedSettlement(t *testing.T) {
 // money nor the volume of this envelope.
 func TestMetricsFundTodayCountsOnlyItsOwnPurchasesAfterTheCut(t *testing.T) {
 	e := fixture(t)
-	// A purchase of 60.00 before the first closure belongs to the window the closure itself settled.
+	// A purchase of 60.00 before the first closure belongs to the window the closure itself settled,
+	// and the load below is the money it spent: the fund of a branch is its book (S5, S7).
+	e.fundLoad(t, 2, "60.00", "Carga de fondo del primer período")
 	e.purchase(t, "metrics-fund-today-previous-01", "60.00")
 	first := e.closeFirstSettlement(t, "500.00")
 	// The purchase of the window: two used batteries and 1.500 kg of copper.
+	e.fundLoad(t, 2, "35.00", "Carga de fondo del período vigente")
 	e.purchaseLines(t, "metrics-fund-today-own-01", "35.00",
 		[]purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 2, UnitPrice: "10.00"}},
 		[]purchases.ScrapLineInput{{MaterialID: 1, Kg: "1.500", PricePerKg: "10.00"}})
 	// Another branch buys four batteries of its own after its own cut: none of it is branch 2's.
 	e.closeSettlementOf(t, 3)
+	e.fundLoad(t, 3, "100.00", "Carga de fondo de la sucursal B")
 	if _, err := e.purchases.Create(e.ctx, identity(3), purchases.CreateInput{
 		OperationKey: "metrics-fund-today-other-01",
 		UsedLines:    []purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 4, UnitPrice: "25.00"}},
@@ -1035,8 +1048,9 @@ func TestMetricsFundTodayCountsOnlyItsOwnPurchasesAfterTheCut(t *testing.T) {
 func TestMetricsFundTodayPublishesANegativeBalanceWithItsSign(t *testing.T) {
 	e := fixture(t)
 	first := e.closeFirstSettlement(t, "500.00")
-	// The closure left no envelope behind, so nothing was inherited and the purchase below is charged
-	// against nothing: a shortage of exactly what it spent.
+	// The closure left no envelope behind, so nothing was inherited: the branch loads exactly what it
+	// spends, and the window still spent 120.50 more than it inherited -- a shortage of exactly that.
+	e.fundLoad(t, 2, "120.50", "Carga de fondo del período")
 	e.purchase(t, "metrics-fund-today-short-01", "120.50")
 
 	fund := metricsOf(t, e, first).FundToday

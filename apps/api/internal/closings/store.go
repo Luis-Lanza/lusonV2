@@ -1802,7 +1802,10 @@ func (s *Store) DecideCorrection(ctx context.Context, actor auth.Identity, corre
 // purchase_fund_counted and purchase_fund_cash are the second envelope (044): what the warehouse
 // counted in it and the amount it leaves there, both drafted while the settlement is held and
 // frozen by the proposal. They are the only money of this vertical that comes from the purchases
-// and not from the cash ledger, and they participate in no identity of the drawer (S1, S12).
+// and not from the cash ledger, and they participate in no identity of the drawer (S1, S12). The
+// column of the amount left is the statement the branch accepted, not the arithmetic: `settled`
+// reads it for a live settlement and derivePurchaseFund replaces it with the signed sum of
+// `purchase_fund_ledger` once the settlement is closed (S5, S9).
 //
 // The money of the period is read as the database stores it, because that is what the offer
 // froze; a row that is still open is published from its own ledgers afterwards (deriveClosing), so
@@ -1997,25 +2000,29 @@ func deriveClosing(ctx context.Context, q querier, closing *Closing) error {
 // previous closure left in it, the sums of the purchases of its own window and the expectation
 // they produce, plus the difference of the counted envelope against that expectation.
 //
-// It reads two things and never invents a third. The opening is the purchase_fund_cash of the
-// previous closed settlement of the same branch, read from branch_closings and never from the live
-// branch state: a closed row is immutable, so the number a period inherited cannot move afterwards.
-// "Previous" is the closure at or before this settlement's own period start, which is the instant the
-// opener inherited, so a history row of an old period never reads the envelope of a later one. The
-// purchases are the documents of the window `[period_start, cut_at)` of the branch, with their
-// counter-documents included as they are stored — negative amounts, so they subtract by
-// construction (S3, S11). Zero when there is none of either, which is the state of a branch that has
-// never closed and of a period with no purchases.
+// It reads two things and never invents a third, and both are the book's (S5, S9). The opening is
+// the fund the previous closed settlement of the same branch left, read from
+// `purchase_fund_ledger` at that settlement's own `closed_at` -- the instant the closure stamped on
+// the row and on the `reposicion` it wrote -- and never from the live branch state: a closed row is
+// immutable, so the number a period inherited cannot move afterwards. "Previous" is the closure at
+// or before this settlement's own period start, which is the instant the opener inherited, so a
+// history row of an old period never reads the envelope of a later one. The purchases are the
+// documents of the window `[period_start, cut_at)` of the branch, with their counter-documents
+// included as they are stored — negative amounts, so they subtract by construction (S3, S11). Zero
+// when there is none of either, which is the state of a branch that has never closed and of a
+// period with no purchases.
 //
 // One statement for both facts, so the envelope of one row describes one instant of one window, and
 // the derivation stays the pure read every other derived number of this document is.
 func derivePurchaseFund(ctx context.Context, q querier, closing *Closing) error {
 	var opening, total, cash string
 	err := q.QueryRow(ctx, `SELECT
-  coalesce((SELECT previous.purchase_fund_cash FROM branch_closings previous
-    WHERE previous.branch_location_id=$1 AND previous.status='closed'
-      AND previous.closed_at <= $4
-    ORDER BY previous.closed_at DESC LIMIT 1),0)::numeric(12,2)::text,
+  coalesce((SELECT sum(fund.effective) FROM purchase_fund_ledger fund
+    WHERE fund.branch_location_id=$1
+      AND fund.occurred_at <= (SELECT previous.closed_at FROM branch_closings previous
+        WHERE previous.branch_location_id=$1 AND previous.status='closed'
+          AND previous.closed_at <= $4
+        ORDER BY previous.closed_at DESC LIMIT 1)),0)::numeric(12,2)::text,
   coalesce((SELECT sum(purchase.total) FROM purchases purchase
     WHERE purchase.location_id=$1 AND purchase.created_at >= $2
       AND purchase.created_at < $3),0)::numeric(12,2)::text,
@@ -2046,6 +2053,21 @@ func derivePurchaseFund(ctx context.Context, q querier, closing *Closing) error 
 		return ErrUnavailable
 	}
 	closing.PurchaseFundExpected = expected
+	// The amount the warehouse leaves is the book's own number and never a column that could drift
+	// from it (S5, S9): the closure writes it as the fund's `reposicion` (051), so the acta of a
+	// settled period publishes the signed sum at the instant that period closed -- the same instant
+	// the closure stamped on the row and on its movement. A settlement that closed before its
+	// branch's fund had a movement keeps the number it stated, because the book has nothing to say
+	// about an instant before its first row; that is the only case this read does not derive.
+	if closing.Status == StatusClosed {
+		settled, err := settledPurchaseFund(ctx, q, closing.BranchID, closing.ClosedAt)
+		if err != nil {
+			return err
+		}
+		if settled != nil {
+			closing.PurchaseFundCash = settled
+		}
+	}
 	if closing.PurchaseFundCounted == nil {
 		// An envelope the warehouse has not counted states no difference: the count sheet of the
 		// drawer is the only thing that blocks, and an uncounted envelope is not a difference of zero.
@@ -2057,6 +2079,38 @@ func derivePurchaseFund(ctx context.Context, q querier, closing *Closing) error 
 	}
 	closing.PurchaseFundDifference = &difference
 	return nil
+}
+
+// settledPurchaseFund is the fund one closed settlement left, read from the one place that computes
+// a fund: the signed sum of `purchase_fund_ledger` (048) at the settlement's own `closed_at`. The
+// closure stamps that instant on the row and writes the `reposicion` that reconciles the book to the
+// amount the warehouse stated (051), so the sum at that instant is exactly the number the settlement
+// settled, and every reader of the fund -- the acta, the history, the card of the envelope and the
+// opening of the next period -- publishes this sum instead of the column.
+//
+// It returns nil when the branch's book has no row at or before that instant, which is the state of
+// a settlement that closed before its branch's fund had a ledger: there is nothing to derive, and
+// the caller keeps the number the settlement stated rather than reading an empty book as zero.
+func settledPurchaseFund(ctx context.Context, q querier, branch int64,
+	closedAt *time.Time) (*Money, error) {
+	if closedAt == nil {
+		return nil, ErrUnavailable
+	}
+	var balance string
+	var movements int64
+	if err := q.QueryRow(ctx, `SELECT coalesce(sum(effective),0)::numeric(12,2)::text,
+  count(*) FROM purchase_fund_ledger WHERE branch_location_id=$1 AND occurred_at <= $2`,
+		int16(branch), *closedAt).Scan(&balance, &movements); err != nil {
+		return nil, fail(ctx)
+	}
+	if movements == 0 {
+		return nil, nil
+	}
+	amount := Money(balance)
+	if _, ok := amountCents(amount); !ok {
+		return nil, ErrUnavailable
+	}
+	return &amount, nil
 }
 
 // draftPeriod replaces the period columns of an open settlement with the money its own window
