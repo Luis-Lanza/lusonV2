@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"luson/api/internal/auth"
+	"luson/api/internal/closings"
 )
 
 func (a *API) registerAdministration(mux *http.ServeMux) {
@@ -33,6 +34,8 @@ func administrationFailure(w http.ResponseWriter, err error) {
 		failure(w, 409, "branch_has_users")
 	case errors.Is(err, auth.ErrBranchPending):
 		failure(w, 409, "branch_has_pending_operations")
+	case errors.Is(err, auth.ErrBranchFrozen):
+		failure(w, 409, "branch_frozen")
 	case errors.Is(err, auth.ErrAdminConflict):
 		failure(w, 409, "conflict")
 	case errors.Is(err, auth.ErrLimited):
@@ -118,6 +121,22 @@ func administrationID(raw string) (int64, bool) {
 	return n, err == nil && n > 0 && strconv.FormatInt(n, 10) == raw
 }
 
+// administrationBalance is one row of the administration's balance panel (S7, S8): the drawer's
+// expectation of one branch, the signed sum of its purchase fund, and whether a live settlement has
+// the branch frozen -- the state in which the drawer's number is the one about to change, so the
+// screen can say it instead of presenting a number as settled.
+//
+// It is published as a response of its own and never as a wider branch row, so the directory's exact
+// `{"id","name"}` shape keeps closing for every reader that pins it -- the panel's own decoder, the
+// retirement screen's strict decoder and the web model alike. `branch_id` is the branch both lists
+// are ordered by, and the warehouse is absent because it owns no drawer and no fund.
+type administrationBalance struct {
+	BranchID    int    `json:"branch_id"`
+	CashBalance string `json:"cash_balance"`
+	FundBalance string `json:"fund_balance"`
+	Frozen      bool   `json:"frozen"`
+}
+
 func (a *API) administration(w http.ResponseWriter, r *http.Request) {
 	token, unique := readCookie(r, sessionCookie)
 	if !unique {
@@ -182,6 +201,37 @@ func (a *API) administration(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		respond(w, 201, account)
+	case "branches/balances":
+		if !method(w, r, http.MethodGet) {
+			return
+		}
+		books, err := a.service.ListBranchBooks(r.Context(), token)
+		if err != nil {
+			administrationFailure(w, err)
+			return
+		}
+		balances := make([]administrationBalance, 0, len(books))
+		for _, book := range books {
+			// The drawer's expectation is the ONE rule of the drawer (S8) and it is not restated
+			// here: the service read the three terms of the branch's own window and this file asks
+			// the settlement's own rule what they add up to, so the panel, the book, the metrics
+			// card and the acta cannot publish two numbers for one drawer.
+			cash, err := closings.DrawerExpected(closings.Money(book.OpeningCash),
+				closings.Money(book.CashSales), closings.Signed(book.CashEffective))
+			if err != nil {
+				// An amount this domain did not write is never approximated nor published: the
+				// read fails closed, exactly like every other read of the vertical.
+				administrationFailure(w, closings.ErrUnavailable)
+				return
+			}
+			if _, err = closings.ParseAmount(book.FundBalance); err != nil {
+				administrationFailure(w, closings.ErrUnavailable)
+				return
+			}
+			balances = append(balances, administrationBalance{BranchID: book.BranchID,
+				CashBalance: string(cash), FundBalance: book.FundBalance, Frozen: book.Frozen})
+		}
+		respond(w, 200, balances)
 	case "branches":
 		if r.Method == http.MethodGet {
 			branches, err := a.service.ListBranches(r.Context(), token)
@@ -218,6 +268,40 @@ func (a *API) administration(w http.ResponseWriter, r *http.Request) {
 		respond(w, 201, branch)
 	default:
 		parts := strings.Split(path, "/")
+		// The load of the two funds of a branch that already exists (S1-S4, S9): exactly its two
+		// amounts, both mandatory and neither canonicalized here -- the text the caller states is
+		// the amount, and the service refuses anything that is not the canonical form.
+		if len(parts) == 3 && parts[0] == "branches" && parts[2] == "funds" {
+			id, ok := administrationID(parts[1])
+			if !ok || id > 32767 || id < 2 {
+				failure(w, 400, "invalid_request")
+				return
+			}
+			if !method(w, r, http.MethodPost) || !a.GuardMutation(w, r) {
+				return
+			}
+			fields, err := administrationFields(r, "opening_cash", "purchase_fund")
+			if err != nil {
+				administrationFailure(w, err)
+				return
+			}
+			openingCash, o := administrationText(fields, "opening_cash")
+			purchaseFund, p := administrationText(fields, "purchase_fund")
+			if len(fields) != 2 || !o || !p {
+				failure(w, 400, "invalid_request")
+				return
+			}
+			if err = a.service.LoadBranchFunds(r.Context(), token, int(id), openingCash, purchaseFund); err != nil {
+				administrationFailure(w, err)
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if len(parts) == 3 && parts[0] == "branches" {
+			failure(w, 404, "not_found")
+			return
+		}
 		if len(parts) == 2 && parts[0] == "branches" {
 			id, ok := administrationID(parts[1])
 			if !ok || id > 32767 {

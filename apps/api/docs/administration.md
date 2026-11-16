@@ -15,6 +15,8 @@ All responses are JSON except empty **204** responses. Lists are ordered by nume
 | `DELETE /api/admin/accounts/{id}` | No payload required | 204 |
 | `POST /api/admin/accounts/{id}/password` | Exactly `temporary_password` | 204 |
 | `POST /api/admin/branches` | Exactly `name`, `opening_cash`, `purchase_fund` | 201 location |
+| `POST /api/admin/branches/{id}/funds` | Exactly `opening_cash`, `purchase_fund`; canonical ID 2–32767 | 204 |
+| `GET /api/admin/branches/balances` | No query | 200 balance array |
 | `DELETE /api/admin/branches/{id}` | No payload required; canonical ID 1–32767 | 204 |
 
 Account representation:
@@ -25,6 +27,14 @@ Account representation:
 
 Location representation: `{"id":4,"name":"Sucursal Nueva"}`. No fabricated last-login/activity metadata is returned. No password, hash, token or supplied secret is returned by administration routes.
 
+Balance representation, one row per live **branch** (the warehouse owns no drawer and no fund, so it is absent), ordered by branch ID:
+
+```json
+{"branch_id":2,"cash_balance":"5000.00","fund_balance":"3000.00","frozen":false}
+```
+
+`cash_balance` is the branch drawer's expectation — what it inherited from its last closed settlement, plus the cash its sales collected after that cut, plus the signed effect of every movement of its own book after the same cut — computed with the one rule of the settlement vertical (`closings.DrawerExpected`), so the panel, the branch's book, the metrics card and the acta can never publish two numbers for one drawer. It is signed text: a shortage is negative. `fund_balance` is the signed sum of `purchase_fund_ledger`, the one arithmetic of the purchase fund. `frozen` states that a live settlement is holding the branch: the numbers are the ones about to change, and the screen says so instead of presenting them as settled. Balances are a response of their own and not fields of the location representation, so the exact `{"id","name"}` shape of a directory row keeps closing for every reader that pins it.
+
 ## Guards and validation
 
 - A unique `luson_session` cookie must identify a live, enabled, completed-password administrator session in the database. Neither username nor a client role/location assertion grants authority. Ordinary operators receive 403 `forbidden`; mandatory-change sessions receive 403 `password_change_required` before body decoding.
@@ -34,6 +44,7 @@ Location representation: `{"id":4,"name":"Sucursal Nueva"}`. No fabricated last-
 - Usernames reuse the existing 3–64 ASCII letters/digits/underscore/dot/hyphen policy. Passwords reuse the existing 12–128 UTF-8 **byte** policy without NUL; bytes, including spaces, are preserved. Names must be nonblank UTF-8, at most 128 bytes, without NUL; supplied valid names are preserved.
 - Operators must be assigned to an existing branch (2–32767), never warehouse 1. Usernames and account IDs cannot be edited. Account 1 permits display-name edits only: its enabled state, assignment and password cannot be managed through this API. Its own-password route remains available.
 - Branch creation accepts only a name, never a warehouse kind or role. The reserved warehouse name is rejected. Duplicate usernames/branch names return conflict without consuming an allocation. It also states its two mandatory amounts, `opening_cash` and `purchase_fund`, as canonical decimal strings: at most ten integral digits and exactly two decimals, never signed, padded or with a decimal comma. A missing or non-canonical amount is `invalid_request` and creates nothing; `0.00` is a stated answer, not a missing one.
+- Loading the funds of a branch that already exists states the same two mandatory canonical amounts and nothing else. It is admitted for a live branch that is not the warehouse, and it writes the drawer's operating cash and the purchase fund as the two `aporte` rows of the two ledgers, signed by the administering account, in one transaction: `0.00` on both sides writes no movement and is not an error, and `0.00` on one side states only the other. The load is refused with 409 `branch_frozen` while a live settlement holds the branch — money stated into a till being counted would break the count — and it never freezes a branch itself. A branch account cannot load funds for itself or for another branch: administration is the warehouse's, so it answers 403 `forbidden`. The provenance of the two rows is the act itself (a transaction-local marker that each ledger honours only when the row was written from inside the act's own trigger), so a bare insert that sets the marker by hand is refused by the database.
 
 ## Temporary password and lifecycle
 
@@ -44,6 +55,8 @@ Reset replaces the hash without reading or revealing the previous password, forc
 Reassignment and enabled-state transitions increment authority version and retire prior sessions. Reactivation cannot revive old sessions. Profile-only edits and no-op assignment/enabled edits do not retire authority. Transactions lock accounts in ID order before sessions, matching login/password lifecycle ordering and preserving concurrent changes. Password hashing uses the existing bounded admission channel.
 
 New branch creation calls `create_branch_funded(name, opening_cash, purchase_fund, creator_account_id)` inside the protected administrator service transaction. The function keeps the initialization lock, the zero balances of every existing catalog variant, the realtime audience and the inventory invalidation of the original seam, and adds the money: the drawer's opening cash as an `aporte` of the branch's cash ledger and the purchase fund as an `aporte` of `branch_fund_movements`, both signed by the administering account (1) and written in the same transaction. The branch and its two openings are born together or not at all, and a `0.00` amount writes no movement. The purchase fund's balance is the signed sum of `purchase_fund_ledger` and is computed nowhere else. Migration 049 dropped `create_branch(text)`, so no path creates a branch without stating its two amounts. Existing locations, stock, transfer rules and historical attribution remain unchanged. Operators assigned to the new branch use the existing inventory, transfer and realtime interfaces.
+
+A branch that already exists receives the same two funds through `POST /api/admin/branches/{id}/funds`, which calls `load_branch_funds(branch, opening_cash, purchase_fund, actor_account_id)` (migration 054). The act has the shape of a view (`branch_fund_load`) whose trigger writes the two `aporte` rows: the actor must be the warehouse, the branch must exist, be live and not be the warehouse, the branch must not be frozen by a live settlement (the settlement's own `LC001` refusal reaches this surface as 409 `branch_frozen`), and `0.00` on both sides writes nothing. The two admissions of the ledgers — the drawer's and the fund's — were restated whole by that version to add this one path, with every code and message they already published unchanged. The load is append-only history like every other movement: a wrong load is answered by a correcting movement, never edited.
 
 ## Personal-account retirement
 
@@ -59,6 +72,6 @@ Blockers return 409, in precedence: `branch_has_stock` (any nonzero existing/res
 
 ## Errors and remaining work
 
-Failures are `{"error":"code"}` with no secret or database detail: 400 `invalid_request` (including duplicate authority cookies), 401 `unauthenticated`, 403 `forbidden` / `password_change_required`, 404 `not_found`, 405 `method_not_allowed` (with Allow), 409 `conflict`, 429 `rate_limited` (Retry-After 60), or 503 `service_unavailable`. Rejected mutations leave account, branch, stock and counter state unchanged.
+Failures are `{"error":"code"}` with no secret or database detail: 400 `invalid_request` (including duplicate authority cookies), 401 `unauthenticated`, 403 `forbidden` / `password_change_required`, 404 `not_found`, 405 `method_not_allowed` (with Allow), 409 `conflict` / `branch_has_stock` / `branch_has_users` / `branch_has_pending_operations` / `branch_frozen`, 429 `rate_limited` (Retry-After 60), or 503 `service_unavailable`. Rejected mutations leave account, branch, stock, counter and ledger state unchanged.
 
 Accepted empty 204 responses trigger directory refetch; branch retirement also refreshes operational metadata and reconciles a retired inventory selection. Pending mutations are not duplicated or automatically retried; uncertain outcomes require consulting the directory before another submission. Private handoffs are cleared when managing/deleting a target, and stale-owner outcomes are ignored. Functional checks and actual-browser D6 proof remain pending; source controls do not imply preview deployment. A private server recovery command is out of scope. HTTP has no protected-account reset override or public recovery endpoint. See [authentication](authentication.md) for own-password changes and [dynamic branches](dynamic-branches.md) for operational scope.

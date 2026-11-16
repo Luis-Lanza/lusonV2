@@ -19,6 +19,10 @@ var (
 	ErrBranchStock    = errors.New("branch has stock")
 	ErrBranchUsers    = errors.New("branch has users")
 	ErrBranchPending  = errors.New("branch has pending operations")
+	// ErrBranchFrozen is the refusal of an act on a branch the warehouse is counting: it has a
+	// live account settlement, and its till is frozen until that settlement is decided and
+	// closed. Money stated into a till being counted would break the count (S5).
+	ErrBranchFrozen = errors.New("branch has a live account settlement")
 )
 
 // Account is directory data only. Credentials and session secrets never enter
@@ -164,6 +168,82 @@ func (s *Service) ListAccounts(ctx context.Context, token string) ([]Account, er
 			return nil, err
 		}
 		result = append(result, a)
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, tx.Commit(ctx)
+}
+
+// BranchBooks is the money of one branch exactly as the administration reads it from the books:
+// what the branch's last closed settlement left in its drawer, the cash its sales collected after
+// that cut, the signed effect of every movement of its own book after the same cut, the signed sum
+// of `purchase_fund_ledger`, and whether a live settlement has the branch frozen (S7, S8).
+//
+// The drawer's expectation is deliberately NOT computed here. `closings.DrawerExpected` is the one
+// rule of the drawer -- the one the book, the metrics card and the settlement itself use -- and this
+// package cannot reach it (it is the package that imports this one), so the terms are read here and
+// the HTTP layer applies that rule instead of stating a second one.
+type BranchBooks struct {
+	BranchID      int
+	OpeningCash   string
+	CashSales     string
+	CashEffective string
+	FundBalance   string
+	Frozen        bool
+}
+
+// ListBranchBooks reads the two balances of every live branch, by branch, for the administration
+// panel (S7, S8). It is a read of the books and of nothing else: the drawer's terms come from the
+// branch's own ledger view, its sales and the amount its last closed settlement left behind -- the
+// same window the branch's own book reads, so the panel and the branch cannot describe two different
+// periods -- and the fund is `sum(effective)` of `purchase_fund_ledger`, the one arithmetic of the
+// fund. The warehouse is not a branch: it owns no drawer and no fund, so it is not published here.
+// `frozen` states the live settlement that makes the drawer's number the one about to change.
+func (s *Service) ListBranchBooks(ctx context.Context, token string) ([]BranchBooks, error) {
+	tx, err := s.administrationTx(ctx, token, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	result := []BranchBooks{}
+	// The cut of the last closed settlement and the cash it left in the drawer are one row of one
+	// branch, the same row the opener of the next settlement inherits its opening from and the same
+	// one the branch's own book reads; a branch that never closed a settlement starts at zero and its
+	// window is everything it ever did.
+	rows, err := tx.Query(ctx, `WITH settled AS (
+    SELECT DISTINCT ON (closing.branch_location_id)
+           closing.branch_location_id, closing.cut_at, closing.closing_cash
+      FROM branch_closings closing
+     WHERE closing.status='closed'
+     ORDER BY closing.branch_location_id, closing.cut_at DESC, closing.id DESC
+)
+SELECT branch.id,
+  coalesce(settled.closing_cash,0)::numeric(12,2)::text,
+  coalesce((SELECT sum(sale.cash_amount) FROM sales sale
+     WHERE sale.branch_location_id=branch.id
+       AND (settled.cut_at IS NULL OR sale.created_at >= settled.cut_at)),0)::numeric(12,2)::text,
+  coalesce((SELECT sum(ledger.effective) FROM branch_cash_ledger ledger
+     WHERE ledger.branch_location_id=branch.id AND ledger.closing_id IS NULL
+       AND (settled.cut_at IS NULL OR ledger.occurred_at >= settled.cut_at)),0)::numeric(12,2)::text,
+  coalesce((SELECT sum(ledger.effective) FROM purchase_fund_ledger ledger
+     WHERE ledger.branch_location_id=branch.id),0)::numeric(12,2)::text,
+  branch_closure_blocker(branch.id)
+ FROM locations branch LEFT JOIN settled ON settled.branch_location_id=branch.id
+ WHERE branch.deleted_at IS NULL AND branch.id > 1
+ ORDER BY branch.id`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var book BranchBooks
+		if err = rows.Scan(&book.BranchID, &book.OpeningCash, &book.CashSales, &book.CashEffective,
+			&book.FundBalance, &book.Frozen); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		result = append(result, book)
 	}
 	rows.Close()
 	if err = rows.Err(); err != nil {
@@ -404,6 +484,55 @@ func (s *Service) RetireBranch(ctx context.Context, token string, id int64) erro
 	}
 	if _, err = tx.Exec(ctx, `UPDATE locations SET deleted_at=CURRENT_TIMESTAMP WHERE id=$1`, int16(id)); err != nil {
 		return administrationError(err)
+	}
+	return tx.Commit(ctx)
+}
+
+// loadFundsError publishes the decisions the load's own guards take: an act that states nothing
+// valid is invalid input, a branch that does not exist -- retired included, and the warehouse, which
+// is not a branch -- is not found, and a branch the warehouse is counting is the freeze of its
+// settlement, with the code that settlement states (S4, S5).
+func loadFundsError(err error) error {
+	var pg *pgconn.PgError
+	if errors.As(err, &pg) {
+		switch pg.Code {
+		case "LG001":
+			return ErrAdminInvalid
+		case "LG002":
+			return ErrAdminNotFound
+		case "LC001":
+			return ErrBranchFrozen
+		}
+	}
+	return administrationError(err)
+}
+
+// LoadBranchFunds loads the two funds of a branch that already exists (S1-S4, S9): the warehouse
+// states the drawer's operating cash and the purchase fund, and the database writes them as the two
+// `aporte` rows of the two books, signed by the administering account. Both amounts are mandatory and
+// canonical decimal text, exactly as at a founding, and `0,00` is a valid and explicit answer that
+// writes nothing at all (S9). The branch must be alive and not frozen: a live settlement refuses the
+// load with the settlement's own code, because money in the till being counted would break the count
+// (S5). A load never freezes anything (S6): it opens no settlement and writes no row of one.
+func (s *Service) LoadBranchFunds(ctx context.Context, token string, branchID int, openingCash, purchaseFund string) error {
+	if err := s.Administrator(ctx, token); err != nil {
+		return err
+	}
+	if !branchLocation(branchID) || !administrationAmount(openingCash) || !administrationAmount(purchaseFund) {
+		return ErrAdminInvalid
+	}
+	tx, err := s.administrationTx(ctx, token, 0)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	// load_branch_funds states the act and writes its two movements in one transaction: the
+	// warehouse as the actor -- 1 is the single administering identity Administrator resolved -- and
+	// the freeze through the guard of 035, which also takes the per-branch lock the files of that
+	// branch share.
+	if _, err = tx.Exec(ctx, `SELECT load_branch_funds($1::smallint,$2::numeric,$3::numeric,$4::integer)`,
+		int16(branchID), openingCash, purchaseFund, 1); err != nil {
+		return loadFundsError(err)
 	}
 	return tx.Commit(ctx)
 }

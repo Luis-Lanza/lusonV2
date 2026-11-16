@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/auth"
 	"luson/api/internal/bootstrap"
+	"luson/api/internal/closings"
 	"luson/api/internal/config"
 	"luson/api/internal/httpapi"
 	"luson/api/internal/inventory"
@@ -639,4 +640,194 @@ func TestT5ConcurrentLifecycle(t *testing.T) {
 	if _, _, err := f.svc.Peek(f.ctx, f.tokens[1]); err != auth.ErrSession {
 		t.Fatal("concurrent retirement lost")
 	}
+}
+
+// t5Balance is one row of the administration's balance panel (S7, S8). It is decoded strictly: the
+// server publishes a closed set of keys and a payload that grew a field without the decoder is a
+// contract change, not a compatible one.
+type t5Balance struct {
+	BranchID    int    `json:"branch_id"`
+	CashBalance string `json:"cash_balance"`
+	FundBalance string `json:"fund_balance"`
+	Frozen      bool   `json:"frozen"`
+}
+
+// balances reads the panel of the two balances of every live branch.
+func (f *t5Fixture) balances() []t5Balance {
+	f.t.Helper()
+	w := f.request(f.tokens[0], "GET", "/api/admin/branches/balances", "")
+	if w.Code != 200 || len(w.Result().Cookies()) != 0 {
+		f.t.Fatalf("balances: %d %s", w.Code, w.Body.String())
+	}
+	d := json.NewDecoder(strings.NewReader(w.Body.String()))
+	d.DisallowUnknownFields()
+	var rows []t5Balance
+	if err := d.Decode(&rows); err != nil || d.More() {
+		f.t.Fatalf("the balance panel is a closed set of keys: %v %s", err, w.Body.String())
+	}
+	if len(rows) != 2 || rows[0].BranchID != 2 || rows[1].BranchID != 3 {
+		f.t.Fatalf("one row per live branch, ordered by identity: %+v", rows)
+	}
+	return rows
+}
+
+// freeze opens the live settlement of a branch: the warehouse is the only account that settles and
+// the opener states no commission, so this is what a frozen branch looks like.
+func (f *t5Fixture) freeze(branch int) {
+	f.t.Helper()
+	if _, err := f.p.Exec(f.ctx, `INSERT INTO branch_settings(branch_location_id,
+         commission_rate_percent,updated_by_account_id) VALUES($1,12.50,1)
+         ON CONFLICT (branch_location_id) DO UPDATE SET commission_rate_percent=12.50`,
+		int16(branch)); err != nil {
+		f.t.Fatalf("the commission of branch %d could not be configured: %v", branch, err)
+	}
+	if _, err := f.p.Exec(f.ctx, `INSERT INTO branch_closings(branch_location_id,period_start,
+         opened_by_account_id) VALUES($1,now(),1)`, int16(branch)); err != nil {
+		f.t.Fatalf("the settlement of branch %d could not be opened: %v", branch, err)
+	}
+}
+
+// TestT5BranchFundsLoadsBothEnvelopes pins the contract of the load at the wire (S1-S4, S6, S9): the
+// administration states exactly the two amounts of a branch that already exists, the response is
+// empty, and the two books receive one aporte each signed by the warehouse. The panel publishes the
+// two balances of the branch, and 0,00 is a stated answer that writes nothing.
+func TestT5BranchFundsLoadsBothEnvelopes(t *testing.T) {
+	f := t5Setup(t)
+	before := f.snapshot()
+	for _, refused := range []struct {
+		name, path, body string
+		status           int
+		code             string
+	}{
+		{"only the opening cash", "/api/admin/branches/2/funds", `{"opening_cash":"500.00"}`, 400, "invalid_request"},
+		{"only the purchase fund", "/api/admin/branches/2/funds", `{"purchase_fund":"300.00"}`, 400, "invalid_request"},
+		{"an empty object", "/api/admin/branches/2/funds", `{}`, 400, "invalid_request"},
+		{"an extra key", "/api/admin/branches/2/funds", `{"opening_cash":"500.00","purchase_fund":"300.00","name":"Otra"}`, 400, "invalid_request"},
+		{"a numeric amount", "/api/admin/branches/2/funds", `{"opening_cash":500,"purchase_fund":"300.00"}`, 400, "invalid_request"},
+		{"a null amount", "/api/admin/branches/2/funds", `{"opening_cash":null,"purchase_fund":"300.00"}`, 400, "invalid_request"},
+		{"an integer without decimals", "/api/admin/branches/2/funds", `{"opening_cash":"500","purchase_fund":"300.00"}`, 400, "invalid_request"},
+		{"a decimal comma", "/api/admin/branches/2/funds", `{"opening_cash":"500,00","purchase_fund":"300.00"}`, 400, "invalid_request"},
+		{"a negative amount", "/api/admin/branches/2/funds", `{"opening_cash":"-1.00","purchase_fund":"300.00"}`, 400, "invalid_request"},
+		{"padded text", "/api/admin/branches/2/funds", `{"opening_cash":" 500.00","purchase_fund":"300.00"}`, 400, "invalid_request"},
+		// The warehouse is not a branch, an unknown identity is no branch, and the id is canonical.
+		{"the warehouse", "/api/admin/branches/1/funds", `{"opening_cash":"500.00","purchase_fund":"300.00"}`, 400, "invalid_request"},
+		{"a padded branch id", "/api/admin/branches/02/funds", `{"opening_cash":"500.00","purchase_fund":"300.00"}`, 400, "invalid_request"},
+		{"a branch that does not exist", "/api/admin/branches/99/funds", `{"opening_cash":"500.00","purchase_fund":"300.00"}`, 404, "not_found"},
+	} {
+		t.Run(refused.name, func(t *testing.T) {
+			t5Error(t, f.request(f.tokens[0], "POST", refused.path, refused.body), refused.status, refused.code)
+			if f.snapshot() != before {
+				t.Fatal("a refused load created a branch or changed state")
+			}
+		})
+	}
+	// A branch account loads neither for itself nor for another branch (S4).
+	for _, branch := range []string{"2", "3"} {
+		t5Error(t, f.request(f.tokens[1], "POST", "/api/admin/branches/"+branch+"/funds",
+			`{"opening_cash":"500.00","purchase_fund":"300.00"}`), 403, "forbidden")
+	}
+	t5Error(t, f.request("", "POST", "/api/admin/branches/2/funds",
+		`{"opening_cash":"500.00","purchase_fund":"300.00"}`), 401, "unauthenticated")
+	// The funds of one branch are an act of POST and never a read.
+	t5Error(t, f.request(f.tokens[0], "GET", "/api/admin/branches/2/funds", ""), 405, "method_not_allowed")
+	if f.snapshot() != before {
+		t.Fatal("a refused load changed state")
+	}
+
+	// The load it admits writes the two aportes of the warehouse and leaves the branch operating.
+	t5Exact(t, f.request(f.tokens[0], "POST", "/api/admin/branches/2/funds",
+		`{"opening_cash":"5000.00","purchase_fund":"3000.00"}`), 204, "")
+	if cash, fund := f.branchBalances(2); cash != "5000.00" || fund != "3000.00" {
+		t.Fatalf("the branch holds the money it was given, got %s and %s", cash, fund)
+	}
+	var actors string
+	if err := f.p.QueryRow(f.ctx, `SELECT (SELECT string_agg(created_by_account_id::text,',')
+         FROM branch_cash_movements WHERE branch_location_id=2)||'/'||
+         (SELECT string_agg(created_by_account_id::text,',') FROM branch_fund_movements
+         WHERE branch_location_id=2)`).Scan(&actors); err != nil || actors != "1/1" {
+		t.Fatalf("both movements are signed by the warehouse, got %q %v", actors, err)
+	}
+	rows := f.balances()
+	if rows[0].CashBalance != "5000.00" || rows[0].FundBalance != "3000.00" || rows[0].Frozen {
+		t.Fatalf("the panel publishes the two balances of the branch, got %+v", rows[0])
+	}
+	// S6: the branch is not frozen and a sale-free day can still be recorded by its own account.
+	if _, err := f.p.Exec(f.ctx, `INSERT INTO branch_cash_movements(branch_location_id,kind,amount,
+         description,created_by_account_id) VALUES(2,'gasto',150.00,'Gasto del dia',2)`); err != nil {
+		t.Fatalf("the branch must keep operating after a load: %v", err)
+	}
+	if rows = f.balances(); rows[0].CashBalance != "4850.00" {
+		t.Fatalf("the drawer is the load minus what the branch spent, got %+v", rows[0])
+	}
+
+	// 0,00 on both sides is a stated answer and it writes nothing (S9).
+	t5Exact(t, f.request(f.tokens[0], "POST", "/api/admin/branches/3/funds",
+		`{"opening_cash":"0.00","purchase_fund":"0.00"}`), 204, "")
+	var rows3 int
+	if err := f.p.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM branch_cash_movements
+         WHERE branch_location_id=3) + (SELECT count(*) FROM branch_fund_movements
+         WHERE branch_location_id=3)`).Scan(&rows3); err != nil || rows3 != 0 {
+		t.Fatalf("a load of 0,00 writes nothing, got %d rows: %v", rows3, err)
+	}
+	if rows = f.balances(); rows[1].CashBalance != "0.00" || rows[1].FundBalance != "0.00" {
+		t.Fatalf("a branch loaded with 0,00 reads zero, got %+v", rows[1])
+	}
+}
+
+// TestT5BranchBalanceIsTheDrawersExpectation proves S7 and S8 at the wire: the drawer's balance the
+// panel publishes is the number the branch's own book publishes for the same branch -- the one rule
+// of `closings`, applied once -- and the fund's balance is the signed sum of its ledger. Nothing is
+// computed twice: the panel and the branch read the same books.
+func TestT5BranchBalanceIsTheDrawersExpectation(t *testing.T) {
+	f := t5Setup(t)
+	if w := f.request(f.tokens[0], "POST", "/api/admin/branches/2/funds",
+		`{"opening_cash":"5000.00","purchase_fund":"3000.00"}`); w.Code != 204 {
+		t.Fatalf("the load must be admitted: %d %s", w.Code, w.Body.String())
+	}
+	// A purchase of the fund and an expense of the drawer, so the two balances are sums of rows and
+	// not the two amounts of one act.
+	if _, err := f.p.Exec(f.ctx, `INSERT INTO branch_fund_movements(branch_location_id,kind,amount,
+         description,created_by_account_id) VALUES(2,'compra',800.00,'Compra de insumos',2)`); err != nil {
+		t.Fatalf("the branch must be able to spend its fund: %v", err)
+	}
+	if _, err := f.p.Exec(f.ctx, `INSERT INTO branch_cash_movements(branch_location_id,kind,amount,
+         description,created_by_account_id) VALUES(2,'gasto',250.00,'Gasto del dia',2)`); err != nil {
+		t.Fatalf("the branch must be able to pay an expense: %v", err)
+	}
+	rows := f.balances()
+	// The branch's own book publishes its expectation with the rule of the vertical: the panel must
+	// answer the same number for the same branch.
+	session, err := f.svc.Current(f.ctx, f.tokens[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	book, err := closings.New(f.p).CashLedger(f.ctx, session.Identity, nil, nil)
+	if err != nil {
+		t.Fatalf("the branch's own book must be readable: %v", err)
+	}
+	if rows[0].CashBalance != string(book.Expected) {
+		t.Fatalf("the panel and the book publish one drawer: %q vs %q",
+			rows[0].CashBalance, string(book.Expected))
+	}
+	if rows[0].CashBalance != "4750.00" {
+		t.Fatalf("the drawer is the load minus the expense, got %s", rows[0].CashBalance)
+	}
+	var fund string
+	if err := f.p.QueryRow(f.ctx, `SELECT coalesce(sum(effective),0)::numeric(12,2)::text
+         FROM purchase_fund_ledger WHERE branch_location_id=2`).Scan(&fund); err != nil {
+		t.Fatal(err)
+	}
+	if rows[0].FundBalance != fund || fund != "2200.00" {
+		t.Fatalf("the panel publishes the signed sum of the fund, got %q vs %q",
+			rows[0].FundBalance, fund)
+	}
+	// The freeze is published as the state of the branch, so the panel can say the drawer's number is
+	// about to change instead of presenting it as settled (S8).
+	f.freeze(2)
+	rows = f.balances()
+	if !rows[0].Frozen || rows[1].Frozen {
+		t.Fatalf("only the branch being counted is frozen, got %+v", rows)
+	}
+	t5Error(t, f.request(f.tokens[0], "POST", "/api/admin/branches/2/funds",
+		`{"opening_cash":"100.00","purchase_fund":"100.00"}`), 409, "branch_frozen")
 }
