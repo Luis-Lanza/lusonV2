@@ -32,6 +32,11 @@ type purchaseFixture struct {
 	warehouse   auth.Identity
 }
 
+// fixtureFund is the purchase fund the fixture states in the book of each branch: enough for every
+// document these tests write, and a number the one test that refuses a document can name. It is a
+// fixture's amount, never a contract's.
+const fixtureFund = "5000000.00"
+
 func newPurchaseFixture(t *testing.T) *purchaseFixture {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -47,6 +52,16 @@ func newPurchaseFixture(t *testing.T) *purchaseFixture {
 	}
 	if err := bootstrap.Provision(ctx, p, credentials); err != nil {
 		t.Fatal("the purchase fixture provisioning failed")
+	}
+	// The fund of each branch is stated in its own book, signed by the branch's own account: a
+	// purchase charges the movement its own document writes, and a branch whose fund was never
+	// stated holds zero (050, S7).
+	for branch, account := range map[int]int{2: 2, 3: 3} {
+		if _, err := p.Exec(ctx, `INSERT INTO branch_fund_movements(branch_location_id,kind,amount,
+ description,created_by_account_id) VALUES($1,'aporte',$2::numeric,
+ 'Fondo de compras del fixture',$3)`, branch, fixtureFund, account); err != nil {
+			t.Fatalf("the fund of branch %d could not be stated: %v", branch, err)
+		}
 	}
 	return &purchaseFixture{
 		ctx:         ctx,
@@ -777,7 +792,7 @@ func TestStoreRefusesTransferPayment(t *testing.T) {
 		// The refusal speaks of the fund, never of a SQLSTATE or of the database's text.
 		if message := err.Error(); strings.Contains(message, "LP006") ||
 			!strings.Contains(message, "cash") || !strings.Contains(message, "purchase fund") ||
-			!strings.Contains(message, "envelope") {
+			!strings.Contains(message, "balance") {
 			t.Fatalf("the %s refusal must speak in the domain's words, got %q", name, message)
 		}
 	}
@@ -792,6 +807,92 @@ func TestStoreRefusesTransferPayment(t *testing.T) {
 	// the purchase.
 	if _, err := f.store.Create(f.ctx, f.branch, document("store-fund-cash-only")); err != nil {
 		t.Fatalf("the same purchase paid in cash must be admitted: %v", err)
+	}
+}
+
+// TestStoreRefusesAPurchaseBeyondTheFund proves S6 and S7 at the store: a purchase that asks the
+// fund for more than the book of its branch holds is refused with the fund's own typed refusal,
+// which carries the balance and the requested amount, and it writes neither the document nor a
+// movement of the fund. A branch whose fund was never stated holds zero, so the same refusal is
+// what a document of that branch meets -- the unstated envelope is no longer an exception.
+func TestStoreRefusesAPurchaseBeyondTheFund(t *testing.T) {
+	f := newPurchaseFixture(t)
+	// The fixture's fund holds exactly this much, and the document asks one cent more.
+	requested := purchases.Money("5000000.01")
+	input := purchases.CreateInput{
+		OperationKey: "store-fund-beyond-01",
+		UsedLines:    []purchases.UsedLineInput{{Model: "NS60ZL", Quantity: 1, UnitPrice: requested}},
+		PaidCash:     requested,
+		PaidTransfer: "0.00",
+	}
+	_, err := f.store.Create(f.ctx, f.branch, input)
+	var insufficient *purchases.FundInsufficient
+	if !errors.As(err, &insufficient) {
+		t.Fatalf("a purchase beyond the fund must be the fund's own refusal, got %v", err)
+	}
+	if insufficient.Balance != purchases.Money(fixtureFund) || insufficient.Requested != requested {
+		t.Fatalf("the refusal must name the balance and the request: %+v", insufficient)
+	}
+	// It is still a refusal of this contract, and it speaks of the fund and never of a SQLSTATE.
+	if !errors.Is(err, purchases.ErrInvalid) {
+		t.Fatalf("the fund's refusal must stay a refusal of the contract, got %v", err)
+	}
+	if message := err.Error(); strings.Contains(message, "LF003") ||
+		!strings.Contains(message, fixtureFund) || !strings.Contains(message, string(requested)) {
+		t.Fatalf("the refusal must state both numbers in the domain's words, got %q", message)
+	}
+	if count := f.countDocuments(t, 2); count != 0 {
+		t.Fatalf("a refused document wrote %d documents", count)
+	}
+	var movements int64
+	if err := f.p.QueryRow(f.ctx, `SELECT count(*) FROM purchase_fund_writes`).Scan(&movements); err != nil || movements != 0 {
+		t.Fatalf("a refused document wrote %d movements of the fund: %v", movements, err)
+	}
+
+	// A branch whose fund was never stated holds zero (S7): the same document is refused there
+	// with a zero balance, instead of being admitted the way 044 admitted it.
+	var empty int
+	if err := f.p.QueryRow(f.ctx, `SELECT create_branch_funded('Sucursal vacia','0.00','0.00',1)`).Scan(&empty); err != nil {
+		t.Fatalf("the empty branch could not be founded: %v", err)
+	}
+	var account int
+	if err := f.p.QueryRow(f.ctx, `INSERT INTO auth_accounts(location_id,username,password_hash,
+ must_change_password) VALUES($1,'sucursal_vacia','x',false) RETURNING id`, empty).Scan(&account); err != nil {
+		t.Fatalf("the account of the empty branch could not be provisioned: %v", err)
+	}
+	unstated := auth.Identity{AccountID: account, Location: auth.Location{ID: empty}}
+	cheap := document("store-fund-unstated-01")
+	cheap.UsedLines = nil
+	cheap.ScrapLines = []purchases.ScrapLineInput{{MaterialID: 1, Kg: "1.000", PricePerKg: "1.00"}}
+	cheap.PaidCash, cheap.PaidTransfer = "1.00", "0.00"
+	_, err = f.store.Create(f.ctx, unstated, cheap)
+	if !errors.As(err, &insufficient) || insufficient.Balance != "0.00" ||
+		insufficient.Requested != "1.00" {
+		t.Fatalf("an unstated fund is zero and refuses its purchase, got %v", err)
+	}
+}
+
+// TestStoreRefusesAPurchaseOfAFrozenBranch proves the freeze at the store: a branch held by a live
+// account settlement registers no purchase, and the refusal is named for what it is instead of
+// being reported as an outage -- the branch acts on it by closing its settlement (LC001).
+func TestStoreRefusesAPurchaseOfAFrozenBranch(t *testing.T) {
+	f := newPurchaseFixture(t)
+	// The settlement is open, which is the state that holds the branch.
+	f.openSettlement(t, 2, nil)
+	_, err := f.store.Create(f.ctx, f.branch, document("store-frozen-key-01"))
+	if !errors.Is(err, purchases.ErrBranchFrozen) {
+		t.Fatalf("a purchase of a frozen branch must be the freeze's own refusal, got %v", err)
+	}
+	// It is never an outage: the branch knows what to do about it.
+	if errors.Is(err, purchases.ErrUnavailable) {
+		t.Fatalf("the freeze must not be published as an outage: %v", err)
+	}
+	if count := f.countDocuments(t, 2); count != 0 {
+		t.Fatalf("a frozen branch wrote %d documents", count)
+	}
+	var movements int64
+	if err := f.p.QueryRow(f.ctx, `SELECT count(*) FROM purchase_fund_writes`).Scan(&movements); err != nil || movements != 0 {
+		t.Fatalf("a frozen branch wrote %d movements of the fund: %v", movements, err)
 	}
 }
 

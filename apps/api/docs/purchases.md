@@ -55,15 +55,33 @@ Line and document amounts:
 ## The purchase fund
 
 A branch keeps a second envelope of physical money, apart from the till, that only
-buys used batteries and scrap. A purchase is paid from it, so the two amounts are
-not interchangeable: `paid_transfer` is zero and `paid_cash` is the whole total.
-The envelope is charged by the document itself — there is no separate ledger row —
-and it can never pay more than it holds: what is available is the amount the last
-closed settlement left behind (`purchase_fund_cash`) minus every `paid_cash` of the
-branch since that closure. Counter-documents return money, so they are admitted
-without consulting the envelope and their negative amounts give it back. A branch
-whose last closure predates the fund, or that has never closed, has no declared
-envelope and is not charged against one until a closure states it.
+buys used batteries and scrap. It has **a book of its own** — `branch_fund_movements`,
+whose signed reading is the view `purchase_fund_ledger` — and its **balance is the sum of
+that reading** and is computed nowhere else. A purchase is paid from it, so the two
+amounts are not interchangeable: `paid_transfer` is zero and `paid_cash` is the whole
+total.
+
+A branch purchase **writes its own movement**, in the same transaction as the document and
+by the database's own rule, so no client can register a purchase that never charged the
+fund: a document paid in cash appends a `compra` of its `paid_cash`, signed by the
+account that registered it and described with its own id and the material it bought
+(`Compra 42: Cobre, NS60ZL`). A document that pays no cash writes nothing at all: a zero
+is the empty sum of a book and not a movement to explain. A **counter-document** appends
+the opposite — a `correccion` that answers the `compra` of its original for the same
+amount, so the money comes back (`Corrección 51 de la compra 42: Cobre, NS60ZL`).
+
+The fund can never pay more than it holds: a document whose `paid_cash` exceeds the
+balance is refused, and the refusal names **both numbers** — what the fund holds and what
+the purchase asks — so the screen can say *«el fondo tiene Bs X, la compra pide Bs Y»*.
+The tope is decided under the per-branch lock of the settlement (`340251`), so two
+purchases of one branch cannot both fit in the same remaining amount, and it never runs
+beside the closure that replaces the fund.
+
+A fund that was **never stated is zero**, not unknown. There is no exception any more:
+a branch whose book is empty holds nothing and its purchase is refused, exactly like a
+branch that has spent everything it had. The fund is loaded by the closing that states
+it (`reposicion`) or by the founding of the branch (`aporte`); this contract only spends
+it.
 
 ## The document
 
@@ -85,9 +103,12 @@ A refused document writes nothing. The database decides the branch, the totals,
 the sign rules and the mirror; the boundary publishes only its SQLSTATE
 (`LP001` branch only, `LP002` totals mismatch, `LP003` reversal does not mirror,
 `LP004` already reversed, `LP005` line or sign rule, `LP006` the purchase fund
-refuses the document because it is not paid in cash or it exceeds what the envelope
-holds). The boundary publishes the fund refusal as `invalid_request`: the amount
-the envelope still holds never leaves the database.
+refuses a document that is not paid in cash, `LC001` a live settlement holds the branch,
+`LF003` the fund of the branch cannot pay the amount the document asks). The `LP006` refusal is
+published as `invalid_request`: the document cannot be admitted as it stands. The `LC001` refusal
+is the branch's own state, so it is published as `409 branch_frozen`, the same token the closing
+layer publishes it with. The `LF003` refusal is published as `fund_insufficient` with the balance
+and the requested amount beside the code, because both numbers are what the branch acts on.
 
 This document moves **no** `inventory_balances` row and extends no realtime
 scope: the received totals are read on request by the screen that shows them.
@@ -246,4 +267,6 @@ code and scrap rows by `material_id`.
 | `404` | `not_found` | the document is unknown, foreign to the branch, or the path is ambiguous |
 | `409` | `retry_conflict` | the operation key already exists with a different payload |
 | `409` | `already_reversed` | the target already has its counter-document, or is one |
+| `409` | `branch_frozen` | the branch is held by a live account settlement and registers nothing (the same token the closing layer publishes for that fact) |
+| `409` | `fund_insufficient` | the fund of the branch holds less than the document asks: `balance` and `requested` travel beside the code |
 | `503` | `service_unavailable` | the store is unreachable or the persisted state fails closed |

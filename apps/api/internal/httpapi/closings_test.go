@@ -1032,6 +1032,16 @@ func closingFixture(t *testing.T) *closingHTTPFixture {
 	if _, err := p.Exec(ctx, `UPDATE auth_accounts SET must_change_password=false`); err != nil {
 		t.Fatal("settlement HTTP operational fixture setup failed")
 	}
+	// The fund of each branch is stated in its own book, signed by the branch's own account: a
+	// purchase charges the movement its own document writes, and a branch whose fund was never
+	// stated holds zero (050, S7).
+	for branch, account := range map[int]int{2: 2, 3: 3} {
+		if _, err := p.Exec(ctx, `INSERT INTO branch_fund_movements(branch_location_id,kind,amount,
+  description,created_by_account_id) VALUES($1,'aporte',5000000.00,
+  'Fondo de compras del fixture',$2)`, branch, account); err != nil {
+			t.Fatalf("the fund of branch %d could not be stated: %v", branch, err)
+		}
+	}
 	svc, err := auth.New(p, nil)
 	if err != nil {
 		t.Fatal("settlement HTTP auth fixture failed")

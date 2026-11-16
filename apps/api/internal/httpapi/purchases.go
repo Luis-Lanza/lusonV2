@@ -115,10 +115,19 @@ func (a *API) purchaseRoutes(store *purchases.Store) http.Handler {
 // token per class, and anything unexpected fails closed. The refusal of the purchase fund
 // reaches the invalid-request branch through its own Unwrap, exactly like the refusal of a
 // settlement that does not close against its total: the fund is cash, so a document paid by
-// transfer or beyond the envelope cannot be admitted as it stands, and the answer is the
-// contract's own token and never a SQLSTATE or the database's text.
+// transfer cannot be admitted as it stands, and the answer is the contract's own token and never a
+// SQLSTATE or the database's text.
+//
+// The fund that cannot pay the document is the one refusal of this contract that names a fact
+// instead of a class: it answers with its own code and with the two numbers the screen shows --
+// what the fund holds and what the purchase asks -- the way the closing layer publishes its named
+// refusals (S6, S7).
 func purchaseFailure(w http.ResponseWriter, err error) {
+	var insufficient *purchases.FundInsufficient
 	switch {
+	case errors.As(err, &insufficient):
+		respond(w, 409, map[string]any{"error": "fund_insufficient",
+			"balance": string(insufficient.Balance), "requested": string(insufficient.Requested)})
 	case errors.Is(err, purchases.ErrInvalid):
 		failure(w, 400, "invalid_request")
 	case errors.Is(err, purchases.ErrForbidden):
@@ -129,6 +138,11 @@ func purchaseFailure(w http.ResponseWriter, err error) {
 		failure(w, 409, "retry_conflict")
 	case errors.Is(err, purchases.ErrAlreadyReversed):
 		failure(w, 409, "already_reversed")
+	case errors.Is(err, purchases.ErrBranchFrozen):
+		// The branch is held by a live settlement (LC001). The branch acts on it by closing its
+		// settlement, so it is published under the token the closing layer publishes that very same
+		// fact with -- 409 branch_frozen -- and never as an outage.
+		failure(w, 409, "branch_frozen")
 	default:
 		failure(w, 503, "service_unavailable")
 	}

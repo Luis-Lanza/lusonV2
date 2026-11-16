@@ -28,23 +28,55 @@ func fail(ctx context.Context) error {
 	return ErrUnavailable
 }
 
-// FundRefusal is the refusal of a purchase the purchase fund cannot pay: the fund is cash,
-// so a branch purchase is paid in cash from it, and no document ever spends more than the
-// envelope of its branch holds. It is an invalid request, exactly like every other broken
-// rule of this contract, and it keeps the domain's own words instead of the database's.
+// ErrBranchFrozen is the refusal of a purchase the branch may not register because a live account
+// settlement holds it (LC001, the freeze of 035). It is a refusal the operator acts on -- the
+// branch closes or waits out its settlement -- and never an outage, so the boundary publishes it
+// under the same code and status the closing layer publishes the very same fact with (409
+// branch_frozen): one fact of the branch, one token across the house.
+var ErrBranchFrozen = errors.New("the branch has an open account settlement and cannot operate")
+
+// FundRefusal is the refusal of a purchase the purchase fund cannot pay: the fund is cash, so a
+// branch purchase is paid in cash from it, and no document ever spends more than the balance of
+// the branch's fund. It is an invalid request, exactly like every other broken rule of this
+// contract, and it keeps the domain's own words instead of the database's.
 //
-// The two rules the fund enforces share this refusal because both say the same thing to the
-// branch: the money of a purchase is physical, and it is the envelope that limits it.
+// It is the class of both refusals of the fund: the payment that is not cash (LP006) and the
+// document the ledger of the fund refuses for lack of money (LF003). The second one reaches the
+// branch with the two numbers of its own refusal, FundInsufficient.
 type FundRefusal struct{}
 
 // Error names the rule and never the SQLSTATE that raised it.
 func (e *FundRefusal) Error() string {
 	return "a branch purchase is paid in cash from the purchase fund, and it can never exceed" +
-		" what the envelope of its branch holds"
+		" the balance of that fund"
 }
 
 // Unwrap keeps errors.Is(err, ErrInvalid) true.
 func (e *FundRefusal) Unwrap() error { return ErrInvalid }
+
+// FundInsufficient is the refusal of a purchase the fund cannot pay: the signed ledger of the
+// branch holds Balance and the document asks Requested (LF003, the admission of the ledger). The
+// two numbers travel with the refusal because they are what the branch acts on -- the screen says
+// «el fondo tiene Bs X, la compra pide Bs Y» -- and a refusal that only said no would leave the
+// operator guessing how much the document exceeds by.
+//
+// The balance is read from `purchase_fund_ledger`, the one place that computes it: this refusal
+// names the arithmetic, it never repeats it.
+type FundInsufficient struct {
+	Balance   Money
+	Requested Money
+}
+
+// Error states both numbers in the words of the contract and never the SQLSTATE.
+func (e *FundInsufficient) Error() string {
+	return "the purchase fund holds " + string(e.Balance) + " and the purchase asks " +
+		string(e.Requested)
+}
+
+// Unwrap keeps errors.Is(err, ErrInvalid) true: a caller that only knows the classes still
+// recognises it, and the boundary publishes it under its own code because "the fund cannot pay
+// this" is a fact the branch acts on and a generic invalid request is not.
+func (e *FundInsufficient) Unwrap() error { return ErrInvalid }
 
 // purchaseLock serializes one operation key, so an identical concurrent submission
 // resolves to a replay instead of a unique violation. Transaction scoped: the database
@@ -169,8 +201,11 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 	if err != nil {
 		return Document{}, err
 	}
+	// The movement of the fund is written by the database at this very instant, by the deferred
+	// trigger of the document (050), so the refusal of a fund that cannot pay arrives here and is
+	// answered with the two numbers of the branch.
 	if err := tx.Commit(ctx); err != nil {
-		return Document{}, mapFailure(ctx, err)
+		return Document{}, s.fundFailure(ctx, branch, payload.PaidCash, err)
 	}
 	return document, nil
 }
@@ -1480,12 +1515,44 @@ func loadScrapLines(ctx context.Context, q querier, document Document) ([]ScrapL
 	return lines, nil
 }
 
+// fundFailure publishes the refusal of a document the fund cannot pay with the two numbers the
+// branch acts on: what the fund holds and what the document asks.
+//
+// This read decides nothing. The document is already refused -- the commit failed with LF003, the
+// admission of the ledger is the one that measured the balance under the lock of the branch -- and
+// what is read here is only the number the operator needs to act on. It is read from
+// `purchase_fund_ledger`, the view that owns the arithmetic: there is one arithmetic and this
+// refusal names it (S7), it never repeats it. The guard of 048 states the two numbers in its
+// message and nowhere else (MESSAGE, no DETAIL), and the house does not read a decision out of a
+// guard's prose, so the balance is asked of the view instead -- the same view the guard refused
+// against, in the same instant, with the document already rolled back.
+//
+// Anything that is not the ledger's own refusal keeps the plain mapping, and a balance that cannot
+// be read back is not guessed: the refusal keeps its class, because a refusal without its numbers
+// is still a refusal and an outage it is not.
+func (s *Store) fundFailure(ctx context.Context, branch int16, requested Money, err error) error {
+	var pg *pgconn.PgError
+	if !errors.As(err, &pg) || pg.Code != "LF003" {
+		return mapFailure(ctx, err)
+	}
+	var balance string
+	read := s.pool.QueryRow(ctx, `SELECT coalesce(sum(effective),0)::numeric(12,2)::text
+ FROM purchase_fund_ledger WHERE branch_location_id=$1`, branch)
+	if read.Scan(&balance) != nil {
+		return mapFailure(ctx, err)
+	}
+	return &FundInsufficient{Balance: Money(balance), Requested: requested}
+}
+
 // mapFailure publishes the database's own decision and nothing else: SQLSTATE is the only
 // trusted evidence, and cancellation keeps its semantics. LP002 (the settlement), LP003
 // (the mirror) and LP005 (the line and sign rules) are refusals this store already derived,
 // so reaching them means the request broke a rule the contract publishes as an invalid
-// document; LP001 is the branch authority, LP004 the already-reversed document and LP006 the
-// purchase fund, which is cash and pays only what its envelope holds.
+// document; LP001 is the branch authority, LP004 the already-reversed document, LP006 the
+// purchase fund, which is cash and pays only what its balance holds, and LC001 the freeze of a
+// live settlement holding the branch. LF003 is the fund's ledger refusing the movement of this
+// document for lack of money: the path that creates the document names the two numbers of that
+// refusal through fundFailure, and this is its class.
 func mapFailure(ctx context.Context, err error) error {
 	if err == nil {
 		return nil
@@ -1498,13 +1565,23 @@ func mapFailure(ctx context.Context, err error) error {
 		switch pg.Code {
 		case "LP001":
 			return ErrForbidden
+		// The branch is frozen by a live settlement (LC001, the freeze of 035): the branch closes or
+		// waits out its settlement, so this is a conflict the operator acts on and never an outage.
+		case "LC001":
+			return ErrBranchFrozen
 		case "LP002", "LP003", "LP005":
 			return ErrInvalid
 		case "LP004":
 			return ErrAlreadyReversed
 		// The fund is cash and it pays what it holds: a purchase paid even partly by
-		// transfer, or one beyond the envelope of the branch, is the fund's own refusal.
+		// transfer, or one beyond the balance of the branch, is the fund's own refusal.
 		case "LP006":
+			return &FundRefusal{}
+		// The ledger of the fund refused the movement of this document: the document asks for
+		// more than the fund holds (LF003, the admission of 048). The path that creates the
+		// document names the balance and the requested amount through fundFailure; this is the
+		// class of the same refusal.
+		case "LF003":
 			return &FundRefusal{}
 		// A refused amount or a refused document shape is the same public refusal, because
 		// the database decides it. A foreign key is deliberately not mapped: an unknown

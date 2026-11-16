@@ -205,12 +205,25 @@ func TestPurchaseFailureMapping(t *testing.T) {
 		purchases.ErrNotFound:        {404, "not_found"},
 		purchases.ErrRetryConflict:   {409, "retry_conflict"},
 		purchases.ErrAlreadyReversed: {409, "already_reversed"},
+		purchases.ErrBranchFrozen:    {409, "branch_frozen"},
+		&purchases.FundRefusal{}:     {400, "invalid_request"},
 		purchases.ErrUnavailable:     {503, "service_unavailable"},
 		errors.New("unexpected"):     {503, "service_unavailable"},
 	} {
 		w := httptest.NewRecorder()
 		purchaseFailure(w, err)
 		expectTransferError(t, w, want.status, want.code)
+	}
+	// The fund that cannot pay the document is published with its own code and with the two
+	// numbers the screen shows, never with a class alone.
+	w := httptest.NewRecorder()
+	purchaseFailure(w, &purchases.FundInsufficient{Balance: "300.00", Requested: "500.00"})
+	var body map[string]string
+	if w.Code != 409 || w.Header().Get("Content-Type") != "application/json" ||
+		json.Unmarshal(w.Body.Bytes(), &body) != nil || len(body) != 3 ||
+		body["error"] != "fund_insufficient" || body["balance"] != "300.00" ||
+		body["requested"] != "500.00" {
+		t.Fatalf("the fund's refusal must name both numbers: %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -601,6 +614,10 @@ type purchaseHTTPFixture struct {
 	tokens  []string
 }
 
+// purchaseFixtureFund is the fund the fixture states in the book of each branch: enough for every
+// document these tests write, and the number the one test that refuses a document can name.
+const purchaseFixtureFund = "5000000.00"
+
 // purchaseFixture needs the isolated test PostgreSQL. Admission fails closed inside
 // testpg.Open, exactly like every other database fixture in this repository.
 func purchaseFixture(t *testing.T) *purchaseHTTPFixture {
@@ -621,6 +638,16 @@ func purchaseFixture(t *testing.T) *purchaseHTTPFixture {
 	}
 	if _, err := p.Exec(ctx, `UPDATE auth_accounts SET must_change_password=false`); err != nil {
 		t.Fatal("purchase HTTP operational fixture setup failed")
+	}
+	// The fund of each branch is stated in its own book, signed by the branch's own account: a
+	// purchase charges the movement its own document writes, and a branch whose fund was never
+	// stated holds zero (050, S7).
+	for branch, account := range map[int]int{2: 2, 3: 3} {
+		if _, err := p.Exec(ctx, `INSERT INTO branch_fund_movements(branch_location_id,kind,amount,
+  description,created_by_account_id) VALUES($1,'aporte',$2::numeric,
+  'Fondo de compras del fixture',$3)`, branch, purchaseFixtureFund, account); err != nil {
+			t.Fatalf("the fund of branch %d could not be stated: %v", branch, err)
+		}
 	}
 	svc, err := auth.New(p, nil)
 	if err != nil {
@@ -732,7 +759,9 @@ func (f *purchaseHTTPFixture) snapshot(t *testing.T) string {
 	err := f.p.QueryRow(f.ctx, `SELECT jsonb_build_object(
   'purchases',(SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id),'[]'::jsonb) FROM purchases p),
   'used',(SELECT coalesce(jsonb_agg(to_jsonb(l) ORDER BY l.purchase_id,l.model),'[]'::jsonb) FROM purchase_used_lines l),
-  'scrap',(SELECT coalesce(jsonb_agg(to_jsonb(l) ORDER BY l.purchase_id,l.material_id),'[]'::jsonb) FROM purchase_scrap_lines l))::text`).Scan(&data)
+  'scrap',(SELECT coalesce(jsonb_agg(to_jsonb(l) ORDER BY l.purchase_id,l.material_id),'[]'::jsonb) FROM purchase_scrap_lines l),
+  'fund',(SELECT coalesce(jsonb_agg(to_jsonb(m) ORDER BY m.id),'[]'::jsonb) FROM branch_fund_movements m),
+  'writes',(SELECT coalesce(jsonb_agg(to_jsonb(w) ORDER BY w.purchase_id),'[]'::jsonb) FROM purchase_fund_writes w))::text`).Scan(&data)
 	if err != nil {
 		t.Fatal("purchase snapshot failed")
 	}
@@ -1116,6 +1145,47 @@ func TestPurchaseHTTPRefusesTransferPayment(t *testing.T) {
 		`{"operation_key":"http-purchase-fund-03","used_lines":[{"model":"NS60ZL","quantity":1,"unit_price":"25000.00"}],"paid_cash":"25000.00","paid_transfer":"0.00"}`)), 201)
 	if admitted.Total != "25000.00" || admitted.PaidCash != "25000.00" || admitted.PaidTransfer != "0.00" {
 		t.Fatalf("the cash document is wrong: %+v", admitted)
+	}
+}
+
+// TestPurchaseHTTPRefusesAPurchaseOfAFrozenBranch proves the freeze on the wire: a branch held by a
+// live settlement answers the token the closing layer publishes that fact with -- 409
+// branch_frozen -- so the operator is told to close its settlement instead of reading an outage,
+// and nothing is written (LC001).
+func TestPurchaseHTTPRefusesAPurchaseOfAFrozenBranch(t *testing.T) {
+	f := purchaseFixture(t)
+	f.openSettlement(t, nil)
+	f.rejected(t, f.request(2, "POST", "/api/purchases", validPurchaseJSON), 409, "branch_frozen")
+	var count int
+	if err := f.p.QueryRow(f.ctx, "SELECT count(*) FROM purchases").Scan(&count); err != nil || count != 0 {
+		t.Fatalf("a frozen branch persisted %d documents: %v", count, err)
+	}
+}
+
+// TestPurchaseHTTPRefusesAPurchaseBeyondTheFund proves the published refusal of S6 and S7 on the
+// wire: a document that asks the fund for more than its branch holds answers its own code with the
+// balance and the requested amount beside it -- so the screen can say «el fondo tiene Bs X, la
+// compra pide Bs Y» -- never an outage and never a SQLSTATE or the database's text, and it writes
+// nothing.
+func TestPurchaseHTTPRefusesAPurchaseBeyondTheFund(t *testing.T) {
+	f := purchaseFixture(t)
+	body := `{"operation_key":"http-purchase-beyond-01","used_lines":[{"model":"NS60ZL","quantity":1,"unit_price":"5000000.01"}],"paid_cash":"5000000.01","paid_transfer":"0.00"}`
+	before := f.snapshot(t)
+	w := f.serve(t, f.request(2, "POST", "/api/purchases", body))
+	var answer map[string]string
+	if w.Code != 409 || w.Header().Get("Content-Type") != "application/json" ||
+		json.Unmarshal(w.Body.Bytes(), &answer) != nil || len(answer) != 3 {
+		t.Fatalf("the fund's refusal must be its own answer: %d %s", w.Code, w.Body.String())
+	}
+	if answer["error"] != "fund_insufficient" || answer["balance"] != purchaseFixtureFund ||
+		answer["requested"] != "5000000.01" {
+		t.Fatalf("the refusal must name the balance and the request: %+v", answer)
+	}
+	if strings.Contains(w.Body.String(), "LF003") || strings.Contains(w.Body.String(), "sum") {
+		t.Fatalf("the answer must never leak a SQLSTATE or the database's text: %s", w.Body.String())
+	}
+	if f.snapshot(t) != before {
+		t.Fatal("a refused purchase changed stored state")
 	}
 }
 
