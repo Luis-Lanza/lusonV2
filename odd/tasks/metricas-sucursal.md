@@ -150,3 +150,12 @@ operativa, fondo de compras, baterías más vendidas por unidades, recambio y es
 - **L20** Resultado: **cuatro revisiones nativas aprobadas y quemadas** (lectura con corrección, contrato,
   parser y pantalla). Ningún corte necesitó una segunda corrección. El espacio de documentos y diseños no es
   candidato de código.
+- **L21** Cierre con el humano: las ventas del preview son de prueba (las hizo para probar), así que los saldos
+  que se ven no son un caso real. Y la tarjeta «Caja de hoy» queda como está: el esperado es el del acta.
+- **L22** Decisión de alcance: **cargar movimientos de caja** —gastos, aportes y recaudaciones— **no entra en
+  esta vertical**. Hoy no hay ninguna pantalla que los escriba; el único camino es `POST /api/closings/expenses`,
+  y en la rendición los gastos sólo se muestran. Será su propia vertical, «Movimientos de caja», y es ahí donde
+  hay que definir qué significa cada tipo: si una recaudación saca plata del cajón o es la entrega que registra
+  el acta al cerrar. Hasta entonces la tarjeta lee gastos en cero, porque no hay forma de crearlos.
+- **L23** Ajuste visual posterior a la revisión: las columnas del libro de la tarjeta «Caja de hoy» se tocaban
+  («MONTONOMENTO», «Bs 5.000,0015/11/2026»). Se separaron con aire y se ancló el momento a la derecha.
