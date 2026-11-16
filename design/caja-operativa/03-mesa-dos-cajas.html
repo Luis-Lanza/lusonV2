@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Caja operativa · dos cajas en una mesa · Luson</title>
+<style>
+  :root{
+    --wine:#7A1F3D; --hover:#5B162D; --tint:#F5E8ED; --page:#F8F6F4;
+    --border:#DED7DA; --muted:#6B6267; --ink:#242124; --surface:#FFFFFF;
+    --received-bg:#ECFDF5; --received-ink:#047857; --received-border:#A7F3D0;
+    --warning-bg:#FFFBEF; --warning-border:#E8CF86; --warning-ink:#805400;
+    --shortage-bg:#FFF0F0; --shortage-border:#FFDAD6; --action-alert:#BA1A1A;
+    --disabled-bg:#EFEDEF; --disabled-ink:#595459; --disabled-border:#AAA5AA;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--page); color:var(--ink); font:14px/1.45 sans-serif; -webkit-font-smoothing:antialiased}
+  .app{display:grid; grid-template-columns:240px 1fr; min-height:100vh}
+  .sidebar{background:var(--surface); border-right:1px solid var(--border); padding:16px 12px}
+  .brand{display:flex; align-items:center; gap:8px; padding:4px 12px 20px; font-weight:700; letter-spacing:.02em}
+  .brand span{width:22px; height:22px; border-radius:6px; background:var(--wine); display:grid; place-items:center; color:#fff; font-size:12px}
+  .side-nav{list-style:none; margin:0; padding:0; display:grid; gap:2px}
+  .side-nav a{display:flex; align-items:center; justify-content:space-between; padding:9px 12px; border-radius:6px;
+    color:var(--ink); text-decoration:none; font-size:13px; border-left:2px solid transparent}
+  .side-nav a:hover{background:var(--page)}
+  .side-nav a[aria-current="page"]{background:var(--tint); color:var(--wine); font-weight:600; border-left-color:var(--wine)}
+  .app-header{height:56px; background:var(--surface); border-bottom:1px solid var(--border);
+    display:flex; align-items:center; justify-content:space-between; padding:0 24px 0 40px}
+  .app-header .where{font-weight:600; font-size:13px}
+  .app-header .who{display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13px}
+  .avatar{width:28px; height:28px; border-radius:50%; background:var(--tint); color:var(--wine); display:grid; place-items:center; font-weight:700; font-size:12px}
+  main{padding:28px 40px 48px 40px; max-width:1240px}
+  h1{margin:0 0 4px; font-size:22px; font-weight:700; letter-spacing:-.01em}
+  .lede{margin:0; color:var(--muted); font-size:13px; max-width:74ch}
+
+  .frozen{display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin:18px 0 20px; padding:12px 16px;
+    background:var(--warning-bg); border:1px solid var(--warning-border); border-radius:8px}
+  .frozen .text{flex:1; min-width:260px; font-size:13px; color:var(--ink)}
+  .frozen .text b{font-weight:700}
+  .chip{font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--warning-ink);
+    background:var(--surface); border:1px solid var(--warning-border); border-radius:999px; padding:3px 10px}
+  .secondary{font:inherit; font-size:13px; font-weight:600; min-height:36px; padding:8px 12px; border-radius:4px;
+    background:var(--surface); border:1px solid var(--muted); color:var(--ink); cursor:pointer; text-decoration:none; display:inline-grid; align-items:center}
+  .secondary:hover{background:var(--page)}
+  .secondary:focus-visible{outline:2px solid var(--wine); outline-offset:3px}
+
+  .mesa{display:grid; grid-template-columns:1fr 1fr; gap:20px; align-items:start}
+  .panel{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px 18px; box-shadow:0 1px 2px #2421240d}
+  .panel.fund{border-left:3px solid var(--warning-border)}
+  .panel .head{display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin-bottom:2px}
+  .panel h2{margin:0; font-size:13px; font-weight:600; letter-spacing:0}
+  .panel .tag{font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--muted)}
+  .big{display:flex; align-items:baseline; gap:10px; margin:6px 0 2px}
+  .big .amount{font-size:26px; font-weight:700; letter-spacing:-.02em; font-variant-numeric:tabular-nums; color:var(--wine)}
+  .big.fund .amount{color:var(--warning-ink)}
+  .big .note{font-size:12px; color:var(--muted)}
+  .sub{margin:0 0 6px; font-size:12px; color:var(--muted)}
+  .ladder{list-style:none; margin:10px 0 14px; padding:0; font-size:12px; border-top:1px solid var(--border)}
+  .ladder li{display:flex; justify-content:space-between; gap:10px; padding:6px 0; border-bottom:1px solid var(--border); color:var(--muted)}
+  .ladder li:last-child{border-bottom:none}
+  .ladder .amt{font-variant-numeric:tabular-nums; color:var(--ink); white-space:nowrap}
+
+  table{width:100%; border-collapse:collapse; font-size:12px}
+  th{text-align:left; font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--muted);
+    padding:6px 0; border-bottom:1px solid var(--border); white-space:nowrap}
+  td{padding:8px 0; border-bottom:1px solid var(--border); vertical-align:middle}
+  tbody tr:last-child td{border-bottom:none}
+  .num{text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap}
+  th.num{text-align:right}
+  .when{color:var(--muted); white-space:nowrap}
+  .kind{display:inline-block; font-size:11px; font-weight:600; letter-spacing:.04em; text-transform:uppercase;
+    border-radius:3px; padding:2px 6px; border:1px solid var(--border); white-space:nowrap}
+  .kind.gasto{background:var(--shortage-bg); border-color:var(--shortage-border); color:var(--action-alert)}
+  .kind.aporte{background:var(--received-bg); border-color:var(--received-border); color:var(--received-ink)}
+  .kind.recaudacion{background:var(--warning-bg); border-color:var(--warning-border); color:var(--warning-ink)}
+  .kind.correccion{background:var(--tint); border-color:#D9B3C1; color:var(--wine)}
+  .kind.compra{background:var(--page); border-color:var(--border); color:var(--muted)}
+
+  .actions{display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:14px; padding-top:14px; border-top:1px solid var(--border)}
+  .actions button{font:inherit; font-size:12px; font-weight:600; min-height:44px; padding:8px; border-radius:4px;
+    background:var(--disabled-bg); border:1px solid var(--disabled-border); color:var(--disabled-ink); cursor:not-allowed}
+  .why{margin:8px 0 0; font-size:12px; color:var(--muted); display:flex; gap:6px; align-items:flex-start}
+  .why b{color:var(--ink); font-weight:600}
+  .foot-note{margin:14px 0 0; font-size:12px; color:var(--muted)}
+  .link{color:var(--wine)}
+
+  .rule-band{margin-top:22px; background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px 18px}
+  .rule-band h2{margin:0 0 10px; font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--muted)}
+  .rule-grid{display:grid; grid-template-columns:1fr 1fr; gap:16px}
+  .rule-grid div{font-size:13px; line-height:1.55}
+  .rule-grid b{font-weight:600}
+  .rule-grid .small{display:block; font-size:12px; color:var(--muted); margin-top:2px}
+  @media(max-width:1100px){ .mesa{grid-template-columns:1fr} .rule-grid{grid-template-columns:1fr} }
+  @media(max-width:820px){
+    .app{grid-template-columns:1fr}
+    .sidebar{border-right:0; border-bottom:1px solid var(--border)}
+    .app-header{padding:0 16px}
+    main{padding:20px 16px 40px}
+    .actions{grid-template-columns:1fr}
+    th.hide,td.hide{display:none}
+  }
+  @media(prefers-reduced-motion:reduce){*{animation:none;transition:none;scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><span>L</span>Lusón</div>
+    <nav aria-label="Secciones">
+      <ul class="side-nav">
+        <li><a href="#/inventario">Inventario</a></li>
+        <li><a href="#/transferencias">Transferencias</a></li>
+        <li><a href="#/rendicion">Rendición de cuentas</a></li>
+        <li><a href="#/ventas">Punto de venta</a></li>
+        <li><a href="#/ventas/historial">Historial de ventas</a></li>
+        <li><a href="#/compras">Compras</a></li>
+        <li><a href="#/caja" aria-current="page">Caja</a></li>
+        <li><a href="#/metricas">Métricas</a></li>
+      </ul>
+    </nav>
+  </aside>
+
+  <div>
+    <header class="app-header">
+      <span class="where">Sucursal Centro</span>
+      <span class="who"><span>María Quispe · encargada</span><span class="avatar" aria-hidden="true">MQ</span></span>
+    </header>
+
+    <main>
+      <h1>Caja operativa y fondo de compras</h1>
+      <p class="lede">Las dos cajas de la sucursal, cada una con su libro. Se miran juntas para no confundirlas; se mueven por separado.</p>
+
+      <div class="frozen" role="status">
+        <span class="chip">Congelada</span>
+        <span class="text"><b>Rendición en curso desde las 09:05.</b> El Almacén está contando la sucursal. Podés consultar el libro; no se registran movimientos hasta que cierre.</span>
+        <a class="secondary" href="#/rendicion">Ver la rendición</a>
+      </div>
+
+      <div class="mesa">
+        <section class="panel" aria-labelledby="t-op">
+          <div class="head">
+            <h2 id="t-op">Caja operativa</h2>
+            <span class="tag">el cajón del mostrador</span>
+          </div>
+          <div class="big"><span class="amount">Bs 6.820,00</span><span class="note">esperado · en vivo</span></div>
+          <p class="sub">Sale de acá el gasto chico de la tienda. Entra el efectivo de las ventas y lo que pone el Almacén.</p>
+
+          <ul class="ladder">
+            <li><span>Quedó al cerrar el 12/11</span><span class="amt">Bs 1.850,00</span></li>
+            <li><span>Ventas en efectivo desde el corte</span><span class="amt">+ Bs 6.420,00</span></li>
+            <li><span>Aportes − gastos − recaudaciones</span><span class="amt">− Bs 1.450,00</span></li>
+          </ul>
+
+          <table>
+            <caption style="text-align:left;font-size:12px;color:var(--muted);padding-bottom:6px">Movimientos desde el corte · 7</caption>
+            <thead>
+              <tr><th scope="col">Momento</th><th scope="col">Tipo</th><th scope="col">Motivo</th><th scope="col" class="num">Monto</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="when">15/11 11:14</td><td><span class="kind correccion">Corrección</span></td><td>Devuelve excedente del adelanto</td><td class="num" style="color:var(--wine);font-weight:600">+ Bs 4.500,00</td></tr>
+              <tr><td class="when">15/11 11:00</td><td><span class="kind gasto">Gasto</span></td><td>Adelanto a proveedor de tapas</td><td class="num" style="color:var(--action-alert);font-weight:600">− Bs 5.000,00</td></tr>
+              <tr><td class="when">15/11 10:03</td><td><span class="kind gasto">Gasto</span></td><td>Focos y cinta aislante</td><td class="num" style="color:var(--action-alert);font-weight:600">− Bs 45,00</td></tr>
+              <tr><td class="when">14/11 17:22</td><td><span class="kind recaudacion">Recaudación</span></td><td>Retiro del Almacén</td><td class="num" style="color:var(--warning-ink);font-weight:600">− Bs 1.200,00</td></tr>
+              <tr><td class="when">14/11 08:05</td><td><span class="kind aporte">Aporte</span></td><td>Cambio del dueño</td><td class="num" style="color:var(--received-ink);font-weight:600">+ Bs 500,00</td></tr>
+            </tbody>
+          </table>
+
+          <div class="actions" role="group" aria-label="Registrar en la caja operativa">
+            <button type="button" disabled aria-describedby="why-frozen">Gasto</button>
+            <button type="button" disabled aria-describedby="why-frozen">Aporte</button>
+            <button type="button" disabled aria-describedby="why-frozen">Recaudación</button>
+          </div>
+          <p class="why" id="why-frozen"><span aria-hidden="true">🔒</span><span><b>No disponible mientras la rendición está abierta.</b> Al cerrar, el Almacén deja el cajón contado y el libro vuelve a aceptar movimientos.</span></p>
+        </section>
+
+        <section class="panel fund" aria-labelledby="t-fondo">
+          <div class="head">
+            <h2 id="t-fondo">Fondo de compras</h2>
+            <span class="tag">chatarra y baterías usadas</span>
+          </div>
+          <div class="big fund"><span class="amount">Bs 1.360,00</span><span class="note">disponible hoy</span></div>
+          <p class="sub">Sólo compra material. Ninguna venta lo alimenta, y ningún gasto de tienda sale de acá.</p>
+
+          <ul class="ladder">
+            <li><span>Quedó al cerrar el 12/11</span><span class="amt">Bs 2.000,00</span></li>
+            <li><span>Compras en efectivo desde el corte</span><span class="amt">− Bs 640,00</span></li>
+          </ul>
+
+          <table>
+            <caption style="text-align:left;font-size:12px;color:var(--muted);padding-bottom:6px">Compras desde el corte · 2 documentos</caption>
+            <thead>
+              <tr><th scope="col">Momento</th><th scope="col">Documento</th><th scope="col">Material</th><th scope="col" class="num">Monto</th></tr>
+            </thead>
+            <tbody>
+              <tr><td class="when">15/11 09:40</td><td><span class="kind compra">Compra</span></td><td>Cobre · 4,5 kg</td><td class="num" style="font-weight:600">− Bs 210,00</td></tr>
+              <tr><td class="when">14/11 16:10</td><td><span class="kind compra">Compra</span></td><td>Baterías usadas · 7 unidades</td><td class="num" style="font-weight:600">− Bs 430,00</td></tr>
+            </tbody>
+          </table>
+
+          <div class="actions" role="group" aria-label="Registrar en el fondo de compras">
+            <button type="button" disabled aria-describedby="why-fund" style="grid-column:1 / -1">Registrar compra</button>
+          </div>
+          <p class="why" id="why-fund"><span aria-hidden="true">🔒</span><span><b>El fondo se repone en la rendición.</b> Comprar se hace desde <a class="link" href="#/compras">Compras</a>, que es la que descuenta de acá y de ninguna otra caja.</span></p>
+        </section>
+      </div>
+
+      <section class="rule-band" aria-labelledby="t-regla">
+        <h2 id="t-regla">La regla de las dos cajas</h2>
+        <div class="rule-grid">
+          <div><b>Un gasto de tienda nunca sale del fondo de compras.</b><span class="small">Detergente, escobas, flete chico: son caja operativa. Si salieran del fondo, la próxima compra de chatarra no se podría pagar.</span></div>
+          <div><b>Una compra de chatarra nunca sale del cajón.</b><span class="small">El fondo existe para eso y se declara en cada rendición. Si saliera del cajón, el esperado del corte no cerraría nunca.</span></div>
+        </div>
+      </section>
+    </main>
+  </div>
+</div>
+</body>
+</html>

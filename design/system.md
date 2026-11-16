@@ -1,6 +1,8 @@
 # Luson visual system
 
-Synced from `apps/web/src/style.css` (entire file). Not a proposed starter. Names below for literal colors are documentation aliases, not additional CSS custom properties. Existing access-management boards are unchanged.
+Synced from `apps/web/src/style.css` (entire file, 1046 lines). Not a proposed starter. Names below for literal colors are documentation aliases, not additional CSS custom properties. Existing access-management boards are unchanged.
+
+Re-synced on 2026-11-16 over the delta of the metrics screen (commits `202bd17`, `f115dbf`, `5ccd796`, `c714cb6`, `efa0ea9`, 231 added lines). What changed: one type size (`26px`, `.metrics-amount`), four spacing values (`1`, `5`, `18` px and the compound `5px 12px` gap), a deliberate `0` radius, a `none` shadow reset, and the metrics card conventions under Component rules. No color value was added or removed: the source still holds the same 36 representations, and `#2421240d` now also shades the metrics panels.
 
 ## Colors (36 normalized source representations)
 Every entry comes from `apps/web/src/style.css`; selectors identify the source and usage. Hex casing and white are normalized without changing values.
@@ -46,19 +48,20 @@ Source also spells the review backdrop as #24212473 and rgb(36 33 36 / 45%); the
 ## Typography (12 sizes, 1 declared family stack)
 Source: `apps/web/src/style.css` :root declares `Inter, sans-serif`, 14px. Self-contained design boards use only the declared generic system fallback `sans-serif`; Inter is not downloaded.
 
-Sizes present: 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24px (navigation badges through detail metrics). Weights: 400 (normal), 500, 600, 700. Source examples: .brand, h1, .transfer-creation h2/h3, .transfer-pending h2, .transfer-decision-recovery h3, .transfer-receipt-overview dd, .count-corrections h5.
+Sizes present: 10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24, 26px (navigation badges through the metrics amount). Weights: 400 (normal), 500, 600, 700. Source examples: .brand, h1, .transfer-creation h2/h3, .transfer-pending h2, .transfer-decision-recovery h3, .transfer-receipt-overview dd, .count-corrections h5, and 26px for `.metrics-amount` (the money a measuring screen leads with, tabular and tight-tracked).
 
 ## Spacing (14 core padding/gap values)
-Source: `apps/web/src/style.css`: 2 (.transfer-action-badge), 4 (.brand), 6 (.location-tabs button), 8 (button), 10 (.login-card input), 12 (.sidebar), 14 (.login-notice), 16 (.inventory-main), 20 (.pending-summary), 24 (.inventory-heading), 28 (.login-submit margin-top), 32 (.login-header), 40 (.login-card), 48 (.login-main) px. 14 actual spacing values. This is a selected reusable scale, not every positional offset in source.
+Source: `apps/web/src/style.css`: 1 (.metrics-band, the hairline between cells), 2 (.transfer-action-badge), 4 (.brand), 5 (.metrics-panel-title margin), 6 (.location-tabs button), 8 (button), 10 (.login-card input), 12 (.sidebar), 14 (.login-notice), 16 (.inventory-main), 18 (.metrics-band-cell), 20 (.pending-summary), 24 (.inventory-heading), 28 (.login-submit margin-top), 32 (.login-header), 40 (.login-card), 48 (.login-main) px. 17 selected values. Compound paddings such as `5px 12px`, `10px 14px`, `16px 18px` and `16px 18px 14px` are combinations of this scale, not new tokens. This is a selected reusable scale, not every positional offset in source.
 
 ## Radius (6 values)
-Source: `apps/web/src/style.css`: 3px (.badge), 4px (button), 6px (.transfer-detail-items), 8px (.product-card), 12px (.login-card), 999px (.transfer-action-badge). 50% is also used for circular history markers, not a panel radius.
+Source: `apps/web/src/style.css`: 0 (deliberate: stacked cells of a metrics panel meet at a square edge and the border supplies the seam), 3px (.badge), 4px (button), 6px (.transfer-detail-items), 8px (.product-card), 12px (.login-card), 999px (.transfer-action-badge). 50% is also used for circular history markers, not a panel radius.
 
 ## Shadows (3)
 Source: `apps/web/src/style.css`:
 - `0 1px 2px #2421240d` — .login-card, .product-card.
 - `0 20px 50px #24212433` — .transfer-review.
 - `0 16px 48px rgb(0 0 0 / 20%)` — .transfer-decision-modal, .count-modal.
+- `none` — reset on nested cells that sit inside an already-elevated surface, so elevation is stated once.
 
 ## Component rules
 - White 240px sidebar; 56px white app header; wine active navigation with tint background and 2px marker. Source: .sidebar, .app-header, .side-nav.
@@ -67,6 +70,10 @@ Source: `apps/web/src/style.css`:
 - Wine primary action, hover token, visible 2px wine focus with 3px offset. Source: button, .primary, :focus-visible.
 - Touch controls 44px minimum and wrapping labels in participant surfaces. Source: F6a participant controls block.
 - New mockups use the existing muted color for field/control boundaries to provide contrast; source fields use border. This is a design accessibility treatment, not a claimed production token change.
+- Measuring screens lead with one tabular amount: 26px, weight 700, `letter-spacing:-.02em`, `font-variant-numeric:tabular-nums`, with a 12.5px muted note beside it. Source: `.metrics-amount`.
+- A band of cells is joined with `gap:1px` over a border-colored background, radius 8px, so the seam is the divider and no cell draws its own card. Each cell pads `16px 18px` on white. Source: `.metrics-band`, `.metrics-band-cell`.
+- Panels on a measuring screen keep the 8px radius, white surface and `0 1px 2px #2421240d`, and carry their own `h3` at 13.5px instead of a page heading. Source: `.metrics-panel`, `.metrics-big`.
+- A period is chosen once, at the top, with the same control as Compras, and every number below inherits it; the control states its provenance (`al cierre` / `en vivo`) next to it. Source: `.metrics-period`, `.metrics-provenance`.
 - Received status and reconciliation status must remain separate. Immutable evidence, effective quantities and stock balances are distinct in TransferDetail.tsx. New reconciliation flow is a proposal, not existing runtime behavior.
 
 ## Artboard self-check

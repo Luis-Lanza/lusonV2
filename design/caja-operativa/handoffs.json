@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "chosen": "01-libro-y-ticket.html",
+  "handoffs": {
+    "01-libro-y-ticket.html": {
+      "status": "in_progress",
+      "queued": false,
+      "sentAt": "2026-11-16T12:16:33.200Z",
+      "startedAt": "2026-11-16T12:16:46.596Z",
+      "implementedAt": null,
+      "feature": "odd/tasks/caja-operativa.md",
+      "note": "Arrancando: migración del tipo corrección, efecto firmado único, endpoints y pantalla."
+    }
+  }
+}

@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Caja operativa · el cajón primero · Luson</title>
+<style>
+  :root{
+    --wine:#7A1F3D; --hover:#5B162D; --tint:#F5E8ED; --page:#F8F6F4;
+    --border:#DED7DA; --muted:#6B6267; --ink:#242124; --surface:#FFFFFF;
+    --received-bg:#ECFDF5; --received-ink:#047857; --received-border:#A7F3D0;
+    --warning-bg:#FFFBEF; --warning-border:#E8CF86; --warning-ink:#805400;
+    --shortage-bg:#FFF0F0; --shortage-border:#FFDAD6; --action-alert:#BA1A1A;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--page); color:var(--ink); font:14px/1.45 sans-serif; -webkit-font-smoothing:antialiased}
+  .app{display:grid; grid-template-columns:240px 1fr; min-height:100vh}
+  .sidebar{background:var(--surface); border-right:1px solid var(--border); padding:16px 12px}
+  .brand{display:flex; align-items:center; gap:8px; padding:4px 12px 20px; font-weight:700; letter-spacing:.02em}
+  .brand span{width:22px; height:22px; border-radius:6px; background:var(--wine); display:grid; place-items:center; color:#fff; font-size:12px}
+  .side-nav{list-style:none; margin:0; padding:0; display:grid; gap:2px}
+  .side-nav a{display:flex; align-items:center; justify-content:space-between; padding:9px 12px; border-radius:6px;
+    color:var(--ink); text-decoration:none; font-size:13px; border-left:2px solid transparent}
+  .side-nav a:hover{background:var(--page)}
+  .side-nav a[aria-current="page"]{background:var(--tint); color:var(--wine); font-weight:600; border-left-color:var(--wine)}
+  .app-header{height:56px; background:var(--surface); border-bottom:1px solid var(--border);
+    display:flex; align-items:center; justify-content:space-between; padding:0 24px 0 40px}
+  .app-header .where{font-weight:600; font-size:13px}
+  .app-header .who{display:flex; align-items:center; gap:10px; color:var(--muted); font-size:13px}
+  .avatar{width:28px; height:28px; border-radius:50%; background:var(--tint); color:var(--wine); display:grid; place-items:center; font-weight:700; font-size:12px}
+  main{padding:28px 40px 48px 40px; max-width:1240px}
+  h1{margin:0 0 4px; font-size:22px; font-weight:700; letter-spacing:-.01em}
+  .lede{margin:0; color:var(--muted); font-size:13px; max-width:70ch}
+  .period-bar{margin:18px 0 18px; display:flex; align-items:flex-end; gap:16px; flex-wrap:wrap;
+    padding:14px 16px; background:var(--surface); border:1px solid var(--border); border-radius:8px}
+  .field{display:grid; gap:4px}
+  .field label{font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--muted)}
+  .field select{font:inherit; font-size:13px; color:var(--ink); background:var(--surface);
+    border:1px solid var(--muted); border-radius:4px; padding:7px 30px 7px 10px; min-width:340px; appearance:none;
+    background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236B6267'/%3E%3C/svg%3E");
+    background-repeat:no-repeat; background-position:right 10px center}
+  .field select:focus-visible{outline:2px solid var(--wine); outline-offset:3px}
+  .provenance{display:inline-flex; align-items:center; gap:6px; font-size:12px; color:var(--muted);
+    border:1px solid var(--border); border-radius:999px; padding:3px 10px; background:var(--page)}
+  .provenance b{color:var(--ink); font-weight:600}
+  .dot{width:7px; height:7px; border-radius:50%; background:var(--received-ink)}
+
+  .drawer{display:grid; grid-template-columns:1.25fr 1fr; gap:20px; align-items:start; margin-bottom:24px}
+  .well{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px 18px; box-shadow:0 1px 2px #2421240d}
+  .well .cap{font-size:12px; color:var(--muted)}
+  .big{display:flex; align-items:baseline; gap:10px; margin:6px 0 2px}
+  .big .amount{font-size:26px; font-weight:700; letter-spacing:-.02em; font-variant-numeric:tabular-nums; color:var(--wine)}
+  .big .note{font-size:12px; color:var(--muted)}
+  .well .hint{font-size:12px; color:var(--muted); margin:0 0 14px}
+
+  .ladder{list-style:none; margin:0; padding:0; font-size:13px}
+  .ladder li{display:grid; grid-template-columns:1fr auto auto; gap:10px; align-items:baseline;
+    padding:8px 0; border-bottom:1px solid var(--border)}
+  .ladder li:last-child{border-bottom:none}
+  .ladder .lbl{color:var(--muted)}
+  .ladder .qty{color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; text-align:right; min-width:70px}
+  .ladder .amt{font-variant-numeric:tabular-nums; font-weight:600; text-align:right; min-width:110px; white-space:nowrap}
+  .ladder .plus{color:var(--received-ink)}
+  .ladder .minus{color:var(--action-alert)}
+  .ladder .total{border-top:1px solid var(--border); margin-top:4px; padding-top:10px}
+  .ladder .total .lbl{color:var(--ink); font-weight:700}
+  .ladder .total .amt{font-size:15px; color:var(--wine)}
+
+  .acts{display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:14px}
+  .acts button{font:inherit; font-size:13px; font-weight:600; min-height:44px; padding:10px 8px; border-radius:4px;
+    background:var(--surface); border:1px solid var(--muted); color:var(--ink); cursor:pointer; display:grid; gap:2px; justify-items:center}
+  .acts button small{font-size:11px; font-weight:400; color:var(--muted)}
+  .acts button:hover{background:var(--page)}
+  .acts button[aria-pressed="true"]{background:var(--tint); border-color:var(--wine); color:var(--wine)}
+  .acts button[aria-pressed="true"] small{color:var(--wine)}
+  .acts button:focus-visible{outline:2px solid var(--wine); outline-offset:3px}
+
+  form.card{border:1px solid var(--muted); border-radius:6px; padding:14px; display:grid; gap:12px; background:var(--surface)}
+  form.card .head{display:flex; align-items:center; justify-content:space-between; gap:8px}
+  form.card .head strong{font-size:13px}
+  form.card .head .esc{font-size:12px; color:var(--muted)}
+  label{display:grid; gap:4px; font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--muted)}
+  input,textarea{font:inherit; font-size:13px; font-weight:400; letter-spacing:0; text-transform:none; color:var(--ink);
+    border:1px solid var(--muted); border-radius:4px; padding:10px 12px; min-height:44px; width:100%}
+  textarea{min-height:60px; resize:vertical}
+  input:focus-visible,textarea:focus-visible{outline:2px solid var(--wine); outline-offset:3px}
+  .row{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+  .stamp{font-size:12px; color:var(--muted); margin:0}
+  .primary{font:inherit; font-size:13px; font-weight:600; min-height:44px; padding:10px 14px; border-radius:4px;
+    background:var(--wine); color:#fff; border:1px solid var(--wine); cursor:pointer}
+  .primary:hover{background:var(--hover); border-color:var(--hover)}
+  .primary:focus-visible{outline:2px solid var(--wine); outline-offset:3px}
+
+  h2{margin:0 0 10px; font-size:11px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--muted)}
+  .panel{background:var(--surface); border:1px solid var(--border); border-radius:8px; padding:16px 18px; box-shadow:0 1px 2px #2421240d}
+  table{width:100%; border-collapse:collapse; font-size:13px}
+  th{text-align:left; font-size:11px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; color:var(--muted);
+    padding:6px 0; border-bottom:1px solid var(--border); white-space:nowrap}
+  td{padding:9px 0; border-bottom:1px solid var(--border); vertical-align:middle}
+  tbody tr:last-child td{border-bottom:none}
+  .num{text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap}
+  th.num{text-align:right}
+  .when{color:var(--muted); white-space:nowrap}
+  .who{color:var(--muted); font-size:12px; white-space:nowrap}
+  .kind{display:inline-block; font-size:11px; font-weight:600; letter-spacing:.04em; text-transform:uppercase;
+    border-radius:3px; padding:2px 7px; border:1px solid var(--border); white-space:nowrap}
+  .kind.gasto{background:var(--shortage-bg); border-color:var(--shortage-border); color:var(--action-alert)}
+  .kind.aporte{background:var(--received-bg); border-color:var(--received-border); color:var(--received-ink)}
+  .kind.recaudacion{background:var(--warning-bg); border-color:var(--warning-border); color:var(--warning-ink)}
+  .kind.correccion{background:var(--tint); border-color:#D9B3C1; color:var(--wine)}
+  .fix{font:inherit; font-size:12px; color:var(--wine); background:none; border:0; padding:4px 2px; text-decoration:underline;
+    text-underline-offset:3px; cursor:pointer; min-height:24px}
+  .fix:focus-visible{outline:2px solid var(--wine); outline-offset:3px; border-radius:3px}
+  .fix[disabled]{color:var(--muted); text-decoration:none; cursor:not-allowed}
+  .more{display:inline-block; margin-top:10px; font-size:12px; color:var(--wine)}
+  .other{margin-top:6px; font-size:12px; color:var(--muted)}
+  .other b{color:var(--ink); font-weight:600}
+  .visually-hidden{position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0}
+  @media(max-width:1100px){ .drawer{grid-template-columns:1fr} }
+  @media(max-width:820px){
+    .app{grid-template-columns:1fr}
+    .sidebar{border-right:0; border-bottom:1px solid var(--border)}
+    .app-header{padding:0 16px}
+    main{padding:20px 16px 40px}
+    .field select{min-width:0; width:100%}
+    .acts{grid-template-columns:1fr}
+    .acts button{grid-template-columns:auto 1fr; justify-items:start}
+    .row{grid-template-columns:1fr}
+    .ladder li{grid-template-columns:1fr auto}
+    .ladder .qty{display:none}
+    th.hide,td.hide{display:none}
+  }
+  @media(prefers-reduced-motion:reduce){*{animation:none;transition:none;scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><span>L</span>Lusón</div>
+    <nav aria-label="Secciones">
+      <ul class="side-nav">
+        <li><a href="#/inventario">Inventario</a></li>
+        <li><a href="#/transferencias">Transferencias</a></li>
+        <li><a href="#/rendicion">Rendición de cuentas</a></li>
+        <li><a href="#/ventas">Punto de venta</a></li>
+        <li><a href="#/ventas/historial">Historial de ventas</a></li>
+        <li><a href="#/compras">Compras</a></li>
+        <li><a href="#/caja" aria-current="page">Caja</a></li>
+        <li><a href="#/metricas">Métricas</a></li>
+      </ul>
+    </nav>
+  </aside>
+
+  <div>
+    <header class="app-header">
+      <span class="where">Sucursal Centro</span>
+      <span class="who"><span>María Quispe · encargada</span><span class="avatar" aria-hidden="true">MQ</span></span>
+    </header>
+
+    <main>
+      <h1>Caja operativa</h1>
+      <p class="lede">Cuánto debería haber en el cajón ahora mismo, y el registro de lo que lo movió.</p>
+
+      <div class="period-bar">
+        <div class="field">
+          <label for="periodo">Período</label>
+          <select id="periodo">
+            <option>Desde el cierre del 12/11 · 18:30 (en curso)</option>
+            <option>Cierre del 05/11 · 19:10</option>
+            <option>Cierre del 29/10 · 18:45</option>
+          </select>
+        </div>
+        <span class="provenance"><span class="dot" aria-hidden="true"></span> <b>En vivo</b> · cambia con cada venta y cada movimiento</span>
+      </div>
+
+      <div class="drawer">
+        <section class="well" aria-labelledby="t-cajon">
+          <h2 id="t-cajon" style="margin-bottom:6px">Debería haber en el cajón</h2>
+          <div class="big"><span class="amount">Bs 6.820,00</span><span class="note">al día de hoy, 15/11 · 11:20</span></div>
+          <p class="hint">Es la misma cuenta que la rendición va a pedir. Si no coincide con lo que contás, la diferencia se ve el día del corte.</p>
+
+          <ul class="ladder">
+            <li><span class="lbl">Quedó al cerrar</span><span class="qty">12/11 18:30</span><span class="amt">Bs 1.850,00</span></li>
+            <li><span class="lbl">Ventas en efectivo</span><span class="qty">14 ventas</span><span class="amt plus">+ Bs 6.420,00</span></li>
+            <li><span class="lbl">Aportes</span><span class="qty">1 movimiento</span><span class="amt plus">+ Bs 500,00</span></li>
+            <li><span class="lbl">Gastos</span><span class="qty">4 movimientos, 1 corregido</span><span class="amt minus">− Bs 750,00</span></li>
+            <li><span class="lbl">Recaudaciones</span><span class="qty">1 movimiento</span><span class="amt minus">− Bs 1.200,00</span></li>
+            <li class="total"><span class="lbl">Esperado en el cajón</span><span class="qty"></span><span class="amt">Bs 6.820,00</span></li>
+          </ul>
+        </section>
+
+        <section class="well" aria-labelledby="t-registrar">
+          <h2 id="t-registrar" style="margin-bottom:10px">Registrar en el cajón</h2>
+          <div class="acts" role="group" aria-label="Tipo de movimiento">
+            <button type="button" aria-pressed="true">Gasto<small>sale plata</small></button>
+            <button type="button" aria-pressed="false">Aporte<small>entra plata</small></button>
+            <button type="button" aria-pressed="false">Recaudación<small>se la lleva el Almacén</small></button>
+          </div>
+
+          <form class="card" aria-labelledby="form-title">
+            <div class="head">
+              <strong id="form-title">Nuevo gasto</strong>
+              <span class="esc">Esc cancela</span>
+            </div>
+            <div class="row">
+              <label for="monto">Monto (Bs)
+                <input id="monto" inputmode="decimal" value="85,00" autofocus>
+              </label>
+              <label for="fecha">Momento
+                <input id="fecha" value="15/11 · 11:20 (automático)" readonly>
+              </label>
+            </div>
+            <label for="motivo">Motivo
+              <textarea id="motivo">Detergente y escobas para el baño del personal</textarea>
+            </label>
+            <p class="stamp">La hora y el autor los pone el sistema. El movimiento queda firmado y no se edita.</p>
+            <button class="primary" type="submit">Registrar gasto de Bs 85,00</button>
+          </form>
+        </section>
+      </div>
+
+      <section aria-labelledby="t-ultimos">
+        <h2 id="t-ultimos" style="margin-bottom:10px">Últimos movimientos</h2>
+        <div class="panel">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Momento</th>
+                <th scope="col">Tipo</th>
+                <th scope="col">Motivo</th>
+                <th scope="col" class="hide">Autor</th>
+                <th scope="col" class="num">Monto</th>
+                <th scope="col"><span class="visually-hidden">Acciones</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="when">15/11 · 11:14</td>
+                <td><span class="kind correccion">Corrección</span></td>
+                <td>Devuelve el excedente del adelanto</td>
+                <td class="who hide">María Quispe</td>
+                <td class="num" style="color:var(--wine);font-weight:600">+ Bs 4.500,00</td>
+                <td></td>
+              </tr>
+              <tr>
+                <td class="when">15/11 · 11:00</td>
+                <td><span class="kind gasto">Gasto</span></td>
+                <td>Adelanto a proveedor de tapas</td>
+                <td class="who hide">María Quispe</td>
+                <td class="num" style="color:var(--action-alert);font-weight:600">− Bs 5.000,00</td>
+                <td style="text-align:right"><button class="fix" type="button" disabled title="Ya tiene una corrección">Corregido</button></td>
+              </tr>
+              <tr>
+                <td class="when">15/11 · 10:03</td>
+                <td><span class="kind gasto">Gasto</span></td>
+                <td>Focos y cinta aislante</td>
+                <td class="who hide">María Quispe</td>
+                <td class="num" style="color:var(--action-alert);font-weight:600">− Bs 45,00</td>
+                <td style="text-align:right"><button class="fix" type="button">Corregir</button></td>
+              </tr>
+              <tr>
+                <td class="when">14/11 · 17:22</td>
+                <td><span class="kind recaudacion">Recaudación</span></td>
+                <td>Retiro del Almacén</td>
+                <td class="who hide">Jorge Mamani</td>
+                <td class="num" style="color:var(--warning-ink);font-weight:600">− Bs 1.200,00</td>
+                <td style="text-align:right"><button class="fix" type="button">Corregir</button></td>
+              </tr>
+            </tbody>
+          </table>
+          <a class="more" href="#/caja?ver=libro">Ver el libro completo del período →</a>
+        </div>
+        <p class="other">El <b>fondo de compras</b> tiene Bs 1.360,00 y es otra caja: comprar chatarra no descuenta de este cajón. Se ve en <a href="#/metricas">Métricas</a>.</p>
+      </section>
+    </main>
+  </div>
+</div>
+</body>
+</html>

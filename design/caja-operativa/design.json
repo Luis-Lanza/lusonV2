@@ -1,0 +1,28 @@
+{
+  "title": "Caja operativa",
+  "brief": "Pantalla de la caja operativa de una sucursal de Lusón: registrar gastos chicos, aportes y recaudaciones en un libro inmutable, ver el esperado del cajón, corregir con un movimiento compensatorio y no confundir esta caja con el fondo de compras. Diseñada con design/system.md re-sincronizado el 2026-11-16.",
+  "feature": "odd/tasks/caja-operativa.md",
+  "artboards": [
+    {
+      "file": "01-libro-y-ticket.html",
+      "title": "El libro y el ticket",
+      "tradeoff": "El libro es el protagonista y el formulario vive al costado, como un talonario al lado de la caja. Escanea bien un período largo y permite corregir desde la fila; el esperado queda en una banda y no domina la pantalla.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "02-cajon-primero.html",
+      "title": "El cajón primero",
+      "tradeoff": "Responde en un segundo cuánto debería haber en el cajón y pone la acción al lado del número, con la cuenta a la vista. El historial queda reducido a los últimos movimientos y exige un enlace para el libro completo.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "03-mesa-dos-cajas.html",
+      "title": "Dos cajas en una mesa",
+      "tradeoff": "Muestra la caja operativa y el fondo de compras juntos, cada uno con su libro y su saldo, y enseña la regla que los separa. Estado congelado por rendición incluido. Gasta ancho en la distinción y deja menos espacio para el detalle de un solo libro.",
+      "width": 1440,
+      "height": 900
+    }
+  ]
+}
