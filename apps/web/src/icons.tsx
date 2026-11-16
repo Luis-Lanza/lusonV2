@@ -14,6 +14,8 @@ const paths = {
   catalog: 'M3 3h10l8 8-10 10-8-8V3z M7.5 7.5h.01',
   sale: 'M3 4h2l2.4 11.2a2 2 0 0 0 2 1.6h8.1a2 2 0 0 0 1.9-1.4L21 8H6 M10 21h.01 M18 21h.01',
   history: 'M5 3h9l5 5v13H5z M14 3v5h5 M9 13h6 M9 17h6',
+  // The metrics of a period: the axes of the acta and the three bars of the ranking.
+  metrics: 'M4 4v16h16 M8 17v-5 M13 17V7 M18 17v-3',
 };
 export function Icon({ name }: { name: keyof typeof paths }) {
   return <svg aria-hidden="true" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={paths[name]} /></svg>;

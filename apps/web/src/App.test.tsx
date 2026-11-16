@@ -1850,6 +1850,56 @@ describe('branch purchases', () => {
   });
 });
 
+describe('branch metrics', () => {
+  const branchSession = { ...session, identity: { ...identity, account_id: 2, username: 'sucursala', location: metadata.locations[1] } };
+  const metricsAnswer = (body: unknown) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  const allPeriod = { kind: 'all', closing_id: null, from: null, to: null, label: 'Todo el historial' };
+  const closedPeriod = { kind: 'settlement', closing_id: 4, from: '2026-10-20T12:00:00Z',
+    to: '2026-11-01T12:00:00Z', label: 'Rendición #4' };
+  // The screen opens on the only default this contract has: the whole history, which states no
+  // drawer at all and says so in words.
+  const metricsBody = {
+    periods: [closedPeriod, allPeriod], period: allPeriod, source: 'history',
+    sales: { total: '0.00', cash: '0.00', card: '0.00', transfer: '0.00', qr: '0.00',
+      commission: '0.00', sales: 0, units: 0 },
+    cash: null, fund: null, materials: null, top_models: [], stock: { units: 0 },
+    // The drawer of today is published whatever the period is, so even the history states it.
+    today: { since: null, opening: '0.00', sales: '0.00', expenses: '0.00', expected: '0.00',
+      movements: [] } };
+  const metricsSetup = () => setup(branchSession, url => url.startsWith('/api/metrics?')
+    ? Promise.resolve(metricsAnswer(metricsBody)) : undefined);
+  const metricsCalls = (mock: ReturnType<typeof setup>) =>
+    mock.mock.calls.filter(([url]) => String(url).startsWith('/api/metrics'));
+
+  it('offers Métricas to a branch session and opens it without any write', async () => {
+    const mock = metricsSetup();
+    render(<App />); await inventory();
+    const navigation = screen.getByRole('navigation', { name: 'Navegación principal' });
+    fireEvent.click(within(navigation).getByRole('button', { name: 'Métricas' }));
+    await screen.findByRole('heading', { name: 'Métricas de la sucursal' });
+    expect(window.location.hash).toBe('#/metricas');
+    expect(screen.getByText('Luson Métricas')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Métricas' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
+    expect(await screen.findByText('El acumulado no tiene caja: la caja se cierra en cada rendición.'))
+      .toBeInTheDocument();
+    expect(metricsCalls(mock).some(([url]) => String(url) === '/api/metrics?period=all')).toBe(true);
+    expect(metricsCalls(mock).some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('hides Métricas from the warehouse and falls back from its typed hash', async () => {
+    window.history.replaceState(null, '', '/#/metricas');
+    const mock = setup(session);
+    render(<App />); await inventory();
+    expect(screen.queryByRole('button', { name: 'Métricas' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Métricas de la sucursal' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Resultados de inventario' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Inventario' })).toHaveAttribute('aria-current', 'page');
+    expect(metricsCalls(mock)).toHaveLength(0);
+  });
+});
+
 describe('warehouse settlement workspace', () => {
   const branchSession = { ...session, identity: { ...identity, account_id: 2, username: 'sucursala', location: metadata.locations[1] } };
   const closingCalls = (mock: ReturnType<typeof setup>) =>

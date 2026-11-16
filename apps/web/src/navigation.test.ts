@@ -7,7 +7,7 @@ describe('T6 private navigation and existing transfer paths', () => {
     expect(window.location.hash).toBe('#/administracion/sucursales');
     expect(readNavigation()).toEqual({ section: 'administration', screen: 'branches' });
   });
-  it.each([['administration', '#/administracion'], ['password', '#/mi-contrasena'], ['inventory', '#/inventario'], ['stock', '#/ingresos'], ['catalog', '#/catalogo'], ['sales', '#/ventas'], ['salesHistory', '#/ventas/historial'], ['purchases', '#/compras']] as const)('roundtrips %s without private data in the URL', (section, hash) => {
+  it.each([['administration', '#/administracion'], ['password', '#/mi-contrasena'], ['inventory', '#/inventario'], ['stock', '#/ingresos'], ['catalog', '#/catalogo'], ['sales', '#/ventas'], ['salesHistory', '#/ventas/historial'], ['purchases', '#/compras'], ['metrics', '#/metricas']] as const)('roundtrips %s without private data in the URL', (section, hash) => {
     writeNavigation({ section }); expect(window.location.hash).toBe(hash); expect(readNavigation()).toEqual({ section });
   });
   it('routes the warehouse adjustment history without private data in the URL', () => {
@@ -34,6 +34,17 @@ describe('T6 private navigation and existing transfer paths', () => {
     expect(readNavigation()).toEqual({ section: 'purchases' });
     window.history.replaceState(null, '', '/#/compras/7');
     expect(readNavigation()).toEqual({ section: 'inventory' });
+  });
+  it('gives the branch metrics their own hash apart from Compras and the settlements', () => {
+    expect(navigationHash({ section: 'metrics' })).toBe('#/metricas');
+    writeNavigation({ section: 'metrics' });
+    expect(window.location.hash).toBe('#/metricas');
+    expect(readNavigation()).toEqual({ section: 'metrics' });
+    // The metrics never swallow a sibling section, and a path below them is not a screen.
+    for (const hash of ['/#/metricas/4', '/#/metricas/compras', '/#/compras']) {
+      window.history.replaceState(null, '', hash);
+      expect(readNavigation()).toEqual(hash === '/#/compras' ? { section: 'purchases' } : { section: 'inventory' });
+    }
   });
   it('gives the warehouse settlement workspace and the branch decision their own hashes', () => {
     expect(navigationHash({ section: 'settlements' })).toBe('#/rendiciones');
