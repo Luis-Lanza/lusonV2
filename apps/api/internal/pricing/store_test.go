@@ -87,7 +87,7 @@ func scalar(t *testing.T, ctx context.Context, p *pgxpool.Pool, query string, ar
 func createBranch(t *testing.T, ctx context.Context, p *pgxpool.Pool, name string) int64 {
 	t.Helper()
 	var id int64
-	if err := p.QueryRow(ctx, "SELECT create_branch($1)", name).Scan(&id); err != nil {
+	if err := p.QueryRow(ctx, "SELECT create_branch_funded($1,'0.00','0.00',1)", name).Scan(&id); err != nil {
 		t.Fatal("branch fixture creation failed")
 	}
 	return id

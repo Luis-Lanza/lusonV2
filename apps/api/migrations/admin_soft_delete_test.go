@@ -119,7 +119,7 @@ func TestAdministrativeRetirementUserMarker(t *testing.T) {
 
 func TestAdministrativeRetirementBranchMarker(t *testing.T) {
 	ctx, p := retirementSchema(t)
-	retirementExec(t, ctx, p, `SELECT create_branch('Retired branch')`)
+	retirementExec(t, ctx, p, `SELECT create_branch_funded('Retired branch','0.00','0.00',1)`)
 	retirementExec(t, ctx, p, `UPDATE locations SET deleted_at=now() WHERE id=4`)
 	retirementAssert(t, ctx, p, `SELECT
  (SELECT name='Retired branch' AND deleted_at IS NOT NULL FROM locations WHERE id=4)
@@ -133,8 +133,8 @@ func TestAdministrativeRetirementBranchMarker(t *testing.T) {
  approver_location_id,retry_key,payload_sha256)
  VALUES(4,'request_stock',1,4,1,'retired-pending-key',decode(repeat('00',32),'hex')) RETURNING id)
  INSERT INTO transfer_request_items(request_id,variant_id,quantity) SELECT id,1,1 FROM request`)
-	retirementReject(t, ctx, p, `SELECT create_branch('Retired branch')`)
-	retirementExec(t, ctx, p, `SELECT create_branch('Next branch')`)
+	retirementReject(t, ctx, p, `SELECT create_branch_funded('Retired branch','0.00','0.00',1)`)
+	retirementExec(t, ctx, p, `SELECT create_branch_funded('Next branch','0.00','0.00',1)`)
 	retirementAssert(t, ctx, p, `SELECT id=5 FROM locations WHERE name='Next branch'`)
 	if err := bootstrap.Check(ctx, p); err != nil {
 		t.Fatal(err)
@@ -147,7 +147,7 @@ func TestAdministrativeRetirementBranchMarker(t *testing.T) {
 // carries an exact line whose single credited unit is drained before retirement.
 func TestAdministrativeRetirementReceivedAdmission(t *testing.T) {
 	ctx, p := retirementSchema(t)
-	retirementExec(t, ctx, p, `SELECT create_branch('Shortfall branch');
+	retirementExec(t, ctx, p, `SELECT create_branch_funded('Shortfall branch','0.00','0.00',1);
  UPDATE inventory_balances SET existing=1,reserved=1 WHERE location_id=1 AND variant_id=1;
  UPDATE inventory_balances SET reserved=reserved+1 WHERE location_id=1 AND variant_id=2;
  BEGIN;
@@ -186,7 +186,7 @@ func TestAdministrativeRetirementReceivedAdmission(t *testing.T) {
 
 func TestAdministrativeRetirementBranchBlockers(t *testing.T) {
 	ctx, p := retirementSchema(t)
-	retirementExec(t, ctx, p, `SELECT create_branch('Blocked branch')`)
+	retirementExec(t, ctx, p, `SELECT create_branch_funded('Blocked branch','0.00','0.00',1)`)
 	retirementAssert(t, ctx, p, `SELECT deleted_at IS NULL FROM locations WHERE id=4`)
 	// Zero available is not sufficient: physically present and reserved stock still blocks.
 	retirementExec(t, ctx, p, `UPDATE inventory_balances SET existing=1,reserved=1 WHERE location_id=4 AND variant_id=1`)

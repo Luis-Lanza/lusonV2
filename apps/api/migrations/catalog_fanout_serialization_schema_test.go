@@ -244,7 +244,7 @@ func TestNewBranchSkipsRetiredBattery(t *testing.T) {
 		t.Fatal(err)
 	}
 	var branch int
-	if err := p.QueryRow(ctx, "SELECT create_branch('RETIRED-FANOUT')").Scan(&branch); err != nil {
+	if err := p.QueryRow(ctx, "SELECT create_branch_funded('RETIRED-FANOUT','0.00','0.00',1)").Scan(&branch); err != nil {
 		t.Fatal(err)
 	}
 	var retired int

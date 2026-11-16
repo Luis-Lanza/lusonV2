@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { Location } from './model';
 import type { PrivateController } from './useInventory';
-import { accountPatch, commissionInput, commissionMoment, commissionText, parseAccount, parseAccounts, parseBranch, parseBranches, parseCommissions, validName, type Account, type Commission } from './administrationModel';
+import { accountPatch, amountInput, branchFounding, commissionInput, commissionMoment, commissionText, parseAccount, parseAccounts, parseBranch, parseBranches, parseCommissions, validName, type Account, type Commission } from './administrationModel';
 import { generateTemporaryPassword, validPassword } from './passwordModel';
 import './administration.css';
 
@@ -126,6 +126,8 @@ export default function AccountAdministration({ controller, owner, initialTab = 
   const [editor, setEditor] = useState<Account | 'create' | null>(null);
   const [handoff, setHandoff] = useState('');
   const [branchName, setBranchName] = useState('');
+  const [openingCash, setOpeningCash] = useState('');
+  const [purchaseFund, setPurchaseFund] = useState('');
   const [deleteBranch, setDeleteBranch] = useState<Location | null>(null);
   const [commissions, setCommissions] = useState<Commission[]>([]);
   const [editingRate, setEditingRate] = useState<{ branch: number; value: string } | null>(null);
@@ -185,13 +187,18 @@ export default function AccountAdministration({ controller, owner, initialTab = 
   async function createBranch(event: FormEvent) {
     event.preventDefault();
     if (pending.current || !current()) return;
-    if (!validName(branchName)) { setError('Ingresá un nombre válido de hasta 128 bytes UTF-8.'); return; }
+    // Both amounts are required and both are stated as canonical text; 0,00 is the
+    // explicit answer of a branch that starts without money (S1, S3).
+    let payload: Record<string, string>;
+    try { payload = branchFounding(branchName, openingCash, purchaseFund); }
+    catch (failure) { setError(publicError(failure)); return; }
     pending.current = true; setBusy(true); setError(''); setNotice('');
     try {
-      const result = parseBranch(await controller.privateRequest(owner, 'admin', '/api/admin/branches', lifetime.current.signal, 'POST', { name: branchName }, 201));
+      const result = parseBranch(await controller.privateRequest(owner, 'admin', '/api/admin/branches', lifetime.current.signal, 'POST', payload, 201));
       if (!current()) return;
       if (result.id === 1) throw new Error('Respuesta inválida del servidor.');
-      setBranchName(''); setNotice(`Sucursal creada: ${result.name}. Stock inicial cero.`);
+      setBranchName(''); setOpeningCash(''); setPurchaseFund('');
+      setNotice(`Sucursal creada: ${result.name}. Stock inicial cero.`);
       controller.refreshBranches(owner); setRevision(previous => previous + 1);
     } catch (failure) { if (current()) setError(publicError(failure)); }
     finally { pending.current = false; if (current()) setBusy(false); }
@@ -228,6 +235,11 @@ export default function AccountAdministration({ controller, owner, initialTab = 
               : <button type="button" disabled={busy} onClick={() => { if (current()) { closePrivate(); setNotice(''); setEditingRate({ branch: branch.id, value: rate ? rate.rate.replace('.', ',') : '' }); } }}>{rate ? 'Cambiar comisión' : 'Configurar comisión'}</button>)}
             {branch.id !== 1 && <button type="button" disabled={busy} onClick={() => { if (current()) { closePrivate(); setNotice(''); setDeleteBranch(branch); } }}>Eliminar sucursal</button>}
           </article>;
-        })}</div>{deleteBranch && <div className="admin-actions"><p>Eliminar {deleteBranch.name} la oculta de las operaciones nuevas. Se conserva su historial. Resolvé stock, usuarios y operaciones pendientes antes de eliminarla.</p><button type="button" disabled={busy} onClick={() => void retireBranch()}>Confirmar eliminación</button><button type="button" disabled={busy} onClick={() => setDeleteBranch(null)}>Cancelar</button></div>}</section><section className="admin-panel"><h2>Crear sucursal</h2><p>Empieza con stock cero. Recibe mercadería mediante transferencias.</p><form onSubmit={event => void createBranch(event)}><label>Nombre de sucursal<input required value={branchName} disabled={busy} onChange={event => setBranchName(event.target.value)} /></label><button className="primary" disabled={busy}>Crear sucursal</button></form></section></>}
+        })}</div>{deleteBranch && <div className="admin-actions"><p>Eliminar {deleteBranch.name} la oculta de las operaciones nuevas. Se conserva su historial. Resolvé stock, usuarios y operaciones pendientes antes de eliminarla.</p><button type="button" disabled={busy} onClick={() => void retireBranch()}>Confirmar eliminación</button><button type="button" disabled={busy} onClick={() => setDeleteBranch(null)}>Cancelar</button></div>}</section><section className="admin-panel"><h2>Crear sucursal</h2><p>Empieza con stock cero. Nace con la plata que declares: el fondo de caja operativa es el cajón con el que arranca y el fondo de compras es lo que puede gastar en mercadería. Recibe más mercadería mediante transferencias.</p><form onSubmit={event => void createBranch(event)}><label>Nombre de sucursal<input required value={branchName} disabled={busy} onChange={event => setBranchName(event.target.value)} /></label>
+              <label>Fondo de caja operativa<input required inputMode="decimal" autoComplete="off" placeholder="0,00" value={openingCash} disabled={busy} onChange={event => setOpeningCash(event.target.value)} /></label>
+              <label>Fondo de compras<input required inputMode="decimal" autoComplete="off" placeholder="0,00" value={purchaseFund} disabled={busy} onChange={event => setPurchaseFund(event.target.value)} /></label>
+              <p>Los dos montos son obligatorios. Se declaran en bolivianos, con hasta dos decimales.</p>
+              {[openingCash, purchaseFund].some(amount => amountInput(amount) === '0.00') && <p role="status">Declaraste 0,00: la sucursal nace sin plata para gastar hasta que el almacén cargue ese fondo.</p>}
+              <button className="primary" disabled={busy}>Crear sucursal</button></form></section></>}
   </section>;
 }

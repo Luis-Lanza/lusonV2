@@ -21,7 +21,7 @@ func t8Setup(t *testing.T) (*t5Fixture, string, t5Account) {
 	if _, err := f.p.Exec(f.ctx, `UPDATE inventory_balances SET existing=20 WHERE location_id IN (1,2,3) AND variant_id=1`); err != nil {
 		t.Fatal("owned stock setup failed")
 	}
-	t5Exact(t, f.request(f.tokens[0], "POST", "/api/admin/branches", `{"name":"Sucursal T8"}`), 201, "{\"id\":4,\"name\":\"Sucursal T8\"}\n")
+	t5Exact(t, f.request(f.tokens[0], "POST", "/api/admin/branches", `{"name":"Sucursal T8","opening_cash":"0.00","purchase_fund":"0.00"}`), 201, "{\"id\":4,\"name\":\"Sucursal T8\"}\n")
 	a := f.create("t8_person", 4, "temporary-t8-password")
 	if a.LocationID != 4 || !a.MustChange {
 		t.Fatal("new assigned temporary operator")

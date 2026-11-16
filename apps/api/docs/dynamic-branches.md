@@ -14,7 +14,7 @@ Warehouse location 1 belongs only to account 1. Every other account is a persona
 
 ## Protected administration seam
 
-`POST /api/admin/branches` now calls `create_branch(text)` through the protected administrator service transaction; see [administration](administration.md). The database function remains revoked from PUBLIC. It serializes allocation through the existing initialization lock and requires an initialized catalog. Branch initialization reuses the existing `initialize_branch_inventory` trigger for both stock and realtime state. No schema changes or duplicate initialization logic are introduced by the API.
+`POST /api/admin/branches` states exactly `name`, `opening_cash` and `purchase_fund` through the protected administrator service transaction; see [administration](administration.md). The service calls `create_branch_funded(name, opening_cash, purchase_fund, 1)`, which remains revoked from PUBLIC, serializes allocation through the existing initialization lock and requires an initialized catalog. The branch is born with its two amounts: the drawer's opening cash as an `aporte` of its cash ledger and the purchase fund as an `aporte` of `branch_fund_movements`, written in the same transaction, so a failed founding leaves neither a location nor money. `0.00` is a stated answer and writes no movement, and the fund's balance is the signed sum of `purchase_fund_ledger`, computed nowhere else. Migration 049 dropped the earlier `create_branch(text)` seam, so nothing creates a branch without both amounts. Branch initialization still reuses the existing `initialize_branch_inventory` trigger for both stock and realtime state; no duplicate initialization logic is introduced by the API.
 
 ## Browser integration
 

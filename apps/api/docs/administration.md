@@ -14,7 +14,7 @@ All responses are JSON except empty **204** responses. Lists are ordered by nume
 | `PATCH /api/admin/accounts/{id}` | One or more of `display_name`, `location_id`, `enabled` | 204 |
 | `DELETE /api/admin/accounts/{id}` | No payload required | 204 |
 | `POST /api/admin/accounts/{id}/password` | Exactly `temporary_password` | 204 |
-| `POST /api/admin/branches` | Exactly `name` | 201 location |
+| `POST /api/admin/branches` | Exactly `name`, `opening_cash`, `purchase_fund` | 201 location |
 | `DELETE /api/admin/branches/{id}` | No payload required; canonical ID 1–32767 | 204 |
 
 Account representation:
@@ -33,7 +33,7 @@ Location representation: `{"id":4,"name":"Sucursal Nueva"}`. No fabricated last-
 - No query parameters are accepted. DELETE does not decode a body or require a media type. Other mutations require `Content-Type: application/json`, a flat object of at most 4096 UTF-8 bytes, and exact field names. Unknown/duplicate fields, nulls, nested values, trailing input, invalid types and malformed numbers are rejected. Client `role`, `kind`, IDs, hash, authority-version and password-state overrides are not accepted.
 - Usernames reuse the existing 3–64 ASCII letters/digits/underscore/dot/hyphen policy. Passwords reuse the existing 12–128 UTF-8 **byte** policy without NUL; bytes, including spaces, are preserved. Names must be nonblank UTF-8, at most 128 bytes, without NUL; supplied valid names are preserved.
 - Operators must be assigned to an existing branch (2–32767), never warehouse 1. Usernames and account IDs cannot be edited. Account 1 permits display-name edits only: its enabled state, assignment and password cannot be managed through this API. Its own-password route remains available.
-- Branch creation accepts only a name, never a warehouse kind or role. The reserved warehouse name is rejected. Duplicate usernames/branch names return conflict without consuming an allocation.
+- Branch creation accepts only a name, never a warehouse kind or role. The reserved warehouse name is rejected. Duplicate usernames/branch names return conflict without consuming an allocation. It also states its two mandatory amounts, `opening_cash` and `purchase_fund`, as canonical decimal strings: at most ten integral digits and exactly two decimals, never signed, padded or with a decimal comma. A missing or non-canonical amount is `invalid_request` and creates nothing; `0.00` is a stated answer, not a missing one.
 
 ## Temporary password and lifecycle
 
@@ -43,7 +43,7 @@ Reset replaces the hash without reading or revealing the previous password, forc
 
 Reassignment and enabled-state transitions increment authority version and retire prior sessions. Reactivation cannot revive old sessions. Profile-only edits and no-op assignment/enabled edits do not retire authority. Transactions lock accounts in ID order before sessions, matching login/password lifecycle ordering and preserving concurrent changes. Password hashing uses the existing bounded admission channel.
 
-New branch creation calls the existing `create_branch(text)` database function unchanged. Its initialization lock and triggers atomically allocate the branch, add zero balances for every existing catalog variant, establish the realtime audience and publish inventory invalidation. Existing locations, stock, transfer rules and historical attribution remain unchanged. Operators assigned to the new branch use the existing inventory, transfer and realtime interfaces.
+New branch creation calls `create_branch_funded(name, opening_cash, purchase_fund, creator_account_id)` inside the protected administrator service transaction. The function keeps the initialization lock, the zero balances of every existing catalog variant, the realtime audience and the inventory invalidation of the original seam, and adds the money: the drawer's opening cash as an `aporte` of the branch's cash ledger and the purchase fund as an `aporte` of `branch_fund_movements`, both signed by the administering account (1) and written in the same transaction. The branch and its two openings are born together or not at all, and a `0.00` amount writes no movement. The purchase fund's balance is the signed sum of `purchase_fund_ledger` and is computed nowhere else. Migration 049 dropped `create_branch(text)`, so no path creates a branch without stating its two amounts. Existing locations, stock, transfer rules and historical attribution remain unchanged. Operators assigned to the new branch use the existing inventory, transfer and realtime interfaces.
 
 ## Personal-account retirement
 

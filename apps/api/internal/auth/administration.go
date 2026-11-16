@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -48,6 +49,18 @@ func administrationName(value string) bool {
 	return utf8.ValidString(value) && len(value) <= 128 && strings.TrimSpace(value) != "" && !strings.ContainsRune(value, 0)
 }
 func branchLocation(id int) bool { return id > 1 && id <= 32767 }
+
+// administrationAmountPattern is the house money contract at a branch's founding
+// (S13): canonical decimal text with exactly two decimals and at most the ten
+// integral digits numeric(12,2) holds. The text the caller states is the amount,
+// never an approximation of it, so a padded, signed, comma or over-precision
+// spelling is refused instead of quietly rounded.
+var administrationAmountPattern = regexp.MustCompile(`^(0|[1-9][0-9]{0,9})\.[0-9]{2}$`)
+
+// administrationAmount admits the canonical amount of the founding. Unlike a
+// price it admits zero: 0,00 is the explicit answer of a branch that starts
+// without money (S3).
+func administrationAmount(value string) bool { return administrationAmountPattern.MatchString(value) }
 
 // Administrator is a passive pre-body gate, never a client role assertion.
 // Every operation rechecks it under locks in its own transaction.
@@ -395,11 +408,17 @@ func (s *Service) RetireBranch(ctx context.Context, token string, id int64) erro
 	return tx.Commit(ctx)
 }
 
-func (s *Service) CreateBranch(ctx context.Context, token, name string) (Location, error) {
+// CreateBranch founds a branch with the two amounts the administration states:
+// the drawer's opening cash and its purchase fund (S1, S2). Both are mandatory and
+// both are canonical decimal text; 0,00 is a valid and explicit answer that the
+// branch starts without money (S3). The founding is one transaction (S12): the
+// branch and its two opening movements are written together or not at all.
+func (s *Service) CreateBranch(ctx context.Context, token, name, openingCash, purchaseFund string) (Location, error) {
 	if err := s.Administrator(ctx, token); err != nil {
 		return Location{}, err
 	}
-	if !administrationName(name) || strings.TrimSpace(name) == "Almacén" {
+	if !administrationName(name) || strings.TrimSpace(name) == "Almacén" ||
+		!administrationAmount(openingCash) || !administrationAmount(purchaseFund) {
 		return Location{}, ErrAdminInvalid
 	}
 	tx, err := s.administrationTx(ctx, token, 0)
@@ -408,9 +427,14 @@ func (s *Service) CreateBranch(ctx context.Context, token, name string) (Locatio
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	location := Location{Name: name}
-	// Reuse the initialized-catalog allocation lock, zero-stock and audience
-	// triggers. No bootstrap import (bootstrap already depends on auth).
-	if err = tx.QueryRow(ctx, `SELECT create_branch($1)`, name).Scan(&location.ID); err != nil {
+	// create_branch_funded reuses the initialized-catalog allocation lock,
+	// zero-stock and audience triggers of the allocation itself and writes the two
+	// openings of the branch in the same transaction. The creator is the
+	// administering identity Administrator already resolved -- the single warehouse
+	// account, 1 -- which is the actor the two openings are signed by (S4).
+	// No bootstrap import (bootstrap already depends on auth).
+	if err = tx.QueryRow(ctx, `SELECT create_branch_funded($1,$2::numeric,$3::numeric,$4::integer)`,
+		name, openingCash, purchaseFund, 1).Scan(&location.ID); err != nil {
 		return Location{}, administrationError(err)
 	}
 	return location, tx.Commit(ctx)

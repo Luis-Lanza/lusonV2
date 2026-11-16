@@ -15,7 +15,7 @@ func TestDynamicBranchBootstrap(t *testing.T) {
 	if err := bootstrap.Initialize(ctx, p, config.LocalTrial); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Exec(ctx, `SELECT create_branch('Sucursal C')`); err != nil {
+	if _, err := p.Exec(ctx, `SELECT create_branch_funded('Sucursal C','0.00','0.00',1)`); err != nil {
 		t.Fatal(err)
 	}
 	if err := bootstrap.Check(ctx, p); err != nil {

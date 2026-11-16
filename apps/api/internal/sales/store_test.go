@@ -188,7 +188,7 @@ func (e *env) scalar(t *testing.T, query string, args ...any) int64 {
 func (e *env) createBranch(t *testing.T, name string) int64 {
 	t.Helper()
 	var id int64
-	if err := e.pool.QueryRow(e.ctx, "SELECT create_branch($1)", name).Scan(&id); err != nil {
+	if err := e.pool.QueryRow(e.ctx, "SELECT create_branch_funded($1,'0.00','0.00',1)", name).Scan(&id); err != nil {
 		t.Fatal("branch fixture creation failed")
 	}
 	return id

@@ -23,7 +23,7 @@ func TestDynamicRealtimePayload(t *testing.T) {
 func TestDynamicRealtimeDelivery(t *testing.T) {
 	f := brokerFixtureDB(t)
 	b, all := f.start(t, nil)
-	if _, err := f.p.Exec(f.ctx, `SELECT create_branch('Sucursal C'); INSERT INTO auth_accounts(id,location_id,username,password_hash,must_change_password) VALUES(20,4,'operator_c','opaque',false)`); err != nil {
+	if _, err := f.p.Exec(f.ctx, `SELECT create_branch_funded('Sucursal C','0.00','0.00',1); INSERT INTO auth_accounts(id,location_id,username,password_hash,must_change_password) VALUES(20,4,'operator_c','opaque',false)`); err != nil {
 		t.Fatal(err)
 	}
 	// Stock initialization invalidates readers and refreshes audiences.

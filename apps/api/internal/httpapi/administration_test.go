@@ -358,7 +358,7 @@ func TestT5NewBranch(t *testing.T) {
 	}
 	defer warehouse.Close()
 	t5Event(t, warehouse, realtime.Resync)
-	t5Exact(t, f.request(f.tokens[0], "POST", "/api/admin/branches", `{"name":"Sucursal Nueva"}`), 201, "{\"id\":4,\"name\":\"Sucursal Nueva\"}\n")
+	t5Exact(t, f.request(f.tokens[0], "POST", "/api/admin/branches", `{"name":"Sucursal Nueva","opening_cash":"500.00","purchase_fund":"300.00"}`), 201, "{\"id\":4,\"name\":\"Sucursal Nueva\"}\n")
 	a := f.create("branch_four", 4, "private-password-four")
 	if a.ID != "4" || a.LocationID != 4 {
 		t.Fatal("coincident independent IDs")
@@ -434,6 +434,80 @@ func (f *t5Fixture) oldInventory() string {
 	}
 	return result
 }
+
+// TestT5BranchFoundingStatesItsTwoAmounts pins the contract of the founding at the
+// wire (S1, S13): the request states exactly its three keys, the two amounts are
+// canonical decimal text, and a body that omits or misstates one of them is refused
+// without creating anything (S12). It reads the money back from the books, because
+// what the branch is born with is the point (S2).
+func TestT5BranchFoundingStatesItsTwoAmounts(t *testing.T) {
+	f := t5Setup(t)
+	before := f.snapshot()
+	for _, refused := range []struct{ name, body string }{
+		{"only the name", `{"name":"Otra"}`},
+		{"the purchase fund missing", `{"name":"Otra","opening_cash":"500.00"}`},
+		{"the opening cash missing", `{"name":"Otra","purchase_fund":"300.00"}`},
+		// A branch is never born without money, so an old client cannot create one.
+		{"an empty object", `{}`},
+		{"an extra key", `{"name":"Otra","opening_cash":"500.00","purchase_fund":"300.00","kind":"warehouse"}`},
+		{"a numeric amount", `{"name":"Otra","opening_cash":500,"purchase_fund":"300.00"}`},
+		{"a null amount", `{"name":"Otra","opening_cash":null,"purchase_fund":"300.00"}`},
+		// The amount is the exact text the database stores (S13).
+		{"an integer without decimals", `{"name":"Otra","opening_cash":"500","purchase_fund":"300.00"}`},
+		{"a decimal comma", `{"name":"Otra","opening_cash":"500,00","purchase_fund":"300.00"}`},
+		{"a bare zero", `{"name":"Otra","opening_cash":"0","purchase_fund":"300.00"}`},
+		{"a negative amount", `{"name":"Otra","opening_cash":"-1.00","purchase_fund":"300.00"}`},
+		{"padded text", `{"name":"Otra","opening_cash":" 500.00","purchase_fund":"300.00"}`},
+	} {
+		t.Run(refused.name, func(t *testing.T) {
+			t5Error(t, f.request(f.tokens[0], "POST", "/api/admin/branches", refused.body), 400, "invalid_request")
+			if f.snapshot() != before {
+				t.Fatal("a refused founding created a branch or changed state")
+			}
+		})
+	}
+
+	// The founding it admits is born with its two amounts, each as a movement of its
+	// own ledger signed by the administrator that created the branch.
+	t5Exact(t, f.request(f.tokens[0], "POST", "/api/admin/branches",
+		`{"name":"Sucursal Nueva","opening_cash":"500.00","purchase_fund":"300.00"}`),
+		201, "{\"id\":4,\"name\":\"Sucursal Nueva\"}\n")
+	cash, fund := f.branchBalances(4)
+	if cash != "500.00" || fund != "300.00" {
+		t.Fatalf("the branch is born with the stated money, got %s and %s", cash, fund)
+	}
+	// 0,00 is a valid and explicit answer (S3): the branch exists and its books stay
+	// empty, because a zero is the empty sum of a book and not a movement.
+	t5Exact(t, f.request(f.tokens[0], "POST", "/api/admin/branches",
+		`{"name":"Sucursal Sur","opening_cash":"0.00","purchase_fund":"0.00"}`),
+		201, "{\"id\":5,\"name\":\"Sucursal Sur\"}\n")
+	if cash, fund = f.branchBalances(5); cash != "0.00" || fund != "0.00" {
+		t.Fatalf("a founding of 0,00 starts at zero, got %s and %s", cash, fund)
+	}
+	var rows int
+	if err := f.p.QueryRow(f.ctx, `SELECT (SELECT count(*) FROM branch_cash_movements
+         WHERE branch_location_id=5) + (SELECT count(*) FROM branch_fund_movements
+         WHERE branch_location_id=5)`).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("a founding of 0,00 writes no movement, got %d rows: %v", rows, err)
+	}
+}
+
+// branchBalances reads the drawer and the purchase fund of one branch from the
+// views that own their arithmetic.
+func (f *t5Fixture) branchBalances(branch int) (cash, fund string) {
+	f.t.Helper()
+	if err := f.p.QueryRow(f.ctx, `SELECT coalesce(sum(effective),0)::numeric(12,2)::text
+         FROM branch_cash_ledger WHERE branch_location_id=$1 AND closing_id IS NULL`,
+		branch).Scan(&cash); err != nil {
+		f.t.Fatalf("the drawer of branch %d could not be read: %v", branch, err)
+	}
+	if err := f.p.QueryRow(f.ctx, `SELECT coalesce(sum(effective),0)::numeric(12,2)::text
+         FROM purchase_fund_ledger WHERE branch_location_id=$1`, branch).Scan(&fund); err != nil {
+		f.t.Fatalf("the fund of branch %d could not be read: %v", branch, err)
+	}
+	return cash, fund
+}
+
 func TestT5PasswordBoundaries(t *testing.T) {
 	f := t5Setup(t)
 	for i, password := range []string{strings.Repeat("a", 12), strings.Repeat("ñ", 64)} {

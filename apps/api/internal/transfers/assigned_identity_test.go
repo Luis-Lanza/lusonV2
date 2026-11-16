@@ -12,7 +12,7 @@ import (
 
 func TestStoreAssignedBinding(t *testing.T) {
 	ctx, p, s := fixture(t)
-	if _, err := p.Exec(ctx, `SELECT create_branch('Assigned branch');
+	if _, err := p.Exec(ctx, `SELECT create_branch_funded('Assigned branch','0.00','0.00',1);
  INSERT INTO auth_accounts(id,location_id,username,password_hash)
  VALUES(20,4,'assigned_operator','opaque'),(21,4,'assigned_peer','opaque')`); err != nil {
 		t.Fatal(err)

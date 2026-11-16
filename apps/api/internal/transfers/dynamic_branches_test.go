@@ -13,7 +13,7 @@ import (
 
 func TestDynamicBranchOperations(t *testing.T) {
 	ctx, p, s := fixture(t)
-	if _, err := p.Exec(ctx, `SELECT create_branch('Sucursal C'); INSERT INTO auth_accounts(id,location_id,username,password_hash,must_change_password) VALUES(20,4,'operator_c','opaque',false),(21,4,'operator_c2','opaque',false)`); err != nil {
+	if _, err := p.Exec(ctx, `SELECT create_branch_funded('Sucursal C','0.00','0.00',1); INSERT INTO auth_accounts(id,location_id,username,password_hash,must_change_password) VALUES(20,4,'operator_c','opaque',false),(21,4,'operator_c2','opaque',false)`); err != nil {
 		t.Fatal(err)
 	}
 	if err := bootstrap.Check(ctx, p); err != nil {

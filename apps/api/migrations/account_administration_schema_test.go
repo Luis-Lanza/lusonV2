@@ -84,11 +84,11 @@ func TestAccountAdministrationSchema(t *testing.T) {
 	exec(`UPDATE auth_accounts SET display_name='Administrator',password_hash='new-opaque-hash',must_change_password=false,authority_version=authority_version+1 WHERE id=1`)
 	exec(`UPDATE auth_accounts SET location_id=3,enabled=false,must_change_password=true,authority_version=authority_version+1 WHERE id=20`)
 	exec(`UPDATE auth_accounts SET enabled=true WHERE id=20`)
-	exec(`SELECT create_branch('Sucursal C')`)
+	exec(`SELECT create_branch_funded('Sucursal C','0.00','0.00',1)`)
 	if got := scalar(`SELECT count(*)::text FROM inventory_balances WHERE location_id=4 AND existing=0 AND reserved=0 AND available=0`); got != "190" {
 		t.Fatal(got)
 	}
-	reject(`SELECT create_branch('Sucursal C')`)
+	reject(`SELECT create_branch_funded('Sucursal C','0.00','0.00',1)`)
 	reject(`INSERT INTO locations(id,name) VALUES(5,'Almacén')`)
 	exec(`INSERT INTO auth_accounts(id,location_id,username,password_hash) VALUES(21,4,'new_branch','opaque-hash')`)
 	// Branch insertion and stock initialization roll back together.
@@ -97,7 +97,7 @@ func TestAccountAdministrationSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = tx.Exec(ctx, `SELECT create_branch('Rolled back')`); err != nil {
+	if _, err = tx.Exec(ctx, `SELECT create_branch_funded('Rolled back','0.00','0.00',1)`); err != nil {
 		t.Fatal(err)
 	}
 	if err = tx.Rollback(ctx); err != nil {

@@ -103,6 +103,27 @@ export function commissionInput(value: string): string | null {
 export function validName(value: string): boolean {
   return !!value.trim() && value.isWellFormed() && !value.includes('\0') && new TextEncoder().encode(value).length <= 128;
 }
+/** What the operator types turned into the canonical wire amount, or null when it is
+ *  not an amount the server would admit: comma or dot, at most two decimals, never
+ *  negative, never padded. The canonical form is exactly two decimals and at most the
+ *  ten integral digits `numeric(12,2)` holds, and zero is an amount. */
+export function amountInput(value: string): string | null {
+  const typed = value.trim().replace(',', '.');
+  const match = /^(0|[1-9][0-9]{0,9})(?:\.([0-9]{1,2}))?$/.exec(typed);
+  if (!match) return null;
+  return `${match[1]}.${(match[2] ?? '').padEnd(2, '0')}`;
+}
+/** The founding the server admits (S1, S13): the name and its two mandatory amounts,
+ *  exactly those three keys and never a fourth. Both amounts are required -- that is
+ *  what the human asked for -- and 0,00 is a stated answer, not a missing one (S3). */
+export function branchFounding(name: string, openingCash: string, purchaseFund: string): Record<string, string> {
+  if (!validName(name)) throw new Error('Ingresá un nombre válido de hasta 128 bytes UTF-8.');
+  const cash = amountInput(openingCash);
+  if (cash === null) throw new Error('Ingresá el fondo de caja operativa en bolivianos, con hasta dos decimales.');
+  const fund = amountInput(purchaseFund);
+  if (fund === null) throw new Error('Ingresá el fondo de compras en bolivianos, con hasta dos decimales.');
+  return { name, opening_cash: cash, purchase_fund: fund };
+}
 export function accountPatch(before: Account, name: string, location: number, enabled: boolean): Record<string, string | number | boolean> {
   const patch: Record<string, string | number | boolean> = {};
   if (name !== before.display_name) { if (!validName(name)) throw new Error('Ingresá un nombre válido de hasta 128 bytes UTF-8.'); patch.display_name = name; }

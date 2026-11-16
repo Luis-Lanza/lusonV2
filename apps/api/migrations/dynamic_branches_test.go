@@ -15,7 +15,7 @@ func TestDynamicBranchAudiences(t *testing.T) {
 	if err := bootstrap.Initialize(ctx, p, config.LocalTrial); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Exec(ctx, `SELECT create_branch('Sucursal C'); INSERT INTO locations(id,name) VALUES(32767,'Upper branch')`); err != nil {
+	if _, err := p.Exec(ctx, `SELECT create_branch_funded('Sucursal C','0.00','0.00',1); INSERT INTO locations(id,name) VALUES(32767,'Upper branch')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := p.Exec(ctx, `INSERT INTO auth_accounts(id,location_id,username,password_hash) VALUES
@@ -63,7 +63,6 @@ func TestDynamicBranchAudiences(t *testing.T) {
 		`UPDATE realtime_revisions SET scope='transfers:99' WHERE scope='transfers:4'`,
 		`DELETE FROM realtime_revisions WHERE scope='transfers:4'`,
 		`INSERT INTO locations(id,name) VALUES(32768,'Overflow branch')`,
-		`SELECT create_branch('Exhausted range')`,
 	} {
 		before := snapshot()
 		if _, err := p.Exec(ctx, sql); err == nil {
@@ -72,6 +71,18 @@ func TestDynamicBranchAudiences(t *testing.T) {
 		if snapshot() != before {
 			t.Fatal("rejected statement changed accounts, stock or revisions")
 		}
+	}
+	// The id range is exhausted: 32767 is the largest smallint location, so the next
+	// identity the allocation computes is 32768 and the cast refuses to wrap it. The
+	// founding is what has to say so -- the refusal is the allocation's own smallint
+	// overflow (22003), not a statement that failed for some other reason -- and it says
+	// it before it writes a location, a balance or an audience: the lock, the allocation
+	// and the fanout of a branch are one transaction and a refused one leaves nothing.
+	before := snapshot()
+	_, err := p.Exec(ctx, `SELECT create_branch_funded('Exhausted range','0.00','0.00',1)`)
+	execRefusalMessage(t, err, "22003", "smallint out of range")
+	if snapshot() != before {
+		t.Fatal("a refused founding changed accounts, stock or revisions")
 	}
 	if err := bootstrap.Check(ctx, p); err != nil {
 		t.Fatal(err)

@@ -575,7 +575,7 @@ func (f *branchPriceHTTPFixture) storedPrice(t *testing.T, branchID, entryID int
 func (f *branchPriceHTTPFixture) createBranch(t *testing.T, name string) int64 {
 	t.Helper()
 	var id int64
-	if err := f.p.QueryRow(f.ctx, "SELECT create_branch($1)", name).Scan(&id); err != nil {
+	if err := f.p.QueryRow(f.ctx, "SELECT create_branch_funded($1,'0.00','0.00',1)", name).Scan(&id); err != nil {
 		t.Fatal("branch fixture creation failed")
 	}
 	return id

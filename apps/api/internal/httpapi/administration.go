@@ -195,17 +195,22 @@ func (a *API) administration(w http.ResponseWriter, r *http.Request) {
 		if !method(w, r, http.MethodPost) || !a.GuardMutation(w, r) {
 			return
 		}
-		fields, err := administrationFields(r, "name")
+		fields, err := administrationFields(r, "name", "opening_cash", "purchase_fund")
 		if err != nil {
 			administrationFailure(w, err)
 			return
 		}
-		name, ok := administrationText(fields, "name")
-		if !ok || len(fields) != 1 {
+		// The founding states exactly its three keys (S1): a branch is never born
+		// without its opening cash and its purchase fund, and the two amounts are
+		// canonical decimal text the service canonicalizes nothing of (S13).
+		name, n := administrationText(fields, "name")
+		openingCash, o := administrationText(fields, "opening_cash")
+		purchaseFund, p := administrationText(fields, "purchase_fund")
+		if len(fields) != 3 || !n || !o || !p {
 			failure(w, 400, "invalid_request")
 			return
 		}
-		branch, err := a.service.CreateBranch(r.Context(), token, name)
+		branch, err := a.service.CreateBranch(r.Context(), token, name, openingCash, purchaseFund)
 		if err != nil {
 			administrationFailure(w, err)
 			return

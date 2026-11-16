@@ -31,7 +31,7 @@ func branchRetirementDirectory(t *testing.T, f *t5Fixture) string {
 }
 func branchRetirementCreate(t *testing.T, f *t5Fixture) {
 	t.Helper()
-	t5Exact(t, f.request(f.tokens[0], "POST", "/api/admin/branches", `{"name":"Sucursal Retiro"}`), 201, "{\"id\":4,\"name\":\"Sucursal Retiro\"}\n")
+	t5Exact(t, f.request(f.tokens[0], "POST", "/api/admin/branches", `{"name":"Sucursal Retiro","opening_cash":"0.00","purchase_fund":"0.00"}`), 201, "{\"id\":4,\"name\":\"Sucursal Retiro\"}\n")
 }
 func branchRetirementBlocked(t *testing.T, f *t5Fixture, path, code string) {
 	t.Helper()

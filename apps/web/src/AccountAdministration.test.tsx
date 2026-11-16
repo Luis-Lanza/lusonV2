@@ -37,7 +37,7 @@ function setup(override?: (url: string, init: RequestInit) => Promise<Response> 
     }
     if (url === '/api/admin/accounts/4' && init.method === 'PATCH') { Object.assign(accounts[1], JSON.parse(String(init.body))); return Promise.resolve(new Response(null, { status: 204 })); }
     if (url === '/api/admin/accounts/4/password' && init.method === 'POST') { accounts[1].must_change_password = true; return Promise.resolve(new Response(null, { status: 204 })); }
-    if (url === '/api/admin/branches' && init.method === 'POST') { const branch = { id: 5, name: JSON.parse(String(init.body)).name }; branches.push(branch); return Promise.resolve(json(branch, 201)); }
+    if (url === '/api/admin/branches' && init.method === 'POST') { const body = JSON.parse(String(init.body)); const branch = { id: 5, name: body.name }; branches.push(branch); return Promise.resolve(json(branch, 201)); }
     if (url === '/api/closings/branches/commissions' && init.method === 'GET') return Promise.resolve(json(commissions));
     const commission = /^\/api\/closings\/branches\/(\d+)\/commission$/.exec(url);
     if (commission && init.method === 'POST') {
@@ -203,15 +203,52 @@ describe('T6 directory real API workflows', () => {
     const h = setup(); await open();
     fireEvent.click(screen.getByRole('button', { name: 'Sucursales' }));
     fireEvent.change(screen.getByLabelText('Nombre de sucursal'), { target: { value: 'Sucursal Sur' } });
+    fireEvent.change(screen.getByLabelText('Fondo de caja operativa'), { target: { value: '500' } });
+    fireEvent.change(screen.getByLabelText('Fondo de compras'), { target: { value: '300,5' } });
     fireEvent.click(screen.getByRole('button', { name: 'Crear sucursal' }));
     await screen.findByText('Sucursal creada: Sucursal Sur. Stock inicial cero.');
-    exactWrite(h, 0, '/api/admin/branches', 'POST', { name: 'Sucursal Sur' });
+    // The two amounts are mandatory in the payload and they are the canonical text the
+    // server stores, whatever the operator typed (S1, S13).
+    exactWrite(h, 0, '/api/admin/branches', 'POST', { name: 'Sucursal Sur', opening_cash: '500.00', purchase_fund: '300.50' });
     await waitFor(() => expect(h.fetcher.mock.calls.filter(([url]) => url === '/api/inventory/metadata')).toHaveLength(2));
     fireEvent.click(screen.getByRole('link', { name: 'Inventario' }));
     await screen.findByRole('button', { name: /Sucursal Sur.*Solo consulta/ });
     expect(screen.getByText('Almacén', { selector: '.assigned-location' })).toBeInTheDocument();
     expect(h.fetcher.mock.calls.filter(([url]) => url === '/api/auth/session')).toHaveLength(1);
     expect(writes(h)).toHaveLength(1);
+  });
+  it('asks for both amounts, refuses to submit without them and warns what 0,00 means (S1, S3)', async () => {
+    const h = setup(); await open();
+    fireEvent.click(screen.getByRole('button', { name: 'Sucursales' }));
+    // Both boxes are stated as required fields of the form and of the payload: silence is
+    // never an answer, and it is never read as 0,00 behind the operator's back.
+    expect(screen.getByLabelText('Fondo de caja operativa')).toBeRequired();
+    expect(screen.getByLabelText('Fondo de compras')).toBeRequired();
+    fireEvent.change(screen.getByLabelText('Nombre de sucursal'), { target: { value: 'Sucursal Sur' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Crear sucursal' }));
+    expect(writes(h)).toHaveLength(0);
+    // Filling only one of them is still not a founding, and it is not sent.
+    fireEvent.change(screen.getByLabelText('Fondo de caja operativa'), { target: { value: '500' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Crear sucursal' }));
+    expect(writes(h)).toHaveLength(0);
+    // Text that is not an amount this house admits is refused before the wire, and it
+    // says which of the two boxes is wrong.
+    fireEvent.change(screen.getByLabelText('Fondo de caja operativa'), { target: { value: '500,005' } });
+    fireEvent.change(screen.getByLabelText('Fondo de compras'), { target: { value: '300' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Crear sucursal' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Ingresá el fondo de caja operativa');
+    expect(writes(h)).toHaveLength(0);
+    // 0,00 is admitted as the explicit answer it is, and the form says what it means: the
+    // branch is born unable to spend until the warehouse loads that fund.
+    fireEvent.change(screen.getByLabelText('Fondo de caja operativa'), { target: { value: '500' } });
+    fireEvent.change(screen.getByLabelText('Fondo de compras'), { target: { value: '0,00' } });
+    expect(await screen.findByText(/Declaraste 0,00/)).toHaveTextContent(/sin plata para gastar hasta que el almacén cargue ese fondo/);
+    fireEvent.click(screen.getByRole('button', { name: 'Crear sucursal' }));
+    await screen.findByText('Sucursal creada: Sucursal Sur. Stock inicial cero.');
+    exactWrite(h, 0, '/api/admin/branches', 'POST', { name: 'Sucursal Sur', opening_cash: '500.00', purchase_fund: '0.00' });
+    expect(writes(h)).toHaveLength(1);
+    // The warning is about a stated zero, so it does not outlive the form it described.
+    expect(screen.queryByText(/Declaraste 0,00/)).not.toBeInTheDocument();
   });
   it('filters locally by search, status and branch without additional HTTP', async () => {
     const h = setup(); await open(); const before = h.fetcher.mock.calls.length;
@@ -227,6 +264,8 @@ describe('T6 directory real API workflows', () => {
       ? code === 'network' ? Promise.reject(new Error('private detail')) : Promise.resolve(json({ error: code }, Number(status))) : undefined);
     await open(); fireEvent.click(screen.getByRole('button', { name: 'Sucursales' }));
     fireEvent.change(screen.getByLabelText('Nombre de sucursal'), { target: { value: 'Not created' } });
+    fireEvent.change(screen.getByLabelText('Fondo de caja operativa'), { target: { value: '500' } });
+    fireEvent.change(screen.getByLabelText('Fondo de compras'), { target: { value: '300' } });
     fireEvent.click(screen.getByRole('button', { name: 'Crear sucursal' })); await screen.findByRole('alert');
     expect(screen.queryByText(/Sucursal creada:/)).not.toBeInTheDocument(); expect(writes(h)).toHaveLength(1);
     expect(screen.getByLabelText('Nombre de sucursal')).toHaveValue('Not created');
