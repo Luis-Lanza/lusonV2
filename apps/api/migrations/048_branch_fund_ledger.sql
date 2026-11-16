@@ -166,6 +166,7 @@ BEGIN
         -- settlement, and that settlement's positive fund and closing instant -- so the marker
         -- cannot backdate an opening for a retired branch or the warehouse, sign one with another
         -- branch's account, or open a branch that already has a fund movement.
+        -- This admission is restated by later versions, so the backfill predicates must travel with it.
         IF current_setting('luson.fund_backfill', true) = 'on' THEN
             IF NOT EXISTS (
                 SELECT 1 FROM branch_closings settlement

@@ -82,6 +82,18 @@ func TestClosingSettlesTheFundMigrationShape(t *testing.T) {
 		"IF used + NEW.amount > abs(corrected.amount) THEN",
 		"THEN -sign(corrected.amount) * NEW.amount",
 		"ELSE sign(corrected.amount) * NEW.amount END",
+
+		// The backfill arm of 048 travels with the restatement: the live branch, its own opener and
+		// the branch's last closed settlement are what the marker cannot forge, and a restatement
+		// that drops one of them reopens the hole 048 closed.
+		"JOIN locations branch ON branch.id = settlement.branch_location_id",
+		"AND settlement.branch_location_id > 1",
+		"AND branch.deleted_at IS NULL",
+		"AND settlement.purchase_fund_cash IS NOT NULL",
+		"AND settlement.purchase_fund_cash > 0",
+		"AND settlement.opened_by_account_id = NEW.created_by_account_id",
+		"AND settlement.closed_at = (",
+		"SELECT max(later.closed_at) FROM branch_closings later",
 	} {
 		if !strings.Contains(sql, required) {
 			t.Errorf("051 must state %q", required)
@@ -126,6 +138,8 @@ func TestClosingSettlesTheFundMigrationShape(t *testing.T) {
 	for _, documented := range []string{
 		"S5", "S6", "S7", "S9", "Why", "one arithmetic", "340251", "pg_trigger_depth",
 		"purchase_fund_ledger", "reposicion", "closing_fund", "036", "LC022", "044", "048",
+		// A restatement is where a rule is silently lost, so 051 says which one has to travel.
+		"restated by later versions", "the backfill predicates must travel with it",
 	} {
 		if !strings.Contains(sql, documented) {
 			t.Errorf("051 must document its own decision: %s", documented)
@@ -321,4 +335,79 @@ func TestFundCorrectionAfterTheClosureAppendsItsMovement(t *testing.T) {
 		t.Fatalf("the closure's movement must stay as it was written, got %q", stored)
 	}
 	t.Logf("051: a fund correction appends its movement and the balance follows")
+}
+
+// TestClosingKeepsTheBackfillRulesOf048 proves the backfill rules of 048 survive the restatement of
+// 051 on a database migrated through 51: 051 replaces the fund's admission whole, so the marker of
+// S12 must still open the numbers of a live branch's last closed settlement signed by that
+// settlement's own opener, and nothing else. The same forged openings the 048 suite runs at the 048
+// level run here against the function 051 installs, so a later restatement that drops one of these
+// predicates fails this test instead of silently reopening the hole.
+func TestClosingKeepsTheBackfillRulesOf048(t *testing.T) {
+	ctx, p := fundPrefixThrough(t, 47)
+
+	// Branch 2 leaves 2.000,00 in its fund and then closes again leaving nothing: its last closed
+	// settlement states no fund, so the backfill must skip the branch instead of walking back to the
+	// earlier settlement, whose instant the admission refuses.
+	earlier, last := closeFund(t, ctx, p, 2, "2000.00"), closeFund(t, ctx, p, 2, "0.00")
+	if !last.After(earlier) {
+		t.Fatalf("the second closure is the branch's last one: %s after %s", last, earlier)
+	}
+	// A branch that is retired before 048 runs. 034 refuses a settlement of a retired branch (LC017)
+	// and of the warehouse (LC002), so the numbers a forged opening for them needs are fabricated the
+	// way the 048 suite fabricates them, after the versions below are applied.
+	var retired int
+	if err := p.QueryRow(ctx, `SELECT create_branch('Sucursal F')`).Scan(&retired); err != nil {
+		t.Fatalf("the branch could not be created: %v", err)
+	}
+	if _, err := p.Exec(ctx, `UPDATE locations SET deleted_at=now() WHERE id=$1`, retired); err != nil {
+		t.Fatalf("branch %d could not be retired: %v", retired, err)
+	}
+
+	applyMigrationFrom(t, ctx, p, 48, 51)
+
+	// The version completed, which it could not do while walking back to the earlier settlement of
+	// branch 2: the last-settlement rule reached the backfill of 048, and that branch got no opening.
+	var rows int
+	if err := p.QueryRow(ctx, `SELECT count(*) FROM branch_fund_movements
+         WHERE branch_location_id=2`).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("a branch whose last settlement left nothing gets no opening, got %d %v", rows, err)
+	}
+	// The fabricated settlements are written with their triggers off, so 051's closure writes no
+	// `reposicion` for them and the numbers a forged opening states are the settlement's own.
+	retiredAt := fabricatedSettlement(t, ctx, p, retired)
+	warehouseAt := fabricatedSettlement(t, ctx, p, 1)
+	liveAt := fabricatedSettlement(t, ctx, p, 3)
+	before := fundLedger(t, ctx, p)
+
+	for _, forged := range []struct {
+		name, message, amount string
+		branch, account       int
+		occurred              time.Time
+	}{
+		// The two holes the review found in 048, closed here against the function 051 installs: a
+		// retired branch and the warehouse state no fund, so the marker cannot open one for them.
+		{"a retired branch", backfillNotLast, "700.00", retired, 1, retiredAt},
+		{"the warehouse", backfillNotLast, "700.00", 1, 1, warehouseAt},
+		// An opening is signed by the account that opened the settlement it comes from: another
+		// branch's account cannot write this one's history, even with the right numbers.
+		{"another branch's account", backfillNotLast, "700.00", 3, 2, liveAt},
+		// The last closed settlement is the only one the backfill reads, and the instant is how it
+		// is read: the earlier settlement of branch 2 states 2.000,00 that its last closure voided.
+		{"an earlier settlement", backfillNotLast, "2000.00", 2, 1, earlier},
+	} {
+		err := tryBackfillAs(ctx, p, forged.branch, forged.amount, forged.occurred, forged.account)
+		execRefusalMessage(t, err, "LF001", forged.message)
+		if after := fundLedger(t, ctx, p); after != before {
+			t.Fatalf("%s must write nothing, got %s before %s", forged.name, after, before)
+		}
+	}
+	// And the four branches the marker cannot open a fund for hold no fund at all: the refusals left
+	// no row behind, which is what "writes nothing" means at the level of a book.
+	for _, branch := range []int{1, 2, 3, retired} {
+		if balance := fundBalance(t, ctx, p, branch); balance != "0.00" {
+			t.Fatalf("branch %d states no fund it was not given, got %s", branch, balance)
+		}
+	}
+	t.Logf("051: the backfill predicates of 048 travel with the restated admission")
 }

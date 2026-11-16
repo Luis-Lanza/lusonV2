@@ -232,12 +232,19 @@ BEGIN
             RETURN NEW;
         END IF;
         IF current_setting('luson.fund_backfill', true) = 'on' THEN
+            -- This admission is restated by later versions, so the backfill predicates must travel with it.
             IF NOT EXISTS (
                 SELECT 1 FROM branch_closings settlement
+                JOIN locations branch ON branch.id = settlement.branch_location_id
                 WHERE settlement.branch_location_id = NEW.branch_location_id
+                  AND settlement.branch_location_id > 1
+                  AND branch.deleted_at IS NULL
                   AND settlement.status = 'closed'
+                  AND settlement.purchase_fund_cash IS NOT NULL
+                  AND settlement.purchase_fund_cash > 0
                   AND settlement.purchase_fund_cash = NEW.amount
                   AND settlement.closed_at = NEW.occurred_at
+                  AND settlement.opened_by_account_id = NEW.created_by_account_id
                   AND settlement.closed_at = (
                       SELECT max(later.closed_at) FROM branch_closings later
                       WHERE later.branch_location_id = NEW.branch_location_id
