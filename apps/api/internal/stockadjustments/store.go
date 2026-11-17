@@ -601,12 +601,12 @@ func (s *Store) Catalog(ctx context.Context, actor auth.Identity, q CatalogQuery
 }
 
 // catalogFilter is shared by the count and the page, so both answer the same
-// question. It selects no stock quantity at all, and a retired battery is no longer
-// a valid target for an adjustment.
+// question. It selects no stock quantity at all, and neither a retired battery nor
+// an other product is a valid target for an adjustment.
 const catalogFilter = ` FROM catalog_variants v
  JOIN catalog_entries e ON e.id=v.catalog_entry_id
  JOIN inventory_balances b ON b.location_id=$1 AND b.variant_id=v.id
- WHERE e.deleted_at IS NULL
+ WHERE e.deleted_at IS NULL AND e.kind = 'battery'
  AND ($2='' OR e.brand ILIKE $2 ESCAPE '\' OR e.model ILIKE $2 ESCAPE '\')
  AND ($3='' OR e.brand=$3) AND ($4='' OR v.polarity=$4)`
 

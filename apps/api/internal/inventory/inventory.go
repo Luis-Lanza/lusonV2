@@ -111,9 +111,11 @@ func (s *Store) Metadata(ctx context.Context, actor auth.Identity) (Metadata, er
 
 // activeBattery is the single definition of "this battery is part of the operating
 // catalog": the brand list, the brand probe and the filtered listing all compose it
-// as `e`, so a change to the rule reaches every selection path at once. History paths
-// never apply it - an archived battery must stay visible in past evidence.
-const activeBattery = `e.deleted_at IS NULL`
+// as `e`, so a change to the rule reaches every selection path at once. It also
+// excludes the other product kind, which carries no brand and is not selectable
+// here. History paths never apply it - an archived battery must stay visible in
+// past evidence.
+const activeBattery = `e.deleted_at IS NULL AND e.kind = 'battery'`
 
 // Count and items share both predicates and a repeatable-read read-only snapshot.
 // A retired battery is no longer part of the operating inventory.

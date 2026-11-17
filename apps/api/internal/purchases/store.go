@@ -796,7 +796,8 @@ func (s *Store) Models(ctx context.Context, actor auth.Identity) ([]string, erro
 		_ = tx.Rollback(cleanup)
 	}()
 	rows, err := tx.Query(ctx, `SELECT canonical.model FROM (
- SELECT DISTINCT upper(btrim(model)) AS model FROM catalog_entries WHERE deleted_at IS NULL
+ SELECT DISTINCT upper(btrim(model)) AS model FROM catalog_entries
+ WHERE deleted_at IS NULL AND kind = 'battery'
 ) canonical ORDER BY canonical.model COLLATE "C"`)
 	if err != nil {
 		return nil, fail(ctx)
