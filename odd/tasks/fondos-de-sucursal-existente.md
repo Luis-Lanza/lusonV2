@@ -43,6 +43,9 @@ vertical agrega esa puerta, y muestra los dos saldos en el mismo panel.
   `feat/caja-operativa`, no `master`).
 - **T4** Documentación y verificación: contrato, `README` si corresponde, y verificación independiente de una
   unidad de riesgo (dinero y permiso). — Spec: S4, S8.
+  **Cumplida** con evidencia de T2 y T3: el contrato de las dos rutas vive en `apps/api/docs/administration.md`,
+  la pantalla en `apps/web/docs/account-administration.md` (`b220bcb`), el `README` no habla de fondos y no
+  cambió, y la verificación independiente es la de L6 (S1-S9 cumplidos, sin bloqueantes).
 
 ## Log
 
@@ -79,3 +82,7 @@ vertical agrega esa puerta, y muestra los dos saldos en el mismo panel.
   dinero, que es la letra de S7, en vez de dibujar una sucursal sin plata—; (b) desde esta unidad el panel
   depende de **cuatro** lecturas, así que si la cuarta falla no hay directorio: mismo criterio, y queda dicho
   para que nadie lo lea como un descuido más adelante.
+- **L8** Vertical cerrada con `879c9c4` (endurecimiento de la guarda y registro de la verificación). Suite web
+  completa tras el endurecimiento: **3825 pasan / 1 skip**. Lo único que queda fuera de este documento es la
+  decisión del humano sobre **push y PR**: los cinco cortes de la vertical (`553442c`…, `b220bcb`, `f8e15b1`,
+  `879c9c4`) están sólo en local y `feat/fondos-iniciales` va un commit por delante de su remoto.
