@@ -39,6 +39,8 @@ vertical agrega esa puerta, y muestra los dos saldos en el mismo panel.
   S7-S10.
 - **T3** Pantalla de administración: en la tarjeta de cada sucursal, los dos saldos y el formulario de carga
   con los dos montos obligatorios y la advertencia del `0,00`. Pruebas. — Spec: S1, S2, S7, S9.
+  **Entregado** en `b220bcb` (354 líneas, unidad de revisión propia; la base de entrega de la vertical es
+  `feat/caja-operativa`, no `master`).
 - **T4** Documentación y verificación: contrato, `README` si corresponde, y verificación independiente de una
   unidad de riesgo (dinero y permiso). — Spec: S4, S8.
 
@@ -50,3 +52,17 @@ vertical agrega esa puerta, y muestra los dos saldos en el mismo panel.
   sucursal existente. Los dos caminos que hoy existen son malos por motivos distintos: abrir una rendición
   para cargar el fondo **congela** la sucursal, y la caja operativa sólo acepta un aporte que registra la
   propia sucursal (es decir: la sucursal se declara plata a sí misma).
+- **L3** Decisión de pantalla para S8, tomada al pie de su letra: con una rendición viva la tarjeta **no
+  publica los dos números** —dice que el cajón se está contando y que se publican cuando la rendición
+  cierre— y no ofrece el formulario de carga. Los datos igual llegan en la respuesta (`frozen` es un estado,
+  no una censura); mostrar un saldo que está por cambiar es exactamente lo que la spec prohíbe.
+- **L4** Hallazgo de implementación: el canal privado del front (`useInventory.privateRequest`) tenía lista
+  blanca de rutas y no admitía `branches/balances` ni `branches/{id}/funds`; el síntoma era «La sesión
+  cambió. Cerrá esta pantalla.», que no se parece a un permiso. Se extendió la lista blanca con las dos rutas
+  de administración y se agregó `branch_frozen` a los códigos que tienen mensaje propio, para que el rechazo
+  de S5 diga por qué. Es la parte de riesgo de la unidad: toca una guarda compartida.
+- **L5** Entrega de T3: `b220bcb`, 354 líneas (pantalla, modelo, estilos, contrato y pruebas). Verificado en
+  local: suite web completa **3823 pasan / 1 skip**, `tsc --noEmit` limpio, `build` verde, `lint` en la línea
+  base del commit anterior (262 warnings, ninguno nuevo). La base de entrega de la vertical es
+  `origin/feat/caja-operativa`; sobre `master` la rama arrastra también la vertical anterior, así que la
+  unidad de revisión de T3 es su propio commit.
