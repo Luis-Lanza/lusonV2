@@ -1623,6 +1623,11 @@ describe('warehouse catalogue section', () => {
         updated_at: '2026-11-04T10:00:00Z', updated_by_account_id: 1, updated_by_display_name: 'Almacén' }] }],
     page: 1, page_size: 10, total_batteries: 1,
   });
+  const otherProductsPage = JSON.stringify({
+    products: [{ id: 113, name: 'Agua acidulada',
+      fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }] }],
+    page: 1, page_size: 10, total_products: 1,
+  });
   const catalogMock = (mock: ReturnType<typeof setup>) =>
     mock.mock.calls.filter(([url]) => String(url).startsWith('/api/catalog/prices'));
 
@@ -1726,6 +1731,27 @@ describe('warehouse catalogue section', () => {
     await screen.findByRole('heading', { name: 'Baterías del catálogo' });
     expect(screen.getByRole('button', { name: 'Catálogo' })).toHaveAttribute('aria-current', 'page');
     expect(await screen.findByText('CAR NS40ZL'), ).toBeInTheDocument();
+    expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
+  it('offers the third catalogue screen and reaches the other products catalogue', async () => {
+    const mock = setup(session, url => url.startsWith('/api/catalog/other-products?')
+      ? Promise.resolve(new Response(otherProductsPage, { status: 200, headers: { 'Content-Type': 'application/json' } }))
+      : url.startsWith('/api/catalog/prices?')
+        ? Promise.resolve(new Response(catalogPage, { status: 200, headers: { 'Content-Type': 'application/json' } }))
+        : undefined);
+    render(<App />); await inventory();
+    fireEvent.click(within(screen.getByRole('navigation', { name: 'Navegación principal' }))
+      .getByRole('button', { name: 'Catálogo' }));
+    await screen.findByRole('heading', { name: 'Catálogo de precios' });
+    const screens = screen.getByRole('group', { name: 'Secciones del catálogo' });
+    expect(within(screens).getByRole('button', { name: 'Otros productos' })).toHaveAttribute('aria-pressed', 'false');
+    fireEvent.click(within(screens).getByRole('button', { name: 'Otros productos' }));
+    await screen.findByRole('heading', { name: 'Otros productos del catálogo' });
+    expect(window.location.hash).toBe('#/catalogo/otros-productos');
+    expect(screen.queryByRole('heading', { name: 'Catálogo de precios' })).not.toBeInTheDocument();
+    expect(await screen.findByText('Agua acidulada')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Catálogo' })).toHaveAttribute('aria-current', 'page');
     expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
   });
 
