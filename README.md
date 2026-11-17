@@ -33,7 +33,9 @@ a consulted inventory location does not change the account's assigned authority.
   remains tracked in `odd/tasks/transfer-origin-restitution-ux.md`.
 
 See the [inventory API contract](apps/api/docs/inventory-api.md) and
-[transfer API contract](apps/api/docs/transfers-api.md) for backend rules.
+[transfer API contract](apps/api/docs/transfers-api.md) for backend rules, and
+the [other products catalog contract](apps/api/docs/other-products.md) for the
+second catalog kind that shares the battery item identity.
 Frontend composition is in [App](apps/web/src/App.tsx) and
 [TransferPending](apps/web/src/TransferPending.tsx), including the reachable
 lifecycle, receipt, count-correction and restitution views. Contract documents

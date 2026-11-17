@@ -78,11 +78,18 @@ no unit.
 
 | ID | Spec | Route | Commit |
 | --- | --- | --- | --- |
-| T1 | S2, S3, S6 | inline (schema is shared, high risk) | — |
-| T2 | S2, S3 | inline (dependent on T1) | — |
-| T3 | S1, S2, S3, S4 | inline (dependent on T2) | — |
-| T4 | S1, S2, S3, S4 | inline (dependent on T3) | — |
-| T5 | S1-S6 | inline | — |
+| T1 | S2, S3, S6 | inline (schema is shared, high risk) | `d7e4d64` |
+| T2 | S1, S2, S6 | inline (shared read paths) | `a8e7a50` |
+| T3 | S2, S3, S4 | worker, then a delegated fixture cycle | `14dda67` |
+| T4 | S1, S2, S3, S4 | worker | `1ff867c` |
+| T5 | S1-S6 | inline | this commit |
+
+Slice boundaries, recorded because the cumulative feature is far past the review
+slice: T1 is the schema and its exhaustive schema test (one commit, because an
+unproven schema rule has no evidence), T2 is the kind predicate sweep plus its
+leak test, T3 is the Go contract with its two suites, T4 is the web screen with
+its three suites, and T5 is documentation only. Each commit stands alone and the
+last one closes the feature.
 
 ## Log
 
@@ -122,3 +129,52 @@ L3. Architecture answer after the recommendation: "Catálogo único + motor de
 transferencias compartido".
 
 L4. Branch `feat/other-products-catalog` created from master `d22fc0c`.
+
+L5. Delivery strategy: one commit per task. T1 is deliberately the largest slice
+(577 authored lines) because a schema rule that is not exhaustively proven by its
+schema test has no evidence at all; it stays a single commit rather than being cut
+into unproven halves. Every later task is a separate, smaller commit.
+
+L6. T1 evidence: `go test ./migrations` green on the admitted fixture, including
+the 028 and 029 schema tests. Commit `d7e4d64`. A first attempt replaced
+`guard_catalog_variant_identity`, which silently dropped the retired-battery
+refusal 029 owns; `TestCatalogVariantRetiredBattery` caught it and the rule now
+lives in its own `protect_variant_kind` trigger, with the replacement forbidden in
+the structure test.
+
+L7. T2 evidence: `go test` green on `internal/inventory`, `internal/pricing`,
+`internal/stockentries`, `internal/stockadjustments`, `internal/purchases`,
+`internal/httpapi` and `migrations` in one fixture cycle. `TestOtherProductsStay-
+OutOfBatteryScreens` proves a created product leaves the brand list at 11, the
+inventory total at 190, the price matrix at 95 and matches no search. Commit
+`a8e7a50`.
+
+L8. T3 evidence: the delegated fixture cycle ran the whole `otherproducts`
+package (8 database tests) and the whole `internal/httpapi` package (255s) green.
+Two defects were found and both were in the parent's new database test, not in the
+implementation: it inserted a battery identity the seeded fixture already owns
+(`TOYO`/`NS40ZL`), and it asserted a field count of zero for a product created
+without fields, which proved nothing. The second was strengthened rather than
+weakened: the product is now created with the two example fields and the test
+requires both rows to survive retirement with `number_value=5`, `unit='L'` and
+the text intact. `go build ./...` and `go vet ./...` clean. Commit `14dda67`.
+
+The number grammar departed from the handoff on purpose: `catalog.ParseDecimal`
+is the positive capacity grammar, while the column is `numeric(18,6)` with no
+positivity rule, so a number field admits a sign and zero. The web reader and the
+SQL column already agreed with that reading.
+
+L9. T4 evidence: `npm test` green twice (3981 passed, 1 skipped), plus
+`npm run typecheck`, `npm run lint` and `npm run build`. The third tab keeps the
+same warehouse gate, the per-owner remount and the hash symmetry of the other two
+screens. Commit `1ff867c`.
+
+L10. Declared gaps, not silently closed:
+- `catalog_product_has_pending` is proven at the error-mapping layer only. The
+database path needs the transfer engine, which is the next vertical.
+- One `internal/httpapi` run failed once without a captured assertion and ten
+subsequent runs were green, including the whole package. Unreproduced, not
+retried.
+- `testpg.Open` fails closed, so `go test ./internal/otherproducts` without the
+fixture fails by design; the repository's own command, `make test-pg`, runs it
+inside the audited fixture.
