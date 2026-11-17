@@ -250,6 +250,7 @@ export default function AccountAdministration({ controller, owner, initialTab = 
       : <><section className="admin-panel"><h2>Sucursales</h2><p>El almacén único es contexto, no una sucursal asignable.</p><div className="admin-branches">{branches.map(branch => {
           const rate = commissions.find(item => item.branch_id === branch.id);
           const book = balances.find(item => item.branch_id === branch.id);
+          const zero = fundLoad?.branch === branch.id ? fundsZeroNotice(fundLoad.openingCash, fundLoad.purchaseFund) : '';
           return <article key={branch.id}><h3>{branch.name}</h3><p>{branch.id === 1 ? 'Almacén protegido' : `${accounts.filter(account => account.location_id === branch.id).length} cuentas asignadas`}</p>
             {branch.id !== 1 && <p className="admin-commission">Comisión: {rate === undefined
               ? <strong>Sin configurar</strong>
@@ -270,7 +271,7 @@ export default function AccountAdministration({ controller, owner, initialTab = 
                   <label>Fondo de caja operativa<input required inputMode="decimal" autoComplete="off" placeholder="0,00" value={fundLoad.openingCash} disabled={busy} onChange={event => setFundLoad({ branch: branch.id, openingCash: event.target.value, purchaseFund: fundLoad.purchaseFund })} /></label>
                   <label>Fondo de compras<input required inputMode="decimal" autoComplete="off" placeholder="0,00" value={fundLoad.purchaseFund} disabled={busy} onChange={event => setFundLoad({ branch: branch.id, openingCash: fundLoad.openingCash, purchaseFund: event.target.value })} /></label>
                   <p>Los dos montos son obligatorios y se suman como aporte del almacén. Lo ya cargado no se edita: una carga equivocada se corrige con un movimiento.</p>
-                  {fundsZeroNotice(fundLoad.openingCash, fundLoad.purchaseFund) && <p role="status">{fundsZeroNotice(fundLoad.openingCash, fundLoad.purchaseFund)}</p>}
+                  {zero && <p role="status">{zero}</p>}
                   <button className="primary" type="submit" disabled={busy}>Confirmar carga</button>
                   <button type="button" disabled={busy} onClick={() => setFundLoad(null)}>Cancelar</button></form>
                 : <button type="button" disabled={busy} onClick={() => { if (current()) { closePrivate(); setNotice(''); setFundLoad({ branch: branch.id, openingCash: '', purchaseFund: '' }); } }}>Cargar fondos</button>)}

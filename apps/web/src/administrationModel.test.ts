@@ -58,14 +58,24 @@ describe('the two balances of each branch and the load of its funds', () => {
       JSON.stringify([{ branch_id: 2, cash_balance: '5,000.00', fund_balance: '3000.00', frozen: false }]),
       JSON.stringify([{ branch_id: 2, cash_balance: '1e3', fund_balance: '3000.00', frozen: false }]),
       JSON.stringify([{ branch_id: 2, cash_balance: '-0.00', fund_balance: '0.00', frozen: false }]),
+      JSON.stringify([{ branch_id: 2, cash_balance: '0.00', fund_balance: '-0.00', frozen: false }]),
+      // The widest amount `numeric(12,2)` holds is ten integral digits, and no more.
+      JSON.stringify([{ branch_id: 2, cash_balance: '10000000000.00', fund_balance: '0.00', frozen: false }]),
+      JSON.stringify([{ branch_id: 2, cash_balance: '00.00', fund_balance: '0.00', frozen: false }]),
+      JSON.stringify([{ branch_id: 2, cash_balance: '+0.00', fund_balance: '0.00', frozen: false }]),
+      JSON.stringify([{ branch_id: 2, cash_balance: ' 0.00', fund_balance: '0.00', frozen: false }]),
+      // One row per branch, and a frozen state stated as a boolean or not at all.
       // The frozen state is stated, never inferred by the reader.
       JSON.stringify([{ branch_id: 2, cash_balance: '5000.00', fund_balance: '3000.00', frozen: 'no' }]),
+      JSON.stringify([{ branch_id: 2, cash_balance: '5000.00', fund_balance: '3000.00', frozen: 0 }]),
+      JSON.stringify([{ branch_id: 2, cash_balance: '5000.00', fund_balance: '3000.00', frozen: null }]),
       // The warehouse owns no drawer and no fund, so it carries no balance.
       JSON.stringify([{ branch_id: 1, cash_balance: '5000.00', fund_balance: '3000.00', frozen: false }]),
       // Extra keys, unsorted branches, a number where the text belongs, and not a list.
       JSON.stringify([{ branch_id: 2, cash_balance: '5000.00', fund_balance: '3000.00', frozen: false, extra: 1 }]),
       JSON.stringify([
         { branch_id: 3, cash_balance: '0.00', fund_balance: '0.00', frozen: false },
+        { branch_id: 2, cash_balance: '0.00', fund_balance: '0.00', frozen: false },
         { branch_id: 2, cash_balance: '0.00', fund_balance: '0.00', frozen: false },
       ]),
       JSON.stringify([{ branch_id: 2, cash_balance: 5000, fund_balance: '3000.00', frozen: false }]),
@@ -81,6 +91,7 @@ describe('the two balances of each branch and the load of its funds', () => {
     expect(balanceText('0.00')).toBe('Bs 0,00');
     expect(balanceText('-300.00')).toBe('-Bs 300,00');
     expect(balanceText('1234567890.99')).toBe('Bs 1.234.567.890,99');
+    expect(balanceText('9999999999.99')).toBe('Bs 9.999.999.999,99');
     for (const refused of ['', '5000', '5000.0', '5.000,00', '+5.00', '-0.00', ' 5.00']) {
       expect(() => balanceText(refused), refused).toThrow('Respuesta inválida del servidor.');
     }
@@ -100,6 +111,8 @@ describe('the two balances of each branch and the load of its funds', () => {
     expect(fundsZeroNotice('0', '0,00')).toBe('Declaraste 0,00 en las dos cajas: la carga no escribe ningún movimiento.');
     expect(fundsZeroNotice('0,00', '300')).toBe('Declaraste 0,00 en la caja operativa: esa caja no recibe ningún movimiento.');
     expect(fundsZeroNotice('500', '0')).toBe('Declaraste 0,00 en el fondo de compras: esa caja no recibe ningún movimiento.');
+    // Silence is not a zero, and the notice speaks only for the box that stated one.
+    expect(fundsZeroNotice('', '0')).toBe('Declaraste 0,00 en el fondo de compras: esa caja no recibe ningún movimiento.');
     // Nothing stated is not a stated zero, and text that is not an amount earns no notice.
     expect(fundsZeroNotice('', '')).toBe('');
     expect(fundsZeroNotice('500,005', '300')).toBe('');

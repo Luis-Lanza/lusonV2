@@ -545,11 +545,15 @@ export function useInventory() {
     // the rule: it is the warehouse's own configuration, refused by the server for any other actor.
     const commission = path === '/api/closings/branches/commissions' ? method === 'GET'
       : method === 'POST' && /^\/api\/closings\/branches\/[1-9]\d{0,4}\/commission$/.test(path);
+    // The two balances of the panel are a read of its own, and the load of a branch's two funds is
+    // the warehouse's act on that branch: both belong to the administration surface and nowhere else,
+    // and each one is admitted with the one method it exists for -- the read never writes and the
+    // load is never a read.
+    const fundBooks = method === 'GET' && path === '/api/admin/branches/balances';
+    const fundLoad = method === 'POST' && /^\/api\/admin\/branches\/[1-9]\d*\/funds$/.test(path);
     const allowed = scope === 'password' ? path === '/api/auth/password' && method === 'POST'
       : method === 'DELETE' ? /^\/api\/admin\/(accounts|branches)\/[1-9]\d*$/.test(path)
-      // The two balances of the panel are a read of its own, and the load of a branch's two funds is
-      // the warehouse's act on that branch: both belong to the administration surface and nowhere else.
-      : commission || /^\/api\/admin\/(accounts(?:\/[1-9]\d*(?:\/password)?)?|branches(?:\/balances|\/[1-9]\d*\/funds)?)$/.test(path);
+      : commission || fundBooks || fundLoad || /^\/api\/admin\/(accounts(?:\/[1-9]\d*(?:\/password)?)?|branches)$/.test(path);
     if (!allowed || signal.aborted || privateOwner(scope) !== owner) throw new Error('La sesión cambió. Cerrá esta pantalla.');
     const controller = new AbortController();
     const abort = () => controller.abort();

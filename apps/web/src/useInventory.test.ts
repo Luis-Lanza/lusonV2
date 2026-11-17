@@ -79,6 +79,32 @@ describe('safe retirement private client', () => {
  });
 });
 
+describe('the administration routes the funds panel needs', () => {
+ it('admits the two routes the panel needs, each with its own method, and refuses every other shape before the wire', async () => {
+  const fetcher = t6Setup((url, init) => url.startsWith('/api/admin/') ? Promise.resolve(init.method === 'GET' ? new Response('[]') : new Response(null, { status: 204 })) : undefined);
+  const { result } = renderHook(() => useInventory()); await waitFor(() => expect(result.current.data).not.toBeNull());
+  const owner = result.current.privateOwner('admin')!;
+  const call = (path: string, method: 'GET' | 'POST', expected = 200) =>
+   result.current.privateRequest(owner, 'admin', path, new AbortController().signal, method, method === 'GET' ? undefined : {}, expected);
+  // The read of the two balances and the load of the two funds are the only two shapes admitted by
+  // name: everything the panel does not do is refused before any request leaves the browser.
+  await expect(call('/api/admin/branches/balances', 'GET')).resolves.toBe('[]');
+  await expect(call('/api/admin/branches/7/funds', 'POST', 204)).resolves.toBe('');
+  for (const [path, method] of [
+   // The pair is not interchangeable: the read is not a write and the load is not a read.
+   ['/api/admin/branches/balances', 'POST'], ['/api/admin/branches/2/funds', 'GET'],
+   ['/api/admin/branches/balances/2', 'GET'], ['/api/admin/branches/balances/2/funds', 'POST'],
+   ['/api/admin/branches/2/funds/', 'POST'], ['/api/admin/branches/2/funds?x=1', 'POST'],
+   ['/api/admin/branches/02/funds', 'POST'], ['/api/admin/branches/0/funds', 'POST'],
+   ['/api/admin/branches/2/funds/extra', 'POST'], ['/api/admin/branches/../../api/admin/branches/2/funds', 'POST'],
+  ] as const) {
+   const before = fetcher.mock.calls.length;
+   await expect(call(path, method, 204), `${method} ${path}`).rejects.toThrow('La sesión cambió');
+   expect(fetcher.mock.calls, `${method} ${path}`).toHaveLength(before);
+  }
+ });
+});
+
 describe('T6 shared controller private ownership', () => {
  it.each(['account', 'display', 'csrf', 'forced', 'assignment'])('refuses stale admin action after in-place %s change before render', async kind => {
   const fetcher = t6Setup(); const { result } = renderHook(() => useInventory());

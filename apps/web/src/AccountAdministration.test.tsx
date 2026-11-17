@@ -406,6 +406,15 @@ describe('the two balances of each branch and the load of its funds', () => {
     expect(within(card('Almacén')).queryByRole('region')).toBeNull();
   });
 
+  it('offers no load and no number for the warehouse', async () => {
+    setup(); await branchesTab();
+
+    // The warehouse owns no drawer and no fund: it receives no money from itself.
+    const w = within(card('Almacén'));
+    expect(w.queryByRole('region')).toBeNull();
+    expect(w.queryByRole('button', { name: 'Cargar fondos' })).toBeNull();
+  });
+
   it('says a frozen branch is being counted instead of publishing numbers about to change', async () => {
     setup(); await branchesTab();
 
