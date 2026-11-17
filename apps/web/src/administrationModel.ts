@@ -118,11 +118,70 @@ export function amountInput(value: string): string | null {
  *  what the human asked for -- and 0,00 is a stated answer, not a missing one (S3). */
 export function branchFounding(name: string, openingCash: string, purchaseFund: string): Record<string, string> {
   if (!validName(name)) throw new Error('Ingresá un nombre válido de hasta 128 bytes UTF-8.');
+  return { name, ...fundAmounts(openingCash, purchaseFund) };
+}
+/** The two mandatory amounts of one load, as the strict payload the server admits (S2):
+ *  the drawer's operating cash and the purchase fund, and never a third key. Silence is
+ *  not an answer here either; 0,00 is a stated answer and it is sent as one (S9). */
+export function branchFundLoad(openingCash: string, purchaseFund: string): Record<string, string> {
+  return fundAmounts(openingCash, purchaseFund);
+}
+function fundAmounts(openingCash: string, purchaseFund: string): Record<string, string> {
   const cash = amountInput(openingCash);
   if (cash === null) throw new Error('Ingresá el fondo de caja operativa en bolivianos, con hasta dos decimales.');
   const fund = amountInput(purchaseFund);
   if (fund === null) throw new Error('Ingresá el fondo de compras en bolivianos, con hasta dos decimales.');
-  return { name, opening_cash: cash, purchase_fund: fund };
+  return { opening_cash: cash, purchase_fund: fund };
+}
+/** What a stated 0,00 answers, in the words of the load it describes (S9). It is a stated
+ *  answer, not a missing one: nothing is written into that box's ledger and the act is not
+ *  an error. Text that is not an amount earns no notice; the payload refuses it first. */
+export function fundsZeroNotice(openingCash: string, purchaseFund: string): string {
+  const cash = amountInput(openingCash) === '0.00';
+  const fund = amountInput(purchaseFund) === '0.00';
+  if (cash && fund) return 'Declaraste 0,00 en las dos cajas: la carga no escribe ningún movimiento.';
+  if (cash) return 'Declaraste 0,00 en la caja operativa: esa caja no recibe ningún movimiento.';
+  if (fund) return 'Declaraste 0,00 en el fondo de compras: esa caja no recibe ningún movimiento.';
+  return '';
+}
+/** One balance of the panel (S7): the branch, the drawer's expectation and the purchase
+ *  fund -- both signed text the server read from the ledgers -- and whether a live
+ *  settlement is holding the branch, in which case its numbers are about to change (S8). */
+export interface BranchBalance {
+  branch_id: number; cash_balance: string; fund_balance: string; frozen: boolean;
+}
+/** Canonical signed text of a `numeric(12,2)`, exactly as the ledgers store it. */
+const signedAmountPattern = /^-?(0|[1-9][0-9]{0,9})\.[0-9]{2}$/;
+function signedAmount(value: unknown): string {
+  const amount = text(value);
+  // `-0.00` is not an amount this arithmetic can produce, and it is not a shortage.
+  if (!signedAmountPattern.test(amount) || amount === '-0.00') return invalid();
+  return amount;
+}
+function branchBalance(value: unknown): BranchBalance {
+  const item = object(value, ['branch_id', 'cash_balance', 'fund_balance', 'frozen']);
+  const id = locationID(item.branch_id);
+  // The warehouse owns no drawer and no fund, so it carries no balance.
+  if (id < 2 || typeof item.frozen !== 'boolean') return invalid();
+  return { branch_id: id, cash_balance: signedAmount(item.cash_balance),
+    fund_balance: signedAmount(item.fund_balance), frozen: item.frozen };
+}
+/** Reads one balance per live branch, in branch order. A branch without its row is not a
+ *  branch without money: it is an answer this server did not produce, and the read fails. */
+export function parseBalances(raw: string): BranchBalance[] {
+  const value = decode(raw);
+  if (!Array.isArray(value)) return invalid();
+  const items = value.map(branchBalance);
+  if (items.some((item, index) => index > 0 && items[index - 1].branch_id >= item.branch_id)) return invalid();
+  return items;
+}
+/** The signed balance as the operator reads it, in the house's money format (`Bs 5.000,00`,
+ *  and `-Bs 300,00` for a shortage). Presentation only: the number is the server's and it is
+ *  never recomputed, clamped or rounded here (S7). */
+export function balanceText(amount: string): string {
+  const match = /^(-?)(0|[1-9][0-9]{0,9})\.([0-9]{2})$/.exec(amount);
+  if (!match || amount === '-0.00') return invalid();
+  return `${match[1]}Bs ${match[2].replace(/\B(?=(\d{3})+(?!\d))/g, '.')},${match[3]}`;
 }
 export function accountPatch(before: Account, name: string, location: number, enabled: boolean): Record<string, string | number | boolean> {
   const patch: Record<string, string | number | boolean> = {};

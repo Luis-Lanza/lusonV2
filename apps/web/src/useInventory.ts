@@ -547,7 +547,9 @@ export function useInventory() {
       : method === 'POST' && /^\/api\/closings\/branches\/[1-9]\d{0,4}\/commission$/.test(path);
     const allowed = scope === 'password' ? path === '/api/auth/password' && method === 'POST'
       : method === 'DELETE' ? /^\/api\/admin\/(accounts|branches)\/[1-9]\d*$/.test(path)
-      : commission || /^\/api\/admin\/(accounts(?:\/[1-9]\d*(?:\/password)?)?|branches)$/.test(path);
+      // The two balances of the panel are a read of its own, and the load of a branch's two funds is
+      // the warehouse's act on that branch: both belong to the administration surface and nowhere else.
+      : commission || /^\/api\/admin\/(accounts(?:\/[1-9]\d*(?:\/password)?)?|branches(?:\/balances|\/[1-9]\d*\/funds)?)$/.test(path);
     if (!allowed || signal.aborted || privateOwner(scope) !== owner) throw new Error('La sesión cambió. Cerrá esta pantalla.');
     const controller = new AbortController();
     const abort = () => controller.abort();
@@ -578,6 +580,7 @@ export function useInventory() {
           branch_has_stock: 'La sucursal tiene stock o reservas. Resolvé el stock y las reservas antes de eliminarla.',
           branch_has_users: 'La sucursal tiene usuarios asignados, incluso desactivados. Reasignalos o eliminalos antes de eliminarla.',
           branch_has_pending_operations: 'La sucursal tiene operaciones pendientes. Resolvelas antes de eliminarla.',
+          branch_frozen: 'La sucursal está congelada por una rendición en curso: no se carga plata hasta que la rendición se cierre.',
         };
         throw new Error(messages[code] ?? 'Respuesta inválida del servidor.');
       }

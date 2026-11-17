@@ -1396,6 +1396,8 @@ describe('safe retirement inventory selection', () => {
    if (url === '/api/admin/accounts') return Promise.resolve(response([{ id: '1', username: 'almacen', display_name: 'Admin', location_id: 1, enabled: true, must_change_password: false }]));
    // The panel reads the configured commissions of the branches it lists.
    if (url === '/api/closings/branches/commissions') return Promise.resolve(response([]));
+   // ... and the two balances of each one, one row per live branch and never for the warehouse.
+   if (url === '/api/admin/branches/balances') return Promise.resolve(response(locations().filter(item => item.id !== 1).map(item => ({ branch_id: item.id, cash_balance: '0.00', fund_balance: '0.00', frozen: false }))));
    if (url === '/api/admin/branches/4' && init.method === 'DELETE') { retired = true; return Promise.resolve(new Response(null, { status: 204 })); }
    if (url.startsWith('/api/inventory?') && new URL(url, 'http://localhost').searchParams.get('location_id') === '4')
     return Promise.resolve(retired ? response({ error: 'not_found' }, 404) : response(pageJSON().replace('"location":{"id":1,"name":"Almacén"}', '"location":' + JSON.stringify(branch))));
@@ -1426,7 +1428,8 @@ describe('T6 administration directory', () => {
   function directorySetup() {
     return setup(session, url => url === '/api/admin/accounts' ? Promise.resolve(response(accounts))
       : url === '/api/admin/branches' ? Promise.resolve(response(branches))
-      : url === '/api/closings/branches/commissions' ? Promise.resolve(response([])) : undefined);
+      : url === '/api/closings/branches/commissions' ? Promise.resolve(response([]))
+      : url === '/api/admin/branches/balances' ? Promise.resolve(response(branches.filter(item => item.id !== 1).map(item => ({ branch_id: item.id, cash_balance: '0.00', fund_balance: '0.00', frozen: false })))) : undefined);
   }
   it.each(['Administración', 'Mi contraseña'])('renders a matching decorative icon for %s', async name => {
     directorySetup(); render(<App />); await inventory();
@@ -1444,7 +1447,7 @@ describe('T6 administration directory', () => {
     await screen.findByRole('heading', { name: 'Usuarios y sucursales' });
     await screen.findByRole('button', { name: 'Gestionar personal.c' });
     const reads = mock.mock.calls.filter(([url]) => String(url).startsWith('/api/admin/'));
-    expect(reads.map(([url]) => url).sort()).toEqual(['/api/admin/accounts', '/api/admin/branches']);
+    expect(reads.map(([url]) => url).sort()).toEqual(['/api/admin/accounts', '/api/admin/branches', '/api/admin/branches/balances']);
     for (const [, init] of reads) {
       expect(init?.method).toBe('GET'); expect(init?.credentials).toBe('same-origin');
       expect(new Headers(init?.headers).get('X-Luson-Passive')).toBe('1'); expect(init?.body).toBeUndefined();

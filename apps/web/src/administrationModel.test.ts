@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { amountInput, branchFounding, commissionInput, commissionText, parseCommissions } from './administrationModel';
+import { amountInput, balanceText, branchFounding, branchFundLoad, commissionInput, commissionText, fundsZeroNotice, parseBalances, parseCommissions } from './administrationModel';
 
 const listed = JSON.stringify([
   { branch_location_id: 2, commission_rate_percent: '4.50', updated_at: '2026-11-15T04:48:56Z', updated_by: 'Almacén' },
   { branch_location_id: 3, commission_rate_percent: '100.00', updated_at: '2026-11-15T04:49:00Z', updated_by: '' },
+]);
+
+const books = JSON.stringify([
+  { branch_id: 2, cash_balance: '5000.00', fund_balance: '3000.00', frozen: false },
+  { branch_id: 3, cash_balance: '-20.50', fund_balance: '0.00', frozen: true },
 ]);
 
 describe('the two mandatory amounts of a founding', () => {
@@ -33,6 +38,71 @@ describe('the two mandatory amounts of a founding', () => {
     expect(() => branchFounding('Sucursal Sur', '500.005', '300.00')).toThrow('Ingresá el fondo de caja operativa');
     expect(() => branchFounding('Sucursal Sur', '500.00', '-300')).toThrow('Ingresá el fondo de compras');
     expect(() => branchFounding(' ', '500.00', '300.00')).toThrow('Ingresá un nombre válido de hasta 128 bytes UTF-8.');
+  });
+});
+
+describe('the two balances of each branch and the load of its funds', () => {
+  it('reads the balances the server publishes, signed, in branch order, each with its own frozen state', () => {
+    expect(parseBalances(books)).toEqual([
+      { branch_id: 2, cash_balance: '5000.00', fund_balance: '3000.00', frozen: false },
+      { branch_id: 3, cash_balance: '-20.50', fund_balance: '0.00', frozen: true },
+    ]);
+    expect(parseBalances('[]')).toEqual([]);
+  });
+
+  it('refuses a balance the server could not have produced', () => {
+    for (const refused of [
+      // A balance is canonical signed text with exactly two decimals.
+      JSON.stringify([{ branch_id: 2, cash_balance: '5000', fund_balance: '3000.00', frozen: false }]),
+      JSON.stringify([{ branch_id: 2, cash_balance: '5000.0', fund_balance: '3000.00', frozen: false }]),
+      JSON.stringify([{ branch_id: 2, cash_balance: '5,000.00', fund_balance: '3000.00', frozen: false }]),
+      JSON.stringify([{ branch_id: 2, cash_balance: '1e3', fund_balance: '3000.00', frozen: false }]),
+      JSON.stringify([{ branch_id: 2, cash_balance: '-0.00', fund_balance: '0.00', frozen: false }]),
+      // The frozen state is stated, never inferred by the reader.
+      JSON.stringify([{ branch_id: 2, cash_balance: '5000.00', fund_balance: '3000.00', frozen: 'no' }]),
+      // The warehouse owns no drawer and no fund, so it carries no balance.
+      JSON.stringify([{ branch_id: 1, cash_balance: '5000.00', fund_balance: '3000.00', frozen: false }]),
+      // Extra keys, unsorted branches, a number where the text belongs, and not a list.
+      JSON.stringify([{ branch_id: 2, cash_balance: '5000.00', fund_balance: '3000.00', frozen: false, extra: 1 }]),
+      JSON.stringify([
+        { branch_id: 3, cash_balance: '0.00', fund_balance: '0.00', frozen: false },
+        { branch_id: 2, cash_balance: '0.00', fund_balance: '0.00', frozen: false },
+      ]),
+      JSON.stringify([{ branch_id: 2, cash_balance: 5000, fund_balance: '3000.00', frozen: false }]),
+      JSON.stringify({ branch_id: 2 }),
+      'no es json',
+    ]) {
+      expect(() => parseBalances(refused), refused).toThrow('Respuesta inválida del servidor.');
+    }
+  });
+
+  it('shows a signed balance the way the counter shows money, without recomputing it', () => {
+    expect(balanceText('5000.00')).toBe('Bs 5.000,00');
+    expect(balanceText('0.00')).toBe('Bs 0,00');
+    expect(balanceText('-300.00')).toBe('-Bs 300,00');
+    expect(balanceText('1234567890.99')).toBe('Bs 1.234.567.890,99');
+    for (const refused of ['', '5000', '5000.0', '5.000,00', '+5.00', '-0.00', ' 5.00']) {
+      expect(() => balanceText(refused), refused).toThrow('Respuesta inválida del servidor.');
+    }
+  });
+
+  it('states the two amounts of a load as the strict payload, naming the box that is not an amount', () => {
+    expect(branchFundLoad('500', '300,5')).toEqual({ opening_cash: '500.00', purchase_fund: '300.50' });
+    // A stated 0,00 is an answer and it is sent as one (S2, S9).
+    expect(branchFundLoad('0', '0,00')).toEqual({ opening_cash: '0.00', purchase_fund: '0.00' });
+    expect(() => branchFundLoad('', '300.00')).toThrow('Ingresá el fondo de caja operativa en bolivianos, con hasta dos decimales.');
+    expect(() => branchFundLoad('500.00', '')).toThrow('Ingresá el fondo de compras en bolivianos, con hasta dos decimales.');
+    expect(() => branchFundLoad('500,005', '300.00')).toThrow('Ingresá el fondo de caja operativa');
+    expect(() => branchFundLoad('500.00', '-300')).toThrow('Ingresá el fondo de compras');
+  });
+
+  it('says what a stated 0,00 means on each side and stays silent when nothing is zero', () => {
+    expect(fundsZeroNotice('0', '0,00')).toBe('Declaraste 0,00 en las dos cajas: la carga no escribe ningún movimiento.');
+    expect(fundsZeroNotice('0,00', '300')).toBe('Declaraste 0,00 en la caja operativa: esa caja no recibe ningún movimiento.');
+    expect(fundsZeroNotice('500', '0')).toBe('Declaraste 0,00 en el fondo de compras: esa caja no recibe ningún movimiento.');
+    // Nothing stated is not a stated zero, and text that is not an amount earns no notice.
+    expect(fundsZeroNotice('', '')).toBe('');
+    expect(fundsZeroNotice('500,005', '300')).toBe('');
   });
 });
 

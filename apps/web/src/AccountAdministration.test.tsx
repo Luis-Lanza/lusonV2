@@ -15,6 +15,13 @@ function setup(override?: (url: string, init: RequestInit) => Promise<Response> 
   const accounts = structuredClone(seed);
   const commissions = [...configured];
   const branches = [{ id: 1, name: 'Almacén' }, { id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }, { id: 4, name: 'Sucursal C' }];
+  // One row per live branch: the drawer's expectation and the purchase fund, both read from the
+  // ledgers by the server, plus whether a live settlement is holding the branch (S7, S8).
+  const balances = [
+    { branch_id: 2, cash_balance: '5000.00', fund_balance: '3000.00', frozen: false },
+    { branch_id: 3, cash_balance: '0.00', fund_balance: '0.00', frozen: true },
+    { branch_id: 4, cash_balance: '120.50', fund_balance: '-30.00', frozen: false },
+  ];
   let current: unknown = administrator;
   class Events { addEventListener() {} removeEventListener() {} close() {} }
   vi.stubGlobal('EventSource', Events);
@@ -37,7 +44,15 @@ function setup(override?: (url: string, init: RequestInit) => Promise<Response> 
     }
     if (url === '/api/admin/accounts/4' && init.method === 'PATCH') { Object.assign(accounts[1], JSON.parse(String(init.body))); return Promise.resolve(new Response(null, { status: 204 })); }
     if (url === '/api/admin/accounts/4/password' && init.method === 'POST') { accounts[1].must_change_password = true; return Promise.resolve(new Response(null, { status: 204 })); }
-    if (url === '/api/admin/branches' && init.method === 'POST') { const body = JSON.parse(String(init.body)); const branch = { id: 5, name: body.name }; branches.push(branch); return Promise.resolve(json(branch, 201)); }
+    if (url === '/api/admin/branches' && init.method === 'POST') { const body = JSON.parse(String(init.body)); const branch = { id: 5, name: body.name }; branches.push(branch); balances.push({ branch_id: 5, cash_balance: body.opening_cash, fund_balance: body.purchase_fund, frozen: false }); return Promise.resolve(json(branch, 201)); }
+    if (url === '/api/admin/branches/balances' && init.method === 'GET') return Promise.resolve(json(balances));
+    const funds = /^\/api\/admin\/branches\/(\d+)\/funds$/.exec(url);
+    if (funds && init.method === 'POST') {
+      const body = JSON.parse(String(init.body)); const row = balances.find(item => item.branch_id === Number(funds[1]))!;
+      row.cash_balance = plus(row.cash_balance, body.opening_cash);
+      row.fund_balance = plus(row.fund_balance, body.purchase_fund);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
     if (url === '/api/closings/branches/commissions' && init.method === 'GET') return Promise.resolve(json(commissions));
     const commission = /^\/api\/closings\/branches\/(\d+)\/commission$/.exec(url);
     if (commission && init.method === 'POST') {
@@ -51,7 +66,14 @@ function setup(override?: (url: string, init: RequestInit) => Promise<Response> 
     throw new Error('Unexpected request');
   });
   vi.stubGlobal('fetch', fetcher);
-  return { fetcher, accounts, branches, commissions };
+  return { fetcher, accounts, branches, commissions, balances };
+}
+/** Exact cents of a balance, added the way the ledgers add them: the mock server only. */
+function plus(balance: string, amount: string): string {
+  const cents = (text: string) => { const [whole, fraction] = text.split('.'); return BigInt(whole) * 100n + BigInt(fraction); };
+  const total = cents(balance) + cents(amount);
+  const magnitude = total < 0n ? -total : total;
+  return `${total < 0n ? '-' : ''}${magnitude / 100n}.${(magnitude % 100n).toString().padStart(2, '0')}`;
 }
 async function open() {
   render(<App />); await screen.findByRole('heading', { name: 'Inventario' });
@@ -359,6 +381,128 @@ describe('the commission of each branch', () => {
 
     expect(await screen.findByText('Ingresá un porcentaje entre 0 y 100, con hasta dos decimales.')).toBeTruthy();
     expect(h.fetcher.mock.calls.some(([url]) => String(url).includes('/commission') && String(url) !== '/api/closings/branches/commissions')).toBe(false);
+  });
+});
+
+describe('the two balances of each branch and the load of its funds', () => {
+  const card = (name: string) => screen.getByRole('heading', { name, level: 3 }).closest('article')!;
+  async function branchesTab() {
+    await open(); fireEvent.click(screen.getByRole('button', { name: 'Sucursales' }));
+    await screen.findByRole('region', { name: 'Saldos de Sucursal A' });
+  }
+
+  it('publishes the two balances the server reads from the ledgers, and none for the warehouse', async () => {
+    setup(); await branchesTab();
+
+    const a = within(card('Sucursal A'));
+    expect(a.getByText('Fondo de caja operativa')).toBeTruthy();
+    expect(a.getByText('Fondo de compras')).toBeTruthy();
+    expect(a.getByText('Bs 5.000,00')).toBeTruthy();
+    expect(a.getByText('Bs 3.000,00')).toBeTruthy();
+    // A signed balance is published exactly as the server states it: a shortage is negative
+    // and it is never zeroed, clamped or recomputed by the panel (S7).
+    expect(within(card('Sucursal C')).getByText('-Bs 30,00')).toBeTruthy();
+    // The warehouse owns no drawer and no fund, so it shows no balances at all.
+    expect(within(card('Almacén')).queryByRole('region')).toBeNull();
+  });
+
+  it('says a frozen branch is being counted instead of publishing numbers about to change', async () => {
+    setup(); await branchesTab();
+
+    const b = within(card('Sucursal B'));
+    expect(b.getByText(/Rendición en curso/)).toHaveTextContent(/congelada/);
+    expect(b.queryByText(/^Bs /)).toBeNull();
+    expect(b.queryByText(/^-Bs /)).toBeNull();
+    // Money stated into a till being counted would break the count, so the panel does not
+    // offer the load at all while the settlement holds the branch (S5).
+    expect(b.queryByRole('button', { name: 'Cargar fondos' })).toBeNull();
+  });
+
+  it('loads both funds of a branch that already exists and shows the numbers the server returns', async () => {
+    const h = setup(); await branchesTab();
+
+    const a = within(card('Sucursal A'));
+    fireEvent.click(a.getByRole('button', { name: 'Cargar fondos' }));
+    const cash = a.getByLabelText('Fondo de caja operativa');
+    const fund = a.getByLabelText('Fondo de compras');
+    // Both boxes are required fields: silence is never read as 0,00 behind the operator (S2).
+    expect(cash).toBeRequired(); expect(fund).toBeRequired();
+    fireEvent.click(a.getByRole('button', { name: 'Confirmar carga' }));
+    expect(writes(h)).toHaveLength(0);
+    fireEvent.change(cash, { target: { value: '500' } });
+    fireEvent.click(a.getByRole('button', { name: 'Confirmar carga' }));
+    expect(writes(h)).toHaveLength(0);
+    // Text that is not an amount this house admits is refused before the wire, naming the box.
+    fireEvent.change(cash, { target: { value: '500,005' } });
+    fireEvent.change(fund, { target: { value: '300' } });
+    fireEvent.click(a.getByRole('button', { name: 'Confirmar carga' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Ingresá el fondo de caja operativa');
+    expect(writes(h)).toHaveLength(0);
+
+    fireEvent.change(cash, { target: { value: '1000' } });
+    fireEvent.click(a.getByRole('button', { name: 'Confirmar carga' }));
+    await screen.findByText(/Fondos cargados/);
+    exactWrite(h, 0, '/api/admin/branches/2/funds', 'POST', { opening_cash: '1000.00', purchase_fund: '300.00' });
+    expect(writes(h)).toHaveLength(1);
+    // The panel reads the books again and shows the server's new number; the branch keeps
+    // operating, because a load does not freeze it (S6, S7).
+    await waitFor(() => expect(within(card('Sucursal A')).getByText('Bs 6.000,00')).toBeTruthy());
+    expect(within(card('Sucursal A')).getByText('Bs 3.300,00')).toBeTruthy();
+    expect(h.fetcher.mock.calls.filter(([url]) => url === '/api/admin/branches/balances')).toHaveLength(2);
+    // The form is gone: the create-branch box is the only one left on the screen.
+    expect(screen.getAllByLabelText('Fondo de caja operativa')).toHaveLength(1);
+  });
+
+  it('warns what a stated 0,00 means and still sends it as the answer it is', async () => {
+    const h = setup(); await branchesTab();
+
+    const c = within(card('Sucursal C'));
+    fireEvent.click(c.getByRole('button', { name: 'Cargar fondos' }));
+    fireEvent.change(c.getByLabelText('Fondo de caja operativa'), { target: { value: '0,00' } });
+    fireEvent.change(c.getByLabelText('Fondo de compras'), { target: { value: '0' } });
+    expect(await c.findByText(/Declaraste 0,00 en las dos cajas/)).toHaveTextContent(/no escribe ningún movimiento/);
+    fireEvent.click(c.getByRole('button', { name: 'Confirmar carga' }));
+    await screen.findByText(/Fondos cargados/);
+    exactWrite(h, 0, '/api/admin/branches/4/funds', 'POST', { opening_cash: '0.00', purchase_fund: '0.00' });
+    expect(writes(h)).toHaveLength(1);
+  });
+
+  it.each([
+    ['branch_frozen', 409, /rendición en curso/i],
+    ['forbidden', 403, /permiso/i],
+    ['network', 0, /confirmar|consultá/i],
+  ] as const)('keeps the form and explains a refused load (%s)', async (code, status, explanation) => {
+    const h = setup((url, init) => url === '/api/admin/branches/2/funds' && init.method === 'POST'
+      ? code === 'network' ? Promise.reject(new Error('private detail')) : Promise.resolve(json({ error: code }, status)) : undefined);
+    await branchesTab();
+    const a = within(card('Sucursal A'));
+    fireEvent.click(a.getByRole('button', { name: 'Cargar fondos' }));
+    fireEvent.change(a.getByLabelText('Fondo de caja operativa'), { target: { value: '1000' } });
+    fireEvent.change(a.getByLabelText('Fondo de compras'), { target: { value: '300' } });
+    fireEvent.click(a.getByRole('button', { name: 'Confirmar carga' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(explanation);
+    expect(screen.queryByText('private detail')).toBeNull();
+    expect(screen.queryByText(/Fondos cargados/)).toBeNull();
+    // Nothing is retried and the stated amounts are still there to be checked.
+    expect(writes(h)).toHaveLength(1);
+    expect(a.getByLabelText('Fondo de caja operativa')).toHaveValue('1000');
+    expect(a.getByLabelText('Fondo de compras')).toHaveValue('300');
+    expect(within(card('Sucursal A')).getByText('Bs 5.000,00')).toBeTruthy();
+  });
+
+  it('refuses a balance the panel could not have read instead of inventing a number', async () => {
+    setup((url, init) => url === '/api/admin/branches/balances' && init.method === 'GET'
+      ? Promise.resolve(json([{ branch_id: 2, cash_balance: '5000.00', fund_balance: '3000.00', frozen: false }])) : undefined);
+    render(<App />); await screen.findByRole('heading', { name: 'Inventario' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Administración' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: 'Administración' }));
+
+    // A directory branch without its balance row is an answer this house did not produce: the
+    // panel fails closed rather than showing a branch with no money, and it renders no number.
+    expect(await screen.findByRole('alert')).toHaveTextContent('Respuesta inválida del servidor.');
+    expect(screen.queryByText(/^Bs /)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Gestionar legacy.c' })).toBeNull();
   });
 });
 

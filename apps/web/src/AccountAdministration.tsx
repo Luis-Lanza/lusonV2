@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { Location } from './model';
 import type { PrivateController } from './useInventory';
-import { accountPatch, amountInput, branchFounding, commissionInput, commissionMoment, commissionText, parseAccount, parseAccounts, parseBranch, parseBranches, parseCommissions, validName, type Account, type Commission } from './administrationModel';
+import { accountPatch, amountInput, balanceText, branchFounding, branchFundLoad, commissionInput, commissionMoment, commissionText, fundsZeroNotice, parseAccount, parseAccounts, parseBalances, parseBranch, parseBranches, parseCommissions, validName, type Account, type BranchBalance, type Commission } from './administrationModel';
 import { generateTemporaryPassword, validPassword } from './passwordModel';
 import './administration.css';
 
@@ -130,7 +130,9 @@ export default function AccountAdministration({ controller, owner, initialTab = 
   const [purchaseFund, setPurchaseFund] = useState('');
   const [deleteBranch, setDeleteBranch] = useState<Location | null>(null);
   const [commissions, setCommissions] = useState<Commission[]>([]);
+  const [balances, setBalances] = useState<BranchBalance[]>([]);
   const [editingRate, setEditingRate] = useState<{ branch: number; value: string } | null>(null);
+  const [fundLoad, setFundLoad] = useState<{ branch: number; openingCash: string; purchaseFund: string } | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
@@ -140,22 +142,48 @@ export default function AccountAdministration({ controller, owner, initialTab = 
   useEffect(() => { const signal = lifetime.current; return () => { signal.abort(); }; }, []);
   const current = () => !lifetime.current.signal.aborted && controller.privateOwner('admin') === owner;
   useEffect(() => {
-    const read = new AbortController(); setBusy(true); setError(''); setAccounts([]); setBranches([]); setCommissions([]);
+    const read = new AbortController(); setBusy(true); setError(''); setAccounts([]); setBranches([]); setCommissions([]); setBalances([]);
     void Promise.all([
       controller.privateRequest(owner, 'admin', '/api/admin/accounts', read.signal).then(parseAccounts),
       controller.privateRequest(owner, 'admin', '/api/admin/branches', read.signal).then(parseBranches),
       controller.privateRequest(owner, 'admin', '/api/closings/branches/commissions', read.signal).then(parseCommissions),
-    ]).then(([users, locations, rates]) => {
+      controller.privateRequest(owner, 'admin', '/api/admin/branches/balances', read.signal).then(parseBalances),
+    ]).then(([users, locations, rates, books]) => {
       if (read.signal.aborted || !current()) return;
       if (users.some(user => !locations.some(location => user.location_id === location.id))) throw new Error('Respuesta inválida del servidor.');
-      setAccounts(users); setBranches(locations); setCommissions(rates);
+      // Every branch the directory lists has the two ledger numbers the server reads, and a
+      // branch without them is not a branch without money: it fails closed like every read (S7).
+      if (locations.some(location => location.id !== 1 && !books.some(book => book.branch_id === location.id))) {
+        throw new Error('Respuesta inválida del servidor.');
+      }
+      setAccounts(users); setBranches(locations); setCommissions(rates); setBalances(books);
     }).catch(failure => { if (!read.signal.aborted && current()) setError(publicError(failure)); })
       .finally(() => { if (!read.signal.aborted && current()) setBusy(false); });
     return () => read.abort();
     // A revision is an explicit refetch, not an automatic mutation retry.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owner, revision]);
-  function closePrivate() { setEditor(null); setHandoff(''); setDeleteBranch(null); setEditingRate(null); }
+  function closePrivate() { setEditor(null); setHandoff(''); setDeleteBranch(null); setEditingRate(null); setFundLoad(null); }
+  async function loadBranchFunds(event: FormEvent) {
+    event.preventDefault();
+    if (pending.current || !current() || !fundLoad) return;
+    // The two amounts are mandatory and they travel as the canonical text the server stores;
+    // 0,00 is a stated answer and it is sent as one (S2, S9).
+    let payload: Record<string, string>;
+    try { payload = branchFundLoad(fundLoad.openingCash, fundLoad.purchaseFund); }
+    catch (failure) { setError(publicError(failure)); return; }
+    pending.current = true; setBusy(true); setError(''); setNotice('');
+    try {
+      await controller.privateRequest(owner, 'admin', `/api/admin/branches/${fundLoad.branch}/funds`,
+        lifetime.current.signal, 'POST', payload, 204);
+      if (!current()) return;
+      setFundLoad(null);
+      // A load is two append-only movements signed by the warehouse; it never freezes the branch (S6).
+      setNotice('Fondos cargados: quedaron asentados como aporte del almacén y la sucursal sigue operando.');
+      setRevision(previous => previous + 1);
+    } catch (failure) { if (current()) setError(publicError(failure)); }
+    finally { pending.current = false; if (current()) setBusy(false); }
+  }
   async function retireBranch() {
     if (pending.current || !current() || !deleteBranch || deleteBranch.id === 1) return;
     pending.current = true; setBusy(true); setError(''); setNotice('');
@@ -221,11 +249,31 @@ export default function AccountAdministration({ controller, owner, initialTab = 
       : <aside className="admin-panel"><span className="admin-tag">Acceso bajo control</span><h2>Ciclo de una cuenta</h2><ol><li>Creás el usuario y asignás su sucursal.</li><li>Entregás una contraseña temporal en privado.</li><li>La persona la cambia antes de operar.</li></ol><p>Podés reasignar, desactivar o reactivar el acceso. Cada operador tiene todas las operaciones de su sucursal.</p><p>La actividad y el último ingreso no están disponibles en este directorio.</p></aside>}</div>
       : <><section className="admin-panel"><h2>Sucursales</h2><p>El almacén único es contexto, no una sucursal asignable.</p><div className="admin-branches">{branches.map(branch => {
           const rate = commissions.find(item => item.branch_id === branch.id);
+          const book = balances.find(item => item.branch_id === branch.id);
           return <article key={branch.id}><h3>{branch.name}</h3><p>{branch.id === 1 ? 'Almacén protegido' : `${accounts.filter(account => account.location_id === branch.id).length} cuentas asignadas`}</p>
             {branch.id !== 1 && <p className="admin-commission">Comisión: {rate === undefined
               ? <strong>Sin configurar</strong>
               : <>{commissionText(rate.rate)}{rate.updated_by ? ` · ${rate.updated_by}` : ''}{` · ${commissionMoment(rate.updated_at)}`}</>}
               {rate === undefined && <span> · sin eso la sucursal no puede proponer su rendición</span>}</p>}
+            {branch.id !== 1 && book && <section className="admin-balance" aria-label={`Saldos de ${branch.name}`}>
+              {book.frozen
+                // A live settlement is counting this drawer: its numbers are the ones about to
+                // change, so the panel states the count instead of publishing them (S8).
+                ? <p className="admin-frozen">Rendición en curso: la sucursal está congelada y sus saldos se están contando. Se publican cuando la rendición cierre.</p>
+                : <><div><small>Fondo de caja operativa</small><strong>{balanceText(book.cash_balance)}</strong></div>
+                  <div><small>Fondo de compras</small><strong>{balanceText(book.fund_balance)}</strong></div></>}
+            </section>}
+            {branch.id !== 1 && book && (book.frozen
+              ? <p className="admin-commission">Con una rendición en curso no se carga plata: el cajón se está contando.</p>
+              : fundLoad?.branch === branch.id
+                ? <form onSubmit={event => void loadBranchFunds(event)} aria-busy={busy}>
+                  <label>Fondo de caja operativa<input required inputMode="decimal" autoComplete="off" placeholder="0,00" value={fundLoad.openingCash} disabled={busy} onChange={event => setFundLoad({ branch: branch.id, openingCash: event.target.value, purchaseFund: fundLoad.purchaseFund })} /></label>
+                  <label>Fondo de compras<input required inputMode="decimal" autoComplete="off" placeholder="0,00" value={fundLoad.purchaseFund} disabled={busy} onChange={event => setFundLoad({ branch: branch.id, openingCash: fundLoad.openingCash, purchaseFund: event.target.value })} /></label>
+                  <p>Los dos montos son obligatorios y se suman como aporte del almacén. Lo ya cargado no se edita: una carga equivocada se corrige con un movimiento.</p>
+                  {fundsZeroNotice(fundLoad.openingCash, fundLoad.purchaseFund) && <p role="status">{fundsZeroNotice(fundLoad.openingCash, fundLoad.purchaseFund)}</p>}
+                  <button className="primary" type="submit" disabled={busy}>Confirmar carga</button>
+                  <button type="button" disabled={busy} onClick={() => setFundLoad(null)}>Cancelar</button></form>
+                : <button type="button" disabled={busy} onClick={() => { if (current()) { closePrivate(); setNotice(''); setFundLoad({ branch: branch.id, openingCash: '', purchaseFund: '' }); } }}>Cargar fondos</button>)}
             {branch.id !== 1 && (editingRate?.branch === branch.id
               ? <form onSubmit={event => void saveCommission(event)}><label>Porcentaje de comisión
                 <input value={editingRate.value} disabled={busy} inputMode="decimal" autoComplete="off"

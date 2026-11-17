@@ -20,7 +20,14 @@ The directory supports local username/display-name search, account-state and bra
 | Deactivate / reactivate | Explicitly change **Acceso**. Reactivation does not revive retired sessions. |
 | Reset password | Privately supply a new temporary password. The API retires sessions and requires a password change; a disabled account remains disabled. The previous password is never requested or returned. |
 | Protected administrator | Only its display name can be managed here. Use **Mi contraseña** for its own password change. Private server recovery is separate work, not an HTTP override. |
-| Create branch | **Sucursales → Crear sucursal** sends only its name. The confirmed branch starts with zero stock; the directory and actual inventory metadata are refetched without resetting login or the consulted inventory query. |
+| Create branch | **Sucursales → Crear sucursal** sends its name and its two mandatory amounts, `opening_cash` and `purchase_fund`. The confirmed branch starts with zero stock and with the money that was stated; the directory and actual inventory metadata are refetched without resetting login or the consulted inventory query. |
+| Load funds | **Sucursales → Cargar fondos** on a branch that already exists sends the same two mandatory amounts, and 0,00 is a stated answer, not a missing one. The API writes the two `aporte` movements signed by the warehouse; nothing already loaded is edited, and the branch keeps operating. A branch held by a live settlement shows its count instead of its numbers and receives no load (`branch_frozen`). |
+
+## The money of each branch
+
+Every card in **Sucursales** states the two numbers the server reads from the ledgers, one per box and never one recomputed by the panel: the drawer's expectation (`apertura + ventas en efectivo + efecto firmado del libro`, the same number the branch sees in **Caja** and the settlement asks for) and the purchase fund (the signed sum of its own ledger). A shortage is negative and is shown as it is, in bolivianos with a decimal comma. The warehouse owns no drawer and no fund, so it shows neither.
+
+A branch with a live settlement is being counted: its card states the count instead of publishing numbers that are about to change, and it does not offer a load. Loading states both amounts, refuses text that is not an amount before the wire, warns what a stated 0,00 means on each side, and sends nothing while a submission is pending. A confirmed empty **204** refetches the directory, so the number on screen is always the server's; a rejection keeps the stated amounts and the reason (for example `branch_frozen`, `forbidden` or an uncertain transport) is shown without retrying.
 
 ## Change your own password
 
