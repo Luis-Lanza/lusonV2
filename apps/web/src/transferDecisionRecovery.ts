@@ -1,4 +1,4 @@
-import { parseTransferRecord, type TransferRecord } from './transferModel';
+import { parseTransferRecord, type TransferItem, type TransferRecord } from './transferModel';
 import type { TransferAuthority } from './useInventory';
 import type { TransferErrorCode } from './transferAPI';
 
@@ -25,11 +25,31 @@ export function captureDecisionRecord(record: TransferRecord): TransferRecord {
   copy.items.forEach(Object.freeze); Object.freeze(copy.items);
   return Object.freeze(copy);
 }
+// A published line is the shared catalogue identity plus the moved quantity, so a
+// reply proves its own identity by content: scalars by value, and the battery and
+// the typed fields attribute by attribute, never by reference.
+const itemScalars = ['variant_id', 'kind', 'name', 'detail', 'quantity'] as const;
+function sameBattery(original: TransferItem['battery'], result: TransferItem['battery']): boolean {
+  if (original === null || result === null) return original === result;
+  return original.brand === result.brand && original.model === result.model
+    && original.capacity_ah === result.capacity_ah && original.polarity === result.polarity;
+}
+function sameFields(original: TransferItem['fields'], result: TransferItem['fields']): boolean {
+  if (original === null || result === null) return original === result;
+  return original.length === result.length && original.every((field, index) => {
+    const other = result[index];
+    return field.name === other.name && field.kind === other.kind && field.unit === other.unit
+      && field.number === other.number && field.text === other.text;
+  });
+}
+function sameItem(original: TransferItem, result: TransferItem): boolean {
+  return itemScalars.every(field => original[field] === result[field])
+    && sameBattery(original.battery, result.battery) && sameFields(original.fields, result.fields);
+}
 export function matchesDecisionRecord(original: TransferRecord, result: TransferRecord): boolean {
   const fields = ['id', 'reference', 'kind', 'created_at', 'creator_location_id', 'creator_location_name',
     'origin_location_id', 'origin_location_name', 'destination_location_id', 'destination_location_name',
     'approver_location_id', 'approver_location_name'] as const;
-  const itemFields = ['variant_id', 'brand', 'model', 'capacity_ah', 'polarity', 'quantity'] as const;
   const later = (original.status === 'approved' && (result.status === 'in_transit' || result.status === 'received' || result.status === 'cancelled'))
     || (original.status === 'in_transit' && result.status === 'received');
   const receiptMatches = original.status !== 'received' || (result.status === 'received'
@@ -45,7 +65,7 @@ export function matchesDecisionRecord(original: TransferRecord, result: Transfer
     && ((original.status !== 'in_transit' && original.status !== 'received')
       || (result.dispatch_location_id === original.dispatch_location_id && result.dispatched_at === original.dispatched_at)) && receiptMatches);
   return metadataMatches && fields.every(field => original[field] === result[field]) && original.items.length === result.items.length
-    && original.items.every((item, index) => itemFields.every(field => item[field] === result.items[index][field]));
+    && original.items.every((item, index) => sameItem(item, result.items[index]));
 }
 export function requestedDecision(action: TransferDecision) { return action === 'approve' ? 'approved' : 'rejected'; }
 export function satisfiesDecision(action: TransferDecision, result: TransferRecord) {

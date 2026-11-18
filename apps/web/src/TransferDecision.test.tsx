@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import TransferDecision from './TransferDecision';
 import { transferViewOwner } from './TransferPending';
 import { useTransfers } from './useTransfers';
+import { identityOf } from './model';
 import { parseTransferRecord } from './transferModel';
 import { createTransferDecisionRecovery } from './transferDecisionRecovery';
 import type { TransferAuthority, TransferController } from './useInventory';
@@ -27,8 +28,10 @@ function wire(origin = 1, destination = 2, status = 'pending', id = '90071992547
     destination_location_id: destination, destination_location_name: names[destination - 1],
     approver_location_id: approver, approver_location_name: names[approver - 1],
     ...(status === 'pending' ? {} : { decision_location_id: approver, decided_at: '2028-01-02T00:00:00.000000001Z' }),
-    items: [1, 2].map(variant_id => ({ variant_id, brand: 'Original', model: `Immutable-${variant_id}`,
-      capacity_ah: '75.125', polarity: variant_id === 1 ? 'L' : 'R', quantity: '9223372036854775807' })),
+    items: [1, 2].map(variant_id => ({ ...identityOf({ variant_id, kind: 'battery' as const,
+      name: `Original · Immutable-${variant_id}`, detail: `75.125 Ah · ${variant_id === 1 ? 'L' : 'R'}`,
+      battery: { brand: 'Original', model: `Immutable-${variant_id}`, capacity_ah: '75.125', polarity: variant_id === 1 ? 'L' as const : 'R' as const },
+      fields: null }), quantity: '9223372036854775807' })),
   };
 }
 const reply = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
@@ -89,7 +92,7 @@ it.each(['approve', 'reject'] as const)('shows the U1 %s confirmation as a read-
   const rows = within(dialog).getByRole('table').querySelectorAll('tbody tr');
   for (const row of rows) {
     expect(row.querySelector('td:first-child small')).toBeNull();
-    expect(row.querySelector('td:first-child')).toHaveTextContent('75.125 Ah');
+    expect(row.querySelector('td:first-child')).toHaveTextContent(/^Original · Immutable-\d · 75\.125 Ah · [LR]$/);
   }
   const impact = dialog.querySelector('.transfer-impact')!;
   expect(within(impact as HTMLElement).getByText(action === 'approve' ? 'Al confirmar:' : 'Al rechazar:').tagName).toBe('STRONG');
@@ -218,7 +221,7 @@ describe('A06a explicit immutable confirmations', () => {
       const table = within(dialog).getByRole('table', { name: destination === 1 ? 'Propuesta completa a confirmar' : 'Solicitud completa a confirmar' });
       expect(table).toHaveTextContent('18446744073709551614');
       expect(within(table).getAllByText('9223372036854775807')).toHaveLength(2);
-      expect(within(table).getAllByText('75.125 Ah')).toHaveLength(2);
+      expect(within(table).getAllByText(/^75\.125 Ah · [LR]$/)).toHaveLength(2);
       expect(Array.from(table.querySelectorAll('tbody tr')).map(row => row.getAttribute('data-variant-id'))).toEqual(['1', '2']);
       expect(table).toHaveTextContent('Izquierda [L]');
       expect(table).toHaveTextContent('Derecha [R]');

@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { appliedSnapshot, fixture as dispatchFixture } from './transferDispatchReconciliationStoreFixtures';
+import { identityOf } from './model';
 import type { CountCorrectionLine, CountProposal } from './transferCountCorrectionModel';
 import { previewTransferReceipt, type TransferRecord } from './transferModel';
 import { projectTransferReceived, type ReceivedProjectionInput } from './transferReceivedModel';
 
 function fixture(): ReceivedProjectionInput {
-  const items = [1, 2].map(variant_id => ({ variant_id, brand: 'Historical', model: `Model ${variant_id}`,
-    capacity_ah: '60', polarity: 'L' as const, quantity: 5n }));
+  const items = [1, 2].map(variant_id => ({ ...identityOf({ variant_id, kind: 'battery' as const,
+    name: `Historical · Model ${variant_id}`, detail: '60 Ah · L',
+    battery: { brand: 'Historical', model: `Model ${variant_id}`, capacity_ah: '60', polarity: 'L' as const }, fields: null }),
+    quantity: 5n }));
   const receipt = previewTransferReceipt({ items: [
     { variant_id: 1, actual_quantity: '5' }, { variant_id: 2, actual_quantity: '5' },
     { variant_id: 3, actual_quantity: '2' },
@@ -68,7 +71,8 @@ describe('received effective projection', () => {
     expect(result.status).toBe('available');
     if (result.status === 'unavailable') throw new Error('Expected projection');
     expect(result.rows.map(row => row.variant_id)).toEqual([1, 2, 3]);
-    expect(result.rows[0].product).toEqual({ brand: 'Historical', model: 'Model 1', capacity_ah: '60', polarity: 'L' });
+    expect(result.rows[0].product).toEqual({ variant_id: 1, kind: 'battery', name: 'Historical · Model 1', detail: '60 Ah · L',
+      battery: { brand: 'Historical', model: 'Model 1', capacity_ah: '60', polarity: 'L' }, fields: null });
     expect(result.rows[2]).toMatchObject({ variant_id: 3, product: null, expected: 0n, actual: 2n, credit: 0n, unexpected: 2n });
     expect(result.totals).toEqual({ expected: 10n, actual: 12n, credit: 10n, shortage: 0n, excess: 0n, unexpected: 2n });
   });

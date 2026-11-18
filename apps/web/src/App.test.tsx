@@ -3,9 +3,16 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { catalogSectionFailureMessage } from './CatalogSectionBoundary';
+import { identityOf } from './model';
 import { useInventory } from './useInventory';
 
 const csrf = 'c'.repeat(43);
+// The creation screen asks the catalogue kind before it reads anything: every flow
+// opened in this suite is a battery document, so it chooses that kind first.
+function chooseBattery() {
+  const button = screen.queryByRole('button', { name: 'Baterías' });
+  if (button) fireEvent.click(button);
+}
 const anonymous = { authenticated: false, csrf_token: csrf };
 const identity = { account_id: 1, username: 'component-user', display_name: 'Operador', must_change_password: false, location: { id: 1, name: 'Almacén' } };
 const session = { authenticated: true, csrf_token: csrf, identity, expires_at: '2030-01-01T00:00:00Z' };
@@ -93,7 +100,7 @@ describe('W2 assigned warehouse creation entry', () => {
     expect(entry).toBeEnabled();
     expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
     const before = stockCalls(mock).length;
-    fireEvent.click(entry);
+    fireEvent.click(entry); chooseBattery();
     const route = await screen.findByRole('region', { name: 'Ruta física' });
     expect(within(route).getByText('Origen · Fijo').parentElement).toHaveTextContent('Almacén');
     await screen.findByRole('region', { name: 'Catálogo de origen' });
@@ -128,7 +135,8 @@ describe('D2 dispatch shell lifetime', () => {
       creator_location_id: 2, creator_location_name: 'Sucursal A', origin_location_id: 1, origin_location_name: 'Almacén',
       destination_location_id: 2, destination_location_name: 'Sucursal A', approver_location_id: 1, approver_location_name: 'Almacén',
       created_at: '2028-01-01T00:00:00Z', decision_location_id: 1, decided_at: '2028-01-02T00:00:00.000000001Z',
-      items: [{ variant_id: 1, brand: 'TOYO', model: 'Exact-1', capacity_ah: '75.125', polarity: 'L', quantity: '2' }] };
+      items: [{ ...identityOf({ variant_id: 1, kind: 'battery', name: 'TOYO · Exact-1', detail: '75.125 Ah · L',
+        battery: { brand: 'TOYO', model: 'Exact-1', capacity_ah: '75.125', polarity: 'L' }, fields: null }), quantity: '2' }] };
     const transit = { ...approved, status: 'in_transit', dispatch_location_id: 1, dispatched_at: '2028-01-02T00:00:00.000000002Z' };
     let dispatched = false;
     const mock = setup(session, (url, init) => {
@@ -751,6 +759,32 @@ describe('inventory interaction and stale guards', () => {
     expect(screen.getByRole('group', { name: 'Filtrar por tipo de producto' })).toBeInTheDocument();
     expect(last().get('kind')).toBe('all');
   });
+  it('offers the kind switch on a branch own stock and reads its own products', async () => {
+    const branch = { ...session, identity: { ...identity, account_id: 2, username: 'sucursal', location: { id: 2, name: 'Sucursal A' } } };
+    const mock = setup(branch, url => {
+      if (!url.startsWith('/api/inventory?')) return undefined;
+      const params = new URL(url, 'http://localhost').searchParams;
+      const location = metadata.locations.find(l => String(l.id) === params.get('location_id'))!;
+      return Promise.resolve(response(pageJSON(rowJSON + ',' + JSON.stringify(productRow), 1, 2)
+        .replace('"location":{"id":1,"name":"Almacén"}', '"location":' + JSON.stringify(location))));
+    });
+    render(<App />);
+    const table = await screen.findByRole('table');
+    const reads = () => stockCalls(mock).map(([url]) => new URL(String(url), 'http://localhost').searchParams);
+    expect(reads().at(-1)!.get('location_id')).toBe('2');
+    expect(reads().at(-1)!.get('kind')).toBe('all');
+    expect(within(table).getByRole('row', { name: /Agua acidulada/ })).toHaveTextContent('volumen en L: 5 L');
+    const kindControl = screen.getByRole('group', { name: 'Filtrar por tipo de producto' });
+    fireEvent.click(within(kindControl).getByRole('button', { name: 'Baterías' }));
+    await waitFor(() => expect(reads().at(-1)!.get('kind')).toBe('battery'));
+    expect(reads().at(-1)!.get('location_id')).toBe('2');
+    // Consulting another location stays the read-only consultation it already is.
+    fireEvent.click(screen.getByRole('button', { name: /^Almacén/ }));
+    await waitFor(() => expect(reads().at(-1)!.get('location_id')).toBe('1'));
+    expect(screen.queryByRole('group', { name: 'Filtrar por tipo de producto' })).not.toBeInTheDocument();
+    expect(reads().at(-1)!.get('kind')).toBeNull();
+    expect(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })).toHaveAttribute('aria-pressed', 'true');
+  });
   it('never prints a product name twice when the server repeats it as the detail', async () => {
     setup(session, url => url.startsWith('/api/inventory?') ? Promise.resolve(response(pageJSON(JSON.stringify(repeatedRow), 1, 1))) : undefined);
     render(<App />);
@@ -1066,7 +1100,7 @@ describe('R04b2b App workspace entry', () => {
     fireEvent.change(screen.getByLabelText('Polaridad'), { target: { value: 'L' } }); await inventory();
     fireEvent.click(screen.getByRole('button', { name: 'Página siguiente' })); await inventory();
     const query = stockCalls(mock).at(-1)![0];
-    const cta = screen.getByRole('button', { name: /Nueva transferencia/ }); expect(cta).toBeEnabled(); fireEvent.click(cta);
+    const cta = screen.getByRole('button', { name: /Nueva transferencia/ }); expect(cta).toBeEnabled(); fireEvent.click(cta); chooseBattery();
     await screen.findByRole('button', { name: 'Añadir Batería 1 L' });
     expect(sourceCalls).toHaveLength(4);
     expect(sourceCalls.map(call => new URL(call.url, 'http://localhost').searchParams.get('page'))).toEqual(['1', '2', '3', '4']);
@@ -1117,7 +1151,8 @@ function r04b2c2App() {
       return Promise.resolve(new Response(JSON.stringify({ id: '1001', reference: 'TR-1001', kind: 'request_stock', status: 'pending', created_at: '2028-01-01T00:00:00.123456789Z',
         creator_location_id: 2, creator_location_name: 'Sucursal A', origin_location_id: 3, origin_location_name: 'Sucursal B', destination_location_id: 2,
         destination_location_name: 'Sucursal A', approver_location_id: 3, approver_location_name: 'Sucursal B',
-        items: [{ variant_id: 1, brand: 'TOYO', model: 'Private selected', capacity_ah: '75.125', polarity: 'L', quantity: '1' }] }),
+        items: [{ ...identityOf({ variant_id: 1, kind: 'battery', name: 'TOYO · Private selected', detail: '75.125 Ah · L',
+          battery: { brand: 'TOYO', model: 'Private selected', capacity_ah: '75.125', polarity: 'L' }, fields: null }), quantity: '1' }] }),
       { status: 200, headers: { 'Content-Type': 'application/json; charset=utf-8' } }));
     }
     if (url.startsWith('/api/inventory?') && new URL(url, 'http://localhost').searchParams.get('page_size') === '50') {
@@ -1134,7 +1169,7 @@ function r04b2c2App() {
   return { mock, posts, loginAs: (id: number, token: string) => { next = branch(id, token); }, failSource: () => { failedSource = true; }, fallStock: () => { stock = 0; } };
 }
 async function r04b2c2OpenAndLose() {
-  fireEvent.click(screen.getByRole('button', { name: /Nueva transferencia/ }));
+  fireEvent.click(screen.getByRole('button', { name: /Nueva transferencia/ })); chooseBattery();
   await screen.findByRole('button', { name: 'Añadir Private selected L' });
   fireEvent.change(screen.getByLabelText('Tipo de transferencia'), { target: { value: 'requestOther' } });
   await screen.findByRole('heading', { name: 'Disponibilidad en Sucursal B' });
@@ -1229,7 +1264,8 @@ function r04cRecord() {
   return { id: '9007199254740993', reference: 'TR-9007199254740993', kind: 'request_stock', status: 'pending', created_at: '2028-01-01T00:00:00.123456789Z',
     creator_location_id: 2, creator_location_name: 'Sucursal A', origin_location_id: 1, origin_location_name: 'Almacén', destination_location_id: 2,
     destination_location_name: 'Sucursal A', approver_location_id: 1, approver_location_name: 'Almacén',
-    items: [{ variant_id: 1, brand: 'TOYO', model: 'Real response', capacity_ah: '75.125', polarity: 'L', quantity: '1' }] };
+    items: [{ ...identityOf({ variant_id: 1, kind: 'battery', name: 'TOYO · Real response', detail: '75.125 Ah · L',
+      battery: { brand: 'TOYO', model: 'Real response', capacity_ah: '75.125', polarity: 'L' }, fields: null }), quantity: '1' }] };
 }
 function r04cApp(status: number, stalled?: ReturnType<typeof deferred<Response>>, assigned = 2) {
   const actor = { ...session, identity: { ...identity, account_id: assigned, location: metadata.locations[assigned - 1] } };
@@ -1256,7 +1292,7 @@ function r04cApp(status: number, stalled?: ReturnType<typeof deferred<Response>>
   return { mock, posts };
 }
 async function r04cSend() {
-  fireEvent.click(screen.getByRole('button', { name: /Nueva transferencia/ }));
+  fireEvent.click(screen.getByRole('button', { name: /Nueva transferencia/ })); chooseBattery();
   fireEvent.click(await screen.findByRole('button', { name: 'Añadir Real response L' }));
   fireEvent.click(screen.getByRole('button', { name: 'Revisar solicitud' }));
   fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' }));
@@ -1278,7 +1314,7 @@ describe('R05-U1 creation section', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
       await screen.findByText('1 transferencia');
     }
-    fireEvent.click(screen.getByRole('button', { name: /Nueva transferencia/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Nueva transferencia/ })); chooseBattery();
     const add = await screen.findByRole('button', { name: 'Añadir Real response L' });
     transfersContext();
     expect(screen.queryByRole('heading', { name: 'Transferencias' })).not.toBeInTheDocument();
@@ -1297,7 +1333,7 @@ describe('R05-U1 creation section', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Transferencias' }));
       await screen.findByRole('heading', { name: 'Transferencias' });
     }
-    fireEvent.click(screen.getByRole('button', { name: /Nueva transferencia/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Nueva transferencia/ })); chooseBattery();
     await screen.findByRole('button', { name: 'Añadir Real response L' });
     fireEvent.click(screen.getByRole('button', { name: '← Volver a transferencias' }));
     await screen.findByRole('heading', { name: 'Transferencias' });

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import type { Metadata } from './model';
-import { groupItems, validSearch } from './model';
+import type { Kind, Metadata } from './model';
+import { batteryRows, groupItems, rowLabel, validSearch } from './model';
 import { filterSourceInventory, loadSourceInventory, SourceInventoryError } from './sourceInventory';
 import { addCartItem, cartStatus, createTransferCart, refreshCart, removeCartItem, setCartQuantity, reviewCart, restoreTransferCart } from './transferCart';
 import { createTransferRecovery, type RecoveryFlight, type RecoverySnapshot } from './transferRecovery';
@@ -8,7 +8,7 @@ import { TransferAPIError, type TransferCreateResult } from './transferAPI';
 import type { TransferCreateInput } from './transferModel';
 import TransferReview from './TransferReview';
 import type { TransferCart } from './transferCart';
-import { transferDirection, transferFlow, validTransferLocation } from './transferModel';
+import { transferCatalogueKindLabels, transferCatalogueKinds, transferDirection, transferFlow, validTransferLocation } from './transferModel';
 import type { TransferFlow } from './transferModel';
 import type { SourceInventoryController, TransferAuthority, TransferController } from './useInventory';
 
@@ -43,6 +43,12 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
   const allowed = authority.ready && key !== null;
   const [flow, setFlow] = useState<TransferFlow>(cachedFlow);
   const flowRef = useRef(flow);
+  // The catalogue kind of this document: chosen before any catalogue is read, and
+  // the one kind the picker offers. A conserved archive names its own kind.
+  const cachedKind = (): Kind | null => recovery.getCurrent(controller.getTransferAuthority)?.items[0]?.kind ?? null;
+  const [kind, setKind] = useState<Kind | null>(cachedKind);
+  const kindRef = useRef(kind);
+  kindRef.current = kind;
   const [held, setHeld] = useState<Held | null>(null);
   const heldRef = useRef(held);
   heldRef.current = held;
@@ -71,6 +77,10 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
   if (!allowed || renderOwner.current !== key) fresh.current = false;
   renderOwner.current = key;
   const activeKey = useRef<string | null>(null);
+  // The workspace belongs to one owner: the ref fences synchronous callbacks and
+  // this state is what the render reads, so a mount without a catalog still paints
+  // the kind step instead of the previous owner's private surface.
+  const [fence, setFence] = useState<string | null>(null);
   const draftOwner = useRef(key);
   const read = useRef<(reason: 'manual' | 'passive') => void>(() => {});
 
@@ -87,14 +97,18 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
     const captured = current();
     if (!captured || !captured.session?.authenticated) return;
     const selectedFlow = flowRef.current;
+    // Nothing is read before the kind is chosen, and only that kind is read after.
+    const selectedKind = kindRef.current;
+    if (selectedKind === null) return;
     const source = transferDirection(captured.session.identity.location.id, selectedFlow).origin_location_id;
     const dirty = flight.current?.dirty ?? false;
     abortRead();
     const job: Flight = { sequence: ++sequence.current, abort: new AbortController(), dirty };
     flight.current = job;
     setBusy(true); setError('');
-    const valid = () => current() !== null && flight.current === job && sequence.current === job.sequence && flowRef.current === selectedFlow;
-    void loader(source, { signal: job.abort.signal, reason }).then(catalog => {
+    const valid = () => current() !== null && flight.current === job && sequence.current === job.sequence
+      && flowRef.current === selectedFlow && kindRef.current === selectedKind;
+    void loader(source, { signal: job.abort.signal, reason, kind: selectedKind }).then(catalog => {
       if (!valid()) return;
       const latest = controller.getTransferAuthority();
       const previous = heldRef.current;
@@ -122,11 +136,13 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
   }, []);
   useEffect(() => {
     abortRead(); activeKey.current = allowed ? key : null;
+    setFence(allowed ? key : null);
     if (!allowed) return;
     if (draftOwner.current !== key) {
       draftOwner.current = key;
       heldRef.current = null; setHeld(null);
       const nextFlow = cachedFlow(); flowRef.current = nextFlow; setFlow(nextFlow);
+      const nextKind = cachedKind(); kindRef.current = nextKind; setKind(nextKind);
       // Old promises retain their opaque token, but cannot unlock a newer owner's job.
       sendLock.current = null; setSending(false); setReview(null); setOutcome(null); setSendError(null);
       setQuantities({}); setFilter({ search: '', brand: '', polarity: '' }); setPage(1);
@@ -144,7 +160,7 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
 
   // Do not even inspect held.cart, error strings or row inputs outside this fence.
   if (!allowed) return <section className="transfer-creation"><p role="status">La creación requiere una sesión activa asignada.</p></section>;
-  if (activeKey.current !== key || (held !== null && held.owner !== key)) return <section className="transfer-creation"><p role="status">Preparando catálogo de la sesión activa…</p></section>;
+  if (fence !== key || (held !== null && held.owner !== key)) return <section className="transfer-creation"><p role="status">Preparando catálogo de la sesión activa…</p></section>;
   const snapshot = recovery.getCurrent(controller.getTransferAuthority);
   const inFlight = snapshot?.phase === 'inFlight' || (sending && sendLock.current?.owner === key);
   const visibleReview = review?.owner === key && review.snapshot.epoch === authority.epoch ? review : null;
@@ -156,12 +172,15 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
   const location = (id: number) => metadata.locations.find(l => l.id === id)?.name ?? 'Ubicación no disponible';
   const sourceName = location(direction.origin_location_id);
   const status = cart ? cartStatus(cart, authority) : null;
-  const rows = cart ? filterSourceInventory(cart.catalog, filter) : [];
+  const rows = cart && kind !== null ? filterSourceInventory(cart.catalog, { ...filter, kind }) : [];
   const lastPage = Math.max(1, Math.ceil(rows.length / 25));
   const displayedPage = Math.min(page, lastPage);
   const pageRows = rows.slice((displayedPage - 1) * 25, displayedPage * 25);
   const direct = direction.kind === 'direct_shipment';
-  const title = direct ? 'Crear envío' : flow === 'sendWarehouse' ? 'Proponer envío a Almacén' : direction.origin_location_id !== 1 ? 'Solicitar a otra sucursal' : 'Solicitar baterías';
+  const title = direct ? 'Crear envío' : flow === 'sendWarehouse' ? 'Proponer envío a Almacén' : direction.origin_location_id !== 1 ? 'Solicitar a otra sucursal' : kind === 'other' ? 'Solicitar productos' : 'Solicitar baterías';
+  const productKind = kind === 'other';
+  // One kind per document, so the kind changes only before anything is selected.
+  const kindLocked = inFlight || !!visibleReview || !!pending || !!snapshot || (cart?.lines.length ?? 0) > 0;
   const otherBranches = metadata.locations.filter(l => l.id > 1 && l.id !== assigned);
   const routes = assigned === 1
     ? otherBranches.map(l => ({ value: transferFlow(assigned, 'direct_shipment', l.id), label: `Enviar a ${l.name}` }))
@@ -204,6 +223,14 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
       setPending(next); return;
     }
     applyFlow(next);
+  }
+  function applyKind(next: Kind) {
+    if (!current() || kindLocked || next === kindRef.current) return;
+    abortRead(); fresh.current = false;
+    heldRef.current = null; setHeld(null); kindRef.current = next; setKind(next);
+    setQuantities({}); setQuantityError(''); setError(''); setStale(false);
+    setFilter({ search: '', brand: '', polarity: '' }); setPage(1);
+    read.current('manual');
   }
   function applyFlow(next: TransferFlow | 'back') {
     if (!current()) return;
@@ -309,7 +336,16 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
       <button type="button" disabled={inFlight} onClick={event => openReview(event.currentTarget)}>{snapshot.phase === 'ready' ? 'Retomar revisión' : 'Retomar misma solicitud'}</button>
       <button type="button" disabled={inFlight} onClick={() => requestCaution('edit')}>Editar selección conservada</button>
       <p>Recargar o cerrar la pestaña pierde esta memoria.</p></div>}
-    <fieldset className="creation-workspace" disabled={inFlight || !!visibleReview || !!pending}>
+    {/* The screen asks the kind first: no catalogue and no cart exist until one is
+        chosen, and one document never mixes the two kinds. */}
+    <div className="creation-kind-step" role="group" aria-label="Tipo de producto de la transferencia">
+      {transferCatalogueKinds.map(option => <button type="button" key={option} aria-pressed={kind === option}
+        disabled={kindLocked} onClick={() => applyKind(option)}>{transferCatalogueKindLabels[option]}</button>)}
+    </div>
+    {kind === null && <p className="creation-kind-hint" role="status">Elegí el tipo de producto para ver el catálogo de origen.</p>}
+    {kind !== null && <p className="creation-kind-line">Esta transferencia es de <strong>{transferCatalogueKindLabels[kind]}</strong>. Un documento nunca mezcla los dos tipos.</p>}
+    {kind !== null && ((snapshot || (cart?.lines.length ?? 0) > 0) && <p className="creation-kind-hint">Para cambiar el tipo, quitá las líneas o descartá la revisión conservada.</p>)}
+    {kind !== null && <fieldset className="creation-workspace" disabled={inFlight || !!visibleReview || !!pending}>
     <section className={`creation-route-controls${direct ? ' creation-direct-route' : ''}`} aria-label="Ruta física">
     {direct && <div className="creation-fixed-origin"><span>Origen · Fijo</span><strong>{sourceName}</strong></div>}
     <label className="creation-flow">{direct ? 'Destino' : 'Tipo de transferencia'}<select aria-label="Tipo de transferencia" ref={picker} value={flow} onChange={e => {
@@ -326,12 +362,12 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
     <div className="creation-grid">
       <section className="creation-catalog" aria-label="Catálogo de origen" aria-busy={busy}>
         <header><h2>Disponibilidad en {sourceName}</h2><p>Disponibilidad orientativa. El servidor validará todas las cantidades al enviar; las páginas no son una foto atómica del stock.</p>
-          <div className="creation-filters"><label>Buscar marca o modelo<input type="search" value={filter.search} onChange={e => changeFilter({ ...filter, search: e.target.value })} /></label>
-            <label>Marca<select value={filter.brand} onChange={e => changeFilter({ ...filter, brand: e.target.value })}><option value="">Todas las marcas</option>{metadata.brands.map(brand => <option key={brand}>{brand}</option>)}</select></label>
-            <label>Polaridad<select value={filter.polarity} onChange={e => {
+          <div className="creation-filters"><label>{productKind ? 'Buscar nombre o dato del producto' : 'Buscar marca o modelo'}<input type="search" value={filter.search} onChange={e => changeFilter({ ...filter, search: e.target.value })} /></label>
+            {!productKind && <label>Marca<select value={filter.brand} onChange={e => changeFilter({ ...filter, brand: e.target.value })}><option value="">Todas las marcas</option>{metadata.brands.map(brand => <option key={brand}>{brand}</option>)}</select></label>}
+            {!productKind && <label>Polaridad<select value={filter.polarity} onChange={e => {
               const polarity = e.target.value;
               if (polarity === '' || polarity === 'L' || polarity === 'R') changeFilter({ ...filter, polarity });
-            }}><option value="">Todas</option><option value="L">Izquierda [L]</option><option value="R">Derecha [R]</option></select></label></div>
+            }}><option value="">Todas</option><option value="L">Izquierda [L]</option><option value="R">Derecha [R]</option></select></label>}</div>
         </header>
         {busy && <p className="message" role="status">Actualizando catálogo completo…</p>}
         {stale && visible && <p className="message" role="status">Disponibilidad desactualizada: se conserva la última consulta completa.</p>}
@@ -343,56 +379,70 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
             && typeof target.scrollIntoView === 'function') {
             target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
           }
-        }}><table><caption className="sr-only">Catálogo de {sourceName}</caption><thead><tr>{['Batería', 'Polaridad', 'Disponible', 'Cantidad', 'Acción'].map(text => <th key={text} scope="col">{text}</th>)}</tr></thead>
-          {groupItems(pageRows).map(group => <tbody key={group[0].catalog_entry_id} className="creation-model-group" aria-label={`${group[0].name} · ${group[0].battery.capacity_ah} Ah`}>
-          <tr className="creation-model-heading"><td colSpan={5}><strong>{group[0].name}</strong><span>{group[0].battery.capacity_ah} Ah</span><small>{group.length} {group.length === 1 ? 'variante' : 'variantes'}</small></td></tr>
-          {group.map(row => {
-            const selected = cart?.lines.find(line => line.item.variant_id === row.variant_id);
-            return <tr key={row.variant_id}>
-            <td className="creation-product"><strong>{row.name}</strong><small>{row.battery.capacity_ah} Ah</small></td><td data-label="Polaridad"><span className="polarity">{row.battery.polarity}</span></td><td data-label="Disponible">{row.available.toString()}{row.available === 0n && <small>Sin disponible</small>}</td>
-            <td data-label="Cantidad"><input id={`source-quantity-${row.variant_id}`} aria-label={`Cantidad ${row.battery.model} ${row.battery.polarity}`} inputMode="numeric" value={quantities[row.variant_id] ?? '1'} disabled={row.available === 0n} onChange={e => {
-              if (!guardedCart()) return;
-              setQuantities(previous => ({ ...previous, [row.variant_id]: e.target.value }));
-            }} /></td><td><button type="button" disabled={row.available === 0n} aria-label={`Añadir ${row.battery.model} ${row.battery.polarity}`} onClick={() => {
-              if (!guardedCart()) return;
-              if (editCart((draft, latest) => addCartItem(draft, latest, row.variant_id, quantities[row.variant_id] ?? '1'))) focusAdd(row.variant_id);
-            }}>{selected ? 'Añadir más' : 'Añadir'}</button>
-              {selected && <small className="creation-selected">En la selección: {selected.quantity.toString()}</small>}</td>
-          </tr>; })}</tbody>)}</table></div>
+        }}><table><caption className="sr-only">{productKind ? `Productos disponibles en ${sourceName}` : `Catálogo de ${sourceName}`}</caption><thead><tr>{(productKind ? ['Producto', 'Detalle', 'Disponible', 'Cantidad', 'Acción'] : ['Batería', 'Polaridad', 'Disponible', 'Cantidad', 'Acción']).map(text => <th key={text} scope="col">{text}</th>)}</tr></thead>
+          {productKind
+            ? <tbody>{pageRows.map(row => {
+              const selected = cart?.lines.find(line => line.item.variant_id === row.variant_id);
+              return <tr key={row.variant_id}>
+                <td className="creation-product"><strong>{row.name}</strong></td><td data-label="Detalle">{row.detail === row.name ? '' : row.detail}</td><td data-label="Disponible">{row.available.toString()}{row.available === 0n && <small>Sin disponible</small>}</td>
+                <td data-label="Cantidad"><input id={`source-quantity-${row.variant_id}`} aria-label={`Cantidad ${rowLabel(row)}`} inputMode="numeric" value={quantities[row.variant_id] ?? '1'} disabled={row.available === 0n} onChange={e => {
+                  if (!guardedCart()) return;
+                  setQuantities(previous => ({ ...previous, [row.variant_id]: e.target.value }));
+                }} /></td><td><button type="button" disabled={row.available === 0n} aria-label={`Añadir ${rowLabel(row)}`} onClick={() => {
+                  if (!guardedCart()) return;
+                  if (editCart((draft, latest) => addCartItem(draft, latest, row.variant_id, quantities[row.variant_id] ?? '1'))) focusAdd(row.variant_id);
+                }}>{selected ? 'Añadir más' : 'Añadir'}</button>
+                  {selected && <small className="creation-selected">En la selección: {selected.quantity.toString()}</small>}</td>
+              </tr>; })}</tbody>
+            : groupItems(batteryRows(pageRows)).map(group => <tbody key={group[0].catalog_entry_id} className="creation-model-group" aria-label={`${group[0].name} · ${group[0].battery.capacity_ah} Ah`}>
+              <tr className="creation-model-heading"><td colSpan={5}><strong>{group[0].name}</strong><span>{group[0].battery.capacity_ah} Ah</span><small>{group.length} {group.length === 1 ? 'variante' : 'variantes'}</small></td></tr>
+              {group.map(row => {
+                const selected = cart?.lines.find(line => line.item.variant_id === row.variant_id);
+                return <tr key={row.variant_id}>
+                  <td className="creation-product"><strong>{row.name}</strong><small>{row.battery.capacity_ah} Ah</small></td><td data-label="Polaridad"><span className="polarity">{row.battery.polarity}</span></td><td data-label="Disponible">{row.available.toString()}{row.available === 0n && <small>Sin disponible</small>}</td>
+                  <td data-label="Cantidad"><input id={`source-quantity-${row.variant_id}`} aria-label={`Cantidad ${row.battery.model} ${row.battery.polarity}`} inputMode="numeric" value={quantities[row.variant_id] ?? '1'} disabled={row.available === 0n} onChange={e => {
+                    if (!guardedCart()) return;
+                    setQuantities(previous => ({ ...previous, [row.variant_id]: e.target.value }));
+                  }} /></td><td><button type="button" disabled={row.available === 0n} aria-label={`Añadir ${row.battery.model} ${row.battery.polarity}`} onClick={() => {
+                    if (!guardedCart()) return;
+                    if (editCart((draft, latest) => addCartItem(draft, latest, row.variant_id, quantities[row.variant_id] ?? '1'))) focusAdd(row.variant_id);
+                  }}>{selected ? 'Añadir más' : 'Añadir'}</button>
+                    {selected && <small className="creation-selected">En la selección: {selected.quantity.toString()}</small>}</td>
+                </tr>; })}</tbody>)}</table></div>
         {visible && rows.length === 0 && <p role="status" className="message">No hay variantes para esta consulta.</p>}
         <footer className="creation-pager"><span>Mostrando {rows.length ? (displayedPage - 1) * 25 + 1 : 0}–{Math.min(displayedPage * 25, rows.length)} de {rows.length} variantes</span>
           <button type="button" aria-label="Página anterior" disabled={displayedPage <= 1} onClick={() => { if (current()) setPage(displayedPage - 1); }}>Anterior</button><span>{displayedPage} / {lastPage}</span>
           <button type="button" aria-label="Página siguiente" disabled={displayedPage >= lastPage} onClick={() => { if (current()) setPage(displayedPage + 1); }}>Siguiente</button></footer>
       </section>
-      <aside className="creation-cart" aria-label="Carrito de transferencia"><header><h2>{direct ? 'Baterías en el envío' : 'Baterías en la solicitud'}</h2><p>{cart?.lines.length ?? 0} {cart?.lines.length === 1 ? 'variante' : 'variantes'}</p></header>
-        {!cart?.lines.length && <p>Agregá baterías del catálogo de origen.</p>}
+      <aside className="creation-cart" aria-label="Carrito de transferencia"><header><h2>{productKind ? direct ? 'Productos en el envío' : 'Productos en la solicitud' : direct ? 'Baterías en el envío' : 'Baterías en la solicitud'}</h2><p>{cart?.lines.length ?? 0} {cart?.lines.length === 1 ? 'variante' : 'variantes'}</p></header>
+        {!cart?.lines.length && <p>{productKind ? 'Agregá productos del catálogo de origen.' : 'Agregá baterías del catálogo de origen.'}</p>}
         {cart?.lines.map(line => <article key={line.item.variant_id} className="creation-cart-line">
-          <h3>{line.item.battery.brand} · {line.item.battery.model}</h3><p>{line.item.battery.capacity_ah} Ah · Polaridad {line.item.battery.polarity}</p>
+          <h3>{line.item.name}</h3><p>{line.item.detail}</p>
           <p>Disponible: {line.available === null ? 'Variante ausente' : line.available.toString()}</p>
           {status?.invalid.includes(line.item.variant_id) && <p className="message" role="alert">Selección inválida: revisá la cantidad o quitá la variante. No se ajustó automáticamente.</p>}
-          <div className="creation-stepper"><button type="button" aria-label={`Reducir ${line.item.battery.model}`} onClick={() => {
+          <div className="creation-stepper"><button type="button" aria-label={`Reducir ${rowLabel(line.item)}`} onClick={() => {
             if (!guardedCart()) return;
             if (line.quantity === 1n) { if (editCart((draft, latest) => removeCartItem(draft, latest, line.item.variant_id))) focusAdd(line.item.variant_id); }
             else editCart((draft, latest) => setCartQuantity(draft, latest, line.item.variant_id, line.quantity - 1n));
-          }}>−</button><input aria-label={`Cantidad seleccionada ${line.item.battery.model}`} inputMode="numeric" value={line.quantity.toString()} onChange={e => {
+          }}>−</button><input aria-label={`Cantidad seleccionada ${rowLabel(line.item)}`} inputMode="numeric" value={line.quantity.toString()} onChange={e => {
             if (!guardedCart()) return;
             if (e.target.value === '0') { if (editCart((draft, latest) => removeCartItem(draft, latest, line.item.variant_id))) focusAdd(line.item.variant_id); }
             else editCart((draft, latest) => setCartQuantity(draft, latest, line.item.variant_id, e.target.value));
-          }} /><button type="button" aria-label={`Aumentar ${line.item.battery.model}`} onClick={() => {
+          }} /><button type="button" aria-label={`Aumentar ${rowLabel(line.item)}`} onClick={() => {
             if (!guardedCart()) return;
             editCart((draft, latest) => setCartQuantity(draft, latest, line.item.variant_id, line.quantity + 1n));
           }}>+</button></div>
-          <button type="button" className="creation-remove" aria-label={`Quitar ${line.item.battery.model}`} onClick={() => {
+          <button type="button" className="creation-remove" aria-label={`Quitar ${rowLabel(line.item)}`} onClick={() => {
             if (editCart((draft, latest) => removeCartItem(draft, latest, line.item.variant_id))) focusAdd(line.item.variant_id);
           }}>Quitar</button>
         </article>)}
         {quantityError && <p className="message" role="alert">{quantityError}</p>}
-        <p className="creation-total">Total a transferir <strong aria-label="Total a transferir">{status?.total.toString() ?? '0'} baterías</strong></p>
+        <p className="creation-total">Total a transferir <strong aria-label="Total a transferir">{status?.total.toString() ?? '0'} {productKind ? 'productos' : 'baterías'}</strong></p>
         <p className="creation-draft-notice">Este borrador no reserva ni mueve existencias.</p><button type="button" className="primary" disabled={!snapshot && !status?.ready} onClick={event => openReview(event.currentTarget)}>{direct ? 'Revisar envío' : 'Revisar solicitud'}</button>
         <p>El envío es manual desde la revisión. Recargar o cerrar la pestaña pierde la recuperación en memoria.</p>
       </aside>
     </div>
-    </fieldset>
+    </fieldset>}
     {visibleReview && <TransferReview controller={controller} metadata={metadata} ownerTag={key!} snapshot={visibleReview.snapshot}
       busy={inFlight} error={sendError?.owner === key ? sendError.text : ''} result={visibleOutcome} returnFocus={reviewTrigger.current}
       onClose={closeReview} onEdit={() => {

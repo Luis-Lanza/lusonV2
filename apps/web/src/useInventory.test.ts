@@ -48,7 +48,7 @@ describe('the stock screen reads both kinds', () => {
   await waitFor(() => expect(reads()).toHaveLength(2));
   expect(new URL(reads()[1], 'http://localhost').searchParams.get('kind')).toBe('other');
  });
- it('keeps a branch on the battery-only read so a product never reaches its list', async () => {
+ it('reads both kinds of its own stock from a branch, so its products reach its list', async () => {
   const branch = { authenticated: true, csrf_token: 'c'.repeat(43), expires_at: '2030-01-01T00:00:00Z',
    identity: { account_id: 2, username: 'sucursal', display_name: 'Sucursal A', must_change_password: false,
     location: { id: 2, name: 'Sucursal A' } } };
@@ -64,9 +64,12 @@ describe('the stock screen reads both kinds', () => {
   });
   const { result } = renderHook(() => useInventory());
   await waitFor(() => expect(result.current.data).not.toBeNull());
-  expect(fetcher.mock.calls.some(([url]) => String(url).startsWith('/api/inventory?'))).toBe(true);
-  expect(new URL(reads[0], 'http://localhost').searchParams.get('kind')).toBeNull();
-  expect(result.current.query.kind).toBeUndefined();
+  expect(reads.length).toBe(1);
+  expect(new URL(reads[0], 'http://localhost').searchParams.get('kind')).toBe('all');
+  expect(result.current.query.kind).toBe('all');
+  act(() => result.current.change({ kind: 'other' }));
+  await waitFor(() => expect(reads.length).toBe(2));
+  expect(new URL(reads[1], 'http://localhost').searchParams.get('kind')).toBe('other');
  });
  it('gates both kinds on the listed location, so the warehouse consulting a branch sees batteries only', async () => {
   const reads: string[] = [];

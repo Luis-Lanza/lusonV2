@@ -1,5 +1,11 @@
+import { identityOf } from './model';
 import type { TransferRecord } from './transferModel';
 import { parseDispatchReconciliations } from './transferDispatchReconciliationModel';
+// One published battery line built from the shared identity: the fixture never
+// keeps a second, hand-composed shape the decoder would have to tolerate.
+export const batteryLine = (variant_id: number, quantity: bigint) => ({ ...identityOf({ variant_id, kind: 'battery',
+  name: 'Brand · Model', detail: '60 Ah · L',
+  battery: { brand: 'Brand', model: 'Model', capacity_ah: '60', polarity: 'L' }, fields: null }), quantity });
 export const stamp = '2026-01-02T12:00:00Z';
 export const operationKey = 'dispatch-proposal-0001';
 export const decisionKey = 'dispatch-decision-0001';
@@ -10,7 +16,7 @@ export function fixture(pending = false) {
     creator_location_id: 1, creator_location_name: 'Warehouse', origin_location_id: 1, origin_location_name: 'Warehouse',
     destination_location_id: 2, destination_location_name: 'Branch', approver_location_id: 1, approver_location_name: 'Warehouse',
     decision_location_id: 1, decided_at: stamp, dispatch_location_id: 1, dispatched_at: stamp, receipt_location_id: 2, received_at: stamp,
-    items: [1, 2].map(variant_id => ({ variant_id, quantity: 5n, brand: 'Brand', model: 'Model', capacity_ah: '60', polarity: 'L' })),
+    items: [1, 2].map(variant_id => batteryLine(variant_id, 5n)),
     receipt: { items: [1, 2].map(variant_id => ({ variant_id, expected_quantity: 5n, actual_quantity: 7n, available_quantity: 5n })),
       exceptions: [1, 2].map(variant_id => ({ variant_id, kind: 'excess' as const, quantity: 2n })) } };
   const op = { operation_key: operationKey, request_id: '123', variant_id: 1, actor_location_id: 1, action: 'propose', expected_revision: '0',

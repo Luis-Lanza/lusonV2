@@ -158,6 +158,24 @@ export function identityOf(item: VariantIdentity): VariantIdentity {
   return { variant_id: item.variant_id, kind: item.kind, name: item.name, detail: item.detail,
     battery: item.battery, fields: item.fields };
 }
+/**
+ * Parses one variant identity out of a payload whose reader already decoded its
+ * numbers as plain JS numbers, as the transfer documents do. The id must still be
+ * an exact integer and is restored to its text before the one identity parser
+ * reads it, so every reader shares a single identity contract.
+ */
+export function parseNumberVariantIdentity(v: unknown, extraKeys: readonly string[] = []): VariantIdentity {
+  const o = object(v);
+  if (typeof o.variant_id !== 'number' || !Number.isSafeInteger(o.variant_id)) return invalid();
+  return parseVariantIdentity({ ...o, variant_id: new LosslessNumber(String(o.variant_id)) }, extraKeys);
+}
+/**
+ * The short label of one row: a battery is known by its model and a product by
+ * its own name, so no surface composes a label out of an attribute a row lacks.
+ */
+export function rowLabel(row: VariantIdentity): string {
+  return row.kind === 'battery' && row.battery ? row.battery.model : row.name;
+}
 export function parseSession(raw: string): Session {
   const o = object(decode(raw));
   const csrf = text(o.csrf_token);

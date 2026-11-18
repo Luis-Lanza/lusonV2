@@ -1,3 +1,4 @@
+import { identityOf } from './model';
 import { describe, expect, it, vi } from 'vitest';
 import { createTransferReceiptRecovery } from './transferReceiptRecovery';
 import { parseTransferRecord } from './transferModel';
@@ -10,7 +11,8 @@ const wire = {
   destination_location_id: 2, destination_location_name: 'Sucursal A', approver_location_id: 1, approver_location_name: 'Almacén',
   created_at: '2026-04-02T00:00:00Z', decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z',
   dispatch_location_id: 1, dispatched_at: '2026-04-03T00:00:00.000000002Z',
-  items: [{ variant_id: 1, brand: 'TOYO', model: 'Exact', capacity_ah: '75.125', polarity: 'L', quantity: '2' }],
+  items: [{ ...identityOf({ variant_id: 1, kind: 'battery', name: 'TOYO · Exact', detail: '75.125 Ah · L',
+    battery: { brand: 'TOYO', model: 'Exact', capacity_ah: '75.125', polarity: 'L' }, fields: null }), quantity: '2' }],
 };
 const parse = (value: unknown) => parseTransferRecord(JSON.stringify(value));
 const transit = (patch = {}) => parse({ ...wire, ...patch });

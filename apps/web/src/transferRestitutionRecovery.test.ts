@@ -1,3 +1,4 @@
+import { identityOf } from './model';
 import { describe, expect, it } from 'vitest';
 import { createTransferRestitutionRecovery, restitutionRetryPayload, type RestitutionReviewPin, type RestitutionFlight } from './transferRestitutionRecovery';
 import { RestitutionAPIError } from './transferAPI';
@@ -15,7 +16,8 @@ function record() {
     created_at: stamp, creator_location_id: 1, creator_location_name: 'Origin', origin_location_id: 1, origin_location_name: 'Origin',
     destination_location_id: 2, destination_location_name: 'Destination', approver_location_id: 1, approver_location_name: 'Origin',
     decision_location_id: 1, decided_at: stamp, dispatch_location_id: 1, dispatched_at: stamp, receipt_location_id: 2, received_at: stamp,
-    items: [{ variant_id: 201, brand: 'B', model: 'M', capacity_ah: '60', polarity: 'L', quantity: '5' }],
+    items: [{ ...identityOf({ variant_id: 201, kind: 'battery', name: 'B · M', detail: '60 Ah · L',
+      battery: { brand: 'B', model: 'M', capacity_ah: '60', polarity: 'L' }, fields: null }), quantity: '5' }],
     receipt: { items: [{ variant_id: 201, expected_quantity: '5', actual_quantity: '4', available_quantity: '4' }],
       exceptions: [{ variant_id: 201, kind: 'shortage', quantity: '1' }] } }));
 }

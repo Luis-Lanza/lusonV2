@@ -23,6 +23,17 @@ describe('T10 personal activity', () => {
   });
 });
 
+// One published line: the shared catalogue identity of its own kind plus the moved
+// quantity, exactly as the server composes it for a battery and for a product.
+export function batteryWire(variant_id: number, quantity = '9223372036854775807',
+  battery = { brand: 'Brand', model: 'Model', capacity_ah: '0.000001', polarity: 'L' }) {
+  return { variant_id, kind: 'battery', name: `${battery.brand} · ${battery.model}`,
+    detail: `${battery.capacity_ah} Ah · ${battery.polarity}`, battery, fields: null, quantity };
+}
+export function productWire(variant_id: number, quantity = '9223372036854775807') {
+  return { variant_id, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L', battery: null,
+    fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }], quantity };
+}
 // Flat DTO fixture matches httpapi.transferDTO, not the inventory wire format.
 export function wireRecord(overrides: Record<string, unknown> = {}) {
   return {
@@ -31,7 +42,7 @@ export function wireRecord(overrides: Record<string, unknown> = {}) {
     origin_location_id: 1, origin_location_name: 'Almacén',
     destination_location_id: 2, destination_location_name: 'Sucursal A',
     approver_location_id: 1, approver_location_name: 'Almacén', created_at: '2026-04-02T12:34:56.123456789Z',
-    items: [{ variant_id: 2147483647, brand: 'Brand', model: 'Model', capacity_ah: '0.000001', polarity: 'L', quantity: '9223372036854775807' }],
+    items: [batteryWire(2147483647)],
     ...overrides,
   };
 }
@@ -135,7 +146,7 @@ describe('C2 cancelled wire contract', () => {
     const decoded = parse(wire);
     expect(decoded).toMatchObject({ id: wire.id, reference: wire.reference, status: 'cancelled',
       created_at: wire.created_at, cancellation_location_id: 2, cancelled_at: '2026-04-03T00:00:00.000000002Z' });
-    expect(decoded.items[0]).toMatchObject({ quantity: 9223372036854775807n, capacity_ah: '0.000001' });
+    expect(decoded.items[0]).toMatchObject({ quantity: 9223372036854775807n, battery: { capacity_ah: '0.000001' } });
     if (approved) expect(decoded).toMatchObject({ decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z' });
     else {
       expect(decoded).not.toHaveProperty('decision_location_id');
@@ -214,14 +225,14 @@ describe('C2 cancelled wire contract', () => {
     }
   });
   it('keeps object key sets independent and skips key-like strings with quotes, slashes and braces', () => {
-    const brand = 'Brand "cancelled_at": {"brand":"value"}, ["items"] \\ tail';
-    const model = 'Escaped \\u005f key text: "cancellation_location_id": 2';
-    const wire = cancellationWire(true, { items: [1, 2].map(variant_id => ({ ...wireRecord().items[0], variant_id, brand, model })) });
+    const name = 'Brand "cancelled_at": {"brand":"value"}, ["items"] \\ tail';
+    const detail = 'Escaped \\u005f key text: "cancellation_location_id": 2';
+    const wire = cancellationWire(true, { items: [1, 2].map(variant_id => ({ ...wireRecord().items[0], variant_id, name, detail })) });
     const decoded = parse(wire);
     expect(decoded.items.map(item => item.variant_id)).toEqual([1, 2]);
-    expect(decoded.items.map(item => item.brand)).toEqual([brand, brand]);
-    expect(decoded.items.map(item => item.model)).toEqual([model, model]);
-    const escapedRaw = JSON.stringify(wire).replaceAll('"brand":', '"br\\u0061nd" \n\t:');
+    expect(decoded.items.map(item => item.name)).toEqual([name, name]);
+    expect(decoded.items.map(item => item.detail)).toEqual([detail, detail]);
+    const escapedRaw = JSON.stringify(wire).replaceAll('"name":', '"n\\u0061me" \n\t:');
     expect(parseTransferRecord(escapedRaw)).toEqual(decoded);
     expect(transferQuantityTotal(decoded)).toBe(18446744073709551614n);
     const second = { ...wire, id: '9007199254740992', reference: 'TR-9007199254740992' };
@@ -386,7 +397,7 @@ describe('A05a outcome and count contracts', () => {
       expect(outcome).toMatchObject({ status, decision_location_id: direction.approver_location_id,
         decided_at: '2028-02-29T23:59:59.000000001Z', created_at: wire.created_at, reference: wire.reference });
       expect(outcome.items[0].quantity).toBe(9223372036854775807n);
-      expect(outcome.items[0].capacity_ah).toBe('0.000001');
+      expect(outcome.items[0].battery?.capacity_ah).toBe('0.000001');
     }
   });
   it.each(['pending', 'approved', 'rejected'] as const)('selects only %s records with unchanged pagination', status => {
@@ -412,12 +423,14 @@ describe('A05a outcome and count contracts', () => {
   });
   it.each(['approved', 'rejected'] as const)('retains item order, precision and strict original fields on %s', status => {
     const wire = wireRecord({ status, decision_location_id: 1, decided_at: '2028-02-29T00:00:00Z' });
-    wire.items.push({ ...wire.items[0], variant_id: 1, capacity_ah: '999999.999999', quantity: '9007199254740993' });
+    wire.items.push({ ...wire.items[0], variant_id: 1, quantity: '9007199254740993',
+      battery: { ...wire.items[0].battery, capacity_ah: '999999.999999' } });
     const decoded = parse(wire);
     expect(decoded.items.map(item => item.variant_id)).toEqual([2147483647, 1]);
-    expect(decoded.items[1]).toMatchObject({ capacity_ah: '999999.999999', quantity: 9007199254740993n });
+    expect(decoded.items[1]).toMatchObject({ battery: { capacity_ah: '999999.999999' }, quantity: 9007199254740993n });
     for (const invalid of [{ id: '9223372036854775808' }, { reference: 'TR-001' }, { origin_location_id: 3 },
-      { items: [{ ...wire.items[0], quantity: '-1' }] }, { items: [{ ...wire.items[0], capacity_ah: '35.0' }] },
+      { items: [{ ...wire.items[0], quantity: '-1' }] },
+      { items: [{ ...wire.items[0], battery: { ...wire.items[0].battery, capacity_ah: '35.0' } }] },
       { items: [{ ...wire.items[0], private_stock: '1' }] }, { created_at: '2028-02-30T00:00:00Z' }]) {
       expect(() => parse({ ...wire, ...invalid })).toThrow();
     }
@@ -539,7 +552,7 @@ describe('R04 pure transfer model', () => {
     wire.items.push({ ...wire.items[0], variant_id: 1 });
     const record = parse(wire);
     expect(record.id).toBe('9007199254740993');
-    expect(record.items[0].capacity_ah).toBe('0.000001');
+    expect(record.items[0].battery?.capacity_ah).toBe('0.000001');
     expect(record.items[0].quantity).toBe(9223372036854775807n);
     expect(transferQuantityTotal(record)).toBe(18446744073709551614n);
   });
@@ -555,11 +568,11 @@ describe('R04 pure transfer model', () => {
   });
   it.each(['0', '0001', '1.0', '1.0000001', '1000000', '-2', '1e2', 35])('rejects noncanonical catalog capacity %s', capacity_ah => {
     const wire = wireRecord();
-    expect(() => parse({ ...wire, items: [{ ...wire.items[0], capacity_ah }] })).toThrow();
+    expect(() => parse({ ...wire, items: [{ ...wire.items[0], battery: { ...wire.items[0].battery, capacity_ah } }] })).toThrow();
   });
   it.each(['35', '35.5', '999999.999999'])('preserves exact capacity %s', capacity_ah => {
     const wire = wireRecord();
-    expect(parse({ ...wire, items: [{ ...wire.items[0], capacity_ah }] }).items[0].capacity_ah).toBe(capacity_ah);
+    expect(parse({ ...wire, items: [{ ...wire.items[0], battery: { ...wire.items[0].battery, capacity_ah } }] }).items[0].battery?.capacity_ah).toBe(capacity_ah);
   });
   it.each([
     { status: 'approved' }, { kind: 'ship' }, { creator_location_id: 1 }, { origin_location_id: 4 },
@@ -571,7 +584,9 @@ describe('R04 pure transfer model', () => {
   it('rejects duplicate variants, bad item fields and framing', () => {
     const wire = wireRecord();
     expect(() => parse({ ...wire, items: [wire.items[0], wire.items[0]] })).toThrow();
-    for (const fields of [{ variant_id: 0 }, { variant_id: 2147483648 }, { variant_id: 1.5 }, { polarity: 'X' }, { brand: '' }, { secret: true }]) {
+    for (const fields of [{ variant_id: 0 }, { variant_id: 2147483648 }, { variant_id: 1.5 }, { kind: 'product' },
+      { battery: { ...wireRecord().items[0].battery, polarity: 'X' } },
+      { battery: { ...wireRecord().items[0].battery, brand: '' } }, { secret: true }]) {
       expect(() => parse({ ...wire, items: [{ ...wire.items[0], ...fields }] })).toThrow();
     }
     expect(() => parse({ ...wire, items: Array.from({ length: 191 }, (_, i) => ({ ...wire.items[0], variant_id: i + 1 })) })).toThrow();
@@ -654,5 +669,41 @@ describe('R04 pure transfer model', () => {
     expect(newTransferRetryKey(crypto)).toBe('ff'.repeat(16));
     expect(() => newTransferRetryKey(null as never)).toThrow('Secure randomness unavailable');
     expect(() => newTransferRetryKey({ getRandomValues: () => { throw new Error('private failure'); } })).toThrow('Secure randomness unavailable');
+  });
+});
+
+describe('T3 the line is the shared catalogue identity', () => {
+  it('publishes a battery line from its battery and a product line from its typed fields', () => {
+    const battery = parse(wireRecord({ items: [batteryWire(7, '3')] }));
+    expect(battery.items[0]).toEqual({ variant_id: 7, kind: 'battery', name: 'Brand · Model', detail: '0.000001 Ah · L',
+      battery: { brand: 'Brand', model: 'Model', capacity_ah: '0.000001', polarity: 'L' }, fields: null, quantity: 3n });
+    const product = parse(wireRecord({ items: [productWire(210, '5')] }));
+    expect(product.items[0]).toEqual({ variant_id: 210, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L',
+      battery: null, fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }], quantity: 5n });
+    expect(product.items[0]).not.toHaveProperty('brand');
+  });
+  it('rejects a line of the other shape or with a key the server never publishes', () => {
+    const wire = wireRecord();
+    for (const line of [{ ...batteryWire(1), battery: null }, { ...productWire(1), fields: null },
+      { ...productWire(1), battery: batteryWire(1).battery }, { ...batteryWire(1), fields: [] },
+      { ...batteryWire(1), brand: 'Brand' }, { ...batteryWire(1), kind: 'product' }]) {
+      expect(() => parse({ ...wire, items: [line] })).toThrow('Invalid transfer response');
+    }
+  });
+  it('publishes the document catalogue kind beside the request kind', () => {
+    const wire = wireRecord({ items: [batteryWire(1)], catalogue_kind: 'battery' });
+    expect(parse(wire)).toMatchObject({ kind: 'request_stock', catalogue_kind: 'battery' });
+    expect(parse(wireRecord())).not.toHaveProperty('catalogue_kind');
+    for (const value of ['product', 'Battery', 1, null]) {
+      expect(() => parse(wireRecord({ catalogue_kind: value }))).toThrow('Invalid transfer response');
+    }
+  });
+  it('keeps a document whose lines disagree with an empty catalogue kind and every line its own shape', () => {
+    const record = parse(wireRecord({ items: [batteryWire(1, '2'), productWire(2, '4')], catalogue_kind: '' }));
+    expect(record.catalogue_kind).toBe('');
+    expect(record.items.map(item => item.kind)).toEqual(['battery', 'other']);
+    expect(record.items[0].battery).not.toBeNull();
+    expect(record.items[1].fields).not.toBeNull();
+    expect(transferQuantityTotal(record)).toBe(6n);
   });
 });

@@ -1,3 +1,4 @@
+import { identityOf } from './model';
 import { describe, expect, it, vi } from 'vitest';
 import { createTransferAPI, TransferAPIError } from './transferAPI';
 import { parseTransferRecord, type TransferCreateInput } from './transferModel';
@@ -6,7 +7,9 @@ const wire = {
   id: '1', reference: 'TR-001', kind: 'request_stock', status: 'pending', created_at: '2026-04-02T00:00:00Z',
   creator_location_id: 2, creator_location_name: 'Sucursal A', origin_location_id: 1, origin_location_name: 'Almacén',
   destination_location_id: 2, destination_location_name: 'Sucursal A', approver_location_id: 1, approver_location_name: 'Almacén',
-  items: [{ variant_id: 201, brand: 'Brand', model: 'Model', capacity_ah: '35.5', polarity: 'R', quantity: '9007199254740993' }],
+  items: [{ ...identityOf({ variant_id: 201, kind: 'battery', name: 'Brand · Model', detail: '35.5 Ah · R',
+    battery: { brand: 'Brand', model: 'Model', capacity_ah: '35.5', polarity: 'R' }, fields: null }),
+    quantity: '9007199254740993' }],
 };
 const input = (): TransferCreateInput => ({ kind: 'request_stock', counterparty_location_id: 1, retry_key: 'stable_key_000001',
   items: [{ variant_id: 201, quantity: '9007199254740993' }, { variant_id: 1, quantity: '2' }] });
@@ -315,8 +318,11 @@ describe('A05b decision transport', () => {
     { creator_location_name: 'different' }, { origin_location_name: 'different' }, { destination_location_name: 'different' },
     { approver_location_name: 'different' }, { origin_location_id: 3, approver_location_id: 3, decision_location_id: 3 },
     { kind: 'send_to_warehouse', origin_location_id: 2, destination_location_id: 1 },
-    ...['variant_id', 'brand', 'model', 'capacity_ah', 'polarity', 'quantity'].map(field => ({ items: [{ ...wire.items[0],
-      [field]: ({ variant_id: 202, brand: 'other', model: 'other', capacity_ah: '35.500001', polarity: 'L', quantity: '9007199254740992' } as Record<string, unknown>)[field] }] })),
+    // Every published line key is immutable: a reply that changes any of them, or
+    // that ships one more key, never replaces the original evidence.
+    ...['variant_id', 'kind', 'name', 'detail', 'battery', 'fields', 'quantity'].map(field => ({ items: [{ ...wire.items[0],
+      [field]: ({ variant_id: 202, kind: 'other', name: 'other', detail: 'other', battery: null, fields: [],
+        quantity: '9007199254740992' } as Record<string, unknown>)[field] }] })),
     { items: [] }, { items: [...wire.items, { ...wire.items[0], variant_id: 202 }] },
     { decision_location_id: 2 }, { decided_at: 'private' }, { status: 'pending' },
   ];
@@ -575,5 +581,32 @@ describe('R04 pure transfer API', () => {
     await expect(api.create({ ...input(), retry_key: 'short' }, 'memory')).rejects.toMatchObject({ code: 'invalid_request', uncertainCreation: false });
     await expect(api.create(input(), '')).rejects.toMatchObject({ code: 'invalid_request' });
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('T3 decision replies must prove the confirmed line identity', () => {
+  const field = { name: 'volumen en L', kind: 'number', unit: 'L', number: '5' };
+  const other = { name: 'presentación', kind: 'text', text: 'paquete' };
+  const productWire = (fields: readonly unknown[]) => ({ ...wire, items: [{ variant_id: 201, kind: 'other',
+    name: 'Agua acidulada', detail: 'volumen en L: 5 L', battery: null, fields, quantity: '9007199254740993' }] });
+  const terminal = (original: typeof wire, action: 'approve' | 'reject') => ({ ...original,
+    status: action === 'approve' ? 'approved' : 'rejected', decision_location_id: original.approver_location_id,
+    decided_at: '2026-04-03T00:00:00.000000001Z' });
+  it.each(['approve', 'reject'] as const)('refuses an otherwise confirmed %s whose line identity differs in one strict detail', async action => {
+    const replies = [
+      // A capacity that differs only by a trailing zero is not the published text.
+      { ...terminal(wire, action), items: [{ ...wire.items[0], battery: { ...wire.items[0].battery, capacity_ah: '35.50' } }] },
+      // The same typed fields in a different order are a different identity.
+      { ...terminal(productWire([field, other]) as typeof wire, action), items: productWire([other, field]).items },
+      // The published kind itself changed while every other scalar survived.
+      { ...terminal(wire, action), items: [{ variant_id: 201, kind: 'other', name: 'Brand · Model', detail: '35.5 Ah · R',
+        battery: null, fields: [], quantity: '9007199254740993' }] },
+    ];
+    for (const reply of replies) {
+      const fetch = mockFetch().mockResolvedValue(response(reply));
+      await expect(createTransferAPI(fetch).decide(parseTransferRecord(JSON.stringify(wire)), action, 'memory_csrf'))
+        .rejects.toMatchObject({ code: 'invalid_response', status: 200, uncertainCreation: false, uncertainDecision: true });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }
   });
 });

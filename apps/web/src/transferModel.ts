@@ -1,6 +1,11 @@
 import { parse as parseJSON } from 'lossless-json';
+import { parseNumberVariantIdentity } from './model';
+import type { Kind, VariantIdentity } from './model';
 
 export type TransferKind = 'request_stock' | 'send_to_warehouse' | 'direct_shipment';
+/** The two catalogue kinds a transfer document can be, in the order the screen offers them. */
+export const transferCatalogueKinds: readonly Kind[] = ['battery', 'other'];
+export const transferCatalogueKindLabels: Record<Kind, string> = { battery: 'Baterías', other: 'Otros productos' };
 export type TransferFlow = 'requestWarehouse' | 'requestOther' | 'sendWarehouse' | 'directA' | 'directB' | `direct:${number}` | `request:${number}`;
 export type TransferLocationID = number;
 export interface TransferDirection {
@@ -13,10 +18,13 @@ export interface TransferCreateInput {
   kind: TransferKind; counterparty_location_id: TransferLocationID;
   retry_key: string; items: readonly TransferLine[];
 }
-export interface TransferItem {
-  variant_id: number; brand: string; model: string; capacity_ah: string;
-  polarity: 'L' | 'R'; quantity: bigint;
-}
+/**
+ * One published transfer line: the shared catalogue identity of the variant plus
+ * the quantity the document moves. A battery line carries its battery
+ * attributes, a product line its typed fields, and every screen labels it from
+ * the identity instead of composing its own battery cells.
+ */
+export interface TransferItem extends VariantIdentity { quantity: bigint }
 export type TransferStatus = 'pending' | 'approved' | 'rejected' | 'in_transit' | 'received' | 'cancelled';
 export interface TransferReceiptInput { items: readonly { readonly variant_id: number; readonly actual_quantity: string }[] }
 export interface TransferReceiptLine { readonly variant_id: number; readonly expected_quantity: bigint; readonly actual_quantity: bigint; readonly available_quantity: bigint }
@@ -32,6 +40,12 @@ export interface TransferActivityEntry {
 interface TransferRecordFields {
   readonly activity?: readonly TransferActivityEntry[];
   id: string; reference: string; kind: TransferKind; created_at: string;
+  /**
+   * The catalogue kind the server derives from this document's own lines, empty
+   * exactly when those lines disagree. It is never the request kind, and no
+   * reader picks one line shape from it: every line renders by its own identity.
+   */
+  catalogue_kind?: Kind | '';
   creator_location_id: TransferLocationID; creator_location_name: string;
   origin_location_id: TransferLocationID; origin_location_name: string;
   destination_location_id: TransferLocationID; destination_location_name: string;
@@ -111,10 +125,31 @@ export function transferFlow(assigned: number, kind: TransferKind, counterpart: 
   if ((assigned === 2 && counterpart === 3) || (assigned === 3 && counterpart === 2)) return 'requestOther';
   return `request:${counterpart}`;
 }
-function capacity(value: unknown): string {
-  // catalog.Decimal is normalized: six whole/fraction digits, no trailing zero fraction.
-  if (typeof value !== 'string' || !/^(0|[1-9][0-9]{0,5})(\.[0-9]{0,5}[1-9])?$/.test(value) || value === '0') return invalid();
+/**
+ * The document's catalogue kind as the server publishes it: both kinds and the
+ * empty string a document carries when its own lines disagree.
+ */
+function catalogueKind(value: unknown): Kind | '' {
+  if (value !== '' && value !== 'battery' && value !== 'other') return invalid();
   return value;
+}
+function transferIdentity(value: unknown): VariantIdentity {
+  // The shared identity parser owns the shape; this decoder still owns its own
+  // error, so every rejected line answers the transfer contract.
+  try { return parseNumberVariantIdentity(value, ['quantity']); } catch { return invalid(); }
+}
+function transferItems(value: unknown): TransferItem[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 190) return invalid();
+  const seen = new Set<number>();
+  return value.map(line => {
+    // The line is the shared catalogue identity plus the moved quantity, so the
+    // battery and the product shape are read by the same parser as inventory.
+    const identity = transferIdentity(line);
+    if (seen.has(identity.variant_id)) return invalid();
+    seen.add(identity.variant_id);
+    const quantity = exact((line as Record<string, unknown>).quantity);
+    return { ...identity, quantity };
+  });
 }
 function createdAt(value: unknown): string {
   const s = text(value);
@@ -303,8 +338,9 @@ function record(value: unknown): TransferRecord {
   const dispatchKeys = [...decisionKeys, 'dispatch_location_id', 'dispatched_at'];
   const receiptKeys = [...dispatchKeys, 'receipt_location_id', 'received_at', 'receipt'];
   const cancellationKeys = [...recordKeys, 'cancellation_location_id', 'cancelled_at'];
-  const candidate = object(value, [...receiptKeys, 'cancellation_location_id', 'cancelled_at', 'activity'], false);
-  const baseValue = { ...candidate }; delete baseValue.activity;
+  const candidate = object(value, [...receiptKeys, 'cancellation_location_id', 'cancelled_at', 'activity', 'catalogue_kind'], false);
+  const baseValue = { ...candidate }; delete baseValue.activity; delete baseValue.catalogue_kind;
+  const publishedCatalogueKind = Object.hasOwn(candidate, 'catalogue_kind') ? catalogueKind(candidate.catalogue_kind) : null;
   const selected = status(candidate.status);
   const preservedApproval = selected === 'cancelled' && (Object.hasOwn(candidate, 'decision_location_id') || Object.hasOwn(candidate, 'decided_at'));
   const o = object(baseValue, selected === 'cancelled' ? preservedApproval ? [...cancellationKeys, 'decision_location_id', 'decided_at'] : cancellationKeys
@@ -321,16 +357,7 @@ function record(value: unknown): TransferRecord {
   const direction = transferDirection(creator, flow);
   if (k !== direction.kind || origin !== direction.origin_location_id || destination !== direction.destination_location_id || approver !== direction.approver_location_id) return invalid();
   if (!Array.isArray(o.items) || o.items.length < 1 || o.items.length > 190) return invalid();
-  const quantities = lines(o.items.map(v => {
-    const item = object(v, ['variant_id', 'brand', 'model', 'capacity_ah', 'polarity', 'quantity']);
-    return { variant_id: item.variant_id, quantity: item.quantity };
-  }));
-  const items = o.items.map((v, i): TransferItem => {
-    const item = v as Record<string, unknown>;
-    if (item.polarity !== 'L' && item.polarity !== 'R') return invalid();
-    return { variant_id: quantities[i].variant_id, quantity: BigInt(quantities[i].quantity),
-      brand: text(item.brand), model: text(item.model), capacity_ah: capacity(item.capacity_ah), polarity: item.polarity };
-  });
+  const items = transferItems(o.items);
   const decision = selected === 'pending' || (selected === 'cancelled' && !preservedApproval) ? null : {
     decision_location_id: location(o.decision_location_id), decided_at: createdAt(o.decided_at),
   };
@@ -381,7 +408,8 @@ function record(value: unknown): TransferRecord {
         location_id, location_name: text(e.location_name), recorded_at, ...variant }) as TransferActivityEntry;
     }));
   })() : undefined;
-  const decoded = { ...outcome, ...receiptFields, ...cancellationFields, ...(activity ? { activity } : {}), id, reference: o.reference as string, kind: k, created_at,
+  const decoded = { ...outcome, ...receiptFields, ...cancellationFields, ...(activity ? { activity } : {}),
+    ...(publishedCatalogueKind === null ? {} : { catalogue_kind: publishedCatalogueKind }), id, reference: o.reference as string, kind: k, created_at,
     creator_location_id: creator, creator_location_name: text(o.creator_location_name),
     origin_location_id: origin, origin_location_name: text(o.origin_location_name),
     destination_location_id: destination, destination_location_name: text(o.destination_location_name),

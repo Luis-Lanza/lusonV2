@@ -59,6 +59,9 @@ export default function TransferReview(props: TransferReviewProps) {
   const outcomeLabel = result?.record.status === 'approved' ? direct ? 'Pendiente de despacho' : 'Aprobada' : result?.record.status === 'rejected' ? 'Rechazada' : result?.record.status === 'in_transit' ? 'En tránsito' : result?.record.status === 'received' ? 'Recibida' : result?.record.status === 'cancelled' ? 'Cancelada' : 'Pending';
   const location = (id: number) => props.metadata.locations.find(l => l.id === id)?.name ?? 'Ubicación no disponible';
   const total = snapshot.items.reduce((sum, line) => sum + BigInt(line.quantity), 0n);
+  // A document carries one kind; a battery keeps its polarity cell, a product
+  // shows the identity the server publishes and never an invented attribute.
+  const battery = snapshot.items.every(line => line.battery !== null);
   return <div className={`review-backdrop${result ? '' : ' review-presubmit-backdrop'}`}><section ref={dialog} tabIndex={-1} className={`transfer-review${result ? '' : ' review-presubmit'}`} role="dialog" aria-modal="true" aria-labelledby="review-title" aria-busy={blocked} onKeyDown={event => {
     if (event.key === 'Escape') { event.preventDefault(); if (!blocked) props.onClose(); }
     if (event.key === 'Tab') {
@@ -86,10 +89,10 @@ export default function TransferReview(props: TransferReviewProps) {
         {result.record.status === 'received' && <><p>Recibida en {result.record.destination_location_name}: <TransferDate value={result.record.received_at} /></p>
           <p>La recepción ya está finalizada. Solo se acreditaron unidades esperadas recibidas hasta lo enviado; las discrepancias permanecen registradas por separado.</p></>}
       </section>}
-      <div className="review-table"><table><caption className="sr-only">Selección inmutable</caption><thead><tr><th scope="col">Batería</th><th scope="col">Polaridad</th><th scope="col">{result ? 'Cantidad solicitada' : 'Cantidad a transferir'}</th></tr></thead>
-        <tbody>{snapshot.items.map(line => <tr key={line.variant_id}><td><strong>{line.battery.brand} · {line.battery.model}</strong><small>{line.battery.capacity_ah} Ah</small></td>
-          <td data-label="Polaridad"><span className="polarity">{line.battery.polarity}</span></td><td data-label="Cantidad a transferir">{line.quantity}</td></tr>)}</tbody>
-        <tfoot><tr><td colSpan={3}>{snapshot.items.length} {snapshot.items.length === 1 ? 'variante' : 'variantes'} · <span aria-label="Total a transferir">{total.toString()} baterías</span></td></tr></tfoot></table></div>
+      <div className="review-table"><table><caption className="sr-only">Selección inmutable</caption><thead><tr><th scope="col">{battery ? 'Batería' : 'Producto'}</th><th scope="col" hidden={!battery}>Polaridad</th><th scope="col">{result ? 'Cantidad solicitada' : 'Cantidad a transferir'}</th></tr></thead>
+        <tbody>{snapshot.items.map(line => <tr key={line.variant_id} data-kind={line.kind}><td><strong>{line.name}</strong><small>{line.detail}</small></td>
+          <td data-label="Polaridad" hidden={!battery}>{line.battery === null ? '' : <span className="polarity">{line.battery.polarity}</span>}</td><td data-label="Cantidad a transferir">{line.quantity}</td></tr>)}</tbody>
+        <tfoot><tr><td colSpan={battery ? 3 : 2}>{snapshot.items.length} {snapshot.items.length === 1 ? 'variante' : 'variantes'} · <span aria-label="Total a transferir">{total.toString()} {battery ? 'baterías' : 'productos'}</span></td></tr></tfoot></table></div>
       {direct && (!result || result.record.status === 'approved') && <div className="review-notice"><p>La creación autoriza y reserva todas las cantidades en Almacén, sin mover existencias ni acreditar el destino.</p>
         <p>Queda Pendiente de despacho. El despacho es una acción separada; podés cancelar antes de despachar. El destino no debe aprobar.</p></div>}
       {!direct && (!result || result.record.status === 'pending') && <div className="review-notice"><p>La solicitud quedará Pending, pendiente de aprobación de {location(snapshot.direction.approver_location_id)}.</p>

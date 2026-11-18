@@ -67,10 +67,11 @@ export function TransferItems({ record, stock, confirmation = false, reject = fa
       <th scope="col">{cancellation ? quantityLabel : sent ? 'Enviadas' : compact && dispatch ? 'A despachar' : compact ? quantityLabel : dispatch ? 'Cantidad a despachar' : (record.status === 'in_transit' || record.status === 'received') ? 'Cantidad enviada' : confirmation && !reject ? 'Cantidad a reservar' : 'Cantidad solicitada'}</th>
       {approved && <th scope="col">{reservationLabel}</th>}
       {advice && <th scope="col">{compact ? 'Disponibles en origen' : `Disponible en ${record.origin_location_name} (orientativo)`}</th>}</tr></thead>
-    <tbody>{record.items.map(item => <tr key={item.variant_id} data-variant-id={item.variant_id}>
-      <td>{compact && confirmation ? <>{item.brand} {item.model} · <span>{item.capacity_ah} Ah</span></>
-        : <><strong>{item.brand} · {item.model}</strong><small>{item.capacity_ah} Ah</small></>}</td>
-      <td data-label={pendingDetail ? 'Polaridad' : undefined}>{item.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</td>
+    <tbody>{record.items.map(item => <tr key={item.variant_id} data-variant-id={item.variant_id} data-kind={item.kind}>
+      <td>{compact && confirmation ? <>{item.name} · <span>{item.detail}</span></>
+        : <><strong>{item.name}</strong><small>{item.detail}</small></>}</td>
+      {/* Each line keeps its own shape: a product line carries no polarity. */}
+      <td data-label={pendingDetail ? 'Polaridad' : undefined}>{item.battery === null ? '' : item.battery.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</td>
       <td data-label={sent ? 'Enviadas' : pendingDetail ? quantityLabel : undefined}>{item.quantity.toString()}</td>
       {/* Approved records reserve the entire immutable request, not a live inventory balance. */}
       {approved && <td data-label={reservationLabel}>{item.quantity.toString()} uds.</td>}
@@ -142,7 +143,11 @@ export default function TransferDetail(props: TransferDetailProps) {
       if (flight.current) { flight.current.dirty = true; return; }
       const job = { abort: new AbortController(), dirty: false };
       flight.current = job;
-      void loadSourceInventory(source, { signal: job.abort.signal, reason: 'passive' }).then(catalog => {
+      // Advisory availability: a battery document keeps the reading it always did,
+      // while a document holding a product asks for both kinds so every line of it
+      // can show the origin stock of its own identity.
+      const adviceKind = record.items.every(line => line.kind === 'battery') ? undefined : 'all';
+      void loadSourceInventory(source, { signal: job.abort.signal, reason: 'passive', kind: adviceKind }).then(catalog => {
         if (valid() && flight.current === job && !job.dirty) {
           setState({ fence, id, stock: { catalog, busy: false, unavailable: false } });
         }
@@ -324,7 +329,7 @@ export default function TransferDetail(props: TransferDetailProps) {
           <tbody>{effective.rows.map(row =>
             <tr key={row.variant_id} data-variant-id={row.variant_id}
               className={row.shortage || row.excess || row.unexpected ? 'received-discrepant' : ''}>
-              <td>{row.product ? <>{row.product.brand} {row.product.model}<small>{row.product.capacity_ah} Ah · {row.product.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</small></>
+              <td>{row.product ? <>{row.product.name}<small>{row.product.detail}</small></>
                 : <>Variante {row.variant_id} · identidad no disponible</>}</td>
               <td data-label="Enviadas">{row.expected.toString()}</td><td data-label="Recibidas efectivas">{row.actual.toString()}</td>
               <td data-label="Crédito efectivo">{row.credit.toString()}</td><td data-label="Diferencia"><ReceivedDifferences quantities={row} /></td>
@@ -369,7 +374,7 @@ export default function TransferDetail(props: TransferDetailProps) {
       </div>}
       {warehouse && record.status !== 'received' && <div className="transfer-detail-cards" aria-label="Baterías solicitadas móvil">
         {record.items.map(item => <article key={item.variant_id} data-variant-id={item.variant_id}>
-          <h3>{item.brand} · {item.model}</h3><p>{item.capacity_ah} Ah · {item.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</p>
+          <h3>{item.name}</h3><p>{item.detail}</p>
           <p>{record.status === 'in_transit' ? 'Cantidad enviada' : 'Cantidad solicitada'}: <strong>{item.quantity.toString()}</strong></p>
           {!terminal && <><p>Disponible en {record.origin_location_name} (orientativo)</p><Stock stock={stock} variant={item.variant_id} /></>}
         </article>)}

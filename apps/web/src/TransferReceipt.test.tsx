@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import TransferReceipt, { ReceiptPreview, type TransferReceiptProps } from './TransferReceipt';
+import { identityOf } from './model';
 import { parseTransferRecord, previewTransferReceipt } from './transferModel';
 
 // Exercise the existing App/controller boundary, not an import of the planned
@@ -14,7 +15,8 @@ const transit = {
   destination_location_id: 2, destination_location_name: 'Sucursal A', approver_location_id: 1, approver_location_name: 'Almacén',
   created_at: '2026-04-02T00:00:00Z', decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z',
   dispatch_location_id: 1, dispatched_at: '2026-04-03T00:00:00.000000002Z',
-  items: [{ variant_id: 1, brand: 'TOYO', model: 'Expected', capacity_ah: '75.125', polarity: 'L', quantity: sent }],
+  items: [{ ...identityOf({ variant_id: 1, kind: 'battery', name: 'TOYO · Expected', detail: '75.125 Ah · L',
+    battery: { brand: 'TOYO', model: 'Expected', capacity_ah: '75.125', polarity: 'L' }, fields: null }), quantity: sent }],
 };
 function outcome(actual = sent, unexpected = false) {
   const credited = BigInt(actual) < BigInt(sent) ? actual : sent;
@@ -42,8 +44,11 @@ function fixture(actor = 2, override?: (url: string, init: RequestInit) => Promi
     if (url === '/api/inventory/metadata') return Promise.resolve(reply({ locations, brands: ['TOYO'] }));
     if (url.startsWith('/api/inventory?')) {
       const q = new URL(url, 'http://localhost').searchParams;
-      const row = (variant_id: number, model: string) => ({ variant_id, catalog_entry_id: variant_id,
-        brand: 'TOYO', model, capacity_ah: 75.125, polarity: 'L', existing: 0, reserved: 0, available: 0 });
+      // The shared catalogue identity of a battery, exactly as the wire publishes it.
+      const row = (variant_id: number, model: string) => ({ variant_id, catalog_entry_id: variant_id, kind: 'battery',
+        name: `TOYO · ${model}`, detail: '75.125 Ah · L',
+        battery: { brand: 'TOYO', model, capacity_ah: '75.125', polarity: 'L' },
+        fields: null, existing: 0, reserved: 0, available: 0 });
       return Promise.resolve(reply({ location: locations[Number(q.get('location_id')) - 1], page: Number(q.get('page')),
         page_size: Number(q.get('page_size')), total_variants: 2, items: [row(1, 'Expected'), row(2, 'Unexpected')] }));
     }
@@ -162,7 +167,8 @@ describe('F2 shared receipt across eligible routes', () => {
 
 describe('U3d expected receipt review', () => {
   const pair = { ...transit, items: ['L', 'R'].map((polarity, index) => ({
-    ...transit.items[0], variant_id: index + 1, polarity, quantity: '1',
+    ...transit.items[0], variant_id: index + 1, quantity: '1', detail: `75.125 Ah · ${polarity}`,
+    battery: { ...transit.items[0].battery!, polarity },
   })) };
   it.each([
     ['matched', '1', ['2', '2', '2'], 'Sin diferencias'],
@@ -178,8 +184,8 @@ describe('U3d expected receipt review', () => {
     expect(within(table).getAllByRole('columnheader').map(cell => cell.textContent)).toEqual([
       'Producto', 'Enviadas', 'Recibidas', 'A acreditar', 'Diferencia',
     ]);
-    expect(table).toHaveTextContent('75.125 Ah · Izquierda [L]');
-    expect(table).toHaveTextContent('75.125 Ah · Derecha [R]');
+    expect(table).toHaveTextContent('75.125 Ah · L');
+    expect(table).toHaveTextContent('75.125 Ah · R');
     expect(table).toHaveTextContent(difference);
     const total = within(table).getByRole('row', { name: /Total: 2 variantes/ });
     expect(within(total).getAllByRole('cell').slice(1, 4).map(cell => cell.textContent)).toEqual(totals);
@@ -228,7 +234,8 @@ describe('U3e unexpected and mixed receipt preview', () => {
   it.each(receiptRoutes)('preserves $kind from $origin per-variant counts and bigint credit without netting', async route => {
     const f = fixture(route.destination);
     f.setRecord({ ...routeRecord(route), items: [1, 3].map((variant_id, index) => ({
-      ...transit.items[0], variant_id, polarity: index ? 'R' : 'L', quantity: sent,
+      ...transit.items[0], variant_id, quantity: sent, detail: `75.125 Ah · ${index ? 'R' : 'L'}`,
+      battery: { ...transit.items[0].battery!, polarity: index ? 'R' as const : 'L' as const },
     })) });
     render(<App />); await detail();
     fireEvent.click(await screen.findByRole('button', { name: route.kind === 'request_stock' ? 'Recibir solicitud' : 'Registrar recepción' }));
