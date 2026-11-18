@@ -1,9 +1,9 @@
 # Warehouse stock ingress
 
 Registered ingress of merchandise into the warehouse (`Almacén`, location 1). A
-document has one or more variant/quantity lines, is applied atomically to
-`inventory_balances`, and stays immutable forever; a mistake is corrected only by
-a counter-entry. This is a new domain beside transfers: no transfer workflow,
+document has one or more variant/quantity lines of one kind, is applied atomically
+to `inventory_balances`, and stays immutable forever; a mistake is corrected only
+by a counter-entry. This is a new domain beside transfers: no transfer workflow,
 reservation, or reconciliation is replaced or reused.
 
 ## Authorization
@@ -48,6 +48,11 @@ trailing slash is `404 not_found`, never a redirect.
 
 * `lines` holds 1 to 190 entries, `variant_id` is unique per document and
   `quantity` is between 1 and 1000000.
+* A document is of **one kind** and never mixes: the kind is derived from its
+  lines and never stored. A body whose variants name both a battery and an other
+  product is refused whole with `400 invalid_request`, and nothing is written —
+  no document, no line and no balance movement. A product-only document is
+  admitted exactly like a battery-only one, and a retired entry is refused.
 * `note` is optional; when present it must be valid UTF-8 without NUL and at most
   500 characters.
 * Decoding is token-exact: unknown keys, duplicate keys (including
@@ -120,9 +125,10 @@ the history with its own negative `total_units`, and the document it reverses
 reports its `id` in `reversed_by`.
 
 Per-line detail never appears in this list: the document detail is a separate
-contract. Because a document is never edited, the history only ever grows; a
-correction adds the counter-entry beside the original and neither row is
-rewritten.
+contract. This history carries no kind of its own either; the kind of the
+document is read from the identity of its lines in that detail. Because a document
+is never edited, the history only ever grows; a correction adds the counter-entry
+beside the original and neither row is rewritten.
 
 ## Document detail
 
@@ -147,7 +153,9 @@ redirected. A query string is not part of this contract: `?page=1` and a bare
 ```json
 {"id":6,"location_id":1,"note":"Remito 0002-00045871","created_at":"2026-11-04T14:20:00Z",
  "created_by_account_id":1,"reverses_entry_id":null,"reversed_by":null,"reason":"",
- "lines":[{"variant_id":7,"brand":"TOYO","model":"NS60L","capacity_ah":"45","polarity":"L","quantity":18}],
+ "lines":[{"variant_id":7,"kind":"battery","name":"TOYO · NS60L","detail":"45 Ah · L",
+  "battery":{"brand":"TOYO","model":"NS60L","capacity_ah":"45","polarity":"L"},
+  "fields":null,"quantity":18}],
  "total_units":18}
 ```
 
@@ -164,8 +172,14 @@ redirected. A query string is not part of this contract: `?page=1` and a bare
 | `lines` | The document lines, ordered by `variant_id` ascending |
 | `total_units` | Exact signed sum of the line quantities |
 
-Each line carries the catalogue identity of its variant — `brand`, `model`,
-`capacity_ah` and `polarity` — plus the signed `quantity` of that line.
+Each line carries the variant identity of its own kind — `variant_id`, `kind`,
+`name`, `detail`, `battery` and `fields` — plus the signed `quantity` of that
+line. A battery line keeps its battery attributes and `fields: null`; a product
+line reads `kind: "other"`, `battery: null`, its typed fields and a detail the
+server composed (`"volumen en L: 5 L"`), so a document stays readable after it is
+written and no line is labelled with an attribute its row does not have. The
+identity is the one of the inventory read and of the
+[other products catalog](other-products.md#variant-identity).
 `capacity_ah` is the canonical decimal **text** of the inventory read (`"45"`,
 `"6.5"`), so no float rounding and no trailing zeros reach the client.
 
@@ -293,7 +307,7 @@ Every failure returns exactly `{"error":"<code>"}`.
 
 | Status | Code | Meaning |
 |---|---|---|
-| 400 | `invalid_request` | Malformed body, bad field, duplicate variant, an exceeded limit, or an inadmissible `page`/`page_size` |
+| 400 | `invalid_request` | Malformed body, bad field, duplicate variant, a document that mixes kinds, an exceeded limit, or an inadmissible `page`/`page_size` |
 | 403 | `forbidden` | The caller is not the warehouse administrator |
 | 409 | `insufficient_stock` | The line would leave `existing < reserved` |
 | 409 | `retry_conflict` | The operation key is bound to a different payload |

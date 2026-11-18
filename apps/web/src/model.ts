@@ -216,8 +216,10 @@ export function queryURL(q: Query): string {
 export function validSearch(text: string): boolean {
   return text.isWellFormed() && !text.includes('\0') && new TextEncoder().encode(text).length <= 128;
 }
-// A battery-only surface reads rows that carry their battery: transfers, the
-// ingress catalogue and the closing count sheet never handle a product (S11).
+// A battery-only surface reads rows that carry their battery: transfers and the
+// closing count sheet never handle a product, while the ingress catalogue reads
+// the battery projection for its battery document and the product listing for a
+// product document (S11).
 export type BatteryRow = Readonly<Item> & { readonly battery: Battery };
 function hasBattery(item: Item): item is BatteryRow { return item.battery !== null; }
 export function batteryRows(items: readonly Item[]): BatteryRow[] {

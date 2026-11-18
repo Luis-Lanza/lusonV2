@@ -8,6 +8,9 @@ a consulted inventory location does not change the account's assigned authority.
 ## Implemented workflows
 
 - Consult inventory across the three locations, with filters and pagination.
+- Record warehouse ingress and physical-count adjustments. Each document is of
+  one catalog kind, batteries or other products, never both, and the stock screen
+  lists both kinds with a kind filter.
 - Create stock requests (`request_stock`), branch proposals to send stock to the
   warehouse (`send_to_warehouse`), and direct warehouse shipments to branches
   (`direct_shipment`).
@@ -32,10 +35,13 @@ a consulted inventory location does not change the account's assigned authority.
   selected-product quantities are secondary disclosures. Responsive acceptance
   remains tracked in `odd/tasks/transfer-origin-restitution-ux.md`.
 
-See the [inventory API contract](apps/api/docs/inventory-api.md) and
+See the [inventory API contract](apps/api/docs/inventory-api.md), the
+[stock ingress contract](apps/api/docs/stock-entries.md), the
+[stock adjustment contract](apps/api/docs/stock-adjustments.md) and the
 [transfer API contract](apps/api/docs/transfers-api.md) for backend rules, and
-the [other products catalog contract](apps/api/docs/other-products.md) for the
-second catalog kind that shares the battery item identity.
+the [other products contract](apps/api/docs/other-products.md) for the second
+catalog kind, the variant identity both kinds share and the surfaces that read
+it today.
 Frontend composition is in [App](apps/web/src/App.tsx) and
 [TransferPending](apps/web/src/TransferPending.tsx), including the reachable
 lifecycle, receipt, count-correction and restitution views. Contract documents

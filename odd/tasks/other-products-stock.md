@@ -151,3 +151,38 @@ and `03-ingreso-tipo-primero.html` (ingress, two directions), `04-ajustes-dos-so
 
 L7. Design self-check: boards use only system tokens (wine, hover, tint, page, border, muted,
 ink, surface, soft and modal shadows, action-alert), `sans-serif` only, no external resource.
+
+L8. T1 delivered (`e45afbe`). `catalog.Identity` is the one shape both languages validate
+against, the number and field grammar of `otherproducts` moved into it, `/api/inventory` and
+the adjustment catalogue apply `kind` with the battery default, and both writes refuse a
+mixed document before any insert. A product adjustment now reads back instead of failing
+closed.
+
+L9. T2 (`9beb070`) hit the real size of the change: `Item` in the web model is read by
+transfers, the transfer cart and its recovery, the ingress catalogue and the closings count
+sheet, so changing it broke ten files. Decision: the readers travel in the same change
+rather than leaving the branch uncompilable, `catalog_entry_id` returns to the wire where
+transfers and pricing key on it, and `kind=all` is reserved to the warehouse. The strict
+parser was not relaxed for any legacy fixture; the fixtures moved to the identity.
+
+L10. T3 (`27e02fd`). Ingress asks the kind before showing a catalogue, the product picker
+searches name and field content, and a product line reads back in the draft, the detail and
+the history. Two corrections: the kind control and the kind query now both follow the
+listed location, so neither promises what the other does not serve. A differential probe
+over 186 battery-only queries was identical before and after.
+
+L11. T4 (`d683fcf`). The history derives each document's kind from its lines and publishes
+no kind when they disagree, because a document written before the one-kind rule could mix
+them; the screen shows a dash. Two tabs in the drawer, product picker without capacity,
+polarity or expected, blind count untouched.
+
+L12. T5 and closing evidence. `inventory-api.md`, `stock-entries.md`,
+`stock-adjustments.md`, `other-products.md` and `README.md` now describe the code as it is.
+The full suite then caught a real regression of T1 that no focused run could see:
+`internal/transfers` `TestUR4PopulatedPrefixUpgrade` built `inventory.Item` by hand and
+compared it with the store's read through `reflect.DeepEqual`, so the embedded identity the
+store now fills made every row differ. The fix composes the identity with the production
+constructor (`catalog.Row.Identity`) exactly as the store does; the comparison was not
+loosened, and two mutations (a divergent name, a one-unit stock change) proved it still
+fails on a real difference. `make test-pg` is green in one cycle over every package and the
+web suite is green with 4046 tests.

@@ -1,11 +1,11 @@
 # Warehouse stock adjustment by physical count
 
 Correction of the warehouse stock (`Almacén`, location 1) against a real physical
-count. A document has one or more variant/counted lines, is applied atomically to
-`inventory_balances`, and stays immutable forever; a mistake is corrected only by
-a counter-entry. Only the warehouse adjusts its own stock, exactly like stock
-ingress: there is no branch adjustment and no counting session, deferred close or
-persisted draft in this domain.
+count. A document has one or more variant/counted lines of one kind, is applied
+atomically to `inventory_balances`, and stays immutable forever; a mistake is
+corrected only by a counter-entry. Only the warehouse adjusts its own stock,
+exactly like stock ingress: there is no branch adjustment and no counting session,
+deferred close or persisted draft in this domain.
 
 ## Blind count
 
@@ -22,7 +22,7 @@ The capture is blind by contract, not by convention:
 * The difference is derived as `counted - expected` on read, so it can never
   disagree with the two persisted facts it comes from.
 * The capture catalogue (`GET /api/stock-adjustments/catalog`) is a separate,
-  quantity-free projection: it carries the catalogue identity of a variant and no
+  quantity-free projection: it carries the variant identity of one item and no
   stock field at all. `/api/inventory` is not reused for the capture because its
   payload includes `existing`.
 * The difference is revealed only **after** the document is applied, in the
@@ -78,6 +78,11 @@ slash is `404 not_found`, never a redirect.
 * `lines` holds 1 to 190 entries, `variant_id` is unique per document and
   `counted_quantity` is between 0 and 1000000. A count of zero is a legitimate
   result of a physical count; a negative one is not expressible.
+* A document is of **one kind** and never mixes: the kind is derived from its
+  lines and never stored. A body whose variants name both a battery and an other
+  product is refused whole with `400 invalid_request`, and nothing is written —
+  no document, no line and no balance movement. A product-only document is
+  admitted exactly like a battery-only one.
 * `reason` is mandatory: valid UTF-8 without NUL, at most 500 characters, never
   blank once trimmed. The admitted reason is persisted trimmed, so an exact
   replay with different padding is still the same reason.
@@ -133,7 +138,7 @@ GET /api/stock-adjustments?page=1&page_size=25
 ```json
 {"page":1,"page_size":25,"total_adjustments":3,
  "adjustments":[{"id":6,"reason":"conteo físico","detail":"pasillo 2",
-  "created_at":"2026-11-04T14:20:00Z","lines":2,"total_difference":-4,
+  "created_at":"2026-11-04T14:20:00Z","lines":2,"kind":"battery","total_difference":-4,
   "reverses_adjustment_id":null,"reversed_by":null}]}
 ```
 
@@ -142,7 +147,7 @@ first and paging with a stable `page_size` never repeats or skips a document.
 `total_adjustments` counts every document of the warehouse, independent of the
 requested page, which makes an empty page beyond the last one harmless.
 
-Each row is a summary of exactly eight fields:
+Each row is a summary of exactly nine fields:
 
 | Field | Meaning |
 |---|---|
@@ -151,13 +156,22 @@ Each row is a summary of exactly eight fields:
 | `detail` | The persisted detail; empty string when absent |
 | `created_at` | RFC3339 in UTC |
 | `lines` | Number of lines in the document |
+| `kind` | The kind the document's own lines declare — `"battery"` or `"other"` — or `null` when they disagree |
 | `total_difference` | Exact signed sum of the line differences |
 | `reverses_adjustment_id` | The original document when this one is a counter-entry, otherwise `null` |
 | `reversed_by` | Id of the counter-entry that reverses this document, or `null` |
 
-`lines` and `total_difference` are computed by the database in `bigint`, and the
-difference total is cast to text before it becomes an integer, so an
-out-of-range sum fails closed instead of wrapping. A counter-entry is itself a
+`kind` is the `Tipo` of the history: one list carries documents of both kinds and
+no second list exists. It is derived on read from the kinds of the document's
+lines and never stored. A document whose stored lines disagree — one written
+before the one-kind rule — publishes `kind: null` instead of a guessed kind; a
+value outside the two kinds is not a document this domain wrote and fails the
+read closed.
+
+`lines`, `kind` and `total_difference` are computed by the database — the line
+count and the sum in `bigint`, the kind from the distinct kinds of the document's
+lines — and the difference total is cast to text before it becomes an integer, so
+an out-of-range sum fails closed instead of wrapping. A counter-entry is itself a
 document, so it appears in the history with its own (negated) `total_difference`
 and a `reverses_adjustment_id`, and the document it reverses reports its `id` in
 `reversed_by`.
@@ -184,9 +198,10 @@ invalid_request`.
 {"id":1,"location_id":1,"reason":"conteo físico","detail":"pasillo 2",
  "created_at":"2026-11-04T14:20:00Z","created_by_account_id":1,
  "reverses_adjustment_id":null,"reversed_by":null,"reversed_by_reason":"",
- "lines":[{"variant_id":7,"catalog_entry_id":4,"brand":"TOYO","model":"NS60L",
-  "capacity_ah":"45","polarity":"L",
-  "expected_quantity":18,"counted_quantity":12,"difference":-6}],
+ "lines":[{"variant_id":7,"catalog_entry_id":4,"kind":"battery","name":"TOYO · NS60L",
+  "detail":"45 Ah · L",
+  "battery":{"brand":"TOYO","model":"NS60L","capacity_ah":"45","polarity":"L"},
+  "fields":null,"expected_quantity":18,"counted_quantity":12,"difference":-6}],
  "total_difference":-6}
 ```
 
@@ -204,11 +219,16 @@ invalid_request`.
 | `lines` | The document lines, ordered by `variant_id` ascending |
 | `total_difference` | Exact signed sum of the line differences |
 
-Each line carries the catalogue identity of its variant — `catalog_entry_id`,
-`brand`, `model`, `capacity_ah` and `polarity` — plus `expected_quantity`,
-`counted_quantity` and `difference`. `capacity_ah` is the canonical decimal
-**text** of the inventory read (`"45"`, `"6.5"`), so no float rounding and no
-trailing zeros reach the client.
+Each line carries the catalogue entry id of its variant and the variant identity
+of its own kind — `variant_id`, `kind`, `name`, `detail`, `battery` and `fields` —
+plus `expected_quantity`, `counted_quantity` and `difference`. A battery line keeps
+its battery attributes and `fields: null`; a product line reads `kind: "other"`,
+`battery: null`, its typed fields and the detail the server composed, so a count
+of a product reads back instead of failing on the missing brand. The identity is
+the one of the inventory read and of the
+[other products catalog](other-products.md#variant-identity). `capacity_ah` is the
+canonical decimal **text** of the inventory read (`"45"`, `"6.5"`), so no float
+rounding and no trailing zeros reach the client.
 
 A persisted document keeps its own arithmetic: `expected_quantity` is the
 snapshot the database took when the document was applied and `counted_quantity`
@@ -304,28 +324,36 @@ Stock is never invented and never compensated automatically.
 ## Capture catalogue
 
 ```
-GET /api/stock-adjustments/catalog?search=&brand=&polarity=&page=1&page_size=25
+GET /api/stock-adjustments/catalog?search=&brand=&polarity=&kind=&page=1&page_size=25
 ```
 
+* `kind` is the same three-state selection as the stock read: `all`, `battery` or
+  `other`, absent meaning `battery`. The two tabs of the capture screen are the
+  battery catalogue and the product catalogue, and neither mixes.
 * `search` is a literal substring over `brand` and `model` (case-insensitive); a
-  `%` or `_` in the operator's own words never becomes a SQL wildcard.
-* `brand` is an exact brand filter and `polarity` is `L` or `R`.
+  `%` or `_` in the operator's own words never becomes a SQL wildcard. It also
+  reads an other product's name, so the product tab is searchable.
+* `brand` is an exact brand filter and `polarity` is `L` or `R`. Both are battery
+  attributes, so either one selects batteries only.
 * `page` and `page_size` are the history contract's, and the numeric parameters
   are admitted only in their canonical raw spelling. The free-text filters are
   percent-decoded once, so a real search with spaces works and an encoded digit
   is still not a page number.
 * Repeated parameters, unknown keys (including any stock parameter such as
-  `existing`), empty values, a bare `?` and malformed escapes are `400
-  invalid_request`.
+  `existing`), an unknown, empty or repeated `kind`, empty values, a bare `?` and
+  malformed escapes are `400 invalid_request`.
 
 ```json
-{"page":1,"page_size":25,"total_variants":190,
- "items":[{"variant_id":1,"catalog_entry_id":1,"brand":"TOYO","model":"NS60L",
-  "capacity_ah":"45","polarity":"L"}]}
+{"page":1,"page_size":25,"total_variants":191,
+ "items":[{"variant_id":210,"catalog_entry_id":96,"kind":"other",
+  "name":"Agua acidulada","detail":"volumen en L: 5 L","battery":null,
+  "fields":[{"name":"volumen en L","kind":"number","unit":"L","number":"5"}]}]}
 ```
 
-Each item is exactly the catalogue identity of one variant of this warehouse:
-`variant_id`, `catalog_entry_id`, `brand`, `model`, `capacity_ah`, `polarity`.
+Each item is exactly the variant identity of its own kind plus `catalog_entry_id`:
+`variant_id`, `kind`, `name`, `detail`, `battery`, `fields` and the entry id. A
+product item therefore carries no capacity, no polarity and no brand — the
+product picker is `Producto · Detalle · Contado`.
 **No stock quantity field exists on this response** — not `existing`, not
 `reserved`, not `available`, not `expected_quantity`, not `difference` — so the
 blind capture cannot leak the number the warehouse is supposed to count. The
@@ -339,7 +367,7 @@ Every failure returns exactly `{"error":"<code>"}`.
 
 | Status | Code | Meaning |
 |---|---|---|
-| 400 | `invalid_request` | Malformed body, bad field, a client-supplied `expected_quantity`/`difference`, duplicate variant, an exceeded limit, a non-canonical `{id}`, or an inadmissible query |
+| 400 | `invalid_request` | Malformed body, bad field, a client-supplied `expected_quantity`/`difference`, duplicate variant, a document that mixes kinds, an exceeded limit, a non-canonical `{id}`, or an inadmissible query |
 | 401 | `unauthenticated` | No session |
 | 403 | `forbidden` | The caller is not the warehouse administrator |
 | 404 | `not_found` | No such document in this warehouse, or an aliased path |
