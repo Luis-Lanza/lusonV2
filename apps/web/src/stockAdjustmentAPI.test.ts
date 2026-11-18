@@ -31,19 +31,21 @@ const counterBody = (overrides: Record<string, unknown> = {}) => JSON.stringify(
 });
 const historyBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   page: 1, page_size: 25, total_adjustments: 1,
-  adjustments: [{ id: 6, reason: motive, detail: '', created_at: '2026-11-04T14:20:00Z',
+  adjustments: [{ id: 6, reason: motive, detail: '', created_at: '2026-11-04T14:20:00Z', kind: 'battery',
     lines: 2, total_difference: -4, reverses_adjustment_id: null, reversed_by: null }], ...overrides,
 });
 const detailBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   id: 6, location_id: 1, reason: motive, detail: '', created_at: '2026-11-04T14:20:00Z',
   created_by_account_id: 1, reverses_adjustment_id: null, reversed_by: null, reversed_by_reason: '',
-  lines: [{ variant_id: 7, catalog_entry_id: 4, brand: 'TOYO', model: 'NS60L', capacity_ah: '45',
-    polarity: 'L', expected_quantity: 18, counted_quantity: 12, difference: -6 }],
+  lines: [{ variant_id: 7, catalog_entry_id: 4, kind: 'battery', name: 'TOYO · NS60L', detail: '45 Ah · L',
+    battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L' }, fields: null,
+    expected_quantity: 18, counted_quantity: 12, difference: -6 }],
   total_difference: -6, ...overrides,
 });
 const catalogBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   page: 1, page_size: 25, total_variants: 1,
-  items: [{ variant_id: 4, catalog_entry_id: 1, brand: 'TOYO', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' }],
+  items: [{ variant_id: 4, catalog_entry_id: 1, kind: 'battery', name: 'TOYO · NS40ZL', detail: '35 Ah · L',
+    battery: { brand: 'TOYO', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' }, fields: null }],
   ...overrides,
 });
 
@@ -182,36 +184,48 @@ describe('adjustment detail transport', () => {
 });
 
 describe('blind capture catalogue transport', () => {
-  it('reads the quantity-free catalogue for the typed search', async () => {
+  it('reads the quantity-free catalogue of the declared kind for the typed search', async () => {
     const fetch = mockFetch().mockImplementation(async () => json(catalogBody()));
-    const page = await createStockAdjustmentAPI(fetch).catalog('');
-    expect(page.items[0]).toEqual({ variant_id: 4, catalog_entry_id: 1, brand: 'TOYO', model: 'NS40ZL',
-      capacity_ah: '35', polarity: 'L' });
-    expect(fetch.mock.calls[0][0]).toBe('/api/stock-adjustments/catalog?page=1&page_size=25');
+    const page = await createStockAdjustmentAPI(fetch).catalog('', 'battery');
+    expect(page.items[0]).toEqual({ variant_id: 4, kind: 'battery', name: 'TOYO · NS40ZL', detail: '35 Ah · L',
+      battery: { brand: 'TOYO', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' }, fields: null, catalog_entry_id: 1 });
+    expect(fetch.mock.calls[0][0]).toBe('/api/stock-adjustments/catalog?page=1&page_size=25&kind=battery');
     expect(fetch.mock.calls[0][1]).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
-    await createStockAdjustmentAPI(fetch).catalog('NS40ZL');
-    expect(fetch.mock.calls[1][0]).toBe('/api/stock-adjustments/catalog?page=1&page_size=25&search=NS40ZL');
+    await createStockAdjustmentAPI(fetch).catalog('NS40ZL', 'battery');
+    expect(fetch.mock.calls[1][0]).toBe('/api/stock-adjustments/catalog?page=1&page_size=25&kind=battery&search=NS40ZL');
+  });
+
+  it('reads the product picker as the product identity alone', async () => {
+    const fetch = mockFetch().mockResolvedValue(json(catalogBody({ items: [{ variant_id: 9, catalog_entry_id: 2,
+      kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L', battery: null,
+      fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }] }] })));
+    const page = await createStockAdjustmentAPI(fetch).catalog('', 'other');
+    expect(page.items[0]).toEqual({ variant_id: 9, kind: 'other', name: 'Agua acidulada',
+      detail: 'volumen en L: 5 L', battery: null,
+      fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }], catalog_entry_id: 2 });
   });
 
   it.each([
     ['a catalogue that leaked a stock figure', json(catalogBody({ items: [{ ...JSON.parse(String(catalogBody())).items[0], existing: 14 }] }))],
+    ['a catalogue of the other kind', json(catalogBody({ items: [{ variant_id: 9, catalog_entry_id: 2, kind: 'other',
+      name: 'Agua acidulada', detail: 'volumen en L: 5 L', battery: null, fields: [] }] }))],
     ['a catalogue for another page', json(catalogBody({ page: 2 }))],
     ['a catalogue with another page size', json(catalogBody({ page_size: 50 }))],
     ['an uninterpretable error code', json('{"error":"not_found"}', 404)],
   ])('refuses %s', async (_, reply) => {
     const fetch = mockFetch().mockResolvedValue(reply);
-    await expect(createStockAdjustmentAPI(fetch).catalog('')).rejects.toMatchObject({ code: 'invalid_response' });
+    await expect(createStockAdjustmentAPI(fetch).catalog('', 'battery')).rejects.toMatchObject({ code: 'invalid_response' });
   });
 
   it.each([[400, 'invalid_request'], [401, 'unauthenticated'], [403, 'forbidden'], [503, 'service_unavailable']])(
     'reports the admitted %s %s', async (status, code) => {
       const fetch = mockFetch().mockResolvedValue(json(`{"error":"${code}"}`, status));
-      await expect(createStockAdjustmentAPI(fetch).catalog('')).rejects.toMatchObject({ code, status });
+      await expect(createStockAdjustmentAPI(fetch).catalog('', 'battery')).rejects.toMatchObject({ code, status });
     });
 
   it('fails closed on an inadmissible search without any call', async () => {
     const fetch = mockFetch();
-    await expect(createStockAdjustmentAPI(fetch).catalog('x'.repeat(129)))
+    await expect(createStockAdjustmentAPI(fetch).catalog('x'.repeat(129), 'battery'))
       .rejects.toMatchObject({ code: 'invalid_request', status: null });
     expect(fetch).not.toHaveBeenCalled();
   });

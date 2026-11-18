@@ -502,8 +502,8 @@ func TestStockAdjustmentPage(t *testing.T) {
 	nine, three := int64(9), int64(3)
 	stamp := time.Date(2026, 11, 4, 14, 20, 0, 0, time.UTC)
 	valid := stockadjustments.Page{Page: 1, PageSize: 25, TotalAdjustments: 2, Adjustments: []stockadjustments.Summary{
-		{ID: 9, Reason: "conteo físico", Detail: "", CreatedAt: stamp, Lines: 1, TotalDifference: 6, ReversesAdjustmentID: &three},
-		{ID: 7, Reason: "conteo físico", Detail: "pasillo 2", CreatedAt: stamp, Lines: 2, TotalDifference: -4, ReversedBy: &nine},
+		{ID: 9, Reason: "conteo físico", Detail: "", CreatedAt: stamp, Lines: 1, Kind: catalog.BatteryKind, TotalDifference: 6, ReversesAdjustmentID: &three},
+		{ID: 7, Reason: "conteo físico", Detail: "pasillo 2", CreatedAt: stamp, Lines: 2, Kind: catalog.OtherKind, TotalDifference: -4, ReversedBy: &nine},
 	}}
 	dto, err := stockAdjustmentPage(valid)
 	if err != nil {
@@ -518,6 +518,18 @@ func TestStockAdjustmentPage(t *testing.T) {
 	}
 	if dto.Adjustments[1].ReversedBy == nil || *dto.Adjustments[1].ReversedBy != 9 || dto.Adjustments[1].Lines != 2 {
 		t.Fatal("a reversed row changed shape")
+	}
+	// The kind of every row is the document's own, and a document whose lines
+	// disagree publishes no kind at all.
+	if dto.Adjustments[0].Kind == nil || *dto.Adjustments[0].Kind != catalog.BatteryKind ||
+		dto.Adjustments[1].Kind == nil || *dto.Adjustments[1].Kind != catalog.OtherKind {
+		t.Fatal("a row must publish the kind of its document")
+	}
+	disagreeing := valid
+	disagreeing.Adjustments = append([]stockadjustments.Summary(nil), valid.Adjustments...)
+	disagreeing.Adjustments[0].Kind = ""
+	if unknown, err := stockAdjustmentPage(disagreeing); err != nil || unknown.Adjustments[0].Kind != nil {
+		t.Fatal("a document whose lines disagree must publish no kind")
 	}
 	clone := func() stockadjustments.Page {
 		page := valid
@@ -537,6 +549,7 @@ func TestStockAdjustmentPage(t *testing.T) {
 		"total_above_bound": func(p *stockadjustments.Page) { p.Adjustments[0].TotalDifference = 190_000_001 },
 		"total_below_bound": func(p *stockadjustments.Page) { p.Adjustments[0].TotalDifference = -190_000_001 },
 		"blank_reason":      func(p *stockadjustments.Page) { p.Adjustments[0].Reason = " " },
+		"unadmitted_kind":   func(p *stockadjustments.Page) { p.Adjustments[0].Kind = "gift" },
 		"nul_reason":        func(p *stockadjustments.Page) { p.Adjustments[0].Reason = "a\x00b" },
 		"long_detail":       func(p *stockadjustments.Page) { p.Adjustments[0].Detail = strings.Repeat("a", 501) },
 		"unsorted": func(p *stockadjustments.Page) {
@@ -865,18 +878,21 @@ type stockAdjustmentHistoryWireDTO struct {
 }
 
 type stockAdjustmentHistoryRowWireDTO struct {
-	ID                   int64  `json:"id"`
-	Reason               string `json:"reason"`
-	Detail               string `json:"detail"`
-	CreatedAt            string `json:"created_at"`
-	Lines                int    `json:"lines"`
-	TotalDifference      int64  `json:"total_difference"`
-	ReversesAdjustmentID *int64 `json:"reverses_adjustment_id"`
-	ReversedBy           *int64 `json:"reversed_by"`
+	ID                   int64   `json:"id"`
+	Reason               string  `json:"reason"`
+	Detail               string  `json:"detail"`
+	CreatedAt            string  `json:"created_at"`
+	Lines                int     `json:"lines"`
+	Kind                 *string `json:"kind"`
+	TotalDifference      int64   `json:"total_difference"`
+	ReversesAdjustmentID *int64  `json:"reverses_adjustment_id"`
+	ReversedBy           *int64  `json:"reversed_by"`
 }
 
 // stockAdjustmentHistoryWire admits only the frozen history shape: four page keys
-// and eight summary keys per row, with no per-line detail anywhere.
+// and nine summary keys per row, with no per-line detail anywhere. The kind is the
+// document's own, derived from its lines, and it is null exactly when those lines
+// disagree.
 func stockAdjustmentHistoryWire(t *testing.T, w *httptest.ResponseRecorder) stockAdjustmentHistoryWireDTO {
 	t.Helper()
 	if w.Code != 200 || w.Header().Get("Content-Type") != "application/json" {
@@ -897,10 +913,10 @@ func stockAdjustmentHistoryWire(t *testing.T, w *httptest.ResponseRecorder) stoc
 	}
 	canonical := regexp.MustCompile(`^[1-9][0-9]*$`)
 	for _, row := range rows {
-		if len(row) != 8 {
+		if len(row) != 9 {
 			t.Fatal("history row whitelist changed")
 		}
-		for _, key := range []string{"id", "reason", "detail", "created_at", "lines", "total_difference",
+		for _, key := range []string{"id", "reason", "detail", "created_at", "lines", "kind", "total_difference",
 			"reverses_adjustment_id", "reversed_by"} {
 			if _, ok := row[key]; !ok {
 				t.Fatalf("history row whitelist incomplete: %s", key)
@@ -910,6 +926,11 @@ func stockAdjustmentHistoryWire(t *testing.T, w *httptest.ResponseRecorder) stoc
 			if value := string(row[pointer]); value != "null" && !canonical.MatchString(value) {
 				t.Fatalf("%s must be null or a canonical id", pointer)
 			}
+		}
+		switch kind := string(row["kind"]); kind {
+		case "null", `"battery"`, `"other"`:
+		default:
+			t.Fatalf("kind must be battery, other or null: %s", kind)
 		}
 	}
 	var page stockAdjustmentHistoryWireDTO
@@ -1330,6 +1351,69 @@ func TestStockAdjustmentHTTPHistory(t *testing.T) {
 	beyond := stockAdjustmentHistoryWire(t, f.serve(t, f.request(1, "GET", "/api/stock-adjustments?page=1000000&page_size=50", "")))
 	if len(beyond.Adjustments) != 0 || beyond.TotalAdjustments != 3 || beyond.PageSize != 50 {
 		t.Fatal("a page beyond the last one must be empty and keep the total")
+	}
+}
+
+// legacyMixedAdjustment writes a document whose lines name both kinds straight
+// into the ledger: the shape a count written before the one-kind rule has, which no
+// write path admits any more. Counted equals the current balance, so the fixture
+// leaves the stock where it found it.
+func (f *stockAdjustmentHTTPFixture) legacyMixedAdjustment(t *testing.T, battery, product int64) int64 {
+	t.Helper()
+	tx, err := f.p.Begin(f.ctx)
+	if err != nil {
+		t.Fatalf("legacy mixed document fixture failed: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var id int64
+	if err := tx.QueryRow(f.ctx, `INSERT INTO stock_adjustments(operation_key,location_id,reason,created_by_account_id)
+ VALUES('legacy-mixed-http-adj-01',1,'conteo físico',1) RETURNING id`).Scan(&id); err != nil {
+		t.Fatalf("legacy mixed document fixture failed: %v", err)
+	}
+	for _, variant := range []int64{battery, product} {
+		if _, err := tx.Exec(f.ctx, `INSERT INTO stock_adjustment_lines(adjustment_id,variant_id,expected_quantity,counted_quantity)
+ VALUES($1,$2,0,(SELECT existing FROM inventory_balances WHERE location_id=1 AND variant_id=$2))`, id, variant); err != nil {
+			t.Fatalf("legacy mixed document line fixture failed: %v", err)
+		}
+	}
+	// The document is complete only once both lines exist, so it commits whole.
+	if err := tx.Commit(f.ctx); err != nil {
+		t.Fatalf("legacy mixed document fixture failed: %v", err)
+	}
+	return id
+}
+
+// The history names the kind of every document and stays one list of both kinds: a
+// battery-only document reads battery, a product-only document reads other, and a
+// document written before the one-kind rule whose lines disagree reads no kind at
+// all instead of a guess.
+func TestStockAdjustmentHTTPHistoryKind(t *testing.T) {
+	f := stockAdjustmentFixture(t)
+	product := seedOtherProduct(t, f.ctx, f.p, "Agua acidulada", "volumen en L", "L", "5")
+	f.setBalance(t, product, 4, 0)
+	one, _ := f.balance(t, 1)
+	batteryDocument := f.create(t, fmt.Sprintf(`{"operation_key":"http-history-kind-01","reason":"conteo físico","lines":[{"variant_id":1,"counted_quantity":%d}]}`, one+1))
+	productDocument := f.create(t, fmt.Sprintf(`{"operation_key":"http-history-kind-02","reason":"conteo físico","lines":[{"variant_id":%d,"counted_quantity":5}]}`, product))
+	legacy := f.legacyMixedAdjustment(t, 1, product)
+	page := stockAdjustmentHistoryWire(t, f.serve(t, f.request(1, "GET", "/api/stock-adjustments", "")))
+	if page.TotalAdjustments != 3 || len(page.Adjustments) != 3 {
+		t.Fatalf("the history must list both kinds in one list: %+v", page.Adjustments)
+	}
+	if page.Adjustments[0].ID != legacy {
+		t.Fatal("the newest document must be listed first")
+	}
+	kinds := make(map[int64]*string, len(page.Adjustments))
+	for _, row := range page.Adjustments {
+		kinds[row.ID] = row.Kind
+	}
+	if kind := kinds[batteryDocument.ID]; kind == nil || *kind != "battery" {
+		t.Fatalf("a battery document must read battery: %v", kind)
+	}
+	if kind := kinds[productDocument.ID]; kind == nil || *kind != "other" {
+		t.Fatalf("a product document must read other: %v", kind)
+	}
+	if kind := kinds[legacy]; kind != nil {
+		t.Fatalf("a document whose lines disagree must read no kind: %v", *kind)
 	}
 }
 

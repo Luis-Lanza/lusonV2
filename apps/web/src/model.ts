@@ -149,8 +149,12 @@ export function parseVariantIdentity(v: unknown, extraKeys: readonly string[] = 
   keys(o, [...identityKeys, ...extraKeys]);
   return identity(o);
 }
-/** The identity of one row, stripped of the stock numbers of its location. */
-export function identityOf(item: Item): VariantIdentity {
+/**
+ * The identity of one row, stripped of whatever envelope carries it: the stock
+ * numbers of a location or the catalogue entry of a capture projection. A plain
+ * identity answers itself, so every surface builds a draft line the same way.
+ */
+export function identityOf(item: VariantIdentity): VariantIdentity {
   return { variant_id: item.variant_id, kind: item.kind, name: item.name, detail: item.detail,
     battery: item.battery, fields: item.fields };
 }

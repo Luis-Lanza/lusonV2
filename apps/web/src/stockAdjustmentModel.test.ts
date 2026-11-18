@@ -5,8 +5,9 @@ import {
   parseStockAdjustmentApplyError, parseStockAdjustmentCatalog, parseStockAdjustmentDetail, parseStockAdjustmentHistory,
   parseStockAdjustmentDetailError, parseStockAdjustmentHistoryError, parseStockAdjustmentRecord,
   parseStockAdjustmentReversalError, parseStockAdjustmentCatalogError,
-  parseStockAdjustmentReversalRecord, stockAdjustmentApplyMessages, stockAdjustmentCatalogPath,
-  stockAdjustmentDetailPath, stockAdjustmentFailureIsDefinite, stockAdjustmentHistoryPath,
+  parseStockAdjustmentReversalRecord, stockAdjustmentApplyMessages, stockAdjustmentBlindCount, stockAdjustmentCatalogPath,
+  stockAdjustmentDetailPath, stockAdjustmentFailureIsDefinite, stockAdjustmentHistoryPath, stockAdjustmentKindLabels,
+  stockAdjustmentKindUnknown, stockAdjustmentKinds,
   stockAdjustmentMaxCounted, stockAdjustmentMaxLines, stockAdjustmentMotives, stockAdjustmentReadMessages,
   stockAdjustmentReversalMessages, stockAdjustmentReversalPath, stockAdjustmentReversible,
   validStockAdjustmentCounted, validStockAdjustmentHistoryQuery,
@@ -22,15 +23,21 @@ const draft = (overrides: Partial<StockAdjustmentInput> = {}): StockAdjustmentIn
   ...overrides,
 });
 const summaryRow = (overrides: Record<string, unknown> = {}) => ({
-  id: 6, reason: motive, detail: '', created_at: '2026-11-04T14:20:00Z',
+  id: 6, reason: motive, detail: '', created_at: '2026-11-04T14:20:00Z', kind: 'battery',
   lines: 2, total_difference: -4, reverses_adjustment_id: null, reversed_by: null, ...overrides,
 });
 const historyBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   page: 1, page_size: 25, total_adjustments: 1, adjustments: [summaryRow()], ...overrides,
 });
 const detailLine = (overrides: Record<string, unknown> = {}) => ({
-  variant_id: 7, catalog_entry_id: 4, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L',
+  variant_id: 7, catalog_entry_id: 4, kind: 'battery', name: 'TOYO · NS60L', detail: '45 Ah · L',
+  battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L' }, fields: null,
   expected_quantity: 18, counted_quantity: 12, difference: -6, ...overrides,
+});
+const productLine = (overrides: Record<string, unknown> = {}) => ({
+  variant_id: 9, catalog_entry_id: 5, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L',
+  battery: null, fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }],
+  expected_quantity: 4, counted_quantity: 7, difference: 3, ...overrides,
 });
 const detailBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   id: 6, location_id: 1, reason: motive, detail: 'pasillo 2', created_at: '2026-11-04T14:20:00Z',
@@ -45,7 +52,12 @@ const recordBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   total_difference: -15, ...overrides,
 });
 const catalogItem = (overrides: Record<string, unknown> = {}) => ({
-  variant_id: 4, catalog_entry_id: 1, brand: 'TOYO', model: 'NS40ZL', capacity_ah: '35', polarity: 'L', ...overrides,
+  variant_id: 4, catalog_entry_id: 1, kind: 'battery', name: 'TOYO · NS40ZL', detail: '35 Ah · L',
+  battery: { brand: 'TOYO', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' }, fields: null, ...overrides,
+});
+const productItem = (overrides: Record<string, unknown> = {}) => ({
+  variant_id: 9, catalog_entry_id: 2, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L',
+  battery: null, fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }], ...overrides,
 });
 const catalogBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   page: 1, page_size: 25, total_variants: 1, items: [catalogItem()], ...overrides,
@@ -115,6 +127,16 @@ describe('blind capture payload', () => {
       'Conteo físico periódico', 'Merma o rotura', 'Diferencia detectada en preparación', 'Otro',
     ]);
   });
+
+  it('offers the two kinds of a document and the blind count word for word', () => {
+    expect(stockAdjustmentKinds).toEqual(['battery', 'other']);
+    expect(stockAdjustmentKindLabels).toEqual({ battery: 'Baterías', other: 'Otros productos' });
+    // A document written before the one-kind rule has no kind, and the screen never
+    // guesses one for it.
+    expect(stockAdjustmentKindUnknown).toBe('—');
+    // The blind count is preserved verbatim: nothing here may reveal the expected stock.
+    expect(stockAdjustmentBlindCount).toBe('Conteo ciego. No se muestra el stock esperado. Cargá lo que contaste; la diferencia se conoce al aplicar.');
+  });
 });
 
 describe('adjustment document parsing', () => {
@@ -160,6 +182,18 @@ describe('adjustment document parsing', () => {
     expect(page.adjustments[2].detail).toBe('pasillo 2');
   });
 
+  // The kind of each document is the server's derivation from its own lines: one
+  // list of both kinds, and no kind at all for a document written before the rule.
+  it('names the kind of every document and keeps one list', () => {
+    const page = parseStockAdjustmentHistory(historyBody({ total_adjustments: 3, adjustments: [
+      summaryRow({ id: 8, kind: 'other' }),
+      summaryRow({ id: 7, kind: 'battery' }),
+      summaryRow({ id: 6, kind: null }),
+    ] }));
+    expect(page.adjustments.map(row => [row.id, row.kind]))
+      .toEqual([[8, 'other'], [7, 'battery'], [6, null]]);
+  });
+
   it.each([
     ['rows that are not newest first', historyBody({ adjustments: [summaryRow({ id: 5 }), summaryRow({ id: 6 })] })],
     ['a page that does not fit its total', historyBody({ page: 4, total_adjustments: 2 })],
@@ -167,22 +201,48 @@ describe('adjustment document parsing', () => {
     ['a row with a foreign field', historyBody({ adjustments: [summaryRow({ expected_quantity: 3 })] })],
     ['a counter-entry that is not later than its target', historyBody({ adjustments: [summaryRow({ reverses_adjustment_id: 6 })] })],
     ['a reversal reference that is not later either', historyBody({ adjustments: [summaryRow({ reversed_by: 6 })] })],
+    ['a kind outside the two kinds', historyBody({ adjustments: [summaryRow({ kind: 'gift' })] })],
+    ['a row without a kind', historyBody({ adjustments: [summaryRow({ kind: undefined })] })],
   ])('refuses a history with %s', (_, raw) => {
     expect(() => parseStockAdjustmentHistory(raw)).toThrow('Respuesta inválida del servidor.');
   });
 
   it('parses one detail with the catalogue identity and the applied arithmetic', () => {
     const detail = parseStockAdjustmentDetail(detailBody({ lines: [
-      detailLine({ variant_id: 4, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', expected_quantity: 9, counted_quantity: 5, difference: -4 }),
+      detailLine({ variant_id: 4, catalog_entry_id: 4, name: 'CAR · NS40ZL', detail: '35 Ah · L',
+        battery: { brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' },
+        expected_quantity: 9, counted_quantity: 5, difference: -4 }),
       detailLine(),
     ], total_difference: -10 }));
     expect(detail).toMatchObject({ id: 6, reason: motive, detail: 'pasillo 2', total_difference: -10 });
     expect(detail.lines).toEqual([
-      { variant_id: 4, catalog_entry_id: 4, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L',
-        expected_quantity: 9, counted_quantity: 5, difference: -4 },
-      { variant_id: 7, catalog_entry_id: 4, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L',
-        expected_quantity: 18, counted_quantity: 12, difference: -6 },
+      { variant_id: 4, kind: 'battery', name: 'CAR · NS40ZL', detail: '35 Ah · L',
+        battery: { brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' }, fields: null,
+        catalog_entry_id: 4, expected_quantity: 9, counted_quantity: 5, difference: -4 },
+      { variant_id: 7, kind: 'battery', name: 'TOYO · NS60L', detail: '45 Ah · L',
+        battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L' }, fields: null,
+        catalog_entry_id: 4, expected_quantity: 18, counted_quantity: 12, difference: -6 },
     ]);
+  });
+
+  // A product document reads back through the identity union: its line carries its
+  // own name and detail instead of blank battery cells, and never a battery shape.
+  it('parses a product line with its own identity and no battery attribute', () => {
+    const detail = parseStockAdjustmentDetail(detailBody({ lines: [productLine()], total_difference: 3 }));
+    expect(detail.lines).toEqual([{
+      variant_id: 9, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L', battery: null,
+      fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }],
+      catalog_entry_id: 5, expected_quantity: 4, counted_quantity: 7, difference: 3,
+    }]);
+  });
+
+  // The detail line is the shared identity of the contract: a line still carrying
+  // the battery columns of the old read is a row the server never wrote.
+  it('refuses a line that still carries battery columns instead of the identity', () => {
+    expect(() => parseStockAdjustmentDetail(detailBody({ lines: [{ variant_id: 7, catalog_entry_id: 4,
+      brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L',
+      expected_quantity: 18, counted_quantity: 12, difference: -6 }] })))
+      .toThrow('Respuesta inválida del servidor.');
   });
 
   it('keeps both directions of the reversal cross-reference in the detail', () => {
@@ -201,8 +261,9 @@ describe('adjustment document parsing', () => {
 
   it.each([
     ['an expected quantity that contradicts the difference', detailBody({ lines: [detailLine({ expected_quantity: 18, counted_quantity: 12, difference: 6 })] })],
-    ['a padded capacity', detailBody({ lines: [detailLine({ capacity_ah: '45.0' })] })],
-    ['a foreign polarity', detailBody({ lines: [detailLine({ polarity: 'X' })] })],
+    ['a padded capacity in the battery', detailBody({ lines: [detailLine({ battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45.0', polarity: 'L' } })] })],
+    ['a foreign polarity in the battery', detailBody({ lines: [detailLine({ battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'X' } })] })],
+    ['a product line that also carries a battery', detailBody({ lines: [productLine({ battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L' } })] })],
     ['an unknown field', detailBody({ operation_key: key })],
     ['a self reference', detailBody({ reverses_adjustment_id: 6 })],
     ['a foreign document location', detailBody({ location_id: 2 })],
@@ -219,24 +280,43 @@ describe('adjustment document parsing', () => {
 });
 
 describe('blind capture catalogue parsing', () => {
-  it('parses the catalogue identity and nothing else', () => {
+  it('parses the catalogue identity of the kind the document declares and nothing else', () => {
     const page = parseStockAdjustmentCatalog(catalogBody({ total_variants: 2, items: [
-      catalogItem(), catalogItem({ variant_id: 9, catalog_entry_id: 2, brand: 'VOLTA', model: 'NS60L', capacity_ah: '45', polarity: 'R' }),
-    ] }));
+      catalogItem(),
+      catalogItem({ variant_id: 9, catalog_entry_id: 2, name: 'VOLTA · NS60L', detail: '45 Ah · R',
+        battery: { brand: 'VOLTA', model: 'NS60L', capacity_ah: '45', polarity: 'R' } }),
+    ] }), 'battery');
     expect(page).toMatchObject({ page: 1, page_size: 25, total_variants: 2 });
-    expect(page.items[1]).toEqual({ variant_id: 9, catalog_entry_id: 2, brand: 'VOLTA', model: 'NS60L',
-      capacity_ah: '45', polarity: 'R' });
+    expect(page.items[1]).toEqual({ variant_id: 9, kind: 'battery', name: 'VOLTA · NS60L', detail: '45 Ah · R',
+      battery: { brand: 'VOLTA', model: 'NS60L', capacity_ah: '45', polarity: 'R' }, fields: null, catalog_entry_id: 2 });
     // The capture payload never carries a stock figure the operator is meant to count.
-    expect(Object.keys(page.items[0])).toEqual(['variant_id', 'catalog_entry_id', 'brand', 'model', 'capacity_ah', 'polarity']);
+    expect(Object.keys(page.items[0])).toEqual(['variant_id', 'kind', 'name', 'detail', 'battery', 'fields', 'catalog_entry_id']);
+  });
+
+  // The product picker is the product identity alone: no capacity, no polarity and
+  // no expected stock, so a product document cannot show a battery column.
+  it('parses the product picker without any battery column', () => {
+    const page = parseStockAdjustmentCatalog(catalogBody({ total_variants: 1, items: [productItem()] }), 'other');
+    expect(page.items).toEqual([{ variant_id: 9, kind: 'other', name: 'Agua acidulada',
+      detail: 'volumen en L: 5 L', battery: null,
+      fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }], catalog_entry_id: 2 }]);
+  });
+
+  it('refuses a picker that answers another kind than the document declares', () => {
+    expect(() => parseStockAdjustmentCatalog(catalogBody({ items: [productItem()] }), 'battery'))
+      .toThrow('Respuesta inválida del servidor.');
+    expect(() => parseStockAdjustmentCatalog(catalogBody(), 'other'))
+      .toThrow('Respuesta inválida del servidor.');
   });
 
   it.each([
     ['a stock quantity in the item', catalogBody({ items: [{ ...catalogItem(), existing: 14 }] })],
     ['a reserved quantity in the item', catalogBody({ items: [{ ...catalogItem(), reserved: 0 }] })],
     ['an unadmitted page size', catalogBody({ page_size: 20 })],
-    ['an item without a brand', catalogBody({ items: [{ variant_id: 4, catalog_entry_id: 1, model: 'NS40ZL', capacity_ah: '35', polarity: 'L' }] })],
+    ['a battery item without its battery', catalogBody({ items: [catalogItem({ battery: null })] })],
+    ['a legacy battery column', catalogBody({ items: [{ variant_id: 4, catalog_entry_id: 1, brand: 'TOYO' }] })],
   ])('refuses a catalogue with %s', (_, raw) => {
-    expect(() => parseStockAdjustmentCatalog(raw)).toThrow('Respuesta inválida del servidor.');
+    expect(() => parseStockAdjustmentCatalog(raw, 'battery')).toThrow('Respuesta inválida del servidor.');
   });
 });
 
@@ -277,9 +357,11 @@ describe('adjustment evidence and paths', () => {
 
   it('builds only the frozen paths, and omits an empty search entirely', () => {
     expect(stockAdjustmentHistoryPath(2, 50)).toBe('/api/stock-adjustments?page=2&page_size=50');
-    expect(stockAdjustmentCatalogPath('')).toBe('/api/stock-adjustments/catalog?page=1&page_size=25');
-    expect(stockAdjustmentCatalogPath('NS40ZL')).toBe('/api/stock-adjustments/catalog?page=1&page_size=25&search=NS40ZL');
-    expect(stockAdjustmentCatalogPath('45 Ah')).toBe('/api/stock-adjustments/catalog?page=1&page_size=25&search=45+Ah');
+    expect(stockAdjustmentCatalogPath('', 'battery')).toBe('/api/stock-adjustments/catalog?page=1&page_size=25&kind=battery');
+    expect(stockAdjustmentCatalogPath('NS40ZL', 'other'))
+      .toBe('/api/stock-adjustments/catalog?page=1&page_size=25&kind=other&search=NS40ZL');
+    expect(stockAdjustmentCatalogPath('45 Ah', 'battery'))
+      .toBe('/api/stock-adjustments/catalog?page=1&page_size=25&kind=battery&search=45+Ah');
     expect(stockAdjustmentDetailPath(6)).toBe('/api/stock-adjustments/6');
     expect(stockAdjustmentReversalPath(6)).toBe('/api/stock-adjustments/6/reverse');
     expect(validStockAdjustmentHistoryQuery(1, 25)).toBe(true);
@@ -287,7 +369,7 @@ describe('adjustment evidence and paths', () => {
     expect(validStockAdjustmentHistoryQuery(1, 15)).toBe(false);
     expect(() => stockAdjustmentDetailPath(0)).toThrow('Detalle de ajuste inválido.');
     expect(() => stockAdjustmentReversalPath(1.5)).toThrow('Contra-asiento inválido.');
-    expect(() => stockAdjustmentCatalogPath('x'.repeat(129))).toThrow('Documento de ajuste inválido.');
+    expect(() => stockAdjustmentCatalogPath('x'.repeat(129), 'battery')).toThrow('Documento de ajuste inválido.');
   });
 });
 

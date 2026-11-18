@@ -9,6 +9,7 @@ import {
   type StockAdjustmentInput, type StockAdjustmentPage, type StockAdjustmentRecord,
   type StockAdjustmentReversalInput, type StockAdjustmentSummary,
 } from './stockAdjustmentModel';
+import type { Kind } from './model';
 
 export class StockAdjustmentAPIError extends Error {
   constructor(public readonly code: StockAdjustmentErrorCode, public readonly status: number | null) {
@@ -155,11 +156,12 @@ export function createStockAdjustmentAPI(fetch: typeof globalThis.fetch = global
       return detail;
     },
 
-    async catalog(search: string, signal?: AbortSignal): Promise<StockAdjustmentCatalogPage> {
-      // The capture catalogue is its own quantity-free read; an inadmissible search
-      // never leaves here, and an empty one is simply absent from the query.
+    async catalog(search: string, kind: Kind, signal?: AbortSignal): Promise<StockAdjustmentCatalogPage> {
+      // The capture catalogue is its own quantity-free read of the kind the
+      // document declares; an inadmissible search never leaves here, and an empty
+      // one is simply absent from the query.
       let path: string;
-      try { path = stockAdjustmentCatalogPath(search); } catch { throw new StockAdjustmentAPIError('invalid_request', null); }
+      try { path = stockAdjustmentCatalogPath(search, kind); } catch { throw new StockAdjustmentAPIError('invalid_request', null); }
       let reply: Response;
       let raw: string;
       try {
@@ -178,7 +180,7 @@ export function createStockAdjustmentAPI(fetch: typeof globalThis.fetch = global
         throw new StockAdjustmentAPIError(code, reply.status);
       }
       let page: StockAdjustmentCatalogPage;
-      try { page = parseStockAdjustmentCatalog(raw); } catch { throw malformed(); }
+      try { page = parseStockAdjustmentCatalog(raw, kind); } catch { throw malformed(); }
       if (page.page !== 1 || page.page_size !== stockAdjustmentCatalogPageSize) throw malformed();
       return page;
     },

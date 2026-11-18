@@ -1248,3 +1248,20 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .cash-band-value { font-size: 20px; }
   .cash-band-value.cash-lead { font-size: 22px; }
 }
+
+/* Adjustment kind selection: the two tabs of the "Nuevo ajuste" drawer and the Tipo
+   column of the history. Colors, token radii and the 44px touch target are the ones
+   this sheet already declares, so no new component shape enters the app. */
+.adjustment-kinds { display: flex; gap: 2px; border-bottom: 1px solid var(--border); }
+.adjustment-kinds button { border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+  background: none; color: var(--muted); min-height: 44px; padding: 0 12px; font-size: 13px; }
+.adjustment-kinds button[aria-selected="true"] { color: var(--wine); border-bottom-color: var(--wine); font-weight: 600; }
+.adjustment-kind { display: inline-block; padding: 1px 7px; border-radius: 3px; background: var(--tint);
+  color: var(--wine); font-size: 11px; font-weight: 600; }
+/* The product picker counts in its own last column, so its counted box is right aligned
+   like the battery one. */
+.adjustment-capture-other td:nth-child(3) { text-align: right; }
+.adjustment-kind-modal { width: min(560px, 100%); }
+@media (max-width: 600px) {
+  .adjustment-capture-other td:nth-child(3) { text-align: left; }
+}

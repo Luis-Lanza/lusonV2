@@ -164,6 +164,77 @@ func TestCatalogKindFilter(t *testing.T) {
 	}
 }
 
+// legacyMixedDocument writes a document whose lines name both kinds straight into
+// the ledger: that is the shape a count written before the one-kind rule has, and
+// no write path admits it any more. Counted equals the current balance, so the
+// fixture leaves the ledger where it found it.
+func legacyMixedDocument(t *testing.T, ctx context.Context, p *pgxpool.Pool, battery, product int64) int64 {
+	t.Helper()
+	tx, err := p.Begin(ctx)
+	if err != nil {
+		t.Fatalf("legacy mixed document fixture failed: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var id int64
+	if err := tx.QueryRow(ctx, `INSERT INTO stock_adjustments(operation_key,location_id,reason,created_by_account_id)
+ VALUES('legacy-mixed-adjustment-01',1,'conteo físico',1) RETURNING id`).Scan(&id); err != nil {
+		t.Fatalf("legacy mixed document fixture failed: %v", err)
+	}
+	for _, variant := range []int64{battery, product} {
+		if _, err := tx.Exec(ctx, `INSERT INTO stock_adjustment_lines(adjustment_id,variant_id,expected_quantity,counted_quantity)
+ VALUES($1,$2,0,(SELECT existing FROM inventory_balances WHERE location_id=1 AND variant_id=$2))`, id, variant); err != nil {
+			t.Fatalf("legacy mixed document line fixture failed: %v", err)
+		}
+	}
+	// The document is complete only once both lines exist, so it commits whole.
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("legacy mixed document fixture failed: %v", err)
+	}
+	return id
+}
+
+// The history derives the kind of every document from its lines and never stores
+// it: a battery-only document reads battery, a product-only document reads other,
+// and a document whose lines disagree reads no kind at all. The list stays one
+// list of both kinds.
+func TestListDerivesDocumentKind(t *testing.T) {
+	ctx, p, s := fixture(t)
+	product := otherVariant(t, ctx, p, "Agua acidulada", "volumen en L", "L", "5")
+	setBalance(t, ctx, p, 1, 10, 0)
+	setBalance(t, ctx, p, product, 4, 0)
+	battery, _, err := s.Create(ctx, warehouse(), input("kind-list-battery-01",
+		stockadjustments.Line{VariantID: 1, Counted: 11}))
+	if err != nil {
+		t.Fatalf("the battery count must be applied: %v", err)
+	}
+	other, _, err := s.Create(ctx, warehouse(), input("kind-list-product-01",
+		stockadjustments.Line{VariantID: product, Counted: 6}))
+	if err != nil {
+		t.Fatalf("the product count must be applied: %v", err)
+	}
+	legacy := legacyMixedDocument(t, ctx, p, 1, product)
+	page, err := s.List(ctx, warehouse(), 1, 25)
+	if err != nil {
+		t.Fatalf("the history must be readable: %v", err)
+	}
+	if page.TotalAdjustments != 3 || len(page.Adjustments) != 3 {
+		t.Fatalf("the history must list one document per row: %+v", page.Adjustments)
+	}
+	kinds := make(map[int64]catalog.Kind, len(page.Adjustments))
+	for _, row := range page.Adjustments {
+		kinds[row.ID] = row.Kind
+	}
+	if kinds[battery.ID] != catalog.BatteryKind {
+		t.Fatalf("a battery document must read battery: %q", kinds[battery.ID])
+	}
+	if kinds[other.ID] != catalog.OtherKind {
+		t.Fatalf("a product document must read other: %q", kinds[other.ID])
+	}
+	if kinds[legacy] != "" {
+		t.Fatalf("a document whose lines disagree must read no kind: %q", kinds[legacy])
+	}
+}
+
 // deadPool is a closed pool: a rejection proven against it never reached the
 // database.
 func deadPool(t *testing.T, ctx context.Context, p *pgxpool.Pool) *pgxpool.Pool {

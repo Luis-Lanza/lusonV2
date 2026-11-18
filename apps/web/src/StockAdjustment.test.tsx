@@ -9,14 +9,22 @@ const json = (body: string, status = 200) => new Response(body, { status, header
 const errorReply = (code: string, status: number) => json(JSON.stringify({ error: code }), status);
 
 const catalogItem = (variant_id: number, model: string, capacity = '35', polarity = 'L', brand = 'TOYO') => ({
-  variant_id, catalog_entry_id: 1, brand, model, capacity_ah: capacity, polarity });
-const catalogReply = (items: readonly ReturnType<typeof catalogItem>[]) => json(JSON.stringify({
+  variant_id, catalog_entry_id: 1, kind: 'battery', name: `${brand} · ${model}`, detail: `${capacity} Ah · ${polarity}`,
+  battery: { brand, model, capacity_ah: capacity, polarity }, fields: null });
+const productItem = (variant_id: number, name: string, detail: string) => ({
+  variant_id, catalog_entry_id: 3, kind: 'other', name, detail, battery: null,
+  fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }] });
+const catalogReply = (items: readonly Record<string, unknown>[]) => json(JSON.stringify({
   page: 1, page_size: 25, total_variants: items.length, items }));
 const defaultCatalog = [
   catalogItem(4, 'NS40ZL', '35', 'L', 'CAR'), catalogItem(7, 'NS60L', '45', 'L'),
 ];
+const defaultProducts = [
+  productItem(191, 'Agua acidulada', 'volumen en L: 5 L'),
+  productItem(192, 'Electrolito preparado', 'volumen en L: 5 L'),
+];
 const summary = (overrides: Record<string, unknown> = {}) => ({
-  id: 5, reason: 'Merma o rotura', detail: '', created_at: '2026-11-02T09:12:00Z',
+  id: 5, reason: 'Merma o rotura', detail: '', created_at: '2026-11-02T09:12:00Z', kind: 'battery',
   lines: 1, total_difference: 0, reverses_adjustment_id: null, reversed_by: null, ...overrides });
 const historyReply = (rows: readonly Record<string, unknown>[], page = 1, pageSize = 25, total = rows.length) => json(JSON.stringify({
   page, page_size: pageSize, total_adjustments: total, adjustments: rows }));
@@ -27,8 +35,14 @@ const defaultHistory = [
   summary({ id: 5 }),
 ];
 const detailLine = (overrides: Record<string, unknown> = {}) => ({
-  variant_id: 7, catalog_entry_id: 2, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L',
+  variant_id: 7, catalog_entry_id: 2, kind: 'battery', name: 'TOYO · NS60L', detail: '45 Ah · L',
+  battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L' }, fields: null,
   expected_quantity: 18, counted_quantity: 14, difference: -4, ...overrides });
+const productDetailLine = (overrides: Record<string, unknown> = {}) => ({
+  variant_id: 191, catalog_entry_id: 3, kind: 'other', name: 'Agua acidulada',
+  detail: 'volumen en L: 5 L', battery: null,
+  fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }],
+  expected_quantity: 4, counted_quantity: 7, difference: 3, ...overrides });
 const detailReply = (overrides: Record<string, unknown> = {}) => json(JSON.stringify({
   id: 6, location_id: 1, reason: motive, detail: 'pasillo 2', created_at: '2026-11-02T09:12:00Z',
   created_by_account_id: 1, reverses_adjustment_id: null, reversed_by: null, reversed_by_reason: '',
@@ -44,9 +58,13 @@ const detailsFor = (id: number) => id === 8
         total_difference: 4 })
       : id === 9
     ? detailReply({ id: 9, reason: motive, detail: '', created_at: '2026-11-05T14:20:00Z',
-      lines: [detailLine({ variant_id: 4, catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35',
+      lines: [detailLine({ variant_id: 4, catalog_entry_id: 1, name: 'CAR · NS40ZL', detail: '35 Ah · L',
+        battery: { brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' },
         expected_quantity: 18, counted_quantity: 12, difference: -6 }),
       detailLine({ variant_id: 7, expected_quantity: 0, counted_quantity: 0, difference: 0 })], total_difference: -6 })
+    : id === 11
+      ? detailReply({ id: 11, reason: motive, detail: '', created_at: '2026-11-05T14:20:00Z',
+        lines: [productDetailLine()], total_difference: 3 })
     : id === 6
       ? detailReply()
       : detailReply({ id, reason: 'Merma o rotura', detail: '',
@@ -65,7 +83,7 @@ const counterReply = (reason = 'Otro') => json(JSON.stringify({
 }), 201);
 
 function harness(options: {
-  catalog?: (search: string) => Response | Promise<Response>;
+  catalog?: (search: string, kind: string) => Response | Promise<Response>;
   history?: (query: URLSearchParams) => Response | Promise<Response>;
   create?: (body: string) => Response | Promise<Response>;
   detail?: (id: string) => Response | Promise<Response>;
@@ -76,9 +94,13 @@ function harness(options: {
     const url = String(input);
     calls.push({ url, init });
     if (url.startsWith('/api/stock-adjustments/catalog?')) {
-      const search = new URL(url, 'http://localhost').searchParams.get('search') ?? '';
-      return options.catalog?.(search) ?? catalogReply(search === 'NS60'
-        ? [catalogItem(7, 'NS60L', '45')] : search === 'nada' ? [] : defaultCatalog);
+      const query = new URL(url, 'http://localhost').searchParams;
+      const search = query.get('search') ?? '';
+      const kind = query.get('kind') ?? '';
+      return options.catalog?.(search, kind) ?? (kind === 'other'
+        ? catalogReply(search === 'nada' ? [] : defaultProducts)
+        : catalogReply(search === 'NS60'
+          ? [catalogItem(7, 'NS60L', '45')] : search === 'nada' ? [] : defaultCatalog));
     }
     if (url.startsWith('/api/stock-adjustments?')) {
       return options.history?.(new URL(url, 'http://localhost').searchParams) ?? historyReply(defaultHistory);
@@ -119,14 +141,53 @@ describe('adjustment history', () => {
     await ready(h);
     const rows = within(historial()).getAllByRole('row').slice(1);
     expect(rows.map(row => row.getAttribute('data-adjustment-id'))).toEqual(['8', '7', '6', '5']);
-    expect(cellsOf(rowOf(8))).toMatchObject({ 0: '#8', 2: 'Otro', 3: '1', 4: '+4', 5: 'Contra-asiento' });
-    expect(cellsOf(rowOf(7))[5]).toBe('Revertido');
-    expect(cellsOf(rowOf(6))[5]).toBe('Aplicado');
-    expect(cellsOf(rowOf(5))[5]).toBe('Aplicado');
-    expect(cellsOf(rowOf(5))[4]).toBe('0');
-    expect(cellsOf(rowOf(6))[1]).toContain('2026');
+    expect(cellsOf(rowOf(8))).toMatchObject({ 0: '#8', 1: 'Baterías', 3: 'Otro', 4: '1', 5: '+4', 6: 'Contra-asiento' });
+    expect(cellsOf(rowOf(7))[6]).toBe('Revertido');
+    expect(cellsOf(rowOf(6))[6]).toBe('Aplicado');
+    expect(cellsOf(rowOf(5))[6]).toBe('Aplicado');
+    expect(cellsOf(rowOf(5))[5]).toBe('0');
+    expect(cellsOf(rowOf(6))[2]).toContain('2026');
     expect(h.histories()[0].url).toBe('/api/stock-adjustments?page=1&page_size=25');
     expect(h.histories()[0].init).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
+  });
+
+  // The history is one list of both kinds, and the kind of every row is the
+  // server's own derivation from that document's lines.
+  it('names the kind of every document in the same list', async () => {
+    const h = harness({ history: () => historyReply([
+      summary({ id: 8, kind: 'other', total_difference: 3 }),
+      summary({ id: 7, kind: 'battery', total_difference: -4 }),
+      summary({ id: 6, kind: null, total_difference: 0 }),
+    ]) });
+    await ready(h);
+    const rows = within(historial()).getAllByRole('row').slice(1);
+    expect(rows.map(row => row.getAttribute('data-adjustment-id'))).toEqual(['8', '7', '6']);
+    expect(rows.map(row => cellsOf(row)[1])).toEqual(['Otros productos', 'Baterías', '—']);
+    expect(within(historial()).getByRole('columnheader', { name: 'Tipo' })).toBeInTheDocument();
+    expect(h.histories()).toHaveLength(1);
+  });
+
+  it('keeps the history copy word for word', async () => {
+    const h = harness();
+    await ready(h);
+    expect(screen.getByText('Cada ajuste es un documento inmutable con el esperado, lo contado y la diferencia. Las correcciones son contra-asientos.'))
+      .toBeInTheDocument();
+  });
+
+  // A product document reads back through the identity union: its line shows the
+  // product name and detail instead of blank battery cells.
+  it('reads a product document through its own identity without battery cells', async () => {
+    const h = harness({ history: () => historyReply([summary({ id: 11, kind: 'other', total_difference: 3 })]) });
+    render(<StockAdjustment csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#11');
+    fireEvent.click(disclosure(11));
+    const panel = document.getElementById('adjustment-lines-11')!;
+    expect(await within(panel).findByText('Agua acidulada')).toBeInTheDocument();
+    expect(within(panel).getAllByRole('columnheader').map(cell => cell.textContent))
+      .toEqual(['Producto', 'Detalle', 'Esperado', 'Contado', 'Diferencia']);
+    const lines = within(panel).getAllByRole('row').slice(1)
+      .map(row => within(row).getAllByRole('cell').map(cell => cell.textContent));
+    expect(lines).toEqual([['Agua acidulada', 'volumen en L: 5 L', '4', '7', '+3']]);
   });
 
   it('expands a document in place with expected, counted and difference', async () => {
@@ -206,7 +267,7 @@ describe('blind capture', () => {
     const drawer = await openDrawer();
     expect(drawer).toHaveAttribute('aria-modal', 'true');
     expect(within(drawer).getByRole('note')).toHaveTextContent('Conteo ciego.');
-    expect(h.catalogs()[0].url).toBe('/api/stock-adjustments/catalog?page=1&page_size=25');
+    expect(h.catalogs()[0].url).toBe('/api/stock-adjustments/catalog?page=1&page_size=25&kind=battery');
     expect(h.catalogs()[0].init).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
     expect(await within(drawer).findByText('CAR · NS40ZL')).toBeInTheDocument();
     expect(within(drawer).getByText('35 Ah')).toBeInTheDocument();
@@ -216,6 +277,89 @@ describe('blind capture', () => {
     expect(within(drawer).queryByText(/^18$/)).not.toBeInTheDocument();
   });
 
+  // The drawer asks for the kind with two tabs, and only that kind's picker is
+  // offered: the battery picker stays exactly as it is today.
+  it('offers the kind with two tabs and only that kind\u2019s picker', async () => {
+    const h = harness();
+    await ready(h);
+    const drawer = await openDrawer();
+    const tabs = within(drawer).getAllByRole('tab');
+    expect(tabs.map(tab => tab.textContent)).toEqual(['Baterías', 'Otros productos']);
+    expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'false');
+    expect(await within(drawer).findByText('CAR · NS40ZL')).toBeInTheDocument();
+    expect(h.catalogs()[0].url).toBe('/api/stock-adjustments/catalog?page=1&page_size=25&kind=battery');
+    expect(within(drawer).getAllByRole('columnheader').map(cell => cell.textContent))
+      .toEqual(['Producto', 'Capacidad', 'Polaridad', 'Contado']);
+    fireEvent.click(tabs[1]);
+    expect(await within(drawer).findByText('Agua acidulada')).toBeInTheDocument();
+    expect(h.catalogs().at(-1)?.url).toBe('/api/stock-adjustments/catalog?page=1&page_size=25&kind=other');
+    // The product picker has no capacity, no polarity and no expected column.
+    expect(within(drawer).getAllByRole('columnheader').map(cell => cell.textContent))
+      .toEqual(['Producto', 'Detalle', 'Contado']);
+    expect(within(drawer).getByLabelText('Buscar producto')).toBeInTheDocument();
+    expect(within(drawer).queryByText(/Esperado|Stock actual|Existencias|Disponibles|Reservadas/))
+      .not.toBeInTheDocument();
+    expect(within(drawer).getByRole('note')).toHaveTextContent(
+      'Conteo ciego. No se muestra el stock esperado. Cargá lo que contaste; la diferencia se conoce al aplicar.');
+  });
+
+  // A document never mixes kinds, so changing the kind with lines loaded asks first
+  // and discards the whole draft, exactly like the ingress.
+  it('asks before discarding the counted lines when the kind changes', async () => {
+    const h = harness();
+    await ready(h);
+    const drawer = await openDrawer();
+    fireEvent.change(await within(drawer).findByLabelText('Contado de CAR · NS40ZL'), { target: { value: '12' } });
+    fireEvent.click(within(drawer).getByRole('tab', { name: 'Otros productos' }));
+    const dialog = screen.getByRole('dialog', { name: 'Cambiar el tipo del ajuste' });
+    expect(within(dialog).getByText(/se descarta el borrador completo/)).toBeInTheDocument();
+    // Cancelling keeps the counted line and the battery picker.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancelar' }));
+    expect(screen.queryByRole('dialog', { name: 'Cambiar el tipo del ajuste' })).not.toBeInTheDocument();
+    expect(countedBox(drawer, 'CAR · NS40ZL')).toHaveValue(12);
+    expect(within(drawer).getByRole('tab', { name: 'Baterías' })).toHaveAttribute('aria-selected', 'true');
+    // Confirming discards the whole draft and reads the other kind's picker.
+    fireEvent.click(within(drawer).getByRole('tab', { name: 'Otros productos' }));
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Cambiar el tipo del ajuste' }))
+      .getByRole('button', { name: 'Descartar borrador y cambiar tipo' }));
+    expect(await within(drawer).findByText('Agua acidulada')).toBeInTheDocument();
+    expect(within(drawer).getByRole('tab', { name: 'Otros productos' })).toHaveAttribute('aria-selected', 'true');
+    expect(h.catalogs().at(-1)?.url).toBe('/api/stock-adjustments/catalog?page=1&page_size=25&kind=other');
+    expect(within(drawer).queryByLabelText('Contado de CAR · NS40ZL')).not.toBeInTheDocument();
+    expect(h.posts()).toHaveLength(0);
+  });
+
+  it('applies a product count and reads the document back through its identity', async () => {
+    const created = json(JSON.stringify({
+      id: 11, location_id: 1, reason: motive, detail: '', created_by_account_id: 1,
+      created_at: '2026-11-05T14:20:00Z', reverses_adjustment_id: null,
+      lines: [{ variant_id: 191, expected_quantity: 4, counted_quantity: 7, difference: 3 }],
+      total_difference: 3,
+    }), 201);
+    const h = harness({
+      create: () => created,
+      history: () => historyReply([summary({ id: 11, kind: 'other', total_difference: 3 })]),
+    });
+    render(<StockAdjustment csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#11');
+    const drawer = await openDrawer();
+    fireEvent.click(within(drawer).getByRole('tab', { name: 'Otros productos' }));
+    fireEvent.change(await within(drawer).findByLabelText('Contado de Agua acidulada'), { target: { value: '7' } });
+    fireEvent.change(within(drawer).getByLabelText('Motivo del ajuste'), { target: { value: motive } });
+    fireEvent.click(applyButton(drawer));
+    await waitFor(() => expect(h.posts()).toHaveLength(1));
+    expect(JSON.parse(String(h.posts()[0].init.body))).toEqual({
+      operation_key: expect.stringMatching(/^[A-Za-z0-9_-]{16,128}$/), reason: motive,
+      lines: [{ variant_id: 191, counted_quantity: 7 }],
+    });
+    await waitFor(() => expect(document.getElementById('adjustment-lines-11')).not.toBeNull());
+    const panel = document.getElementById('adjustment-lines-11')!;
+    expect(await within(panel).findByText('Agua acidulada')).toBeInTheDocument();
+    expect(within(panel).getAllByRole('columnheader').map(cell => cell.textContent))
+      .toEqual(['Producto', 'Detalle', 'Esperado', 'Contado', 'Diferencia']);
+  });
+
   it('asks the catalogue for the typed search and shows the matching variants', async () => {
     const h = harness();
     await ready(h);
@@ -223,7 +367,7 @@ describe('blind capture', () => {
     await within(drawer).findByText('CAR · NS40ZL');
     fireEvent.change(within(drawer).getByLabelText('Buscar variante'), { target: { value: 'NS60' } });
     await within(drawer).findByText('TOYO · NS60L');
-    expect(h.catalogs().at(-1)?.url).toBe('/api/stock-adjustments/catalog?page=1&page_size=25&search=NS60');
+    expect(h.catalogs().at(-1)?.url).toBe('/api/stock-adjustments/catalog?page=1&page_size=25&kind=battery&search=NS60');
     expect(within(drawer).queryByText('CAR · NS40ZL')).not.toBeInTheDocument();
     fireEvent.change(within(drawer).getByLabelText('Buscar variante'), { target: { value: 'nada' } });
     expect(await within(drawer).findByText('Sin variantes para esa búsqueda.')).toBeInTheDocument();

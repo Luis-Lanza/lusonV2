@@ -120,14 +120,18 @@ type Detail struct {
 }
 
 // Summary is one row of the read-only adjustment history. The per-line detail
-// stays out of this projection; only the line count and the exact difference are
-// exposed.
+// stays out of this projection; only the line count, the kind derived from those
+// lines and the exact difference are exposed.
 type Summary struct {
 	ID                   int64
 	Reason               string
 	Detail               string
 	CreatedAt            time.Time
 	Lines                int
+	// Kind is the kind the document's own lines declare, and it is empty exactly
+	// when those lines disagree: such a document was written before the one-kind
+	// rule and never gets a guessed kind. It is derived on read, never stored.
+	Kind                 catalog.Kind
 	TotalDifference      int64
 	ReversesAdjustmentID *int64
 	ReversedBy           *int64
@@ -170,6 +174,26 @@ type CatalogPage struct {
 }
 
 var operationKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
+
+// documentKind derives the kind a document declares from the kinds of its lines,
+// which the database counts and minimizes in the history statement: a single kind
+// is the document's kind, and several kinds are a document written before the
+// one-kind rule, which therefore has no kind at all instead of a guess. Nothing
+// else is a shape this ledger wrote.
+func documentKind(distinct int64, sole string) (catalog.Kind, error) {
+	if distinct < 1 {
+		return "", ErrUnavailable
+	}
+	switch catalog.Kind(sole) {
+	case catalog.BatteryKind, catalog.OtherKind:
+	default:
+		return "", ErrUnavailable
+	}
+	if distinct == 1 {
+		return catalog.Kind(sole), nil
+	}
+	return "", nil
+}
 
 // ValidOperationKey is the database regex, checked before any database work.
 func ValidOperationKey(key string) bool { return operationKeyPattern.MatchString(key) }

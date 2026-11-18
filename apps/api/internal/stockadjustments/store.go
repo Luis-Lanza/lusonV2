@@ -320,10 +320,10 @@ func derivedLines(ctx context.Context, q querier, targetID int64) ([]reversalLin
 
 // List reads one newest-first page of persisted documents for the warehouse. The
 // actor guard and the provisioned-account binding are creation's, and the page is
-// one statement plus one total: line counts and differences are summed by the
-// database, never by a Go loop over every line. The difference total is cast to
-// text before it becomes an int64, so an out-of-range sum fails closed instead of
-// wrapping.
+// one statement plus one total: line counts, the kind derived from those lines and
+// differences are computed by the database, never by a Go loop over every line. The
+// difference total is cast to text before it becomes an int64, so an out-of-range
+// sum fails closed instead of wrapping.
 func (s *Store) List(ctx context.Context, actor auth.Identity, page, pageSize int) (Page, error) {
 	result := Page{Page: page, PageSize: pageSize, Adjustments: []Summary{}}
 	if ctx == nil || s == nil || s.pool == nil {
@@ -356,9 +356,13 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, page, pageSize in
 	rows, err := tx.Query(ctx, `SELECT a.id,a.reason,a.detail,a.created_at,a.reverses_adjustment_id,
   count(l.variant_id)::bigint,
   coalesce(sum(l.counted_quantity-l.expected_quantity),0)::text,
-  (SELECT counter.id FROM stock_adjustments counter WHERE counter.reverses_adjustment_id=a.id)
+  (SELECT counter.id FROM stock_adjustments counter WHERE counter.reverses_adjustment_id=a.id),
+  count(DISTINCT e.kind)::bigint,
+  coalesce(min(e.kind),'')
  FROM stock_adjustments a
  LEFT JOIN stock_adjustment_lines l ON l.adjustment_id=a.id
+ LEFT JOIN catalog_variants v ON v.id=l.variant_id
+ LEFT JOIN catalog_entries e ON e.id=v.catalog_entry_id
  WHERE a.location_id=$1
  GROUP BY a.id
  ORDER BY a.id DESC
@@ -369,15 +373,22 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, page, pageSize in
 	defer rows.Close()
 	for rows.Next() {
 		var summary Summary
-		var lines int64
-		var difference string
+		var lines, kinds int64
+		var difference, soleKind string
 		if rows.Scan(&summary.ID, &summary.Reason, &summary.Detail, &summary.CreatedAt,
-			&summary.ReversesAdjustmentID, &lines, &difference, &summary.ReversedBy) != nil {
+			&summary.ReversesAdjustmentID, &lines, &difference, &summary.ReversedBy,
+			&kinds, &soleKind) != nil {
 			return Page{}, fail(ctx)
 		}
 		// A persisted document always has between one and maxLines lines.
 		if lines < 1 || lines > maxLines {
 			return Page{}, ErrUnavailable
+		}
+		// The kind of the row is derived from its lines here, so a document whose
+		// lines disagree reads no kind instead of the kind of one of them.
+		kind, err := documentKind(kinds, soleKind)
+		if err != nil {
+			return Page{}, err
 		}
 		total, err := strconv.ParseInt(difference, 10, 64)
 		// A single line can only add maxCounted and can only subtract an existing
@@ -386,6 +397,7 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, page, pageSize in
 			return Page{}, ErrUnavailable
 		}
 		summary.Lines = int(lines)
+		summary.Kind = kind
 		summary.TotalDifference = total
 		result.Adjustments = append(result.Adjustments, summary)
 	}

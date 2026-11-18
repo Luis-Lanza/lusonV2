@@ -1,26 +1,29 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
-import { validSearch } from './model';
+import { identityOf, validSearch } from './model';
+import type { Kind, VariantIdentity } from './model';
 import TransferDate from './shared/TransferDate';
 import { createStockAdjustmentAPI, StockAdjustmentAPIError } from './stockAdjustmentAPI';
 import {
   canonicalStockAdjustmentInput, canonicalStockAdjustmentReason, canonicalStockAdjustmentReversalInput,
-  newStockAdjustmentOperationKey, stockAdjustmentApplyMessages, stockAdjustmentCatalogUnavailable,
+  newStockAdjustmentOperationKey, stockAdjustmentApplyMessages, stockAdjustmentBlindCount, stockAdjustmentCatalogUnavailable,
   stockAdjustmentDefaultPageSize, stockAdjustmentFailureIsDefinite, stockAdjustmentHistoryUnavailable,
+  stockAdjustmentKindLabels, stockAdjustmentKinds, stockAdjustmentKindUnknown,
   stockAdjustmentMaxCounted, stockAdjustmentMaxPage, stockAdjustmentPageSizes,
   stockAdjustmentMotives, stockAdjustmentReadMessages, stockAdjustmentReversalMessages, stockAdjustmentReversible,
   validStockAdjustmentCounted, validStockAdjustmentHistoryQuery,
-  type StockAdjustmentCatalogItem, type StockAdjustmentDetail, type StockAdjustmentErrorCode,
-  type StockAdjustmentInput, type StockAdjustmentPage, type StockAdjustmentReversalInput,
-  type StockAdjustmentSummary,
+  type StockAdjustmentCatalogItem, type StockAdjustmentDetail, type StockAdjustmentDetailLine,
+  type StockAdjustmentErrorCode, type StockAdjustmentInput, type StockAdjustmentPage,
+  type StockAdjustmentReversalInput, type StockAdjustmentSummary,
 } from './stockAdjustmentModel';
 import './stock-entry.css';
 import './stock-adjustments.css';
 
-/** The counted line of the local draft: the identity is for the operator, never for the payload. */
-interface CountedLine {
-  readonly variant_id: number; readonly brand: string; readonly model: string;
-  readonly capacity_ah: string; readonly polarity: 'L' | 'R'; readonly counted: string;
-}
+/**
+ * The counted line of the local draft: the identity of the picked variant of the
+ * document's own kind (for the operator, never for the payload) and what was
+ * counted. Nothing battery-specific is added to a product line.
+ */
+interface CountedLine extends VariantIdentity { readonly counted: string }
 interface CatalogState { readonly phase: 'loading' | 'ready' | 'error'; readonly items: readonly StockAdjustmentCatalogItem[]; readonly problem: string }
 // The history is its own state: a failed read never touches the draft document.
 interface HistoryState { readonly phase: 'loading' | 'ready' | 'error'; readonly page: StockAdjustmentPage | null; readonly problem: string }
@@ -50,16 +53,23 @@ export interface StockAdjustmentProps {
   realtime?: StockAdjustmentRealtime;
 }
 
-const productLabel = (row: { brand: string; model: string }) => `${row.brand} · ${row.model}`;
-/** A difference is always shown with its sign, so a gain is never mistaken for a loss. */
 const signed = (value: number) => value > 0 ? `+${value}` : String(value);
 const deltaClass = (value: number) => value > 0 ? 'adjustment-delta positive' : value < 0 ? 'adjustment-delta negative' : 'adjustment-delta';
+// A battery document keeps the cells it always had; a product document reads the
+// name and the detail the server composes from its typed fields.
+const detailBatteryLines = (lines: readonly StockAdjustmentDetailLine[]) =>
+  lines.flatMap(line => line.battery === null ? [] : [{ line, battery: line.battery }]);
 const focusableWithin = (element: HTMLElement | null) => Array.from(element?.querySelectorAll<HTMLElement>(
   'button:not(:disabled), textarea:not(:disabled), input:not(:disabled), select:not(:disabled), a[href]') ?? []);
 
 export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, realtime }: StockAdjustmentProps) {
   const api = useMemo(() => createStockAdjustmentAPI(fetcher), [fetcher]);
   const [open, setOpen] = useState(false);
+  // The document declares its kind, and the kind is chosen with two tabs before a
+  // count: one document never mixes the two kinds.
+  const [kind, setKind] = useState<Kind>('battery');
+  const [kindSwitch, setKindSwitch] = useState<{ next: Kind; trigger: HTMLButtonElement } | null>(null);
+  const kindDialog = useRef<HTMLElement>(null);
   const [search, setSearch] = useState('');
   const [catalogRevision, setCatalogRevision] = useState(0);
   const [catalog, setCatalog] = useState<CatalogState>({ phase: 'loading', items: [], problem: stockAdjustmentCatalogUnavailable });
@@ -101,8 +111,9 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
     return () => { mounted.current = false; flight.abort(); };
   }, []);
 
-  // The capture catalogue is a quantity-free projection, so it is read only while
-  // the operator is actually counting. It never replaces the inventory read.
+  // The capture catalogue is a quantity-free projection of the document's own kind,
+  // so it is read only while the operator is actually counting. It never replaces
+  // the inventory read.
   useEffect(() => {
     if (!open) return;
     if (!validSearch(search)) {
@@ -114,7 +125,7 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
     setCatalog({ phase: 'loading', items: [], problem: stockAdjustmentCatalogUnavailable });
     void (async () => {
       try {
-        const page = await api.catalog(search, controller.signal);
+        const page = await api.catalog(search, kind, controller.signal);
         if (!alive()) return;
         setCatalog({ phase: 'ready', items: page.items, problem: '' });
       } catch (failure) {
@@ -124,7 +135,7 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
       }
     })();
     return () => controller.abort();
-  }, [api, open, search, catalogRevision]);
+  }, [api, open, kind, search, catalogRevision]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -179,8 +190,32 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
 
   useEffect(() => { if (open) searchField.current?.focus(); }, [open]);
   useEffect(() => { if (reversal) reversalMotiveField.current?.focus(); }, [reversal]);
+  // Focus moves into the confirmation as soon as it exists.
+  useEffect(() => { if (kindSwitch) kindDialog.current?.focus(); }, [kindSwitch]);
 
   function forgetAttempt() { operationKey.current = null; }
+  // A kind change is a new document: the draft of the other kind is discarded
+  // whole, and no line is ever migrated to the new kind.
+  function applyKind(next: Kind) {
+    forgetAttempt();
+    setKind(next);
+    setKindSwitch(null);
+    setSearch('');
+    setLines([]);
+    setDrawerStatus(''); setDrawerProblem('');
+  }
+  function chooseKind(next: Kind, trigger: HTMLButtonElement) {
+    if (applyBusy || pending.current || kindSwitch || next === kind) return;
+    // With nothing loaded the change costs nothing; a draft with a line is
+    // discarded only after the deliberate confirmation.
+    if (lines.length === 0) { applyKind(next); return; }
+    setKindSwitch({ next, trigger });
+  }
+  function closeKindSwitch() {
+    const trigger = kindSwitch?.trigger;
+    setKindSwitch(null);
+    if (trigger?.isConnected) trigger.focus();
+  }
   function toggleRow(id: number) {
     if (expanded === id) { setExpanded(null); return; }
     setDetail({ id, phase: 'loading', document: null, problem: '' });
@@ -193,14 +228,15 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
       setLines(lines.filter(line => line.variant_id !== item.variant_id));
       return;
     }
-    const line: CountedLine = { variant_id: item.variant_id, brand: item.brand, model: item.model,
-      capacity_ah: item.capacity_ah, polarity: item.polarity, counted: value };
+    const line: CountedLine = { ...identityOf(item), counted: value };
     const current = lines.find(entry => entry.variant_id === item.variant_id);
     setLines(current ? lines.map(entry => entry.variant_id === item.variant_id ? line : entry) : [...lines, line]);
   }
   function openDrawer() {
     if (applyBusy) return;
     forgetAttempt(); setLines([]); setMotive(''); setDrawerStatus(''); setDrawerProblem(''); setSearch('');
+    // The drawer opens on the battery picker every time, exactly like today.
+    setKind('battery'); setKindSwitch(null);
     setOpen(true);
   }
   function closeDrawer() {
@@ -225,7 +261,9 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
 
   async function apply() {
     if (applyBusy || pending.current) return;
-    if (!lines.length) { setDrawerStatus('Agregá al menos una variante contada antes de aplicar.'); return; }
+    if (!lines.length) { setDrawerStatus(kind === 'other'
+      ? 'Agregá al menos un producto contado antes de aplicar.'
+      : 'Agregá al menos una variante contada antes de aplicar.'); return; }
     if (!motiveValid) { setDrawerStatus('Elegí un motivo del ajuste antes de aplicar.'); return; }
     if (!countedValid) { setDrawerStatus('Cantidad inválida: ingresá un entero entre 0 y 1.000.000 en cada línea contada.'); return; }
     if (operationKey.current === null) {
@@ -344,6 +382,9 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
 
   function detailPanel(row: StockAdjustmentSummary) {
     const view = detail && detail.id === row.id ? detail : { id: row.id, phase: 'loading' as const, document: null, problem: '' };
+    // A document is of one kind, so a product document reads the name and the
+    // detail of every line and never invents a battery cell.
+    const detailKind = view.document && view.document.lines.length > 0 ? view.document.lines[0].kind : null;
     return <div className="adjustment-lines" aria-busy={view.phase === 'loading'}>
       {view.phase === 'loading' && <p className="stock-message">Consultando el detalle del ajuste…</p>}
       {view.phase === 'error' && <p role="alert" className="stock-message">{view.problem}
@@ -357,19 +398,32 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
           {view.document.detail !== '' && <div><dt>Detalle</dt><dd>{view.document.detail}</dd></div>}
         </dl>
         <div className="stock-table-wrap">
-          <table className="stock-table adjustment-line-table">
-            <caption className="sr-only">Líneas del ajuste #{view.document.id} con esperado, contado y diferencia</caption>
-            <thead><tr><th scope="col">Producto</th><th scope="col">Capacidad</th><th scope="col">Polaridad</th>
-              <th scope="col">Esperado</th><th scope="col">Contado</th><th scope="col">Diferencia</th></tr></thead>
-            <tbody>{view.document.lines.map(line => <tr key={line.variant_id} data-variant-id={line.variant_id}>
-              <td data-label="Producto"><strong>{productLabel(line)}</strong></td>
-              <td data-label="Capacidad">{line.capacity_ah} Ah</td>
-              <td data-label="Polaridad"><span className="polarity">{line.polarity}</span></td>
-              <td data-label="Esperado">{line.expected_quantity}</td>
-              <td data-label="Contado">{line.counted_quantity}</td>
-              <td data-label="Diferencia"><span className={deltaClass(line.difference)}>{signed(line.difference)}</span></td>
-            </tr>)}</tbody>
-          </table>
+          {detailKind === 'other'
+            ? <table className="stock-table adjustment-line-table">
+              <caption className="sr-only">Líneas del ajuste #{view.document.id} con esperado, contado y diferencia</caption>
+              <thead><tr><th scope="col">Producto</th><th scope="col">Detalle</th>
+                <th scope="col">Esperado</th><th scope="col">Contado</th><th scope="col">Diferencia</th></tr></thead>
+              <tbody>{view.document.lines.map(line => <tr key={line.variant_id} data-variant-id={line.variant_id}>
+                <td data-label="Producto"><strong>{line.name}</strong></td>
+                <td data-label="Detalle">{line.detail}</td>
+                <td data-label="Esperado">{line.expected_quantity}</td>
+                <td data-label="Contado">{line.counted_quantity}</td>
+                <td data-label="Diferencia"><span className={deltaClass(line.difference)}>{signed(line.difference)}</span></td>
+              </tr>)}</tbody>
+            </table>
+            : <table className="stock-table adjustment-line-table">
+              <caption className="sr-only">Líneas del ajuste #{view.document.id} con esperado, contado y diferencia</caption>
+              <thead><tr><th scope="col">Producto</th><th scope="col">Capacidad</th><th scope="col">Polaridad</th>
+                <th scope="col">Esperado</th><th scope="col">Contado</th><th scope="col">Diferencia</th></tr></thead>
+              <tbody>{detailBatteryLines(view.document.lines).map(({ line, battery }) => <tr key={line.variant_id} data-variant-id={line.variant_id}>
+                <td data-label="Producto"><strong>{line.name}</strong></td>
+                <td data-label="Capacidad">{battery.capacity_ah} Ah</td>
+                <td data-label="Polaridad"><span className="polarity">{battery.polarity}</span></td>
+                <td data-label="Esperado">{line.expected_quantity}</td>
+                <td data-label="Contado">{line.counted_quantity}</td>
+                <td data-label="Diferencia"><span className={deltaClass(line.difference)}>{signed(line.difference)}</span></td>
+              </tr>)}</tbody>
+            </table>}
         </div>
         {view.document.reverses_adjustment_id !== null &&
           <p className="stock-hint">{`Contra-asiento del documento #${view.document.reverses_adjustment_id}.`}</p>}
@@ -399,7 +453,7 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
       {rows.length > 0 && <div className="stock-table-wrap">
         <table className="stock-table adjustment-table">
           <caption className="sr-only">Historial de ajustes del Almacén</caption>
-          <thead><tr><th scope="col">Documento</th><th scope="col">Fecha</th><th scope="col">Motivo</th>
+          <thead><tr><th scope="col">Documento</th><th scope="col">Tipo</th><th scope="col">Fecha</th><th scope="col">Motivo</th>
             <th scope="col">Líneas</th><th scope="col">Diferencia</th><th scope="col">Estado</th><th scope="col">Acción</th></tr></thead>
           <tbody>{rows.map(row => {
             const isOpen = expanded === row.id;
@@ -412,6 +466,9 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
                 <td data-label="Documento"><button type="button" className="adjustment-disclosure"
                   aria-expanded={isOpen} aria-controls={`adjustment-lines-${row.id}`}
                   onClick={event => { event.stopPropagation(); toggleRow(row.id); }}><strong>#{row.id}</strong></button></td>
+                <td data-label="Tipo">{row.kind === null
+                  ? stockAdjustmentKindUnknown
+                  : <span className="adjustment-kind">{stockAdjustmentKindLabels[row.kind]}</span>}</td>
                 <td data-label="Fecha"><TransferDate value={row.created_at} /></td>
                 <td data-label="Motivo">{row.reason}{row.detail !== '' && <small>{row.detail}</small>}</td>
                 <td data-label="Líneas">{row.lines}</td>
@@ -422,7 +479,7 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
                   onClick={event => openReversal(row, event.currentTarget)}>Revertir</button>}</td>
               </tr>
               {isOpen && <tr className="adjustment-detail-row" id={`adjustment-lines-${row.id}`}>
-                <td colSpan={7}>{detailPanel(row)}</td>
+                <td colSpan={8}>{detailPanel(row)}</td>
               </tr>}
             </Fragment>;
           })}</tbody>
@@ -456,32 +513,58 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
             <p className="stock-hint">Almacén · un documento puntual por conteo</p></div>
           <button type="button" aria-label="Cerrar el ajuste" disabled={applyBusy} onClick={closeDrawer}>×</button>
         </header>
-        <div className="adjustment-blind" role="note">
-          <strong>Conteo ciego.</strong>
-          <p>No se muestra el stock esperado. Cargá lo que contaste; la diferencia se conoce al aplicar.</p>
+        {/* The kind is chosen before any count: one document never mixes the two
+            kinds, and changing it with lines loaded asks first. */}
+        <div className="adjustment-kinds" role="tablist" aria-label="Tipo de producto del ajuste">
+          {stockAdjustmentKinds.map(option => <button type="button" key={option} role="tab"
+            aria-selected={kind === option} disabled={applyBusy}
+            onClick={event => chooseKind(option, event.currentTarget)}>{stockAdjustmentKindLabels[option]}</button>)}
         </div>
-        <label className="stock-search">Buscar variante
-          <input ref={searchField} type="search" value={search} placeholder="NS40ZL, TOYO, 45 Ah"
+        <p className="stock-kind-line">Este ajuste es de <strong>{stockAdjustmentKindLabels[kind]}</strong>. Un documento nunca mezcla los dos tipos.
+          {lines.length > 0 && ' Cambiar el tipo pide confirmación y descarta el borrador.'}</p>
+        <div className="adjustment-blind" role="note">
+          <p>{stockAdjustmentBlindCount}</p>
+        </div>
+        <label className="stock-search">{kind === 'other' ? 'Buscar producto' : 'Buscar variante'}
+          <input ref={searchField} type="search" value={search}
+            placeholder={kind === 'other' ? 'Agua acidulada, 5 L' : 'NS40ZL, TOYO, 45 Ah'}
             onChange={event => setSearch(event.target.value)} />
         </label>
         {catalog.phase === 'loading' && <p className="stock-message">Consultando el catálogo del Almacén…</p>}
         {catalog.phase === 'error' && <p role="alert" className="stock-message">{catalog.problem}
           <button type="button" onClick={() => setCatalogRevision(value => value + 1)}>Reintentar catálogo</button></p>}
         {catalog.phase === 'ready' && catalog.items.length === 0 &&
-          <p className="stock-message">Sin variantes para esa búsqueda.</p>}
-        {catalog.phase === 'ready' && catalog.items.length > 0 && <div className="stock-table-wrap">
-          <table className="stock-table adjustment-capture">
-            <caption className="sr-only">Variantes del catálogo del Almacén para contar</caption>
-            <thead><tr><th scope="col">Producto</th><th scope="col">Capacidad</th><th scope="col">Polaridad</th><th scope="col">Contado</th></tr></thead>
+          <p className="stock-message">{kind === 'other' ? 'Sin productos para esa búsqueda.' : 'Sin variantes para esa búsqueda.'}</p>}
+        {catalog.phase === 'ready' && catalog.items.length > 0 && kind === 'other' && <div className="stock-table-wrap">
+          <table className="stock-table adjustment-capture adjustment-capture-other">
+            <caption className="sr-only">Productos del catálogo del Almacén para contar</caption>
+            <thead><tr><th scope="col">Producto</th><th scope="col">Detalle</th><th scope="col">Contado</th></tr></thead>
             <tbody>{catalog.items.map(item => {
               const line = lines.find(entry => entry.variant_id === item.variant_id);
               return <tr key={item.variant_id} data-variant-id={item.variant_id}>
-                <td data-label="Producto"><strong>{productLabel(item)}</strong></td>
-                <td data-label="Capacidad">{item.capacity_ah} Ah</td>
-                <td data-label="Polaridad"><span className="polarity">{item.polarity}</span></td>
+                <td data-label="Producto"><strong>{item.name}</strong></td>
+                <td data-label="Detalle">{item.detail}</td>
                 <td data-label="Contado"><input className="stock-quantity" type="number" inputMode="numeric" min={0}
                   max={stockAdjustmentMaxCounted} step={1} placeholder="—"
-                  aria-label={`Contado de ${productLabel(item)}`} value={line ? line.counted : ''}
+                  aria-label={`Contado de ${item.name}`} value={line ? line.counted : ''}
+                  onChange={event => setCounted(item, event.target.value)} /></td>
+              </tr>;
+            })}</tbody>
+          </table>
+        </div>}
+        {catalog.phase === 'ready' && catalog.items.length > 0 && kind === 'battery' && <div className="stock-table-wrap">
+          <table className="stock-table adjustment-capture">
+            <caption className="sr-only">Variantes del catálogo del Almacén para contar</caption>
+            <thead><tr><th scope="col">Producto</th><th scope="col">Capacidad</th><th scope="col">Polaridad</th><th scope="col">Contado</th></tr></thead>
+            <tbody>{catalog.items.flatMap(item => item.battery === null ? [] : [{ item, battery: item.battery }]).map(({ item, battery }) => {
+              const line = lines.find(entry => entry.variant_id === item.variant_id);
+              return <tr key={item.variant_id} data-variant-id={item.variant_id}>
+                <td data-label="Producto"><strong>{item.name}</strong></td>
+                <td data-label="Capacidad">{battery.capacity_ah} Ah</td>
+                <td data-label="Polaridad"><span className="polarity">{battery.polarity}</span></td>
+                <td data-label="Contado"><input className="stock-quantity" type="number" inputMode="numeric" min={0}
+                  max={stockAdjustmentMaxCounted} step={1} placeholder="—"
+                  aria-label={`Contado de ${item.name}`} value={line ? line.counted : ''}
                   onChange={event => setCounted(item, event.target.value)} /></td>
               </tr>;
             })}</tbody>
@@ -494,7 +577,7 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
           </select>
         </label>
         <div className="stock-totalbar">
-          <dl className="stock-totals"><div><dt>Variantes contadas</dt><dd>{lines.length}</dd></div></dl>
+          <dl className="stock-totals"><div><dt>{kind === 'other' ? 'Productos contados' : 'Variantes contadas'}</dt><dd>{lines.length}</dd></div></dl>
           <div className="adjustment-drawer-actions">
             <button type="button" disabled={applyBusy} onClick={closeDrawer}>Cancelar</button>
             <button type="button" className="primary" disabled={applyBusy} onClick={() => void apply()}>Aplicar ajuste</button>
@@ -504,6 +587,25 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
         {drawerProblem && <p role="alert" className="stock-status">{drawerProblem}</p>}
       </aside>
     </div>}
+    {kindSwitch && <div className="adjustment-drawer-backdrop"><section ref={kindDialog} tabIndex={-1}
+      className="transfer-decision-modal adjustment-kind-modal" role="dialog" aria-modal="true"
+      aria-labelledby="adjustment-kind-title" aria-describedby="adjustment-kind-notice"
+      onKeyDown={event => {
+        if (event.key === 'Escape') { event.preventDefault(); closeKindSwitch(); return; }
+        trapFocus(event, kindDialog.current);
+      }}>
+      <header><div><h2 id="adjustment-kind-title">Cambiar el tipo del ajuste</h2>
+        <p>Documento de {stockAdjustmentKindLabels[kind]} · {lines.length} {lines.length === 1 ? 'línea' : 'líneas'}</p></div>
+        <button type="button" aria-label="Cerrar cambio de tipo" disabled={applyBusy} onClick={closeKindSwitch}>×</button></header>
+      <div className="adjustment-reversal-body">
+        <p id="adjustment-kind-notice" className="stock-hint">Un documento nunca mezcla los dos tipos. Si cambiás a
+          {' '}<strong>{stockAdjustmentKindLabels[kindSwitch.next]}</strong>, se descarta el borrador completo: las líneas
+          cargadas no se convierten ni se migran.</p>
+      </div>
+      <footer><button type="button" disabled={applyBusy} onClick={closeKindSwitch}>Cancelar</button>
+        <button type="button" className="primary" disabled={applyBusy}
+          onClick={() => applyKind(kindSwitch.next)}>Descartar borrador y cambiar tipo</button></footer>
+    </section></div>}
     {reversal && <div className="adjustment-drawer-backdrop">
       <section className="transfer-decision-modal adjustment-reversal-modal" role="dialog" aria-modal="true"
         aria-labelledby="adjustment-reversal-title" aria-describedby="adjustment-reversal-notice"

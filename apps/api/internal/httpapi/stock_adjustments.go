@@ -519,14 +519,15 @@ type stockAdjustmentDetailDTO struct {
 }
 
 type stockAdjustmentSummaryDTO struct {
-	ID                   int64  `json:"id"`
-	Reason               string `json:"reason"`
-	Detail               string `json:"detail"`
-	CreatedAt            string `json:"created_at"`
-	Lines                int    `json:"lines"`
-	TotalDifference      int64  `json:"total_difference"`
-	ReversesAdjustmentID *int64 `json:"reverses_adjustment_id"`
-	ReversedBy           *int64 `json:"reversed_by"`
+	ID                   int64         `json:"id"`
+	Reason               string        `json:"reason"`
+	Detail               string        `json:"detail"`
+	CreatedAt            string        `json:"created_at"`
+	Lines                int           `json:"lines"`
+	Kind                 *catalog.Kind `json:"kind"`
+	TotalDifference      int64         `json:"total_difference"`
+	ReversesAdjustmentID *int64        `json:"reverses_adjustment_id"`
+	ReversedBy           *int64        `json:"reversed_by"`
 }
 
 type stockAdjustmentPageDTO struct {
@@ -707,6 +708,21 @@ func stockAdjustmentDetailRecord(detail stockadjustments.Detail) (stockAdjustmen
 	}, nil
 }
 
+// stockAdjustmentSummaryKind publishes the kind a document declares from its own
+// lines: one of the two kinds, or no kind at all when the stored lines disagree,
+// because such a document predates the one-kind rule and is never guessed. Any
+// other value is not a document this domain wrote.
+func stockAdjustmentSummaryKind(kind catalog.Kind) (*catalog.Kind, bool) {
+	switch kind {
+	case "":
+		return nil, true
+	case catalog.BatteryKind, catalog.OtherKind:
+		value := kind
+		return &value, true
+	}
+	return nil, false
+}
+
 // stockAdjustmentPage admits only a complete persisted page: shape, newest-first
 // order, counts and differences are the frozen contract.
 func stockAdjustmentPage(page stockadjustments.Page) (stockAdjustmentPageDTO, error) {
@@ -738,10 +754,14 @@ func stockAdjustmentPage(page stockadjustments.Page) (stockAdjustmentPageDTO, er
 		if !ok {
 			return unavailable()
 		}
+		kind, ok := stockAdjustmentSummaryKind(summary.Kind)
+		if !ok {
+			return unavailable()
+		}
 		previous = summary.ID
 		rows = append(rows, stockAdjustmentSummaryDTO{ID: summary.ID, Reason: summary.Reason,
 			Detail: summary.Detail, CreatedAt: summary.CreatedAt.UTC().Format(time.RFC3339),
-			Lines: summary.Lines, TotalDifference: summary.TotalDifference,
+			Lines: summary.Lines, Kind: kind, TotalDifference: summary.TotalDifference,
 			ReversesAdjustmentID: reverses, ReversedBy: reversedBy})
 	}
 	return stockAdjustmentPageDTO{Page: page.Page, PageSize: page.PageSize,

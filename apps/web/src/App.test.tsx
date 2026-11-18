@@ -1683,7 +1683,7 @@ describe('stock ingress section', () => {
 });
 
 describe('warehouse adjustment section', () => {
-  const adjustmentRow = { id: 6, reason: 'Merma o rotura', detail: '', created_at: '2026-11-02T09:12:00Z',
+  const adjustmentRow = { id: 6, reason: 'Merma o rotura', detail: '', created_at: '2026-11-02T09:12:00Z', kind: 'battery',
     lines: 1, total_difference: 0, reverses_adjustment_id: null, reversed_by: null };
   it('reaches the adjustment history from the shell without reading stock for the capture', async () => {
     const mock = setup(session, url => url.startsWith('/api/stock-adjustments?')
