@@ -178,3 +178,12 @@ retried.
 - `testpg.Open` fails closed, so `go test ./internal/otherproducts` without the
 fixture fails by design; the repository's own command, `make test-pg`, runs it
 inside the audited fixture.
+
+L11. Closing evidence: the whole Go suite on the fixture (`make test-pg`) ran every
+package green except `internal/bootstrap`, whose `TestPostgres/schema_seed_and_preservation`
+pins the exact inventory of base tables — and 055 adds `catalog_entry_fields`. That
+is the assertion doing its job, not a defect in the migration: the table is
+deliberate, so the inventory gained it with its own comment. `./internal/bootstrap`
+is green again inside one fixture cycle after the correction. Everything else in
+that same cycle was already green, including `internal/transfers` (442s) and
+`internal/httpapi` (291s).
