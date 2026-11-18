@@ -402,7 +402,7 @@ func TestBranchPriceWriteBlockAtomicity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("matrix read failed: %v", err)
 	}
-	battery := matrix.Batteries[0]
+	battery := matrix.Rows[0]
 	if battery.CatalogEntryID != 1 || len(battery.Polarities) != 2 ||
 		battery.Polarities[0] != "L" || battery.Polarities[1] != "R" {
 		t.Fatalf("the changed battery must report both polarities in one row: %+v", battery)
@@ -467,7 +467,7 @@ func TestBranchPriceMatrixShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("matrix read failed: %v", err)
 	}
-	if matrix.Page != 1 || matrix.PageSize != 10 || matrix.TotalBatteries != 95 || len(matrix.Batteries) != 10 {
+	if matrix.Page != 1 || matrix.PageSize != 10 || matrix.Total != 95 || len(matrix.Rows) != 10 {
 		t.Fatalf("matrix page does not match the frozen contract: %+v", matrix)
 	}
 	if len(matrix.Branches) != 2 || matrix.Branches[0].ID != 2 || matrix.Branches[0].Name != "Sucursal A" ||
@@ -478,7 +478,7 @@ func TestBranchPriceMatrixShape(t *testing.T) {
 	if p.QueryRow(ctx, "SELECT display_name FROM auth_accounts WHERE id=1").Scan(&displayName) != nil {
 		t.Fatal("display name read failed")
 	}
-	first := matrix.Batteries[0]
+	first := matrix.Rows[0]
 	if first.CatalogEntryID != 1 || first.Brand == "" || first.Model == "" ||
 		first.Capacity == "" || len(first.Cells) != 3 {
 		t.Fatalf("matrix row does not carry the catalogue identity: %+v", first)
@@ -499,7 +499,7 @@ func TestBranchPriceMatrixShape(t *testing.T) {
 		}
 	}
 	// A battery without prices reports an empty list, never a null.
-	second := matrix.Batteries[1]
+	second := matrix.Rows[1]
 	if second.Prices == nil || len(second.Prices) != 0 {
 		t.Fatalf("a battery without prices must report an empty list: %+v", second.Prices)
 	}
@@ -529,17 +529,17 @@ func TestBranchPriceMatrixFiltersAndPagination(t *testing.T) {
 		seen := map[int64]bool{}
 		for index := 1; (index-1)*size < 95; index++ {
 			page, err := s.Matrix(ctx, warehouse(), pricing.BranchQuery{Page: index, PageSize: size})
-			if err != nil || page.TotalBatteries != 95 || page.Page != index || page.PageSize != size {
+			if err != nil || page.Total != 95 || page.Page != index || page.PageSize != size {
 				t.Fatalf("matrix pagination contract failed for size %d", size)
 			}
 			want := size
 			if 95-(index-1)*size < size {
 				want = 95 - (index-1)*size
 			}
-			if len(page.Batteries) != want {
+			if len(page.Rows) != want {
 				t.Fatalf("matrix page %d of size %d has the wrong length", index, size)
 			}
-			for i, item := range page.Batteries {
+			for i, item := range page.Rows {
 				id := int64((index-1)*size + i + 1)
 				if seen[id] || item.CatalogEntryID != id {
 					t.Fatalf("matrix page %d of size %d is not the stable battery order", index, size)
@@ -552,7 +552,7 @@ func TestBranchPriceMatrixFiltersAndPagination(t *testing.T) {
 		}
 	}
 	empty, err := s.Matrix(ctx, warehouse(), pricing.BranchQuery{Page: 1_000_000, PageSize: 50})
-	if err != nil || len(empty.Batteries) != 0 || empty.Batteries == nil || empty.TotalBatteries != 95 {
+	if err != nil || len(empty.Rows) != 0 || empty.Rows == nil || empty.Total != 95 {
 		t.Fatal("an empty matrix page must be non-null and keep the total")
 	}
 	for name, q := range map[string]pricing.BranchQuery{
@@ -584,17 +584,17 @@ func TestBranchPriceMatrixFiltersAndPagination(t *testing.T) {
 			want = append(want, int64(entry.ID))
 		}
 		result, err := s.Matrix(ctx, warehouse(), q)
-		if err != nil || result.TotalBatteries != int64(len(want)) {
+		if err != nil || result.Total != int64(len(want)) {
 			t.Fatalf("%s filter did not count the matching batteries", name)
 		}
 		limit := len(want)
 		if limit > 50 {
 			limit = 50
 		}
-		if len(result.Batteries) != limit {
-			t.Fatalf("%s filter returned %d batteries, want %d", name, len(result.Batteries), limit)
+		if len(result.Rows) != limit {
+			t.Fatalf("%s filter returned %d batteries, want %d", name, len(result.Rows), limit)
 		}
-		for i, item := range result.Batteries {
+		for i, item := range result.Rows {
 			if item.CatalogEntryID != want[i] {
 				t.Fatalf("%s filter is not the stable battery order", name)
 			}

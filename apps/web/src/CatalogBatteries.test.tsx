@@ -12,13 +12,13 @@ const price = (branch: number) => ({
   branch_location_id: branch, min_price: '85000.00', suggested_price: '96000.00',
   updated_at: '2026-11-04T10:00:00Z', updated_by_account_id: 1, updated_by_display_name: 'Almacén',
 });
-const priced = { catalog_entry_id: 96, brand: 'TOYO', model: 'NS40ZL', capacity_ah: '45', polarities: ['L', 'R'],
-  cells: [], prices: [price(2)] };
-const unpriced = { catalog_entry_id: 97, brand: 'CAR', model: 'NS60', capacity_ah: '60', polarities: ['L'],
-  cells: [], prices: [] };
+const priced = { kind: 'battery', catalog_entry_id: 96, brand: 'TOYO', model: 'NS40ZL', capacity_ah: '45',
+  polarities: ['L', 'R'], cells: [], prices: [price(2)] };
+const unpriced = { kind: 'battery', catalog_entry_id: 97, brand: 'CAR', model: 'NS60', capacity_ah: '60',
+  polarities: ['L'], cells: [], prices: [] };
 const pageBody = (batteries: readonly unknown[] = [priced, unpriced], total = 97) => JSON.stringify({
   branches: [{ id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }],
-  batteries, page: 1, page_size: 10, total_batteries: total,
+  rows: batteries, page: 1, page_size: 10, total,
 });
 const created = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   id: 98, brand: 'HYBRID', model: 'BT54L', capacity_ah: '54',
@@ -77,7 +77,7 @@ describe('the catalogue battery screen', () => {
   it('lists the batteries with their variants and marks the unpriced one as not sellable', async () => {
     const h = harness();
     await ready(h);
-    expect(h.reads()[0].url).toBe('/api/catalog/prices?page=1&page_size=10');
+    expect(h.reads()[0].url).toBe('/api/catalog/prices?kind=battery&page=1&page_size=10');
     expect(h.reads()[0].init).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
     const toyo = rowOf('TOYO NS40ZL');
     expect(within(toyo).getByText('45 Ah')).toBeInTheDocument();
@@ -253,9 +253,9 @@ describe('the catalogue battery screen', () => {
     await ready(h);
     fireEvent.click(listing().getByRole('button', { name: 'Siguiente página' }));
     await waitFor(() => expect(h.reads()).toHaveLength(2));
-    expect(h.reads()[1].url).toBe('/api/catalog/prices?page=2&page_size=10');
+    expect(h.reads()[1].url).toBe('/api/catalog/prices?kind=battery&page=2&page_size=10');
     fireEvent.change(listing().getByLabelText('Buscar marca o modelo'), { target: { value: 'NS40' } });
-    await waitFor(() => expect(h.reads().at(-1)?.url).toBe('/api/catalog/prices?search=NS40&page=1&page_size=10'));
+    await waitFor(() => expect(h.reads().at(-1)?.url).toBe('/api/catalog/prices?kind=battery&search=NS40&page=1&page_size=10'));
     expect(h.writes()).toHaveLength(0);
   });
 });

@@ -20,6 +20,7 @@ export function createCatalogPricesAPI(fetch: typeof globalThis.fetch = globalTh
   return {
     async list(query: CatalogPricesQuery, signal?: AbortSignal): Promise<CatalogPricesPage> {
       // The query is the frozen read contract: an inadmissible one never leaves here.
+      // The kind is part of it, so the page a caller asked for is the page it reads.
       let path: string;
       try {
         if (!validCatalogPricesQuery(query)) throw new Error('Invalid query');
@@ -45,14 +46,17 @@ export function createCatalogPricesAPI(fetch: typeof globalThis.fetch = globalTh
       }
       let page: CatalogPricesPage;
       try { page = parseCatalogPrices(raw); } catch { throw malformed(); }
-      // A page that does not answer the exact query is not evidence about it.
+      // A page that does not answer the exact query is not evidence about it: neither
+      // another page or size, nor a row of the kind the caller did not ask for.
       if (page.page !== query.page || page.page_size !== query.page_size) throw malformed();
+      if (page.rows.some(row => row.kind !== query.kind)) throw malformed();
       return page;
     },
 
     /**
-     * Writes one block. The payload carries the battery, the prices and the branches
-     * only: the reply is admitted when it repeats exactly that write.
+     * Writes one block. The payload carries the catalogue entry, the prices and the
+     * branches only: the reply is admitted when it repeats exactly that write. A
+     * product is priced with this same body, because the write never carried a kind.
      */
     async apply(input: CatalogPriceInput, csrf: string,
       signal?: AbortSignal): Promise<CatalogPriceResult> {

@@ -2,14 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import TransferDate from './shared/TransferDate';
 import { CatalogPricesAPIError, createCatalogPricesAPI } from './catalogPricesAPI';
 import {
-  branchTag, catalogAmountEntry, catalogPricesDefaultPageSize, catalogPricesErrorMessages, catalogPricesListUnavailable,
-  catalogPricesPageSizes, formatCatalogMoney, polaritiesLabel, sharedPriceLabel, validateCatalogPriceDraft,
-  type CatalogBattery, type CatalogPricesErrorCode, type CatalogPricesPage, type CatalogPricesQuery,
+  branchTag, catalogAmountEntry, catalogKindColumns, catalogKindLabels, catalogKinds, catalogPricesDefaultPageSize,
+  catalogPricesErrorMessages, catalogPricesListUnavailable, catalogPricesPageSizes, formatCatalogMoney, polaritiesLabel,
+  sharedPriceLabel, validateCatalogPriceDraft,
+  type CatalogKind, type CatalogPriceRow, type CatalogPricesErrorCode, type CatalogPricesPage,
 } from './catalogPricesModel';
 import './catalog-prices.css';
 
 interface PricesState { readonly phase: 'loading' | 'ready' | 'error'; readonly page: CatalogPricesPage | null; readonly problem: string }
-/** The unfolded row: which battery, and the draft its form currently holds. */
+/** The unfolded row: which catalogue entry, and the draft its form currently holds. */
 interface OpenRow { readonly entryId: number; readonly draft: Draft }
 interface Draft {
   readonly min: string; readonly suggested: string; readonly checked: readonly number[];
@@ -23,11 +24,15 @@ export interface CatalogPricesProps {
   fetcher?: typeof globalThis.fetch;
 }
 
-const productLabel = (row: { brand: string; model: string }) => `${row.brand} · ${row.model}`;
+// The row identity as the notice names it: brand and model of a battery, the free
+// name of a product.
+const rowLabel = (row: CatalogPriceRow) => row.kind === 'battery' ? `${row.brand} · ${row.model}` : row.name;
 const branchWord = (count: number) => count === 1 ? 'sucursal' : 'sucursales';
 
 export default function CatalogPrices({ csrf, brands = [], fetcher = globalThis.fetch }: CatalogPricesProps) {
   const api = useMemo(() => createCatalogPricesAPI(fetcher), [fetcher]);
+  // One page is one kind, chosen with the same two tabs the stock screens use.
+  const [kind, setKind] = useState<CatalogKind>('battery');
   const [search, setSearch] = useState('');
   const [brand, setBrand] = useState('');
   const [capacity, setCapacity] = useState('');
@@ -51,14 +56,13 @@ export default function CatalogPrices({ csrf, brands = [], fetcher = globalThis.
     return () => { mounted.current = false; flight.abort(); };
   }, []);
 
-  const query: CatalogPricesQuery = { search, brand, capacity, page: pageNumber, page_size: pageSize };
   useEffect(() => {
     const controller = new AbortController();
     const alive = () => mounted.current && !controller.signal.aborted && !lifetime.current.signal.aborted;
     setState(current => ({ phase: 'loading', page: current.page, problem: catalogPricesListUnavailable }));
     void (async () => {
       try {
-        const page = await api.list({ search, brand, capacity, page: pageNumber, page_size: pageSize }, controller.signal);
+        const page = await api.list({ kind, search, brand, capacity, page: pageNumber, page_size: pageSize }, controller.signal);
         if (!alive()) return;
         setState({ phase: 'ready', page, problem: '' });
       } catch (failure) {
@@ -70,25 +74,37 @@ export default function CatalogPrices({ csrf, brands = [], fetcher = globalThis.
       }
     })();
     return () => controller.abort();
-  }, [api, search, brand, capacity, pageNumber, pageSize, revision]);
+  }, [api, kind, search, brand, capacity, pageNumber, pageSize, revision]);
 
+  const batteryTab = kind === 'battery';
   const page = state.page;
   const branches = page?.branches ?? [];
-  const batteries = page?.batteries ?? [];
+  const rows = page?.rows ?? [];
   const capacities = useMemo(() => {
-    const present = [...new Set(batteries.map(battery => battery.capacity_ah))];
+    const present = [...new Set(rows.flatMap(row => row.kind === 'battery' ? [row.capacity_ah] : []))];
     if (capacity !== '' && !present.includes(capacity)) present.push(capacity);
     return present.sort((left, right) => Number(left) - Number(right));
-  }, [batteries, capacity]);
-  const total = page?.total_batteries ?? 0;
-  const firstRow = page && batteries.length > 0 ? (page.page - 1) * page.page_size + 1 : 0;
-  const lastRow = page && batteries.length > 0 ? firstRow + batteries.length - 1 : 0;
-  const current = open === null ? null : batteries.find(battery => battery.catalog_entry_id === open.entryId) ?? null;
+  }, [rows, capacity]);
+  const total = page?.total ?? 0;
+  const firstRow = page && rows.length > 0 ? (page.page - 1) * page.page_size + 1 : 0;
+  const lastRow = page && rows.length > 0 ? firstRow + rows.length - 1 : 0;
+  const current = open === null ? null : rows.find(row => row.catalog_entry_id === open.entryId) ?? null;
+
+  /**
+   * A tab is a new page: the unfolded draft and the battery-only filters of the other
+   * kind never travel to it, because a product page refuses brand and capacity.
+   */
+  function chooseKind(next: CatalogKind) {
+    if (busy || pending.current || next === kind) return;
+    setOpen(null); setProblem(''); setNotice('');
+    setSearch(''); setBrand(''); setCapacity(''); setPageNumber(1);
+    setKind(next);
+  }
 
   /** The draft an unfolded row starts with: its first persisted pair and its priced branches. */
-  function draftFor(battery: CatalogBattery, matrix: readonly { id: number }[]): Draft {
+  function draftFor(row: CatalogPriceRow, matrix: readonly { id: number }[]): Draft {
     const priced = matrix
-      .map(branch_ => battery.prices.find(price => price.branch_location_id === branch_.id))
+      .map(branch_ => row.prices.find(price => price.branch_location_id === branch_.id))
       .filter((price): price is NonNullable<typeof price> => price !== undefined);
     const first = priced[0];
     return {
@@ -98,11 +114,11 @@ export default function CatalogPrices({ csrf, brands = [], fetcher = globalThis.
     };
   }
 
-  function toggle(battery: CatalogBattery) {
+  function toggle(row: CatalogPriceRow) {
     if (busy) return;
     setProblem(''); setNotice('');
-    if (open?.entryId === battery.catalog_entry_id) { setOpen(null); return; }
-    setOpen({ entryId: battery.catalog_entry_id, draft: draftFor(battery, branches) });
+    if (open?.entryId === row.catalog_entry_id) { setOpen(null); return; }
+    setOpen({ entryId: row.catalog_entry_id, draft: draftFor(row, branches) });
   }
   function close(entryId: number) {
     if (busy) return;
@@ -120,9 +136,10 @@ export default function CatalogPrices({ csrf, brands = [], fetcher = globalThis.
     edit({ checked: next });
   }
 
-  async function apply(battery: CatalogBattery) {
-    if (busy || pending.current || !open || open.entryId !== battery.catalog_entry_id) return;
-    const validation = validateCatalogPriceDraft(battery.catalog_entry_id, {
+  async function apply(row: CatalogPriceRow) {
+    if (busy || pending.current || !open || open.entryId !== row.catalog_entry_id) return;
+    // The write is the same for both kinds: the entry, the pair and the branches.
+    const validation = validateCatalogPriceDraft(row.catalog_entry_id, {
       min_price: open.draft.min, suggested_price: open.draft.suggested, branch_ids: open.draft.checked,
     });
     setNotice('');
@@ -134,7 +151,7 @@ export default function CatalogPrices({ csrf, brands = [], fetcher = globalThis.
       setOpen(null);
       // The matrix is re-read so the chips and the per-branch values show what was written.
       setRevision(value => value + 1);
-      setNotice(`Precios aplicados: ${productLabel(battery)} · mínimo ${formatCatalogMoney(result.min_price)} · sugerido ${formatCatalogMoney(result.suggested_price)} en ${result.written} ${branchWord(result.written)}.`);
+      setNotice(`Precios aplicados: ${rowLabel(row)} · mínimo ${formatCatalogMoney(result.min_price)} · sugerido ${formatCatalogMoney(result.suggested_price)} en ${result.written} ${branchWord(result.written)}.`);
     } catch (failure) {
       if (!mounted.current || lifetime.current.signal.aborted) return;
       const code: CatalogPricesErrorCode = failure instanceof CatalogPricesAPIError ? failure.code : 'invalid_response';
@@ -156,66 +173,81 @@ export default function CatalogPrices({ csrf, brands = [], fetcher = globalThis.
 
   const replaced = open === null || current === null ? 0 : open.draft.checked
     .filter(id => current.prices.some(price => price.branch_location_id === id)).length;
-  const latest = (battery: CatalogBattery) => battery.prices.reduce<(typeof battery.prices)[number] | null>(
+  const latest = (row: CatalogPriceRow) => row.prices.reduce<(typeof row.prices)[number] | null>(
     (newest, price) => newest === null || Date.parse(price.updated_at) >= Date.parse(newest.updated_at) ? price : newest, null);
+  const column = catalogKindColumns[kind];
 
   return <section className="catalog-prices" aria-labelledby="catalog-prices-title">
     <header className="catalog-heading">
       <small>ALMACÉN / CATÁLOGO</small>
       <h1 id="catalog-prices-title">Catálogo de precios</h1>
-      <p>El Almacén define el precio mínimo y el sugerido de cada batería y elige a qué sucursales se les aplica. El precio vale para las dos polaridades de la batería y cada sucursal mantiene sus propios valores.</p>
+      <p>{batteryTab
+        ? 'El Almacén define el precio mínimo y el sugerido de cada batería y elige a qué sucursales se les aplica. El precio vale para las dos polaridades de la batería y cada sucursal mantiene sus propios valores.'
+        : 'El Almacén define el precio mínimo y el sugerido de cada producto y elige a qué sucursales se les aplica. Cada sucursal mantiene sus propios valores.'}</p>
     </header>
+    {/* One page is one kind: the same two tabs the stock screens already use. */}
+    <div className="catalog-kinds" role="tablist" aria-label="Tipo de producto del catálogo de precios">
+      {catalogKinds.map(option => <button type="button" key={option} role="tab" aria-selected={kind === option}
+        disabled={busy} onClick={() => chooseKind(option)}>{catalogKindLabels[option]}</button>)}
+    </div>
     <section className="catalog-panel" aria-labelledby="catalog-list-title" aria-busy={state.phase === 'loading'}>
       <div className="catalog-panel-head">
         <div>
-          <h2 id="catalog-list-title">Baterías</h2>
-          <p className="catalog-hint">{`${total} ${total === 1 ? 'batería' : 'baterías'} · desplegá una batería para cargar o cambiar sus precios`}</p>
+          <h2 id="catalog-list-title">{catalogKindLabels[kind]}</h2>
+          <p className="catalog-hint">{batteryTab
+            ? `${total} ${total === 1 ? 'batería' : 'baterías'} · desplegá una batería para cargar o cambiar sus precios`
+            : `${total} ${total === 1 ? 'producto' : 'productos'} · desplegá un producto para cargar o cambiar sus precios`}</p>
         </div>
-        <span className="catalog-tag">{state.phase === 'ready' ? `${batteries.length} en esta página` : 'Almacén'}</span>
+        <span className="catalog-tag">{state.phase === 'ready' ? `${rows.length} en esta página` : 'Almacén'}</span>
       </div>
-      <div className="catalog-filters">
-        <label htmlFor="catalog-search">Buscar marca o modelo
-          <input id="catalog-search" type="search" value={search} placeholder="NS40ZL, TOYO" disabled={busy}
+      {/* Marca y capacidad son filtros de batería: una página de productos no los nombra. */}
+      <div className={batteryTab ? 'catalog-filters' : 'catalog-filters catalog-filters-single'}>
+        <label htmlFor="catalog-search">{batteryTab ? 'Buscar marca o modelo' : 'Buscar nombre o dato del producto'}
+          <input id="catalog-search" type="search" value={search}
+            placeholder={batteryTab ? 'NS40ZL, TOYO' : 'Agua acidulada, 5 L'} disabled={busy}
             onChange={event => { setPageNumber(1); setSearch(event.target.value); }} />
         </label>
-        <label htmlFor="catalog-brand">Marca
+        {batteryTab && <label htmlFor="catalog-brand">Marca
           <select id="catalog-brand" value={brand} onChange={event => { setPageNumber(1); setBrand(event.target.value); }}>
             <option value="">Todas</option>
             {brands.map(value => <option key={value} value={value}>{value}</option>)}
           </select>
-        </label>
-        <label htmlFor="catalog-capacity">Capacidad
+        </label>}
+        {batteryTab && <label htmlFor="catalog-capacity">Capacidad
           <select id="catalog-capacity" value={capacity} onChange={event => { setPageNumber(1); setCapacity(event.target.value); }}>
             <option value="">Todas</option>
             {capacities.map(value => <option key={value} value={value}>{value} Ah</option>)}
           </select>
-        </label>
+        </label>}
       </div>
-      {batteries.length > 0 && <div className="catalog-table-wrap">
+      {rows.length > 0 && <div className="catalog-table-wrap">
         <table className="catalog-table">
-          <caption className="sr-only">Baterías del catálogo de precios, con sus polaridades, sus sucursales y su última actualización</caption>
+          <caption className="sr-only">{batteryTab
+            ? 'Baterías del catálogo de precios, con sus polaridades, sus sucursales y su última actualización'
+            : 'Otros productos del catálogo de precios, con sus sucursales y su última actualización'}</caption>
           <thead><tr>
-            <th scope="col">Batería</th><th scope="col">Sucursales con precio</th>
+            <th scope="col">{column}</th><th scope="col">Sucursales con precio</th>
             <th scope="col">Última actualización</th><th scope="col">Acción</th>
           </tr></thead>
-          <tbody>{batteries.map(battery => {
-            const expanded = open?.entryId === battery.catalog_entry_id;
-            const detailId = `catalog-detail-${battery.catalog_entry_id}`;
-            const rowId = `catalog-row-${battery.catalog_entry_id}`;
-            const updated = latest(battery);
+          <tbody>{rows.map(row => {
+            const expanded = open?.entryId === row.catalog_entry_id;
+            const detailId = `catalog-detail-${row.catalog_entry_id}`;
+            const rowId = `catalog-row-${row.catalog_entry_id}`;
+            const updated = latest(row);
             return [
-              <tr key={`row-${battery.catalog_entry_id}`} id={rowId} className="catalog-row" tabIndex={0}
+              <tr key={`row-${row.catalog_entry_id}`} id={rowId} className="catalog-row" tabIndex={0}
                 aria-expanded={expanded} aria-controls={detailId}
-                ref={element => { if (element) rowRefs.current.set(battery.catalog_entry_id, element); else rowRefs.current.delete(battery.catalog_entry_id); }}
-                onClick={() => toggle(battery)}
+                ref={element => { if (element) rowRefs.current.set(row.catalog_entry_id, element); else rowRefs.current.delete(row.catalog_entry_id); }}
+                onClick={() => toggle(row)}
                 onKeyDown={event => {
                   if (event.key !== 'Enter' && event.key !== ' ') return;
-                  event.preventDefault(); toggle(battery);
+                  event.preventDefault(); toggle(row);
                 }}>
-                <td data-label="Batería"><strong>{battery.brand} {battery.model}</strong>
-                  <small>{battery.capacity_ah} Ah · {polaritiesLabel(battery.polarities)}</small></td>
+                <td data-label={column}>{row.kind === 'battery'
+                  ? <><strong>{row.brand} {row.model}</strong><small>{row.capacity_ah} Ah · {polaritiesLabel(row.polarities)}</small></>
+                  : <><strong>{row.name}</strong><small>{row.detail}</small></>}</td>
                 <td data-label="Sucursales con precio"><div className="catalog-chips">{branches.map(branch_ => {
-                  const price = battery.prices.find(entry => entry.branch_location_id === branch_.id);
+                  const price = row.prices.find(entry => entry.branch_location_id === branch_.id);
                   return price
                     ? <span key={branch_.id} className="catalog-chip ok" title={`${branch_.name}: mínimo ${formatCatalogMoney(price.min_price)} · sugerido ${formatCatalogMoney(price.suggested_price)}`}>{branchTag(branch_.name)}</span>
                     : <span key={branch_.id} className="catalog-chip short" title={`${branch_.name}: sin precio`}>{branchTag(branch_.name)} sin precio</span>;
@@ -226,39 +258,42 @@ export default function CatalogPrices({ csrf, brands = [], fetcher = globalThis.
                   : <small>Sin precio cargado</small>}</td>
                 <td data-label="Acción"><span className="catalog-openaction">{expanded ? 'Cerrar −' : 'Desplegar +'}</span></td>
               </tr>,
-              <tr key={`detail-${battery.catalog_entry_id}`} id={detailId} className="catalog-detail" hidden={!expanded}>
-                <td colSpan={4}>{expanded && open && current !== null && current.catalog_entry_id === battery.catalog_entry_id &&
+              <tr key={`detail-${row.catalog_entry_id}`} id={detailId} className="catalog-detail" hidden={!expanded}>
+                <td colSpan={4}>{expanded && open && current !== null && current.catalog_entry_id === row.catalog_entry_id &&
                   <div className="catalog-detail-inner">
                     <header>
                       <div>
-                        <h3>Precios de {battery.brand} {battery.model}</h3>
-                        <p>{battery.capacity_ah} Ah · {polaritiesLabel(battery.polarities)}
-                          {battery.cells.length > 0 && ` · ${battery.cells.length} ${battery.cells.length === 1 ? 'celda de origen' : 'celdas de origen'} (${battery.cells.join(', ')})`}</p>
+                        <h3>{row.kind === 'battery' ? `Precios de ${row.brand} ${row.model}` : `Precios de ${row.name}`}</h3>
+                        <p>{row.kind === 'battery'
+                          ? <>{row.capacity_ah} Ah · {polaritiesLabel(row.polarities)}
+                            {row.cells.length > 0 && ` · ${row.cells.length} ${row.cells.length === 1 ? 'celda de origen' : 'celdas de origen'} (${row.cells.join(', ')})`}</>
+                          : row.detail}</p>
                       </div>
                       <span className="catalog-tag">Mínimo y sugerido por sucursal</span>
                     </header>
-                    <p className="catalog-shared">{sharedPriceLabel(battery.polarities)}</p>
+                    {/* A product has no polarity, so the shared-price line has nothing to say. */}
+                    {row.kind === 'battery' && <p className="catalog-shared">{sharedPriceLabel(row.polarities)}</p>}
                     <div className="catalog-form">
                       <div>
                         <div className="catalog-pair">
-                          <label htmlFor={`catalog-min-${battery.catalog_entry_id}`}>Precio mínimo de venta
-                            <input id={`catalog-min-${battery.catalog_entry_id}`} inputMode="decimal" value={open.draft.min}
-                              aria-describedby={`catalog-amounts-${battery.catalog_entry_id}`} disabled={busy}
+                          <label htmlFor={`catalog-min-${row.catalog_entry_id}`}>Precio mínimo de venta
+                            <input id={`catalog-min-${row.catalog_entry_id}`} inputMode="decimal" value={open.draft.min}
+                              aria-describedby={`catalog-amounts-${row.catalog_entry_id}`} disabled={busy}
                               onChange={event => edit({ min: event.target.value })} />
                           </label>
-                          <label htmlFor={`catalog-suggested-${battery.catalog_entry_id}`}>Precio sugerido de venta
-                            <input id={`catalog-suggested-${battery.catalog_entry_id}`} inputMode="decimal" value={open.draft.suggested}
-                              aria-describedby={`catalog-amounts-${battery.catalog_entry_id}`} disabled={busy}
+                          <label htmlFor={`catalog-suggested-${row.catalog_entry_id}`}>Precio sugerido de venta
+                            <input id={`catalog-suggested-${row.catalog_entry_id}`} inputMode="decimal" value={open.draft.suggested}
+                              aria-describedby={`catalog-amounts-${row.catalog_entry_id}`} disabled={busy}
                               onChange={event => edit({ suggested: event.target.value })} />
                           </label>
                         </div>
-                        <p id={`catalog-amounts-${battery.catalog_entry_id}`} className="catalog-hint">Montos con dos decimales. El sugerido nunca puede quedar por debajo del mínimo: por debajo del mínimo la sucursal no puede vender.</p>
+                        <p id={`catalog-amounts-${row.catalog_entry_id}`} className="catalog-hint">Montos con dos decimales. El sugerido nunca puede quedar por debajo del mínimo: por debajo del mínimo la sucursal no puede vender.</p>
                       </div>
                       <div>
                         <fieldset className="catalog-branches">
                           <legend>Sucursales a las que se aplica este precio</legend>
                           {branches.map(branch_ => {
-                            const price = battery.prices.find(entry => entry.branch_location_id === branch_.id);
+                            const price = row.prices.find(entry => entry.branch_location_id === branch_.id);
                             const checked = open.draft.checked.includes(branch_.id);
                             return <label key={branch_.id} className="catalog-branch">
                               <input type="checkbox" checked={checked} disabled={busy} aria-label={`Aplicar a ${branch_.name}`}
@@ -278,9 +313,9 @@ export default function CatalogPrices({ csrf, brands = [], fetcher = globalThis.
                         </div>
                         <div className="catalog-actions">
                           <button type="button" className="catalog-cancel" disabled={busy}
-                            onClick={() => close(battery.catalog_entry_id)}>Cancelar</button>
+                            onClick={() => close(row.catalog_entry_id)}>Cancelar</button>
                           <button type="button" className="primary" disabled={busy}
-                            onClick={() => void apply(battery)}>{`Aplicar a ${open.draft.checked.length} ${branchWord(open.draft.checked.length)}`}</button>
+                            onClick={() => void apply(row)}>{`Aplicar a ${open.draft.checked.length} ${branchWord(open.draft.checked.length)}`}</button>
                         </div>
                         {problem !== '' && <p role="alert" className="catalog-status">{problem}</p>}
                       </div>
@@ -295,11 +330,14 @@ export default function CatalogPrices({ csrf, brands = [], fetcher = globalThis.
       {state.phase === 'loading' && <p className="catalog-message" role="status">Consultando el catálogo de precios…</p>}
       {state.phase === 'error' && <p className="catalog-message" role="alert">{state.problem}
         <button type="button" disabled={busy} onClick={() => setRevision(value => value + 1)}>Reintentar catálogo</button></p>}
-      {state.phase === 'ready' && batteries.length === 0 && <p className="catalog-message">Sin baterías para esta consulta.</p>}
+      {state.phase === 'ready' && rows.length === 0
+        && <p className="catalog-message">{batteryTab ? 'Sin baterías para esta consulta.' : 'Sin productos para esta consulta.'}</p>}
       <footer className="pager" aria-label="Paginación del catálogo de precios">
-        <span className="range" aria-live="polite">{page ? <>Mostrando <strong>{firstRow}–{lastRow}</strong> de <strong>{total}</strong> baterías</> : 'Sin resultados cargados.'}</span>
+        <span className="range" aria-live="polite">{page
+          ? <>Mostrando <strong>{firstRow}–{lastRow}</strong> de <strong>{total}</strong> {batteryTab ? 'baterías' : 'productos'}</>
+          : 'Sin resultados cargados.'}</span>
         <div className="page-controls">
-          <label htmlFor="catalog-page-size">Baterías por página</label>
+          <label htmlFor="catalog-page-size">{batteryTab ? 'Baterías por página' : 'Productos por página'}</label>
           <select id="catalog-page-size" value={pageSize} disabled={busy}
             onChange={event => {
               const next = Number(event.target.value);
@@ -312,7 +350,9 @@ export default function CatalogPrices({ csrf, brands = [], fetcher = globalThis.
         </div>
       </footer>
       <p role="status" className="catalog-notice">{notice}</p>
-      <p className="catalog-hint">Una fila por batería y un solo precio para sus polaridades. El formulario se despliega debajo de la fila elegida y se cierra con Cancelar.</p>
+      <p className="catalog-hint">{batteryTab
+        ? 'Una fila por batería y un solo precio para sus polaridades. El formulario se despliega debajo de la fila elegida y se cierra con Cancelar.'
+        : 'Una fila por producto y un solo par de precios por sucursal. El formulario se despliega debajo de la fila elegida y se cierra con Cancelar.'}</p>
     </section>
   </section>;
 }

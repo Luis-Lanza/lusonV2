@@ -14,8 +14,15 @@
 .catalog-tag { display: inline-block; flex-shrink: 0; padding: 4px 8px; background: var(--page);
   border: 1px solid var(--border); border-radius: 3px; color: var(--muted); font-size: 11px; font-weight: 600; }
 .catalog-hint { color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+/* The two tabs of the screen: one kind per page, the same pair the stock screens use. */
+.catalog-kinds { display: flex; gap: 2px; border-bottom: 1px solid var(--border); }
+.catalog-kinds button { min-height: 44px; padding: 0 12px; border: 0; border-bottom: 2px solid #0000;
+  border-radius: 0; background: none; color: var(--muted); font-size: 13px; }
+.catalog-kinds button[aria-selected="true"] { border-bottom-color: var(--wine); color: var(--wine); font-weight: 600; }
 /* Search, brand and capacity: the polarity no longer tells prices apart. */
 .catalog-filters { display: grid; grid-template-columns: minmax(0, 1.4fr) repeat(2, minmax(0, .8fr)); gap: 12px; }
+/* A product page has no brand nor capacity filter: the search is its only filter. */
+.catalog-filters.catalog-filters-single { grid-template-columns: minmax(0, 1fr); }
 .catalog-filters label { display: grid; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }
 .catalog-filters input, .catalog-filters select { width: 100%; min-height: 44px; padding: 10px 12px;
   border-color: var(--muted); color: #242124; font-size: 13px; }
@@ -85,6 +92,7 @@
 @media (max-width: 767px) {
   .catalog-panel { padding: 16px; border-radius: 8px; }
   .catalog-panel-head h2 { font-size: 16px; }
+  .catalog-kinds button { flex: 1 1 0; }
   .catalog-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .catalog-filters label:first-child { grid-column: 1 / -1; }
   .catalog-detail-inner { padding: 16px; }

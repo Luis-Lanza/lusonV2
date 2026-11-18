@@ -45,12 +45,12 @@ func checkAssignment(ctx context.Context, q querier, actor auth.Identity) error 
 }
 
 // Matrix reads one page of the price list: the active branches, the catalogue
-// identity of every admitted battery together with the polarities that exist for it,
-// and the prices the active branches hold. The actor guard and the provisioned-account
-// binding are the write's, and the page is one count plus one page statement, so the
-// total is the database's own number.
+// identity of every admitted entry of one kind together with the attributes that kind
+// has, and the prices the active branches hold. The actor guard and the
+// provisioned-account binding are the write's, and the page is one count plus one page
+// statement, so the total is the database's own number.
 func (s *Store) Matrix(ctx context.Context, actor auth.Identity, q BranchQuery) (Matrix, error) {
-	result := Matrix{Page: q.Page, PageSize: q.PageSize, Branches: []Branch{}, Batteries: []Battery{}}
+	result := Matrix{Page: q.Page, PageSize: q.PageSize, Branches: []Branch{}, Rows: []Row{}}
 	if ctx == nil || s == nil || s.pool == nil {
 		return Matrix{}, ErrUnavailable
 	}
@@ -80,45 +80,74 @@ func (s *Store) Matrix(ctx context.Context, actor auth.Identity, q BranchQuery) 
 		return Matrix{}, err
 	}
 	result.Branches = branches
-	args := []any{literalPattern(q.Search), q.Brand, capacityArg(q.Capacity)}
-	if tx.QueryRow(ctx, "SELECT count(*)"+matrixFilter, args...).Scan(&result.TotalBatteries) != nil {
+	args := []any{literalPattern(q.Search), q.Brand, capacityArg(q.Capacity), string(q.Kind.Filter())}
+	if tx.QueryRow(ctx, "SELECT count(*)"+matrixFilter, args...).Scan(&result.Total) != nil {
 		return Matrix{}, fail(ctx)
 	}
 	args = append(args, int64(q.PageSize), int64(q.Page-1)*int64(q.PageSize))
-	// The polarities of a battery are aggregated in ascending order, so one matrix row
-	// carries every polarity the battery exists in instead of one row per polarity.
-	rows, err := tx.Query(ctx, `SELECT e.id,e.brand,e.model,e.capacity_ah::text,
-  (SELECT array_agg(v.polarity ORDER BY v.polarity) FROM catalog_variants v WHERE v.catalog_entry_id=e.id)`+
-		matrixFilter+` ORDER BY e.id LIMIT $4 OFFSET $5`, args...)
+	// A battery row aggregates its polarities in ascending order, so one matrix row
+	// carries every polarity the battery exists in instead of one row per polarity. A
+	// product declares no polarity, so the aggregate skips it instead of publishing an
+	// array with a null inside.
+	rows, err := tx.Query(ctx, `SELECT e.id,e.kind,coalesce(e.brand,''),coalesce(e.model,''),
+  e.capacity_ah::text,coalesce(e.name,''),
+  (SELECT array_agg(v.polarity ORDER BY v.polarity) FROM catalog_variants v
+   WHERE v.catalog_entry_id=e.id AND v.polarity IS NOT NULL)`+
+		matrixFilter+` ORDER BY e.id LIMIT $5 OFFSET $6`, args...)
 	if err != nil {
 		return Matrix{}, fail(ctx)
 	}
-	batteries := make([]Battery, 0, q.PageSize)
+	admitted := make([]Row, 0, q.PageSize)
 	ids := make([]int32, 0, q.PageSize)
+	products := make([]int32, 0, q.PageSize)
 	for rows.Next() {
-		var item Battery
-		var capacity string
-		if rows.Scan(&item.CatalogEntryID, &item.Brand, &item.Model, &capacity,
+		var item Row
+		var entryKind, brand, model, name string
+		var capacity *string
+		if rows.Scan(&item.CatalogEntryID, &entryKind, &brand, &model, &capacity, &name,
 			&item.Polarities) != nil {
 			rows.Close()
 			return Matrix{}, fail(ctx)
 		}
-		if item.CatalogEntryID < 1 || item.Brand == "" || item.Model == "" ||
-			!validPolarities(item.Polarities) ||
-			(len(batteries) > 0 && item.CatalogEntryID <= batteries[len(batteries)-1].CatalogEntryID) {
+		if item.CatalogEntryID < 1 ||
+			(len(admitted) > 0 && item.CatalogEntryID <= admitted[len(admitted)-1].CatalogEntryID) {
 			rows.Close()
 			return Matrix{}, ErrUnavailable
 		}
-		if item.Capacity, err = catalog.ParseDecimal(capacity); err != nil {
+		item.Kind = catalog.Kind(entryKind)
+		switch item.Kind {
+		case catalog.BatteryKind:
+			// A battery row is its battery attributes: a battery without them is a row
+			// this contract could not have produced.
+			if brand == "" || model == "" || capacity == nil || !validPolarities(item.Polarities) {
+				rows.Close()
+				return Matrix{}, ErrUnavailable
+			}
+			item.Brand, item.Model = brand, model
+			if item.Capacity, err = catalog.ParseDecimal(*capacity); err != nil {
+				rows.Close()
+				return Matrix{}, ErrUnavailable
+			}
+			if item.Cells, err = cellsOf(item.CatalogEntryID); err != nil {
+				rows.Close()
+				return Matrix{}, err
+			}
+		case catalog.OtherKind:
+			// A product row is its free name and the summary of its typed fields, and it
+			// carries no battery attribute: a product with one is not a row this
+			// catalogue could have produced.
+			if name == "" || capacity != nil || brand != "" || model != "" || len(item.Polarities) != 0 {
+				rows.Close()
+				return Matrix{}, ErrUnavailable
+			}
+			item.Name = name
+			products = append(products, int32(item.CatalogEntryID))
+		default:
 			rows.Close()
 			return Matrix{}, ErrUnavailable
-		}
-		if item.Cells, err = cellsOf(item.CatalogEntryID); err != nil {
-			rows.Close()
-			return Matrix{}, err
 		}
 		item.Prices = []Price{}
-		batteries = append(batteries, item)
+		admitted = append(admitted, item)
 		ids = append(ids, int32(item.CatalogEntryID))
 	}
 	if rows.Err() != nil {
@@ -126,12 +155,27 @@ func (s *Store) Matrix(ctx context.Context, actor auth.Identity, q BranchQuery) 
 		return Matrix{}, fail(ctx)
 	}
 	rows.Close()
+	// A product's detail is the summary of its typed fields, read in one statement for
+	// the whole page, so a row shows what the catalogue holds instead of a second
+	// composition of it.
+	if len(products) > 0 {
+		fields, err := catalog.ReadFields(ctx, tx, products)
+		if err != nil {
+			return Matrix{}, ErrUnavailable
+		}
+		for i := range admitted {
+			if admitted[i].Kind != catalog.OtherKind {
+				continue
+			}
+			admitted[i].Detail = catalog.ProductDetail(admitted[i].Name, fields[int(admitted[i].CatalogEntryID)])
+		}
+	}
 	if len(ids) > 0 {
-		if err := loadPrices(ctx, tx, branches, ids, batteries); err != nil {
+		if err := loadPrices(ctx, tx, branches, ids, admitted); err != nil {
 			return Matrix{}, err
 		}
 	}
-	result.Batteries = batteries
+	result.Rows = admitted
 	if tx.Commit(ctx) != nil {
 		return Matrix{}, fail(ctx)
 	}
@@ -156,12 +200,22 @@ func validPolarities(polarities []string) bool {
 }
 
 // matrixFilter is shared by the count and the page, so both answer the same question.
+// One page is one kind, and the absent kind is the battery listing every caller had.
 // The capacity is a nullable numeric parameter: an absent filter never casts an empty
-// string. The matrix is a list of batteries, so the filter never looks at a polarity,
-// never lists the other product kind and never lists a retired battery.
+// string. The search reads the battery columns every caller already had, plus the free
+// name and everything a product row displays of its typed fields - the name of the
+// field, its unit and its value - because a term a row shows must answer that row. A
+// typed field only ever belongs to a product, so the battery page answers exactly what
+// it answered before. The matrix is a list of entries, so the filter never looks at a
+// polarity and never lists a retired entry.
 const matrixFilter = ` FROM catalog_entries e
- WHERE e.deleted_at IS NULL AND e.kind = 'battery'
- AND ($1='' OR e.brand ILIKE $1 ESCAPE '\' OR e.model ILIKE $1 ESCAPE '\')
+ WHERE e.deleted_at IS NULL AND e.kind = $4
+ AND ($1='' OR e.brand ILIKE $1 ESCAPE '\' OR e.model ILIKE $1 ESCAPE '\' OR e.name ILIKE $1 ESCAPE '\'
+  OR EXISTS (SELECT 1 FROM catalog_entry_fields f WHERE f.catalog_entry_id=e.id
+   AND (f.name ILIKE $1 ESCAPE '\' OR f.unit ILIKE $1 ESCAPE '\'
+    OR f.text_value ILIKE $1 ESCAPE '\' OR (f.kind='number' AND f.number_value::text ILIKE $1 ESCAPE '\')
+    OR (f.kind='number' AND f.unit IS NOT NULL
+     AND (trim_scale(f.number_value)::text || ' ' || f.unit) ILIKE $1 ESCAPE '\'))))
  AND ($2='' OR e.brand=$2) AND ($3::numeric IS NULL OR e.capacity_ah=$3::numeric)`
 
 // loadBranches reads the active branches of the matrix in id order. The warehouse is
@@ -190,12 +244,12 @@ func loadBranches(ctx context.Context, q querier) ([]Branch, error) {
 	return branches, nil
 }
 
-// loadPrices attaches the persisted pairs of one page to its batteries. Only the
-// listed active branches are read: a price of a retired branch is still persisted
-// (prices are never deleted) but it is no longer a sale price of this matrix.
-func loadPrices(ctx context.Context, q querier, branches []Branch, ids []int32, batteries []Battery) error {
-	index := make(map[int64]int, len(batteries))
-	for i, item := range batteries {
+// loadPrices attaches the persisted pairs of one page to its rows. Only the listed
+// active branches are read: a price of a retired branch is still persisted (prices are
+// never deleted) but it is no longer a sale price of this matrix.
+func loadPrices(ctx context.Context, q querier, branches []Branch, ids []int32, page []Row) error {
+	index := make(map[int64]int, len(page))
+	for i, item := range page {
 		index[item.CatalogEntryID] = i
 	}
 	active := make(map[int64]bool, len(branches))
@@ -240,7 +294,7 @@ func loadPrices(ctx context.Context, q querier, branches []Branch, ids []int32, 
 			return ErrUnavailable
 		}
 		previousEntry, previousBranch = entryID, price.BranchLocationID
-		batteries[position].Prices = append(batteries[position].Prices, price)
+		page[position].Prices = append(page[position].Prices, price)
 	}
 	if rows.Err() != nil {
 		return fail(ctx)
@@ -289,8 +343,9 @@ func (s *Store) Write(ctx context.Context, actor auth.Identity, input WriteInput
 		return WriteResult{}, err
 	}
 	for _, branchID := range canonical.BranchIDs {
-		// The key is the battery, so one row per (branch, battery) is written and a
-		// second write replaces it: the two polarities of the battery can never diverge.
+		// The key is the catalogue entry, so one row per (branch, entry) is written and a
+		// second write replaces it: the two polarities of a battery can never diverge, and
+		// the single variant of a product needs no row of its own.
 		if _, err := tx.Exec(ctx, `INSERT INTO branch_prices(branch_location_id,catalog_entry_id,min_price,suggested_price,updated_by_account_id,updated_at)
  VALUES($1,$2,$3,$4,$5,now())
  ON CONFLICT (branch_location_id,catalog_entry_id) DO UPDATE
@@ -312,8 +367,10 @@ func (s *Store) Write(ctx context.Context, actor auth.Identity, input WriteInput
 	}, nil
 }
 
-// entryExists refuses an unknown battery before any pair is written: an unknown id is
-// a request error, and one assignment is applied completely or not at all.
+// entryExists refuses an unknown catalogue entry before any pair is written: an
+// unknown id is a request error, and one assignment is applied completely or not at
+// all. Both kinds are admitted, because a price belongs to the entry and an other
+// product is one entry with one polarity-less variant.
 func entryExists(ctx context.Context, q querier, entryID int64) (bool, error) {
 	var known bool
 	if err := q.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM catalog_entries WHERE id=$1)", int32(entryID)).Scan(&known); err != nil {

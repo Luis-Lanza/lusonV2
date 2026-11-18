@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/auth"
 	"luson/api/internal/bootstrap"
+	"luson/api/internal/catalog"
 	"luson/api/internal/config"
 	"luson/api/internal/inventory"
 	"luson/api/internal/pricing"
@@ -149,11 +150,23 @@ func TestBranchPriceQuery(t *testing.T) {
 		"defaults":     {"", pricing.BranchQuery{Page: 1, PageSize: 10}, true},
 		"all":          {"search=ns60&brand=TOYO&capacity=45&page=2&page_size=25", pricing.BranchQuery{Search: "ns60", Brand: "TOYO", Capacity: "45", Page: 2, PageSize: 25}, true},
 		"capacity_dec": {"capacity=6.5", pricing.BranchQuery{Capacity: "6.5", Page: 1, PageSize: 10}, true},
-		"decoded_text": {"search=TOYO%20MOTO", pricing.BranchQuery{Search: "TOYO MOTO", Page: 1, PageSize: 10}, true},
-		"plus_text":    {"search=TOYO+MOTO", pricing.BranchQuery{Search: "TOYO MOTO", Page: 1, PageSize: 10}, true},
-		"fifty":        {"page_size=50&page=3", pricing.BranchQuery{Page: 3, PageSize: 50}, true},
-		"blank_search": {"search=", pricing.BranchQuery{}, false},
-		"blank_brand":  {"brand=", pricing.BranchQuery{}, false},
+		// One page is one kind. The absent kind is the battery page every caller
+		// already had, and the product page is its own listing.
+		"kind_battery":  {"kind=battery", pricing.BranchQuery{Kind: catalog.BatteryOnly, Page: 1, PageSize: 10}, true},
+		"kind_other":    {"kind=other&search=Agua&page=2", pricing.BranchQuery{Kind: catalog.OtherOnly, Search: "Agua", Page: 2, PageSize: 10}, true},
+		"kind_all":      {"kind=all", pricing.BranchQuery{}, false},
+		"kind_unknown":  {"kind=gift", pricing.BranchQuery{}, false},
+		"kind_blank":    {"kind=", pricing.BranchQuery{}, false},
+		"kind_repeated": {"kind=battery&kind=other", pricing.BranchQuery{}, false},
+		// A battery filter is battery-only: naming one together with the product kind
+		// is refused instead of silently ignored.
+		"product_with_brand":    {"kind=other&brand=TOYO", pricing.BranchQuery{}, false},
+		"product_with_capacity": {"kind=other&capacity=45", pricing.BranchQuery{}, false},
+		"decoded_text":          {"search=TOYO%20MOTO", pricing.BranchQuery{Search: "TOYO MOTO", Page: 1, PageSize: 10}, true},
+		"plus_text":             {"search=TOYO+MOTO", pricing.BranchQuery{Search: "TOYO MOTO", Page: 1, PageSize: 10}, true},
+		"fifty":                 {"page_size=50&page=3", pricing.BranchQuery{Page: 3, PageSize: 50}, true},
+		"blank_search":          {"search=", pricing.BranchQuery{}, false},
+		"blank_brand":           {"brand=", pricing.BranchQuery{}, false},
 		// The price belongs to the battery, so a polarity filter is not part of this
 		// contract any more.
 		"polarity_gone":  {"polarity=L", pricing.BranchQuery{}, false},
@@ -235,9 +248,9 @@ func branchPriceMatrixValue() pricing.Matrix {
 	written := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
 	return pricing.Matrix{
 		Branches: []pricing.Branch{{ID: 2, Name: "Sucursal A"}, {ID: 3, Name: "Sucursal B"}},
-		Batteries: []pricing.Battery{
+		Rows: []pricing.Row{
 			{
-				CatalogEntryID: 1, Brand: "CAR", Model: "NS40ZL", Capacity: "35",
+				CatalogEntryID: 1, Kind: catalog.BatteryKind, Brand: "CAR", Model: "NS40ZL", Capacity: "35",
 				Polarities: []string{"L", "R"}, Cells: []string{"B5", "C5", "D5"},
 				Prices: []pricing.Price{{
 					BranchLocationID: 2, MinPrice: "85000.00", SuggestedPrice: "96000.00", UpdatedAt: written,
@@ -245,12 +258,40 @@ func branchPriceMatrixValue() pricing.Matrix {
 				}},
 			},
 			{
-				CatalogEntryID: 2, Brand: "CAR", Model: "NS40ZR", Capacity: "35",
+				CatalogEntryID: 2, Kind: catalog.BatteryKind, Brand: "CAR", Model: "NS40ZR", Capacity: "35",
 				Polarities: []string{"L", "R"}, Cells: []string{"B5", "C5", "D5"}, Prices: []pricing.Price{},
 			},
 		},
-		Page: 1, PageSize: 10, TotalBatteries: 95,
+		Page: 1, PageSize: 10, Total: 95,
 	}
+}
+
+// branchPriceProductMatrixValue is the product page of the same contract: the same
+// envelope and the same price pairs, with the identity a product publishes instead of
+// the battery attributes. One page is one kind, so no row here is a battery.
+func branchPriceProductMatrixValue() pricing.Matrix {
+	written := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	return pricing.Matrix{
+		Branches: []pricing.Branch{{ID: 2, Name: "Sucursal A"}, {ID: 3, Name: "Sucursal B"}},
+		Rows: []pricing.Row{{
+			CatalogEntryID: 96, Kind: catalog.OtherKind, Name: "Agua acidulada",
+			Detail: "volumen en L: 5 L",
+			Prices: []pricing.Price{{
+				BranchLocationID: 2, MinPrice: "1500.00", SuggestedPrice: "1900.00", UpdatedAt: written,
+				UpdatedByAccountID: 1, UpdatedByDisplayName: "Almacén",
+			}},
+		}},
+		Page: 1, PageSize: 10, Total: 1,
+	}
+}
+
+// branchPriceText reads the optional text of one field of the union, so a value the
+// contract did not publish reads as empty instead of panicking.
+func branchPriceText(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func TestBranchPriceWriteRecord(t *testing.T) {
@@ -295,13 +336,19 @@ func TestBranchPriceMatrixRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a complete matrix page must be described: %v", err)
 	}
-	if len(record.Branches) != 2 || len(record.Batteries) != 2 || record.TotalBatteries != 95 {
+	if len(record.Branches) != 2 || len(record.Rows) != 2 || record.Total != 95 {
 		t.Fatalf("matrix record does not match the frozen contract: %+v", record)
 	}
-	first, second := record.Batteries[0], record.Batteries[1]
-	if first.Cells == nil || len(first.Cells) != 3 || first.Capacity != "35" ||
-		len(first.Polarities) != 2 || first.Polarities[0] != "L" || first.Polarities[1] != "R" {
+	first, second := record.Rows[0], record.Rows[1]
+	if first.Kind != catalog.BatteryKind || first.Brand == nil || *first.Brand != "CAR" || first.Model == nil ||
+		*first.Model != "NS40ZL" || first.Capacity == nil || *first.Capacity != "35" ||
+		first.Cells == nil || len(*first.Cells) != 3 || first.Polarities == nil || len(*first.Polarities) != 2 ||
+		(*first.Polarities)[0] != "L" || (*first.Polarities)[1] != "R" {
 		t.Fatalf("battery row does not match the frozen contract: %+v", first)
+	}
+	// A battery row is its battery attributes and never a product name.
+	if first.Name != nil || first.Detail != nil {
+		t.Fatalf("a battery row must not carry name or detail: %+v", first)
 	}
 	if len(first.Prices) != 1 || first.Prices[0].MinPrice != "85000.00" ||
 		first.Prices[0].SuggestedPrice != "96000.00" || first.Prices[0].UpdatedAt != "2026-11-04T10:00:00Z" ||
@@ -311,6 +358,25 @@ func TestBranchPriceMatrixRecord(t *testing.T) {
 	if second.Prices == nil || len(second.Prices) != 0 {
 		t.Fatalf("a battery without prices must report an empty list: %+v", second)
 	}
+	// The wire shape carries the kind tag of every row and nothing of the other kind.
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("the record is not encodable: %v", err)
+	}
+	var wire struct {
+		Rows []map[string]json.RawMessage `json:"rows"`
+	}
+	if json.Unmarshal(encoded, &wire) != nil || len(wire.Rows) != 2 {
+		t.Fatalf("the record is not decodable: %s", encoded)
+	}
+	if string(wire.Rows[0]["kind"]) != `"battery"` || len(wire.Rows[0]) != 8 {
+		t.Fatalf("battery row whitelist changed: %s", wire.Rows[0])
+	}
+	for _, key := range []string{"name", "detail"} {
+		if _, ok := wire.Rows[0][key]; ok {
+			t.Fatalf("a battery row must not publish %s: %s", key, wire.Rows[0])
+		}
+	}
 	mutate := func(change func(*pricing.Matrix)) pricing.Matrix {
 		value := branchPriceMatrixValue()
 		change(&value)
@@ -319,27 +385,102 @@ func TestBranchPriceMatrixRecord(t *testing.T) {
 	for name, matrix := range map[string]pricing.Matrix{
 		"bad_page":         mutate(func(m *pricing.Matrix) { m.Page = 0 }),
 		"bad_size":         mutate(func(m *pricing.Matrix) { m.PageSize = 15 }),
-		"negative_total":   mutate(func(m *pricing.Matrix) { m.TotalBatteries = -1 }),
-		"page_overflow":    mutate(func(m *pricing.Matrix) { m.TotalBatteries = 1 }),
+		"negative_total":   mutate(func(m *pricing.Matrix) { m.Total = -1 }),
+		"page_overflow":    mutate(func(m *pricing.Matrix) { m.Total = 1 }),
 		"warehouse_branch": mutate(func(m *pricing.Matrix) { m.Branches[0].ID = 1 }),
 		"unordered_branch": mutate(func(m *pricing.Matrix) { m.Branches[1].ID = 2 }),
 		"empty_branch":     mutate(func(m *pricing.Matrix) { m.Branches[0].Name = "" }),
-		"battery_zero":     mutate(func(m *pricing.Matrix) { m.Batteries[0].CatalogEntryID = 0 }),
-		"battery_order":    mutate(func(m *pricing.Matrix) { m.Batteries[1].CatalogEntryID = 1 }),
-		"polarity":         mutate(func(m *pricing.Matrix) { m.Batteries[0].Polarities = []string{"X"} }),
-		"polarity_order":   mutate(func(m *pricing.Matrix) { m.Batteries[0].Polarities = []string{"R", "L"} }),
-		"polarity_repeat":  mutate(func(m *pricing.Matrix) { m.Batteries[0].Polarities = []string{"L", "L"} }),
-		"polarity_empty":   mutate(func(m *pricing.Matrix) { m.Batteries[0].Polarities = []string{} }),
-		"polarity_triple":  mutate(func(m *pricing.Matrix) { m.Batteries[0].Polarities = []string{"L", "L", "R"} }),
-		"cells":            mutate(func(m *pricing.Matrix) { m.Batteries[0].Cells = []string{"B5", "C5"} }),
-		"cells_empty":      mutate(func(m *pricing.Matrix) { m.Batteries[0].Cells = []string{"", "C5", "D5"} }),
-		"capacity":         mutate(func(m *pricing.Matrix) { m.Batteries[0].Capacity = "0" }),
-		"price_digits":     mutate(func(m *pricing.Matrix) { m.Batteries[0].Prices[0].MinPrice = "85000" }),
-		"price_minimum":    mutate(func(m *pricing.Matrix) { m.Batteries[0].Prices[0].SuggestedPrice = "84000.00" }),
-		"price_branch":     mutate(func(m *pricing.Matrix) { m.Batteries[0].Prices[0].BranchLocationID = 4 }),
-		"price_retired":    mutate(func(m *pricing.Matrix) { m.Batteries[0].Prices[0].BranchLocationID = 1 }),
-		"price_updated":    mutate(func(m *pricing.Matrix) { m.Batteries[0].Prices[0].UpdatedAt = time.Time{} }),
-		"price_account":    mutate(func(m *pricing.Matrix) { m.Batteries[0].Prices[0].UpdatedByAccountID = 0 }),
+		"battery_zero":     mutate(func(m *pricing.Matrix) { m.Rows[0].CatalogEntryID = 0 }),
+		"battery_order":    mutate(func(m *pricing.Matrix) { m.Rows[1].CatalogEntryID = 1 }),
+		"battery_kind":     mutate(func(m *pricing.Matrix) { m.Rows[0].Kind = catalog.Kind("gift") }),
+		"battery_name":     mutate(func(m *pricing.Matrix) { m.Rows[0].Name = "Agua acidulada" }),
+		"battery_detail":   mutate(func(m *pricing.Matrix) { m.Rows[0].Detail = "35 Ah" }),
+		"polarity":         mutate(func(m *pricing.Matrix) { m.Rows[0].Polarities = []string{"X"} }),
+		"polarity_order":   mutate(func(m *pricing.Matrix) { m.Rows[0].Polarities = []string{"R", "L"} }),
+		"polarity_repeat":  mutate(func(m *pricing.Matrix) { m.Rows[0].Polarities = []string{"L", "L"} }),
+		"polarity_empty":   mutate(func(m *pricing.Matrix) { m.Rows[0].Polarities = []string{} }),
+		"polarity_triple":  mutate(func(m *pricing.Matrix) { m.Rows[0].Polarities = []string{"L", "L", "R"} }),
+		"cells":            mutate(func(m *pricing.Matrix) { m.Rows[0].Cells = []string{"B5", "C5"} }),
+		"cells_empty":      mutate(func(m *pricing.Matrix) { m.Rows[0].Cells = []string{"", "C5", "D5"} }),
+		"capacity":         mutate(func(m *pricing.Matrix) { m.Rows[0].Capacity = "0" }),
+		"price_digits":     mutate(func(m *pricing.Matrix) { m.Rows[0].Prices[0].MinPrice = "85000" }),
+		"price_minimum":    mutate(func(m *pricing.Matrix) { m.Rows[0].Prices[0].SuggestedPrice = "84000.00" }),
+		"price_branch":     mutate(func(m *pricing.Matrix) { m.Rows[0].Prices[0].BranchLocationID = 4 }),
+		"price_retired":    mutate(func(m *pricing.Matrix) { m.Rows[0].Prices[0].BranchLocationID = 1 }),
+		"price_updated":    mutate(func(m *pricing.Matrix) { m.Rows[0].Prices[0].UpdatedAt = time.Time{} }),
+		"price_account":    mutate(func(m *pricing.Matrix) { m.Rows[0].Prices[0].UpdatedByAccountID = 0 }),
+	} {
+		if _, err := branchPriceMatrixRecord(matrix); !errors.Is(err, pricing.ErrUnavailable) {
+			t.Fatalf("%s must fail closed", name)
+		}
+	}
+}
+
+// TestBranchPriceMatrixProductRecord is the union of S3: a product row publishes the
+// free name and the summary of its typed fields, the same prices array a battery row
+// carries, and no battery field at all - not even as null.
+func TestBranchPriceMatrixProductRecord(t *testing.T) {
+	record, err := branchPriceMatrixRecord(branchPriceProductMatrixValue())
+	if err != nil {
+		t.Fatalf("a complete product page must be described: %v", err)
+	}
+	if len(record.Rows) != 1 || record.Total != 1 {
+		t.Fatalf("product record does not match the frozen contract: %+v", record)
+	}
+	row := record.Rows[0]
+	if row.Kind != catalog.OtherKind || row.CatalogEntryID != 96 ||
+		branchPriceText(row.Name) != "Agua acidulada" ||
+		branchPriceText(row.Detail) != "volumen en L: 5 L" {
+		t.Fatalf("product row identity mismatch: %+v", row)
+	}
+	if row.Brand != nil || row.Model != nil || row.Capacity != nil ||
+		row.Polarities != nil || row.Cells != nil {
+		t.Fatalf("a product row must not carry a battery field: %+v", row)
+	}
+	// The prices array is exactly the battery one: the row kind never changes the pair.
+	if len(row.Prices) != 1 || row.Prices[0].BranchLocationID != 2 ||
+		row.Prices[0].MinPrice != "1500.00" || row.Prices[0].SuggestedPrice != "1900.00" ||
+		row.Prices[0].UpdatedAt != "2026-11-04T10:00:00Z" || row.Prices[0].UpdatedByAccountID != 1 {
+		t.Fatalf("product prices mismatch: %+v", row.Prices)
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("the record is not encodable: %v", err)
+	}
+	var wire struct {
+		Rows []map[string]json.RawMessage `json:"rows"`
+	}
+	if json.Unmarshal(encoded, &wire) != nil || len(wire.Rows) != 1 {
+		t.Fatalf("the record is not decodable: %s", encoded)
+	}
+	if string(wire.Rows[0]["kind"]) != `"other"` || len(wire.Rows[0]) != 5 {
+		t.Fatalf("product row whitelist changed: %s", wire.Rows[0])
+	}
+	for _, key := range []string{"brand", "model", "capacity_ah", "polarities", "cells"} {
+		if _, ok := wire.Rows[0][key]; ok {
+			t.Fatalf("a product row must not publish %s: %s", key, wire.Rows[0])
+		}
+	}
+	mutate := func(change func(*pricing.Matrix)) pricing.Matrix {
+		value := branchPriceProductMatrixValue()
+		change(&value)
+		return value
+	}
+	for name, matrix := range map[string]pricing.Matrix{
+		"unknown_kind":       mutate(func(m *pricing.Matrix) { m.Rows[0].Kind = catalog.Kind("gift") }),
+		"empty_name":         mutate(func(m *pricing.Matrix) { m.Rows[0].Name = "" }),
+		"empty_detail":       mutate(func(m *pricing.Matrix) { m.Rows[0].Detail = "" }),
+		"nul_name":           mutate(func(m *pricing.Matrix) { m.Rows[0].Name = "Agua\x00acidulada" }),
+		"nul_detail":         mutate(func(m *pricing.Matrix) { m.Rows[0].Detail = "volumen\x00en L" }),
+		"product_brand":      mutate(func(m *pricing.Matrix) { m.Rows[0].Brand = "CAR" }),
+		"product_model":      mutate(func(m *pricing.Matrix) { m.Rows[0].Model = "NS40ZL" }),
+		"product_capacity":   mutate(func(m *pricing.Matrix) { m.Rows[0].Capacity = "35" }),
+		"product_polarities": mutate(func(m *pricing.Matrix) { m.Rows[0].Polarities = []string{"L"} }),
+		"product_cells":      mutate(func(m *pricing.Matrix) { m.Rows[0].Cells = []string{"B5", "C5", "D5"} }),
+		"negative_total":     mutate(func(m *pricing.Matrix) { m.Total = -1 }),
+		"page_overflow":      mutate(func(m *pricing.Matrix) { m.Total = 0 }),
+		"price_branch":       mutate(func(m *pricing.Matrix) { m.Rows[0].Prices[0].BranchLocationID = 4 }),
+		"price_minimum":      mutate(func(m *pricing.Matrix) { m.Rows[0].Prices[0].SuggestedPrice = "1400.00" }),
 	} {
 		if _, err := branchPriceMatrixRecord(matrix); !errors.Is(err, pricing.ErrUnavailable) {
 			t.Fatalf("%s must fail closed", name)
@@ -352,20 +493,20 @@ func TestBranchPriceMatrixRecord(t *testing.T) {
 // stays a literal array for both the preloaded and the operational battery.
 func TestBranchPriceMatrixOptionalCells(t *testing.T) {
 	value := branchPriceMatrixValue()
-	value.Batteries[1].CatalogEntryID = 96
-	value.Batteries[1].Brand = "NUEVA"
-	value.Batteries[1].Model = "AGM"
-	value.Batteries[1].Cells = []string{}
-	value.TotalBatteries = 96
+	value.Rows[1].CatalogEntryID = 96
+	value.Rows[1].Brand = "NUEVA"
+	value.Rows[1].Model = "AGM"
+	value.Rows[1].Cells = []string{}
+	value.Total = 96
 	record, err := branchPriceMatrixRecord(value)
 	if err != nil {
 		t.Fatalf("a battery without source cells must be described: %v", err)
 	}
-	if len(record.Batteries) != 2 {
-		t.Fatalf("the operational battery must stay in the page: %+v", record.Batteries)
+	if len(record.Rows) != 2 {
+		t.Fatalf("the operational battery must stay in the page: %+v", record.Rows)
 	}
-	if cells := record.Batteries[1].Cells; cells == nil || len(cells) != 0 {
-		t.Fatalf("a battery without source cells reports an empty list: %+v", record.Batteries[1])
+	if cells := record.Rows[1].Cells; cells == nil || len(*cells) != 0 {
+		t.Fatalf("a battery without source cells reports an empty list: %+v", record.Rows[1])
 	}
 	// The wire shape does not change: cells is still present and still an array.
 	encoded, err := json.Marshal(record)
@@ -373,16 +514,16 @@ func TestBranchPriceMatrixOptionalCells(t *testing.T) {
 		t.Fatalf("the record is not encodable: %v", err)
 	}
 	var top struct {
-		Batteries []map[string]json.RawMessage `json:"batteries"`
+		Rows []map[string]json.RawMessage `json:"rows"`
 	}
-	if json.Unmarshal(encoded, &top) != nil || len(top.Batteries) != 2 {
+	if json.Unmarshal(encoded, &top) != nil || len(top.Rows) != 2 {
 		t.Fatalf("the record is not decodable: %s", encoded)
 	}
-	if string(top.Batteries[1]["cells"]) != "[]" {
-		t.Fatalf("cells must stay an empty array, never null or absent: %s", top.Batteries[1]["cells"])
+	if string(top.Rows[1]["cells"]) != "[]" {
+		t.Fatalf("cells must stay an empty array, never null or absent: %s", top.Rows[1]["cells"])
 	}
-	if len(top.Batteries[1]) != 7 {
-		t.Fatalf("battery whitelist changed: %s", top.Batteries[1])
+	if len(top.Rows[1]) != 8 {
+		t.Fatalf("battery whitelist changed: %s", top.Rows[1])
 	}
 	// Every other cell shape stays refused: optional cells never relaxes the count.
 	for name, cells := range map[string][]string{
@@ -392,7 +533,7 @@ func TestBranchPriceMatrixOptionalCells(t *testing.T) {
 		"nil_cells":  nil,
 	} {
 		refused := branchPriceMatrixValue()
-		refused.Batteries[0].Cells = cells
+		refused.Rows[0].Cells = cells
 		if _, err := branchPriceMatrixRecord(refused); !errors.Is(err, pricing.ErrUnavailable) {
 			t.Fatalf("%s must fail closed", name)
 		}
@@ -588,6 +729,24 @@ func (f *branchPriceHTTPFixture) retireBranch(t *testing.T, id int64) {
 	}
 }
 
+// createProduct seeds one other product exactly like the catalog route writes it: a
+// free name, one polarity-less variant and one typed number field with a unit.
+func (f *branchPriceHTTPFixture) createProduct(t *testing.T, name, fieldName, unit, number string) int64 {
+	t.Helper()
+	var entry int64
+	if err := f.p.QueryRow(f.ctx, `INSERT INTO catalog_entries(kind,name) VALUES('other',$1) RETURNING id`, name).Scan(&entry); err != nil {
+		t.Fatal("product fixture setup failed")
+	}
+	if _, err := f.p.Exec(f.ctx, `INSERT INTO catalog_variants(catalog_entry_id) VALUES($1)`, entry); err != nil {
+		t.Fatal("product variant fixture setup failed")
+	}
+	if _, err := f.p.Exec(f.ctx, `INSERT INTO catalog_entry_fields(catalog_entry_id,name,kind,unit,number_value)
+ VALUES($1,$2,'number',$3,$4::numeric)`, entry, fieldName, unit, number); err != nil {
+		t.Fatal("product field fixture setup failed")
+	}
+	return entry
+}
+
 func (f *branchPriceHTTPFixture) request(actor int, verb, path, body string) *http.Request {
 	r := httptest.NewRequest(verb, path, strings.NewReader(body))
 	r.RemoteAddr = "127.0.0.1:1234"
@@ -622,8 +781,38 @@ func (f *branchPriceHTTPFixture) rejected(t *testing.T, r *http.Request, status 
 	}
 }
 
-// branchPriceMatrixWire admits only the frozen matrix shape: five page keys, seven
-// battery keys, six price keys and two branch keys, with canonical amounts.
+// branchPriceWirePrices admits one row's prices on both kinds: an array (empty when the
+// row has no price) of six keys with canonical amounts.
+func branchPriceWirePrices(t *testing.T, raw json.RawMessage) []map[string]json.RawMessage {
+	t.Helper()
+	var prices []map[string]json.RawMessage
+	if json.Unmarshal(raw, &prices) != nil || prices == nil {
+		t.Fatal("matrix prices are not an array")
+	}
+	money := regexp.MustCompile(`^"[0-9]+\.[0-9]{2}"$`)
+	for _, price := range prices {
+		if len(price) != 6 {
+			t.Fatal("price whitelist changed")
+		}
+		for _, key := range []string{"branch_location_id", "min_price", "suggested_price", "updated_at",
+			"updated_by_account_id", "updated_by_display_name"} {
+			if _, ok := price[key]; !ok {
+				t.Fatalf("price whitelist incomplete: %s", key)
+			}
+		}
+		// Amounts are canonical two-decimal text, never a binary float.
+		for _, key := range []string{"min_price", "suggested_price"} {
+			if !money.MatchString(string(price[key])) {
+				t.Fatalf("%s must be canonical money text", key)
+			}
+		}
+	}
+	return prices
+}
+
+// branchPriceMatrixWire admits only the frozen matrix shape: five page keys and the
+// row shape of the row's own kind - eight battery keys, five product keys - with
+// canonical amounts and no field of the other kind.
 func branchPriceMatrixWire(t *testing.T, w *httptest.ResponseRecorder) branchPriceMatrixDTO {
 	t.Helper()
 	if w.Code != 200 || w.Header().Get("Content-Type") != "application/json" {
@@ -633,9 +822,15 @@ func branchPriceMatrixWire(t *testing.T, w *httptest.ResponseRecorder) branchPri
 	if json.Unmarshal(w.Body.Bytes(), &top) != nil || len(top) != 5 {
 		t.Fatal("matrix whitelist changed")
 	}
-	for _, key := range []string{"branches", "batteries", "page", "page_size", "total_batteries"} {
+	for _, key := range []string{"branches", "rows", "page", "page_size", "total"} {
 		if _, ok := top[key]; !ok {
 			t.Fatalf("matrix whitelist incomplete: %s", key)
+		}
+	}
+	// The envelope of S2 is renamed, never extended: the old names are gone.
+	for _, key := range []string{"batteries", "total_batteries"} {
+		if _, ok := top[key]; ok {
+			t.Fatalf("the renamed envelope must not publish %s", key)
 		}
 	}
 	var branches []map[string]json.RawMessage
@@ -652,59 +847,77 @@ func branchPriceMatrixWire(t *testing.T, w *httptest.ResponseRecorder) branchPri
 			}
 		}
 	}
-	var batteries []map[string]json.RawMessage
-	if json.Unmarshal(top["batteries"], &batteries) != nil {
-		t.Fatal("matrix batteries are not an array")
+	var rows []map[string]json.RawMessage
+	if json.Unmarshal(top["rows"], &rows) != nil || rows == nil {
+		t.Fatal("matrix rows are not an array")
 	}
-	money := regexp.MustCompile(`^"[0-9]+\.[0-9]{2}"$`)
-	for _, item := range batteries {
-		if len(item) != 7 {
-			t.Fatal("battery whitelist changed")
+	for _, item := range rows {
+		var kind string
+		if json.Unmarshal(item["kind"], &kind) != nil {
+			t.Fatal("every row is discriminated by kind")
 		}
-		for _, key := range []string{"catalog_entry_id", "brand", "model", "capacity_ah",
-			"polarities", "cells", "prices"} {
-			if _, ok := item[key]; !ok {
-				t.Fatalf("battery whitelist incomplete: %s", key)
+		if _, ok := item["catalog_entry_id"]; !ok {
+			t.Fatal("row whitelist incomplete: catalog_entry_id")
+		}
+		switch kind {
+		case "battery":
+			if len(item) != 8 {
+				t.Fatal("battery whitelist changed")
 			}
-		}
-		// One row per battery carries both polarities, ascending: the two polarities
-		// never appear as separate rows with prices of their own.
-		var polarities []string
-		if json.Unmarshal(item["polarities"], &polarities) != nil || len(polarities) != 2 ||
-			polarities[0] != "L" || polarities[1] != "R" {
-			t.Fatalf("polarities must be the battery's, ascending: %s", item["polarities"])
-		}
-		var cells []string
-		if json.Unmarshal(item["cells"], &cells) != nil || len(cells) != 3 {
-			t.Fatal("matrix cells must be the three source cells")
-		}
-		if !regexp.MustCompile(`^"[1-9][0-9]*(\.[0-9]*[1-9])?"$`).MatchString(string(item["capacity_ah"])) {
-			t.Fatal("capacity_ah must be the canonical decimal as a string")
-		}
-		var prices []map[string]json.RawMessage
-		if json.Unmarshal(item["prices"], &prices) != nil || prices == nil {
-			t.Fatal("matrix prices are not an array")
-		}
-		for _, price := range prices {
-			if len(price) != 6 {
-				t.Fatal("price whitelist changed")
-			}
-			for _, key := range []string{"branch_location_id", "min_price", "suggested_price", "updated_at",
-				"updated_by_account_id", "updated_by_display_name"} {
-				if _, ok := price[key]; !ok {
-					t.Fatalf("price whitelist incomplete: %s", key)
+			for _, key := range []string{"brand", "model", "capacity_ah", "polarities", "cells", "prices"} {
+				if _, ok := item[key]; !ok {
+					t.Fatalf("battery whitelist incomplete: %s", key)
 				}
 			}
-			// Amounts are canonical two-decimal text, never a binary float.
-			for _, key := range []string{"min_price", "suggested_price"} {
-				if !money.MatchString(string(price[key])) {
-					t.Fatalf("%s must be canonical money text", key)
+			// A battery row never publishes a product name.
+			for _, key := range []string{"name", "detail"} {
+				if _, ok := item[key]; ok {
+					t.Fatalf("a battery row must not publish %s: %s", key, item)
 				}
 			}
+			// One row per battery carries both polarities, ascending: the two polarities
+			// never appear as separate rows with prices of their own.
+			var polarities []string
+			if json.Unmarshal(item["polarities"], &polarities) != nil || len(polarities) != 2 ||
+				polarities[0] != "L" || polarities[1] != "R" {
+				t.Fatalf("polarities must be the battery's, ascending: %s", item["polarities"])
+			}
+			var cells []string
+			if json.Unmarshal(item["cells"], &cells) != nil || len(cells) != 3 {
+				t.Fatal("matrix cells must be the three source cells")
+			}
+			if !regexp.MustCompile(`^"[1-9][0-9]*(\.[0-9]*[1-9])?"$`).MatchString(string(item["capacity_ah"])) {
+				t.Fatal("capacity_ah must be the canonical decimal as a string")
+			}
+			branchPriceWirePrices(t, item["prices"])
+		case "other":
+			if len(item) != 5 {
+				t.Fatal("product whitelist changed")
+			}
+			for _, key := range []string{"name", "detail", "prices"} {
+				if _, ok := item[key]; !ok {
+					t.Fatalf("product whitelist incomplete: %s", key)
+				}
+			}
+			// A product row carries none of the battery fields, not even as null.
+			for _, key := range []string{"brand", "model", "capacity_ah", "polarities", "cells"} {
+				if _, ok := item[key]; ok {
+					t.Fatalf("a product row must not publish %s: %s", key, item)
+				}
+			}
+			for _, key := range []string{"name", "detail"} {
+				var text string
+				if json.Unmarshal(item[key], &text) != nil || text == "" {
+					t.Fatalf("a product row must publish its %s: %s", key, item)
+				}
+			}
+			branchPriceWirePrices(t, item["prices"])
+		default:
+			t.Fatalf("unknown row kind: %q", kind)
 		}
 	}
 	var matrix branchPriceMatrixDTO
-	if json.Unmarshal(w.Body.Bytes(), &matrix) != nil || len(matrix.Batteries) != len(batteries) {
+	if json.Unmarshal(w.Body.Bytes(), &matrix) != nil || len(matrix.Rows) != len(rows) {
 		t.Fatal("matrix response is not decodable")
 	}
 	return matrix
@@ -747,13 +960,13 @@ func TestBranchPriceHTTPMatrix(t *testing.T) {
 	f := branchPriceFixture(t)
 	w := f.serve(t, f.request(1, "GET", "/api/catalog/prices?page=1&page_size=10", ""))
 	empty := branchPriceMatrixWire(t, w)
-	if empty.Page != 1 || empty.PageSize != 10 || empty.TotalBatteries != 95 || len(empty.Batteries) != 10 {
+	if empty.Page != 1 || empty.PageSize != 10 || empty.Total != 95 || len(empty.Rows) != 10 {
 		t.Fatalf("an empty price list must still describe the whole catalogue: %+v", empty)
 	}
 	if len(empty.Branches) != 2 || empty.Branches[0].ID != 2 || empty.Branches[1].ID != 3 {
 		t.Fatalf("branches must be the active branches in id order: %+v", empty.Branches)
 	}
-	for _, battery := range empty.Batteries {
+	for _, battery := range empty.Rows {
 		if len(battery.Prices) != 0 {
 			t.Fatalf("a battery without prices must report an empty list: %+v", battery)
 		}
@@ -764,7 +977,7 @@ func TestBranchPriceHTTPMatrix(t *testing.T) {
 		t.Fatalf("matrix fixture write failed: %d %s", w.Code, w.Body.String())
 	}
 	matrix := branchPriceMatrixWire(t, f.serve(t, f.request(1, "GET", "/api/catalog/prices?page=1&page_size=10", "")))
-	first := matrix.Batteries[0]
+	first := matrix.Rows[0]
 	if first.CatalogEntryID != 1 {
 		t.Fatalf("the written battery is not read back: %+v", first)
 	}
@@ -788,9 +1001,88 @@ func TestBranchPriceHTTPMatrix(t *testing.T) {
 			t.Fatal("a retired branch must not be listed")
 		}
 	}
-	second := after.Batteries[1]
+	second := after.Rows[1]
 	if len(second.Prices) != 0 {
 		t.Fatalf("a price of a retired branch is not a sale price: %+v", second.Prices)
+	}
+}
+
+// TestBranchPriceHTTPProductMatrix is the union of S2/S3/S5 over HTTP: the product
+// page is the battery page with another identity - the same envelope, the same price
+// body and the same price pairs.
+func TestBranchPriceHTTPProductMatrix(t *testing.T) {
+	f := branchPriceFixture(t)
+	product := f.createProduct(t, "Agua acidulada", "volumen en L", "L", "5")
+	// The price of a product is the price of a battery: same body, same amounts.
+	if w := f.serve(t, f.request(1, "PUT", "/api/catalog/prices",
+		fmt.Sprintf(`{"catalog_entry_id":%d,"min_price":"1500","suggested_price":"1900.5","branch_ids":[2,3]}`, product))); w.Code != 200 {
+		t.Fatalf("product write failed: %d %s", w.Code, w.Body.String())
+	}
+	if min, suggested := f.storedPrice(t, 2, product); min != "1500.00" || suggested != "1900.50" {
+		t.Fatalf("a product pair must persist like a battery pair: %s/%s", min, suggested)
+	}
+	matrix := branchPriceMatrixWire(t, f.serve(t, f.request(1, "GET",
+		"/api/catalog/prices?kind=other&page=1&page_size=10", "")))
+	if matrix.Total != 1 || len(matrix.Rows) != 1 {
+		t.Fatalf("the product page must answer the one product, got %d of %d", len(matrix.Rows), matrix.Total)
+	}
+	row := matrix.Rows[0]
+	if row.Kind != catalog.OtherKind || row.CatalogEntryID != product ||
+		branchPriceText(row.Name) != "Agua acidulada" || branchPriceText(row.Detail) != "volumen en L: 5 L" {
+		t.Fatalf("product row identity mismatch: %+v", row)
+	}
+	if len(row.Prices) != 2 || row.Prices[0].BranchLocationID != 2 || row.Prices[1].BranchLocationID != 3 ||
+		row.Prices[0].MinPrice != "1500.00" || row.Prices[0].SuggestedPrice != "1900.50" ||
+		row.Prices[0].UpdatedByAccountID != 1 {
+		t.Fatalf("the written product pair is not read back: %+v", row.Prices)
+	}
+	// A product never leaks into the battery page, and the absent kind is still that
+	// battery page: every answer that predates this change is unchanged.
+	for _, target := range []string{"/api/catalog/prices?kind=battery&page_size=10",
+		"/api/catalog/prices?page_size=10"} {
+		batteries := branchPriceMatrixWire(t, f.serve(t, f.request(1, "GET", target, "")))
+		if batteries.Total != 95 || len(batteries.Rows) != 10 {
+			t.Fatalf("%s must answer the whole battery catalogue: %+v", target, batteries)
+		}
+		for _, item := range batteries.Rows {
+			if item.CatalogEntryID == product {
+				t.Fatalf("%s must never list a product: %+v", target, item)
+			}
+		}
+	}
+	// The write path is unchanged: the same rejection still applies to a product.
+	f.rejected(t, f.request(1, "PUT", "/api/catalog/prices",
+		fmt.Sprintf(`{"catalog_entry_id":%d,"min_price":"1900","suggested_price":"1500","branch_ids":[2]}`, product)),
+		400, "invalid_request")
+}
+
+// TestBranchPriceHTTPKindRefusals pins the two refusals of S2 and S6: one page is one
+// kind, and a battery filter is never silently ignored on the product page.
+func TestBranchPriceHTTPKindRefusals(t *testing.T) {
+	f := branchPriceFixture(t)
+	for _, query := range []string{"kind=all", "kind=", "kind=gift", "kind=battery&kind=other",
+		"kind=other&brand=CAR", "kind=other&capacity=35"} {
+		query := query
+		t.Run(query, func(t *testing.T) {
+			f.rejected(t, f.request(1, "GET", "/api/catalog/prices?"+query, ""), 400, "invalid_request")
+		})
+	}
+	// The battery filters still apply to the battery page they belong to.
+	brand := branchPriceMatrixWire(t, f.serve(t, f.request(1, "GET",
+		"/api/catalog/prices?brand=CAR&capacity=35&page_size=10", "")))
+	if brand.Total < 1 || len(brand.Rows) < 1 {
+		t.Fatalf("the battery filters must still apply to the battery page: %+v", brand)
+	}
+	for _, item := range brand.Rows {
+		if item.Brand == nil || *item.Brand != "CAR" || item.Capacity == nil || *item.Capacity != "35" {
+			t.Fatalf("the battery filters must be applied: %+v", item)
+		}
+	}
+	// The kind filter does not change the row shape of the battery page.
+	battery := branchPriceMatrixWire(t, f.serve(t, f.request(1, "GET",
+		"/api/catalog/prices?kind=battery&page_size=10", "")))
+	if battery.Total != 95 {
+		t.Fatalf("kind=battery must be the battery catalogue: %+v", battery)
 	}
 }
 

@@ -14,15 +14,26 @@ const priceOf = (branch: number, min: string, suggested: string, updatedAt = '20
 });
 // One row per battery: both polarities share the same price.
 const batteryOf = (overrides: Record<string, unknown> = {}) => ({
-  catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarities: ['L', 'R'],
+  kind: 'battery', catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarities: ['L', 'R'],
   cells: ['B5', 'C5', 'D5'],
   prices: [priceOf(2, '85000.00', '96000.00'), priceOf(3, '88000.00', '99000.00', '2026-11-02T10:00:00Z')], ...overrides,
 });
 const unpriced = {
-  catalog_entry_id: 3, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarities: ['R'], cells: ['F5'], prices: [],
+  kind: 'battery', catalog_entry_id: 3, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarities: ['R'], cells: ['F5'],
+  prices: [],
 };
-const pageBody = (batteries: readonly unknown[] = [batteryOf(), unpriced]) => JSON.stringify({
-  branches, batteries, page: 1, page_size: 10, total_batteries: 95,
+const pageBody = (rows: readonly unknown[] = [batteryOf(), unpriced], total = 95) => JSON.stringify({
+  branches, rows, page: 1, page_size: 10, total,
+});
+// The product tab reads the same envelope with the other row shape: the name the
+// catalogue publishes and the summary of its typed fields, and no battery attribute.
+const productOf = (overrides: Record<string, unknown> = {}) => ({
+  kind: 'other', catalog_entry_id: 11, name: 'Agua acidulada', detail: 'volumen en L: 5 L',
+  prices: [priceOf(2, '1500.00', '1800.00'), priceOf(3, '1600.00', '1900.00', '2026-11-02T10:00:00Z')], ...overrides,
+});
+const unpricedProduct = { kind: 'other', catalog_entry_id: 12, name: 'Alcohol 96', detail: 'volumen en L: 1 L', prices: [] };
+const productPageBody = (rows: readonly unknown[] = [productOf(), unpricedProduct], total = 4) => JSON.stringify({
+  branches, rows, page: 1, page_size: 10, total,
 });
 const resultBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   catalog_entry_id: 1, written: 2, branch_ids: [2, 3], min_price: '85000.00', suggested_price: '96000.00',
@@ -30,7 +41,7 @@ const resultBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
 });
 
 function harness(options: {
-  page?: () => Response | Promise<Response>;
+  page?: (url: string) => Response | Promise<Response>;
   write?: (body: string) => Response | Promise<Response>;
 } = {}) {
   const calls: { url: string; init: RequestInit }[] = [];
@@ -38,7 +49,10 @@ function harness(options: {
     const url = String(input);
     calls.push({ url, init });
     if (url === '/api/catalog/prices') return options.write?.(String(init.body)) ?? json(resultBody());
-    if (url.startsWith('/api/catalog/prices?')) return options.page?.() ?? json(pageBody());
+    // The product tab is the same read with the other kind: the default page follows it.
+    if (url.startsWith('/api/catalog/prices?')) {
+      return options.page?.(url) ?? json(url.includes('kind=other') ? productPageBody() : pageBody());
+    }
     throw new Error('Unexpected mocked URL: ' + url);
   });
   return { fetcher, calls, reads: () => calls.filter(call => call.url.startsWith('/api/catalog/prices?')),
@@ -56,6 +70,11 @@ const amount = (detail: HTMLElement, label: string) => within(detail).getByRole(
 async function ready(h: ReturnType<typeof harness>) {
   render(<CatalogPrices csrf={csrf} brands={['CAR', 'TOYO']} fetcher={h.fetcher} />);
   await screen.findByRole('table');
+}
+/** The product tab of the same section: one click away from the battery page. */
+async function productTab() {
+  fireEvent.click(screen.getByRole('tab', { name: 'Otros productos' }));
+  await screen.findByText('Agua acidulada');
 }
 
 describe('catalogue matrix', () => {
@@ -76,7 +95,7 @@ describe('catalogue matrix', () => {
     expect(screen.getAllByRole('row').filter(row => row.hasAttribute('aria-controls'))).toHaveLength(2);
     expect(screen.queryByText(/garantía/i)).not.toBeInTheDocument();
     expect(screen.getByText('95 baterías · desplegá una batería para cargar o cambiar sus precios')).toBeInTheDocument();
-    expect(h.reads()[0].url).toBe('/api/catalog/prices?page=1&page_size=10');
+    expect(h.reads()[0].url).toBe('/api/catalog/prices?kind=battery&page=1&page_size=10');
     expect(h.reads()[0].init).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
   });
 
@@ -105,12 +124,126 @@ describe('catalogue matrix', () => {
     const h = harness();
     await ready(h);
     fireEvent.change(screen.getByLabelText('Marca'), { target: { value: 'CAR' } });
-    await waitFor(() => expect(h.reads().at(-1)?.url).toBe('/api/catalog/prices?brand=CAR&page=1&page_size=10'));
+    await waitFor(() => expect(h.reads().at(-1)?.url).toBe('/api/catalog/prices?kind=battery&brand=CAR&page=1&page_size=10'));
     fireEvent.change(screen.getByLabelText('Capacidad'), { target: { value: '45' } });
-    await waitFor(() => expect(h.reads().at(-1)?.url).toBe('/api/catalog/prices?brand=CAR&capacity=45&page=1&page_size=10'));
+    await waitFor(() => expect(h.reads().at(-1)?.url).toBe('/api/catalog/prices?kind=battery&brand=CAR&capacity=45&page=1&page_size=10'));
     fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'NS40' } });
     await waitFor(() => expect(h.reads().at(-1)?.url)
-      .toBe('/api/catalog/prices?search=NS40&brand=CAR&capacity=45&page=1&page_size=10'));
+      .toBe('/api/catalog/prices?kind=battery&search=NS40&brand=CAR&capacity=45&page=1&page_size=10'));
+  });
+});
+
+describe('catalogue tabs', () => {
+  it('opens on the battery tab, with the same two tabs the stock screens use', async () => {
+    const h = harness();
+    await ready(h);
+    const tabs = screen.getByRole('tablist', { name: 'Tipo de producto del catálogo de precios' });
+    expect(within(tabs).getByRole('tab', { name: 'Baterías' })).toHaveAttribute('aria-selected', 'true');
+    expect(within(tabs).getByRole('tab', { name: 'Otros productos' })).toHaveAttribute('aria-selected', 'false');
+    expect(screen.getByRole('columnheader', { name: 'Batería' })).toBeInTheDocument();
+    expect(h.reads()[0].url).toContain('kind=battery');
+  });
+
+  it('switches the kind of the read, and back, without keeping the battery filters', async () => {
+    const h = harness();
+    await ready(h);
+    fireEvent.change(screen.getByLabelText('Marca'), { target: { value: 'CAR' } });
+    await waitFor(() => expect(h.reads().at(-1)?.url).toContain('brand=CAR'));
+    await productTab();
+    // The product page asks for one kind and nothing else: no brand, no capacity.
+    expect(h.reads().at(-1)?.url).toBe('/api/catalog/prices?kind=other&page=1&page_size=10');
+    expect(screen.getByRole('tab', { name: 'Otros productos' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Baterías' })).toHaveAttribute('aria-selected', 'false');
+    expect(screen.getByLabelText('Buscar nombre o dato del producto')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Marca')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Capacidad')).not.toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Producto' })).toBeInTheDocument();
+    expect(screen.getByText('4 productos · desplegá un producto para cargar o cambiar sus precios')).toBeInTheDocument();
+    // The battery tab reads the battery page again, with no filter carried over either.
+    fireEvent.click(screen.getByRole('tab', { name: 'Baterías' }));
+    await screen.findByText('CAR NS40ZL');
+    expect(h.reads().at(-1)?.url).toBe('/api/catalog/prices?kind=battery&page=1&page_size=10');
+    expect(screen.getByRole('columnheader', { name: 'Batería' })).toBeInTheDocument();
+  });
+
+  it('closes the unfolded row of the tab it leaves, so no draft crosses kinds', async () => {
+    const h = harness();
+    await ready(h);
+    openRow('CAR NS40ZL');
+    expect(pickRow('CAR NS40ZL')).toHaveAttribute('aria-expanded', 'true');
+    await productTab();
+    // The draft of the battery row is gone whole: no amount field survives the tab.
+    expect(screen.queryByRole('heading', { name: 'Precios de CAR NS40ZL' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox', { name: 'Precio mínimo de venta' })).toBeNull();
+    expect(pickRow('Agua acidulada')).toHaveAttribute('aria-expanded', 'false');
+  });
+});
+
+describe('product catalogue', () => {
+  it('shows the product name with its detail under it and no capacity at all', async () => {
+    const h = harness();
+    await ready(h);
+    await productTab();
+    const row = pickRow('Agua acidulada');
+    expect(within(row).getByText('Agua acidulada')).toBeInTheDocument();
+    expect(within(row).getByText('volumen en L: 5 L')).toBeInTheDocument();
+    // Neither capacity nor polarity exists for a product, so neither is rendered.
+    expect(within(row).queryByText(/Ah/)).toBeNull();
+    expect(within(row).queryByText(/Polaridad/)).toBeNull();
+    expect(within(row).getByText('A')).toBeInTheDocument();
+    expect(within(row).getByText('C sin precio')).toBeInTheDocument();
+    expect(within(pickRow('Alcohol 96')).getByText('volumen en L: 1 L')).toBeInTheDocument();
+  });
+
+  it('unfolds the same two amounts and the per-branch list without the polarity legend', async () => {
+    const h = harness();
+    await ready(h);
+    await productTab();
+    const detail = openRow('Agua acidulada');
+    expect(within(detail).getByRole('heading', { name: 'Precios de Agua acidulada' })).toBeInTheDocument();
+    expect(within(detail).getByText('volumen en L: 5 L')).toBeInTheDocument();
+    // The legend names the two polarities of a battery: a product has none.
+    expect(within(detail).queryByText(/Un mismo precio para/)).toBeNull();
+    expect(amount(detail, 'Precio mínimo de venta')).toHaveValue('1500');
+    expect(amount(detail, 'Precio sugerido de venta')).toHaveValue('1800');
+    expect(within(detail).getByRole('checkbox', { name: 'Aplicar a Sucursal A' })).toBeChecked();
+    expect(within(detail).getByRole('checkbox', { name: 'Aplicar a Sucursal B' })).toBeChecked();
+    expect(within(detail).getByRole('checkbox', { name: 'Aplicar a Sucursal C' })).not.toBeChecked();
+    expect(within(detail).getByRole('button', { name: 'Aplicar a 2 sucursales' })).toBeInTheDocument();
+  });
+
+  it('writes the product price with the unchanged body of the battery price', async () => {
+    const h = harness({
+      write: () => json(resultBody({ catalog_entry_id: 11, min_price: '1500.00', suggested_price: '1800.00' })),
+    });
+    await ready(h);
+    await productTab();
+    const detail = openRow('Agua acidulada');
+    fireEvent.click(within(detail).getByRole('button', { name: 'Aplicar a 2 sucursales' }));
+    await waitFor(() => expect(h.writes()).toHaveLength(1));
+    // Same entry, same pair, same branches: the write never carried a kind.
+    expect(JSON.parse(String(h.writes()[0].init.body))).toEqual({
+      catalog_entry_id: 11, min_price: '1500', suggested_price: '1800', branch_ids: [2, 3],
+    });
+    expect(await screen.findByText(/Precios aplicados: Agua acidulada · mínimo \$ 1\.500 · sugerido \$ 1\.800 en 2 sucursales\./))
+      .toBeInTheDocument();
+    expect(pickRow('Agua acidulada')).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('mirrors the server rules on a product before sending anything', async () => {
+    const h = harness();
+    await ready(h);
+    await productTab();
+    const detail = openRow('Agua acidulada');
+    fireEvent.change(amount(detail, 'Precio sugerido de venta'), { target: { value: '1000' } });
+    fireEvent.click(within(detail).getByRole('button', { name: /^Aplicar a / }));
+    expect(within(detail).getByRole('alert')).toHaveTextContent(catalogPriceOrderMessage);
+    fireEvent.change(amount(detail, 'Precio sugerido de venta'), { target: { value: '1800' } });
+    fireEvent.click(within(detail).getByRole('checkbox', { name: 'Aplicar a Sucursal A' }));
+    fireEvent.click(within(detail).getByRole('checkbox', { name: 'Aplicar a Sucursal B' }));
+    fireEvent.click(within(detail).getByRole('button', { name: 'Aplicar a 0 sucursales' }));
+    expect(within(detail).getByRole('alert')).toHaveTextContent(catalogPriceBranchMessage);
+    expect(h.writes()).toHaveLength(0);
   });
 });
 
@@ -280,11 +413,11 @@ describe('catalogue with the persisted preview shape', () => {
     updated_at: updatedAt, updated_by_account_id: 1, updated_by_display_name: '',
   });
   const previewBattery = {
-    catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarities: ['L', 'R'], cells: ['B5'],
-    prices: [persisted(2), persisted(3, '2026-11-04T23:14:07.123456Z')],
+    kind: 'battery', catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarities: ['L', 'R'],
+    cells: ['B5'], prices: [persisted(2), persisted(3, '2026-11-04T23:14:07.123456Z')],
   };
   const previewPage = () => json(JSON.stringify({
-    branches: previewBranches, batteries: [previewBattery], page: 1, page_size: 10, total_batteries: 95,
+    branches: previewBranches, rows: [previewBattery], page: 1, page_size: 10, total: 95,
   }));
 
   it('re-reads and renders the matrix after a write', async () => {

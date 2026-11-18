@@ -223,14 +223,16 @@ export function parseCatalogBattery(raw: string): CatalogBatteryRecord {
  */
 export function parseCatalogBatteryPage(raw: string): CatalogBatteryPage {
   const matrix = parseCatalogPrices(raw);
-  const rows = matrix.batteries.map(battery => Object.freeze({
-    id: battery.catalog_entry_id, brand: battery.brand, model: battery.model,
-    capacity_ah: battery.capacity_ah, polarities: battery.polarities,
-    priced_branches: battery.prices.length,
-  }));
+  // This screen asked for the battery page: a row of the other kind is a reply it
+  // never asked for and never renders, so it refuses the page instead of skipping it.
+  const rows = matrix.rows.map(row => {
+    if (row.kind !== 'battery') return invalidResponse();
+    return Object.freeze({ id: row.catalog_entry_id, brand: row.brand, model: row.model,
+      capacity_ah: row.capacity_ah, polarities: row.polarities, priced_branches: row.prices.length });
+  });
   return Object.freeze({
     rows: Object.freeze(rows), page: matrix.page, page_size: matrix.page_size,
-    total_batteries: matrix.total_batteries,
+    total_batteries: matrix.total,
   });
 }
 
