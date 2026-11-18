@@ -190,6 +190,48 @@ describe('adjustment history', () => {
     expect(lines).toEqual([['Agua acidulada', 'volumen en L: 5 L', '4', '7', '+3']]);
   });
 
+  // The baseline binary accepted a document whose lines mixed a battery and a
+  // product, so such documents exist in a real database and the history honestly
+  // publishes no kind for them. Its panel renders every persisted line by its own
+  // identity instead of choosing one table shape from the first line: the battery
+  // line keeps its battery cells, the product line its name and detail, and no
+  // line of the document is dropped.
+  it('renders every line of a mixed document by its own identity', async () => {
+    const h = harness({
+      history: () => historyReply([summary({ id: 12, kind: null, lines: 2, total_difference: 0 })]),
+      detail: () => detailReply({ id: 12, created_at: '2026-11-06T10:00:00Z', lines: [
+        detailLine({ expected_quantity: 13, counted_quantity: 10, difference: -3 }),
+        productDetailLine({ expected_quantity: 4, counted_quantity: 7, difference: 3 })],
+      total_difference: 0 }),
+    });
+    render(<StockAdjustment csrf={csrf} fetcher={h.fetcher} />);
+    await within(historial()).findByText('#12');
+    // The history states that the kind of this document is unknown, never a guess,
+    // and it reports both persisted lines.
+    expect(cellsOf(rowOf(12))[1]).toBe('—');
+    expect(cellsOf(rowOf(12))[4]).toBe('2');
+    fireEvent.click(disclosure(12));
+    const panel = document.getElementById('adjustment-lines-12')!;
+    expect(await within(panel).findByText('TOYO · NS60L')).toBeInTheDocument();
+    expect(within(panel).getByText('Agua acidulada')).toBeInTheDocument();
+    const batteries = panel.querySelector<HTMLElement>('table[data-kind="battery"]')!;
+    const products = panel.querySelector<HTMLElement>('table[data-kind="other"]')!;
+    expect(batteries).not.toBeNull();
+    expect(products).not.toBeNull();
+    expect(within(batteries).getAllByRole('columnheader').map(cell => cell.textContent))
+      .toEqual(['Producto', 'Capacidad', 'Polaridad', 'Esperado', 'Contado', 'Diferencia']);
+    expect(within(products).getAllByRole('columnheader').map(cell => cell.textContent))
+      .toEqual(['Producto', 'Detalle', 'Esperado', 'Contado', 'Diferencia']);
+    const linesOf = (table: HTMLElement) => within(table).getAllByRole('row').slice(1)
+      .map(row => within(row).getAllByRole('cell').map(cell => cell.textContent));
+    expect(linesOf(batteries)).toEqual([['TOYO · NS60L', '45 Ah', 'L', '13', '10', '-3']]);
+    expect(linesOf(products)).toEqual([['Agua acidulada', 'volumen en L: 5 L', '4', '7', '+3']]);
+    // Two lines were persisted and two are on screen: nothing is hidden and no
+    // battery cell is invented for the product.
+    expect(within(panel).getAllByRole('row')).toHaveLength(4);
+    expect(panel.querySelector('table[data-kind="other"]')!.textContent).not.toContain('45 Ah');
+  });
+
   it('expands a document in place with expected, counted and difference', async () => {
     const h = harness();
     await ready(h);

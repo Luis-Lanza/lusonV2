@@ -27,7 +27,7 @@ brand. Locations remain `1:Almacén`, `2:Sucursal A`, `3:Sucursal B`.
 | --- | --- |
 | `location_id` | Required positive decimal integer, existing location 1–3; no GLOBAL/0 |
 | `kind` | Optional `all`, `battery` or `other`; absent means `battery` |
-| `search` | Optional literal, case-insensitive substring over a battery's brand and model, or over an other product's name and typed field values (text, or a number's decimal text); maximum 128 UTF-8 bytes; empty means no search |
+| `search` | Optional literal, case-insensitive substring over a battery's brand and model, or over an other product's name, its typed field values (text, or a number's decimal text) and its field names and units; maximum 128 UTF-8 bytes; empty means no search |
 | `brand` | Optional nonempty exact PostgreSQL brand, including case; maximum 128 UTF-8 bytes |
 | `polarity` | Optional explicit `L` or `R`; never inferred from model suffix |
 | `page` | Default 1; positive decimal digits, maximum 1,000,000 |

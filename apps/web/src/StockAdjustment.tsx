@@ -59,6 +59,16 @@ const deltaClass = (value: number) => value > 0 ? 'adjustment-delta positive' : 
 // name and the detail the server composes from its typed fields.
 const detailBatteryLines = (lines: readonly StockAdjustmentDetailLine[]) =>
   lines.flatMap(line => line.battery === null ? [] : [{ line, battery: line.battery }]);
+/**
+ * The lines of one expanded document, grouped by their own kind. A document is of
+ * one kind, but a document written before the one-kind rule can carry lines of
+ * both: the panel then renders one table per kind instead of choosing one shape
+ * from the first line and hiding the rest.
+ */
+const detailGroups = (lines: readonly StockAdjustmentDetailLine[]) => stockAdjustmentKinds
+  .map(kind => ({ kind, lines: lines.filter(line => line.kind === kind) }))
+  .filter(group => group.lines.length > 0);
+const detailGroupName = (kind: Kind) => kind === 'battery' ? 'baterías' : 'otros productos';
 const focusableWithin = (element: HTMLElement | null) => Array.from(element?.querySelectorAll<HTMLElement>(
   'button:not(:disabled), textarea:not(:disabled), input:not(:disabled), select:not(:disabled), a[href]') ?? []);
 
@@ -382,53 +392,59 @@ export default function StockAdjustment({ csrf, fetcher = globalThis.fetch, real
 
   function detailPanel(row: StockAdjustmentSummary) {
     const view = detail && detail.id === row.id ? detail : { id: row.id, phase: 'loading' as const, document: null, problem: '' };
-    // A document is of one kind, so a product document reads the name and the
-    // detail of every line and never invents a battery cell.
-    const detailKind = view.document && view.document.lines.length > 0 ? view.document.lines[0].kind : null;
+    const document = view.phase === 'ready' ? view.document : null;
+    // Every line is rendered by its own identity: a battery line keeps its battery
+    // cells and a product line shows its name and detail, so a document whose
+    // lines disagree (or whose kind the server could not name) hides nothing and
+    // invents no cell.
+    const groups = document ? detailGroups(document.lines) : [];
     return <div className="adjustment-lines" aria-busy={view.phase === 'loading'}>
       {view.phase === 'loading' && <p className="stock-message">Consultando el detalle del ajuste…</p>}
       {view.phase === 'error' && <p role="alert" className="stock-message">{view.problem}
         <button type="button" onClick={() => setDetailRevision(value => value + 1)}>Reintentar detalle</button></p>}
-      {view.phase === 'ready' && view.document && <>
+      {document && <>
         <dl className="adjustment-summary">
-          <div><dt>Documento</dt><dd>#{view.document.id}</dd></div>
-          <div><dt>Fecha</dt><dd><TransferDate value={view.document.created_at} /></dd></div>
-          <div><dt>Motivo</dt><dd>{view.document.reason}</dd></div>
-          <div><dt>Diferencia total</dt><dd><span className={deltaClass(view.document.total_difference)}>{signed(view.document.total_difference)}</span></dd></div>
-          {view.document.detail !== '' && <div><dt>Detalle</dt><dd>{view.document.detail}</dd></div>}
+          <div><dt>Documento</dt><dd>#{document.id}</dd></div>
+          <div><dt>Fecha</dt><dd><TransferDate value={document.created_at} /></dd></div>
+          <div><dt>Motivo</dt><dd>{document.reason}</dd></div>
+          <div><dt>Diferencia total</dt><dd><span className={deltaClass(document.total_difference)}>{signed(document.total_difference)}</span></dd></div>
+          {document.detail !== '' && <div><dt>Detalle</dt><dd>{document.detail}</dd></div>}
         </dl>
-        <div className="stock-table-wrap">
-          {detailKind === 'other'
-            ? <table className="stock-table adjustment-line-table">
-              <caption className="sr-only">Líneas del ajuste #{view.document.id} con esperado, contado y diferencia</caption>
-              <thead><tr><th scope="col">Producto</th><th scope="col">Detalle</th>
-                <th scope="col">Esperado</th><th scope="col">Contado</th><th scope="col">Diferencia</th></tr></thead>
-              <tbody>{view.document.lines.map(line => <tr key={line.variant_id} data-variant-id={line.variant_id}>
-                <td data-label="Producto"><strong>{line.name}</strong></td>
-                <td data-label="Detalle">{line.detail}</td>
-                <td data-label="Esperado">{line.expected_quantity}</td>
-                <td data-label="Contado">{line.counted_quantity}</td>
-                <td data-label="Diferencia"><span className={deltaClass(line.difference)}>{signed(line.difference)}</span></td>
-              </tr>)}</tbody>
-            </table>
-            : <table className="stock-table adjustment-line-table">
-              <caption className="sr-only">Líneas del ajuste #{view.document.id} con esperado, contado y diferencia</caption>
-              <thead><tr><th scope="col">Producto</th><th scope="col">Capacidad</th><th scope="col">Polaridad</th>
-                <th scope="col">Esperado</th><th scope="col">Contado</th><th scope="col">Diferencia</th></tr></thead>
-              <tbody>{detailBatteryLines(view.document.lines).map(({ line, battery }) => <tr key={line.variant_id} data-variant-id={line.variant_id}>
-                <td data-label="Producto"><strong>{line.name}</strong></td>
-                <td data-label="Capacidad">{battery.capacity_ah} Ah</td>
-                <td data-label="Polaridad"><span className="polarity">{battery.polarity}</span></td>
-                <td data-label="Esperado">{line.expected_quantity}</td>
-                <td data-label="Contado">{line.counted_quantity}</td>
-                <td data-label="Diferencia"><span className={deltaClass(line.difference)}>{signed(line.difference)}</span></td>
-              </tr>)}</tbody>
-            </table>}
-        </div>
-        {view.document.reverses_adjustment_id !== null &&
-          <p className="stock-hint">{`Contra-asiento del documento #${view.document.reverses_adjustment_id}.`}</p>}
-        {view.document.reversed_by !== null &&
-          <p className="stock-hint">{`Revertido por el contra-asiento #${view.document.reversed_by} · motivo: “${view.document.reversed_by_reason}”.`}</p>}
+        {groups.map(group => <div className="stock-table-wrap" key={group.kind}>
+          <table className="stock-table adjustment-line-table" data-kind={group.kind}>
+            <caption className="sr-only">{groups.length > 1
+              ? `Líneas de ${detailGroupName(group.kind)} del ajuste #${document.id} con esperado, contado y diferencia`
+              : `Líneas del ajuste #${document.id} con esperado, contado y diferencia`}</caption>
+            {group.kind === 'battery'
+              ? <>
+                <thead><tr><th scope="col">Producto</th><th scope="col">Capacidad</th><th scope="col">Polaridad</th>
+                  <th scope="col">Esperado</th><th scope="col">Contado</th><th scope="col">Diferencia</th></tr></thead>
+                <tbody>{detailBatteryLines(group.lines).map(({ line, battery }) => <tr key={line.variant_id} data-variant-id={line.variant_id}>
+                  <td data-label="Producto"><strong>{line.name}</strong></td>
+                  <td data-label="Capacidad">{battery.capacity_ah} Ah</td>
+                  <td data-label="Polaridad"><span className="polarity">{battery.polarity}</span></td>
+                  <td data-label="Esperado">{line.expected_quantity}</td>
+                  <td data-label="Contado">{line.counted_quantity}</td>
+                  <td data-label="Diferencia"><span className={deltaClass(line.difference)}>{signed(line.difference)}</span></td>
+                </tr>)}</tbody>
+              </>
+              : <>
+                <thead><tr><th scope="col">Producto</th><th scope="col">Detalle</th>
+                  <th scope="col">Esperado</th><th scope="col">Contado</th><th scope="col">Diferencia</th></tr></thead>
+                <tbody>{group.lines.map(line => <tr key={line.variant_id} data-variant-id={line.variant_id}>
+                  <td data-label="Producto"><strong>{line.name}</strong></td>
+                  <td data-label="Detalle">{line.detail}</td>
+                  <td data-label="Esperado">{line.expected_quantity}</td>
+                  <td data-label="Contado">{line.counted_quantity}</td>
+                  <td data-label="Diferencia"><span className={deltaClass(line.difference)}>{signed(line.difference)}</span></td>
+                </tr>)}</tbody>
+              </>}
+          </table>
+        </div>)}
+        {document.reverses_adjustment_id !== null &&
+          <p className="stock-hint">{`Contra-asiento del documento #${document.reverses_adjustment_id}.`}</p>}
+        {document.reversed_by !== null &&
+          <p className="stock-hint">{`Revertido por el contra-asiento #${document.reversed_by} · motivo: “${document.reversed_by_reason}”.`}</p>}
         <p className="stock-hint">El esperado es la foto del momento del ajuste: el stock actual puede haber cambiado.</p>
       </>}
     </div>;

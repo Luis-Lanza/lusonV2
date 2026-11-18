@@ -186,3 +186,16 @@ constructor (`catalog.Row.Identity`) exactly as the store does; the comparison w
 loosened, and two mutations (a divergent name, a one-unit stock change) proved it still
 fails on a real difference. `make test-pg` is green in one cycle over every package and the
 web suite is green with 4046 tests.
+
+L13. Independent verification (Risk items 3 and 1) reproduced the whole vertical against
+the base binary on the same database: 23 battery queries identical, a mixed document
+refused with its balances unchanged (md5 equal before and after), a product ingress and
+adjustment written and read back, the blind count verbatim, a branch still battery-only,
+and the contract keys exact. It found one blocker: the adjustment detail chose its table
+shape from `lines[0]`, so a document whose lines disagree — writable by the base binary,
+whose detail then answered 503 — rendered one row where two were persisted. Each line is
+now rendered by its own identity, one table per kind, and the regression test asserts both
+rows of a mixed document with their own shapes. The same round pinned S3 with a test that a
+stocked product whose name matches the search never enters a default listing, and widened
+the product search to field names and units, so a term the row displays finds the row.
+`make test-pg` is green over all twenty packages and the web suite is green with 4047 tests.

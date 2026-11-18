@@ -79,6 +79,10 @@ func TestInventorySearchReadsProductFields(t *testing.T) {
 	actor := auth.Identity{AccountID: 1, Location: auth.Location{ID: 1}}
 	_, watery := otherProduct(t, ctx, p, "Agua acidulada", "volumen en L", "L", "5")
 	_, gloved := otherTextProduct(t, ctx, p, "Guantes de nitrilo", "presentación", "pack x12")
+	// The field's own name and its unit are part of what the row shows, so they are
+	// searchable too: neither "Litros" nor "bidón" appears in this product's name
+	// or in the value of its field.
+	_, litred := otherProduct(t, ctx, p, "Refrigerante listo", "Litros", "bidón", "7")
 
 	product := func(search string, kind catalog.KindFilter) Page {
 		t.Helper()
@@ -105,12 +109,21 @@ func TestInventorySearchReadsProductFields(t *testing.T) {
 		byText.Items[0].Detail != "presentación: pack x12" {
 		t.Fatalf("a text field value must select its product: %+v", byText)
 	}
+	// The name of the field selects it, and so does its unit: the row displays both,
+	// and a term a row displays must answer that row.
+	for _, term := range []string{"Litros", "bidón"} {
+		byFieldPart := product(term, catalog.OtherOnly)
+		if byFieldPart.TotalVariants != 1 || len(byFieldPart.Items) != 1 || byFieldPart.Items[0].VariantID != litred ||
+			byFieldPart.Items[0].Detail != "Litros: 7 bidón" {
+			t.Fatalf("the field term %q must select its product: %+v", term, byFieldPart)
+		}
+	}
 	// Both kinds together answer the same product, and the battery-only listing
 	// never gains one: a field term belongs to its product and nowhere else.
 	if both := product("x12", catalog.AllKinds); both.TotalVariants != 1 || both.Items[0].VariantID != gloved {
 		t.Fatalf("the all-kinds search must answer the product: %+v", both)
 	}
-	for _, term := range []string{"x12", "volumen", "acidulada"} {
+	for _, term := range []string{"x12", "volumen", "acidulada", "Litros", "bidón"} {
 		if batteries := product(term, ""); batteries.TotalVariants != 0 || len(batteries.Items) != 0 {
 			t.Fatalf("the battery listing must not gain a product for %q: %+v", term, batteries)
 		}
