@@ -13,10 +13,14 @@ const countedLine = (overrides: Record<string, unknown> = {}) => ({
   polarity: 'L', expected_quantity: 12, counted_quantity: 12, ...overrides,
 });
 
-/** One row of the branch's own catalogue: every variant of the branch, stock or not. */
-const catalogueItem = (overrides: Record<string, unknown> = {}) => ({
-  variant_id: 1, catalog_entry_id: 1, brand: 'Bosch', model: 'S4', capacity_ah: 45,
-  polarity: 'L', existing: 12, reserved: 0, available: 12, ...overrides,
+/** One row of the branch's own catalogue: every variant of the branch, stock or not, as the
+ * inventory read publishes it: the variant identity of its kind plus its three stock numbers. */
+const catalogueItem = ({ brand = 'Bosch', model = 'S4', capacity_ah = '45', polarity = 'L',
+  ...overrides }: Record<string, unknown> = {}) => ({
+  variant_id: 1, catalog_entry_id: 1, kind: 'battery', name: `${brand} · ${model}`,
+  detail: `${capacity_ah} Ah · ${polarity}`,
+  battery: { brand, model, capacity_ah, polarity }, fields: null,
+  existing: 12, reserved: 0, available: 12, ...overrides,
 });
 
 /** One used line of the material sheet: whole units per model (S7, S8). */
@@ -51,13 +55,13 @@ const materialSheet = (counts: ReadonlyMap<string, string | null>) => [
  */
 const cataloguePage = (search: string) => {
   const items = [catalogueItem(),
-    catalogueItem({ variant_id: 2, polarity: 'R', model: 'Power', capacity_ah: 110, existing: 9, available: 9 }),
-    catalogueItem({ variant_id: 3, model: 'Blue', capacity_ah: 60, existing: 14, available: 14 }),
+    catalogueItem({ variant_id: 2, polarity: 'R', model: 'Power', capacity_ah: '110', existing: 9, available: 9 }),
+    catalogueItem({ variant_id: 3, model: 'Blue', capacity_ah: '60', existing: 14, available: 14 }),
     catalogueItem({ variant_id: 20, catalog_entry_id: 11, brand: 'Toyo', model: 'NS60',
-      capacity_ah: 65, polarity: 'R', existing: 0, available: 0 }),
+      capacity_ah: '65', polarity: 'R', existing: 0, available: 0 }),
     catalogueItem({ variant_id: 21, catalog_entry_id: 11, brand: 'Toyo', model: 'NS60',
-      capacity_ah: 65, polarity: 'L', existing: 4, available: 4 })].filter(item =>
-    search === '' || `${item.brand} ${item.model}`.toLowerCase().includes(search.toLowerCase()));
+      capacity_ah: '65', polarity: 'L', existing: 4, available: 4 })].filter(item =>
+    search === '' || `${item.battery.brand} ${item.battery.model}`.toLowerCase().includes(search.toLowerCase()));
   return { location: { id: 2, name: 'Sopocachi' }, page: 1, page_size: 50,
     total_variants: items.length, items };
 };

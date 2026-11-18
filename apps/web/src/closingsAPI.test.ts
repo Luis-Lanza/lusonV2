@@ -726,10 +726,12 @@ describe('the branch catalogue of the count sheet (S4, S5)', () => {
   const inventory = (overrides: Record<string, unknown> = {}) => ({
     location: { id: 2, name: 'Sopocachi' }, page: 1, page_size: 50, total_variants: 2,
     items: [
-      { variant_id: 1, catalog_entry_id: 1, brand: 'Bosch', model: 'S4', capacity_ah: 45,
-        polarity: 'L', existing: 12, reserved: 0, available: 12 },
-      { variant_id: 20, catalog_entry_id: 11, brand: 'Toyo', model: 'NS60', capacity_ah: 65,
-        polarity: 'R', existing: 0, reserved: 0, available: 0 },
+      { variant_id: 1, catalog_entry_id: 1, kind: 'battery', name: 'Bosch · S4', detail: '45 Ah · L',
+        battery: { brand: 'Bosch', model: 'S4', capacity_ah: '45', polarity: 'L' }, fields: null,
+        existing: 12, reserved: 0, available: 12 },
+      { variant_id: 20, catalog_entry_id: 11, kind: 'battery', name: 'Toyo · NS60', detail: '65 Ah · R',
+        battery: { brand: 'Toyo', model: 'NS60', capacity_ah: '65', polarity: 'R' }, fields: null,
+        existing: 0, reserved: 0, available: 0 },
     ], ...overrides,
   });
 

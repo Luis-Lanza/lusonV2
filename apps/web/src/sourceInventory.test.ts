@@ -3,7 +3,7 @@ import { filterSourceInventory, loadSourceInventory, SourceInventoryError } from
 
 // Raw numeric wire tokens, not JSON.stringify(bigint) or rounded JS quantities.
 function row(id: number, stock = '9223372036854775807', entry = Math.ceil(id / 2)): string {
-  return `{"variant_id":${id},"catalog_entry_id":${entry},"brand":"TOYO","model":"M+_%","capacity_ah":6.000001,"polarity":"L","existing":${stock},"reserved":0,"available":${stock}}`;
+  return `{"variant_id":${id},"catalog_entry_id":${entry},"kind":"battery","name":"TOYO · M+_%","detail":"6.000001 Ah · L","battery":{"brand":"TOYO","model":"M+_%","capacity_ah":"6.000001","polarity":"L"},"fields":null,"existing":${stock},"reserved":0,"available":${stock}}`;
 }
 function page(ids: number[], total = ids.length, current = 1, source = 1, name = 'Almacén'): string {
   return `{"location":{"id":${source},"name":"${name}"},"items":[${ids.map(id => row(id)).join(',')}],"page":${current},"page_size":50,"total_variants":${total}}`;
@@ -17,7 +17,8 @@ describe('R04 source catalog', () => {
     const fetcher = replies(page(range(1, 50), 190), page(range(51, 50), 190, 2), page(range(101, 50), 190, 3), page(range(151, 40), 190, 4));
     const catalog = await loadSourceInventory(1, {}, fetcher);
     expect(catalog.rows).toHaveLength(190);
-    expect(catalog.rows[189]).toMatchObject({ variant_id: 190, catalog_entry_id: 95, available: 9223372036854775807n, capacity_ah: '6.000001' });
+    expect(catalog.rows[189]).toMatchObject({ variant_id: 190, catalog_entry_id: 95, available: 9223372036854775807n,
+      battery: { brand: 'TOYO', model: 'M+_%', capacity_ah: '6.000001', polarity: 'L' } });
     expect(catalog.rows[0].existing).toBe(9223372036854775807n);
     for (const value of [catalog, catalog.location, catalog.rows, catalog.rows[0]]) expect(Object.isFrozen(value)).toBe(true);
     expect(fetcher).toHaveBeenCalledTimes(4);

@@ -3,7 +3,6 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import App from './App';
 import { catalogSectionFailureMessage } from './CatalogSectionBoundary';
-import { pageJSON } from './test-fixtures';
 import { useInventory } from './useInventory';
 
 const csrf = 'c'.repeat(43);
@@ -12,6 +11,10 @@ const identity = { account_id: 1, username: 'component-user', display_name: 'Ope
 const session = { authenticated: true, csrf_token: csrf, identity, expires_at: '2030-01-01T00:00:00Z' };
 const metadata = { locations: [identity.location, { id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }], brands: ['TOYO', 'CAR'] };
 const response = (value: unknown, status = 200) => new Response(typeof value === 'string' ? value : JSON.stringify(value), { status });
+// The stock wire is the variant identity plus its three stock numbers, one shape
+// for both kinds: a battery row carries its battery attributes and no typed field.
+const rowJSON = '{"variant_id":1,"catalog_entry_id":1,"kind":"battery","name":"TOYO · A_%\\\\","detail":"6.5 Ah · L","battery":{"brand":"TOYO","model":"A_%\\\\","capacity_ah":"6.5","polarity":"L"},"fields":null,"existing":9007199254740993,"reserved":1,"available":9007199254740992}';
+const pageJSON = (items = rowJSON, page = 1, total = 190) => `{"location":{"id":1,"name":"Almacén"},"items":[${items}],"page":${page},"page_size":10,"total_variants":${total}}`;
 class AppSource {
   static instances: AppSource[] = [];
   readyState = 0;
@@ -321,7 +324,7 @@ describe('R03 passive invalidation', () => {
       expect(new Headers(init?.headers).get('X-Luson-Passive')).toBe('1');
     }
     passiveCounts(mock);
-    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'manual' } });
+    fireEvent.change(screen.getByLabelText('Buscar marca, modelo o nombre'), { target: { value: 'manual' } });
     await inventory();
     expect(new Headers(mock.mock.calls.at(-1)![1]?.headers).has('X-Luson-Passive')).toBe(false);
   });
@@ -334,7 +337,7 @@ describe('R03 passive invalidation', () => {
     await login(); expect(AppSource.instances).toHaveLength(1);
     const post = mock.mock.calls.find(([url]) => String(url).endsWith('/login'))!;
     expect(post[1]?.headers).toEqual({ 'Content-Type': 'application/json', 'X-CSRF-Token': csrf });
-    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'same-source' } });
+    fireEvent.change(screen.getByLabelText('Buscar marca, modelo o nombre'), { target: { value: 'same-source' } });
     await inventory(); expect(AppSource.instances).toHaveLength(1);
   });
   it('open does not refetch; resync reads full metadata and current snapshot; transfers do not read stock', async () => {
@@ -367,7 +370,7 @@ describe('R03 passive invalidation', () => {
     });
     render(<App />); await inventory();
     fireEvent.click(screen.getByRole('button', { name: /Sucursal B/ })); await inventory();
-    const search = screen.getByLabelText('Buscar marca o modelo'); search.focus();
+    const search = screen.getByLabelText('Buscar marca, modelo o nombre'); search.focus();
     fireEvent.change(search, { target: { value: 'TOYO' } }); await inventory();
     fireEvent.change(screen.getByLabelText('Marca'), { target: { value: 'TOYO' } }); await inventory();
     fireEvent.change(screen.getByLabelText('Polaridad'), { target: { value: 'R' } }); await inventory();
@@ -393,7 +396,7 @@ describe('R03 passive invalidation', () => {
     expect(stockCalls(mock)).toHaveLength(1);
     await act(async () => pending.resolve(response(pageJSON().replace('TOYO', 'OBSOLETE'))));
     await hookInventory(result); expect(stockCalls(mock)).toHaveLength(2);
-    expect(result.current.data?.items[0].brand).toBe('TOYO');
+    expect(result.current.data?.items[0].battery?.brand).toBe('TOYO');
     expect(mock.mock.calls.filter(([url]) => String(url).endsWith('/metadata'))).toHaveLength(2);
   });
   it('invalidations during the follow-up cause another bounded latest read rather than dropping dirty work', async () => {
@@ -404,7 +407,7 @@ describe('R03 passive invalidation', () => {
     act(() => { for (let i = 0; i < 30; i++) AppSource.instances[0].emit('inventory'); });
     await act(async () => pending.resolve(response(pageJSON())));
     await waitFor(() => expect(stockCalls(mock)).toHaveLength(3)); await hookInventory(result);
-    expect(result.current.query).toEqual({ location: 1, search: '', brand: '', polarity: '', page: 1, size: 10 });
+    expect(result.current.query).toEqual({ location: 1, kind: 'all', search: '', brand: '', polarity: '', page: 1, size: 10 });
   });
   it('healthy coalesced cookie-neutral probes preserve session object, query, snapshots and CSRF', async () => {
     const probe = deferred<Response>();
@@ -668,7 +671,7 @@ describe('cookie session lifecycle', () => {
       return undefined;
     });
     render(<App />); await inventory();
-    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'wait-expiry' } });
+    fireEvent.change(screen.getByLabelText('Buscar marca, modelo o nombre'), { target: { value: 'wait-expiry' } });
     await screen.findByLabelText('Usuario');
     await waitFor(() => expect(screen.getByLabelText('Usuario')).toHaveFocus());
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
@@ -682,7 +685,7 @@ describe('cookie session lifecycle', () => {
   it('401 removes all protected rows/identity, refreshes anonymous CSRF and focuses login', async () => {
     const mock = setup(session, url => url.includes('search=expire') ? Promise.resolve(response({}, 401)) : undefined);
     render(<App />); await inventory();
-    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'expire' } });
+    fireEvent.change(screen.getByLabelText('Buscar marca, modelo o nombre'), { target: { value: 'expire' } });
     await screen.findByLabelText('Usuario');
     await waitFor(() => expect(screen.getByLabelText('Usuario')).toHaveFocus());
     expect(screen.queryByText('component-user')).not.toBeInTheDocument();
@@ -692,12 +695,66 @@ describe('cookie session lifecycle', () => {
 });
 
 describe('inventory interaction and stale guards', () => {
+  const productRow = { variant_id: 210, catalog_entry_id: 96, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L', battery: null,
+    fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }], existing: 8, reserved: 0, available: 8 };
+  const repeatedRow = { variant_id: 211, catalog_entry_id: 97, kind: 'other', name: 'Trapos de limpieza', detail: 'Trapos de limpieza', battery: null,
+    fields: [], existing: 0, reserved: 0, available: 0 };
+  const bothKinds = (url: string) => url.startsWith('/api/inventory?')
+    ? Promise.resolve(response(pageJSON(rowJSON + ',' + JSON.stringify(productRow), 1, 2))) : undefined;
+
+  it('lists both kinds by default in one name and detail pair, and refetches the kind filter', async () => {
+    const mock = setup(session, bothKinds);
+    render(<App />); await inventory();
+    const kindControl = screen.getByRole('group', { name: 'Filtrar por tipo de producto' });
+    expect(within(kindControl).getByRole('button', { name: 'Todas' })).toHaveAttribute('aria-pressed', 'true');
+    expect(within(kindControl).getByRole('button', { name: 'Baterías' })).toHaveAttribute('aria-pressed', 'false');
+    expect(new URL(String(stockCalls(mock)[0][0]), 'http://localhost').searchParams.get('kind')).toBe('all');
+    // One table of name plus detail: the battery columns are gone.
+    const table = screen.getByRole('table');
+    expect(within(table).getByRole('columnheader', { name: 'Producto' })).toBeInTheDocument();
+    expect(within(table).getByRole('columnheader', { name: 'Detalle' })).toBeInTheDocument();
+    expect(within(table).queryByRole('columnheader', { name: 'Marca' })).not.toBeInTheDocument();
+    expect(within(table).getByRole('row', { name: /CAR|TOYO/ })).toHaveTextContent('6.5 Ah · L');
+    const product = within(table).getByRole('row', { name: /Agua acidulada/ });
+    expect(product).toHaveTextContent('volumen en L: 5 L');
+    // Changing the filter is a refetch, never a client-side hide.
+    const before = stockCalls(mock).length;
+    fireEvent.click(within(kindControl).getByRole('button', { name: 'Otros productos' }));
+    await waitFor(() => expect(stockCalls(mock)).toHaveLength(before + 1));
+    const query = new URL(String(stockCalls(mock).at(-1)![0]), 'http://localhost').searchParams;
+    expect(query.get('kind')).toBe('other');
+    expect(query.get('brand')).toBeNull(); expect(query.get('polarity')).toBeNull();
+    expect(screen.getByLabelText('Marca')).toBeDisabled(); expect(screen.getByLabelText('Polaridad')).toBeDisabled();
+    expect(screen.getByText(/Marca y polaridad son atributos de las baterías/)).toBeInTheDocument();
+    // The battery-only filters are asked for again by the battery listing.
+    fireEvent.click(within(kindControl).getByRole('button', { name: 'Baterías' }));
+    await waitFor(() => expect(new URL(String(stockCalls(mock).at(-1)![0]), 'http://localhost').searchParams.get('kind')).toBe('battery'));
+    expect(screen.getByLabelText('Marca')).toBeEnabled();
+  });
+  it('never prints a product name twice when the server repeats it as the detail', async () => {
+    setup(session, url => url.startsWith('/api/inventory?') ? Promise.resolve(response(pageJSON(JSON.stringify(repeatedRow), 1, 1))) : undefined);
+    render(<App />);
+    const table = await screen.findByRole('table');
+    const row = within(table).getByRole('row', { name: /Trapos de limpieza/ });
+    expect(within(row).getAllByText('Trapos de limpieza')).toHaveLength(1);
+    expect(within(row).getAllByRole('cell')[1].textContent).toBe('');
+  });
+  it('carries the same name and detail pair in the mobile cards', async () => {
+    vi.stubGlobal('matchMedia', () => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    setup(session, bothKinds);
+    const { container } = render(<App />);
+    await screen.findByText('volumen en L: 5 L');
+    const cards = [...container.querySelectorAll('.product-card')];
+    expect(cards).toHaveLength(2);
+    expect(cards[1]).toHaveTextContent('Agua acidulada');
+    expect(cards[1]).toHaveTextContent('volumen en L: 5 L');
+  });
   it('maps filters AND omission, resets page atomically, keeps assignment and ordinary fetch focus', async () => {
     const mock = setup(session, url => url.includes('page=2') ? Promise.resolve(response(pageJSON('', 2))) : undefined);
     render(<App />); await inventory();
     fireEvent.click(screen.getByRole('button', { name: 'Página siguiente' }));
     await waitFor(() => expect(screen.getByText('2', { selector: '[aria-current="page"]' })).toBeInTheDocument());
-    const search = screen.getByLabelText('Buscar marca o modelo'); search.focus();
+    const search = screen.getByLabelText('Buscar marca, modelo o nombre'); search.focus();
     fireEvent.change(search, { target: { value: 'á_%\\' } });
     await waitFor(() => expect(mock.mock.calls.some(([url]) => String(url).includes('search='))).toBe(true));
     expect(search).toHaveFocus();
@@ -708,7 +765,7 @@ describe('inventory interaction and stale guards', () => {
     await waitFor(() => {
       const urls = mock.mock.calls.map(([url]) => String(url));
       const last = new URL(urls.at(-1)!, 'http://localhost');
-      expect(Object.fromEntries(last.searchParams)).toEqual({ location_id: '3', page: '1', page_size: '25', search: 'á_%\\', brand: 'TOYO', polarity: 'R' });
+      expect(Object.fromEntries(last.searchParams)).toEqual({ location_id: '3', page: '1', page_size: '25', kind: 'all', search: 'á_%\\', brand: 'TOYO', polarity: 'R' });
     });
     expect(screen.getByText('Almacén', { selector: '.assigned-location' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Sucursal B/ })).toHaveAttribute('aria-pressed', 'true');
@@ -719,9 +776,9 @@ describe('inventory interaction and stale guards', () => {
     let finish!: (r: Response) => void;
     const mock = setup(session, url => url.includes('search=old') ? new Promise(resolve => { finish = resolve; }) : undefined);
     render(<App />); await inventory();
-    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'old' } });
+    fireEvent.change(screen.getByLabelText('Buscar marca, modelo o nombre'), { target: { value: 'old' } });
     await waitFor(() => expect(finish).toBeTypeOf('function'));
-    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'new' } });
+    fireEvent.change(screen.getByLabelText('Buscar marca, modelo o nombre'), { target: { value: 'new' } });
     await inventory();
     const old = mock.mock.calls.find(([url]) => String(url).includes('search=old'))!;
     expect(old[1]?.signal?.aborted).toBe(true);
@@ -746,7 +803,7 @@ describe('inventory interaction and stale guards', () => {
     let finish!: (r: Response) => void;
     setup(session, url => url.includes('search=old') ? new Promise(resolve => { finish = resolve; }) : undefined);
     render(<App />); await inventory();
-    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'old' } });
+    fireEvent.change(screen.getByLabelText('Buscar marca, modelo o nombre'), { target: { value: 'old' } });
     await waitFor(() => expect(finish).toBeTypeOf('function'));
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar sesión' }));
     await login();
@@ -757,10 +814,10 @@ describe('inventory interaction and stale guards', () => {
   it('keeps results empty on current error and validates Unicode byte limit without a request', async () => {
     const mock = setup(session, url => url.includes('search=fail') ? Promise.resolve(response({}, 503)) : undefined);
     render(<App />); await inventory();
-    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'fail' } });
+    fireEvent.change(screen.getByLabelText('Buscar marca, modelo o nombre'), { target: { value: 'fail' } });
     await screen.findByText(/Servicio no disponible/); expect(screen.queryByText('9007199254740993')).not.toBeInTheDocument();
     const before = mock.mock.calls.length;
-    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'á'.repeat(65) } });
+    fireEvent.change(screen.getByLabelText('Buscar marca, modelo o nombre'), { target: { value: 'á'.repeat(65) } });
     await screen.findByText(/128 bytes/); expect(mock.mock.calls).toHaveLength(before);
   });
   it('uses warehouse-only mobile layout class, page-local singleton and server zero availability', async () => {
@@ -972,15 +1029,17 @@ describe('R04b2b App workspace entry', () => {
       const page = Number(params.get('page')); const source = Number(params.get('location_id'));
       const items = Array.from({ length: Math.min(50, 190 - (page - 1) * 50) }, (_, index) => {
         const variant = (page - 1) * 50 + index + 1;
-        return { variant_id: variant, catalog_entry_id: Math.ceil(variant / 2), brand: 'TOYO', model: `Batería ${variant}`,
-          capacity_ah: 75.125, polarity: variant % 2 ? 'L' : 'R', existing: 10, reserved: 0, available: 10 };
+        return { variant_id: variant, catalog_entry_id: Math.ceil(variant / 2), kind: 'battery',
+          name: `TOYO · Batería ${variant}`, detail: `75.125 Ah · ${variant % 2 ? 'L' : 'R'}`,
+          battery: { brand: 'TOYO', model: `Batería ${variant}`, capacity_ah: '75.125', polarity: variant % 2 ? 'L' : 'R' },
+          fields: null, existing: 10, reserved: 0, available: 10 };
       });
       return Promise.resolve(new Response(JSON.stringify({ location: metadata.locations[source - 1], page, page_size: 50, total_variants: 190, items }),
         { status: 200, headers: { 'Content-Type': 'application/json; charset=utf-8' } }));
     });
     render(<App />); await inventory();
     fireEvent.click(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })); await inventory();
-    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'TOYO' } }); await inventory();
+    fireEvent.change(screen.getByLabelText('Buscar marca, modelo o nombre'), { target: { value: 'TOYO' } }); await inventory();
     fireEvent.change(screen.getByLabelText('Marca'), { target: { value: 'TOYO' } }); await inventory();
     fireEvent.change(screen.getByLabelText('Polaridad'), { target: { value: 'L' } }); await inventory();
     fireEvent.click(screen.getByRole('button', { name: 'Página siguiente' })); await inventory();
@@ -997,7 +1056,7 @@ describe('R04b2b App workspace entry', () => {
     fireEvent.click(screen.getByRole('button', { name: /Volver a transferencias/ }));
     await screen.findByRole('heading', { name: 'Transferencias' });
     fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' })); await inventory();
-    expect(screen.getByLabelText('Buscar marca o modelo')).toHaveValue('TOYO');
+    expect(screen.getByLabelText('Buscar marca, modelo o nombre')).toHaveValue('TOYO');
     expect(screen.getByLabelText('Marca')).toHaveValue('TOYO'); expect(screen.getByLabelText('Polaridad')).toHaveValue('L');
     expect(stockCalls(mock).filter(([url]) => String(url) === String(query))).toHaveLength(1);
     expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
@@ -1043,7 +1102,9 @@ function r04b2c2App() {
       if (failedSource) return Promise.reject(new Error('failed TEST source'));
       const source = Number(new URL(url, 'http://localhost').searchParams.get('location_id'));
       return Promise.resolve(new Response(JSON.stringify({ location: metadata.locations[source - 1], page: 1, page_size: 50, total_variants: 1,
-        items: [{ variant_id: 1, catalog_entry_id: 1, brand: 'TOYO', model: 'Private selected', capacity_ah: 75.125, polarity: 'L', existing: stock, reserved: 0, available: stock }] }),
+        items: [{ variant_id: 1, catalog_entry_id: 1, kind: 'battery', name: 'TOYO · Private selected', detail: '75.125 Ah · L',
+          battery: { brand: 'TOYO', model: 'Private selected', capacity_ah: '75.125', polarity: 'L' }, fields: null,
+          existing: stock, reserved: 0, available: stock }] }),
       { status: 200, headers: { 'Content-Type': 'application/json; charset=utf-8' } }));
     }
     return undefined;
@@ -1090,13 +1151,13 @@ describe('R04b2c2 root lifetime', () => {
   it('returns through Transfers to the consulted inventory query with an owner-only recovery banner', async () => {
     const h = r04b2c2App(); render(<App />); await inventory();
     fireEvent.click(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })); await inventory();
-    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'kept-query' } }); await inventory();
+    fireEvent.change(screen.getByLabelText('Buscar marca, modelo o nombre'), { target: { value: 'kept-query' } }); await inventory();
     await r04b2c2OpenAndLose(); fireEvent.click(screen.getByRole('button', { name: 'Cerrar revisión' }));
     fireEvent.click(screen.getByRole('button', { name: '← Volver a transferencias' }));
     fireEvent.click(screen.getByRole('button', { name: 'Volver conservando el intento' }));
     await screen.findByRole('heading', { name: 'Transferencias' });
     fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' })); await inventory();
-    expect(screen.getByLabelText('Buscar marca o modelo')).toHaveValue('kept-query');
+    expect(screen.getByLabelText('Buscar marca, modelo o nombre')).toHaveValue('kept-query');
     expect(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('region', { name: 'Recuperación de solicitud' })).toHaveTextContent('Recargar o cerrar');
     expect(h.posts).toHaveLength(1); expect(h.mock.mock.calls.filter(([url]) => /^\/api\/transfers\/[1-9][0-9]*$/.test(String(url)))).toHaveLength(0);
@@ -1164,7 +1225,9 @@ function r04cApp(status: number, stalled?: ReturnType<typeof deferred<Response>>
     if (url.startsWith('/api/inventory?') && new URL(url, 'http://localhost').searchParams.get('page_size') === '50') {
       const source = Number(new URL(url, 'http://localhost').searchParams.get('location_id'));
       return Promise.resolve(new Response(JSON.stringify({ location: metadata.locations[source - 1], page: 1, page_size: 50, total_variants: 1,
-        items: [{ variant_id: 1, catalog_entry_id: 1, brand: 'TOYO', model: 'Real response', capacity_ah: 75.125, polarity: 'L', existing: 8, reserved: 0, available: 8 }] }), { headers: { 'Content-Type': 'application/json' } }));
+        items: [{ variant_id: 1, catalog_entry_id: 1, kind: 'battery', name: 'TOYO · Real response', detail: '75.125 Ah · L',
+          battery: { brand: 'TOYO', model: 'Real response', capacity_ah: '75.125', polarity: 'L' }, fields: null,
+          existing: 8, reserved: 0, available: 8 }] }), { headers: { 'Content-Type': 'application/json' } }));
     }
     return undefined;
   });
@@ -1329,7 +1392,7 @@ describe('R04c guarded success navigation', () => {
   it.each([201, 200])('opens only the validated %s record ID and returns to the unchanged inventory query', async status => {
     const h = r04cApp(status); render(<App />); await inventory();
     fireEvent.click(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })); await inventory();
-    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'kept-r04c' } }); await inventory();
+    fireEvent.change(screen.getByLabelText('Buscar marca, modelo o nombre'), { target: { value: 'kept-r04c' } }); await inventory();
     fireEvent.change(screen.getByLabelText('Marca', { exact: true }), { target: { value: 'TOYO' } }); await inventory();
     fireEvent.change(screen.getByLabelText('Polaridad', { exact: true }), { target: { value: 'L' } }); await inventory();
     fireEvent.change(screen.getByLabelText('Filas por página'), { target: { value: '10' } }); await inventory();
@@ -1349,7 +1412,7 @@ describe('R04c guarded success navigation', () => {
     expect(new Headers(reads[0][1]?.headers).has('X-Luson-Passive')).toBe(false);
     expect(h.posts).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Volver al inventario' })); await inventory();
-    expect(screen.getByLabelText('Buscar marca o modelo')).toHaveValue('kept-r04c');
+    expect(screen.getByLabelText('Buscar marca, modelo o nombre')).toHaveValue('kept-r04c');
     expect(screen.getByLabelText('Marca', { exact: true })).toHaveValue('TOYO'); expect(screen.getByLabelText('Polaridad', { exact: true })).toHaveValue('L');
     expect(screen.getByLabelText('Filas por página')).toHaveValue('10');
     expect(screen.getByRole('button', { name: /Almacén.*Solo consulta/ })).toHaveAttribute('aria-pressed', 'true'); expect(h.posts).toHaveLength(1);
@@ -1492,13 +1555,13 @@ describe('T6 password lifecycle', () => {
     const actor = { ...session, identity: { ...identity, account_id: account, location: metadata.locations[account - 1] } };
     const mock = setup(actor);
     render(<App />); await inventory();
-    fireEvent.change(screen.getByLabelText('Buscar marca o modelo'), { target: { value: 'kept-password-query' } }); await inventory();
+    fireEvent.change(screen.getByLabelText('Buscar marca, modelo o nombre'), { target: { value: 'kept-password-query' } }); await inventory();
     fireEvent.click(screen.getByRole('button', { name: 'Mi contraseña' }));
     await screen.findByRole('heading', { name: 'Cambiar mi contraseña' });
     expect(mock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
     fireEvent.click(screen.getByRole('button', { name: 'Volver' }));
     await inventory();
-    expect(screen.getByLabelText('Buscar marca o modelo')).toHaveValue('kept-password-query');
+    expect(screen.getByLabelText('Buscar marca, modelo o nombre')).toHaveValue('kept-password-query');
     expect(AppSource.instances).toHaveLength(1);
   });
 });

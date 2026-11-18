@@ -353,7 +353,7 @@ function catalog(source: number, page = 1, total = 2, available = '9223372036854
   const length = Math.min(50, Math.max(0, total - (page - 1) * 50));
   const items = Array.from({ length }, (_, index) => {
     const variant = (page - 1) * 50 + index + 1;
-    return `{"variant_id":${variant},"catalog_entry_id":1,"brand":"LIVE NOT ORIGINAL","model":"Different","capacity_ah":35,"polarity":"L","existing":${available},"reserved":0,"available":${available}}`;
+    return `{"variant_id":${variant},"catalog_entry_id":1,"kind":"battery","name":"LIVE NOT ORIGINAL · Different","detail":"35 Ah · L","battery":{"brand":"LIVE NOT ORIGINAL","model":"Different","capacity_ah":"35","polarity":"L"},"fields":null,"existing":${available},"reserved":0,"available":${available}}`;
   });
   return new Response(`{"location":{"id":${source},"name":"${names[source - 1]}"},"page":${page},"page_size":50,"total_variants":${total},"items":[${items.join(',')}]}`, { headers: { 'Content-Type': 'application/json' } });
 }

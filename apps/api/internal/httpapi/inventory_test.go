@@ -193,12 +193,14 @@ func TestInventoryHTTPPostgres(t *testing.T) {
 }
 
 // itemWire is one inventory row as the frozen contract spells it: the variant
-// identity plus its three stock numbers and nothing else.
+// identity, the catalogue entry the grouping surfaces key on, and the three stock
+// numbers of the location.
 type itemWire struct {
 	catalog.Identity
-	Existing  int64 `json:"existing"`
-	Reserved  int64 `json:"reserved"`
-	Available int64 `json:"available"`
+	CatalogEntryID int64 `json:"catalog_entry_id"`
+	Existing       int64 `json:"existing"`
+	Reserved       int64 `json:"reserved"`
+	Available      int64 `json:"available"`
 }
 
 // The stock screen reads both kinds and filters by kind. The absent value is the
@@ -282,10 +284,10 @@ func TestInventoryKindQuery(t *testing.T) {
 		t.Fatalf("the default listing must stay battery-only: %d", total)
 	}
 	for _, item := range items {
-		if len(item) != 9 {
+		if len(item) != 10 {
 			t.Fatal("inventory item whitelist changed")
 		}
-		for _, key := range []string{"variant_id", "kind", "name", "detail", "battery", "fields", "existing", "reserved", "available"} {
+		for _, key := range []string{"variant_id", "catalog_entry_id", "kind", "name", "detail", "battery", "fields", "existing", "reserved", "available"} {
 			if _, ok := item[key]; !ok {
 				t.Fatalf("inventory item whitelist incomplete: %s", key)
 			}
@@ -293,6 +295,7 @@ func TestInventoryKindQuery(t *testing.T) {
 		raw, err := json.Marshal(item)
 		var row itemWire
 		if err != nil || json.Unmarshal(raw, &row) != nil || row.Identity.Valid() != nil ||
+			row.CatalogEntryID < 1 ||
 			row.Kind != catalog.BatteryKind || row.Battery == nil || row.Fields != nil ||
 			row.Name != row.Battery.Brand+" · "+row.Battery.Model {
 			t.Fatalf("a battery row must carry its battery identity: %+v", row)

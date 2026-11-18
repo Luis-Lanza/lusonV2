@@ -68,15 +68,16 @@ function Available({ item }: { item: Item }) {
 function Cards({ items }: { items: Item[] }) {
   return <div className="cards">{groupItems(items).map(group => {
     const first = group[0];
-    return <article className="product-card" key={first.catalog_entry_id} data-catalog-entry-id={first.catalog_entry_id}>
-      <header><h2><i />{first.brand} · {first.model} · {first.capacity_ah} Ah</h2><small className="badge">{group.length} {group.length === 1 ? 'variante' : 'variantes'}</small></header>
+    return <article className="product-card" key={first.catalog_entry_id} data-catalog-entry-id={first.catalog_entry_id} data-kind={first.kind}>
+      <header><h2><i />{first.name}</h2><small className="badge">{group.length} {group.length === 1 ? 'variante' : 'variantes'}</small></header>
       <div className="variants">{group.map(item => <div className="variant" key={item.variant_id} data-variant-id={item.variant_id}>
-        <div className="variant-top"><div className="polarity-label"><b className="polarity">{item.polarity}</b><strong>Polaridad {item.polarity === 'L' ? 'Izquierda' : 'Derecha'}</strong></div><div className="quantity"><small>Disponibles</small><Available item={item} /></div></div>
+        <div className="variant-top"><div className="detail-label"><strong className="detail">{item.detail === item.name ? '' : item.detail}</strong>{item.kind === 'other' && <span className="tag">Otro producto</span>}</div><div className="quantity"><small>Disponibles</small><Available item={item} /></div></div>
         <div className="variant-bottom"><span>Existencias: <b>{item.existing.toString()}</b></span><span>Reservadas: <b>{item.reserved.toString()}</b></span></div>
       </div>)}</div>
     </article>;
   })}</div>;
 }
+const kindOptions = [['all', 'Todas'], ['battery', 'Baterías'], ['other', 'Otros productos']] as const;
 function Pager({ state }: { state: Controller }) {
   const { data, query } = state;
   const total = data?.total_variants ?? 0;
@@ -269,6 +270,10 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
     changeRoute({ section: 'transfers', id });
   }
   const mobile = warehouse && narrow;
+  // The warehouse stock screen is the one surface where both kinds are visible at
+  // once, so its filter offers the three states; products alone never send the
+  // battery attributes, which the endpoint would otherwise apply to them.
+  const productsOnly = query.kind === 'other';
   const selected = metadata?.locations.find(l => l.id === query.location);
   const recoverable = recovery.getCurrent(state.getTransferAuthority);
   const navDisabled = !ownerTag || creation || recoverable?.phase === 'inFlight';
@@ -392,14 +397,19 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
         <label htmlFor="consult-location">Consultar ubicación</label><select id="consult-location" value={query.location} disabled={!metadata || state.authBusy} onChange={e => state.change({ location: Number(e.target.value) })}>{metadata?.locations.map(l => <option key={l.id} value={l.id}>{l.name} ({l.id === identity.location.id ? 'Mi ubicación · Consulta' : 'Solo consulta'})</option>)}</select>
         <strong>Estado: {selected?.id === identity.location.id ? 'Mi ubicación · Solo consulta' : 'Solo consulta'}</strong><p>La consulta a otras ubicaciones es de solo lectura y no reasigna la cuenta activa.</p>
       </section>
-      <section className="filters" aria-label="Filtros de inventario"><div className="search-field"><Icon name="search" /><label className="sr-only" htmlFor="search">Buscar marca o modelo</label><input id="search" type="search" placeholder="Buscar marca o modelo…" value={query.search} disabled={state.authBusy} onChange={e => state.change({ search: e.target.value })} aria-describedby="results-message" /></div>
-        <div className="filter-pair"><div><label htmlFor="brand">Marca</label><select id="brand" value={query.brand} disabled={!metadata || state.authBusy} onChange={e => state.change({ brand: e.target.value })}><option value="">Todas las marcas</option>{metadata?.brands.map(b => <option key={b} value={b}>{b}</option>)}</select></div>
-          <div><label htmlFor="polarity">Polaridad</label><select id="polarity" value={query.polarity} disabled={state.authBusy} onChange={e => state.change({ polarity: e.target.value as '' | 'L' | 'R' })}><option value="">Todas</option><option value="L">Izquierda [L]</option><option value="R">Derecha [R]</option></select></div></div>
+      <section className="filters" aria-label="Filtros de inventario">
+        {warehouse && <div className="kind-filter" role="group" aria-label="Filtrar por tipo de producto">
+          {kindOptions.map(([kind, label]) => <button type="button" key={kind} aria-pressed={query.kind === kind} disabled={state.authBusy} onClick={() => state.change({ kind })}>{label}</button>)}
+        </div>}
+        <div className="search-field"><Icon name="search" /><label className="sr-only" htmlFor="search">Buscar marca, modelo o nombre</label><input id="search" type="search" placeholder="Buscar marca, modelo o nombre…" value={query.search} disabled={state.authBusy} onChange={e => state.change({ search: e.target.value })} aria-describedby="results-message" /></div>
+        <div className="filter-pair"><div><label htmlFor="brand">Marca</label><select id="brand" value={query.brand} disabled={productsOnly || !metadata || state.authBusy} aria-describedby={productsOnly ? 'battery-filter-note' : undefined} onChange={e => state.change({ brand: e.target.value })}><option value="">Todas las marcas</option>{metadata?.brands.map(b => <option key={b} value={b}>{b}</option>)}</select></div>
+          <div><label htmlFor="polarity">Polaridad</label><select id="polarity" value={query.polarity} disabled={productsOnly || state.authBusy} aria-describedby={productsOnly ? 'battery-filter-note' : undefined} onChange={e => state.change({ polarity: e.target.value as '' | 'L' | 'R' })}><option value="">Todas</option><option value="L">Izquierda [L]</option><option value="R">Derecha [R]</option></select></div></div>
+        {productsOnly && <p className="message" id="battery-filter-note">Marca y polaridad son atributos de las baterías: no se aplican a otros productos.</p>}
       </section>
       <div className="formula"><Icon name="info" /><p><strong>Regla de cálculo:</strong> Disponible = existencias − reservadas. Las unidades reservadas permanecen físicamente en almacén hasta confirmación de salida.</p></div>
       <section className="results" aria-label="Resultados de inventario" aria-busy={state.loading}>
         <div id="results-message" aria-live="polite">{state.loading && <p role="status" className="message">Cargando inventario…</p>}{state.resultsError && <div className="message" role="alert">{state.resultsError}<button type="button" onClick={state.retryInventory} disabled={state.authBusy}>Reintentar</button></div>}{data?.items.length === 0 && <p role="status" className="message">No hay variantes para esta consulta.</p>}</div>
-        {data && data.items.length > 0 && <>{!mobile && <div className="table-scroll"><table><caption className="sr-only">Inventario de {data.location.name}</caption><thead><tr>{['Marca', 'Modelo', 'Capacidad (Ah)', 'Polaridad', 'Existencias', 'Reservadas', 'Disponibles'].map(h => <th key={h} scope="col">{h}</th>)}</tr></thead><tbody>{data.items.map(item => <tr key={item.variant_id} data-variant-id={item.variant_id}><td>{item.brand}</td><td>{item.model}</td><td>{item.capacity_ah} Ah</td><td><span className="polarity">{item.polarity}</span></td><td>{item.existing.toString()}</td><td>{item.reserved.toString()}</td><td><Available item={item} /></td></tr>)}</tbody></table></div>}{mobile && <Cards items={data.items} />}</>}
+        {data && data.items.length > 0 && <>{!mobile && <div className="table-scroll"><table><caption className="sr-only">Inventario de {data.location.name}</caption><thead><tr>{['Producto', 'Detalle', 'Existencias', 'Reservadas', 'Disponibles'].map(h => <th key={h} scope="col">{h}</th>)}</tr></thead><tbody>{data.items.map(item => <tr key={item.variant_id} data-variant-id={item.variant_id} data-catalog-entry-id={item.catalog_entry_id} data-kind={item.kind}><td><span className="name">{item.name}</span>{item.kind === 'other' && <small className="tag">Otro producto</small>}</td><td className="detail">{item.detail === item.name ? '' : item.detail}</td><td>{item.existing.toString()}</td><td>{item.reserved.toString()}</td><td><Available item={item} /></td></tr>)}</tbody></table></div>}{mobile && <Cards items={data.items} />}</>}
         <Pager state={state} />
       </section>
       </>}

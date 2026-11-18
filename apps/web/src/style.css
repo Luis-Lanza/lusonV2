@@ -101,6 +101,15 @@ h1 { font-size: 22px; font-weight: 600; letter-spacing: -.015em; }
 .filter-pair > div { display: flex; align-items: center; gap: 6px; }
 .filter-pair label { color: var(--muted); font-size: 12px; }
 .filter-pair select { font-size: 12px; padding: 7px; }
+/* The kind filter is the three-state segmented control of the stock list: both
+   kinds, batteries alone, products alone. */
+.kind-filter { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; background: white; overflow: hidden; flex-shrink: 0; }
+.kind-filter button { border: 0; border-radius: 0; min-height: 36px; padding: 0 14px; font-size: 13px; color: var(--muted); background: none; }
+.kind-filter button + button { border-left: 1px solid var(--border); }
+.kind-filter button[aria-pressed="true"] { background: var(--tint); color: var(--wine); font-weight: 600; }
+/* The stock list publishes the name and the detail, so its three figures start at
+   the third column; the entry columns are never numeric. */
+.results th:nth-child(n+3), .results td:nth-child(n+3) { text-align: right; font-variant-numeric: tabular-nums; }
 .formula { display: flex; align-items: flex-start; gap: 8px; border: 1px solid var(--border); padding: 12px; border-radius: 4px; background: white; font-size: 12px; line-height: 18px; }
 .formula svg, .formula strong { color: var(--wine); }
 .results { background: white; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
@@ -156,6 +165,8 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .warehouse .filter-pair > div { display: block; min-width: 0; }
   .warehouse .filter-pair label { font-size: 11px; font-weight: 600; display: block; margin-bottom: 4px; }
   .warehouse .filter-pair select { width: 100%; padding: 8px; }
+  .warehouse .kind-filter { display: flex; }
+  .warehouse .kind-filter button { flex: 1; min-height: 40px; padding: 0 8px; font-size: 12px; }
   .warehouse .results { order: 4; background: transparent; border: 0; overflow: visible; }
   .cards { display: flex; flex-direction: column; gap: 14px; }
   .product-card { border: 1px solid var(--border); border-radius: 8px; background: white; overflow: hidden; box-shadow: 0 1px 2px #2421240d; }

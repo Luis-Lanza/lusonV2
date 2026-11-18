@@ -5,7 +5,9 @@ import { stockEntryErrorMessages, stockEntryReversalErrorMessages } from './stoc
 
 const csrf = 'c'.repeat(43);
 const row = (variant_id: number, model: string, existing = 14, capacity = 35) => JSON.stringify({
-  variant_id, catalog_entry_id: 1, brand: 'TOYO', model, capacity_ah: capacity, polarity: 'L', existing, reserved: 0, available: existing,
+  variant_id, catalog_entry_id: 1, kind: 'battery', name: `TOYO · ${model}`, detail: `${capacity} Ah · L`,
+  battery: { brand: 'TOYO', model, capacity_ah: String(capacity), polarity: 'L' }, fields: null,
+  existing, reserved: 0, available: existing,
 });
 const catalogPage = (items: readonly string[]) =>
   `{"location":{"id":1,"name":"Almacén"},"items":[${items.join(',')}],"page":1,"page_size":50,"total_variants":${items.length}}`;

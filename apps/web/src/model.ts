@@ -6,17 +6,36 @@ export type Session = { authenticated: false; csrf_token: string } | {
   authenticated: true; csrf_token: string; identity: Identity; expires_at: string;
 };
 export interface Metadata { locations: Location[]; brands: string[] }
+/** The two kinds of catalogue entry a variant can belong to. */
+export type Kind = 'battery' | 'other';
+/** The three states of the kind selection: both kinds, batteries alone, products alone. */
+export type KindFilter = 'all' | 'battery' | 'other';
+/** The battery attributes of a battery variant: brand, model, capacity text and polarity. */
+export interface Battery { brand: string; model: string; capacity_ah: string; polarity: 'L' | 'R' }
+export type FieldKind = 'number' | 'text';
+/** One typed custom field of an other product: a canonical number with an optional unit, or text. */
+export interface Field { name: string; kind: FieldKind; unit?: string; number?: string; text?: string }
+/**
+ * One stock row: the variant identity every surface reads, one shape for both
+ * kinds, plus the three stock numbers of the location. The kind shows in the
+ * name and the detail; a battery carries its battery attributes and no typed
+ * field, a product carries its typed fields and no battery attribute.
+ */
 export interface Item {
-  variant_id: number; catalog_entry_id: number; brand: string; model: string;
-  capacity_ah: string; polarity: 'L' | 'R'; existing: bigint; reserved: bigint; available: bigint;
+  variant_id: number; catalog_entry_id: number; kind: Kind; name: string; detail: string;
+  battery: Battery | null; fields: Field[] | null;
+  existing: bigint; reserved: bigint; available: bigint;
 }
 export interface Inventory {
   location: Location; items: Item[]; page: number; page_size: number; total_variants: number;
+}export interface Query {
+  location: number;
+  // Absent is the battery-only listing the endpoint answers by default, so a
+  // caller that predates the second kind keeps its own answer.
+  kind?: KindFilter;
+  search: string; brand: string; polarity: '' | 'L' | 'R'; page: number; size: number;
 }
-export interface Query {
-  location: number; search: string; brand: string; polarity: '' | 'L' | 'R'; page: number; size: number;
-}
-export const initialQuery = (location: number): Query => ({ location, search: '', brand: '', polarity: '', page: 1, size: 10 });
+export const initialQuery = (location: number, kind?: KindFilter): Query => ({ location, kind, search: '', brand: '', polarity: '', page: 1, size: 10 });
 function invalid(): never { throw new Error('Respuesta inválida del servidor.'); }
 function decode(raw: string): unknown {
   try { return parse(raw); } catch { return invalid(); }
@@ -48,10 +67,54 @@ function quantity(v: unknown): bigint {
   if (exact > 9223372036854775807n) return invalid();
   return exact;
 }
-function capacity(v: unknown): string {
-  const raw = numeric(v);
-  if (!/^(0|[1-9]\d{0,5})(\.\d{1,6})?$/.test(raw) || !/[1-9]/.test(raw)) return invalid();
-  return raw.includes('.') ? raw.replace(/0+$/, '').replace(/\.$/, '') : raw;
+// A decimal the server publishes as canonical text: no leading zero in the
+// integral part, no trailing zero in the fraction and no negative zero, so the
+// value travels exactly as it was composed.
+function decimal(v: unknown, integral: number, signed: boolean): string {
+  const raw = text(v);
+  const pattern = new RegExp('^' + (signed ? '-?' : '') + '(0|[1-9]\\d{0,' + (integral - 1) + '})(\\.\\d{1,6})?$');
+  if (!pattern.test(raw) || /\.\d*0$/.test(raw) || raw === '-0' || (!signed && !/[1-9]/.test(raw))) return invalid();
+  return raw;
+}
+// The admitted number of custom fields of one product, and the byte bounds of
+// its own columns, restated so a row the server could not publish never reaches
+// a screen.
+const maxFields = 20;
+const fieldBounds = { name: 40, unit: 8, text: 200 } as const;
+function bounded(v: unknown, limit: number): string {
+  const raw = text(v);
+  if (new TextEncoder().encode(raw).length > limit) return invalid();
+  return raw;
+}
+// Every object of the identity is read as its exact key set: an unknown key and
+// a missing key are both a row the server never composed.
+function keys(o: Record<string, unknown>, expected: readonly string[]): Record<string, unknown> {
+  if (Object.keys(o).length !== expected.length || !expected.every(key => Object.hasOwn(o, key))) return invalid();
+  return o;
+}
+function field(v: unknown): Field {
+  const o = object(v);
+  const name = bounded(o.name, fieldBounds.name);
+  if (o.kind === 'number') {
+    const unit = Object.hasOwn(o, 'unit');
+    keys(o, unit ? ['name', 'kind', 'unit', 'number'] : ['name', 'kind', 'number']);
+    const number = decimal(o.number, 12, true);
+    return unit ? { name, kind: 'number', unit: bounded(o.unit, fieldBounds.unit), number } : { name, kind: 'number', number };
+  }
+  if (o.kind === 'text') {
+    keys(o, ['name', 'kind', 'text']);
+    return { name, kind: 'text', text: bounded(o.text, fieldBounds.text) };
+  }
+  return invalid();
+}
+function fields(v: unknown): Field[] {
+  if (!Array.isArray(v) || v.length > maxFields) return invalid();
+  return v.map(field);
+}
+function battery(v: unknown): Battery {
+  const o = keys(object(v), ['brand', 'model', 'capacity_ah', 'polarity']);
+  if (o.polarity !== 'L' && o.polarity !== 'R') return invalid();
+  return { brand: text(o.brand), model: text(o.model), capacity_ah: decimal(o.capacity_ah, 6, false), polarity: o.polarity };
 }
 function location(v: unknown): Location {
   const o = object(v);
@@ -89,13 +152,18 @@ export function parseInventory(raw: string): Inventory {
   const total = integer(o.total_variants, 0, 2_147_483_647);
   if (![10, 25, 50].includes(size) || !Array.isArray(o.items) || o.items.length > size || o.items.length > total) return invalid();
   const items = o.items.map(value => {
-    const i = object(value);
-    if (i.polarity !== 'L' && i.polarity !== 'R') return invalid();
+    const i = keys(object(value), ['variant_id', 'catalog_entry_id', 'kind', 'name', 'detail', 'battery', 'fields', 'existing', 'reserved', 'available']);
+    if (i.kind !== 'battery' && i.kind !== 'other') return invalid();
+    // The kind decides the shape: a battery row without its battery object is a
+    // malformed row, and so is a product row carrying one.
     const result: Item = {
       variant_id: integer(i.variant_id, 1, 2_147_483_647), catalog_entry_id: integer(i.catalog_entry_id, 1, 2_147_483_647),
-      brand: text(i.brand), model: text(i.model), capacity_ah: capacity(i.capacity_ah), polarity: i.polarity,
+      kind: i.kind, name: text(i.name), detail: text(i.detail),
+      battery: i.kind === 'battery' ? battery(i.battery) : null,
+      fields: i.kind === 'other' ? fields(i.fields) : null,
       existing: quantity(i.existing), reserved: quantity(i.reserved), available: quantity(i.available),
     };
+    if (i.kind === 'battery' ? i.fields !== null : i.battery !== null) return invalid();
     if (result.reserved > result.existing || result.available > result.existing) return invalid();
     return result;
   });
@@ -104,16 +172,35 @@ export function parseInventory(raw: string): Inventory {
 }
 export function queryURL(q: Query): string {
   const params = new URLSearchParams({ location_id: String(q.location), page: String(q.page), page_size: String(q.size) });
+  // The brand and the polarity are battery attributes: a product-only listing
+  // never sends them, so a stale battery filter cannot empty it.
+  const batteryFilters = q.kind !== 'other';
+  if (q.kind) params.set('kind', q.kind);
   if (q.search) params.set('search', q.search);
-  if (q.brand) params.set('brand', q.brand);
-  if (q.polarity) params.set('polarity', q.polarity);
+  if (batteryFilters && q.brand) params.set('brand', q.brand);
+  if (batteryFilters && q.polarity) params.set('polarity', q.polarity);
   return '/api/inventory?' + params.toString();
 }
 export function validSearch(text: string): boolean {
   return text.isWellFormed() && !text.includes('\0') && new TextEncoder().encode(text).length <= 128;
 }
-export function groupItems(items: Item[]): Item[][] {
-  const groups = new Map<number, Item[]>();
+// A battery-only surface reads rows that carry their battery: transfers, the
+// ingress catalogue and the closing count sheet never handle a product (S11).
+export type BatteryRow = Readonly<Item> & { readonly battery: Battery };
+function hasBattery(item: Item): item is BatteryRow { return item.battery !== null; }
+export function batteryRows(items: readonly Item[]): BatteryRow[] {
+  return items.filter(hasBattery).map(item => Object.freeze({ ...item }));
+}
+// The warehouse identity is account 1 in location 1, the only identity that reads
+// and writes the warehouse surfaces: it is the one that lists both kinds at once.
+export function warehouseIdentity(identity: Identity | null | undefined): boolean {
+  return !!identity && identity.account_id === 1 && identity.location.id === 1;
+}
+// The page lists variants, and the catalogue entry they belong to is what a
+// grouping surface folds together: the polarity variants of one battery are one
+// entry, and a product is one entry of exactly one variant.
+export function groupItems<T extends Item>(items: T[]): T[][] {
+  const groups = new Map<number, T[]>();
   for (const item of items) {
     const group = groups.get(item.catalog_entry_id);
     if (group) group.push(item); else groups.set(item.catalog_entry_id, [item]);

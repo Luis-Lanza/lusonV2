@@ -34,20 +34,21 @@ type Query struct {
 
 // Item is one row of the stock screen: the variant identity of its own kind plus
 // the three stock numbers of the location. The identity is the only catalogue
-// shape the wire carries, so a product row never invents a battery attribute.
+// shape the wire carries, so a product row never invents a battery attribute; the
+// catalogue entry id travels beside it because the grouping surfaces key on it.
 type Item struct {
 	catalog.Identity
-	Existing  int64 `json:"existing"`
-	Reserved  int64 `json:"reserved"`
-	Available int64 `json:"available"`
+	CatalogEntryID int   `json:"catalog_entry_id"`
+	Existing       int64 `json:"existing"`
+	Reserved       int64 `json:"reserved"`
+	Available      int64 `json:"available"`
 	// The catalogue columns of the row are kept for the in-process readers that
 	// build an Item from their own statement; they are never part of the wire,
 	// which carries the identity above.
-	CatalogEntryID int             `json:"-"`
-	Brand          string          `json:"-"`
-	Model          string          `json:"-"`
-	Capacity       catalog.Decimal `json:"-"`
-	Polarity       string          `json:"-"`
+	Brand    string          `json:"-"`
+	Model    string          `json:"-"`
+	Capacity catalog.Decimal `json:"-"`
+	Polarity string          `json:"-"`
 }
 type Page struct {
 	Location      Location `json:"location"`

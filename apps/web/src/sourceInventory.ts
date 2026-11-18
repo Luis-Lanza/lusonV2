@@ -1,4 +1,4 @@
-import { initialQuery, parseInventory, queryURL, validSearch, type Item, type Location } from './model';
+import { initialQuery, parseInventory, queryURL, validSearch, type BatteryRow, type Item, type Location } from './model';
 import { validTransferLocation, type TransferLocationID } from './transferModel';
 
 export interface SourceCatalog {
@@ -66,12 +66,16 @@ export async function loadSourceInventory(source: TransferLocationID, options: S
   throw new SourceInventoryError('malformed');
 }
 
-export function filterSourceInventory(catalog: SourceCatalog, filter: { search?: string; brand?: string; polarity?: '' | 'L' | 'R' }): readonly Readonly<Item>[] {
+// A transfer moves batteries, so the source list offers the rows that carry their
+// battery attributes and matches the brand, the model and the search on them; a
+// product row is never offered by this catalogue (S11).
+export function filterSourceInventory(catalog: SourceCatalog, filter: { search?: string; brand?: string; polarity?: '' | 'L' | 'R' }): readonly BatteryRow[] {
   const search = filter.search ?? '';
   const brand = filter.brand ?? '';
   const polarity = filter.polarity ?? '';
   if (!validSearch(search) || !validSearch(brand) || !['', 'L', 'R'].includes(polarity)) throw new Error('Invalid source filter');
   const literal = search.toLowerCase();
-  return Object.freeze(catalog.rows.filter(row => (!brand || row.brand === brand) && (!polarity || row.polarity === polarity)
-    && (!literal || row.brand.toLowerCase().includes(literal) || row.model.toLowerCase().includes(literal))));
+  return Object.freeze(catalog.rows.filter((row): row is BatteryRow => row.battery !== null
+    && (!brand || row.battery.brand === brand) && (!polarity || row.battery.polarity === polarity)
+    && (!literal || row.battery.brand.toLowerCase().includes(literal) || row.battery.model.toLowerCase().includes(literal))));
 }

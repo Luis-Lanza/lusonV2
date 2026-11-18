@@ -14,8 +14,10 @@ function authority(assigned = 2, epoch = 1, account = assigned): TransferAuthori
 }
 function catalog(source = 1, count = 2, available = 9223372036854775807n): SourceCatalog {
   return { location: metadata.locations[source - 1], rows: Array.from({ length: count }, (_, i): Item => ({
-    variant_id: i + 1, catalog_entry_id: Math.floor(i / 2) + 1, brand: i % 2 ? 'CAR' : 'TOYO', model: `Modelo ${i + 1}`,
-    capacity_ah: '75.125', polarity: i % 2 ? 'R' : 'L', existing: i === 1 ? 0n : available, reserved: 0n, available: i === 1 ? 0n : available,
+    variant_id: i + 1, catalog_entry_id: Math.floor(i / 2) + 1, kind: 'battery',
+    name: `${i % 2 ? 'CAR' : 'TOYO'} · Modelo ${i + 1}`, detail: `75.125 Ah · ${i % 2 ? 'R' : 'L'}`,
+    battery: { brand: i % 2 ? 'CAR' : 'TOYO', model: `Modelo ${i + 1}`, capacity_ah: '75.125', polarity: i % 2 ? 'R' : 'L' },
+    fields: null, existing: i === 1 ? 0n : available, reserved: 0n, available: i === 1 ? 0n : available,
   })) };
 }
 function deferred<T>() {
@@ -100,7 +102,8 @@ describe('F3 grouped catalog and compact route', () => {
   function pairedCatalog() {
     const source = catalog(1, 3, 17n);
     return { ...source, rows: source.rows.map((row, index): Item => index === 1
-      ? { ...source.rows[0], variant_id: 2, polarity: 'R', existing: 9n, available: 9n } : row) };
+      ? { ...source.rows[0], variant_id: 2, detail: '75.125 Ah · R', existing: 9n, available: 9n,
+        battery: { ...source.rows[0].battery!, polarity: 'R' } } : row) };
   }
   it('groups paired polarities by catalog identity with independent quantities and stock bounds', async () => {
     const h = harness(authority(1));
@@ -149,7 +152,7 @@ describe('F3 grouped catalog and compact route', () => {
   it('groups only the displayed page even when a pair crosses its boundary', async () => {
     const h = harness(); const original = catalog(1, 26, 17n);
     const source = { ...original, rows: original.rows.map((row, index): Item => index === 25
-      ? { ...original.rows[24], variant_id: 26, polarity: 'R' } : row) };
+      ? { ...original.rows[24], variant_id: 26, detail: '75.125 Ah · R', battery: { ...original.rows[24].battery!, polarity: 'R' } } : row) };
     const loader = vi.fn<typeof loadSourceInventory>(async () => source);
     render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
     const name = 'TOYO · Modelo 25 · 75.125 Ah';

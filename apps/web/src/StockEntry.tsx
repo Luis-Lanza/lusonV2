@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Item } from './model';
+import type { BatteryRow } from './model';
 import { validSearch } from './model';
 import TransferDate from './shared/TransferDate';
 import { createStockEntryAPI, StockEntryAPIError, StockEntryDetailAPIError, StockEntryReversalAPIError } from './stockEntryAPI';
@@ -18,7 +18,7 @@ interface DocumentLine {
   readonly variant_id: number; readonly brand: string; readonly model: string;
   readonly capacity_ah: string; readonly polarity: 'L' | 'R'; readonly quantity: string;
 }
-interface CatalogState { readonly phase: 'loading' | 'ready' | 'error'; readonly items: readonly Item[]; readonly problem: string }
+interface CatalogState { readonly phase: 'loading' | 'ready' | 'error'; readonly items: readonly BatteryRow[]; readonly problem: string }
 // The history is its own state: a failed read never touches the draft document.
 interface HistoryState {
   readonly phase: 'loading' | 'ready' | 'error';
@@ -147,19 +147,19 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
   }, [api, detail, detailRevision]);
 
   function forgetAttempt() { operationKey.current = null; }
-  function add(row: Item) {
+  function add(row: BatteryRow) {
     forgetAttempt();
     const current = lines.find(line => line.variant_id === row.variant_id);
     if (current) {
       const previous = Number(current.quantity);
       const quantity = validStockQuantity(previous) ? Math.min(previous + 1, stockEntryMaxQuantity) : 1;
       setLines(lines.map(line => line.variant_id === row.variant_id ? { ...line, quantity: String(quantity) } : line));
-      setStatus(`${productLabel(row)} ya estaba en el documento: ahora ${quantity} ${quantity === 1 ? 'unidad' : 'unidades'}.`);
+      setStatus(`${productLabel(row.battery)} ya estaba en el documento: ahora ${quantity} ${quantity === 1 ? 'unidad' : 'unidades'}.`);
       return;
     }
-    setLines([...lines, { variant_id: row.variant_id, brand: row.brand, model: row.model,
-      capacity_ah: row.capacity_ah, polarity: row.polarity, quantity: '1' }]);
-    setStatus(`${productLabel(row)} agregado al documento.`);
+    setLines([...lines, { variant_id: row.variant_id, brand: row.battery.brand, model: row.battery.model,
+      capacity_ah: row.battery.capacity_ah, polarity: row.battery.polarity, quantity: '1' }]);
+    setStatus(`${productLabel(row.battery)} agregado al documento.`);
   }
   function setQuantity(variant: number, value: string) {
     if (!/^\d{0,7}$/.test(value)) return;
@@ -353,11 +353,11 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
             <caption className="sr-only">Variantes del catálogo del Almacén</caption>
             <thead><tr><th scope="col">Producto</th><th scope="col">Capacidad</th><th scope="col">Polaridad</th><th scope="col">Stock actual</th><th scope="col">Acción</th></tr></thead>
             <tbody>{catalog.items.map(row => <tr key={row.variant_id} data-variant-id={row.variant_id}>
-              <td data-label="Producto"><strong>{productLabel(row)}</strong></td>
-              <td data-label="Capacidad">{row.capacity_ah} Ah</td>
-              <td data-label="Polaridad"><span className="polarity">{row.polarity}</span></td>
+              <td data-label="Producto"><strong>{productLabel(row.battery)}</strong></td>
+              <td data-label="Capacidad">{row.battery.capacity_ah} Ah</td>
+              <td data-label="Polaridad"><span className="polarity">{row.battery.polarity}</span></td>
               <td data-label="Stock actual">{row.existing.toString()}</td>
-              <td data-label="Acción"><button type="button" className="stock-add" aria-label={`Agregar ${productLabel(row)}`} onClick={() => add(row)}>Agregar</button></td>
+              <td data-label="Acción"><button type="button" className="stock-add" aria-label={`Agregar ${productLabel(row.battery)}`} onClick={() => add(row)}>Agregar</button></td>
             </tr>)}</tbody>
           </table>
         </div>}

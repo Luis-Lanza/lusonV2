@@ -27,7 +27,9 @@ const recordJSON = (overrides: Record<string, unknown> = {}) => JSON.stringify({
 });
 const catalogJSON = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   location: { id: 1, name: 'Almacén' },
-  items: [{ variant_id: 4, catalog_entry_id: 2, brand: 'TOYO', model: 'NS40ZL', capacity_ah: 35, polarity: 'L', existing: 14, reserved: 0, available: 14 }],
+  items: [{ variant_id: 4, catalog_entry_id: 2, kind: 'battery', name: 'TOYO · NS40ZL', detail: '35 Ah · L',
+    battery: { brand: 'TOYO', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' }, fields: null,
+    existing: 14, reserved: 0, available: 14 }],
   page: 1, page_size: 50, total_variants: 1, ...overrides,
 });
 
@@ -272,7 +274,8 @@ describe('stock catalog read contract', () => {
   it('parses the existing inventory payload and refuses another location, page or size', () => {
     const items = parseStockCatalog(catalogJSON());
     expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({ variant_id: 4, brand: 'TOYO', model: 'NS40ZL', capacity_ah: '35', existing: 14n });
+    expect(items[0]).toMatchObject({ variant_id: 4, catalog_entry_id: 2, existing: 14n,
+      battery: { brand: 'TOYO', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' } });
     expect(Object.isFrozen(items)).toBe(true);
     expect(() => parseStockCatalog(catalogJSON({ location: { id: 2, name: 'Sucursal A' } }))).toThrow('Respuesta inválida del servidor.');
     expect(() => parseStockCatalog(catalogJSON({ page: 2 }))).toThrow('Respuesta inválida del servidor.');

@@ -55,7 +55,9 @@ it.each(['accept', 'reject'] as const)('exact historical confirmation invalidate
   expect(f.inventory.result.current.data).toBe(before);
   if (action !== 'accept') { f.inventory.unmount(); return; }
   await act(async () => { fresh.resolve(new Response(JSON.stringify({ location: { id: 3, name: 'Other' },
-    items: [{ variant_id: 1, catalog_entry_id: 1, brand: 'B', model: 'M', capacity_ah: 60, polarity: 'L', existing: 100, reserved: 2, available: 98 }],
+    items: [{ variant_id: 1, catalog_entry_id: 1, kind: 'battery', name: 'B · M', detail: '60 Ah · L',
+      battery: { brand: 'B', model: 'M', capacity_ah: '60', polarity: 'L' }, fields: null,
+      existing: 100, reserved: 2, available: 98 }],
     page: 1, page_size: f.inventory.result.current.query.size, total_variants: 1 }))); });
   await waitFor(() => expect(f.inventory.result.current.data?.items[0].existing).toBe(100n));
   expect(f.inventory.result.current.data?.items[0].available).toBe(98n);

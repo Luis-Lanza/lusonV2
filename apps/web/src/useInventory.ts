@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { initialQuery, parseInventory, parseMetadata, parseSession, queryURL, validSearch } from './model';
+import { initialQuery, parseInventory, parseMetadata, parseSession, queryURL, validSearch, warehouseIdentity } from './model';
 import type { Inventory, Metadata, Query, Session } from './model';
 import { useRealtime } from './useRealtime';
 import type { Recovery } from './useRealtime';
@@ -206,7 +206,9 @@ export function useInventory() {
   function initial(next: Session) {
     csrf.current = next.csrf_token; authorityState.current.session = next; setSession(next);
     if (next.authenticated && next.identity.must_change_password === false) {
-      setQuery(initialQuery(next.identity.location.id));
+      // The stock screen lists both kinds at once only for the warehouse; a branch
+      // keeps the battery-only read, so it never lists a product at zero balance.
+      setQuery(initialQuery(next.identity.location.id, warehouseIdentity(next.identity) ? 'all' : undefined));
       setJob(previous => ({ sequence: previous.sequence + 1, reason: 'initial', full: true }));
     }
   }

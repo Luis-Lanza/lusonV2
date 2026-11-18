@@ -13,8 +13,10 @@ function setup(flow: 'requestWarehouse' | 'requestOther' | 'sendWarehouse' = 're
     identity: { account_id: 2, username: 'test', location: metadata.locations[1] } } };
   const controller = { authorityEpoch: 4, getTransferAuthority: () => authority, subscribeTransferInvalidation: vi.fn(() => () => {}), settleUnauthorized: vi.fn(async () => 'unavailable' as const) };
   const source = flow === 'sendWarehouse' ? 2 : flow === 'requestOther' ? 3 : 1;
-  const catalog = { location: metadata.locations[source - 1], rows: [1, 2].map(id => ({ variant_id: id, catalog_entry_id: 1, brand: 'TOYO', model: `Private model ${id}`, capacity_ah: '75.125', polarity: id === 1 ? 'L' as const : 'R' as const,
-    existing: 9223372036854775807n, reserved: 0n, available: 9223372036854775807n })) };
+  const catalog = { location: metadata.locations[source - 1], rows: [1, 2].map(id => ({ variant_id: id, catalog_entry_id: 1, kind: 'battery' as const,
+    name: `TOYO · Private model ${id}`, detail: `75.125 Ah · ${id === 1 ? 'L' : 'R'}`,
+    battery: { brand: 'TOYO', model: `Private model ${id}`, capacity_ah: '75.125', polarity: id === 1 ? 'L' as const : 'R' as const },
+    fields: null, existing: 9223372036854775807n, reserved: 0n, available: 9223372036854775807n })) };
   let cart = createTransferCart(authority, flow, catalog);
   for (const id of [1, 2]) cart = addCartItem(cart, authority, id, '9223372036854775807');
   cart = reviewCart(cart, authority, 'review_private_retry_key');

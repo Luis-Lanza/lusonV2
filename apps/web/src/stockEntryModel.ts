@@ -1,5 +1,5 @@
 import { LosslessNumber, parse as parseJSON } from 'lossless-json';
-import { parseInventory, queryURL, type Item } from './model';
+import { batteryRows, parseInventory, queryURL, type BatteryRow } from './model';
 import { newTransferRetryKey } from './transferModel';
 
 // Warehouse ingress contract: one document, applied atomically or not at all.
@@ -305,10 +305,12 @@ export function stockCatalogPath(search: string): string {
   return queryURL({ location: stockCatalogLocationID, search, brand: '', polarity: '', page: 1, size: stockCatalogPageSize });
 }
 
-export function parseStockCatalog(raw: string): readonly Item[] {
+// The ingress catalogue of this document is battery-only (S11), so the rows it
+// offers are the ones that carry their battery attributes.
+export function parseStockCatalog(raw: string): readonly BatteryRow[] {
   const page = parseInventory(raw);
   if (page.location.id !== stockCatalogLocationID || page.page !== 1 || page.page_size !== stockCatalogPageSize) return invalidResponse();
-  return Object.freeze(page.items);
+  return Object.freeze(batteryRows(page.items));
 }
 
 /** Only the frozen page and page sizes are ever requested. */
