@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -240,6 +241,30 @@ func TestOtherProductsListQuery(t *testing.T) {
 		if stub.query != c.want {
 			t.Fatalf("%s reached the store as %v, want %v", c.target, stub.query, c.want)
 		}
+	}
+}
+
+// The search bound is the number of runes the shipped client already bounds by, not
+// the number of bytes: one accented rune is two bytes in UTF-8, so a legitimate
+// 128-rune search of 256 bytes was refused for a bound the client and the server
+// state as runes. Only the 129th rune is inadmissible.
+func TestOtherProductsSearchBoundIsRunes(t *testing.T) {
+	stub := &otherProductsStub{page: otherproducts.Page{Products: []otherproducts.Product{}, Page: 1, PageSize: 10}}
+	handler := otherProductsHandler(t, stub)
+	admitted := strings.Repeat("ñ", otherProductMaxSearch)
+	w := otherProductsServe(t, handler,
+		otherProductsWrite(http.MethodGet, otherProductRoutePath+"?search="+url.QueryEscape(admitted), ""))
+	if w.Code != 200 {
+		t.Fatalf("a %d-rune search of %d bytes must be admitted: %d %s", otherProductMaxSearch, len(admitted), w.Code, w.Body.String())
+	}
+	if stub.query.Search != admitted || stub.query.Page != 1 || stub.query.PageSize != 10 || stub.listCalls != 1 {
+		t.Fatalf("the admitted search reached the store as %v", stub.query)
+	}
+	refused := strings.Repeat("ñ", otherProductMaxSearch+1)
+	w = otherProductsServe(t, handler,
+		otherProductsWrite(http.MethodGet, otherProductRoutePath+"?search="+url.QueryEscape(refused), ""))
+	if w.Code != 400 || w.Body.String() != `{"error":"invalid_request"}`+"\n" || stub.listCalls != 1 {
+		t.Fatalf("a %d-rune search must be refused before the store: %d %s", otherProductMaxSearch+1, w.Code, w.Body.String())
 	}
 }
 

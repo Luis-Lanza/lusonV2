@@ -187,3 +187,26 @@ deliberate, so the inventory gained it with its own comment. `./internal/bootstr
 is green again inside one fixture cycle after the correction. Everything else in
 that same cycle was already green, including `internal/transfers` (442s) and
 `internal/httpapi` (291s).
+
+L12. Independent verification (Risk items 1 and 3) found a blocker the parent's own
+leak test missed, and it was found by reproduction, not by reading:
+
+- B1, blocker: the branch point of sale never gained the kind predicate, so with one
+  product present `GET /api/sales/sellable` counted 191 instead of 190 and the later
+  pages answered `503` — the POS paginates, so it was an ordinary path. Fixed in
+  `internal/sales/store.go` on the shared filter, with
+  `TestSellableCatalogueStaysBatteryOnly` pinned on five page/size windows.
+- A2: `DELETE /api/catalog/batteries/{id}` answered 204 on a product id and retired
+  it. The battery edit and archive now address `kind='battery'`, so a product id is
+  `404` exactly like an unknown one, and
+  `TestCatalogAdminBatteryRoutesNeverTouchProducts` also preserves the battery round
+  trip.
+- A4: the list's search was bounded by bytes while the shipped client bounds it by
+  runes; the server now counts runes at the same 128 limit
+  (`TestOtherProductsSearchBoundIsRunes`).
+
+Gaps recorded rather than closed: the schema does not bound `text_value` length (the
+server does; tightening it needs a new migration, because an applied version cannot
+change its checksum), identifier validations reached only by crafted ids in
+adjustments, closings and the price entry probe carry no kind predicate, and
+`catalog_product_has_pending` is still proven at the mapping layer only.

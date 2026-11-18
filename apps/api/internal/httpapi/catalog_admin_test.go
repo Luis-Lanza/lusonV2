@@ -1,13 +1,26 @@
 package httpapi
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/auth"
+	"luson/api/internal/bootstrap"
 	"luson/api/internal/catalog"
 	"luson/api/internal/catalogadmin"
+	"luson/api/internal/config"
+	"luson/api/internal/inventory"
+	"luson/api/internal/stockadjustments"
+	"luson/api/internal/stockentries"
+	"luson/api/internal/testpg"
+	"luson/api/internal/transfers"
 )
 
 // The battery body is a canonical flat document: the exact key set, no duplicate
@@ -193,5 +206,151 @@ func TestCatalogAdminFailureCodes(t *testing.T) {
 		if got := w.Header().Get("Content-Type"); got != "application/json" {
 			t.Fatalf("refusal content type %q", got)
 		}
+	}
+}
+
+// catalogBatteryIdentityFixture is the battery contract on a fresh installation, with
+// the warehouse administrator logged in. It needs the isolated test PostgreSQL and
+// fails closed inside testpg.Open, like every other database fixture here.
+type catalogBatteryIdentityFixture struct {
+	ctx     context.Context
+	p       *pgxpool.Pool
+	cfg     config.Auth
+	handler http.Handler
+	token   string
+}
+
+func catalogBatteryIdentity(t *testing.T) *catalogBatteryIdentityFixture {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	t.Cleanup(cancel)
+	p := testpg.Open(t)
+	if bootstrap.Initialize(ctx, p, config.LocalTrial) != nil {
+		t.Fatal("catalog identity fixture initialization failed")
+	}
+	credentials := make([]bootstrap.Credentials, 3)
+	for i := range credentials {
+		credentials[i] = bootstrap.Credentials{Username: "u" + testpg.Random(t)[:20], Password: testpg.Random(t)}
+	}
+	if bootstrap.Provision(ctx, p, credentials) != nil {
+		t.Fatal("catalog identity test provisioning failed")
+	}
+	if _, err := p.Exec(ctx, `UPDATE auth_accounts SET must_change_password=false`); err != nil {
+		t.Fatal("catalog identity operational fixture setup failed")
+	}
+	service, err := auth.New(p, nil)
+	if err != nil {
+		t.Fatal("catalog identity auth fixture failed")
+	}
+	cfg := transferConfig(t)
+	base, err := NewWithStockEntries(service, cfg, inventory.New(p), transfers.New(p),
+		stockentries.New(p), nil, stockadjustments.New(p))
+	if err != nil {
+		t.Fatal("catalog identity base constructor failed")
+	}
+	handler, err := NewWithCatalogAdmin(base, service, cfg, catalogadmin.New(p, service))
+	if err != nil {
+		t.Fatal("catalog identity constructor failed")
+	}
+	_, token, err := service.Login(ctx, credentials[0].Username, credentials[0].Password, "127.0.0.1", "")
+	if err != nil {
+		t.Fatal("catalog identity login failed")
+	}
+	return &catalogBatteryIdentityFixture{ctx: ctx, p: p, cfg: cfg, handler: handler, token: token}
+}
+
+func (f *catalogBatteryIdentityFixture) serve(t *testing.T, verb, target, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	r := httptest.NewRequest(verb, target, strings.NewReader(body))
+	r.RemoteAddr = "127.0.0.1:1234"
+	r.Header.Set("Content-Type", "application/json")
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: f.token})
+	r.Header.Set("X-CSRF-Token", auth.CSRF(f.token))
+	r.Header.Set("Origin", f.cfg.Origin)
+	r.Header.Set("Sec-Fetch-Site", "same-origin")
+	w := httptest.NewRecorder()
+	f.handler.ServeHTTP(w, r)
+	if w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("catalog identity security headers changed")
+	}
+	return w
+}
+
+// The kind is part of the catalog identity, so a battery route that reads, edits or
+// archives by id alone acts on a product: DELETE /api/catalog/batteries/{product}
+// answered 204 and retired an other product, while a product is not a battery
+// identity at all. Both writes answer not_found exactly like an unknown id, and the
+// product is left active; a real battery keeps its own edit and archive.
+func TestCatalogAdminBatteryRoutesNeverTouchProducts(t *testing.T) {
+	f := catalogBatteryIdentity(t)
+	var product int64
+	if err := f.p.QueryRow(f.ctx, `INSERT INTO catalog_entries(kind,name)
+ VALUES('other','Agua acidulada') RETURNING id`).Scan(&product); err != nil {
+		t.Fatal("product fixture failed")
+	}
+	if _, err := f.p.Exec(f.ctx, `INSERT INTO catalog_variants(catalog_entry_id) VALUES($1)`, product); err != nil {
+		t.Fatal("product variant fixture failed")
+	}
+	productActive := func(stage string) {
+		t.Helper()
+		var active bool
+		if err := f.p.QueryRow(f.ctx, `SELECT deleted_at IS NULL AND kind='other' AND name='Agua acidulada'
+ FROM catalog_entries WHERE id=$1`, int32(product)).Scan(&active); err != nil {
+			t.Fatalf("%s: product read failed: %v", stage, err)
+		}
+		if !active {
+			t.Fatalf("%s: the product must still be active", stage)
+		}
+	}
+	productActive("before")
+
+	// An edit of a product through the battery route is not found: it is not a battery.
+	if w := f.serve(t, http.MethodPatch, fmt.Sprintf("/api/catalog/batteries/%d", product),
+		`{"brand":"CAR","model":"NS40ZL","capacity_ah":"45"}`); w.Code != 404 ||
+		w.Body.String() != "{\"error\":\"not_found\"}\n" || w.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("editing a product through the battery route answered %d %q", w.Code, w.Body.String())
+	}
+	productActive("after the refused edit")
+	// An archive of a product through the battery route is not found either, and the
+	// product is not retired.
+	if w := f.serve(t, http.MethodDelete, fmt.Sprintf("/api/catalog/batteries/%d", product), ""); w.Code != 404 ||
+		w.Body.String() != "{\"error\":\"not_found\"}\n" {
+		t.Fatalf("archiving a product through the battery route answered %d %q", w.Code, w.Body.String())
+	}
+	productActive("after the refused archive")
+
+	// The battery behaviour is unchanged: a created battery edits and archives exactly
+	// as it did, and a repeated archive stays the same successful no-op.
+	created := f.serve(t, http.MethodPost, "/api/catalog/batteries",
+		`{"brand":"NUEVA","model":"M1","capacity_ah":"60","polarities":["L","R"]}`)
+	if created.Code != 201 {
+		t.Fatalf("the battery must still be created: %d %s", created.Code, created.Body.String())
+	}
+	var battery struct {
+		ID       int64  `json:"id"`
+		Brand    string `json:"brand"`
+		Model    string `json:"model"`
+		Capacity string `json:"capacity_ah"`
+	}
+	if json.Unmarshal(created.Body.Bytes(), &battery) != nil || battery.ID < 1 {
+		t.Fatalf("the created battery is not the record this test asked for: %s", created.Body.String())
+	}
+	edited := f.serve(t, http.MethodPatch, fmt.Sprintf("/api/catalog/batteries/%d", battery.ID),
+		`{"brand":"NUEVA","model":"M2","capacity_ah":"65"}`)
+	if edited.Code != 200 {
+		t.Fatalf("the battery must still be edited: %d %s", edited.Code, edited.Body.String())
+	}
+	if json.Unmarshal(edited.Body.Bytes(), &battery) != nil || battery.Model != "M2" || battery.Capacity != "65" {
+		t.Fatalf("the edited battery is not the edited record: %s", edited.Body.String())
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		if w := f.serve(t, http.MethodDelete, fmt.Sprintf("/api/catalog/batteries/%d", battery.ID), ""); w.Code != 204 {
+			t.Fatalf("archive %d of the battery answered %d %q", attempt, w.Code, w.Body.String())
+		}
+	}
+	var retired bool
+	if err := f.p.QueryRow(f.ctx, `SELECT deleted_at IS NOT NULL FROM catalog_entries WHERE id=$1`,
+		int32(battery.ID)).Scan(&retired); err != nil || !retired {
+		t.Fatalf("the battery must be retired: %v %v", retired, err)
 	}
 }

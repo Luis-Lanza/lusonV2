@@ -672,12 +672,16 @@ func (s *Store) Sellable(ctx context.Context, actor auth.Identity, q SellableQue
 }
 
 // sellableFilter is shared by the count and the page, so both answer the same question.
-// Every variant matched by the filters is one row, priced or not: the pair is joined
-// through the battery and the balance through the branch, both as LEFT JOINs, so a
+// Every battery variant matched by the filters is one row, priced or not: the pair is
+// joined through the battery and the balance through the branch, both as LEFT JOINs, so a
 // variant without a price in this branch -- the row the counter must show blocked -- and
 // a variant without a balance row still appear exactly once. The join on the battery also
 // gives both polarities of one battery the same pair, and no row here is duplicated,
 // because a battery has at most one price per branch and a variant one balance per branch.
+// Only batteries are sold at the counter: an other product shares this catalog table with
+// a NULL brand, model, capacity and polarity, so its polarity-less variant is neither
+// counted nor paged here -- a row this scan cannot read would turn the whole page into a
+// service error.
 const sellableFilter = ` FROM catalog_variants v
  JOIN catalog_entries e ON e.id=v.catalog_entry_id
  LEFT JOIN branch_prices p ON p.catalog_entry_id=e.id AND p.branch_location_id=$1
@@ -685,6 +689,7 @@ const sellableFilter = ` FROM catalog_variants v
  WHERE ($2='' OR e.brand ILIKE $2 ESCAPE '\' OR e.model ILIKE $2 ESCAPE '\')
  AND ($3='' OR e.brand=$3) AND ($4::numeric IS NULL OR e.capacity_ah=$4::numeric)
  AND ($5='' OR v.polarity=$5)
+ AND e.kind='battery'
  AND e.deleted_at IS NULL`
 
 // capacityArg turns the optional capacity filter into a nullable numeric parameter, so

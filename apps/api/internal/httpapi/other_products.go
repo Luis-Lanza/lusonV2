@@ -316,7 +316,10 @@ func otherProductQuery(raw string) (otherproducts.Query, error) {
 	for key, value := range values {
 		switch key {
 		case "search":
-			if len(value.decoded) > otherProductMaxSearch {
+			// The bound is the number of runes, which is the bound the shipped client
+			// applies: an accented rune is two bytes, so a byte bound here refused a
+			// legitimate 128-rune search the rest of this contract admits.
+			if utf8.RuneCountInString(value.decoded) > otherProductMaxSearch {
 				return query, otherproducts.ErrInvalid
 			}
 			query.Search = value.decoded
