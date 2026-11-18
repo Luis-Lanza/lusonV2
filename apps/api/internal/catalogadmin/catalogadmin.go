@@ -250,7 +250,8 @@ func (s *Store) Create(ctx context.Context, token string, in CreateInput) (Batte
 // the path's identity and is never rewritten, and the variants are untouched. The
 // update's own row count is the decision, so there is no read-then-write window: a
 // retired battery has left the editable catalog and is answered exactly like an
-// unknown one.
+// unknown one. The kind is part of that identity, so an other product is answered
+// the same way instead of being rewritten into a battery shape.
 func (s *Store) Edit(ctx context.Context, token string, id int64, in EditInput) (Battery, error) {
 	if ctx == nil || s == nil || s.pool == nil || s.service == nil {
 		return Battery{}, ErrUnavailable
@@ -277,7 +278,7 @@ func (s *Store) Edit(ctx context.Context, token string, id int64, in EditInput) 
 		_ = tx.Rollback(cleanup)
 	}()
 	tag, err := tx.Exec(ctx, `UPDATE catalog_entries SET brand=$2,model=$3,capacity_ah=$4
- WHERE id=$1 AND deleted_at IS NULL`, int32(id), canonical.Brand, canonical.Model, string(canonical.Capacity))
+ WHERE id=$1 AND kind='battery' AND deleted_at IS NULL`, int32(id), canonical.Brand, canonical.Model, string(canonical.Capacity))
 	if err != nil {
 		return Battery{}, writeError(err)
 	}
@@ -297,7 +298,9 @@ func (s *Store) Edit(ctx context.Context, token string, id int64, in EditInput) 
 // Archive retires a battery in the same shape RetireBranch retires a branch: the
 // common fence is taken first, an already retired battery is a successful no-op,
 // and the database's blocker names stock or an open operation before anything is
-// written. A retirement is never reversed.
+// written. A retirement is never reversed. Only a battery is addressed here: an
+// other product id is answered like an unknown one, exactly as the edit does, so
+// this surface never retires an identity another surface owns.
 func (s *Store) Archive(ctx context.Context, token string, id int64) error {
 	if ctx == nil || s == nil || s.pool == nil || s.service == nil {
 		return ErrUnavailable
@@ -325,7 +328,8 @@ func (s *Store) Archive(ctx context.Context, token string, id int64) error {
 		return fail(ctx)
 	}
 	var retired bool
-	if err = tx.QueryRow(ctx, `SELECT deleted_at IS NOT NULL FROM catalog_entries WHERE id=$1`, int32(id)).Scan(&retired); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT deleted_at IS NOT NULL FROM catalog_entries
+ WHERE id=$1 AND kind='battery'`, int32(id)).Scan(&retired); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrNotFound
 		}

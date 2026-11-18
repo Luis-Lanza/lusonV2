@@ -54,22 +54,23 @@ func checkAssignment(ctx context.Context, q querier, actor auth.Identity) error 
 	return nil
 }
 
-// admitActiveVariants refuses a document that names a retired battery: ingress is an
-// operating act and a retired battery is out of operation. A reversal keeps working,
-// because it follows a persisted document instead of a selection, and a replay is
-// resolved before this check, because it creates no new document.
+// admitActiveVariants refuses a document that names an identity the ingress cannot
+// own: a retired battery, or an other product, which has no ingress contract yet.
+// Ingress is an operating act and a retired battery is out of operation. A reversal
+// keeps working, because it follows a persisted document instead of a selection, and
+// a replay is resolved before this check, because it creates no new document.
 func admitActiveVariants(ctx context.Context, q querier, lines []Line) error {
 	ids := make([]int32, len(lines))
 	for i, line := range lines {
 		ids[i] = int32(line.VariantID)
 	}
-	var retired int64
+	var unusable int64
 	if err := q.QueryRow(ctx, `SELECT count(*) FROM catalog_variants v
  JOIN catalog_entries e ON e.id=v.catalog_entry_id
- WHERE v.id=ANY($1) AND e.deleted_at IS NOT NULL`, ids).Scan(&retired); err != nil {
+ WHERE v.id=ANY($1) AND (e.deleted_at IS NOT NULL OR e.kind <> 'battery')`, ids).Scan(&unusable); err != nil {
 		return fail(ctx)
 	}
-	if retired != 0 {
+	if unusable != 0 {
 		return ErrInvalid
 	}
 	return nil

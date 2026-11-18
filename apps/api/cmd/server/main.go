@@ -14,6 +14,7 @@ import (
 	"luson/api/internal/config"
 	"luson/api/internal/httpapi"
 	"luson/api/internal/inventory"
+	"luson/api/internal/otherproducts"
 	"luson/api/internal/pricing"
 	"luson/api/internal/purchases"
 	"luson/api/internal/realtime"
@@ -123,6 +124,13 @@ func run() (result error) {
 	// The warehouse catalog administrator mounts last, so the battery contract owns
 	// only its own path and every other composed surface keeps its exact behavior.
 	api, err = httpapi.NewWithCatalogAdmin(api, service, httpCfg, catalogadmin.New(pool, service))
+	if err != nil {
+		return errors.New("API initialization failed")
+	}
+	// The other-product catalog mounts beside the battery contract on the same
+	// authority: it owns only its own path, and every composed surface keeps its
+	// exact behavior.
+	api, err = httpapi.NewWithOtherProducts(api, service, httpCfg, otherproducts.New(pool, service))
 	if err != nil {
 		return errors.New("API initialization failed")
 	}

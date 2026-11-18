@@ -158,9 +158,9 @@ func validPolarities(polarities []string) bool {
 // matrixFilter is shared by the count and the page, so both answer the same question.
 // The capacity is a nullable numeric parameter: an absent filter never casts an empty
 // string. The matrix is a list of batteries, so the filter never looks at a polarity,
-// and a retired battery is no longer part of the sale catalog.
+// never lists the other product kind and never lists a retired battery.
 const matrixFilter = ` FROM catalog_entries e
- WHERE e.deleted_at IS NULL
+ WHERE e.deleted_at IS NULL AND e.kind = 'battery'
  AND ($1='' OR e.brand ILIKE $1 ESCAPE '\' OR e.model ILIKE $1 ESCAPE '\')
  AND ($2='' OR e.brand=$2) AND ($3::numeric IS NULL OR e.capacity_ah=$3::numeric)`
 
