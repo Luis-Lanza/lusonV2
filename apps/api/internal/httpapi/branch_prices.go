@@ -250,6 +250,18 @@ func branchPriceQuery(raw string) (pricing.BranchQuery, error) {
 				return query, pricing.ErrInvalid
 			}
 			query.Capacity = capacity
+		case "kind":
+			// One page is one kind: the absent value is the battery listing every
+			// caller already had, the two named kinds are the tabs, and the shared
+			// three-state `all` is a malformed request here.
+			switch value.decoded {
+			case string(catalog.BatteryOnly):
+				query.Kind = catalog.BatteryOnly
+			case string(catalog.OtherOnly):
+				query.Kind = catalog.OtherOnly
+			default:
+				return query, pricing.ErrInvalid
+			}
 		case "page":
 			n, err := canonicalAdjustmentInteger(value.raw, pricing.MaxPage)
 			if err != nil {
@@ -289,31 +301,37 @@ type branchPriceDTO struct {
 	UpdatedByDisplayName string `json:"updated_by_display_name"`
 }
 
-// branchPriceBatteryDTO is one row of the matrix: the catalogue identity of a battery,
-// the polarities that exist for it and the prices the listed active branches hold. One
-// row per battery, so both polarities always show the same pair.
-type branchPriceBatteryDTO struct {
+// branchPriceRowDTO is one row of the union: a battery keeps the catalogue identity
+// the client composes its label from, a product keeps the free name and the summary of
+// its typed fields, and neither carries a field of the other kind. The prices array is
+// identical for both kinds, because a price is a price of an entry, not of a kind.
+// Every optional field is a pointer so a battery row still publishes `"cells":[]` for
+// a battery without source cells.
+type branchPriceRowDTO struct {
+	Kind           catalog.Kind     `json:"kind"`
 	CatalogEntryID int64            `json:"catalog_entry_id"`
-	Brand          string           `json:"brand"`
-	Model          string           `json:"model"`
-	Capacity       string           `json:"capacity_ah"`
-	Polarities     []string         `json:"polarities"`
-	Cells          []string         `json:"cells"`
+	Brand          *string          `json:"brand,omitempty"`
+	Model          *string          `json:"model,omitempty"`
+	Capacity       *string          `json:"capacity_ah,omitempty"`
+	Polarities     *[]string        `json:"polarities,omitempty"`
+	Cells          *[]string        `json:"cells,omitempty"`
+	Name           *string          `json:"name,omitempty"`
+	Detail         *string          `json:"detail,omitempty"`
 	Prices         []branchPriceDTO `json:"prices"`
 }
 
 // branchPriceMatrixDTO is the frozen read response: the active branches, one page of
-// batteries with their prices and the total of matching batteries.
+// rows of the asked kind with their prices and the total of matching rows.
 type branchPriceMatrixDTO struct {
-	Branches       []branchPriceBranchDTO  `json:"branches"`
-	Batteries      []branchPriceBatteryDTO `json:"batteries"`
-	Page           int                     `json:"page"`
-	PageSize       int                     `json:"page_size"`
-	TotalBatteries int64                   `json:"total_batteries"`
+	Branches []branchPriceBranchDTO `json:"branches"`
+	Rows     []branchPriceRowDTO    `json:"rows"`
+	Page     int                    `json:"page"`
+	PageSize int                    `json:"page_size"`
+	Total    int64                  `json:"total"`
 }
 
-// branchPriceWriteDTO is the frozen write response: the battery, how many pairs were
-// written, the branches in ascending order and the canonical pair.
+// branchPriceWriteDTO is the frozen write response: the catalogue entry, how many
+// pairs were written, the branches in ascending order and the canonical pair.
 type branchPriceWriteDTO struct {
 	CatalogEntryID int64   `json:"catalog_entry_id"`
 	Written        int     `json:"written"`
@@ -373,18 +391,19 @@ func branchPriceRecord(result pricing.WriteResult) (branchPriceWriteDTO, error) 
 }
 
 // branchPriceMatrixRecord admits only a complete matrix page: the branches it is read
-// against, the catalogue identity of every battery with its polarities and the
-// canonical pairs of the active branches.
+// against, the identity of every row of the asked kind and the canonical pairs of the
+// active branches. A row of one kind carrying a field of the other is a row this
+// contract could not have produced, so it is never published partially.
 func branchPriceMatrixRecord(matrix pricing.Matrix) (branchPriceMatrixDTO, error) {
 	unavailable := func() (branchPriceMatrixDTO, error) {
 		return branchPriceMatrixDTO{}, pricing.ErrUnavailable
 	}
-	if !pricing.ValidPage(matrix.Page, matrix.PageSize) || matrix.TotalBatteries < 0 ||
-		len(matrix.Batteries) > matrix.PageSize ||
+	if !pricing.ValidPage(matrix.Page, matrix.PageSize) || matrix.Total < 0 ||
+		len(matrix.Rows) > matrix.PageSize ||
 		// A page beyond the last one is legitimately empty; a page with rows must
 		// still fit inside the reported total.
-		(len(matrix.Batteries) > 0 &&
-			int64(matrix.Page-1)*int64(matrix.PageSize)+int64(len(matrix.Batteries)) > matrix.TotalBatteries) {
+		(len(matrix.Rows) > 0 &&
+			int64(matrix.Page-1)*int64(matrix.PageSize)+int64(len(matrix.Rows)) > matrix.Total) {
 		return unavailable()
 	}
 	branches := make([]branchPriceBranchDTO, 0, len(matrix.Branches))
@@ -398,24 +417,12 @@ func branchPriceMatrixRecord(matrix pricing.Matrix) (branchPriceMatrixDTO, error
 		active[item.ID] = true
 		branches = append(branches, branchPriceBranchDTO{ID: item.ID, Name: item.Name})
 	}
-	var previousBattery int64
-	batteries := make([]branchPriceBatteryDTO, 0, len(matrix.Batteries))
-	for _, item := range matrix.Batteries {
+	var previousEntry int64
+	rows := make([]branchPriceRowDTO, 0, len(matrix.Rows))
+	for _, item := range matrix.Rows {
 		if item.CatalogEntryID < 1 || item.CatalogEntryID > math.MaxInt32 ||
-			item.CatalogEntryID <= previousBattery ||
-			!validBranchPriceText(item.Brand) || item.Brand == "" ||
-			!validBranchPriceText(item.Model) || item.Model == "" ||
-			!validBranchPriceCells(item.Cells) || !validBranchPricePolarities(item.Polarities) {
+			item.CatalogEntryID <= previousEntry {
 			return unavailable()
-		}
-		capacity, err := catalog.ParseDecimal(string(item.Capacity))
-		if err != nil {
-			return unavailable()
-		}
-		for _, cell := range item.Cells {
-			if cell == "" || !validBranchPriceText(cell) {
-				return unavailable()
-			}
 		}
 		prices := make([]branchPriceDTO, 0, len(item.Prices))
 		var previousPrice int64
@@ -445,24 +452,65 @@ func branchPriceMatrixRecord(matrix pricing.Matrix) (branchPriceMatrixDTO, error
 				UpdatedByDisplayName: price.UpdatedByDisplayName,
 			})
 		}
-		previousBattery = item.CatalogEntryID
-		batteries = append(batteries, branchPriceBatteryDTO{
-			CatalogEntryID: item.CatalogEntryID,
-			Brand:          item.Brand,
-			Model:          item.Model,
-			Capacity:       string(capacity),
-			Polarities:     item.Polarities,
-			Cells:          item.Cells,
-			Prices:         prices,
-		})
+		record, err := branchPriceRow(item, prices)
+		if err != nil {
+			return unavailable()
+		}
+		previousEntry = item.CatalogEntryID
+		rows = append(rows, record)
 	}
 	return branchPriceMatrixDTO{
-		Branches:       branches,
-		Batteries:      batteries,
-		Page:           matrix.Page,
-		PageSize:       matrix.PageSize,
-		TotalBatteries: matrix.TotalBatteries,
+		Branches: branches,
+		Rows:     rows,
+		Page:     matrix.Page,
+		PageSize: matrix.PageSize,
+		Total:    matrix.Total,
 	}, nil
+}
+
+// branchPriceRow publishes one row of the union. A battery is its battery attributes
+// and the polarities that exist for it; a product is the name and the detail the rest
+// of the application already publishes. A row carrying a field of the other kind, or
+// missing one of its own, is a payload this contract could not have produced.
+func branchPriceRow(item pricing.Row, prices []branchPriceDTO) (branchPriceRowDTO, error) {
+	row := branchPriceRowDTO{Kind: item.Kind, CatalogEntryID: item.CatalogEntryID, Prices: prices}
+	switch item.Kind {
+	case catalog.BatteryKind:
+		if item.Name != "" || item.Detail != "" ||
+			!validBranchPriceText(item.Brand) || item.Brand == "" ||
+			!validBranchPriceText(item.Model) || item.Model == "" ||
+			!validBranchPriceCells(item.Cells) || !validBranchPricePolarities(item.Polarities) {
+			return branchPriceRowDTO{}, pricing.ErrUnavailable
+		}
+		capacity, err := catalog.ParseDecimal(string(item.Capacity))
+		if err != nil {
+			return branchPriceRowDTO{}, pricing.ErrUnavailable
+		}
+		for _, cell := range item.Cells {
+			if cell == "" || !validBranchPriceText(cell) {
+				return branchPriceRowDTO{}, pricing.ErrUnavailable
+			}
+		}
+		brand, model, capacityText := item.Brand, item.Model, string(capacity)
+		polarities, cells := item.Polarities, item.Cells
+		row.Brand, row.Model, row.Capacity = &brand, &model, &capacityText
+		row.Polarities, row.Cells = &polarities, &cells
+	case catalog.OtherKind:
+		// A product is its free name and the summary of its typed fields, and it
+		// carries no battery attribute: a product with one is not a row this
+		// catalogue could have produced.
+		if !validBranchPriceText(item.Name) || item.Name == "" ||
+			!validBranchPriceText(item.Detail) || item.Detail == "" ||
+			item.Brand != "" || item.Model != "" || item.Capacity != "" ||
+			len(item.Polarities) != 0 || len(item.Cells) != 0 {
+			return branchPriceRowDTO{}, pricing.ErrUnavailable
+		}
+		name, detail := item.Name, item.Detail
+		row.Name, row.Detail = &name, &detail
+	default:
+		return branchPriceRowDTO{}, pricing.ErrUnavailable
+	}
+	return row, nil
 }
 
 // validBranchPriceCells admits the source cells of a preloaded battery, and for a
@@ -490,9 +538,9 @@ func validBranchPricePolarities(polarities []string) bool {
 }
 
 // branchPrices serves the catalogue price list and its write. The read is the
-// administrator's matrix of batteries; the write replaces the pair of every chosen
-// branch in one transaction. Only the warehouse administrator is admitted and the store is the
-// final authority for both.
+// administrator's matrix of one catalogue kind; the write replaces the pair of every
+// chosen branch in one transaction. Only the warehouse administrator is admitted and
+// the store is the final authority for both.
 func (a *API) branchPrices(store *pricing.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Anything below the collection is an unknown route answered as JSON, never a

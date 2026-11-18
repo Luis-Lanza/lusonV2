@@ -2,11 +2,14 @@
 
 The branch price list is the warehouse's administration surface for **what each
 branch sells for**: one minimum price and one suggested price per (branch,
-**battery**). A battery is a catalogue entry — brand + model + capacity — so one
-price covers **both polarities** of that battery: "el precio se aplica el mismo
-tanto a las baterias con polaridad L y R del mismo medelo/marca". Two polarities of
-one battery can never hold different prices, because there is exactly one row to
-hold them.
+**catalogue entry**), and the entry is one of the catalogue's two kinds. A
+**battery** is a catalogue entry — brand + model + capacity — so one price covers
+**both polarities** of that battery: "el precio se aplica el mismo tanto a las
+baterias con polaridad L y R del mismo medelo/marca". Two polarities of one battery
+can never hold different prices, because there is exactly one row to hold them. An
+**other product** is the second kind: a free name plus typed custom fields, with one
+polarity-less variant, so its single entry row already covers it — there is no
+per-variant price and no second table.
 
 Prices are administered only by the warehouse (`Almacén`, account `1` with
 location `1`), are assigned one branch at a time or in a block to several branches
@@ -54,53 +57,91 @@ contract.
 ## Read: the price matrix
 
 ```
-GET /api/catalog/prices?search=&brand=&capacity=&page=&page_size=
+GET /api/catalog/prices?kind=&search=&brand=&capacity=&page=&page_size=
 ```
 
-* `search` is a literal substring over `brand` and `model` (case-insensitive); a
-  `%` or `_` in the operator's own words never becomes a SQL wildcard.
-* `brand` is an exact brand filter.
+* `kind` selects the one kind the page lists: `battery` or `other`. **Absent means
+  `battery`**, so every answer that predates the second kind is unchanged. `all` is
+  `400 invalid_request`: one page is one kind, because that is what the two tabs ask
+  for and a mixed page has no second ordering key. The envelope is renamed to match:
+  `batteries` is now `rows` and `total_batteries` is now `total`.
+* `search` is a literal substring (case-insensitive); for a battery it reads `brand`
+  and `model`, for a product it also reads the free name and the content of its typed
+  fields, so a term the row displays finds the row. A `%` or `_` in the operator's own
+  words never becomes a SQL wildcard.
+* `brand` is an exact brand filter. It is a **battery** filter: naming it together
+  with `kind=other` is `400 invalid_request`, never a silently ignored parameter.
 * `capacity` is an exact catalogue capacity (`"45"`, `"6.5"`). It is validated as a
   catalogue decimal and compared as `numeric`, so `6,5` or `abc` is
+  `400 invalid_request`. It is a **battery** filter too: `kind=other&capacity=45` is
   `400 invalid_request`.
 * `page` is a canonical integer from 1 to 1000000 and defaults to 1.
 * `page_size` is one of `10`, `25`, `50` and defaults to 10.
-* The query is token-exact: repeated parameters, unknown keys, empty values, a
-  bare `?` and non-canonical integers (`01`, `+1`, `1e3`, `1.0`, `%31`) are all
-  `400 invalid_request`. Parameter order is irrelevant. The free text is
-  percent-decoded once, so a real search with spaces works.
+* The query is token-exact: repeated parameters, unknown keys, empty values, an
+  unknown `kind`, a bare `?` and non-canonical integers (`01`, `+1`, `1e3`, `1.0`,
+  `%31`) are all `400 invalid_request`. Parameter order is irrelevant. The free text
+  is percent-decoded once, so a real search with spaces works.
 
-There is **no polarity filter**: a price belongs to the battery, so every row of
+There is **no polarity filter**: a price belongs to the entry, so every battery row of
 the matrix carries both of its polarities. A `polarity` parameter is an unknown
 key and is rejected.
 
+A battery page:
+
 ```json
 {"branches":[{"id":2,"name":"Sucursal A"}],
- "batteries":[{"catalog_entry_id":1,"brand":"CAR","model":"NS40ZL",
+ "rows":[{"kind":"battery","catalog_entry_id":1,"brand":"CAR","model":"NS40ZL",
   "capacity_ah":"35","polarities":["L","R"],"cells":["B5","C5","D5"],
   "prices":[{"branch_location_id":2,"min_price":"85000.00",
    "suggested_price":"96000.00","updated_at":"2026-11-04T10:00:00Z",
    "updated_by_account_id":1,"updated_by_display_name":""}]}],
- "page":1,"page_size":10,"total_batteries":95}
+ "page":1,"page_size":10,"total":95}
+```
+
+A product page of the same contract:
+
+```json
+{"branches":[{"id":2,"name":"Sucursal A"}],
+ "rows":[{"kind":"other","catalog_entry_id":96,"name":"Agua acidulada",
+  "detail":"volumen en L: 5 L",
+  "prices":[{"branch_location_id":2,"min_price":"1500.00",
+   "suggested_price":"1900.00","updated_at":"2026-11-04T10:00:00Z",
+   "updated_by_account_id":1,"updated_by_display_name":""}]}],
+ "page":1,"page_size":10,"total":1}
 ```
 
 | Field | Meaning |
 |---|---|
 | `branches` | The active branches, in `id` order. Retired branches and the warehouse are never listed |
-| `batteries` | One page of batteries, in `catalog_entry_id` order |
+| `rows` | One page of the asked kind, in `catalog_entry_id` order |
 | `page`, `page_size` | The admitted page |
-| `total_batteries` | Every battery matching the filters, independent of the page |
+| `total` | Every row of the asked kind matching the filters, independent of the page |
 
-Each battery row is:
+A row is a discriminated union on `kind`, and the `prices` array is **identical for
+both kinds**: that is what "igual que en las baterías" means here. A battery row is:
 
 | Field | Meaning |
 |---|---|
+| `kind` | `battery` |
 | `catalog_entry_id` | The battery: brand + model + capacity |
 | `brand`, `model` | Catalogue entry brand and model |
 | `capacity_ah` | Canonical catalogue capacity as a string (`"35"`, `"6.5"`), never a float |
 | `polarities` | The polarities that exist for this battery, ascending (`["L","R"]`) |
 | `cells` | The three source cells of the catalogue entry |
 | `prices` | The pairs of the listed active branches, in `branch_location_id` order; an empty array when the battery has no price |
+
+A battery row never carries `name` or `detail`. A product row is:
+
+| Field | Meaning |
+|---|---|
+| `kind` | `other` |
+| `catalog_entry_id` | The product entry |
+| `name` | The free name the rest of the application publishes |
+| `detail` | The summary of its typed fields (`volumen en L: 5 L`), or its own name when it declares none — never a second composition |
+| `prices` | The pairs of the listed active branches, in `branch_location_id` order; an empty array when the product has no price |
+
+A product row carries no `capacity_ah`, no `polarities`, no `cells` and no null
+battery field: the key is absent, not empty.
 
 Each price is:
 
@@ -113,11 +154,14 @@ Each price is:
 | `updated_by_account_id` | The account that wrote it |
 | `updated_by_display_name` | That account's display name, empty when the account has none |
 
-A battery the branch has no price for appears with an empty `prices` array: that
-is exactly the "not sellable in this branch" case of the point of sale, and it
-applies to **both** of its polarities at once. A price of a branch that was later
-retired stays persisted (prices are never deleted) but is no longer advertised
-here, because it is not a sale price any more.
+An entry the branch has no price for appears with an empty `prices` array: that is
+exactly the "not sellable in this branch" case of the point of sale, and for a battery
+it applies to **both** of its polarities at once. A price of a branch that was later
+retired stays persisted (prices are never deleted) but is no longer advertised here,
+because it is not a sale price any more.
+
+A price does not make a product sellable: the point of sale still sells batteries
+only, so a product price is a recorded amount, never a ticket to sell it.
 
 ## Write: individual or block assignment
 
@@ -132,7 +176,8 @@ PUT /api/catalog/prices
  "branch_ids":[2,3]}
 ```
 
-* `catalog_entry_id` is a canonical positive integer of an existing battery.
+* `catalog_entry_id` is a canonical positive integer of an existing catalogue entry of
+  either kind: a battery or an other product.
 * `min_price` and `suggested_price` are JSON **strings** holding a positive
   decimal amount with at most two decimals. They are canonicalized to exactly two
   decimals (`"85000"` → `"85000.00"`, `"96000.5"` → `"96000.50"`).
@@ -159,13 +204,14 @@ this contract.
 
 ### Semantics
 
-* One battery, one pair, N branches. The value of the operation is the battery, so
+* One entry, one pair, N branches. The value of the operation is the catalogue entry, so
   the same `min_price`/`suggested_price` pair is written to every chosen branch and
-  covers both polarities of the battery there; a later individual write can
-  diverge one branch from the rest.
-* One write creates **exactly one row per (branch, battery)**, never one row per
+  covers both polarities of a battery there; a later individual write can
+  diverge one branch from the rest. A product has exactly one variant, so its single
+  entry row covers it the same way.
+* One write creates **exactly one row per (branch, entry)**, never one row per
   polarity. Writing again replaces that row in place.
-* Two branches may hold different amounts for the same battery; nothing in this
+* Two branches may hold different amounts for the same entry; nothing in this
   contract propagates a pair to branches that were not chosen.
 * The whole operation is one transaction: either every chosen branch receives the
   pair, or nothing is written at all. If one id in the list is unknown, retired,
@@ -179,7 +225,7 @@ this contract.
 
 | Status | Code | Meaning |
 |---|---|---|
-| 400 | `invalid_request` | Unknown battery, non-positive amount, more than two decimals, suggested price below the minimum, empty/duplicate/out-of-range `branch_ids`, the warehouse in `branch_ids`, an unknown branch id, or an unknown extra key (including a leftover `variant_id` or `warranty_months`) |
+| 400 | `invalid_request` | Unknown entry, non-positive amount, more than two decimals, suggested price below the minimum, empty/duplicate/out-of-range `branch_ids`, the warehouse in `branch_ids`, an unknown branch id, or an unknown extra key (including a leftover `variant_id` or `warranty_months`) |
 | 400 | `retired_branch` | One of the chosen branches was retired; the body names it (see below) |
 | 401 | `unauthenticated` | No session |
 | 403 | `forbidden` | The caller is not the warehouse administrator, or the mutation guard failed |
@@ -198,7 +244,7 @@ Every other failure is the house envelope `{"error":"<code>"}`.
 
 | Status | Code | Meaning |
 |---|---|---|
-| 400 | `invalid_request` | Malformed body, bad amount, bad branch list, bad query, wrong amount pair |
+| 400 | `invalid_request` | Malformed body, bad amount, bad branch list, bad query (`kind=all`, an unknown `kind`, `brand` or `capacity` with `kind=other`), wrong amount pair |
 | 400 | `retired_branch` | A named branch of the block was retired; nothing was written |
 | 401 | `unauthenticated` | No session |
 | 403 | `forbidden` | The caller is not the warehouse administrator |

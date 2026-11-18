@@ -1,8 +1,10 @@
 // Package pricing owns the branch price list: the minimum and suggested sale
-// price the warehouse administers for one battery in one branch. A battery is a
-// catalogue entry (brand + model + capacity), so its pair covers both polarities of
+// price the warehouse administers for one catalogue entry in one branch. A battery is
+// a catalogue entry (brand + model + capacity), so its pair covers both polarities of
 // that battery at once: L and R can never hold different prices, because there is one
-// price per battery. Money is a canonical decimal string with exactly two decimals
+// price per battery. An other product is a catalogue entry too (a free name with typed
+// fields and exactly one polarity-less variant), so the same pair covers it without a
+// second table. Money is a canonical decimal string with exactly two decimals
 // and is never a binary float, so no rounding is invented between the database and the
 // client. Only the warehouse administrator writes prices and only active branches keep
 // them; a retired pair is replaced, never deleted. The warranty term of a sale is not
@@ -141,37 +143,44 @@ type Price struct {
 	UpdatedByDisplayName string    `json:"updated_by_display_name"`
 }
 
-// Battery is one row of the matrix: the catalogue identity of a battery, the
-// polarities that exist for it and the prices of the active branches. There is one
-// row per battery, never one per polarity, so the two polarities of a battery always
-// show the same pair.
-type Battery struct {
+// Row is one row of the matrix: the catalogue identity of one entry of the selected
+// kind and the prices the active branches hold for it. There is one row per entry,
+// never one per polarity, so the two polarities of a battery always show the same
+// pair. A battery row carries the battery attributes the client composes its label
+// from and no name; a product row carries the free name and the summary of its typed
+// fields and no battery attribute.
+type Row struct {
 	CatalogEntryID int64
+	Kind           catalog.Kind
 	Brand          string
 	Model          string
 	Capacity       catalog.Decimal
 	Polarities     []string
 	Cells          []string
+	Name           string
+	Detail         string
 	Prices         []Price
 }
 
 // Matrix is one page of the price list together with the active branches it is read
-// against.
+// against. One page is one kind, so the total counts the rows of the asked kind.
 type Matrix struct {
-	Branches       []Branch
-	Batteries      []Battery
-	Page           int
-	PageSize       int
-	TotalBatteries int64
+	Branches []Branch
+	Rows     []Row
+	Page     int
+	PageSize int
+	Total    int64
 }
 
 // BranchQuery is the frozen read filter. Capacity is a canonical catalogue decimal
 // and an empty value means no capacity filter. There is no polarity filter: a price
-// belongs to the battery, so the matrix lists both polarities in one row.
+// belongs to the battery, so the matrix lists both polarities in one row. Kind selects
+// the one kind of the page.
 type BranchQuery struct {
 	Search   string
 	Brand    string
 	Capacity catalog.Decimal
+	Kind     catalog.KindFilter
 	Page     int
 	PageSize int
 }
@@ -220,9 +229,19 @@ func validText(text string) bool {
 }
 
 // ValidQuery admits the read filter. The capacity is a catalogue decimal, so a
-// value the catalogue cannot hold never becomes a SQL parameter.
+// value the catalogue cannot hold never becomes a SQL parameter. The kind is one kind:
+// the absent value is the battery-only page every caller had, and the shared
+// three-state `all` is refused because one page has one row shape and one total. A
+// battery filter named together with the product kind is refused instead of silently
+// ignored, so a caller never believes a filter applied when it did not.
 func ValidQuery(q BranchQuery) bool {
 	if !ValidPage(q.Page, q.PageSize) || !validText(q.Search) || !validText(q.Brand) {
+		return false
+	}
+	if !q.Kind.Valid() || q.Kind == catalog.AllKinds {
+		return false
+	}
+	if q.Kind.Filter() == catalog.OtherOnly && (q.Brand != "" || q.Capacity != "") {
 		return false
 	}
 	if q.Capacity != "" {
