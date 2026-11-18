@@ -1,0 +1,34 @@
+{
+  "title": "Otros productos en stock e ingresos",
+  "brief": "Las tres pantallas del Almacén que hoy sólo entienden baterías — Inventario, Ingresos y Ajustes — con el segundo tipo del catálogo, sus campos propios y la regla de un documento por tipo.",
+  "artboards": [
+    {
+      "file": "01-stock-dos-tipos.html",
+      "title": "Inventario con dos tipos",
+      "tradeoff": "Una sola tabla con columna Detalle y filtro por tipo: se escanea de un tirón, pero el tipo se lee de un rótulo chico en la fila en vez de dominar la pantalla.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "02-ingreso-tipo-declarado.html",
+      "title": "Ingreso: el tipo vive en el documento",
+      "tradeoff": "El ingreso arranca con el catálogo a la vista y el tipo aparece como chip del documento; cambiar de tipo obliga a descartar el borrador, y la solapa bloqueada tiene que explicar por qué.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "03-ingreso-tipo-primero.html",
+      "title": "Ingreso: el tipo va primero",
+      "tradeoff": "Mezclar tipos deja de ser posible por construcción, a cambio de un paso más antes de ver el catálogo y de una pantalla menos densa.",
+      "width": 1440,
+      "height": 900
+    },
+    {
+      "file": "04-ajustes-dos-solapas.html",
+      "title": "Ajustes: dos solapas y conteo ciego",
+      "tradeoff": "El historial mezcla documentos de los dos tipos en una sola lista, y el cajón de conteo pierde capacidad y polaridad para ganar Detalle; el tipo bloquea la otra solapa igual que en ingresos.",
+      "width": 1440,
+      "height": 900
+    }
+  ]
+}
