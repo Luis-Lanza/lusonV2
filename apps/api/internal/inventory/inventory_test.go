@@ -118,7 +118,9 @@ func TestInventoryPostgres(t *testing.T) {
 	}
 	result, err := s.List(ctx, actor, Query{LocationID: 1, Search: "6,5", Page: 1, PageSize: 10})
 	b, _ := json.Marshal(result)
-	if err != nil || len(result.Items) != 4 || strings.Count(string(b), `"capacity_ah":6.5`) != 4 {
+	// The identity carries the capacity as the canonical decimal text of the
+	// contract, never a binary float.
+	if err != nil || len(result.Items) != 4 || strings.Count(string(b), `"capacity_ah":"6.5"`) != 4 {
 		t.Fatal("exact fractional numeric JSON")
 	}
 	// Test-owned holds only: no production or initializer hold seed is added.

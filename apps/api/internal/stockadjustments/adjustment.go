@@ -86,19 +86,17 @@ type Adjustment struct {
 	ReversesAdjustmentID *int64 `json:"reverses_adjustment_id"`
 }
 
-// DetailLine is one persisted line together with the catalogue identity of its
-// variant. The difference is the applied counted minus expected, so a historical
-// document keeps its own arithmetic even after the current stock has changed.
+// DetailLine is one persisted line together with the variant identity of its own
+// kind: a battery keeps its battery attributes and a product keeps its typed
+// fields, so reading a product line never invents a brand. The difference is the
+// applied counted minus expected, so a historical document keeps its own
+// arithmetic even after the current stock has changed.
 type DetailLine struct {
-	VariantID      int64           `json:"variant_id"`
-	CatalogEntryID int64           `json:"catalog_entry_id"`
-	Brand          string          `json:"brand"`
-	Model          string          `json:"model"`
-	Capacity       catalog.Decimal `json:"capacity_ah"`
-	Polarity       string          `json:"polarity"`
-	Expected       int64           `json:"expected_quantity"`
-	Counted        int64           `json:"counted_quantity"`
-	Difference     int64           `json:"difference"`
+	catalog.Identity
+	CatalogEntryID int64
+	Expected       int64 `json:"expected_quantity"`
+	Counted        int64 `json:"counted_quantity"`
+	Difference     int64 `json:"difference"`
 }
 
 // Detail is one persisted document with its catalogue-resolved lines and its
@@ -144,25 +142,23 @@ type Page struct {
 }
 
 // CatalogQuery is the blind capture query: searching the catalogue never carries
-// a stock quantity, only the catalogue identity of a variant.
+// a stock quantity, only the catalogue identity of a variant. The absent kind is
+// the battery-only catalogue every caller had before the second kind existed.
 type CatalogQuery struct {
 	Search   string
 	Brand    string
 	Polarity string
+	Kind     catalog.KindFilter
 	Page     int
 	PageSize int
 }
 
-// CatalogItem is the catalogue identity of one variant of this warehouse. It
-// deliberately has no stock field: the capture screen cannot reveal the expected
-// quantity, the difference or any other stock number.
+// CatalogItem is the variant identity of one item of this warehouse's catalogue,
+// of its own kind. It deliberately has no stock field: the capture screen cannot
+// reveal the expected quantity, the difference or any other stock number.
 type CatalogItem struct {
-	VariantID      int64           `json:"variant_id"`
-	CatalogEntryID int64           `json:"catalog_entry_id"`
-	Brand          string          `json:"brand"`
-	Model          string          `json:"model"`
-	Capacity       catalog.Decimal `json:"capacity_ah"`
-	Polarity       string          `json:"polarity"`
+	catalog.Identity
+	CatalogEntryID int64 `json:"catalog_entry_id"`
 }
 
 // CatalogPage is one admitted page of the capture catalogue plus the total.

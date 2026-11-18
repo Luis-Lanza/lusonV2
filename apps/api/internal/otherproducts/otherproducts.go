@@ -12,7 +12,6 @@ import (
 	"context"
 	"errors"
 	"math"
-	"regexp"
 	"strings"
 	"time"
 	"unicode"
@@ -159,50 +158,20 @@ func CanonicalName(value string) (string, error) {
 	return name, nil
 }
 
-// numberPattern is the admitted spelling of a number field before it is
-// canonicalized: an optional sign, at most eighteen digits and at most six
-// decimals, which is the whole text form of the numeric(18,6) column.
-var numberPattern = regexp.MustCompile(`^-?[0-9]{1,18}(\.[0-9]{1,6})?$`)
-
 // CanonicalNumber admits the value of a number field and returns the canonical
 // decimal text the column holds: no leading zero in the integral part, no trailing
 // zero in the fraction and no negative zero, so "005.50" travels as "5.5".
 //
-// It is deliberately not catalog.ParseDecimal: a capacity is a positive battery
-// property, while a number field is any value the product declares, so zero and a
-// negative value are values here. The bound is the column's own numeric(18,6): at
-// most twelve integral and six fractional digits, refused here so the database
-// never rounds or overflows what the operator typed.
+// The grammar is the catalog's own, because the same value is published by the
+// variant identity every screen reads: it is deliberately not catalog.ParseDecimal,
+// since a capacity is a positive battery property while a number field is any value
+// the product declares, so zero and a negative value are values here.
 func CanonicalNumber(value string) (catalog.Decimal, error) {
-	if !numberPattern.MatchString(value) {
+	number, err := catalog.CanonicalNumber(value)
+	if err != nil {
 		return "", ErrInvalid
 	}
-	negative := strings.HasPrefix(value, "-")
-	whole, fraction, _ := strings.Cut(strings.TrimPrefix(value, "-"), ".")
-	integral := strings.TrimLeft(whole, "0")
-	if integral == "" {
-		integral = "0"
-	}
-	if len(integral) > maxNumberIntegral {
-		return "", ErrInvalid
-	}
-	fraction = strings.TrimRight(fraction, "0")
-	if integral == "0" && fraction == "" {
-		// Zero is a value; a negative zero is only a spelling, and the catalog never
-		// holds it.
-		if negative {
-			return "", ErrInvalid
-		}
-		return catalog.Decimal("0"), nil
-	}
-	canonical := integral
-	if fraction != "" {
-		canonical += "." + fraction
-	}
-	if negative {
-		canonical = "-" + canonical
-	}
-	return catalog.Decimal(canonical), nil
+	return number, nil
 }
 
 // CanonicalFields decides the whole field set before any statement runs: at most
@@ -769,42 +738,23 @@ func readFields(ctx context.Context, q querier, products []Product) error {
 }
 
 // storedField validates one persisted field and returns it in the canonical shape
-// this contract publishes. A decimal never travels as a float: the column's own
-// text is parsed back into the catalog decimal.
+// this contract publishes. The rule is the catalog's own field rule, because the
+// same value is published by the variant identity every screen reads; a decimal
+// never travels as a float, so the column's own text is parsed back into the
+// catalog decimal.
 func storedField(name, kind string, unit, number, text *string) (Field, error) {
-	if !utf8.ValidString(name) || !validText(name) ||
-		len(name) < 1 || len(name) > maxFieldName || strings.TrimSpace(name) != name {
+	published, err := catalog.CanonicalField(name, kind, unit, number, text)
+	if err != nil {
 		return Field{}, ErrUnavailable
 	}
-	field := Field{Name: name, Kind: Kind(kind)}
-	switch field.Kind {
-	case KindNumber:
-		if number == nil || text != nil {
-			return Field{}, ErrUnavailable
-		}
-		value, err := CanonicalNumber(*number)
-		if err != nil {
-			return Field{}, ErrUnavailable
-		}
+	field := Field{Name: published.Name, Kind: Kind(published.Kind), Unit: published.Unit}
+	if published.Number != nil {
+		value := catalog.Decimal(*published.Number)
 		field.Number = &value
-		if unit != nil {
-			if !utf8.ValidString(*unit) || !validText(*unit) ||
-				len(*unit) < 1 || len(*unit) > maxUnit || strings.TrimSpace(*unit) != *unit {
-				return Field{}, ErrUnavailable
-			}
-			field.Unit = *unit
-		}
-	case KindText:
-		if text == nil || number != nil || unit != nil {
-			return Field{}, ErrUnavailable
-		}
-		if !utf8.ValidString(*text) || !validText(*text) || len(*text) < 1 || len(*text) > maxText {
-			return Field{}, ErrUnavailable
-		}
-		value := *text
+	}
+	if published.Text != nil {
+		value := *published.Text
 		field.Text = &value
-	default:
-		return Field{}, ErrUnavailable
 	}
 	return field, nil
 }

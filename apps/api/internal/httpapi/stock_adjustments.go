@@ -427,6 +427,19 @@ func stockAdjustmentCatalogQuery(raw string) (stockadjustments.CatalogQuery, err
 				return query, stockadjustments.ErrInvalid
 			}
 			query.Polarity = value.decoded
+		case "kind":
+			// Exactly the three frozen states: a kind outside them is a malformed
+			// request, never a silent default.
+			switch value.decoded {
+			case string(catalog.AllKinds):
+				query.Kind = catalog.AllKinds
+			case string(catalog.BatteryOnly):
+				query.Kind = catalog.BatteryOnly
+			case string(catalog.OtherOnly):
+				query.Kind = catalog.OtherOnly
+			default:
+				return query, stockadjustments.ErrInvalid
+			}
 		case "page":
 			n, err := canonicalAdjustmentInteger(value.raw, stockadjustments.MaxPage)
 			if err != nil {
@@ -474,18 +487,16 @@ type stockAdjustmentDTO struct {
 	TotalDifference      int64                    `json:"total_difference"`
 }
 
+// stockAdjustmentDetailLineDTO is one line of the frozen detail: the variant
+// identity of its own kind, the catalogue entry it belongs to and the applied
+// arithmetic. A battery keeps its battery attributes and a product keeps its
+// typed fields, so the read never invents the attribute a row does not have.
 type stockAdjustmentDetailLineDTO struct {
-	VariantID      int64  `json:"variant_id"`
-	CatalogEntryID int64  `json:"catalog_entry_id"`
-	Brand          string `json:"brand"`
-	Model          string `json:"model"`
-	// Capacity is the inventory read's canonical rendering of capacity_ah as the
-	// frozen detail contract spells it: the exact decimal text, never a binary float.
-	Capacity   string `json:"capacity_ah"`
-	Polarity   string `json:"polarity"`
-	Expected   int64  `json:"expected_quantity"`
-	Counted    int64  `json:"counted_quantity"`
-	Difference int64  `json:"difference"`
+	catalog.Identity
+	CatalogEntryID int64 `json:"catalog_entry_id"`
+	Expected       int64 `json:"expected_quantity"`
+	Counted        int64 `json:"counted_quantity"`
+	Difference     int64 `json:"difference"`
 }
 
 // stockAdjustmentDetailDTO is the frozen per-document detail: the header, the
@@ -525,16 +536,12 @@ type stockAdjustmentPageDTO struct {
 	Adjustments      []stockAdjustmentSummaryDTO `json:"adjustments"`
 }
 
-// stockAdjustmentCatalogItemDTO is the catalogue identity of one variant. It has no
-// stock field at all, so the blind capture cannot reveal the expected quantity, the
-// difference or any other stock number.
+// stockAdjustmentCatalogItemDTO is the variant identity of one item of the blind
+// capture catalogue. It has no stock field at all, so the capture cannot reveal
+// the expected quantity, the difference or any other stock number.
 type stockAdjustmentCatalogItemDTO struct {
-	VariantID      int64  `json:"variant_id"`
-	CatalogEntryID int64  `json:"catalog_entry_id"`
-	Brand          string `json:"brand"`
-	Model          string `json:"model"`
-	Capacity       string `json:"capacity_ah"`
-	Polarity       string `json:"polarity"`
+	catalog.Identity
+	CatalogEntryID int64 `json:"catalog_entry_id"`
 }
 
 type stockAdjustmentCatalogDTO struct {
@@ -555,13 +562,6 @@ func stockAdjustmentMotive(reason string) bool {
 func validStockAdjustmentDetail(detail string) bool {
 	return utf8.ValidString(detail) && !strings.ContainsRune(detail, 0) &&
 		utf8.RuneCountInString(detail) <= stockAdjustmentMaxDetail
-}
-
-// validStockAdjustmentCatalogueText is the catalogue identity bound of a line: the
-// brand and the model are persisted non-empty text, so a blank, NUL or malformed
-// one never reaches the wire.
-func validStockAdjustmentCatalogueText(value string) bool {
-	return value != "" && utf8.ValidString(value) && !strings.ContainsRune(value, 0)
 }
 
 // stockAdjustmentDifference sums exactly: a total that leaves int64 is a stored
@@ -672,16 +672,11 @@ func stockAdjustmentDetailRecord(detail stockadjustments.Detail) (stockAdjustmen
 	lines := make([]stockAdjustmentDetailLineDTO, 0, len(detail.Lines))
 	var previous, total int64
 	for _, line := range detail.Lines {
-		if line.VariantID < 1 || line.VariantID > math.MaxInt32 || line.VariantID <= previous ||
-			line.CatalogEntryID < 1 || !validStockAdjustmentCatalogueText(line.Brand) ||
-			!validStockAdjustmentCatalogueText(line.Model) ||
-			(line.Polarity != "L" && line.Polarity != "R") ||
+		if line.CatalogEntryID < 1 ||
+			line.Identity.Valid() != nil ||
+			int64(line.VariantID) <= previous ||
 			line.Expected < 0 || line.Counted < 0 || line.Counted > stockAdjustmentMaxCounted ||
 			line.Difference != line.Counted-line.Expected {
-			return unavailable()
-		}
-		capacity, err := catalog.ParseDecimal(string(line.Capacity))
-		if err != nil {
 			return unavailable()
 		}
 		next, err := stockAdjustmentDifference(total, line.Difference)
@@ -689,10 +684,9 @@ func stockAdjustmentDetailRecord(detail stockadjustments.Detail) (stockAdjustmen
 			return unavailable()
 		}
 		total = next
-		previous = line.VariantID
-		lines = append(lines, stockAdjustmentDetailLineDTO{VariantID: line.VariantID,
-			CatalogEntryID: line.CatalogEntryID, Brand: line.Brand, Model: line.Model,
-			Capacity: string(capacity), Polarity: line.Polarity, Expected: line.Expected,
+		previous = int64(line.VariantID)
+		lines = append(lines, stockAdjustmentDetailLineDTO{Identity: line.Identity,
+			CatalogEntryID: line.CatalogEntryID, Expected: line.Expected,
 			Counted: line.Counted, Difference: line.Difference})
 	}
 	if detail.TotalDifference != total || total > stockAdjustmentMaxTotal || total < -stockAdjustmentMaxTotal {
@@ -770,20 +764,12 @@ func stockAdjustmentCatalogPage(page stockadjustments.CatalogPage) (stockAdjustm
 	items := make([]stockAdjustmentCatalogItemDTO, 0, len(page.Items))
 	var previous int64
 	for _, item := range page.Items {
-		if item.VariantID < 1 || item.VariantID > math.MaxInt32 || item.VariantID <= previous ||
-			item.CatalogEntryID < 1 || !validStockAdjustmentCatalogueText(item.Brand) ||
-			!validStockAdjustmentCatalogueText(item.Model) ||
-			(item.Polarity != "L" && item.Polarity != "R") {
+		if item.CatalogEntryID < 1 || item.Identity.Valid() != nil || int64(item.VariantID) <= previous {
 			return unavailable()
 		}
-		capacity, err := catalog.ParseDecimal(string(item.Capacity))
-		if err != nil {
-			return unavailable()
-		}
-		previous = item.VariantID
-		items = append(items, stockAdjustmentCatalogItemDTO{VariantID: item.VariantID,
-			CatalogEntryID: item.CatalogEntryID, Brand: item.Brand, Model: item.Model,
-			Capacity: string(capacity), Polarity: item.Polarity})
+		previous = int64(item.VariantID)
+		items = append(items, stockAdjustmentCatalogItemDTO{Identity: item.Identity,
+			CatalogEntryID: item.CatalogEntryID})
 	}
 	return stockAdjustmentCatalogDTO{Page: page.Page, PageSize: page.PageSize,
 		TotalVariants: page.TotalVariants, Items: items}, nil

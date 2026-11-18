@@ -420,15 +420,13 @@ func stockEntryRecord(entry stockentries.Entry) (stockEntryDTO, error) {
 	}, nil
 }
 
+// stockEntryDetailLineDTO is one line of the frozen detail: the variant identity
+// of its own kind and the document's signed quantity. A battery keeps its battery
+// attributes and a product keeps its typed fields, so the read never invents the
+// attribute a row does not have.
 type stockEntryDetailLineDTO struct {
-	VariantID int64  `json:"variant_id"`
-	Brand     string `json:"brand"`
-	Model     string `json:"model"`
-	// Capacity is the inventory read's canonical rendering of capacity_ah as the
-	// frozen detail contract spells it: the exact decimal text, never a binary float.
-	Capacity string `json:"capacity_ah"`
-	Polarity string `json:"polarity"`
-	Quantity int64  `json:"quantity"`
+	catalog.Identity
+	Quantity int64 `json:"quantity"`
 }
 
 // stockEntryDetailDTO is the frozen per-document detail: the header, the catalogue
@@ -445,13 +443,6 @@ type stockEntryDetailDTO struct {
 	Reason             string                    `json:"reason"`
 	Lines              []stockEntryDetailLineDTO `json:"lines"`
 	TotalUnits         int64                     `json:"total_units"`
-}
-
-// validStockEntryCatalogueText is the catalogue identity bound of a line: the
-// brand and the model are persisted non-empty text, so a blank, NUL or malformed
-// one never reaches the wire.
-func validStockEntryCatalogueText(value string) bool {
-	return value != "" && utf8.ValidString(value) && !strings.ContainsRune(value, 0)
 }
 
 // stockEntryDetailRecord admits only a complete persisted document detail: the
@@ -482,25 +473,18 @@ func stockEntryDetailRecord(entry stockentries.EntryDetail) (stockEntryDetailDTO
 	var previous int64
 	var total int64
 	for _, line := range entry.Lines {
-		if line.VariantID < 1 || line.VariantID <= previous ||
+		if line.Identity.Valid() != nil || int64(line.VariantID) <= previous ||
 			(counter && line.Quantity > -1) || (!counter && line.Quantity < 1) ||
-			line.Quantity > stockEntryMaxLineUnits || line.Quantity < -stockEntryMaxLineUnits ||
-			!validStockEntryCatalogueText(line.Brand) || !validStockEntryCatalogueText(line.Model) ||
-			(line.Polarity != "L" && line.Polarity != "R") {
-			return unavailable()
-		}
-		capacity, err := catalog.ParseDecimal(string(line.Capacity))
-		if err != nil {
+			line.Quantity > stockEntryMaxLineUnits || line.Quantity < -stockEntryMaxLineUnits {
 			return unavailable()
 		}
 		if (line.Quantity > 0 && total > math.MaxInt64-line.Quantity) ||
 			(line.Quantity < 0 && total < math.MinInt64-line.Quantity) {
 			return unavailable()
 		}
-		previous = line.VariantID
+		previous = int64(line.VariantID)
 		total += line.Quantity
-		lines = append(lines, stockEntryDetailLineDTO{VariantID: line.VariantID, Brand: line.Brand, Model: line.Model,
-			Capacity: string(capacity), Polarity: line.Polarity, Quantity: line.Quantity})
+		lines = append(lines, stockEntryDetailLineDTO{Identity: line.Identity, Quantity: line.Quantity})
 	}
 	if total != entry.TotalUnits || (counter && total > -1) || (!counter && total < 1) {
 		return unavailable()

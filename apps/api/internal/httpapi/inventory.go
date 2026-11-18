@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"luson/api/internal/auth"
+	"luson/api/internal/catalog"
 	"luson/api/internal/inventory"
 	"net/http"
 	"net/url"
@@ -63,7 +64,9 @@ func positive(value string) (int, error) {
 	return n, nil
 }
 func inventoryQuery(raw string, metadata bool) (inventory.Query, error) {
-	q := inventory.Query{Page: 1, PageSize: 10}
+	// The absent kind is the battery-only listing every existing caller already
+	// had, so the closing count sheet keeps counting no product.
+	q := inventory.Query{Kind: catalog.BatteryOnly, Page: 1, PageSize: 10}
 	// Bound decoding work independently of decoded field limits.
 	if len(raw) > 4096 {
 		return q, inventory.ErrInvalid
@@ -96,6 +99,19 @@ func inventoryQuery(raw string, metadata bool) (inventory.Query, error) {
 				return q, inventory.ErrInvalid
 			}
 			q.Polarity = value
+		case "kind":
+			// Exactly the three frozen states: a kind outside them is a malformed
+			// request, never a silent default.
+			switch value {
+			case string(catalog.AllKinds):
+				q.Kind = catalog.AllKinds
+			case string(catalog.BatteryOnly):
+				q.Kind = catalog.BatteryOnly
+			case string(catalog.OtherOnly):
+				q.Kind = catalog.OtherOnly
+			default:
+				return q, inventory.ErrInvalid
+			}
 		default:
 			return q, inventory.ErrInvalid
 		}

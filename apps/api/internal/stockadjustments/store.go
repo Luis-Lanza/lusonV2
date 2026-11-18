@@ -56,19 +56,21 @@ func checkAssignment(ctx context.Context, q querier, actor auth.Identity) error 
 	return nil
 }
 
-// checkVariants refuses a document that names a variant outside the catalogue
-// before the ledger is touched: an unknown variant is a request error, and one
-// document is applied completely or not at all.
+// checkVariants refuses a document that names a variant outside the catalogue and
+// any document that mixes kinds, before the ledger is touched: an unknown variant
+// is a request error, one document is of one kind derived from its lines and never
+// stored, and one document is applied completely or not at all.
 func checkVariants(ctx context.Context, q querier, lines []Line) error {
 	ids := make([]int32, len(lines))
 	for i, line := range lines {
 		ids[i] = int32(line.VariantID)
 	}
-	var known int64
-	if err := q.QueryRow(ctx, "SELECT count(*) FROM catalog_variants v JOIN catalog_entries e ON e.id=v.catalog_entry_id WHERE v.id = ANY($1) AND e.deleted_at IS NULL", ids).Scan(&known); err != nil {
+	var known, kinds int64
+	if err := q.QueryRow(ctx, `SELECT count(*),count(DISTINCT e.kind) FROM catalog_variants v
+ JOIN catalog_entries e ON e.id=v.catalog_entry_id WHERE v.id = ANY($1) AND e.deleted_at IS NULL`, ids).Scan(&known, &kinds); err != nil {
 		return fail(ctx)
 	}
-	if known != int64(len(lines)) {
+	if known != int64(len(lines)) || kinds > 1 {
 		return ErrInvalid
 	}
 	return nil
@@ -447,8 +449,8 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
 	if err != nil {
 		return Detail{}, fail(ctx)
 	}
-	rows, err := tx.Query(ctx, `SELECT l.variant_id,e.id,e.brand,e.model,e.capacity_ah::text,v.polarity,
-  l.expected_quantity,l.counted_quantity
+	rows, err := tx.Query(ctx, `SELECT l.variant_id,e.id,e.kind,coalesce(e.brand,''),coalesce(e.model,''),
+  e.capacity_ah::text,coalesce(v.polarity,''),coalesce(e.name,''),l.expected_quantity,l.counted_quantity
  FROM stock_adjustment_lines l
  JOIN catalog_variants v ON v.id=l.variant_id
  JOIN catalog_entries e ON e.id=v.catalog_entry_id
@@ -457,41 +459,70 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
 		return Detail{}, fail(ctx)
 	}
 	defer rows.Close()
-	lines := make([]DetailLine, 0, 8)
+	// persisted is one stored line before its identity is composed: the typed
+	// fields of a product are read in one statement instead of a lookup per line.
+	type persisted struct {
+		variant           catalog.Row
+		expected, counted int64
+	}
+	stored := make([]persisted, 0, 8)
+	entryIDs := make([]int32, 0, 8)
 	var total int64
 	for rows.Next() {
-		var line DetailLine
-		var capacity string
-		if rows.Scan(&line.VariantID, &line.CatalogEntryID, &line.Brand, &line.Model, &capacity,
-			&line.Polarity, &line.Expected, &line.Counted) != nil {
+		var line persisted
+		var capacity *string
+		if rows.Scan(&line.variant.VariantID, &line.variant.CatalogEntryID, &line.variant.Kind,
+			&line.variant.Brand, &line.variant.Model, &capacity, &line.variant.Polarity,
+			&line.variant.Name, &line.expected, &line.counted) != nil {
 			return Detail{}, fail(ctx)
+		}
+		// A numeric column never travels as a float: its own text is parsed back
+		// into the canonical decimal of the contract.
+		if capacity != nil {
+			line.variant.Capacity = *capacity
 		}
 		// A persisted line outside the admitted bounds means the ledger is not what
 		// this domain wrote, so the read fails closed instead of describing it.
-		if line.VariantID < 1 || line.VariantID > math.MaxInt32 || line.CatalogEntryID < 1 ||
-			line.Brand == "" || line.Model == "" || (line.Polarity != "L" && line.Polarity != "R") ||
-			line.Expected < 0 || line.Counted < 0 || line.Counted > maxCounted ||
-			(len(lines) > 0 && line.VariantID <= lines[len(lines)-1].VariantID) {
+		if line.variant.VariantID < 1 || line.variant.VariantID > math.MaxInt32 ||
+			line.variant.CatalogEntryID < 1 || line.expected < 0 || line.counted < 0 ||
+			line.counted > maxCounted ||
+			(len(stored) > 0 && line.variant.VariantID <= stored[len(stored)-1].variant.VariantID) {
 			return Detail{}, ErrUnavailable
 		}
-		if line.Capacity, err = catalog.ParseDecimal(capacity); err != nil {
-			return Detail{}, ErrUnavailable
-		}
-		line.Difference = line.Counted - line.Expected
-		total, err = addDifference(total, line.Difference)
-		if err != nil {
+		difference := line.counted - line.expected
+		if total, err = addDifference(total, difference); err != nil {
 			return Detail{}, err
 		}
-		lines = append(lines, line)
-		if len(lines) > maxLines {
+		if line.variant.Kind == catalog.OtherKind {
+			entryIDs = append(entryIDs, int32(line.variant.CatalogEntryID))
+		}
+		stored = append(stored, line)
+		if len(stored) > maxLines {
 			return Detail{}, ErrUnavailable
 		}
 	}
+	rows.Close()
 	if rows.Err() != nil {
 		return Detail{}, fail(ctx)
 	}
-	if len(lines) == 0 {
+	if len(stored) == 0 {
 		return Detail{}, ErrUnavailable
+	}
+	// The variant identity of every line is the one the whole warehouse reads: a
+	// battery keeps its battery attributes and a product its typed fields.
+	fields, err := catalog.ReadFields(ctx, tx, entryIDs)
+	if err != nil {
+		return Detail{}, fail(ctx)
+	}
+	lines := make([]DetailLine, 0, len(stored))
+	for _, line := range stored {
+		identity, err := line.variant.Identity(fields[line.variant.CatalogEntryID])
+		if err != nil {
+			return Detail{}, ErrUnavailable
+		}
+		lines = append(lines, DetailLine{Identity: identity, CatalogEntryID: int64(line.variant.CatalogEntryID),
+			Expected: line.expected, Counted: line.counted,
+			Difference: line.counted - line.expected})
 	}
 	// Every document states a mandatory motive; a counter-entry mirrors a strictly
 	// earlier document of this warehouse.
@@ -547,7 +578,7 @@ func (s *Store) Catalog(ctx context.Context, actor auth.Identity, q CatalogQuery
 		return CatalogPage{}, ErrForbidden
 	}
 	if !ValidPage(q.Page, q.PageSize) || (q.Polarity != "" && q.Polarity != "L" && q.Polarity != "R") ||
-		!validText(q.Search) || !validText(q.Brand) {
+		!q.Kind.Valid() || !validText(q.Search) || !validText(q.Brand) {
 		return CatalogPage{}, ErrInvalid
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -564,35 +595,57 @@ func (s *Store) Catalog(ctx context.Context, actor auth.Identity, q CatalogQuery
 		defer done()
 		_ = tx.Rollback(cleanup)
 	}()
-	args := []any{warehouseLocationID, literalPattern(q.Search), q.Brand, q.Polarity}
+	args := []any{warehouseLocationID, literalPattern(q.Search), q.Brand, q.Polarity, string(q.Kind.Filter())}
 	if err := tx.QueryRow(ctx, "SELECT count(*)"+catalogFilter, args...).Scan(&result.TotalVariants); err != nil {
 		return CatalogPage{}, fail(ctx)
 	}
 	args = append(args, int64(q.PageSize), int64(q.Page-1)*int64(q.PageSize))
-	rows, err := tx.Query(ctx, `SELECT v.id,e.id,e.brand,e.model,e.capacity_ah::text,v.polarity`+catalogFilter+
-		` ORDER BY v.id LIMIT $5 OFFSET $6`, args...)
+	rows, err := tx.Query(ctx, `SELECT v.id,e.id,e.kind,coalesce(e.brand,''),coalesce(e.model,''),
+  e.capacity_ah::text,coalesce(v.polarity,''),coalesce(e.name,'')`+catalogFilter+
+		` ORDER BY v.id LIMIT $6 OFFSET $7`, args...)
 	if err != nil {
 		return CatalogPage{}, fail(ctx)
 	}
 	defer rows.Close()
+	selected := make([]catalog.Row, 0, q.PageSize)
+	entryIDs := make([]int32, 0, q.PageSize)
 	for rows.Next() {
-		var item CatalogItem
-		var capacity string
-		if rows.Scan(&item.VariantID, &item.CatalogEntryID, &item.Brand, &item.Model, &capacity, &item.Polarity) != nil {
+		var row catalog.Row
+		var capacity *string
+		if rows.Scan(&row.VariantID, &row.CatalogEntryID, &row.Kind, &row.Brand, &row.Model,
+			&capacity, &row.Polarity, &row.Name) != nil {
 			return CatalogPage{}, fail(ctx)
 		}
-		if item.VariantID < 1 || item.CatalogEntryID < 1 || item.Brand == "" || item.Model == "" ||
-			(item.Polarity != "L" && item.Polarity != "R") ||
-			(len(result.Items) > 0 && item.VariantID <= result.Items[len(result.Items)-1].VariantID) {
+		// A numeric column never travels as a float: its own text is parsed back
+		// into the canonical decimal of the contract.
+		if capacity != nil {
+			row.Capacity = *capacity
+		}
+		if row.VariantID < 1 || row.CatalogEntryID < 1 ||
+			(len(selected) > 0 && row.VariantID <= selected[len(selected)-1].VariantID) {
 			return CatalogPage{}, ErrUnavailable
 		}
-		if item.Capacity, err = catalog.ParseDecimal(capacity); err != nil {
-			return CatalogPage{}, ErrUnavailable
+		if row.Kind == catalog.OtherKind {
+			entryIDs = append(entryIDs, int32(row.CatalogEntryID))
 		}
-		result.Items = append(result.Items, item)
+		selected = append(selected, row)
 	}
+	rows.Close()
 	if rows.Err() != nil {
 		return CatalogPage{}, fail(ctx)
+	}
+	// The typed fields of the listed products are one statement, never a lookup
+	// per item, and a row this contract could not publish fails the read closed.
+	fields, err := catalog.ReadFields(ctx, tx, entryIDs)
+	if err != nil {
+		return CatalogPage{}, fail(ctx)
+	}
+	for _, row := range selected {
+		identity, err := row.Identity(fields[row.CatalogEntryID])
+		if err != nil {
+			return CatalogPage{}, ErrUnavailable
+		}
+		result.Items = append(result.Items, CatalogItem{Identity: identity, CatalogEntryID: int64(row.CatalogEntryID)})
 	}
 	if tx.Commit(ctx) != nil {
 		return CatalogPage{}, fail(ctx)
@@ -601,13 +654,15 @@ func (s *Store) Catalog(ctx context.Context, actor auth.Identity, q CatalogQuery
 }
 
 // catalogFilter is shared by the count and the page, so both answer the same
-// question. It selects no stock quantity at all, and neither a retired battery nor
-// an other product is a valid target for an adjustment.
+// question. It selects no stock quantity at all, a retired entry is never a valid
+// target for an adjustment, and the kind selection is the stock read's own: an
+// absent kind is the battery-only catalogue every caller already had.
 const catalogFilter = ` FROM catalog_variants v
  JOIN catalog_entries e ON e.id=v.catalog_entry_id
  JOIN inventory_balances b ON b.location_id=$1 AND b.variant_id=v.id
- WHERE e.deleted_at IS NULL AND e.kind = 'battery'
- AND ($2='' OR e.brand ILIKE $2 ESCAPE '\' OR e.model ILIKE $2 ESCAPE '\')
+ WHERE e.deleted_at IS NULL
+ AND ($5='all' OR e.kind=$5)
+ AND ($2='' OR e.brand ILIKE $2 ESCAPE '\' OR e.model ILIKE $2 ESCAPE '\' OR e.name ILIKE $2 ESCAPE '\')
  AND ($3='' OR e.brand=$3) AND ($4='' OR v.polarity=$4)`
 
 // literalPattern turns a free search into a literal substring, so % and _ in the

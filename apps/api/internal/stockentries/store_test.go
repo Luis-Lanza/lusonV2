@@ -2,6 +2,7 @@ package stockentries_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -848,22 +849,39 @@ func readDetail(t *testing.T, ctx context.Context, s *stockentries.Store, id int
 	return detail
 }
 
-// catalogueOf is the catalogue identity of one variant as the inventory read
-// exposes it: brand, model, capacity normalized from the numeric column and the
-// polarity of the variant itself.
-func catalogueOf(t *testing.T, ctx context.Context, p *pgxpool.Pool, variant int64) (brand, model string, capacity catalog.Decimal, polarity string) {
+// catalogueOf is the persisted identity of one variant, read straight from the
+// database, so the detail read is compared with the ledger instead of itself.
+func catalogueOf(t *testing.T, ctx context.Context, p *pgxpool.Pool, variant int64) catalog.Identity {
 	t.Helper()
-	var raw string
-	err := p.QueryRow(ctx, `SELECT e.brand,e.model,e.capacity_ah::text,v.polarity
- FROM catalog_variants v JOIN catalog_entries e ON e.id=v.catalog_entry_id WHERE v.id=$1`, int32(variant)).Scan(&brand, &model, &raw, &polarity)
+	var row catalog.Row
+	var capacity *string
+	err := p.QueryRow(ctx, `SELECT v.id,e.id,e.kind,coalesce(e.brand,''),coalesce(e.model,''),
+  e.capacity_ah::text,coalesce(v.polarity,''),coalesce(e.name,'')
+ FROM catalog_variants v JOIN catalog_entries e ON e.id=v.catalog_entry_id WHERE v.id=$1`, int32(variant)).Scan(
+		&row.VariantID, &row.CatalogEntryID, &row.Kind, &row.Brand, &row.Model, &capacity, &row.Polarity, &row.Name)
 	if err != nil {
 		t.Fatal("catalogue identity read failed")
 	}
-	capacity, err = catalog.ParseDecimal(raw)
-	if err != nil {
-		t.Fatal("catalogue capacity is not a canonical decimal")
+	if capacity != nil {
+		row.Capacity = *capacity
 	}
-	return brand, model, capacity, polarity
+	known, err := catalog.ReadFields(ctx, p, []int32{int32(row.CatalogEntryID)})
+	if err != nil {
+		t.Fatal("persisted fields are not readable")
+	}
+	identity, err := row.Identity(known[row.CatalogEntryID])
+	if err != nil {
+		t.Fatalf("persisted identity of variant %d is not readable: %v", variant, err)
+	}
+	return identity
+}
+
+// sameIdentity compares two identities as the wire spells them.
+func sameIdentity(t *testing.T, got, want catalog.Identity) bool {
+	t.Helper()
+	gotJSON, gotErr := json.Marshal(got)
+	wantJSON, wantErr := json.Marshal(want)
+	return gotErr == nil && wantErr == nil && string(gotJSON) == string(wantJSON)
 }
 
 func TestReadEntryDetail(t *testing.T) {
@@ -890,18 +908,18 @@ func TestReadEntryDetail(t *testing.T) {
 		t.Fatal("detail lines are not the persisted variant-ordered lines")
 	}
 	for _, line := range detail.Lines {
-		brand, model, capacity, polarity := catalogueOf(t, ctx, p, line.VariantID)
-		if line.Brand != brand || line.Model != model || line.Capacity != capacity || line.Polarity != polarity {
+		if !sameIdentity(t, line.Identity, catalogueOf(t, ctx, p, int64(line.VariantID))) ||
+			line.Identity.Valid() != nil {
 			t.Fatalf("line %d does not carry its catalogue identity", line.VariantID)
 		}
-		if line.Brand == "" || line.Model == "" || (line.Polarity != "L" && line.Polarity != "R") {
-			t.Fatalf("line %d has an incomplete catalogue identity", line.VariantID)
+		if line.Kind != catalog.BatteryKind || line.Battery == nil || line.Fields != nil {
+			t.Fatalf("line %d must carry the battery identity", line.VariantID)
 		}
 	}
 }
 
 func TestReadEntryDetailCounterEntry(t *testing.T) {
-	ctx, _, s := fixture(t)
+	ctx, p, s := fixture(t)
 	original, _, err := s.CreateEntry(ctx, warehouse(), input("detail-counter-key-0001",
 		stockentries.Line{VariantID: 1, Quantity: 2}, stockentries.Line{VariantID: 2, Quantity: 3}))
 	if err != nil {
@@ -929,7 +947,7 @@ func TestReadEntryDetailCounterEntry(t *testing.T) {
 		t.Fatal("a counter-entry detail must carry the exact negative lines")
 	}
 	for _, line := range detail.Lines {
-		if line.Brand == "" || line.Model == "" || line.Capacity == "" || (line.Polarity != "L" && line.Polarity != "R") {
+		if line.Identity.Valid() != nil || !sameIdentity(t, line.Identity, catalogueOf(t, ctx, p, int64(line.VariantID))) {
 			t.Fatalf("counter-entry line %d has no catalogue identity", line.VariantID)
 		}
 	}

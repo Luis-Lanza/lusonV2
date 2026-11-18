@@ -55,22 +55,26 @@ func checkAssignment(ctx context.Context, q querier, actor auth.Identity) error 
 }
 
 // admitActiveVariants refuses a document that names an identity the ingress cannot
-// own: a retired battery, or an other product, which has no ingress contract yet.
-// Ingress is an operating act and a retired battery is out of operation. A reversal
-// keeps working, because it follows a persisted document instead of a selection, and
-// a replay is resolved before this check, because it creates no new document.
+// own and any document that mixes kinds. A retired entry has left the operating
+// catalog, and one document is of one kind: the kind is derived from its lines and
+// never stored, so a request that names both kinds is refused whole before
+// anything is written. A reversal keeps working, because it follows a persisted
+// document instead of a selection, and a replay is resolved before this check,
+// because it creates no new document.
 func admitActiveVariants(ctx context.Context, q querier, lines []Line) error {
 	ids := make([]int32, len(lines))
 	for i, line := range lines {
 		ids[i] = int32(line.VariantID)
 	}
-	var unusable int64
-	if err := q.QueryRow(ctx, `SELECT count(*) FROM catalog_variants v
+	var unusable, kinds int64
+	if err := q.QueryRow(ctx, `SELECT count(*) FILTER (WHERE e.deleted_at IS NOT NULL),
+  count(DISTINCT e.kind)
+ FROM catalog_variants v
  JOIN catalog_entries e ON e.id=v.catalog_entry_id
- WHERE v.id=ANY($1) AND (e.deleted_at IS NOT NULL OR e.kind <> 'battery')`, ids).Scan(&unusable); err != nil {
+ WHERE v.id=ANY($1)`, ids).Scan(&unusable, &kinds); err != nil {
 		return fail(ctx)
 	}
-	if unusable != 0 {
+	if unusable != 0 || kinds > 1 {
 		return ErrInvalid
 	}
 	return nil
@@ -424,7 +428,8 @@ func (s *Store) ReadEntry(ctx context.Context, actor auth.Identity, id int64) (E
 	if err != nil {
 		return EntryDetail{}, fail(ctx)
 	}
-	rows, err := tx.Query(ctx, `SELECT l.variant_id,e.brand,e.model,e.capacity_ah::text,v.polarity,l.quantity
+	rows, err := tx.Query(ctx, `SELECT l.variant_id,e.id,e.kind,coalesce(e.brand,''),coalesce(e.model,''),
+  e.capacity_ah::text,coalesce(v.polarity,''),coalesce(e.name,''),l.quantity
  FROM stock_entry_lines l
  JOIN catalog_variants v ON v.id=l.variant_id
  JOIN catalog_entries e ON e.id=v.catalog_entry_id
@@ -433,40 +438,68 @@ func (s *Store) ReadEntry(ctx context.Context, actor auth.Identity, id int64) (E
 		return EntryDetail{}, fail(ctx)
 	}
 	defer rows.Close()
-	lines := make([]DetailLine, 0, 8)
+	// persisted is one stored line before its identity is composed: the typed
+	// fields of a product are read in one statement instead of a lookup per line.
+	type persisted struct {
+		variant  catalog.Row
+		quantity int64
+	}
+	stored := make([]persisted, 0, 8)
+	entryIDs := make([]int32, 0, 8)
 	var total int64
 	for rows.Next() {
-		var line DetailLine
-		var capacity string
-		if rows.Scan(&line.VariantID, &line.Brand, &line.Model, &capacity, &line.Polarity, &line.Quantity) != nil {
+		var line persisted
+		var capacity *string
+		if rows.Scan(&line.variant.VariantID, &line.variant.CatalogEntryID, &line.variant.Kind,
+			&line.variant.Brand, &line.variant.Model, &capacity, &line.variant.Polarity,
+			&line.variant.Name, &line.quantity) != nil {
 			return EntryDetail{}, fail(ctx)
+		}
+		// A numeric column never travels as a float: its own text is parsed back
+		// into the canonical decimal of the contract.
+		if capacity != nil {
+			line.variant.Capacity = *capacity
 		}
 		// A persisted line outside the admitted bounds means the ledger is not what
 		// this domain wrote, so the read fails closed instead of describing it.
-		if line.VariantID < 1 || line.VariantID > math.MaxInt32 || line.Brand == "" || line.Model == "" ||
-			(line.Polarity != "L" && line.Polarity != "R") || line.Quantity == 0 ||
-			line.Quantity > maxQuantity || line.Quantity < -maxQuantity ||
-			(len(lines) > 0 && line.VariantID <= lines[len(lines)-1].VariantID) {
+		if line.variant.VariantID < 1 || line.variant.VariantID > math.MaxInt32 || line.quantity == 0 ||
+			line.quantity > maxQuantity || line.quantity < -maxQuantity ||
+			(len(stored) > 0 && line.variant.VariantID <= stored[len(stored)-1].variant.VariantID) {
 			return EntryDetail{}, ErrUnavailable
 		}
-		if line.Capacity, err = catalog.ParseDecimal(capacity); err != nil {
+		if (line.quantity > 0 && total > math.MaxInt64-line.quantity) ||
+			(line.quantity < 0 && total < math.MinInt64-line.quantity) {
 			return EntryDetail{}, ErrUnavailable
 		}
-		if (line.Quantity > 0 && total > math.MaxInt64-line.Quantity) ||
-			(line.Quantity < 0 && total < math.MinInt64-line.Quantity) {
-			return EntryDetail{}, ErrUnavailable
+		total += line.quantity
+		if line.variant.Kind == catalog.OtherKind {
+			entryIDs = append(entryIDs, int32(line.variant.CatalogEntryID))
 		}
-		total += line.Quantity
-		lines = append(lines, line)
-		if len(lines) > maxLines {
+		stored = append(stored, line)
+		if len(stored) > maxLines {
 			return EntryDetail{}, ErrUnavailable
 		}
 	}
+	rows.Close()
 	if rows.Err() != nil {
 		return EntryDetail{}, fail(ctx)
 	}
-	if len(lines) == 0 {
+	if len(stored) == 0 {
 		return EntryDetail{}, ErrUnavailable
+	}
+	// The variant identity of every line is the one the whole warehouse reads: a
+	// battery keeps its battery attributes and a product its typed fields.
+	fields, err := catalog.ReadFields(ctx, tx, entryIDs)
+	if err != nil {
+		return EntryDetail{}, fail(ctx)
+	}
+	lines := make([]DetailLine, 0, len(stored))
+	for _, line := range stored {
+		identity, err := line.variant.Identity(fields[line.variant.CatalogEntryID])
+		if err != nil {
+			return EntryDetail{}, ErrUnavailable
+		}
+		lines = append(lines, DetailLine{Identity: identity, Quantity: line.quantity})
 	}
 	// A counter-entry negates its original and always states why; an ingress
 	// document has no motive of its own and only ever adds units.
