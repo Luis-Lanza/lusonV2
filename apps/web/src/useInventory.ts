@@ -81,6 +81,12 @@ export interface SourceInventoryController {
 }
 
 export type Controller = ReturnType<typeof useInventory>;
+// Both kinds are a property of the listed location, never of the account: only the
+// warehouse listing reads them, so a warehouse account consulting a branch keeps
+// the battery-only listing that branch has.
+function listedQuery(query: Query): Query {
+  return query.location === 1 ? query : { ...query, kind: undefined };
+}
 export function useInventory() {
   const [decisionRecovery] = useState(createTransferDecisionRecovery);
   const [dispatchRecovery] = useState(createTransferDispatchRecovery);
@@ -458,7 +464,7 @@ export function useInventory() {
           change({ location: session.identity.location.id });
           return;
         }
-        const next = parseInventory(await (await request(queryURL(query), { signal: controller.signal }, 200, passive)).text());
+        const next = parseInventory(await (await request(queryURL(listedQuery(query)), { signal: controller.signal }, 200, passive)).text());
         if (!current(auth, read)) return;
         if (next.location.id !== query.location || next.page !== query.page || next.page_size !== query.size) throw new Error('Respuesta inválida del servidor.');
         if (!pending.dirty) {

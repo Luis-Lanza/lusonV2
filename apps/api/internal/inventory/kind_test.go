@@ -3,6 +3,7 @@ package inventory
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -33,6 +34,121 @@ func otherProduct(t *testing.T, ctx context.Context, p *pgxpool.Pool, name, fiel
 		t.Fatal("product field fixture setup failed")
 	}
 	return entry, variant
+}
+
+// otherTextProduct seeds one other product whose only typed field is free text,
+// exactly like the catalog route writes it.
+func otherTextProduct(t *testing.T, ctx context.Context, p *pgxpool.Pool, name, fieldName, text string) (int, int) {
+	t.Helper()
+	entry, variant := otherProductFields(t, ctx, p, name)
+	if _, err := p.Exec(ctx, `INSERT INTO catalog_entry_fields(catalog_entry_id,name,kind,text_value)
+ VALUES($1,$2,'text',$3)`, entry, fieldName, text); err != nil {
+		t.Fatal("product text field fixture setup failed")
+	}
+	return entry, variant
+}
+
+// otherProductFields seeds the entry and its single polarity-less variant, the
+// part both product fixtures share.
+func otherProductFields(t *testing.T, ctx context.Context, p *pgxpool.Pool, name string) (int, int) {
+	t.Helper()
+	var entry, variant int
+	if err := p.QueryRow(ctx, `INSERT INTO catalog_entries(kind,name) VALUES('other',$1) RETURNING id`, name).Scan(&entry); err != nil {
+		t.Fatal("product fixture setup failed")
+	}
+	if _, err := p.Exec(ctx, `INSERT INTO catalog_variants(catalog_entry_id) VALUES($1)`, entry); err != nil {
+		t.Fatal("product variant fixture setup failed")
+	}
+	if err := p.QueryRow(ctx, `SELECT id FROM catalog_variants WHERE catalog_entry_id=$1`, entry).Scan(&variant); err != nil {
+		t.Fatal("product variant read failed")
+	}
+	return entry, variant
+}
+
+// The product search reads the content of the typed fields, not only the name:
+// the ingress picker promises "nombre o dato del producto" and the typed fields
+// are the point of having them. The battery search keeps its own columns, because
+// a typed field only ever belongs to a product.
+func TestInventorySearchReadsProductFields(t *testing.T) {
+	p := testpg.Open(t)
+	ctx := context.Background()
+	if err := bootstrap.Initialize(ctx, p, config.LocalTrial); err != nil {
+		t.Fatal("initialize fixture failed")
+	}
+	s := New(p)
+	actor := auth.Identity{AccountID: 1, Location: auth.Location{ID: 1}}
+	_, watery := otherProduct(t, ctx, p, "Agua acidulada", "volumen en L", "L", "5")
+	_, gloved := otherTextProduct(t, ctx, p, "Guantes de nitrilo", "presentación", "pack x12")
+
+	product := func(search string, kind catalog.KindFilter) Page {
+		t.Helper()
+		page, err := s.List(ctx, actor, Query{LocationID: 1, Kind: kind, Search: search, Page: 1, PageSize: 50})
+		if err != nil {
+			t.Fatalf("the product search %q must be answered: %v", search, err)
+		}
+		return page
+	}
+
+	// The name still selects the product.
+	if byName := product("acidulada", catalog.OtherOnly); byName.TotalVariants != 1 || len(byName.Items) != 1 || byName.Items[0].VariantID != watery {
+		t.Fatalf("a product name must select its product: %+v", byName)
+	}
+	// The value of a number field selects it too: "5" is nowhere in its name.
+	byNumber := product("5", catalog.OtherOnly)
+	if byNumber.TotalVariants != 1 || len(byNumber.Items) != 1 || byNumber.Items[0].VariantID != watery ||
+		byNumber.Items[0].Name != "Agua acidulada" || byNumber.Items[0].Detail != "volumen en L: 5 L" {
+		t.Fatalf("a number field value must select its product: %+v", byNumber)
+	}
+	// The text of a text field selects it as well.
+	byText := product("x12", catalog.OtherOnly)
+	if byText.TotalVariants != 1 || len(byText.Items) != 1 || byText.Items[0].VariantID != gloved ||
+		byText.Items[0].Detail != "presentación: pack x12" {
+		t.Fatalf("a text field value must select its product: %+v", byText)
+	}
+	// Both kinds together answer the same product, and the battery-only listing
+	// never gains one: a field term belongs to its product and nowhere else.
+	if both := product("x12", catalog.AllKinds); both.TotalVariants != 1 || both.Items[0].VariantID != gloved {
+		t.Fatalf("the all-kinds search must answer the product: %+v", both)
+	}
+	for _, term := range []string{"x12", "volumen", "acidulada"} {
+		if batteries := product(term, ""); batteries.TotalVariants != 0 || len(batteries.Items) != 0 {
+			t.Fatalf("the battery listing must not gain a product for %q: %+v", term, batteries)
+		}
+	}
+	// An unknown term still finds nothing.
+	if none := product("agua destilada", catalog.OtherOnly); none.TotalVariants != 0 || len(none.Items) != 0 {
+		t.Fatalf("an unknown product term must find nothing: %+v", none)
+	}
+
+	// The battery search keeps its own columns: the brand and the model of a
+	// battery still select it, and no product is answered beside it.
+	const brand = "TOYO_MOTO"
+	byBrand := product(brand, "")
+	if byBrand.TotalVariants == 0 || len(byBrand.Items) == 0 {
+		t.Fatalf("the battery brand search must keep working: %+v", byBrand)
+	}
+	for _, item := range byBrand.Items {
+		if item.Kind != catalog.BatteryKind || item.Battery == nil || item.Battery.Brand != brand {
+			t.Fatalf("a battery brand search must answer batteries of that brand only: %+v", item)
+		}
+	}
+	if products := product(brand, catalog.OtherOnly); products.TotalVariants != 0 {
+		t.Fatalf("a battery brand must never select a product: %+v", products)
+	}
+	listing, err := s.List(ctx, actor, Query{LocationID: 1, Page: 1, PageSize: 10})
+	if err != nil || len(listing.Items) == 0 {
+		t.Fatalf("the default listing must answer batteries: %v", err)
+	}
+	model := listing.Items[0].Battery.Model
+	byModel := product(model, "")
+	if byModel.TotalVariants == 0 {
+		t.Fatalf("the battery model search must keep working: %+v", byModel)
+	}
+	for _, item := range byModel.Items {
+		if item.Kind != catalog.BatteryKind || item.Battery == nil || !strings.Contains(item.Battery.Model, model) {
+			t.Fatalf("a battery model search must answer batteries of that model only: %+v", item)
+		}
+	}
 }
 
 // The stock screen reads both kinds. The kind selection is additive: the absent

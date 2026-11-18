@@ -9,6 +9,11 @@ const row = (variant_id: number, model: string, existing = 14, capacity = 35) =>
   battery: { brand: 'TOYO', model, capacity_ah: String(capacity), polarity: 'L' }, fields: null,
   existing, reserved: 0, available: existing,
 });
+const productRow = (variant_id: number, name: string, detail: string, existing = 8) => JSON.stringify({
+  variant_id, catalog_entry_id: 97, kind: 'other', name, detail, battery: null,
+  fields: [{ name: detail.split(':')[0], kind: 'text', text: detail.split(': ')[1] }],
+  existing, reserved: 0, available: existing,
+});
 const catalogPage = (items: readonly string[]) =>
   `{"location":{"id":1,"name":"Almacén"},"items":[${items.join(',')}],"page":1,"page_size":50,"total_variants":${items.length}}`;
 const catalogReply = (search: string) => new Response(
@@ -29,7 +34,7 @@ const historyReply = (rows: readonly string[], page = 1, pageSize = 25, total = 
 const defaultHistoryRows = [historyRow(6, 'Remito 0002', 2, 18), historyRow(5, '', 1, 3)];
 
 function harness(options: {
-  catalog?: (search: string) => Response;
+  catalog?: (search: string, kind: string) => Response;
   create?: (body: string) => Response | Promise<Response>;
   history?: (query: URLSearchParams) => Response | Promise<Response>;
   reverse?: (target: string, body: string) => Response | Promise<Response>;
@@ -40,8 +45,9 @@ function harness(options: {
     const url = String(input);
     calls.push({ url, init });
     if (url.startsWith('/api/inventory?')) {
-      const search = new URL(url, 'http://localhost').searchParams.get('search') ?? '';
-      return options.catalog?.(search) ?? catalogReply(search);
+      const params = new URL(url, 'http://localhost').searchParams;
+      const search = params.get('search') ?? '';
+      return options.catalog?.(search, params.get('kind') ?? '') ?? catalogReply(search);
     }
     if (url.startsWith('/api/stock-entries?')) {
       return options.history?.(new URL(url, 'http://localhost').searchParams) ?? historyReply(defaultHistoryRows);
@@ -68,7 +74,11 @@ const counterReply = (overrides: Record<string, unknown> = {}) => new Response(J
 // The per-document detail of the row used by the detail tests: two catalogue lines
 // summing to the listed total.
 const detailLineOf = (variant_id: number, model: string, quantity: number, capacity = '45') =>
-  ({ variant_id, brand: 'TOYO', model, capacity_ah: capacity, polarity: 'L' as const, quantity });
+  ({ variant_id, kind: 'battery', name: `TOYO · ${model}`, detail: `${capacity} Ah · L`,
+    battery: { brand: 'TOYO', model, capacity_ah: capacity, polarity: 'L' as const }, fields: null, quantity });
+const productLineOf = (variant_id: number, name: string, detail: string, quantity: number) =>
+  ({ variant_id, kind: 'other', name, detail, battery: null,
+    fields: [{ name: detail.split(':')[0], kind: 'text', text: detail.split(': ')[1] }], quantity });
 const detailReply = (overrides: Record<string, unknown> = {}) => new Response(JSON.stringify({
   id: 6, location_id: 1, note: 'Remito 0002', created_at: '2026-05-01T14:20:00Z',
   created_by_account_id: 1, reverses_entry_id: null, reversed_by: null, reason: '',
@@ -88,8 +98,15 @@ const sections = () => ({
 });
 const totalFor = (label: string) => within(sections().documento).getByText(label).closest('div');
 const addButton = (model: string) => within(sections().catalogo).getByRole('button', { name: `Agregar TOYO · ${model}` });
+const addProduct = (name: string) => within(sections().catalogo).getByRole('button', { name: `Agregar ${name}` });
+// The screen asks what is arriving before it shows a catalog or a document, so
+// every flow starts by choosing the kind of the document.
+const choose = (label: 'Baterías' | 'Otros productos') =>
+  fireEvent.click(screen.getByRole('button', { name: new RegExp(`^${label}`) }));
+const kindStep = () => screen.getByRole('group', { name: 'Tipo de producto del ingreso' });
 async function ready(h: ReturnType<typeof harness>) {
   render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+  choose('Baterías');
   await within(sections().catalogo).findByRole('button', { name: 'Agregar TOYO · NS40ZL' });
 }
 
@@ -97,16 +114,19 @@ describe('stock entry catalog', () => {
   it('reads the warehouse catalog once, then again for the typed search', async () => {
     const h = harness();
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     const { catalogo } = sections();
     expect(within(catalogo).getByRole('status')).toHaveTextContent('Consultando catálogo del almacén');
     await within(catalogo).findByText('TOYO · NS40ZL');
     expect(within(catalogo).getByText('35 Ah')).toBeInTheDocument();
     expect(within(catalogo).getByText('14')).toBeInTheDocument();
-    expect(h.catalogs()[0].url).toBe('/api/inventory?location_id=1&page=1&page_size=50');
+    expect(within(catalogo).getAllByRole('columnheader').map(head => head.textContent))
+      .toEqual(['Producto', 'Capacidad', 'Polaridad', 'Stock actual', 'Acción']);
+    expect(h.catalogs()[0].url).toBe('/api/inventory?location_id=1&page=1&page_size=50&kind=battery');
     expect(h.catalogs()[0].init).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
     fireEvent.change(within(catalogo).getByLabelText('Buscar marca, modelo o capacidad'), { target: { value: 'NS60' } });
     await within(catalogo).findByRole('button', { name: 'Agregar TOYO · NS60L' });
-    expect(h.catalogs().at(-1)?.url).toBe('/api/inventory?location_id=1&page=1&page_size=50&search=NS60');
+    expect(h.catalogs().at(-1)?.url).toBe('/api/inventory?location_id=1&page=1&page_size=50&kind=battery&search=NS60');
     expect(within(catalogo).queryByRole('button', { name: 'Agregar TOYO · NS40ZL' })).not.toBeInTheDocument();
     fireEvent.change(within(catalogo).getByLabelText('Buscar marca, modelo o capacidad'), { target: { value: 'nada' } });
     await within(catalogo).findByText('Sin coincidencias en el catálogo.');
@@ -116,6 +136,7 @@ describe('stock entry catalog', () => {
     let failing = true;
     const h = harness({ catalog: search => failing ? errorReply('service_unavailable', 503) : catalogReply(search) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     const { catalogo } = sections();
     expect(await within(catalogo).findByRole('alert')).toHaveTextContent('No se pudo consultar el catálogo del Almacén');
     failing = false;
@@ -188,7 +209,7 @@ describe('stock entry document', () => {
     expect(totalFor('Variantes')).toHaveTextContent(/Variantes\s*0/);
     expect(totalFor('Unidades')).toHaveTextContent(/Unidades\s*0/);
     await waitFor(() => expect(h.catalogs().length).toBeGreaterThan(before));
-    expect(h.catalogs().at(-1)?.url).toBe('/api/inventory?location_id=1&page=1&page_size=50');
+    expect(h.catalogs().at(-1)?.url).toBe('/api/inventory?location_id=1&page=1&page_size=50&kind=battery');
   });
 
   it('keeps the typed document and the same operation key when the outcome is uncertain', async () => {
@@ -238,6 +259,7 @@ describe('stock ingress history', () => {
       historyRow(6, '', 3, 6),
     ]) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     const historial = historySections();
     expect(within(historial).getByRole('status')).toHaveTextContent('Consultando el historial de ingresos');
     await within(historial).findByText('#9');
@@ -257,6 +279,7 @@ describe('stock ingress history', () => {
   it('shows an empty history without rows', async () => {
     const h = harness({ history: () => historyReply([]) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     const historial = historySections();
     expect(await within(historial).findByText('Todavía no hay ingresos registrados.')).toBeInTheDocument();
     expect(within(historial).queryByRole('table')).not.toBeInTheDocument();
@@ -266,6 +289,7 @@ describe('stock ingress history', () => {
     let failing = true;
     const h = harness({ history: () => failing ? errorReply('service_unavailable', 503) : historyReply(defaultHistoryRows) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     const historial = historySections();
     expect(await within(historial).findByRole('alert')).toHaveTextContent('No se pudo consultar el historial de ingresos');
     expect(within(historial).queryByRole('table')).not.toBeInTheDocument();
@@ -279,6 +303,7 @@ describe('stock ingress history', () => {
     const h = harness({ history: query => historyReply(defaultHistoryRows, Number(query.get('page')),
       Number(query.get('page_size')), 60) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     const historial = historySections();
     await within(historial).findByText('#6');
     expect(h.histories()[0].url).toBe('/api/stock-entries?page=1&page_size=25');
@@ -338,6 +363,7 @@ describe('stock counter-entry', () => {
   it('offers the action only on rows that have no counter-entry yet', async () => {
     const h = harness({ history: () => historyReply(rowsWithAction()) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     await within(historial()).findByText('#6');
     expect(within(historial()).getAllByRole('button', { name: /^Anular ingreso/ }).map(button => button.getAttribute('aria-label')))
       .toEqual(['Anular ingreso #9', 'Anular ingreso #6']);
@@ -349,6 +375,7 @@ describe('stock counter-entry', () => {
   it('opens an accessible dialog that explains the immutable original and moves focus', async () => {
     const h = harness({ history: () => historyReply(rowsWithAction()) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     await within(historial()).findByText('#6');
     const dialog = await openReversal(historial());
     expect(dialog).toHaveAttribute('aria-modal', 'true');
@@ -365,6 +392,7 @@ describe('stock counter-entry', () => {
   it('refuses a blank reason without sending anything', async () => {
     const h = harness({ history: () => historyReply(rowsWithAction()) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     await within(historial()).findByText('#6');
     const dialog = await openReversal(historial());
     fireEvent.change(reasonBox(dialog), { target: { value: '   ' } });
@@ -382,6 +410,7 @@ describe('stock counter-entry', () => {
       reverse: () => { reversed = true; return counterReply(); },
     });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     await within(historial()).findByText('#6');
     const dialog = await openReversal(historial());
     fireEvent.change(reasonBox(dialog), { target: { value: '  error de carga  ' } });
@@ -407,6 +436,7 @@ describe('stock counter-entry', () => {
     const h = harness({ history: () => historyReply(rowsWithAction()),
       reverse: () => errorReply('insufficient_stock', 409) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     await within(historial()).findByText('#6');
     const dialog = await openReversal(historial());
     fireEvent.change(reasonBox(dialog), { target: { value: 'error de carga' } });
@@ -423,6 +453,7 @@ describe('stock counter-entry', () => {
     const h = harness({ history: () => historyReply(rowsWithAction()),
       reverse: () => { calls += 1; return calls === 1 ? errorReply('service_unavailable', 503) : counterReply(); } });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     await within(historial()).findByText('#6');
     const dialog = await openReversal(historial());
     fireEvent.change(reasonBox(dialog), { target: { value: 'error de carga' } });
@@ -445,6 +476,7 @@ describe('stock counter-entry', () => {
       reverse: () => { stale = false; return errorReply('decision_conflict', 409); },
     });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     await within(historial()).findByText('#6');
     const dialog = await openReversal(historial());
     fireEvent.change(reasonBox(dialog), { target: { value: 'error de carga' } });
@@ -459,6 +491,7 @@ describe('stock counter-entry', () => {
     const h = harness({ history: () => historyReply(rowsWithAction()),
       reverse: () => new Promise<Response>(yes => { resolve = yes; }) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     await within(historial()).findByText('#6');
     const dialog = await openReversal(historial());
     fireEvent.change(reasonBox(dialog), { target: { value: 'error de carga' } });
@@ -492,6 +525,7 @@ describe('stock ingress detail', () => {
     const h = harness({ history: () => historyReply([historyRow(9, 'Remito 0003', 1, 4),
       historyRow(7, 'Remito 0002', 2, 18, 10), historyRow(6, '', 3, 6)]) });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     await within(historial()).findByText('#6');
     expect(within(historial()).getAllByRole('button', { name: /^Ver detalle del ingreso/ })
       .map(button => button.getAttribute('aria-label')))
@@ -501,6 +535,7 @@ describe('stock ingress detail', () => {
   it('opens the clicked document with exactly the units that entered', async () => {
     const h = harness({ history: () => historyReply(rowsWithDetail()), detail: defaultDetail });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     await within(historial()).findByText('#6');
     fireEvent.click(detailButton(6));
     const dialog = screen.getByRole('dialog', { name: 'Detalle del ingreso #6' });
@@ -522,9 +557,31 @@ describe('stock ingress detail', () => {
     expect(detailButton(6)).toHaveFocus();
   });
 
+  it('reads a product document back with its name and detail and no battery attribute', async () => {
+    const h = harness({
+      history: () => historyReply([historyRow(8, 'Remito 0004', 1, 20), historyRow(6, 'Remito 0002', 2, 18)]),
+      detail: id => id === '8'
+        ? detailReply({ id: 8, note: 'Remito 0004', lines: [productLineOf(210, 'Agua acidulada', 'volumen en L: 5 L', 20)], total_units: 20 })
+        : detailReply(),
+    });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
+    await within(historial()).findByText('#8');
+    const dialog = await openDetail(8);
+    await within(dialog).findByText('Agua acidulada');
+    const lines = within(dialog).getAllByRole('row').slice(1)
+      .map(row => within(row).getAllByRole('cell').map(cell => cell.textContent));
+    expect(lines).toEqual([['Agua acidulada', 'volumen en L: 5 L', '20']]);
+    expect(within(dialog).queryByText(/TOYO/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/Ah/)).not.toBeInTheDocument();
+    expect(within(dialog).getByText('Unidades del documento: 20')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Volver' }));
+  });
+
   it('shows the motive and the original document of a counter-entry with negative units', async () => {
     const h = harness({ history: () => historyReply(rowsWithDetail()), detail: defaultDetail });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     await within(historial()).findByText('#7');
     const dialog = await openDetail(7);
     await within(dialog).findByText(/error de carga/);
@@ -540,6 +597,7 @@ describe('stock ingress detail', () => {
   it('never shows the previous document after closing and opening another row', async () => {
     const h = harness({ history: () => historyReply(rowsWithDetail()), detail: defaultDetail });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     await within(historial()).findByText('#6');
     const first = await openDetail(6);
     await within(first).findByText('TOYO · NS60L');
@@ -558,6 +616,7 @@ describe('stock ingress detail', () => {
     const h = harness({ history: () => historyReply(rowsWithDetail()),
       detail: id => { if (failing) { failing = false; return errorReply('service_unavailable', 503); } return defaultDetail(id); } });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     await within(historial()).findByText('#6');
     const dialog = await openDetail(6);
     expect(await within(dialog).findByRole('alert')).toHaveTextContent('No pudimos traer el detalle de este ingreso');
@@ -570,6 +629,7 @@ describe('stock ingress detail', () => {
   it('closes with Escape, restores focus and cycles Tab inside the dialog', async () => {
     const h = harness({ history: () => historyReply(rowsWithDetail()), detail: defaultDetail });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     await within(historial()).findByText('#6');
     const dialog = await openDetail(6);
     await within(dialog).findByText('TOYO · NS60L');
@@ -586,6 +646,7 @@ describe('stock ingress detail', () => {
   it('keeps the counter-entry flow unchanged after a detail dialog closed', async () => {
     const h = harness({ history: () => historyReply(rowsWithDetail()), detail: defaultDetail });
     render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
     await within(historial()).findByText('#6');
     const dialog = await openDetail(6);
     await within(dialog).findByText('TOYO · NS60L');
@@ -597,5 +658,109 @@ describe('stock ingress detail', () => {
     await waitFor(() => expect(h.reversals()).toHaveLength(1));
     expect(h.reversals()[0].url).toBe('/api/stock-entries/6/reverse');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+});
+
+describe('stock entry kind first', () => {
+  const productReply = (search: string) => new Response(
+    catalogPage(search === 'nada' ? []
+      : search === 'x12' ? [productRow(211, 'Guantes de nitrilo', 'presentación: pack x12', 6)]
+        : [productRow(210, 'Agua acidulada', 'volumen en L: 5 L'), productRow(211, 'Guantes de nitrilo', 'presentación: pack x12', 6)]),
+    { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  it('asks what is arriving before it shows any catalog or document', async () => {
+    const h = harness({ catalog: search => productReply(search) });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    const step = kindStep();
+    const choices = within(step).getAllByRole('button').map(button => button.getAttribute('aria-pressed'));
+    expect(choices).toEqual(['false', 'false']);
+    expect(within(step).getByText('Con marca, modelo, capacidad y polaridad.')).toBeInTheDocument();
+    expect(within(step).getByText('Del catálogo libre: nombre y sus campos propios.')).toBeInTheDocument();
+    // Nothing has been read and no document exists until the kind is chosen.
+    expect(screen.queryByRole('region', { name: 'Catálogo' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Documento de ingreso' })).not.toBeInTheDocument();
+    expect(h.catalogs()).toHaveLength(0);
+    // The chosen kind is what the picker reads and what the document declares.
+    choose('Otros productos');
+    const { catalogo, documento } = sections();
+    expect(within(step).getByRole('button', { name: /^Otros productos/ })).toHaveAttribute('aria-pressed', 'true');
+    expect(await within(catalogo).findByText('Agua acidulada')).toBeInTheDocument();
+    expect(h.catalogs()[0].url).toBe('/api/inventory?location_id=1&page=1&page_size=50&kind=other');
+    expect(within(documento).getByRole('note', { name: 'Tipo del documento' })).toHaveTextContent('Otros productos');
+  });
+
+  it('offers the product table with its own columns and search hint', async () => {
+    const h = harness({ catalog: search => productReply(search) });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Otros productos');
+    const { catalogo } = sections();
+    await within(catalogo).findByText('Agua acidulada');
+    expect(within(catalogo).getAllByRole('columnheader').map(head => head.textContent))
+      .toEqual(['Producto', 'Detalle', 'Stock actual', 'Acción']);
+    expect(within(catalogo).getByText('volumen en L: 5 L')).toBeInTheDocument();
+    fireEvent.change(within(catalogo).getByLabelText('Buscar nombre o dato del producto'), { target: { value: 'x12' } });
+    await within(catalogo).findByRole('button', { name: 'Agregar Guantes de nitrilo' });
+    expect(h.catalogs().at(-1)?.url).toBe('/api/inventory?location_id=1&page=1&page_size=50&kind=other&search=x12');
+    expect(within(catalogo).queryByText('Agua acidulada')).not.toBeInTheDocument();
+  });
+
+  it('adds a product line with its name and detail and sends only a variant and a quantity', async () => {
+    const h = harness({ catalog: search => productReply(search) });
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Otros productos');
+    const { documento } = sections();
+    await within(sections().catalogo).findByRole('button', { name: 'Agregar Agua acidulada' });
+    fireEvent.click(addProduct('Agua acidulada'));
+    expect(within(documento).getByLabelText('Cantidad de Agua acidulada')).toHaveValue(1);
+    expect(within(documento).getByText('Agua acidulada')).toBeInTheDocument();
+    expect(within(documento).getByText('volumen en L: 5 L')).toBeInTheDocument();
+    // Nothing battery-specific is invented for a product line.
+    expect(within(documento).queryByText(/Ah/)).not.toBeInTheDocument();
+    expect(within(documento).queryByText(/Polaridad/)).not.toBeInTheDocument();
+    fireEvent.change(within(documento).getByLabelText('Cantidad de Agua acidulada'), { target: { value: '20' } });
+    fireEvent.click(within(documento).getByRole('button', { name: 'Confirmar ingreso' }));
+    await waitFor(() => expect(h.posts()).toHaveLength(1));
+    expect(JSON.parse(String(h.posts()[0].init.body))).toEqual({
+      operation_key: expect.stringMatching(/^[A-Za-z0-9_-]{16,128}$/), lines: [{ variant_id: 210, quantity: 20 }],
+    });
+  });
+
+  it('asks for confirmation and discards the draft when the kind changes with a line', async () => {
+    const h = harness({ catalog: (search, kind) => kind === 'other' ? productReply(search) : catalogReply(search) });
+    await ready(h);
+    const { documento } = sections();
+    fireEvent.click(addButton('NS40ZL'));
+    fireEvent.change(within(documento).getByLabelText('Nota del documento (opcional)'), { target: { value: 'Remito 0002' } });
+    choose('Otros productos');
+    const dialog = screen.getByRole('dialog', { name: 'Cambiar el tipo del ingreso' });
+    expect(within(dialog).getByText(/nunca mezcla los dos tipos/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/no se convierten ni se migran/)).toBeInTheDocument();
+    // Nothing changed while the confirmation is open.
+    expect(h.catalogs().at(-1)?.url).toContain('kind=battery');
+    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL')).toHaveValue(1);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancelar' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(within(documento).getByLabelText('Cantidad de TOYO · NS40ZL')).toHaveValue(1);
+    expect(within(documento).getByLabelText('Nota del documento (opcional)')).toHaveValue('Remito 0002');
+    // The deliberate change discards the draft of the other kind.
+    choose('Otros productos');
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'Cambiar el tipo del ingreso' }))
+      .getByRole('button', { name: 'Descartar borrador y cambiar tipo' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await within(sections().catalogo).findByRole('button', { name: 'Agregar Agua acidulada' });
+    expect(h.catalogs().at(-1)?.url).toContain('kind=other');
+    expect(within(documento).queryByLabelText('Cantidad de TOYO · NS40ZL')).not.toBeInTheDocument();
+    expect(within(documento).getByText('Todavía no agregaste líneas.')).toBeInTheDocument();
+    expect(within(documento).getByLabelText('Nota del documento (opcional)')).toHaveValue('');
+    expect(within(documento).getByRole('note', { name: 'Tipo del documento' })).toHaveTextContent('Otros productos');
+  });
+
+  it('keeps the two existing copy strings word for word', async () => {
+    const h = harness();
+    render(<StockEntry csrf={csrf} fetcher={h.fetcher} />);
+    choose('Baterías');
+    const { documento } = sections();
+    expect(screen.getByText('Registrá la mercadería que entra al depósito. El stock se aplica recién al confirmar.')).toBeInTheDocument();
+    expect(documento).toHaveTextContent('Todo o nada: si una línea es inválida no se aplica ninguna. Una vez confirmado, el documento no se edita ni se borra: se corrige con un contra-asiento que deja ambos registros.');
   });
 });

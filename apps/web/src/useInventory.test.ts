@@ -68,6 +68,31 @@ describe('the stock screen reads both kinds', () => {
   expect(new URL(reads[0], 'http://localhost').searchParams.get('kind')).toBeNull();
   expect(result.current.query.kind).toBeUndefined();
  });
+ it('gates both kinds on the listed location, so the warehouse consulting a branch sees batteries only', async () => {
+  const reads: string[] = [];
+  const fetcher = t6Setup((url) => {
+   if (url.startsWith('/api/inventory?')) {
+    const location = Number(new URL(url, 'http://localhost').searchParams.get('location_id'));
+    reads.push(url);
+    return Promise.resolve(new Response(JSON.stringify({
+     location: { id: location, name: location === 1 ? 'Almacén' : 'Sucursal A' },
+     page: 1, page_size: 10, total_variants: 0, items: [] })));
+   }
+   return undefined;
+  });
+  const { result } = renderHook(() => useInventory());
+  await waitFor(() => expect(result.current.data).not.toBeNull());
+  expect(new URL(reads[0], 'http://localhost').searchParams.get('kind')).toBe('all');
+  // The same warehouse account, listing a branch: the branch listing never asks
+  // for both kinds, whoever is consulting it.
+  act(() => result.current.change({ location: 2 }));
+  await waitFor(() => expect(reads).toHaveLength(2));
+  const branch = new URL(reads[1], 'http://localhost').searchParams;
+  expect(branch.get('location_id')).toBe('2');
+  expect(branch.get('kind')).toBeNull();
+  expect(result.current.query.location).toBe(2);
+  expect(fetcher.mock.calls.some(([url]) => String(url) === '/api/inventory?location_id=1&page=1&page_size=10&kind=battery')).toBe(false);
+ });
 });
 
 describe('safe retirement private client', () => {

@@ -130,13 +130,18 @@ const activeBattery = `e.deleted_at IS NULL AND e.kind = 'battery'`
 // Count and items share both predicates and a repeatable-read read-only snapshot.
 // A retired entry is no longer part of the operating inventory, and the kind
 // selection is the same predicate on both: an absent kind is the battery-only
-// listing, `all` reads both kinds and `other` reads the products alone.
+// listing, `all` reads both kinds and `other` reads the products alone. The search
+// reads the battery columns every caller already had, plus the content of the
+// typed fields of a product: a typed field only ever belongs to a product, so the
+// battery listing answers exactly what it answered before.
 const filtered = ` FROM inventory_balances b
  JOIN catalog_variants v ON v.id=b.variant_id
  JOIN catalog_entries e ON e.id=v.catalog_entry_id
  WHERE b.location_id=$1 AND e.deleted_at IS NULL
  AND ($5='all' OR e.kind=$5)
- AND ($2='' OR e.brand ILIKE $2 ESCAPE '\' OR e.model ILIKE $2 ESCAPE '\' OR e.name ILIKE $2 ESCAPE '\')
+ AND ($2='' OR e.brand ILIKE $2 ESCAPE '\' OR e.model ILIKE $2 ESCAPE '\' OR e.name ILIKE $2 ESCAPE '\'
+  OR EXISTS (SELECT 1 FROM catalog_entry_fields f WHERE f.catalog_entry_id=e.id
+   AND (f.text_value ILIKE $2 ESCAPE '\' OR (f.kind='number' AND f.number_value::text ILIKE $2 ESCAPE '\'))))
  AND ($3='' OR e.brand=$3) AND ($4='' OR v.polarity=$4)`
 
 func literalPattern(search string) string {

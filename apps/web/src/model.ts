@@ -17,14 +17,10 @@ export type FieldKind = 'number' | 'text';
 export interface Field { name: string; kind: FieldKind; unit?: string; number?: string; text?: string }
 /**
  * One stock row: the variant identity every surface reads, one shape for both
- * kinds, plus the three stock numbers of the location. The kind shows in the
- * name and the detail; a battery carries its battery attributes and no typed
- * field, a product carries its typed fields and no battery attribute.
+ * kinds, plus the three stock numbers of the location.
  */
-export interface Item {
-  variant_id: number; catalog_entry_id: number; kind: Kind; name: string; detail: string;
-  battery: Battery | null; fields: Field[] | null;
-  existing: bigint; reserved: bigint; available: bigint;
+export interface Item extends VariantIdentity {
+  catalog_entry_id: number; existing: bigint; reserved: bigint; available: bigint;
 }
 export interface Inventory {
   location: Location; items: Item[]; page: number; page_size: number; total_variants: number;
@@ -120,6 +116,44 @@ function location(v: unknown): Location {
   const o = object(v);
   return { id: integer(o.id, 1, 32767), name: text(o.name) };
 }
+/**
+ * The variant identity every screen reads, without the stock numbers of one
+ * location: one shape for both kinds, where the kind shows in the name and the
+ * detail. A battery carries its battery attributes and no typed field, a product
+ * carries its typed fields and no battery attribute.
+ */
+export interface VariantIdentity {
+  variant_id: number; kind: Kind; name: string; detail: string;
+  battery: Battery | null; fields: Field[] | null;
+}
+const identityKeys = ['variant_id', 'kind', 'name', 'detail', 'battery', 'fields'] as const;
+// The kind decides the shape: a battery row without its battery object is a
+// malformed row, and so is a product row carrying one.
+function identity(o: Record<string, unknown>): VariantIdentity {
+  if (o.kind !== 'battery' && o.kind !== 'other') return invalid();
+  const result: VariantIdentity = {
+    variant_id: integer(o.variant_id, 1, 2_147_483_647), kind: o.kind, name: text(o.name), detail: text(o.detail),
+    battery: o.kind === 'battery' ? battery(o.battery) : null,
+    fields: o.kind === 'other' ? fields(o.fields) : null,
+  };
+  if (o.kind === 'battery' ? o.fields !== null : o.battery !== null) return invalid();
+  return result;
+}
+/**
+ * Parses one variant identity from any wire shape that carries it plus the keys
+ * of its own envelope, so the ingress detail line and the stock row read the same
+ * identity instead of two parsers that could disagree.
+ */
+export function parseVariantIdentity(v: unknown, extraKeys: readonly string[] = []): VariantIdentity {
+  const o = object(v);
+  keys(o, [...identityKeys, ...extraKeys]);
+  return identity(o);
+}
+/** The identity of one row, stripped of the stock numbers of its location. */
+export function identityOf(item: Item): VariantIdentity {
+  return { variant_id: item.variant_id, kind: item.kind, name: item.name, detail: item.detail,
+    battery: item.battery, fields: item.fields };
+}
 export function parseSession(raw: string): Session {
   const o = object(decode(raw));
   const csrf = text(o.csrf_token);
@@ -153,17 +187,11 @@ export function parseInventory(raw: string): Inventory {
   if (![10, 25, 50].includes(size) || !Array.isArray(o.items) || o.items.length > size || o.items.length > total) return invalid();
   const items = o.items.map(value => {
     const i = keys(object(value), ['variant_id', 'catalog_entry_id', 'kind', 'name', 'detail', 'battery', 'fields', 'existing', 'reserved', 'available']);
-    if (i.kind !== 'battery' && i.kind !== 'other') return invalid();
-    // The kind decides the shape: a battery row without its battery object is a
-    // malformed row, and so is a product row carrying one.
     const result: Item = {
-      variant_id: integer(i.variant_id, 1, 2_147_483_647), catalog_entry_id: integer(i.catalog_entry_id, 1, 2_147_483_647),
-      kind: i.kind, name: text(i.name), detail: text(i.detail),
-      battery: i.kind === 'battery' ? battery(i.battery) : null,
-      fields: i.kind === 'other' ? fields(i.fields) : null,
+      ...identity(i),
+      catalog_entry_id: integer(i.catalog_entry_id, 1, 2_147_483_647),
       existing: quantity(i.existing), reserved: quantity(i.reserved), available: quantity(i.available),
     };
-    if (i.kind === 'battery' ? i.fields !== null : i.battery !== null) return invalid();
     if (result.reserved > result.existing || result.available > result.existing) return invalid();
     return result;
   });

@@ -731,6 +731,26 @@ describe('inventory interaction and stale guards', () => {
     await waitFor(() => expect(new URL(String(stockCalls(mock).at(-1)![0]), 'http://localhost').searchParams.get('kind')).toBe('battery'));
     expect(screen.getByLabelText('Marca')).toBeEnabled();
   });
+  it('gates the kind control on the listed location, so the control and the query agree', async () => {
+    const mock = setup(session, bothKinds);
+    render(<App />); await inventory();
+    const last = () => new URL(String(stockCalls(mock).at(-1)![0]), 'http://localhost').searchParams;
+    // The warehouse listing offers both kinds and asks for both.
+    expect(screen.getByRole('group', { name: 'Filtrar por tipo de producto' })).toBeInTheDocument();
+    expect(last().get('kind')).toBe('all');
+    // The same warehouse account listing a branch: no control, and no kind on the wire.
+    const before = stockCalls(mock).length;
+    fireEvent.click(screen.getByRole('button', { name: /^Sucursal B/ }));
+    await waitFor(() => expect(last().get('location_id')).toBe('3'));
+    expect(stockCalls(mock).length).toBeGreaterThan(before);
+    expect(screen.queryByRole('group', { name: 'Filtrar por tipo de producto' })).not.toBeInTheDocument();
+    expect(last().get('kind')).toBeNull();
+    // Back on the warehouse listing the control returns with its selection.
+    fireEvent.click(screen.getByRole('button', { name: /^Almacén/ }));
+    await waitFor(() => expect(last().get('location_id')).toBe('1'));
+    expect(screen.getByRole('group', { name: 'Filtrar por tipo de producto' })).toBeInTheDocument();
+    expect(last().get('kind')).toBe('all');
+  });
   it('never prints a product name twice when the server repeats it as the detail', async () => {
     setup(session, url => url.startsWith('/api/inventory?') ? Promise.resolve(response(pageJSON(JSON.stringify(repeatedRow), 1, 1))) : undefined);
     render(<App />);
@@ -765,7 +785,9 @@ describe('inventory interaction and stale guards', () => {
     await waitFor(() => {
       const urls = mock.mock.calls.map(([url]) => String(url));
       const last = new URL(urls.at(-1)!, 'http://localhost');
-      expect(Object.fromEntries(last.searchParams)).toEqual({ location_id: '3', page: '1', page_size: '25', kind: 'all', search: 'á_%\\', brand: 'TOYO', polarity: 'R' });
+      // The kind selection belongs to the warehouse listing alone: a branch listing
+      // never asks for both kinds, whoever is consulting it.
+      expect(Object.fromEntries(last.searchParams)).toEqual({ location_id: '3', page: '1', page_size: '25', search: 'á_%\\', brand: 'TOYO', polarity: 'R' });
     });
     expect(screen.getByText('Almacén', { selector: '.assigned-location' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Sucursal B/ })).toHaveAttribute('aria-pressed', 'true');
@@ -1632,7 +1654,12 @@ describe('stock ingress section', () => {
     expect(window.location.hash).toBe('#/ingresos');
     expect(screen.getByText('Luson Ingresos')).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Resultados de inventario' })).not.toBeInTheDocument();
-    await waitFor(() => expect(mock.mock.calls.some(([url]) => String(url).includes('page_size=50') && String(url).includes('location_id=1'))).toBe(true));
+    // The screen asks what is arriving first: no catalog is read until the kind is
+    // chosen, and the read that follows carries that kind.
+    expect(mock.mock.calls.some(([url]) => String(url).includes('page_size=50'))).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: /^Baterías/ }));
+    await waitFor(() => expect(mock.mock.calls.some(([url]) => String(url).includes('page_size=50')
+      && String(url).includes('location_id=1') && String(url).includes('kind=battery'))).toBe(true));
     expect(mock.mock.calls.some(([url]) => String(url) === '/api/stock-entries')).toBe(false);
   });
   it('hides Ingresos from a branch identity and falls back from a typed hash to inventory', async () => {

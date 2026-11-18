@@ -270,10 +270,14 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
     changeRoute({ section: 'transfers', id });
   }
   const mobile = warehouse && narrow;
-  // The warehouse stock screen is the one surface where both kinds are visible at
-  // once, so its filter offers the three states; products alone never send the
-  // battery attributes, which the endpoint would otherwise apply to them.
-  const productsOnly = query.kind === 'other';
+  // The stock screen is the one surface where both kinds are visible at once, and
+  // the kind is a property of the listed location, exactly as the read treats it:
+  // only the warehouse listing serves both kinds, so only it offers the filter. A
+  // warehouse account consulting a branch never sees a selection the read ignores.
+  const kindSelection = query.location === 1;
+  // Products alone never send the battery attributes, which the endpoint would
+  // otherwise apply to them.
+  const productsOnly = kindSelection && query.kind === 'other';
   const selected = metadata?.locations.find(l => l.id === query.location);
   const recoverable = recovery.getCurrent(state.getTransferAuthority);
   const navDisabled = !ownerTag || creation || recoverable?.phase === 'inFlight';
@@ -398,7 +402,7 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
         <strong>Estado: {selected?.id === identity.location.id ? 'Mi ubicación · Solo consulta' : 'Solo consulta'}</strong><p>La consulta a otras ubicaciones es de solo lectura y no reasigna la cuenta activa.</p>
       </section>
       <section className="filters" aria-label="Filtros de inventario">
-        {warehouse && <div className="kind-filter" role="group" aria-label="Filtrar por tipo de producto">
+        {kindSelection && <div className="kind-filter" role="group" aria-label="Filtrar por tipo de producto">
           {kindOptions.map(([kind, label]) => <button type="button" key={kind} aria-pressed={query.kind === kind} disabled={state.authBusy} onClick={() => state.change({ kind })}>{label}</button>)}
         </div>}
         <div className="search-field"><Icon name="search" /><label className="sr-only" htmlFor="search">Buscar marca, modelo o nombre</label><input id="search" type="search" placeholder="Buscar marca, modelo o nombre…" value={query.search} disabled={state.authBusy} onChange={e => state.change({ search: e.target.value })} aria-describedby="results-message" /></div>
