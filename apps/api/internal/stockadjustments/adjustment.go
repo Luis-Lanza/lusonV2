@@ -86,19 +86,17 @@ type Adjustment struct {
 	ReversesAdjustmentID *int64 `json:"reverses_adjustment_id"`
 }
 
-// DetailLine is one persisted line together with the catalogue identity of its
-// variant. The difference is the applied counted minus expected, so a historical
-// document keeps its own arithmetic even after the current stock has changed.
+// DetailLine is one persisted line together with the variant identity of its own
+// kind: a battery keeps its battery attributes and a product keeps its typed
+// fields, so reading a product line never invents a brand. The difference is the
+// applied counted minus expected, so a historical document keeps its own
+// arithmetic even after the current stock has changed.
 type DetailLine struct {
-	VariantID      int64           `json:"variant_id"`
-	CatalogEntryID int64           `json:"catalog_entry_id"`
-	Brand          string          `json:"brand"`
-	Model          string          `json:"model"`
-	Capacity       catalog.Decimal `json:"capacity_ah"`
-	Polarity       string          `json:"polarity"`
-	Expected       int64           `json:"expected_quantity"`
-	Counted        int64           `json:"counted_quantity"`
-	Difference     int64           `json:"difference"`
+	catalog.Identity
+	CatalogEntryID int64
+	Expected       int64 `json:"expected_quantity"`
+	Counted        int64 `json:"counted_quantity"`
+	Difference     int64 `json:"difference"`
 }
 
 // Detail is one persisted document with its catalogue-resolved lines and its
@@ -122,14 +120,18 @@ type Detail struct {
 }
 
 // Summary is one row of the read-only adjustment history. The per-line detail
-// stays out of this projection; only the line count and the exact difference are
-// exposed.
+// stays out of this projection; only the line count, the kind derived from those
+// lines and the exact difference are exposed.
 type Summary struct {
 	ID                   int64
 	Reason               string
 	Detail               string
 	CreatedAt            time.Time
 	Lines                int
+	// Kind is the kind the document's own lines declare, and it is empty exactly
+	// when those lines disagree: such a document was written before the one-kind
+	// rule and never gets a guessed kind. It is derived on read, never stored.
+	Kind                 catalog.Kind
 	TotalDifference      int64
 	ReversesAdjustmentID *int64
 	ReversedBy           *int64
@@ -144,25 +146,23 @@ type Page struct {
 }
 
 // CatalogQuery is the blind capture query: searching the catalogue never carries
-// a stock quantity, only the catalogue identity of a variant.
+// a stock quantity, only the catalogue identity of a variant. The absent kind is
+// the battery-only catalogue every caller had before the second kind existed.
 type CatalogQuery struct {
 	Search   string
 	Brand    string
 	Polarity string
+	Kind     catalog.KindFilter
 	Page     int
 	PageSize int
 }
 
-// CatalogItem is the catalogue identity of one variant of this warehouse. It
-// deliberately has no stock field: the capture screen cannot reveal the expected
-// quantity, the difference or any other stock number.
+// CatalogItem is the variant identity of one item of this warehouse's catalogue,
+// of its own kind. It deliberately has no stock field: the capture screen cannot
+// reveal the expected quantity, the difference or any other stock number.
 type CatalogItem struct {
-	VariantID      int64           `json:"variant_id"`
-	CatalogEntryID int64           `json:"catalog_entry_id"`
-	Brand          string          `json:"brand"`
-	Model          string          `json:"model"`
-	Capacity       catalog.Decimal `json:"capacity_ah"`
-	Polarity       string          `json:"polarity"`
+	catalog.Identity
+	CatalogEntryID int64 `json:"catalog_entry_id"`
 }
 
 // CatalogPage is one admitted page of the capture catalogue plus the total.
@@ -174,6 +174,26 @@ type CatalogPage struct {
 }
 
 var operationKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)
+
+// documentKind derives the kind a document declares from the kinds of its lines,
+// which the database counts and minimizes in the history statement: a single kind
+// is the document's kind, and several kinds are a document written before the
+// one-kind rule, which therefore has no kind at all instead of a guess. Nothing
+// else is a shape this ledger wrote.
+func documentKind(distinct int64, sole string) (catalog.Kind, error) {
+	if distinct < 1 {
+		return "", ErrUnavailable
+	}
+	switch catalog.Kind(sole) {
+	case catalog.BatteryKind, catalog.OtherKind:
+	default:
+		return "", ErrUnavailable
+	}
+	if distinct == 1 {
+		return catalog.Kind(sole), nil
+	}
+	return "", nil
+}
 
 // ValidOperationKey is the database regex, checked before any database work.
 func ValidOperationKey(key string) bool { return operationKeyPattern.MatchString(key) }

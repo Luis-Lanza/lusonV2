@@ -1,5 +1,6 @@
 import { LosslessNumber, parse as parseJSON } from 'lossless-json';
-import { parseInventory, queryURL, type Item } from './model';
+import { parseInventory, parseVariantIdentity, queryURL } from './model';
+import type { Item, Kind, VariantIdentity } from './model';
 import { newTransferRetryKey } from './transferModel';
 
 // Warehouse ingress contract: one document, applied atomically or not at all.
@@ -29,13 +30,11 @@ export interface StockEntryHistoryRow {
 }
 /**
  * One persisted line of a document detail: the catalogue identity of the variant
- * plus the signed quantity of that document. Capacity keeps the inventory read's
- * canonical decimal text, never a float.
+ * of its own kind plus the signed quantity of that document. A battery line keeps
+ * its battery attributes, a product line its typed fields, so a document never
+ * invents the attribute a row does not have.
  */
-export interface StockEntryDetailLine {
-  readonly variant_id: number; readonly brand: string; readonly model: string;
-  readonly capacity_ah: string; readonly polarity: 'L' | 'R'; readonly quantity: number;
-}
+export interface StockEntryDetailLine extends VariantIdentity { readonly quantity: number }
 /**
  * The full persisted document behind one history row: its header, the exact units
  * that entered and the two directions of the reversal cross-reference.
@@ -61,6 +60,13 @@ export const stockEntryMaxReason = 500;
 export const stockEntryMaxVariantID = 2_147_483_647;
 export const stockEntryMaxDocumentUnits = stockEntryMaxLines * stockEntryMaxQuantity;
 export const stockCatalogLocationID = 1;
+/** The two kinds a document can be, in the order the screen offers them. */
+export const stockEntryKinds: readonly Kind[] = ['battery', 'other'];
+export const stockEntryKindLabels: Record<Kind, string> = { battery: 'Baterías', other: 'Otros productos' };
+export const stockEntryKindDescriptions: Record<Kind, string> = {
+  battery: 'Con marca, modelo, capacidad y polaridad.',
+  other: 'Del catálogo libre: nombre y sus campos propios.',
+};
 export const stockCatalogPageSize = 50;
 export const stockEntryHistoryPageSizes: readonly number[] = [10, 25, 50];
 export const stockEntryHistoryDefaultPageSize = 25;
@@ -300,15 +306,18 @@ export function matchesStockEntryInput(input: StockEntryInput, record: StockEntr
   return expected.lines.every((line, index) => lines[index].variant_id === line.variant_id && lines[index].quantity === line.quantity);
 }
 
-/** Reuses the existing inventory read contract; no new catalog endpoint. */
-export function stockCatalogPath(search: string): string {
-  return queryURL({ location: stockCatalogLocationID, search, brand: '', polarity: '', page: 1, size: stockCatalogPageSize });
+/** Reuses the existing inventory read contract with the kind of the document. */
+export function stockCatalogPath(search: string, kind: Kind): string {
+  return queryURL({ location: stockCatalogLocationID, kind, search, brand: '', polarity: '', page: 1, size: stockCatalogPageSize });
 }
 
-export function parseStockCatalog(raw: string): readonly Item[] {
+// The picker answers the kind the document declares, so a row of the other kind
+// is a reply this screen never asked for and never renders.
+export function parseStockCatalog(raw: string, kind: Kind): readonly Item[] {
   const page = parseInventory(raw);
   if (page.location.id !== stockCatalogLocationID || page.page !== 1 || page.page_size !== stockCatalogPageSize) return invalidResponse();
-  return Object.freeze(page.items);
+  if (page.items.some(item => item.kind !== kind)) return invalidResponse();
+  return Object.freeze(page.items.map(item => Object.freeze({ ...item })));
 }
 
 /** Only the frozen page and page sizes are ever requested. */
@@ -409,19 +418,6 @@ export function stockEntryReversalFailureIsDefinite(code: StockEntryReversalErro
     || code === 'decision_conflict' || code === 'retry_conflict' || code === 'insufficient_stock';
 }
 
-/**
- * Capacity is the inventory contract's canonical decimal text: at most six
- * integral digits, at most six fractional ones, positive, and already normalized,
- * because the server never writes a trailing zero.
- */
-function stockCapacity(value: unknown): string {
-  if (typeof value !== 'string' || !/^(0|[1-9]\d{0,5})(\.\d{1,6})?$/.test(value) || !/[1-9]/.test(value)) return invalidResponse();
-  const normalized = value.includes('.') ? value.replace(/0+$/, '').replace(/\.$/, '') : value;
-  // The server always writes the normalized decimal, so a padded one is a shape
-  // this contract never produces.
-  return normalized === value ? value : invalidResponse();
-}
-
 /** A persisted motive is canonical: trimmed, non-empty, bounded UTF-16. */
 function stockDetailReason(value: unknown): string {
   if (typeof value !== 'string' || !value.isWellFormed() || value.includes('\0')) return invalidResponse();
@@ -462,16 +458,16 @@ export function parseStockEntryDetail(raw: string): StockEntryDetail {
   if (!Array.isArray(record.lines) || record.lines.length < 1 || record.lines.length > stockEntryMaxLines) return invalidResponse();
   let previous = 0;
   const lines = record.lines.map(value => {
-    const line = fields(value, ['variant_id', 'brand', 'model', 'capacity_ah', 'polarity', 'quantity']);
-    const variant_id = integer(line.variant_id, 1, stockEntryMaxVariantID);
-    if (variant_id <= previous) return invalidResponse();
-    previous = variant_id;
-    if (line.polarity !== 'L' && line.polarity !== 'R') return invalidResponse();
+    const line = fields(value, ['variant_id', 'kind', 'name', 'detail', 'battery', 'fields', 'quantity']);
+    // The line is the shared identity of the inventory read plus its quantity, so
+    // both reads accept and reject exactly the same identity.
+    const identity = parseVariantIdentity(value, ['quantity']);
+    if (identity.variant_id <= previous) return invalidResponse();
+    previous = identity.variant_id;
     const quantity = counter
       ? signedInteger(line.quantity, -stockEntryMaxQuantity, -1)
       : integer(line.quantity, 1, stockEntryMaxQuantity);
-    return Object.freeze({ variant_id, brand: text(line.brand), model: text(line.model),
-      capacity_ah: stockCapacity(line.capacity_ah), polarity: line.polarity, quantity });
+    return Object.freeze({ ...identity, quantity });
   });
   const total_units = counter
     ? signedInteger(record.total_units, -stockEntryMaxDocumentUnits, -1)

@@ -77,11 +77,12 @@ async function assertRendered(page, data, mobile) {
     if (mobile) {
       check(text.includes(item.existing.toString()) && text.includes(item.reserved.toString()), 'real existing/reserved card quantities');
       const card = page.locator(`.product-card[data-catalog-entry-id="${item.catalog_entry_id.toString()}"]`);
-      check((await card.locator('h2').textContent()).includes(`${item.brand} · ${item.model} · ${item.capacity_ah.toString()} Ah`), 'real card catalog/capacity');
+      check((await card.locator('h2').textContent()).includes(item.name), 'real card name');
     } else {
+      // The stock list publishes the identity's name and detail, then the figures.
       const cells = await row.locator('td').allTextContents();
-      check(cells[0] === item.brand && cells[1] === item.model && cells[2] === item.capacity_ah.toString() + ' Ah', 'real table catalog/capacity');
-      check(cells[4] === item.existing.toString() && cells[5] === item.reserved.toString(), 'real table quantities');
+      check(cells[0] === item.name && cells[1] === item.detail, 'real table name/detail');
+      check(cells[2] === item.existing.toString() && cells[3] === item.reserved.toString(), 'real table quantities');
     }
     check((await row.locator('.available').textContent()).startsWith(item.available.toString()), 'server availability displayed without recomputation');
     check(await row.getByText('Sin disponible', { exact: true }).count() === (item.available.toString() === '0' ? 1 : 0), 'zero availability label only');
@@ -149,9 +150,12 @@ for (let accountIndex = 0; accountIndex < 3; accountIndex++) {
     check(await page.getByRole('button', { name: 'Transferencias', exact: true }).isDisabled(), 'native disabled navigation');
     check(await page.locator('.transfer-cta').isDisabled(), 'native disabled transfer CTA');
     let consulted = String(accountIndex + 1);
+    // The warehouse is the one identity whose stock list asks for both kinds; a
+    // branch keeps the battery-only read the endpoint answers by default.
+    const kind = accountIndex === 0 ? { kind: 'all' } : {};
     for (const location of meta.locations) {
       const id = location.id.toString();
-      const params = { location_id: id, page: '1', page_size: '10' };
+      const params = { location_id: id, page: '1', page_size: '10', ...kind };
       let data;
       if (id === consulted) data = await payload(await page.request.get(urlFor(params)));
       else data = await change(page, () => mobile ? page.getByLabel('Consultar ubicación').selectOption(id) : page.getByRole('button', { name: new RegExp(location.name) }).click(), params);
@@ -162,17 +166,17 @@ for (let accountIndex = 0; accountIndex < 3; accountIndex++) {
       const after = parse(await (await page.request.get('/api/auth/session')).text());
       check(number(after.identity.location.id) === accountIndex + 1 && after.identity.username === account.username, 'consultation never changes assigned identity');
       const full = await allVariants(page, id);
-      const expectedBrands = [...new Set(full.map(i => i.brand))].sort();
+      const expectedBrands = [...new Set(full.map(i => i.battery.brand))].sort();
       check(same([...meta.brands].sort(), expectedBrands), 'metadata is catalog-derived');
       // Exact filters are AND; variants and metadata come from real responses.
-      const chosen = full.find(i => i.model.includes('_')) ?? full[0];
-      const search = page.getByLabel('Buscar marca o modelo');
-      const base = { location_id: id, page: '1', page_size: '10' };
-      const searchText = chosen.model;
+      const chosen = full.find(i => i.battery.model.includes('_')) ?? full[0];
+      const search = page.getByLabel('Buscar marca, modelo o nombre');
+      const base = { location_id: id, page: '1', page_size: '10', ...kind };
+      const searchText = chosen.battery.model;
       await change(page, () => search.fill(searchText), { ...base, search: searchText });
-      await change(page, () => page.getByLabel('Marca', { exact: true }).selectOption(chosen.brand), { ...base, search: searchText, brand: chosen.brand });
-      data = await change(page, () => page.getByLabel('Polaridad', { exact: true }).selectOption('R'), { ...base, search: searchText, brand: chosen.brand, polarity: 'R' });
-      const expected = full.filter(i => (i.brand.toLowerCase().includes(searchText.toLowerCase()) || i.model.toLowerCase().includes(searchText.toLowerCase())) && i.brand === chosen.brand && i.polarity === 'R');
+      await change(page, () => page.getByLabel('Marca', { exact: true }).selectOption(chosen.battery.brand), { ...base, search: searchText, brand: chosen.battery.brand });
+      data = await change(page, () => page.getByLabel('Polaridad', { exact: true }).selectOption('R'), { ...base, search: searchText, brand: chosen.battery.brand, polarity: 'R' });
+      const expected = full.filter(i => (i.battery.brand.toLowerCase().includes(searchText.toLowerCase()) || i.battery.model.toLowerCase().includes(searchText.toLowerCase())) && i.battery.brand === chosen.battery.brand && i.battery.polarity === 'R');
       check(number(data.total_variants) === expected.length, 'literal brand/model AND exact brand AND polarity');
       await assertRendered(page, data, mobile);
       if (mobile) check(await page.locator('.product-card .variants .variant').count() === await page.locator('.product-card').count(), 'filtered singleton cards are valid');
@@ -180,7 +184,7 @@ for (let accountIndex = 0; accountIndex < 3; accountIndex++) {
       await change(page, () => page.getByLabel('Polaridad', { exact: true }).selectOption(''), { ...base, search: searchText });
       for (const literal of ['_', '%', '\\', '6.5']) {
         data = await change(page, () => search.fill(literal), { ...base, search: literal });
-        const literalCount = full.filter(i => i.brand.toLowerCase().includes(literal) || i.model.toLowerCase().includes(literal)).length;
+        const literalCount = full.filter(i => i.battery.brand.toLowerCase().includes(literal) || i.battery.model.toLowerCase().includes(literal)).length;
         check(number(data.total_variants) === literalCount, 'literal special characters and no capacity search');
         await assertRendered(page, data, mobile);
       }
@@ -203,7 +207,7 @@ for (let accountIndex = 0; accountIndex < 3; accountIndex++) {
     }
     // Return to assignment; actual styles and dimensions, not a fake sample.
     const assigned = String(accountIndex + 1);
-    if (accountIndex !== 2) await change(page, () => mobile ? page.getByLabel('Consultar ubicación').selectOption(assigned) : page.getByRole('button', { name: new RegExp(current.identity.location.name) }).click(), { location_id: assigned, page: '1', page_size: '10' });
+    if (accountIndex !== 2) await change(page, () => mobile ? page.getByLabel('Consultar ubicación').selectOption(assigned) : page.getByRole('button', { name: new RegExp(current.identity.location.name) }).click(), { location_id: assigned, page: '1', page_size: '10', ...kind });
     await geometry(page, mobile);
     if (mobile) {
       const zero = page.locator(`.variant[data-variant-id="${runtime.zeroVariant}"]`);
@@ -236,15 +240,15 @@ test('real protocol denials and persisted session expiry clear the UI', async ({
   check(denial === 403, 'actual missing CSRF denied');
   await login(page, runtime.accounts[0]);
   const metadata = parse(await (await page.request.get('/api/inventory/metadata')).text());
-  await page.getByLabel('Buscar marca o modelo').focus();
+  await page.getByLabel('Buscar marca, modelo o nombre').focus();
   await page.keyboard.press('Tab');
   check(await page.getByLabel('Marca', { exact: true }).evaluate(el => document.activeElement === el), 'keyboard reaches brand filter');
-  await change(page, () => page.keyboard.press('ArrowDown'), { location_id: '1', page: '1', page_size: '10', brand: metadata.brands[0] });
+  await change(page, () => page.keyboard.press('ArrowDown'), { location_id: '1', page: '1', page_size: '10', kind: 'all', brand: metadata.brands[0] });
   check((await page.request.get('/api/inventory?location_id=1&actor_id=2')).status() === 400, 'actor query cannot alter assignment');
   check((await page.request.get('/api/inventory?location_id=1&location_id=2')).status() === 400, 'ambiguous location denied');
   const changed = await fixtureSQL(runtime.fixture, "WITH expired AS (UPDATE auth_sessions SET idle_deadline=now()-interval '1 second' WHERE revoked_at IS NULL RETURNING account_id) SELECT count(*) FROM expired");
   check(Number(changed) >= 1, 'only own TEST persisted sessions expired');
-  await page.getByLabel('Buscar marca o modelo').fill('expiry-check');
+  await page.getByLabel('Buscar marca, modelo o nombre').fill('expiry-check');
   await page.getByLabel('Usuario', { exact: true }).waitFor();
   await page.waitForFunction(() => document.activeElement?.id === 'username' && !document.querySelector('button[type=submit]').disabled);
   check(await page.locator('table,.product-card,.identity').count() === 0, 'real 401 removes protected identity/rows');

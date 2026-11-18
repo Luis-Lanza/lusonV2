@@ -87,8 +87,8 @@ export default function TransferReview(props: TransferReviewProps) {
           <p>La recepción ya está finalizada. Solo se acreditaron unidades esperadas recibidas hasta lo enviado; las discrepancias permanecen registradas por separado.</p></>}
       </section>}
       <div className="review-table"><table><caption className="sr-only">Selección inmutable</caption><thead><tr><th scope="col">Batería</th><th scope="col">Polaridad</th><th scope="col">{result ? 'Cantidad solicitada' : 'Cantidad a transferir'}</th></tr></thead>
-        <tbody>{snapshot.items.map(line => <tr key={line.variant_id}><td><strong>{line.brand} · {line.model}</strong><small>{line.capacity_ah} Ah</small></td>
-          <td data-label="Polaridad"><span className="polarity">{line.polarity}</span></td><td data-label="Cantidad a transferir">{line.quantity}</td></tr>)}</tbody>
+        <tbody>{snapshot.items.map(line => <tr key={line.variant_id}><td><strong>{line.battery.brand} · {line.battery.model}</strong><small>{line.battery.capacity_ah} Ah</small></td>
+          <td data-label="Polaridad"><span className="polarity">{line.battery.polarity}</span></td><td data-label="Cantidad a transferir">{line.quantity}</td></tr>)}</tbody>
         <tfoot><tr><td colSpan={3}>{snapshot.items.length} {snapshot.items.length === 1 ? 'variante' : 'variantes'} · <span aria-label="Total a transferir">{total.toString()} baterías</span></td></tr></tfoot></table></div>
       {direct && (!result || result.record.status === 'approved') && <div className="review-notice"><p>La creación autoriza y reserva todas las cantidades en Almacén, sin mover existencias ni acreditar el destino.</p>
         <p>Queda Pendiente de despacho. El despacho es una acción separada; podés cancelar antes de despachar. El destino no debe aprobar.</p></div>}

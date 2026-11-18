@@ -219,16 +219,24 @@ func urEraInventory(t *testing.T, ctx context.Context, p *pgxpool.Pool) []invent
 				t.Fatal("prefix inventory listing failed", err)
 			}
 			for rows.Next() {
+				// Every prefix entry is a battery: the kind column arrives with migration
+				// 055, so the identity of a row is the battery one the catalogue composes.
+				// The row is built as a catalog.Row and its identity through the same
+				// constructor the store's read uses, never a second copy of the composition.
+				row := catalog.Row{Kind: catalog.BatteryKind}
 				var item inventory.Item
-				var capacity string
-				if err := rows.Scan(&item.VariantID, &item.CatalogEntryID, &item.Brand, &item.Model, &capacity, &item.Polarity, &item.Existing, &item.Reserved, &item.Available); err != nil {
+				if err := rows.Scan(&row.VariantID, &row.CatalogEntryID, &row.Brand, &row.Model, &row.Capacity, &row.Polarity, &item.Existing, &item.Reserved, &item.Available); err != nil {
 					rows.Close()
 					t.Fatal("prefix inventory row unreadable", err)
 				}
-				if item.Capacity, err = catalog.ParseDecimal(capacity); err != nil {
+				identity, err := row.Identity(nil)
+				if err != nil {
 					rows.Close()
-					t.Fatal("prefix inventory capacity unreadable", err)
+					t.Fatal("prefix inventory identity unreadable", err)
 				}
+				item.Identity, item.CatalogEntryID = identity, row.CatalogEntryID
+				item.Brand, item.Model, item.Polarity = row.Brand, row.Model, row.Polarity
+				item.Capacity = catalog.Decimal(identity.Battery.Capacity)
 				page.Items = append(page.Items, item)
 			}
 			err = rows.Err()

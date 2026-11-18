@@ -41,13 +41,14 @@ async function rendered(page, payload, mobile) {
       const quantities = await row.locator('.variant-bottom b').allTextContents();
       check(same(quantities,[item.existing.toString(),item.reserved.toString()]), 'exact mobile quantities');
       const card = page.locator(`.product-card[data-catalog-entry-id="${item.catalog_entry_id.toString()}"]`);
-      check((await card.locator('h2').textContent()).includes(`${item.brand} · ${item.model} · ${item.capacity_ah.toString()} Ah`), 'exact mobile catalog/capacity');
+      check((await card.locator('h2').textContent()).includes(item.name), 'exact mobile name');
     } else {
+      // The stock list publishes the identity's name and detail, then the figures.
       const cells = await row.locator('td').allTextContents();
-      check(same(cells.slice(0,3),[item.brand,item.model,item.capacity_ah.toString()+' Ah'])
-        && cells[4] === item.existing.toString() && cells[5] === item.reserved.toString(), 'exact desktop catalog/capacity/quantities');
+      check(same(cells.slice(0,2),[item.name,item.detail])
+        && cells[2] === item.existing.toString() && cells[3] === item.reserved.toString(), 'exact desktop name/detail/quantities');
     }
-    check((await row.locator('.polarity').textContent()) === item.polarity, 'explicit server polarity');
+    check(item.detail.includes(item.battery.polarity), 'explicit server polarity in the detail');
   }
   if (mobile) {
     const groups = [...new Set(payload.items.map(item => item.catalog_entry_id.toString()))];
@@ -55,16 +56,20 @@ async function rendered(page, payload, mobile) {
   }
 }
 async function filterAndPager(page, location, mobile, account, assigned) {
-  const base = { location_id: String(location), page: '1', page_size: '10' };
+  // The warehouse is the one identity whose stock list asks for both kinds; a
+  // branch keeps the battery-only read the endpoint answers by default.
+  const kind = assigned === 1 ? { kind: 'all' } : {};
+  const base = { location_id: String(location), page: '1', page_size: '10', ...kind };
   const full = [];
+  let total;
   for (let pageNumber = 1; pageNumber <= 4; pageNumber++) {
     const payload = await data(await page.request.get('/api/inventory?'+new URLSearchParams({ ...base, page: String(pageNumber), page_size: '50' })));
-    check(number(payload.total_variants) === 190, 'real complete variant total');
+    total = number(payload.total_variants);
     full.push(...payload.items);
   }
-  check(full.length === 190 && new Set(full.map(item => item.variant_id.toString())).size === 190, 'complete unique server inventory');
-  const matches = (item,q) => (!q.search || item.brand.toLowerCase().includes(q.search.toLowerCase()) || item.model.toLowerCase().includes(q.search.toLowerCase()))
-    && (!q.brand || item.brand === q.brand) && (!q.polarity || item.polarity === q.polarity);
+  check(total === 190 && full.length === 190 && new Set(full.map(item => item.variant_id.toString())).size === 190, 'real complete variant total');
+  const matches = (item,q) => (!q.search || item.battery.brand.toLowerCase().includes(q.search.toLowerCase()) || item.battery.model.toLowerCase().includes(q.search.toLowerCase()))
+    && (!q.brand || item.battery.brand === q.brand) && (!q.polarity || item.battery.polarity === q.polarity);
   async function change(action,q) {
     const requested = [];
     const observe = req => { if (new URL(req.url()).pathname === '/api/inventory') requested.push([...new URL(req.url()).searchParams].sort()); };
@@ -80,22 +85,22 @@ async function filterAndPager(page, location, mobile, account, assigned) {
     check(requested.length > 0 && requested.every(query => same(query,Object.entries(q).sort())), 'atomic query reset without intermediate wrong page');
     const expected = full.filter(item => matches(item,q));
     const offset = (Number(q.page)-1)*Number(q.page_size);
-    const values = item => [item.variant_id.toString(),item.capacity_ah.toString(),item.existing.toString(),item.reserved.toString(),item.available.toString()];
+    const values = item => [item.variant_id.toString(),item.existing.toString(),item.reserved.toString(),item.available.toString()];
     check(number(payload.total_variants) === expected.length && same(payload.items.map(values),expected.slice(offset,offset+Number(q.page_size)).map(values)), 'literal AND filters/page/order/quantities match actual catalog');
     const identity = await data(await page.request.get('/api/auth/session'));
     check(identity.identity.username === account.username && number(identity.identity.location.id) === assigned, 'filter/pager preserves assigned actor');
     return payload;
   }
-  const search = page.getByLabel('Buscar marca o modelo');
-  const fractional = full.filter(item => item.capacity_ah.toString() === '6.5');
+  const search = page.getByLabel('Buscar marca, modelo o nombre');
+  const fractional = full.filter(item => item.battery.capacity_ah === '6.5');
   check(fractional.length > 0 && fractional.every(item => !matches(item,{ search: '6.5' })), 'fractional capacities exist but are not brand/model matches');
   const chosen = fractional[0];
-  await change(() => search.fill(chosen.model),{ ...base, search: chosen.model });
-  await change(() => page.getByLabel('Marca', { exact: true }).selectOption(chosen.brand),{ ...base, search: chosen.model, brand: chosen.brand });
-  await change(() => page.getByLabel('Polaridad', { exact: true }).selectOption('R'),{ ...base, search: chosen.model, brand: chosen.brand, polarity: 'R' });
+  await change(() => search.fill(chosen.battery.model),{ ...base, search: chosen.battery.model });
+  await change(() => page.getByLabel('Marca', { exact: true }).selectOption(chosen.battery.brand),{ ...base, search: chosen.battery.model, brand: chosen.battery.brand });
+  await change(() => page.getByLabel('Polaridad', { exact: true }).selectOption('R'),{ ...base, search: chosen.battery.model, brand: chosen.battery.brand, polarity: 'R' });
   if (mobile) check(await page.locator('.variant').count() === await page.locator('.product-card').count(), 'single-polarity mobile groups retain singleton variants');
-  await change(() => page.getByLabel('Marca', { exact: true }).selectOption(''),{ ...base, search: chosen.model, polarity: 'R' });
-  await change(() => page.getByLabel('Polaridad', { exact: true }).selectOption(''),{ ...base, search: chosen.model });
+  await change(() => page.getByLabel('Marca', { exact: true }).selectOption(''),{ ...base, search: chosen.battery.model, polarity: 'R' });
+  await change(() => page.getByLabel('Polaridad', { exact: true }).selectOption(''),{ ...base, search: chosen.battery.model });
   for (const literal of ['_','%','\\','6.5']) await change(() => search.fill(literal),{ ...base, search: literal });
   await change(() => search.fill(''),base);
   const next = page.getByRole('button', { name: 'Página siguiente' });
@@ -241,7 +246,7 @@ if (phase === 'initial') {
     }
     await geometry(page,mobile);
     check(await page.getByRole('button', { name: 'Transferencias', exact: true }).isDisabled() && await page.locator('.transfer-cta').isDisabled(), 'native disabled transfer controls');
-    await page.getByLabel('Buscar marca o modelo').focus(); await page.keyboard.press('Tab');
+    await page.getByLabel('Buscar marca, modelo o nombre').focus(); await page.keyboard.press('Tab');
     check(await page.getByLabel('Marca', { exact: true }).evaluate(el => document.activeElement === el), 'keyboard filter access');
     await page.reload(); await settle(page);
     check(await page.evaluate(() => localStorage.length === 0 && sessionStorage.length === 0), 'no browser credential storage');
@@ -281,7 +286,7 @@ if (phase === 'initial') {
       const owner = new OwnedCompose({ command, manifestPath: runtime.manifestPath, composePath: runtime.composePath, overridePath: runtime.overridePath, env: runtime.env });
       owner.owned = new Map(Object.entries(state.ids)); owner.hashes = new Map(Object.entries(state.hashes));
       check(await owner.sql(`WITH expired AS (UPDATE auth_sessions SET idle_deadline=now()-interval '1 second' WHERE token_hash=decode('${hash}','hex') AND revoked_at IS NULL RETURNING account_id) SELECT count(*) FROM expired;`) === '1', 'expire only retained own TEST session after persistence phase');
-      await page.getByLabel('Buscar marca o modelo').fill('expiry');
+      await page.getByLabel('Buscar marca, modelo o nombre').fill('expiry');
       await page.getByLabel('Usuario', { exact: true }).waitFor();
       await page.waitForFunction(() => document.activeElement?.id === 'username');
       check(await page.locator('table,.product-card,.identity').count() === 0 && (await page.request.get(params(1))).status() === 401, 'real expiry removes protected content and denies reads');

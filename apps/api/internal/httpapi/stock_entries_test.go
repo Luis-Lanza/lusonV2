@@ -1074,8 +1074,8 @@ func TestStockEntryHTTPReversalRejectsUncoveredStock(t *testing.T) {
 }
 
 // stockEntryDetailWire admits only the frozen detail shape: ten header keys and
-// six line keys, with no operation key, cost, account or stored column outside
-// the contract.
+// seven line keys (the variant identity plus the quantity), with no operation key,
+// cost, account or stored column outside the contract.
 func stockEntryDetailWire(t *testing.T, w *httptest.ResponseRecorder) stockEntryDetailDTO {
 	t.Helper()
 	if w.Code != 200 || w.Header().Get("Content-Type") != "application/json" {
@@ -1096,18 +1096,20 @@ func stockEntryDetailWire(t *testing.T, w *httptest.ResponseRecorder) stockEntry
 		t.Fatal("detail lines are not an array")
 	}
 	for _, line := range lines {
-		if len(line) != 6 {
+		if len(line) != 7 {
 			t.Fatal("detail line whitelist changed")
 		}
-		for _, key := range []string{"variant_id", "brand", "model", "capacity_ah", "polarity", "quantity"} {
+		for _, key := range []string{"variant_id", "kind", "name", "detail", "battery", "fields", "quantity"} {
 			if _, ok := line[key]; !ok {
 				t.Fatalf("detail line whitelist incomplete: %s", key)
 			}
 		}
-		// Capacity is the canonical decimal text of the contract, and the quantity is
-		// a plain signed integer: neither is ever a float or a padded number.
-		if !regexp.MustCompile(`^"[1-9][0-9]*(\.[0-9]*[1-9])?"$`).MatchString(string(line["capacity_ah"])) {
-			t.Fatal("capacity_ah must be the canonical decimal as a string")
+		// The line carries the variant identity of the contract, which is never a
+		// blank name or detail and never a battery attribute a product lacks.
+		var identity catalog.Identity
+		identityJSON, marshalErr := json.Marshal(line)
+		if marshalErr != nil || json.Unmarshal(identityJSON, &identity) != nil || identity.Valid() != nil {
+			t.Fatal("detail line identity is malformed")
 		}
 		if !regexp.MustCompile(`^-?(0|[1-9][0-9]*)$`).MatchString(string(line["quantity"])) {
 			t.Fatal("quantity must be a canonical integer")
@@ -1123,20 +1125,41 @@ func stockEntryDetailWire(t *testing.T, w *httptest.ResponseRecorder) stockEntry
 	return detail
 }
 
-// catalogueOfVariant is the catalogue identity of one variant exactly as the
-// inventory read renders it: capacity is normalized from the numeric column.
-func catalogueOfVariant(t *testing.T, f *stockEntryHTTPFixture, variant int64) (brand, model string, capacity catalog.Decimal, polarity string) {
+// identityOfVariant is the persisted identity of one variant, read straight from
+// the database, so the detail read is compared with the ledger instead of with
+// itself.
+func identityOfVariant(t *testing.T, f *stockEntryHTTPFixture, variant int64) catalog.Identity {
 	t.Helper()
-	var raw string
-	err := f.p.QueryRow(f.ctx, `SELECT e.brand,e.model,e.capacity_ah::text,v.polarity
- FROM catalog_variants v JOIN catalog_entries e ON e.id=v.catalog_entry_id WHERE v.id=$1`, int32(variant)).Scan(&brand, &model, &raw, &polarity)
+	var row catalog.Row
+	var capacity *string
+	err := f.p.QueryRow(f.ctx, `SELECT v.id,e.id,e.kind,coalesce(e.brand,''),coalesce(e.model,''),
+  e.capacity_ah::text,coalesce(v.polarity,''),coalesce(e.name,'')
+ FROM catalog_variants v JOIN catalog_entries e ON e.id=v.catalog_entry_id WHERE v.id=$1`, int32(variant)).Scan(
+		&row.VariantID, &row.CatalogEntryID, &row.Kind, &row.Brand, &row.Model, &capacity, &row.Polarity, &row.Name)
 	if err != nil {
 		t.Fatal("catalogue identity read failed")
 	}
-	if capacity, err = catalog.ParseDecimal(raw); err != nil {
-		t.Fatal("catalogue capacity is not a canonical decimal")
+	if capacity != nil {
+		row.Capacity = *capacity
 	}
-	return brand, model, capacity, polarity
+	known, err := catalog.ReadFields(f.ctx, f.p, []int32{int32(row.CatalogEntryID)})
+	if err != nil {
+		t.Fatal("persisted fields are not readable")
+	}
+	identity, err := row.Identity(known[row.CatalogEntryID])
+	if err != nil {
+		t.Fatalf("persisted identity of variant %d is not readable: %v", variant, err)
+	}
+	return identity
+}
+
+// sameIdentity compares two identities as the wire spells them, so a battery
+// attribute or a typed field the read invented is a difference.
+func sameIdentity(t *testing.T, got, want catalog.Identity) bool {
+	t.Helper()
+	gotJSON, gotErr := json.Marshal(got)
+	wantJSON, wantErr := json.Marshal(want)
+	return gotErr == nil && wantErr == nil && string(gotJSON) == string(wantJSON)
 }
 
 // foreignDocument persists a document of another location with the admission and
@@ -1180,6 +1203,74 @@ func (f *stockEntryHTTPFixture) foreignDocument(t *testing.T) int64 {
 
 func detailPath(id any) string { return fmt.Sprintf("/api/stock-entries/%v", id) }
 
+// seedOtherProduct writes one other product exactly like the catalog route does:
+// a free name, one polarity-less variant that the balance fan-out stocks with
+// zero in every active location, and one typed field.
+func seedOtherProduct(t *testing.T, ctx context.Context, p *pgxpool.Pool, name, fieldName, unit, number string) int64 {
+	t.Helper()
+	var entry, variant int64
+	if err := p.QueryRow(ctx, `INSERT INTO catalog_entries(kind,name) VALUES('other',$1) RETURNING id`, name).Scan(&entry); err != nil {
+		t.Fatal("product fixture setup failed")
+	}
+	if _, err := p.Exec(ctx, `INSERT INTO catalog_variants(catalog_entry_id) VALUES($1)`, entry); err != nil {
+		t.Fatal("product variant fixture setup failed")
+	}
+	if err := p.QueryRow(ctx, `SELECT id FROM catalog_variants WHERE catalog_entry_id=$1`, entry).Scan(&variant); err != nil {
+		t.Fatal("product variant read failed")
+	}
+	if _, err := p.Exec(ctx, `INSERT INTO catalog_entry_fields(catalog_entry_id,name,kind,unit,number_value)
+ VALUES($1,$2,'number',$3,$4::numeric)`, entry, fieldName, unit, number); err != nil {
+		t.Fatal("product field fixture setup failed")
+	}
+	return variant
+}
+
+// An ingress document is of one kind. A product-only document is the wire line it
+// always was and reads back with the product identity, and a document that names
+// both kinds is refused whole with 400 invalid_request and writes nothing.
+func TestStockEntryHTTPOtherProduct(t *testing.T) {
+	f := stockEntryFixture(t)
+	variant := seedOtherProduct(t, f.ctx, f.p, "Agua acidulada", "volumen en L", "L", "5")
+	w := f.serve(t, f.request(1, "POST", "/api/stock-entries",
+		fmt.Sprintf(`{"operation_key":"http-other-entry-key-01","note":"compra de proveedor","lines":[{"variant_id":%d,"quantity":6}]}`, variant)))
+	stockEntryObject(t, w, 201)
+	var document stockEntryDTO
+	if json.Unmarshal(w.Body.Bytes(), &document) != nil || document.ID < 1 || document.TotalUnits != 6 ||
+		len(document.Lines) != 1 || document.Lines[0].VariantID != variant || document.Lines[0].Quantity != 6 {
+		t.Fatal("a product-only document is still the wire document")
+	}
+	// The document is readable after it is written: the product line carries its own
+	// identity and no invented battery attribute.
+	detail := stockEntryDetailWire(t, f.serve(t, f.request(1, "GET", detailPath(document.ID), "")))
+	if len(detail.Lines) != 1 || detail.TotalUnits != 6 {
+		t.Fatal("the product ingress detail must carry its line")
+	}
+	line := detail.Lines[0]
+	if line.Kind != catalog.OtherKind || line.Name != "Agua acidulada" ||
+		line.Detail != "volumen en L: 5 L" || line.Battery != nil || len(line.Fields) != 1 ||
+		line.Quantity != 6 || !sameIdentity(t, line.Identity, identityOfVariant(t, f, variant)) {
+		t.Fatalf("the product line must carry its product identity: %+v", line)
+	}
+	// A document whose lines name both kinds is refused whole.
+	for name, lines := range map[string]string{
+		"battery_then_product": fmt.Sprintf(`{"operation_key":"http-other-mixed-key-01","lines":[{"variant_id":1,"quantity":2},{"variant_id":%d,"quantity":3}]}`, variant),
+		"product_then_battery": fmt.Sprintf(`{"operation_key":"http-other-mixed-key-02","lines":[{"variant_id":%d,"quantity":3},{"variant_id":1,"quantity":2}]}`, variant),
+	} {
+		t.Run(name, func(t *testing.T) {
+			f.rejected(t, f.request(1, "POST", "/api/stock-entries", lines), 400, "invalid_request")
+		})
+	}
+	if n := f.count(t, "stock_entries"); n != 1 {
+		t.Fatal("a mixed document must not persist a document")
+	}
+	// The same warehouse still admits the product alone, so the refusal is the
+	// mixing and not the product.
+	second := f.create(t, fmt.Sprintf(`{"operation_key":"http-other-entry-key-02","lines":[{"variant_id":%d,"quantity":1}]}`, variant))
+	if second.TotalUnits != 1 {
+		t.Fatal("a product-only document must still be admitted")
+	}
+}
+
 func TestStockEntryHTTPDetail(t *testing.T) {
 	f := stockEntryFixture(t)
 	original := f.create(t, `{"operation_key":"http-detail-original-1","note":"Remito 0002-00045871","lines":[{"variant_id":9,"quantity":15},{"variant_id":4,"quantity":3}]}`)
@@ -1200,19 +1291,9 @@ func TestStockEntryHTTPDetail(t *testing.T) {
 		t.Fatal("detail lines are not the variant-ordered persisted lines")
 	}
 	for _, line := range detail.Lines {
-		brand, model, capacity, polarity := catalogueOfVariant(t, f, line.VariantID)
-		if line.Brand != brand || line.Model != model || line.Capacity != string(capacity) || line.Polarity != polarity {
+		if !sameIdentity(t, line.Identity, identityOfVariant(t, f, int64(line.VariantID))) {
 			t.Fatalf("line %d does not carry its catalogue identity", line.VariantID)
 		}
-	}
-	// The rendered capacity is the inventory contract's, not the column's text.
-	var rawCapacity string
-	if f.p.QueryRow(f.ctx, `SELECT e.capacity_ah::text FROM catalog_variants v
- JOIN catalog_entries e ON e.id=v.catalog_entry_id WHERE v.id=9`).Scan(&rawCapacity) != nil {
-		t.Fatal("capacity read failed")
-	}
-	if normalized, err := catalog.ParseDecimal(rawCapacity); err != nil || detail.Lines[1].Capacity != string(normalized) {
-		t.Fatal("capacity is not rendered like the inventory read")
 	}
 	// Nothing stored outside the contract reaches the wire.
 	body := w.Body.String()
@@ -1240,7 +1321,7 @@ func TestStockEntryHTTPDetail(t *testing.T) {
 		t.Fatal("counter-entry detail does not carry the exact negative lines")
 	}
 	for _, line := range counterDetail.Lines {
-		if line.Brand == "" || line.Model == "" || line.Capacity == "" || (line.Polarity != "L" && line.Polarity != "R") {
+		if line.Identity.Valid() != nil || !sameIdentity(t, line.Identity, identityOfVariant(t, f, int64(line.VariantID))) {
 			t.Fatalf("counter-entry line %d has no catalogue identity", line.VariantID)
 		}
 	}

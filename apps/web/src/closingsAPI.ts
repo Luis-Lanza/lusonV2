@@ -1115,11 +1115,15 @@ export function createClosingAPI(fetch: typeof globalThis.fetch = globalThis.fet
         || page.location.id !== wanted) {
         throw new ClosingAPIError('invalid_response', 200);
       }
-      return Object.freeze(page.items.map(item => Object.freeze({
-        variant_id: item.variant_id, catalog_entry_id: item.catalog_entry_id, brand: item.brand,
-        model: item.model, capacity_ah: item.capacity_ah, polarity: item.polarity,
-        existing: item.existing,
-      })));
+      // The count sheet counts batteries: a row of this read always carries its
+      // battery attributes, and one that does not is not evidence of this branch.
+      return Object.freeze(page.items.map(item => {
+        const battery = item.battery;
+        if (!battery) throw new ClosingAPIError('invalid_response', 200);
+        return Object.freeze({ variant_id: item.variant_id, catalog_entry_id: item.catalog_entry_id,
+          brand: battery.brand, model: battery.model, capacity_ah: battery.capacity_ah, polarity: battery.polarity,
+          existing: item.existing });
+      }));
     },
 
     /** Records only what was counted: the expected quantity cannot even be expressed here. */

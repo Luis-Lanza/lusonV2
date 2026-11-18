@@ -72,16 +72,13 @@ type Entry struct {
 	ReversesEntryID *int64 `json:"-"`
 }
 
-// DetailLine is one persisted line of a document together with the catalogue
-// identity of its variant. Quantity keeps the document's sign: negative for a
-// counter-entry.
+// DetailLine is one persisted line of a document together with the variant
+// identity of its own kind: a battery keeps its battery attributes and a product
+// keeps its typed fields, so reading a product line never invents a brand.
+// Quantity keeps the document's sign: negative for a counter-entry.
 type DetailLine struct {
-	VariantID int64           `json:"variant_id"`
-	Brand     string          `json:"brand"`
-	Model     string          `json:"model"`
-	Capacity  catalog.Decimal `json:"capacity_ah"`
-	Polarity  string          `json:"polarity"`
-	Quantity  int64           `json:"quantity"`
+	catalog.Identity
+	Quantity int64 `json:"quantity"`
 }
 
 // EntryDetail is one persisted document with its catalogue-resolved lines and its

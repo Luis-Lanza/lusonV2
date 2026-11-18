@@ -13,8 +13,10 @@ function authority(assigned = 2, epoch = 7): TransferAuthority {
 }
 function catalog(source = 1, count = 2, available = max): SourceCatalog {
   return { location: { id: source, name: 'Physical source' }, rows: Array.from({ length: count }, (_, i) => ({
-    variant_id: i + 1, catalog_entry_id: Math.ceil((i + 1) / 2), brand: 'TOYO', model: 'Real model', capacity_ah: '6.000001', polarity: 'L',
-    existing: max, reserved: 0n, available,
+    variant_id: i + 1, catalog_entry_id: Math.ceil((i + 1) / 2), kind: 'battery' as const,
+    name: 'TOYO · Real model', detail: '6.000001 Ah · L',
+    battery: { brand: 'TOYO', model: 'Real model', capacity_ah: '6.000001', polarity: 'L' as const },
+    fields: null, existing: max, reserved: 0n, available,
   })) };
 }
 const cart = () => createTransferCart(authority(), 'requestWarehouse', catalog());
@@ -76,23 +78,23 @@ describe('R04b2c-hydration', () => {
     expect(state.attempt).not.toBe(input.attempt);
     expect(state.lines.map(v => [v.quantity, v.available])).toEqual([[max, 2n], [max, null]]);
     expect(cartStatus(state, authority(2, 8))).toEqual({ usable: true, ready: false, total: max * 2n, invalid: [1, 2] });
-    expect(Object.keys(state.lines[0].item).sort()).toEqual(['brand', 'capacity_ah', 'catalog_entry_id', 'model', 'polarity', 'variant_id']);
-    expect(state.lines[1].item.capacity_ah).toBe('6.000001');
+    expect(Object.keys(state.lines[0].item).sort()).toEqual(['battery', 'catalog_entry_id', 'variant_id']);
+    expect(state.lines[1].item.battery.capacity_ah).toBe('6.000001');
     for (const value of [state, state.direction, state.catalog, state.catalog.location, state.catalog.rows, state.catalog.rows[0],
       state.lines, state.lines[0], state.lines[0].item, state.attempt, state.attempt!.items, state.attempt!.items[0]]) expect(Object.isFrozen(value)).toBe(true);
     expect(state.catalog).not.toBe(source);
   });
   it('copies mutable input without retaining stock or credential extras', () => {
     const original = snapshot();
-    const items = original.items.map(v => ({ ...v, existing: max, csrf_token: 'not-retained' }));
+    const items = original.items.map(v => ({ ...v, battery: { ...v.battery }, existing: max, csrf_token: 'not-retained' }));
     const attempt = { ...original.attempt, items: original.attempt.items.map(v => ({ ...v })) };
     const direction = { ...original.direction };
     const row = { ...catalog().rows[0] };
     const location = { id: 1, name: 'Physical source' };
     const state = restoreTransferCart(authority(2, 8), { location, rows: [row] }, { ...original, items, attempt, direction });
-    items[0].brand = 'Changed'; attempt.items[0].quantity = '1'; direction.origin_location_id = 3;
+    items[0].battery.brand = 'Changed'; attempt.items[0].quantity = '1'; direction.origin_location_id = 3;
     row.available = 0n; location.id = 3;
-    expect(state.lines[0].item.brand).toBe('TOYO');
+    expect(state.lines[0].item.battery.brand).toBe('TOYO');
     expect(state.lines[0].item).not.toHaveProperty('csrf_token');
     expect(state.lines[0].item).not.toHaveProperty('existing');
     expect(state.lines[0].available).toBe(max);
@@ -113,7 +115,8 @@ describe('R04b2c-hydration', () => {
   it.each(['direction', 'counterparty', 'source', 'count', 'duplicate', 'membership', 'quantity', 'float', 'variant', 'entry', 'brand', 'model', 'capacity', 'polarity', 'catalog-descriptor'])(
     'rejects %s mismatch with sanitized errors', mode => {
       const original = snapshot();
-      const input = { ...original, direction: { ...original.direction }, attempt: { ...original.attempt }, items: original.items.map(v => ({ ...v })) };
+      const input = { ...original, direction: { ...original.direction }, attempt: { ...original.attempt },
+      items: original.items.map(v => ({ ...v, battery: { ...v.battery } })) };
       let source = catalog();
       if (mode === 'direction') input.direction.approver_location_id = 3;
       if (mode === 'counterparty') input.attempt.counterparty_location_id = 2;
@@ -125,12 +128,12 @@ describe('R04b2c-hydration', () => {
       if (mode === 'float') input.items[0].quantity = '1.5';
       if (mode === 'variant') input.items[0].variant_id = 191;
       if (mode === 'entry') input.items[0].catalog_entry_id = 96;
-      if (mode === 'brand') input.items[0].brand = '';
-      if (mode === 'model') input.items[0].model = '\0';
-      if (mode === 'capacity') input.items[0].capacity_ah = '6.0';
+      if (mode === 'brand') input.items[0].battery.brand = '';
+      if (mode === 'model') input.items[0].battery.model = '\0';
+      if (mode === 'capacity') input.items[0].battery.capacity_ah = '6.0';
       // @ts-expect-error deliberately invalid polarity
-      if (mode === 'polarity') input.items[0].polarity = 'X';
-      if (mode === 'catalog-descriptor') input.items[0].model = 'Different';
+      if (mode === 'polarity') input.items[0].battery.polarity = 'X';
+      if (mode === 'catalog-descriptor') input.items[0].battery.model = 'Different';
       expect(() => restoreTransferCart(authority(2, 8), source, input)).toThrow(/^Invalid transfer cart$/);
     });
   it.each([2, 3])('restores every physical route from assigned branch%s, not consulted stock', assigned => {
@@ -182,7 +185,9 @@ describe('R04 transfer cart', () => {
     const input = catalog();
     const initial = createTransferCart(authority(), 'requestWarehouse', input);
     const next = addCartItem(initial, authority(), 1, '9007199254740993');
-    expect(next.lines[0]).toMatchObject({ quantity: 9007199254740993n, item: { brand: 'TOYO', model: 'Real model', capacity_ah: '6.000001', polarity: 'L', existing: max, reserved: 0n, available: max } });
+    expect(next.lines[0]).toMatchObject({ quantity: 9007199254740993n, item: { variant_id: 1, catalog_entry_id: 1,
+      battery: { brand: 'TOYO', model: 'Real model', capacity_ah: '6.000001', polarity: 'L' } } });
+    expect(next.lines[0].item).not.toHaveProperty('existing');
     expect(input.rows[0].available).toBe(max);
     expect(initial.lines).toEqual([]);
     expect(next.catalog).not.toBe(input);
@@ -195,9 +200,9 @@ describe('R04 transfer cart', () => {
     const location = { id: 1, name: 'Physical source' };
     const selected = addCartItem(createTransferCart(authority(), 'requestWarehouse', { location, rows: [owned] }), authority(), 1, '2');
     owned.available = 0n;
-    owned.brand = 'Changed';
+    owned.battery!.brand = 'Changed';
     location.id = 3;
-    expect(selected.lines[0].item.brand).toBe('TOYO');
+    expect(selected.lines[0].item.battery.brand).toBe('TOYO');
     expect(selected.lines[0].available).toBe(max);
     expect(selected.catalog.location.id).toBe(1);
     expect(cartStatus(selected, authority()).ready).toBe(true);

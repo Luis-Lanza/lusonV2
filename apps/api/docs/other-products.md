@@ -19,10 +19,69 @@ admits one such row per entry). The existing `initialize_variant_inventory`
 trigger therefore opens a zero balance row in every active location without any
 new code: availability is already modelled the way a transfer will need it.
 
-This slice delivers the catalog only: no price, no stock, no transfer. Battery
-screens do not list these products — `internal/inventory`, the price matrix, the
-adjustment catalog and the purchase model suggestions all restrict themselves to
-`kind='battery'`, and `internal/httpapi/other_product_leak_test.go` pins that.
+## Variant identity
+
+Every surface that names a variant reads one shape for both kinds, so a screen
+never invents an attribute a row does not have. The kind is visible in the name
+and the detail, and the two optional blocks carry the kind's own attributes:
+
+```json
+{ "variant_id": 210,
+  "kind": "other",
+  "name": "Agua acidulada",
+  "detail": "volumen en L: 5 L",
+  "battery": null,
+  "fields": [ { "name": "volumen en L", "kind": "number", "unit": "L", "number": "5" } ] }
+```
+
+For a battery: `kind` `"battery"`, `name` `"CAR · NS40ZL"`, `detail` `"35 Ah · L"`,
+`battery` `{ "brand": "CAR", "model": "NS40ZL", "capacity_ah": "35",
+"polarity": "L" }` and `fields` `null`. A product always carries a non-null
+`fields` array and a `null` `battery`.
+
+`name` and `detail` are composed by the server, so every surface agrees: a battery
+name is `brand · model` and its detail is `capacity Ah · polarity`; a product name
+is its free name and its detail joins the first three typed fields as
+`nombre: valor unidad` with ` · `, appending ` · +N` when more fields exist. A
+product with no field falls back to its own name, because neither `name` nor
+`detail` is ever empty. `capacity_ah` travels as the canonical decimal **text**
+(`"35"`, `"6.5"`), like the rest of the catalogue.
+
+## Where the second kind is visible today
+
+The catalogue slice alone wrote no stock. The stock vertical
+(`odd/tasks/other-products-stock.md`) puts the product into the warehouse ledger
+and its documents, so these surfaces read and write both kinds:
+
+- `GET /api/inventory` lists both kinds in one list behind the three-state `kind`
+  parameter (`all` | `battery` | `other`, default `battery`); the stock screen and
+  the ingress product picker read it. A product row carries its identity and the
+  same three stock numbers a battery row carries.
+- `POST /api/stock-entries` admits a product-only document, and its detail labels
+  each product line with the product identity instead of failing on the missing
+  brand.
+- `POST /api/stock-adjustments` counts a product, `GET
+  /api/stock-adjustments/catalog` offers the product picker behind the same `kind`
+  parameter, its detail labels the product line, and the history states each
+  document's `kind`.
+
+A document of either write is of one kind and never mixes: the kind is derived
+from its lines and never stored, so a body naming variants of both kinds is refused
+whole with `400 invalid_request` and writes nothing.
+
+These surfaces still handle batteries only in this vertical:
+
+- Branch counting and every closing document. The closing count sheet reads
+  `/api/inventory` with no `kind`, which is the battery-only listing, so it keeps
+  counting no product and its count lines stay battery rows.
+- Transfers, their items, receipts and reconciliations.
+- Prices: the branch price matrix and the sale catalog, because a product has no
+  price, and the purchase model suggestions.
+
+That split is safe because the absent `kind` is the battery-only listing every
+caller had before the second kind existed.
+`internal/httpapi/other_product_leak_test.go` still pins those battery-only
+answers: the default inventory listing, the brand list and the price matrix.
 
 ## Authorization
 

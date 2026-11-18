@@ -296,7 +296,8 @@ func TestSchemaCataloguePayloadCarriesNoStock(t *testing.T) {
 	if err := json.Unmarshal(payload, &items); err != nil {
 		t.Fatal("the catalogue payload is not decodable")
 	}
-	want := []string{"brand", "capacity_ah", "catalog_entry_id", "model", "polarity", "variant_id"}
+	// The identity of the variant plus the entry it belongs to: nothing else.
+	want := []string{"battery", "catalog_entry_id", "detail", "fields", "kind", "name", "variant_id"}
 	for i, item := range items {
 		keys := make([]string, 0, len(item))
 		for key := range item {

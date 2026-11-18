@@ -26,18 +26,22 @@ brand. Locations remain `1:Almacén`, `2:Sucursal A`, `3:Sucursal B`.
 | Inventory query | Contract |
 | --- | --- |
 | `location_id` | Required positive decimal integer, existing location 1–3; no GLOBAL/0 |
-| `search` | Optional literal, case-insensitive brand/model substring; maximum 128 UTF-8 bytes; empty means no search |
+| `kind` | Optional `all`, `battery` or `other`; absent means `battery` |
+| `search` | Optional literal, case-insensitive substring over a battery's brand and model, or over an other product's name, its typed field values (text, or a number's decimal text) and its field names and units; maximum 128 UTF-8 bytes; empty means no search |
 | `brand` | Optional nonempty exact PostgreSQL brand, including case; maximum 128 UTF-8 bytes |
 | `polarity` | Optional explicit `L` or `R`; never inferred from model suffix |
 | `page` | Default 1; positive decimal digits, maximum 1,000,000 |
 | `page_size` | Default 10; only 10, 25 or 50 |
 
-Filters are AND-combined. Search does not match capacities, quantities or status.
+Filters are AND-combined. `kind` is the filter that selects the second catalog
+kind; `brand` and `polarity` are battery attributes, so an explicit one of either
+selects batteries only. Search does not match capacities, quantities or status.
 Percent, underscore and backslash are literal characters, not SQL wildcards.
 URL-encode values, especially `+` and `&`. SQL uses bound parameters.
 
 Duplicate or unknown fields, malformed URL encoding, invalid UTF-8, NUL, empty
-explicit brand/polarity, signed/fractional integers and unsupported values are
+explicit brand/polarity, an unknown, empty or repeated `kind`, signed/fractional
+integers and unsupported values are
 400 `invalid_request`. Raw query length is bounded at 4096 bytes; integer text
 at seven digits. Bounds are technical request/overflow safeguards, not business
 rules. Leading zeros are accepted within the text bound. Page offsets are
@@ -57,16 +61,41 @@ Inventory JSON uses these fields:
 }
 ```
 
-Each item has `variant_id`, `catalog_entry_id`, `brand`, `model`, `capacity_ah`,
-`polarity`, `existing`, `reserved`, `available`. Capacity is an exact JSON number
-(e.g. `6.5`, not a quoted value or binary-float conversion). Quantities are
-PostgreSQL bigint values; `available` reads the generated `existing-reserved`
-column. There are no status/threshold fields or invented operational holds.
+Each item carries the shared variant identity, the catalogue entry the grouping
+surfaces key on and the three stock numbers of the location:
+
+```json
+{"variant_id":210,"kind":"other","name":"Agua acidulada",
+ "detail":"volumen en L: 5 L","battery":null,
+ "fields":[{"name":"volumen en L","kind":"number","unit":"L","number":"5"}],
+ "catalog_entry_id":96,"existing":0,"reserved":0,"available":0}
+```
+
+A battery row is `kind: "battery"`, `name: "CAR · NS40ZL"`, `detail: "35 Ah · L"`,
+`battery: {"brand":"CAR","model":"NS40ZL","capacity_ah":"35","polarity":"L"}`
+and `fields: null`; a product row is `kind: "other"`, `battery: null` and carries
+its typed fields. The identity is composed by the server, so every screen labels
+a row the same way (see the
+[other products catalog](other-products.md#variant-identity)). `capacity_ah` is
+the canonical catalogue decimal **text** (`"35"`, `"6.5"`) inside `battery`, so
+no float rounding and no trailing zeros reach the client; it is never a
+top-level field of an item.
+
+Quantities are PostgreSQL bigint values; `available` reads the generated
+`existing-reserved` column. There are no status/threshold fields or invented
+operational holds.
 
 Items are ordered by `variant_id`. Count and items use identical predicates in
 one read-only repeatable-read transaction. A valid page beyond the last returns
 `items:[]` and the accurate total, not 404. Empty metadata/item arrays are never
-null. The unfiltered initialized catalog has 190 variants per location.
+null. The unfiltered initialized catalog has 190 battery variants per location:
+the absent `kind` is the battery-only listing every caller had before the second
+kind existed, and `kind=all` adds the single variant of every active product,
+whose zero balance rows the catalogue fan-out already opened.
+
+`GET /api/inventory/metadata` takes no `kind` at all (`400 invalid_request`) and
+keeps describing batteries only: its `brands` list never gains a product, which
+has no brand.
 
 | Failure | JSON error |
 | --- | --- |

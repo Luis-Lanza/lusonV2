@@ -1,12 +1,11 @@
-import type { TransferCart } from './transferCart';
+import type { CartDescriptor, TransferCart } from './transferCart';
 import type { TransferAuthority } from './useInventory';
 import { canonicalTransferInput, transferDirection, transferFlow, validTransferLocation, type TransferCreateInput, type TransferDirection, type TransferLocationID } from './transferModel';
 export interface RecoveryHandle { readonly __recoveryHandle?: never }
 export interface RecoveryFlight { readonly __recoveryFlight?: never }
-export interface RecoveryItem {
-  readonly variant_id: number; readonly catalog_entry_id: number; readonly brand: string;
-  readonly model: string; readonly capacity_ah: string; readonly polarity: 'L' | 'R'; readonly quantity: string;
-}
+// The archived selection is the cart descriptor itself plus the requested quantity,
+// so the recovery and the cart can never describe the same row differently.
+export interface RecoveryItem extends CartDescriptor { readonly quantity: string }
 export interface RecoverySnapshot {
   readonly epoch: number; readonly phase: 'ready' | 'unknown' | 'inFlight'; readonly handle: RecoveryHandle;
   readonly attempt: TransferCreateInput; readonly direction: Readonly<TransferDirection>; readonly items: readonly RecoveryItem[];
@@ -75,14 +74,14 @@ export function createTransferRecovery() {
         const items = Object.freeze(attempt.items.map(line => {
           const selected = cart.lines.find(v => v.item.variant_id === line.variant_id);
           if (!selected || selected.quantity.toString() !== line.quantity) return unavailable();
-          const v = selected.item;
+          const v = selected.item; const battery = v.battery;
           if (!integer(v.variant_id, 2_147_483_647) || !integer(v.catalog_entry_id, 2_147_483_647) || seen.has(v.variant_id)
-            || !text(v.brand) || !text(v.model) || typeof v.capacity_ah !== 'string'
-            || !/^(0|[1-9][0-9]{0,5})(\.[0-9]{0,5}[1-9])?$/.test(v.capacity_ah) || v.capacity_ah === '0'
-            || (v.polarity !== 'L' && v.polarity !== 'R')) return unavailable();
+            || !text(battery.brand) || !text(battery.model) || typeof battery.capacity_ah !== 'string'
+            || !/^(0|[1-9][0-9]{0,5})(\.[0-9]{0,5}[1-9])?$/.test(battery.capacity_ah) || battery.capacity_ah === '0'
+            || (battery.polarity !== 'L' && battery.polarity !== 'R')) return unavailable();
           seen.add(v.variant_id);
-          return Object.freeze({ variant_id: v.variant_id, catalog_entry_id: v.catalog_entry_id, brand: v.brand,
-            model: v.model, capacity_ah: v.capacity_ah, polarity: v.polarity, quantity: line.quantity });
+          return Object.freeze({ variant_id: v.variant_id, catalog_entry_id: v.catalog_entry_id,
+            battery: Object.freeze({ ...battery }), quantity: line.quantity });
         }));
         const previous = current(o);
         if (previous) {

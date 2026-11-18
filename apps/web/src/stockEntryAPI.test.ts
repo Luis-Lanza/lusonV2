@@ -272,7 +272,12 @@ describe('stock counter-entry transport', () => {
 
 describe('stock document detail transport', () => {
   const detailLine = (overrides: Record<string, unknown> = {}) => ({
-    variant_id: 7, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L', quantity: 18, ...overrides });
+    variant_id: 7, kind: 'battery', name: 'TOYO · NS60L', detail: '45 Ah · L',
+    battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L' }, fields: null,
+    quantity: 18, ...overrides });
+  const productLine = (overrides: Record<string, unknown> = {}) => ({
+    variant_id: 210, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L', battery: null,
+    fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }], quantity: 20, ...overrides });
   const detailBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
     id: 6, location_id: 1, note: 'Remito 0002-00045871', created_at: '2026-05-01T14:20:00Z',
     created_by_account_id: 1, reverses_entry_id: null, reversed_by: null, reason: '',
@@ -285,10 +290,19 @@ describe('stock document detail transport', () => {
     const detail = await createStockEntryAPI(fetch).detail(6);
     expect(detail).toMatchObject({ id: 6, note: 'Remito 0002-00045871', total_units: 18,
       reverses_entry_id: null, reversed_by: null, reason: '' });
-    expect(detail.lines).toEqual([{ variant_id: 7, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L', quantity: 18 }]);
+    expect(detail.lines).toEqual([{ variant_id: 7, kind: 'battery', name: 'TOYO · NS60L', detail: '45 Ah · L',
+      battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L' }, fields: null, quantity: 18 }]);
     expect(fetch.mock.calls[0]).toEqual(['/api/stock-entries/6', {
       method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: undefined,
     }]);
+  });
+
+  it('reads a product document with the identity union of its lines', async () => {
+    const fetch = mockFetch().mockResolvedValue(detailResponse(detailBody({ lines: [productLine()], total_units: 20 })));
+    const detail = await createStockEntryAPI(fetch).detail(6);
+    expect(detail.lines).toEqual([{ variant_id: 210, kind: 'other', name: 'Agua acidulada',
+      detail: 'volumen en L: 5 L', battery: null,
+      fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }], quantity: 20 }]);
   });
 
   it('sends the abort signal it was given', async () => {

@@ -1,5 +1,6 @@
 import { LosslessNumber, parse as parseJSON } from 'lossless-json';
-import { validSearch } from './model';
+import { parseVariantIdentity, validSearch } from './model';
+import type { Kind, VariantIdentity } from './model';
 import { newTransferRetryKey } from './transferModel';
 
 // Warehouse stock adjustment contract: one immutable document that corrects the
@@ -26,17 +27,27 @@ export interface StockAdjustmentRecord {
 /** One row of the read-only history: a document summary, never its lines. */
 export interface StockAdjustmentSummary {
   readonly id: number; readonly reason: string; readonly detail: string; readonly created_at: string;
-  readonly lines: number; readonly total_difference: number;
+  readonly lines: number;
+  /**
+   * The kind the server derives from this document's own lines. It is null when
+   * those lines disagree, because such a document was written before the one-kind
+   * rule: the screen renders no kind for it instead of a guess.
+   */
+  readonly kind: Kind | null;
+  readonly total_difference: number;
   readonly reverses_adjustment_id: number | null; readonly reversed_by: number | null;
 }
 export interface StockAdjustmentPage {
   readonly page: number; readonly page_size: number; readonly total_adjustments: number;
   readonly adjustments: readonly StockAdjustmentSummary[];
 }
-/** One persisted line with the catalogue identity of its variant and the applied arithmetic. */
-export interface StockAdjustmentDetailLine {
-  readonly variant_id: number; readonly catalog_entry_id: number; readonly brand: string; readonly model: string;
-  readonly capacity_ah: string; readonly polarity: 'L' | 'R';
+/**
+ * One persisted line with the catalogue identity of its own kind and the applied
+ * arithmetic. A product line shows its name and detail and carries no battery
+ * cell, so a document read never invents the attribute a row does not have.
+ */
+export interface StockAdjustmentDetailLine extends VariantIdentity {
+  readonly catalog_entry_id: number;
   readonly expected_quantity: number; readonly counted_quantity: number; readonly difference: number;
 }
 export interface StockAdjustmentDetail {
@@ -49,12 +60,11 @@ export interface StockAdjustmentDetail {
 }
 /**
  * The blind capture catalogue: the catalogue identity of one variant of this
- * warehouse. It has no stock field at all, so the capture cannot reveal the number
- * the operator is supposed to count.
+ * warehouse, of the kind the document declares. It has no stock field at all, so
+ * the capture cannot reveal the number the operator is supposed to count.
  */
-export interface StockAdjustmentCatalogItem {
-  readonly variant_id: number; readonly catalog_entry_id: number; readonly brand: string; readonly model: string;
-  readonly capacity_ah: string; readonly polarity: 'L' | 'R';
+export interface StockAdjustmentCatalogItem extends VariantIdentity {
+  readonly catalog_entry_id: number;
 }
 export interface StockAdjustmentCatalogPage {
   readonly page: number; readonly page_size: number; readonly total_variants: number;
@@ -79,6 +89,17 @@ export const stockAdjustmentPageSizes: readonly number[] = [10, 25, 50];
 export const stockAdjustmentDefaultPageSize = 25;
 export const stockAdjustmentCatalogPageSize = 25;
 export const stockAdjustmentMaxPage = 1_000_000;
+/** The two kinds a document can be, in the order the screen offers them. */
+export const stockAdjustmentKinds: readonly Kind[] = ['battery', 'other'];
+export const stockAdjustmentKindLabels: Record<Kind, string> = { battery: 'Baterías', other: 'Otros productos' };
+/** A document written before the one-kind rule has no kind, and a dash is never a guess. */
+export const stockAdjustmentKindUnknown = '—';
+/**
+ * The blind count, word for word: nothing the capture offers may reveal the
+ * expected quantity before the document is applied.
+ */
+export const stockAdjustmentBlindCount =
+  'Conteo ciego. No se muestra el stock esperado. Cargá lo que contaste; la diferencia se conoce al aplicar.';
 export const stockAdjustmentHistoryUnavailable =
   'No se pudo consultar el historial de ajustes. Revisá la conexión e intentá de nuevo.';
 export const stockAdjustmentCatalogUnavailable =
@@ -221,16 +242,6 @@ function timestamp(value: unknown): string {
   if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 19) !== raw.slice(0, 19)) return invalidResponse();
   if (!Number.isFinite(Date.parse(raw))) return invalidResponse();
   return raw;
-}
-/**
- * Capacity is the inventory contract's canonical decimal text: at most six
- * integral digits, at most six fractional ones, positive, and already normalized,
- * because the server never writes a trailing zero.
- */
-function capacity(value: unknown): string {
-  if (typeof value !== 'string' || !/^(0|[1-9]\d{0,5})(\.\d{1,6})?$/.test(value) || !/[1-9]/.test(value)) return invalidResponse();
-  const normalized = value.includes('.') ? value.replace(/0+$/, '').replace(/\.$/, '') : value;
-  return normalized === value ? value : invalidResponse();
 }
 /** A persisted motive is canonical: trimmed, non-empty, bounded UTF-16. */
 function reason(value: unknown): string {
@@ -391,12 +402,13 @@ export function stockAdjustmentHistoryPath(page: number, pageSize: number): stri
 
 /**
  * The capture catalogue is a separate, quantity-free projection, so the capture
- * never reuses the inventory read: that payload includes the expected balance.
- * An empty search is omitted entirely because the contract refuses empty values.
+ * never reuses the inventory read: that payload includes the expected balance. The
+ * kind is always declared, so the picker can only answer the document's own kind,
+ * and an empty search is omitted entirely because the contract refuses empty values.
  */
-export function stockAdjustmentCatalogPath(search: string): string {
+export function stockAdjustmentCatalogPath(search: string, kind: Kind): string {
   if (!validSearch(search)) return invalidInput();
-  const params = new URLSearchParams({ page: '1', page_size: String(stockAdjustmentCatalogPageSize) });
+  const params = new URLSearchParams({ page: '1', page_size: String(stockAdjustmentCatalogPageSize), kind });
   if (search !== '') params.set('search', search);
   return '/api/stock-adjustments/catalog?' + params.toString();
 }
@@ -414,9 +426,21 @@ export function stockAdjustmentReversalPath(id: number): string {
 }
 
 /**
+ * The kind of one history row is the server's derivation from that document's
+ * lines: one of the two kinds, or no kind at all when the stored lines disagree.
+ * Anything else is a row the server never composed.
+ */
+function documentKind(value: unknown): Kind | null {
+  if (value === null) return null;
+  if (value === 'battery' || value === 'other') return value;
+  return invalidResponse();
+}
+
+/**
  * Parses one history page strictly: exact keys, lossless numbers, newest-first rows
- * whose references point inside the ledger. A page beyond the last one is
- * legitimately empty; a page with rows must still fit inside the reported total.
+ * whose references point inside the ledger and the kind derived from each
+ * document's lines. A page beyond the last one is legitimately empty; a page with
+ * rows must still fit inside the reported total.
  */
 export function parseStockAdjustmentHistory(raw: string): StockAdjustmentPage {
   const record = fields(decode(raw), ['page', 'page_size', 'total_adjustments', 'adjustments']);
@@ -428,13 +452,14 @@ export function parseStockAdjustmentHistory(raw: string): StockAdjustmentPage {
   if (record.adjustments.length > 0 && (page - 1) * page_size + record.adjustments.length > total_adjustments) return invalidResponse();
   let previous = Number.POSITIVE_INFINITY;
   const adjustments = record.adjustments.map(value => {
-    const row = fields(value, ['id', 'reason', 'detail', 'created_at', 'lines', 'total_difference',
+    const row = fields(value, ['id', 'reason', 'detail', 'created_at', 'lines', 'kind', 'total_difference',
       'reverses_adjustment_id', 'reversed_by']);
     const id = integer(row.id, 1, Number.MAX_SAFE_INTEGER);
     if (id >= previous) return invalidResponse();
     previous = id;
     return Object.freeze({ id, reason: reason(row.reason), detail: detailText(row.detail),
       created_at: timestamp(row.created_at), lines: integer(row.lines, 1, stockAdjustmentMaxLines),
+      kind: documentKind(row.kind),
       total_difference: signedInteger(row.total_difference, -stockAdjustmentMaxTotal, stockAdjustmentMaxTotal),
       reverses_adjustment_id: reference(row.reverses_adjustment_id, id, false),
       reversed_by: reference(row.reversed_by, id, true) });
@@ -443,9 +468,10 @@ export function parseStockAdjustmentHistory(raw: string): StockAdjustmentPage {
 }
 
 /**
- * Parses one document detail strictly: the catalogue identity of every line, the
- * expected snapshot, the counted quantity and the derived difference, plus both
- * directions of the reversal cross-reference.
+ * Parses one document detail strictly: the catalogue identity of every line of its
+ * own kind, the expected snapshot, the counted quantity and the derived
+ * difference, plus both directions of the reversal cross-reference. A product line
+ * reads back with its name and detail, never with invented battery cells.
  */
 export function parseStockAdjustmentDetail(raw: string): StockAdjustmentDetail {
   const record = fields(decode(raw), ['id', 'location_id', 'reason', 'detail', 'created_at',
@@ -456,20 +482,21 @@ export function parseStockAdjustmentDetail(raw: string): StockAdjustmentDetail {
   let previous = 0;
   let total = 0;
   const lines = record.lines.map(value => {
-    const line = fields(value, ['variant_id', 'catalog_entry_id', 'brand', 'model', 'capacity_ah',
-      'polarity', 'expected_quantity', 'counted_quantity', 'difference']);
-    const variant_id = integer(line.variant_id, 1, stockAdjustmentMaxVariantID);
-    if (variant_id <= previous) return invalidResponse();
-    previous = variant_id;
-    if (line.polarity !== 'L' && line.polarity !== 'R') return invalidResponse();
+    const line = fields(value, ['variant_id', 'catalog_entry_id', 'kind', 'name', 'detail', 'battery', 'fields',
+      'expected_quantity', 'counted_quantity', 'difference']);
+    // The line is the shared identity of the inventory read plus the arithmetic of
+    // this document, so a line the server could not publish never reaches a screen.
+    const identity = parseVariantIdentity(value, ['catalog_entry_id', 'expected_quantity', 'counted_quantity', 'difference']);
+    if (identity.variant_id <= previous) return invalidResponse();
+    previous = identity.variant_id;
     const expected_quantity = integer(line.expected_quantity, 0, Number.MAX_SAFE_INTEGER);
     const counted_quantity = integer(line.counted_quantity, 0, stockAdjustmentMaxCounted);
     const difference = signedInteger(line.difference, -Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
     if (difference !== counted_quantity - expected_quantity) return invalidResponse();
     total += difference;
-    return Object.freeze({ variant_id, catalog_entry_id: integer(line.catalog_entry_id, 1, Number.MAX_SAFE_INTEGER),
-      brand: text(line.brand), model: text(line.model), capacity_ah: capacity(line.capacity_ah),
-      polarity: line.polarity, expected_quantity, counted_quantity, difference });
+    return Object.freeze({ ...identity,
+      catalog_entry_id: integer(line.catalog_entry_id, 1, Number.MAX_SAFE_INTEGER),
+      expected_quantity, counted_quantity, difference });
   });
   const total_difference = signedInteger(record.total_difference, -stockAdjustmentMaxTotal, stockAdjustmentMaxTotal);
   if (total !== total_difference) return invalidResponse();
@@ -483,8 +510,12 @@ export function parseStockAdjustmentDetail(raw: string): StockAdjustmentDetail {
     lines: Object.freeze(lines), total_difference });
 }
 
-/** Parses the blind capture catalogue: identity only, never a stock field. */
-export function parseStockAdjustmentCatalog(raw: string): StockAdjustmentCatalogPage {
+/**
+ * Parses the blind capture catalogue of the kind the document declares: the
+ * variant identity and nothing else. A row of the other kind is a reply this
+ * screen never asked for and never renders.
+ */
+export function parseStockAdjustmentCatalog(raw: string, kind: Kind): StockAdjustmentCatalogPage {
   const record = fields(decode(raw), ['page', 'page_size', 'total_variants', 'items']);
   const page = integer(record.page, 1, stockAdjustmentMaxPage);
   const page_size = integer(record.page_size, 10, 50);
@@ -494,13 +525,12 @@ export function parseStockAdjustmentCatalog(raw: string): StockAdjustmentCatalog
   if (record.items.length > 0 && (page - 1) * page_size + record.items.length > total_variants) return invalidResponse();
   let previous = 0;
   const items = record.items.map(value => {
-    const item = fields(value, ['variant_id', 'catalog_entry_id', 'brand', 'model', 'capacity_ah', 'polarity']);
-    const variant_id = integer(item.variant_id, 1, stockAdjustmentMaxVariantID);
-    if (variant_id <= previous) return invalidResponse();
-    previous = variant_id;
-    if (item.polarity !== 'L' && item.polarity !== 'R') return invalidResponse();
-    return Object.freeze({ variant_id, catalog_entry_id: integer(item.catalog_entry_id, 1, Number.MAX_SAFE_INTEGER),
-      brand: text(item.brand), model: text(item.model), capacity_ah: capacity(item.capacity_ah), polarity: item.polarity });
+    const item = fields(value, ['variant_id', 'catalog_entry_id', 'kind', 'name', 'detail', 'battery', 'fields']);
+    const identity = parseVariantIdentity(value, ['catalog_entry_id']);
+    if (identity.variant_id <= previous || identity.kind !== kind) return invalidResponse();
+    previous = identity.variant_id;
+    return Object.freeze({ ...identity,
+      catalog_entry_id: integer(item.catalog_entry_id, 1, Number.MAX_SAFE_INTEGER) });
   });
   return Object.freeze({ page, page_size, total_variants, items: Object.freeze(items) });
 }

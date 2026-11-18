@@ -344,16 +344,16 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
             target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
           }
         }}><table><caption className="sr-only">Catálogo de {sourceName}</caption><thead><tr>{['Batería', 'Polaridad', 'Disponible', 'Cantidad', 'Acción'].map(text => <th key={text} scope="col">{text}</th>)}</tr></thead>
-          {groupItems(pageRows).map(group => <tbody key={group[0].catalog_entry_id} className="creation-model-group" aria-label={`${group[0].brand} · ${group[0].model} · ${group[0].capacity_ah} Ah`}>
-          <tr className="creation-model-heading"><td colSpan={5}><strong>{group[0].brand} · {group[0].model}</strong><span>{group[0].capacity_ah} Ah</span><small>{group.length} {group.length === 1 ? 'variante' : 'variantes'}</small></td></tr>
+          {groupItems(pageRows).map(group => <tbody key={group[0].catalog_entry_id} className="creation-model-group" aria-label={`${group[0].name} · ${group[0].battery.capacity_ah} Ah`}>
+          <tr className="creation-model-heading"><td colSpan={5}><strong>{group[0].name}</strong><span>{group[0].battery.capacity_ah} Ah</span><small>{group.length} {group.length === 1 ? 'variante' : 'variantes'}</small></td></tr>
           {group.map(row => {
             const selected = cart?.lines.find(line => line.item.variant_id === row.variant_id);
             return <tr key={row.variant_id}>
-            <td className="creation-product"><strong>{row.brand} · {row.model}</strong><small>{row.capacity_ah} Ah</small></td><td data-label="Polaridad"><span className="polarity">{row.polarity}</span></td><td data-label="Disponible">{row.available.toString()}{row.available === 0n && <small>Sin disponible</small>}</td>
-            <td data-label="Cantidad"><input id={`source-quantity-${row.variant_id}`} aria-label={`Cantidad ${row.model} ${row.polarity}`} inputMode="numeric" value={quantities[row.variant_id] ?? '1'} disabled={row.available === 0n} onChange={e => {
+            <td className="creation-product"><strong>{row.name}</strong><small>{row.battery.capacity_ah} Ah</small></td><td data-label="Polaridad"><span className="polarity">{row.battery.polarity}</span></td><td data-label="Disponible">{row.available.toString()}{row.available === 0n && <small>Sin disponible</small>}</td>
+            <td data-label="Cantidad"><input id={`source-quantity-${row.variant_id}`} aria-label={`Cantidad ${row.battery.model} ${row.battery.polarity}`} inputMode="numeric" value={quantities[row.variant_id] ?? '1'} disabled={row.available === 0n} onChange={e => {
               if (!guardedCart()) return;
               setQuantities(previous => ({ ...previous, [row.variant_id]: e.target.value }));
-            }} /></td><td><button type="button" disabled={row.available === 0n} aria-label={`Añadir ${row.model} ${row.polarity}`} onClick={() => {
+            }} /></td><td><button type="button" disabled={row.available === 0n} aria-label={`Añadir ${row.battery.model} ${row.battery.polarity}`} onClick={() => {
               if (!guardedCart()) return;
               if (editCart((draft, latest) => addCartItem(draft, latest, row.variant_id, quantities[row.variant_id] ?? '1'))) focusAdd(row.variant_id);
             }}>{selected ? 'Añadir más' : 'Añadir'}</button>
@@ -367,22 +367,22 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
       <aside className="creation-cart" aria-label="Carrito de transferencia"><header><h2>{direct ? 'Baterías en el envío' : 'Baterías en la solicitud'}</h2><p>{cart?.lines.length ?? 0} {cart?.lines.length === 1 ? 'variante' : 'variantes'}</p></header>
         {!cart?.lines.length && <p>Agregá baterías del catálogo de origen.</p>}
         {cart?.lines.map(line => <article key={line.item.variant_id} className="creation-cart-line">
-          <h3>{line.item.brand} · {line.item.model}</h3><p>{line.item.capacity_ah} Ah · Polaridad {line.item.polarity}</p>
+          <h3>{line.item.battery.brand} · {line.item.battery.model}</h3><p>{line.item.battery.capacity_ah} Ah · Polaridad {line.item.battery.polarity}</p>
           <p>Disponible: {line.available === null ? 'Variante ausente' : line.available.toString()}</p>
           {status?.invalid.includes(line.item.variant_id) && <p className="message" role="alert">Selección inválida: revisá la cantidad o quitá la variante. No se ajustó automáticamente.</p>}
-          <div className="creation-stepper"><button type="button" aria-label={`Reducir ${line.item.model}`} onClick={() => {
+          <div className="creation-stepper"><button type="button" aria-label={`Reducir ${line.item.battery.model}`} onClick={() => {
             if (!guardedCart()) return;
             if (line.quantity === 1n) { if (editCart((draft, latest) => removeCartItem(draft, latest, line.item.variant_id))) focusAdd(line.item.variant_id); }
             else editCart((draft, latest) => setCartQuantity(draft, latest, line.item.variant_id, line.quantity - 1n));
-          }}>−</button><input aria-label={`Cantidad seleccionada ${line.item.model}`} inputMode="numeric" value={line.quantity.toString()} onChange={e => {
+          }}>−</button><input aria-label={`Cantidad seleccionada ${line.item.battery.model}`} inputMode="numeric" value={line.quantity.toString()} onChange={e => {
             if (!guardedCart()) return;
             if (e.target.value === '0') { if (editCart((draft, latest) => removeCartItem(draft, latest, line.item.variant_id))) focusAdd(line.item.variant_id); }
             else editCart((draft, latest) => setCartQuantity(draft, latest, line.item.variant_id, e.target.value));
-          }} /><button type="button" aria-label={`Aumentar ${line.item.model}`} onClick={() => {
+          }} /><button type="button" aria-label={`Aumentar ${line.item.battery.model}`} onClick={() => {
             if (!guardedCart()) return;
             editCart((draft, latest) => setCartQuantity(draft, latest, line.item.variant_id, line.quantity + 1n));
           }}>+</button></div>
-          <button type="button" className="creation-remove" aria-label={`Quitar ${line.item.model}`} onClick={() => {
+          <button type="button" className="creation-remove" aria-label={`Quitar ${line.item.battery.model}`} onClick={() => {
             if (editCart((draft, latest) => removeCartItem(draft, latest, line.item.variant_id))) focusAdd(line.item.variant_id);
           }}>Quitar</button>
         </article>)}

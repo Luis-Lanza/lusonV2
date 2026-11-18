@@ -1,23 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Item } from './model';
-import { validSearch } from './model';
+import type { Item, Kind, VariantIdentity } from './model';
+import { batteryRows, identityOf, validSearch } from './model';
 import TransferDate from './shared/TransferDate';
 import { createStockEntryAPI, StockEntryAPIError, StockEntryDetailAPIError, StockEntryReversalAPIError } from './stockEntryAPI';
 import {
   canonicalStockEntryInput, canonicalStockEntryReversalInput, canonicalStockEntryReversalReason,
   newStockEntryOperationKey, parseStockCatalog, stockCatalogPath, stockEntryDetailErrorMessages, stockEntryErrorMessages,
   stockEntryFailureIsDefinite, stockEntryHistoryDefaultPageSize, stockEntryHistoryMaxPage, stockEntryHistoryPageSizes,
-  stockEntryHistoryUnavailable, stockEntryMaxNote, stockEntryMaxQuantity, stockEntryMaxReason,
+  stockEntryHistoryUnavailable, stockEntryKindDescriptions, stockEntryKindLabels, stockEntryKinds, stockEntryMaxNote,
+  stockEntryMaxQuantity, stockEntryMaxReason,
   stockEntryReversalErrorMessages, stockEntryReversalFailureIsDefinite, stockEntryReversible, validStockQuantity,
-  type StockEntryDetail, type StockEntryDetailErrorCode, type StockEntryErrorCode, type StockEntryHistoryPage,
-  type StockEntryHistoryRow, type StockEntryInput, type StockEntryReversalErrorCode, type StockEntryReversalInput,
+  type StockEntryDetail, type StockEntryDetailErrorCode, type StockEntryDetailLine, type StockEntryErrorCode,
+  type StockEntryHistoryPage, type StockEntryHistoryRow, type StockEntryInput, type StockEntryReversalErrorCode,
+  type StockEntryReversalInput,
 } from './stockEntryModel';
 import './stock-entry.css';
 
-interface DocumentLine {
-  readonly variant_id: number; readonly brand: string; readonly model: string;
-  readonly capacity_ah: string; readonly polarity: 'L' | 'R'; readonly quantity: string;
-}
+// One line of the draft: the identity of the picked variant plus the quantity as
+// the user typed it. Nothing battery-specific is added to a product line.
+interface DocumentLine extends VariantIdentity { readonly quantity: string }
 interface CatalogState { readonly phase: 'loading' | 'ready' | 'error'; readonly items: readonly Item[]; readonly problem: string }
 // The history is its own state: a failed read never touches the draft document.
 interface HistoryState {
@@ -40,11 +41,19 @@ export interface StockEntryProps {
   csrf: string;
   fetcher?: typeof globalThis.fetch;
 }
-const productLabel = (row: { brand: string; model: string }) => `${row.brand} · ${row.model}`;
 const catalogUnavailable = 'No se pudo consultar el catálogo del Almacén. Revisá la conexión e intentá de nuevo.';
+// A battery document keeps the columns it always had; a product document reads
+// the name and the detail the server composes from its typed fields.
+const detailBatteryLines = (lines: readonly StockEntryDetailLine[]) =>
+  lines.flatMap(line => line.battery === null ? [] : [{ line, battery: line.battery }]);
 
 export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEntryProps) {
   const api = useMemo(() => createStockEntryAPI(fetcher), [fetcher]);
+  // The document declares its kind, and the kind is chosen before any catalog or
+  // document appears: one document never mixes the two kinds.
+  const [kind, setKind] = useState<Kind | null>(null);
+  const [kindSwitch, setKindSwitch] = useState<{ next: Kind; trigger: HTMLButtonElement } | null>(null);
+  const kindDialog = useRef<HTMLElement>(null);
   const [search, setSearch] = useState('');
   const [revision, setRevision] = useState(0);
   const [catalog, setCatalog] = useState<CatalogState>({ phase: 'loading', items: [], problem: catalogUnavailable });
@@ -86,6 +95,8 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
   }, []);
 
   useEffect(() => {
+    // Nothing is read before the kind is chosen, and only that kind is read after.
+    if (kind === null) return;
     if (!validSearch(search)) {
       setCatalog({ phase: 'error', items: [], problem: 'La búsqueda admite hasta 128 bytes UTF-8, sin caracteres inválidos.' });
       return;
@@ -95,10 +106,10 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
     setCatalog({ phase: 'loading', items: [], problem: catalogUnavailable });
     void (async () => {
       try {
-        const reply = await fetcher(stockCatalogPath(search), { method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
+        const reply = await fetcher(stockCatalogPath(search, kind), { method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
         if (!alive()) return;
         if (reply.status !== 200) throw new Error('catalog status');
-        const items = parseStockCatalog(await reply.text());
+        const items = parseStockCatalog(await reply.text(), kind);
         if (!alive()) return;
         setCatalog({ phase: 'ready', items, problem: '' });
       } catch {
@@ -106,7 +117,7 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
       }
     })();
     return () => controller.abort();
-  }, [search, revision, fetcher]);
+  }, [kind, search, revision, fetcher]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -147,6 +158,34 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
   }, [api, detail, detailRevision]);
 
   function forgetAttempt() { operationKey.current = null; }
+  // A kind change is a new document: the draft of the other kind is discarded
+  // whole, and no line is ever migrated to the new kind.
+  function applyKind(next: Kind) {
+    forgetAttempt();
+    setKind(next);
+    setKindSwitch(null);
+    setSearch('');
+    setLines([]);
+    setNote('');
+    setStatus('');
+  }
+  function chooseKind(next: Kind, trigger: HTMLButtonElement) {
+    if (busy || pending.current || kindSwitch || next === kind) return;
+    // With nothing loaded the change costs nothing; a document with a line is
+    // discarded only after the deliberate confirmation.
+    if (lines.length === 0) { applyKind(next); return; }
+    setKindSwitch({ next, trigger });
+  }
+  function closeKindSwitch() {
+    const trigger = kindSwitch?.trigger;
+    setKindSwitch(null);
+    if (trigger?.isConnected) trigger.focus();
+  }
+  // Focus moves into the confirmation as soon as it exists.
+  useEffect(() => {
+    if (kindSwitch) kindDialog.current?.focus();
+  }, [kindSwitch]);
+
   function add(row: Item) {
     forgetAttempt();
     const current = lines.find(line => line.variant_id === row.variant_id);
@@ -154,12 +193,11 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
       const previous = Number(current.quantity);
       const quantity = validStockQuantity(previous) ? Math.min(previous + 1, stockEntryMaxQuantity) : 1;
       setLines(lines.map(line => line.variant_id === row.variant_id ? { ...line, quantity: String(quantity) } : line));
-      setStatus(`${productLabel(row)} ya estaba en el documento: ahora ${quantity} ${quantity === 1 ? 'unidad' : 'unidades'}.`);
+      setStatus(`${row.name} ya estaba en el documento: ahora ${quantity} ${quantity === 1 ? 'unidad' : 'unidades'}.`);
       return;
     }
-    setLines([...lines, { variant_id: row.variant_id, brand: row.brand, model: row.model,
-      capacity_ah: row.capacity_ah, polarity: row.polarity, quantity: '1' }]);
-    setStatus(`${productLabel(row)} agregado al documento.`);
+    setLines([...lines, { ...identityOf(row), quantity: '1' }]);
+    setStatus(`${row.name} agregado al documento.`);
   }
   function setQuantity(variant: number, value: string) {
     if (!/^\d{0,7}$/.test(value)) return;
@@ -321,10 +359,19 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
     if (detail) detailDialog.current?.focus();
   }, [detail]);
 
-  const catalogCount = `${catalog.items.length} ${catalog.items.length === 1 ? 'variante' : 'variantes'}`;
+  const catalogCount = kind === 'other'
+    ? `${catalog.items.length} ${catalog.items.length === 1 ? 'producto' : 'productos'}`
+    : `${catalog.items.length} ${catalog.items.length === 1 ? 'variante' : 'variantes'}`;
+  // The picker only ever holds the kind of the document, so each table reads the
+  // rows of its own shape: the battery table exactly as it is today.
+  const batteryCatalog = kind === 'battery' ? batteryRows(catalog.items) : [];
   const historyRows = history.phase === 'ready' && history.page ? history.page.entries : [];
   // A detail is only ever rendered for the document that asked for it.
   const detailView = detail && detailLoad.id === detail.row.id ? detailLoad : null;
+  const detailDocument = detailView?.phase === 'ready' ? detailView.document : null;
+  // A document is of one kind, so the detail table of a product document reads the
+  // name and the detail of every line and never invents a battery attribute.
+  const detailKind = detailDocument && detailDocument.lines.length > 0 ? detailDocument.lines[0].kind : null;
   const historyTotal = history.page ? history.page.total_entries : 0;
   const historyCount = history.phase === 'ready'
     ? `${historyTotal} ${historyTotal === 1 ? 'ingreso' : 'ingresos'}` : 'Almacén';
@@ -339,26 +386,51 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
       <h1 id="stock-entry-title">Nuevo ingreso de stock</h1>
       <p>Registrá la mercadería que entra al depósito. El stock se aplica recién al confirmar.</p>
     </header>
-    <div className="stock-entry-grid">
+    {/* The screen starts by asking what is arriving: no catalog and no document
+        exist until the kind is chosen, and one document never mixes kinds. */}
+    <div className="stock-kind-step" role="group" aria-label="Tipo de producto del ingreso">
+      {stockEntryKinds.map(option => <button type="button" key={option} className="stock-kind-choice"
+        aria-pressed={kind === option} disabled={busy}
+        onClick={event => chooseKind(option, event.currentTarget)}>
+        <span className="stock-kind-dot" aria-hidden="true" />
+        <span><strong>{stockEntryKindLabels[option]}</strong><span>{stockEntryKindDescriptions[option]}</span></span>
+      </button>)}
+    </div>
+    {kind === null && <p className="stock-hint" role="status">Elegí el tipo de producto para ver el catálogo y el documento.</p>}
+    {kind !== null && <p className="stock-kind-line">Este ingreso es de <strong>{stockEntryKindLabels[kind]}</strong>. Un documento nunca mezcla los dos tipos. {lines.length > 0 && 'Cambiar el tipo pide confirmación y descarta el borrador.'}</p>}
+    {kind !== null && <div className="stock-entry-grid">
       <section className="stock-entry-panel" aria-labelledby="stock-catalog-title" aria-busy={catalog.phase === 'loading'}>
         <div className="stock-panel-head">
           <h2 id="stock-catalog-title">Catálogo</h2>
           <span className="stock-tag">{catalog.phase === 'ready' ? catalogCount : 'Almacén'}</span>
         </div>
-        <label className="stock-search">Buscar marca, modelo o capacidad
-          <input type="search" value={search} placeholder="NS40ZL, TOYO, 45 Ah" onChange={event => setSearch(event.target.value)} />
+        <label className="stock-search">{kind === 'other' ? 'Buscar nombre o dato del producto' : 'Buscar marca, modelo o capacidad'}
+          <input type="search" value={search} placeholder={kind === 'other' ? 'Agua acidulada, 5 L' : 'NS40ZL, TOYO, 45 Ah'}
+            onChange={event => setSearch(event.target.value)} />
         </label>
         {catalog.phase === 'ready' && catalog.items.length > 0 && <div className="stock-table-wrap">
           <table className="stock-table">
-            <caption className="sr-only">Variantes del catálogo del Almacén</caption>
-            <thead><tr><th scope="col">Producto</th><th scope="col">Capacidad</th><th scope="col">Polaridad</th><th scope="col">Stock actual</th><th scope="col">Acción</th></tr></thead>
-            <tbody>{catalog.items.map(row => <tr key={row.variant_id} data-variant-id={row.variant_id}>
-              <td data-label="Producto"><strong>{productLabel(row)}</strong></td>
-              <td data-label="Capacidad">{row.capacity_ah} Ah</td>
-              <td data-label="Polaridad"><span className="polarity">{row.polarity}</span></td>
-              <td data-label="Stock actual">{row.existing.toString()}</td>
-              <td data-label="Acción"><button type="button" className="stock-add" aria-label={`Agregar ${productLabel(row)}`} onClick={() => add(row)}>Agregar</button></td>
-            </tr>)}</tbody>
+            <caption className="sr-only">{kind === 'other' ? 'Productos del catálogo del Almacén' : 'Variantes del catálogo del Almacén'}</caption>
+            {kind === 'other'
+              ? <>
+                <thead><tr><th scope="col">Producto</th><th scope="col">Detalle</th><th scope="col">Stock actual</th><th scope="col">Acción</th></tr></thead>
+                <tbody>{catalog.items.map(row => <tr key={row.variant_id} data-variant-id={row.variant_id}>
+                  <td data-label="Producto"><strong>{row.name}</strong></td>
+                  <td data-label="Detalle">{row.detail}</td>
+                  <td data-label="Stock actual">{row.existing.toString()}</td>
+                  <td data-label="Acción"><button type="button" className="stock-add" aria-label={`Agregar ${row.name}`} onClick={() => add(row)}>Agregar</button></td>
+                </tr>)}</tbody>
+              </>
+              : <>
+                <thead><tr><th scope="col">Producto</th><th scope="col">Capacidad</th><th scope="col">Polaridad</th><th scope="col">Stock actual</th><th scope="col">Acción</th></tr></thead>
+                <tbody>{batteryCatalog.map(row => <tr key={row.variant_id} data-variant-id={row.variant_id}>
+                  <td data-label="Producto"><strong>{row.name}</strong></td>
+                  <td data-label="Capacidad">{row.battery.capacity_ah} Ah</td>
+                  <td data-label="Polaridad"><span className="polarity">{row.battery.polarity}</span></td>
+                  <td data-label="Stock actual">{row.existing.toString()}</td>
+                  <td data-label="Acción"><button type="button" className="stock-add" aria-label={`Agregar ${row.name}`} onClick={() => add(row)}>Agregar</button></td>
+                </tr>)}</tbody>
+              </>}
           </table>
         </div>}
         {catalog.phase === 'loading' && <p className="stock-message" role="status">Consultando catálogo del almacén…</p>}
@@ -370,7 +442,10 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
       <section className="stock-entry-panel" aria-labelledby="stock-document-title">
         <div className="stock-panel-head">
           <div><h2 id="stock-document-title">Documento de ingreso</h2><p className="stock-hint">Se numera al confirmar.</p></div>
-          <span className="stock-tag wine">Borrador local</span>
+          <div className="stock-doc-tags">
+            <span className="stock-chip" role="note" aria-label="Tipo del documento">{kind === null ? '' : stockEntryKindLabels[kind]}</span>
+            <span className="stock-tag wine">Borrador local</span>
+          </div>
         </div>
         <label className="stock-note">Nota del documento (opcional)
           <input value={note} maxLength={stockEntryMaxNote} placeholder="Remito 0002-00045871 · Proveedor del norte"
@@ -381,11 +456,12 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
             <caption className="sr-only">Líneas que se aplican al stock</caption>
             <thead><tr><th scope="col">Producto</th><th scope="col">Cantidad</th><th scope="col">Quitar</th></tr></thead>
             <tbody>{lines.map(line => <tr key={line.variant_id}>
-              <td data-label="Producto"><strong>{productLabel(line)}</strong><small>{line.capacity_ah} Ah · Polaridad {line.polarity}</small></td>
+              <td data-label="Producto"><strong>{line.name}</strong><small>{line.battery === null
+                ? line.detail : `${line.battery.capacity_ah} Ah · Polaridad ${line.battery.polarity}`}</small></td>
               <td data-label="Cantidad"><input className="stock-quantity" type="number" inputMode="numeric" min={1} max={stockEntryMaxQuantity} step={1}
-                aria-label={`Cantidad de ${productLabel(line)}`} value={line.quantity}
+                aria-label={`Cantidad de ${line.name}`} value={line.quantity}
                 onChange={event => setQuantity(line.variant_id, event.target.value)} /></td>
-              <td data-label="Quitar"><button type="button" className="stock-remove" aria-label={`Quitar ${productLabel(line)}`} onClick={() => removeLine(line.variant_id)}>Quitar</button></td>
+              <td data-label="Quitar"><button type="button" className="stock-remove" aria-label={`Quitar ${line.name}`} onClick={() => removeLine(line.variant_id)}>Quitar</button></td>
             </tr>)}</tbody>
           </table>
         </div>}
@@ -400,7 +476,7 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
         <p role="status" className="stock-status">{status}</p>
         <p className="stock-notices">Todo o nada: si una línea es inválida no se aplica ninguna. Una vez confirmado, el documento no se edita ni se borra: se corrige con un contra-asiento que deja ambos registros.</p>
       </section>
-    </div>
+    </div>}
     <section className="stock-entry-panel stock-history" aria-labelledby="stock-history-title" aria-busy={history.phase === 'loading'}>
       <div className="stock-panel-head">
         <div><h2 id="stock-history-title">Historial de ingresos</h2>
@@ -446,6 +522,25 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
           onClick={nextHistoryPage}>Siguiente página</button>
       </div></footer>
     </section>
+    {kindSwitch && <div className="transfer-decision-backdrop"><section ref={kindDialog} tabIndex={-1}
+      className="transfer-decision-modal stock-kind-modal" role="dialog" aria-modal="true"
+      aria-labelledby="stock-kind-title" aria-describedby="stock-kind-notice"
+      onKeyDown={event => {
+        if (event.key === 'Escape') { event.preventDefault(); closeKindSwitch(); return; }
+        trapFocus(event, kindDialog.current);
+      }}>
+      <header><div><h2 id="stock-kind-title">Cambiar el tipo del ingreso</h2>
+        <p>Documento de {kind === null ? '' : stockEntryKindLabels[kind]} · {lines.length} {lines.length === 1 ? 'línea' : 'líneas'}</p></div>
+        <button type="button" aria-label="Cerrar cambio de tipo" disabled={busy} onClick={closeKindSwitch}>×</button></header>
+      <div className="stock-detail-body">
+        <p id="stock-kind-notice" className="stock-hint">Un documento nunca mezcla los dos tipos. Si cambiás a
+          {' '}<strong>{stockEntryKindLabels[kindSwitch.next]}</strong>, se descarta el borrador completo: las líneas
+          cargadas no se convierten ni se migran.</p>
+      </div>
+      <footer><button type="button" disabled={busy} onClick={closeKindSwitch}>Cancelar</button>
+        <button type="button" className="primary" disabled={busy}
+          onClick={() => applyKind(kindSwitch.next)}>Descartar borrador y cambiar tipo</button></footer>
+    </section></div>}
     {reversal && <div className="transfer-decision-backdrop"><section ref={reversalDialog} tabIndex={-1}
       className="transfer-decision-modal stock-reversal-modal" role="dialog" aria-modal="true"
       aria-labelledby="stock-reversal-title" aria-describedby="stock-reversal-notice" aria-busy={reversalBusy}
@@ -506,16 +601,26 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
               <div><dt>Motivo</dt><dd>{detailView.document.reason}</dd></div>}
           </dl>
           <div className="stock-table-wrap">
-            <table className="stock-table stock-detail-table">
-              <caption className="sr-only">Unidades que entraron con este documento</caption>
-              <thead><tr><th scope="col">Producto</th><th scope="col">Capacidad</th><th scope="col">Polaridad</th><th scope="col">Cantidad</th></tr></thead>
-              <tbody>{detailView.document.lines.map(line => <tr key={line.variant_id} data-variant-id={line.variant_id}>
-                <td data-label="Producto"><strong>{productLabel(line)}</strong></td>
-                <td data-label="Capacidad">{line.capacity_ah} Ah</td>
-                <td data-label="Polaridad"><span className="polarity">{line.polarity}</span></td>
-                <td data-label="Cantidad">{line.quantity}</td>
-              </tr>)}</tbody>
-            </table>
+            {detailKind === 'other'
+              ? <table className="stock-table stock-detail-table">
+                <caption className="sr-only">Unidades que entraron con este documento</caption>
+                <thead><tr><th scope="col">Producto</th><th scope="col">Detalle</th><th scope="col">Cantidad</th></tr></thead>
+                <tbody>{detailView.document.lines.map(line => <tr key={line.variant_id} data-variant-id={line.variant_id}>
+                  <td data-label="Producto"><strong>{line.name}</strong></td>
+                  <td data-label="Detalle">{line.detail}</td>
+                  <td data-label="Cantidad">{line.quantity}</td>
+                </tr>)}</tbody>
+              </table>
+              : <table className="stock-table stock-detail-table">
+                <caption className="sr-only">Unidades que entraron con este documento</caption>
+                <thead><tr><th scope="col">Producto</th><th scope="col">Capacidad</th><th scope="col">Polaridad</th><th scope="col">Cantidad</th></tr></thead>
+                <tbody>{detailBatteryLines(detailView.document.lines).map(({ line, battery }) => <tr key={line.variant_id} data-variant-id={line.variant_id}>
+                  <td data-label="Producto"><strong>{line.name}</strong></td>
+                  <td data-label="Capacidad">{battery.capacity_ah} Ah</td>
+                  <td data-label="Polaridad"><span className="polarity">{battery.polarity}</span></td>
+                  <td data-label="Cantidad">{line.quantity}</td>
+                </tr>)}</tbody>
+              </table>}
           </div>
           <p className="stock-detail-total">{`Unidades del documento: ${detailView.document.total_units}`}</p>
           <p className="stock-hint">Un documento confirmado no se edita ni se borra: estas son las líneas que se aplicaron al stock del Almacén.</p>

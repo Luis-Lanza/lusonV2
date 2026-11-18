@@ -1,9 +1,11 @@
-import type { Item } from './model';
+import type { Battery } from './model';
 import type { TransferAuthority } from './useInventory';
 import type { SourceCatalog } from './sourceInventory';
 import { canonicalTransferInput, newTransferRetryKey, transferDirection, transferFlow, validTransferLocation, type TransferCreateInput, type TransferDirection, type TransferFlow, type TransferLocationID } from './transferModel';
 
-export type CartDescriptor = Readonly<Pick<Item, 'variant_id' | 'catalog_entry_id' | 'brand' | 'model' | 'capacity_ah' | 'polarity'>>;
+// A transfer moves batteries, so the cart keeps the battery descriptor of the row
+// it selected: the entry it belongs to and the attributes its labels are made of.
+export type CartDescriptor = Readonly<{ variant_id: number; catalog_entry_id: number; battery: Readonly<Battery> }>;
 export interface CartRestoration {
   readonly epoch: number; readonly attempt: TransferCreateInput; readonly direction: Readonly<TransferDirection>;
   readonly items: readonly (CartDescriptor & { readonly quantity: string })[];
@@ -32,6 +34,14 @@ function usable(cart: TransferCart, authority: TransferAuthority): boolean {
   } catch { return false; }
 }
 function guard(cart: TransferCart, authority: TransferAuthority) { if (!usable(cart, authority)) invalid(); }
+function sameDescriptor(left: CartDescriptor, right: CartDescriptor): boolean {
+  return left.variant_id === right.variant_id && left.catalog_entry_id === right.catalog_entry_id
+    && left.battery.brand === right.battery.brand && left.battery.model === right.battery.model
+    && left.battery.capacity_ah === right.battery.capacity_ah && left.battery.polarity === right.battery.polarity;
+}
+function descriptor(item: { variant_id: number; catalog_entry_id: number; battery: Readonly<Battery> }): CartDescriptor {
+  return Object.freeze({ variant_id: item.variant_id, catalog_entry_id: item.catalog_entry_id, battery: Object.freeze({ ...item.battery }) });
+}
 function quantity(input: CartQuantity): bigint {
   if (typeof input !== 'string' && typeof input !== 'bigint') return invalid();
   const text = String(input);
@@ -76,7 +86,8 @@ export function restoreTransferCart(authority: TransferAuthority, catalog: Sourc
     if (!Array.isArray(snapshot.items) || snapshot.items.length !== attempt.items.length) return invalid();
     const seen = new Set<number>();
     const lines = snapshot.items.map(selected => {
-      const { variant_id, catalog_entry_id, brand, model, capacity_ah, polarity } = selected;
+      const { variant_id, catalog_entry_id, battery, quantity: requestedQuantity } = selected;
+      const { brand, model, capacity_ah, polarity } = battery;
       const validText = (s: string) => typeof s === 'string' && !!s && !s.includes('\0') && s.isWellFormed();
       if (!Number.isInteger(variant_id) || variant_id < 1 || variant_id > 2_147_483_647 || seen.has(variant_id)
         || !Number.isInteger(catalog_entry_id) || catalog_entry_id < 1 || catalog_entry_id > 2_147_483_647
@@ -85,11 +96,11 @@ export function restoreTransferCart(authority: TransferAuthority, catalog: Sourc
         || (polarity !== 'L' && polarity !== 'R')) return invalid();
       seen.add(variant_id);
       const requested = attempt.items.find(line => line.variant_id === variant_id);
-      if (!requested || typeof selected.quantity !== 'string' || selected.quantity !== requested.quantity) return invalid();
-      const item = Object.freeze({ variant_id, catalog_entry_id, brand, model, capacity_ah, polarity });
+      if (!requested || typeof requestedQuantity !== 'string' || requestedQuantity !== requested.quantity) return invalid();
+      const item = descriptor({ variant_id, catalog_entry_id, battery: { brand, model, capacity_ah, polarity } });
       const row = copied.rows.find(v => v.variant_id === variant_id);
-      if (row && Object.keys(item).some(k => item[k as keyof CartDescriptor] !== row[k as keyof CartDescriptor])) return invalid();
-      return Object.freeze({ item, quantity: quantity(selected.quantity), available: row?.available ?? null });
+      if (row && (!row.battery || !sameDescriptor(item, descriptor({ ...row, battery: row.battery })))) return invalid();
+      return Object.freeze({ item, quantity: quantity(requestedQuantity), available: row?.available ?? null });
     });
     return Object.freeze({ ...current, direction, catalog: copied, lines: Object.freeze(lines), attempt });
   } catch { return invalid(); }
@@ -107,9 +118,9 @@ export function setCartQuantity(cart: TransferCart, authority: TransferAuthority
   const previous = cart.lines.find(line => line.item.variant_id === id);
   // A no-op must not discard a known uncertain attempt after guidance changes.
   if (previous?.quantity === exact) return cart;
-  const item = cart.catalog.rows.find(row => row.variant_id === id);
-  if (!item || exact > item.available || (!previous && cart.lines.length >= 190)) return invalid();
-  const line = Object.freeze({ item, quantity: exact, available: item.available });
+  const row = cart.catalog.rows.find(row => row.variant_id === id);
+  if (!row?.battery || exact > row.available || (!previous && cart.lines.length >= 190)) return invalid();
+  const line = Object.freeze({ item: descriptor({ ...row, battery: row.battery }), quantity: exact, available: row.available });
   return withLines(cart, previous ? cart.lines.map(old => old.item.variant_id === id ? line : old) : [...cart.lines, line]);
 }
 export function addCartItem(cart: TransferCart, authority: TransferAuthority, id: number, input: CartQuantity): TransferCart {
@@ -131,8 +142,9 @@ export function refreshCart(cart: TransferCart, authority: TransferAuthority, ca
   guard(cart, authority);
   const copied = copyCatalog(catalog, cart.direction.origin_location_id);
   const lines = cart.lines.map(line => {
-    const item = copied.rows.find(row => row.variant_id === line.item.variant_id);
-    return Object.freeze({ item: item ?? line.item, quantity: line.quantity, available: item?.available ?? null });
+    const row = copied.rows.find(row => row.variant_id === line.item.variant_id);
+    return Object.freeze({ item: row?.battery ? descriptor({ ...row, battery: row.battery }) : line.item,
+      quantity: line.quantity, available: row?.available ?? null });
   });
   // Availability/descriptors are guidance only, not material request edits.
   return withLines(Object.freeze({ ...cart, catalog: copied }), lines, cart.attempt);

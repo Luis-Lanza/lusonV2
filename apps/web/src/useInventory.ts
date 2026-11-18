@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { initialQuery, parseInventory, parseMetadata, parseSession, queryURL, validSearch } from './model';
+import { initialQuery, parseInventory, parseMetadata, parseSession, queryURL, validSearch, warehouseIdentity } from './model';
 import type { Inventory, Metadata, Query, Session } from './model';
 import { useRealtime } from './useRealtime';
 import type { Recovery } from './useRealtime';
@@ -81,6 +81,12 @@ export interface SourceInventoryController {
 }
 
 export type Controller = ReturnType<typeof useInventory>;
+// Both kinds are a property of the listed location, never of the account: only the
+// warehouse listing reads them, so a warehouse account consulting a branch keeps
+// the battery-only listing that branch has.
+function listedQuery(query: Query): Query {
+  return query.location === 1 ? query : { ...query, kind: undefined };
+}
 export function useInventory() {
   const [decisionRecovery] = useState(createTransferDecisionRecovery);
   const [dispatchRecovery] = useState(createTransferDispatchRecovery);
@@ -206,7 +212,9 @@ export function useInventory() {
   function initial(next: Session) {
     csrf.current = next.csrf_token; authorityState.current.session = next; setSession(next);
     if (next.authenticated && next.identity.must_change_password === false) {
-      setQuery(initialQuery(next.identity.location.id));
+      // The stock screen lists both kinds at once only for the warehouse; a branch
+      // keeps the battery-only read, so it never lists a product at zero balance.
+      setQuery(initialQuery(next.identity.location.id, warehouseIdentity(next.identity) ? 'all' : undefined));
       setJob(previous => ({ sequence: previous.sequence + 1, reason: 'initial', full: true }));
     }
   }
@@ -456,7 +464,7 @@ export function useInventory() {
           change({ location: session.identity.location.id });
           return;
         }
-        const next = parseInventory(await (await request(queryURL(query), { signal: controller.signal }, 200, passive)).text());
+        const next = parseInventory(await (await request(queryURL(listedQuery(query)), { signal: controller.signal }, 200, passive)).text());
         if (!current(auth, read)) return;
         if (next.location.id !== query.location || next.page !== query.page || next.page_size !== query.size) throw new Error('Respuesta inválida del servidor.');
         if (!pending.dirty) {

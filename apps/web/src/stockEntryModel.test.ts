@@ -27,7 +27,9 @@ const recordJSON = (overrides: Record<string, unknown> = {}) => JSON.stringify({
 });
 const catalogJSON = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   location: { id: 1, name: 'Almacén' },
-  items: [{ variant_id: 4, catalog_entry_id: 2, brand: 'TOYO', model: 'NS40ZL', capacity_ah: 35, polarity: 'L', existing: 14, reserved: 0, available: 14 }],
+  items: [{ variant_id: 4, catalog_entry_id: 2, kind: 'battery', name: 'TOYO · NS40ZL', detail: '35 Ah · L',
+    battery: { brand: 'TOYO', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' }, fields: null,
+    existing: 14, reserved: 0, available: 14 }],
   page: 1, page_size: 50, total_variants: 1, ...overrides,
 });
 
@@ -263,20 +265,48 @@ describe('stock ingress history read contract', () => {
   });
 });
 
+const productRowJSON = (overrides: Record<string, unknown> = {}) => ({
+  variant_id: 210, catalog_entry_id: 97, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L',
+  battery: null, fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }],
+  existing: 8, reserved: 0, available: 8, ...overrides });
+const productCatalogJSON = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+  location: { id: 1, name: 'Almacén' }, items: [productRowJSON()], page: 1, page_size: 50, total_variants: 1, ...overrides });
+
 describe('stock catalog read contract', () => {
-  it('reuses the inventory query with the warehouse, first page and fifty rows', () => {
-    expect(stockCatalogPath('')).toBe('/api/inventory?location_id=1&page=1&page_size=50');
-    expect(stockCatalogPath('NS40ZL')).toBe('/api/inventory?location_id=1&page=1&page_size=50&search=NS40ZL');
+  it('reuses the inventory query with the warehouse, the document kind, first page and fifty rows', () => {
+    expect(stockCatalogPath('', 'battery')).toBe('/api/inventory?location_id=1&page=1&page_size=50&kind=battery');
+    expect(stockCatalogPath('NS40ZL', 'battery')).toBe('/api/inventory?location_id=1&page=1&page_size=50&kind=battery&search=NS40ZL');
+    expect(stockCatalogPath('', 'other')).toBe('/api/inventory?location_id=1&page=1&page_size=50&kind=other');
+    expect(stockCatalogPath('Agua acidulada', 'other')).toBe('/api/inventory?location_id=1&page=1&page_size=50&kind=other&search=Agua+acidulada');
   });
 
-  it('parses the existing inventory payload and refuses another location, page or size', () => {
-    const items = parseStockCatalog(catalogJSON());
+  it('parses the existing inventory payload of the document kind and refuses another location, page or size', () => {
+    const items = parseStockCatalog(catalogJSON(), 'battery');
     expect(items).toHaveLength(1);
-    expect(items[0]).toMatchObject({ variant_id: 4, brand: 'TOYO', model: 'NS40ZL', capacity_ah: '35', existing: 14n });
+    expect(items[0]).toMatchObject({ variant_id: 4, catalog_entry_id: 2, existing: 14n,
+      battery: { brand: 'TOYO', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' } });
     expect(Object.isFrozen(items)).toBe(true);
-    expect(() => parseStockCatalog(catalogJSON({ location: { id: 2, name: 'Sucursal A' } }))).toThrow('Respuesta inválida del servidor.');
-    expect(() => parseStockCatalog(catalogJSON({ page: 2 }))).toThrow('Respuesta inválida del servidor.');
-    expect(() => parseStockCatalog(catalogJSON({ page_size: 10 }))).toThrow('Respuesta inválida del servidor.');
+    expect(() => parseStockCatalog(catalogJSON({ location: { id: 2, name: 'Sucursal A' } }), 'battery')).toThrow('Respuesta inválida del servidor.');
+    expect(() => parseStockCatalog(catalogJSON({ page: 2 }), 'battery')).toThrow('Respuesta inválida del servidor.');
+    expect(() => parseStockCatalog(catalogJSON({ page_size: 10 }), 'battery')).toThrow('Respuesta inválida del servidor.');
+  });
+
+  it('parses the product catalog with the name, the detail and the typed fields of every row', () => {
+    const rows = parseStockCatalog(productCatalogJSON(), 'other');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({ variant_id: 210, catalog_entry_id: 97, kind: 'other', name: 'Agua acidulada',
+      detail: 'volumen en L: 5 L', battery: null,
+      fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }],
+      existing: 8n, reserved: 0n, available: 8n });
+    expect(Object.isFrozen(rows[0])).toBe(true);
+  });
+
+  it.each([
+    ['a battery row in the product catalog', productCatalogJSON({ items: [JSON.parse(catalogJSON()).items[0]] })],
+    ['a product row in the battery catalog', catalogJSON({ items: [productRowJSON()] })],
+  ])('refuses %s: the catalog answers the document kind only', (_, raw) => {
+    expect(() => parseStockCatalog(raw, raw === productCatalogJSON({ items: [JSON.parse(catalogJSON()).items[0]] }) ? 'other' : 'battery'))
+      .toThrow('Respuesta inválida del servidor.');
   });
 });
 
@@ -397,12 +427,19 @@ describe('stock counter-entry contract', () => {
 });
 
 describe('stock ingress detail contract', () => {
-  const detailLine = (overrides: Record<string, unknown> = {}) => ({
-    variant_id: 7, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L', quantity: 18, ...overrides });
+  // One line is the catalogue identity of its own kind plus the document quantity.
+  const batteryLine = (overrides: Record<string, unknown> = {}) => ({
+    variant_id: 7, kind: 'battery', name: 'TOYO · NS60L', detail: '45 Ah · L',
+    battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L' }, fields: null,
+    quantity: 18, ...overrides });
+  const productLine = (overrides: Record<string, unknown> = {}) => ({
+    variant_id: 7, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L',
+    battery: null, fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }],
+    quantity: 18, ...overrides });
   const detailJSON = (overrides: Record<string, unknown> = {}) => JSON.stringify({
     id: 6, location_id: 1, note: 'Remito 0002-00045871', created_at: '2026-11-04T14:20:00Z',
     created_by_account_id: 1, reverses_entry_id: null, reversed_by: null, reason: '',
-    lines: [detailLine()], total_units: 18, ...overrides });
+    lines: [batteryLine()], total_units: 18, ...overrides });
 
   it('builds the frozen detail path and admits only a canonical document id', () => {
     expect(stockEntryDetailPath(6)).toBe('/api/stock-entries/6');
@@ -412,20 +449,32 @@ describe('stock ingress detail contract', () => {
     }
   });
 
-  it('parses the exact units of one document with its catalogue identity', () => {
+  it('parses the exact units of one document with the catalogue identity of every line', () => {
     const detail = parseStockEntryDetail(detailJSON({
-      lines: [detailLine({ variant_id: 7, quantity: 3 }), detailLine({ variant_id: 9, quantity: 15 })],
+      lines: [batteryLine({ variant_id: 7, quantity: 3 }), batteryLine({ variant_id: 9, quantity: 15 })],
       total_units: 18,
     }));
     expect(detail).toEqual({ id: 6, location_id: 1, note: 'Remito 0002-00045871',
       created_at: '2026-11-04T14:20:00Z', created_by_account_id: 1, reverses_entry_id: null,
       reversed_by: null, reason: '',
       lines: [
-        { variant_id: 7, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L', quantity: 3 },
-        { variant_id: 9, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L', quantity: 15 },
+        { variant_id: 7, kind: 'battery', name: 'TOYO · NS60L', detail: '45 Ah · L',
+          battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L' }, fields: null, quantity: 3 },
+        { variant_id: 9, kind: 'battery', name: 'TOYO · NS60L', detail: '45 Ah · L',
+          battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L' }, fields: null, quantity: 15 },
       ], total_units: 18 });
     expect(Object.isFrozen(detail)).toBe(true);
     expect(Object.isFrozen(detail.lines)).toBe(true);
+    expect(Object.isFrozen(detail.lines[0])).toBe(true);
+  });
+
+  // A document is of one kind, so its lines read the identity union: a product
+  // line is labelled without inventing a battery attribute.
+  it('parses a product line as its product identity, without a battery', () => {
+    const detail = parseStockEntryDetail(detailJSON({ lines: [productLine({ quantity: 5 })], total_units: 5 }));
+    expect(detail.lines).toEqual([{ variant_id: 7, kind: 'other', name: 'Agua acidulada',
+      detail: 'volumen en L: 5 L', battery: null,
+      fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }], quantity: 5 }]);
     expect(Object.isFrozen(detail.lines[0])).toBe(true);
   });
 
@@ -434,20 +483,21 @@ describe('stock ingress detail contract', () => {
     expect(reversed.reversed_by).toBe(10);
     expect(reversed.reverses_entry_id).toBeNull();
     const counter = parseStockEntryDetail(detailJSON({ id: 10, note: '', reverses_entry_id: 6,
-      reason: 'error de carga', lines: [detailLine({ quantity: -18 })], total_units: -18 }));
+      reason: 'error de carga', lines: [batteryLine({ quantity: -18 })], total_units: -18 }));
     expect(counter).toMatchObject({ id: 10, reverses_entry_id: 6, reversed_by: null,
       reason: 'error de carga', note: '', total_units: -18 });
     expect(counter.lines.map(line => line.quantity)).toEqual([-18]);
   });
 
   it('keeps a fractional capacity as its exact decimal text', () => {
-    expect(parseStockEntryDetail(detailJSON({ lines: [detailLine({ capacity_ah: '6.5' })] })).lines[0].capacity_ah).toBe('6.5');
+    const capacity = { brand: 'TOYO', model: 'NS60L', capacity_ah: '6.5', polarity: 'L' };
+    expect(parseStockEntryDetail(detailJSON({ lines: [batteryLine({ battery: capacity })] })).lines[0].battery).toEqual(capacity);
   });
 
   it.each([
     ['an extra header field', detailJSON({ location_name: 'Almacén' })],
     ['a missing header field', JSON.stringify({ id: 6, location_id: 1, note: '', created_at: '2026-11-04T14:20:00Z',
-      created_by_account_id: 1, reverses_entry_id: null, reason: '', lines: [detailLine()], total_units: 18 })],
+      created_by_account_id: 1, reverses_entry_id: null, reason: '', lines: [batteryLine()], total_units: 18 })],
     ['a zero document id', detailJSON({ id: 0 })],
     ['an unsafe document id', detailJSON({ id: 9007199254740992 })],
     ['a document of another location', detailJSON({ location_id: 2 })],
@@ -455,37 +505,45 @@ describe('stock ingress detail contract', () => {
     ['a note over 500 characters', detailJSON({ note: 'n'.repeat(501) })],
     ['an impossible date', detailJSON({ created_at: '2026-02-31T00:00:00Z' })],
     ['an unknown actor', detailJSON({ created_by_account_id: 0 })],
-    ['an extra line field', detailJSON({ lines: [detailLine({ catalog_entry_id: 2 })] })],
-    ['a missing line field', detailJSON({ lines: [{ variant_id: 7, brand: 'TOYO', model: 'NS60L', capacity_ah: '45', quantity: 18 }] })],
-    ['a numeric capacity', detailJSON({ lines: [detailLine({ capacity_ah: 45 })] })],
-    ['a padded capacity', detailJSON({ lines: [detailLine({ capacity_ah: '045' })] })],
-    ['a capacity with trailing zeros', detailJSON({ lines: [detailLine({ capacity_ah: '45.000' })] })],
-    ['a zero capacity', detailJSON({ lines: [detailLine({ capacity_ah: '0' })] })],
-    ['an empty brand', detailJSON({ lines: [detailLine({ brand: '' })] })],
-    ['an unknown polarity', detailJSON({ lines: [detailLine({ polarity: 'X' })] })],
-    ['a zero quantity', detailJSON({ lines: [detailLine({ quantity: 0 })] })],
-    ['a fractional quantity', detailJSON({ lines: [detailLine({ quantity: 1.5 })] })],
-    ['an exponent quantity', '{"id":6,"location_id":1,"note":"","created_at":"2026-11-04T14:20:00Z","created_by_account_id":1,"reverses_entry_id":null,"reversed_by":null,"reason":"","lines":[{"variant_id":7,"brand":"TOYO","model":"NS60L","capacity_ah":"45","polarity":"L","quantity":1e3}],"total_units":1000}'],
-    ['a quantity above one document line', detailJSON({ lines: [detailLine({ quantity: 1000001 })], total_units: 1000001 })],
-    ['a negative line on an ingress document', detailJSON({ lines: [detailLine({ quantity: -18 })], total_units: -18 })],
-    ['lines out of order', detailJSON({ lines: [detailLine({ variant_id: 9 }), detailLine({ variant_id: 7 })], total_units: 36 })],
-    ['a repeated line', detailJSON({ lines: [detailLine(), detailLine()], total_units: 36 })],
+    ['an extra line field', detailJSON({ lines: [batteryLine({ catalog_entry_id: 2 })] })],
+    ['a missing line field', detailJSON({ lines: [{ variant_id: 7, kind: 'battery', name: 'TOYO · NS60L',
+      detail: '45 Ah · L', battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L' }, quantity: 18 }] })],
+    ['an unknown line kind', detailJSON({ lines: [batteryLine({ kind: 'gift' })] })],
+    ['an empty line name', detailJSON({ lines: [batteryLine({ name: '' })] })],
+    ['an empty line detail', detailJSON({ lines: [productLine({ detail: '' })] })],
+    ['a battery line carrying typed fields', detailJSON({ lines: [batteryLine({ fields: [] })] })],
+    ['a product line carrying a battery', detailJSON({ lines: [productLine({ battery: { brand: 'TOYO',
+      model: 'NS60L', capacity_ah: '45', polarity: 'L' } })] })],
+    ['a product line without its field list', detailJSON({ lines: [productLine({ fields: null })] })],
+    ['a numeric capacity', detailJSON({ lines: [batteryLine({ battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: 45, polarity: 'L' } })] })],
+    ['a padded capacity', detailJSON({ lines: [batteryLine({ battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '045', polarity: 'L' } })] })],
+    ['a capacity with trailing zeros', detailJSON({ lines: [batteryLine({ battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45.000', polarity: 'L' } })] })],
+    ['a zero capacity', detailJSON({ lines: [batteryLine({ battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '0', polarity: 'L' } })] })],
+    ['an empty brand', detailJSON({ lines: [batteryLine({ battery: { brand: '', model: 'NS60L', capacity_ah: '45', polarity: 'L' } })] })],
+    ['an unknown polarity', detailJSON({ lines: [batteryLine({ battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'X' } })] })],
+    ['a zero quantity', detailJSON({ lines: [batteryLine({ quantity: 0 })] })],
+    ['a fractional quantity', detailJSON({ lines: [batteryLine({ quantity: 1.5 })] })],
+    ['an exponent quantity', '{"id":6,"location_id":1,"note":"","created_at":"2026-11-04T14:20:00Z","created_by_account_id":1,"reverses_entry_id":null,"reversed_by":null,"reason":"","lines":[{"variant_id":7,"kind":"battery","name":"TOYO · NS60L","detail":"45 Ah · L","battery":{"brand":"TOYO","model":"NS60L","capacity_ah":"45","polarity":"L"},"fields":null,"quantity":1e3}],"total_units":1000}'],
+    ['a quantity above one document line', detailJSON({ lines: [batteryLine({ quantity: 1000001 })], total_units: 1000001 })],
+    ['a negative line on an ingress document', detailJSON({ lines: [batteryLine({ quantity: -18 })], total_units: -18 })],
+    ['lines out of order', detailJSON({ lines: [batteryLine({ variant_id: 9 }), batteryLine({ variant_id: 7 })], total_units: 36 })],
+    ['a repeated line', detailJSON({ lines: [batteryLine(), batteryLine()], total_units: 36 })],
     ['no lines', detailJSON({ lines: [], total_units: 0 })],
     ['a total that does not add up', detailJSON({ total_units: 19 })],
-    ['a counter-entry without a motive', detailJSON({ reverses_entry_id: 5, note: '', lines: [detailLine({ quantity: -18 })], total_units: -18 })],
+    ['a counter-entry without a motive', detailJSON({ reverses_entry_id: 5, note: '', lines: [batteryLine({ quantity: -18 })], total_units: -18 })],
     ['an original document with a motive', detailJSON({ reason: 'error de carga' })],
     ['a padded motive', detailJSON({ reverses_entry_id: 5, note: '', reason: ' error de carga ',
-      lines: [detailLine({ quantity: -18 })], total_units: -18 })],
+      lines: [batteryLine({ quantity: -18 })], total_units: -18 })],
     ['a motive over 500 characters', detailJSON({ reverses_entry_id: 5, note: '', reason: 'ñ'.repeat(501),
-      lines: [detailLine({ quantity: -18 })], total_units: -18 })],
-    ['a counter-entry of itself', detailJSON({ id: 6, reverses_entry_id: 6, note: '', lines: [detailLine({ quantity: -18 })], total_units: -18 })],
-    ['a counter-entry of a later document', detailJSON({ reverses_entry_id: 9, note: '', lines: [detailLine({ quantity: -18 })], total_units: -18 })],
+      lines: [batteryLine({ quantity: -18 })], total_units: -18 })],
+    ['a counter-entry of itself', detailJSON({ id: 6, reverses_entry_id: 6, note: '', lines: [batteryLine({ quantity: -18 })], total_units: -18 })],
+    ['a counter-entry of a later document', detailJSON({ reverses_entry_id: 9, note: '', lines: [batteryLine({ quantity: -18 })], total_units: -18 })],
     ['a reverse entry id of zero', detailJSON({ reverses_entry_id: 0 })],
-    ['a positive line on a counter-entry', detailJSON({ reverses_entry_id: 5, note: '', reason: 'error de carga', lines: [detailLine({ quantity: 18 })] })],
+    ['a positive line on a counter-entry', detailJSON({ reverses_entry_id: 5, note: '', reason: 'error de carga', lines: [batteryLine({ quantity: 18 })] })],
     ['a reversal of itself', detailJSON({ reversed_by: 6 })],
     ['a reversal of an earlier document', detailJSON({ reversed_by: 5 })],
     ['a zero reversal id', detailJSON({ reversed_by: 0 })],
-    ['a duplicated JSON key', '{"id":6,"id":7,"location_id":1,"note":"","created_at":"2026-11-04T14:20:00Z","created_by_account_id":1,"reverses_entry_id":null,"reversed_by":null,"reason":"","lines":[{"variant_id":7,"brand":"TOYO","model":"NS60L","capacity_ah":"45","polarity":"L","quantity":18}],"total_units":18}'],
+    ['a duplicated JSON key', '{"id":6,"id":7,"location_id":1,"note":"","created_at":"2026-11-04T14:20:00Z","created_by_account_id":1,"reverses_entry_id":null,"reversed_by":null,"reason":"","lines":[{"variant_id":7,"kind":"battery","name":"TOYO · NS60L","detail":"45 Ah · L","battery":{"brand":"TOYO","model":"NS60L","capacity_ah":"45","polarity":"L"},"fields":null,"quantity":18}],"total_units":18}'],
     ['a non JSON body', '<html>proxy</html>'],
   ])('rejects %s', (_, raw) => {
     expect(() => parseStockEntryDetail(raw)).toThrow('Respuesta inválida del servidor.');

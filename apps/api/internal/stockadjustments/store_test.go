@@ -2,6 +2,7 @@ package stockadjustments_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -77,6 +78,41 @@ func balances(t *testing.T, ctx context.Context, p *pgxpool.Pool, location, vari
 		t.Fatal("balance read failed")
 	}
 	return existing, reserved
+}
+
+// identityOf is the persisted identity of one variant, read straight from the
+// database, so a detail read is compared with the ledger instead of itself.
+func identityOf(t *testing.T, ctx context.Context, p *pgxpool.Pool, variant int64) catalog.Identity {
+	t.Helper()
+	var row catalog.Row
+	var capacity *string
+	err := p.QueryRow(ctx, `SELECT v.id,e.id,e.kind,coalesce(e.brand,''),coalesce(e.model,''),
+  e.capacity_ah::text,coalesce(v.polarity,''),coalesce(e.name,'')
+ FROM catalog_variants v JOIN catalog_entries e ON e.id=v.catalog_entry_id WHERE v.id=$1`, int32(variant)).Scan(
+		&row.VariantID, &row.CatalogEntryID, &row.Kind, &row.Brand, &row.Model, &capacity, &row.Polarity, &row.Name)
+	if err != nil {
+		t.Fatal("catalogue identity read failed")
+	}
+	if capacity != nil {
+		row.Capacity = *capacity
+	}
+	known, err := catalog.ReadFields(ctx, p, []int32{int32(row.CatalogEntryID)})
+	if err != nil {
+		t.Fatal("persisted fields are not readable")
+	}
+	identity, err := row.Identity(known[row.CatalogEntryID])
+	if err != nil {
+		t.Fatalf("persisted identity of variant %d is not readable: %v", variant, err)
+	}
+	return identity
+}
+
+// sameIdentity compares two identities as the wire spells them.
+func sameIdentity(t *testing.T, got, want catalog.Identity) bool {
+	t.Helper()
+	gotJSON, gotErr := json.Marshal(got)
+	wantJSON, wantErr := json.Marshal(want)
+	return gotErr == nil && wantErr == nil && string(gotJSON) == string(wantJSON)
 }
 
 // setBalance is test-owned ledger state: the stock a counter is supposed to find.
@@ -624,20 +660,15 @@ func readDetail(t *testing.T, ctx context.Context, s *stockadjustments.Store, id
 	return detail
 }
 
-// catalogueOf is the catalogue identity of one variant as the database holds it.
-func catalogueOf(t *testing.T, ctx context.Context, p *pgxpool.Pool, variant int64) (entry int64, brand, model string, capacity catalog.Decimal, polarity string) {
+// catalogueEntry is the persisted catalogue entry of one variant.
+func catalogueEntry(t *testing.T, ctx context.Context, p *pgxpool.Pool, variant int64) int64 {
 	t.Helper()
-	var raw string
-	err := p.QueryRow(ctx, `SELECT e.id,e.brand,e.model,e.capacity_ah::text,v.polarity
- FROM catalog_variants v JOIN catalog_entries e ON e.id=v.catalog_entry_id WHERE v.id=$1`, int32(variant)).Scan(&entry, &brand, &model, &raw, &polarity)
-	if err != nil {
+	var entry int64
+	if err := p.QueryRow(ctx, `SELECT e.id FROM catalog_variants v
+ JOIN catalog_entries e ON e.id=v.catalog_entry_id WHERE v.id=$1`, int32(variant)).Scan(&entry); err != nil {
 		t.Fatal("catalogue identity read failed")
 	}
-	capacity, err = catalog.ParseDecimal(raw)
-	if err != nil {
-		t.Fatal("catalogue capacity is not a canonical decimal")
-	}
-	return entry, brand, model, capacity, polarity
+	return entry
 }
 
 func TestReadDetail(t *testing.T) {
@@ -662,22 +693,22 @@ func TestReadDetail(t *testing.T) {
 	}
 	// Lines are ordered by variant id, never by insertion order, and the
 	// difference is derived from the two persisted facts.
-	want := []stockadjustments.DetailLine{
-		{VariantID: 4, Expected: 15, Counted: 18, Difference: 3},
-		{VariantID: 9, Expected: 15, Counted: 11, Difference: -4},
+	want := []struct{ variant, expected, counted, difference int64 }{
+		{4, 15, 18, 3},
+		{9, 15, 11, -4},
 	}
 	for i, line := range detail.Lines {
-		if line.VariantID != want[i].VariantID || line.Expected != want[i].Expected ||
-			line.Counted != want[i].Counted || line.Difference != want[i].Difference {
+		if int64(line.VariantID) != want[i].variant || line.Expected != want[i].expected ||
+			line.Counted != want[i].counted || line.Difference != want[i].difference {
 			t.Fatalf("line %d is not the persisted expected/counted/difference triple: %+v", i, line)
 		}
-		entry, brand, model, capacity, polarity := catalogueOf(t, ctx, p, line.VariantID)
-		if line.CatalogEntryID != entry || line.Brand != brand || line.Model != model ||
-			line.Capacity != capacity || line.Polarity != polarity {
+		identity := identityOf(t, ctx, p, int64(line.VariantID))
+		if !sameIdentity(t, line.Identity, identity) || line.Identity.Valid() != nil {
 			t.Fatalf("line %d does not carry its catalogue identity: %+v", line.VariantID, line)
 		}
-		if line.Brand == "" || line.Model == "" || line.Capacity == "" || (line.Polarity != "L" && line.Polarity != "R") {
-			t.Fatalf("line %d has an incomplete catalogue identity", line.VariantID)
+		if line.Kind != catalog.BatteryKind || line.Battery == nil || line.Fields != nil ||
+			line.CatalogEntryID < 1 {
+			t.Fatalf("line %d has an incomplete battery identity", line.VariantID)
 		}
 	}
 	// The detail stays readable the way it was applied even though stock moved.
@@ -724,7 +755,7 @@ func TestReadDetailReversalCrossReferences(t *testing.T) {
 			line.Counted != want[i].Counted || line.Difference != want[i].Difference {
 			t.Fatalf("reversal line %d is not the swapped original line: %+v", i, line)
 		}
-		if line.Brand == "" || line.Model == "" || line.Capacity == "" || (line.Polarity != "L" && line.Polarity != "R") {
+		if line.Identity.Valid() != nil || !sameIdentity(t, line.Identity, identityOf(t, ctx, p, int64(line.VariantID))) {
 			t.Fatalf("reversal line %d has no catalogue identity", line.VariantID)
 		}
 	}
@@ -1140,9 +1171,8 @@ func TestCatalogIdentityOnly(t *testing.T) {
 	}
 	for i, item := range page.Items {
 		wantID := int64(i + 1)
-		entry, brand, model, capacity, polarity := catalogueOf(t, ctx, p, wantID)
-		if item.VariantID != wantID || item.CatalogEntryID != entry || item.Brand != brand ||
-			item.Model != model || item.Capacity != capacity || item.Polarity != polarity {
+		if int64(item.VariantID) != wantID || item.CatalogEntryID != catalogueEntry(t, ctx, p, wantID) ||
+			!sameIdentity(t, item.Identity, identityOf(t, ctx, p, wantID)) {
 			t.Fatalf("catalogue item %d does not carry its identity: %+v", i, item)
 		}
 		sourceEntry := source.Entries[(wantID-1)/2]
@@ -1150,8 +1180,9 @@ func TestCatalogIdentityOnly(t *testing.T) {
 		if wantID%2 == 0 {
 			wantPolarity = "R"
 		}
-		if item.CatalogEntryID != int64(sourceEntry.ID) || item.Brand != sourceEntry.Brand ||
-			item.Model != sourceEntry.Model || item.Capacity != sourceEntry.Capacity || item.Polarity != wantPolarity {
+		if item.CatalogEntryID != int64(sourceEntry.ID) || item.Battery == nil ||
+			item.Battery.Brand != sourceEntry.Brand || item.Battery.Model != sourceEntry.Model ||
+			item.Battery.Capacity != string(sourceEntry.Capacity) || item.Battery.Polarity != wantPolarity {
 			t.Fatalf("catalogue item %d does not match the preloaded source catalogue", i)
 		}
 	}
@@ -1172,7 +1203,7 @@ func TestCatalogIdentityOnly(t *testing.T) {
 			}
 			for i, item := range result.Items {
 				id := int64((index-1)*size + i + 1)
-				if seen[id] || item.VariantID != id {
+				if seen[id] || int64(item.VariantID) != id {
 					t.Fatalf("catalogue page %d of size %d is not the stable variant order", index, size)
 				}
 				seen[id] = true
@@ -1246,7 +1277,7 @@ func TestCatalogFilters(t *testing.T) {
 			t.Fatalf("%s filter returned %d items, want %d", name, len(result.Items), limit)
 		}
 		for i, item := range result.Items {
-			if item.VariantID != want[i] {
+			if int64(item.VariantID) != want[i] {
 				t.Fatalf("%s filter is not the stable variant order", name)
 			}
 		}

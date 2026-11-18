@@ -37,6 +37,64 @@ function t6Setup(override?: (url: string, init: RequestInit) => Promise<Response
  });
  vi.stubGlobal('fetch', fetcher); return fetcher;
 }
+describe('the stock screen reads both kinds', () => {
+ it('asks for both kinds on its own read and refetches the kind selection instead of hiding rows', async () => {
+  const fetcher = t6Setup();
+  const { result } = renderHook(() => useInventory());
+  await waitFor(() => expect(result.current.data).not.toBeNull());
+  const reads = () => fetcher.mock.calls.map(([url]) => String(url)).filter(url => url.startsWith('/api/inventory?'));
+  expect(new URL(reads()[0], 'http://localhost').searchParams.get('kind')).toBe('all');
+  act(() => result.current.change({ kind: 'other' }));
+  await waitFor(() => expect(reads()).toHaveLength(2));
+  expect(new URL(reads()[1], 'http://localhost').searchParams.get('kind')).toBe('other');
+ });
+ it('keeps a branch on the battery-only read so a product never reaches its list', async () => {
+  const branch = { authenticated: true, csrf_token: 'c'.repeat(43), expires_at: '2030-01-01T00:00:00Z',
+   identity: { account_id: 2, username: 'sucursal', display_name: 'Sucursal A', must_change_password: false,
+    location: { id: 2, name: 'Sucursal A' } } };
+  const reads: string[] = [];
+  const fetcher = t6Setup((url) => {
+   if (url === '/api/auth/session') return Promise.resolve(new Response(JSON.stringify(branch)));
+   if (url === '/api/inventory/metadata') return Promise.resolve(new Response(JSON.stringify({ locations: [{ id: 1, name: 'Almacén' }, { id: 2, name: 'Sucursal A' }], brands: ['TOYO'] })));
+   if (url.startsWith('/api/inventory?')) {
+    reads.push(url);
+    return Promise.resolve(new Response(JSON.stringify({ location: { id: 2, name: 'Sucursal A' }, page: 1, page_size: 10, total_variants: 0, items: [] })));
+   }
+   return undefined;
+  });
+  const { result } = renderHook(() => useInventory());
+  await waitFor(() => expect(result.current.data).not.toBeNull());
+  expect(fetcher.mock.calls.some(([url]) => String(url).startsWith('/api/inventory?'))).toBe(true);
+  expect(new URL(reads[0], 'http://localhost').searchParams.get('kind')).toBeNull();
+  expect(result.current.query.kind).toBeUndefined();
+ });
+ it('gates both kinds on the listed location, so the warehouse consulting a branch sees batteries only', async () => {
+  const reads: string[] = [];
+  const fetcher = t6Setup((url) => {
+   if (url.startsWith('/api/inventory?')) {
+    const location = Number(new URL(url, 'http://localhost').searchParams.get('location_id'));
+    reads.push(url);
+    return Promise.resolve(new Response(JSON.stringify({
+     location: { id: location, name: location === 1 ? 'Almacén' : 'Sucursal A' },
+     page: 1, page_size: 10, total_variants: 0, items: [] })));
+   }
+   return undefined;
+  });
+  const { result } = renderHook(() => useInventory());
+  await waitFor(() => expect(result.current.data).not.toBeNull());
+  expect(new URL(reads[0], 'http://localhost').searchParams.get('kind')).toBe('all');
+  // The same warehouse account, listing a branch: the branch listing never asks
+  // for both kinds, whoever is consulting it.
+  act(() => result.current.change({ location: 2 }));
+  await waitFor(() => expect(reads).toHaveLength(2));
+  const branch = new URL(reads[1], 'http://localhost').searchParams;
+  expect(branch.get('location_id')).toBe('2');
+  expect(branch.get('kind')).toBeNull();
+  expect(result.current.query.location).toBe(2);
+  expect(fetcher.mock.calls.some(([url]) => String(url) === '/api/inventory?location_id=1&page=1&page_size=10&kind=battery')).toBe(false);
+ });
+});
+
 describe('safe retirement private client', () => {
  // Reflect.apply deliberately exercises the public runtime interface before its method union grows.
  const callDelete = (state: ReturnType<typeof useInventory>, path: string, signal = new AbortController().signal) =>

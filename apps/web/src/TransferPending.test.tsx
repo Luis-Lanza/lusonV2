@@ -2061,7 +2061,8 @@ describe('R04c participant Pending', () => {
     const f = fixture(); const navigate = vi.fn();
     const snapshot: RecoverySnapshot = { epoch: 1, phase: 'ready', handle: {},
       attempt: { kind: 'request_stock', counterparty_location_id: 1, retry_key: 'test_review_stable_key', items: [{ variant_id: 1, quantity: '1' }] },
-      direction: transferDirection(2, 'requestWarehouse'), items: [{ variant_id: 1, catalog_entry_id: 1, brand: 'TOYO', model: 'Exact-1', capacity_ah: '75.125', polarity: 'L', quantity: '1' }] };
+      direction: transferDirection(2, 'requestWarehouse'), items: [{ variant_id: 1, catalog_entry_id: 1,
+        battery: { brand: 'TOYO', model: 'Exact-1', capacity_ah: '75.125', polarity: 'L' as const }, quantity: '1' }] };
     const result = { record: parseTransferRecord(JSON.stringify(f.env.record)), replayed: false };
     render(<TransferReview controller={f.controller} metadata={{ locations: locations.map((name, index) => ({ id: index + 1, name })), brands: ['TOYO'] }}
       ownerTag={f.ownerTag} snapshot={snapshot} result={result} busy={false} error="" returnFocus={null}

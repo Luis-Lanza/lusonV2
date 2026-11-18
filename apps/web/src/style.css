@@ -101,6 +101,38 @@ h1 { font-size: 22px; font-weight: 600; letter-spacing: -.015em; }
 .filter-pair > div { display: flex; align-items: center; gap: 6px; }
 .filter-pair label { color: var(--muted); font-size: 12px; }
 .filter-pair select { font-size: 12px; padding: 7px; }
+/* The kind filter is the three-state segmented control of the stock list: both
+   kinds, batteries alone, products alone. */
+.kind-filter { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; background: white; overflow: hidden; flex-shrink: 0; }
+.kind-filter button { border: 0; border-radius: 0; min-height: 36px; padding: 0 14px; font-size: 13px; color: var(--muted); background: none; }
+.kind-filter button + button { border-left: 1px solid var(--border); }
+.kind-filter button[aria-pressed="true"] { background: var(--tint); color: var(--wine); font-weight: 600; }
+/* The ingress type step: the document declares its kind before any catalog or
+   document is shown, and the two choices carry the artboard's own copy. */
+.stock-kind-step { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.stock-kind-choice { display: flex; align-items: flex-start; gap: 12px; min-height: 44px; padding: 14px 16px;
+  border: 1px solid var(--border); border-radius: 8px; background: white; color: #242124; text-align: left;
+  box-shadow: 0 1px 2px #2421240d; }
+.stock-kind-choice[aria-pressed="true"] { border-color: var(--wine); box-shadow: inset 0 0 0 1px var(--wine); }
+.stock-kind-choice strong { display: block; font-size: 13.5px; }
+.stock-kind-choice[aria-pressed="true"] strong { color: var(--wine); }
+.stock-kind-choice > span > span { display: block; margin-top: 2px; color: var(--muted); font-size: 12px; }
+.stock-kind-dot { flex: 0 0 auto; width: 16px; height: 16px; margin-top: 2px; border-radius: 50%;
+  border: 2px solid var(--muted); }
+.stock-kind-choice[aria-pressed="true"] .stock-kind-dot { border-color: var(--wine); background: var(--wine);
+  box-shadow: inset 0 0 0 3px white; }
+.stock-kind-line { margin: 0; padding: 10px 14px; border-radius: 6px; background: var(--tint); color: var(--wine);
+  font-size: 12.5px; line-height: 1.5; }
+/* The chip that names the kind of the whole ingress document. */
+.stock-doc-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.stock-chip { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px;
+  background: var(--tint); color: var(--wine); font-size: 11.5px; font-weight: 600; }
+@media (max-width: 820px) {
+  .stock-kind-step { grid-template-columns: minmax(0, 1fr); }
+}
+/* The stock list publishes the name and the detail, so its three figures start at
+   the third column; the entry columns are never numeric. */
+.results th:nth-child(n+3), .results td:nth-child(n+3) { text-align: right; font-variant-numeric: tabular-nums; }
 .formula { display: flex; align-items: flex-start; gap: 8px; border: 1px solid var(--border); padding: 12px; border-radius: 4px; background: white; font-size: 12px; line-height: 18px; }
 .formula svg, .formula strong { color: var(--wine); }
 .results { background: white; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
@@ -156,6 +188,8 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .warehouse .filter-pair > div { display: block; min-width: 0; }
   .warehouse .filter-pair label { font-size: 11px; font-weight: 600; display: block; margin-bottom: 4px; }
   .warehouse .filter-pair select { width: 100%; padding: 8px; }
+  .warehouse .kind-filter { display: flex; }
+  .warehouse .kind-filter button { flex: 1; min-height: 40px; padding: 0 8px; font-size: 12px; }
   .warehouse .results { order: 4; background: transparent; border: 0; overflow: visible; }
   .cards { display: flex; flex-direction: column; gap: 14px; }
   .product-card { border: 1px solid var(--border); border-radius: 8px; background: white; overflow: hidden; box-shadow: 0 1px 2px #2421240d; }
@@ -1213,4 +1247,21 @@ th:nth-child(4), td:nth-child(4) { text-align: center; }
   .cash-band-cell { padding: 12px 16px; }
   .cash-band-value { font-size: 20px; }
   .cash-band-value.cash-lead { font-size: 22px; }
+}
+
+/* Adjustment kind selection: the two tabs of the "Nuevo ajuste" drawer and the Tipo
+   column of the history. Colors, token radii and the 44px touch target are the ones
+   this sheet already declares, so no new component shape enters the app. */
+.adjustment-kinds { display: flex; gap: 2px; border-bottom: 1px solid var(--border); }
+.adjustment-kinds button { border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+  background: none; color: var(--muted); min-height: 44px; padding: 0 12px; font-size: 13px; }
+.adjustment-kinds button[aria-selected="true"] { color: var(--wine); border-bottom-color: var(--wine); font-weight: 600; }
+.adjustment-kind { display: inline-block; padding: 1px 7px; border-radius: 3px; background: var(--tint);
+  color: var(--wine); font-size: 11px; font-weight: 600; }
+/* The product picker counts in its own last column, so its counted box is right aligned
+   like the battery one. */
+.adjustment-capture-other td:nth-child(3) { text-align: right; }
+.adjustment-kind-modal { width: min(560px, 100%); }
+@media (max-width: 600px) {
+  .adjustment-capture-other td:nth-child(3) { text-align: left; }
 }

@@ -302,25 +302,32 @@ func TestStockAdjustmentCatalogQuery(t *testing.T) {
 		want stockadjustments.CatalogQuery
 		ok   bool
 	}{
-		"defaults":      {"", stockadjustments.CatalogQuery{Page: 1, PageSize: 25}, true},
-		"all":           {"search=ns60&brand=TOYO&polarity=L&page=2&page_size=10", stockadjustments.CatalogQuery{Search: "ns60", Brand: "TOYO", Polarity: "L", Page: 2, PageSize: 10}, true},
-		"decoded_text":  {"search=TOYO%20MOTO", stockadjustments.CatalogQuery{Search: "TOYO MOTO", Page: 1, PageSize: 25}, true},
-		"plus_text":     {"search=TOYO+MOTO", stockadjustments.CatalogQuery{Search: "TOYO MOTO", Page: 1, PageSize: 25}, true},
-		"blank_search":  {"search=", stockadjustments.CatalogQuery{}, false},
-		"blank_brand":   {"brand=", stockadjustments.CatalogQuery{}, false},
-		"polarity":      {"polarity=X", stockadjustments.CatalogQuery{}, false},
-		"lowercase":     {"polarity=l", stockadjustments.CatalogQuery{}, false},
-		"unknown":       {"status=all", stockadjustments.CatalogQuery{}, false},
-		"duplicate":     {"search=a&search=a", stockadjustments.CatalogQuery{}, false},
-		"encoded_page":  {"page=%31", stockadjustments.CatalogQuery{}, false},
-		"page_size":     {"page_size=20", stockadjustments.CatalogQuery{}, false},
-		"long_search":   {"search=" + strings.Repeat("a", 129), stockadjustments.CatalogQuery{}, false},
-		"long_brand":    {"brand=" + strings.Repeat("a", 129), stockadjustments.CatalogQuery{}, false},
-		"bad_escape":    {"search=%ZZ", stockadjustments.CatalogQuery{}, false},
-		"nul":           {"search=a%00b", stockadjustments.CatalogQuery{}, false},
-		"no_equals":     {"search", stockadjustments.CatalogQuery{}, false},
-		"trailing":      {"search=a&", stockadjustments.CatalogQuery{}, false},
-		"empty_section": {"&&", stockadjustments.CatalogQuery{}, false},
+		"defaults":       {"", stockadjustments.CatalogQuery{Page: 1, PageSize: 25}, true},
+		"all":            {"search=ns60&brand=TOYO&polarity=L&page=2&page_size=10", stockadjustments.CatalogQuery{Search: "ns60", Brand: "TOYO", Polarity: "L", Page: 2, PageSize: 10}, true},
+		"kind_all":       {"kind=all", stockadjustments.CatalogQuery{Kind: catalog.AllKinds, Page: 1, PageSize: 25}, true},
+		"kind_battery":   {"kind=battery", stockadjustments.CatalogQuery{Kind: catalog.BatteryOnly, Page: 1, PageSize: 25}, true},
+		"kind_other":     {"kind=other", stockadjustments.CatalogQuery{Kind: catalog.OtherOnly, Page: 1, PageSize: 25}, true},
+		"kind_upper":     {"kind=ALL", stockadjustments.CatalogQuery{}, false},
+		"kind_empty":     {"kind=", stockadjustments.CatalogQuery{}, false},
+		"kind_unknown":   {"kind=gift", stockadjustments.CatalogQuery{}, false},
+		"kind_duplicate": {"kind=all&kind=other", stockadjustments.CatalogQuery{}, false},
+		"decoded_text":   {"search=TOYO%20MOTO", stockadjustments.CatalogQuery{Search: "TOYO MOTO", Page: 1, PageSize: 25}, true},
+		"plus_text":      {"search=TOYO+MOTO", stockadjustments.CatalogQuery{Search: "TOYO MOTO", Page: 1, PageSize: 25}, true},
+		"blank_search":   {"search=", stockadjustments.CatalogQuery{}, false},
+		"blank_brand":    {"brand=", stockadjustments.CatalogQuery{}, false},
+		"polarity":       {"polarity=X", stockadjustments.CatalogQuery{}, false},
+		"lowercase":      {"polarity=l", stockadjustments.CatalogQuery{}, false},
+		"unknown":        {"status=all", stockadjustments.CatalogQuery{}, false},
+		"duplicate":      {"search=a&search=a", stockadjustments.CatalogQuery{}, false},
+		"encoded_page":   {"page=%31", stockadjustments.CatalogQuery{}, false},
+		"page_size":      {"page_size=20", stockadjustments.CatalogQuery{}, false},
+		"long_search":    {"search=" + strings.Repeat("a", 129), stockadjustments.CatalogQuery{}, false},
+		"long_brand":     {"brand=" + strings.Repeat("a", 129), stockadjustments.CatalogQuery{}, false},
+		"bad_escape":     {"search=%ZZ", stockadjustments.CatalogQuery{}, false},
+		"nul":            {"search=a%00b", stockadjustments.CatalogQuery{}, false},
+		"no_equals":      {"search", stockadjustments.CatalogQuery{}, false},
+		"trailing":       {"search=a&", stockadjustments.CatalogQuery{}, false},
+		"empty_section":  {"&&", stockadjustments.CatalogQuery{}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, err := stockAdjustmentCatalogQuery(tc.raw)
@@ -402,9 +409,9 @@ func TestStockAdjustmentDetailRecord(t *testing.T) {
 		ID: 7, LocationID: 1, Reason: "conteo físico", Detail: "pasillo 2", CreatedAt: stamp, CreatedByAccountID: 1,
 		ReversedBy: &counter, ReversedByReason: "error de conteo",
 		Lines: []stockadjustments.DetailLine{
-			{VariantID: 1, CatalogEntryID: 1, Brand: "TOYO", Model: "NS60L", Capacity: "45", Polarity: "L",
+			{Identity: catalog.BatteryIdentity(1, "TOYO", "NS60L", "45", "L"), CatalogEntryID: 1,
 				Expected: 18, Counted: 12, Difference: -6},
-			{VariantID: 3, CatalogEntryID: 2, Brand: "TOYO", Model: "NS60R", Capacity: "6.5", Polarity: "R",
+			{Identity: catalog.BatteryIdentity(3, "TOYO", "NS60R", "6.5", "R"), CatalogEntryID: 2,
 				Expected: 2, Counted: 5, Difference: 3},
 		},
 		TotalDifference: -3,
@@ -415,9 +422,28 @@ func TestStockAdjustmentDetailRecord(t *testing.T) {
 	}
 	if record.ID != 7 || record.CreatedAt != "2026-11-04T14:20:00Z" || record.ReversedBy == nil || *record.ReversedBy != 9 ||
 		record.ReversedByReason != "error de conteo" ||
-		record.ReversesAdjustmentID != nil || len(record.Lines) != 2 || record.Lines[1].Capacity != "6.5" ||
+		record.ReversesAdjustmentID != nil || len(record.Lines) != 2 ||
+		record.Lines[1].Battery == nil || record.Lines[1].Battery.Capacity != "6.5" ||
 		record.Lines[0].CatalogEntryID != 1 || record.TotalDifference != -3 {
 		t.Fatal("detail does not match the frozen contract")
+	}
+	// A product line is a legitimate detail line: it carries its typed fields and no
+	// battery attribute, and the read keeps answering it.
+	number := "5"
+	product := valid
+	product.Lines = []stockadjustments.DetailLine{
+		{Identity: catalog.ProductIdentity(191, "Agua acidulada", []catalog.Field{
+			{Name: "volumen en L", Kind: catalog.NumberField, Unit: "L", Number: &number},
+		}), CatalogEntryID: 96, Expected: 4, Counted: 7, Difference: 3},
+	}
+	product.TotalDifference = 3
+	productRecord, err := stockAdjustmentDetailRecord(product)
+	if err != nil {
+		t.Fatalf("a product detail was rejected: %v", err)
+	}
+	if line := productRecord.Lines[0]; line.Kind != catalog.OtherKind || line.Name != "Agua acidulada" ||
+		line.Detail != "volumen en L: 5 L" || line.Battery != nil || len(line.Fields) != 1 {
+		t.Fatalf("the product detail line does not carry its identity: %+v", line)
 	}
 	// A document that is not reversed carries no counter-entry motive at all.
 	plain := valid
@@ -435,11 +461,15 @@ func TestStockAdjustmentDetailRecord(t *testing.T) {
 		"no_lines":         func(d *stockadjustments.Detail) { d.Lines = nil },
 		"unsorted":         func(d *stockadjustments.Detail) { d.Lines[0], d.Lines[1] = d.Lines[1], d.Lines[0] },
 		"zero_entry":       func(d *stockadjustments.Detail) { d.Lines[0].CatalogEntryID = 0 },
-		"empty_brand":      func(d *stockadjustments.Detail) { d.Lines[0].Brand = "" },
-		"nul_model":        func(d *stockadjustments.Detail) { d.Lines[0].Model = "a\x00b" },
-		"polarity":         func(d *stockadjustments.Detail) { d.Lines[0].Polarity = "X" },
-		"capacity":         func(d *stockadjustments.Detail) { d.Lines[0].Capacity = "0" },
-		"blank_capacity":   func(d *stockadjustments.Detail) { d.Lines[0].Capacity = "" },
+		"empty_brand":      func(d *stockadjustments.Detail) { d.Lines[0].Battery.Brand = "" },
+		"nul_model":        func(d *stockadjustments.Detail) { d.Lines[0].Battery.Model = "a\x00b" },
+		"polarity":         func(d *stockadjustments.Detail) { d.Lines[0].Battery.Polarity = "X" },
+		"capacity":         func(d *stockadjustments.Detail) { d.Lines[0].Battery.Capacity = "0" },
+		"blank_capacity":   func(d *stockadjustments.Detail) { d.Lines[0].Battery.Capacity = "" },
+		"missing_battery":  func(d *stockadjustments.Detail) { d.Lines[0].Battery = nil },
+		"empty_name":       func(d *stockadjustments.Detail) { d.Lines[0].Name = "" },
+		"empty_detail":     func(d *stockadjustments.Detail) { d.Lines[0].Detail = "" },
+		"battery_fields":   func(d *stockadjustments.Detail) { d.Lines[0].Fields = []catalog.Field{} },
 		"negative_expected": func(d *stockadjustments.Detail) {
 			d.Lines[0].Expected = -1
 		},
@@ -472,8 +502,8 @@ func TestStockAdjustmentPage(t *testing.T) {
 	nine, three := int64(9), int64(3)
 	stamp := time.Date(2026, 11, 4, 14, 20, 0, 0, time.UTC)
 	valid := stockadjustments.Page{Page: 1, PageSize: 25, TotalAdjustments: 2, Adjustments: []stockadjustments.Summary{
-		{ID: 9, Reason: "conteo físico", Detail: "", CreatedAt: stamp, Lines: 1, TotalDifference: 6, ReversesAdjustmentID: &three},
-		{ID: 7, Reason: "conteo físico", Detail: "pasillo 2", CreatedAt: stamp, Lines: 2, TotalDifference: -4, ReversedBy: &nine},
+		{ID: 9, Reason: "conteo físico", Detail: "", CreatedAt: stamp, Lines: 1, Kind: catalog.BatteryKind, TotalDifference: 6, ReversesAdjustmentID: &three},
+		{ID: 7, Reason: "conteo físico", Detail: "pasillo 2", CreatedAt: stamp, Lines: 2, Kind: catalog.OtherKind, TotalDifference: -4, ReversedBy: &nine},
 	}}
 	dto, err := stockAdjustmentPage(valid)
 	if err != nil {
@@ -488,6 +518,18 @@ func TestStockAdjustmentPage(t *testing.T) {
 	}
 	if dto.Adjustments[1].ReversedBy == nil || *dto.Adjustments[1].ReversedBy != 9 || dto.Adjustments[1].Lines != 2 {
 		t.Fatal("a reversed row changed shape")
+	}
+	// The kind of every row is the document's own, and a document whose lines
+	// disagree publishes no kind at all.
+	if dto.Adjustments[0].Kind == nil || *dto.Adjustments[0].Kind != catalog.BatteryKind ||
+		dto.Adjustments[1].Kind == nil || *dto.Adjustments[1].Kind != catalog.OtherKind {
+		t.Fatal("a row must publish the kind of its document")
+	}
+	disagreeing := valid
+	disagreeing.Adjustments = append([]stockadjustments.Summary(nil), valid.Adjustments...)
+	disagreeing.Adjustments[0].Kind = ""
+	if unknown, err := stockAdjustmentPage(disagreeing); err != nil || unknown.Adjustments[0].Kind != nil {
+		t.Fatal("a document whose lines disagree must publish no kind")
 	}
 	clone := func() stockadjustments.Page {
 		page := valid
@@ -507,6 +549,7 @@ func TestStockAdjustmentPage(t *testing.T) {
 		"total_above_bound": func(p *stockadjustments.Page) { p.Adjustments[0].TotalDifference = 190_000_001 },
 		"total_below_bound": func(p *stockadjustments.Page) { p.Adjustments[0].TotalDifference = -190_000_001 },
 		"blank_reason":      func(p *stockadjustments.Page) { p.Adjustments[0].Reason = " " },
+		"unadmitted_kind":   func(p *stockadjustments.Page) { p.Adjustments[0].Kind = "gift" },
 		"nul_reason":        func(p *stockadjustments.Page) { p.Adjustments[0].Reason = "a\x00b" },
 		"long_detail":       func(p *stockadjustments.Page) { p.Adjustments[0].Detail = strings.Repeat("a", 501) },
 		"unsorted": func(p *stockadjustments.Page) {
@@ -534,16 +577,36 @@ func TestStockAdjustmentPage(t *testing.T) {
 
 func TestStockAdjustmentCatalogRecord(t *testing.T) {
 	valid := stockadjustments.CatalogPage{Page: 1, PageSize: 10, TotalVariants: 2, Items: []stockadjustments.CatalogItem{
-		{VariantID: 1, CatalogEntryID: 1, Brand: "TOYO", Model: "NS60L", Capacity: "45", Polarity: "L"},
-		{VariantID: 2, CatalogEntryID: 1, Brand: "TOYO", Model: "NS60L", Capacity: "45", Polarity: "R"},
+		{Identity: catalog.BatteryIdentity(1, "TOYO", "NS60L", "45", "L"), CatalogEntryID: 1},
+		{Identity: catalog.BatteryIdentity(2, "TOYO", "NS60L", "45", "R"), CatalogEntryID: 1},
 	}}
 	dto, err := stockAdjustmentCatalogPage(valid)
 	if err != nil {
 		t.Fatal("a persisted catalogue page was rejected")
 	}
 	if dto.Page != 1 || dto.PageSize != 10 || dto.TotalVariants != 2 || len(dto.Items) != 2 ||
-		dto.Items[0].VariantID != 1 || dto.Items[1].Polarity != "R" || dto.Items[0].Capacity != "45" {
+		dto.Items[0].VariantID != 1 || dto.Items[0].Battery == nil || dto.Items[1].Battery.Polarity != "R" ||
+		dto.Items[0].Battery.Capacity != "45" || dto.Items[0].CatalogEntryID != 1 {
 		t.Fatal("catalogue page does not match the frozen contract")
+	}
+	// The product picker reads a product with its own identity and no battery
+	// attribute.
+	number := "5"
+	product := valid
+	product.TotalVariants = 1
+	product.Items = []stockadjustments.CatalogItem{
+		{Identity: catalog.ProductIdentity(191, "Agua acidulada", []catalog.Field{
+			{Name: "volumen en L", Kind: catalog.NumberField, Unit: "L", Number: &number},
+		}), CatalogEntryID: 96},
+	}
+	productDTO, err := stockAdjustmentCatalogPage(product)
+	if err != nil {
+		t.Fatalf("a product catalogue page was rejected: %v", err)
+	}
+	if item := productDTO.Items[0]; item.Kind != catalog.OtherKind || item.Name != "Agua acidulada" ||
+		item.Detail != "volumen en L: 5 L" || item.Battery != nil || len(item.Fields) != 1 ||
+		item.CatalogEntryID != 96 {
+		t.Fatalf("the product catalogue item does not carry its identity: %+v", item)
 	}
 	clone := func() stockadjustments.CatalogPage {
 		page := valid
@@ -562,10 +625,18 @@ func TestStockAdjustmentCatalogRecord(t *testing.T) {
 		},
 		"zero_variant": func(p *stockadjustments.CatalogPage) { p.Items[0].VariantID = 0 },
 		"zero_entry":   func(p *stockadjustments.CatalogPage) { p.Items[0].CatalogEntryID = 0 },
-		"empty_brand":  func(p *stockadjustments.CatalogPage) { p.Items[0].Brand = "" },
-		"nul_model":    func(p *stockadjustments.CatalogPage) { p.Items[0].Model = "a\x00b" },
-		"polarity":     func(p *stockadjustments.CatalogPage) { p.Items[0].Polarity = "X" },
-		"capacity":     func(p *stockadjustments.CatalogPage) { p.Items[0].Capacity = "0" },
+		"empty_brand":  func(p *stockadjustments.CatalogPage) { p.Items[0].Battery.Brand = "" },
+		"nul_model":    func(p *stockadjustments.CatalogPage) { p.Items[0].Battery.Model = "a\x00b" },
+		"polarity":     func(p *stockadjustments.CatalogPage) { p.Items[0].Battery.Polarity = "X" },
+		"capacity":     func(p *stockadjustments.CatalogPage) { p.Items[0].Battery.Capacity = "0" },
+		"missing_battery": func(p *stockadjustments.CatalogPage) {
+			p.Items[0].Battery = nil
+		},
+		"empty_name":   func(p *stockadjustments.CatalogPage) { p.Items[0].Name = "" },
+		"empty_detail": func(p *stockadjustments.CatalogPage) { p.Items[0].Detail = "" },
+		"battery_fields": func(p *stockadjustments.CatalogPage) {
+			p.Items[0].Fields = []catalog.Field{}
+		},
 		"unsorted": func(p *stockadjustments.CatalogPage) {
 			p.Items[0], p.Items[1] = p.Items[1], p.Items[0]
 		},
@@ -807,18 +878,21 @@ type stockAdjustmentHistoryWireDTO struct {
 }
 
 type stockAdjustmentHistoryRowWireDTO struct {
-	ID                   int64  `json:"id"`
-	Reason               string `json:"reason"`
-	Detail               string `json:"detail"`
-	CreatedAt            string `json:"created_at"`
-	Lines                int    `json:"lines"`
-	TotalDifference      int64  `json:"total_difference"`
-	ReversesAdjustmentID *int64 `json:"reverses_adjustment_id"`
-	ReversedBy           *int64 `json:"reversed_by"`
+	ID                   int64   `json:"id"`
+	Reason               string  `json:"reason"`
+	Detail               string  `json:"detail"`
+	CreatedAt            string  `json:"created_at"`
+	Lines                int     `json:"lines"`
+	Kind                 *string `json:"kind"`
+	TotalDifference      int64   `json:"total_difference"`
+	ReversesAdjustmentID *int64  `json:"reverses_adjustment_id"`
+	ReversedBy           *int64  `json:"reversed_by"`
 }
 
 // stockAdjustmentHistoryWire admits only the frozen history shape: four page keys
-// and eight summary keys per row, with no per-line detail anywhere.
+// and nine summary keys per row, with no per-line detail anywhere. The kind is the
+// document's own, derived from its lines, and it is null exactly when those lines
+// disagree.
 func stockAdjustmentHistoryWire(t *testing.T, w *httptest.ResponseRecorder) stockAdjustmentHistoryWireDTO {
 	t.Helper()
 	if w.Code != 200 || w.Header().Get("Content-Type") != "application/json" {
@@ -839,10 +913,10 @@ func stockAdjustmentHistoryWire(t *testing.T, w *httptest.ResponseRecorder) stoc
 	}
 	canonical := regexp.MustCompile(`^[1-9][0-9]*$`)
 	for _, row := range rows {
-		if len(row) != 8 {
+		if len(row) != 9 {
 			t.Fatal("history row whitelist changed")
 		}
-		for _, key := range []string{"id", "reason", "detail", "created_at", "lines", "total_difference",
+		for _, key := range []string{"id", "reason", "detail", "created_at", "lines", "kind", "total_difference",
 			"reverses_adjustment_id", "reversed_by"} {
 			if _, ok := row[key]; !ok {
 				t.Fatalf("history row whitelist incomplete: %s", key)
@@ -853,6 +927,11 @@ func stockAdjustmentHistoryWire(t *testing.T, w *httptest.ResponseRecorder) stoc
 				t.Fatalf("%s must be null or a canonical id", pointer)
 			}
 		}
+		switch kind := string(row["kind"]); kind {
+		case "null", `"battery"`, `"other"`:
+		default:
+			t.Fatalf("kind must be battery, other or null: %s", kind)
+		}
 	}
 	var page stockAdjustmentHistoryWireDTO
 	if json.Unmarshal(w.Body.Bytes(), &page) != nil || len(page.Adjustments) != len(rows) {
@@ -862,7 +941,8 @@ func stockAdjustmentHistoryWire(t *testing.T, w *httptest.ResponseRecorder) stoc
 }
 
 // stockAdjustmentDetailWire admits only the frozen detail shape: eleven header keys
-// and nine line keys, with no operation key and no stock column outside it.
+// and ten line keys (the variant identity, the entry id and the applied
+// arithmetic), with no operation key and no stock column outside it.
 func stockAdjustmentDetailWire(t *testing.T, w *httptest.ResponseRecorder) stockAdjustmentDetailDTO {
 	t.Helper()
 	if w.Code != 200 || w.Header().Get("Content-Type") != "application/json" {
@@ -891,17 +971,21 @@ func stockAdjustmentDetailWire(t *testing.T, w *httptest.ResponseRecorder) stock
 		t.Fatal("detail lines are not an array")
 	}
 	for _, line := range lines {
-		if len(line) != 9 {
+		if len(line) != 10 {
 			t.Fatal("detail line whitelist changed")
 		}
-		for _, key := range []string{"variant_id", "catalog_entry_id", "brand", "model", "capacity_ah", "polarity",
+		for _, key := range []string{"variant_id", "catalog_entry_id", "kind", "name", "detail", "battery", "fields",
 			"expected_quantity", "counted_quantity", "difference"} {
 			if _, ok := line[key]; !ok {
 				t.Fatalf("detail line whitelist incomplete: %s", key)
 			}
 		}
-		if !regexp.MustCompile(`^"[1-9][0-9]*(\.[0-9]*[1-9])?"$`).MatchString(string(line["capacity_ah"])) {
-			t.Fatal("capacity_ah must be the canonical decimal as a string")
+		// The line carries the variant identity of the contract, which is never a
+		// blank name or detail and never a battery attribute a product lacks.
+		var identity catalog.Identity
+		identityJSON, marshalErr := json.Marshal(line)
+		if marshalErr != nil || json.Unmarshal(identityJSON, &identity) != nil || identity.Valid() != nil {
+			t.Fatal("detail line identity is malformed")
 		}
 		for _, key := range []string{"expected_quantity", "counted_quantity", "difference"} {
 			if !regexp.MustCompile(`^-?(0|[1-9][0-9]*)$`).MatchString(string(line[key])) {
@@ -924,16 +1008,13 @@ type stockAdjustmentCatalogWireDTO struct {
 }
 
 type stockAdjustmentCatalogItemWireDTO struct {
-	VariantID      int64  `json:"variant_id"`
-	CatalogEntryID int64  `json:"catalog_entry_id"`
-	Brand          string `json:"brand"`
-	Model          string `json:"model"`
-	Capacity       string `json:"capacity_ah"`
-	Polarity       string `json:"polarity"`
+	catalog.Identity
+	CatalogEntryID int64 `json:"catalog_entry_id"`
 }
 
 // stockAdjustmentCatalogWire admits only the blind capture shape: four page keys
-// and six identity keys per item, and structurally no stock quantity at all.
+// and seven keys per item (the entry id plus the variant identity), and
+// structurally no stock quantity at all.
 func stockAdjustmentCatalogWire(t *testing.T, w *httptest.ResponseRecorder) stockAdjustmentCatalogWireDTO {
 	t.Helper()
 	if w.Code != 200 || w.Header().Get("Content-Type") != "application/json" {
@@ -953,13 +1034,20 @@ func stockAdjustmentCatalogWire(t *testing.T, w *httptest.ResponseRecorder) stoc
 		t.Fatal("catalogue items are not an array")
 	}
 	for _, item := range items {
-		if len(item) != 6 {
+		if len(item) != 7 {
 			t.Fatal("catalogue item whitelist changed")
 		}
-		for _, key := range []string{"variant_id", "catalog_entry_id", "brand", "model", "capacity_ah", "polarity"} {
+		for _, key := range []string{"variant_id", "catalog_entry_id", "kind", "name", "detail", "battery", "fields"} {
 			if _, ok := item[key]; !ok {
 				t.Fatalf("catalogue item whitelist incomplete: %s", key)
 			}
+		}
+		// The item carries the variant identity of the contract, which is never a
+		// blank name or detail and never a battery attribute a product lacks.
+		var identity catalog.Identity
+		identityJSON, marshalErr := json.Marshal(item)
+		if marshalErr != nil || json.Unmarshal(identityJSON, &identity) != nil || identity.Valid() != nil {
+			t.Fatal("catalogue item identity is malformed")
 		}
 		// The blind count never reveals a stock number: no quantity of any kind
 		// may appear, under any alias, in a catalogue item.
@@ -984,18 +1072,31 @@ func stockAdjustmentCatalogWire(t *testing.T, w *httptest.ResponseRecorder) stoc
 	return page
 }
 
-// catalogueIdentity is the catalogue identity of one variant exactly as the
-// inventory and adjustment reads render it.
+// catalogueIdentity is the persisted identity of one variant exactly as the
+// inventory and adjustment reads render it, read straight from the database.
 type catalogueIdentity struct {
 	variant, entry int64
-	brand, model   string
-	capacity       string
-	polarity       string
+	identity       catalog.Identity
+}
+
+func (c catalogueIdentity) brand() string {
+	if c.identity.Battery == nil {
+		return ""
+	}
+	return c.identity.Battery.Brand
+}
+
+func (c catalogueIdentity) model() string {
+	if c.identity.Battery == nil {
+		return ""
+	}
+	return c.identity.Battery.Model
 }
 
 func (f *stockAdjustmentHTTPFixture) catalogue(t *testing.T) []catalogueIdentity {
 	t.Helper()
-	rows, err := f.p.Query(f.ctx, `SELECT v.id,e.id,e.brand,e.model,e.capacity_ah::text,v.polarity
+	rows, err := f.p.Query(f.ctx, `SELECT v.id,e.id,e.kind,coalesce(e.brand,''),coalesce(e.model,''),
+  e.capacity_ah::text,coalesce(v.polarity,''),coalesce(e.name,'')
  FROM catalog_variants v JOIN catalog_entries e ON e.id=v.catalog_entry_id ORDER BY v.id`)
 	if err != nil {
 		t.Fatal("catalogue read failed")
@@ -1004,15 +1105,24 @@ func (f *stockAdjustmentHTTPFixture) catalogue(t *testing.T) []catalogueIdentity
 	items := make([]catalogueIdentity, 0, 190)
 	for rows.Next() {
 		var item catalogueIdentity
-		var raw string
-		if rows.Scan(&item.variant, &item.entry, &item.brand, &item.model, &raw, &item.polarity) != nil {
+		var row catalog.Row
+		var capacity *string
+		if rows.Scan(&row.VariantID, &row.CatalogEntryID, &row.Kind, &row.Brand, &row.Model,
+			&capacity, &row.Polarity, &row.Name) != nil {
 			t.Fatal("catalogue row read failed")
 		}
-		capacity, err := catalog.ParseDecimal(raw)
-		if err != nil {
-			t.Fatal("catalogue capacity is not a canonical decimal")
+		if capacity != nil {
+			row.Capacity = *capacity
 		}
-		item.capacity = string(capacity)
+		known, err := catalog.ReadFields(f.ctx, f.p, []int32{int32(row.CatalogEntryID)})
+		if err != nil {
+			t.Fatal("persisted fields are not readable")
+		}
+		identity, err := row.Identity(known[row.CatalogEntryID])
+		if err != nil {
+			t.Fatalf("persisted identity of variant %d is not readable: %v", row.VariantID, err)
+		}
+		item.variant, item.entry, item.identity = int64(row.VariantID), int64(row.CatalogEntryID), identity
 		items = append(items, item)
 	}
 	if rows.Err() != nil {
@@ -1244,6 +1354,69 @@ func TestStockAdjustmentHTTPHistory(t *testing.T) {
 	}
 }
 
+// legacyMixedAdjustment writes a document whose lines name both kinds straight
+// into the ledger: the shape a count written before the one-kind rule has, which no
+// write path admits any more. Counted equals the current balance, so the fixture
+// leaves the stock where it found it.
+func (f *stockAdjustmentHTTPFixture) legacyMixedAdjustment(t *testing.T, battery, product int64) int64 {
+	t.Helper()
+	tx, err := f.p.Begin(f.ctx)
+	if err != nil {
+		t.Fatalf("legacy mixed document fixture failed: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var id int64
+	if err := tx.QueryRow(f.ctx, `INSERT INTO stock_adjustments(operation_key,location_id,reason,created_by_account_id)
+ VALUES('legacy-mixed-http-adj-01',1,'conteo físico',1) RETURNING id`).Scan(&id); err != nil {
+		t.Fatalf("legacy mixed document fixture failed: %v", err)
+	}
+	for _, variant := range []int64{battery, product} {
+		if _, err := tx.Exec(f.ctx, `INSERT INTO stock_adjustment_lines(adjustment_id,variant_id,expected_quantity,counted_quantity)
+ VALUES($1,$2,0,(SELECT existing FROM inventory_balances WHERE location_id=1 AND variant_id=$2))`, id, variant); err != nil {
+			t.Fatalf("legacy mixed document line fixture failed: %v", err)
+		}
+	}
+	// The document is complete only once both lines exist, so it commits whole.
+	if err := tx.Commit(f.ctx); err != nil {
+		t.Fatalf("legacy mixed document fixture failed: %v", err)
+	}
+	return id
+}
+
+// The history names the kind of every document and stays one list of both kinds: a
+// battery-only document reads battery, a product-only document reads other, and a
+// document written before the one-kind rule whose lines disagree reads no kind at
+// all instead of a guess.
+func TestStockAdjustmentHTTPHistoryKind(t *testing.T) {
+	f := stockAdjustmentFixture(t)
+	product := seedOtherProduct(t, f.ctx, f.p, "Agua acidulada", "volumen en L", "L", "5")
+	f.setBalance(t, product, 4, 0)
+	one, _ := f.balance(t, 1)
+	batteryDocument := f.create(t, fmt.Sprintf(`{"operation_key":"http-history-kind-01","reason":"conteo físico","lines":[{"variant_id":1,"counted_quantity":%d}]}`, one+1))
+	productDocument := f.create(t, fmt.Sprintf(`{"operation_key":"http-history-kind-02","reason":"conteo físico","lines":[{"variant_id":%d,"counted_quantity":5}]}`, product))
+	legacy := f.legacyMixedAdjustment(t, 1, product)
+	page := stockAdjustmentHistoryWire(t, f.serve(t, f.request(1, "GET", "/api/stock-adjustments", "")))
+	if page.TotalAdjustments != 3 || len(page.Adjustments) != 3 {
+		t.Fatalf("the history must list both kinds in one list: %+v", page.Adjustments)
+	}
+	if page.Adjustments[0].ID != legacy {
+		t.Fatal("the newest document must be listed first")
+	}
+	kinds := make(map[int64]*string, len(page.Adjustments))
+	for _, row := range page.Adjustments {
+		kinds[row.ID] = row.Kind
+	}
+	if kind := kinds[batteryDocument.ID]; kind == nil || *kind != "battery" {
+		t.Fatalf("a battery document must read battery: %v", kind)
+	}
+	if kind := kinds[productDocument.ID]; kind == nil || *kind != "other" {
+		t.Fatalf("a product document must read other: %v", kind)
+	}
+	if kind := kinds[legacy]; kind != nil {
+		t.Fatalf("a document whose lines disagree must read no kind: %v", *kind)
+	}
+}
+
 func TestStockAdjustmentHTTPHistoryRejections(t *testing.T) {
 	f := stockAdjustmentFixture(t)
 	f.rejected(t, f.request(0, "GET", "/api/stock-adjustments", ""), 401, "unauthenticated")
@@ -1290,7 +1463,7 @@ func TestStockAdjustmentHTTPDetail(t *testing.T) {
 	}
 	// Lines are ordered by variant id and carry the catalogue identity of each
 	// variant plus the expected, counted and derived difference.
-	want := map[int64]struct{ expected, counted, difference int64 }{
+	want := map[int]struct{ expected, counted, difference int64 }{
 		1: {one, one - 2, -2},
 		4: {four, four + 3, 3},
 	}
@@ -1304,9 +1477,8 @@ func TestStockAdjustmentHTTPDetail(t *testing.T) {
 			t.Fatalf("line %d does not carry expected, counted and difference", line.VariantID)
 		}
 		identity := catalogue[line.VariantID-1]
-		if identity.variant != line.VariantID || identity.entry != line.CatalogEntryID ||
-			identity.brand != line.Brand || identity.model != line.Model ||
-			identity.capacity != line.Capacity || identity.polarity != line.Polarity {
+		if identity.variant != int64(line.VariantID) || identity.entry != line.CatalogEntryID ||
+			!sameIdentity(t, line.Identity, identity.identity) {
 			t.Fatalf("line %d does not carry its catalogue identity", line.VariantID)
 		}
 		if i > 0 && detail.Lines[i-1].VariantID >= line.VariantID {
@@ -1622,17 +1794,16 @@ func TestStockAdjustmentHTTPCatalog(t *testing.T) {
 	catalogue := f.catalogue(t)
 	for i, item := range page.Items {
 		identity := catalogue[i]
-		if item.VariantID != identity.variant || item.CatalogEntryID != identity.entry ||
-			item.Brand != identity.brand || item.Model != identity.model ||
-			item.Capacity != identity.capacity || item.Polarity != identity.polarity {
+		if int64(item.VariantID) != identity.variant || item.CatalogEntryID != identity.entry ||
+			!sameIdentity(t, item.Identity, identity.identity) {
 			t.Fatalf("catalogue item %d does not match the persisted identity", i)
 		}
 	}
 	// No search quantity is queryable through the catalogue filters.
-	brandItems := stockAdjustmentCatalogWire(t, f.serve(t, f.request(1, "GET", "/api/stock-adjustments/catalog?brand="+url.QueryEscape(catalogue[0].brand)+"&page_size=50", "")))
+	brandItems := stockAdjustmentCatalogWire(t, f.serve(t, f.request(1, "GET", "/api/stock-adjustments/catalog?brand="+url.QueryEscape(catalogue[0].brand())+"&page_size=50", "")))
 	var wantBrand int64
 	for _, identity := range catalogue {
-		if identity.brand == catalogue[0].brand {
+		if identity.brand() == catalogue[0].brand() {
 			wantBrand++
 		}
 	}
@@ -1640,7 +1811,7 @@ func TestStockAdjustmentHTTPCatalog(t *testing.T) {
 		t.Fatal("the brand filter must answer the matching variants only")
 	}
 	for _, item := range brandItems.Items {
-		if item.Brand != catalogue[0].brand {
+		if item.Battery == nil || item.Battery.Brand != catalogue[0].brand() {
 			t.Fatal("the brand filter returned another brand")
 		}
 	}
@@ -1649,17 +1820,17 @@ func TestStockAdjustmentHTTPCatalog(t *testing.T) {
 		t.Fatal("the polarity filter must answer the matching variants only")
 	}
 	for _, item := range right.Items {
-		if item.Polarity != "R" {
+		if item.Battery == nil || item.Battery.Polarity != "R" {
 			t.Fatal("the polarity filter returned another polarity")
 		}
 	}
 	// The search is a literal substring, never a SQL wildcard.
-	model := catalogue[8].model
+	model := catalogue[8].model()
 	searched := stockAdjustmentCatalogWire(t, f.serve(t, f.request(1, "GET", "/api/stock-adjustments/catalog?search="+url.QueryEscape(model)+"&page_size=50", "")))
 	var wantSearch int64
 	for _, identity := range catalogue {
-		if strings.Contains(strings.ToLower(identity.model), strings.ToLower(model)) ||
-			strings.Contains(strings.ToLower(identity.brand), strings.ToLower(model)) {
+		if strings.Contains(strings.ToLower(identity.model()), strings.ToLower(model)) ||
+			strings.Contains(strings.ToLower(identity.brand()), strings.ToLower(model)) {
 			wantSearch++
 		}
 	}
@@ -1672,7 +1843,7 @@ func TestStockAdjustmentHTTPCatalog(t *testing.T) {
 	// Pagination is canonical and stable.
 	second := stockAdjustmentCatalogWire(t, f.serve(t, f.request(1, "GET", "/api/stock-adjustments/catalog?page=2&page_size=50", "")))
 	if second.Page != 2 || second.PageSize != 50 || second.TotalVariants != 190 || len(second.Items) != 50 ||
-		second.Items[0].VariantID != catalogue[50].variant {
+		int64(second.Items[0].VariantID) != catalogue[50].variant {
 		t.Fatal("a second catalogue page must start at the next variant")
 	}
 	beyond := stockAdjustmentCatalogWire(t, f.serve(t, f.request(1, "GET", "/api/stock-adjustments/catalog?page=1000000", "")))
@@ -1729,6 +1900,98 @@ func TestStockAdjustmentHTTPCatalogRejections(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f.rejected(t, f.request(1, "GET", alias, ""), 404, "not_found")
+		})
+	}
+}
+
+// An adjustment is of one kind too. A product count is written and read back
+// through the real routes, the blind count keeps its expected snapshot in the
+// database, and a document that names both kinds is refused whole with 400
+// invalid_request and an unchanged balance.
+func TestStockAdjustmentHTTPOtherProduct(t *testing.T) {
+	f := stockAdjustmentFixture(t)
+	variant := seedOtherProduct(t, f.ctx, f.p, "Agua acidulada", "volumen en L", "L", "5")
+	f.setBalance(t, variant, 4, 0)
+	document := f.create(t, fmt.Sprintf(`{"operation_key":"http-other-adjustment-01","reason":"conteo físico","lines":[{"variant_id":%d,"counted_quantity":7}]}`, variant))
+	if len(document.Lines) != 1 || document.Lines[0].Expected != 4 || document.Lines[0].Counted != 7 ||
+		document.Lines[0].Difference != 3 || document.TotalDifference != 3 {
+		t.Fatalf("a product count must be applied like any other: %+v", document)
+	}
+	if existing, reserved := f.balance(t, variant); existing != 7 || reserved != 0 {
+		t.Fatalf("the counted product balance was not applied: %d/%d", existing, reserved)
+	}
+	// The document reads back: the product line carries its own identity and its
+	// typed fields, and no battery attribute is invented for it.
+	detail := stockAdjustmentDetailWire(t, f.serve(t, f.request(1, "GET", adjustmentDetailPath(document.ID), "")))
+	if len(detail.Lines) != 1 || detail.TotalDifference != 3 {
+		t.Fatalf("the product adjustment detail must carry its line: %+v", detail)
+	}
+	line := detail.Lines[0]
+	if line.Kind != catalog.OtherKind || line.Name != "Agua acidulada" ||
+		line.Detail != "volumen en L: 5 L" || line.Battery != nil || len(line.Fields) != 1 ||
+		line.Expected != 4 || line.Counted != 7 || line.Difference != 3 {
+		t.Fatalf("the product detail line must carry its identity and arithmetic: %+v", line)
+	}
+	// A document whose lines name both kinds is refused whole: no document, no line
+	// and no balance change.
+	one, _ := f.balance(t, 1)
+	four, _ := f.balance(t, variant)
+	for name, lines := range map[string]string{
+		"battery_then_product": fmt.Sprintf(`{"operation_key":"http-other-mixed-adj-01","reason":"conteo físico","lines":[{"variant_id":1,"counted_quantity":%d},{"variant_id":%d,"counted_quantity":%d}]}`, one, variant, four),
+		"product_then_battery": fmt.Sprintf(`{"operation_key":"http-other-mixed-adj-02","reason":"conteo físico","lines":[{"variant_id":%d,"counted_quantity":%d},{"variant_id":1,"counted_quantity":%d}]}`, variant, four, one),
+	} {
+		t.Run(name, func(t *testing.T) {
+			f.rejected(t, f.request(1, "POST", "/api/stock-adjustments", lines), 400, "invalid_request")
+		})
+	}
+	if existing, _ := f.balance(t, 1); existing != one {
+		t.Fatal("a mixed document must not move the battery balance")
+	}
+	if existing, _ := f.balance(t, variant); existing != four {
+		t.Fatal("a mixed document must not move the product balance")
+	}
+	if n := f.count(t, "stock_adjustments"); n != 1 {
+		t.Fatal("a mixed document must not create a document")
+	}
+}
+
+// The blind capture catalogue reads the same three kind states as the stock read:
+// the absent value is the battery-only catalogue, and the product picker reads the
+// product alone with its identity and no capacity, no polarity and no stock.
+func TestStockAdjustmentHTTPCatalogOtherProducts(t *testing.T) {
+	f := stockAdjustmentFixture(t)
+	variant := seedOtherProduct(t, f.ctx, f.p, "Agua acidulada", "volumen en L", "L", "5")
+	// The default catalogue stays battery-only, byte for byte the answer that
+	// predates the product.
+	if page := stockAdjustmentCatalogWire(t, f.serve(t, f.request(1, "GET", "/api/stock-adjustments/catalog", ""))); page.TotalVariants != 190 {
+		t.Fatalf("the default catalogue must stay battery-only: %d", page.TotalVariants)
+	}
+	all := stockAdjustmentCatalogWire(t, f.serve(t, f.request(1, "GET", "/api/stock-adjustments/catalog?kind=all&page_size=50", "")))
+	if all.TotalVariants != 191 {
+		t.Fatalf("the all-kinds catalogue must count both kinds: %d", all.TotalVariants)
+	}
+	products := stockAdjustmentCatalogWire(t, f.serve(t, f.request(1, "GET", "/api/stock-adjustments/catalog?kind=other", "")))
+	if products.TotalVariants != 1 || len(products.Items) != 1 {
+		t.Fatalf("the product picker must answer the only product: %+v", products.TotalVariants)
+	}
+	item := products.Items[0]
+	if int64(item.VariantID) != variant || item.Kind != catalog.OtherKind || item.Name != "Agua acidulada" ||
+		item.Detail != "volumen en L: 5 L" || item.Battery != nil || len(item.Fields) != 1 ||
+		item.Fields[0].Name != "volumen en L" || item.Fields[0].Number == nil || *item.Fields[0].Number != "5" {
+		t.Fatalf("the product catalogue item must carry its identity: %+v", item)
+	}
+	// An explicit battery state is the default answer.
+	if battery := stockAdjustmentCatalogWire(t, f.serve(t, f.request(1, "GET", "/api/stock-adjustments/catalog?kind=battery", ""))); battery.TotalVariants != 190 {
+		t.Fatal("the explicit battery state must answer the default catalogue")
+	}
+	for name, query := range map[string]string{
+		"unknown_kind":   "?kind=gift",
+		"upper_kind":     "?kind=ALL",
+		"blank_kind":     "?kind=",
+		"duplicate_kind": "?kind=all&kind=other",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f.rejected(t, f.request(1, "GET", "/api/stock-adjustments/catalog"+query, ""), 400, "invalid_request")
 		})
 	}
 }
