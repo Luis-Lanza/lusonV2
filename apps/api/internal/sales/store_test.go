@@ -686,7 +686,7 @@ func TestSaleVariantWithoutPrice(t *testing.T) {
 		if item.VariantID > 4 {
 			continue
 		}
-		existing, reserved, available := e.availability(t, 2, item.VariantID)
+		existing, reserved, available := e.availability(t, 2, int64(item.VariantID))
 		if item.Existing != existing || item.Reserved != reserved || item.Available != available {
 			t.Fatalf("every row must carry the branch balance: %+v", item)
 		}
@@ -1228,7 +1228,9 @@ func TestSaleKeepsFrozenFacts(t *testing.T) {
 	}
 	line := detail.Lines[0]
 	if line.UnitPrice != "90000.00" || line.MinPrice != "85000.00" || len(line.Units) != 2 ||
-		line.Subtotal != "180000.00" || line.Capacity == "" || line.Brand == "" || line.Model == "" {
+		line.Subtotal != "180000.00" || line.Identity.Kind != catalog.BatteryKind ||
+		line.Identity.Battery == nil || line.Identity.Battery.Capacity == "" ||
+		line.Identity.Battery.Brand == "" || line.Identity.Battery.Model == "" {
 		t.Fatalf("the emitted line must keep the prices of the sale: %+v", line)
 	}
 	if detail.Total != "180000.00" || detail.WarrantyNumber != emitted.WarrantyNumber {
@@ -1400,12 +1402,11 @@ func TestSaleSellableCatalogue(t *testing.T) {
 		if item.VariantID > 6 {
 			continue
 		}
-		if item.Brand == "" || item.Model == "" || item.Capacity == "" ||
-			(item.Polarity != "L" && item.Polarity != "R") {
+		if item.Kind != catalog.BatteryKind || item.Identity.Valid() != nil {
 			t.Fatalf("the catalogue item must carry the catalogue identity: %+v", item)
 		}
-		if item.Sellable != sellable[item.VariantID] {
-			t.Fatalf("variant %d must be sellable=%v: %+v", item.VariantID, sellable[item.VariantID], item)
+		if item.Sellable != sellable[int64(item.VariantID)] {
+			t.Fatalf("variant %d must be sellable=%v: %+v", item.VariantID, sellable[int64(item.VariantID)], item)
 		}
 	}
 	// The first two rows are the two polarities of the first priced battery, at its pair.
@@ -1422,7 +1423,7 @@ func TestSaleSellableCatalogue(t *testing.T) {
 	for _, blocked := range []int64{7, 8} {
 		item := page.Items[blocked-1]
 		existing, reserved, available := e.availability(t, 2, blocked)
-		if item.VariantID != blocked || item.Sellable || item.SuggestedPrice != "" ||
+		if int64(item.VariantID) != blocked || item.Sellable || item.SuggestedPrice != "" ||
 			item.MinPrice != "" || item.Existing != existing || item.Reserved != reserved ||
 			item.Available != available {
 			t.Fatalf("an unpriced variant must be published blocked: %+v want %d/%d/%d",

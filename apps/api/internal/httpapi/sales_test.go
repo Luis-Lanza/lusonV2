@@ -115,6 +115,18 @@ func TestSaleDecoder(t *testing.T) {
 			}
 		}
 	})
+	// S1: a product line carries no unit at all, which the wire states with the empty array.
+	// How many units a line admits is the rule of its catalogue kind, judged by the store, so
+	// the empty array is admitted here and refused there for a battery.
+	product := `{"payments":[{"method":"cash","amount":"1900.00"}],` +
+		`"customer":{"name":"C","phone":"","document":"","address":""},` +
+		`"lines":[{"variant_id":191,"quantity":2,"unit_price":"950.00","units":[]}]}`
+	r := httptest.NewRequest("POST", "/api/sales", strings.NewReader(product))
+	r.Header.Set("Content-Type", "application/json")
+	if got, err := decodeSale(r); err != nil || len(got.Lines) != 1 || got.Lines[0].Units == nil ||
+		len(got.Lines[0].Units) != 0 || got.Lines[0].Quantity != 2 {
+		t.Fatalf("a product line with no unit must be admitted: %+v %v", got.Lines, err)
+	}
 	// A full-width document is admitted: the body limit exists because a sale admits
 	// MaxLines lines.
 	lines := make([]string, 0, sales.MaxLines)
@@ -123,7 +135,7 @@ func TestSaleDecoder(t *testing.T) {
 	}
 	full := `{"payments":[{"method":"cash","amount":"190.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[` +
 		strings.Join(lines, ",") + `]}`
-	r := httptest.NewRequest("POST", "/api/sales", strings.NewReader(full))
+	r = httptest.NewRequest("POST", "/api/sales", strings.NewReader(full))
 	r.Header.Set("Content-Type", "application/json")
 	if got, err := decodeSale(r); err != nil || len(got.Lines) != sales.MaxLines {
 		t.Fatalf("a full-width sale must be admitted: %v", err)
@@ -255,7 +267,6 @@ func TestSaleDecoder(t *testing.T) {
 		// The unit itself is exactly serial_number and warranty_months.
 		"units_null":     replace(`"units":[{"serial_number":"ABC123","warranty_months":6},{"serial_number":"ABC124","warranty_months":null}]`, `"units":null`),
 		"units_object":   replace(`"units":[{"serial_number":"ABC123","warranty_months":6},{"serial_number":"ABC124","warranty_months":null}]`, `"units":{}`),
-		"units_empty":    replace(`"units":[{"serial_number":"ABC123","warranty_months":6},{"serial_number":"ABC124","warranty_months":null}]`, `"units":[]`),
 		"unit_root":      replace(`"units":[{"serial_number":"ABC123","warranty_months":6},{"serial_number":"ABC124","warranty_months":null}]`, `"units":[[]]`),
 		"unit_unknown":   replace(`"serial_number":"ABC123"`, `"serial_number":"ABC123","brand":"CAR"`),
 		"unit_duplicate": replace(`"serial_number":"ABC124"`, `"serial_number":"ABC124","serial_number":"ABC125"`),
@@ -516,7 +527,7 @@ func saleDocumentValue() sales.Sale {
 		Customer:      sales.Customer{Name: "Cliente Mostrador", Phone: "700-00000", Document: "V-123", Address: "Av. Colón 1234"},
 		Total:         "192000.00", CreatedByAccountID: 2,
 		CreatedAt: time.Date(2026, 11, 20, 14, 30, 0, 0, time.UTC),
-		Lines: []sales.SaleLine{{VariantID: 1, Quantity: 2, UnitPrice: "96000.00",
+		Lines: []sales.SaleLine{{VariantID: 1, Kind: catalog.BatteryKind, Quantity: 2, UnitPrice: "96000.00",
 			MinPrice: "85000.00", Subtotal: "192000.00", Units: []sales.Unit{
 				{SerialNumber: "ABC123", WarrantyMonths: &term},
 				{SerialNumber: "ABC124"},
@@ -692,9 +703,9 @@ func TestSaleDocumentRecord(t *testing.T) {
 		"repeated_variant": mutate(func(v *sales.Sale) { v.Lines = append(v.Lines, v.Lines[0]) }),
 		"unordered_lines": mutate(func(v *sales.Sale) {
 			v.Lines = []sales.SaleLine{
-				{VariantID: 2, Quantity: 1, UnitPrice: "96000.00", MinPrice: "85000.00", Subtotal: "96000.00",
+				{VariantID: 2, Kind: catalog.BatteryKind, Quantity: 1, UnitPrice: "96000.00", MinPrice: "85000.00", Subtotal: "96000.00",
 					Units: []sales.Unit{{SerialNumber: "ORDER-2"}}},
-				{VariantID: 1, Quantity: 1, UnitPrice: "96000.00", MinPrice: "85000.00", Subtotal: "96000.00",
+				{VariantID: 1, Kind: catalog.BatteryKind, Quantity: 1, UnitPrice: "96000.00", MinPrice: "85000.00", Subtotal: "96000.00",
 					Units: []sales.Unit{{SerialNumber: "ORDER-1"}}},
 			}
 			v.Total = "192000.00"
@@ -711,7 +722,7 @@ func salePageValue() sales.Page {
 		ID: 7, BranchSequence: 1, WarrantyNumber: "2-000001", PaymentMethod: sales.PaymentCard,
 		CustomerName: "Cliente Mostrador", Total: "192000.00",
 		CreatedAt: time.Date(2026, 11, 20, 14, 30, 0, 0, time.UTC), Lines: 1,
-		UnitsTotal: 2, UnitsWithWarranty: 1,
+		UnitsTotal: 2, UnitsWithWarranty: 1, BatteryUnits: 2,
 	}}}
 }
 
@@ -804,12 +815,12 @@ func saleDetailValue() sales.Detail {
 		Total:          "192000.00", CreatedByAccountID: 2,
 		CreatedAt: time.Date(2026, 11, 20, 14, 30, 0, 0, time.UTC),
 		Lines: []sales.DetailLine{{
-			SaleLine: sales.SaleLine{VariantID: 1, Quantity: 2, UnitPrice: "96000.00",
+			SaleLine: sales.SaleLine{VariantID: 1, Kind: catalog.BatteryKind, Quantity: 2, UnitPrice: "96000.00",
 				MinPrice: "85000.00", Subtotal: "192000.00", Units: []sales.Unit{
 					{SerialNumber: "ABC123", WarrantyMonths: &term},
 					{SerialNumber: "ABC124"},
 				}},
-			CatalogEntryID: 1, Brand: "CAR", Model: "NS40ZL", Capacity: catalog.Decimal("35"), Polarity: "L",
+			CatalogEntryID: 1, Identity: catalog.BatteryIdentity(1, "CAR", "NS40ZL", "35", "L"),
 		}},
 	}
 }
@@ -859,11 +870,12 @@ func TestSaleDetailRecord(t *testing.T) {
 	}
 	for name, detail := range map[string]sales.Detail{
 		"zero_entry":      mutate(func(v *sales.Detail) { v.Lines[0].CatalogEntryID = 0 }),
-		"empty_brand":     mutate(func(v *sales.Detail) { v.Lines[0].Brand = "" }),
-		"empty_model":     mutate(func(v *sales.Detail) { v.Lines[0].Model = "" }),
-		"nul_model":       mutate(func(v *sales.Detail) { v.Lines[0].Model = "a\x00b" }),
-		"capacity":        mutate(func(v *sales.Detail) { v.Lines[0].Capacity = "0" }),
-		"polarity":        mutate(func(v *sales.Detail) { v.Lines[0].Polarity = "X" }),
+		"empty_brand":     mutate(func(v *sales.Detail) { v.Lines[0].Identity.Battery.Brand = "" }),
+		"empty_model":     mutate(func(v *sales.Detail) { v.Lines[0].Identity.Battery.Model = "" }),
+		"nul_model":       mutate(func(v *sales.Detail) { v.Lines[0].Identity.Battery.Model = "a\x00b" }),
+		"capacity":        mutate(func(v *sales.Detail) { v.Lines[0].Identity.Battery.Capacity = "0" }),
+		"polarity":        mutate(func(v *sales.Detail) { v.Lines[0].Identity.Battery.Polarity = "X" }),
+		"kind_mismatch":   mutate(func(v *sales.Detail) { v.Lines[0].Kind = catalog.OtherKind }),
 		"no_lines":        mutate(func(v *sales.Detail) { v.Lines = []sales.DetailLine{} }),
 		"floor_above":     mutate(func(v *sales.Detail) { v.Lines[0].MinPrice = "97000.00" }),
 		"number_mismatch": mutate(func(v *sales.Detail) { v.WarrantyNumber = "2-000009" }),
@@ -909,15 +921,15 @@ func TestSaleDetailRecord(t *testing.T) {
 
 func saleSellableValue() sales.SellablePage {
 	return sales.SellablePage{Page: 1, PageSize: 25, TotalVariants: 3, Items: []sales.SellableItem{
-		{VariantID: 1, CatalogEntryID: 1, Brand: "CAR", Model: "NS40ZL", Capacity: "35", Polarity: "L",
-			Sellable: true, SuggestedPrice: "96000.00", MinPrice: "85000.00",
+		{Identity: catalog.BatteryIdentity(1, "CAR", "NS40ZL", "35", "L"),
+			CatalogEntryID: 1, Sellable: true, SuggestedPrice: "96000.00", MinPrice: "85000.00",
 			Existing: 12, Reserved: 2, Available: 10},
-		{VariantID: 2, CatalogEntryID: 1, Brand: "CAR", Model: "NS40ZL", Capacity: "35", Polarity: "R",
-			Sellable: true, SuggestedPrice: "96000.00", MinPrice: "85000.00",
+		{Identity: catalog.BatteryIdentity(2, "CAR", "NS40ZL", "35", "R"),
+			CatalogEntryID: 1, Sellable: true, SuggestedPrice: "96000.00", MinPrice: "85000.00",
 			Existing: 4, Reserved: 0, Available: 4},
 		// A variant the branch cannot sell is still a row: the counter shows it blocked.
-		{VariantID: 3, CatalogEntryID: 2, Brand: "CAR", Model: "NS60L", Capacity: "45", Polarity: "L",
-			Sellable: false, Existing: 7, Reserved: 1, Available: 6},
+		{Identity: catalog.BatteryIdentity(3, "CAR", "NS60L", "45", "L"),
+			CatalogEntryID: 2, Sellable: false, Existing: 7, Reserved: 1, Available: 6},
 	}}
 }
 
@@ -958,12 +970,12 @@ func TestSaleSellableRecord(t *testing.T) {
 		"bad_size":       mutate(func(v *sales.SellablePage) { v.PageSize = 20 }),
 		"negative_total": mutate(func(v *sales.SellablePage) { v.TotalVariants = -1 }),
 		"overflow":       mutate(func(v *sales.SellablePage) { v.TotalVariants = 2 }),
-		"zero_variant":   mutate(func(v *sales.SellablePage) { v.Items[0].VariantID = 0 }),
-		"unordered":      mutate(func(v *sales.SellablePage) { v.Items[1].VariantID = 1 }),
+		"zero_variant":   mutate(func(v *sales.SellablePage) { v.Items[0].Identity.VariantID = 0 }),
+		"unordered":      mutate(func(v *sales.SellablePage) { v.Items[1].Identity.VariantID = 1 }),
 		"zero_entry":     mutate(func(v *sales.SellablePage) { v.Items[0].CatalogEntryID = 0 }),
-		"empty_brand":    mutate(func(v *sales.SellablePage) { v.Items[0].Brand = "" }),
-		"polarity":       mutate(func(v *sales.SellablePage) { v.Items[0].Polarity = "X" }),
-		"capacity":       mutate(func(v *sales.SellablePage) { v.Items[0].Capacity = "0" }),
+		"empty_brand":    mutate(func(v *sales.SellablePage) { v.Items[0].Identity.Battery.Brand = "" }),
+		"polarity":       mutate(func(v *sales.SellablePage) { v.Items[0].Identity.Battery.Polarity = "X" }),
+		"capacity":       mutate(func(v *sales.SellablePage) { v.Items[0].Identity.Battery.Capacity = "0" }),
 		"money_digits":   mutate(func(v *sales.SellablePage) { v.Items[0].MinPrice = "85000" }),
 		"under_floor":    mutate(func(v *sales.SellablePage) { v.Items[0].SuggestedPrice = "84000.00" }),
 		// A blocked variant never carries a pair, and a sellable one always does.
@@ -1508,15 +1520,15 @@ func salePageWire(t *testing.T, w *httptest.ResponseRecorder) salePageDTO {
 			}
 		}
 		// S5: the counts tell the sale's position without unfolding it, and the warranted
-		// units are a subset of all of them. A sale issued before the sold unit existed
-		// (T12) is a legible row with zero units; a row with some units but fewer than its
-		// lines is not.
+		// units are a subset of all of them. The units of a sale are the pieces sold on
+		// battery lines, never a count of its lines, because a product line carries none: a
+		// sale issued before the sold unit existed is a legible row with zero units, and a
+		// mixed sale is a legible row with fewer units than lines.
 		var lines, total, warranted int64
 		if json.Unmarshal(row["lines"], &lines) != nil ||
 			json.Unmarshal(row["units_total"], &total) != nil ||
 			json.Unmarshal(row["units_with_warranty"], &warranted) != nil ||
-			lines < 1 || total > sales.MaxUnits || (total != 0 && total < lines) ||
-			warranted > total {
+			lines < 1 || total < 0 || total > sales.MaxUnits || warranted > total {
 			t.Fatalf("the unit counts are not a legible row: %s", row["units_total"])
 		}
 	}
@@ -1833,8 +1845,6 @@ func TestSaleHTTPRefusals(t *testing.T) {
 	// D3: the units are exactly as many as the quantity, and a sale whose units do not match
 	// writes nothing at all.
 	for name, body := range map[string]string{
-		"units_short": `{"payments":[{"method":"cash","amount":"192000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":2,"unit_price":"96000.00","units":[{"serial_number":"REF-1","warranty_months":6}]}]}`,
-		"units_long":  `{"payments":[{"method":"cash","amount":"192000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":2,"unit_price":"96000.00","units":[{"serial_number":"REF-2","warranty_months":6},{"serial_number":"REF-3","warranty_months":6},{"serial_number":"REF-4","warranty_months":6}]}]}`,
 		// S2: a serial is mandatory, at most sixty-four characters and never a NUL.
 		"blank_serial": `{"payments":[{"method":"cash","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"   ","warranty_months":6}]}]}`,
 		"long_serial":  fmt.Sprintf(`{"payments":[{"method":"cash","amount":"96000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":%q,"warranty_months":6}]}]}`, strings.Repeat("S", 65)),
@@ -1851,6 +1861,19 @@ func TestSaleHTTPRefusals(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f.rejected(t, f.request(2, "POST", "/api/sales", body), 400, "invalid_request")
 		})
+	}
+	// S1/D3: the units of a battery line are exactly its sold pieces, and the refusal names the
+	// rule and the line instead of the generic invalid document.
+	for name, body := range map[string]string{
+		"units_short": `{"payments":[{"method":"cash","amount":"192000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":2,"unit_price":"96000.00","units":[{"serial_number":"REF-1","warranty_months":6}]}]}`,
+		"units_long":  `{"payments":[{"method":"cash","amount":"192000.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[{"variant_id":1,"quantity":2,"unit_price":"96000.00","units":[{"serial_number":"REF-2","warranty_months":6},{"serial_number":"REF-3","warranty_months":6},{"serial_number":"REF-4","warranty_months":6}]}]}`,
+	} {
+		before := f.snapshot(t)
+		expectSaleLineRefusal(t, f.serve(t, f.request(2, "POST", "/api/sales", body)),
+			"battery_line_requires_units", 1)
+		if f.snapshot(t) != before {
+			t.Fatalf("%s must not write a sale, a unit nor touch stock", name)
+		}
 	}
 	// D2: one physical battery is sold once. The second sale of the same serial, spelled with
 	// the padding the counter may type, is refused with its own code and names the battery.
