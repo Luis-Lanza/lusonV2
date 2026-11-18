@@ -123,11 +123,11 @@ type Detail struct {
 // stays out of this projection; only the line count, the kind derived from those
 // lines and the exact difference are exposed.
 type Summary struct {
-	ID                   int64
-	Reason               string
-	Detail               string
-	CreatedAt            time.Time
-	Lines                int
+	ID        int64
+	Reason    string
+	Detail    string
+	CreatedAt time.Time
+	Lines     int
 	// Kind is the kind the document's own lines declare, and it is empty exactly
 	// when those lines disagree: such a document was written before the one-kind
 	// rule and never gets a guessed kind. It is derived on read, never stored.
