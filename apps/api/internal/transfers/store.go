@@ -76,14 +76,25 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 			return CreateResult{}, ErrRetryConflict
 		}
 	} else if errors.Is(err, pgx.ErrNoRows) {
+		ids := make([]int32, len(n.Items))
+		for i, line := range n.Items {
+			ids[i] = int32(line.VariantID)
+		}
+		// A document carries one catalogue kind, derived from its own lines and
+		// never stored, so a cart naming both kinds is refused whole before any
+		// write. A replay of a persisted document was answered above and is never
+		// re-judged here.
+		mixed, err := mixedCatalogueKinds(ctx, tx, ids)
+		if err != nil {
+			return CreateResult{}, fail(ctx)
+		}
+		if mixed {
+			return CreateResult{}, ErrInvalid
+		}
 		if n.Kind == DirectShipment {
 			if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(714025,1)"); err != nil {
 				return CreateResult{}, fail(ctx)
 			}
-		}
-		ids := make([]int32, len(n.Items))
-		for i, line := range n.Items {
-			ids[i] = int32(line.VariantID)
 		}
 		rows, err := tx.Query(ctx, `SELECT b.variant_id,b.available FROM inventory_balances b
    JOIN catalog_variants v ON v.id=b.variant_id
@@ -177,6 +188,22 @@ func (s *Store) Get(ctx context.Context, actor auth.Identity, id int64) (Request
 	return load(ctx, s.pool, actor.Location.ID, id)
 }
 
+// mixedCatalogueKinds reports whether the named variants belong to both catalogue
+// kinds. The kind of a transfer document is derived from its own lines and never
+// stored, so this is the only place a mixed cart is refused instead of recorded.
+func mixedCatalogueKinds(ctx context.Context, q querier, ids []int32) (bool, error) {
+	var batteries, products bool
+	err := q.QueryRow(ctx, `SELECT
+  EXISTS(SELECT 1 FROM catalog_variants v JOIN catalog_entries e ON e.id=v.catalog_entry_id
+   WHERE v.id=ANY($1::integer[]) AND e.kind='battery'),
+  EXISTS(SELECT 1 FROM catalog_variants v JOIN catalog_entries e ON e.id=v.catalog_entry_id
+   WHERE v.id=ANY($1::integer[]) AND e.kind='other')`, ids).Scan(&batteries, &products)
+	if err != nil {
+		return false, err
+	}
+	return batteries && products, nil
+}
+
 type querier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 	Query(context.Context, string, ...any) (pgx.Rows, error)
@@ -201,29 +228,59 @@ func load(ctx context.Context, q querier, participant int, id int64, personal ..
 	if err != nil {
 		return Request{}, fail(ctx)
 	}
-	rows, err := q.Query(ctx, `SELECT i.variant_id,i.quantity,e.brand,e.model,e.capacity_ah::text,v.polarity
+	rows, err := q.Query(ctx, `SELECT i.variant_id,i.quantity,
+  e.id,e.kind,coalesce(e.brand,''),coalesce(e.model,''),e.capacity_ah::text,coalesce(v.polarity,''),coalesce(e.name,'')
   FROM transfer_request_items i JOIN catalog_variants v ON v.id=i.variant_id
   JOIN catalog_entries e ON e.id=v.catalog_entry_id WHERE i.request_id=$1 ORDER BY i.variant_id`, id)
 	if err != nil {
 		return Request{}, fail(ctx)
 	}
 	defer rows.Close()
-	lines := []Line{}
+	// persisted is one stored line before its identity is composed: the typed
+	// fields of a product are read in one statement instead of a lookup per line.
+	type persisted struct {
+		variant  catalog.Row
+		quantity int64
+	}
+	stored := make([]persisted, 0, 8)
+	entries := make([]int32, 0, 8)
 	for rows.Next() {
-		var item Item
-		var capacity string
-		if rows.Scan(&item.VariantID, &item.Quantity, &item.Brand, &item.Model, &capacity, &item.Polarity) != nil {
+		var line persisted
+		var capacity *string
+		if rows.Scan(&line.variant.VariantID, &line.quantity, &line.variant.CatalogEntryID, &line.variant.Kind,
+			&line.variant.Brand, &line.variant.Model, &capacity, &line.variant.Polarity, &line.variant.Name) != nil {
 			return Request{}, fail(ctx)
 		}
-		item.Capacity, err = catalog.ParseDecimal(capacity)
-		if err != nil {
-			return Request{}, ErrUnavailable
+		// A numeric column never travels as a float: its own text is parsed back
+		// into the canonical decimal of the contract.
+		if capacity != nil {
+			line.variant.Capacity = *capacity
 		}
-		r.Items = append(r.Items, item)
-		lines = append(lines, Line{VariantID: item.VariantID, Quantity: item.Quantity})
+		if line.variant.Kind == catalog.OtherKind {
+			entries = append(entries, int32(line.variant.CatalogEntryID))
+		}
+		stored = append(stored, line)
 	}
 	if rows.Err() != nil {
 		return Request{}, fail(ctx)
+	}
+	rows.Close()
+	fields, err := catalog.ReadFields(ctx, q, entries)
+	if err != nil {
+		return Request{}, ErrUnavailable
+	}
+	// Every line renders by its own identity: a battery as brand · model and
+	// capacity Ah · polarity, a product as its free name and its field summary.
+	// A line this contract could not publish fails the read closed.
+	r.Items = make([]Item, 0, len(stored))
+	lines := make([]Line, 0, len(stored))
+	for _, line := range stored {
+		identity, err := line.variant.Identity(fields[line.variant.CatalogEntryID])
+		if err != nil {
+			return Request{}, ErrUnavailable
+		}
+		r.Items = append(r.Items, NewItem(identity, line.quantity))
+		lines = append(lines, Line{VariantID: int64(identity.VariantID), Quantity: line.quantity})
 	}
 	counterparty := r.Origin.ID
 	if r.Kind == SendToWarehouse {
@@ -278,7 +335,6 @@ func load(ctx context.Context, q querier, participant int, id int64, personal ..
 	} else if r.DispatchLocationID != nil || r.DispatchedAt != nil {
 		return Request{}, ErrUnavailable
 	}
-	rows.Close()
 	if err := loadReceipt(ctx, q, &r); err != nil {
 		return Request{}, err
 	}

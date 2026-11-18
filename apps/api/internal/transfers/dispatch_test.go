@@ -63,7 +63,7 @@ func TestD01DispatchStore(t *testing.T) {
 			wantStock := append([]stockRow(nil), before...)
 			for i := range wantStock {
 				for _, item := range r.Items {
-					if wantStock[i].Location == r.Origin.ID && int64(wantStock[i].Variant) == item.VariantID {
+					if wantStock[i].Location == r.Origin.ID && int64(wantStock[i].Variant) == int64(item.VariantID) {
 						wantStock[i].Existing -= item.Quantity
 						wantStock[i].Reserved -= item.Quantity
 					}

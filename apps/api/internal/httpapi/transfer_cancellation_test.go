@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"luson/api/internal/auth"
+	"luson/api/internal/catalog"
 	"luson/api/internal/transfers"
 )
 
@@ -39,9 +40,10 @@ func TestC01PendingCancellationHTTP(t *testing.T) {
 			// a future cancellation export or the Pending-only DTO whitelist.
 			w := f.request(t, 2, "POST", path+"/cancel", " \n{}\t")
 			cancelled := transferObject(t, w, 200)
-			if transferBusinessFieldCount(t, cancelled) != 16 || string(cancelled["status"]) != `"cancelled"` || len(w.Result().Cookies()) != 0 {
+			if transferBusinessFieldCount(t, cancelled) != 17 || string(cancelled["status"]) != `"cancelled"` || len(w.Result().Cookies()) != 0 {
 				t.Fatal("creator cancellation did not return Cancelled without cookies")
 			}
+			transferRecordCatalogueKind(t, cancelled, catalog.BatteryKind)
 			cancellationMetadata(t, f, id, cancelled, 2)
 			var beforeActor, afterActor transferDTO
 			originalJSON, _ := json.Marshal(original)
@@ -123,9 +125,10 @@ func cancellationProof(t *testing.T, f *transferHTTPFixture, original transferDT
 	}
 	return func(w *httptest.ResponseRecorder) {
 		got := transferObject(t, w, 200)
-		if transferBusinessFieldCount(t, got) != 18 || string(got["status"]) != `"cancelled"` || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("X-Content-Type-Options") != "nosniff" || w.Header().Get("Access-Control-Allow-Origin") != "" || len(w.Result().Cookies()) != 0 {
+		if transferBusinessFieldCount(t, got) != 19 || string(got["status"]) != `"cancelled"` || w.Header().Get("Cache-Control") != "no-store" || w.Header().Get("X-Content-Type-Options") != "nosniff" || w.Header().Get("Access-Control-Allow-Origin") != "" || len(w.Result().Cookies()) != 0 {
 			t.Fatal("Approved cancellation response contract changed")
 		}
+		transferRecordCatalogueKind(t, got, catalog.BatteryKind)
 		cancellationMetadata(t, f, original.ID, got, original.CreatorLocationID)
 		var result transferDTO
 		if json.Unmarshal(w.Body.Bytes(), &result) != nil {

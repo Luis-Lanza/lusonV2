@@ -44,7 +44,7 @@ func TestC01ApprovedCancellationSchema(t *testing.T) {
 			want := append([]stockRow(nil), before...)
 			for i := range want {
 				for _, item := range r.Items {
-					if want[i].Location == r.Origin.ID && int64(want[i].Variant) == item.VariantID {
+					if want[i].Location == r.Origin.ID && int64(want[i].Variant) == int64(item.VariantID) {
 						want[i].Reserved -= item.Quantity
 						want[i].Available += item.Quantity
 					}

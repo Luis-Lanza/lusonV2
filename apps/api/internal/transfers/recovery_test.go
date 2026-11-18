@@ -20,7 +20,7 @@ func recoveryInput(r transfers.Request) transfers.RecoveryInput {
 		ReceivedAt: time.Now().UTC(),
 	}
 	for _, item := range r.Items {
-		in.Items = append(in.Items, transfers.Line{VariantID: item.VariantID, Quantity: item.Quantity})
+		in.Items = append(in.Items, transfers.Line{VariantID: int64(item.VariantID), Quantity: item.Quantity})
 	}
 	return in
 }

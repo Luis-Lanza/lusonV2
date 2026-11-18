@@ -14,7 +14,7 @@ func TestUnifiedReconciliationReaderUnowned(t *testing.T) {
 	// anymore: seed it on 001-018, upgrade through 019, then read it back.
 	ctx, p := urPrefixFixtureAt(t, 19)
 	s := transfers.New(p)
-	r := urHistoricalReceipt(t, ctx, p, s)
+	r := urHistoricalReceipt(t, ctx, p)
 	urSeedUnexpectedLine(t, ctx, p, r, 3, 1)
 	if err := db.Apply(ctx, p); err != nil {
 		t.Fatal("apply019 over historical receipt lines", err)

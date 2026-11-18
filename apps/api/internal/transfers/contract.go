@@ -54,12 +54,17 @@ type Location struct {
 	Name string
 }
 type Item struct {
-	VariantID    int64
-	Quantity     int64
-	Brand, Model string
-	Capacity     catalog.Decimal
-	Polarity     string
+	// A line is one variant identity, never a battery shape: the shared catalogue
+	// identity every other surface reads, plus the quantity this document carries.
+	catalog.Identity
+	Quantity int64
 }
+
+// NewItem composes one published line from the identity of its variant.
+func NewItem(identity catalog.Identity, quantity int64) Item {
+	return Item{Identity: identity, Quantity: quantity}
+}
+
 type Request struct {
 	Activity                               []Activity `json:"activity,omitempty"`
 	ID                                     int64
@@ -82,6 +87,24 @@ type Request struct {
 type CreateResult struct {
 	Request  Request
 	Replayed bool
+}
+
+// CatalogueKind is the kind of the catalogue entries this document names. It is
+// derived from the document's own lines on every read and never stored: the one
+// kind they all name, or empty exactly when they disagree. Each line still
+// renders by its own identity, so no reader has to choose one shape.
+func (r Request) CatalogueKind() catalog.Kind {
+	kind := catalog.Kind("")
+	for _, item := range r.Items {
+		if kind == "" {
+			kind = item.Kind
+			continue
+		}
+		if item.Kind != kind {
+			return ""
+		}
+	}
+	return kind
 }
 
 var retryKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{16,128}$`)

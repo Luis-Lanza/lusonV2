@@ -50,7 +50,7 @@ func TestC01CancellationStore(t *testing.T) {
 				}
 				for i := range before {
 					for _, item := range got.Items {
-						if approved && before[i].Location == got.Origin.ID && int64(before[i].Variant) == item.VariantID {
+						if approved && before[i].Location == got.Origin.ID && int64(before[i].Variant) == int64(item.VariantID) {
 							before[i].Reserved -= item.Quantity
 							before[i].Available += item.Quantity
 						}

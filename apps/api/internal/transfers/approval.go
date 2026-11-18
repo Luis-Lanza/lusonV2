@@ -105,7 +105,7 @@ func (s *Store) Approve(ctx context.Context, actor auth.Identity, id int64) (Req
 	// quantity <= existing-reserved proves reserved+quantity <= MaxInt64;
 	// summing quantities across unrelated variants would not be safe.
 	for _, item := range r.Items {
-		quantity, exists := available[item.VariantID]
+		quantity, exists := available[int64(item.VariantID)]
 		if !exists || quantity < item.Quantity {
 			return Request{}, ErrInsufficientStock
 		}

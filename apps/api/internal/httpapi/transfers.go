@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"luson/api/internal/auth"
+	"luson/api/internal/catalog"
 	"luson/api/internal/config"
 	"luson/api/internal/inventory"
 	"luson/api/internal/transfers"
@@ -287,39 +288,44 @@ func transferQuery(raw string) (transfers.Query, error) {
 	return q, nil
 }
 
+// transferItemDTO publishes one line: the shared catalogue identity of its own
+// variant plus the quantity this document carries. A battery keeps its brand,
+// model, capacity and polarity inside `battery` and carries no typed field; a
+// product carries its free name, its field summary and its typed fields. Neither
+// is ever a top-level battery field of the transfer line.
 type transferItemDTO struct {
-	VariantID  int64  `json:"variant_id"`
-	Brand      string `json:"brand"`
-	Model      string `json:"model"`
-	CapacityAH string `json:"capacity_ah"`
-	Polarity   string `json:"polarity"`
-	Quantity   string `json:"quantity"`
+	catalog.Identity
+	Quantity string `json:"quantity"`
 }
 type transferDTO struct {
-	Activity                []transfers.Activity `json:"activity,omitempty"`
-	ID                      string               `json:"id"`
-	Reference               string               `json:"reference"`
-	CreatorLocationID       int                  `json:"creator_location_id"`
-	CreatorLocationName     string               `json:"creator_location_name"`
-	Kind                    transfers.Kind       `json:"kind"`
-	OriginLocationID        int                  `json:"origin_location_id"`
-	OriginLocationName      string               `json:"origin_location_name"`
-	DestinationLocationID   int                  `json:"destination_location_id"`
-	DestinationLocationName string               `json:"destination_location_name"`
-	ApproverLocationID      int                  `json:"approver_location_id"`
-	ApproverLocationName    string               `json:"approver_location_name"`
-	Status                  string               `json:"status"`
-	CreatedAt               string               `json:"created_at"`
-	Items                   []transferItemDTO    `json:"items"`
-	DecisionLocationID      *int                 `json:"decision_location_id,omitempty"`
-	DecidedAt               *string              `json:"decided_at,omitempty"`
-	DispatchLocationID      *int                 `json:"dispatch_location_id,omitempty"`
-	DispatchedAt            *string              `json:"dispatched_at,omitempty"`
-	ReceiptLocationID       *int                 `json:"receipt_location_id,omitempty"`
-	ReceivedAt              *string              `json:"received_at,omitempty"`
-	Receipt                 *receiptDTO          `json:"receipt,omitempty"`
-	CancellationLocationID  *int                 `json:"cancellation_location_id,omitempty"`
-	CancelledAt             *string              `json:"cancelled_at,omitempty"`
+	Activity            []transfers.Activity `json:"activity,omitempty"`
+	ID                  string               `json:"id"`
+	Reference           string               `json:"reference"`
+	CreatorLocationID   int                  `json:"creator_location_id"`
+	CreatorLocationName string               `json:"creator_location_name"`
+	Kind                transfers.Kind       `json:"kind"`
+	// CatalogueKind is the kind the document's own lines hold, derived on read and
+	// never stored: it is empty exactly when those lines disagree. `kind` already
+	// means the request kind, so the catalogue kind never reuses that name.
+	CatalogueKind           catalog.Kind      `json:"catalogue_kind"`
+	OriginLocationID        int               `json:"origin_location_id"`
+	OriginLocationName      string            `json:"origin_location_name"`
+	DestinationLocationID   int               `json:"destination_location_id"`
+	DestinationLocationName string            `json:"destination_location_name"`
+	ApproverLocationID      int               `json:"approver_location_id"`
+	ApproverLocationName    string            `json:"approver_location_name"`
+	Status                  string            `json:"status"`
+	CreatedAt               string            `json:"created_at"`
+	Items                   []transferItemDTO `json:"items"`
+	DecisionLocationID      *int              `json:"decision_location_id,omitempty"`
+	DecidedAt               *string           `json:"decided_at,omitempty"`
+	DispatchLocationID      *int              `json:"dispatch_location_id,omitempty"`
+	DispatchedAt            *string           `json:"dispatched_at,omitempty"`
+	ReceiptLocationID       *int              `json:"receipt_location_id,omitempty"`
+	ReceivedAt              *string           `json:"received_at,omitempty"`
+	Receipt                 *receiptDTO       `json:"receipt,omitempty"`
+	CancellationLocationID  *int              `json:"cancellation_location_id,omitempty"`
+	CancelledAt             *string           `json:"cancelled_at,omitempty"`
 }
 
 // Outcomes must be complete persisted results, never fabricated Pending or
@@ -388,7 +394,10 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 	}
 	items := make([]transferItemDTO, 0, len(r.Items))
 	for _, item := range r.Items {
-		items = append(items, transferItemDTO{item.VariantID, item.Brand, item.Model, string(item.Capacity), item.Polarity, strconv.FormatInt(item.Quantity, 10)})
+		if item.Identity.Valid() != nil || item.Quantity < 1 {
+			return transferDTO{}, transfers.ErrUnavailable
+		}
+		items = append(items, transferItemDTO{Identity: item.Identity, Quantity: strconv.FormatInt(item.Quantity, 10)})
 	}
 	return transferDTO{
 		Activity:                r.Activity,
@@ -397,6 +406,7 @@ func transferRecord(r transfers.Request) (transferDTO, error) {
 		CreatorLocationID:       r.Creator.ID,
 		CreatorLocationName:     r.Creator.Name,
 		Kind:                    r.Kind,
+		CatalogueKind:           r.CatalogueKind(),
 		OriginLocationID:        r.Origin.ID,
 		OriginLocationName:      r.Origin.Name,
 		DestinationLocationID:   r.Destination.ID,

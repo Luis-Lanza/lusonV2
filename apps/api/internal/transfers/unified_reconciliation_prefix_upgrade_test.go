@@ -253,9 +253,9 @@ func urEraInventory(t *testing.T, ctx context.Context, p *pgxpool.Pool) []invent
 // urHistoricalReceipt finalizes the receipt the legacy fixtures used: variant 1
 // dispatched with 10 units and 8 arriving. The prefix database therefore holds genuine
 // pre-019 history, written with the SQL that prefix era admits.
-func urHistoricalReceipt(t *testing.T, ctx context.Context, p *pgxpool.Pool, s *transfers.Store) transfers.Request {
+func urHistoricalReceipt(t *testing.T, ctx context.Context, p *pgxpool.Pool) transfers.Request {
 	t.Helper()
-	return urEraReceipt(t, ctx, p, s, 2,
+	return urEraReceipt(t, ctx, p, 2,
 		[]transfers.Line{{VariantID: 1, Quantity: 10}},
 		[]transfers.Line{{VariantID: 1, Quantity: 8}})
 }
@@ -267,7 +267,7 @@ func urHistoricalReceipt(t *testing.T, ctx context.Context, p *pgxpool.Pool, s *
 // still the public contract -- transfers.Validate derives the fingerprint the store would
 // persist, and Get re-derives it later -- and the 015 creation admission trigger still
 // judges the row.
-func urEraPendingRequest(t *testing.T, ctx context.Context, p *pgxpool.Pool, creator int, in transfers.CreateInput) int64 {
+func urEraPendingRequest(t *testing.T, ctx context.Context, p *pgxpool.Pool, creator int, in transfers.CreateInput) (int64, transfers.Intent) {
 	t.Helper()
 	n, err := transfers.Validate(actor(creator), in)
 	if err != nil {
@@ -293,66 +293,179 @@ func urEraPendingRequest(t *testing.T, ctx context.Context, p *pgxpool.Pool, cre
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal("historical pending request", err)
 	}
-	return id
+	return id, n
 }
 
 // urEraReceipt builds the historical received transfer the pre-019 flows produced.
-// Approval and dispatch still run through the public store, which reads no post-prefix
-// column; the finalization is the two writes the store itself issues, because
-// Store.Receive admits the destination catalogue through catalog_entries.deleted_at.
-// Everything the receipt *means* stays the database's: the 008 triggers credit the
-// destination, derive the shortage/excess rows and judge the document at commit.
-func urEraReceipt(t *testing.T, ctx context.Context, p *pgxpool.Pool, s *transfers.Store, creator int, dispatched, arrived []transfers.Line) transfers.Request {
+//
+// Retired premise: this fixture used to install only migrations 001..018/019 and then
+// drive the current store against that partial schema, because "approval and dispatch
+// still run through the public store, which reads no post-prefix column". That scenario
+// cannot exist any more: the migration engine applies every missing migration in one
+// locked transaction before the server serves, so no database is ever read by this
+// binary without 055's catalog_entries.kind/name, which the store's kind-aware item read
+// needs. What the era tests prove is the historical *data*, so the document is seeded
+// with the SQL the prefix era admits - never through the store - and the migration
+// engine then completes the schema before the first store call.
+//
+// The seeded statements are exactly the writes the era store issued: the availability
+// validation and its two reservation statements, then the single header UPDATEs whose
+// database guards derive decision/dispatch metadata, deduct source stock, consume the
+// allocations and credit the destination of each receipt line.
+func urEraReceipt(t *testing.T, ctx context.Context, p *pgxpool.Pool, creator int, dispatched, arrived []transfers.Line) transfers.Request {
 	t.Helper()
 	in := input()
 	in.Items = dispatched
-	r, err := s.Get(ctx, actor(creator), urEraPendingRequest(t, ctx, p, creator, in))
-	if err != nil {
-		t.Fatal("historical request", err)
-	}
-	if _, err := s.Approve(ctx, actor(r.Approver.ID), r.ID); err != nil {
-		t.Fatal("historical approval", err)
-	}
-	r, err = s.Dispatch(ctx, actor(r.Origin.ID), r.ID)
-	if err != nil {
-		t.Fatal("historical dispatch", err)
-	}
+	id, n := urEraPendingRequest(t, ctx, p, creator, in)
 	actual := make(map[int64]int64, len(arrived))
 	for _, line := range arrived {
 		actual[line.VariantID] = line.Quantity
-	}
-	// Which lines the historical finalization owed is the dispatched payload the 008
-	// admission trigger demands, never a second copy of the wire input.
-	sent := make(map[int64]int64, len(r.Items))
-	for _, item := range r.Items {
-		sent[item.VariantID] = item.Quantity
 	}
 	tx, err := p.Begin(ctx)
 	if err != nil {
 		t.Fatal("historical receipt transaction", err)
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
-	for variant, expected := range sent {
-		quantity, ok := actual[variant]
+	// Approval: the era writer reserved every line and owned its allocation before
+	// the header transition, which is where the database derives the decision.
+	for _, line := range n.Items {
+		if _, err := tx.Exec(ctx, `UPDATE inventory_balances SET reserved=reserved+$3
+   WHERE location_id=$1 AND variant_id=$2`, n.OriginID, int32(line.VariantID), line.Quantity); err != nil {
+			t.Fatal("historical approval reservation", err)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO transfer_request_allocations(request_id,variant_id,origin_location_id,quantity)
+   VALUES($1,$2,$3,$4)`, id, int32(line.VariantID), n.OriginID, line.Quantity); err != nil {
+			t.Fatal("historical approval allocation", err)
+		}
+	}
+	for _, status := range []string{"approved", "in_transit"} {
+		if _, err := tx.Exec(ctx, "UPDATE transfer_requests SET status=$2 WHERE id=$1", id, status); err != nil {
+			t.Fatal("historical transition", status, err)
+		}
+	}
+	// Receipt: the dispatched payload the 008 admission trigger demands, then the
+	// finalization whose guard credits min(dispatched,observed) and derives the
+	// shortage/excess evidence.
+	for _, line := range n.Items {
+		quantity, ok := actual[line.VariantID]
 		if !ok {
-			t.Fatal("historical receipt is missing a dispatched variant", variant)
+			t.Fatal("historical receipt is missing a dispatched variant", line.VariantID)
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO transfer_receipt_lines(request_id,variant_id,expected_quantity,actual_quantity,available_quantity)
-   VALUES($1,$2,$3::bigint,$4::bigint,LEAST($3::bigint,$4::bigint))`, r.ID, int32(variant), expected, quantity); err != nil {
+   VALUES($1,$2,$3::bigint,$4::bigint,LEAST($3::bigint,$4::bigint))`, id, int32(line.VariantID), line.Quantity, quantity); err != nil {
 			t.Fatal("historical receipt line", err)
 		}
 	}
-	if _, err := tx.Exec(ctx, "UPDATE transfer_requests SET status='received' WHERE id=$1", r.ID); err != nil {
+	if _, err := tx.Exec(ctx, "UPDATE transfer_requests SET status='received' WHERE id=$1", id); err != nil {
 		t.Fatal("historical receipt finalization", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal("historical receipt finalization", err)
 	}
-	settled, err := s.Get(ctx, actor(r.Destination.ID), r.ID)
-	if err != nil {
-		t.Fatal("historical receipt", err)
+	return urEraRequest(t, ctx, p, id)
+}
+
+// urEraRequest reads the seeded document back with the prefix era's own columns: every
+// prefix entry is a battery, so each line is the battery identity the catalogue
+// composes. It never calls the store, which needs the current schema.
+func urEraRequest(t *testing.T, ctx context.Context, p *pgxpool.Pool, id int64) transfers.Request {
+	t.Helper()
+	var r transfers.Request
+	var retryKey string
+	var fingerprint []byte
+	if err := p.QueryRow(ctx, `SELECT r.id,r.kind,r.status,r.created_at,
+  c.id,c.name,o.id,o.name,d.id,d.name,a.id,a.name,r.retry_key,r.payload_sha256
+  FROM transfer_requests r
+  JOIN locations c ON c.id=r.creator_location_id JOIN locations o ON o.id=r.origin_location_id
+  JOIN locations d ON d.id=r.destination_location_id JOIN locations a ON a.id=r.approver_location_id
+  WHERE r.id=$1`, id).Scan(&r.ID, &r.Kind, &r.Status, &r.CreatedAt,
+		&r.Creator.ID, &r.Creator.Name, &r.Origin.ID, &r.Origin.Name, &r.Destination.ID, &r.Destination.Name, &r.Approver.ID, &r.Approver.Name,
+		&retryKey, &fingerprint); err != nil {
+		t.Fatal("historical request unreadable", err)
 	}
-	return settled
+	rows, err := p.Query(ctx, `SELECT i.variant_id,i.quantity,e.brand,e.model,e.capacity_ah::text,v.polarity
+  FROM transfer_request_items i JOIN catalog_variants v ON v.id=i.variant_id
+  JOIN catalog_entries e ON e.id=v.catalog_entry_id WHERE i.request_id=$1 ORDER BY i.variant_id`, id)
+	if err != nil {
+		t.Fatal("historical request items unreadable", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var variant, quantity int64
+		var brand, model, capacity, polarity string
+		if rows.Scan(&variant, &quantity, &brand, &model, &capacity, &polarity) != nil {
+			t.Fatal("historical request item unreadable")
+		}
+		// The numeric column travels as its own text; the era reader canonicalizes it
+		// exactly as the identity contract does, so the detail is "35 Ah · L".
+		canonical, err := catalog.ParseDecimal(capacity)
+		if err != nil {
+			t.Fatal("historical request item capacity unreadable", err)
+		}
+		r.Items = append(r.Items, transfers.NewItem(catalog.BatteryIdentity(int(variant), brand, model, string(canonical), polarity), quantity))
+	}
+	if rows.Err() != nil {
+		t.Fatal("historical request items incomplete")
+	}
+	r.Reference = fmt.Sprintf("TR-%03d", r.ID)
+	return r
+}
+
+// urEraOriginal reads the seeded received document the way the era store projected it,
+// using only the prefix era's columns, so a test can compare that era truth with the
+// current store read that follows the upgrade. Fixture code, never product code.
+func urEraOriginal(t *testing.T, ctx context.Context, p *pgxpool.Pool, id int64) transfers.Request {
+	t.Helper()
+	r := urEraRequest(t, ctx, p, id)
+	var retryKey string
+	var fingerprint []byte
+	if err := p.QueryRow(ctx, `SELECT retry_key,payload_sha256,decision_location_id,decided_at,
+  dispatch_location_id,dispatched_at,receipt_location_id,received_at,
+  cancellation_location_id,cancelled_at FROM transfer_requests WHERE id=$1`, id).Scan(
+		&retryKey, &fingerprint, &r.DecisionLocationID, &r.DecidedAt, &r.DispatchLocationID, &r.DispatchedAt,
+		&r.ReceiptLocationID, &r.ReceivedAt, &r.CancellationLocationID, &r.CancelledAt); err != nil {
+		t.Fatal("historical request metadata unreadable", err)
+	}
+	if r.Status != "received" {
+		return r
+	}
+	receipt := &transfers.Receipt{Items: []transfers.ReceiptLine{}, Exceptions: []transfers.ReceiptException{}}
+	rows, err := p.Query(ctx, `SELECT variant_id,expected_quantity,actual_quantity,available_quantity
+  FROM transfer_receipt_lines WHERE request_id=$1 ORDER BY variant_id`, id)
+	if err != nil {
+		t.Fatal("historical receipt lines unreadable", err)
+	}
+	for rows.Next() {
+		var line transfers.ReceiptLine
+		if rows.Scan(&line.VariantID, &line.ExpectedQuantity, &line.ActualQuantity, &line.AvailableQuantity) != nil {
+			t.Fatal("historical receipt line unreadable")
+		}
+		receipt.Items = append(receipt.Items, line)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		t.Fatal("historical receipt lines incomplete")
+	}
+	rows, err = p.Query(ctx, `SELECT variant_id,kind,quantity FROM transfer_receipt_exceptions
+  WHERE request_id=$1 ORDER BY variant_id,kind`, id)
+	if err != nil {
+		t.Fatal("historical receipt exceptions unreadable", err)
+	}
+	for rows.Next() {
+		var exception transfers.ReceiptException
+		if rows.Scan(&exception.VariantID, &exception.Kind, &exception.Quantity) != nil {
+			t.Fatal("historical receipt exception unreadable")
+		}
+		receipt.Exceptions = append(receipt.Exceptions, exception)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		t.Fatal("historical receipt exceptions incomplete")
+	}
+	r.Receipt = receipt
+	return r
 }
 
 // urSeedUnexpectedLine installs the undispatched ("unexpected") receipt line a
@@ -495,12 +608,10 @@ func TestUR4PopulatedPrefixUpgrade(t *testing.T) {
 			}
 			in := input()
 			in.Items = []transfers.Line{{VariantID: 1, Quantity: expected}}
-			r := urEraReceipt(t, ctx, p, s, 2, in.Items, []transfers.Line{{VariantID: 1, Quantity: arrival}})
-			original, err := s.Get(ctx, actor(r.Origin.ID), r.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
+			r := urEraReceipt(t, ctx, p, 2, in.Items, []transfers.Line{{VariantID: 1, Quantity: arrival}})
+			original := urEraOriginal(t, ctx, p, r.ID)
 			// Capture returned immutable public operations, not historical table rows.
+			var err error
 			var restProposal, restAccept transfers.RestitutionOperation
 			var dispatchProposal, dispatchAccept transfers.DispatchReconciliationOperation
 			var countProposal, countAccept transfers.CountOperation
