@@ -199,3 +199,12 @@ rows of a mixed document with their own shapes. The same round pinned S3 with a 
 stocked product whose name matches the search never enters a default listing, and widened
 the product search to field names and units, so a term the row displays finds the row.
 `make test-pg` is green over all twenty packages and the web suite is green with 4047 tests.
+
+L14. The verifier confirmed the fix with its own probe, not with the test we wrote: a mixed
+document (history kind null, two lines) renders both persisted lines, each in its own shape,
+with the Tipo cell still reading a dash. Its second check found the committed S3 pin
+stronger than its own probe (a page of 50 instead of 10, and `existing=12` proving the
+stocked row is the one answered), with nothing material missing. The run of that Go test
+stands on `make test-pg`, which executes it; the verifier's own attempt to run it was
+refused by the fixture's admission rules, which is a limitation of its sandbox and not of
+the test.
