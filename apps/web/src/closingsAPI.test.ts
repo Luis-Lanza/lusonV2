@@ -762,6 +762,21 @@ describe('the branch catalogue of the count sheet (S4, S5)', () => {
     expect((await refusalOf(impossibleSearch.api.catalogue(2, 'a\0b'))).code).toBe('invalid_request');
   });
 
+  it('counts batteries only: a product row never becomes a count line (S11)', async () => {
+    // The sheet counts batteries and nothing else, so a product row is a reply this
+    // read never asked for and never renders. The read cannot ask for one either: its
+    // URL carries no kind, so the server answers the battery listing whatever stock the
+    // branch holds in the other kind.
+    const product = harness(() => json(inventory({ total_variants: 1, items: [
+      { variant_id: 40, catalog_entry_id: 20, kind: 'other', name: 'Agua acidulada',
+        detail: 'volumen en L: 5 L', battery: null,
+        fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }],
+        existing: 3, reserved: 0, available: 3 },
+    ] })));
+    expect((await refusalOf(product.api.catalogue(2, ''))).code).toBe('invalid_response');
+    expect(product.calls[0].url).toBe('/api/inventory?location_id=2&page=1&page_size=50');
+  });
+
   it('publishes the refusal of the read instead of an invented catalogue', async () => {
     const missing = harness(() => json({ error: 'not_found' }, 404));
     expect((await refusalOf(missing.api.catalogue(2, ''))).code).toBe('not_found');

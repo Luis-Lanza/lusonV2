@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"luson/api/internal/catalog"
 	"luson/api/internal/transfers"
 )
 
@@ -25,9 +26,10 @@ func dispatchProof(t *testing.T, f *transferHTTPFixture, approved transferDTO) f
 	}
 	return func(w *httptest.ResponseRecorder) {
 		got := transferObject(t, w, 200)
-		if transferBusinessFieldCount(t, got) != 18 || string(got["status"]) != `"in_transit"` {
+		if transferBusinessFieldCount(t, got) != 19 || string(got["status"]) != `"in_transit"` {
 			t.Fatal("incomplete dispatch DTO")
 		}
+		transferRecordCatalogueKind(t, got, catalog.BatteryKind)
 		var dispatched transferDTO
 		if json.Unmarshal(w.Body.Bytes(), &dispatched) != nil {
 			t.Fatal("dispatch actor decoding")

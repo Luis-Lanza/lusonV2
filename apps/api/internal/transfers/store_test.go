@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/bootstrap"
+	"luson/api/internal/catalog"
 	"luson/api/internal/config"
 	"luson/api/internal/testpg"
 	"luson/api/internal/transfers"
@@ -293,7 +294,9 @@ func testExactCatalog(t *testing.T) {
 	in.Items = []transfers.Line{{VariantID: variant, Quantity: math.MaxInt64}}
 	r := create(t, ctx, s, 2, in)
 	item := r.Request.Items[0]
-	if item.Quantity != math.MaxInt64 || item.Capacity != "6.5" || item.Brand != "TOYO_MOTO" || item.Model != "12N6,5_3B" || item.Polarity != "L" {
+	if item.Quantity != math.MaxInt64 || item.Kind != catalog.BatteryKind || item.Battery == nil ||
+		item.Battery.Capacity != "6.5" || item.Battery.Brand != "TOYO_MOTO" || item.Battery.Model != "12N6,5_3B" || item.Battery.Polarity != "L" ||
+		item.Name != catalog.BatteryName("TOYO_MOTO", "12N6,5_3B") || item.Detail != catalog.BatteryDetail("6.5", "L") {
 		t.Fatal("catalog or bigint precision changed")
 	}
 	unchanged(t, before, stocks(t, ctx, p))
@@ -314,7 +317,7 @@ func testFullCart(t *testing.T) {
 		t.Fatal("bounded complete cart not persisted")
 	}
 	for i, item := range r.Request.Items {
-		if item.VariantID != int64(i+1) || item.Quantity != 1 || item.Capacity == "" {
+		if int64(item.VariantID) != int64(i+1) || item.Quantity != 1 || item.Battery == nil || item.Battery.Capacity == "" {
 			t.Fatal("complete cart item/canonical order changed")
 		}
 	}

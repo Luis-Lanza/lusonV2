@@ -1,11 +1,13 @@
-import type { Battery } from './model';
+import { identityOf, parseNumberVariantIdentity } from './model';
+import type { Battery, Field, VariantIdentity } from './model';
 import type { TransferAuthority } from './useInventory';
 import type { SourceCatalog } from './sourceInventory';
 import { canonicalTransferInput, newTransferRetryKey, transferDirection, transferFlow, validTransferLocation, type TransferCreateInput, type TransferDirection, type TransferFlow, type TransferLocationID } from './transferModel';
 
-// A transfer moves batteries, so the cart keeps the battery descriptor of the row
-// it selected: the entry it belongs to and the attributes its labels are made of.
-export type CartDescriptor = Readonly<{ variant_id: number; catalog_entry_id: number; battery: Readonly<Battery> }>;
+// A transfer moves one catalogue kind, and the cart keeps the shared identity of
+// the row it selected: the entry it belongs to and the identity its labels are
+// read from, the same one inventory publishes for a battery and for a product.
+export type CartDescriptor = Readonly<VariantIdentity & { catalog_entry_id: number }>;
 export interface CartRestoration {
   readonly epoch: number; readonly attempt: TransferCreateInput; readonly direction: Readonly<TransferDirection>;
   readonly items: readonly (CartDescriptor & { readonly quantity: string })[];
@@ -34,13 +36,42 @@ function usable(cart: TransferCart, authority: TransferAuthority): boolean {
   } catch { return false; }
 }
 function guard(cart: TransferCart, authority: TransferAuthority) { if (!usable(cart, authority)) invalid(); }
+function sameBattery(left: Battery | null, right: Battery | null): boolean {
+  if (left === null || right === null) return left === right;
+  return left.brand === right.brand && left.model === right.model
+    && left.capacity_ah === right.capacity_ah && left.polarity === right.polarity;
+}
+function sameFields(left: readonly Field[] | null, right: readonly Field[] | null): boolean {
+  if (left === null || right === null) return left === right;
+  return left.length === right.length && left.every((field, index) => {
+    const other = right[index];
+    return field.name === other.name && field.kind === other.kind && field.unit === other.unit
+      && field.number === other.number && field.text === other.text;
+  });
+}
 function sameDescriptor(left: CartDescriptor, right: CartDescriptor): boolean {
   return left.variant_id === right.variant_id && left.catalog_entry_id === right.catalog_entry_id
-    && left.battery.brand === right.battery.brand && left.battery.model === right.battery.model
-    && left.battery.capacity_ah === right.battery.capacity_ah && left.battery.polarity === right.battery.polarity;
+    && left.kind === right.kind && left.name === right.name && left.detail === right.detail
+    && sameBattery(left.battery, right.battery) && sameFields(left.fields, right.fields);
 }
-function descriptor(item: { variant_id: number; catalog_entry_id: number; battery: Readonly<Battery> }): CartDescriptor {
-  return Object.freeze({ variant_id: item.variant_id, catalog_entry_id: item.catalog_entry_id, battery: Object.freeze({ ...item.battery }) });
+function descriptor(item: VariantIdentity & { catalog_entry_id: number }): CartDescriptor {
+  return Object.freeze({ ...identityOf(item), catalog_entry_id: item.catalog_entry_id,
+    battery: item.battery === null ? null : Object.freeze({ ...item.battery }),
+    fields: item.fields === null ? null : item.fields.map(field => Object.freeze({ ...field })) });
+}
+/**
+ * Copies one archived descriptor, keeping only the shared identity the catalogue
+ * could publish: stock numbers, credentials or any other archived extra never
+ * reach a line, and nothing is invented for a row of either kind.
+ */
+export function archivedCartDescriptor(value: unknown): CartDescriptor {
+  const line = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : invalid();
+  const catalog_entry_id = line.catalog_entry_id;
+  if (typeof catalog_entry_id !== 'number' || !Number.isSafeInteger(catalog_entry_id)
+    || catalog_entry_id < 1 || catalog_entry_id > 2_147_483_647) return invalid();
+  const identity = parseNumberVariantIdentity({ variant_id: line.variant_id, kind: line.kind, name: line.name,
+    detail: line.detail, battery: line.battery, fields: line.fields });
+  return descriptor({ ...identity, catalog_entry_id });
 }
 function quantity(input: CartQuantity): bigint {
   if (typeof input !== 'string' && typeof input !== 'bigint') return invalid();
@@ -86,20 +117,14 @@ export function restoreTransferCart(authority: TransferAuthority, catalog: Sourc
     if (!Array.isArray(snapshot.items) || snapshot.items.length !== attempt.items.length) return invalid();
     const seen = new Set<number>();
     const lines = snapshot.items.map(selected => {
-      const { variant_id, catalog_entry_id, battery, quantity: requestedQuantity } = selected;
-      const { brand, model, capacity_ah, polarity } = battery;
-      const validText = (s: string) => typeof s === 'string' && !!s && !s.includes('\0') && s.isWellFormed();
-      if (!Number.isInteger(variant_id) || variant_id < 1 || variant_id > 2_147_483_647 || seen.has(variant_id)
-        || !Number.isInteger(catalog_entry_id) || catalog_entry_id < 1 || catalog_entry_id > 2_147_483_647
-        || !validText(brand) || !validText(model) || typeof capacity_ah !== 'string'
-        || !/^(0|[1-9][0-9]{0,5})(\.[0-9]{0,5}[1-9])?$/.test(capacity_ah) || capacity_ah === '0'
-        || (polarity !== 'L' && polarity !== 'R')) return invalid();
-      seen.add(variant_id);
-      const requested = attempt.items.find(line => line.variant_id === variant_id);
-      if (!requested || typeof requestedQuantity !== 'string' || requestedQuantity !== requested.quantity) return invalid();
-      const item = descriptor({ variant_id, catalog_entry_id, battery: { brand, model, capacity_ah, polarity } });
-      const row = copied.rows.find(v => v.variant_id === variant_id);
-      if (row && (!row.battery || !sameDescriptor(item, descriptor({ ...row, battery: row.battery })))) return invalid();
+      const item = archivedCartDescriptor(selected);
+      const requestedQuantity = (selected as { quantity?: unknown }).quantity;
+      const requested = attempt.items.find(line => line.variant_id === item.variant_id);
+      if (seen.has(item.variant_id) || !requested || typeof requestedQuantity !== 'string'
+        || requestedQuantity !== requested.quantity) return invalid();
+      seen.add(item.variant_id);
+      const row = copied.rows.find(v => v.variant_id === item.variant_id);
+      if (row && !sameDescriptor(item, descriptor(row))) return invalid();
       return Object.freeze({ item, quantity: quantity(requestedQuantity), available: row?.available ?? null });
     });
     return Object.freeze({ ...current, direction, catalog: copied, lines: Object.freeze(lines), attempt });
@@ -119,8 +144,10 @@ export function setCartQuantity(cart: TransferCart, authority: TransferAuthority
   // A no-op must not discard a known uncertain attempt after guidance changes.
   if (previous?.quantity === exact) return cart;
   const row = cart.catalog.rows.find(row => row.variant_id === id);
-  if (!row?.battery || exact > row.available || (!previous && cart.lines.length >= 190)) return invalid();
-  const line = Object.freeze({ item: descriptor({ ...row, battery: row.battery }), quantity: exact, available: row.available });
+  // A document carries one catalogue kind: a row of the other kind never enters it.
+  if (!row || exact > row.available || (cart.lines[0]?.item.kind ?? row.kind) !== row.kind
+    || (!previous && cart.lines.length >= 190)) return invalid();
+  const line = Object.freeze({ item: descriptor(row), quantity: exact, available: row.available });
   return withLines(cart, previous ? cart.lines.map(old => old.item.variant_id === id ? line : old) : [...cart.lines, line]);
 }
 export function addCartItem(cart: TransferCart, authority: TransferAuthority, id: number, input: CartQuantity): TransferCart {
@@ -143,7 +170,7 @@ export function refreshCart(cart: TransferCart, authority: TransferAuthority, ca
   const copied = copyCatalog(catalog, cart.direction.origin_location_id);
   const lines = cart.lines.map(line => {
     const row = copied.rows.find(row => row.variant_id === line.item.variant_id);
-    return Object.freeze({ item: row?.battery ? descriptor({ ...row, battery: row.battery }) : line.item,
+    return Object.freeze({ item: row ? descriptor(row) : line.item,
       quantity: line.quantity, available: row?.available ?? null });
   });
   // Availability/descriptors are guidance only, not material request edits.

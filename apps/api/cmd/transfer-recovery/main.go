@@ -109,7 +109,7 @@ func run() error {
 	}
 	dispatched := make([]transfers.Line, len(preview.Items))
 	for i, item := range preview.Items {
-		dispatched[i] = transfers.Line{VariantID: item.VariantID, Quantity: item.Quantity}
+		dispatched[i] = transfers.Line{VariantID: int64(item.VariantID), Quantity: item.Quantity}
 	}
 	summary := fmt.Sprintf("Recovery summary for %s (in_transit)\n  operator: %s\n  observed arrival: %s\n  dispatched: %s\n  observed: %s\n  undispatched arrivals (audit only, never credited): %s\n  reason: %s\nThis records %d audit event(s) and credits min(dispatched,observed) for the dispatched variants only.\n",
 		preview.Reference, *operator, observed.UTC().Format(time.RFC3339), list(dispatched), list(received), list(arrivals), *reason, len(arrivals))

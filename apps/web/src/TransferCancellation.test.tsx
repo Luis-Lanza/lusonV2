@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import TransferPending, { transferViewOwner } from './TransferPending';
 import { useInventory } from './useInventory';
+import { identityOf } from './model';
 import { pageJSON } from './test-fixtures';
 
 // Exercise the existing entry point: no absent TransferCancellation import can
@@ -13,7 +14,9 @@ function original(approved = false) {
     destination_location_id: 2, destination_location_name: locations[1], approver_location_id: 1, approver_location_name: locations[0],
     created_at: '2026-04-02T00:00:00.000000001Z',
     ...(approved ? { decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z' } : {}),
-    items: [{ variant_id: 201, brand: 'TOYO', model: 'Exact model', capacity_ah: '35.5', polarity: 'L', quantity: '9223372036854775807' }] };
+    items: [{ ...identityOf({ variant_id: 201, kind: 'battery', name: 'TOYO · Exact model', detail: '35.5 Ah · L',
+      battery: { brand: 'TOYO', model: 'Exact model', capacity_ah: '35.5', polarity: 'L' }, fields: null }),
+      quantity: '9223372036854775807' }] };
 }
 const cancelled = (approved = false) => ({ ...original(approved), status: 'cancelled',
   cancellation_location_id: 2, cancelled_at: '2026-04-03T00:00:00.000000002Z' });

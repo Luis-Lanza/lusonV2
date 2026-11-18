@@ -1,3 +1,4 @@
+import { identityOf } from './model';
 import { describe, expect, it } from 'vitest';
 import { createTransferDispatchRecovery } from './transferDispatchRecovery';
 import { parseTransferRecord } from './transferModel';
@@ -7,7 +8,9 @@ const dispatchWire = (overrides = {}) => ({
   destination_location_id: 2, destination_location_name: 'Sucursal A', approver_location_id: 1, approver_location_name: 'Almacén',
   created_at: '2026-04-02T00:00:00Z', decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z',
   dispatch_location_id: 1, dispatched_at: '2026-04-03T00:00:00.000000002Z',
-  items: [{ variant_id: 1, brand: 'Brand', model: 'Model', capacity_ah: '35.5', polarity: 'L', quantity: '9223372036854775807' }], ...overrides,
+  items: [{ ...identityOf({ variant_id: 1, kind: 'battery', name: 'Brand · Model', detail: '35.5 Ah · L',
+    battery: { brand: 'Brand', model: 'Model', capacity_ah: '35.5', polarity: 'L' }, fields: null }),
+    quantity: '9223372036854775807' }], ...overrides,
 });
 
 const approved = () => parseTransferRecord(JSON.stringify(dispatchWire({ status: 'approved', dispatch_location_id: undefined, dispatched_at: undefined })));

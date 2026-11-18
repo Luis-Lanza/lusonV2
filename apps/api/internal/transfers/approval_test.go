@@ -114,7 +114,7 @@ func a02WholeOutcomes(t *testing.T) {
 			wantStock := append([]stockRow(nil), before...)
 			for i := range wantStock {
 				for _, item := range original.Items {
-					if wantStock[i].Location == original.Origin.ID && int64(wantStock[i].Variant) == item.VariantID {
+					if wantStock[i].Location == original.Origin.ID && int64(wantStock[i].Variant) == int64(item.VariantID) {
 						wantStock[i].Reserved += item.Quantity
 						wantStock[i].Available -= item.Quantity
 					}

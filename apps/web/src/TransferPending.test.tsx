@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import TransferPending, { transferViewOwner } from './TransferPending';
 import TransferReview from './TransferReview';
 import { transferActionCategoryLabels, transferActionLabels } from './transferActionView';
+import { identityOf } from './model';
 import { parseTransferRecord, transferDirection } from './transferModel';
 import type { RecoverySnapshot } from './transferRecovery';
 import type { TransferAuthority } from './useInventory';
@@ -48,7 +49,10 @@ function wire(origin = 1, destination = 2, id = '9007199254740993', status = 'pe
     created_at: '2028-01-01T00:00:00.123456789Z', creator_location_id: creator, creator_location_name: locations[creator - 1],
     origin_location_id: origin, origin_location_name: locations[origin - 1], destination_location_id: destination, destination_location_name: locations[destination - 1],
     approver_location_id: destination === 1 ? 1 : origin, approver_location_name: locations[(destination === 1 ? 1 : origin) - 1],
-    items: [1, 2].map(variant_id => ({ variant_id, brand: 'TOYO', model: `Exact-${variant_id}`, capacity_ah: '75.125', polarity: variant_id === 1 ? 'L' : 'R', quantity: '9223372036854775807' })) };
+    items: [1, 2].map(variant_id => ({ ...identityOf({ variant_id, kind: 'battery' as const,
+      name: `TOYO · Exact-${variant_id}`, detail: `75.125 Ah · ${variant_id === 1 ? 'L' : 'R'}`,
+      battery: { brand: 'TOYO', model: `Exact-${variant_id}`, capacity_ah: '75.125', polarity: variant_id === 1 ? 'L' as const : 'R' as const },
+      fields: null }), quantity: '9223372036854775807' })) };
 }
 const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 function deferred() {
@@ -2061,8 +2065,10 @@ describe('R04c participant Pending', () => {
     const f = fixture(); const navigate = vi.fn();
     const snapshot: RecoverySnapshot = { epoch: 1, phase: 'ready', handle: {},
       attempt: { kind: 'request_stock', counterparty_location_id: 1, retry_key: 'test_review_stable_key', items: [{ variant_id: 1, quantity: '1' }] },
-      direction: transferDirection(2, 'requestWarehouse'), items: [{ variant_id: 1, catalog_entry_id: 1,
-        battery: { brand: 'TOYO', model: 'Exact-1', capacity_ah: '75.125', polarity: 'L' as const }, quantity: '1' }] };
+      direction: transferDirection(2, 'requestWarehouse'), items: [{ ...identityOf({ variant_id: 1, kind: 'battery' as const,
+        name: 'TOYO · Exact-1', detail: '75.125 Ah · L',
+        battery: { brand: 'TOYO', model: 'Exact-1', capacity_ah: '75.125', polarity: 'L' as const }, fields: null }),
+        catalog_entry_id: 1, quantity: '1' }] };
     const result = { record: parseTransferRecord(JSON.stringify(f.env.record)), replayed: false };
     render(<TransferReview controller={f.controller} metadata={{ locations: locations.map((name, index) => ({ id: index + 1, name })), brands: ['TOYO'] }}
       ownerTag={f.ownerTag} snapshot={snapshot} result={result} busy={false} error="" returnFocus={null}

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 're
 import './transfer-receipt.css';
 import type { TransferController } from './useInventory';
 import type { useTransfers } from './useTransfers';
+import type { VariantIdentity } from './model';
 import { canonicalTransferReceiptInput, previewTransferReceipt, type TransferReceiptData, type TransferReceiptInput, type TransferRecord } from './transferModel';
 import { captureDecisionRecord } from './transferDecisionRecovery';
 import { detailAuthority } from './TransferDetail';
@@ -23,8 +24,8 @@ export function ReceiptTable({ receipt, record, detailPresentation = false }: {
       const item = record.items.find(item => item.variant_id === line.variant_id);
       const exception = receipt.exceptions.find(exception => exception.variant_id === line.variant_id);
       return <tr key={line.variant_id} data-variant-id={line.variant_id}>
-        <td data-label={labels[0]}>{item ? <>{`${item.brand} · ${item.model}`}
-          {detailPresentation && <small>{item.capacity_ah} Ah · {item.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</small>}</>
+        <td data-label={labels[0]}>{item ? <>{item.name}
+          {detailPresentation && <small>{item.detail}</small>}</>
           : `Variante inesperada ${line.variant_id}`}</td>
         <td data-label={labels[1]}>{line.expected_quantity.toString()}</td>
         <td data-label={labels[2]}>{line.actual_quantity.toString()}</td>
@@ -35,18 +36,14 @@ export function ReceiptTable({ receipt, record, detailPresentation = false }: {
   </table></div>;
 }
 // Preview only: persisted receipt history retains its original labels and evidence.
-interface CatalogIdentity {
-  readonly brand: string; readonly model: string; readonly capacity_ah: string; readonly polarity: 'L' | 'R';
-  readonly destinationLocationID: TransferRecord['destination_location_id'];
-}
 export function ReceiptPreview({ receipt, record, identities }: {
-  receipt: TransferReceiptData; record: TransferRecord; identities: Readonly<Record<number, CatalogIdentity>>;
+  receipt: TransferReceiptData; record: TransferRecord; identities: Readonly<Record<number, VariantIdentity>>;
 }) {
   const identity = (id: number) => record.items.find(item => item.variant_id === id) ?? identities[id];
   const product = (id: number) => {
     const item = identity(id);
-    return item ? <><strong>{item.brand} {item.model}</strong>{' · '}
-      <small>{item.capacity_ah} Ah · {item.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</small></>
+    return item ? <><strong>{item.name}</strong>{' · '}
+      <small>{item.detail}</small></>
       : <><strong>Variante {id}</strong><small>Identidad no disponible. Consultá el catálogo del destino.</small></>;
   };
   const labels = ['Producto', 'Enviadas', 'Recibidas', 'A acreditar', 'Diferencia'];
@@ -92,7 +89,7 @@ export function ReceiptPreview({ receipt, record, identities }: {
       {receipt.exceptions.map(exception => {
         const item = identity(exception.variant_id);
         return <div className="receipt-preview-exception" key={exception.variant_id}>
-          <p>{difference(exception.kind, exception.quantity)} · {item ? <>{item.brand} {item.model} · {item.capacity_ah} Ah · {item.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]'}</> : `Variante ${exception.variant_id} · Identidad no disponible`}.</p>
+          <p>{difference(exception.kind, exception.quantity)} · {item ? <>{item.name} · {item.detail}</> : `Variante ${exception.variant_id} · Identidad no disponible`}.</p>
           <p className="receipt-preview-warning">{exception.kind === 'shortage' ? 'El faltante quedará registrado; no se resuelve automáticamente.'
             : exception.kind === 'unexpected' ? 'La variante no enviada quedará registrada por separado; no se acreditará automáticamente al stock disponible ni se resolverá esta diferencia.'
               : 'El exceso quedará registrado por separado; no se sumará automáticamente al stock disponible.'}</p>
@@ -263,10 +260,12 @@ export default function TransferReceipt(props: TransferReceiptProps) {
             <caption className="sr-only">Cantidades recibidas</caption>
             <thead><tr>{['Producto', 'Polaridad', 'Enviadas', 'Recibidas'].map(label => <th scope="col" key={label}>{label}</th>)}</tr></thead>
             <tbody>{captureLines.map(line => {
-              const label = line.model ? `${line.brand} · ${line.model}` : `Variante ${line.variant_id}`;
-              const polarity = line.polarity === 'L' ? 'Izquierda [L]' : line.polarity === 'R' ? 'Derecha [R]' : 'No disponible';
-              return <tr key={line.variant_id}>
-                <td><strong>{label}</strong>{line.capacity_ah !== undefined && <small>{line.capacity_ah} Ah</small>}</td>
+              // Each line is labelled by its own identity: a battery keeps its
+              // polarity cell, a product shows its name and detail and nothing else.
+              const label = line.name;
+              const polarity = line.battery === null ? '' : line.battery.polarity === 'L' ? 'Izquierda [L]' : 'Derecha [R]';
+              return <tr key={line.variant_id} data-kind={line.kind}>
+                <td><strong>{label}</strong><small>{line.detail}</small></td>
                 <td data-label="Polaridad">{polarity}</td>
                 <td data-label="Enviadas">{line.sent.toString()}</td>
                 <td data-label="Recibidas"><label className="sr-only" htmlFor={`receipt-quantity-${line.variant_id}`}>Cantidad recibida {label} · {polarity}</label>
@@ -283,7 +282,7 @@ export default function TransferReceipt(props: TransferReceiptProps) {
           {completeInvalidCapture && <p role="alert">Revisá las cantidades: solo enteros sin signos, espacios ni ceros iniciales, hasta 9223372036854775807. Al menos una cantidad debe ser positiva.</p>}
         </div> : visibleReview.step === 'capture' ? <>
           <p>Ingresá cada cantidad recibida, incluido 0 si no llegó esa variante. No se limita por disponibilidad del destino.</p>
-          <div className="receipt-quantities">{visibleReview.record.items.map(item => ({ id: item.variant_id, label: `${item.brand} · ${item.model}`, sent: item.quantity })).map(line => <div key={line.id}>
+          <div className="receipt-quantities">{visibleReview.record.items.map(item => ({ id: item.variant_id, label: item.name, sent: item.quantity })).map(line => <div key={line.id}>
               <label htmlFor={`receipt-quantity-${line.id}`}>Cantidad recibida {line.label}</label><small>Cantidad enviada: {line.sent.toString()}</small>
               <input id={`receipt-quantity-${line.id}`} type="text" inputMode="numeric" autoComplete="off" value={visibleReview.values[line.id]} disabled={busy}
                 onChange={event => editValue(line.id, event.target.value)} />

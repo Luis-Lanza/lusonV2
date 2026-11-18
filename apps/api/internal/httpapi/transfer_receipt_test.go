@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"luson/api/internal/catalog"
 	"luson/api/internal/transfers"
 )
 
@@ -64,9 +65,10 @@ func receiptHTTPProof(t *testing.T, f *transferHTTPFixture, transit transferDTO,
 	}
 	return func(w *httptest.ResponseRecorder) {
 		got := transferObject(t, w, 200)
-		if transferBusinessFieldCount(t, got) != 21 || string(got["status"]) != `"received"` {
+		if transferBusinessFieldCount(t, got) != 22 || string(got["status"]) != `"received"` {
 			t.Fatal("incomplete received wire record")
 		}
+		transferRecordCatalogueKind(t, got, catalog.BatteryKind)
 		var result transferDTO
 		if json.Unmarshal(w.Body.Bytes(), &result) != nil || result.Receipt == nil || result.ReceiptLocationID == nil || *result.ReceiptLocationID != transit.DestinationLocationID || result.ReceivedAt == nil {
 			t.Fatal("receipt metadata missing")
@@ -266,7 +268,7 @@ func TestR1ReceiptWireFence(t *testing.T) {
 		DecisionLocationID: &origin, DecidedAt: &now,
 		DispatchLocationID: &origin, DispatchedAt: &now,
 		ReceiptLocationID: &destination, ReceivedAt: &now,
-		Items: []transfers.Item{{VariantID: 1, Quantity: 1}},
+		Items: []transfers.Item{transfers.NewItem(catalog.BatteryIdentity(1, "CAR", "NS40ZL", "35", "L"), 1)},
 		Receipt: &transfers.Receipt{
 			Items:      []transfers.ReceiptLine{{VariantID: 1, ExpectedQuantity: 1, ActualQuantity: 1, AvailableQuantity: 1}},
 			Exceptions: []transfers.ReceiptException{},

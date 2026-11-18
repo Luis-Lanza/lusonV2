@@ -248,7 +248,7 @@ func TestUR2UnexpectedAuditCorrectionPreserved(t *testing.T) {
 	// them, then 019 is applied on top and the evidence must survive intact.
 	ctx, p := urPrefixFixtureAt(t, 19)
 	s := transfers.New(p)
-	r := urHistoricalReceipt(t, ctx, p, s)
+	r := urHistoricalReceipt(t, ctx, p)
 	urSeedUnexpectedLine(t, ctx, p, r, 3, 1)
 	if _, e := s.ProposeUnifiedReconciliation(ctx, actor(r.Origin.ID), r.ID, urProposal("ur2-expected-ownership")); e != nil {
 		t.Fatal(e)

@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/auth"
 	"luson/api/internal/bootstrap"
+	"luson/api/internal/catalog"
 	"luson/api/internal/config"
 	"luson/api/internal/inventory"
 	"luson/api/internal/testpg"
@@ -362,7 +363,7 @@ func transferObject(t *testing.T, w *httptest.ResponseRecorder, status int) map[
 func transferWireRecord(t *testing.T, w *httptest.ResponseRecorder, status int) transferDTO {
 	t.Helper()
 	value := transferObject(t, w, status)
-	want := []string{"id", "reference", "creator_location_id", "creator_location_name", "kind", "origin_location_id", "origin_location_name", "destination_location_id", "destination_location_name", "approver_location_id", "approver_location_name", "status", "created_at", "items"}
+	want := []string{"id", "reference", "creator_location_id", "creator_location_name", "kind", "catalogue_kind", "origin_location_id", "origin_location_name", "destination_location_id", "destination_location_name", "approver_location_id", "approver_location_name", "status", "created_at", "items"}
 	if value["activity"] != nil {
 		want = append(want, "activity")
 	}
@@ -387,22 +388,150 @@ func transferWireRecord(t *testing.T, w *httptest.ResponseRecorder, status int) 
 		t.Fatal("item framing failed")
 	}
 	for _, item := range items {
-		if len(item) != 6 {
+		if len(item) != 7 {
 			t.Fatal("item whitelist changed")
 		}
-		for _, key := range []string{"variant_id", "brand", "model", "capacity_ah", "polarity", "quantity"} {
+		for _, key := range []string{"variant_id", "kind", "name", "detail", "battery", "fields", "quantity"} {
 			if item[key] == nil {
 				t.Fatal("item whitelist incomplete")
 			}
 		}
-		for _, key := range []string{"capacity_ah", "quantity"} {
-			var text string
-			if json.Unmarshal(item[key], &text) != nil {
-				t.Fatal("exact value became a JSON number")
+		for _, leaked := range []string{"brand", "model", "capacity_ah", "polarity"} {
+			if item[leaked] != nil {
+				t.Fatal("a battery attribute is still a transfer line field")
 			}
 		}
+		// Every flow of this fixture holds batteries: the line is their shared
+		// catalogue identity, with the battery attributes inside `battery` and no
+		// typed field at all.
+		var kind, name, detail, quantity string
+		var battery catalog.BatteryAttributes
+		if json.Unmarshal(item["kind"], &kind) != nil || kind != string(catalog.BatteryKind) ||
+			json.Unmarshal(item["battery"], &battery) != nil || battery.Brand == "" || battery.Model == "" ||
+			(battery.Polarity != "L" && battery.Polarity != "R") || string(item["fields"]) != "null" ||
+			json.Unmarshal(item["name"], &name) != nil || json.Unmarshal(item["detail"], &detail) != nil ||
+			name != catalog.BatteryName(battery.Brand, battery.Model) ||
+			detail != catalog.BatteryDetail(battery.Capacity, battery.Polarity) ||
+			json.Unmarshal(item["quantity"], &quantity) != nil {
+			t.Fatal("published line is not the battery identity")
+		}
+	}
+	if kind, err := transferCatalogueKind(value); err != nil || kind != string(catalog.BatteryKind) {
+		t.Fatal("the record does not name the kind its own lines hold")
+	}
+	if got, ok := value["kind"]; !ok || (string(got) != `"request_stock"` && string(got) != `"send_to_warehouse"` && string(got) != `"direct_shipment"`) {
+		t.Fatal("the request kind was replaced by the catalogue kind")
 	}
 	return dto
+}
+
+// transferCatalogueKind reads the derived catalogue kind the record publishes
+// beside its request kind: a battery document says battery, a product document
+// says other and a document whose lines disagree says the empty string.
+func transferCatalogueKind(value map[string]json.RawMessage) (string, error) {
+	raw, exists := value["catalogue_kind"]
+	if !exists {
+		return "", errors.New("missing catalogue_kind")
+	}
+	var kind string
+	if err := json.Unmarshal(raw, &kind); err != nil {
+		return "", err
+	}
+	return kind, nil
+}
+
+// transferRecordCatalogueKind asserts the record names the derived catalogue kind
+// of its own lines, so a business-field count can never be the only evidence that
+// the key exists and carries that kind.
+func transferRecordCatalogueKind(t *testing.T, value map[string]json.RawMessage, want catalog.Kind) {
+	t.Helper()
+	kind, err := transferCatalogueKind(value)
+	if err != nil || kind != string(want) {
+		t.Fatalf("record catalogue_kind = %q (err %v), want %q", kind, err, want)
+	}
+}
+
+// The published transfer line is the shared catalogue identity of its own
+// variant: a product renders with its free name and its field summary, a battery
+// with brand · model and capacity Ah · polarity, and the record names the one kind
+// its lines hold, derived on read and never stored.
+func TestR02TransferIdentityWire(t *testing.T) {
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	volume, source := "5", "importado"
+	product := catalog.ProductIdentity(211, "Agua acidulada", []catalog.Field{
+		{Name: "volumen en L", Kind: catalog.NumberField, Unit: "L", Number: &volume},
+		{Name: "origen", Kind: catalog.TextField, Text: &source},
+	})
+	battery := catalog.BatteryIdentity(1, "CAR", "NS40ZL", "35", "L")
+	document := func(items ...transfers.Item) transfers.Request {
+		return transfers.Request{Kind: transfers.RequestStock, Status: "pending", CreatedAt: now,
+			Creator: transfers.Location{ID: 2}, Origin: transfers.Location{ID: 1},
+			Destination: transfers.Location{ID: 2}, Approver: transfers.Location{ID: 1}, Items: items}
+	}
+	record := func(r transfers.Request) map[string]json.RawMessage {
+		t.Helper()
+		dto, err := transferRecord(r)
+		if err != nil {
+			t.Fatalf("a complete document was refused: %v", err)
+		}
+		raw, err := json.Marshal(dto)
+		if err != nil {
+			t.Fatal("published record is not serializable")
+		}
+		var value map[string]json.RawMessage
+		if json.Unmarshal(raw, &value) != nil {
+			t.Fatal("published record is not an object")
+		}
+		return value
+	}
+	// A product document names its own kind and publishes the product identity,
+	// never a battery attribute at the top level of the line.
+	productRecord := record(document(transfers.NewItem(product, 3)))
+	transferRecordCatalogueKind(t, productRecord, catalog.OtherKind)
+	if string(productRecord["kind"]) != `"request_stock"` {
+		t.Fatal("the request kind was replaced by the catalogue kind")
+	}
+	var items []map[string]json.RawMessage
+	if json.Unmarshal(productRecord["items"], &items) != nil || len(items) != 1 {
+		t.Fatal("product line framing changed")
+	}
+	line := items[0]
+	if len(line) != 7 {
+		t.Fatal("product line whitelist changed")
+	}
+	for _, key := range []string{"variant_id", "kind", "name", "detail", "battery", "fields", "quantity"} {
+		if line[key] == nil {
+			t.Fatal("product line whitelist incomplete")
+		}
+	}
+	for _, leaked := range []string{"brand", "model", "capacity_ah", "polarity"} {
+		if line[leaked] != nil {
+			t.Fatal("a battery attribute leaked onto the product line")
+		}
+	}
+	var kind, name, detail, quantity string
+	var fields []catalog.Field
+	if json.Unmarshal(line["kind"], &kind) != nil || kind != string(catalog.OtherKind) ||
+		json.Unmarshal(line["name"], &name) != nil || name != "Agua acidulada" ||
+		json.Unmarshal(line["detail"], &detail) != nil || detail != "volumen en L: 5 L · origen: importado" ||
+		string(line["battery"]) != "null" || json.Unmarshal(line["fields"], &fields) != nil || len(fields) != 2 ||
+		json.Unmarshal(line["quantity"], &quantity) != nil || quantity != "3" {
+		t.Fatal("published product line is not the catalogue identity")
+	}
+	// A battery document keeps its own kind and its battery identity.
+	transferRecordCatalogueKind(t, record(document(transfers.NewItem(battery, 2))), catalog.BatteryKind)
+	// Disagreeing lines name no kind at all, and each line still renders by its own
+	// identity: a reader never picks one shape from the first line.
+	mixed := record(document(transfers.NewItem(product, 1), transfers.NewItem(battery, 1)))
+	transferRecordCatalogueKind(t, mixed, "")
+	if json.Unmarshal(mixed["items"], &items) != nil || len(items) != 2 ||
+		string(items[0]["kind"]) != `"other"` || string(items[1]["kind"]) != `"battery"` {
+		t.Fatal("a disagreeing document hid or homogenized a line")
+	}
+	// A line this contract could not have produced is refused, never published.
+	if _, err := transferRecord(document(transfers.NewItem(catalog.Identity{}, 1))); err != transfers.ErrUnavailable {
+		t.Fatal("an uncomposed identity was published")
+	}
 }
 func transferWirePage(t *testing.T, w *httptest.ResponseRecorder) (int64, []transferDTO) {
 	t.Helper()
@@ -652,10 +781,10 @@ func testTransferExact(t *testing.T) {
 	}
 	fractional := false
 	for i, item := range dto.Items {
-		if item.VariantID != int64(i+1) || item.Quantity != "9223372036854775807" || (item.Polarity != "L" && item.Polarity != "R") {
+		if item.Battery == nil || item.VariantID != i+1 || item.Quantity != "9223372036854775807" || (item.Battery.Polarity != "L" && item.Battery.Polarity != "R") {
 			t.Fatal("lossless complete item data changed")
 		}
-		if item.Brand == "TOYO_MOTO" && item.Model == "12N6,5_3B" && item.CapacityAH == "6.5" {
+		if item.Battery.Brand == "TOYO_MOTO" && item.Battery.Model == "12N6,5_3B" && item.Battery.Capacity == "6.5" {
 			fractional = true
 		}
 	}

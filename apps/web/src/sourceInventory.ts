@@ -1,11 +1,17 @@
-import { initialQuery, parseInventory, queryURL, validSearch, type BatteryRow, type Item, type Location } from './model';
+import { initialQuery, parseInventory, queryURL, validSearch, type Item, type Kind, type KindFilter, type Location } from './model';
 import { validTransferLocation, type TransferLocationID } from './transferModel';
 
 export interface SourceCatalog {
   readonly location: Readonly<Location>;
   readonly rows: readonly Readonly<Item>[];
 }
-export interface SourceInventoryOptions { signal?: AbortSignal; reason?: 'manual' | 'passive' }
+/**
+ * `kind` is the catalogue kind the caller asks for: the origin picker reads the
+ * one kind its document carries, an advisory reader may ask for both, and a
+ * reader that omits it keeps the battery-only default the endpoint has always
+ * answered.
+ */
+export interface SourceInventoryOptions { signal?: AbortSignal; reason?: 'manual' | 'passive'; kind?: KindFilter }
 export class SourceInventoryError extends Error {
   constructor(public readonly code: 'invalid_source' | 'unauthenticated' | 'unavailable' | 'malformed' | 'canceled', public readonly status: number | null = null) {
     super(code);
@@ -18,6 +24,7 @@ export async function loadSourceInventory(source: TransferLocationID, options: S
   if (!validTransferLocation(source)) throw new SourceInventoryError('invalid_source');
   const signal = options.signal;
   const passive = options.reason === 'passive';
+  const kind = options.kind;
   const checkCanceled = () => { if (signal?.aborted) throw new SourceInventoryError('canceled'); };
   const rows: Readonly<Item>[] = [];
   const seen = new Set<number>();
@@ -27,7 +34,7 @@ export async function loadSourceInventory(source: TransferLocationID, options: S
     checkCanceled();
     let reply: Response;
     try {
-      reply = await fetcher(queryURL({ ...initialQuery(source), page, size: 50 }), {
+      reply = await fetcher(queryURL({ ...initialQuery(source, kind), page, size: 50 }), {
         method: 'GET', credentials: 'same-origin', cache: 'no-store', signal,
         headers: passive ? { 'X-Luson-Passive': '1' } : {},
       });
@@ -54,6 +61,7 @@ export async function loadSourceInventory(source: TransferLocationID, options: S
     if (data.items.length !== expected) throw malformed();
     for (const item of data.items) {
       if (seen.has(item.variant_id) || (rows.length > 0 && item.variant_id <= rows[rows.length - 1].variant_id)
+        || (kind !== undefined && kind !== 'all' && item.kind !== kind)
         || item.available !== item.existing - item.reserved) throw malformed();
       seen.add(item.variant_id);
       rows.push(Object.freeze({ ...item }));
@@ -66,16 +74,34 @@ export async function loadSourceInventory(source: TransferLocationID, options: S
   throw new SourceInventoryError('malformed');
 }
 
-// A transfer moves batteries, so the source list offers the rows that carry their
-// battery attributes and matches the brand, the model and the search on them; a
-// product row is never offered by this catalogue (S11).
-export function filterSourceInventory(catalog: SourceCatalog, filter: { search?: string; brand?: string; polarity?: '' | 'L' | 'R' }): readonly BatteryRow[] {
+export interface SourceFilter {
+  /** The one catalogue kind this document carries. */
+  readonly kind: Kind;
+  readonly search?: string; readonly brand?: string; readonly polarity?: '' | 'L' | 'R';
+}
+// A battery search matches the brand and the model it shows; a product search
+// matches its free name and the content of its typed fields, because a term the
+// row shows must find the row. The battery filters never apply to a product.
+function productMatches(row: Item, literal: string): boolean {
+  const fields = row.fields ?? [];
+  const shown = [row.name, row.detail, ...fields.flatMap(field => [field.name, field.unit ?? '', field.number ?? '', field.text ?? ''])].join('\n');
+  return shown.toLowerCase().includes(literal);
+}
+/**
+ * Offers the rows of the one catalogue kind the document carries, narrowed by the
+ * term inside that kind. A row of the other kind is never offered, and a retired
+ * entry never reaches this catalogue in the first place.
+ */
+export function filterSourceInventory(catalog: SourceCatalog, filter: SourceFilter): readonly Readonly<Item>[] {
+  const { kind } = filter;
   const search = filter.search ?? '';
   const brand = filter.brand ?? '';
   const polarity = filter.polarity ?? '';
-  if (!validSearch(search) || !validSearch(brand) || !['', 'L', 'R'].includes(polarity)) throw new Error('Invalid source filter');
+  if ((kind !== 'battery' && kind !== 'other') || !validSearch(search) || !validSearch(brand)
+    || !['', 'L', 'R'].includes(polarity)) throw new Error('Invalid source filter');
   const literal = search.toLowerCase();
-  return Object.freeze(catalog.rows.filter((row): row is BatteryRow => row.battery !== null
-    && (!brand || row.battery.brand === brand) && (!polarity || row.battery.polarity === polarity)
-    && (!literal || row.battery.brand.toLowerCase().includes(literal) || row.battery.model.toLowerCase().includes(literal))));
+  return Object.freeze(catalog.rows.filter(row => row.kind === kind && (kind === 'battery'
+    ? (!brand || row.battery?.brand === brand) && (!polarity || row.battery?.polarity === polarity)
+      && (!literal || row.battery?.brand.toLowerCase().includes(literal) || row.battery?.model.toLowerCase().includes(literal))
+    : !literal || productMatches(row, literal))));
 }

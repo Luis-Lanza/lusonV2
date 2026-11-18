@@ -78,23 +78,23 @@ describe('R04b2c-hydration', () => {
     expect(state.attempt).not.toBe(input.attempt);
     expect(state.lines.map(v => [v.quantity, v.available])).toEqual([[max, 2n], [max, null]]);
     expect(cartStatus(state, authority(2, 8))).toEqual({ usable: true, ready: false, total: max * 2n, invalid: [1, 2] });
-    expect(Object.keys(state.lines[0].item).sort()).toEqual(['battery', 'catalog_entry_id', 'variant_id']);
-    expect(state.lines[1].item.battery.capacity_ah).toBe('6.000001');
+    expect(Object.keys(state.lines[0].item).sort()).toEqual(['battery', 'catalog_entry_id', 'detail', 'fields', 'kind', 'name', 'variant_id']);
+    expect(state.lines[1].item.battery?.capacity_ah).toBe('6.000001');
     for (const value of [state, state.direction, state.catalog, state.catalog.location, state.catalog.rows, state.catalog.rows[0],
       state.lines, state.lines[0], state.lines[0].item, state.attempt, state.attempt!.items, state.attempt!.items[0]]) expect(Object.isFrozen(value)).toBe(true);
     expect(state.catalog).not.toBe(source);
   });
   it('copies mutable input without retaining stock or credential extras', () => {
     const original = snapshot();
-    const items = original.items.map(v => ({ ...v, battery: { ...v.battery }, existing: max, csrf_token: 'not-retained' }));
+    const items = original.items.map(v => ({ ...v, battery: v.battery === null ? null : { ...v.battery }, existing: max, csrf_token: 'not-retained' }));
     const attempt = { ...original.attempt, items: original.attempt.items.map(v => ({ ...v })) };
     const direction = { ...original.direction };
     const row = { ...catalog().rows[0] };
     const location = { id: 1, name: 'Physical source' };
     const state = restoreTransferCart(authority(2, 8), { location, rows: [row] }, { ...original, items, attempt, direction });
-    items[0].battery.brand = 'Changed'; attempt.items[0].quantity = '1'; direction.origin_location_id = 3;
+    items[0].battery!.brand = 'Changed'; attempt.items[0].quantity = '1'; direction.origin_location_id = 3;
     row.available = 0n; location.id = 3;
-    expect(state.lines[0].item.battery.brand).toBe('TOYO');
+    expect(state.lines[0].item.battery?.brand).toBe('TOYO');
     expect(state.lines[0].item).not.toHaveProperty('csrf_token');
     expect(state.lines[0].item).not.toHaveProperty('existing');
     expect(state.lines[0].available).toBe(max);
@@ -116,7 +116,7 @@ describe('R04b2c-hydration', () => {
     'rejects %s mismatch with sanitized errors', mode => {
       const original = snapshot();
       const input = { ...original, direction: { ...original.direction }, attempt: { ...original.attempt },
-      items: original.items.map(v => ({ ...v, battery: { ...v.battery } })) };
+      items: original.items.map(v => ({ ...v, battery: v.battery === null ? null : { ...v.battery } })) };
       let source = catalog();
       if (mode === 'direction') input.direction.approver_location_id = 3;
       if (mode === 'counterparty') input.attempt.counterparty_location_id = 2;
@@ -128,12 +128,12 @@ describe('R04b2c-hydration', () => {
       if (mode === 'float') input.items[0].quantity = '1.5';
       if (mode === 'variant') input.items[0].variant_id = 191;
       if (mode === 'entry') input.items[0].catalog_entry_id = 96;
-      if (mode === 'brand') input.items[0].battery.brand = '';
-      if (mode === 'model') input.items[0].battery.model = '\0';
-      if (mode === 'capacity') input.items[0].battery.capacity_ah = '6.0';
+      if (mode === 'brand') input.items[0].battery!.brand = '';
+      if (mode === 'model') input.items[0].battery!.model = '\0';
+      if (mode === 'capacity') input.items[0].battery!.capacity_ah = '6.0';
       // @ts-expect-error deliberately invalid polarity
-      if (mode === 'polarity') input.items[0].battery.polarity = 'X';
-      if (mode === 'catalog-descriptor') input.items[0].battery.model = 'Different';
+      if (mode === 'polarity') input.items[0].battery!.polarity = 'X';
+      if (mode === 'catalog-descriptor') input.items[0].battery!.model = 'Different';
       expect(() => restoreTransferCart(authority(2, 8), source, input)).toThrow(/^Invalid transfer cart$/);
     });
   it.each([2, 3])('restores every physical route from assigned branch%s, not consulted stock', assigned => {
@@ -202,7 +202,7 @@ describe('R04 transfer cart', () => {
     owned.available = 0n;
     owned.battery!.brand = 'Changed';
     location.id = 3;
-    expect(selected.lines[0].item.battery.brand).toBe('TOYO');
+    expect(selected.lines[0].item.battery?.brand).toBe('TOYO');
     expect(selected.lines[0].available).toBe(max);
     expect(selected.catalog.location.id).toBe(1);
     expect(cartStatus(selected, authority()).ready).toBe(true);
@@ -344,5 +344,43 @@ describe('R04 transfer cart', () => {
       for (const operation of [() => addCartItem(state, current, 1, '1'), () => setCartQuantity(state, current, 1, '1'),
         () => removeCartItem(state, current, 1), () => clearTransferCart(state, current), () => refreshCart(state, current, catalog()), () => reviewCart(state, current, key)]) expect(operation).toThrow();
     }
+  });
+});
+
+describe('T3 one catalogue kind per document', () => {
+  const product = { variant_id: 9, catalog_entry_id: 9, kind: 'other' as const, name: 'Agua acidulada',
+    detail: 'volumen en L: 5 L', battery: null,
+    fields: [{ name: 'volumen en L', kind: 'number' as const, unit: 'L', number: '5' }],
+    existing: 10n, reserved: 0n, available: 10n };
+  it('keeps a product line by its own identity and never invents a battery attribute', () => {
+    const source = { location: { id: 1, name: 'Physical source' }, rows: [product] };
+    const state = addCartItem(createTransferCart(authority(), 'requestWarehouse', source), authority(), 9, '4');
+    expect(state.lines[0].item).toMatchObject({ variant_id: 9, catalog_entry_id: 9, kind: 'other',
+      name: 'Agua acidulada', detail: 'volumen en L: 5 L', battery: null });
+    expect(state.lines[0].item.fields).toEqual([{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }]);
+    expect(state.lines[0].item).not.toHaveProperty('brand');
+    expect(state.lines[0].item).not.toHaveProperty('capacity_ah');
+    expect(cartStatus(state, authority())).toEqual({ usable: true, ready: true, total: 4n, invalid: [] });
+    expect(reviewCart(state, authority(), key).attempt?.items).toEqual([{ variant_id: 9, quantity: '4' }]);
+    const recovery = createTransferRecovery();
+    recovery.capture(() => authority(), reviewCart(state, authority(), key));
+    const snapshot = recovery.getCurrent(() => authority())!;
+    expect(snapshot.items[0]).toMatchObject({ kind: 'other', name: 'Agua acidulada', battery: null, quantity: '4' });
+    expect(restoreTransferCart(authority(), source, snapshot).lines[0].item).toMatchObject({ kind: 'other', name: 'Agua acidulada' });
+  });
+  it('refuses a row of the other kind once the document holds one kind', () => {
+    const mixed = { location: { id: 1, name: 'Physical source' }, rows: [product, ...catalog().rows] };
+    const state = addCartItem(createTransferCart(authority(), 'requestWarehouse', mixed), authority(), 9, '2');
+    expect(() => addCartItem(state, authority(), 1, '1')).toThrow();
+    const batteryFirst = addCartItem(createTransferCart(authority(), 'requestWarehouse', mixed), authority(), 1, '2');
+    expect(() => addCartItem(batteryFirst, authority(), 9, '1')).toThrow();
+  });
+  it('rejects an archived product line whose identity was altered', () => {
+    const source = { location: { id: 1, name: 'Physical source' }, rows: [product] };
+    const recovery = createTransferRecovery();
+    recovery.capture(() => authority(), reviewCart(addCartItem(createTransferCart(authority(), 'requestWarehouse', source), authority(), 9, '2'), authority(), key));
+    const snapshot = recovery.getCurrent(() => authority())!;
+    const tampered = { ...snapshot, items: snapshot.items.map(line => ({ ...line, name: 'Otra cosa' })) };
+    expect(() => restoreTransferCart(authority(), source, tampered)).toThrow(/^Invalid transfer cart$/);
   });
 });

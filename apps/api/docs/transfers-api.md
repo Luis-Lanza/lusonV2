@@ -97,7 +97,7 @@ Responses retain `Cache-Control: no-store` and
 | `counterparty_location_id` | Canonical integer JSON token 1–3; direction validated against actor |
 | `retry_key` | Opaque ASCII `[A-Za-z0-9_-]{16,128}`, actor-scoped |
 | `items` | 1–190 objects, one line per variant; duplicates rejected |
-| `items[].variant_id` | Canonical positive integer JSON token through 2147483647; must exist |
+| `items[].variant_id` | Canonical positive integer JSON token through 2147483647; must exist in the catalogue |
 | `items[].quantity` | Canonical positive decimal **string** through 9223372036854775807 |
 
 All four root fields and both item fields are required. Input is at most 64 KiB,
@@ -123,6 +123,25 @@ replays the original immutable record even if current availability changes;
 reordered lines are equivalent. Changed payload with the same actor/key is 409.
 Independent actors may reuse a key. References remain globally generated,
 continue beyond 999 and may have rollback gaps. No client reference is accepted.
+
+## One catalogue kind per document
+
+The catalogue holds operational entries of two kinds — batteries and other
+products — and every transfer line names one variant of either. A transfer
+document carries **one** kind: the kind is chosen before the catalogue appears
+and it is derived from the document's own lines on every read, never stored. A
+body whose lines name variants of both kinds is refused whole as
+`400 invalid_request` and writes nothing, exactly like any other invalid body: no
+header, no line, no reservation, no balance change. A document of either kind
+alone is admitted unchanged, and creation replay by actor/retry key/payload
+fingerprint keeps answering the original document rather than re-judging it.
+
+Nothing about stock changes with the kind. Approval reserves, dispatch deducts,
+receipt credits, cancellation releases, and count corrections and restitution
+each apply to `(location, variant)` only. The origin availability check keeps its
+existing predicate — it filters a retired entry — and there is no special
+zero-stock rule for a product: approval refuses a shortage exactly the way it
+refuses an empty battery.
 
 ## Direct warehouse creation
 
@@ -342,7 +361,9 @@ X-CSRF-Token: <session-derived token>
 Receipt follows the same authenticated mutation admission order as dispatch.
 The root object has exactly `items`; every item has exactly `variant_id` and
 `actual_quantity`. Variant IDs use the existing canonical positive integer JSON
-token parser and must belong to the immutable preloaded catalog. Actual quantities
+token parser and must exist in the catalogue, which holds operational entries of
+both kinds — a battery and an other product are received by the same rule, and
+neither needs a brand. Actual quantities
 are canonical decimal **strings** from `"0"` through `"9223372036854775807"`.
 Unknown fields (including actor/time), duplicate keys/variants, missing fields,
 trailing data, numeric quantities, signs, padding and exponent/float aliases are
@@ -516,10 +537,16 @@ Independent Pending/action counters are not narrowed by this filter.
 
 Only explicit snake_case DTOs are serialized:
 
-- Record: `id`, `reference`, `kind`, `status`, `created_at`, `items`, plus
-  `creator_location_id/name`, `origin_location_id/name`,
+- Record: `id`, `reference`, `kind`, `catalogue_kind`, `status`, `created_at`,
+  `items`, plus `creator_location_id/name`, `origin_location_id/name`,
   `destination_location_id/name`, `approver_location_id/name` (each pair means
   two flat fields, e.g. `origin_location_id` and `origin_location_name`).
+  `kind` is the request kind (`request_stock`, `send_to_warehouse`,
+  `direct_shipment`); `catalogue_kind` is derived on read from the document's own
+  lines and is `"battery"` or `"other"` for a one-kind document and `""` exactly
+  when those lines disagree. Such a legacy document still renders, and each line
+  is labelled by its own identity — a reader never picks one shape from the first
+  line.
 - Decided record only: `decision_location_id`, `decided_at`.
 - In-transit/Received record additionally: `dispatch_location_id`, `dispatched_at`.
 - Received record additionally: `receipt_location_id`, `received_at`, `receipt`.
@@ -528,7 +555,14 @@ Only explicit snake_case DTOs are serialized:
   direct shipments authorized at creation.
 - Detail/full-transfer mutation response only: optional `activity`, described in
   [personal transfer activity](personal-transfer-activity.md); omitted if unknown.
-- Item: `variant_id`, `brand`, `model`, `capacity_ah`, `polarity`, `quantity`.
+- Item: `variant_id`, `kind`, `name`, `detail`, `battery`, `fields`, `quantity` —
+  the same shared catalogue identity inventory, ingress, adjustments and prices
+  already read. A battery's `name` is `marca · modelo` and its `detail` is
+  `capacidad Ah · polaridad`, with `battery` carrying `brand`, `model`,
+  `capacity_ah` (canonical decimal text) and `polarity` and `fields` null. A
+  product's `name` is its free name, its `detail` is the summary of its typed
+  fields, `battery` is null and `fields` carries them. `brand`, `model`,
+  `capacity_ah` and `polarity` are never top-level transfer-line fields.
 - Page: `page`, `page_size`, `status`, `total_count`, `records`, `requires_action`, `required_actions`.
 
 `requires_action` echoes the normalized boolean. `required_actions` maps exactly
@@ -541,10 +575,13 @@ not authorization to mutate. Projection, total, selected IDs/reasons and canonic
 loads share one read-only repeatable-read snapshot; no full proposal histories
 are loaded to produce reasons.
 
-Request IDs, quantities, decimal capacities and total_count are JSON **strings**,
-never floating-point conversions. Bounded location/variant/page values are JSON
-integer numbers. Timestamps are canonical UTC RFC3339 with only necessary
-fractional precision. Exact catalog model, Ah and L/R data are preserved. Creation retry
+Request IDs, quantities and total_count are JSON **strings**, never
+floating-point conversions; a battery's `capacity_ah` inside `battery` is its
+canonical catalogue decimal text.
+Bounded location/variant/page values are JSON integer numbers. Timestamps are
+canonical UTC RFC3339 with only necessary
+fractional precision. Each line keeps its own exact catalogue identity inside the
+published line. Creation retry
 keys, hashes, creation XIDs and authentication/session secrets are never
 transfer-record fields. The optional `activity.actor` contains only the immutable
 account ID, username and display-name snapshot, not current account authority. Reconciliation DTOs separately expose their durable

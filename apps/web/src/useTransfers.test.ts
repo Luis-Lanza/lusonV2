@@ -1,5 +1,6 @@
+import { identityOf } from './model';
 import { createElement } from 'react';
-import { act, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import TransferCreation from './TransferCreation';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useInventory } from './useInventory';
@@ -34,7 +35,9 @@ function wire(branch = 2, id = '9007199254740993') {
     creator_location_id: branch, creator_location_name: locations[branch - 1].name,
     origin_location_id: 1, origin_location_name: 'Warehouse', destination_location_id: branch, destination_location_name: locations[branch - 1].name,
     approver_location_id: 1, approver_location_name: 'Warehouse',
-    items: [{ variant_id: 201, brand: 'Brand', model: 'Model', capacity_ah: '35.5', polarity: 'L', quantity: '9223372036854775807' }] };
+    items: [{ ...identityOf({ variant_id: 201, kind: 'battery', name: 'Brand · Model', detail: '35.5 Ah · L',
+      battery: { brand: 'Brand', model: 'Model', capacity_ah: '35.5', polarity: 'L' }, fields: null }),
+      quantity: '9223372036854775807' }] };
 }
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -104,6 +107,12 @@ function boundedHarness(countsEnabled = true, actor = 2) {
   return { a, controller, listeners, jobs, fetch, hook, emit, api };
 }
 
+// The creation screen asks the catalogue kind before it reads anything: these
+// flows are battery documents, so they choose that kind first.
+function chooseBattery() {
+  const button = screen.queryByRole('button', { name: 'Baterías' });
+  if (button) fireEvent.click(button);
+}
 type DecisionHook = ReturnType<typeof useTransfers>;
 type InventoryHook = ReturnType<typeof useInventory>;
 function decisionFixture(actor = 1, original = wire(2, '1'), override?: Parameters<typeof fixture>[1], catalog = false) {
@@ -986,7 +995,7 @@ describe('A05b real controller decisions', () => {
       const h = decisionFixture(3, original, (url, init) => init.method === 'POST' ? mode === 'post'
         ? Promise.resolve(reply(decisionOutcome(original, status))) : Promise.reject(new Error('unknown'))
         : reading && url === '/api/transfers/1' ? Promise.resolve(reply(decisionOutcome(original, status))) : undefined, true);
-      await h.ready(); expect(await screen.findByRole('button', { name: 'Añadir A_%\\ L' })).toBeEnabled();
+      await h.ready(); chooseBattery(); expect(await screen.findByRole('button', { name: 'Añadir A_%\\ L' })).toBeEnabled();
       const sourceCalls = () => inventoryCalls(h.fetch).filter(([url]) => new URL(String(url), 'http://localhost').searchParams.get('page_size') === '50');
       expect(sourceCalls()).toHaveLength(1);
       const inventory = inventoryCalls(h.fetch).length;
@@ -1010,7 +1019,7 @@ describe('A05b real controller decisions', () => {
       if (!kind) return undefined;
       const job = deferred<Response>(); waiting.push({ kind, job, url }); return job.promise;
     }, true);
-    await h.ready(); expect(await screen.findByRole('button', { name: 'Añadir A_%\\ L' })).toBeEnabled();
+    await h.ready(); chooseBattery(); expect(await screen.findByRole('button', { name: 'Añadir A_%\\ L' })).toBeEnabled();
     act(() => h.lanes.forEach(lane => lane.selectDetail('1')));
     await waitFor(() => expect(h.lanes[1].detail?.id).toBe('1'));
     delay = true;

@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import TransferDetail from './TransferDetail';
 import { transferViewOwner } from './TransferPending';
+import { identityOf } from './model';
 import { parseTransferRecord } from './transferModel';
 import type { DetailController } from './TransferDetail';
 import type { TransferAuthority } from './useInventory';
@@ -136,7 +137,7 @@ describe('U2 approved stock request at physical origin', () => {
     for (const row of table.querySelectorAll('tbody tr')) {
       expect(row.querySelector('[data-label="Solicitadas"]')).toHaveTextContent(/^9223372036854775807$/);
       expect(row.querySelector('[data-label="Reservadas para esta solicitud"]')).toHaveTextContent(/^9223372036854775807 uds\.$/);
-      expect(row.querySelector('td small')).toHaveTextContent('75.125 Ah');
+      expect(row.querySelector('td small')).toHaveTextContent(/^75\.125 Ah · [LR]$/);
     }
     expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
@@ -198,7 +199,7 @@ describe('F1 participant transit detail', () => {
     expect(within(table).getAllByRole('columnheader').map(cell => cell.textContent)).toEqual(['Batería', 'Polaridad', 'Enviadas']);
     for (const row of table.querySelectorAll('tbody tr')) {
       expect(row.querySelector('[data-label="Enviadas"]')).toHaveTextContent(/^9223372036854775807$/);
-      expect(row.querySelector('td small')).toHaveTextContent('75.125 Ah');
+      expect(row.querySelector('td small')).toHaveTextContent(/^75\.125 Ah · [LR]$/);
     }
     expect(table).toHaveTextContent('Original · Immutable-1');
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
@@ -279,8 +280,8 @@ describe('F4a original receipt overview', () => {
     expect(metrics.getByText('Stock acreditado (recepción original)').nextElementSibling).toHaveTextContent(/^7$/);
     const table = screen.getByRole('table', { name: 'Detalle de recepción' });
     expect(overview.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(table).toHaveTextContent('75.125 Ah · Izquierda [L]');
-    expect(table).toHaveTextContent('75.125 Ah · Derecha [R]');
+    expect(table).toHaveTextContent('75.125 Ah · L');
+    expect(table).toHaveTextContent('75.125 Ah · R');
     expect(table).toHaveTextContent('Faltante: 3');
     expect(table).toHaveTextContent('Exceso: 2');
     expect(table).toHaveTextContent('Variante inesperada 3');
@@ -339,8 +340,10 @@ function wire(origin = 1, destination = 2, status = 'pending') {
     destination_location_id: destination, destination_location_name: names[destination - 1],
     approver_location_id: approver, approver_location_name: names[approver - 1],
     ...(status === 'pending' ? {} : { decision_location_id: approver, decided_at: '2028-01-02T00:00:00.000000001Z' }),
-    items: [1, 2].map(variant_id => ({ variant_id, brand: 'Original', model: `Immutable-${variant_id}`,
-      capacity_ah: '75.125', polarity: variant_id === 1 ? 'L' : 'R', quantity: '9223372036854775807' })),
+    items: [1, 2].map(variant_id => ({ ...identityOf({ variant_id, kind: 'battery' as const,
+      name: `Original · Immutable-${variant_id}`, detail: `75.125 Ah · ${variant_id === 1 ? 'L' : 'R'}`,
+      battery: { brand: 'Original', model: `Immutable-${variant_id}`, capacity_ah: '75.125', polarity: variant_id === 1 ? 'L' as const : 'R' as const },
+      fields: null }), quantity: '9223372036854775807' })),
   };
 }
 function deferred() {
@@ -475,7 +478,7 @@ describe('A06a immutable physical review', () => {
     const table = screen.getByRole('table', { name: destination === 1 ? 'Baterías propuestas' : 'Baterías solicitadas' });
     expect(document.body).toHaveTextContent('18446744073709551614');
     expect(within(table).getAllByText('9223372036854775807')).toHaveLength(2);
-    expect(within(table).getAllByText('75.125 Ah')).toHaveLength(2);
+    expect(within(table).getAllByText(/^75\.125 Ah · [LR]$/)).toHaveLength(2);
     expect(Array.from(table.querySelectorAll('tbody tr')).map(row => row.getAttribute('data-variant-id'))).toEqual(['1', '2']);
     expect(table).toHaveTextContent('Original · Immutable-1');
     expect(table).toHaveTextContent('Izquierda [L]');
@@ -647,5 +650,37 @@ describe('A06a immutable physical review', () => {
     expect(f.fetch.mock.calls[0][1]?.signal?.aborted).toBe(true);
     await act(async () => d.resolve(catalog(1)));
     expect(JSON.stringify(f.record, (_key, value) => typeof value === 'bigint' ? value.toString() : value)).toBe(before);
+  });
+});
+
+describe('T3 extracts another kind', () => {
+  const product = (variant_id: number, name: string, detail: string, number: string) => ({ variant_id, kind: 'other' as const,
+    name, detail, battery: null, fields: [{ name: 'volumen en L', kind: 'number' as const, unit: 'L', number }], quantity: '3' });
+  it('labels a product line by its name and detail without inventing a battery cell', async () => {
+    const f = fixture();
+    const record = parseTransferRecord(JSON.stringify({ ...wire(1, 2, 'pending'),
+      catalogue_kind: 'other', items: [product(210, 'Agua acidulada', 'volumen en L: 5 L', '5')] }));
+    render(f.element(record));
+    const products = screen.getByRole('region', { name: 'Productos solicitados' });
+    const row = within(products).getByRole('row', { name: /Agua acidulada/ });
+    expect(row).toHaveAttribute('data-kind', 'other');
+    expect(row).toHaveTextContent('volumen en L: 5 L');
+    expect(row).not.toHaveTextContent('Ah');
+    expect(row).not.toHaveTextContent('Izquierda'); expect(row).not.toHaveTextContent('Derecha');
+    expect(within(products).queryByText('LIVE NOT ORIGINAL')).not.toBeInTheDocument();
+  });
+  it('renders every line of a document whose catalogue kind is empty by its own identity', () => {
+    const f = fixture();
+    const record = parseTransferRecord(JSON.stringify({ ...wire(1, 2, 'pending'), catalogue_kind: '',
+      items: [{ ...wire(1, 2).items[0], quantity: '2' }, product(210, 'Agua acidulada', 'volumen en L: 5 L', '5')] }));
+    expect(record.catalogue_kind).toBe('');
+    render(f.element(record));
+    const products = screen.getByRole('region', { name: 'Productos solicitados' });
+    const battery = within(products).getByRole('row', { name: /Original · Immutable-1/ });
+    const other = within(products).getByRole('row', { name: /Agua acidulada/ });
+    expect(battery).toHaveAttribute('data-kind', 'battery');
+    expect(battery).toHaveTextContent('75.125 Ah · L'); expect(battery).toHaveTextContent('Izquierda [L]');
+    expect(other).toHaveAttribute('data-kind', 'other');
+    expect(other).toHaveTextContent('volumen en L: 5 L'); expect(other).not.toHaveTextContent('Izquierda');
   });
 });

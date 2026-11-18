@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import TransferCreation from './TransferCreation';
-import type { Item, Metadata } from './model';
+import { identityOf, type Item, type Metadata } from './model';
 import { loadSourceInventory, SourceInventoryError, type SourceCatalog } from './sourceInventory';
 import type { TransferAuthority } from './useInventory';
 import { createTransferRecovery } from './transferRecovery';
@@ -37,6 +37,12 @@ function harness(initial = authority()) {
   return { controller, detach, listeners, set: (next: TransferAuthority) => { current = next; controller.authorityEpoch = next.epoch; },
     emit: () => act(() => { for (const listener of listeners) listener(); }) };
 }
+// The creation screen asks the catalogue kind first: every flow in this suite is a
+// battery document, so it chooses that kind before any catalogue exists.
+function chooseBattery() {
+  const button = screen.queryByRole('button', { name: 'Baterías' });
+  if (button) fireEvent.click(button);
+}
 const add = () => screen.getByRole('button', { name: 'Añadir Modelo 1 L' });
 const flow = (value: string) => fireEvent.change(screen.getByLabelText('Tipo de transferencia'), { target: { value } });
 
@@ -44,7 +50,7 @@ it('offers every metadata branch as a destination and preserves its physical sou
   const expanded = { ...metadata, locations: [...metadata.locations, { id: 4, name: 'Sucursal C' }] };
   const h = harness(authority(2, 1, 20));
   const loader = vi.fn<typeof loadSourceInventory>(async source => ({ ...catalog(1), location: expanded.locations.find(l => l.id === source)! }));
-  render(<TransferCreation controller={h.controller} metadata={expanded} loader={loader} onBack={() => {}} />);
+  render(<TransferCreation controller={h.controller} metadata={expanded} loader={loader} onBack={() => {}} />); chooseBattery();
   await waitFor(() => expect(add()).toBeEnabled());
   expect(screen.getByRole('option', { name: 'Solicitar a Sucursal B' })).toHaveValue('requestOther');
   expect(screen.getByRole('option', { name: 'Solicitar a Sucursal C' })).toHaveValue('request:4');
@@ -60,7 +66,7 @@ describe('W2 direct warehouse workspace', () => {
     const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
     const confirmation = deferred<Response>();
     const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(() => confirmation.promise);
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} recovery={recovery} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} recovery={recovery} onBack={vi.fn()} />); chooseBattery();
     await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
     expect(screen.getByLabelText('Tipo de transferencia')).toHaveValue('directA');
     expect(screen.queryByRole('option', { name: 'Solicitar a Almacén' })).not.toBeInTheDocument();
@@ -108,7 +114,7 @@ describe('F3 grouped catalog and compact route', () => {
   it('groups paired polarities by catalog identity with independent quantities and stock bounds', async () => {
     const h = harness(authority(1));
     const loader = vi.fn<typeof loadSourceInventory>(async () => pairedCatalog());
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
     const group = await screen.findByRole('rowgroup', { name: 'TOYO · Modelo 1 · 75.125 Ah' });
     expect(within(group).getByText('2 variantes')).toBeInTheDocument();
     expect(screen.getAllByLabelText('Cantidad Modelo 1 L')).toHaveLength(1);
@@ -136,7 +142,7 @@ describe('F3 grouped catalog and compact route', () => {
       ? { ...row, existing: 0n, available: 0n } : index === 2
         ? { ...original.rows[0], variant_id: 3, catalog_entry_id: 2 } : row) };
     const loader = vi.fn<typeof loadSourceInventory>(async () => source);
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
     await screen.findByRole('button', { name: 'Añadir Modelo 1 R' });
     const groups = screen.getAllByRole('rowgroup', { name: 'TOYO · Modelo 1 · 75.125 Ah' });
     expect(groups).toHaveLength(2);
@@ -154,7 +160,7 @@ describe('F3 grouped catalog and compact route', () => {
     const source = { ...original, rows: original.rows.map((row, index): Item => index === 25
       ? { ...original.rows[24], variant_id: 26, detail: '75.125 Ah · R', battery: { ...original.rows[24].battery!, polarity: 'R' } } : row) };
     const loader = vi.fn<typeof loadSourceInventory>(async () => source);
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
     const name = 'TOYO · Modelo 25 · 75.125 Ah';
     const group = await screen.findByRole('rowgroup', { name });
     expect(within(group).getByText('1 variante')).toBeInTheDocument();
@@ -174,7 +180,7 @@ describe('F3 responsive selection contract', () => {
   it('requests nearest full exposure for focused native table controls', async () => {
     const h = harness();
     const loader = vi.fn<typeof loadSourceInventory>(async () => catalog());
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
     const button = await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
     const input = screen.getByLabelText('Cantidad Modelo 1 L');
     for (const control of [input, button]) {
@@ -195,7 +201,7 @@ describe('F3 responsive selection contract', () => {
   it.each([1, 2])('keeps a single editable selection and truthful review for assignment %s', async assigned => {
     const h = harness(authority(assigned));
     const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source, 3, 17n));
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
     await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
     expect(screen.getAllByLabelText('Cantidad Modelo 1 L')).toHaveLength(1);
     fireEvent.change(screen.getByLabelText('Cantidad Modelo 1 L'), { target: { value: '4' } });
@@ -226,7 +232,7 @@ describe('F3 responsive selection contract', () => {
 describe('R04b2b workspace', () => {
   it('opens the physical warehouse catalog with explicit real review and no stock mutations', async () => {
     const h = harness(); const original = catalog(); const loader = vi.fn<typeof loadSourceInventory>(async () => original);
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
     expect(await screen.findByRole('heading', { name: 'Disponibilidad en Almacén' })).toBeVisible();
     await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
     fireEvent.click(add());
@@ -241,7 +247,7 @@ describe('R04b2b workspace', () => {
   it.each([2, 3])('uses all three physical routes for assigned branch %s', async assigned => {
     const h = harness(authority(assigned));
     const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
     await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
     const route = () => within(screen.getByRole('region', { name: 'Ruta física' }));
     expect(route().getByText(metadata.locations[assigned - 1].name, { selector: 'strong' })).toBeVisible();
@@ -257,7 +263,7 @@ describe('R04b2b workspace', () => {
   it.each(['anonymous', 'unready'])('denies %s without catalog requests or subscriptions', async denied => {
     const a = denied === 'anonymous' ? { epoch: 1, ready: true, session: null } : { ...authority(), ready: false };
     const h = harness(a); const loader = vi.fn<typeof loadSourceInventory>();
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
     expect(screen.getByRole('status')).toHaveTextContent('sesión activa asignada');
     expect(loader).not.toHaveBeenCalled(); expect(h.listeners.size).toBe(0);
   });
@@ -273,7 +279,7 @@ describe('R04b2b workspace', () => {
       }
       return output;
     }
-    const view = render(<Probe />); await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
+    const view = render(<Probe />); chooseBattery(); await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
     fireEvent.click(add());
     const next = changed === 'epoch' ? authority(2, 2) : changed === 'account' ? authority(2, 1, 99) : changed === 'assignment' ? authority(3) : changed === 'anonymous' ? { epoch: 1, ready: false, session: null } : { ...authority(), ready: false };
     h.set(next); checked = true;
@@ -284,7 +290,7 @@ describe('R04b2b workspace', () => {
   });
   it('rejects saved row handlers when latest readiness changes before a rerender', async () => {
     const h = harness(); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
     await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
     h.set({ ...authority(), ready: false }); fireEvent.click(add());
     expect(screen.queryByLabelText('Cantidad seleccionada Modelo 1')).not.toBeInTheDocument();
@@ -295,11 +301,11 @@ describe('R04b2b workspace', () => {
     let nextJob = 0;
     const loader = vi.fn<typeof loadSourceInventory>(() => jobs[nextJob++].promise);
     const props = { controller: h.controller, metadata, loader, onBack: vi.fn() };
-    const view = render(<TransferCreation {...props} />);
+    const view = render(<TransferCreation {...props} />); chooseBattery();
     await waitFor(() => expect(loader).toHaveBeenCalledTimes(1));
     flow('requestOther'); flow('sendWarehouse');
     expect(loader).toHaveBeenCalledTimes(3); expect(loader.mock.calls[0][1]?.signal?.aborted).toBe(true);
-    h.set(authority(3, 2)); view.rerender(<TransferCreation {...props} />);
+    h.set(authority(3, 2)); view.rerender(<TransferCreation {...props} />); chooseBattery();
     await waitFor(() => expect(loader).toHaveBeenCalledTimes(4));
     await act(async () => { jobs[0].resolve(catalog()); jobs[1].reject(new SourceInventoryError('unauthenticated', 401)); jobs[2].resolve(catalog(2)); });
     expect(screen.queryByText(/Modelo 1/)).not.toBeInTheDocument(); expect(h.controller.settleUnauthorized).not.toHaveBeenCalled();
@@ -310,7 +316,7 @@ describe('R04b2b workspace', () => {
     const h = harness(); const jobs = Array.from({ length: 4 }, () => deferred<SourceCatalog>());
     let nextJob = 0;
     const loader = vi.fn<typeof loadSourceInventory>(() => jobs[nextJob++].promise);
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
     await screen.findByRole('heading', { name: 'Disponibilidad en Almacén' });
     h.emit(); h.emit(); h.emit(); expect(loader).toHaveBeenCalledTimes(1);
     await act(async () => jobs[0].resolve(catalog()));
@@ -326,7 +332,7 @@ describe('R04b2b workspace', () => {
   it('filters and paginates the whole 190 variant catalog locally while retaining exact cart totals', async () => {
     const h = harness(); const snapshot = catalog(1, 190); const loader = vi.fn<typeof loadSourceInventory>(async () => snapshot);
     const rng = vi.spyOn(crypto, 'getRandomValues'); const fetcher = vi.spyOn(globalThis, 'fetch');
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
     await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
     fireEvent.change(screen.getByLabelText('Cantidad Modelo 1 L'), { target: { value: '9223372036854775807' } }); fireEvent.click(add());
     fireEvent.change(screen.getByLabelText('Cantidad Modelo 3 L'), { target: { value: '9223372036854775807' } });
@@ -349,7 +355,7 @@ describe('R04b2b workspace', () => {
   });
   it('preserves reduced and missing stock selections and filters on advisory refresh', async () => {
     const h = harness(); let snapshot = catalog(1, 3); const loader = vi.fn<typeof loadSourceInventory>(async () => snapshot);
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
     await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
     fireEvent.change(screen.getByLabelText('Cantidad Modelo 1 L'), { target: { value: '9007199254740993' } }); fireEvent.click(add());
     fireEvent.click(screen.getByRole('button', { name: 'Añadir Modelo 3 L' }));
@@ -366,7 +372,7 @@ describe('R04b2b workspace', () => {
   });
   it('requires explicit source discard, focuses cancel and keeps source on cancellation or same flow', async () => {
     const h = harness(); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
     await screen.findByRole('button', { name: 'Añadir Modelo 1 L' }); fireEvent.click(add());
     expect(screen.getByLabelText('Cantidad Modelo 1 L')).toHaveFocus();
     flow('requestWarehouse'); expect(loader).toHaveBeenCalledTimes(1);
@@ -381,7 +387,7 @@ describe('R04b2b workspace', () => {
   });
   it.each(['١', '-1', '01', '1.5', '9223372036854775808'])('rejects noncanonical or overflowing quantity %s with sanitized guidance', async value => {
     const h = harness(); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
     await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
     fireEvent.change(screen.getByLabelText('Cantidad Modelo 1 L'), { target: { value } }); fireEvent.click(add());
     expect(screen.getByRole('alert')).toHaveTextContent('Ingresá una cantidad entera positiva');
@@ -389,7 +395,7 @@ describe('R04b2b workspace', () => {
   });
   it('handles zero and minus at one as explicit removal and restores input focus', async () => {
     const h = harness(); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
     await screen.findByRole('button', { name: 'Añadir Modelo 1 L' }); fireEvent.click(add());
     fireEvent.click(screen.getByRole('button', { name: 'Aumentar Modelo 1' }));
     expect(screen.getByLabelText('Cantidad seleccionada Modelo 1')).toHaveValue('2');
@@ -401,7 +407,7 @@ describe('R04b2b workspace', () => {
   it('sanitizes initial and background failures, keeps full stale guidance and settles only current 401', async () => {
     const h = harness(); const loader = vi.fn<typeof loadSourceInventory>().mockRejectedValueOnce(new Error('private response'))
       .mockResolvedValueOnce(catalog()).mockRejectedValueOnce(new SourceInventoryError('unauthenticated', 401));
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
     await screen.findByRole('alert'); expect(screen.queryByText(/private response/)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Añadir Modelo 1 L' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar catálogo' })); await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
@@ -414,10 +420,10 @@ describe('R04b2b workspace', () => {
     const h = harness(); const resume = deferred<SourceCatalog>();
     const loader = vi.fn<typeof loadSourceInventory>().mockResolvedValueOnce(catalog()).mockImplementation(() => resume.promise);
     const props = { controller: h.controller, metadata, loader, onBack: vi.fn() };
-    const view = render(<TransferCreation {...props} />); await screen.findByRole('button', { name: 'Añadir Modelo 1 L' }); fireEvent.click(add());
-    h.set({ ...authority(), ready: false }); view.rerender(<TransferCreation {...props} />);
+    const view = render(<TransferCreation {...props} />); chooseBattery(); await screen.findByRole('button', { name: 'Añadir Modelo 1 L' }); fireEvent.click(add());
+    h.set({ ...authority(), ready: false }); view.rerender(<TransferCreation {...props} />); chooseBattery();
     expect(h.listeners.size).toBe(0); expect(screen.queryByText(/Modelo 1/)).not.toBeInTheDocument();
-    h.set(authority()); view.rerender(<TransferCreation {...props} />);
+    h.set(authority()); view.rerender(<TransferCreation {...props} />); chooseBattery();
     expect(screen.queryByText(/Modelo 1/)).not.toBeInTheDocument();
     await act(async () => resume.resolve(catalog()));
     expect(screen.getByLabelText('Cantidad seleccionada Modelo 1')).toHaveValue('1');
@@ -431,7 +437,7 @@ describe('R04b2c2 explicit review', () => {
   it.each(['requestWarehouse', 'requestOther', 'sendWarehouse'])('opens a real Pending review for %s without sending', async selected => {
     const h = harness(); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
     const fetcher = vi.spyOn(globalThis, 'fetch');
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
     await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
     if (selected !== 'requestWarehouse') {
       flow(selected); await waitFor(() => expect(loader).toHaveBeenCalledTimes(2));
@@ -439,7 +445,7 @@ describe('R04b2c2 explicit review', () => {
     }
     fireEvent.click(add()); fireEvent.click(screen.getByRole('button', { name: 'Revisar solicitud' }));
     const dialog = screen.getByRole('dialog', { name: 'Revisar solicitud' });
-    expect(within(dialog).getByText('75.125 Ah')).toBeVisible();
+    expect(within(dialog).getByText('75.125 Ah · L')).toBeVisible();
     expect(within(dialog).getByText(/no reserva ni mueve stock/)).toBeVisible();
     expect(within(dialog).getByRole('button', { name: 'Enviar solicitud' })).toBeEnabled();
     expect(fetcher).not.toHaveBeenCalled(); fetcher.mockRestore();
@@ -453,7 +459,8 @@ function recordDTO(id = '1001') {
   return { id, reference: `TR-${id}`, kind: 'request_stock', status: 'pending', created_at: '2028-02-29T12:34:56.123456789Z',
     creator_location_id: 2, creator_location_name: 'Sucursal A', origin_location_id: 1, origin_location_name: 'Almacén',
     destination_location_id: 2, destination_location_name: 'Sucursal A', approver_location_id: 1, approver_location_name: 'Almacén',
-    items: [{ variant_id: 1, brand: 'TOYO', model: 'Modelo 1', capacity_ah: '75.125', polarity: 'L', quantity: '1' }] };
+    items: [{ ...identityOf({ variant_id: 1, kind: 'battery', name: 'TOYO · Modelo 1', detail: '75.125 Ah · L',
+      battery: { brand: 'TOYO', model: 'Modelo 1', capacity_ah: '75.125', polarity: 'L' }, fields: null }), quantity: '1' }] };
 }
 function archived(h: ReturnType<typeof harness>, selected: 'requestWarehouse' | 'requestOther' | 'sendWarehouse' = 'requestWarehouse', quantity = '1') {
   const recovery = createTransferRecovery();
@@ -491,7 +498,7 @@ describe('A05a terminal original creation replay', () => {
           expected_quantity: item.quantity, actual_quantity: item.quantity, available_quantity: item.quantity })), exceptions: [] } } : {}) };
     const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply(outcome, 200));
     render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery}
-      loader={async source => catalog(source)} onBack={back} onDetail={detail} />);
+      loader={async source => catalog(source)} onBack={back} onDetail={detail} />); chooseBattery();
     fireEvent.click(await screen.findByRole('button', { name: 'Retomar misma solicitud' }));
     const attempt = recovery.getCurrent(h.controller.getTransferAuthority)!.attempt;
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar misma solicitud' }));
@@ -509,7 +516,7 @@ describe('A05a terminal original creation replay', () => {
     const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply({ ...recordDTO(), status,
       decision_location_id: 1, decided_at: '2028-03-01T00:00:00Z', items: [{ ...recordDTO().items[0], quantity: '2' }] }, 200));
     render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery}
-      loader={async source => catalog(source)} onBack={vi.fn()} onDetail={detail} />);
+      loader={async source => catalog(source)} onBack={vi.fn()} onDetail={detail} />); chooseBattery();
     fireEvent.click(await screen.findByRole('button', { name: 'Retomar misma solicitud' }));
     const original = recovery.getCurrent(h.controller.getTransferAuthority)!;
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar misma solicitud' }));
@@ -523,8 +530,8 @@ describe('A05a terminal original creation replay', () => {
     const h = harness(); const recovery = createTransferRecovery(); const old = deferred<Response>(); const fresh = deferred<Response>();
     const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => old.promise).mockImplementationOnce(() => fresh.promise);
     const props = { controller: h.controller, metadata, recovery, loader: async (source: number) => catalog(source), onBack: vi.fn() };
-    const view = render(<TransferCreation {...props} />); await selectAndReview(); fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' }));
-    h.set(authority(2, 9)); view.rerender(<TransferCreation {...props} />);
+    const view = render(<TransferCreation {...props} />); chooseBattery(); await selectAndReview(); fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' }));
+    h.set(authority(2, 9)); view.rerender(<TransferCreation {...props} />); chooseBattery();
     fireEvent.click(await screen.findByRole('button', { name: 'Retomar misma solicitud' }));
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar misma solicitud' }));
     const replacement = recovery.getCurrent(h.controller.getTransferAuthority)!;
@@ -541,7 +548,7 @@ describe('R04b2c2 manual lifecycle', () => {
   it.each([201, 200])('shows actual parsed %s reference, string ID, readable date and exact evidence then returns to Transfers', async status => {
     const h = harness(); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source)); const back = vi.fn();
     const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply(recordDTO(), status));
-    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={back} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={back} />); chooseBattery();
     await selectAndReview(); fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' }));
     expect(await screen.findByRole('heading', { name: 'TR-1001' })).toBeVisible();
     expect(screen.getByText('ID: 1001')).toBeVisible();
@@ -559,7 +566,7 @@ describe('R04b2c2 manual lifecycle', () => {
   it('locks synchronously against double clicks and all destructive exits while the flight is pending', async () => {
     const h = harness(); const recovery = createTransferRecovery(); const job = deferred<Response>(); const back = vi.fn();
     const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementation(() => job.promise);
-    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={back} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={back} />); chooseBattery();
     const dialog = await selectAndReview(); const send = screen.getByRole('button', { name: 'Enviar solicitud' });
     act(() => { fireEvent.click(send); fireEvent.click(send); });
     expect(fetcher).toHaveBeenCalledTimes(1); expect(recovery.getCurrent(h.controller.getTransferAuthority)?.phase).toBe('inFlight');
@@ -576,7 +583,7 @@ describe('R04b2c2 manual lifecycle', () => {
   ] as const)('preserves exact attempt and sanitizes %s/%s without fake success', async (status, code, message) => {
     const h = harness(); const recovery = createTransferRecovery();
     const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply({ error: code }, status));
-    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={vi.fn()} />); chooseBattery();
     await selectAndReview(); const before = recovery.getCurrent(h.controller.getTransferAuthority)!.attempt;
     fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(message);
@@ -589,7 +596,7 @@ describe('R04b2c2 manual lifecycle', () => {
     const h = harness(); const recovery = createTransferRecovery(); const fetcher = vi.spyOn(globalThis, 'fetch');
     if (failure === 'network') fetcher.mockRejectedValue(new Error('secret response message'));
     else fetcher.mockResolvedValue(failure === 'mime' ? reply(recordDTO(), 201, 'text/html') : reply({ code: 'fake' }));
-    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={vi.fn()} />); chooseBattery();
     await selectAndReview(); fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' })); await screen.findByRole('alert');
     const before = JSON.parse(String(fetcher.mock.calls[0][1]?.body));
     expect(screen.queryByText(/secret response message/)).not.toBeInTheDocument(); expect(screen.queryByText(/fake/)).not.toBeInTheDocument();
@@ -600,7 +607,7 @@ describe('R04b2c2 manual lifecycle', () => {
   it('fails closed when secure randomness is unavailable without POST or archive', async () => {
     const h = harness(); const recovery = createTransferRecovery(); const rng = vi.spyOn(crypto, 'getRandomValues').mockImplementation(() => { throw new Error('private RNG details'); });
     const fetcher = vi.spyOn(globalThis, 'fetch');
-    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={vi.fn()} />); chooseBattery();
     await screen.findByRole('button', { name: 'Añadir Modelo 1 L' }); fireEvent.click(add()); fireEvent.click(screen.getByRole('button', { name: 'Revisar solicitud' }));
     expect(screen.getByRole('alert')).toHaveTextContent('revisión segura'); expect(screen.queryByText(/private RNG/)).not.toBeInTheDocument();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument(); expect(fetcher).not.toHaveBeenCalled(); expect(recovery.getCurrent(h.controller.getTransferAuthority)).toBeNull(); rng.mockRestore(); fetcher.mockRestore();
@@ -608,7 +615,7 @@ describe('R04b2c2 manual lifecycle', () => {
   it('retains the key across close, reopen and advisory refresh; material edits mint only on next review', async () => {
     const h = harness(); const recovery = createTransferRecovery(); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
     const rng = vi.spyOn(crypto, 'getRandomValues');
-    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={loader} onBack={vi.fn()} />); chooseBattery();
     await selectAndReview(); const key = recovery.getCurrent(h.controller.getTransferAuthority)!.attempt.retry_key;
     fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' }); expect(screen.getByRole('button', { name: 'Revisar solicitud' })).toHaveFocus();
     h.emit(); await waitFor(() => expect(loader).toHaveBeenCalledTimes(2));
@@ -625,7 +632,7 @@ describe('R04b2c2 manual lifecycle', () => {
     const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply({ ...recordDTO(), origin_location_id: 3, origin_location_name: 'Sucursal B', approver_location_id: 3, approver_location_name: 'Sucursal B',
       items: recordDTO().items.map(item => ({ ...item, quantity: '9007199254740993' })) }, 200));
     const rng = vi.spyOn(crypto, 'getRandomValues');
-    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={loader} onBack={vi.fn()} />); chooseBattery();
     const resume = await screen.findByRole('button', { name: 'Retomar misma solicitud' }); fireEvent.click(resume);
     expect(screen.getByLabelText('Tipo de transferencia')).toHaveValue('requestOther');
     expect(within(screen.getByRole('dialog')).getByText('9007199254740993')).toBeVisible();
@@ -636,7 +643,7 @@ describe('R04b2c2 manual lifecycle', () => {
   it.each(['fallen', 'missing', 'failed'])('prepares all archived quantities before warned edit/discard with %s guidance', async guidance => {
     const h = harness(); const recovery = archived(h, 'requestWarehouse', '9007199254740993');
     const loader = vi.fn<typeof loadSourceInventory>(async source => { if (guidance === 'failed') throw new Error('source failed'); return catalog(source, guidance === 'missing' ? 0 : 1, 1n); });
-    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={loader} onBack={vi.fn()} />); chooseBattery();
     await screen.findByRole('button', { name: 'Editar selección conservada' });
     await waitFor(() => expect(screen.queryByText('Actualizando catálogo completo…')).not.toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: 'Editar selección conservada' }));
@@ -656,7 +663,7 @@ describe('R04b2c2 manual lifecycle', () => {
   });
   it('warns on unknown back and keeps the canonical attempt instead of silently discarding', async () => {
     const h = harness(); const recovery = archived(h); const back = vi.fn();
-    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={back} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={back} />); chooseBattery();
     await screen.findByRole('button', { name: 'Retomar misma solicitud' }); fireEvent.click(screen.getByRole('button', { name: '← Volver a transferencias' }));
     expect(back).not.toHaveBeenCalled(); expect(screen.getByRole('dialog')).toHaveTextContent('no al recargar o cerrar');
     fireEvent.click(screen.getByRole('button', { name: 'Volver conservando el intento' })); expect(back).toHaveBeenCalledOnce();
@@ -666,8 +673,8 @@ describe('R04b2c2 manual lifecycle', () => {
     const h = harness(); const recovery = createTransferRecovery(); const first = deferred<Response>(); const second = deferred<Response>();
     const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise);
     const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source)); const props = { controller: h.controller, metadata, recovery, loader, onBack: vi.fn() };
-    const view = render(<TransferCreation {...props} />); await selectAndReview(); fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' }));
-    h.set(authority(2, 9)); view.rerender(<TransferCreation {...props} />);
+    const view = render(<TransferCreation {...props} />); chooseBattery(); await selectAndReview(); fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' }));
+    h.set(authority(2, 9)); view.rerender(<TransferCreation {...props} />); chooseBattery();
     await screen.findByRole('button', { name: 'Retomar misma solicitud' }); fireEvent.click(screen.getByRole('button', { name: 'Retomar misma solicitud' }));
     fireEvent.click(screen.getByRole('button', { name: 'Reintentar misma solicitud' })); expect(fetcher).toHaveBeenCalledTimes(2);
     await act(async () => first.resolve(reply(recordDTO('1002'))));
@@ -681,10 +688,10 @@ describe('R04b2c2 manual lifecycle', () => {
     const fetcher = vi.spyOn(globalThis, 'fetch').mockImplementationOnce(() => old.promise).mockImplementationOnce(() => fresh.promise);
     const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
     const props = { controller: h.controller, metadata, recovery, loader, onBack: vi.fn() };
-    const view = render(<TransferCreation {...props} />);
+    const view = render(<TransferCreation {...props} />); chooseBattery();
     await selectAndReview(); fireEvent.click(screen.getByRole('button', { name: 'Enviar solicitud' }));
     const original = JSON.parse(String(fetcher.mock.calls[0][1]?.body));
-    h.set(authority(2, 10)); view.rerender(<TransferCreation {...props} />);
+    h.set(authority(2, 10)); view.rerender(<TransferCreation {...props} />); chooseBattery();
     await screen.findByRole('button', { name: 'Editar selección conservada' });
     await waitFor(() => expect(screen.queryByText('Actualizando catálogo completo…')).not.toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: 'Editar selección conservada' }));
@@ -709,7 +716,7 @@ describe('R04b2c2 manual lifecycle', () => {
   });
   it.each(['unready', 'account', 'epoch'])('rejects saved send handler against latest %s without waiting for effects', async changed => {
     const h = harness(); const recovery = createTransferRecovery(); const fetcher = vi.spyOn(globalThis, 'fetch');
-    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={async source => catalog(source)} onBack={vi.fn()} />); chooseBattery();
     await selectAndReview();
     const send = screen.getByRole('button', { name: 'Enviar solicitud' });
     h.set(changed === 'unready' ? { ...authority(), ready: false } : changed === 'account' ? authority(2, 1, 99) : authority(2, 2));
@@ -718,9 +725,9 @@ describe('R04b2c2 manual lifecycle', () => {
   it('preserves both owner slots without a foreign banner or payload while switching A/B/A/B', async () => {
     const h = harness(); const recovery = createTransferRecovery(); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
     const props = { controller: h.controller, metadata, recovery, loader, onBack: vi.fn() };
-    const view = render(<TransferCreation {...props} />); await selectAndReview();
+    const view = render(<TransferCreation {...props} />); chooseBattery(); await selectAndReview();
     const attemptA = recovery.getCurrent(h.controller.getTransferAuthority)!.attempt;
-    h.set(authority(3, 2)); view.rerender(<TransferCreation {...props} />);
+    h.set(authority(3, 2)); view.rerender(<TransferCreation {...props} />); chooseBattery();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Retomar revisión' })).not.toBeInTheDocument();
     await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
@@ -729,18 +736,18 @@ describe('R04b2c2 manual lifecycle', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Revisar solicitud' }));
     const attemptB = recovery.getCurrent(h.controller.getTransferAuthority)!.attempt;
     expect(attemptB.kind).toBe('send_to_warehouse'); expect(attemptB.retry_key).not.toBe(attemptA.retry_key);
-    h.set(authority(2, 3)); view.rerender(<TransferCreation {...props} />);
+    h.set(authority(2, 3)); view.rerender(<TransferCreation {...props} />); chooseBattery();
     await screen.findByRole('button', { name: 'Retomar revisión' });
     expect(recovery.getCurrent(h.controller.getTransferAuthority)?.attempt).toEqual(attemptA);
     expect(screen.getByLabelText('Tipo de transferencia')).toHaveValue('requestWarehouse');
-    h.set(authority(3, 4)); view.rerender(<TransferCreation {...props} />);
+    h.set(authority(3, 4)); view.rerender(<TransferCreation {...props} />); chooseBattery();
     await screen.findByRole('button', { name: 'Retomar revisión' });
     expect(recovery.getCurrent(h.controller.getTransferAuthority)?.attempt).toEqual(attemptB);
     expect(screen.getByLabelText('Tipo de transferencia')).toHaveValue('sendWarehouse');
   });
   it('requires caution before unknown source change and leaves the archive intact on cancellation', async () => {
     const h = harness(); const recovery = archived(h); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
-    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={loader} onBack={vi.fn()} />);
+    render(<TransferCreation controller={h.controller} metadata={metadata} recovery={recovery} loader={loader} onBack={vi.fn()} />); chooseBattery();
     await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
     const before = recovery.getCurrent(h.controller.getTransferAuthority)!;
     flow('requestOther'); expect(screen.getByRole('dialog')).toHaveTextContent('generar otra solicitud');
@@ -752,5 +759,85 @@ describe('R04b2c2 manual lifecycle', () => {
     await waitFor(() => expect(loader).toHaveBeenCalledTimes(2));
     expect(recovery.getCurrent(h.controller.getTransferAuthority)).toBeNull();
     expect(screen.getByLabelText('Tipo de transferencia')).toHaveValue('requestOther');
+  });
+});
+
+describe('T3 kind-first creation', () => {
+  const product = (variant_id: number, name: string, detail: string, fields: { name: string; unit?: string; number: string }[] = []) => ({
+    variant_id: variant_id + 200, catalog_entry_id: variant_id + 200, kind: 'other' as const, name, detail,
+    battery: null, fields: fields.map(field => ({ ...field, kind: 'number' as const })), existing: 6n, reserved: 0n, available: 6n,
+  });
+  const productCatalog = (): SourceCatalog => ({ location: metadata.locations[0], rows: [
+    product(1, 'Agua acidulada', 'volumen en L: 5 L', [{ name: 'volumen en L', unit: 'L', number: '5' }]),
+    product(2, 'Trapos de limpieza', 'bultos: 2', [{ name: 'bultos', number: '2' }]),
+  ] });
+  it('asks the catalogue kind before reading or offering any catalogue', async () => {
+    const h = harness(); const loader = vi.fn<typeof loadSourceInventory>(async () => productCatalog());
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    const kinds = screen.getByRole('group', { name: 'Tipo de producto de la transferencia' });
+    expect(within(kinds).getByRole('button', { name: 'Baterías' })).toHaveAttribute('aria-pressed', 'false');
+    expect(within(kinds).getByRole('button', { name: 'Otros productos' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByRole('status')).toHaveTextContent('Elegí el tipo de producto para ver el catálogo de origen.');
+    expect(screen.queryByRole('region', { name: 'Catálogo de origen' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('complementary', { name: 'Carrito de transferencia' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Tipo de transferencia')).not.toBeInTheDocument();
+    expect(loader).not.toHaveBeenCalled();
+    fireEvent.click(within(kinds).getByRole('button', { name: 'Otros productos' }));
+    await screen.findByRole('button', { name: 'Añadir Agua acidulada' });
+    expect(loader).toHaveBeenCalledTimes(1); expect(loader.mock.calls[0][1]?.kind).toBe('other');
+    expect(within(kinds).getByRole('button', { name: 'Otros productos' })).toHaveAttribute('aria-pressed', 'true');
+  });
+  it('offers the product kind with the product name and detail and no battery column', async () => {
+    const h = harness(); const loader = vi.fn<typeof loadSourceInventory>(async () => productCatalog());
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Otros productos' }));
+    await screen.findByRole('button', { name: 'Añadir Agua acidulada' });
+    const table = screen.getByRole('table');
+    expect(within(table).getAllByRole('columnheader').map(cell => cell.textContent)).toEqual(['Producto', 'Detalle', 'Disponible', 'Cantidad', 'Acción']);
+    expect(within(table).queryByRole('columnheader', { name: 'Polaridad' })).not.toBeInTheDocument();
+    const row = within(table).getByRole('row', { name: /Agua acidulada/ });
+    expect(row).toHaveTextContent('volumen en L: 5 L');
+    expect(row).not.toHaveTextContent('Ah');
+    // A term the row shows must find the row inside the product kind.
+    fireEvent.change(screen.getByLabelText('Buscar nombre o dato del producto'), { target: { value: 'bultos' } });
+    expect(screen.queryByRole('button', { name: 'Añadir Agua acidulada' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Añadir Trapos de limpieza' })).toBeEnabled();
+    expect(loader).toHaveBeenCalledTimes(1);
+  });
+  it('carries a product into the cart and the review by its name and detail only', async () => {
+    const h = harness(); const loader = vi.fn<typeof loadSourceInventory>(async () => productCatalog());
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Otros productos' }));
+    await screen.findByRole('button', { name: 'Añadir Agua acidulada' });
+    fireEvent.change(screen.getByLabelText('Cantidad Agua acidulada'), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Añadir Agua acidulada' }));
+    const cart = screen.getByRole('complementary', { name: 'Carrito de transferencia' });
+    expect(cart).toHaveTextContent('Agua acidulada'); expect(cart).toHaveTextContent('volumen en L: 5 L');
+    expect(cart).not.toHaveTextContent('Ah ·'); expect(cart).not.toHaveTextContent('Polaridad');
+    expect(screen.getByLabelText('Total a transferir')).toHaveTextContent('3 productos');
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar solicitud' }));
+    const dialog = screen.getByRole('dialog', { name: 'Revisar solicitud' });
+    const lines = within(dialog).getByRole('table', { name: 'Selección inmutable' });
+    expect(within(lines).getAllByRole('columnheader').map(cell => cell.textContent)).toEqual(['Producto', 'Cantidad a transferir']);
+    const line = within(lines).getByRole('row', { name: /Agua acidulada/ });
+    expect(line).toHaveTextContent('volumen en L: 5 L'); expect(line).not.toHaveTextContent('Polaridad');
+    expect(within(dialog).getByText(/1 variante ·/)).toHaveTextContent('3 productos');
+  });
+  it('does not let a document mix kinds once a line is selected', async () => {
+    const h = harness(); const loader = vi.fn<typeof loadSourceInventory>(async source => catalog(source));
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
+    await screen.findByRole('button', { name: 'Añadir Modelo 1 L' }); fireEvent.click(add());
+    expect(screen.getByRole('button', { name: 'Baterías' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Otros productos' })).toBeDisabled();
+    expect(screen.getByText('Para cambiar el tipo, quitá las líneas o descartá la revisión conservada.')).toBeVisible();
+  });
+  it('reads the other kind only after an explicit change with nothing selected', async () => {
+    const h = harness(); const loader = vi.fn<typeof loadSourceInventory>(async (_source, options) => options?.kind === 'other' ? productCatalog() : catalog(_source));
+    render(<TransferCreation controller={h.controller} metadata={metadata} loader={loader} onBack={vi.fn()} />); chooseBattery();
+    await screen.findByRole('button', { name: 'Añadir Modelo 1 L' });
+    fireEvent.click(screen.getByRole('button', { name: 'Otros productos' }));
+    await screen.findByRole('button', { name: 'Añadir Agua acidulada' });
+    expect(loader).toHaveBeenCalledTimes(2); expect(loader.mock.calls[1][1]?.kind).toBe('other');
+    expect(screen.queryByRole('button', { name: 'Añadir Modelo 1 L' })).not.toBeInTheDocument();
   });
 });

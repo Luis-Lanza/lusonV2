@@ -74,7 +74,7 @@ func TestC01CancellationConcurrency(t *testing.T) {
 			}
 			for i := range before {
 				for _, item := range r.Items {
-					if race.approved && before[i].Location == r.Origin.ID && int64(before[i].Variant) == item.VariantID {
+					if race.approved && before[i].Location == r.Origin.ID && int64(before[i].Variant) == int64(item.VariantID) {
 						before[i].Reserved -= item.Quantity
 						if race.first == "dispatch" {
 							before[i].Existing -= item.Quantity

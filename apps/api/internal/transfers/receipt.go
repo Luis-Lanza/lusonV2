@@ -179,7 +179,7 @@ func (s *Store) Receive(ctx context.Context, actor auth.Identity, id int64, inpu
 func receiptPayload(r Request, normalized ReceiptInput) (map[int64]int64, map[int64]int64, []int32, error) {
 	expected := make(map[int64]int64, len(r.Items))
 	for _, item := range r.Items {
-		expected[item.VariantID] = item.Quantity
+		expected[int64(item.VariantID)] = item.Quantity
 	}
 	ids := make([]int32, len(normalized.Items))
 	actual := make(map[int64]int64, len(normalized.Items))
@@ -270,7 +270,7 @@ func CheckReceipt(r Request) error {
 	}
 	expected := map[int64]int64{}
 	for _, item := range r.Items {
-		expected[item.VariantID] = item.Quantity
+		expected[int64(item.VariantID)] = item.Quantity
 	}
 	positive := false
 	seen := map[int64]bool{}

@@ -1,3 +1,4 @@
+import { identityOf } from './model';
 import { expect, it } from 'vitest';
 import { parseTransferRecord, parseTransferPage, parseTransferCounts, validateTransferActions } from './transferModel';
 
@@ -7,7 +8,8 @@ const record = {
   destination_location_id: 2, destination_location_name: 'Destination', approver_location_id: 1, approver_location_name: 'Origin',
   created_at: '2026-04-01T00:00:00Z', decision_location_id: 1, decided_at: '2026-04-01T00:00:01Z',
   dispatch_location_id: 1, dispatched_at: '2026-04-01T00:00:02Z', receipt_location_id: 2, received_at: '2026-04-01T00:00:03Z',
-  items: [{ variant_id: 1, brand: 'B', model: 'M', capacity_ah: '35', polarity: 'L', quantity: '10' }],
+  items: [{ ...identityOf({ variant_id: 1, kind: 'battery', name: 'B · M', detail: '35 Ah · L',
+    battery: { brand: 'B', model: 'M', capacity_ah: '35', polarity: 'L' }, fields: null }), quantity: '10' }],
   receipt: { items: [{ variant_id: 1, expected_quantity: '10', actual_quantity: '8', available_quantity: '8' }],
     exceptions: [{ variant_id: 1, kind: 'shortage', quantity: '2' }] },
 };

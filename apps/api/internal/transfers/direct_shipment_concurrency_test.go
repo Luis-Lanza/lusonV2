@@ -106,7 +106,7 @@ func TestW01DirectShipmentConcurrency(t *testing.T) {
 			}
 			for i := range before {
 				for _, item := range won.Items {
-					if before[i].Location == 1 && int64(before[i].Variant) == item.VariantID {
+					if before[i].Location == 1 && int64(before[i].Variant) == int64(item.VariantID) {
 						before[i].Reserved += item.Quantity
 						before[i].Available -= item.Quantity
 					}

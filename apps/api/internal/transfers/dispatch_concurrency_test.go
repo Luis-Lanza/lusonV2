@@ -52,7 +52,7 @@ func TestD01DispatchConcurrency(t *testing.T) {
 			}
 			for i := range before {
 				for _, item := range first.Items {
-					if before[i].Location == first.Origin.ID && int64(before[i].Variant) == item.VariantID {
+					if before[i].Location == first.Origin.ID && int64(before[i].Variant) == int64(item.VariantID) {
 						quantity := item.Quantity
 						if competing == "overlapping_dispatch" {
 							quantity *= 2

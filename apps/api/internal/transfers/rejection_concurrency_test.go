@@ -137,7 +137,7 @@ func a03DecisionRace(t *testing.T, approvalFirst bool) {
 		wantAllocations += int64(len(r.Items))
 		for i := range wantStock {
 			for _, item := range r.Items {
-				if wantStock[i].Location == r.Origin.ID && int64(wantStock[i].Variant) == item.VariantID {
+				if wantStock[i].Location == r.Origin.ID && int64(wantStock[i].Variant) == int64(item.VariantID) {
 					wantStock[i].Reserved += item.Quantity
 					wantStock[i].Available -= item.Quantity
 				}

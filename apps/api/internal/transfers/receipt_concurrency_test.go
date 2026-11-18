@@ -71,7 +71,7 @@ func TestR1ReceiptConcurrency(t *testing.T) {
 			}
 			for i := range stock {
 				for _, item := range first.Items {
-					if stock[i].Location == 2 && int64(stock[i].Variant) == item.VariantID {
+					if stock[i].Location == 2 && int64(stock[i].Variant) == int64(item.VariantID) {
 						credit := item.Quantity
 						if competing == "overlapping_receipt" {
 							credit *= 2

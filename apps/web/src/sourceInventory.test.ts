@@ -136,11 +136,41 @@ describe('R04 source catalog', () => {
   it('filters a complete catalog locally with literal brand/model search and exact brand/polarity', async () => {
     const fetcher = replies(page(range(1, 50), 51), page([51], 51, 2));
     const catalog = await loadSourceInventory(1, {}, fetcher);
-    expect(filterSourceInventory(catalog, { search: '+_%', brand: 'TOYO', polarity: 'L' })).toHaveLength(51);
-    expect(filterSourceInventory(catalog, { search: 'toyo' })).toHaveLength(51);
-    expect(filterSourceInventory(catalog, { brand: 'toyo' })).toHaveLength(0);
-    expect(filterSourceInventory(catalog, { polarity: 'R' })).toHaveLength(0);
-    expect(() => filterSourceInventory(catalog, { search: '\0' })).toThrow();
+    expect(filterSourceInventory(catalog, { kind: 'battery', search: '+_%', brand: 'TOYO', polarity: 'L' })).toHaveLength(51);
+    expect(filterSourceInventory(catalog, { kind: 'battery', search: 'toyo' })).toHaveLength(51);
+    expect(filterSourceInventory(catalog, { kind: 'battery', brand: 'toyo' })).toHaveLength(0);
+    expect(filterSourceInventory(catalog, { kind: 'battery', polarity: 'R' })).toHaveLength(0);
+    expect(() => filterSourceInventory(catalog, { kind: 'battery', search: '\0' })).toThrow();
     expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+  it('asks the endpoint for the one catalogue kind the document carries', async () => {
+    const fetcher = replies(page([1], 1, 1, 2, 'Sucursal'));
+    await loadSourceInventory(2, { kind: 'battery' }, fetcher);
+    expect(fetcher.mock.calls[0][0]).toBe('/api/inventory?location_id=2&page=1&page_size=50&kind=battery');
+  });
+  it('rejects a reply that offers a row of the other kind', async () => {
+    const product = JSON.stringify({ variant_id: 2, catalog_entry_id: 1, kind: 'other', name: 'Agua acidulada',
+      detail: '5 L', battery: null, fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }],
+      existing: 3, reserved: 0, available: 3 });
+    const mixed = page([1]).replace(']}', '') + ',' + product + ']}';
+    await expect(loadSourceInventory(1, { kind: 'battery' }, replies(mixed))).rejects.toMatchObject({ code: 'malformed' });
+  });
+  it('offers only the selected kind and finds a product by its name or by a typed field', async () => {
+    const product = (variant_id: number, name: string, field: string, value: string) => JSON.stringify({ variant_id,
+      catalog_entry_id: variant_id, kind: 'other', name, detail: `${field}: ${value}`,
+      battery: null, fields: [{ name: field, kind: 'number' as const, unit: 'L', number: value }],
+      existing: 4, reserved: 0, available: 4 });
+    const wire = '{"location":{"id":2,"name":"Sucursal"},"items":[' + product(1, 'Agua acidulada', 'volumen en L', '5')
+      + ',' + product(2, 'Trapos de limpieza', 'bultos', '2') + '],"page":1,"page_size":50,"total_variants":2}';
+    const catalog = await loadSourceInventory(2, { kind: 'other' }, replies(wire));
+    expect(filterSourceInventory(catalog, { kind: 'other' })).toHaveLength(2);
+    expect(filterSourceInventory(catalog, { kind: 'other', search: 'agua' }).map(row => row.variant_id)).toEqual([1]);
+    // A term the row shows must find it: the typed field and its unit both count.
+    expect(filterSourceInventory(catalog, { kind: 'other', search: 'volumen' }).map(row => row.variant_id)).toEqual([1]);
+    expect(filterSourceInventory(catalog, { kind: 'other', search: 'bultos' }).map(row => row.variant_id)).toEqual([2]);
+    // The battery filters never apply to a product, and a battery term finds nothing here.
+    expect(filterSourceInventory(catalog, { kind: 'other', brand: 'TOYO', polarity: 'L' })).toHaveLength(2);
+    expect(filterSourceInventory(catalog, { kind: 'other', search: 'toyo' })).toHaveLength(0);
+    expect(filterSourceInventory(catalog, { kind: 'battery' })).toHaveLength(0);
   });
 });

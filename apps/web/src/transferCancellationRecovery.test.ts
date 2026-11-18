@@ -1,3 +1,4 @@
+import { identityOf } from './model';
 import { describe, expect, it, vi } from 'vitest';
 import { createTransferCancellationRecovery } from './transferCancellationRecovery';
 import { parseTransferRecord } from './transferModel';
@@ -7,7 +8,9 @@ const wire = { id: '1', reference: 'TR-001', kind: 'request_stock', status: 'pen
   created_at: '2026-04-02T00:00:00Z', creator_location_id: 2, creator_location_name: 'A',
   origin_location_id: 1, origin_location_name: 'Warehouse', destination_location_id: 2, destination_location_name: 'A',
   approver_location_id: 1, approver_location_name: 'Warehouse',
-  items: [{ variant_id: 1, brand: 'Brand', model: 'Model', capacity_ah: '35.5', polarity: 'L', quantity: '9223372036854775807' }] };
+  items: [{ ...identityOf({ variant_id: 1, kind: 'battery', name: 'Brand · Model', detail: '35.5 Ah · L',
+    battery: { brand: 'Brand', model: 'Model', capacity_ah: '35.5', polarity: 'L' }, fields: null }),
+    quantity: '9223372036854775807' }] };
 const record = (patch = {}) => parseTransferRecord(JSON.stringify({ ...wire, ...patch }));
 const approval = { status: 'approved', decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z' };
 const cancellation = { status: 'cancelled', cancellation_location_id: 2, cancelled_at: '2026-04-03T00:00:00.000000002Z' };

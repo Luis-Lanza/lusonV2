@@ -246,7 +246,7 @@ export default function TransferPending(props: TransferPendingProps) {
           </div>
           <section className="pending-card-variants"><h3>Detalle del envío ({row.items.length} {row.items.length === 1 ? 'variante' : 'variantes'})</h3>
             <ul>{row.items.map(item => <li key={item.variant_id}>
-              <span>{item.brand} · {item.model} · {item.capacity_ah} Ah · <span className="polarity">{item.polarity}</span></span>
+              <span>{item.name} · {item.detail}</span>
               <strong className="pending-variant-quantity">{unitsLabel(item.quantity)}</strong>
             </li>)}</ul>
           </section>

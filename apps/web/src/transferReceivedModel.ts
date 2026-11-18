@@ -1,6 +1,8 @@
+import { identityOf } from './model';
+import type { VariantIdentity } from './model';
 import type { DispatchReconciliations } from './transferDispatchReconciliationModel';
 import type { CountCorrections } from './transferCountCorrectionModel';
-import type { TransferItem, TransferRecord } from './transferModel';
+import type { TransferRecord } from './transferModel';
 
 export interface ReceivedProjectionInput {
   readonly record: TransferRecord | null;
@@ -23,8 +25,12 @@ export interface ReceivedQuantities {
 }
 export interface ReceivedRow extends ReceivedQuantities {
   readonly variant_id: number;
-  /** Null means ID-only identity: receipt-only variants have no historical product metadata. */
-  readonly product: Readonly<Pick<TransferItem, 'brand' | 'model' | 'capacity_ah' | 'polarity'>> | null;
+  /**
+   * Null means ID-only identity: receipt-only variants have no historical product
+   * metadata. A present identity is the catalogue identity of its own kind, so a
+   * product row carries its name and detail and never an invented battery cell.
+   */
+  readonly product: Readonly<VariantIdentity> | null;
   readonly workflow_revision: bigint;
   readonly applied_revision: bigint;
 }
@@ -85,8 +91,7 @@ export function projectTransferReceived(input: ReceivedProjectionInput): Receive
     const actual = line.effective_actual;
     const row: ReceivedRow = Object.freeze({
       variant_id: line.variant_id,
-      product: product ? Object.freeze({ brand: product.brand, model: product.model,
-        capacity_ah: product.capacity_ah, polarity: product.polarity }) : null,
+      product: product ? Object.freeze(identityOf(product)) : null,
       expected, actual, credit: line.effective_credit,
       shortage: actual < expected ? expected - actual : 0n,
       excess: expected > 0n && actual > expected ? actual - expected : 0n,

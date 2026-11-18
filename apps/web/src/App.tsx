@@ -271,10 +271,10 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
   }
   const mobile = warehouse && narrow;
   // The stock screen is the one surface where both kinds are visible at once, and
-  // the kind is a property of the listed location, exactly as the read treats it:
-  // only the warehouse listing serves both kinds, so only it offers the filter. A
-  // warehouse account consulting a branch never sees a selection the read ignores.
-  const kindSelection = query.location === 1;
+  // the kind filter belongs to the caller's own listing, exactly as the read treats
+  // it: a branch reads its own product stock too. Consulting another location is
+  // read-only, so it never shows a selection that read ignores.
+  const kindSelection = query.location === identity.location.id;
   // Products alone never send the battery attributes, which the endpoint would
   // otherwise apply to them.
   const productsOnly = kindSelection && query.kind === 'other';

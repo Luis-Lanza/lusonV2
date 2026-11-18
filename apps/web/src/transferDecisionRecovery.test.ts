@@ -1,3 +1,4 @@
+import { identityOf } from './model';
 import { describe, expect, it, vi } from 'vitest';
 import { createTransferDecisionRecovery, decisionOwner, matchesDecisionRecord, type DecisionOwner } from './transferDecisionRecovery';
 import { parseTransferRecord, type TransferRecord } from './transferModel';
@@ -5,7 +6,9 @@ import { parseTransferRecord, type TransferRecord } from './transferModel';
 const wire = { id: '9007199254740993', reference: 'TR-9007199254740993', kind: 'request_stock', status: 'pending', created_at: '2026-04-02T00:00:00.000000001Z',
   creator_location_id: 2, creator_location_name: 'Branch A', origin_location_id: 1, origin_location_name: 'Warehouse',
   destination_location_id: 2, destination_location_name: 'Branch A', approver_location_id: 1, approver_location_name: 'Warehouse',
-  items: [{ variant_id: 201, brand: 'Brand', model: 'Model', capacity_ah: '35.5', polarity: 'R', quantity: '9007199254740993' }] };
+  items: [{ ...identityOf({ variant_id: 201, kind: 'battery', name: 'Brand · Model', detail: '35.5 Ah · R',
+    battery: { brand: 'Brand', model: 'Model', capacity_ah: '35.5', polarity: 'R' }, fields: null }),
+    quantity: '9007199254740993' }] };
 const record = () => parseTransferRecord(JSON.stringify(wire));
 const owner: DecisionOwner = { account: 42, location: 1, epoch: 7, generation: 3 };
 const outcome = (status: 'approved' | 'rejected') => parseTransferRecord(JSON.stringify({ ...wire, status,
@@ -147,5 +150,38 @@ describe('controller-owned decision recovery', () => {
     expect(listener).toHaveBeenCalledTimes(1); recovery.finish(token); expect(listener).toHaveBeenCalledTimes(2);
     detach(); recovery.start(record(), 'approve', owner); expect(listener).toHaveBeenCalledTimes(2);
     expect(matchesDecisionRecord(record(), outcome('rejected'))).toBe(true);
+  });
+});
+
+describe('T3 the confirmed line must prove its own identity', () => {
+  const field = { name: 'volumen en L', kind: 'number' as const, unit: 'L', number: '5' };
+  const other = { name: 'presentación', kind: 'text' as const, text: 'paquete' };
+  const productWire = (fields: readonly unknown[]) => ({ ...wire, items: [{ variant_id: 201, kind: 'other',
+    name: 'Agua acidulada', detail: 'volumen en L: 5 L', battery: null, fields, quantity: '9007199254740993' }] });
+  const terminalOf = (value: typeof wire) => parseTransferRecord(JSON.stringify({ ...value, status: 'approved',
+    decision_location_id: 1, decided_at: '2026-04-03T00:00:00.000000001Z' }));
+  it('matches an independently parsed identical line by content, never by reference', () => {
+    const original = outcome('approved');
+    const confirmed = outcome('approved');
+    expect(confirmed).not.toBe(original);
+    expect(confirmed.items[0]).not.toBe(original.items[0]);
+    expect(confirmed.items[0].battery).not.toBe(original.items[0].battery);
+    expect(matchesDecisionRecord(original, confirmed)).toBe(true);
+  });
+  it('refuses a product whose typed fields are the same in a different order', () => {
+    expect(matchesDecisionRecord(terminalOf(productWire([field, other]) as typeof wire),
+      terminalOf(productWire([other, field]) as typeof wire))).toBe(false);
+  });
+  it('refuses a line whose kind changed even when every scalar it shows survived', () => {
+    const original = outcome('approved');
+    const relabelled: TransferRecord = { ...original,
+      items: [{ ...original.items[0], kind: 'other', battery: null, fields: [] }] };
+    expect(matchesDecisionRecord(original, relabelled)).toBe(false);
+  });
+  it('refuses a battery identity whose published attribute differs', () => {
+    const original = outcome('approved');
+    const changed: TransferRecord = { ...original, items: [{ ...original.items[0],
+      battery: { ...original.items[0].battery!, capacity_ah: '35.50' } }] };
+    expect(matchesDecisionRecord(original, changed)).toBe(false);
   });
 });

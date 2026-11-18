@@ -103,12 +103,13 @@ describe('Transfer recovery R04b2c1', () => {
   });
   it('copies and freezes only minimal descriptors and canonical payload without stock or auth', () => {
     const cache = createTransferRecovery(); const original = reviewed();
-    const item = { ...original.lines[0].item, battery: { ...original.lines[0].item.battery } }; const input = { ...original.attempt!, items: original.attempt!.items.map(v => ({ ...v })).reverse() };
+    const item = { ...original.lines[0].item, battery: original.lines[0].item.battery === null ? null : { ...original.lines[0].item.battery } }; const input = { ...original.attempt!, items: original.attempt!.items.map(v => ({ ...v })).reverse() };
     const cart = { ...original, attempt: input, lines: [{ ...original.lines[0], item }, original.lines[1]], direction: { ...original.direction } };
-    cache.capture(() => authority(), cart); item.battery.brand = 'mutated'; input.items[0].quantity = '1'; cart.direction.origin_location_id = 3;
+    cache.capture(() => authority(), cart); item.battery!.brand = 'mutated'; input.items[0].quantity = '1'; cart.direction.origin_location_id = 3;
     const s = cache.getCurrent(() => authority())!;
-    expect(s.items[0]).toEqual({ variant_id: 1, catalog_entry_id: 1,
-      battery: { brand: 'TOYO', model: 'Model', capacity_ah: '6.000001', polarity: 'L' }, quantity: max });
+    expect(s.items[0]).toEqual({ variant_id: 1, kind: 'battery', name: 'TOYO · Model', detail: '6.000001 Ah · L',
+      catalog_entry_id: 1, battery: { brand: 'TOYO', model: 'Model', capacity_ah: '6.000001', polarity: 'L' },
+      fields: null, quantity: max });
     expect(s.attempt.items.map(v => v.variant_id)).toEqual([1, 2]);
     for (const value of [s, s.handle, s.items, ...s.items, s.attempt, s.attempt.items, ...s.attempt.items, s.direction]) expect(Object.isFrozen(value)).toBe(true);
     const json = JSON.stringify(s);

@@ -1,4 +1,4 @@
-import type { CartDescriptor, TransferCart } from './transferCart';
+import { archivedCartDescriptor, type CartDescriptor, type TransferCart } from './transferCart';
 import type { TransferAuthority } from './useInventory';
 import { canonicalTransferInput, transferDirection, transferFlow, validTransferLocation, type TransferCreateInput, type TransferDirection, type TransferLocationID } from './transferModel';
 export interface RecoveryHandle { readonly __recoveryHandle?: never }
@@ -17,7 +17,6 @@ type Entry = { owner: string; handle: RecoveryHandle; phase: RecoverySnapshot['p
 type Flight = { entry: Entry; epoch: number; generation: number };
 function unavailable(): never { throw new Error('Transfer recovery unavailable'); }
 function integer(value: number, max: number): boolean { return Number.isInteger(value) && value >= 1 && value <= max; }
-function text(value: string): boolean { return typeof value === 'string' && !!value && !value.includes('\0') && value.isWellFormed(); }
 
 // Only opaque identities escape these instance-local maps; no auth object is retained.
 export function createTransferRecovery() {
@@ -74,14 +73,11 @@ export function createTransferRecovery() {
         const items = Object.freeze(attempt.items.map(line => {
           const selected = cart.lines.find(v => v.item.variant_id === line.variant_id);
           if (!selected || selected.quantity.toString() !== line.quantity) return unavailable();
-          const v = selected.item; const battery = v.battery;
-          if (!integer(v.variant_id, 2_147_483_647) || !integer(v.catalog_entry_id, 2_147_483_647) || seen.has(v.variant_id)
-            || !text(battery.brand) || !text(battery.model) || typeof battery.capacity_ah !== 'string'
-            || !/^(0|[1-9][0-9]{0,5})(\.[0-9]{0,5}[1-9])?$/.test(battery.capacity_ah) || battery.capacity_ah === '0'
-            || (battery.polarity !== 'L' && battery.polarity !== 'R')) return unavailable();
-          seen.add(v.variant_id);
-          return Object.freeze({ variant_id: v.variant_id, catalog_entry_id: v.catalog_entry_id,
-            battery: Object.freeze({ ...battery }), quantity: line.quantity });
+          // The archived line is the shared identity of its own kind plus the
+          // requested quantity: no surface has to know a battery attribute.
+          if (seen.has(line.variant_id)) return unavailable();
+          seen.add(line.variant_id);
+          return Object.freeze({ ...archivedCartDescriptor(selected.item), quantity: line.quantity });
         }));
         const previous = current(o);
         if (previous) {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseDispatchReconciliations, parseDispatchReconciliationOperation, type DispatchReconciliationOperation } from './transferDispatchReconciliationModel';
 type Wire<T> = T extends bigint ? string : T extends object ? { -readonly [K in keyof T]: Wire<T[K]> } : T;
+import { batteryLine } from './transferDispatchReconciliationStoreFixtures';
 import type { TransferRecord } from './transferModel';
 const stamp = '2026-01-02T12:00:00.123456789Z';
 const key = 'dispatch-proposal-0001';
@@ -9,7 +10,7 @@ function fixture() {
     creator_location_id: 1, creator_location_name: 'Warehouse', origin_location_id: 1, origin_location_name: 'Warehouse',
     destination_location_id: 2, destination_location_name: 'Branch', approver_location_id: 1, approver_location_name: 'Warehouse',
     decision_location_id: 1, decided_at: stamp, dispatch_location_id: 1, dispatched_at: stamp, receipt_location_id: 2, received_at: stamp,
-    items: [{ variant_id: 1, quantity: 5n, brand: 'Brand', model: 'Model', capacity_ah: '60', polarity: 'L' }],
+    items: [batteryLine(1, 5n)],
     receipt: { items: [{ variant_id: 1, expected_quantity: 5n, actual_quantity: 7n, available_quantity: 5n }],
       exceptions: [{ variant_id: 1, kind: 'excess', quantity: 2n }] } };
   const op: Wire<DispatchReconciliationOperation> = { operation_key: key, request_id: '123', variant_id: 1, actor_location_id: 1, action: 'propose', expected_revision: '0', dispatch_quantity: '7', reason: ' verified ', revision: '1', source_existing_before: null, source_existing_after: null, destination_existing_before: null, destination_existing_after: null, recorded_at: stamp };

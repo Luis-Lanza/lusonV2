@@ -4,7 +4,7 @@ import TransferReview, { type TransferReviewProps } from './TransferReview';
 import { addCartItem, createTransferCart, reviewCart } from './transferCart';
 import { createTransferRecovery, type RecoverySnapshot } from './transferRecovery';
 import type { TransferAuthority } from './useInventory';
-import type { Metadata } from './model';
+import { identityOf, type Metadata } from './model';
 import { parseTransferRecord, type TransferRecord } from './transferModel';
 
 const metadata: Metadata = { locations: [{ id: 1, name: 'Almacén' }, { id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }], brands: ['TOYO'] };
@@ -35,7 +35,9 @@ describe('C2 original creation replay presents cancelled history', () => {
       approver_location_id: 1, approver_location_name: 'Almacén', cancellation_location_id: 2,
       cancelled_at: '2028-01-02T00:00:00.000000002Z',
       ...(approved ? { decision_location_id: 1, decided_at: '2028-01-02T00:00:00.000000001Z' } : {}),
-      items: [{ variant_id: 1, brand: 'TOYO', model: 'Private model 1', capacity_ah: '75.125', polarity: 'L', quantity: '9223372036854775807' }] };
+      items: [{ ...identityOf({ variant_id: 1, kind: 'battery', name: 'TOYO · Private model 1', detail: '75.125 Ah · L',
+        battery: { brand: 'TOYO', model: 'Private model 1', capacity_ah: '75.125', polarity: 'L' }, fields: null }),
+        quantity: '9223372036854775807' }] };
     render(<TransferReview {...h.props} result={{ record: parseTransferRecord(JSON.stringify(wire)), replayed: true }} />);
     const modal = screen.getByRole('dialog');
     expect(modal).toHaveAccessibleName('Solicitud Cancelada confirmada');
@@ -59,7 +61,8 @@ describe('A05a terminal replay presentation', () => {
       created_at: '2028-01-01T00:00:00.123456789Z', creator_location_id: 2, creator_location_name: 'Sucursal A',
       origin_location_id: 1, origin_location_name: 'Almacén', destination_location_id: 2, destination_location_name: 'Sucursal A',
       approver_location_id: 1, approver_location_name: 'Almacén', decision_location_id: 1, decided_at: '2028-01-02T00:00:00.000000001Z',
-      items: [{ variant_id: 1, brand: 'TOYO', model: 'Private model 1', capacity_ah: '75.125', polarity: 'L', quantity: '1' }] };
+      items: [{ ...identityOf({ variant_id: 1, kind: 'battery', name: 'TOYO · Private model 1', detail: '75.125 Ah · L',
+        battery: { brand: 'TOYO', model: 'Private model 1', capacity_ah: '75.125', polarity: 'L' }, fields: null }), quantity: '1' }] };
     render(<TransferReview {...h.props} result={{ record: parseTransferRecord(JSON.stringify(record)), replayed: true }} />);
     const label = status === 'approved' ? 'Aprobada' : 'Rechazada';
     expect(screen.getByRole('dialog')).toHaveAccessibleName(`Solicitud ${label} confirmada`);
@@ -79,7 +82,8 @@ it.each(['in_transit', 'received'])('presents readable persisted %s replay dates
     origin_location_id: 1, origin_location_name: 'Almacén', destination_location_id: 2, destination_location_name: 'Sucursal A',
     approver_location_id: 1, approver_location_name: 'Almacén', decision_location_id: 1, decided_at: '2028-01-02T00:00:00Z',
     dispatch_location_id: 1, dispatched_at: '2028-01-03T00:00:00.000000002Z',
-    items: [{ variant_id: 1, brand: 'TOYO', model: 'Original', capacity_ah: '75.125', polarity: 'L', quantity: '1' }],
+    items: [{ ...identityOf({ variant_id: 1, kind: 'battery', name: 'TOYO · Original', detail: '75.125 Ah · L',
+      battery: { brand: 'TOYO', model: 'Original', capacity_ah: '75.125', polarity: 'L' }, fields: null }), quantity: '1' }],
     ...(status === 'received' ? { receipt_location_id: 2, received_at: '2028-01-04T00:00:00.000000003Z',
       receipt: { items: [{ variant_id: 1, expected_quantity: '1', actual_quantity: '1', available_quantity: '1' }], exceptions: [] } } : {}),
   }));
@@ -121,7 +125,8 @@ describe('R04b2c2 review dialog', () => {
     expect(route.textContent).toBe(`Origen${expectedSource}→Destino${expectedDestination}`);
     expect(dialog.querySelector('tfoot')).toHaveTextContent('2 variantes · 18446744073709551614 baterías');
     expect(within(dialog).getByLabelText('Total a transferir')).toHaveTextContent('18446744073709551614 baterías');
-    expect(within(dialog).getAllByText('9223372036854775807')).toHaveLength(2); expect(within(dialog).getAllByText('75.125 Ah')).toHaveLength(2);
+    expect(within(dialog).getAllByText('9223372036854775807')).toHaveLength(2);
+    expect(within(dialog).getAllByText(/^75\.125 Ah · [LR]$/)).toHaveLength(2);
     expect(within(dialog).getByText('L')).toBeVisible(); expect(within(dialog).getByText('R')).toBeVisible();
     expect(dialog).toHaveTextContent(`pendiente de aprobación de ${flow === 'requestOther' ? 'Sucursal B' : 'Almacén'}`);
     expect(dialog).toHaveTextContent('no reserva ni mueve stock'); expect(dialog).not.toHaveTextContent('Crear y reservar');

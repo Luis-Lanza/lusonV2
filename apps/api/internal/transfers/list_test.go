@@ -218,10 +218,10 @@ func testListExact(t *testing.T) {
 	}
 	fractional := false
 	for _, item := range got.Records[0].Items {
-		if item.Quantity != math.MaxInt64 || (item.Polarity != "L" && item.Polarity != "R") {
+		if item.Quantity != math.MaxInt64 || item.Battery == nil || (item.Battery.Polarity != "L" && item.Battery.Polarity != "R") {
 			t.Fatal("quantity/polarity lost")
 		}
-		if item.Brand == "TOYO_MOTO" && item.Model == "12N6,5_3B" && item.Capacity == "6.5" {
+		if item.Battery.Brand == "TOYO_MOTO" && item.Battery.Model == "12N6,5_3B" && item.Battery.Capacity == "6.5" {
 			fractional = true
 		}
 	}

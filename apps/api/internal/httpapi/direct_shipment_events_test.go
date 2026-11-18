@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+
+	"luson/api/internal/catalog"
 )
 
 func w01HTTPBody(destination int) string {
@@ -29,9 +31,10 @@ func w01HTTPProof(t *testing.T, f *transferHTTPFixture, destination int) func(*h
 	return func(w *httptest.ResponseRecorder) transferDTO {
 		obj := transferObject(t, w, 201)
 		var dto transferDTO
-		if transferBusinessFieldCount(t, obj) != 16 || json.Unmarshal(w.Body.Bytes(), &dto) != nil || dto.Kind != "direct_shipment" || dto.Status != "approved" || dto.CreatorLocationID != 1 || dto.OriginLocationID != 1 || dto.ApproverLocationID != 1 || dto.DestinationLocationID != destination || dto.DecisionLocationID == nil || *dto.DecisionLocationID != 1 || dto.DecidedAt == nil || *dto.DecidedAt != dto.CreatedAt || len(dto.Items) != 2 {
+		if transferBusinessFieldCount(t, obj) != 17 || json.Unmarshal(w.Body.Bytes(), &dto) != nil || dto.Kind != "direct_shipment" || dto.Status != "approved" || dto.CreatorLocationID != 1 || dto.OriginLocationID != 1 || dto.ApproverLocationID != 1 || dto.DestinationLocationID != destination || dto.DecisionLocationID == nil || *dto.DecisionLocationID != 1 || dto.DecidedAt == nil || *dto.DecidedAt != dto.CreatedAt || len(dto.Items) != 2 {
 			t.Fatal("direct initial response does not retain creation authorization")
 		}
+		transferRecordCatalogueKind(t, obj, catalog.BatteryKind)
 		if len(dto.Activity) != 1 || dto.Activity[0].Action != "create" || dto.Activity[0].Actor.AccountID != "1" || dto.Activity[0].LocationID != 1 {
 			t.Fatal("direct creation actor missing")
 		}

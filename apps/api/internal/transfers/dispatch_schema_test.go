@@ -44,7 +44,7 @@ func TestD01DispatchSchema(t *testing.T) {
 	a01Exec(t, ctx, p, "UPDATE transfer_requests SET status='in_transit' WHERE id=$1", r.ID)
 	for i := range stock {
 		for _, item := range r.Items {
-			if stock[i].Location == r.Origin.ID && int64(stock[i].Variant) == item.VariantID {
+			if stock[i].Location == r.Origin.ID && int64(stock[i].Variant) == int64(item.VariantID) {
 				stock[i].Existing -= item.Quantity
 				stock[i].Reserved -= item.Quantity
 			}

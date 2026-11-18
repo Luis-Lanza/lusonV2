@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import TransferPending, { transferViewOwner } from './TransferPending';
 import { createTransferDispatchRecovery } from './transferDispatchRecovery';
 import { createTransferDecisionRecovery, decisionOwner } from './transferDecisionRecovery';
+import { identityOf } from './model';
 import { parseTransferRecord } from './transferModel';
 import type { TransferAuthority } from './useInventory';
 import type { DetailController } from './TransferDetail';
@@ -24,7 +25,10 @@ function wire(origin = 1, destination = 2, status = 'approved', length = 2) {
     destination_location_id: destination, destination_location_name: names[destination - 1], approver_location_id: approver, approver_location_name: names[approver - 1],
     created_at: '2026-04-02T00:00:00Z', decision_location_id: approver, decided_at: '2026-04-03T00:00:00.000000001Z',
     ...(status === 'in_transit' ? { dispatch_location_id: origin, dispatched_at: '2026-04-03T00:00:00.000000002Z' } : {}),
-    items: Array.from({ length }, (_, index) => ({ variant_id: index + 1, brand: 'TOYO', model: `Exact-${index + 1}`, capacity_ah: '75.125', polarity: index % 2 ? 'R' : 'L', quantity: '9223372036854775807' })) };
+    items: Array.from({ length }, (_, index) => ({ ...identityOf({ variant_id: index + 1, kind: 'battery' as const,
+      name: `TOYO · Exact-${index + 1}`, detail: `75.125 Ah · ${index % 2 ? 'R' : 'L'}`,
+      battery: { brand: 'TOYO', model: `Exact-${index + 1}`, capacity_ah: '75.125', polarity: index % 2 ? 'R' as const : 'L' as const },
+      fields: null }), quantity: '9223372036854775807' })) };
 }
 const reply = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 function deferred() {
@@ -218,7 +222,7 @@ describe('U2b approved stock-request dispatch review', () => {
     const dialog = screen.getByRole('dialog');
     expect(dialog).toHaveClass('transfer-dispatch-confirmation');
     expect(within(dialog).getAllByRole('columnheader').map(cell => cell.textContent)).toEqual(['Producto', 'Polaridad', 'A despachar']);
-    expect(within(dialog).getByRole('cell', { name: 'TOYO Exact-1 · 75.125 Ah' })).toBeVisible();
+    expect(within(dialog).getByRole('cell', { name: 'TOYO · Exact-1 · 75.125 Ah · L' })).toBeVisible();
     expect(dialog).toHaveTextContent('Total: 2 variantes · 18446744073709551614 baterías');
     const bullets = within(dialog).getAllByRole('listitem');
     expect(bullets).toHaveLength(3);

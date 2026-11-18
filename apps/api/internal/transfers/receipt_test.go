@@ -43,7 +43,7 @@ func receiptDispatch(t *testing.T, ctx context.Context, s *transfers.Store, in t
 func receiptInput(r transfers.Request) transfers.ReceiptInput {
 	in := transfers.ReceiptInput{Items: []transfers.Line{}}
 	for _, item := range r.Items {
-		in.Items = append(in.Items, transfers.Line{item.VariantID, item.Quantity})
+		in.Items = append(in.Items, transfers.Line{int64(item.VariantID), item.Quantity})
 	}
 	return in
 }

@@ -102,7 +102,7 @@ export default function TransferUnifiedReconciliation({ controller, record, reco
           {!snapshot ? <><p role="status">Conciliación no disponible. No se muestra historia como estado vigente.</p><button onClick={() => void hook.refresh()}>Consultar conciliación</button></> : <>
             <label>Variante<select value={variant} disabled={!!prepared || hook.busy} onChange={e => {
               setVariant(Number(e.target.value)); hook.cancel(); setDispatch(''); setArrival(''); setRetained('0'); setReason(''); setAttested(false);
-            }}>{record.items.map(item => <option key={item.variant_id} value={item.variant_id}>{item.brand} {item.model} · {item.polarity} · Variante {item.variant_id}</option>)}</select></label>
+            }}>{record.items.map(item => <option key={item.variant_id} value={item.variant_id}>{item.name} · {item.detail} · Variante {item.variant_id}</option>)}</select></label>
             {original && <p className="unified-notice">Declaradas originalmente: {original.expected_quantity.toString()} · Recibidas originalmente: {original.actual_quantity.toString()} · Crédito original: {original.available_quantity.toString()}. Estos registros se conservan.</p>}
             {prepared ? <section aria-label="Revisión de conciliación"><h3>Revisar efectos</h3>
               <p>{labels[prepared.action]} · Variante {prepared.payload.variant_id}</p>
