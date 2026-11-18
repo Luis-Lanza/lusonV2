@@ -179,7 +179,7 @@ export default function SalesHistory({ branch = 'esta sucursal', fetcher = globa
                           {` · ${open.detail.customer.name}${customerLine(open.detail.customer) === '' ? '' : ` · ${customerLine(open.detail.customer)}`}`}
                         </p>
                       </header>
-                      {open.detail.lines.every(line => line.units.length === 0) &&
+                      {open.detail.lines.every(line => line.identity === undefined && line.units.length === 0) &&
                         <p className="pos-hint" data-testid="pre-vertical-note">{preVerticalNote}</p>}
                       <div className="pos-table-wrap">
                         <table className="sales-detail-lines">
@@ -190,20 +190,24 @@ export default function SalesHistory({ branch = 'esta sucursal', fetcher = globa
                           </tr></thead>
                           <tbody>{open.detail.lines.map(line => <tr key={line.variant_id}>
                             <td data-label="Batería">
-                              <strong>{`${line.brand} ${line.model}`}</strong>
-                              <small>{`${line.capacity_ah} Ah · ${line.polarity}`}</small>
+                              {line.identity
+                                ? <><strong>{line.identity.name}</strong><small>{line.identity.detail}</small></>
+                                : <><strong>{`${line.brand} ${line.model}`}</strong>
+                                  <small>{`${line.capacity_ah} Ah · ${line.polarity}`}</small></>}
                             </td>
                             <td data-label="Cantidad">{`${line.quantity} × ${formatMoney(moneyCents(line.unit_price))}`}</td>
                             <td data-label="Precio unitario">{formatMoney(moneyCents(line.unit_price))}
                               <small>{`Mínimo al vender ${formatMoney(moneyCents(line.min_price))}`}</small></td>
                             <td data-label="Unidades">
-                              {line.units.length === 0
-                                ? <small>Sin series registradas</small>
-                                : <ul className="sales-detail-units">{line.units.map(unit =>
-                                  <li key={unit.serial_number}>
-                                    <span className="pos-doc">{unit.serial_number}</span>
-                                    <small>{warrantyLabel(unit.warranty_months)}</small>
-                                  </li>)}</ul>}
+                              {line.identity
+                                ? <small>Sin serie: alcanza la cantidad</small>
+                                : line.units.length === 0
+                                  ? <small>Sin series registradas</small>
+                                  : <ul className="sales-detail-units">{line.units.map(unit =>
+                                    <li key={unit.serial_number}>
+                                      <span className="pos-doc">{unit.serial_number}</span>
+                                      <small>{warrantyLabel(unit.warranty_months)}</small>
+                                    </li>)}</ul>}
                             </td>
                             <td data-label="Subtotal" className="num">{formatMoney(moneyCents(line.subtotal))}</td>
                           </tr>)}</tbody>

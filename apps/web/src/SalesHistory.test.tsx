@@ -221,3 +221,61 @@ describe('the sales history', () => {
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 });
+
+describe('the two kinds in one sale', () => {
+  const productIdentity = {
+    variant_id: 191, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L', battery: null,
+    fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }],
+  };
+  const productLine = {
+    variant_id: 191, catalog_entry_id: 96, identity: productIdentity, quantity: 3,
+    unit_price: '1900.00', min_price: '1500.00', units: [], subtotal: '5700.00',
+  };
+  const batteryLine = {
+    variant_id: 1, catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L',
+    quantity: 1, unit_price: '96000.00', min_price: '85000.00', subtotal: '96000.00',
+    units: [{ serial_number: 'ABC123', warranty_months: 12 }],
+  };
+  const mixedBody = () => json(detailBody({
+    total: '101700.00', payments: [{ method: 'cash', amount: '101700.00' }],
+    lines: [batteryLine, productLine],
+  }));
+  const mixedSummary = summary({ lines: 2, units_total: 1, units_with_warranty: 1, total: '101700.00' });
+
+  it('renders a product line by its name and detail and never as a battery', async () => {
+    const h = harness({ page: () => json(pageBody([mixedSummary])), detail: mixedBody });
+    await ready(h);
+    fireEvent.click(screen.getByRole('button', { name: 'Ver la venta 126' }));
+    const detail = await screen.findByRole('region', { name: 'Venta 126' });
+    const productRow = within(detail).getByText('Agua acidulada').closest('tr')!;
+    expect(within(productRow).getByText('volumen en L: 5 L')).toBeInTheDocument();
+    expect(within(productRow).getByText('3 × Bs 1.900,00')).toBeInTheDocument();
+    // A product carries no serial and no term: nothing battery-shaped is invented for it.
+    expect(within(productRow).getByText('Sin serie: alcanza la cantidad')).toBeInTheDocument();
+    expect(within(productRow).queryByText(/Ah/)).not.toBeInTheDocument();
+    expect(within(productRow).queryByText(/Polaridad/)).not.toBeInTheDocument();
+    expect(within(productRow).queryByText('Sin garantía')).not.toBeInTheDocument();
+    expect(within(productRow).queryByText('Sin series registradas')).not.toBeInTheDocument();
+    // The battery line of the same sale still reads exactly as it always did.
+    const batteryRow = within(detail).getByText('CAR NS40ZL').closest('tr')!;
+    expect(within(batteryRow).getByText('35 Ah · L')).toBeInTheDocument();
+    expect(within(batteryRow).getByText('ABC123')).toBeInTheDocument();
+    expect(within(batteryRow).getByText('12 meses')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Ver la venta 126' }));
+  });
+
+  it('does not call a new product-only document a pre-vertical sale', async () => {
+    const h = harness({
+      page: () => json(pageBody([summary({ lines: 1, units_total: 0, units_with_warranty: 0, total: '5700.00' })])),
+      detail: () => json(detailBody({
+        total: '5700.00', payments: [{ method: 'cash', amount: '5700.00' }], lines: [productLine],
+      })),
+    });
+    await ready(h);
+    fireEvent.click(screen.getByRole('button', { name: 'Ver la venta 126' }));
+    const detail = await screen.findByRole('region', { name: 'Venta 126' });
+    expect(within(detail).getByText('Agua acidulada')).toBeInTheDocument();
+    expect(within(detail).getByText('volumen en L: 5 L')).toBeInTheDocument();
+    expect(within(detail).queryByTestId('pre-vertical-note')).not.toBeInTheDocument();
+  });
+});

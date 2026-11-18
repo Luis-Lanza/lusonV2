@@ -549,3 +549,63 @@ describe('the sale the counter sends', () => {
     expect(prepareSale(cheap, split, customer)).toEqual({ ok: false, message: posPriceFloorMessage(8_500_000n) });
   });
 });
+
+describe('the two kinds of one sale', () => {
+  /** One other product of the catalogue: its shared identity and no physical piece. */
+  const product = (): SellableVariant => ({
+    variant_id: 191, catalog_entry_id: 96,
+    identity: { variant_id: 191, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L', battery: null,
+      fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }] },
+    sellable: true, suggested_price: '1900.00', min_price: '1500.00',
+    existing: 6n, reserved: 0n, available: 6n,
+  } as unknown as SellableVariant);
+
+  it('adds a product line with its quantity and no piece at all', () => {
+    const cart = cartOf(product());
+    expect(cart).toHaveLength(1);
+    expect(cart[0]).toMatchObject({ variant_id: 191, catalog_entry_id: 96, quantity: 1, units: [] });
+    expect(cart[0].identity).toMatchObject({ kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L' });
+    expect(cart[0].units).toEqual([]);
+    // The default twelve months belongs to a battery and never reaches a product.
+    expect(cart[0].units).toEqual([]);
+    expect(cart[0].identity).toMatchObject({ kind: 'other' });
+    expect(variantLabel(cart[0])).toBe('Agua acidulada');
+    // Products are counted, so the thousand-battery bound does not apply to them.
+    const grown = changeQuantity(cart, 191, 2);
+    expect(grown.ok && grown.cart[0].quantity).toBe(3);
+    expect(grown.ok && grown.cart[0].units).toEqual([]);
+    expect(unitsProblem(grown.ok ? grown.cart : cart)).toBeNull();
+  });
+
+  it('sends a product as quantity plus the mandatory empty units array', () => {
+    const battery = unitsOf(cartOf(item()), 1, ['ABC123']);
+    const added = addToCart(battery, product());
+    expect(added.ok).toBe(true);
+    const withProduct = added.ok ? added.cart : battery;
+    const three = changeQuantity(withProduct, 191, 2);
+    expect(three.ok).toBe(true);
+    if (!three.ok) return;
+    const split = setPaymentAmount(emptyPayments, 'cash', 10_170_000n);
+    const prepared = prepareSale(three.cart, split, {
+      name: 'Marta Giménez', phone: '', document: '', address: '',
+    });
+    expect(prepared).toEqual({
+      ok: true, total_cents: 10_170_000n,
+      input: {
+        payments: [{ method: 'cash', amount: '101700.00' }],
+        customer: { name: 'Marta Giménez', phone: '', document: '', address: '' },
+        lines: [
+          { variant_id: 1, quantity: 1, unit_price: '96000.00',
+            units: [{ serial_number: 'ABC123', warranty_months: 12 }] },
+          { variant_id: 191, quantity: 3, unit_price: '1900.00', units: [] },
+        ],
+      },
+    });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    // The wire names no serial and no term for the product line, ever.
+    const body = JSON.stringify(prepared.input);
+    expect(body).toContain('"units":[]');
+    expect(body).not.toContain('"serial_number":""');
+  });
+});

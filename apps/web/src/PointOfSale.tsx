@@ -2,6 +2,7 @@ import { Component, Fragment, useEffect, useMemo, useRef, useState, type ReactNo
 import TransferDate from './shared/TransferDate';
 import {
   addToCart, cartTotal, changeQuantity, counterPaymentMethods, emptyCustomer, emptyPayments, fillRemaining, formatMoney,
+  lineBattery, lineIdentity, lineKind,
   maxCustomerAddress, maxSerialLength, maxWarrantyMonths, minWarrantyMonths, moneyCents, moneySumMessage,
   paymentAmount, paymentBreakdown, posCustomerNameMessage, posEmptyCartMessage, posNotSellableReason, posQuantityMessage,
   posWarrantyMessage, prepareSale, removeFromCart, serialSoldProblem, setPayment, setQuantity, setUnitPrice,
@@ -105,6 +106,7 @@ export interface PointOfSaleProps {
 export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [], fetcher = globalThis.fetch }: PointOfSaleProps) {
   const api = useMemo(() => createSalesAPI(fetcher), [fetcher]);
   const [search, setSearch] = useState('');
+  const [kind, setKind] = useState<'battery' | 'other'>('battery');
   const [brand, setBrand] = useState('');
   const [capacity, setCapacity] = useState('');
   const [polarity, setPolarity] = useState<'' | 'L' | 'R'>('');
@@ -138,7 +140,7 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
     setState(current => ({ phase: 'loading', page: current.page, problem: sellableUnavailable }));
     void (async () => {
       try {
-        const page = await api.sellable({ search, brand, capacity, polarity, page: pageNumber, page_size: pageSize },
+        const page = await api.sellable({ search, brand, capacity, polarity, kind, page: pageNumber, page_size: pageSize },
           controller.signal);
         if (!alive()) return;
         setState({ phase: 'ready', page, problem: '' });
@@ -151,17 +153,18 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
       }
     })();
     return () => controller.abort();
-  }, [api, search, brand, capacity, polarity, pageNumber, pageSize, revision]);
+  }, [api, search, kind, brand, capacity, polarity, pageNumber, pageSize, revision]);
 
   const items = state.page?.items ?? [];
   const total = state.page?.total_variants ?? 0;
   const firstRow = state.page && items.length > 0 ? (state.page.page - 1) * state.page.page_size + 1 : 0;
   const lastRow = state.page && items.length > 0 ? firstRow + items.length - 1 : 0;
   const capacities = useMemo(() => {
-    const present = [...new Set(items.map(item => item.capacity_ah))];
+    if (kind === 'other') return [];
+    const present = [...new Set(items.flatMap(item => item.capacity_ah === undefined ? [] : [item.capacity_ah]))];
     if (capacity !== '' && !present.includes(capacity)) present.push(capacity);
     return present.sort((left, right) => Number(left) - Number(right));
-  }, [items, capacity]);
+  }, [items, capacity, kind]);
   const saleTotal = cartTotal(cart);
   const open = settlement(saleTotal, split);
   const nameMissing = customer.name.trim() === '';
@@ -330,55 +333,78 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
     <header className="pos-heading">
       <small>SUCURSAL / PUNTO DE VENTA</small>
       <h1 id="point-of-sale-title">Nueva venta</h1>
-      <p>{`Sólo las baterías con precio cargado en ${branch} se pueden vender. Cada batería lleva el número de serie que leés en el momento y su plazo de garantía, o su ausencia. El precio mínimo es un piso: por debajo de él la venta se rechaza.`}</p>
+      <p>{kind === 'other'
+        ? `Sólo los productos con precio cargado en ${branch} se pueden vender. Se cobran por cantidad y no llevan serie ni plazo de garantía. El precio mínimo es un piso: por debajo de él la venta se rechaza.`
+        : `Sólo las baterías con precio cargado en ${branch} se pueden vender. Cada batería lleva el número de serie que leés en el momento y su plazo de garantía, o su ausencia. El precio mínimo es un piso: por debajo de él la venta se rechaza.`}</p>
     </header>
     <div className="pos-layout">
       <section className="pos-panel pos-catalogue" aria-labelledby="pos-catalogue-title" aria-busy={state.phase === 'loading'}>
         <div className="pos-panel-head">
           <div>
-            <h2 id="pos-catalogue-title">Baterías</h2>
+            <h2 id="pos-catalogue-title">{kind === 'other' ? 'Productos' : 'Baterías'}</h2>
             <p className="pos-hint">{`${total} ${total === 1 ? 'variante' : 'variantes'} · las que no tienen precio quedan bloqueadas`}</p>
           </div>
           <span className="pos-tag">{state.phase === 'ready' ? `${items.length} en esta página` : 'Sucursal'}</span>
         </div>
         <div className="pos-filters">
-          <label htmlFor="pos-search">Buscar batería
-            <input id="pos-search" type="search" value={search} placeholder="Marca o modelo" disabled={busy}
+          <label htmlFor="pos-kind">Tipo de producto
+            <select id="pos-kind" value={kind} disabled={busy}
+              onChange={event => {
+                const next = event.target.value === 'other' ? 'other' : 'battery';
+                setPageNumber(1); setKind(next);
+                // The brand, the capacity and the polarity are the battery's: a product
+                // listing starts without them instead of carrying a stale filter.
+                if (next === 'other') { setBrand(''); setCapacity(''); setPolarity(''); }
+              }}>
+              <option value="battery">Baterías</option>
+              <option value="other">Productos</option>
+            </select>
+          </label>
+          <label htmlFor="pos-search">{kind === 'other' ? 'Buscar producto' : 'Buscar batería'}
+            <input id="pos-search" type="search" value={search}
+              placeholder={kind === 'other' ? 'Nombre o detalle' : 'Marca o modelo'} disabled={busy}
               onChange={event => { setPageNumber(1); setSearch(event.target.value); }} />
           </label>
-          <label htmlFor="pos-brand">Marca
-            <select id="pos-brand" value={brand} disabled={busy}
-              onChange={event => { setPageNumber(1); setBrand(event.target.value); }}>
-              <option value="">Todas</option>
-              {brands.map(value => <option key={value} value={value}>{value}</option>)}
-            </select>
-          </label>
-          <label htmlFor="pos-capacity">Capacidad
-            <select id="pos-capacity" value={capacity} disabled={busy}
-              onChange={event => { setPageNumber(1); setCapacity(event.target.value); }}>
-              <option value="">Todas</option>
-              {capacities.map(value => <option key={value} value={value}>{value} Ah</option>)}
-            </select>
-          </label>
-          <label htmlFor="pos-polarity">Polaridad
-            <select id="pos-polarity" value={polarity} disabled={busy}
-              onChange={event => { setPageNumber(1); setPolarity(event.target.value as '' | 'L' | 'R'); }}>
-              <option value="">Todas</option>
-              <option value="L">Izquierda [L]</option>
-              <option value="R">Derecha [R]</option>
-            </select>
-          </label>
+          {kind !== 'other' && <>
+            <label htmlFor="pos-brand">Marca
+              <select id="pos-brand" value={brand} disabled={busy}
+                onChange={event => { setPageNumber(1); setBrand(event.target.value); }}>
+                <option value="">Todas</option>
+                {brands.map(value => <option key={value} value={value}>{value}</option>)}
+              </select>
+            </label>
+            <label htmlFor="pos-capacity">Capacidad
+              <select id="pos-capacity" value={capacity} disabled={busy}
+                onChange={event => { setPageNumber(1); setCapacity(event.target.value); }}>
+                <option value="">Todas</option>
+                {capacities.map(value => <option key={value} value={value}>{value} Ah</option>)}
+              </select>
+            </label>
+            <label htmlFor="pos-polarity">Polaridad
+              <select id="pos-polarity" value={polarity} disabled={busy}
+                onChange={event => { setPageNumber(1); setPolarity(event.target.value as '' | 'L' | 'R'); }}>
+                <option value="">Todas</option>
+                <option value="L">Izquierda [L]</option>
+                <option value="R">Derecha [R]</option>
+              </select>
+            </label>
+          </>}
         </div>
         {items.length > 0 && <div className="pos-cards">{items.map(item => {
           const label = variantLabel(item);
           const reasonID = blockedReason(item.variant_id);
+          const identity = item.identity;
+          const battery = identity?.battery ?? null;
+          const product = identity?.kind === 'other';
           return <article className={'pos-card' + (item.sellable ? '' : ' blocked')} key={item.variant_id}
             data-variant-id={item.variant_id}>
-            <h3>{`${item.brand} ${item.model}`}</h3>
-            <div className="pos-meta">
-              <span className="pos-tag">{`${item.capacity_ah} Ah`}</span>
-              <span className="pos-tag">{item.polarity}</span>
-            </div>
+            <h3>{product && identity ? identity.name : `${battery?.brand ?? item.brand} ${battery?.model ?? item.model}`}</h3>
+            {product && identity
+              ? <p className="pos-detail">{identity.detail}</p>
+              : <div className="pos-meta">
+                <span className="pos-tag">{`${battery?.capacity_ah ?? item.capacity_ah} Ah`}</span>
+                <span className="pos-tag">{battery?.polarity ?? item.polarity}</span>
+              </div>}
             <div className="pos-figures">
               <span className="pos-price">{item.sellable && item.suggested_price !== null
                 ? formatMoney(moneyCents(item.suggested_price)) : 'Bs —'}</span>
@@ -395,13 +421,14 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
         {state.phase === 'error' && <p className="pos-message" role="alert">{state.problem}
           <button type="button" disabled={busy} onClick={() => setRevision(value => value + 1)}>Reintentar catálogo vendible</button>
         </p>}
-        {state.phase === 'ready' && items.length === 0 && <p className="pos-message">Sin baterías para esta consulta.</p>}
+        {state.phase === 'ready' && items.length === 0 &&
+          <p className="pos-message">{kind === 'other' ? 'Sin productos para esta consulta.' : 'Sin baterías para esta consulta.'}</p>}
         <footer className="pager" aria-label="Paginación del catálogo vendible">
           <span className="range" aria-live="polite">{state.page
             ? <>Mostrando <strong>{firstRow}–{lastRow}</strong> de <strong>{total}</strong> variantes</>
             : 'Sin resultados cargados.'}</span>
           <div className="page-controls">
-            <label htmlFor="pos-page-size">Baterías por página</label>
+            <label htmlFor="pos-page-size">{kind === 'other' ? 'Productos por página' : 'Baterías por página'}</label>
             <select id="pos-page-size" value={pageSize} disabled={busy}
               onChange={event => {
                 const next = Number(event.target.value);
@@ -420,11 +447,15 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
           <h2 id="pos-cart-title">Venta en curso <span className="pos-tag">{`${cart.length} ${cart.length === 1 ? 'línea' : 'líneas'}`}</span></h2>
           <div className="pos-lines">{cart.map(line => {
             const label = variantLabel(line);
+            const identity = lineIdentity(line);
+            const battery = lineBattery(line);
+            const product = lineKind(line) === 'other';
             const draft = draftFor(line);
             const adjusted = line.suggested_price_cents > line.unit_price_cents;
             return <div className="pos-line" key={line.variant_id}>
               <div className="pos-line-head">
-                <div><strong>{`${line.brand} ${line.model}`}</strong><small>{`${line.capacity_ah} Ah · ${line.polarity}`}</small></div>
+                <div><strong>{product ? identity.name : `${battery?.brand} ${battery?.model}`}</strong>
+                  <small>{product ? identity.detail : `${battery?.capacity_ah} Ah · ${battery?.polarity}`}</small></div>
                 <span className="pos-num">{formatMoney(line.unit_price_cents * BigInt(line.quantity))}</span>
               </div>
               <div className="pos-line-controls">
@@ -442,40 +473,42 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
                     onChange={event => typePrice(line, event.target.value)} />
                 </label>
               </div>
-              <div className="pos-units">{line.units.map((unit, index) => <div className="pos-unit"
-                key={unitKey(line.variant_id, index)}>
-                <div className="pos-unit-head">
-                  <span className="pos-unit-index">{`Unidad ${index + 1}`}</span>
-                  <span className="pos-tag">{warrantyLabel(unit.warranty_months)}</span>
+              {!product && <>
+                <div className="pos-units">{line.units.map((unit, index) => <div className="pos-unit"
+                  key={unitKey(line.variant_id, index)}>
+                  <div className="pos-unit-head">
+                    <span className="pos-unit-index">{`Unidad ${index + 1}`}</span>
+                    <span className="pos-tag">{warrantyLabel(unit.warranty_months)}</span>
+                  </div>
+                  <label htmlFor={`pos-serial-${line.variant_id}-${index}`}>Número de serie
+                    <input id={`pos-serial-${line.variant_id}-${index}`}
+                      aria-label={`Número de serie de la unidad ${index + 1} de ${label}`}
+                      value={unit.serial_number} maxLength={maxSerialLength} disabled={busy} autoComplete="off"
+                      placeholder="Leelo de la batería"
+                      onChange={event => typeSerial(line, index, event.target.value)} />
+                  </label>
+                  <label htmlFor={`pos-unit-warranty-${line.variant_id}-${index}`}>Garantía (meses)
+                    <input id={`pos-unit-warranty-${line.variant_id}-${index}`}
+                      aria-label={`Garantía en meses de la unidad ${index + 1} de ${label}`}
+                      inputMode="numeric" value={termFor(line, index)} disabled={busy} placeholder="Sin garantía"
+                      onChange={event => typeTerm(line, index, event.target.value)} />
+                  </label>
+                </div>)}</div>
+                <div className="pos-line-bulk">
+                  <label htmlFor={`pos-bulk-${line.variant_id}`}>Plazo para todas (meses)
+                    <input id={`pos-bulk-${line.variant_id}`}
+                      aria-label={`Plazo en meses para todas las unidades de ${label}`}
+                      inputMode="numeric" value={draft.bulk} disabled={busy} placeholder="1 a 120"
+                      onChange={event => patchDraft(line, { bulk: event.target.value })} />
+                  </label>
+                  <button type="button" disabled={busy}
+                    aria-label={`Aplicar plazo a todas las unidades de ${label}`}
+                    onClick={() => applyTypedTerm(line)}>Aplicar a todas</button>
+                  <button type="button" disabled={busy}
+                    aria-label={`Sin garantía a todas las unidades de ${label}`}
+                    onClick={() => applyTerm(line, null)}>Sin garantía a todas</button>
                 </div>
-                <label htmlFor={`pos-serial-${line.variant_id}-${index}`}>Número de serie
-                  <input id={`pos-serial-${line.variant_id}-${index}`}
-                    aria-label={`Número de serie de la unidad ${index + 1} de ${label}`}
-                    value={unit.serial_number} maxLength={maxSerialLength} disabled={busy} autoComplete="off"
-                    placeholder="Leelo de la batería"
-                    onChange={event => typeSerial(line, index, event.target.value)} />
-                </label>
-                <label htmlFor={`pos-unit-warranty-${line.variant_id}-${index}`}>Garantía (meses)
-                  <input id={`pos-unit-warranty-${line.variant_id}-${index}`}
-                    aria-label={`Garantía en meses de la unidad ${index + 1} de ${label}`}
-                    inputMode="numeric" value={termFor(line, index)} disabled={busy} placeholder="Sin garantía"
-                    onChange={event => typeTerm(line, index, event.target.value)} />
-                </label>
-              </div>)}</div>
-              <div className="pos-line-bulk">
-                <label htmlFor={`pos-bulk-${line.variant_id}`}>Plazo para todas (meses)
-                  <input id={`pos-bulk-${line.variant_id}`}
-                    aria-label={`Plazo en meses para todas las unidades de ${label}`}
-                    inputMode="numeric" value={draft.bulk} disabled={busy} placeholder="1 a 120"
-                    onChange={event => patchDraft(line, { bulk: event.target.value })} />
-                </label>
-                <button type="button" disabled={busy}
-                  aria-label={`Aplicar plazo a todas las unidades de ${label}`}
-                  onClick={() => applyTypedTerm(line)}>Aplicar a todas</button>
-                <button type="button" disabled={busy}
-                  aria-label={`Sin garantía a todas las unidades de ${label}`}
-                  onClick={() => applyTerm(line, null)}>Sin garantía a todas</button>
-              </div>
+              </>}
               <small className="pos-hint">{`Mínimo autorizado ${formatMoney(line.min_price_cents)}`}
                 {adjusted && ` · ajustado ${formatMoney(line.suggested_price_cents - line.unit_price_cents)} por debajo del sugerido`}</small>
               <button type="button" className="pos-remove" aria-label={`Quitar ${label}`} disabled={busy}
@@ -483,10 +516,15 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
             </div>;
           })}</div>
           <div className="pos-totals">
-            {cart.map(line => <div className="pos-row" key={line.variant_id}>
-              <span className="pos-hint">{`${line.quantity} × ${line.brand} ${line.model}`}</span>
-              <span>{formatMoney(line.unit_price_cents * BigInt(line.quantity))}</span>
-            </div>)}
+            {cart.map(line => {
+              const identity = lineIdentity(line);
+              const battery = lineBattery(line);
+              const name = lineKind(line) === 'other' ? identity.name : `${battery?.brand} ${battery?.model}`;
+              return <div className="pos-row" key={line.variant_id}>
+                <span className="pos-hint">{`${line.quantity} × ${name}`}</span>
+                <span>{formatMoney(line.unit_price_cents * BigInt(line.quantity))}</span>
+              </div>;
+            })}
             <div className="pos-row pos-grand"><span>Total</span><span>{formatMoney(saleTotal)}</span></div>
           </div>
           <fieldset className="pos-payments">

@@ -6,6 +6,8 @@
  * `96.000,00` or `96000,00`; no amount is ever parsed into a binary float.
  */
 
+import { rowLabel, type Battery, type Kind, type VariantIdentity } from './model';
+
 // ---------------------------------------------------------------------------------
 // Money
 // ---------------------------------------------------------------------------------
@@ -71,15 +73,21 @@ export function typedMoney(cents: bigint): string {
 
 export type Polarity = 'L' | 'R';
 
-/** One variant of the branch catalogue: its battery, one polarity and its availability. */
+/** One variant of the branch catalogue: its shared identity and its availability. */
 export interface SellableVariant {
   readonly variant_id: number;
   readonly catalog_entry_id: number;
-  readonly brand: string;
-  readonly model: string;
-  readonly capacity_ah: string;
-  readonly polarity: Polarity;
-  /** False when the branch has no price for the battery: the row is shown, never sold. */
+  /**
+   * The shared identity of the row: a product publishes it on the wire and a battery row
+   * composes it from its battery columns, so every surface labels a line the same way.
+   */
+  readonly identity?: VariantIdentity;
+  /** The battery columns of a battery row; a product row publishes none of them. */
+  readonly brand?: string;
+  readonly model?: string;
+  readonly capacity_ah?: string;
+  readonly polarity?: Polarity;
+  /** False when the branch has no price for the entry: the row is shown, never sold. */
   readonly sellable: boolean;
   readonly suggested_price: string | null;
   readonly min_price: string | null;
@@ -121,6 +129,7 @@ export const posSerialMessage = 'Cada batería lleva su número de serie: leelo 
 export const posSerialLengthMessage = `El número de serie lleva hasta ${maxSerialLength} caracteres.`;
 export const posDuplicateSerialMessage = 'Ese número de serie ya está en esta venta: cada batería se vende una sola vez.';
 export const posUnitsMessage = 'Cada línea lleva una unidad por batería: revisá la cantidad.';
+export const posProductUnitsMessage = 'Un producto se vende por cantidad: no lleva unidades.';
 export const posMissingUnitMessage = 'Esa unidad ya no está en la línea: revisá la cantidad.';
 export const posUnitTotalMessage = `Una venta lleva como máximo ${maxSaleUnits} unidades.`;
 export const posAddressMessage = `La dirección o barrio lleva como máximo ${maxCustomerAddress} caracteres.`;
@@ -159,15 +168,18 @@ export interface CartUnit {
 export interface CartLine {
   readonly variant_id: number;
   readonly catalog_entry_id: number;
-  readonly brand: string;
-  readonly model: string;
-  readonly capacity_ah: string;
-  readonly polarity: Polarity;
+  /** The shared catalogue identity of the line: a battery keeps its battery, a product its name. */
+  readonly identity?: VariantIdentity;
+  /** The battery columns of a battery line; a product line carries none. */
+  readonly brand?: string;
+  readonly model?: string;
+  readonly capacity_ah?: string;
+  readonly polarity?: Polarity;
   readonly quantity: number;
   readonly unit_price_cents: bigint;
   readonly suggested_price_cents: bigint;
   readonly min_price_cents: bigint;
-  /** One entry per physical battery, in the order the seller wrote them. */
+  /** One entry per physical battery, in the order the seller wrote them; empty for a product. */
   readonly units: readonly CartUnit[];
 }
 
@@ -175,19 +187,66 @@ export type CartEdit =
   | { readonly ok: true; readonly cart: readonly CartLine[] }
   | { readonly ok: false; readonly message: string };
 
-/** `CAR NS40ZL L`: the label a line and a card share. */
-export function variantLabel(value: { brand: string; model: string; polarity: Polarity }): string {
-  return `${value.brand} ${value.model} ${value.polarity}`;
+/** The common fields every line, card and row exposes for its label. */
+interface Identified {
+  readonly identity?: VariantIdentity;
+  readonly brand?: string;
+  readonly model?: string;
+  readonly capacity_ah?: string;
+  readonly polarity?: Polarity;
+}
+
+/** The battery of a line: its own identity when it has one, or its battery columns. */
+export function lineBattery(value: Identified): Battery | null {
+  if (value.identity) return value.identity.battery;
+  if (value.brand === undefined || value.model === undefined
+    || value.capacity_ah === undefined || value.polarity === undefined) return null;
+  return { brand: value.brand, model: value.model, capacity_ah: value.capacity_ah, polarity: value.polarity };
+}
+
+/** The kind of one cart line: a product says so in its identity and everything else is a battery. */
+export function lineKind(line: CartLine): Kind {
+  return line.identity?.kind ?? 'battery';
+}
+
+/** The identity of one cart line, the one every label of the line reads. */
+export function lineIdentity(line: CartLine): VariantIdentity {
+  if (line.identity) return line.identity;
+  const battery = lineBattery(line);
+  if (battery === null) throw new Error('La línea no tiene identidad.');
+  return identityFromBattery(line.variant_id, battery);
+}
+
+/** `CAR NS40ZL L`: the label a battery line and a card share; a product is its own name. */
+export function variantLabel(value: Identified): string {
+  if (value.identity?.kind === 'other') return rowLabel(value.identity);
+  const battery = lineBattery(value);
+  return battery === null ? '' : `${battery.brand} ${battery.model} ${battery.polarity}`;
+}
+
+function identityFromBattery(variantID: number, battery: Battery): VariantIdentity {
+  return Object.freeze({ variant_id: variantID, kind: 'battery', name: `${battery.brand} · ${battery.model}`,
+    detail: `${battery.capacity_ah} Ah · ${battery.polarity}`, battery, fields: null });
+}
+
+function sellableIdentity(variant: SellableVariant): VariantIdentity | null {
+  if (variant.identity) return variant.identity;
+  const battery = lineBattery(variant);
+  return battery === null ? null : identityFromBattery(variant.variant_id, battery);
 }
 
 function lineOf(variant: SellableVariant): CartLine | null {
   if (!variant.sellable || variant.suggested_price === null || variant.min_price === null) return null;
+  const identity = sellableIdentity(variant);
+  if (identity === null) return null;
+  const battery = identity.battery;
   return Object.freeze({
-    variant_id: variant.variant_id, catalog_entry_id: variant.catalog_entry_id,
-    brand: variant.brand, model: variant.model, capacity_ah: variant.capacity_ah, polarity: variant.polarity,
+    variant_id: variant.variant_id, catalog_entry_id: variant.catalog_entry_id, identity,
+    ...(battery === null ? {} : { brand: battery.brand, model: battery.model,
+      capacity_ah: battery.capacity_ah, polarity: battery.polarity }),
     quantity: 1, unit_price_cents: moneyCents(variant.suggested_price),
     suggested_price_cents: moneyCents(variant.suggested_price), min_price_cents: moneyCents(variant.min_price),
-    units: Object.freeze([newUnit()]),
+    units: battery === null ? Object.freeze([]) : Object.freeze([newUnit()]),
   });
 }
 
@@ -197,9 +256,11 @@ function newUnit(): CartUnit {
 }
 
 /** One unit row per battery: growing adds batteries, shrinking drops the trailing ones. */
-function unitsFor(units: readonly CartUnit[], quantity: number): readonly CartUnit[] {
-  if (quantity <= units.length) return Object.freeze(units.slice(0, quantity));
-  const grown = [...units];
+function unitsFor(line: CartLine, quantity: number): readonly CartUnit[] {
+  // A product is counted, not serialized: its line never grows a physical piece.
+  if (lineKind(line) === 'other') return Object.freeze([]);
+  if (quantity <= line.units.length) return Object.freeze(line.units.slice(0, quantity));
+  const grown = [...line.units];
   while (grown.length < quantity) grown.push(newUnit());
   return Object.freeze(grown);
 }
@@ -230,9 +291,10 @@ export function setQuantity(cart: readonly CartLine[], variantID: number, quanti
     return { ok: false, message: posQuantityMessage };
   }
   if (quantity > maxQuantity) return { ok: false, message: posQuantityMessage };
-  // Every battery is a row with its own serial: a line never holds more than a whole sale.
-  if (quantity > maxSaleUnits) return { ok: false, message: posUnitTotalMessage };
-  return { ok: true, cart: replaceLine(cart, variantID, { quantity, units: unitsFor(line.units, quantity) }) };
+  // Every battery is a row with its own serial: a battery line never holds more than a whole
+  // sale. A product is only counted, so its quantity is bounded by the quantity alone.
+  if (lineKind(line) === 'battery' && quantity > maxSaleUnits) return { ok: false, message: posUnitTotalMessage };
+  return { ok: true, cart: replaceLine(cart, variantID, { quantity, units: unitsFor(line, quantity) }) };
 }
 
 /** Moves the quantity by one unit with the steppers, always leaving a line with one unit. */
@@ -562,6 +624,11 @@ export function unitsProblem(cart: readonly CartLine[]): string | null {
   const serials = new Set<string>();
   let total = 0;
   for (const line of cart) {
+    // A product is counted: its line carries no piece, so there is no serial to ask for.
+    if (lineKind(line) === 'other') {
+      if (line.units.length !== 0) return posProductUnitsMessage;
+      continue;
+    }
     const checked = checkedUnits(line, serials);
     if (!checked.ok) return checked.message;
     total += checked.units.length;
@@ -588,12 +655,20 @@ export function prepareSale(cart: readonly CartLine[], split: PaymentSplit, cust
     if (!Number.isInteger(line.quantity) || line.quantity < 1 || line.quantity > maxQuantity) {
       return { ok: false, message: posQuantityMessage };
     }
-    const checked = checkedUnits(line, serials);
-    if (!checked.ok) return { ok: false, message: checked.message };
-    unitsTotal += checked.units.length;
     if (line.unit_price_cents < line.min_price_cents) {
       return { ok: false, message: posPriceFloorMessage(line.min_price_cents) };
     }
+    if (lineKind(line) === 'other') {
+      // A product is counted, not serialized: the key is mandatory and the empty array is
+      // what says the line has no pieces and never promised a term.
+      if (line.units.length !== 0) return { ok: false, message: posProductUnitsMessage };
+      lines.push({ variant_id: line.variant_id, quantity: line.quantity,
+        unit_price: centsToMoney(line.unit_price_cents), units: Object.freeze([]) });
+      continue;
+    }
+    const checked = checkedUnits(line, serials);
+    if (!checked.ok) return { ok: false, message: checked.message };
+    unitsTotal += checked.units.length;
     lines.push({ variant_id: line.variant_id, quantity: line.quantity,
       unit_price: centsToMoney(line.unit_price_cents), units: checked.units });
   }

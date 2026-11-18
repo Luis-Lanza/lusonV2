@@ -1,5 +1,5 @@
 import { LosslessNumber, parse as parseJSON } from 'lossless-json';
-import { validSearch } from './model';
+import { parseVariantIdentity, validSearch, type VariantIdentity } from './model';
 import {
   centsToMoney, maxCartLines, maxCustomerAddress, maxQuantity, maxSaleUnits, maxSerialLength, maxWarrantyMonths,
   minWarrantyMonths, moneyCents,
@@ -64,6 +64,8 @@ export interface SellableQuery {
   readonly brand: string;
   readonly capacity: string;
   readonly polarity: '' | 'L' | 'R';
+  /** The catalogue kind: absent is the battery listing the endpoint answers by default. */
+  readonly kind?: 'battery' | 'other';
   readonly page: number;
   readonly page_size: number;
 }
@@ -98,10 +100,12 @@ export interface SaleLineRecord {
 /** One persisted line with the catalogue identity of its variant. */
 export interface SaleDetailLine extends SaleLineRecord {
   readonly catalog_entry_id: number;
-  readonly brand: string;
-  readonly model: string;
-  readonly capacity_ah: string;
-  readonly polarity: 'L' | 'R';
+  /** The shared identity of a product line; a battery line keeps its battery columns. */
+  readonly identity?: VariantIdentity;
+  readonly brand?: string;
+  readonly model?: string;
+  readonly capacity_ah?: string;
+  readonly polarity?: 'L' | 'R';
 }
 /** The created document, under the `sale` key of the creation reply. */
 export interface SaleDocument {
@@ -282,17 +286,22 @@ function carriesNoUnits(lines: unknown): boolean {
     return Array.isArray(units) && units.length === 0;
   });
 }
-/** The units of one line of a pre-vertical sale: the empty array, and nothing invented. */
+/** The shape a line's units take: a battery one per piece, a product none, a pre-vertical line none. */
+type UnitsShape = 'battery' | 'product' | 'legacy' | 'auto';
+/** The units of one line of a sale stored before the sold unit existed: the empty array only. */
 function saleNoUnits(value: unknown): readonly SaleUnitRecord[] {
   if (!Array.isArray(value) || value.length !== 0) return invalidResponse();
   return Object.freeze([]);
 }
-/** The units of a line: exactly as many as its quantity, each with its serial and a term
- * that is present in the body and is either an integer or `null`, never absent and never
- * zero. A serial repeated inside one document contradicts the physical battery it tracks.
+/** The units of a line: exactly as many as its quantity for a battery, and `[]` for a product,
+ * each with its serial and a term that is present in the body and is either an integer or
+ * `null`, never absent and never zero. A serial repeated inside one document contradicts the
+ * physical battery it tracks.
  */
-function saleUnits(value: unknown, count: number, noUnits: boolean): readonly SaleUnitRecord[] {
-  if (noUnits) return saleNoUnits(value);
+function saleUnits(value: unknown, count: number, shape: UnitsShape): readonly SaleUnitRecord[] {
+  // A product is counted, not serialized, so its line carries the mandatory empty array.
+  if (shape === 'product' || shape === 'legacy') return saleNoUnits(value);
+  if (shape === 'auto' && Array.isArray(value) && value.length === 0) return saleNoUnits(value);
   if (!Array.isArray(value) || value.length !== count) return invalidResponse();
   const serials = new Set<string>();
   const rows = value.map(entry => {
@@ -343,25 +352,41 @@ function customer(value: unknown): SaleCustomerRecord {
     address: optionalText(record.address, maxCustomerAddress) });
 }
 /** A frozen line: the charged price, the floor, its units and the exact subtotal. */
-function saleLine(value: unknown, noUnits: boolean): SaleLineRecord {
+function saleLine(value: unknown, shape: UnitsShape): SaleLineRecord {
   const record = fields(value, ['variant_id', 'quantity', 'unit_price', 'min_price', 'units', 'subtotal']);
   const count = quantity(record.quantity);
   const line = {
     variant_id: variantID(record.variant_id), quantity: count,
     unit_price: wireMoney(record.unit_price), min_price: wireMoney(record.min_price),
-    units: saleUnits(record.units, count, noUnits), subtotal: wireMoney(record.subtotal),
+    units: saleUnits(record.units, count, shape), subtotal: wireMoney(record.subtotal),
   };
   if (moneyCents(line.unit_price) < moneyCents(line.min_price)) return invalidResponse();
   if (moneyCents(line.subtotal) !== moneyCents(line.unit_price) * BigInt(line.quantity)) return invalidResponse();
   return Object.freeze(line);
 }
+const batteryLineKeys = ['variant_id', 'catalog_entry_id', 'brand', 'model', 'capacity_ah', 'polarity',
+  'quantity', 'unit_price', 'min_price', 'units', 'subtotal'] as const;
+const productLineKeys = ['variant_id', 'catalog_entry_id', 'identity',
+  'quantity', 'unit_price', 'min_price', 'units', 'subtotal'] as const;
 function detailLine(value: unknown, noUnits: boolean): SaleDetailLine {
-  const record = fields(value, ['variant_id', 'catalog_entry_id', 'brand', 'model', 'capacity_ah', 'polarity',
-    'quantity', 'unit_price', 'min_price', 'units', 'subtotal']);
+  // A product line publishes its shared identity instead of the battery columns, so the
+  // line is read by the kind it declares and never against the shape of the other one.
+  const candidate = fields(value, [...batteryLineKeys, 'identity'], false);
+  if (Object.hasOwn(candidate, 'identity')) {
+    const record = fields(value, productLineKeys);
+    const line = saleLine({
+      variant_id: record.variant_id, quantity: record.quantity, unit_price: record.unit_price,
+      min_price: record.min_price, units: record.units, subtotal: record.subtotal,
+    }, 'product');
+    const identity = parseVariantIdentity(record.identity);
+    if (identity.kind !== 'other' || identity.variant_id !== line.variant_id) return invalidResponse();
+    return Object.freeze({ ...line, catalog_entry_id: variantID(record.catalog_entry_id), identity });
+  }
+  const record = fields(value, batteryLineKeys);
   const line = saleLine({
     variant_id: record.variant_id, quantity: record.quantity, unit_price: record.unit_price,
     min_price: record.min_price, units: record.units, subtotal: record.subtotal,
-  }, noUnits);
+  }, noUnits ? 'legacy' : 'battery');
   return Object.freeze({
     ...line, catalog_entry_id: variantID(record.catalog_entry_id), brand: text(record.brand),
     model: text(record.model), capacity_ah: capacity(record.capacity_ah), polarity: polarity(record.polarity),
@@ -415,6 +440,7 @@ function fitsPage(rows: number, page: number, page_size: number, total: number):
 
 export function validSellableQuery(query: SellableQuery): boolean {
   if (typeof query.search !== 'string' || !validSearch(query.search)) return false;
+  if (query.kind !== undefined && query.kind !== 'battery' && query.kind !== 'other') return false;
   if (typeof query.brand !== 'string' || !query.brand.isWellFormed() || query.brand.includes('\0')
     || query.brand.length > maxSaleText) return false;
   if (typeof query.capacity !== 'string'
@@ -435,10 +461,17 @@ export function validSalesQuery(query: SalesQuery): boolean {
 export function sellablePath(query: SellableQuery): string {
   if (!validSellableQuery(query)) return invalidPayload();
   const params = new URLSearchParams();
+  const product = query.kind === 'other';
   if (query.search !== '') params.set('search', query.search);
-  if (query.brand !== '') params.set('brand', query.brand);
-  if (query.capacity !== '') params.set('capacity', query.capacity);
-  if (query.polarity !== '') params.set('polarity', query.polarity);
+  // The brand, the capacity and the polarity are battery attributes: a product listing never
+  // sends them, so a stale battery filter cannot empty it.
+  if (!product) {
+    if (query.brand !== '') params.set('brand', query.brand);
+    if (query.capacity !== '') params.set('capacity', query.capacity);
+    if (query.polarity !== '') params.set('polarity', query.polarity);
+  }
+  // Battery is the endpoint's own default, so only the product kind is stated.
+  if (product) params.set('kind', 'other');
   params.set('page', String(query.page));
   params.set('page_size', String(query.page_size));
   return '/api/sales/sellable?' + params.toString();
@@ -472,6 +505,23 @@ export function warrantyPath(id: number): string {
 // Parsers
 // ---------------------------------------------------------------------------------
 
+/**
+ * The shared identity of a battery row, composed from the battery columns the sellable
+ * read publishes exactly as the catalogue composes it, so the counter line reads one
+ * identity for both kinds instead of two shapes.
+ */
+function batteryIdentity(variant_id: number, brand: string, model: string,
+  capacity_ah: string, polarity: 'L' | 'R'): VariantIdentity {
+  return Object.freeze({ variant_id, kind: 'battery', name: `${brand} · ${model}`,
+    detail: `${capacity_ah} Ah · ${polarity}`,
+    battery: { brand, model, capacity_ah, polarity }, fields: null });
+}
+
+const sellableBatteryKeys = ['variant_id', 'catalog_entry_id', 'brand', 'model', 'capacity_ah', 'polarity',
+  'sellable', 'suggested_price', 'min_price', 'existing', 'reserved', 'available'] as const;
+const sellableProductKeys = ['variant_id', 'catalog_entry_id', 'identity',
+  'sellable', 'suggested_price', 'min_price', 'existing', 'reserved', 'available'] as const;
+
 /** Parses one page of the sellable catalogue: a row per variant, priced or not. */
 export function parseSellablePage(raw: string): SellablePage {
   const record = fields(decode(raw), ['page', 'page_size', 'total_variants', 'items']);
@@ -481,8 +531,11 @@ export function parseSellablePage(raw: string): SellablePage {
   fitsPage(record.items.length, page, page_size, total_variants);
   let previous = 0;
   const items = record.items.map(value => {
-    const row = fields(value, ['variant_id', 'catalog_entry_id', 'brand', 'model', 'capacity_ah', 'polarity',
-      'sellable', 'suggested_price', 'min_price', 'existing', 'reserved', 'available']);
+    // Each kind is read by its own exact key set: a product publishes the shared identity
+    // and a battery keeps the columns it always had, so neither borrows the other's shape.
+    const candidate = fields(value, [...sellableBatteryKeys, 'identity'], false);
+    const product = Object.hasOwn(candidate, 'identity');
+    const row = product ? fields(value, sellableProductKeys) : fields(value, sellableBatteryKeys);
     const variant_id = variantID(row.variant_id);
     if (variant_id <= previous) return invalidResponse();
     previous = variant_id;
@@ -501,9 +554,20 @@ export function parseSellablePage(raw: string): SellablePage {
       // A variant the branch cannot sell never carries a pair the counter could charge.
       return invalidResponse();
     }
-    return Object.freeze({
-      variant_id, catalog_entry_id: variantID(row.catalog_entry_id), brand: text(row.brand),
-      model: text(row.model), capacity_ah: capacity(row.capacity_ah), polarity: polarity(row.polarity),
+    const catalog_entry_id = variantID(row.catalog_entry_id);
+    if (product) {
+      const identity = parseVariantIdentity(row.identity);
+      if (identity.kind !== 'other' || identity.variant_id !== variant_id) return invalidResponse();
+      return Object.freeze({ variant_id, catalog_entry_id, identity,
+        sellable: row.sellable, suggested_price, min_price, existing, reserved, available }) as SellableVariant;
+    }
+    const brand = text(row.brand);
+    const model = text(row.model);
+    const capacity_ah = capacity(row.capacity_ah);
+    const sign = polarity(row.polarity);
+    return Object.freeze({ variant_id, catalog_entry_id,
+      identity: batteryIdentity(variant_id, brand, model, capacity_ah, sign),
+      brand, model, capacity_ah, polarity: sign,
       sellable: row.sellable, suggested_price, min_price, existing, reserved, available,
     }) as SellableVariant;
   });
@@ -524,7 +588,7 @@ export function parseCreatedSale(raw: string): SaleDocument {
   const settlement = payments(sale.payments);
   const label = paymentLabel(settlement);
   if (sale.payment_method !== label) return invalidResponse();
-  const lines = lineList(sale.lines, entry => saleLine(entry, false));
+  const lines = lineList(sale.lines, entry => saleLine(entry, 'auto'));
   ascending(lines);
   boundedUnits(lines);
   const total = wireMoney(sale.total);
@@ -554,11 +618,12 @@ export function parseSalePage(raw: string): SalesPage {
     if (typeof row.payment_method !== 'string' || !recordedMethods.includes(row.payment_method)) return invalidResponse();
     const lines = integer(row.lines, 1, maxCartLines);
     // A sale issued before the sold unit existed carries no unit at all: it is a legible
-    // row with zero units and nothing warranted. A row carrying some units but fewer than
-    // its lines is corrupt, and a battery is never counted twice (S5, T12).
+    // row with zero units and nothing warranted. A product line carries no unit, so a mixed
+    // sale may legitimately carry fewer units than lines; the warranty count never exceeds
+    // the units that were sold (S3, S5, T12).
     const units_total = integer(row.units_total, 0, maxSaleUnits);
     const units_with_warranty = integer(row.units_with_warranty, 0, maxSaleUnits);
-    if ((units_total !== 0 && units_total < lines) || units_with_warranty > units_total) return invalidResponse();
+    if (units_with_warranty > units_total) return invalidResponse();
     return Object.freeze({
       id, branch_sequence: integer(row.branch_sequence, 1, 999_999_999),
       warranty_number: warrantyNumber(row.warranty_number), payment_method: row.payment_method,
@@ -680,11 +745,15 @@ function canonicalAddress(value: unknown): string {
 }
 
 /**
- * The units of one payload line: exactly as many as its quantity, exactly two keys each,
- * a written serial per battery and the term key always present, an integer or `null`.
+ * The units of one payload line: exactly as many as its quantity for a battery, each with a
+ * written serial and the term key always present (an integer or `null`), and the empty array
+ * for a product, because a product is counted and carries no piece. The key is always sent.
  */
 function canonicalUnits(value: unknown, quantity: number, serials: Set<string>): readonly SaleUnitWire[] {
-  if (!Array.isArray(value) || value.length !== quantity) return invalidPayload();
+  if (!Array.isArray(value)) return invalidPayload();
+  // A product line is the one that says so with the empty array: never a missing key.
+  if (value.length === 0) return Object.freeze([]);
+  if (value.length !== quantity) return invalidPayload();
   const units = value.map(entry => {
     const unit = fields(entry, ['serial_number', 'warranty_months'], false);
     if (Object.keys(unit).length !== 2) return invalidPayload();

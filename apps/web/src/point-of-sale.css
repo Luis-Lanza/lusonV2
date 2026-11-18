@@ -17,7 +17,7 @@
 .pos-tag.ok { background: #ECFDF5; border-color: #A7F3D0; color: #047857; }
 .pos-tag.short { background: #FFF0F0; border-color: #FFDAD6; color: #991515; }
 .pos-hint { color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-.pos-filters { display: grid; grid-template-columns: minmax(0, 1.6fr) repeat(3, minmax(0, .8fr)); gap: 12px; }
+.pos-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
 .pos-history-filters { grid-template-columns: minmax(0, 1fr) 190px; }
 .pos-filters label { display: grid; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }
 .pos-filters input, .pos-filters select { width: 100%; min-height: 44px; padding: 10px 12px;
@@ -26,6 +26,7 @@
 .pos-card { display: grid; gap: 10px; align-content: start; padding: 14px; background: #fff;
   border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 1px 2px #2421240d; }
 .pos-card h3 { font-size: 14px; font-weight: 600; }
+.pos-detail { color: var(--muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .pos-card.blocked { background: var(--page); border-style: dashed; }
 .pos-card.blocked .pos-price { color: var(--muted); }
 .pos-meta { display: flex; flex-wrap: wrap; gap: 6px; }

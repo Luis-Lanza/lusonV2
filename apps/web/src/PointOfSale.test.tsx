@@ -25,6 +25,19 @@ const unpriced = {
 const sellableBody = (items: readonly unknown[] = [item(), unpriced]) => JSON.stringify({
   page: 1, page_size: 10, total_variants: 190, items,
 });
+/** The shared identity of one other-product variant, exactly as the catalogue composes it. */
+const productIdentity = (overrides: Record<string, unknown> = {}) => ({
+  variant_id: 191, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L', battery: null,
+  fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }], ...overrides,
+});
+const productItem = (overrides: Record<string, unknown> = {}) => ({
+  variant_id: 191, catalog_entry_id: 96, identity: productIdentity(),
+  sellable: true, existing: 6, reserved: 0, available: 6,
+  suggested_price: '1900.00', min_price: '1500.00', ...overrides,
+});
+const productBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+  page: 1, page_size: 10, total_variants: 1, items: [productItem()], ...overrides,
+});
 const issuedBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   sale: {
     id: 7, branch_location_id: 2, branch_sequence: 126, warranty_number: '2-000126',
@@ -53,13 +66,43 @@ function soldBody(units: readonly { serial_number: string; warranty_months: numb
   } }), { status: 201, headers: { 'Content-Type': 'application/json' } });
 }
 
-function harness(options: { page?: () => Response | Promise<Response>; sale?: () => Response | Promise<Response> } = {}) {
+/** The document the server echoes for a product-only sale: quantity and the empty units array. */
+function soldProductBody(quantity = 1) {
+  const total = 190_000n * BigInt(quantity);
+  return new Response(JSON.stringify({ sale: {
+    id: 8, branch_location_id: 2, branch_sequence: 127, warranty_number: '2-000127', payment_method: 'cash',
+    payments: [{ method: 'cash', amount: money(total) }],
+    customer: { name: 'Marta Giménez', phone: '', document: '', address: '' },
+    total: money(total), created_by_account_id: 2, created_at: '2026-11-04T17:42:00Z',
+    lines: [{ variant_id: 191, quantity, unit_price: '1900.00', min_price: '1500.00',
+      subtotal: money(total), units: [] }],
+  } }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+}
+
+/** The document the server echoes for one battery and one product sold together. */
+function soldMixedBody() {
+  const total = 9_980_000n;
+  return new Response(JSON.stringify({ sale: {
+    id: 9, branch_location_id: 2, branch_sequence: 128, warranty_number: '2-000128', payment_method: 'cash',
+    payments: [{ method: 'cash', amount: money(total) }],
+    customer: { name: 'Marta Giménez', phone: '', document: '', address: '' },
+    total: money(total), created_by_account_id: 2, created_at: '2026-11-04T17:42:00Z',
+    lines: [
+      { variant_id: 1, quantity: 1, unit_price: '96000.00', min_price: '85000.00', subtotal: '96000.00',
+        units: [{ serial_number: 'ABC123', warranty_months: 12 }] },
+      { variant_id: 191, quantity: 2, unit_price: '1900.00', min_price: '1500.00', subtotal: '3800.00', units: [] },
+    ],
+  } }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+}
+
+function harness(options: { page?: (url: string) => Response | Promise<Response>;
+  sale?: () => Response | Promise<Response> } = {}) {
   const calls: { url: string; init: RequestInit }[] = [];
   const fetcher = vi.fn<typeof fetch>(async (input, init = {}) => {
     const url = String(input);
     calls.push({ url, init });
     if (url === '/api/sales') return options.sale?.() ?? new Response(issuedBody(), { status: 201, headers: { 'Content-Type': 'application/json' } });
-    if (url.startsWith('/api/sales/sellable?')) return options.page?.() ?? json(sellableBody());
+    if (url.startsWith('/api/sales/sellable?')) return options.page?.(url) ?? json(sellableBody());
     throw new Error('Unexpected mocked URL: ' + url);
   });
   return { fetcher, calls,
@@ -475,5 +518,97 @@ describe('the counter section boundary', () => {
     quiet();
     render(<div><SalesSectionBoundary message={salesHistoryFailureMessage}><Boom /></SalesSectionBoundary></div>);
     expect(screen.getByRole('alert')).toHaveTextContent(salesHistoryFailureMessage);
+  });
+});
+
+describe('the counter sells both catalogue kinds', () => {
+  const batteryPage = () => json(sellableBody([item()]));
+  const kinds = (url: string) => url.includes('kind=other') ? json(productBody()) : batteryPage();
+  const chooseKind = (kind: 'battery' | 'other') =>
+    fireEvent.change(screen.getByLabelText('Tipo de producto'), { target: { value: kind } });
+
+  it('offers the product kind and sends a product line with the mandatory empty units array', async () => {
+    const h = harness({ page: kinds, sale: () => soldProductBody(3) });
+    await ready(h);
+    chooseKind('other');
+    await screen.findByRole('heading', { name: 'Agua acidulada' });
+    // The product listing offers no battery-only filter at all.
+    expect(screen.getByLabelText('Buscar producto')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Buscar batería')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Marca')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Capacidad')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Polaridad')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Productos' })).toBeInTheDocument();
+    // The product card shows its name and detail, never a capacity, a brand or a polarity.
+    const card = cardOf('Agua acidulada');
+    expect(within(card).getByText('volumen en L: 5 L')).toBeInTheDocument();
+    expect(card.textContent).not.toMatch(/Ah/);
+    expect(card.textContent).not.toMatch(/Polaridad|Izquierda|Derecha/);
+    expect(h.reads().at(-1)?.url).toBe('/api/sales/sellable?kind=other&page=1&page_size=10');
+
+    addToSale('Agua acidulada');
+    const line = cartLine('Agua acidulada');
+    expect(within(line).getByText('Agua acidulada')).toBeInTheDocument();
+    expect(within(line).getByText('volumen en L: 5 L')).toBeInTheDocument();
+    expect(within(line).getByLabelText('Cantidad de Agua acidulada')).toHaveValue('1');
+    expect(within(line).getByLabelText('Precio unitario de Agua acidulada')).toHaveValue('1.900,00');
+    // A product line asks for no serial, no term and no bulk action.
+    expect(within(line).queryByLabelText(/Número de serie/)).not.toBeInTheDocument();
+    expect(within(line).queryByLabelText(/Garantía/)).not.toBeInTheDocument();
+    expect(within(line).queryByRole('button', { name: /Plazo para todas|Aplicar plazo|Sin garantía a todas/ }))
+      .not.toBeInTheDocument();
+    expect(line.textContent).not.toMatch(/12 meses|Ah/);
+
+    fireEvent.click(within(line).getByRole('button', { name: 'Sumar una unidad de Agua acidulada' }));
+    fireEvent.click(within(line).getByRole('button', { name: 'Sumar una unidad de Agua acidulada' }));
+    expect(within(line).getByLabelText('Cantidad de Agua acidulada')).toHaveValue('3');
+    nameClient();
+    fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '5.700,00' } });
+    expect(charge()).toBeEnabled();
+    fireEvent.click(charge());
+    await screen.findByText('Venta #127 · Garantía 2-000127');
+    // The product travels as quantity plus the empty units array: no serial and no term.
+    expect(JSON.parse(String(h.writes()[0].init.body))).toEqual({
+      payments: [{ method: 'cash', amount: '5700.00' }],
+      customer: { name: 'Marta Giménez', phone: '', document: '', address: '' },
+      lines: [{ variant_id: 191, quantity: 3, unit_price: '1900.00', units: [] }],
+    });
+  });
+
+  it('mixes a battery and a product in one sale, each line by its own identity', async () => {
+    const h = harness({ page: kinds, sale: soldMixedBody });
+    await ready(h);
+    addToSale('CAR NS40ZL');
+    typeSerial();
+    chooseKind('other');
+    await screen.findByRole('heading', { name: 'Agua acidulada' });
+    addToSale('Agua acidulada');
+    fireEvent.click(within(cartLine('Agua acidulada'))
+      .getByRole('button', { name: 'Sumar una unidad de Agua acidulada' }));
+    // Both kinds render at once, every line by its own identity.
+    const battery = cartLine('CAR NS40ZL L');
+    expect(within(battery).getByLabelText('Número de serie de la unidad 1 de CAR NS40ZL L')).toHaveValue('ABC123');
+    expect(within(battery).getByLabelText('Garantía en meses de la unidad 1 de CAR NS40ZL L')).toHaveValue('12');
+    const product = cartLine('Agua acidulada');
+    expect(within(product).getByText('volumen en L: 5 L')).toBeInTheDocument();
+    expect(within(product).queryByLabelText(/Número de serie/)).not.toBeInTheDocument();
+    nameClient();
+    fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '99.800,00' } });
+    expect(charge()).toBeEnabled();
+    fireEvent.click(charge());
+    await screen.findByText('Venta #128 · Garantía 2-000128');
+    expect(JSON.parse(String(h.writes()[0].init.body)).lines).toEqual([
+      { variant_id: 1, quantity: 1, unit_price: '96000.00',
+        units: [{ serial_number: 'ABC123', warranty_months: 12 }] },
+      { variant_id: 191, quantity: 2, unit_price: '1900.00', units: [] },
+    ]);
+  });
+
+  it('refuses a catalogue response whose product identity does not fit instead of inventing a label', async () => {
+    const malformed = productBody({ items: [productItem({ identity: productIdentity({ detail: undefined }) })] });
+    const h = harness({ page: () => json(malformed) });
+    render(<PointOfSale csrf={csrf} branch="Sucursal A" fetcher={h.fetcher} />);
+    expect(await screen.findByRole('alert')).toHaveTextContent(sellableUnavailable);
+    expect(screen.queryByRole('heading', { name: 'Agua acidulada' })).not.toBeInTheDocument();
   });
 });
