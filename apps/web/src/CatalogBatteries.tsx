@@ -64,7 +64,9 @@ export default function CatalogBatteries({ csrf, fetcher = globalThis.fetch }: C
     setState(previous => ({ phase: 'loading', page: previous.page, problem: catalogBatteriesListUnavailable }));
     void (async () => {
       try {
-        const page = await api.list({ search, brand: '', capacity: '', page: pageNumber, page_size: pageSize }, controller.signal);
+        // The battery catalogue reads the battery page of the price matrix and nothing
+        // else, so the kind of its read is never left to the default.
+        const page = await api.list({ kind: 'battery', search, brand: '', capacity: '', page: pageNumber, page_size: pageSize }, controller.signal);
         if (!current()) return;
         setState({ phase: 'ready', page, problem: '' });
       } catch (failure) {

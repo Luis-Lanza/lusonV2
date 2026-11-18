@@ -99,13 +99,13 @@ describe('the battery listing', () => {
     branch_location_id: branch, min_price: '85000.00', suggested_price: '96000.00',
     updated_at: '2026-11-04T10:00:00Z', updated_by_account_id: 1, updated_by_display_name: 'Almacén',
   });
-  const row = (overrides: Record<string, unknown> = {}) => ({ catalog_entry_id: 97, brand: 'CAR', model: 'NS60',
-    capacity_ah: '60', polarities: ['R'], cells: [], prices: [], ...overrides });
+  const row = (overrides: Record<string, unknown> = {}) => ({ kind: 'battery', catalog_entry_id: 97, brand: 'CAR',
+    model: 'NS60', capacity_ah: '60', polarities: ['R'], cells: [], prices: [], ...overrides });
   const page = (overrides: Record<string, unknown> = {}) => JSON.stringify({
     branches: [{ id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }],
-    batteries: [{ catalog_entry_id: 96, brand: 'TOYO', model: 'NS40ZL', capacity_ah: '45',
+    rows: [{ kind: 'battery', catalog_entry_id: 96, brand: 'TOYO', model: 'NS40ZL', capacity_ah: '45',
       polarities: ['L', 'R'], cells: [], prices: [price(2)] }, row(overrides)],
-    page: 1, page_size: 10, total_batteries: 96,
+    page: 1, page_size: 10, total: 96,
   });
 
   it('derives the priced branches and the polarities of every listed battery', () => {
@@ -125,15 +125,24 @@ describe('the battery listing', () => {
     expect(() => parseCatalogBatteryPage(page({ priced_branches: 0 }))).toThrow();
   });
 
+  it('refuses a product row, because this screen reads the battery page and nothing else', () => {
+    expect(() => parseCatalogBatteryPage(JSON.stringify({
+      branches: [{ id: 2, name: 'Sucursal A' }],
+      rows: [{ kind: 'other', catalog_entry_id: 113, name: 'Agua acidulada',
+        detail: 'volumen en L: 5 L', prices: [] }],
+      page: 1, page_size: 10, total: 1,
+    }))).toThrow();
+  });
+
   it('refuses a price that belongs to no listed active branch', () => {
     expect(() => parseCatalogBatteryPage(page({ prices: [price(9)] }))).toThrow();
   });
 
   it('builds the same frozen read path the matrix already serves', () => {
-    // No new field travels: the listing is the price matrix query, unchanged.
-    expect(catalogBatteriesPath({ search: '', brand: '', capacity: '', page: 2, page_size: 25 }))
-      .toBe('/api/catalog/prices?page=2&page_size=25');
-    expect(() => catalogBatteriesPath({ search: '', brand: '', capacity: '', page: 0, page_size: 25 })).toThrow();
+    // No new field travels: the listing is the price matrix query, of one kind.
+    expect(catalogBatteriesPath({ kind: 'battery', search: '', brand: '', capacity: '', page: 2, page_size: 25 }))
+      .toBe('/api/catalog/prices?kind=battery&page=2&page_size=25');
+    expect(() => catalogBatteriesPath({ kind: 'battery', search: '', brand: '', capacity: '', page: 0, page_size: 25 })).toThrow();
   });
 });
 

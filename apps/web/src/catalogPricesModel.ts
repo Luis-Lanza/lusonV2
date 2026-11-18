@@ -1,11 +1,15 @@
 import { LosslessNumber, parse as parseJSON } from 'lossless-json';
 import { validSearch } from './model';
 
-// Catalogue price matrix: one row per battery, one minimum/suggested pair per
-// (branch, battery), written by the warehouse administrator in blocks. A price
-// belongs to brand + model + capacity, so both polarities share it.
+// Catalogue price matrix: one row per catalogue entry of the one kind the page asks
+// for, one minimum/suggested pair per (branch, entry), written by the warehouse
+// administrator in blocks. A price belongs to the entry — brand + model + capacity
+// for a battery, the product itself for any other entry — so both polarities of a
+// battery share one pair and a product has one polarity-less row.
 /** One active branch of the matrix: the destination of a block assignment. */
 export interface CatalogBranch { readonly id: number; readonly name: string }
+/** The two catalogue kinds: one page is one kind, exactly like the two stock tabs. */
+export type CatalogKind = 'battery' | 'other';
 /** The polarities one battery is sold in: never priced apart from each other. */
 export type CatalogPolarity = 'L' | 'R';
 /** One persisted pair of a branch. Money is canonical decimal text, never a float. */
@@ -14,18 +18,31 @@ export interface CatalogPrice {
   readonly updated_at: string; readonly updated_by_account_id: number; readonly updated_by_display_name: string;
 }
 /** One battery of the catalogue: its product data, its polarities and every persisted branch price. */
-export interface CatalogBattery {
+export interface CatalogBatteryRow {
+  readonly kind: 'battery';
   readonly catalog_entry_id: number; readonly brand: string; readonly model: string;
   readonly capacity_ah: string; readonly polarities: readonly CatalogPolarity[]; readonly cells: readonly string[];
   readonly prices: readonly CatalogPrice[];
 }
+/**
+ * One other product of the catalogue: the free name the catalogue publishes and the
+ * summary of its typed fields, never a capacity, a polarity nor a cell. A product has
+ * exactly one variant, so its single row covers it and there is no per-variant price.
+ */
+export interface CatalogProductRow {
+  readonly kind: 'other';
+  readonly catalog_entry_id: number; readonly name: string; readonly detail: string;
+  readonly prices: readonly CatalogPrice[];
+}
+/** One row of the matrix, discriminated by its kind: each kind carries its own fields. */
+export type CatalogPriceRow = CatalogBatteryRow | CatalogProductRow;
 export interface CatalogPricesPage {
-  readonly branches: readonly CatalogBranch[]; readonly batteries: readonly CatalogBattery[];
-  readonly page: number; readonly page_size: number; readonly total_batteries: number;
+  readonly branches: readonly CatalogBranch[]; readonly rows: readonly CatalogPriceRow[];
+  readonly page: number; readonly page_size: number; readonly total: number;
 }
 /** The frozen read query: every filter of the contract is always present. */
 export interface CatalogPricesQuery {
-  readonly search: string; readonly brand: string; readonly capacity: string;
+  readonly kind: CatalogKind; readonly search: string; readonly brand: string; readonly capacity: string;
   readonly page: number; readonly page_size: number;
 }
 /**
@@ -52,6 +69,13 @@ export type CatalogPriceValidation =
 
 export type CatalogPricesErrorCode = 'invalid_request' | 'retired_branch' | 'unauthenticated' | 'forbidden'
   | 'not_found' | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
+
+/** The two tabs of the screen, in the order it offers them. */
+export const catalogKinds: readonly CatalogKind[] = ['battery', 'other'];
+/** Spanish label of each tab, the same pair the stock screens already use. */
+export const catalogKindLabels: Record<CatalogKind, string> = { battery: 'Baterías', other: 'Otros productos' };
+/** The first column of the matrix: the identity the row of that kind carries. */
+export const catalogKindColumns: Record<CatalogKind, string> = { battery: 'Batería', other: 'Producto' };
 
 export const catalogPricesPageSizes: readonly number[] = [10, 25, 50];
 export const catalogPricesDefaultPageSize = 10;
@@ -183,15 +207,19 @@ export function sharedPriceLabel(tags: readonly CatalogPolarity[]): string {
 
 /**
  * The frozen read path. The contract refuses an empty filter value, so a filter the
- * operator left blank is absent from the query instead of sent empty; the page and
- * the page size always travel.
+ * operator left blank is absent from the query instead of sent empty; the kind, the
+ * page and the page size always travel. Brand and capacity are battery filters, so a
+ * product page never names them.
  */
 export function catalogPricesPath(query: CatalogPricesQuery): string {
   if (!validCatalogPricesQuery(query)) return invalidResponse();
   const params = new URLSearchParams();
+  params.set('kind', query.kind);
   if (query.search !== '') params.set('search', query.search);
-  if (query.brand !== '') params.set('brand', query.brand);
-  if (query.capacity !== '') params.set('capacity', query.capacity);
+  if (query.kind === 'battery') {
+    if (query.brand !== '') params.set('brand', query.brand);
+    if (query.capacity !== '') params.set('capacity', query.capacity);
+  }
   params.set('page', String(query.page));
   params.set('page_size', String(query.page_size));
   return '/api/catalog/prices?' + params.toString();
@@ -203,9 +231,13 @@ function validLabel(value: unknown): boolean {
 
 export function validCatalogPricesQuery(query: CatalogPricesQuery): boolean {
   const filters = query as unknown as Record<string, unknown>;
+  // One page is one kind: `all` is never a page, and a missing kind is not guessed.
+  if (filters.kind !== 'battery' && filters.kind !== 'other') return false;
   if (typeof filters.search !== 'string' || !validSearch(filters.search)) return false;
   if (typeof filters.brand !== 'string' || !validLabel(filters.brand) || filters.brand.length > 128) return false;
   if (typeof filters.capacity !== 'string' || (filters.capacity !== '' && !/^(0|[1-9]\d{0,5})(\.\d{1,6})?$/.test(filters.capacity))) return false;
+  // The two battery filters are refused with a product page instead of being ignored.
+  if (query.kind === 'other' && (query.brand !== '' || query.capacity !== '')) return false;
   return Number.isInteger(query.page) && query.page >= 1 && query.page <= catalogPricesMaxPage
     && Number.isInteger(query.page_size) && catalogPricesPageSizes.includes(query.page_size);
 }
@@ -225,16 +257,74 @@ function polarities(value: unknown): readonly CatalogPolarity[] {
 }
 
 /**
+ * The row's own kind, read before any other key: the union is discriminated, never
+ * guessed from the fields a row happens to carry.
+ */
+function rowKind(value: unknown): CatalogKind {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value instanceof LosslessNumber) return invalidResponse();
+  const kind = (value as Record<string, unknown>).kind;
+  if (kind !== 'battery' && kind !== 'other') return invalidResponse();
+  return kind;
+}
+
+/**
+ * The pairs of one row. A price whose branch is not listed by this matrix is no
+ * evidence about this catalogue, and a persisted pair that puts the suggested price
+ * below its own minimum never renders.
+ */
+function rowPrices(value: unknown, branchIDs: ReadonlySet<number>, branchCount: number): readonly CatalogPrice[] {
+  if (!Array.isArray(value) || value.length > branchCount) return invalidResponse();
+  const pricedBranches = new Set<number>();
+  const prices = value.map(entry => {
+    const price = fields(entry, ['branch_location_id', 'min_price', 'suggested_price', 'updated_at',
+      'updated_by_account_id', 'updated_by_display_name']);
+    const branch_location_id = integer(price.branch_location_id, 1, 32767);
+    if (!branchIDs.has(branch_location_id) || pricedBranches.has(branch_location_id)) return invalidResponse();
+    pricedBranches.add(branch_location_id);
+    const min_price = money(price.min_price);
+    const suggested_price = money(price.suggested_price);
+    if (catalogAmountCents(suggested_price) < catalogAmountCents(min_price)) return invalidResponse();
+    return Object.freeze({ branch_location_id, min_price, suggested_price,
+      updated_at: timestamp(price.updated_at),
+      updated_by_account_id: integer(price.updated_by_account_id, 1, Number.MAX_SAFE_INTEGER),
+      updated_by_display_name: label(price.updated_by_display_name) });
+  });
+  return Object.freeze(prices);
+}
+
+/** A battery row: its identity, its polarities, its cells and the pairs of its branches. */
+function batteryRow(value: unknown, branchIDs: ReadonlySet<number>, branchCount: number): CatalogBatteryRow {
+  const row = fields(value, ['kind', 'catalog_entry_id', 'brand', 'model', 'capacity_ah', 'polarities', 'cells', 'prices']);
+  const tags = polarities(row.polarities);
+  if (!Array.isArray(row.cells) || row.cells.length > 64) return invalidResponse();
+  const cells = row.cells.map(text);
+  if (new Set(cells).size !== cells.length) return invalidResponse();
+  return Object.freeze({ kind: 'battery', catalog_entry_id: integer(row.catalog_entry_id, 1, catalogPricesMaxCatalogEntryID),
+    brand: text(row.brand), model: text(row.model), capacity_ah: capacity(row.capacity_ah), polarities: tags,
+    cells: Object.freeze(cells), prices: rowPrices(row.prices, branchIDs, branchCount) });
+}
+
+/**
+ * A product row: the free name and the detail the catalogue already publishes. Exact
+ * keys refuse a row that carries a battery attribute, so the two shapes never mix.
+ */
+function productRow(value: unknown, branchIDs: ReadonlySet<number>, branchCount: number): CatalogProductRow {
+  const row = fields(value, ['kind', 'catalog_entry_id', 'name', 'detail', 'prices']);
+  return Object.freeze({ kind: 'other', catalog_entry_id: integer(row.catalog_entry_id, 1, catalogPricesMaxCatalogEntryID),
+    name: text(row.name), detail: text(row.detail), prices: rowPrices(row.prices, branchIDs, branchCount) });
+}
+
+/**
  * Parses one matrix page strictly: exact keys, lossless numbers, unique branches,
- * prices that belong to a listed branch and a pair that never reports a suggested
- * price below its own minimum.
+ * prices that belong to a listed branch, a pair that never reports a suggested price
+ * below its own minimum, and a row of exactly one of the two catalogue kinds.
  */
 export function parseCatalogPrices(raw: string): CatalogPricesPage {
-  const record = fields(decode(raw), ['branches', 'batteries', 'page', 'page_size', 'total_batteries']);
+  const record = fields(decode(raw), ['branches', 'rows', 'page', 'page_size', 'total']);
   const page = integer(record.page, 1, catalogPricesMaxPage);
   const page_size = integer(record.page_size, 10, 50);
   if (!catalogPricesPageSizes.includes(page_size)) return invalidResponse();
-  const total_batteries = integer(record.total_batteries, 0, Number.MAX_SAFE_INTEGER);
+  const total = integer(record.total, 0, Number.MAX_SAFE_INTEGER);
   if (!Array.isArray(record.branches)) return invalidResponse();
   const branchIDs = new Set<number>();
   const branches = record.branches.map(value => {
@@ -244,41 +334,18 @@ export function parseCatalogPrices(raw: string): CatalogPricesPage {
     branchIDs.add(id);
     return Object.freeze({ id, name: text(entry.name) });
   });
-  if (!Array.isArray(record.batteries) || record.batteries.length > page_size) return invalidResponse();
-  if (record.batteries.length > 0 && (page - 1) * page_size + record.batteries.length > total_batteries) return invalidResponse();
+  if (!Array.isArray(record.rows) || record.rows.length > page_size) return invalidResponse();
+  if (record.rows.length > 0 && (page - 1) * page_size + record.rows.length > total) return invalidResponse();
   const entryIDs = new Set<number>();
-  const batteries = record.batteries.map(value => {
-    const row = fields(value, ['catalog_entry_id', 'brand', 'model', 'capacity_ah', 'polarities', 'cells', 'prices']);
-    const catalog_entry_id = integer(row.catalog_entry_id, 1, catalogPricesMaxCatalogEntryID);
-    if (entryIDs.has(catalog_entry_id)) return invalidResponse();
-    entryIDs.add(catalog_entry_id);
-    const tags = polarities(row.polarities);
-    if (!Array.isArray(row.cells) || row.cells.length > 64) return invalidResponse();
-    const cells = row.cells.map(text);
-    if (new Set(cells).size !== cells.length) return invalidResponse();
-    if (!Array.isArray(row.prices) || row.prices.length > branches.length) return invalidResponse();
-    const pricedBranches = new Set<number>();
-    const prices = row.prices.map(entry => {
-      const price = fields(entry, ['branch_location_id', 'min_price', 'suggested_price', 'updated_at',
-        'updated_by_account_id', 'updated_by_display_name']);
-      const branch_location_id = integer(price.branch_location_id, 1, 32767);
-      // A price for a branch outside this matrix is not evidence about this catalogue.
-      if (!branchIDs.has(branch_location_id) || pricedBranches.has(branch_location_id)) return invalidResponse();
-      pricedBranches.add(branch_location_id);
-      const min_price = money(price.min_price);
-      const suggested_price = money(price.suggested_price);
-      // The server enforces the floor; a persisted pair that violates it never renders.
-      if (catalogAmountCents(suggested_price) < catalogAmountCents(min_price)) return invalidResponse();
-      return Object.freeze({ branch_location_id, min_price, suggested_price,
-        updated_at: timestamp(price.updated_at),
-        updated_by_account_id: integer(price.updated_by_account_id, 1, Number.MAX_SAFE_INTEGER),
-        updated_by_display_name: label(price.updated_by_display_name) });
-    });
-    return Object.freeze({ catalog_entry_id, brand: text(row.brand), model: text(row.model),
-      capacity_ah: capacity(row.capacity_ah), polarities: tags, cells: Object.freeze(cells),
-      prices: Object.freeze(prices) });
+  const rows = record.rows.map(value => {
+    const row = rowKind(value) === 'battery'
+      ? batteryRow(value, branchIDs, branches.length)
+      : productRow(value, branchIDs, branches.length);
+    if (entryIDs.has(row.catalog_entry_id)) return invalidResponse();
+    entryIDs.add(row.catalog_entry_id);
+    return row;
   });
-  return Object.freeze({ branches: Object.freeze(branches), batteries: Object.freeze(batteries), page, page_size, total_batteries });
+  return Object.freeze({ branches: Object.freeze(branches), rows: Object.freeze(rows), page, page_size, total });
 }
 
 /** Exact cents of an admitted draft amount, so no comparison ever uses a float. */

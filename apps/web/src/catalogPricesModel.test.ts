@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  branchTag, catalogAmountCents, catalogAmountEntry, catalogPriceAmountMessage, catalogPriceBatteryMessage,
-  catalogPriceBranchMessage, catalogPriceOrderMessage, catalogPricesPath, formatCatalogMoney,
-  matchesCatalogPriceInput, parseCatalogPriceResult, parseCatalogPrices, parseCatalogPricesError,
-  parseCatalogPricesWriteError, polaritiesLabel, sharedPriceLabel, validCatalogPricesQuery,
+  branchTag, catalogAmountCents, catalogAmountEntry, catalogKindColumns, catalogKindLabels, catalogKinds,
+  catalogPriceAmountMessage, catalogPriceBatteryMessage, catalogPriceBranchMessage, catalogPriceOrderMessage,
+  catalogPricesPath, formatCatalogMoney, matchesCatalogPriceInput, parseCatalogPriceResult, parseCatalogPrices,
+  parseCatalogPricesError, parseCatalogPricesWriteError, polaritiesLabel, sharedPriceLabel, validCatalogPricesQuery,
   validateCatalogPriceDraft, type CatalogPriceInput,
 } from './catalogPricesModel';
 
@@ -12,28 +12,42 @@ const price = (overrides: Record<string, unknown> = {}) => ({
   branch_location_id: 2, min_price: '85000.00', suggested_price: '96000.00',
   updated_at: '2026-11-04T10:00:00Z', updated_by_account_id: 1, updated_by_display_name: 'Almacén', ...overrides,
 });
-// One row per battery: the price belongs to brand + model + capacity, so the row
-// carries both polarities instead of one variant each.
+// One row per catalogue entry: the price belongs to the entry, so a battery carries
+// both of its polarities in one row and a product carries none.
 const battery = (overrides: Record<string, unknown> = {}) => ({
-  catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarities: ['L', 'R'],
+  kind: 'battery', catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarities: ['L', 'R'],
   cells: ['B5', 'C5', 'D5'], prices: [price()], ...overrides,
+});
+// A product row is the identity the rest of the application already publishes: the
+// free name and the summary of its typed fields, and no battery attribute at all.
+const product = (overrides: Record<string, unknown> = {}) => ({
+  kind: 'other', catalog_entry_id: 2, name: 'Agua acidulada', detail: 'volumen en L: 5 L', prices: [price()],
+  ...overrides,
 });
 const page = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   branches: [branch(2, 'Sucursal A'), branch(3, 'Sucursal B')],
-  batteries: [battery()], page: 1, page_size: 10, total_batteries: 95, ...overrides,
+  rows: [battery()], page: 1, page_size: 10, total: 95, ...overrides,
 });
 
 describe('catalog prices read path', () => {
-  it('omits the filters the operator left blank, which the contract refuses empty', () => {
-    const query = { search: '', brand: '', capacity: '', page: 1, page_size: 10 };
-    expect(catalogPricesPath(query)).toBe('/api/catalog/prices?page=1&page_size=10');
-    expect(catalogPricesPath({ ...query, brand: 'CAR' })).toBe('/api/catalog/prices?brand=CAR&page=1&page_size=10');
+  it('sends the kind of the page and omits the filters the operator left blank', () => {
+    const query = { kind: 'battery', search: '', brand: '', capacity: '', page: 1, page_size: 10 } as const;
+    expect(catalogPricesPath(query)).toBe('/api/catalog/prices?kind=battery&page=1&page_size=10');
+    expect(catalogPricesPath({ ...query, brand: 'CAR' }))
+      .toBe('/api/catalog/prices?kind=battery&brand=CAR&page=1&page_size=10');
     expect(catalogPricesPath({ ...query, search: 'NS40ZL', brand: 'CAR', capacity: '35', page: 2, page_size: 25 }))
-      .toBe('/api/catalog/prices?search=NS40ZL&brand=CAR&capacity=35&page=2&page_size=25');
+      .toBe('/api/catalog/prices?kind=battery&search=NS40ZL&brand=CAR&capacity=35&page=2&page_size=25');
+  });
+
+  it('sends only the search on a product page, because brand and capacity are battery filters', () => {
+    expect(catalogPricesPath({ kind: 'other', search: 'Agua', brand: '', capacity: '', page: 1, page_size: 10 }))
+      .toBe('/api/catalog/prices?kind=other&search=Agua&page=1&page_size=10');
+    expect(catalogPricesPath({ kind: 'other', search: '', brand: '', capacity: '', page: 1, page_size: 10 }))
+      .toBe('/api/catalog/prices?kind=other&page=1&page_size=10');
   });
 
   it('never sends a polarity filter, because a price no longer depends on one', () => {
-    const path = catalogPricesPath({ search: '', brand: 'CAR', capacity: '35', page: 1, page_size: 10 });
+    const path = catalogPricesPath({ kind: 'battery', search: '', brand: 'CAR', capacity: '35', page: 1, page_size: 10 });
     expect(path).not.toContain('polarity');
   });
 
@@ -46,14 +60,21 @@ describe('catalog prices read path', () => {
     ['a search with NUL', { search: 'a\0b' }],
     ['a capacity that is not a decimal', { capacity: '35 Ah' }],
     ['a brand with NUL', { brand: 'C\0R' }],
+    // One page is one kind: `all` is refused instead of merging two orderings, and a
+    // battery filter named with the product kind is refused instead of ignored.
+    ['the all kind', { kind: 'all' }],
+    ['a missing kind', { kind: undefined }],
+    ['a brand filter on the product kind', { kind: 'other', brand: 'CAR' }],
+    ['a capacity filter on the product kind', { kind: 'other', capacity: '35' }],
   ])('refuses %s', (_, overrides) => {
-    expect(validCatalogPricesQuery({ search: '', brand: '', capacity: '', page: 1, page_size: 10, ...overrides } as never))
+    expect(validCatalogPricesQuery({ kind: 'battery', search: '', brand: '', capacity: '', page: 1, page_size: 10, ...overrides } as never))
       .toBe(false);
   });
 
-  it('admits the contract query', () => {
-    expect(validCatalogPricesQuery({ search: 'NS40ZL', brand: 'CAR', capacity: '35', page: 1, page_size: 10 })).toBe(true);
-    expect(validCatalogPricesQuery({ search: '', brand: '', capacity: '', page: 1, page_size: 50 })).toBe(true);
+  it('admits the contract query of both kinds', () => {
+    expect(validCatalogPricesQuery({ kind: 'battery', search: 'NS40ZL', brand: 'CAR', capacity: '35', page: 1, page_size: 10 })).toBe(true);
+    expect(validCatalogPricesQuery({ kind: 'battery', search: '', brand: '', capacity: '', page: 1, page_size: 50 })).toBe(true);
+    expect(validCatalogPricesQuery({ kind: 'other', search: 'Agua acidulada', brand: '', capacity: '', page: 1, page_size: 25 })).toBe(true);
   });
 });
 
@@ -61,28 +82,48 @@ describe('catalog prices read mapping', () => {
   it('maps one row per battery with both of its polarities and every branch chip', () => {
     const parsed = parseCatalogPrices(page());
     expect(parsed.page).toBe(1);
-    expect(parsed.total_batteries).toBe(95);
+    expect(parsed.total).toBe(95);
     expect(parsed.branches.map(b => b.name)).toEqual(['Sucursal A', 'Sucursal B']);
-    const row = parsed.batteries[0];
-    expect(row).toMatchObject({ catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35' });
-    expect(row.polarities).toEqual(['L', 'R']);
-    expect(row.cells).toEqual(['B5', 'C5', 'D5']);
+    const row = parsed.rows[0];
+    expect(row.kind).toBe('battery');
+    expect(row).toMatchObject({ kind: 'battery', catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35' });
+    expect(row.kind === 'battery' && row.polarities).toEqual(['L', 'R']);
+    expect(row.kind === 'battery' && row.cells).toEqual(['B5', 'C5', 'D5']);
     expect(row.prices[0].min_price).toBe('85000.00');
     expect(row.prices[0].suggested_price).toBe('96000.00');
     expect(typeof row.prices[0].min_price).toBe('string');
     expect(row).not.toHaveProperty('variant_id');
     expect(row).not.toHaveProperty('warranty_months');
+    expect(row).not.toHaveProperty('name');
+  });
+
+  it('maps a product row with its published name and detail and no battery attribute', () => {
+    const parsed = parseCatalogPrices(page({ rows: [product()] }));
+    const row = parsed.rows[0];
+    expect(row).toMatchObject({
+      kind: 'other', catalog_entry_id: 2, name: 'Agua acidulada', detail: 'volumen en L: 5 L',
+    });
+    // The pairs are the same shape for both kinds: that is what "igual que en las baterías" means.
+    expect(row.prices[0]).toMatchObject({ branch_location_id: 2, min_price: '85000.00', suggested_price: '96000.00' });
+    expect(row.prices[0].updated_by_display_name).toBe('Almacén');
+    expect(row).not.toHaveProperty('brand');
+    expect(row).not.toHaveProperty('capacity_ah');
+    expect(row).not.toHaveProperty('polarities');
+    expect(row).not.toHaveProperty('cells');
   });
 
   it('admits a battery with a single polarity, listed once', () => {
-    const parsed = parseCatalogPrices(page({ batteries: [battery({ polarities: ['R'] })] }));
-    expect(parsed.batteries[0].polarities).toEqual(['R']);
+    const parsed = parseCatalogPrices(page({ rows: [battery({ polarities: ['R'] })] }));
+    const row = parsed.rows[0];
+    expect(row.kind === 'battery' && row.polarities).toEqual(['R']);
   });
 
-  it('admits a battery with no price in any branch', () => {
-    const parsed = parseCatalogPrices(page({ batteries: [battery({ prices: [], cells: [] })] }));
-    expect(parsed.batteries[0].prices).toEqual([]);
-    expect(parsed.batteries[0].cells).toEqual([]);
+  it('admits a battery with no price in any branch, and a product with none either', () => {
+    const batteries = parseCatalogPrices(page({ rows: [battery({ prices: [], cells: [] })] }));
+    expect(batteries.rows[0].prices).toEqual([]);
+    expect(batteries.rows[0].kind === 'battery' && batteries.rows[0].cells).toEqual([]);
+    const products = parseCatalogPrices(page({ rows: [product({ prices: [] })] }));
+    expect(products.rows[0].prices).toEqual([]);
   });
 
   it('admits a persisted writer whose account has no display name', () => {
@@ -90,54 +131,81 @@ describe('catalog prices read mapping', () => {
     // is still evidence about the catalogue and must render.
     const parsed = parseCatalogPrices(page({
       branches: Array.from({ length: 5 }, (_, index) => branch(index + 2, `Sucursal ${index + 1}`)),
-      batteries: [battery({ prices: [
+      rows: [battery({ prices: [
         price({ branch_location_id: 2, updated_by_display_name: '' }),
         price({ branch_location_id: 3, updated_by_display_name: '', updated_at: '2026-11-04T23:14:07.123456Z' }),
       ] })],
     }));
     expect(parsed.branches).toHaveLength(5);
-    expect(parsed.batteries[0].prices.map(entry => entry.updated_by_display_name)).toEqual(['', '']);
-    expect(parsed.batteries[0].prices[1].updated_at).toBe('2026-11-04T23:14:07.123456Z');
+    expect(parsed.rows[0].prices.map(entry => entry.updated_by_display_name)).toEqual(['', '']);
+    expect(parsed.rows[0].prices[1].updated_at).toBe('2026-11-04T23:14:07.123456Z');
   });
 
   it('admits a JSON number capacity, which the inventory read already serves', () => {
-    expect(parseCatalogPrices(page({ batteries: [battery({ capacity_ah: 54 })] })).batteries[0].capacity_ah).toBe('54');
-    expect(parseCatalogPrices(page({ batteries: [battery({ capacity_ah: 6.5 })] })).batteries[0].capacity_ah).toBe('6.5');
+    const wide = parseCatalogPrices(page({ rows: [battery({ capacity_ah: 54 })] }));
+    expect(wide.rows[0].kind === 'battery' && wide.rows[0].capacity_ah).toBe('54');
+    const half = parseCatalogPrices(page({ rows: [battery({ capacity_ah: 6.5 })] }));
+    expect(half.rows[0].kind === 'battery' && half.rows[0].capacity_ah).toBe('6.5');
   });
 
   it.each([
     ['an unknown top-level key', page({ extra: 1 })],
-    ['the variant-shaped page key of the previous contract', page({ batteries: undefined, variants: [battery()] })],
-    ['an unknown battery key', page({ batteries: [battery({ existing: 3 })] })],
-    ['the variant-shaped row of the previous contract', page({ batteries: [battery({ variant_id: 1, polarity: 'L' })] })],
-    ['an unknown price key', page({ batteries: [battery({ prices: [price({ note: 'x' })] })] })],
+    ['the battery-shaped envelope key of the previous contract', page({ rows: undefined, batteries: [battery()] })],
+    ['the battery-shaped total of the previous contract', page({ total: undefined, total_batteries: 95 })],
+    ['an unknown row key', page({ rows: [battery({ existing: 3 })] })],
+    ['the variant-shaped row of the previous contract', page({ rows: [battery({ variant_id: 1, polarity: 'L' })] })],
+    ['an unknown price key', page({ rows: [battery({ prices: [price({ note: 'x' })] })] })],
+    // The union is discriminated, so a row of one kind never carries a field of the other.
+    ['a battery row that carries a name', page({ rows: [battery({ name: 'Agua acidulada' })] })],
+    ['a battery row that carries a detail', page({ rows: [battery({ detail: 'volumen en L: 5 L' })] })],
+    ['a product row that carries a brand', page({ rows: [product({ brand: 'CAR' })] })],
+    ['a product row that carries a model', page({ rows: [product({ model: 'NS40ZL' })] })],
+    ['a product row that carries a capacity', page({ rows: [product({ capacity_ah: '35' })] })],
+    ['a product row that carries a null capacity', page({ rows: [product({ capacity_ah: null })] })],
+    ['a product row that carries polarities', page({ rows: [product({ polarities: ['L'] })] })],
+    ['a product row that carries cells', page({ rows: [product({ cells: [] })] })],
+    ['an unknown kind', page({ rows: [{ catalog_entry_id: 9, name: 'Agua acidulada', detail: 'volumen en L: 5 L', prices: [], kind: 'all' }] })],
+    ['a row without a kind', page({ rows: [{ catalog_entry_id: 9, name: 'Agua acidulada', detail: 'volumen en L: 5 L', prices: [] }] })],
+    ['a row whose kind is not a string', page({ rows: [{ ...product(), kind: 3 }] })],
+    ['a product row without a name', page({ rows: [product({ name: '' })] })],
+    ['a product row without a detail', page({ rows: [product({ detail: '' })] })],
+    ['a product detail with NUL', page({ rows: [product({ detail: 'volumen\0 5 L' })] })],
     ['a page size outside the matrix', page({ page_size: 15 })],
-    ['more batteries than the announced page', page({ page_size: 10, batteries: Array.from({ length: 11 }, (_, index) => battery({ catalog_entry_id: index + 1 })), total_batteries: 95 })],
-    ['a page past the announced total', page({ page: 2, batteries: [battery({ catalog_entry_id: 95 })], total_batteries: 1 })],
-    ['an empty polarity list', page({ batteries: [battery({ polarities: [] })] })],
-    ['a polarity list that is not an array', page({ batteries: [battery({ polarities: 'L' })] })],
-    ['a polarity that is not L or R', page({ batteries: [battery({ polarities: ['L', 'X'] })] })],
-    ['the same polarity twice', page({ batteries: [battery({ polarities: ['L', 'L'] })] })],
-    ['a third polarity', page({ batteries: [battery({ polarities: ['L', 'R', 'L'] })] })],
-    ['a capacity that is not canonical', page({ batteries: [battery({ capacity_ah: '035' })] })],
-    ['a zero capacity', page({ batteries: [battery({ capacity_ah: '0' })] })],
-    ['a duplicated battery', page({ batteries: [battery(), battery()] })],
+    ['more rows than the announced page', page({ page_size: 10, rows: Array.from({ length: 11 }, (_, index) => battery({ catalog_entry_id: index + 1 })), total: 95 })],
+    ['a page past the announced total', page({ page: 2, rows: [battery({ catalog_entry_id: 95 })], total: 1 })],
+    ['an empty polarity list', page({ rows: [battery({ polarities: [] })] })],
+    ['a polarity list that is not an array', page({ rows: [battery({ polarities: 'L' })] })],
+    ['a polarity that is not L or R', page({ rows: [battery({ polarities: ['L', 'X'] })] })],
+    ['the same polarity twice', page({ rows: [battery({ polarities: ['L', 'L'] })] })],
+    ['a third polarity', page({ rows: [battery({ polarities: ['L', 'R', 'L'] })] })],
+    ['a capacity that is not canonical', page({ rows: [battery({ capacity_ah: '035' })] })],
+    ['a zero capacity', page({ rows: [battery({ capacity_ah: '0' })] })],
+    ['a duplicated battery', page({ rows: [battery(), battery()] })],
+    ['a duplicated entry across the two kinds', page({ rows: [battery({ catalog_entry_id: 2 }), product()] })],
     ['a duplicated branch', page({ branches: [branch(2, 'Sucursal A'), branch(2, 'Sucursal A')] })],
-    ['a duplicated price for the same branch', page({ batteries: [battery({ prices: [price(), price()] })] })],
-    ['a price for a branch outside the matrix', page({ batteries: [battery({ prices: [price({ branch_location_id: 9 })] })] })],
-    ['money with one decimal', page({ batteries: [battery({ prices: [price({ min_price: '85000.0' })] })] })],
-    ['money with three decimals', page({ batteries: [battery({ prices: [price({ min_price: '85000.000' })] })] })],
-    ['negative money', page({ batteries: [battery({ prices: [price({ min_price: '-1.00' })] })] })],
-    ['a JSON number as money', page({ batteries: [battery({ prices: [price({ min_price: 85000 })] })] })],
-    ['a suggested price below the minimum', page({ batteries: [battery({ prices: [price({ suggested_price: '80000.00' })] })] })],
-    ['a duplicated JSON key', '{"branches":[],"branches":[{"id":2,"name":"Sucursal A"}],"batteries":[],"page":1,"page_size":10,"total_batteries":0}'],
+    ['a duplicated price for the same branch', page({ rows: [battery({ prices: [price(), price()] })] })],
+    ['a price for a branch outside the matrix', page({ rows: [battery({ prices: [price({ branch_location_id: 9 })] })] })],
+    ['money with one decimal', page({ rows: [battery({ prices: [price({ min_price: '85000.0' })] })] })],
+    ['money with three decimals', page({ rows: [battery({ prices: [price({ min_price: '85000.000' })] })] })],
+    ['negative money', page({ rows: [battery({ prices: [price({ min_price: '-1.00' })] })] })],
+    ['a JSON number as money', page({ rows: [battery({ prices: [price({ min_price: 85000 })] })] })],
+    ['a suggested price below the minimum', page({ rows: [battery({ prices: [price({ suggested_price: '80000.00' })] })] })],
+    ['a duplicated JSON key', '{"branches":[],"branches":[{"id":2,"name":"Sucursal A"}],"rows":[],"page":1,"page_size":10,"total":0}'],
   ])('refuses %s', (_, body) => {
     expect(() => parseCatalogPrices(body)).toThrow();
   });
 
   it('admits a suggested price equal to the minimum', () => {
-    const parsed = parseCatalogPrices(page({ batteries: [battery({ prices: [price({ suggested_price: '85000.00' })] })] }));
-    expect(parsed.batteries[0].prices[0].suggested_price).toBe('85000.00');
+    const parsed = parseCatalogPrices(page({ rows: [battery({ prices: [price({ suggested_price: '85000.00' })] })] }));
+    expect(parsed.rows[0].prices[0].suggested_price).toBe('85000.00');
+  });
+});
+
+describe('catalog prices tabs', () => {
+  it('offers the same two kinds the stock screens offer, in the same order', () => {
+    expect(catalogKinds).toEqual(['battery', 'other']);
+    expect(catalogKindLabels).toEqual({ battery: 'Baterías', other: 'Otros productos' });
+    expect(catalogKindColumns).toEqual({ battery: 'Batería', other: 'Producto' });
   });
 });
 
@@ -231,10 +299,19 @@ describe('catalog price draft validation', () => {
     } });
   });
 
+  it('produces the same payload for a product, whose write never carried a kind', () => {
+    // The product tab writes with the unchanged body: entry, pair and branches.
+    const validation = validateCatalogPriceDraft(2, draft());
+    expect(validation).toEqual({ valid: true, input: {
+      catalog_entry_id: 2, min_price: '85000', suggested_price: '96000', branch_ids: [2, 3],
+    } });
+  });
+
   it('sends no product term, whatever the draft carried', () => {
     // The catalogue manages prices only: a draft that still holds a product term
     // fails closed instead of leaking it into the payload.
     expect(validateCatalogPriceDraft(1, draft({ warranty_months: 6 } as never)).valid).toBe(false);
+    expect(validateCatalogPriceDraft(1, draft({ kind: 'other' } as never)).valid).toBe(false);
     const clean = validateCatalogPriceDraft(1, draft());
     expect(clean.valid && Object.keys(clean.input).sort())
       .toEqual(['branch_ids', 'catalog_entry_id', 'min_price', 'suggested_price']);
@@ -271,7 +348,7 @@ describe('catalog price draft validation', () => {
       .toEqual({ valid: false, message: catalogPriceBranchMessage });
   });
 
-  it.each([[0], [-1], [1.5], [Number.NaN], ['1']])('rejects the battery %s', catalog_entry_id => {
+  it.each([[0], [-1], [1.5], [Number.NaN], ['1']])('rejects the entry %s', catalog_entry_id => {
     expect(validateCatalogPriceDraft(catalog_entry_id as number, draft()))
       .toEqual({ valid: false, message: catalogPriceBatteryMessage });
   });

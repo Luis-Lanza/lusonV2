@@ -3,7 +3,8 @@ import { CatalogPricesAPIError, createCatalogPricesAPI } from './catalogPricesAP
 import type { CatalogPriceInput, CatalogPricesQuery } from './catalogPricesModel';
 
 const csrf = 'c'.repeat(43);
-const query: CatalogPricesQuery = { search: 'NS40ZL', brand: 'CAR', capacity: '35', page: 1, page_size: 10 };
+const query: CatalogPricesQuery = { kind: 'battery', search: 'NS40ZL', brand: 'CAR', capacity: '35', page: 1, page_size: 10 };
+const productQuery: CatalogPricesQuery = { kind: 'other', search: 'Agua', brand: '', capacity: '', page: 1, page_size: 10 };
 const draft = (): CatalogPriceInput => ({
   catalog_entry_id: 1, min_price: '85000', suggested_price: '96000', branch_ids: [2, 3],
 });
@@ -12,11 +13,19 @@ const mockFetch = () => vi.fn<typeof fetch>();
 
 const pageBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   branches: [{ id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }],
-  batteries: [{ catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarities: ['L', 'R'],
+  rows: [{ kind: 'battery', catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarities: ['L', 'R'],
     cells: ['B5', 'C5', 'D5'],
     prices: [{ branch_location_id: 2, min_price: '85000.00', suggested_price: '96000.00',
       updated_at: '2026-11-04T10:00:00Z', updated_by_account_id: 1, updated_by_display_name: 'Almacén' }] }],
-  page: 1, page_size: 10, total_batteries: 95, ...overrides,
+  page: 1, page_size: 10, total: 95, ...overrides,
+});
+// The product page of the same contract: the same envelope and the same pairs.
+const productPageBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+  branches: [{ id: 2, name: 'Sucursal A' }, { id: 3, name: 'Sucursal B' }],
+  rows: [{ kind: 'other', catalog_entry_id: 11, name: 'Agua acidulada', detail: 'volumen en L: 5 L',
+    prices: [{ branch_location_id: 2, min_price: '1500.00', suggested_price: '1800.00',
+      updated_at: '2026-11-04T10:00:00Z', updated_by_account_id: 1, updated_by_display_name: 'Almacén' }] }],
+  page: 1, page_size: 10, total: 4, ...overrides,
 });
 const resultBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   catalog_entry_id: 1, written: 2, branch_ids: [2, 3], min_price: '85000.00', suggested_price: '96000.00',
@@ -27,19 +36,30 @@ describe('catalog prices read transport', () => {
   it('reads one matrix page with the exact query and the session cookie', async () => {
     const fetch = mockFetch().mockResolvedValue(json(pageBody()));
     const page = await createCatalogPricesAPI(fetch).list(query);
-    expect(page.total_batteries).toBe(95);
-    expect(page.batteries[0].polarities).toEqual(['L', 'R']);
-    expect(page.batteries[0].prices[0].min_price).toBe('85000.00');
+    expect(page.total).toBe(95);
+    const row = page.rows[0];
+    expect(row.kind).toBe('battery');
+    expect(row.kind === 'battery' && row.polarities).toEqual(['L', 'R']);
+    expect(row.prices[0].min_price).toBe('85000.00');
     expect(fetch.mock.calls[0]).toEqual([
-      '/api/catalog/prices?search=NS40ZL&brand=CAR&capacity=35&page=1&page_size=10',
+      '/api/catalog/prices?kind=battery&search=NS40ZL&brand=CAR&capacity=35&page=1&page_size=10',
       { method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: undefined },
     ]);
   });
 
-  it('leaves out the filters the operator left blank and always sends page and size', async () => {
+  it('reads the product page with only the search, and decodes its own row shape', async () => {
+    const fetch = mockFetch().mockResolvedValue(json(productPageBody()));
+    const page = await createCatalogPricesAPI(fetch).list(productQuery);
+    expect(page.total).toBe(4);
+    expect(page.rows[0]).toMatchObject({ kind: 'other', catalog_entry_id: 11, name: 'Agua acidulada', detail: 'volumen en L: 5 L' });
+    expect(page.rows[0].prices[0].suggested_price).toBe('1800.00');
+    expect(fetch.mock.calls[0][0]).toBe('/api/catalog/prices?kind=other&search=Agua&page=1&page_size=10');
+  });
+
+  it('leaves out the filters the operator left blank and always sends kind, page and size', async () => {
     const fetch = mockFetch().mockResolvedValue(json(pageBody()));
     await createCatalogPricesAPI(fetch).list({ ...query, search: '', brand: '', capacity: '' });
-    expect(fetch.mock.calls[0][0]).toBe('/api/catalog/prices?page=1&page_size=10');
+    expect(fetch.mock.calls[0][0]).toBe('/api/catalog/prices?kind=battery&page=1&page_size=10');
   });
 
   it('forwards the abort signal of the read', async () => {
@@ -61,7 +81,9 @@ describe('catalog prices read transport', () => {
     ['a text/html body', new Response(pageBody(), { status: 200, headers: { 'Content-Type': 'text/html' } })],
     ['a page that reports another size', json(pageBody({ page_size: 25 }))],
     ['an uninterpretable error code', json('{"error":"unauthenticated"}', 400)],
-    ['the variant-shaped page of the previous contract', json(pageBody({ batteries: undefined, variants: [] }))],
+    ['the battery-shaped envelope of the previous contract', json(pageBody({ rows: undefined, batteries: [] }))],
+    ['a product row on the battery page read', json(pageBody({ rows: [{ kind: 'other', catalog_entry_id: 1,
+      name: 'Agua acidulada', detail: 'volumen en L: 5 L', prices: [] }] }))],
   ])('refuses to interpret %s', async (_, reply) => {
     const fetch = mockFetch().mockResolvedValue(reply);
     await expect(createCatalogPricesAPI(fetch).list(query)).rejects.toMatchObject({ code: 'invalid_response' });
@@ -72,6 +94,11 @@ describe('catalog prices read transport', () => {
     await expect(createCatalogPricesAPI(fetch).list({ ...query, page_size: 15 }))
       .rejects.toMatchObject({ code: 'invalid_request', status: null });
     await expect(createCatalogPricesAPI(fetch).list({ ...query, search: 'x'.repeat(129) }))
+      .rejects.toMatchObject({ code: 'invalid_request', status: null });
+    // One page is one kind, and the battery filters are refused with the product kind.
+    await expect(createCatalogPricesAPI(fetch).list({ ...query, kind: 'all' } as never))
+      .rejects.toMatchObject({ code: 'invalid_request', status: null });
+    await expect(createCatalogPricesAPI(fetch).list({ ...query, kind: 'other' }))
       .rejects.toMatchObject({ code: 'invalid_request', status: null });
     expect(fetch).not.toHaveBeenCalled();
   });

@@ -14,12 +14,12 @@ const price = (branch: number) => ({
 });
 const matrix = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   branches: [{ id: 2, name: 'Sucursal A' }],
-  batteries: [{ catalog_entry_id: 96, brand: 'TOYO', model: 'NS40ZL', capacity_ah: '45',
-    polarities: ['L', 'R'], cells: [], prices: [price(2)] }, { catalog_entry_id: 97, brand: 'CAR', model: 'NS60',
-    capacity_ah: '60', polarities: ['R'], cells: [], prices: [], ...overrides }],
-  page: 1, page_size: 10, total_batteries: 97,
+  rows: [{ kind: 'battery', catalog_entry_id: 96, brand: 'TOYO', model: 'NS40ZL', capacity_ah: '45',
+    polarities: ['L', 'R'], cells: [], prices: [price(2)] }, { kind: 'battery', catalog_entry_id: 97, brand: 'CAR',
+    model: 'NS60', capacity_ah: '60', polarities: ['R'], cells: [], prices: [], ...overrides }],
+  page: 1, page_size: 10, total: 97,
 });
-const query = { search: '', brand: '', capacity: '', page: 1, page_size: 10 };
+const query = { kind: 'battery' as const, search: '', brand: '', capacity: '', page: 1, page_size: 10 };
 
 function harness(reply: (url: string, init: RequestInit) => Response | Promise<Response>) {
   const calls: { url: string; init: RequestInit }[] = [];
@@ -42,7 +42,7 @@ describe('the battery listing read', () => {
   it('reads the matrix path and derives the unsellable state of every row', async () => {
     const h = harness(() => json(matrix()));
     const page = await h.api.list(query);
-    expect(h.calls[0].url).toBe('/api/catalog/prices?page=1&page_size=10');
+    expect(h.calls[0].url).toBe('/api/catalog/prices?kind=battery&page=1&page_size=10');
     expect(h.calls[0].init).toMatchObject({ method: 'GET', credentials: 'same-origin', cache: 'no-store' });
     expect(page.rows.map(row => [row.id, row.priced_branches]))
       .toEqual([[96, 1], [97, 0]]);
@@ -57,8 +57,11 @@ describe('the battery listing read', () => {
 
   it.each([
     ['a row that grew a field', matrix({ priced_branches: 0 })],
-    ['a duplicated key', '{"branches":[],"branches":[{"id":2,"name":"Sucursal A"}],"batteries":[],"page":1,"page_size":10,"total_batteries":0}'],
-    ['a page that does not answer the query', JSON.stringify({ branches: [], batteries: [], page: 2, page_size: 10, total_batteries: 0 })],
+    ['a duplicated key', '{"branches":[],"branches":[{"id":2,"name":"Sucursal A"}],"rows":[],"page":1,"page_size":10,"total":0}'],
+    ['a page that does not answer the query', JSON.stringify({ branches: [], rows: [], page: 2, page_size: 10, total: 0 })],
+    ['a product row', JSON.stringify({ branches: [{ id: 2, name: 'Sucursal A' }], rows: [{ kind: 'other',
+      catalog_entry_id: 113, name: 'Agua acidulada', detail: 'volumen en L: 5 L', prices: [] }],
+    page: 1, page_size: 10, total: 1 })],
   ])('refuses %s as evidence about the catalogue', async (_name, body) => {
     const h = harness(() => json(body));
     expect(await codeOf(h.api.list(query))).toBe('invalid_response');
