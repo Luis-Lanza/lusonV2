@@ -87,7 +87,7 @@ func TestOtherProductsStayOutOfBatteryScreens(t *testing.T) {
 		return page.TotalVariants
 	}
 	type pricesPage struct {
-		TotalBatteries int64 `json:"total_batteries"`
+		Total int64 `json:"total"`
 	}
 	pricesTotal := func(query string) int64 {
 		t.Helper()
@@ -95,7 +95,7 @@ func TestOtherProductsStayOutOfBatteryScreens(t *testing.T) {
 		if json.Unmarshal(request("/api/catalog/prices?page=1&page_size=10"+query).Body.Bytes(), &page) != nil {
 			t.Fatal("price matrix body")
 		}
-		return page.TotalBatteries
+		return page.Total
 	}
 
 	// Before: the seeded catalogue is all batteries.
