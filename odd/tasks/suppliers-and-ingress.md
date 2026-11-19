@@ -71,12 +71,24 @@ Solo entradas activas; `kind` opcional (`battery`|`other`), `search` opcional so
 
 ## Tasks
 
-- **T1** Migración 059: `suppliers`, `supplier_offers`, `stock_entries.supplier_id` y las guardas `LS009`–`LS012` (trigger nuevo, sin redefinir `admit_stock_entry`); test de estructura; allow-list de tablas del test de bootstrap. **Parent inline.** Commit `feat(api): suppliers schema and ingress supplier guard`.
-- **T2** Go: paquete `internal/suppliers` (alta, edición, retiro, asignación reemplazable, lecturas de entradas asignables y de variantes ofrecidas) + `internal/httpapi/suppliers.go` + `apps/api/docs/suppliers.md` + tests. **Worker.** Commit `feat(api): suppliers administration`.
-- **T3** Go: ingreso con proveedor (validación de carga, `supplier` en la clave canónica, tres lecturas, herencia en el contra-asiento) + `apps/api/docs/stock-entries.md` + tests. **Worker.** Commit `feat(api): ingress requires an offered supplier`.
-- **T4** Web: tab Proveedores + pantalla (alta, edición, retiro, editor de asignación) + API/model + tests. **Worker.** Commit `feat(web): suppliers section`.
-- **T5** Web: Ingresos proveedor-primero (selector, tipos disponibles, catálogo filtrado, historial con proveedor) + tests. **Worker.** Commit `feat(web): ingress chooses a supplier first`.
-- **T6** Verificación completa, barrido de docs y cierre de la vertical. **Parent inline.**
+- **T1** Migración 059: `suppliers`, `supplier_offers`, `stock_entries.supplier_id` y las guardas `LS009`–`LS012` (trigger nuevo, sin redefinir `admit_stock_entry`); test de estructura; allow-list de tablas del test de bootstrap. **Parent inline.** Commit `5bd60e4`.
+- **T2** Go: paquete `internal/suppliers` (alta, edición, retiro, asignación reemplazable, lecturas de entradas asignables y de variantes ofrecidas) + `internal/httpapi/suppliers.go` + `apps/api/docs/suppliers.md` + tests. **Worker.** Commit `7f1c11c`.
+- **T3** Go: ingreso con proveedor (validación de carga, `supplier` en la clave canónica, tres lecturas, herencia en el contra-asiento) + `apps/api/docs/stock-entries.md` + tests. **Worker.** Commit `25d7215`.
+- **T4** Web: tab Proveedores + pantalla (alta, edición, retiro, editor de asignación) + API/model + tests. **Worker.** Commit `03d5670`.
+- **T5** Web: Ingresos proveedor-primero (selector, tipos disponibles, catálogo filtrado, historial con proveedor) + tests. **Worker.** Commit `17a21f9`.
+- **T6** Verificación completa, barrido de docs y cierre de la vertical. **Parent inline.** Commit `docs(odd): close the suppliers vertical`.
+
+## Delivery
+La vertical es grande por naturaleza (esquema + dos fronteras + dos pantallas), así que se entrega en cortes por área, cada uno con sus tests al lado del comportamiento:
+
+- corte 1 `5bd60e4` — esquema 059, guardas y allow-list del fixture (227 líneas).
+- corte 2 `48d9146` — este documento.
+- corte 3 `03d5670` — pantalla Proveedores (web, con sus tres suites).
+- corte 4 `17a21f9` — Ingresos proveedor-primero (web, con sus suites).
+- corte 5 — API de proveedores (Go, T2).
+- corte 6 — ingreso con proveedor (Go, T3).
+
+Los cortes 3 y 4 superan el ideal de ~400 líneas porque son pantallas completas con su evidencia; no se parten por archivo. La revisión de esta vertical, si se pide, se hace por corte y no como un candidato único: la memoria del repo registra que un candidato de este tamaño excede el presupuesto del revisor.
 
 ## Log
 
@@ -85,3 +97,11 @@ Solo entradas activas; `kind` opcional (`battery`|`other`), `search` opcional so
 **L2** (decisiones del humano, textuales) — "A la entrada: marca/modelo o nombre"; "No: solo trazabilidad por ahora"; "No aparece: primero hay que asignarlo"; "Sí, siempre en ingresos nuevos".
 
 **L3** Evidencia previa (exploración, no invención): no existe entidad proveedor en ningún lado (`032_purchases.sql:39-41`, `docs/purchases.md:13`); `stock_entries` no lleva origen ni costo (`021_stock_entries.sql:8-32`); el único precedente de tabla asociativa por **entrada** es `branch_prices` (`026_branch_prices_by_battery.sql:20`); el selector de Ingresos consulta `/api/inventory` con `kind`+`search` (`StockEntry.tsx:97-120`).
+
+**L4** Evidencia de los cortes: `migrations` + `internal/bootstrap` verdes en fixture limpio (la 059 aplica de cero); `internal/suppliers` 3,2 s y `internal/httpapi` 205,9 s; `internal/stockentries` 22,8 s y `internal/httpapi` 221 s; web 4469 pasan / 0 fallan / 1 skip, `tsc` limpio, `vite build` ok.
+
+**L5** Desvíos y reglas derivadas, decididos al implementar y documentados en `apps/api/docs/suppliers.md`:
+- La entrada asignable **no emite `polarity`**: la polaridad es de la variante, y la asignación es proveedor↔entrada (S2). El cliente web tolera su ausencia y la recibe dentro de la identidad de la variante.
+- `GET /api/suppliers/{id}/catalog` de un proveedor retirado responde `409 conflict` (ya no puede llenar el selector de Ingresos); `PATCH` de un retirado responde `404 not_found` (salió de la lista editable), siguiendo la convención de las otras pantallas de administración.
+- `kind=all` se rechaza: la ausencia de `kind` ya significa ambos tipos. La lectura de variantes ofrecidas se topa en 500 (≥200 entradas × 2 polaridades) y la de entradas asignables admite `page_size` 10/25/50.
+- El lint no vuelve a un baseline de 227: el árbol limpio real trae 274 y las pantallas nuevas repiten los mismos patrones que `CatalogOtherProducts.tsx`, `CatalogBatteries.tsx` y `StockAdjustment.tsx`. Igualar el estilo existente es la decisión; cambiarlo es otra vertical.
