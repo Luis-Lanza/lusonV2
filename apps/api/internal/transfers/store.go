@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/auth"
 	"luson/api/internal/catalog"
@@ -25,6 +26,19 @@ func fail(ctx context.Context) error {
 		return err
 	}
 	return ErrUnavailable
+}
+
+// mapWriteFailure publishes the database's own decision and nothing else. A write refused because a
+// branch holds an open account settlement is the freeze itself (LC001, migration 035), which the
+// branch acts on by closing the settlement, so it never reads as an outage. The SQLSTATE alone
+// decides, never the message, and every other failure keeps its historical meaning: cancellation
+// when the context died, an outage otherwise, so no driver or SQL detail leaks to a client.
+func mapWriteFailure(ctx context.Context, err error) error {
+	var refused *pgconn.PgError
+	if ctx.Err() == nil && errors.As(err, &refused) && refused.Code == "LC001" {
+		return ErrBranchFrozen
+	}
+	return fail(ctx)
 }
 func retryLock(creator int, key string) int64 {
 	h := sha256.Sum256([]byte(fmt.Sprintf("luson.pending.retry/v1:%d:%s", creator, key)))
@@ -137,7 +151,7 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 			if ctx.Err() == nil && activeLocationRequired(err) {
 				return CreateResult{}, ErrDecisionConflict
 			}
-			return CreateResult{}, fail(ctx)
+			return CreateResult{}, mapWriteFailure(ctx, err)
 		}
 		for _, line := range n.Items {
 			if _, err := tx.Exec(ctx, "INSERT INTO transfer_request_items(request_id,variant_id,quantity) VALUES($1,$2,$3)", id, int32(line.VariantID), line.Quantity); err != nil {

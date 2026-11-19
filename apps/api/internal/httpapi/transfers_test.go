@@ -237,7 +237,7 @@ func TestR02TransfersDecoder(t *testing.T) {
 			err  error
 			code int
 			name string
-		}{{transfers.ErrInvalid, 400, "invalid_request"}, {transfers.ErrForbidden, 403, "forbidden"}, {transfers.ErrNotFound, 404, "not_found"}, {transfers.ErrInsufficientStock, 409, "insufficient_stock"}, {transfers.ErrRetryConflict, 409, "retry_conflict"}, {transfers.ErrUnavailable, 503, "service_unavailable"}, {context.Canceled, 503, "service_unavailable"}, {context.DeadlineExceeded, 503, "service_unavailable"}, {errors.New("private backend error"), 503, "service_unavailable"}} {
+		}{{transfers.ErrInvalid, 400, "invalid_request"}, {transfers.ErrForbidden, 403, "forbidden"}, {transfers.ErrNotFound, 404, "not_found"}, {transfers.ErrInsufficientStock, 409, "insufficient_stock"}, {transfers.ErrRetryConflict, 409, "retry_conflict"}, {transfers.ErrDecisionConflict, 409, "decision_conflict"}, {transfers.ErrBranchFrozen, 409, "branch_frozen"}, {transfers.ErrUnavailable, 503, "service_unavailable"}, {context.Canceled, 503, "service_unavailable"}, {context.DeadlineExceeded, 503, "service_unavailable"}, {errors.New("private backend error"), 503, "service_unavailable"}} {
 			w := httptest.NewRecorder()
 			transferFailure(w, fmt.Errorf("wrapped: %w", tc.err))
 			expectTransferError(t, w, tc.code, tc.name)

@@ -71,6 +71,10 @@ func transferFailure(w http.ResponseWriter, err error) {
 		failure(w, 409, "decision_conflict")
 	case errors.Is(err, transfers.ErrRetryConflict):
 		failure(w, 409, "retry_conflict")
+	case errors.Is(err, transfers.ErrBranchFrozen):
+		// The branch holding an open settlement is what refused the write (LC001): the code names
+		// the freeze, as the administration already publishes it, instead of an outage to retry.
+		failure(w, 409, "branch_frozen")
 	default:
 		failure(w, 503, "service_unavailable")
 	}

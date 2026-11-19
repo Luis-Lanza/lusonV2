@@ -208,7 +208,7 @@ func writeReceipt(ctx context.Context, tx pgx.Tx, id int64, normalized ReceiptIn
 		}
 	}
 	if _, err := tx.Exec(ctx, "UPDATE transfer_requests SET status='received' WHERE id=$1", id); err != nil {
-		return fail(ctx)
+		return mapWriteFailure(ctx, err)
 	}
 	return nil
 }
