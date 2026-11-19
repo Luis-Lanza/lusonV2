@@ -19,6 +19,7 @@ import ClosingDecision from './ClosingDecision';
 import CatalogPrices from './CatalogPrices';
 import CatalogBatteries from './CatalogBatteries';
 import CatalogOtherProducts from './CatalogOtherProducts';
+import CatalogSuppliers from './CatalogSuppliers';
 import CatalogSectionBoundary from './CatalogSectionBoundary';
 import PointOfSale, { SalesSectionBoundary, salesHistoryFailureMessage } from './PointOfSale';
 import SalesHistory from './SalesHistory';
@@ -129,25 +130,28 @@ function Navigation({ mobile = false, transfers, disabled, actionCount, countUna
     <span id={statusID} className="sr-only" role="status">{countStatus}</span>
   </nav>;
 }
-// The catalogue holds three screens of one section: the price matrix, the battery
-// catalogue and the other products. All are gated by the same warehouse authority
-// and remounted per owner, so a rotated session cannot publish any of them into a
-// newer session.
+// The catalogue holds four screens of one section: the price matrix, the battery
+// catalogue, the other products and the warehouse suppliers. All are gated by the
+// same warehouse authority and remounted per owner, so a rotated session cannot
+// publish any of them into a newer session.
 function CatalogScreens({ owner, csrf, brands, screen, onScreen }: {
-  owner: string; csrf: string; brands: readonly string[]; screen: 'prices' | 'batteries' | 'other-products';
-  onScreen: (screen: 'prices' | 'batteries' | 'other-products') => void;
+  owner: string; csrf: string; brands: readonly string[]; screen: 'prices' | 'batteries' | 'other-products' | 'suppliers';
+  onScreen: (screen: 'prices' | 'batteries' | 'other-products' | 'suppliers') => void;
 }) {
   return <>
     <div className="admin-tabs" role="group" aria-label="Secciones del catálogo">
       <button type="button" aria-pressed={screen === 'prices'} onClick={() => onScreen('prices')}>Precios</button>
       <button type="button" aria-pressed={screen === 'batteries'} onClick={() => onScreen('batteries')}>Baterías</button>
       <button type="button" aria-pressed={screen === 'other-products'} onClick={() => onScreen('other-products')}>Otros productos</button>
+      <button type="button" aria-pressed={screen === 'suppliers'} onClick={() => onScreen('suppliers')}>Proveedores</button>
     </div>
     {screen === 'batteries'
       ? <CatalogBatteries key={`catalog-batteries-${owner}`} csrf={csrf} />
       : screen === 'other-products'
         ? <CatalogOtherProducts key={`catalog-other-products-${owner}`} csrf={csrf} />
-        : <CatalogPrices key={owner} csrf={csrf} brands={brands} />}
+        : screen === 'suppliers'
+          ? <CatalogSuppliers key={`catalog-suppliers-${owner}`} csrf={csrf} />
+          : <CatalogPrices key={owner} csrf={csrf} brands={brands} />}
   </>;
 }
 // Exported for the hook-order test: App can never mount this with an unauthenticated
@@ -217,9 +221,10 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
   // routes like every other section, so a reload lands back on the same one.
   const settlements = warehouse && route.section === 'settlements';
   const catalog = warehouse && route.section === 'catalog';
-  // The catalogue's three screens: its own hash opens the price matrix.
-  const catalogScreen: 'prices' | 'batteries' | 'other-products'
-    = catalog && (route.screen === 'batteries' || route.screen === 'other-products') ? route.screen : 'prices';
+  // The catalogue's four screens: its own hash opens the price matrix.
+  const catalogScreen: 'prices' | 'batteries' | 'other-products' | 'suppliers'
+    = catalog && (route.screen === 'batteries' || route.screen === 'other-products'
+      || route.screen === 'suppliers') ? route.screen : 'prices';
   // The counter and its history are branch-only surfaces (S1): the warehouse (account 1,
   // location 1) neither sees them in the sidebar nor reaches them with a typed hash.
   const branch = identity.location.id > 1;
@@ -311,7 +316,7 @@ export function InventoryView({ state, recovery }: { state: Controller; recovery
     if (navDisabled || catalog || latest !== ownerTag) return;
     changeRoute({ section: 'catalog' });
   }
-  function navigateCatalogScreen(screen: 'prices' | 'batteries' | 'other-products') {
+  function navigateCatalogScreen(screen: 'prices' | 'batteries' | 'other-products' | 'suppliers') {
     const latest = transferViewOwner(state.getTransferAuthority());
     if (navDisabled || !catalog || latest !== ownerTag || catalogScreen === screen) return;
     changeRoute({ section: 'catalog', screen });
