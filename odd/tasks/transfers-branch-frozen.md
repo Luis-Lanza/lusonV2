@@ -97,3 +97,7 @@ L8. Entrega en dos commits de código sobre `d7986d1`, más este documento: `33f
 `d3b6104` (web). Carga de revisión: **192 líneas autoradas de código** en dos cortes temáticos, API y
 web, más este documento; total de la rama, 290 líneas. Sin push y sin merge: sigue siendo decisión
 del humano.
+
+L9. Publicada: la rama subió con su upstream y entró a `master` como merge commit `c596e0f`. Después del
+merge, sobre master: `go build ./...` verde y `gofmt -l apps/api` vacío. CI `verify` corre sobre el push
+de master (`go`, `go-postgresql`, `frontend`).
