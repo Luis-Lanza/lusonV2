@@ -38,6 +38,13 @@ catálogo y comprobante distinto del PDF de garantía no se construyen acá.
 S8. **Nada de la batería se toca.** El cable de la venta de baterías no cambia en ningún campo, y el
 copy de pantalla existente se conserva palabra por palabra.
 
+S9. **"Si, es obligatorio y ademas no solo el nombre sino todos los datos de la garantia".** Una
+venta que emite garantía exige el cliente completo: nombre, teléfono y documento, que son exactamente
+los tres datos que el papel de garantía imprime (`warranty/warranty.go:300-302`). Una venta de solo
+productos no emite garantía, no exige ningún dato del cliente, y el documento impreso dice
+«Consumidor final» donde iría el nombre. La dirección queda opcional siempre: se guarda y el papel nunca
+la imprime, así que exigirla sería una regla que el cliente no puede cumplir desde el papel.
+
 ## Tasks
 
 | ID | Specs | Ruta | Commit |
@@ -47,7 +54,10 @@ copy de pantalla existente se conserva palabra por palabra.
 | T3 | S2 | worker backend: PDF de garantía por línea | — |
 | T4 | S1, S2, S3, S5, S8 | worker web: mostrador, carrito, historial, detalle | — |
 | T5 | S2, S5, S6 | docs: API de ventas | — |
-| T6 | S1-S8 | verificación independiente | — |
+| T7 | S9 | parent: migración `057` (cliente de garantía por tipo) + test de esquema | — |
+| T8 | S9 | worker backend: dominio, store, httpapi, PDF | — |
+| T9 | S9 | worker web: el cliente se pide sólo si hay batería | — |
+| T6 | S1-S9 | verificación independiente | — |
 
 ## Log
 
@@ -104,3 +114,36 @@ mostraba el mensaje del precio en vez del de la serie; `master` validaba la seri
 afirmando en la fila de `invalid_request` que unas unidades distintas de la cantidad responden
 `invalid_request`, cuando ahora responden su propio código: misma lección que L5, un documento que afirma
 lo que el servidor hace se corrige, no se preserva.
+
+L8. "okey hay otra decicion, si solo se compra un producto que no sea bateria, no es necesario que el
+cliente se registre de manera obligatoria". Preguntado por la venta mezclada y por el papel, el dueño
+respondió: "Si, es obligatorio y ademas no solo el nombre sino todos los datos de la garantia" y
+«Consumidor final». La obligatoriedad de hoy vive en dos lugares, no en la pantalla: la base
+(`025_sales.sql:25`, `customer_name NOT NULL CHECK 1..120`) y el dominio (`sales/sales.go:259`,
+`boundedText(name, 1, ...)`). El nombre existe porque la garantía es una promesa con destinatario, y el
+agua no lleva garantía: en una venta de solo agua el dato no tiene a quién servir. El alcance de "todos
+los datos" no lo inventé yo: el papel imprime exactamente Cliente, Teléfono y Documento.
+
+L9. Esa respuesta **endurece** una regla: hoy teléfono y documento son opcionales incluso en una venta
+de batería. Desde T8, una venta con batería se rechaza si falta cualquiera de los tres. Es lo que pidió
+el dueño, y queda dicho acá porque cambia lo que el cajero tiene que tipear en el mostrador.
+
+L10. S9 cerrada. Verificación independiente: **todas las afirmaciones satisfechas, sin bloqueantes**. Lo
+medido: la venta histórica (nombre, sin teléfono ni documento, como permitía el esquema anterior) se lee
+con 200 en detalle, historial y PDF; el papel de una venta de batería es byte-idéntico al baseline
+(mismo sha256); el endurecimiento es real y medido —en el baseline una venta de batería con sólo el
+nombre respondía 201 y ahora responde 400—; y la base sigue siendo la autoridad, porque un inserto por
+SQL crudo sin teléfono se rechaza con `LV015` y no mueve la contabilidad.
+
+L11. La suite completa encontró lo que ninguna superficie declarada cubría: `closings` creaba ventas de
+batería con sólo el nombre para poder medir la rendición, así que nueve tests de métricas fallaban en su
+propio fixture. La regla del cliente es global y atraviesa paquetes que esta tarea nunca abrió. Dos cosas
+de método, y me costaron tres corridas: el `tail` me escondió dos veces el paquete culpable (un `FAIL`
+suelto con quince `ok` alrededor), y un fixture puede tener más de un camino de escritura —había dos, el
+helper y una venta concurrente escrita a mano—, así que se buscan todos antes de volver a correr.
+
+L12. Estado final de la vertical, ocho commits sobre `d84d63c`: `2bb4fa2` (migración 056), `ffeb54c`
+(backend de venta de productos + docs), `00d0198` (mostrador), `3df0b16` (orden de validaciones + dos
+documentos corregidos), `9b6f8d3` (migración 057), `b836c01` (cliente de garantía en el dominio, con la
+regla juzgada al escribir y nunca al leer), `05e22ad` (formulario del cliente) y `75bfba4` (fixtures de
+rendición). Suite Go completa verde, suite web 4158 tests verde, typecheck/lint/build limpios.
