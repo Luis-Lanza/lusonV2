@@ -655,13 +655,13 @@ export function prepareSale(cart: readonly CartLine[], split: PaymentSplit, cust
     if (!Number.isInteger(line.quantity) || line.quantity < 1 || line.quantity > maxQuantity) {
       return { ok: false, message: posQuantityMessage };
     }
-    if (line.unit_price_cents < line.min_price_cents) {
-      return { ok: false, message: posPriceFloorMessage(line.min_price_cents) };
-    }
     if (lineKind(line) === 'other') {
       // A product is counted, not serialized: the key is mandatory and the empty array is
       // what says the line has no pieces and never promised a term.
       if (line.units.length !== 0) return { ok: false, message: posProductUnitsMessage };
+      if (line.unit_price_cents < line.min_price_cents) {
+        return { ok: false, message: posPriceFloorMessage(line.min_price_cents) };
+      }
       lines.push({ variant_id: line.variant_id, quantity: line.quantity,
         unit_price: centsToMoney(line.unit_price_cents), units: Object.freeze([]) });
       continue;
@@ -669,6 +669,9 @@ export function prepareSale(cart: readonly CartLine[], split: PaymentSplit, cust
     const checked = checkedUnits(line, serials);
     if (!checked.ok) return { ok: false, message: checked.message };
     unitsTotal += checked.units.length;
+    if (line.unit_price_cents < line.min_price_cents) {
+      return { ok: false, message: posPriceFloorMessage(line.min_price_cents) };
+    }
     lines.push({ variant_id: line.variant_id, quantity: line.quantity,
       unit_price: centsToMoney(line.unit_price_cents), units: checked.units });
   }

@@ -418,7 +418,7 @@ keys it always had and never publishes `identity`.
 
 | Status | Code | Meaning |
 |---|---|---|
-| 400 | `invalid_request` | Malformed body, unknown or duplicate key, a missing key, non-canonical amount, quantity or term out of bounds, a line whose units are not exactly as many as its quantity, a serial outside 1..64 characters, an address above 200 characters, a sale above 1000 units, `mixed` sent as an input, a repeated method, bad query, a query string on the mutation |
+| 400 | `invalid_request` | Malformed body, unknown or duplicate key, a missing key, non-canonical amount, quantity or term out of bounds, a serial outside 1..64 characters, an address above 200 characters, a sale above 1000 units, `mixed` sent as an input, a repeated method, bad query, a query string on the mutation |
 | 400 | `battery_line_requires_units` | A battery line does not carry exactly one unit per sold piece; the refusal names the variant when the store derived it |
 | 400 | `product_line_carries_no_units` | An other-product line carries a unit; a product is counted, so it carries none; the refusal names the variant when the store derived it |
 | 400 | `payments_mismatch` | The settlement does not close against the total; the body names `missing` or `excess` |

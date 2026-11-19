@@ -451,6 +451,16 @@ describe('the sale the counter sends', () => {
     expect(prepareSale(all, split, customer).ok).toBe(true);
   });
 
+  it('reports the missing serial before the price floor, so the seller fixes the line', () => {
+    // One line can be wrong twice. The serial is what the seller is typing at that moment,
+    // so it is the reason stated first; the floor never hides a unit that is still empty.
+    const underFloorAndEmpty = unitsOf(document, 1, ['', ''], [12, 12])
+      .map(line => line.variant_id === 1
+        ? { ...line, unit_price_cents: line.min_price_cents - 1n } : line);
+    expect(prepareSale(underFloorAndEmpty, split, customer))
+      .toEqual({ ok: false, message: posSerialMessage });
+  });
+
   it('refuses a sale with a unit that has no serial, and says why', () => {
     expect(prepareSale(two, split, customer)).toEqual({ ok: false, message: posSerialMessage });
     // One missing serial is enough: the rest of the sale is not charged either.
