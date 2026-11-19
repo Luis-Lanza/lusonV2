@@ -13,8 +13,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/auth"
+	"luson/api/internal/catalog"
 	"luson/api/internal/closings"
 	"luson/api/internal/config"
+	"luson/api/internal/pricing"
 	"luson/api/internal/purchases"
 )
 
@@ -31,12 +33,16 @@ var (
 	metricsFundWireKeys      = []string{"opening", "purchases", "expected", "counted", "difference", "replacement"}
 	metricsMaterialsWireKeys = []string{"used_units", "used_delivered_units", "scrap_milli", "scrap_delivered_milli", "materials"}
 	metricsMaterialWireKeys  = []string{"material_id", "material", "bought_milli", "delivered_milli"}
-	metricsModelWireKeys     = []string{"catalog_entry_id", "brand", "model", "capacity_ah", "units", "money"}
-	metricsStockWireKeys     = []string{"units"}
-	metricsTodayWireKeys     = []string{"since", "opening", "sales", "expenses", "effective", "expected", "rate", "sold", "commission", "movements"}
-	metricsFundTodayWireKeys = []string{"since", "opening", "purchases", "effective", "balance", "documents", "used_units", "scrap_milli"}
-	metricsMovementWireKeys  = []string{"kind", "amount", "effective", "occurred_at"}
-	metricsPeriodWireKeys    = []string{"kind", "closing_id", "from", "to", "label"}
+	// The ranking publishes one row per catalogue kind, and the row's shape is its own discriminant: a
+	// battery keeps the six keys it always published and an other product publishes its free name where
+	// the battery publishes its identity, with no battery key and no tag at all (S6).
+	metricsModelWireKeys        = []string{"catalog_entry_id", "brand", "model", "capacity_ah", "units", "money"}
+	metricsProductModelWireKeys = []string{"catalog_entry_id", "name", "units", "money"}
+	metricsStockWireKeys        = []string{"units"}
+	metricsTodayWireKeys        = []string{"since", "opening", "sales", "expenses", "effective", "expected", "rate", "sold", "commission", "movements"}
+	metricsFundTodayWireKeys    = []string{"since", "opening", "purchases", "effective", "balance", "documents", "used_units", "scrap_milli"}
+	metricsMovementWireKeys     = []string{"kind", "amount", "effective", "occurred_at"}
+	metricsPeriodWireKeys       = []string{"kind", "closing_id", "from", "to", "label"}
 	// metricsMoneyWire is the strict money parser a client applies to this answer (S8): canonical
 	// two-decimal text, signed only where the contract states a difference.
 	metricsMoneyWire = regexp.MustCompile(`^-?\d{1,10}\.[0-9]{2}$`)
@@ -95,6 +101,28 @@ func metricsObject(t *testing.T, raw json.RawMessage, keys []string) map[string]
 	return object
 }
 
+// metricsModelRow admits one row of the ranking by the shape it carries, which is its own
+// discriminant: a row with a battery field publishes exactly the six keys a battery always published, a
+// row with a name publishes the four keys of a product, and a row with both shapes or neither is a row
+// this contract could not have written (S6).
+func metricsModelRow(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	var row map[string]json.RawMessage
+	if json.Unmarshal(raw, &row) != nil {
+		t.Fatalf("the ranking row is not decodable: %s", raw)
+	}
+	_, battery := row["brand"]
+	_, product := row["name"]
+	if battery == product {
+		t.Fatalf("the ranking publishes a row of both kinds or of neither: %s", raw)
+	}
+	if battery {
+		metricsObject(t, raw, metricsModelWireKeys)
+		return
+	}
+	metricsObject(t, raw, metricsProductModelWireKeys)
+}
+
 type metricsPeriodWire struct {
 	Kind      string  `json:"kind"`
 	ClosingID *int64  `json:"closing_id"`
@@ -146,12 +174,13 @@ type metricsAnswerWire struct {
 		} `json:"materials"`
 	} `json:"materials"`
 	Top []struct {
-		CatalogEntryID int64  `json:"catalog_entry_id"`
-		Brand          string `json:"brand"`
-		Model          string `json:"model"`
-		Capacity       string `json:"capacity_ah"`
-		Units          int64  `json:"units"`
-		Money          string `json:"money"`
+		CatalogEntryID int64   `json:"catalog_entry_id"`
+		Brand          *string `json:"brand"`
+		Model          *string `json:"model"`
+		Capacity       *string `json:"capacity_ah"`
+		Name           *string `json:"name"`
+		Units          int64   `json:"units"`
+		Money          string  `json:"money"`
 	} `json:"top_models"`
 	Stock struct {
 		Units int64 `json:"units"`
@@ -227,7 +256,7 @@ func metricsAnswer(t *testing.T, w *httptest.ResponseRecorder, status int) metri
 		t.Fatalf("the ranking must be a list and never null: %s", w.Body.String())
 	}
 	for _, row := range top {
-		metricsObject(t, row, metricsModelWireKeys)
+		metricsModelRow(t, row)
 	}
 	var periods []json.RawMessage
 	if json.Unmarshal(root["periods"], &periods) != nil || len(periods) == 0 {
@@ -425,6 +454,69 @@ func TestMetricsHTTPAnswer(t *testing.T) {
 	}
 }
 
+// metricsProduct seeds one other product exactly like the catalogue screen writes it -- a free name,
+// one polarity-less variant and one typed field -- and prices it in the branch, returning the entry and
+// the variant the counter points at.
+func (f *metricsHTTPFixture) metricsProduct(t *testing.T, branch int64, name string) (entry, variant int64) {
+	t.Helper()
+	if err := f.p.QueryRow(f.ctx,
+		`INSERT INTO catalog_entries(kind,name) VALUES('other',$1) RETURNING id`, name).Scan(&entry); err != nil {
+		t.Fatalf("product fixture setup failed: %v", err)
+	}
+	if err := f.p.QueryRow(f.ctx,
+		`INSERT INTO catalog_variants(catalog_entry_id) VALUES($1) RETURNING id`, entry).Scan(&variant); err != nil {
+		t.Fatalf("product variant fixture setup failed: %v", err)
+	}
+	if _, err := f.p.Exec(f.ctx, `INSERT INTO catalog_entry_fields(catalog_entry_id,name,kind,unit,number_value)
+ VALUES($1,'volumen en L','number','L',5)`, entry); err != nil {
+		t.Fatalf("product field fixture setup failed: %v", err)
+	}
+	if _, err := f.prices.Write(f.ctx, auth.Identity{AccountID: 1, Location: auth.Location{ID: 1}},
+		pricing.WriteInput{CatalogEntryID: entry, MinPrice: "1500.00", SuggestedPrice: "1900.00",
+			BranchIDs: []int64{branch}}); err != nil {
+		t.Fatalf("the price of the product could not be written: %v", err)
+	}
+	return entry, variant
+}
+
+// TestMetricsHTTPPublishesAProductPeriod pins S6 over the route: a period that sold an other product
+// answers 200 with its row published by name and no capacity, and the volume of the period keeps
+// summing both kinds (S7).
+func TestMetricsHTTPPublishesAProductPeriod(t *testing.T) {
+	f := metricsFixture(t)
+	// The product sells out before the period opens, so the count sheet of the period keeps its
+	// batteries: a sheet that carries a product line is the other vertical's read (S2).
+	entry, product := f.metricsProduct(t, 2, "Agua acidulada")
+	if _, err := f.p.Exec(f.ctx, `UPDATE inventory_balances SET existing=3,reserved=0
+ WHERE location_id=2 AND variant_id=$1`, product); err != nil {
+		t.Fatalf("the stock of the product could not be stated: %v", err)
+	}
+	if w := f.serve(t, f.request(2, "POST", "/api/sales",
+		saleProductBody(product, 3, "1900.00"))); w.Code != 201 {
+		t.Fatalf("the product must be sellable: %d %s", w.Code, w.Body.String())
+	}
+	live := f.open(t, 2)
+
+	answer := metricsAnswer(t, f.serve(t, f.request(2, "GET",
+		fmt.Sprintf("/api/metrics?period=%d", live), "")), 200)
+	if len(answer.Top) != 1 {
+		t.Fatalf("the period sold one product: %+v", answer.Top)
+	}
+	row := answer.Top[0]
+	if row.CatalogEntryID != entry || row.Name == nil || *row.Name != "Agua acidulada" ||
+		row.Units != 3 || row.Money != "5700.00" {
+		t.Fatalf("the product must be published by its name: %+v", row)
+	}
+	// A product publishes no battery column at all: the read never invents a capacity for it.
+	if row.Brand != nil || row.Model != nil || row.Capacity != nil {
+		t.Fatalf("a product row must not publish a battery column: %+v", row)
+	}
+	// S7: the volume of the period is the sum of every kind it sold.
+	if answer.Sales.Units != 3 || answer.Sales.Sales != 1 || answer.Sales.Total != "5700.00" {
+		t.Fatalf("the volume of the period must sum both kinds: %+v", answer.Sales)
+	}
+}
+
 // TestMetricsHTTPRefusals proves every refusal of the read is the contract's own token and that a
 // refused read leaves the answer of the branch exactly as it was: the selector is not a period, an
 // unknown token is not a default, and a repeated or foreign key is not the first one that fits.
@@ -576,8 +668,8 @@ func validMetrics() closings.Metrics {
 		Materials: &closings.MetricsMaterials{Used: 2, UsedDelivered: &usedDelivered, Scrap: 1000,
 			ScrapDelivered: &scrapDelivered, Materials: []closings.MetricsMaterial{{MaterialID: 1,
 				Material: "Cobre", Bought: 1000, Delivered: &delivered}}},
-		Top: []closings.MetricsModel{{CatalogEntryID: 1, Brand: "CAR", Model: "NS40ZL",
-			Capacity: "35", Units: 2, Money: "10.00"}},
+		Top: []closings.MetricsModel{{CatalogEntryID: 1, Kind: catalog.BatteryKind, Brand: "CAR",
+			Model: "NS40ZL", Capacity: "35", Units: 2, Money: "10.00"}},
 		Stock: closings.MetricsStock{Units: 5},
 		// The drawer of today: what the last cut left, the cash collected after it and the signed effect
 		// of the movements of that window -- 5.00 + 10.00 + (−2.00) = 13.00 -- with one ledger row of the
@@ -806,7 +898,22 @@ func TestMetricsRecordsRefuseAShapeTheServerNeverWrote(t *testing.T) {
 		"model money not canonical": func(m *closings.Metrics) {
 			m.Top[0].Money = "10"
 		},
-		"model without an entry":       func(m *closings.Metrics) { m.Top[0].CatalogEntryID = 0 },
+		"model without an entry":      func(m *closings.Metrics) { m.Top[0].CatalogEntryID = 0 },
+		"model of an unknown kind":    func(m *closings.Metrics) { m.Top[0].Kind = "gift" },
+		"battery with a product name": func(m *closings.Metrics) { m.Top[0].Name = "Agua acidulada" },
+		"battery without a capacity":  func(m *closings.Metrics) { m.Top[0].Capacity = "" },
+		"product without a name": func(m *closings.Metrics) {
+			m.Top = []closings.MetricsModel{metricsProductModel()}
+			m.Top[0].Name = ""
+		},
+		"product with a battery capacity": func(m *closings.Metrics) {
+			m.Top = []closings.MetricsModel{metricsProductModel()}
+			m.Top[0].Capacity = "35"
+		},
+		"product with a brand": func(m *closings.Metrics) {
+			m.Top = []closings.MetricsModel{metricsProductModel()}
+			m.Top[0].Brand = "CAR"
+		},
 		"today opening not money":      func(m *closings.Metrics) { m.Today.Opening = "5" },
 		"today sales not money":        func(m *closings.Metrics) { m.Today.Sales = "-10.00" },
 		"today effect not signed":      func(m *closings.Metrics) { m.Today.Effective = "menos" },
@@ -910,6 +1017,107 @@ func metricsRefused(t *testing.T, name string, err error) {
 	if w.Code != 503 || w.Body.String() != "{\"error\":\"service_unavailable\"}\n" {
 		t.Fatalf("%s must be published as an unavailable service, got %d %s", name, w.Code,
 			w.Body.String())
+	}
+}
+
+// metricsProductModel is one row of the ranking of the second catalogue kind: the free name it
+// publishes, its units and its money, and no battery identity at all.
+func metricsProductModel() closings.MetricsModel {
+	return closings.MetricsModel{CatalogEntryID: 7, Kind: catalog.OtherKind, Name: "Agua acidulada",
+		Units: 3, Money: "15.00"}
+}
+
+// metricsModelJSON publishes one row of the ranking as the exact bytes of its wire shape, so a test
+// pins the keys and their order instead of a set that would hide an added one.
+func metricsModelJSON(t *testing.T, model closings.MetricsModel) string {
+	t.Helper()
+	record, err := metricsModelRecord(model)
+	if err != nil {
+		t.Fatalf("the row %+v must be published: %v", model, err)
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("the row is not encodable: %v", err)
+	}
+	return string(encoded)
+}
+
+// metricsModelKeys reads one row of the ranking back as its own key set, so a test asserts the wire
+// shape of each kind by the keys it carries instead of a struct that would hide an extra one.
+func metricsModelKeys(t *testing.T, model closings.MetricsModel) map[string]json.RawMessage {
+	t.Helper()
+	encoded := metricsModelJSON(t, model)
+	var wire map[string]json.RawMessage
+	if json.Unmarshal([]byte(encoded), &wire) != nil {
+		t.Fatalf("the row is not decodable: %s", encoded)
+	}
+	return wire
+}
+
+// TestMetricsModelRecordPublishesBothCatalogueKinds pins S6 on the wire shape of one row: a battery
+// keeps the keys and the values it always published, an other product publishes its name with no
+// capacity at all, and a malformed battery is still refused instead of being relaxed with it.
+func TestMetricsModelRecordPublishesBothCatalogueKinds(t *testing.T) {
+	// A battery row is the six keys this contract published before the second kind existed, in that
+	// order and with nothing added: the kind of a row is its own shape, never a tag beside it (S6).
+	if got, want := metricsModelJSON(t, validMetrics().Top[0]),
+		`{"catalog_entry_id":1,"brand":"CAR","model":"NS40ZL","capacity_ah":"35","units":2,"money":"10.00"}`; got != want {
+		t.Fatalf("the battery row must be the bytes it always published:\n got %s\nwant %s", got, want)
+	}
+	// A product row is its name and nothing of the battery shape: no capacity and no battery key.
+	if got, want := metricsModelJSON(t, metricsProductModel()),
+		`{"catalog_entry_id":7,"name":"Agua acidulada","units":3,"money":"15.00"}`; got != want {
+		t.Fatalf("a product row is its name and no battery key:\n got %s\nwant %s", got, want)
+	}
+	battery := metricsModelKeys(t, validMetrics().Top[0])
+	if len(battery) != len(metricsModelWireKeys) ||
+		string(battery["catalog_entry_id"]) != `1` || string(battery["brand"]) != `"CAR"` ||
+		string(battery["model"]) != `"NS40ZL"` || string(battery["capacity_ah"]) != `"35"` ||
+		string(battery["units"]) != `2` || string(battery["money"]) != `"10.00"` {
+		t.Fatalf("the battery row must keep the identity it always published: %v", battery)
+	}
+	// A product is its name, its units and its money: no capacity is invented for it, because it has
+	// none and a number nobody stored would read as if the catalogue had one, and no tag tells the two
+	// apart -- the shape does.
+	product := metricsModelKeys(t, metricsProductModel())
+	if len(product) != len(metricsProductModelWireKeys) ||
+		string(product["catalog_entry_id"]) != `7` || string(product["name"]) != `"Agua acidulada"` ||
+		string(product["units"]) != `3` || string(product["money"]) != `"15.00"` {
+		t.Fatalf("a product row is its name, its units and its money: %v", product)
+	}
+	for _, key := range []string{"brand", "model", "capacity_ah"} {
+		if _, ok := product[key]; ok {
+			t.Fatalf("a product row must not publish %q: %v", key, product)
+		}
+	}
+	// The gates that refuse a battery this domain never wrote are relaxed for the product kind only: an
+	// empty brand or a capacity that is not the canonical one still fails closed for a battery, and a
+	// product carrying a battery attribute is refused as the other kind's shape it is.
+	batteryRow := validMetrics().Top[0]
+	for name, broken := range map[string]struct {
+		base    closings.MetricsModel
+		breakIt func(*closings.MetricsModel)
+	}{
+		"battery without a brand":     {batteryRow, func(m *closings.MetricsModel) { m.Brand = "" }},
+		"battery without a model":     {batteryRow, func(m *closings.MetricsModel) { m.Model = "" }},
+		"battery without a capacity":  {batteryRow, func(m *closings.MetricsModel) { m.Capacity = "" }},
+		"battery capacity is text":    {batteryRow, func(m *closings.MetricsModel) { m.Capacity = "35Ah" }},
+		"battery with a product name": {batteryRow, func(m *closings.MetricsModel) { m.Name = "Agua acidulada" }},
+		"battery of an unknown kind":  {batteryRow, func(m *closings.MetricsModel) { m.Kind = "gift" }},
+		"battery without units":       {batteryRow, func(m *closings.MetricsModel) { m.Units = 0 }},
+		"product without a name":      {metricsProductModel(), func(m *closings.MetricsModel) { m.Name = "" }},
+		"product with a capacity":     {metricsProductModel(), func(m *closings.MetricsModel) { m.Capacity = "35" }},
+		"product with a brand":        {metricsProductModel(), func(m *closings.MetricsModel) { m.Brand = "CAR" }},
+		"product without units":       {metricsProductModel(), func(m *closings.MetricsModel) { m.Units = 0 }},
+		"product money is not canonical": {metricsProductModel(), func(m *closings.MetricsModel) {
+			m.Money = "15"
+		}},
+	} {
+		model := broken.base
+		broken.breakIt(&model)
+		if _, err := metricsModelRecord(model); !errors.Is(err, closings.ErrUnavailable) {
+			t.Fatalf("%s must fail closed, got %v", name, err)
+		}
 	}
 }
 

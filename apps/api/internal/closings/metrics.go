@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"luson/api/internal/auth"
+	"luson/api/internal/catalog"
 )
 
 // The metrics read is a projection of one period of one branch, never a second calculation of
@@ -86,12 +87,17 @@ type MetricsMaterials struct {
 	Materials      []MetricsMaterial
 }
 
-// MetricsModel is one battery model of the ranking, by units sold and with the money they made.
+// MetricsModel is one product of the ranking -- of either catalogue kind -- by the units it sold and
+// with the money they made. A battery states the battery identity it always published: its brand, its
+// model and its canonical capacity. An other product states its free name and no capacity at all,
+// because it never had one: a number nobody stored is a number this read cannot publish (S6).
 type MetricsModel struct {
 	CatalogEntryID int64
+	Kind           catalog.Kind
 	Brand          string
 	Model          string
 	Capacity       string
+	Name           string
 	Units          int64
 	Money          Money
 }
@@ -417,22 +423,28 @@ func salesFacts(ctx context.Context, q querier, branch int64, from, to *time.Tim
 	return read, nil
 }
 
-// topModels ranks the models of a period by the units they sold, newest ties broken by the
+// topModels ranks the products of a period by the units they sold, newest ties broken by the
 // catalogue's own order so the same period always publishes the same five rows. Money is the
-// secondary reading of the same rows.
+// secondary reading of the same rows. Both catalogue kinds are ranked: a period that sold an other
+// product publishes it instead of failing the whole read (S6).
 func topModels(ctx context.Context, q querier, branch int64, from, to *time.Time) ([]MetricsModel, error) {
 	where, args := windowOf(branch, from, to)
-	rows, err := q.Query(ctx, `SELECT entry.id, entry.brand, entry.model,
-       trim(trailing '.' from trim(trailing '0' from entry.capacity_ah::text)),
+	// The entry's own kind is selected beside its battery shape, and every column of the other kind is
+	// coalesced because a product stores none of them: the shape of each row is decided by its kind
+	// below, never by the NULL of a column it does not have.
+	rows, err := q.Query(ctx, `SELECT entry.id, entry.kind,
+       coalesce(entry.brand,''), coalesce(entry.model,''),
+       coalesce(trim(trailing '.' from trim(trailing '0' from entry.capacity_ah::text)),''),
+       coalesce(entry.name,''),
        sum(line.quantity), sum(line.subtotal)::numeric(12,2)::text
  FROM sale_lines line
  JOIN sales sale ON sale.id=line.sale_id
  JOIN catalog_variants variant ON variant.id=line.variant_id
  JOIN catalog_entries entry ON entry.id=variant.catalog_entry_id
  WHERE `+where+`
- GROUP BY entry.id, entry.brand, entry.model, entry.capacity_ah
+ GROUP BY entry.id, entry.kind, entry.brand, entry.model, entry.capacity_ah, entry.name
  ORDER BY sum(line.quantity) DESC, entry.brand COLLATE "C", entry.model COLLATE "C",
-          entry.capacity_ah, entry.id
+          entry.capacity_ah, entry.name COLLATE "C", entry.id
  LIMIT `+strconv.Itoa(metricsTopModels), args...)
 	if err != nil {
 		return nil, fail(ctx)
@@ -441,23 +453,42 @@ func topModels(ctx context.Context, q querier, branch int64, from, to *time.Time
 	top := make([]MetricsModel, 0, metricsTopModels)
 	for rows.Next() {
 		var model MetricsModel
-		var capacity, money string
+		var kind, capacity, name, money string
 		var units int64
-		if rows.Scan(&model.CatalogEntryID, &model.Brand, &model.Model, &capacity, &units, &money) != nil {
+		if rows.Scan(&model.CatalogEntryID, &kind, &model.Brand, &model.Model, &capacity, &name,
+			&units, &money) != nil {
 			return nil, fail(ctx)
 		}
-		// A ranking of a period that sold nothing is not a ranking of zero rows: the statement
-		// groups existing sales, so a row with no units or no canonical capacity is a shape this
-		// domain never wrote.
-		if model.CatalogEntryID < 1 || model.Brand == "" || model.Model == "" ||
-			!capacityPattern.MatchString(capacity) || units < 1 {
+		// A ranking of a period that sold nothing is not a ranking of zero rows: the statement groups
+		// existing sales, so a row with no units or no money this domain could have written is a shape
+		// it never wrote. Each kind is then judged against its own shape and against the absence of the
+		// other's: a battery still needs its brand, its model and a canonical capacity -- an empty brand
+		// or an unparseable capacity is refused exactly as before -- and a product states its name and
+		// nothing of the battery shape (S6).
+		if model.CatalogEntryID < 1 || units < 1 {
+			return nil, ErrUnavailable
+		}
+		model.Kind, model.Units = catalog.Kind(kind), units
+		switch model.Kind {
+		case catalog.BatteryKind:
+			if model.Brand == "" || model.Model == "" || name != "" ||
+				!capacityPattern.MatchString(capacity) {
+				return nil, ErrUnavailable
+			}
+			model.Capacity = capacity
+		case catalog.OtherKind:
+			if name == "" || model.Brand != "" || model.Model != "" || capacity != "" {
+				return nil, ErrUnavailable
+			}
+			model.Name = name
+		default:
 			return nil, ErrUnavailable
 		}
 		amount := Money(money)
 		if _, ok := amountCents(amount); !ok {
 			return nil, ErrUnavailable
 		}
-		model.Capacity, model.Units, model.Money = capacity, units, amount
+		model.Money = amount
 		top = append(top, model)
 	}
 	if rows.Err() != nil {

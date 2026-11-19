@@ -48,6 +48,10 @@ const topModels = [
   { catalog_entry_id: 4, brand: 'Willard', model: 'UB 12-100', capacity_ah: '100', units: 9, money: '1035000.00' },
   { catalog_entry_id: 5, brand: 'Rocket', model: '12-55', capacity_ah: '55', units: 4, money: '208000.00' },
 ];
+// One row of the second catalogue kind: a product is its free name, and it publishes no capacity at all
+// because it never had one. The shape of the row is its own discriminant: a battery has a brand, a product
+// has a name, and neither carries a tag beside it (S6).
+const productModel = { catalog_entry_id: 6, name: 'Agua acidulada', units: 3, money: '150000.00' };
 const stock = { units: 214 };
 
 // The drawer of today: what the last cut left, the cash the sales collected after it and the signed
@@ -326,6 +330,25 @@ describe('metrics wire contract', () => {
     expect(answer.cash?.expected_cents).toBe(187780000n);
   });
 
+  it('reads a product row as its name and no capacity', () => {
+    const answer = parseMetricsAnswer(settlementBody({
+      top_models: [topModels[0], productModel],
+    }));
+    // The product row is its own identity: its name, its units, its money and no capacity invented for it.
+    expect(answer.top_models[1]).toEqual({
+      catalog_entry_id: 6, name: 'Agua acidulada', units: 3, money_cents: 15000000n,
+    });
+    expect(answer.top_models[1]).not.toHaveProperty('capacity_ah');
+    expect(answer.top_models[1]).not.toHaveProperty('brand');
+    // The battery row keeps the six fields it always published, and no tag tells the two apart: the shape
+    // of the row does.
+    expect(answer.top_models[0]).toEqual({
+      catalog_entry_id: 1, brand: 'Willard', model: 'UB 12-75', capacity_ah: '75', units: 22,
+      money_cents: 122100000n,
+    });
+    expect(answer.top_models[0]).not.toHaveProperty('name');
+  });
+
   it.each([
     ['an extra field the contract does not publish', settlementBody({ extra: 1 })],
     ['a period kind this contract never publishes', settlementBody({
@@ -356,6 +379,34 @@ describe('metrics wire contract', () => {
     })],
     ['a ranking ordered by money instead of units', settlementBody({
       top_models: [topModels[3], topModels[0], topModels[1], topModels[2], topModels[4]],
+    })],
+    ['a ranking row carrying both kinds', settlementBody({
+      top_models: [{ ...topModels[0], name: 'Agua acidulada' }],
+    })],
+    ['a ranking row of neither kind', settlementBody({
+      top_models: [{ catalog_entry_id: 6, units: 3, money: '150000.00' }],
+    })],
+    ['a battery row without its brand', settlementBody({
+      top_models: [{ catalog_entry_id: 1, model: 'UB 12-75', capacity_ah: '75', units: 22,
+        money: '1221000.00' }],
+    })],
+    ['a battery row with a capacity that is not a number', settlementBody({
+      top_models: [{ ...topModels[0], capacity_ah: '75 Ah' }],
+    })],
+    ['a battery row without a capacity', settlementBody({
+      top_models: [{ ...topModels[0], capacity_ah: '' }],
+    })],
+    ['a product row carrying a capacity', settlementBody({
+      top_models: [{ ...productModel, capacity_ah: '75' }],
+    })],
+    ['a product row carrying a battery brand', settlementBody({
+      top_models: [{ ...productModel, brand: 'Willard' }],
+    })],
+    ['a product row without a name', settlementBody({
+      top_models: [{ ...productModel, name: '' }],
+    })],
+    ['a product row without units', settlementBody({
+      top_models: [{ ...productModel, units: 0 }],
     })],
     ['an account the history cannot state', historyBody({ cash })],
     ['a drawer of today that does not close', settlementBody({

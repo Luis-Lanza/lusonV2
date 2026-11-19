@@ -45,6 +45,9 @@ const topModels = [
   { catalog_entry_id: 4, brand: 'Willard', model: 'UB 12-100', capacity_ah: '100', units: 9, money: '1035000.00' },
   { catalog_entry_id: 5, brand: 'Rocket', model: '12-55', capacity_ah: '55', units: 4, money: '208000.00' },
 ];
+// One row of the second catalogue kind: a product is its free name and it carries no capacity. The shape
+// of the row is its own discriminant and there is no tag beside it (S6).
+const productModel = { catalog_entry_id: 6, name: 'Agua acidulada', units: 3, money: '150000.00' };
 const stock = { units: 214 };
 
 // The drawer of today, published by every source: what the last cut left, the cash sales after it and
@@ -85,8 +88,8 @@ const olderBody = () => settlementBody({
     difference: '0.00', replacement: '0.00' },
   materials: { used_units: 0, used_delivered_units: 0, scrap_milli: 0, scrap_delivered_milli: 0,
     materials: [] },
-  top_models: [{ catalog_entry_id: 1, brand: 'Willard', model: 'UB 12-75', capacity_ah: '75',
-    units: 12, money: '1000000.00' }],
+  top_models: [{ catalog_entry_id: 1, brand: 'Willard', model: 'UB 12-75',
+    capacity_ah: '75', units: 12, money: '1000000.00' }],
 });
 const liveBody = () => JSON.stringify({
   periods, period: live, source: 'live', sales,
@@ -157,7 +160,7 @@ describe('branch metrics screen', () => {
     expect(within(money).getAllByText('Bs 4.286.400,00').length).toBeGreaterThan(0);
     expect(within(money).getByText('en 63 ventas')).toBeInTheDocument();
     expect(within(money).getByText(/Ticket promedio Bs 68\.038,10/)).toBeInTheDocument();
-    expect(within(money).getByText(/78 baterías vendidas/)).toBeInTheDocument();
+    expect(within(money).getByText(/78 unidades vendidas/)).toBeInTheDocument();
     // The collection by method with its share of the total; the commission is reported beside it.
     expect(within(money).getByText('43,0 %')).toBeInTheDocument();
     expect(within(money).getByText('34,7 %')).toBeInTheDocument();
@@ -175,7 +178,7 @@ describe('branch metrics screen', () => {
     expect(within(envelope).getByText('Recambio que dejó el Almacén')).toBeInTheDocument();
 
     // Top 5 by units with the money of each row as the secondary reading (S4).
-    const podium = panel('Baterías más vendidas');
+    const podium = panel('Más vendidos');
     const rows = within(podium).getAllByRole('row');
     expect(rows).toHaveLength(6);
     expect(rows[1]).toHaveTextContent('Willard UB 12-75');
@@ -187,6 +190,59 @@ describe('branch metrics screen', () => {
     const scrap = panel('Recambio');
     expect(within(scrap).getByText('Cobre')).toBeInTheDocument();
     expect(within(scrap).getByText('214 u')).toBeInTheDocument();
+  });
+
+  it('states the units of the period as units of every catalogue kind', async () => {
+    // The figure is the sum of every kind the period sold (S7), so the label says units and never
+    // batteries alone (S4, S6). The singular is the same label with its own number.
+    setup(token => json(token === 'all' ? historyBody()
+      : settlementBody({ sales: { ...sales, units: 1 } })));
+    const money = await screen.findByRole('region', { name: 'Plata del período' });
+    expect(within(money).getByText(/78 unidades vendidas/)).toBeInTheDocument();
+    await selectPeriod('4');
+    expect(await screen.findByText(/1 unidad vendida/)).toBeInTheDocument();
+    // The battery-only wording is gone from the label, in both its forms.
+    expect(screen.queryByText(/baterías vendidas/)).toBeNull();
+    expect(screen.queryByText(/1 batería vendida/)).toBeNull();
+  });
+
+  it('names the ranking and its empty state for both catalogue kinds', async () => {
+    // The period sold nothing: the panel says the period sold nothing, never that it sold no batteries,
+    // because a product is a sale of this catalogue like any other (S4, S6).
+    setup(token => json(token === 'all' ? historyBody({ top_models: [] })
+      : settlementBody({ top_models: [] })));
+    const empty = await screen.findByRole('region', { name: 'Más vendidos' });
+    expect(within(empty).getByText('El período no vendió nada: no hay ranking que mostrar.'))
+      .toBeInTheDocument();
+    await selectPeriod('4');
+    // The heading is the same one whether the period sold anything or not, and the battery-only wording
+    // is gone from both the title and the empty state.
+    const podium = await screen.findByRole('region', { name: 'Más vendidos' });
+    expect(within(podium).getByText('El período no vendió nada: no hay ranking que mostrar.'))
+      .toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Baterías más vendidas' })).toBeNull();
+    expect(screen.queryByText(/ninguna batería/)).toBeNull();
+  });
+
+  it('renders a product row by its name and invents no capacity for it', async () => {
+    // The period sold two batteries and one product, ranked by units: the product is the last row.
+    const ranking = { top_models: [topModels[0], topModels[1], productModel] };
+    setup(token => json(token === 'all' ? historyBody(ranking) : settlementBody(ranking)));
+    await selectPeriod('4');
+
+    const podium = await screen.findByRole('region', { name: 'Más vendidos' });
+    const rows = within(podium).getAllByRole('row');
+    expect(rows).toHaveLength(4);
+    // A battery keeps the label the screen always composed, capacity included.
+    expect(rows[1]).toHaveTextContent('Willard UB 12-75');
+    expect(rows[1]).toHaveTextContent('75 Ah');
+    // The product is its name and nothing else: the row is the same row of the same table, keyed by its
+    // own catalogue entry, and it carries no "Ah" suffix because it has no capacity (S6).
+    expect(rows[3]).toHaveTextContent('Agua acidulada');
+    expect(rows[3]).toHaveTextContent('Bs 150.000,00');
+    expect(rows[3]).not.toHaveTextContent('Ah');
+    // The volume of the period is untouched by the ranking's kinds (S7).
+    expect(within(panel('Plata del período')).getByText(/78 unidades vendidas/)).toBeInTheDocument();
   });
 
   it('switches to another published period and refetches with that exact token', async () => {
@@ -256,7 +312,7 @@ describe('branch metrics screen', () => {
     expect(within(scrap).getByText(/no tiene planilla/)).toBeInTheDocument();
     expect(within(scrap).queryByText('Bs 0,00')).toBeNull();
     // What the history does state is still there: the sales, the ranking and the shelf of today.
-    const podium = panel('Baterías más vendidas');
+    const podium = panel('Más vendidos');
     expect(within(podium).getAllByRole('row')).toHaveLength(6);
     expect(within(scrap).getByText('214 u')).toBeInTheDocument();
   });

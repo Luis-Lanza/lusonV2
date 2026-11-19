@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"luson/api/internal/catalog"
 	"luson/api/internal/closings"
 	"luson/api/internal/purchases"
 	"luson/api/internal/sales"
@@ -234,6 +235,103 @@ func TestMetricsRankingIsByUnits(t *testing.T) {
 	// The money of the period is the secondary reading of the very same sales.
 	if metrics.Sales.Total != "550.00" || metrics.Sales.Units != 11 || metrics.Sales.Sales != 3 {
 		t.Fatalf("the period must publish the volume of its sales: %+v", metrics.Sales)
+	}
+}
+
+// productOf seeds one other product the way the Catálogo writes it -- a free name, one
+// polarity-less variant and one typed field with a unit -- prices it in branch 2 and stocks it, so a
+// settlement of that branch has a product to sell. It returns the entry and the variant the counter
+// points at.
+func (e *env) productOf(t *testing.T, name string, stock int64) (entry, variant int64) {
+	t.Helper()
+	if err := e.pool.QueryRow(e.ctx,
+		`INSERT INTO catalog_entries(kind,name) VALUES('other',$1) RETURNING id`, name).Scan(&entry); err != nil {
+		t.Fatalf("the product %q could not be created: %v", name, err)
+	}
+	if err := e.pool.QueryRow(e.ctx,
+		`INSERT INTO catalog_variants(catalog_entry_id) VALUES($1) RETURNING id`, entry).Scan(&variant); err != nil {
+		t.Fatalf("the variant of product %q could not be created: %v", name, err)
+	}
+	if _, err := e.pool.Exec(e.ctx, `INSERT INTO catalog_entry_fields(catalog_entry_id,name,kind,unit,number_value)
+ VALUES($1,'volumen en L','number','L',5)`, entry); err != nil {
+		t.Fatalf("the typed fields of product %q could not be written: %v", name, err)
+	}
+	if _, err := e.pool.Exec(e.ctx, `UPDATE inventory_balances SET existing=$2,reserved=0
+ WHERE location_id=2 AND variant_id=$1`, variant, stock); err != nil {
+		t.Fatalf("the stock of product %q could not be stated: %v", name, err)
+	}
+	e.price(t, entry, "1.00", "5.00", 2)
+	return entry, variant
+}
+
+// sellProduct issues one real sale of an other product in branch 2: a product is counted and never
+// serialized, so its line carries no unit at all.
+func (e *env) sellProduct(t *testing.T, variant, quantity int64, unitPrice string) {
+	t.Helper()
+	total, err := sales.LineTotal(sales.Money(unitPrice), quantity)
+	if err != nil {
+		t.Fatalf("product sale fixture amount %q is not sellable: %v", unitPrice, err)
+	}
+	if _, err := e.sales.Create(e.ctx, identity(2), sales.CreateInput{
+		Payments: []sales.Payment{{Method: sales.PaymentCash, Amount: total}},
+		Customer: sales.Customer{Name: "Cliente de sucursal", Phone: "700-00000",
+			Document: "CI-123456"},
+		Lines: []sales.LineInput{{VariantID: variant, Quantity: quantity,
+			UnitPrice: sales.Money(unitPrice)}},
+	}); err != nil {
+		t.Fatalf("product sale fixture failed: %v", err)
+	}
+}
+
+// TestMetricsRankingPublishesBothCatalogueKinds pins S6 and S7: a period that sold an other product
+// is readable, the ranking publishes the product by its name and publishes no capacity it does not
+// have, and the volume and the shelf keep summing both kinds exactly as they did.
+func TestMetricsRankingPublishesBothCatalogueKinds(t *testing.T) {
+	e := fixture(t)
+	e.closeFirstSettlement(t, "500.00")
+	// The product is stocked exactly as much as it sells, so the count sheet of the period keeps its
+	// batteries only: a sheet with a product line is the other vertical's read (S2).
+	entry, product := e.productOf(t, "Agua acidulada", 3)
+	battery := variantOfEntry(t, e, 1)
+	e.sell(t, battery, 2, "100.00", sales.PaymentCash)
+	e.sellProduct(t, product, 3, "5.00")
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("the period could not be opened: %v", err)
+	}
+	// The shelf the read publishes is today's, so the product the branch still holds is put back on
+	// it: the sheet of the open period is a snapshot of the instant it opened and never moves.
+	if _, err := e.pool.Exec(e.ctx, `UPDATE inventory_balances SET existing=5,reserved=0
+ WHERE location_id=2 AND variant_id=$1`, product); err != nil {
+		t.Fatalf("the shelf of the product could not be restocked: %v", err)
+	}
+
+	metrics := metricsOf(t, e, opened.ID)
+	if len(metrics.Top) != 2 {
+		t.Fatalf("the period sold one model of each kind: %+v", metrics.Top)
+	}
+	// The product sold more units than the battery, so the ranking is ordered by the volume of the
+	// whole catalogue and never by kind. It is ranked by its name, and no capacity is invented for
+	// it.
+	if first := metrics.Top[0]; first.Kind != catalog.OtherKind || first.CatalogEntryID != entry ||
+		first.Name != "Agua acidulada" || first.Units != 3 || first.Money != "15.00" ||
+		first.Brand != "" || first.Model != "" || first.Capacity != "" {
+		t.Fatalf("a product row must carry its name and no battery identity: %+v", first)
+	}
+	// A battery keeps the identity and the capacity it always published, in the same keys.
+	if second := metrics.Top[1]; second.Kind != catalog.BatteryKind || second.Brand != "CAR" ||
+		second.Model != "NS40ZL" || second.Capacity != "35" || second.Units != 2 ||
+		second.Money != "200.00" || second.Name != "" {
+		t.Fatalf("a battery row must keep the identity it always published: %+v", second)
+	}
+	// S7: the volume of the period and the shelf are sums of every kind, and this read never
+	// narrows them to batteries.
+	if metrics.Sales.Units != 5 || metrics.Sales.Sales != 2 || metrics.Sales.Total != "215.00" {
+		t.Fatalf("the volume of the period must sum both kinds: %+v", metrics.Sales)
+	}
+	if want := e.scalar(t, `SELECT coalesce(sum(existing),0) FROM inventory_balances
+ WHERE location_id=2`); metrics.Stock.Units != want {
+		t.Fatalf("the shelf must sum both kinds: %d, want %d", metrics.Stock.Units, want)
 	}
 }
 

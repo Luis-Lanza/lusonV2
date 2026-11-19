@@ -389,12 +389,17 @@ function ScrapPanel({ materials, shelf, history }: {
   </section>;
 }
 
-/** The ranking of the period: units first, the money of each row as the secondary reading (S4). */
+/**
+ * The ranking of the period: units first, the money of each row as the secondary reading (S4). A row of
+ * either catalogue kind is listed by its own identity, so a product is its name and carries no capacity
+ * suffix (S6). The row's shape is its own discriminant: a battery states its capacity and a product never
+ * does (S4).
+ */
 function RankingPanel({ models, total }: { models: readonly MetricsModel[]; total: number }) {
   return <section className="metrics-panel" aria-labelledby="metrics-ranking-title">
-    <h2 id="metrics-ranking-title" className="metrics-panel-title">Baterías más vendidas</h2>
+    <h2 id="metrics-ranking-title" className="metrics-panel-title">Más vendidos</h2>
     {models.length === 0
-      ? <p className="metrics-note">El período no vendió ninguna batería: no hay ranking que mostrar.</p>
+      ? <p className="metrics-note">El período no vendió nada: no hay ranking que mostrar.</p>
       : <table className="metrics-table">
         <caption className="metrics-caption">Top 5 por unidades vendidas en el período</caption>
         <thead>
@@ -407,8 +412,9 @@ function RankingPanel({ models, total }: { models: readonly MetricsModel[]; tota
             const share = unitsShare(model.units, total);
             return <tr key={model.catalog_entry_id}>
               <td className="rank">{index + 1}</td>
-              <td className="model">{model.brand} {model.model}
-                <small>{model.capacity_ah} Ah</small></td>
+              <td className="model">{'capacity_ah' in model
+                ? <>{model.brand} {model.model}<small>{model.capacity_ah} Ah</small></>
+                : model.name}</td>
               <td className="num">{model.units}</td>
               <td>
                 <span className="metrics-share">
@@ -446,7 +452,7 @@ function SalesPanel({ answer }: { answer: MetricsAnswer }) {
     </p>
     <p className="metrics-note">
       {`Ticket promedio ${ticket === null ? '—' : money(ticket)} · `}
-      {sales.units === 1 ? '1 batería vendida' : `${sales.units} baterías vendidas`}
+      {sales.units === 1 ? '1 unidad vendida' : `${sales.units} unidades vendidas`}
       {` · comisión ${money(sales.commission_cents)} (${moneyShareText(sales.commission_cents, sales.total_cents)})`}
     </p>
     <table className="metrics-table">

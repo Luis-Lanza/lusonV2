@@ -104,8 +104,13 @@ export interface MetricsMaterials {
   readonly materials: readonly MetricsMaterialLine[];
 }
 
-/** One row of the ranking: units first, the money of that row as the secondary reading. */
-export interface MetricsModel {
+/**
+ * One row of the ranking, discriminated by the shape it carries and never by a tag beside it: a battery
+ * carries the identity the screen composes its label from and an other product carries its free name. A
+ * product has no capacity, so it publishes none: a number nobody stored would read as if the catalogue
+ * had one (S6).
+ */
+export interface MetricsBatteryModel {
   readonly catalog_entry_id: number;
   readonly brand: string;
   readonly model: string;
@@ -113,6 +118,17 @@ export interface MetricsModel {
   readonly units: number;
   readonly money_cents: bigint;
 }
+
+/** One other product of the ranking: its name, its units and its money, and no battery identity. */
+export interface MetricsProductModel {
+  readonly catalog_entry_id: number;
+  readonly name: string;
+  readonly units: number;
+  readonly money_cents: bigint;
+}
+
+/** One row of the ranking: units first, the money of that row as the secondary reading. */
+export type MetricsModel = MetricsBatteryModel | MetricsProductModel;
 
 export interface MetricsStock { readonly units: number }
 
@@ -550,21 +566,47 @@ const capacityShape = /^\d{1,9}(\.\d{1,6})?$/;
 /** The ranking publishes at most five models. */
 const metricsTopModels = 5;
 
+/** The four keys a product row publishes: its name where a battery publishes its identity. */
+const productModelKeys = ['catalog_entry_id', 'name', 'units', 'money'] as const;
+
 /**
- * One row of the ranking. The server already ordered it by units, so the only ordering this parser
- * can judge without inventing one is that the units never grow and that no model is listed twice.
+ * The shape a row carries is its own discriminant: a battery publishes its brand and a product its name,
+ * and a row that carries both shapes or neither is not a row this server wrote.
+ */
+function modelIsBattery(value: Record<string, unknown>): boolean {
+  const battery = Object.hasOwn(value, 'brand');
+  const product = Object.hasOwn(value, 'name');
+  if (battery === product) return invalidResponse();
+  return battery;
+}
+
+/**
+ * One row of the ranking, judged by the rule of its own shape: a battery still needs its brand, its model
+ * and its canonical capacity, and a product is its name and carries none of the battery columns. The
+ * server already ordered the list by units, so the only ordering this parser can judge without inventing
+ * one is that the units never grow and that no entry is listed twice.
  */
 function modelValue(value: unknown): MetricsModel {
-  const record = fields(value, ['catalog_entry_id', 'brand', 'model', 'capacity_ah', 'units', 'money']);
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value instanceof LosslessNumber) {
+    return invalidResponse();
+  }
+  const battery = modelIsBattery(value as Record<string, unknown>);
+  const record = battery
+    ? fields(value, ['catalog_entry_id', 'brand', 'model', 'capacity_ah', 'units', 'money'])
+    : fields(value, productModelKeys);
   const catalog_entry_id = count(record.catalog_entry_id, Number.MAX_SAFE_INTEGER);
   if (catalog_entry_id < 1) return invalidResponse();
-  const capacity_ah = text(record.capacity_ah);
-  if (!capacityShape.test(capacity_ah)) return invalidResponse();
   const units = count(record.units, Number.MAX_SAFE_INTEGER);
   // A model nobody sold is not a row of the ranking.
   if (units < 1) return invalidResponse();
+  const money_cents = wireMoney(record.money, false);
+  if (!battery) {
+    return Object.freeze({ catalog_entry_id, name: text(record.name), units, money_cents });
+  }
+  const capacity_ah = text(record.capacity_ah);
+  if (!capacityShape.test(capacity_ah)) return invalidResponse();
   return Object.freeze({ catalog_entry_id, brand: text(record.brand), model: text(record.model),
-    capacity_ah, units, money_cents: wireMoney(record.money, false) });
+    capacity_ah, units, money_cents });
 }
 
 function topModelsValue(value: unknown): readonly MetricsModel[] {

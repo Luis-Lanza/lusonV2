@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"luson/api/internal/auth"
+	"luson/api/internal/catalog"
 	"luson/api/internal/closings"
 	"luson/api/internal/config"
 	"luson/api/internal/purchases"
@@ -267,13 +268,20 @@ type metricsMaterialsDTO struct {
 	Materials      []metricsMaterialDTO `json:"materials"`
 }
 
+// metricsModelDTO is one row of the ranking, discriminated by its own shape and never by a tag beside
+// it: a battery carries the six keys it always published -- its catalogue entry, its brand, its model,
+// its capacity, its units and its money -- and an other product carries its free name where the battery
+// carries its identity, with no battery key at all. A product never publishes a capacity, because it
+// has none and a number nobody stored would read as if the catalogue had one; the row's own volume is
+// the same for both kinds (S6).
 type metricsModelDTO struct {
-	CatalogEntryID int64  `json:"catalog_entry_id"`
-	Brand          string `json:"brand"`
-	Model          string `json:"model"`
-	Capacity       string `json:"capacity_ah"`
-	Units          int64  `json:"units"`
-	Money          string `json:"money"`
+	CatalogEntryID int64   `json:"catalog_entry_id"`
+	Brand          *string `json:"brand,omitempty"`
+	Model          *string `json:"model,omitempty"`
+	Capacity       *string `json:"capacity_ah,omitempty"`
+	Name           *string `json:"name,omitempty"`
+	Units          int64   `json:"units"`
+	Money          string  `json:"money"`
 }
 
 type metricsStockDTO struct {
@@ -735,14 +743,36 @@ func metricsMaterialsRecord(materials closings.MetricsMaterials) (metricsMateria
 	return record, nil
 }
 
+// metricsModelRecord publishes one row of the ranking. Each kind is judged against its own shape and
+// against the absence of the other's: a battery still needs its brand, its model and a canonical
+// capacity -- an empty brand or a capacity that is not the stored one is refused exactly as before
+// (S6) -- and an other product states its name and no battery attribute, so the read is never relaxed
+// into accepting a malformed battery.
 func metricsModelRecord(model closings.MetricsModel) (metricsModelDTO, error) {
-	if model.CatalogEntryID < 1 || model.Brand == "" || model.Model == "" ||
-		!metricsCapacityPattern.MatchString(model.Capacity) || model.Units < 1 ||
-		!metricsMoneyPattern.MatchString(string(model.Money)) {
+	record := metricsModelDTO{CatalogEntryID: model.CatalogEntryID, Units: model.Units,
+		Money: string(model.Money)}
+	if model.CatalogEntryID < 1 || model.Units < 1 ||
+		!metricsMoneyPattern.MatchString(record.Money) {
 		return metricsModelDTO{}, closings.ErrUnavailable
 	}
-	return metricsModelDTO{CatalogEntryID: model.CatalogEntryID, Brand: model.Brand, Model: model.Model,
-		Capacity: model.Capacity, Units: model.Units, Money: string(model.Money)}, nil
+	switch model.Kind {
+	case catalog.BatteryKind:
+		if model.Brand == "" || model.Model == "" || model.Name != "" ||
+			!metricsCapacityPattern.MatchString(model.Capacity) {
+			return metricsModelDTO{}, closings.ErrUnavailable
+		}
+		brand, modelName, capacity := model.Brand, model.Model, model.Capacity
+		record.Brand, record.Model, record.Capacity = &brand, &modelName, &capacity
+	case catalog.OtherKind:
+		if model.Name == "" || model.Brand != "" || model.Model != "" || model.Capacity != "" {
+			return metricsModelDTO{}, closings.ErrUnavailable
+		}
+		name := model.Name
+		record.Name = &name
+	default:
+		return metricsModelDTO{}, closings.ErrUnavailable
+	}
+	return record, nil
 }
 
 // metricsCapacityPattern admits the rendered capacity of a model: whole or fractional ampere-hours
