@@ -8,7 +8,7 @@ import {
 } from './transferModel';
 import { captureDecisionRecord, matchesDecisionRecord, satisfiesDecision, type TransferDecision } from './transferDecisionRecovery';
 import { countCorrectionsPath, parseCountCorrections, type CountCorrections } from './transferCountCorrectionModel';
-export type TransferErrorCode = 'invalid_request' | 'unauthenticated' | 'forbidden' | 'not_found' | 'method_not_allowed' | 'insufficient_stock' | 'retry_conflict' | 'decision_conflict' | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
+export type TransferErrorCode = 'invalid_request' | 'unauthenticated' | 'forbidden' | 'not_found' | 'method_not_allowed' | 'insufficient_stock' | 'retry_conflict' | 'decision_conflict' | 'branch_frozen' | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
 export class TransferAPIError extends Error {
   constructor(public readonly code: TransferErrorCode, public readonly status: number | null, public readonly uncertainCreation = false, public readonly uncertainDecision = false, public readonly uncertainDispatch = false, public readonly uncertainReceipt = false, public readonly uncertainCancellation = false, public readonly uncertainCorrection = false) { super(code); this.name = 'TransferAPIError'; }
 }
@@ -20,7 +20,7 @@ export interface TransferReadOptions { signal?: AbortSignal; passive?: boolean }
 export interface TransferCreateResult { record: TransferRecord; replayed: boolean }
 const serverCodes: Record<number, readonly TransferErrorCode[]> = {
   400: ['invalid_request'], 401: ['unauthenticated'], 403: ['forbidden'], 404: ['not_found'],
-  405: ['method_not_allowed'], 409: ['insufficient_stock', 'retry_conflict'], 503: ['service_unavailable'],
+  405: ['method_not_allowed'], 409: ['insufficient_stock', 'retry_conflict', 'branch_frozen'], 503: ['service_unavailable'],
 };
 function local<T>(build: () => T): T {
   try { return build(); } catch { throw new TransferAPIError('invalid_request', null); }
@@ -50,8 +50,8 @@ export function createTransferAPI(fetch: typeof globalThis.fetch = globalThis.fe
       catch { throw malformed(); }
       if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'error')) throw malformed();
       const code = (value as { error: unknown }).error;
-      const admitted = reply.status === 409 && cancellation ? ['decision_conflict'] : reply.status === 409 && receipt ? ['retry_conflict', 'decision_conflict']
-        : reply.status === 409 && (decision || dispatch) ? ['insufficient_stock', 'decision_conflict'] : serverCodes[reply.status];
+      const admitted = reply.status === 409 && cancellation ? ['decision_conflict'] : reply.status === 409 && receipt ? ['retry_conflict', 'decision_conflict', 'branch_frozen']
+        : reply.status === 409 && (decision || dispatch) ? ['insufficient_stock', 'decision_conflict', 'branch_frozen'] : serverCodes[reply.status];
       if (typeof code !== 'string' || !admitted?.includes(code as TransferErrorCode)) throw malformed();
       throw new TransferAPIError(code as TransferErrorCode, reply.status);
     }

@@ -187,7 +187,7 @@ describe('R2 Received lifecycle transport', () => {
     });
   });
   it.each([[400, 'invalid_request'], [401, 'unauthenticated'], [403, 'forbidden'], [404, 'not_found'],
-    [409, 'retry_conflict'], [409, 'decision_conflict'], [503, 'service_unavailable']] as const)
+    [409, 'retry_conflict'], [409, 'decision_conflict'], [409, 'branch_frozen'], [503, 'service_unavailable']] as const)
     ('keeps definite receive failure %s/%s separate from mutation uncertainty', async (status, code) => {
       const fetch = mockFetch().mockResolvedValue(response({ error: code }, status));
       await expect(createTransferAPI(fetch).receive(parse(transit), { items: [{ variant_id: 201, actual_quantity: '1' }] }, 'memory'))
@@ -262,7 +262,7 @@ describe('D2 dispatch transport', () => {
       await expect(createTransferAPI(fetch).dispatch(original(), 'memory_csrf')).rejects.toMatchObject({ uncertainDispatch: true, uncertainCreation: false, uncertainDecision: false });
     }
   });
-  it.each([[403, 'forbidden'], [404, 'not_found'], [409, 'decision_conflict'], [503, 'service_unavailable']] as const)('preserves definite dispatch failure %s', async (status, error) => {
+  it.each([[403, 'forbidden'], [404, 'not_found'], [409, 'decision_conflict'], [409, 'branch_frozen'], [503, 'service_unavailable']] as const)('preserves definite dispatch failure %s', async (status, error) => {
     const fetch = mockFetch().mockResolvedValue(response({ error }, status));
     await expect(createTransferAPI(fetch).dispatch(original(), 'memory_csrf')).rejects.toMatchObject({ status, code: error, uncertainDispatch: false });
   });
@@ -511,7 +511,7 @@ describe('R04 pure transfer API', () => {
   });
   it.each([
     [400, 'invalid_request'], [401, 'unauthenticated'], [403, 'forbidden'], [404, 'not_found'],
-    [405, 'method_not_allowed'], [409, 'insufficient_stock'], [409, 'retry_conflict'], [503, 'service_unavailable'],
+    [405, 'method_not_allowed'], [409, 'insufficient_stock'], [409, 'retry_conflict'], [409, 'branch_frozen'], [503, 'service_unavailable'],
   ] as const)('exposes only known sanitized status/code %s %s', async (status, code) => {
     const fetch = mockFetch().mockResolvedValue(response({ error: code }, status));
     await expect(createTransferAPI(fetch).create(input(), 'memory')).rejects.toMatchObject({ code, status });

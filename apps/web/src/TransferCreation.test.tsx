@@ -579,7 +579,7 @@ describe('R04b2c2 manual lifecycle', () => {
   it.each([
     [403, 'forbidden', 'No tenés permiso'], [401, 'unauthenticated', 'validarse nuevamente'],
     [503, 'service_unavailable', 'servicio no está disponible'], [409, 'insufficient_stock', 'rechazó la creación por stock insuficiente'],
-    [409, 'retry_conflict', 'clave corresponde a otro contenido'],
+    [409, 'retry_conflict', 'clave corresponde a otro contenido'], [409, 'branch_frozen', 'rendición abierta'],
   ] as const)('preserves exact attempt and sanitizes %s/%s without fake success', async (status, code, message) => {
     const h = harness(); const recovery = createTransferRecovery();
     const fetcher = vi.spyOn(globalThis, 'fetch').mockResolvedValue(reply({ error: code }, status));
