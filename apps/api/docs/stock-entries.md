@@ -42,10 +42,14 @@ trailing slash is `404 not_found`, never a redirect.
 ### Request
 
 ```json
-{"operation_key":"[A-Za-z0-9_-]{16,128}","note":"string, optional, <=500 chars",
+{"operation_key":"[A-Za-z0-9_-]{16,128}","supplier_id":1,
+ "note":"string, optional, <=500 chars",
  "lines":[{"variant_id":1,"quantity":2}]}
 ```
 
+* `supplier_id` is **mandatory** and a canonical positive integer (no string
+  alias, no leading zeros, no sign). It names the supplier that delivers the
+  document and is frozen with it.
 * `lines` holds 1 to 190 entries, `variant_id` is unique per document and
   `quantity` is between 1 and 1000000.
 * A document is of **one kind** and never mixes: the kind is derived from its
@@ -53,6 +57,15 @@ trailing slash is `404 not_found`, never a redirect.
   product is refused whole with `400 invalid_request`, and nothing is written —
   no document, no line and no balance movement. A product-only document is
   admitted exactly like a battery-only one, and a retired entry is refused.
+* **The supplier is a rule of the server, not of the screen.** Every line of a new
+  document must belong to a catalogue entry that the named supplier offers: a
+  line outside that set is `400 invalid_request` and nothing is written — not
+  even the offered lines beside it. A supplier with no offers admits no document
+  at all; there is no auto-assignment.
+* A supplier that is unknown or retired is `409 decision_conflict`: the document
+  is not written and the ingress is never answered with an invented supplier.
+  Historical documents written before suppliers existed keep a null supplier and
+  are neither rewritten nor re-validated.
 * `note` is optional; when present it must be valid UTF-8 without NUL and at most
   500 characters.
 * Decoding is token-exact: unknown keys, duplicate keys (including
@@ -63,23 +76,26 @@ trailing slash is `404 not_found`, never a redirect.
 ### Success
 
 ```json
-{"id":1,"location_id":1,"note":"","created_by_account_id":1,
- "created_at":"2026-02-03T04:05:06Z",
+{"id":1,"location_id":1,"note":"","supplier":{"id":1,"name":"Proveedor Central"},
+ "created_by_account_id":1,"created_at":"2026-02-03T04:05:06Z",
  "lines":[{"variant_id":1,"quantity":2}],"total_units":2}
 ```
 
 `created_at` is RFC3339 in UTC, `lines` are ordered by `variant_id` and
-`total_units` is the exact sum of the line quantities.
+`total_units` is the exact sum of the line quantities. `supplier` is the supplier
+of the document: its id and the name it has stored. It is `null` only for a
+historical document that predates suppliers, never for a document created or
+replayed through this route.
 
 ### Idempotency
 
 `operation_key` identifies one intent. Resending the same canonical payload
-(location, note, and the variant-ordered lines) returns `200` with the persisted
-document and changes nothing. Sending a different payload under the same key
-returns `409 retry_conflict` and writes nothing, because the first document is
-already the truth. Only the operation key is serialized
-(`pg_advisory_xact_lock`), so a concurrent duplicate submission resolves to a
-replay instead of a unique violation.
+(location, supplier, note, and the variant-ordered lines) returns `200` with the
+persisted document and changes nothing. Sending a different payload under the
+same key — another supplier included — returns `409 retry_conflict` and writes
+nothing, because the first document is already the truth. Only the operation key
+is serialized (`pg_advisory_xact_lock`), so a concurrent duplicate submission
+resolves to a replay instead of a unique violation.
 
 ## History
 
@@ -98,7 +114,9 @@ GET /api/stock-entries?page=1&page_size=25
 
 ```json
 {"page":1,"page_size":25,"total_entries":3,
- "entries":[{"id":6,"note":"Remito 0002-00045871","created_at":"2026-11-04T14:20:00Z",
+ "entries":[{"id":6,"note":"Remito 0002-00045871",
+  "supplier":{"id":1,"name":"Proveedor Central"},
+  "created_at":"2026-11-04T14:20:00Z",
   "lines":2,"total_units":18,"reversed_by":null}]}
 ```
 
@@ -107,22 +125,25 @@ and paging with a stable `page_size` never repeats or skips a document.
 `total_entries` counts every document of the warehouse, independent of the
 requested page, which makes an empty page beyond the last one harmless.
 
-Each row is a summary of exactly six fields:
+Each row is a summary of exactly seven fields:
 
 | Field | Meaning |
 |---|---|
 | `id` | Document number |
 | `note` | Header note; empty string when absent |
+| `supplier` | `{id,name}` of the document's supplier, or `null` for a historical document |
 | `created_at` | RFC3339 in UTC |
 | `lines` | Number of lines in the document |
 | `total_units` | Exact sum of the line quantities |
 | `reversed_by` | Id of the counter-entry that reverses this document, or `null` |
 
-`lines` and `total_units` are computed by the database in `bigint`/`numeric` and
-come back as one page statement plus one total statement, never by summing every
-line in the application. A counter-entry is itself a document, so it appears in
-the history with its own negative `total_units`, and the document it reverses
-reports its `id` in `reversed_by`.
+`supplier` is read by the same page statement (one `join` on `suppliers`), never
+by a lookup per row, and a retired supplier keeps answering its name. `lines` and
+`total_units` are computed by the database in `bigint`/`numeric` and come back as
+one page statement plus one total statement, never by summing every line in the
+application. A counter-entry is itself a document, so it appears in the history
+with its own negative `total_units`, and the document it reverses reports its
+`id` in `reversed_by`; both rows repeat the same `supplier`.
 
 Per-line detail never appears in this list: the document detail is a separate
 contract. This history carries no kind of its own either; the kind of the
@@ -151,7 +172,8 @@ redirected. A query string is not part of this contract: `?page=1` and a bare
 ### Success
 
 ```json
-{"id":6,"location_id":1,"note":"Remito 0002-00045871","created_at":"2026-11-04T14:20:00Z",
+{"id":6,"location_id":1,"note":"Remito 0002-00045871","supplier":{"id":1,"name":"Proveedor Central"},
+ "created_at":"2026-11-04T14:20:00Z",
  "created_by_account_id":1,"reverses_entry_id":null,"reversed_by":null,"reason":"",
  "lines":[{"variant_id":7,"kind":"battery","name":"TOYO · NS60L","detail":"45 Ah · L",
   "battery":{"brand":"TOYO","model":"NS60L","capacity_ah":"45","polarity":"L"},
@@ -164,6 +186,7 @@ redirected. A query string is not part of this contract: `?page=1` and a bare
 | `id` | Document number |
 | `location_id` | Always `1`: the warehouse |
 | `note` | Header note; empty string when absent |
+| `supplier` | `{id,name}` of the document's supplier, or `null` for a historical document |
 | `created_at` | RFC3339 in UTC |
 | `created_by_account_id` | The warehouse administrator that confirmed the document |
 | `reverses_entry_id` | The original document when this one is a counter-entry, otherwise `null` |
@@ -199,6 +222,11 @@ correction, so a detail read answers both without a second request:
   has been corrected, `reversed_by: <counter-entry id>`.
 * The counter-entry has `reverses_entry_id: <original id>`, the persisted
   `reason` and `reversed_by: null`.
+
+`supplier` is the same in both directions: a counter-entry repeats the supplier of
+its original, because the correction is of the same ingress. A historical
+document keeps `supplier: null` in its detail, in the history and in its own
+counter-entry; the null is never replaced by an invented supplier.
 
 Nothing here is inferred from the client: a document of another location, an
 unknown id and an aliased id are all `not_found`, exactly like the counter-entry
@@ -247,6 +275,14 @@ therefore the exact negation of the original total, and the original document is
 never touched: both documents stay visible forever, and the original reports its
 counter-entry through `reversed_by` in the history.
 
+**The supplier is inherited, never requested.** The reversal body has no
+`supplier_id`: the store reads the supplier of the original in the same locked
+statement that reads its location and reversal target, and the counter-entry
+persists that supplier. A historical original has none, so its counter-entry has
+none either. The database still refuses (`LS012`) a counter-entry whose supplier
+differs from its original's, so the mirror is a database rule and not a caller
+promise.
+
 One counter-entry per document: the partial unique index on
 `reverses_entry_id` admits at most one, a counter-entry is not itself a reversal
 target, and a document is never its own target.
@@ -254,14 +290,16 @@ target, and a document is never its own target.
 ### Success
 
 ```json
-{"id":2,"location_id":1,"note":"","created_by_account_id":1,
- "created_at":"2026-02-03T04:06:11Z",
+{"id":2,"location_id":1,"note":"","supplier":{"id":1,"name":"Proveedor Central"},
+ "created_by_account_id":1,"created_at":"2026-02-03T04:06:11Z",
  "lines":[{"variant_id":1,"quantity":-2},{"variant_id":2,"quantity":-3}],
  "total_units":-5}
 ```
 
 The shape is exactly the creation shape. The counter-entry has no note of its
-own (`note` is always the empty string) and its lines and total are negative.
+own (`note` is always the empty string) and its lines and total are negative. Its
+`supplier` is the supplier of the original document, or `null` when the original
+is a historical document without one.
 
 ### Idempotency
 
@@ -307,10 +345,11 @@ Every failure returns exactly `{"error":"<code>"}`.
 
 | Status | Code | Meaning |
 |---|---|---|
-| 400 | `invalid_request` | Malformed body, bad field, duplicate variant, a document that mixes kinds, an exceeded limit, or an inadmissible `page`/`page_size` |
+| 400 | `invalid_request` | Malformed body, missing or non-canonical `supplier_id`, a line the supplier does not offer, a document that mixes kinds, duplicate variant, an exceeded limit, or an inadmissible `page`/`page_size` |
 | 403 | `forbidden` | The caller is not the warehouse administrator |
+| 409 | `decision_conflict` | The named supplier is unknown or retired (creation) |
 | 409 | `insufficient_stock` | The line would leave `existing < reserved` |
-| 409 | `retry_conflict` | The operation key is bound to a different payload |
+| 409 | `retry_conflict` | The operation key is bound to a different payload, supplier included |
 | 503 | `service_unavailable` | Pool, database, or any unmapped failure |
 
 Failures never leak driver, SQL, or configuration details; only the database's
@@ -335,11 +374,29 @@ decides the following, with stable SQLSTATEs:
 | `LS005` | `location_id <> 1` | 400 `invalid_request` |
 | `LS006` | Reversal target missing, in another location, or itself a reversal | 400 `invalid_request` |
 | `LS007` | The resulting `existing` would exceed `bigint` | 400 `invalid_request` |
+| `LS009` | A new ingress document without a supplier | 400 `invalid_request` |
+| `LS010` | The named supplier is unknown or retired | 409 `decision_conflict` |
+| `LS011` | A line whose catalogue entry the supplier does not offer | 400 `invalid_request` |
+| `LS012` | A counter-entry whose supplier differs from its original's | 400 `invalid_request` |
 
 Ingress only ever adds to `existing` and never touches `reserved`. Balance rows
 are locked and updated line by line in ascending `variant_id` order, so the
 document's lock order is deterministic. Quantities are summed with an explicit
 `bigint` bound check instead of wrapping.
+
+### Supplier
+
+`stock_entries.supplier_id` is a nullable reference to `suppliers(id)`: a new
+document always names an active supplier, and a historical document written
+before suppliers existed keeps `NULL` and is neither rewritten nor re-validated.
+A supplier is retired, never deleted, so every document that names it keeps
+reading, and its name is read by the same statement as the document (one `join`,
+never a lookup per row). The database, not the application, enforces the four
+new rules: a new ingress document without a supplier (`LS009`), an unknown or
+retired supplier (`LS010`), a line outside the supplier's offer list (`LS011`)
+and a counter-entry whose supplier differs from its original's (`LS012`). A
+reversal and a historical document are exempt from the offer list, because a
+reversal follows a persisted original instead of a selection.
 
 ### Counter-entries
 

@@ -80,6 +80,20 @@ func admitActiveVariants(ctx context.Context, q querier, lines []Line) error {
 	return nil
 }
 
+// persistedSupplier composes the supplier projection of one persisted document
+// from the two columns it is read with. Both columns are null together for a
+// historical document; any other combination means the row is not what this
+// domain wrote, so the read fails closed instead of inventing a supplier.
+func persistedSupplier(id *int64, name *string) (*Supplier, error) {
+	if id == nil && name == nil {
+		return nil, nil
+	}
+	if id == nil || name == nil || *id < 1 {
+		return nil, ErrUnavailable
+	}
+	return &Supplier{ID: *id, Name: *name}, nil
+}
+
 // CreateEntry applies one immutable ingress document atomically. The warehouse
 // administrator is the only admitted actor; the canonical payload is resolved
 // first, so an identical replay returns the persisted document and a different
@@ -124,7 +138,8 @@ func (s *Store) CreateEntry(ctx context.Context, actor auth.Identity, input Crea
 		if err != nil {
 			return Entry{}, false, err
 		}
-		if entry.Note != canonical.Note || !sameLines(entry.Lines, canonical.Lines) {
+		if entry.Note != canonical.Note || !sameLines(entry.Lines, canonical.Lines) ||
+			entry.Supplier == nil || entry.Supplier.ID != canonical.SupplierID {
 			return Entry{}, false, ErrRetryConflict
 		}
 		if err := tx.Commit(ctx); err != nil {
@@ -138,8 +153,8 @@ func (s *Store) CreateEntry(ctx context.Context, actor auth.Identity, input Crea
 	if err := admitActiveVariants(ctx, tx, canonical.Lines); err != nil {
 		return Entry{}, false, err
 	}
-	err = tx.QueryRow(ctx, `INSERT INTO stock_entries(operation_key,location_id,note,created_by_account_id)
- VALUES($1,$2,$3,$4) RETURNING id`, canonical.OperationKey, warehouseLocationID, canonical.Note, actor.AccountID).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO stock_entries(operation_key,location_id,note,supplier_id,created_by_account_id)
+ VALUES($1,$2,$3,$4,$5) RETURNING id`, canonical.OperationKey, warehouseLocationID, canonical.Note, canonical.SupplierID, actor.AccountID).Scan(&id)
 	if err != nil {
 		return Entry{}, false, mapFailure(ctx, err)
 	}
@@ -226,13 +241,15 @@ func (s *Store) ReverseEntry(ctx context.Context, actor auth.Identity, targetID 
 		return Entry{}, false, fail(ctx)
 	}
 	// The target row is locked before it is judged, so a concurrent reversal of
-	// the same document cannot slip between the check and the insert.
+	// the same document cannot slip between the check and the insert. The supplier
+	// is read in this same statement: a counter-entry inherits it and never takes
+	// one from the client.
 	var location int
-	var targetReverses *int64
+	var targetReverses, supplier *int64
 	var alreadyReversed bool
-	err = tx.QueryRow(ctx, `SELECT e.location_id,e.reverses_entry_id,
+	err = tx.QueryRow(ctx, `SELECT e.location_id,e.reverses_entry_id,e.supplier_id,
   EXISTS(SELECT 1 FROM stock_entries counter WHERE counter.reverses_entry_id=e.id)
- FROM stock_entries e WHERE e.id=$1 FOR UPDATE`, targetID).Scan(&location, &targetReverses, &alreadyReversed)
+ FROM stock_entries e WHERE e.id=$1 FOR UPDATE`, targetID).Scan(&location, &targetReverses, &supplier, &alreadyReversed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Entry{}, false, ErrNotFound
 	}
@@ -251,8 +268,8 @@ func (s *Store) ReverseEntry(ctx context.Context, actor auth.Identity, targetID 
 		return Entry{}, false, err
 	}
 	var id int64
-	err = tx.QueryRow(ctx, `INSERT INTO stock_entries(operation_key,location_id,note,reverses_entry_id,reason,created_by_account_id)
- VALUES($1,$2,'',$3,$4,$5) RETURNING id`, operationKey, warehouseLocationID, targetID, canonicalReason, actor.AccountID).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO stock_entries(operation_key,location_id,note,reverses_entry_id,reason,supplier_id,created_by_account_id)
+ VALUES($1,$2,'',$3,$4,$5,$6) RETURNING id`, operationKey, warehouseLocationID, targetID, canonicalReason, supplier, actor.AccountID).Scan(&id)
 	if err != nil {
 		return Entry{}, false, mapFailure(ctx, err)
 	}
@@ -344,11 +361,13 @@ func (s *Store) ListEntries(ctx context.Context, actor auth.Identity, page, page
 	rows, err := tx.Query(ctx, `SELECT e.id,e.note,e.created_at,
   count(l.variant_id)::bigint,
   coalesce(sum(l.quantity),0)::text,
-  (SELECT counter.id FROM stock_entries counter WHERE counter.reverses_entry_id=e.id)
+  (SELECT counter.id FROM stock_entries counter WHERE counter.reverses_entry_id=e.id),
+  e.supplier_id, s.name
  FROM stock_entries e
  LEFT JOIN stock_entry_lines l ON l.entry_id=e.id
+ LEFT JOIN suppliers s ON s.id=e.supplier_id
  WHERE e.location_id=$1
- GROUP BY e.id
+ GROUP BY e.id, s.name
  ORDER BY e.id DESC
  LIMIT $2 OFFSET $3`, warehouseLocationID, int64(pageSize), int64(page-1)*int64(pageSize))
 	if err != nil {
@@ -359,9 +378,19 @@ func (s *Store) ListEntries(ctx context.Context, actor auth.Identity, page, page
 		var summary EntrySummary
 		var lines int64
 		var units string
-		if rows.Scan(&summary.ID, &summary.Note, &summary.CreatedAt, &lines, &units, &summary.ReversedBy) != nil {
+		var supplierID *int64
+		var supplierName *string
+		if rows.Scan(&summary.ID, &summary.Note, &summary.CreatedAt, &lines, &units, &summary.ReversedBy,
+			&supplierID, &supplierName) != nil {
 			return EntryPage{}, fail(ctx)
 		}
+		// The supplier name is read by the same statement, so a page is never an
+		// N+1 lookup; its shape is still checked before it reaches the wire.
+		supplier, err := persistedSupplier(supplierID, supplierName)
+		if err != nil {
+			return EntryPage{}, err
+		}
+		summary.Supplier = supplier
 		// A persisted document always has between one and maxLines lines.
 		if lines < 1 || lines > maxLines {
 			return EntryPage{}, ErrUnavailable
@@ -417,17 +446,29 @@ func (s *Store) ReadEntry(ctx context.Context, actor auth.Identity, id int64) (E
 		_ = tx.Rollback(cleanup)
 	}()
 	var detail EntryDetail
+	var supplierID *int64
+	var supplierName *string
 	err = tx.QueryRow(ctx, `SELECT e.id,e.location_id,e.note,e.created_by_account_id,e.created_at,e.reverses_entry_id,e.reason,
-  (SELECT counter.id FROM stock_entries counter WHERE counter.reverses_entry_id=e.id)
- FROM stock_entries e WHERE e.id=$1 AND e.location_id=$2`, id, warehouseLocationID).Scan(
+  (SELECT counter.id FROM stock_entries counter WHERE counter.reverses_entry_id=e.id),
+  e.supplier_id, s.name
+ FROM stock_entries e
+ LEFT JOIN suppliers s ON s.id=e.supplier_id
+ WHERE e.id=$1 AND e.location_id=$2`, id, warehouseLocationID).Scan(
 		&detail.ID, &detail.LocationID, &detail.Note, &detail.CreatedByAccountID, &detail.CreatedAt,
-		&detail.ReversesEntryID, &detail.Reason, &detail.ReversedBy)
+		&detail.ReversesEntryID, &detail.Reason, &detail.ReversedBy, &supplierID, &supplierName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return EntryDetail{}, ErrNotFound
 	}
 	if err != nil {
 		return EntryDetail{}, fail(ctx)
 	}
+	// The supplier is joined by the same header statement, so the detail read is
+	// never an N+1 lookup either.
+	supplier, err := persistedSupplier(supplierID, supplierName)
+	if err != nil {
+		return EntryDetail{}, err
+	}
+	detail.Supplier = supplier
 	rows, err := tx.Query(ctx, `SELECT l.variant_id,e.id,e.kind,coalesce(e.brand,''),coalesce(e.model,''),
   e.capacity_ah::text,coalesce(v.polarity,''),coalesce(e.name,''),l.quantity
  FROM stock_entry_lines l
@@ -528,15 +569,26 @@ func (s *Store) ReadEntry(ctx context.Context, actor auth.Identity, id int64) (E
 // reversal target is internal only; it never reaches the wire.
 func loadEntry(ctx context.Context, q querier, id int64) (Entry, error) {
 	var entry Entry
-	err := q.QueryRow(ctx, `SELECT id,location_id,note,created_by_account_id,created_at,reverses_entry_id
- FROM stock_entries WHERE id=$1 AND location_id=$2`, id, warehouseLocationID).Scan(
-		&entry.ID, &entry.LocationID, &entry.Note, &entry.CreatedByAccountID, &entry.CreatedAt, &entry.ReversesEntryID)
+	var supplierID *int64
+	var supplierName *string
+	err := q.QueryRow(ctx, `SELECT e.id,e.location_id,e.note,e.created_by_account_id,e.created_at,e.reverses_entry_id,
+  e.supplier_id, s.name
+ FROM stock_entries e
+ LEFT JOIN suppliers s ON s.id=e.supplier_id
+ WHERE e.id=$1 AND e.location_id=$2`, id, warehouseLocationID).Scan(
+		&entry.ID, &entry.LocationID, &entry.Note, &entry.CreatedByAccountID, &entry.CreatedAt, &entry.ReversesEntryID,
+		&supplierID, &supplierName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Entry{}, ErrUnavailable
 	}
 	if err != nil {
 		return Entry{}, fail(ctx)
 	}
+	supplier, err := persistedSupplier(supplierID, supplierName)
+	if err != nil {
+		return Entry{}, err
+	}
+	entry.Supplier = supplier
 	rows, err := q.Query(ctx, "SELECT variant_id,quantity FROM stock_entry_lines WHERE entry_id=$1 ORDER BY variant_id", id)
 	if err != nil {
 		return Entry{}, fail(ctx)
@@ -580,6 +632,14 @@ func mapFailure(ctx context.Context, err error) error {
 			return ErrInsufficientStock
 		case "LS002", "LS003", "LS005", "LS006", "LS007":
 			return ErrInvalid
+		// The supplier guards. A document without a supplier, a line its supplier
+		// does not offer and a counter-entry that would not mirror its original's
+		// supplier are rejected payloads; an unknown or retired supplier is a
+		// decision the warehouse cannot take.
+		case "LS009", "LS011", "LS012":
+			return ErrInvalid
+		case "LS010":
+			return ErrDecisionConflict
 		}
 	}
 	return ErrUnavailable

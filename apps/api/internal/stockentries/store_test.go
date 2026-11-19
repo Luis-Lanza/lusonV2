@@ -21,6 +21,14 @@ import (
 	"luson/api/internal/testpg"
 )
 
+// testSupplierID is the supplier the fixture seeds for every document of these
+// tests. A fresh database starts the supplier identity at 1, and the fixture
+// refuses to run when that is no longer true, so the seeded supplier is also the
+// one a persisted document names.
+const testSupplierID = 1
+
+const testSupplierName = "Proveedor Central"
+
 // fixture provisions the isolated database exactly like the transfer stores do.
 // Without an admitted LUSON_TEST_PG_MANIFEST every database test below fails
 // closed at testpg.Open and that is the expected local outcome.
@@ -39,7 +47,36 @@ func fixture(t *testing.T) (context.Context, *pgxpool.Pool, *stockentries.Store)
 	if bootstrap.Provision(ctx, p, credentials) != nil {
 		t.Fatal("test account provisioning failed")
 	}
+	if supplier := seedSupplier(t, ctx, p, testSupplierName); supplier != testSupplierID {
+		t.Fatalf("the first supplier must be the fixture supplier: got %d", supplier)
+	}
 	return ctx, p, stockentries.New(p)
+}
+
+// seedSupplier inserts one supplier and offers it every catalogue entry that
+// exists at that moment, exactly like the supplier routes write them. A test
+// that adds a catalogue entry later offers it explicitly with offerVariants.
+func seedSupplier(t *testing.T, ctx context.Context, p *pgxpool.Pool, name string) int64 {
+	t.Helper()
+	var id int64
+	if err := p.QueryRow(ctx, "INSERT INTO suppliers(name) VALUES($1) RETURNING id", name).Scan(&id); err != nil {
+		t.Fatal("supplier fixture setup failed")
+	}
+	if _, err := p.Exec(ctx, `INSERT INTO supplier_offers(supplier_id,catalog_entry_id)
+ SELECT $1::bigint,id FROM catalog_entries WHERE deleted_at IS NULL`, id); err != nil {
+		t.Fatalf("supplier offer fixture setup failed: %v", err)
+	}
+	return id
+}
+
+// offerVariants assigns the catalogue entry of each variant to a supplier: an
+// offer is entry-level, so a variant id is enough to state it.
+func offerVariants(t *testing.T, ctx context.Context, p *pgxpool.Pool, supplier int64, variants ...int64) {
+	t.Helper()
+	if _, err := p.Exec(ctx, `INSERT INTO supplier_offers(supplier_id,catalog_entry_id)
+ SELECT DISTINCT $1::bigint,v.catalog_entry_id FROM catalog_variants v WHERE v.id=ANY($2::bigint[])`, supplier, variants); err != nil {
+		t.Fatalf("supplier offer fixture setup failed: %v", err)
+	}
 }
 
 func warehouse() auth.Identity {
@@ -51,7 +88,7 @@ func branch() auth.Identity {
 }
 
 func input(key string, lines ...stockentries.Line) stockentries.CreateInput {
-	return stockentries.CreateInput{OperationKey: key, Note: "compra de proveedor", Lines: lines}
+	return stockentries.CreateInput{OperationKey: key, SupplierID: testSupplierID, Note: "compra de proveedor", Lines: lines}
 }
 
 // snapshot captures every table this domain owns, so a rejected document is
@@ -88,7 +125,8 @@ func scalar(t *testing.T, ctx context.Context, p *pgxpool.Pool, query string, ar
 }
 
 // reverse persists a counter-entry exactly like a later correction screen would,
-// inside one transaction because its completeness check runs at commit.
+// inside one transaction because its completeness check runs at commit. It
+// inherits the supplier of its original, exactly like the store does.
 func reverse(t *testing.T, ctx context.Context, p *pgxpool.Pool, original int64, key, reason string, lines ...stockentries.Line) error {
 	t.Helper()
 	tx, err := p.BeginTx(ctx, pgx.TxOptions{})
@@ -97,8 +135,8 @@ func reverse(t *testing.T, ctx context.Context, p *pgxpool.Pool, original int64,
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	var id int64
-	if err := tx.QueryRow(ctx, `INSERT INTO stock_entries(operation_key,location_id,note,reverses_entry_id,reason,created_by_account_id)
- VALUES($1,1,'',$2,$3,1) RETURNING id`, key, original, reason).Scan(&id); err != nil {
+	if err := tx.QueryRow(ctx, `INSERT INTO stock_entries(operation_key,location_id,note,reverses_entry_id,reason,created_by_account_id,supplier_id)
+ VALUES($1,1,'',$2,$3,1,(SELECT supplier_id FROM stock_entries WHERE id=$2)) RETURNING id`, key, original, reason).Scan(&id); err != nil {
 		return err
 	}
 	for _, line := range lines {
@@ -157,8 +195,8 @@ func TestListEntriesNewestFirst(t *testing.T) {
 	ids := make([]int64, 0, 3)
 	for i, in := range []stockentries.CreateInput{
 		input("history-key-0000000001", stockentries.Line{VariantID: 1, Quantity: 3}),
-		{OperationKey: "history-key-0000000002", Note: "Remito 0002-00045871", Lines: []stockentries.Line{{VariantID: 2, Quantity: 14}, {VariantID: 1, Quantity: 4}}},
-		{OperationKey: "history-key-0000000003", Lines: []stockentries.Line{{VariantID: 3, Quantity: 1}}},
+		{OperationKey: "history-key-0000000002", SupplierID: testSupplierID, Note: "Remito 0002-00045871", Lines: []stockentries.Line{{VariantID: 2, Quantity: 14}, {VariantID: 1, Quantity: 4}}},
+		{OperationKey: "history-key-0000000003", SupplierID: testSupplierID, Lines: []stockentries.Line{{VariantID: 3, Quantity: 1}}},
 	} {
 		entry, _, err := s.CreateEntry(ctx, warehouse(), in)
 		if err != nil {
@@ -177,6 +215,12 @@ func TestListEntriesNewestFirst(t *testing.T) {
 	if second.Note != "Remito 0002-00045871" || second.Lines != 2 || second.TotalUnits != 18 ||
 		second.ReversedBy != nil || second.CreatedAt.IsZero() {
 		t.Fatal("summary does not match the persisted document")
+	}
+	// Every row carries the supplier of its own document, without an N+1 lookup.
+	for _, row := range page.Entries {
+		if row.Supplier == nil || row.Supplier.ID != testSupplierID || row.Supplier.Name != testSupplierName {
+			t.Fatal("a history row must carry the supplier of its document")
+		}
 	}
 	if page.Entries[0].Note != "" || page.Entries[0].Lines != 1 || page.Entries[0].TotalUnits != 1 {
 		t.Fatal("an empty note and a single line must be summarized exactly")
@@ -243,6 +287,11 @@ func TestListEntriesReversedBy(t *testing.T) {
 	original := page.Entries[1]
 	if original.ID != entry.ID || original.TotalUnits != 5 || original.ReversedBy == nil || *original.ReversedBy != counterID {
 		t.Fatal("a reversed document must expose its counter-entry and keep its total")
+	}
+	// A counter-entry inherits the supplier of its original, so both rows agree.
+	if counter.Supplier == nil || counter.Supplier.ID != testSupplierID ||
+		original.Supplier == nil || *counter.Supplier != *original.Supplier {
+		t.Fatal("a counter-entry must be listed with its original's supplier")
 	}
 }
 
@@ -319,6 +368,13 @@ func TestCreateEntryAppliesBalance(t *testing.T) {
 		entry.Lines[1].VariantID != 2 || entry.Lines[1].Quantity != 2 || entry.CreatedAt.IsZero() {
 		t.Fatal("persisted document does not match the frozen contract")
 	}
+	// The document names the supplier it was written with, never an invented one.
+	if entry.Supplier == nil || entry.Supplier.ID != testSupplierID || entry.Supplier.Name != testSupplierName {
+		t.Fatal("the persisted document must carry its supplier")
+	}
+	if n := scalar(t, ctx, p, "SELECT count(*) FROM stock_entries WHERE id=$1 AND supplier_id=$2", entry.ID, testSupplierID); n != 1 {
+		t.Fatal("the supplier must be persisted with the document")
+	}
 	if got, reserved := balances(t, ctx, p, 1, 1); got != existingOne+3 || reserved != reservedOne {
 		t.Fatal("ingress must add to existing and never touch reserved")
 	}
@@ -365,7 +421,8 @@ func TestCreateEntryReplayConflict(t *testing.T) {
 	}
 	before := snapshot(t, ctx, p)
 	for name, changed := range map[string]stockentries.CreateInput{
-		"note":     {OperationKey: in.OperationKey, Note: "otra nota", Lines: in.Lines},
+		"note":     {OperationKey: in.OperationKey, SupplierID: testSupplierID, Note: "otra nota", Lines: in.Lines},
+		"supplier": {OperationKey: in.OperationKey, SupplierID: testSupplierID + 1, Note: in.Note, Lines: in.Lines},
 		"quantity": input(in.OperationKey, stockentries.Line{VariantID: 1, Quantity: 3}),
 		"variant":  input(in.OperationKey, stockentries.Line{VariantID: 2, Quantity: 2}),
 		"extra":    input(in.OperationKey, stockentries.Line{VariantID: 1, Quantity: 2}, stockentries.Line{VariantID: 2, Quantity: 1}),
@@ -405,11 +462,17 @@ func TestCreateEntryRejectsInvalidWithoutWriting(t *testing.T) {
 	before := snapshot(t, ctx, p)
 	for name, in := range map[string]stockentries.CreateInput{
 		"empty_lines":  input("invalid-key-0000000001"),
-		"short_key":    {OperationKey: "short", Lines: []stockentries.Line{{VariantID: 1, Quantity: 1}}},
+		"short_key":    {OperationKey: "short", SupplierID: testSupplierID, Lines: []stockentries.Line{{VariantID: 1, Quantity: 1}}},
 		"zero_qty":     input("invalid-key-0000000002", stockentries.Line{VariantID: 1, Quantity: 0}),
 		"negative_qty": input("invalid-key-0000000003", stockentries.Line{VariantID: 1, Quantity: -1}),
 		"duplicate":    input("invalid-key-0000000004", stockentries.Line{VariantID: 1, Quantity: 1}, stockentries.Line{VariantID: 1, Quantity: 2}),
-		"long_note":    {OperationKey: "invalid-key-0000000005", Note: strings.Repeat("a", 501), Lines: []stockentries.Line{{VariantID: 1, Quantity: 1}}},
+		"long_note":    {OperationKey: "invalid-key-0000000005", SupplierID: testSupplierID, Note: strings.Repeat("a", 501), Lines: []stockentries.Line{{VariantID: 1, Quantity: 1}}},
+		"no_supplier": {OperationKey: "invalid-key-0000000006", Note: "compra de proveedor",
+			Lines: []stockentries.Line{{VariantID: 1, Quantity: 1}}},
+		"zero_supplier": {OperationKey: "invalid-key-0000000007", SupplierID: 0, Note: "compra de proveedor",
+			Lines: []stockentries.Line{{VariantID: 1, Quantity: 1}}},
+		"negative_supplier": {OperationKey: "invalid-key-0000000008", SupplierID: -1, Note: "compra de proveedor",
+			Lines: []stockentries.Line{{VariantID: 1, Quantity: 1}}},
 	} {
 		if _, _, err := s.CreateEntry(ctx, warehouse(), in); !errors.Is(err, stockentries.ErrInvalid) {
 			t.Fatalf("%s must be invalid", name)
@@ -417,6 +480,93 @@ func TestCreateEntryRejectsInvalidWithoutWriting(t *testing.T) {
 	}
 	if snapshot(t, ctx, p) != before {
 		t.Fatal("an invalid document must not change any stored value")
+	}
+}
+
+// A new ingress document always names a supplier the warehouse can still use:
+// a missing supplier is a rejected payload, and an unknown or retired supplier is
+// a decision conflict. In every case nothing is written and no balance moves.
+func TestCreateEntryRequiresKnownActiveSupplier(t *testing.T) {
+	ctx, p, s := fixture(t)
+	retired := seedSupplier(t, ctx, p, "Proveedor Retirado")
+	if _, err := p.Exec(ctx, "UPDATE suppliers SET deleted_at=now() WHERE id=$1", retired); err != nil {
+		t.Fatal("supplier retirement setup failed")
+	}
+	before := snapshot(t, ctx, p)
+	existing, reserved := balances(t, ctx, p, 1, 1)
+	for i, tc := range []struct {
+		name     string
+		supplier int64
+		want     error
+	}{
+		{"missing", 0, stockentries.ErrInvalid},
+		{"negative", -1, stockentries.ErrInvalid},
+		{"unknown", math.MaxInt64, stockentries.ErrDecisionConflict},
+		{"retired", retired, stockentries.ErrDecisionConflict},
+	} {
+		in := stockentries.CreateInput{OperationKey: fmt.Sprintf("supplier-key-%016d", i),
+			SupplierID: tc.supplier, Note: "compra de proveedor",
+			Lines: []stockentries.Line{{VariantID: 1, Quantity: 1}}}
+		if _, _, err := s.CreateEntry(ctx, warehouse(), in); !errors.Is(err, tc.want) {
+			t.Fatalf("%s supplier must be %v, got %v", tc.name, tc.want, err)
+		}
+		if snapshot(t, ctx, p) != before {
+			t.Fatalf("%s supplier must not change any stored value", tc.name)
+		}
+	}
+	if got, stillReserved := balances(t, ctx, p, 1, 1); got != existing || stillReserved != reserved {
+		t.Fatal("a refused document must not move the balance")
+	}
+	// The same warehouse still admits the document with the active supplier.
+	if _, _, err := s.CreateEntry(ctx, warehouse(), input("supplier-key-000000000099",
+		stockentries.Line{VariantID: 1, Quantity: 1})); err != nil {
+		t.Fatalf("an active supplier must still be admitted: %v", err)
+	}
+}
+
+// Every line of a new document must belong to an entry its supplier offers. A
+// line outside the offer list is refused whole: no document, no line and no
+// balance movement.
+func TestCreateEntryRequiresOfferedLines(t *testing.T) {
+	ctx, p, s := fixture(t)
+	// A supplier that offers only the catalogue entry of variant 1. Variant 2
+	// shares that entry (it is the other polarity) and variant 3 belongs to
+	// another entry, so it is not offered.
+	var partial int64
+	if err := p.QueryRow(ctx, "INSERT INTO suppliers(name) VALUES('Proveedor Parcial') RETURNING id").Scan(&partial); err != nil {
+		t.Fatal("partial supplier fixture setup failed")
+	}
+	offerVariants(t, ctx, p, partial, 1)
+	before := snapshot(t, ctx, p)
+	existing, reserved := balances(t, ctx, p, 1, 3)
+	for i, tc := range []struct {
+		name  string
+		lines []stockentries.Line
+	}{
+		{"not_offered", []stockentries.Line{{VariantID: 3, Quantity: 1}}},
+		{"offered_and_missing", []stockentries.Line{{VariantID: 1, Quantity: 1}, {VariantID: 3, Quantity: 1}}},
+	} {
+		in := stockentries.CreateInput{OperationKey: fmt.Sprintf("offer-key-%016d", i),
+			SupplierID: partial, Note: "compra de proveedor", Lines: tc.lines}
+		if _, _, err := s.CreateEntry(ctx, warehouse(), in); !errors.Is(err, stockentries.ErrInvalid) {
+			t.Fatalf("%s line must be invalid, got %v", tc.name, err)
+		}
+		if snapshot(t, ctx, p) != before {
+			t.Fatalf("%s line must not write a document, a line or a balance", tc.name)
+		}
+	}
+	if got, stillReserved := balances(t, ctx, p, 1, 3); got != existing || stillReserved != reserved {
+		t.Fatal("a refused document must not move the balance")
+	}
+	// The same supplier still admits the entry it does offer, so the refusal is
+	// the offer and not the supplier.
+	entry, _, err := s.CreateEntry(ctx, warehouse(), stockentries.CreateInput{
+		OperationKey: "offer-key-000000000099", SupplierID: partial, Lines: []stockentries.Line{{VariantID: 2, Quantity: 1}}})
+	if err != nil {
+		t.Fatalf("an offered line must be admitted: %v", err)
+	}
+	if entry.Supplier == nil || entry.Supplier.ID != partial {
+		t.Fatal("the document must carry the supplier it named")
 	}
 }
 
@@ -643,6 +793,13 @@ func TestReverseEntryDerivesAndRestores(t *testing.T) {
 		*counter.ReversesEntryID != original.ID {
 		t.Fatal("counter-entry header does not match the frozen contract")
 	}
+	// The counter-entry inherits the supplier of the original, never a client value.
+	if counter.Supplier == nil || original.Supplier == nil || *counter.Supplier != *original.Supplier {
+		t.Fatal("a counter-entry must inherit the supplier of its original")
+	}
+	if n := scalar(t, ctx, p, "SELECT count(*) FROM stock_entries WHERE id=$1 AND supplier_id=$2", counter.ID, testSupplierID); n != 1 {
+		t.Fatal("the inherited supplier must be persisted with the counter-entry")
+	}
 	// The derived lines are exactly the negation of the original ones.
 	if len(counter.Lines) != len(original.Lines) || counter.TotalUnits != -original.TotalUnits {
 		t.Fatal("counter-entry does not mirror the original document")
@@ -667,6 +824,42 @@ func TestReverseEntryDerivesAndRestores(t *testing.T) {
 	}
 	if n := scalar(t, ctx, p, "SELECT count(*) FROM stock_entries"); n != 2 {
 		t.Fatal("the original and its counter-entry must both stay visible")
+	}
+}
+
+// A counter-entry never takes a supplier from the client: it inherits the one of
+// its original. It keeps working after the supplier is retired, because both
+// documents keep naming the supplier they were written with.
+func TestReverseEntryInheritsSupplier(t *testing.T) {
+	ctx, p, s := fixture(t)
+	original, _, err := s.CreateEntry(ctx, warehouse(), input("inherit-key-0000000001",
+		stockentries.Line{VariantID: 1, Quantity: 2}))
+	if err != nil {
+		t.Fatal("ingress before reversal failed")
+	}
+	if original.Supplier == nil {
+		t.Fatal("the original document must carry its supplier")
+	}
+	// Retiring the supplier closes it for new documents and keeps the history.
+	if _, err := p.Exec(ctx, "UPDATE suppliers SET deleted_at=now() WHERE id=$1", testSupplierID); err != nil {
+		t.Fatal("supplier retirement setup failed")
+	}
+	counter, replayed, err := s.ReverseEntry(ctx, warehouse(), original.ID, "inherit-counter-key-0001", "error de carga")
+	if err != nil || replayed {
+		t.Fatalf("reversal was not created: %v", err)
+	}
+	if counter.Supplier == nil || *counter.Supplier != *original.Supplier {
+		t.Fatal("the counter-entry must inherit the supplier of its original")
+	}
+	if n := scalar(t, ctx, p, "SELECT count(*) FROM stock_entries WHERE id=$1 AND supplier_id=$2", counter.ID, testSupplierID); n != 1 {
+		t.Fatal("the inherited supplier must be persisted with the counter-entry")
+	}
+	// A retired supplier keeps reading: both documents still answer its name.
+	for _, id := range []int64{original.ID, counter.ID} {
+		detail := readDetail(t, ctx, s, id)
+		if detail.Supplier == nil || *detail.Supplier != *original.Supplier {
+			t.Fatalf("document %d must keep reading its retired supplier", id)
+		}
 	}
 }
 
@@ -839,6 +1032,82 @@ func TestReverseEntryRejectsInvalidInputWithoutWriting(t *testing.T) {
 	}
 }
 
+// historicalDocument persists one document of the warehouse exactly like the
+// migration before suppliers wrote it: only the supplier trigger is disabled for
+// the window of the insert, so the row keeps a NULL supplier while every other
+// guard (location admission, balances, reversal mirroring) still runs.
+func historicalDocument(t *testing.T, ctx context.Context, p *pgxpool.Pool, key string, lines ...stockentries.Line) int64 {
+	t.Helper()
+	enable := func() {
+		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
+		defer done()
+		_, _ = p.Exec(cleanup, "ALTER TABLE stock_entries ENABLE TRIGGER require_stock_entry_supplier")
+	}
+	t.Cleanup(enable)
+	if _, err := p.Exec(ctx, "ALTER TABLE stock_entries DISABLE TRIGGER require_stock_entry_supplier"); err != nil {
+		t.Fatal("historical document fixture setup failed")
+	}
+	var id int64
+	if err := p.QueryRow(ctx, `INSERT INTO stock_entries(operation_key,location_id,note,created_by_account_id)
+ VALUES($1,1,'ingreso historico',1) RETURNING id`, key).Scan(&id); err != nil {
+		enable()
+		t.Fatal("historical document insert failed")
+	}
+	for _, line := range lines {
+		if _, err := p.Exec(ctx, "INSERT INTO stock_entry_lines(entry_id,variant_id,quantity) VALUES($1,$2,$3)", id, int32(line.VariantID), line.Quantity); err != nil {
+			enable()
+			t.Fatal("historical document line insert failed")
+		}
+	}
+	enable()
+	return id
+}
+
+// A document written before suppliers existed keeps a NULL supplier: it still
+// reads, it still appears in the history and it still reverses, and its supplier
+// is null instead of an invented one. Its counter-entry inherits that null.
+func TestHistoricalDocumentWithoutSupplier(t *testing.T) {
+	ctx, p, s := fixture(t)
+	existingOne, _ := balances(t, ctx, p, 1, 1)
+	existingTwo, _ := balances(t, ctx, p, 1, 2)
+	id := historicalDocument(t, ctx, p, "historical-key-000000001",
+		stockentries.Line{VariantID: 1, Quantity: 2}, stockentries.Line{VariantID: 2, Quantity: 3})
+	detail := readDetail(t, ctx, s, id)
+	if detail.ID != id || detail.Note != "ingreso historico" || detail.TotalUnits != 5 || len(detail.Lines) != 2 {
+		t.Fatal("a historical document must read like any other document")
+	}
+	if detail.Supplier != nil {
+		t.Fatal("the supplier of a historical document is null, never invented")
+	}
+	page := listWarehouse(t, ctx, s, 1, 25)
+	if page.TotalEntries != 1 || len(page.Entries) != 1 {
+		t.Fatal("a historical document must be listed")
+	}
+	if page.Entries[0].ID != id || page.Entries[0].Supplier != nil || page.Entries[0].TotalUnits != 5 {
+		t.Fatal("a historical document keeps a null supplier in the history")
+	}
+	counter, replayed, err := s.ReverseEntry(ctx, warehouse(), id, "historical-counter-key-01", "error de carga")
+	if err != nil || replayed {
+		t.Fatalf("a historical document must still reverse: %v", err)
+	}
+	if counter.Supplier != nil || counter.TotalUnits != -5 {
+		t.Fatal("a counter-entry of a historical document keeps the null supplier")
+	}
+	if n := scalar(t, ctx, p, "SELECT count(*) FROM stock_entries WHERE id=$1 AND supplier_id IS NULL", counter.ID); n != 1 {
+		t.Fatal("the counter-entry must persist a null supplier")
+	}
+	counterDetail := readDetail(t, ctx, s, counter.ID)
+	if counterDetail.Supplier != nil || counterDetail.ReversesEntryID == nil || *counterDetail.ReversesEntryID != id {
+		t.Fatal("the counter-entry detail must mirror the null supplier")
+	}
+	if got, _ := balances(t, ctx, p, 1, 1); got != existingOne {
+		t.Fatal("the reversal must restore the first line")
+	}
+	if got, _ := balances(t, ctx, p, 1, 2); got != existingTwo {
+		t.Fatal("the reversal must restore the second line")
+	}
+}
+
 // readDetail is the warehouse detail read of one persisted document.
 func readDetail(t *testing.T, ctx context.Context, s *stockentries.Store, id int64) stockentries.EntryDetail {
 	t.Helper()
@@ -887,7 +1156,7 @@ func sameIdentity(t *testing.T, got, want catalog.Identity) bool {
 func TestReadEntryDetail(t *testing.T) {
 	ctx, p, s := fixture(t)
 	entry, _, err := s.CreateEntry(ctx, warehouse(), stockentries.CreateInput{
-		OperationKey: "detail-key-000000000001", Note: "Remito 0002-00045871",
+		OperationKey: "detail-key-000000000001", SupplierID: testSupplierID, Note: "Remito 0002-00045871",
 		Lines: []stockentries.Line{{VariantID: 9, Quantity: 15}, {VariantID: 4, Quantity: 3}},
 	})
 	if err != nil {
@@ -898,6 +1167,9 @@ func TestReadEntryDetail(t *testing.T) {
 		detail.Note != "Remito 0002-00045871" || detail.CreatedAt.IsZero() ||
 		detail.ReversesEntryID != nil || detail.ReversedBy != nil || detail.Reason != "" {
 		t.Fatal("detail header does not match the persisted document")
+	}
+	if detail.Supplier == nil || detail.Supplier.ID != testSupplierID || detail.Supplier.Name != testSupplierName {
+		t.Fatal("the detail must carry the supplier of the document")
 	}
 	if len(detail.Lines) != 2 || detail.TotalUnits != 18 {
 		t.Fatal("detail must carry every line and the exact signed total")

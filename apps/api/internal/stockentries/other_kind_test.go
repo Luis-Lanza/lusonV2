@@ -38,6 +38,7 @@ func otherVariant(t *testing.T, ctx context.Context, p *pgxpool.Pool, name, fiel
 func TestCreateEntryAdmitsOtherProducts(t *testing.T) {
 	ctx, p, s := fixture(t)
 	variant := otherVariant(t, ctx, p, "Agua acidulada", "volumen en L", "L", "5")
+	offerVariants(t, ctx, p, testSupplierID, variant)
 	before, reserved := balances(t, ctx, p, 1, int(variant))
 	entry, replayed, err := s.CreateEntry(ctx, warehouse(), input("other-ingress-key-000001",
 		stockentries.Line{VariantID: variant, Quantity: 5}))
@@ -91,6 +92,7 @@ func TestCreateEntryAdmitsOtherProducts(t *testing.T) {
 func TestCreateEntryRefusesMixedKinds(t *testing.T) {
 	ctx, p, s := fixture(t)
 	variant := otherVariant(t, ctx, p, "Agua acidulada", "volumen en L", "L", "5")
+	offerVariants(t, ctx, p, testSupplierID, variant)
 	batteryBefore, _ := balances(t, ctx, p, 1, 1)
 	productBefore, _ := balances(t, ctx, p, 1, int(variant))
 	before := snapshot(t, ctx, p)
