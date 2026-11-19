@@ -314,6 +314,7 @@ export default function TransferCreation({ controller, metadata, onBack, loader 
         forbidden: 'No tenés permiso para enviar esta solicitud. Se conserva el intento.',
         unauthenticated: 'La sesión debe validarse nuevamente. Se conserva el intento.',
         service_unavailable: 'El servicio no está disponible. Se conserva el intento para reintentar manualmente.',
+        branch_frozen: 'La sucursal está congelada por una rendición abierta: no puede operar hasta que se cierre. Se conserva el intento.',
       };
       setSendError({ owner: key!, text: messages[code] ?? 'No pudimos confirmar el resultado. Conservamos la misma solicitud para reintentar manualmente.' });
       const retained = recovery.getCurrent(controller.getTransferAuthority);

@@ -71,7 +71,10 @@ func (s *Store) Dispatch(ctx context.Context, actor auth.Identity, id int64) (Re
 		return Request{}, ErrUnavailable
 	}
 	tag, err := tx.Exec(ctx, "UPDATE transfer_requests SET status='in_transit' WHERE id=$1", id)
-	if err != nil || tag.RowsAffected() != 1 {
+	if err != nil {
+		return Request{}, mapWriteFailure(ctx, err)
+	}
+	if tag.RowsAffected() != 1 {
 		return Request{}, fail(ctx)
 	}
 	r, err = load(ctx, tx, actor.Location.ID, id)

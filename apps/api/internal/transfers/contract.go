@@ -29,6 +29,7 @@ var (
 	ErrInsufficientStock = errors.New("insufficient transfer stock")
 	ErrRetryConflict     = errors.New("transfer retry conflict")
 	ErrDecisionConflict  = errors.New("transfer decision conflict")
+	ErrBranchFrozen      = errors.New("the branch has an open account settlement and cannot operate")
 	ErrUnavailable       = errors.New("transfer store unavailable")
 )
 
