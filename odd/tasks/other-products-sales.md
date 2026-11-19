@@ -147,3 +147,12 @@ L12. Estado final de la vertical, ocho commits sobre `d84d63c`: `2bb4fa2` (migra
 documentos corregidos), `9b6f8d3` (migración 057), `b836c01` (cliente de garantía en el dominio, con la
 regla juzgada al escribir y nunca al leer), `05e22ad` (formulario del cliente) y `75bfba4` (fixtures de
 rendición). Suite Go completa verde, suite web 4158 tests verde, typecheck/lint/build limpios.
+
+L13. Entrega: la vertical entró a `master` como merge commit `676835b`. Antes del merge, `gofmt`
+señaló `internal/sales/store_refusal_test.go` (tabla mal alineada, venía de `b836c01`), y el arreglo
+quedó en su propio commit `0764b81 style(sales): gofmt the refusal test table` para no reescribir la
+historia revisada. Medido antes de tocar master: `go build ./...` verde, `go vet` limpio, `gofmt -l`
+vacío, `make test-pg` exit 0 sobre los 19 paquetes (fixture auditado, teardown limpio), web con
+`tsc --noEmit`, `biome lint` (271 warnings preexistentes, sin errores) y `vite build` verdes. Queda
+fuera de esta entrega, por decisión de alcance: el mapeo de `LC001` (sucursal con liquidación abierta)
+en `httpapi.transferFailure`, que hoy cae al `default` y responde 503 `service_unavailable`.
