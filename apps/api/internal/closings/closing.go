@@ -279,20 +279,22 @@ type Counted struct {
 }
 
 // CountLine is one persisted line of the count sheet with the catalogue identity of its
-// variant, so the sheet is legible without a second lookup. The opener seeds CountedQuantity
-// with the ExpectedQuantity it photographs, so a live sheet never states a missing quantity
-// (S1): the warehouse only edits the lines that disagree with the system. CountedQuantity is
-// nil only on a sheet written before that seeding, which is the state the pending refusal
-// still guards.
+// variant, so the sheet is legible without a second lookup. The identity is the catalogue's own
+// (catalog.Identity): a battery states its brand, model, capacity and polarity and a product its
+// name and detail, and neither carries an attribute of the other kind, because the sheet counts the
+// whole catalogue (S2, S3). The opener seeds CountedQuantity with the ExpectedQuantity it
+// photographs, so a live sheet never states a missing quantity (S1): the warehouse only edits the
+// lines that disagree with the system. CountedQuantity is nil only on a sheet written before that
+// seeding, which is the state the pending refusal still guards.
 type CountLine struct {
-	VariantID        int64           `json:"variant_id"`
-	CatalogEntryID   int64           `json:"catalog_entry_id"`
-	Brand            string          `json:"brand"`
-	Model            string          `json:"model"`
-	Capacity         catalog.Decimal `json:"capacity_ah"`
-	Polarity         string          `json:"polarity"`
-	ExpectedQuantity int64           `json:"expected_quantity"`
-	CountedQuantity  *int64          `json:"counted_quantity"`
+	// VariantID is the key of the row: the variant this line counts, which is also the variant of the
+	// Identity beside it. A line is never published with the two disagreeing.
+	VariantID int64
+	// Identity is the catalogue identity of that variant, composed by the catalogue's own rule.
+	Identity         catalog.Identity
+	CatalogEntryID   int64
+	ExpectedQuantity int64
+	CountedQuantity  *int64
 }
 
 // CashDraft is exactly what the admin reads off the drawer at the cut: what it counted, the

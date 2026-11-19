@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import ClosingDecision from './ClosingDecision';
+import { notifyClosingInvalidation } from './useInventory';
 
 const csrf = 'c'.repeat(43);
 const json = (body: unknown, status = 200) => new Response(
@@ -185,6 +186,70 @@ const decision = () => screen.getByRole('region', { name: 'Tu decisión' });
 const acceptButton = () => within(decision()).getByRole('button', { name: 'Aceptar y cerrar la rendición' });
 const rejectToggle = () => within(decision()).getByRole('button', { name: 'Rechazar la propuesta' });
 const sendRejection = () => within(decision()).getByRole('button', { name: 'Enviar rechazo al Almacén' });
+
+describe('the settlement arrives on the branch stream (S10)', () => {
+  it('shows the frozen branch and then the offer without a reload', async () => {
+    const h = server();
+    // The branch holds nothing yet: the warehouse has not opened the rendición.
+    h.state.listed = [];
+    await ready(h);
+    expect(await screen.findByText('La sucursal no tiene una rendición abierta ni cerrada todavía.'))
+      .toBeInTheDocument();
+    expect(screen.queryByText('Sucursal congelada')).not.toBeInTheDocument();
+    // The warehouse opens it: the settlement's own trigger (058) rides the branch's stream, and the
+    // notice of the freeze appears without the branch reloading the page.
+    h.state.closing = open(); h.state.listed = [summary(open())];
+    act(() => notifyClosingInvalidation());
+    expect(await screen.findByText('Sucursal congelada')).toBeInTheDocument();
+    // A held settlement has no offer: there is nothing to accept until the warehouse proposes it.
+    expect(screen.queryByRole('button', { name: 'Aceptar y cerrar la rendición' }))
+      .not.toBeInTheDocument();
+    // The proposal is the same stream and the same screen: the acceptance is offered in place.
+    h.state.closing = proposed(); h.state.listed = [summary(proposed())];
+    act(() => notifyClosingInvalidation());
+    expect(await screen.findByRole('button', { name: 'Aceptar y cerrar la rendición' }))
+      .toBeInTheDocument();
+  });
+
+  it('never discards the answer being typed when the stream speaks', async () => {
+    const h = server();
+    await ready(h);
+    fireEvent.click(rejectToggle());
+    fireEvent.change(screen.getByLabelText('Motivo del rechazo'),
+      { target: { value: 'Falta contar el plomo' } });
+    const reads = h.calls.length;
+    // The branch is answering a round right now: a hint of the same stream must not read the
+    // document again, because reading it again is what clears the motive it is typing.
+    h.state.closing = closed(); h.state.listed = [summary(closed())];
+    act(() => notifyClosingInvalidation());
+    expect(h.calls).toHaveLength(reads);
+    expect(screen.getByLabelText('Motivo del rechazo')).toHaveValue('Falta contar el plomo');
+  });
+
+  it('applies the frame that arrived while the branch was answering once the answer is out of the way', async () => {
+    const h = server();
+    await ready(h);
+    // The warehouse re-proposes the settlement while the branch is writing its rejection.
+    fireEvent.click(rejectToggle());
+    fireEvent.change(screen.getByLabelText('Motivo del rechazo'),
+      { target: { value: 'Falta contar el plomo' } });
+    const second = proposed({ rounds: [
+      round(1, { decision: 'rejected', decision_reason: 'Falta contar el plomo',
+        decided_by_account_id: 2, decided_at: '2026-09-12T15:02:00Z' }),
+      round(2)] });
+    h.state.closing = second; h.state.listed = [summary(second)];
+    const reads = h.calls.length;
+    act(() => notifyClosingInvalidation());
+    // The motive is not thrown away, and nothing is read over it: the frame waits.
+    expect(h.calls).toHaveLength(reads);
+    expect(screen.getByLabelText('Motivo del rechazo')).toHaveValue('Falta contar el plomo');
+    // The branch clears the motive: the frame that waited lands now, once, so the new offer is on
+    // screen without a reload (S10).
+    fireEvent.change(screen.getByLabelText('Motivo del rechazo'), { target: { value: '' } });
+    expect(await screen.findByText('Propuesta 2 de 2')).toBeInTheDocument();
+    expect(h.calls.filter(call => call.url === '/api/closings/1')).toHaveLength(2);
+  });
+});
 
 describe('what the branch is accepting (S14)', () => {
   it('reads its own settlement and only its own branch from the session', async () => {

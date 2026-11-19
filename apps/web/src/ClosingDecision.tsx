@@ -22,6 +22,7 @@ import {
   ClosingAPIError, closingDocumentUnavailable, closingErrorMessages, closingRefusalMessage,
   createClosingAPI, type ClosingRefusal,
 } from './closingsAPI';
+import { subscribeClosingInvalidation } from './useInventory';
 import './closings.css';
 
 export interface ClosingDecisionProps {
@@ -75,6 +76,13 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
   const mounted = useRef(true);
   const lifetime = useRef(new AbortController());
   const pending = useRef(false);
+  // Whether the branch is working on an answer right now: an operation in flight, or a motive it has
+  // already typed. A live hint must not read the document again over either of them, because reading
+  // it again is what clears them; the hint is remembered instead and applied once they are gone.
+  const answering = useRef(false);
+  answering.current = busy || motive.trim() !== '' || correctionMotive.trim() !== '';
+  // The frame that arrived while the branch was answering: it waits here instead of being lost.
+  const waiting = useRef(false);
   // The roving tab index of the two tabs, the same one the purchases screen uses.
   const tabButtons = useRef<Record<ClosingTab, HTMLButtonElement | null>>({ caja: null, chatarra: null });
 
@@ -83,6 +91,24 @@ export default function ClosingDecision({ csrf, branch, branchName, fetcher = gl
     mounted.current = true;
     return () => { mounted.current = false; flight.abort(); };
   }, []);
+
+  // The settlement the warehouse opens or proposes arrives on the branch's own stream (058): the
+  // screen reads its history and its document again instead of waiting for a reload, so the notice
+  // of the frozen branch and the acceptance appear in place (S10).
+  useEffect(() => subscribeClosingInvalidation(() => {
+    if (!mounted.current || lifetime.current.signal.aborted) return;
+    if (answering.current) { waiting.current = true; return; }
+    setRevision(value => value + 1);
+  }), []);
+
+  // A hint that arrived while the branch was answering is applied as soon as the answer is out of the
+  // way -- the motive cleared or the request finished -- exactly once, so a settlement the warehouse
+  // proposed while the branch was typing still lands without a reload (S10).
+  useEffect(() => {
+    if (!waiting.current || !mounted.current || lifetime.current.signal.aborted || answering.current) return;
+    waiting.current = false;
+    setRevision(value => value + 1);
+  }, [busy, motive, correctionMotive]);
 
   // The branch reads its own history: the live settlement when there is one, and the last
   // closure otherwise, so a reload after the closure still describes the settlement it answered.

@@ -11,7 +11,7 @@ import {
   closingCorrectionKindLabels, closingCorrectionPreview, closingCorrectionQuantityDeltaText,
   closingCorrectionReasonMessage, closingCorrectionStatusLabels, closingCorrectionValueMessage,
   closingCountChanges, closingDifferenceName, closingEnvelopeApartHelp, closingEnvelopeNewHelp,
-  closingIsEditable, closingIsLive, closingLineDifference,
+  closingIsBatteryLine, closingIsEditable, closingIsLive, closingLineDifference,
   closingLineIsOutsideSystem, closingLineLabel,
   closingCountBatches, closingMaterialClearedMessage, closingMaterialDeliveryHelp,
   closingMaterialEmptySheet, closingMaterialLines, closingMaterialQuantityLabel,
@@ -39,6 +39,7 @@ import {
   ClosingAPIError, closingErrorMessages, closingHistoryUnavailable, closingRefusalMessage,
   createClosingAPI, type ClosingRefusal,
 } from './closingsAPI';
+import { subscribeClosingInvalidation } from './useInventory';
 import './closings.css';
 
 export interface ClosingWorkspaceProps {
@@ -128,6 +129,13 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   const mounted = useRef(true);
   const lifetime = useRef(new AbortController());
   const pending = useRef(false);
+  // Whether this screen is working on the document right now: an operation in flight, or work typed
+  // and not saved yet. A live hint must never read the document again over either of them, because
+  // reading it again is what discards the draft; the hint is remembered instead and applied once the
+  // screen is idle.
+  const working = useRef(false);
+  // The frame that arrived while this screen was working: it waits here instead of being lost.
+  const waiting = useRef(false);
   // The roving tab index of the two tabs: the tabs are navigation, never two life cycles (S10).
   const tabButtons = useRef<Record<ClosingTab, HTMLButtonElement | null>>({ caja: null, chatarra: null });
 
@@ -230,9 +238,9 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   }
 
   /**
-   * Searches the branch's own catalogue for a battery the count sheet does not have: the sheet is the
-   * snapshot of the cut, so a variant the branch counted without having it in the system has no row
-   * to type into until the admin adds one (S4, S5).
+   * Searches the branch's own catalogue for a variant the count sheet does not have: the sheet is the
+   * snapshot of the cut, so a battery or a product the branch counted without having it in the system
+   * has no row to type into until the admin adds one (S4, S5).
    */
   async function searchCatalogue() {
     const current = closing;
@@ -465,6 +473,25 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
   const unsaved = closing !== null
     && (changed.length > 0 || added.length > 0 || materialReading.unsaved
       || !sameDrawer(draft, drawerDraftFrom(closing), envelope, purchaseFundDraftFrom(closing)));
+  working.current = busy || unsaved;
+
+  // The settlement of the branch arrives on the branch's own stream (058): the screen reads its
+  // history and its document again instead of waiting for a reload, so a settlement another window
+  // opened and a decision the branch made appear here in place (S10).
+  useEffect(() => subscribeClosingInvalidation(() => {
+    if (!mounted.current || lifetime.current.signal.aborted) return;
+    if (working.current) { waiting.current = true; return; }
+    setRevision(value => value + 1);
+  }), []);
+
+  // A hint that arrived while the sheet was being typed or saved is applied as soon as the screen is
+  // idle -- the draft submitted, dismissed or back to the document -- exactly once, so the settlement
+  // that changed meanwhile still lands without a reload and without discarding the draft (S10).
+  useEffect(() => {
+    if (!waiting.current || !mounted.current || lifetime.current.signal.aborted || working.current) return;
+    waiting.current = false;
+    setRevision(value => value + 1);
+  }, [busy, unsaved]);
   const blockers = closing === null || view === null ? [] : closingBlockers(closing, view, unsaved, commissionMissing);
   const blocked = blockers.length > 0;
   const searchValid = validSearch(search);
@@ -595,19 +622,20 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
             </small>
           </header>
           <div className="closing-search">
-            <input type="search" aria-label="Buscar batería" placeholder="Buscar marca, modelo o amperaje"
+            <input type="search" aria-label="Buscar en la planilla"
+              placeholder="Buscar marca, modelo, nombre o detalle"
               value={search} onChange={event => setSearch(event.target.value)} />
             <small><kbd>Tab</kbd> avanza · <kbd>Enter</kbd> confirma · <kbd>↑</kbd><kbd>↓</kbd> mueven</small>
           </div>
           {!searchValid && <p role="alert" className="closing-problem">{closingSearchMessage}</p>}
-          {/* The sheet is the snapshot of the cut, so a battery the system did not have is only
-              countable once the admin adds it from the branch's own catalogue (S4, S5). */}
+          {/* The sheet is the snapshot of the cut, so a variant the system did not have -- a battery or a
+              product -- is only countable once the admin adds it from the branch's own catalogue (S4, S5). */}
           {editable && <section className="closing-catalogue" aria-labelledby="closing-catalogue-title">
-            <h3 id="closing-catalogue-title">Agregar una batería que el sistema no tiene</h3>
+            <h3 id="closing-catalogue-title">Agregar una batería o un producto que el sistema no tiene</h3>
             <p className="closing-muted">{closingCatalogueHelp}</p>
             <div className="closing-catalogue-search">
-              <input type="search" aria-label="Buscar batería en el catálogo de la sucursal"
-                placeholder="Marca, modelo o amperaje" value={catalogueSearch}
+              <input type="search" aria-label="Buscar en el catálogo de la sucursal"
+                placeholder="Marca, modelo, nombre o detalle" value={catalogueSearch}
                 onChange={event => setCatalogueSearch(event.target.value)}
                 onKeyDown={event => {
                   if (event.key !== 'Enter') return;
@@ -626,10 +654,16 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
             {catalogue.phase === 'ready' && options.length > 0
               && <ul className="closing-catalogue-list" aria-label="Variantes del catálogo para agregar">
                 {options.map(option => {
-                  const label = closingLineLabel({ variant_id: option.variant.variant_id,
-                    catalog_entry_id: option.variant.catalog_entry_id, brand: option.variant.brand,
-                    model: option.variant.model, capacity_ah: option.variant.capacity_ah,
-                    polarity: option.variant.polarity, expected_quantity: 0, counted_quantity: null });
+                  // The row of the catalogue is labelled with the identity of its kind: the battery
+                  // attributes of a battery and the name and detail of a product (S3).
+                  const chosen = option.variant;
+                  const label = closingLineLabel(closingIsBatteryLine(chosen)
+                    ? { variant_id: chosen.variant_id, catalog_entry_id: chosen.catalog_entry_id,
+                      brand: chosen.brand, model: chosen.model, capacity_ah: chosen.capacity_ah,
+                      polarity: chosen.polarity, expected_quantity: 0, counted_quantity: null }
+                    : { variant_id: chosen.variant_id, catalog_entry_id: chosen.catalog_entry_id,
+                      name: chosen.name, detail: chosen.detail, expected_quantity: 0,
+                      counted_quantity: null });
                   return <li key={option.variant.variant_id} data-variant-id={option.variant.variant_id}
                     data-state={option.state}>
                     <span>{label}</span>
@@ -648,7 +682,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
               <caption className="sr-only">Conteo de stock de {closing.branch_name}</caption>
               <thead>
                 <tr>
-                  <th scope="col">Batería</th>
+                  <th scope="col">Artículo</th>
                   <th scope="col" className="num">Sistema</th>
                   <th scope="col" className="num">Contado</th>
                   <th scope="col" className="num">Dif.</th>
@@ -670,8 +704,11 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
                   className={[changedRow ? 'changed' : '', outside ? 'outside' : '']
                     .filter(name => name !== '').join(' ') || undefined}>
                   <td>
-                    {line.brand}{' '}
-                    <small>{line.model} · {line.capacity_ah} Ah · {line.polarity}</small>
+                    {closingIsBatteryLine(line)
+                      ? <>{line.brand}{' '}
+                        <small>{line.model} · {line.capacity_ah} Ah · {line.polarity}</small></>
+                      : <>{line.name}{' '}
+                        <small>{line.detail}</small></>}
                     {outside && <span className="closing-outside" title={closingOutsideSystemHelp}>
                       {closingOutsideSystemTag}</span>}
                     {changedRow && <span className="closing-changed">{closingChangedTag}</span>}
@@ -748,7 +785,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
                 <div><dt>Porcentaje congelado</dt><dd>{closingRateText(rail.rate_percent)}</dd></div>
                 <div className="total"><dt>Comisión</dt><dd>{closingMoneyText(rail.commission_cents)}</dd></div>
               </dl>
-              <small className="closing-muted">Sólo baterías nuevas. La base es todo lo vendido en el período, también lo cobrado por QR: la comisión no depende de cómo se pagó. Se informa aparte: no se descuenta de la caja.</small>
+              <small className="closing-muted">Baterías y productos del catálogo. La base es todo lo vendido en el período, también lo cobrado por QR: la comisión no depende de cómo se pagó. Se informa aparte: no se descuenta de la caja.</small>
             </div>
 
             <div className="closing-group">
@@ -1070,7 +1107,7 @@ export default function ClosingWorkspace({ csrf, branches, fetcher = globalThis.
               <caption className="sr-only">Conteo corregido de {closing.branch_name}</caption>
               <thead>
                 <tr>
-                  <th scope="col">Batería</th>
+                  <th scope="col">Artículo</th>
                   <th scope="col" className="num">Sistema</th>
                   <th scope="col" className="num">Firmado</th>
                   <th scope="col" className="num">Corregido</th>

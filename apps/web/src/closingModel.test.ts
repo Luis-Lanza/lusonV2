@@ -3,7 +3,7 @@ import * as model from './closingModel';
 import {
   canonicalCountPayload, canonicalDrawerPayload, closingAcceptance, closingAccountLabel,
   closingBlockers, closingBlockReason, closingCents, closingDecisionPayload, closingDecisionReadiness,
-  closingDifferenceName, closingLineDifference, closingLineLabel, closingMomentText,
+  closingDifferenceName, closingIsBatteryLine, closingLineDifference, closingLineLabel, closingMomentText,
   closingAssumedQuantity, closingChangedTag, closingCountDifferenceText, closingCountMatchTag,
   closingCountReading, closingSeedQuantity,
   closingPeriod, closingPeriodLabel, closingQuantityText,
@@ -21,7 +21,8 @@ import {
   closingMaterialQuantityText, closingMaterialReading, closingMaterialSeed,
   closingMaterialSignedText, closingMaterialWireText, closingTabAfter, closingTabLabels,
   closingTabMarker, closingTabOrder, closingTabsLabel, emptyMaterialDraft, materialDraftFrom,
-  type Closing, type ClosingCatalogueVariant, type ClosingCountLine, type ClosingCorrection,
+  type Closing, type ClosingCatalogueVariant, type ClosingBatteryLine, type ClosingCountLine,
+  type ClosingCorrection, type ClosingProductLine,
   type ClosingMaterialLine, type ClosingOffer, type ClosingPurchaseFund, type ClosingRound,
   type CorrectionDraft, type DrawerDraft, type PurchaseFundDraft,
 } from './closingModel';
@@ -34,6 +35,12 @@ const line = (variant_id: number, expected: number, counted: number | null,
   polarity: variant_id % 2 === 0 ? 'R' : 'L', expected_quantity: expected, counted_quantity: counted,
   ...overrides,
 });
+
+// One line of the second kind: the name of the product and the detail the catalogue composes of
+// its typed fields, with no battery attribute at all (S3).
+const productLine = (overrides: Partial<ClosingProductLine> = {}): ClosingProductLine =>
+  Object.freeze({ variant_id: 20, catalog_entry_id: 11, name: 'Agua acidulada', detail: '1 L',
+    expected_quantity: 3, counted_quantity: 3, ...overrides });
 
 const lines: readonly ClosingCountLine[] = [
   line(1, 12, 12), line(2, 9, 8), line(3, 14, 14), line(4, 11, 13), line(5, 7, 7), line(6, 6, 6),
@@ -621,6 +628,22 @@ describe('S4 the count sheet is not blind and never recalculates the expected qu
   it('labels a row with its battery, polarity and capacity', () => {
     expect(closingLineLabel(line(10, 3, null, { model: 'Power', capacity_ah: '110' })))
       .toBe('Bosch Power R · 110 Ah');
+  });
+
+  it('labels a product row with its name and detail, never with a battery attribute (S3, S4)', () => {
+    expect(closingLineLabel(productLine())).toBe('Agua acidulada · 1 L');
+    // The two kinds say their own identity: a battery is never read as a product nor the other way.
+    expect(closingIsBatteryLine(line(1, 1, 1))).toBe(true);
+    expect(closingIsBatteryLine(productLine())).toBe(false);
+  });
+
+  it('filters the sheet by the product identity too (S3, S4)', () => {
+    const sheet: readonly ClosingCountLine[] = [...lines, productLine({ variant_id: 20 })];
+    expect(filterCountLines(sheet, 'agua').map(entry => entry.variant_id)).toEqual([20]);
+    expect(filterCountLines(sheet, '1 l').map(entry => entry.variant_id)).toEqual([20]);
+    expect(filterCountLines(sheet, '20').map(entry => entry.variant_id)).toEqual([20]);
+    // A product is not found by a battery attribute it does not have.
+    expect(filterCountLines(sheet, 'polarity')).toEqual([]);
   });
 });
 
@@ -1227,6 +1250,19 @@ describe('S4, S5 a battery the system did not have', () => {
     expect(model.closingCatalogueListedTag).toBe('Ya está en la planilla');
     expect(model.closingCatalogueHeldTag).toBe('La sucursal ya tiene stock');
     expect(model.closingOutsideSystemTag).toBe('Fuera del sistema');
+  });
+
+  it('adds a product of the catalogue as a row of its own kind (S3, S4)', () => {
+    const product = Object.freeze({ variant_id: 21, catalog_entry_id: 12,
+      name: 'Agua acidulada', detail: 'volumen: 1 L', existing: 0n });
+    const rows = closingSheetRows(closing(), [product]);
+    const added = rows[rows.length - 1];
+    expect(added).toEqual({ variant_id: 21, catalog_entry_id: 12, name: 'Agua acidulada',
+      detail: 'volumen: 1 L', expected_quantity: 0, counted_quantity: null });
+    // The stock the catalogue read is never a column of the sheet.
+    expect('existing' in added).toBe(false);
+    expect(closingLineLabel(added)).toBe('Agua acidulada · volumen: 1 L');
+    expect(closingLineIsOutsideSystem(added)).toBe(true);
   });
 
   it('marks an added row as outside the system, with no expected quantity at all', () => {

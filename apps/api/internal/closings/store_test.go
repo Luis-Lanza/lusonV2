@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"luson/api/internal/auth"
 	"luson/api/internal/bootstrap"
+	"luson/api/internal/catalog"
 	"luson/api/internal/closings"
 	"luson/api/internal/config"
 	"luson/api/internal/pricing"
@@ -124,6 +126,30 @@ func (e *env) entryOf(t *testing.T, variant int64) int64 {
 		t.Fatal("catalogue entry read failed")
 	}
 	return entry
+}
+
+// product writes one other product of the catalogue with one typed field per name, the way the
+// catalogue writes it (055): a free name, no battery shape and one polarity-less variant. It returns
+// the variant the count sheet names, so a sheet of the second kind is written by the real triggers.
+func (e *env) product(t *testing.T, name string, fieldNames ...string) int64 {
+	t.Helper()
+	var entry int64
+	if err := e.pool.QueryRow(e.ctx, `INSERT INTO catalog_entries(kind,name) VALUES('other',$1)
+ RETURNING id`, name).Scan(&entry); err != nil {
+		t.Fatalf("product fixture %q failed: %v", name, err)
+	}
+	for index, field := range fieldNames {
+		if _, err := e.pool.Exec(e.ctx, `INSERT INTO catalog_entry_fields(catalog_entry_id,name,kind,unit,number_value)
+ VALUES($1,$2,'number','L',$3)`, entry, field, index+1); err != nil {
+			t.Fatalf("product field fixture %q failed: %v", field, err)
+		}
+	}
+	var variant int64
+	if err := e.pool.QueryRow(e.ctx, `INSERT INTO catalog_variants(catalog_entry_id) VALUES($1)
+ RETURNING id`, entry).Scan(&variant); err != nil {
+		t.Fatalf("product variant fixture %q failed: %v", name, err)
+	}
+	return variant
 }
 
 // sell issues one real sale in branch 2: the frozen price, the payment and the stock
@@ -475,7 +501,9 @@ func TestOpenFreezesThePeriodAndTheSnapshot(t *testing.T) {
 		if line.ExpectedQuantity != want || line.CountedQuantity == nil || *line.CountedQuantity != want {
 			t.Fatalf("variant %d: expected %d counted at the open, got %+v", line.VariantID, want, line)
 		}
-		if line.Brand == "" || line.Model == "" || line.Polarity == "" || line.Capacity == "" {
+		if line.Identity.Kind != catalog.BatteryKind || line.Identity.Battery == nil ||
+			line.Identity.Battery.Brand == "" || line.Identity.Battery.Model == "" ||
+			line.Identity.Battery.Polarity == "" || line.Identity.Battery.Capacity == "" {
 			t.Fatalf("the sheet must be legible by catalogue identity: %+v", line)
 		}
 	}
@@ -525,6 +553,71 @@ func TestOpenFreezesThePeriodAndTheSnapshot(t *testing.T) {
 	var retired *closings.RetiredBranch
 	if !errors.As(err, &retired) || retired.BranchID != 3 {
 		t.Fatalf("a retired branch must be refused by name: %v", err)
+	}
+}
+
+// TestOpenReadsBothKindsOfTheCountSheet pins S2, S5 and S12. The sheet of the cut seeds every variant
+// the branch holds, so a branch with product stock has a product line, and the read must publish it
+// with the identity of its kind instead of failing closed. A battery line keeps publishing exactly
+// what it published before the second kind existed, so a settlement written under the old contract
+// reads the same, and a product line is still written with the quantity the database snapshotted.
+func TestOpenReadsBothKindsOfTheCountSheet(t *testing.T) {
+	e := fixture(t)
+	product := e.product(t, "Agua acidulada", "volumen")
+	e.seedStock(t, 2, map[int64]int64{1: 10, product: 3})
+	opened, err := e.store.Open(e.ctx, warehouse(), 2)
+	if err != nil {
+		t.Fatalf("a branch that holds a product must publish its settlement: %v", err)
+	}
+	if len(opened.CountLines) != 2 {
+		t.Fatalf("the sheet must list the battery and the product: %+v", opened.CountLines)
+	}
+	battery, other := opened.CountLines[0], opened.CountLines[1]
+	// The battery line of an old settlement still states brand, model, capacity and polarity, and
+	// nothing of the second kind.
+	if battery.Identity.Kind != catalog.BatteryKind || battery.Identity.Battery == nil ||
+		battery.Identity.Fields != nil || battery.Identity.Battery.Brand == "" ||
+		battery.Identity.Battery.Model == "" || battery.Identity.Battery.Polarity == "" ||
+		battery.Identity.Battery.Capacity == "" ||
+		battery.Identity.Name != catalog.BatteryName(battery.Identity.Battery.Brand,
+			battery.Identity.Battery.Model) ||
+		battery.Identity.Detail != catalog.BatteryDetail(battery.Identity.Battery.Capacity,
+			battery.Identity.Battery.Polarity) {
+		t.Fatalf("the battery line must keep its battery identity: %+v", battery)
+	}
+	if battery.ExpectedQuantity != 10 || battery.CountedQuantity == nil || *battery.CountedQuantity != 10 {
+		t.Fatalf("the battery line must keep its snapshot: %+v", battery)
+	}
+	// The product line states its own identity -- the name it is sold by and the detail the catalogue
+	// composes of its typed fields -- and no battery attribute at all.
+	if other.Identity.Kind != catalog.OtherKind || other.Identity.Battery != nil ||
+		other.Identity.Name != "Agua acidulada" || other.Identity.Detail != "volumen: 1 L" ||
+		len(other.Identity.Fields) != 1 {
+		t.Fatalf("the product line must state its own identity: %+v", other)
+	}
+	// The expected quantity is the snapshot the database took of the branch balance, for both kinds
+	// (S5): it is never stated by the caller.
+	if other.ExpectedQuantity != 3 || other.CountedQuantity == nil || *other.CountedQuantity != 3 {
+		t.Fatalf("the product line must carry the balance the trigger seeded: %+v", other)
+	}
+	// Counting a product is writing a line like any other, and the expected quantity does not follow
+	// the count.
+	counted, err := e.store.Count(e.ctx, warehouse(), opened.ID,
+		[]closings.Counted{{VariantID: product, Quantity: 1}})
+	if err != nil {
+		t.Fatalf("a product must be counted like a battery: %v", err)
+	}
+	if len(counted.CountLines) != 2 || counted.CountLines[1].ExpectedQuantity != 3 ||
+		counted.CountLines[1].CountedQuantity == nil || *counted.CountLines[1].CountedQuantity != 1 {
+		t.Fatalf("the count must be recorded against the snapshot: %+v", counted.CountLines)
+	}
+	// Reading the same document again says the same: the sheet is a fact of the cut, not a live read.
+	read, err := e.store.Read(e.ctx, warehouse(), opened.ID)
+	if err != nil {
+		t.Fatalf("the settlement of a branch with products must be legible: %v", err)
+	}
+	if !reflect.DeepEqual(read.CountLines, counted.CountLines) {
+		t.Fatalf("the sheet must read the same twice: %+v then %+v", counted.CountLines, read.CountLines)
 	}
 }
 

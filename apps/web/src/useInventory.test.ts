@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { useInventory } from './useInventory';
+import { subscribeClosingInvalidation, useInventory } from './useInventory';
 import type { Session } from './model';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -96,6 +96,70 @@ describe('the stock screen reads both kinds', () => {
   expect(result.current.query.location).toBe(2);
   expect(fetcher.mock.calls.some(([url]) => String(url) === '/api/inventory?location_id=1&page=1&page_size=10&kind=battery')).toBe(false);
  });
+});
+
+describe('the settlement rides the branch stream', () => {
+  /** The one source of the shell, with the listeners it registered, so a test speaks as the server. */
+  class Stream {
+    static live: Stream[] = [];
+    listeners = new Map<string, Set<EventListener>>();
+    close = vi.fn();
+    constructor(public url: string) { Stream.live.push(this); }
+    addEventListener(kind: string, callback: EventListener) {
+      const callbacks = this.listeners.get(kind) ?? new Set<EventListener>();
+      callbacks.add(callback); this.listeners.set(kind, callbacks);
+    }
+    removeEventListener(kind: string, callback: EventListener) { this.listeners.get(kind)?.delete(callback); }
+    emit(kind: string, data = '{}') {
+      for (const callback of [...(this.listeners.get(kind) ?? [])]) callback(new MessageEvent(kind, { data }));
+    }
+  }
+  afterEach(() => { Stream.live = []; });
+
+  it('notifies the rendición readers from the transfers frame the settlement triggers (S10)', async () => {
+    // No Go publish path exists: the settlement's own trigger (058) bumps the branch's counter and
+    // notifies `transfers:<branch>`, which the server frames as this very event.
+    t6Setup();
+    vi.stubGlobal('EventSource', Stream);
+    const read = vi.fn();
+    const detach = subscribeClosingInvalidation(read);
+    const { result } = renderHook(() => useInventory());
+    await waitFor(() => expect(result.current.data).not.toBeNull());
+    expect(Stream.live).toHaveLength(1);
+    // The transfer readers of the same frame keep receiving it: the settlement's hint is an extra
+    // subscriber of one frame, never a replacement of the one it rides.
+    const transfer = vi.fn();
+    const offTransfer = result.current.subscribeTransferInvalidation(transfer);
+    act(() => Stream.live[0].emit('transfers'));
+    expect(read).toHaveBeenCalledOnce();
+    expect(transfer).toHaveBeenCalledOnce();
+    // A frame that is not an empty invalidation is nothing: the payload is never a document.
+    act(() => Stream.live[0].emit('transfers', '{"closing_id":1}'));
+    expect(read).toHaveBeenCalledOnce();
+    detach();
+    offTransfer();
+    act(() => Stream.live[0].emit('transfers'));
+    expect(read).toHaveBeenCalledOnce();
+    expect(transfer).toHaveBeenCalledOnce();
+    // The readers share the one source of the shell: subscribing opens no second stream.
+    expect(Stream.live).toHaveLength(1);
+  });
+
+  it('keeps the rendición readers silent while the session is not ready', async () => {
+    const fetcher = t6Setup((url) => url === '/api/auth/session' ? Promise.resolve(new Response(JSON.stringify({
+      authenticated: true, csrf_token: 'b'.repeat(43), expires_at: '2030-01-01T00:00:00Z',
+      identity: { account_id: 2, username: 'sucursal', display_name: 'Sucursal A',
+        must_change_password: true, location: { id: 2, name: 'Sucursal A' } } }))) : undefined);
+    vi.stubGlobal('EventSource', Stream);
+    const read = vi.fn();
+    const detach = subscribeClosingInvalidation(read);
+    const { result } = renderHook(() => useInventory());
+    await waitFor(() => expect(result.current.authBusy).toBe(false));
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(Stream.live).toHaveLength(0);
+    detach();
+    expect(read).not.toHaveBeenCalled();
+  });
 });
 
 describe('safe retirement private client', () => {

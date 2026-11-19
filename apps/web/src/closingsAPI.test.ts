@@ -18,6 +18,13 @@ const countedLine = (overrides: Record<string, unknown> = {}) => ({
   polarity: 'L', expected_quantity: 12, counted_quantity: 12, ...overrides,
 });
 
+// One line of the second kind as the sheet publishes it: the name of the product and the detail the
+// catalogue composes of its typed fields, and no battery attribute at all (S3).
+const productLine = (overrides: Record<string, unknown> = {}) => ({
+  variant_id: 20, catalog_entry_id: 11, name: 'Agua acidulada', detail: 'volumen: 1 L',
+  expected_quantity: 3, counted_quantity: 3, ...overrides,
+});
+
 // One row of the branch's own ledger as the document publishes it: the expense the branch paid out of
 // its till, with the kind it stated and the movement a correction answers (S6, S13).
 const expense = (overrides: Record<string, unknown> = {}) => ({
@@ -83,6 +90,23 @@ describe('the settlement document', () => {
     // The commission is a reported amount and the QR was never in the drawer (S9, S13).
     expect(rail.commission_cents).toBe(146160n);
     expect(rail.expected_cents).toBe(80000n + 643000n - 21500n);
+  });
+
+  it('reads a count line of a product that states no battery attribute (S3)', () => {
+    // The sheet of a branch that holds a product publishes its lines per kind: the battery row keeps
+    // its four battery attributes and the product row carries its name and detail instead.
+    const closing = parseClosing(JSON.stringify(document({
+      count_lines: [countedLine(), productLine()] })));
+    expect(closing.count_lines[0]).toEqual(countedLine());
+    expect(closing.count_lines[1]).toEqual(productLine());
+    // Nothing is invented for the attribute the wire omits: the product line has no battery fields.
+    expect('brand' in closing.count_lines[1]).toBe(false);
+    expect('polarity' in closing.count_lines[1]).toBe(false);
+    // A line of neither kind is not read: half a battery and half a product is no line at all.
+    const halfBattery = countedLine({ polarity: null });
+    expect(() => parseClosing(JSON.stringify(document({ count_lines: [halfBattery] })))).toThrow();
+    const both = countedLine({ name: 'Agua acidulada', detail: 'volumen: 1 L' });
+    expect(() => parseClosing(JSON.stringify(document({ count_lines: [both] })))).toThrow();
   });
 
   it('reads an open settlement whose drawer and totals are not stated yet', () => {
@@ -738,7 +762,7 @@ describe('the branch catalogue of the count sheet (S4, S5)', () => {
   it('reads the branch catalogue with the search and the sheet page, stock as an exact quantity', async () => {
     const h = harness(() => json(inventory()));
     const variants = await h.api.catalogue(2, 'NS60');
-    expect(h.calls[0].url).toBe('/api/inventory?location_id=2&page=1&page_size=50&search=NS60');
+    expect(h.calls[0].url).toBe('/api/inventory?location_id=2&page=1&page_size=50&kind=all&search=NS60');
     expect(variants).toEqual([
       { variant_id: 1, catalog_entry_id: 1, brand: 'Bosch', model: 'S4', capacity_ah: '45',
         polarity: 'L', existing: 12n },
@@ -748,7 +772,7 @@ describe('the branch catalogue of the count sheet (S4, S5)', () => {
     // An empty search is the whole matrix, never an absent filter the contract would refuse.
     const all = harness(() => json(inventory()));
     await all.api.catalogue(2, '');
-    expect(all.calls[0].url).toBe('/api/inventory?location_id=2&page=1&page_size=50');
+    expect(all.calls[0].url).toBe('/api/inventory?location_id=2&page=1&page_size=50&kind=all');
   });
 
   it('refuses a page that answers another branch, another page or another shape', async () => {
@@ -762,19 +786,20 @@ describe('the branch catalogue of the count sheet (S4, S5)', () => {
     expect((await refusalOf(impossibleSearch.api.catalogue(2, 'a\0b'))).code).toBe('invalid_request');
   });
 
-  it('counts batteries only: a product row never becomes a count line (S11)', async () => {
-    // The sheet counts batteries and nothing else, so a product row is a reply this
-    // read never asked for and never renders. The read cannot ask for one either: its
-    // URL carries no kind, so the server answers the battery listing whatever stock the
-    // branch holds in the other kind.
-    const product = harness(() => json(inventory({ total_variants: 1, items: [
+  it('offers both kinds of the catalogue, never only batteries (S4)', async () => {
+    // The sheet counts every variant the branch holds, so the catalogue it completes the sheet from
+    // is the branch's whole matrix: it asks for both kinds and it keeps the identity of each row.
+    const both = harness(() => json(inventory({ total_variants: 1, items: [
       { variant_id: 40, catalog_entry_id: 20, kind: 'other', name: 'Agua acidulada',
         detail: 'volumen en L: 5 L', battery: null,
         fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }],
         existing: 3, reserved: 0, available: 3 },
     ] })));
-    expect((await refusalOf(product.api.catalogue(2, ''))).code).toBe('invalid_response');
-    expect(product.calls[0].url).toBe('/api/inventory?location_id=2&page=1&page_size=50');
+    expect(await both.api.catalogue(2, '')).toEqual([{ variant_id: 40, catalog_entry_id: 20,
+      name: 'Agua acidulada', detail: 'volumen en L: 5 L', existing: 3n }]);
+    // The kind is the read's own: without it the server answers the battery listing alone, so a
+    // product the branch holds would never be offered.
+    expect(both.calls[0].url).toBe('/api/inventory?location_id=2&page=1&page_size=50&kind=all');
   });
 
   it('publishes the refusal of the read instead of an invented catalogue', async () => {
@@ -788,9 +813,14 @@ describe('the branch catalogue of the count sheet (S4, S5)', () => {
     const grown = parseClosing(JSON.stringify(document({ count_lines: [
       countedLine(),
       countedLine({ variant_id: 20, catalog_entry_id: 11, brand: 'Toyo', model: 'NS60',
-        capacity_ah: '65', polarity: 'R', expected_quantity: 0, counted_quantity: 3 })] })));
+        capacity_ah: '65', polarity: 'R', expected_quantity: 0, counted_quantity: 3 }),
+      productLine({ variant_id: 21, catalog_entry_id: 12, expected_quantity: 0 })] })));
     const added = grown.count_lines[1];
     expect(added.expected_quantity).toBe(0);
     expect(added.counted_quantity).toBe(3);
+    // A product added by hand is a row of the same sheet, read with its own identity and no
+    // expected quantity either (S3, S4).
+    expect(grown.count_lines[2]).toEqual(productLine({ variant_id: 21, catalog_entry_id: 12,
+      expected_quantity: 0 }));
   });
 });

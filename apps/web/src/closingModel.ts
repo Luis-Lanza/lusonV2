@@ -59,23 +59,61 @@ export function closingIsEditable(status: ClosingStatus): boolean {
 
 export type ClosingPolarity = 'L' | 'R';
 
-/** One line of the sheet: the snapshot the database took at the cut and what was counted. */
-export interface ClosingCountLine {
-  readonly variant_id: number;
-  readonly catalog_entry_id: number;
+/**
+ * The identity of a battery variant: the four attributes the catalogue publishes of one. A line of a
+ * battery states exactly these and never the identity of the other kind (S3).
+ */
+export interface ClosingBatteryIdentity {
   readonly brand: string;
   readonly model: string;
   readonly capacity_ah: string;
   readonly polarity: ClosingPolarity;
+}
+
+/**
+ * The identity of an other product: the name it is sold by and the detail the catalogue composes of
+ * its typed fields. A line of a product states these and no battery attribute (S3).
+ */
+export interface ClosingProductIdentity {
+  readonly name: string;
+  readonly detail: string;
+}
+
+/** The two keys every row of the sheet shares, whatever its kind. */
+export interface ClosingLineKey {
+  readonly variant_id: number;
+  readonly catalog_entry_id: number;
+}
+
+/**
+ * Whether a row names a battery. The wire states the identity of the one kind a row has and omits the
+ * other kind's attributes altogether, so presence is the only discriminant and no field is invented
+ * for a row that does not carry it (S3).
+ */
+export function closingIsBatteryLine(
+  line: ClosingBatteryIdentity | ClosingProductIdentity): line is ClosingBatteryIdentity {
+  return 'brand' in line;
+}
+
+/** One battery line of the sheet, with its four battery attributes. */
+export type ClosingBatteryLine = ClosingLineKey & ClosingBatteryIdentity & {
   /** Frozen at the cut and never recalculated: the sheet stays a fact of the opening (S4). */
   readonly expected_quantity: number;
-  /**
-   * The quantity the sheet opens with, which the seed writes equal to the expected one: the admin
-   * only overwrites the variants that do not coincide (S1). `null` is a leftover of a settlement
-   * opened before that seed (L3) and is read as coinciding, never as a hole to fill.
-   */
   readonly counted_quantity: number | null;
-}
+};
+
+/** One product line of the sheet, with its name and detail and no battery attribute. */
+export type ClosingProductLine = ClosingLineKey & ClosingProductIdentity & {
+  readonly expected_quantity: number;
+  readonly counted_quantity: number | null;
+};
+
+/**
+ * One line of the sheet: the identity of its one kind, the snapshot the database took at the cut and
+ * what was counted. The sheet counts the whole catalogue, so a battery row and a product row live in
+ * the same sheet (S2, S3).
+ */
+export type ClosingCountLine = ClosingBatteryLine | ClosingProductLine;
 
 /** One line of a stored offer: both sides are stated, because the branch accepts that arithmetic. */
 export interface ClosingOfferLine {
@@ -1093,9 +1131,12 @@ export const closingCountEmptyMessage = 'Contá al menos una variante antes de g
 export const closingCountLimitMessage = `Un conteo lleva como máximo ${closingMaxCountLines} variantes.`;
 export const closingSearchMessage = 'La búsqueda admite hasta 128 bytes UTF-8, sin caracteres inválidos.';
 
-/** `TOYO NS40ZL L`: the label a row, a blocker and a refusal share. */
+/** `TOYO NS40ZL L · 100 Ah` for a battery and `Agua acidulada · 1 L` for a product: the label a
+ *  row, a blocker and a refusal share, stated with the identity of its own kind (S3). */
 export function closingLineLabel(line: ClosingCountLine): string {
-  return `${line.brand} ${line.model} ${line.polarity} · ${line.capacity_ah} Ah`;
+  return closingIsBatteryLine(line)
+    ? `${line.brand} ${line.model} ${line.polarity} · ${line.capacity_ah} Ah`
+    : `${line.name} · ${line.detail}`;
 }
 
 /**
@@ -1140,15 +1181,18 @@ export function closingCountDifferenceText(differing: number): string {
   return `${differing} ${differing === 1 ? 'diferencia' : 'diferencias'} contra el sistema`;
 }
 
-/** The search of the sheet: the sheet is already here, so the filter never asks the server. */
+/** The search of the sheet: the sheet is already here, so the filter never asks the server. It
+ *  indexes the identity of each row -- the battery attributes of a battery and the name and detail of
+ *  a product -- because a term a row shows must answer that row (S3, S4). */
 export function filterCountLines(lines: readonly ClosingCountLine[], search: string): readonly ClosingCountLine[] {
   if (typeof search !== 'string' || !validSearch(search)) throw new Error(closingSearchMessage);
   const needle = search.trim().toLocaleLowerCase('es');
   if (needle === '') return lines;
   return lines.filter(line => {
-    const haystack = `${line.brand} ${line.model} ${line.capacity_ah} ${line.polarity} ${line.variant_id}`
-      .toLocaleLowerCase('es');
-    return haystack.includes(needle);
+    const identity = closingIsBatteryLine(line)
+      ? `${line.brand} ${line.model} ${line.capacity_ah} ${line.polarity}`
+      : `${line.name} ${line.detail}`;
+    return `${identity} ${line.variant_id}`.toLocaleLowerCase('es').includes(needle);
   });
 }
 
@@ -1205,7 +1249,7 @@ export const closingCataloguePageSize = 50;
 export const closingCatalogueUnavailable =
   'No se pudo consultar el catálogo de la sucursal. Revisá la conexión e intentá de nuevo.';
 export const closingCatalogueHelp =
-  '¿Contaste una batería que el sistema no tiene? Buscala en el catálogo de la sucursal y agregala: la fila queda sin cantidad esperada y el cierre la deja con lo que contaste.';
+  '¿Contaste una batería o un producto que el sistema no tiene? Buscalo en el catálogo de la sucursal y agregalo: la fila queda sin cantidad esperada y el cierre la deja con lo que contaste.';
 export const closingCatalogueEmpty = 'Sin variantes para agregar con esa búsqueda.';
 export const closingCatalogueListedTag = 'Ya está en la planilla';
 export const closingCatalogueHeldTag = 'La sucursal ya tiene stock';
@@ -1216,17 +1260,16 @@ export const closingOutsideSystemTag = 'Fuera del sistema';
 export const closingOutsideSystemHelp =
   'La sucursal no tenía esta variante en el sistema: la fila no lleva cantidad esperada y su diferencia es lo contado.';
 
-/** One variant of the branch's catalogue, with the stock the branch holds right now. */
-export interface ClosingCatalogueVariant {
-  readonly variant_id: number;
-  readonly catalog_entry_id: number;
-  readonly brand: string;
-  readonly model: string;
-  readonly capacity_ah: string;
-  readonly polarity: ClosingPolarity;
-  /** What the branch holds: only a variant it holds none of is an addition (S5). */
-  readonly existing: bigint;
-}
+/**
+ * One variant of the branch's catalogue, with the stock the branch holds right now. It is the
+ * identity of its own kind -- a battery states its battery attributes, a product its name and detail
+ * -- plus the stock, so the sheet completes itself from both kinds (S3, S4).
+ */
+export type ClosingCatalogueVariant = ClosingLineKey &
+  (ClosingBatteryIdentity | ClosingProductIdentity) & {
+    /** What the branch holds: only a variant it holds none of is an addition (S5). */
+    readonly existing: bigint;
+  };
 
 /** What the catalogue search offers for one variant of the branch. */
 export type ClosingCatalogueState = 'addable' | 'listed' | 'held';
@@ -1285,23 +1328,28 @@ export function closingRemoveLine(lines: readonly ClosingCatalogueVariant[],
   return Object.freeze(lines.filter(line => line.variant_id !== variant_id));
 }
 
+/** The identity of one row of the sheet, without the stock the catalogue read carries. */
+function lineIdentity(
+  line: ClosingBatteryIdentity | ClosingProductIdentity): ClosingBatteryIdentity | ClosingProductIdentity {
+  return closingIsBatteryLine(line)
+    ? { brand: line.brand, model: line.model, capacity_ah: line.capacity_ah, polarity: line.polarity }
+    : { name: line.name, detail: line.detail };
+}
+
 /**
  * The rows the screen works on: the snapshot of the cut plus the rows added by hand, in variant
- * order. An added row carries no expected quantity because the cut had none of it.
+ * order. An added row carries no expected quantity because the cut had none of it, and it keeps the
+ * identity of its kind (S3).
  */
 export function closingSheetRows(closing: Closing,
   added: readonly ClosingCatalogueVariant[] = []): readonly ClosingCountLine[] {
-  const rows: ClosingCountLine[] = closing.count_lines.map(line => Object.freeze({
-    variant_id: line.variant_id, catalog_entry_id: line.catalog_entry_id, brand: line.brand,
-    model: line.model, capacity_ah: line.capacity_ah, polarity: line.polarity,
-    expected_quantity: line.expected_quantity, counted_quantity: line.counted_quantity,
-  }));
+  const rows: ClosingCountLine[] = closing.count_lines.map(line => Object.freeze(
+    { ...lineIdentity(line), variant_id: line.variant_id, catalog_entry_id: line.catalog_entry_id,
+      expected_quantity: line.expected_quantity, counted_quantity: line.counted_quantity }));
   for (const variant of added) {
     if (rows.some(row => row.variant_id === variant.variant_id)) continue;
-    rows.push(Object.freeze({ variant_id: variant.variant_id,
-      catalog_entry_id: variant.catalog_entry_id, brand: variant.brand, model: variant.model,
-      capacity_ah: variant.capacity_ah, polarity: variant.polarity,
-      expected_quantity: 0, counted_quantity: null }));
+    rows.push(Object.freeze({ ...lineIdentity(variant), variant_id: variant.variant_id,
+      catalog_entry_id: variant.catalog_entry_id, expected_quantity: 0, counted_quantity: null }));
   }
   rows.sort((left, right) => left.variant_id - right.variant_id);
   return Object.freeze(rows);
