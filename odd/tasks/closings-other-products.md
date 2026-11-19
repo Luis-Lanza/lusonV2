@@ -157,3 +157,16 @@ revisión: 644 líneas autoradas en el primero, ~1470 en el segundo; si el segun
 sentada, el corte natural es API (`closing.go`, `store.go`, `httpapi/*`, migración) contra web
 (`closingsAPI`, `closingModel`, las dos pantallas, `useInventory`). Sin push y sin merge: es decisión del
 humano.
+
+L11. Publicada: la rama subió con upstream y entró a `master` como merge commit `c6dbd22`. Después del
+merge, sobre master: `go build ./...` verde y `gofmt -l apps/api` vacío. CI `verify` corre sobre el push
+de master (`go`, `go-postgresql`, `frontend`).
+
+L12. Un tropiezo de entrega, anotado para no repetirlo: al levantar el stack local con esta vertical
+reinicié la API pero **no reconstruí el SPA**, y el servidor cachea `index.html` en memoria al arrancar.
+El bundle viejo (anterior a la vertical) rechazaba la línea de producto de la planilla y la pantalla de
+Rendiciones mostraba "No se pudieron consultar las rendiciones". Era el frontend de ayer contra el
+backend de hoy. Se corrigió con `vite build` **más** reinicio, y la verificación correcta es comparar el
+hash del asset que sirve `GET /` con el que declara `apps/web/dist/index.html`. Lo que el bundle viejo
+no podía parsear era real y estaba en la base: la rendición viva de Sucursal A tiene 184 líneas de
+batería y 1 de producto.
