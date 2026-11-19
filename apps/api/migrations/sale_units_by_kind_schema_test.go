@@ -16,22 +16,10 @@ import (
 // added, and this test asserts exactly that.
 const migration056 = "056_sale_units_by_catalog_kind.sql"
 
-// beginSale stores a sale header and guarantees the transaction is closed even when the
-// test fails: an abandoned transaction keeps a connection busy, and closing the pool
-// then waits for it long after the refusal itself was reported.
+// beginSale stores a sale header for a customer the caller does not care about.
 func beginSale(t *testing.T, ctx context.Context, p *pgxpool.Pool, total string) (pgx.Tx, int64) {
 	t.Helper()
-	tx, err := p.Begin(ctx)
-	if err != nil {
-		t.Fatal("the sale transaction could not start")
-	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
-	var id int64
-	if err := tx.QueryRow(ctx, `INSERT INTO sales(branch_location_id,cash_amount,customer_name,total,created_by_account_id)
- VALUES(2,$1::numeric,'Cliente',$1::numeric,2) RETURNING id`, total).Scan(&id); err != nil {
-		t.Fatalf("the sale header could not be stored: %v", err)
-	}
-	return tx, id
+	return beginSaleFor(t, ctx, p, total, "Cliente", "", "")
 }
 
 // The rule is the database's, so every case here runs against a live one: a mixed sale
