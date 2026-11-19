@@ -1,20 +1,22 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createStockEntryAPI, StockEntryAPIError, StockEntryDetailAPIError, StockEntryReversalAPIError } from './stockEntryAPI';
+import { createStockEntryAPI, StockEntryAPIError, StockEntryDetailAPIError, StockEntryReversalAPIError,
+  StockEntrySupplierAPIError } from './stockEntryAPI';
 import type { StockEntryInput } from './stockEntryModel';
 
 const csrf = 'c'.repeat(43);
+const supplier = { id: 3, name: 'Proveedor del norte' };
 const draft = (): StockEntryInput => ({
-  operation_key: 'warehouse_key_0001', note: 'Remito 0002',
+  operation_key: 'warehouse_key_0001', supplier_id: 3, note: 'Remito 0002',
   lines: [{ variant_id: 9, quantity: 1 }, { variant_id: 4, quantity: 2 }],
 });
 const recordBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   id: 7, location_id: 1, note: 'Remito 0002', created_by_account_id: 1, created_at: '2026-05-01T14:20:00Z',
-  lines: [{ variant_id: 4, quantity: 2 }, { variant_id: 9, quantity: 1 }], total_units: 3, ...overrides,
+  supplier, lines: [{ variant_id: 4, quantity: 2 }, { variant_id: 9, quantity: 1 }], total_units: 3, ...overrides,
 });
 const json = (body: string, status = 201) => new Response(body, { status, headers: { 'Content-Type': 'application/json' } });
 const mockFetch = () => vi.fn<typeof fetch>();
 const historyRow = (overrides: Record<string, unknown> = {}) => ({
-  id: 7, note: 'Remito 0002', created_at: '2026-05-01T14:20:00Z',
+  id: 7, note: 'Remito 0002', created_at: '2026-05-01T14:20:00Z', supplier: null,
   lines: 2, total_units: 18, reversed_by: null, ...overrides });
 const historyBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   page: 1, page_size: 25, total_entries: 1, entries: [historyRow()], ...overrides });
@@ -25,11 +27,11 @@ describe('stock entry API transport', () => {
     const fetch = mockFetch().mockResolvedValue(json(recordBody(), status));
     const result = await createStockEntryAPI(fetch).create(draft(), csrf);
     expect(result.replayed).toBe(replayed);
-    expect(result.record).toMatchObject({ id: 7, location_id: 1, total_units: 3, note: 'Remito 0002' });
+    expect(result.record).toMatchObject({ id: 7, location_id: 1, total_units: 3, note: 'Remito 0002', supplier });
     expect(fetch.mock.calls[0]).toEqual(['/api/stock-entries', {
       method: 'POST', credentials: 'same-origin', cache: 'no-store', signal: undefined,
       headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf },
-      body: '{"operation_key":"warehouse_key_0001","note":"Remito 0002","lines":[{"variant_id":4,"quantity":2},{"variant_id":9,"quantity":1}]}',
+      body: '{"operation_key":"warehouse_key_0001","supplier_id":3,"note":"Remito 0002","lines":[{"variant_id":4,"quantity":2},{"variant_id":9,"quantity":1}]}',
     }]);
   });
 
@@ -37,15 +39,17 @@ describe('stock entry API transport', () => {
     let resolve!: (value: Response) => void;
     const fetch = mockFetch().mockReturnValue(new Promise<Response>(yes => { resolve = yes; }));
     // Deliberately mutable copy: the API must not read it again after the first await.
-    const input = draft() as { operation_key: string; note?: string; lines: { variant_id: number; quantity: number }[] };
+    const input = draft() as { operation_key: string; supplier_id: number; note?: string;
+      lines: { variant_id: number; quantity: number }[] };
     const job = createStockEntryAPI(fetch).create(input, csrf);
     input.lines[0].quantity = 500;
     input.note = 'mutated';
     input.operation_key = 'warehouse_key_9999';
+    input.supplier_id = 99;
     resolve(json(recordBody()));
     await job;
     expect(JSON.parse(String(fetch.mock.calls[0][1]?.body))).toEqual({
-      operation_key: 'warehouse_key_0001', note: 'Remito 0002',
+      operation_key: 'warehouse_key_0001', supplier_id: 3, note: 'Remito 0002',
       lines: [{ variant_id: 4, quantity: 2 }, { variant_id: 9, quantity: 1 }],
     });
   });
@@ -64,6 +68,8 @@ describe('stock entry API transport', () => {
     ['a record with another variant set', json(recordBody({ lines: [{ variant_id: 4, quantity: 2 }, { variant_id: 5, quantity: 1 }] })), 'invalid_response'],
     ['a record whose total does not add up', json(recordBody({ total_units: 9 })), 'invalid_response'],
     ['a record outside the warehouse', json(recordBody({ location_id: 2 })), 'invalid_response'],
+    ['a record of another supplier', json(recordBody({ supplier: { id: 4, name: 'Baterías Sur' } })), 'invalid_response'],
+    ['a record without a supplier', json(recordBody({ supplier: null })), 'invalid_response'],
     ['an unadmitted success status', json(recordBody(), 202), 'invalid_response'],
   ])('rejects %s', async (_, reply, code) => {
     const fetch = mockFetch().mockResolvedValue(reply);
@@ -71,7 +77,8 @@ describe('stock entry API transport', () => {
   });
 
   it.each([
-    [400, 'invalid_request'], [403, 'forbidden'], [409, 'retry_conflict'], [409, 'insufficient_stock'], [503, 'service_unavailable'],
+    [400, 'invalid_request'], [403, 'forbidden'], [409, 'retry_conflict'], [409, 'decision_conflict'],
+    [409, 'insufficient_stock'], [503, 'service_unavailable'],
   ])('reports the admitted %s %s code with its status', async (status, code) => {
     const fetch = mockFetch().mockResolvedValue(json(`{"error":"${code}"}`, status));
     const failure = await createStockEntryAPI(fetch).create(draft(), csrf).catch(error => error);
@@ -99,7 +106,7 @@ describe('stock entry API transport', () => {
   });
 
   it.each([
-    ['an invalid draft', { operation_key: 'short', lines: [{ variant_id: 4, quantity: 1 }] } as StockEntryInput, csrf],
+    ['an invalid draft', { operation_key: 'short', supplier_id: 3, lines: [{ variant_id: 4, quantity: 1 }] } as StockEntryInput, csrf],
     ['a missing CSRF token', draft(), ''],
     ['a CSRF token with forbidden characters', draft(), 'not a token'],
   ])('fails closed on %s without any network call', async (_, input, token) => {
@@ -115,7 +122,7 @@ describe('stock ingress history transport', () => {
     const page = await createStockEntryAPI(fetch).history(2, 50);
     expect(page).toMatchObject({ page: 1, page_size: 25, total_entries: 1 });
     expect(page.entries[0]).toEqual({ id: 7, note: 'Remito 0002', created_at: '2026-05-01T14:20:00Z',
-      lines: 2, total_units: 18, reversed_by: null });
+      supplier: null, lines: 2, total_units: 18, reversed_by: null });
     expect(fetch.mock.calls[0]).toEqual(['/api/stock-entries?page=2&page_size=50', {
       method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: undefined,
     }]);
@@ -176,12 +183,12 @@ describe('stock ingress history transport', () => {
 
 describe('stock counter-entry transport', () => {
   const listed = (overrides: Record<string, unknown> = {}) => ({
-    id: 7, note: 'Remito 0002', created_at: '2026-05-01T14:20:00Z',
+    id: 7, note: 'Remito 0002', created_at: '2026-05-01T14:20:00Z', supplier,
     lines: 2, total_units: 18, reversed_by: null, ...overrides });
   const reversal = { operation_key: 'warehouse_reverse_01', reason: ' error de carga ' };
   const counterBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
     id: 9, location_id: 1, note: '', created_by_account_id: 1, created_at: '2026-05-01T14:21:00Z',
-    lines: [{ variant_id: 1, quantity: -4 }, { variant_id: 2, quantity: -14 }], total_units: -18, ...overrides,
+    supplier, lines: [{ variant_id: 1, quantity: -4 }, { variant_id: 2, quantity: -14 }], total_units: -18, ...overrides,
   });
   const counterResponse = (body = counterBody(), status = 201) => json(body, status);
 
@@ -281,7 +288,7 @@ describe('stock document detail transport', () => {
   const detailBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
     id: 6, location_id: 1, note: 'Remito 0002-00045871', created_at: '2026-05-01T14:20:00Z',
     created_by_account_id: 1, reverses_entry_id: null, reversed_by: null, reason: '',
-    lines: [detailLine()], total_units: 18, ...overrides,
+    supplier, lines: [detailLine()], total_units: 18, ...overrides,
   });
   const detailResponse = (body = detailBody(), status = 200) => json(body, status);
 
@@ -289,7 +296,7 @@ describe('stock document detail transport', () => {
     const fetch = mockFetch().mockResolvedValue(detailResponse());
     const detail = await createStockEntryAPI(fetch).detail(6);
     expect(detail).toMatchObject({ id: 6, note: 'Remito 0002-00045871', total_units: 18,
-      reverses_entry_id: null, reversed_by: null, reason: '' });
+      reverses_entry_id: null, reversed_by: null, reason: '', supplier });
     expect(detail.lines).toEqual([{ variant_id: 7, kind: 'battery', name: 'TOYO · NS60L', detail: '45 Ah · L',
       battery: { brand: 'TOYO', model: 'NS60L', capacity_ah: '45', polarity: 'L' }, fields: null, quantity: 18 }]);
     expect(fetch.mock.calls[0]).toEqual(['/api/stock-entries/6', {
@@ -348,5 +355,106 @@ describe('stock document detail transport', () => {
     controller.abort();
     const aborted = mockFetch().mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' }));
     await expect(createStockEntryAPI(aborted).detail(6, controller.signal)).rejects.toMatchObject({ code: 'aborted', status: null });
+  });
+});
+
+describe('supplier read transport', () => {
+  const supplierChoice = (overrides: Record<string, unknown> = {}) => ({
+    id: 3, name: 'Proveedor del norte', contact: '', retired: false,
+    kinds: ['battery', 'other'], offers: 4, ...overrides });
+  const supplierListBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+    suppliers: [supplierChoice()], page: 1, page_size: 50, total_suppliers: 1, ...overrides });
+  const catalogueBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+    items: [{ variant_id: 4, catalog_entry_id: 2, kind: 'battery', name: 'TOYO · NS40ZL', detail: '35 Ah · L',
+      battery: { brand: 'TOYO', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' }, fields: null }],
+    page_size: 50, ...overrides });
+
+  it('reads one page of suppliers with the session cookie and no CSRF header', async () => {
+    const fetch = mockFetch().mockResolvedValue(json(supplierListBody(), 200));
+    const page = await createStockEntryAPI(fetch).suppliers(1, 50);
+    expect(page.suppliers).toEqual([{ id: 3, name: 'Proveedor del norte', contact: '', retired: false,
+      kinds: ['battery', 'other'], offers: 4 }]);
+    expect(fetch.mock.calls[0]).toEqual(['/api/suppliers?page=1&page_size=50', {
+      method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: undefined,
+    }]);
+  });
+
+  it('reads the catalogue of exactly one supplier with its kind and search', async () => {
+    const fetch = mockFetch().mockResolvedValue(json(catalogueBody(), 200));
+    const items = await createStockEntryAPI(fetch).supplierCatalog(3, 'battery', 'NS40');
+    expect(items[0]).toMatchObject({ variant_id: 4, catalog_entry_id: 2, kind: 'battery' });
+    expect(fetch.mock.calls[0]).toEqual(['/api/suppliers/3/catalog?kind=battery&search=NS40', {
+      method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: undefined,
+    }]);
+  });
+
+  it('sends the abort signal it was given to both reads', async () => {
+    const fetch = mockFetch().mockResolvedValue(json(supplierListBody(), 200));
+    const controller = new AbortController();
+    await createStockEntryAPI(fetch).suppliers(1, 50, controller.signal);
+    expect(fetch.mock.calls[0][1]?.signal).toBe(controller.signal);
+    const catalogue = mockFetch().mockResolvedValue(json(catalogueBody(), 200));
+    await createStockEntryAPI(catalogue).supplierCatalog(3, 'battery', '', controller.signal);
+    expect(catalogue.mock.calls[0][1]?.signal).toBe(controller.signal);
+  });
+
+  it.each([
+    ['a text/html body', new Response(supplierListBody(), { status: 200, headers: { 'Content-Type': 'text/html' } })],
+    ['an unparseable page', json('not json', 200)],
+    ['a page with a foreign supplier field', json(supplierListBody({ suppliers: [supplierChoice({ offers_list: [] })] }), 200)],
+    ['a page outside the request', json(supplierListBody({ page: 2 }), 200)],
+    ['an unadmitted success status', json(supplierListBody(), 201)],
+  ])('refuses to interpret %s of the supplier list', async (_, reply) => {
+    const fetch = mockFetch().mockResolvedValue(reply);
+    await expect(createStockEntryAPI(fetch).suppliers(1, 50))
+      .rejects.toMatchObject({ name: 'StockEntrySupplierAPIError', code: 'invalid_response' });
+  });
+
+  it.each([
+    ['a text/html body', new Response(catalogueBody(), { status: 200, headers: { 'Content-Type': 'text/html' } })],
+    ['an unparseable catalogue', json('not json', 200)],
+    ['a catalogue with stock numbers', json(catalogueBody({ items: [{ variant_id: 4, catalog_entry_id: 2, kind: 'battery',
+      name: 'TOYO · NS40ZL', detail: '35 Ah · L', battery: { brand: 'TOYO', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' },
+      fields: null, existing: 14 }] }), 200)],
+    ['a catalogue of the other kind', json(catalogueBody({ items: [{ variant_id: 210, catalog_entry_id: 97, kind: 'other',
+      name: 'Agua acidulada', detail: 'volumen en L: 5 L', battery: null, fields: [] }] }), 200)],
+    ['an unadmitted success status', json(catalogueBody(), 201)],
+  ])('refuses to interpret %s of a supplier catalogue', async (_, reply) => {
+    const fetch = mockFetch().mockResolvedValue(reply);
+    await expect(createStockEntryAPI(fetch).supplierCatalog(3, 'battery', ''))
+      .rejects.toMatchObject({ name: 'StockEntrySupplierAPIError', code: 'invalid_response' });
+  });
+
+  it.each([[400, 'invalid_request'], [401, 'unauthenticated'], [403, 'forbidden'], [503, 'service_unavailable']])(
+    'reports the admitted supplier read %s %s code with its status', async (status, code) => {
+      const fetch = mockFetch().mockResolvedValue(json(`{"error":"${code}"}`, status));
+      const failure = await createStockEntryAPI(fetch).suppliers(1, 50).catch(error => error);
+      expect(failure).toBeInstanceOf(StockEntrySupplierAPIError);
+      expect(failure).toMatchObject({ code, status });
+    });
+
+  it('distinguishes a lost connection from an aborted supplier read', async () => {
+    const network = mockFetch().mockRejectedValue(new TypeError('Failed to fetch'));
+    await expect(createStockEntryAPI(network).suppliers(1, 50)).rejects.toMatchObject({ code: 'network', status: null });
+    const controller = new AbortController();
+    controller.abort();
+    const aborted = mockFetch().mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+    await expect(createStockEntryAPI(aborted).supplierCatalog(3, 'battery', '', controller.signal))
+      .rejects.toMatchObject({ code: 'aborted', status: null });
+  });
+
+  it.each([[0, 50], [1, 0], [1, 51], [1.5, 50]])('fails closed on page %s size %s without any network call',
+    async (page, size) => {
+      const fetch = mockFetch();
+      await expect(createStockEntryAPI(fetch).suppliers(page, size))
+        .rejects.toMatchObject({ code: 'invalid_request', status: null });
+      expect(fetch).not.toHaveBeenCalled();
+    });
+
+  it.each([[0], [-1], [3.5], [Number.NaN]])('fails closed on supplier %s without any network call', async id => {
+    const fetch = mockFetch();
+    await expect(createStockEntryAPI(fetch).supplierCatalog(id, 'battery', ''))
+      .rejects.toMatchObject({ code: 'invalid_request', status: null });
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

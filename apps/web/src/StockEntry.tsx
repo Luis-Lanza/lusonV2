@@ -1,25 +1,38 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Item, Kind, VariantIdentity } from './model';
-import { batteryRows, identityOf, validSearch } from './model';
+import type { Kind, VariantIdentity } from './model';
+import { identityOf, validSearch } from './model';
 import TransferDate from './shared/TransferDate';
 import { createStockEntryAPI, StockEntryAPIError, StockEntryDetailAPIError, StockEntryReversalAPIError } from './stockEntryAPI';
 import {
   canonicalStockEntryInput, canonicalStockEntryReversalInput, canonicalStockEntryReversalReason,
-  newStockEntryOperationKey, parseStockCatalog, stockCatalogPath, stockEntryDetailErrorMessages, stockEntryErrorMessages,
+  newStockEntryOperationKey, stockEntryDetailErrorMessages, stockEntryErrorMessages,
   stockEntryFailureIsDefinite, stockEntryHistoryDefaultPageSize, stockEntryHistoryMaxPage, stockEntryHistoryPageSizes,
   stockEntryHistoryUnavailable, stockEntryKindDescriptions, stockEntryKindLabels, stockEntryKinds, stockEntryMaxNote,
   stockEntryMaxQuantity, stockEntryMaxReason,
-  stockEntryReversalErrorMessages, stockEntryReversalFailureIsDefinite, stockEntryReversible, validStockQuantity,
+  stockEntryReversalErrorMessages, stockEntryReversalFailureIsDefinite, stockEntryReversible,
+  stockSupplierDraftNotOffered, stockSupplierNoOffers, stockSupplierPageSize, stockSupplierRequired,
+  unofferedStockEntryVariantIDs, validStockQuantity,
   type StockEntryDetail, type StockEntryDetailErrorCode, type StockEntryDetailLine, type StockEntryErrorCode,
   type StockEntryHistoryPage, type StockEntryHistoryRow, type StockEntryInput, type StockEntryReversalErrorCode,
-  type StockEntryReversalInput,
+  type StockEntryReversalInput, type SupplierCatalogRow, type SupplierChoice, type SupplierListPage,
 } from './stockEntryModel';
 import './stock-entry.css';
 
 // One line of the draft: the identity of the picked variant plus the quantity as
 // the user typed it. Nothing battery-specific is added to a product line.
 interface DocumentLine extends VariantIdentity { readonly quantity: string }
-interface CatalogState { readonly phase: 'loading' | 'ready' | 'error'; readonly items: readonly Item[]; readonly problem: string }
+interface CatalogState {
+  readonly phase: 'loading' | 'ready' | 'error';
+  readonly items: readonly SupplierCatalogRow[];
+  readonly problem: string;
+}
+// The suppliers the screen can choose from are their own read: a failed read
+// never leaves a picker or a document behind.
+interface SupplierState {
+  readonly phase: 'loading' | 'ready' | 'error';
+  readonly page: SupplierListPage | null;
+  readonly problem: string;
+}
 // The history is its own state: a failed read never touches the draft document.
 interface HistoryState {
   readonly phase: 'loading' | 'ready' | 'error';
@@ -41,14 +54,34 @@ export interface StockEntryProps {
   csrf: string;
   fetcher?: typeof globalThis.fetch;
 }
-const catalogUnavailable = 'No se pudo consultar el catálogo del Almacén. Revisá la conexión e intentá de nuevo.';
+const supplierUnavailable = 'No se pudo consultar la lista de proveedores. Revisá la conexión e intentá de nuevo.';
+const supplierCatalogUnavailable =
+  'No se pudo consultar el catálogo del proveedor elegido. Revisá la conexión e intentá de nuevo.';
 // A battery document keeps the columns it always had; a product document reads
 // the name and the detail the server composes from its typed fields.
 const detailBatteryLines = (lines: readonly StockEntryDetailLine[]) =>
   lines.flatMap(line => line.battery === null ? [] : [{ line, battery: line.battery }]);
+// The picker only ever holds the kind of the document, so each table reads the
+// rows of its own shape and labels a product without inventing a battery.
+const supplierBatteryRows = (items: readonly SupplierCatalogRow[]) =>
+  items.flatMap(item => item.battery === null ? [] : [{ item, battery: item.battery }]);
+// What the supplier brings in, said before choosing it, so an empty supplier is
+// obvious and never a surprise inside the picker.
+const offerCount = (choice: SupplierChoice) => choice.offers === 0
+  ? 'Sin productos asignados'
+  : `${choice.offers} ${choice.offers === 1 ? 'producto ofrecido' : 'productos ofrecidos'}`;
+const supplierName = (supplier: { readonly name: string } | null) => supplier === null ? 'sin proveedor' : supplier.name;
 
 export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEntryProps) {
   const api = useMemo(() => createStockEntryAPI(fetcher), [fetcher]);
+  // The document names the supplier whose products it brings in: the supplier is
+  // chosen first and nothing is read or saved until it is.
+  const [supplier, setSupplier] = useState<SupplierChoice | null>(null);
+  const [supplierSwitch, setSupplierSwitch] = useState<{ next: SupplierChoice; trigger: HTMLButtonElement } | null>(null);
+  const supplierDialog = useRef<HTMLElement>(null);
+  const [suppliersState, setSuppliersState] = useState<SupplierState>(
+    { phase: 'loading', page: null, problem: supplierUnavailable });
+  const [suppliersRevision, setSuppliersRevision] = useState(0);
   // The document declares its kind, and the kind is chosen before any catalog or
   // document appears: one document never mixes the two kinds.
   const [kind, setKind] = useState<Kind | null>(null);
@@ -56,11 +89,15 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
   const kindDialog = useRef<HTMLElement>(null);
   const [search, setSearch] = useState('');
   const [revision, setRevision] = useState(0);
-  const [catalog, setCatalog] = useState<CatalogState>({ phase: 'loading', items: [], problem: catalogUnavailable });
+  const [catalog, setCatalog] = useState<CatalogState>(
+    { phase: 'loading', items: [], problem: supplierCatalogUnavailable });
   const [lines, setLines] = useState<readonly DocumentLine[]>([]);
   const [note, setNote] = useState('');
   const [status, setStatus] = useState('');
   const [busy, setBusy] = useState(false);
+  // Every variant the chosen supplier actually offered while this document was
+  // being typed: a line outside it can never be confirmed (S5).
+  const offered = useRef<Set<number>>(new Set());
   const [historyPage, setHistoryPage] = useState(1);
   const [historySize, setHistorySize] = useState(stockEntryHistoryDefaultPageSize);
   const [historyRevision, setHistoryRevision] = useState(0);
@@ -95,29 +132,46 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
   }, []);
 
   useEffect(() => {
-    // Nothing is read before the kind is chosen, and only that kind is read after.
-    if (kind === null) return;
+    const controller = new AbortController();
+    const alive = () => mounted.current && !controller.signal.aborted && !lifetime.current.signal.aborted;
+    setSuppliersState(current => ({ phase: 'loading', page: current.page, problem: supplierUnavailable }));
+    void (async () => {
+      try {
+        const page = await api.suppliers(1, stockSupplierPageSize, controller.signal);
+        if (!alive()) return;
+        setSuppliersState({ phase: 'ready', page, problem: '' });
+      } catch {
+        if (alive()) setSuppliersState(current => ({ ...current, phase: 'error', problem: supplierUnavailable }));
+      }
+    })();
+    return () => controller.abort();
+  }, [api, suppliersRevision]);
+
+  useEffect(() => {
+    // Nothing is read before the supplier and its kind are chosen, and only that
+    // supplier's catalogue is read after: there is no all-products path.
+    if (supplier === null || kind === null) return;
     if (!validSearch(search)) {
       setCatalog({ phase: 'error', items: [], problem: 'La búsqueda admite hasta 128 bytes UTF-8, sin caracteres inválidos.' });
       return;
     }
     const controller = new AbortController();
     const alive = () => mounted.current && !controller.signal.aborted && !lifetime.current.signal.aborted;
-    setCatalog({ phase: 'loading', items: [], problem: catalogUnavailable });
+    setCatalog({ phase: 'loading', items: [], problem: supplierCatalogUnavailable });
     void (async () => {
       try {
-        const reply = await fetcher(stockCatalogPath(search, kind), { method: 'GET', credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
+        const items = await api.supplierCatalog(supplier.id, kind, search, controller.signal);
         if (!alive()) return;
-        if (reply.status !== 200) throw new Error('catalog status');
-        const items = parseStockCatalog(await reply.text(), kind);
-        if (!alive()) return;
+        // Every row the supplier answered with is a variant this draft may name,
+        // whatever the current search hides afterwards.
+        for (const item of items) offered.current.add(item.variant_id);
         setCatalog({ phase: 'ready', items, problem: '' });
       } catch {
-        if (alive()) setCatalog({ phase: 'error', items: [], problem: catalogUnavailable });
+        if (alive()) setCatalog({ phase: 'error', items: [], problem: supplierCatalogUnavailable });
       }
     })();
     return () => controller.abort();
-  }, [kind, search, revision, fetcher]);
+  }, [api, supplier, kind, search, revision]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -158,10 +212,44 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
   }, [api, detail, detailRevision]);
 
   function forgetAttempt() { operationKey.current = null; }
+  // The supplier is the first decision of the document: choosing another one is a
+  // new document, and no line is ever migrated to the new supplier's catalogue.
+  function applySupplier(next: SupplierChoice) {
+    forgetAttempt();
+    offered.current = new Set();
+    setSupplier(next);
+    setSupplierSwitch(null);
+    setKindSwitch(null);
+    // A supplier that offers a single kind needs no second decision, and a
+    // supplier without products needs no picker at all.
+    setKind(next.kinds.length === 1 ? next.kinds[0] : null);
+    setSearch('');
+    setCatalog({ phase: 'loading', items: [], problem: supplierCatalogUnavailable });
+    setLines([]);
+    setNote('');
+    setStatus('');
+  }
+  function chooseSupplier(next: SupplierChoice, trigger: HTMLButtonElement) {
+    if (busy || pending.current || supplierSwitch || kindSwitch || next.retired || next.id === supplier?.id) return;
+    // With nothing typed the change costs nothing; a draft with a line is
+    // discarded only after the deliberate confirmation.
+    if (lines.length === 0) { applySupplier(next); return; }
+    setSupplierSwitch({ next, trigger });
+  }
+  function closeSupplierSwitch() {
+    const trigger = supplierSwitch?.trigger;
+    setSupplierSwitch(null);
+    if (trigger?.isConnected) trigger.focus();
+  }
+  // Focus moves into the confirmation as soon as it exists.
+  useEffect(() => {
+    if (supplierSwitch) supplierDialog.current?.focus();
+  }, [supplierSwitch]);
   // A kind change is a new document: the draft of the other kind is discarded
   // whole, and no line is ever migrated to the new kind.
   function applyKind(next: Kind) {
     forgetAttempt();
+    offered.current = new Set();
     setKind(next);
     setKindSwitch(null);
     setSearch('');
@@ -171,6 +259,8 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
   }
   function chooseKind(next: Kind, trigger: HTMLButtonElement) {
     if (busy || pending.current || kindSwitch || next === kind) return;
+    // Only the kinds the chosen supplier offers are ever offered here.
+    if (supplier === null || !supplier.kinds.includes(next)) return;
     // With nothing loaded the change costs nothing; a document with a line is
     // discarded only after the deliberate confirmation.
     if (lines.length === 0) { applyKind(next); return; }
@@ -186,7 +276,9 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
     if (kindSwitch) kindDialog.current?.focus();
   }, [kindSwitch]);
 
-  function add(row: Item) {
+  function add(row: SupplierCatalogRow) {
+    // Only a row of the chosen supplier's catalogue is a line of this document.
+    if (!offered.current.has(row.variant_id)) { setStatus(stockSupplierDraftNotOffered); return; }
     forgetAttempt();
     const current = lines.find(line => line.variant_id === row.variant_id);
     if (current) {
@@ -214,13 +306,22 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
 
   async function confirm() {
     if (busy || pending.current) return;
+    if (supplier === null) { setStatus(stockSupplierRequired); return; }
+    // A supplier without assigned products cannot receive an ingress at all.
+    if (supplier.offers === 0) { setStatus(stockSupplierNoOffers); return; }
     if (!lines.length) { setStatus('Agregá al menos una línea antes de confirmar.'); return; }
     if (!quantitiesValid) { setStatus('Cantidad inválida: ingresá un entero entre 1 y 1.000.000 en cada línea.'); return; }
+    // The offer list is a rule of the document, not only of the picker: a line the
+    // supplier does not offer is refused whole before anything is sent.
+    if (unofferedStockEntryVariantIDs(offered.current, lines.map(line => line.variant_id)).length > 0) {
+      setStatus(stockSupplierDraftNotOffered);
+      return;
+    }
     if (operationKey.current === null) {
       try { operationKey.current = newStockEntryOperationKey(); }
       catch { setStatus('No se pudo generar una clave segura para este ingreso. No se envió nada.'); return; }
     }
-    const input: StockEntryInput = { operation_key: operationKey.current, note,
+    const input: StockEntryInput = { operation_key: operationKey.current, supplier_id: supplier.id, note,
       lines: lines.map(line => ({ variant_id: line.variant_id, quantity: Number(line.quantity) })) };
     let prepared: StockEntryInput;
     try { prepared = canonicalStockEntryInput(input); } catch { setStatus('El documento no es válido. Revisá las líneas y la nota.'); return; }
@@ -359,12 +460,16 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
     if (detail) detailDialog.current?.focus();
   }, [detail]);
 
+  const supplierChoices = suppliersState.phase === 'ready' && suppliersState.page ? suppliersState.page.suppliers : [];
+  // Only the kinds this supplier actually offers are offered here: choosing it
+  // never shows a kind that would open an empty catalogue.
+  const offeredKinds = supplier === null ? [] : stockEntryKinds.filter(option => supplier.kinds.includes(option));
   const catalogCount = kind === 'other'
     ? `${catalog.items.length} ${catalog.items.length === 1 ? 'producto' : 'productos'}`
     : `${catalog.items.length} ${catalog.items.length === 1 ? 'variante' : 'variantes'}`;
   // The picker only ever holds the kind of the document, so each table reads the
   // rows of its own shape: the battery table exactly as it is today.
-  const batteryCatalog = kind === 'battery' ? batteryRows(catalog.items) : [];
+  const batteryCatalog = kind === 'battery' ? supplierBatteryRows(catalog.items) : [];
   const historyRows = history.phase === 'ready' && history.page ? history.page.entries : [];
   // A detail is only ever rendered for the document that asked for it.
   const detailView = detail && detailLoad.id === detail.row.id ? detailLoad : null;
@@ -386,23 +491,64 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
       <h1 id="stock-entry-title">Nuevo ingreso de stock</h1>
       <p>Registrá la mercadería que entra al depósito. El stock se aplica recién al confirmar.</p>
     </header>
-    {/* The screen starts by asking what is arriving: no catalog and no document
-        exist until the kind is chosen, and one document never mixes kinds. */}
-    <div className="stock-kind-step" role="group" aria-label="Tipo de producto del ingreso">
-      {stockEntryKinds.map(option => <button type="button" key={option} className="stock-kind-choice"
+    {/* The screen starts by asking who brings the merchandise: no kind, no
+        catalog and no document exist until the supplier is chosen (S4). */}
+    <section className="stock-entry-panel stock-supplier-panel" aria-labelledby="stock-supplier-step-title"
+      aria-busy={suppliersState.phase === 'loading'}>
+      <div className="stock-panel-head">
+        <div><h2 id="stock-supplier-step-title">Proveedor del ingreso</h2>
+          <p className="stock-hint">Elegí primero el proveedor: el ingreso solo admite los productos que ese proveedor ofrece.</p></div>
+        <span className="stock-tag">{supplier === null ? 'Sin elegir' : supplier.name}</span>
+      </div>
+      {suppliersState.phase === 'loading' && <p className="stock-message" role="status">Consultando proveedores…</p>}
+      {suppliersState.phase === 'error' && <p className="stock-message" role="alert">{suppliersState.problem}
+        <button type="button" disabled={busy} onClick={() => setSuppliersRevision(value => value + 1)}>Reintentar proveedores</button></p>}
+      {suppliersState.phase === 'ready' && supplierChoices.length === 0 &&
+        <p className="stock-message">Todavía no hay proveedores cargados. Creá uno en Catálogo → Proveedores y volvé a intentar.</p>}
+      {supplierChoices.length > 0 && <div className="stock-supplier-list" role="group" aria-label="Proveedor del ingreso">
+        {supplierChoices.map(choice => <button type="button" key={choice.id} className="stock-supplier-choice"
+          aria-pressed={supplier?.id === choice.id} disabled={busy || choice.retired}
+          onClick={event => chooseSupplier(choice, event.currentTarget)}>
+          <strong>{choice.name}</strong>
+          <span>{offerCount(choice)}</span>
+          {choice.retired && <span className="stock-tag">Retirado</span>}
+        </button>)}
+      </div>}
+    </section>
+    {supplier === null && suppliersState.phase === 'ready' && supplierChoices.length > 0 &&
+      <p className="stock-hint" role="status">Elegí el proveedor para ver los productos que podés ingresar.</p>}
+    {/* A supplier without assigned products cannot receive an ingress: it says so
+        instead of opening a picker that could never fill a document (S5). */}
+    {supplier !== null && supplier.offers === 0 && <section className="stock-entry-panel stock-empty-panel"
+      aria-labelledby="stock-empty-title">
+      <div className="stock-panel-head">
+        <div><h2 id="stock-empty-title">Proveedor sin productos</h2><p className="stock-hint">{supplier.name}</p></div>
+        <span className="stock-tag">Sin productos</span>
+      </div>
+      <p className="stock-message">{stockSupplierNoOffers}</p>
+    </section>}
+    {supplier !== null && offeredKinds.length > 1 && <div className="stock-kind-step" role="group"
+      aria-label="Tipo de producto del ingreso">
+      {offeredKinds.map(option => <button type="button" key={option} className="stock-kind-choice"
         aria-pressed={kind === option} disabled={busy}
         onClick={event => chooseKind(option, event.currentTarget)}>
         <span className="stock-kind-dot" aria-hidden="true" />
         <span><strong>{stockEntryKindLabels[option]}</strong><span>{stockEntryKindDescriptions[option]}</span></span>
       </button>)}
-    </div>
-    {kind === null && <p className="stock-hint" role="status">Elegí el tipo de producto para ver el catálogo y el documento.</p>}
+    </div>}
+    {/* A single offered kind needs no decision and no dead button: it is chosen
+        as soon as the supplier is, and the document declares it. */}
+    {supplier !== null && offeredKinds.length === 1 && <p className="stock-hint" role="status">
+      Este proveedor ofrece un solo tipo: <strong>{stockEntryKindLabels[offeredKinds[0]]}</strong>. Queda elegido automáticamente.
+    </p>}
+    {supplier !== null && offeredKinds.length > 1 && kind === null &&
+      <p className="stock-hint" role="status">Elegí el tipo de producto para ver el catálogo y el documento.</p>}
     {kind !== null && <p className="stock-kind-line">Este ingreso es de <strong>{stockEntryKindLabels[kind]}</strong>. Un documento nunca mezcla los dos tipos. {lines.length > 0 && 'Cambiar el tipo pide confirmación y descarta el borrador.'}</p>}
-    {kind !== null && <div className="stock-entry-grid">
+    {supplier !== null && kind !== null && <div className="stock-entry-grid">
       <section className="stock-entry-panel" aria-labelledby="stock-catalog-title" aria-busy={catalog.phase === 'loading'}>
         <div className="stock-panel-head">
-          <h2 id="stock-catalog-title">Catálogo</h2>
-          <span className="stock-tag">{catalog.phase === 'ready' ? catalogCount : 'Almacén'}</span>
+          <div><h2 id="stock-catalog-title">Catálogo</h2><p className="stock-hint">{supplier.name}</p></div>
+          <span className="stock-tag">{catalog.phase === 'ready' ? catalogCount : 'Proveedor'}</span>
         </div>
         <label className="stock-search">{kind === 'other' ? 'Buscar nombre o dato del producto' : 'Buscar marca, modelo o capacidad'}
           <input type="search" value={search} placeholder={kind === 'other' ? 'Agua acidulada, 5 L' : 'NS40ZL, TOYO, 45 Ah'}
@@ -410,45 +556,44 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
         </label>
         {catalog.phase === 'ready' && catalog.items.length > 0 && <div className="stock-table-wrap">
           <table className="stock-table">
-            <caption className="sr-only">{kind === 'other' ? 'Productos del catálogo del Almacén' : 'Variantes del catálogo del Almacén'}</caption>
+            <caption className="sr-only">{kind === 'other' ? 'Productos que ofrece el proveedor elegido' : 'Variantes que ofrece el proveedor elegido'}</caption>
             {kind === 'other'
               ? <>
-                <thead><tr><th scope="col">Producto</th><th scope="col">Detalle</th><th scope="col">Stock actual</th><th scope="col">Acción</th></tr></thead>
+                <thead><tr><th scope="col">Producto</th><th scope="col">Detalle</th><th scope="col">Acción</th></tr></thead>
                 <tbody>{catalog.items.map(row => <tr key={row.variant_id} data-variant-id={row.variant_id}>
                   <td data-label="Producto"><strong>{row.name}</strong></td>
                   <td data-label="Detalle">{row.detail}</td>
-                  <td data-label="Stock actual">{row.existing.toString()}</td>
                   <td data-label="Acción"><button type="button" className="stock-add" aria-label={`Agregar ${row.name}`} onClick={() => add(row)}>Agregar</button></td>
                 </tr>)}</tbody>
               </>
               : <>
-                <thead><tr><th scope="col">Producto</th><th scope="col">Capacidad</th><th scope="col">Polaridad</th><th scope="col">Stock actual</th><th scope="col">Acción</th></tr></thead>
-                <tbody>{batteryCatalog.map(row => <tr key={row.variant_id} data-variant-id={row.variant_id}>
+                <thead><tr><th scope="col">Producto</th><th scope="col">Capacidad</th><th scope="col">Polaridad</th><th scope="col">Acción</th></tr></thead>
+                <tbody>{batteryCatalog.map(({ item: row, battery }) => <tr key={row.variant_id} data-variant-id={row.variant_id}>
                   <td data-label="Producto"><strong>{row.name}</strong></td>
-                  <td data-label="Capacidad">{row.battery.capacity_ah} Ah</td>
-                  <td data-label="Polaridad"><span className="polarity">{row.battery.polarity}</span></td>
-                  <td data-label="Stock actual">{row.existing.toString()}</td>
+                  <td data-label="Capacidad">{battery.capacity_ah} Ah</td>
+                  <td data-label="Polaridad"><span className="polarity">{battery.polarity}</span></td>
                   <td data-label="Acción"><button type="button" className="stock-add" aria-label={`Agregar ${row.name}`} onClick={() => add(row)}>Agregar</button></td>
                 </tr>)}</tbody>
               </>}
           </table>
         </div>}
-        {catalog.phase === 'loading' && <p className="stock-message" role="status">Consultando catálogo del almacén…</p>}
+        {catalog.phase === 'loading' && <p className="stock-message" role="status">Consultando el catálogo del proveedor…</p>}
         {catalog.phase === 'error' && <p className="stock-message" role="alert">{catalog.problem}
           <button type="button" disabled={busy} onClick={() => setRevision(value => value + 1)}>Reintentar catálogo</button></p>}
         {catalog.phase === 'ready' && catalog.items.length === 0 && <p className="stock-message">Sin coincidencias en el catálogo.</p>}
-        <p className="stock-hint">El stock que ves acá es el actual del Almacén. Suma unidades del documento y se vuelve a consultar al confirmar.</p>
+        <p className="stock-hint">Estos son todos los productos que ofrece el proveedor elegido. Un producto que no aparezca acá no se puede ingresar: primero se le asigna en Catálogo → Proveedores.</p>
       </section>
       <section className="stock-entry-panel" aria-labelledby="stock-document-title">
         <div className="stock-panel-head">
           <div><h2 id="stock-document-title">Documento de ingreso</h2><p className="stock-hint">Se numera al confirmar.</p></div>
           <div className="stock-doc-tags">
+            <span className="stock-chip" role="note" aria-label="Proveedor del documento">{supplier.name}</span>
             <span className="stock-chip" role="note" aria-label="Tipo del documento">{kind === null ? '' : stockEntryKindLabels[kind]}</span>
             <span className="stock-tag wine">Borrador local</span>
           </div>
         </div>
         <label className="stock-note">Nota del documento (opcional)
-          <input value={note} maxLength={stockEntryMaxNote} placeholder="Remito 0002-00045871 · Proveedor del norte"
+          <input value={note} maxLength={stockEntryMaxNote} placeholder="Remito 0002-00045871"
             onChange={event => { forgetAttempt(); setNote(event.target.value); }} />
         </label>
         {lines.length > 0 && <div className="stock-table-wrap">
@@ -486,7 +631,7 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
       {historyRows.length > 0 && <div className="stock-table-wrap">
         <table className="stock-table stock-history-table">
           <caption className="sr-only">Historial de ingresos del Almacén</caption>
-          <thead><tr><th scope="col">Documento</th><th scope="col">Fecha</th><th scope="col">Nota</th><th scope="col">Líneas</th><th scope="col">Unidades</th><th scope="col">Estado</th><th scope="col">Acción</th></tr></thead>
+          <thead><tr><th scope="col">Documento</th><th scope="col">Fecha</th><th scope="col">Nota</th><th scope="col">Líneas</th><th scope="col">Unidades</th><th scope="col">Estado</th><th scope="col">Proveedor</th><th scope="col">Acción</th></tr></thead>
           <tbody>{historyRows.map(row => <tr key={row.id} data-entry-id={row.id}>
             <td data-label="Documento"><strong>#{row.id}</strong></td>
             <td data-label="Fecha"><TransferDate value={row.created_at} /></td>
@@ -496,6 +641,9 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
             <td data-label="Estado">{row.reversed_by === null
               ? <span className="stock-tag">Aplicado</span>
               : <span className="stock-tag reversed">Anulado por contra-asiento</span>}</td>
+            {/* A historical document written before suppliers existed keeps its
+                null supplier: it is shown as sin proveedor and stays reversible. */}
+            <td data-label="Proveedor">{supplierName(row.supplier)}</td>
             <td data-label="Acción"><div className="stock-row-actions">
               <button type="button" className="stock-detail" aria-label={`Ver detalle del ingreso #${row.id}`}
                 disabled={reversalBusy} onClick={event => openDetail(row, event.currentTarget)}>Ver detalle</button>
@@ -522,6 +670,25 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
           onClick={nextHistoryPage}>Siguiente página</button>
       </div></footer>
     </section>
+    {supplierSwitch && <div className="transfer-decision-backdrop"><section ref={supplierDialog} tabIndex={-1}
+      className="transfer-decision-modal stock-supplier-modal" role="dialog" aria-modal="true"
+      aria-labelledby="stock-supplier-title" aria-describedby="stock-supplier-notice"
+      onKeyDown={event => {
+        if (event.key === 'Escape') { event.preventDefault(); closeSupplierSwitch(); return; }
+        trapFocus(event, supplierDialog.current);
+      }}>
+      <header><div><h2 id="stock-supplier-title">Cambiar de proveedor</h2>
+        <p>Documento de {supplierName(supplier)} · {lines.length} {lines.length === 1 ? 'línea' : 'líneas'}</p></div>
+        <button type="button" aria-label="Cerrar cambio de proveedor" disabled={busy} onClick={closeSupplierSwitch}>×</button></header>
+      <div className="stock-detail-body">
+        <p id="stock-supplier-notice" className="stock-hint">El ingreso es de un solo proveedor. Si cambiás a
+          {' '}<strong>{supplierSwitch.next.name}</strong>, se descarta el borrador completo: las líneas cargadas no
+          se convierten ni se migran al catálogo del otro proveedor.</p>
+      </div>
+      <footer><button type="button" disabled={busy} onClick={closeSupplierSwitch}>Cancelar</button>
+        <button type="button" className="primary" disabled={busy}
+          onClick={() => applySupplier(supplierSwitch.next)}>Descartar borrador y cambiar proveedor</button></footer>
+    </section></div>}
     {kindSwitch && <div className="transfer-decision-backdrop"><section ref={kindDialog} tabIndex={-1}
       className="transfer-decision-modal stock-kind-modal" role="dialog" aria-modal="true"
       aria-labelledby="stock-kind-title" aria-describedby="stock-kind-notice"
@@ -558,6 +725,7 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
           <div><dt>Unidades del contra-asiento</dt><dd>{-reversal.row.total_units}</dd></div>
         </dl>
         <p id="stock-reversal-notice" className="stock-hint">Se registra un documento nuevo con las mismas líneas en negativo y este motivo.
+          El contra-asiento hereda el proveedor del original: no se pide de nuevo.
           El original nunca cambia: queda Aplicado en el historial y el contra-asiento aparece como documento aparte.</p>
         <label className="stock-reversal-reason" htmlFor="stock-reversal-reason">Motivo del contra-asiento
           <textarea id="stock-reversal-reason" ref={reversalReasonField} required maxLength={stockEntryMaxReason}
@@ -589,6 +757,7 @@ export default function StockEntry({ csrf, fetcher = globalThis.fetch }: StockEn
           <dl className="stock-detail-summary">
             <div><dt>Documento</dt><dd>#{detailView.document.id}</dd></div>
             <div><dt>Fecha</dt><dd><TransferDate value={detailView.document.created_at} /></dd></div>
+            <div><dt>Proveedor</dt><dd>{supplierName(detailView.document.supplier)}</dd></div>
             <div><dt>Estado</dt><dd>{detailView.document.reverses_entry_id !== null
               ? 'Contra-asiento'
               : detailView.document.reversed_by !== null

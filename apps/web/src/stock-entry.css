@@ -110,3 +110,20 @@
 @media (max-width: 767px) {
   .stock-detail-body { padding: 16px; }
 }
+/* Supplier step: the first decision of the document. It reuses the tokens, the
+   44px targets and the pressed-state treatment of the kind step, so no new
+   colour enters the section. */
+.stock-supplier-panel { gap: 16px; }
+.stock-supplier-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.stock-supplier-choice { display: grid; gap: 4px; min-height: 44px; padding: 14px 16px; text-align: left;
+  background: #fff; border: 1px solid var(--border); border-radius: 4px; color: #242124; }
+.stock-supplier-choice strong { font-size: 13.5px; overflow-wrap: anywhere; }
+.stock-supplier-choice span { color: var(--muted); font-size: 12px; }
+.stock-supplier-choice[aria-pressed="true"] { border-color: var(--wine); box-shadow: inset 0 0 0 1px var(--wine); }
+.stock-supplier-choice[aria-pressed="true"] strong { color: var(--wine); }
+.stock-supplier-choice:disabled { background: var(--page); color: var(--muted); }
+.stock-supplier-modal { width: min(600px, 100%); }
+.stock-empty-panel { border-color: var(--muted); }
+@media (max-width: 767px) {
+  .stock-supplier-list { grid-template-columns: minmax(0, 1fr); }
+}
