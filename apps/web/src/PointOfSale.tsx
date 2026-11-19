@@ -1,15 +1,17 @@
 import { Component, Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import TransferDate from './shared/TransferDate';
 import {
-  addToCart, cartTotal, changeQuantity, counterPaymentMethods, emptyCustomer, emptyPayments, fillRemaining, formatMoney,
+  addToCart, cartTotal, changeQuantity, counterPaymentMethods, customerProblem, emptyCustomer, emptyPayments,
+  fillRemaining, formatMoney, issuesWarranty,
   lineBattery, lineIdentity, lineKind,
   maxCustomerAddress, maxSerialLength, maxWarrantyMonths, minWarrantyMonths, moneyCents, moneySumMessage,
-  paymentAmount, paymentBreakdown, posCustomerNameMessage, posEmptyCartMessage, posNotSellableReason, posQuantityMessage,
+  paymentAmount, paymentBreakdown, posEmptyCartMessage, posNoCustomerMessage, posNotSellableReason, posQuantityMessage,
   posWarrantyMessage, prepareSale, removeFromCart, serialSoldProblem, setPayment, setQuantity, setUnitPrice,
   setUnitSerial,
-  setUnitWarranty, setWarranty, settlement, typedMoney, unitsProblem, variantLabel, warrantyLabel,
+  setUnitWarranty, setWarranty, settlement, typedMoney, unitsProblem, variantLabel, warrantyCustomerRefusal,
+  warrantyLabel,
   type CartEdit, type CartLine, type CounterPaymentMethod, type PaymentSplit, type SaleCustomer, type SellablePage,
-  type SellableVariant,
+  type SellableVariant, type WarrantyCustomerField,
 } from './pointOfSaleModel';
 import {
   SalesAPIError, createSalesAPI, salesDefaultPageSize, salesErrorMessages, salesPageSizes, sellableUnavailable,
@@ -167,7 +169,10 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
   }, [items, capacity, kind]);
   const saleTotal = cartTotal(cart);
   const open = settlement(saleTotal, split);
-  const nameMissing = customer.name.trim() === '';
+  // S9: the client belongs to the warranty. Only a cart carrying a battery demands one, and the
+  // screen states the exact datum the cashier still has to type instead of blocking silently.
+  const warrantySale = issuesWarranty(cart);
+  const customerIssue = customerProblem(cart, customer);
   const closable = open.status === 'exact';
   // Every battery needs its serial and a valid term before the sale can be charged (S2, S3).
   const unitsIssue = unitsProblem(cart);
@@ -175,12 +180,12 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
   // charges a term the seller sees one way and the document records another.
   const termIssue = cart.some(line => line.units.some((_, index) =>
     draftTermInvalid(termDrafts[unitKey(line.variant_id, index)]))) ? posWarrantyMessage : null;
-  const canCharge = !busy && cart.length > 0 && closable && !nameMissing
+  const canCharge = !busy && cart.length > 0 && closable && customerIssue === null
     && unitsIssue === null && termIssue === null;
   // The sum already states what is missing, so the hint only covers what it cannot say.
   const hint = busy ? 'Emitiendo la venta…'
     : cart.length === 0 ? posEmptyCartMessage
-    : closable && nameMissing ? posCustomerNameMessage
+    : closable && customerIssue !== null ? customerIssue
     : unitsIssue !== null ? unitsIssue
     : termIssue ?? '';
 
@@ -307,6 +312,8 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
       const mismatch = failure instanceof SalesAPIError ? failure.mismatch : null;
       const variantID = failure instanceof SalesAPIError ? failure.variantId : null;
       const serial = failure instanceof SalesAPIError ? failure.serialNumber : null;
+      const customerFields: readonly WarrantyCustomerField[] =
+        failure instanceof SalesAPIError ? failure.customerFields : [];
       if (code === 'payments_mismatch' && mismatch !== null) {
         setProblem(mismatch.side === 'missing'
           ? `Faltan ${formatMoney(moneyCents(mismatch.amount))} para cubrir el total.`
@@ -315,6 +322,12 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
       }
       if (code === 'serial_already_sold' && serial !== null) {
         setProblem(serialSoldProblem(cart, serial));
+        return;
+      }
+      // The client the warranty prints is the server's own refusal: the screen repeats the data
+      // it named, so the cashier types exactly that and nothing is guessed.
+      if (code === 'warranty_customer_incomplete') {
+        setProblem(warrantyCustomerRefusal(customerFields));
         return;
       }
       const named = variantID === null ? null : cart.find(line => line.variant_id === variantID) ?? null;
@@ -542,6 +555,7 @@ export default function PointOfSale({ csrf, branch = 'esta sucursal', brands = [
           </div>
           <p className="pos-hint">Un solo monto es una venta normal; más de uno queda como Mixto. El QR es dinero electrónico: no es efectivo y no entra en la caja. Si la suma no es exactamente el total, el cobro queda deshabilitado.</p>
           <div className="pos-customer">
+            {cart.length > 0 && !warrantySale && <p className="pos-hint">{posNoCustomerMessage}</p>}
             <label htmlFor="pos-customer-name">Cliente
               <input id="pos-customer-name" value={customer.name} disabled={busy} autoComplete="off" maxLength={120}
                 onChange={event => setCustomer({ ...customer, name: event.target.value })} />

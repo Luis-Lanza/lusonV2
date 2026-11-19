@@ -115,6 +115,10 @@ export const maxWarrantyMonths = 120;
 export const maxSerialLength = 64;
 /** The one free field S1 admits on the sale header. */
 export const maxCustomerAddress = 200;
+/** The three data the printed paper carries: name, phone and document, each within its bound. */
+export const maxCustomerName = 120;
+export const maxCustomerPhone = 40;
+export const maxCustomerDocument = 40;
 /** The whole body limit of the document, in physical batteries. */
 export const maxSaleUnits = 1000;
 /** The term a unit starts with; the seller changes it, or clears it, before issuing. */
@@ -135,8 +139,12 @@ export const posUnitTotalMessage = `Una venta lleva como máximo ${maxSaleUnits}
 export const posAddressMessage = `La dirección o barrio lleva como máximo ${maxCustomerAddress} caracteres.`;
 export const posLineLimitMessage = `Una venta lleva como máximo ${maxCartLines} líneas.`;
 export const posMissingLineMessage = 'La línea ya no está en la venta: volvé a agregarla.';
-export const posEmptyCartMessage = 'Agregá al menos una batería para cobrar.';
+export const posEmptyCartMessage = 'Agregá al menos un producto o una batería para cobrar.';
 export const posCustomerNameMessage = 'Escribí el nombre del cliente: la garantía lo exige.';
+export const posCustomerPhoneMessage = 'Escribí el teléfono del cliente: la garantía lo exige.';
+export const posCustomerDocumentMessage = 'Escribí el documento del cliente: la garantía lo exige.';
+export const posWarrantyCustomerMessage = 'La garantía exige el nombre, el teléfono y el documento del cliente.';
+export const posNoCustomerMessage = 'Una venta sin baterías no lleva garantía: no pide ningún dato del cliente.';
 export const posCustomerTextMessage = 'El teléfono y el documento llevan como máximo 40 caracteres.';
 export const posPaymentMethodMessage = 'El mostrador cobra en efectivo, por transferencia o por QR.';
 
@@ -547,6 +555,73 @@ export interface SaleCustomer {
 
 export const emptyCustomer: SaleCustomer = Object.freeze({ name: '', phone: '', document: '', address: '' });
 
+/**
+ * The three data the printed warranty carries, named the way the server names them and in
+ * the order the paper prints them, so a refusal points at the exact datum to type.
+ */
+export type WarrantyCustomerField = 'customer_name' | 'customer_phone' | 'customer_document';
+export const warrantyCustomerFields: readonly WarrantyCustomerField[] = Object.freeze([
+  'customer_name', 'customer_phone', 'customer_document']);
+const customerFieldNames: Readonly<Record<WarrantyCustomerField, string>> = Object.freeze({
+  customer_name: 'el nombre', customer_phone: 'el teléfono', customer_document: 'el documento' });
+const customerFieldMessages: Readonly<Record<WarrantyCustomerField, string>> = Object.freeze({
+  customer_name: posCustomerNameMessage, customer_phone: posCustomerPhoneMessage,
+  customer_document: posCustomerDocumentMessage });
+
+/** True when the cart issues a warranty: at least one of its lines is a battery. */
+export function issuesWarranty(cart: readonly CartLine[]): boolean {
+  return cart.some(line => lineKind(line) === 'battery');
+}
+
+/**
+ * The client data a warranty still lacks, in the paper's order. A cart of products alone
+ * issues no warranty and demands nobody, and the address is never required because the
+ * printed paper never prints it (S9).
+ */
+export function missingCustomerFields(cart: readonly CartLine[],
+  customer: SaleCustomer): readonly WarrantyCustomerField[] {
+  if (!issuesWarranty(cart)) return Object.freeze([]);
+  // A value that is only whitespace is absent, exactly as the paper and the server judge it.
+  const blank = (value: unknown): boolean => typeof value !== 'string' || value.trim() === '';
+  const missing: WarrantyCustomerField[] = [];
+  if (blank(customer.name)) missing.push('customer_name');
+  if (blank(customer.phone)) missing.push('customer_phone');
+  if (blank(customer.document)) missing.push('customer_document');
+  return Object.freeze(missing);
+}
+
+/** The sentence that names the client data a warranty sale still lacks. */
+export function warrantyCustomerMessage(missing: readonly WarrantyCustomerField[]): string {
+  if (missing.length === 0) return posWarrantyCustomerMessage;
+  if (missing.length === 1) return customerFieldMessages[missing[0]];
+  const names = missing.map(field => customerFieldNames[field]);
+  return `La garantía exige el cliente completo: faltan ${names.slice(0, -1).join(', ')} y ${names[names.length - 1]}.`;
+}
+
+/** The reason a battery sale cannot be charged yet because of its client, or `null`. It names
+ * the first datum the printed paper still lacks, in the paper's order, so the cashier types
+ * exactly that one next; a cart of products alone demands nobody. */
+export function customerProblem(cart: readonly CartLine[], customer: SaleCustomer): string | null {
+  const [first] = missingCustomerFields(cart, customer);
+  return first === undefined ? null : customerFieldMessages[first];
+}
+
+/** The refusal of a warranty without its complete client, exactly as the server named it. */
+export function warrantyCustomerRefusal(missing: readonly WarrantyCustomerField[]): string {
+  return `${warrantyCustomerMessage(missing)} No se registró nada.`;
+}
+
+/**
+ * How a document that names nobody reads on the screen. The printed paper's own text for such
+ * a sale belongs to the server, so this screen never composes it.
+ */
+export const anonymousCustomerLabel = 'Sin cliente';
+
+/** The client name of a document, or the label that states it names nobody. */
+export function customerLabel(name: string): string {
+  return typeof name === 'string' && name.trim() !== '' ? name : anonymousCustomerLabel;
+}
+
 /** One physical battery on the wire: its serial, and its term or the explicit absence. */
 export interface SaleUnitWire {
   readonly serial_number: string;
@@ -680,12 +755,19 @@ export function prepareSale(cart: readonly CartLine[], split: PaymentSplit, cust
   const state = settlement(total, split);
   if (state.status === 'missing') return { ok: false, message: posMissingMessage(state.remaining) };
   if (state.status === 'excess') return { ok: false, message: posExcessMessage(state.excess) };
-  if (!boundedText(customer.name, 120)) return { ok: false, message: posCustomerNameMessage };
-  const name = customer.name.trim();
-  if (name === '') return { ok: false, message: posCustomerNameMessage };
-  if (!boundedText(customer.phone, 40) || !boundedText(customer.document, 40)) {
+  // S9: the client belongs to the warranty. A sale carrying a battery is refused here, in the
+  // paper's order, until the three data the paper prints are typed; a sale of products alone
+  // names nobody and passes without a single datum.
+  const customerIssue = customerProblem(cart, customer);
+  if (customerIssue !== null) return { ok: false, message: customerIssue };
+  const name = typeof customer.name === 'string' ? customer.name.trim() : null;
+  if (name === null || !boundedText(name, maxCustomerName)) {
+    return { ok: false, message: posCustomerNameMessage };
+  }
+  if (!boundedText(customer.phone, maxCustomerPhone) || !boundedText(customer.document, maxCustomerDocument)) {
     return { ok: false, message: posCustomerTextMessage };
   }
+  // The address is never required: it is stored and the paper never prints it.
   const address = trimmedText(customer.address, maxCustomerAddress);
   if (address === null) return { ok: false, message: posAddressMessage };
   return {

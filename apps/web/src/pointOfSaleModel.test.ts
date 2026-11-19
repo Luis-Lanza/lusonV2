@@ -1,17 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
-  addToCart, cartCount, cartTotal, centsToMoney, changeQuantity, defaultWarrantyMonths, emptyCustomer, emptyPayments,
-  fillRemaining, formatMoney, lineSubtotal, maxSaleUnits, maxSerialLength, maxWarrantyMonths, minWarrantyMonths,
+  addToCart, cartCount, cartTotal, centsToMoney, changeQuantity, customerProblem, defaultWarrantyMonths,
+  emptyCustomer, emptyPayments,
+  fillRemaining, formatMoney, issuesWarranty, lineSubtotal, maxSaleUnits, maxSerialLength, maxWarrantyMonths,
+  minWarrantyMonths,
   moneyCents,
   moneySumMessage, parseTypedMoney, paymentAmount, paymentBreakdown, paymentLabel, paymentsTotal, paymentsWire,
-  posAddressMessage, posCustomerNameMessage, posDuplicateSerialMessage, posEmptyCartMessage, posExcessMessage,
-  posMissingMessage, posMissingUnitMessage, posNotSellableReason, posPriceFloorMessage, posSerialLengthMessage,
+  posAddressMessage, posCustomerDocumentMessage, posCustomerNameMessage, posCustomerPhoneMessage,
+  posDuplicateSerialMessage, posEmptyCartMessage, posExcessMessage,
+  posMissingMessage, posMissingUnitMessage, posNoCustomerMessage, posNotSellableReason, posPriceFloorMessage,
+  posSerialLengthMessage,
   posSerialMessage, posUnitTotalMessage, posUnitsMessage, posWarrantyMessage, prepareSale, removeFromCart, serialSoldProblem,
   setPayment,
   isClosed,
   setPaymentAmount,
   setQuantity, setUnitPrice, setUnitSerial, setUnitWarranty, setWarranty, settlement, typedMoney, unitsProblem,
-  variantLabel, warrantyLabel, type CartLine, type SellableVariant,
+  variantLabel, warrantyCustomerMessage, warrantyCustomerRefusal, warrantyLabel, type CartLine,
+  type SellableVariant,
 } from './pointOfSaleModel';
 
 /** The counter's sellable variant: its battery carries the pair, the variant one polarity. */
@@ -596,14 +601,15 @@ describe('the two kinds of one sale', () => {
     expect(three.ok).toBe(true);
     if (!three.ok) return;
     const split = setPaymentAmount(emptyPayments, 'cash', 10_170_000n);
+    // S9: a mixed cart follows the battery rule, so its client is the complete one.
     const prepared = prepareSale(three.cart, split, {
-      name: 'Marta Giménez', phone: '', document: '', address: '',
+      name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: '',
     });
     expect(prepared).toEqual({
       ok: true, total_cents: 10_170_000n,
       input: {
         payments: [{ method: 'cash', amount: '101700.00' }],
-        customer: { name: 'Marta Giménez', phone: '', document: '', address: '' },
+        customer: { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: '' },
         lines: [
           { variant_id: 1, quantity: 1, unit_price: '96000.00',
             units: [{ serial_number: 'ABC123', warranty_months: 12 }] },
@@ -617,5 +623,120 @@ describe('the two kinds of one sale', () => {
     const body = JSON.stringify(prepared.input);
     expect(body).toContain('"units":[]');
     expect(body).not.toContain('"serial_number":""');
+  });
+});
+
+// S9: the client belongs to the warranty. A sale carrying at least one battery demands the
+// three data the printed paper carries; a sale of products alone demands nobody, and the
+// address is never required because the paper never prints it.
+describe('the client of a warranty sale', () => {
+  /** One other product of the catalogue: its shared identity and no physical piece. */
+  const productVariant = (): SellableVariant => ({
+    variant_id: 191, catalog_entry_id: 96,
+    identity: { variant_id: 191, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L', battery: null,
+      fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }] },
+    sellable: true, suggested_price: '1900.00', min_price: '1500.00',
+    existing: 6n, reserved: 0n, available: 6n,
+  } as unknown as SellableVariant);
+  /** Three bottles of water: a product is counted, so its quantity is the whole line. */
+  const productCart = (): readonly CartLine[] => {
+    const added = addToCart([], productVariant());
+    expect(added.ok).toBe(true);
+    const one = added.ok ? added.cart : [];
+    const three = changeQuantity(one, 191, 2);
+    expect(three.ok).toBe(true);
+    return three.ok ? three.cart : one;
+  };
+  /** One battery with the serial the seller read: a sale that issues a warranty. */
+  const batteryCart = (): readonly CartLine[] => unitsOf(cartOf(item()), 1, ['ABC123']);
+  const cash = (cents: bigint) => setPaymentAmount(emptyPayments, 'cash', cents);
+  const client = { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: '' };
+
+  it('charges a product-only cart with no client at all, sending the four keys empty', () => {
+    const prepared = prepareSale(productCart(), cash(570_000n), emptyCustomer);
+    expect(prepared).toEqual({
+      ok: true, total_cents: 570_000n,
+      input: {
+        payments: [{ method: 'cash', amount: '5700.00' }],
+        customer: { name: '', phone: '', document: '', address: '' },
+        lines: [{ variant_id: 191, quantity: 3, unit_price: '1900.00', units: [] }],
+      },
+    });
+    expect(prepared.ok && issuesWarranty(productCart())).toBe(false);
+    // The keys are always written: an omitted key is a refused document, never an absent client.
+    const body = JSON.parse(JSON.stringify(prepared.ok ? prepared.input : {})) as { customer: Record<string, unknown> };
+    expect(Object.keys(body.customer).sort()).toEqual(['address', 'document', 'name', 'phone']);
+    expect(Object.values(body.customer)).toEqual(['', '', '', '']);
+  });
+
+  it('refuses a battery cart until the name, the phone and the document are typed, naming the one missing', () => {
+    const cart = batteryCart();
+    const split = cash(9_600_000n);
+    expect(issuesWarranty(cart)).toBe(true);
+    expect(prepareSale(cart, split, emptyCustomer)).toEqual({ ok: false, message: posCustomerNameMessage });
+    expect(prepareSale(cart, split, { ...emptyCustomer, name: client.name }))
+      .toEqual({ ok: false, message: posCustomerPhoneMessage });
+    expect(prepareSale(cart, split, { ...emptyCustomer, name: client.name, phone: client.phone }))
+      .toEqual({ ok: false, message: posCustomerDocumentMessage });
+    // The copy of the three data the paper prints, word for word.
+    expect(posCustomerNameMessage).toBe('Escribí el nombre del cliente: la garantía lo exige.');
+    expect(posCustomerPhoneMessage).toBe('Escribí el teléfono del cliente: la garantía lo exige.');
+    expect(posCustomerDocumentMessage).toBe('Escribí el documento del cliente: la garantía lo exige.');
+    // A value that is only whitespace is absent, exactly as the paper and the server judge it.
+    expect(prepareSale(cart, split, { ...client, phone: '   ' }))
+      .toEqual({ ok: false, message: posCustomerPhoneMessage });
+    expect(prepareSale(cart, split, client).ok).toBe(true);
+  });
+
+  it('names every datum of the refusal the server answers, in the paper order', () => {
+    expect(warrantyCustomerMessage(['customer_phone', 'customer_document']))
+      .toBe('La garantía exige el cliente completo: faltan el teléfono y el documento.');
+    expect(warrantyCustomerMessage(['customer_name', 'customer_phone', 'customer_document']))
+      .toBe('La garantía exige el cliente completo: faltan el nombre, el teléfono y el documento.');
+    // The house envelope names no datum at all, and the counter never invents one.
+    expect(warrantyCustomerRefusal([]))
+      .toBe('La garantía exige el nombre, el teléfono y el documento del cliente. No se registró nada.');
+    expect(warrantyCustomerRefusal(['customer_phone']))
+      .toBe('Escribí el teléfono del cliente: la garantía lo exige. No se registró nada.');
+  });
+
+  it('follows the battery rule in a mixed cart', () => {
+    const added = addToCart(batteryCart(), productVariant());
+    expect(added.ok).toBe(true);
+    const cart = added.ok ? added.cart : batteryCart();
+    const split = cash(9_790_000n);
+    expect(issuesWarranty(cart)).toBe(true);
+    expect(prepareSale(cart, split, emptyCustomer)).toEqual({ ok: false, message: posCustomerNameMessage });
+    expect(prepareSale(cart, split, { ...emptyCustomer, name: client.name }))
+      .toEqual({ ok: false, message: posCustomerPhoneMessage });
+    expect(prepareSale(cart, split, client).ok).toBe(true);
+  });
+
+  it('never requires the address: a complete client with none charges', () => {
+    const prepared = prepareSale(batteryCart(), cash(9_600_000n), client);
+    expect(prepared.ok && prepared.input.customer).toEqual({
+      name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: '',
+    });
+    expect(prepareSale(productCart(), cash(570_000n), { ...client, address: '' }).ok).toBe(true);
+  });
+
+  it('states that a cart of products alone asks for no client, and keeps the battery copy', () => {
+    // The screen reads the same answer the sale does: none, for a cart of products alone.
+    expect(customerProblem(productCart(), emptyCustomer)).toBeNull();
+    expect(customerProblem(batteryCart(), emptyCustomer)).toBe(posCustomerNameMessage);
+    expect(posNoCustomerMessage)
+      .toBe('Una venta sin baterías no lleva garantía: no pide ningún dato del cliente.');
+  });
+
+  it('keeps the battery-only request body field by field', () => {
+    expect(prepareSale(batteryCart(), cash(9_600_000n), client)).toEqual({
+      ok: true, total_cents: 9_600_000n,
+      input: {
+        payments: [{ method: 'cash', amount: '96000.00' }],
+        customer: { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: '' },
+        lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00',
+          units: [{ serial_number: 'ABC123', warranty_months: 12 }] }],
+      },
+    });
   });
 });

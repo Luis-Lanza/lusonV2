@@ -1,9 +1,11 @@
 import { LosslessNumber, parse as parseJSON } from 'lossless-json';
 import { parseVariantIdentity, validSearch, type VariantIdentity } from './model';
 import {
-  centsToMoney, maxCartLines, maxCustomerAddress, maxQuantity, maxSaleUnits, maxSerialLength, maxWarrantyMonths,
-  minWarrantyMonths, moneyCents,
+  centsToMoney, maxCartLines, maxCustomerAddress, maxCustomerDocument, maxCustomerName, maxCustomerPhone,
+  maxQuantity, maxSaleUnits, maxSerialLength, maxWarrantyMonths,
+  minWarrantyMonths, moneyCents, warrantyCustomerFields,
   type CreateSaleInput, type PaymentWire, type SaleUnitWire, type SellablePage, type SellableVariant,
+  type WarrantyCustomerField,
 } from './pointOfSaleModel';
 
 /**
@@ -13,16 +15,16 @@ import {
  */
 
 export type SalesErrorCode =
-  | 'invalid_request' | 'payments_mismatch' | 'variant_not_sellable' | 'below_minimum'
-  | 'insufficient_stock' | 'serial_already_sold' | 'unauthenticated' | 'forbidden' | 'not_found'
-  | 'method_not_allowed' | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
+  | 'invalid_request' | 'payments_mismatch' | 'warranty_customer_incomplete' | 'variant_not_sellable'
+  | 'below_minimum' | 'insufficient_stock' | 'serial_already_sold' | 'unauthenticated' | 'forbidden'
+  | 'not_found' | 'method_not_allowed' | 'service_unavailable' | 'invalid_response' | 'network' | 'aborted';
 
 /** The side of the total a settlement failed on, with the canonical amount. */
 export interface PaymentsMismatch { readonly side: 'missing' | 'excess'; readonly amount: string }
 
 /** The admitted error envelope per HTTP status; nothing else may reach the UI. */
 export const salesAdmittedErrors: ReadonlyMap<number, readonly SalesErrorCode[]> = new Map([
-  [400, ['invalid_request', 'payments_mismatch']],
+  [400, ['invalid_request', 'payments_mismatch', 'warranty_customer_incomplete']],
   [401, ['unauthenticated']],
   [403, ['forbidden']],
   [404, ['not_found']],
@@ -38,6 +40,7 @@ const lineRefusals: readonly SalesErrorCode[] = ['variant_not_sellable', 'below_
 export const salesErrorMessages: Record<SalesErrorCode, string> = {
   invalid_request: 'El servidor rechazó la venta: revisá las líneas, los montos y el plazo. No se registró nada.',
   payments_mismatch: 'Los montos no cierran contra el total: no se registró nada.',
+  warranty_customer_incomplete: 'La garantía exige el nombre, el teléfono y el documento del cliente. No se registró nada.',
   variant_not_sellable: 'Una batería no tiene precio en esta sucursal: no es vendible. No se registró nada.',
   below_minimum: 'Una línea cobra menos que el precio mínimo de la sucursal. No se registró nada.',
   insufficient_stock: 'La sucursal no tiene stock suficiente para una línea. No se registró nada.',
@@ -193,6 +196,13 @@ function optionalText(value: unknown, max: number): string {
   }
   return value;
 }
+/**
+ * The client name a document carries. A sale of products alone issues no warranty, so it names
+ * nobody and answers the empty name: the paper's own text for it is the server's, not this read's.
+ */
+function customerName(value: unknown): string {
+  return optionalText(value, maxCustomerName);
+}
 function numeric(value: unknown): string {
   if (!(value instanceof LosslessNumber)) return invalidResponse();
   return value.toString();
@@ -346,10 +356,21 @@ function payments(value: unknown): readonly SalePayment[] {
 }
 function customer(value: unknown): SaleCustomerRecord {
   const record = fields(value, ['name', 'phone', 'document', 'address']);
-  const name = text(record.name);
-  if (name.length > 120) return invalidResponse();
-  return Object.freeze({ name, phone: optionalText(record.phone, 40), document: optionalText(record.document, 40),
+  return Object.freeze({ name: customerName(record.name),
+    phone: optionalText(record.phone, maxCustomerPhone),
+    document: optionalText(record.document, maxCustomerDocument),
     address: optionalText(record.address, maxCustomerAddress) });
+}
+/**
+ * True when a document carries a physical battery, which is what makes it a warranty. A
+ * product line carries no unit at all, so a document of products alone names nobody (S9).
+ */
+function carriesBattery(lines: readonly SaleLineRecord[]): boolean {
+  return lines.some(line => line.units.length > 0);
+}
+/** The three data a warranty prints, all of them: the first one missing makes the client incomplete. */
+function completesWarrantyCustomer(client: SaleCustomerRecord): boolean {
+  return [client.name, client.phone, client.document].every(value => value.trim() !== '');
 }
 /** A frozen line: the charged price, the floor, its units and the exact subtotal. */
 function saleLine(value: unknown, shape: UnitsShape): SaleLineRecord {
@@ -593,9 +614,13 @@ export function parseCreatedSale(raw: string): SaleDocument {
   boundedUnits(lines);
   const total = wireMoney(sale.total);
   if (moneyCents(total) !== totalOf(lines) || paymentsTotal(settlement) !== moneyCents(total)) return invalidResponse();
+  // A document that carries a battery is a warranty, and a warranty names its client with the
+  // three data the paper prints; a document of products alone names nobody (S9).
+  const client = customer(sale.customer);
+  if (carriesBattery(lines) && !completesWarrantyCustomer(client)) return invalidResponse();
   return Object.freeze({
     id, branch_location_id, branch_sequence, warranty_number: number, payment_method: label,
-    payments: settlement, customer: customer(sale.customer), total, created_at: timestamp(sale.created_at),
+    payments: settlement, customer: client, total, created_at: timestamp(sale.created_at),
     created_by_account_id: integer(sale.created_by_account_id, 1, Number.MAX_SAFE_INTEGER),
     lines,
   });
@@ -627,7 +652,7 @@ export function parseSalePage(raw: string): SalesPage {
     return Object.freeze({
       id, branch_sequence: integer(row.branch_sequence, 1, 999_999_999),
       warranty_number: warrantyNumber(row.warranty_number), payment_method: row.payment_method,
-      customer_name: text(row.customer_name), total: wireMoney(row.total),
+      customer_name: customerName(row.customer_name), total: wireMoney(row.total),
       created_at: timestamp(row.created_at), lines, units_total, units_with_warranty,
     }) as SaleSummary;
   });
@@ -650,7 +675,7 @@ export function parseSaleDetail(raw: string): SaleDetail {
   boundedUnits(lines);
   const total = wireMoney(record.total);
   if (moneyCents(total) !== totalOf(lines) || paymentsTotal(settlement) !== moneyCents(total)) return invalidResponse();
-  const customer_name = text(record.customer_name);
+  const customer_name = customerName(record.customer_name);
   const client = customer(record.customer);
   if (client.name !== customer_name) return invalidResponse();
   return Object.freeze({
@@ -661,12 +686,31 @@ export function parseSaleDetail(raw: string): SaleDetail {
   });
 }
 
-/** One admitted refusal: the code, the line it names, the serial it names and the side of an open settlement. */
+/** One admitted refusal: the code, the line it names, the serial it names, the side of an open
+ * settlement and the client data a warranty refusal names. */
 export interface SalesErrorDetail {
   readonly code: SalesErrorCode;
   readonly variant_id: number | null;
   readonly serial_number: string | null;
   readonly mismatch: PaymentsMismatch | null;
+  readonly customer_fields: readonly WarrantyCustomerField[];
+}
+
+/**
+ * The client data a warranty refusal names, in the paper's order and never twice: anything else
+ * is not evidence of which data are missing, so it fails closed.
+ */
+function refusedCustomerFields(value: unknown): readonly WarrantyCustomerField[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > warrantyCustomerFields.length) {
+    return invalidResponse();
+  }
+  const ranks = value.map(entry => {
+    if (typeof entry !== 'string') return invalidResponse();
+    const rank = warrantyCustomerFields.indexOf(entry as WarrantyCustomerField);
+    return rank < 0 ? invalidResponse() : rank;
+  });
+  if (ranks.some((rank, index) => index > 0 && rank <= ranks[index - 1])) return invalidResponse();
+  return Object.freeze(ranks.map(rank => warrantyCustomerFields[rank]));
 }
 
 export function parseSalesError(raw: string, status: number): SalesErrorDetail {
@@ -676,27 +720,37 @@ export function parseSalesError(raw: string, status: number): SalesErrorDetail {
   const code = envelope.error;
   if (typeof code !== 'string' || !admitted.includes(code as SalesErrorCode)) return invalidResponse();
   const keys = Object.keys(envelope).sort();
+  const bare = { variant_id: null, serial_number: null, mismatch: null, customer_fields: Object.freeze([]) } as const;
   if (code === 'payments_mismatch') {
     const sides = (['missing', 'excess'] as const).filter(side => Object.hasOwn(envelope, side));
     if (sides.length !== 1 || keys.length !== 2) return invalidResponse();
     const side = sides[0];
     let amount: string;
     try { amount = paidMoney(envelope[side]); } catch { return invalidResponse(); }
-    return { code: code as SalesErrorCode, variant_id: null, serial_number: null, mismatch: { side, amount } };
+    return { code: code as SalesErrorCode, variant_id: null, serial_number: null,
+      mismatch: { side, amount }, customer_fields: Object.freeze([]) };
+  }
+  // The client of the warranty is its own refusal: it names every missing datum in the paper's
+  // order, or it is the house envelope of the database trigger and names none.
+  if (code === 'warranty_customer_incomplete') {
+    if (keys.length === 1) return { code: code as SalesErrorCode, ...bare };
+    if (keys.length !== 2 || !Object.hasOwn(envelope, 'missing')) return invalidResponse();
+    return { code: code as SalesErrorCode, variant_id: null, serial_number: null, mismatch: null,
+      customer_fields: refusedCustomerFields(envelope.missing) };
   }
   if (lineRefusals.includes(code as SalesErrorCode)) {
     if (keys.length !== 2 || !Object.hasOwn(envelope, 'variant_id')) return invalidResponse();
     return { code: code as SalesErrorCode, variant_id: integer(envelope.variant_id, 1, maxSaleID),
-      serial_number: null, mismatch: null };
+      serial_number: null, mismatch: null, customer_fields: Object.freeze([]) };
   }
   // D8: the repeated serial is answered with its own envelope, the serial and nothing else.
   if (code === 'serial_already_sold') {
     if (keys.length !== 2 || !Object.hasOwn(envelope, 'serial_number')) return invalidResponse();
     return { code: code as SalesErrorCode, variant_id: null,
-      serial_number: refusedSerial(envelope.serial_number), mismatch: null };
+      serial_number: refusedSerial(envelope.serial_number), mismatch: null, customer_fields: Object.freeze([]) };
   }
   if (keys.length !== 1) return invalidResponse();
-  return { code: code as SalesErrorCode, variant_id: null, serial_number: null, mismatch: null };
+  return { code: code as SalesErrorCode, ...bare };
 }
 
 // ---------------------------------------------------------------------------------
@@ -791,10 +845,12 @@ export function canonicalCreateSaleInput(input: CreateSaleInput): CreateSaleInpu
   });
   const client = fields(record.customer, ['name', 'phone', 'document', 'address'], false);
   if (Object.keys(client).length !== 4) return invalidPayload();
+  // The name may be empty: a sale of products alone issues no warranty and names nobody. It is
+  // the document's kinds that decide whether the client is required, and that is judged below.
   const name = typeof client.name === 'string' ? client.name.trim() : invalidPayload();
-  if (name === '' || name.length > 120 || name.includes('\0') || !name.isWellFormed()) return invalidPayload();
-  const phone = optionalText(client.phone, 40);
-  const document = optionalText(client.document, 40);
+  if (name.length > maxCustomerName || name.includes('\0') || !name.isWellFormed()) return invalidPayload();
+  const phone = optionalText(client.phone, maxCustomerPhone);
+  const document = optionalText(client.document, maxCustomerDocument);
   const address = canonicalAddress(client.address);
   if (!Array.isArray(record.lines) || record.lines.length < 1 || record.lines.length > maxCartLines) return invalidPayload();
   const variants = new Set<number>();
@@ -814,6 +870,9 @@ export function canonicalCreateSaleInput(input: CreateSaleInput): CreateSaleInpu
     });
   });
   if (unitsTotal > maxSaleUnits) return invalidPayload();
+  // S9: a document carrying a battery issues a warranty, so it names its client with the three
+  // data the paper prints; a document of products alone passes with the four keys empty.
+  if (unitsTotal > 0 && [name, phone, document].some(value => value.trim() === '')) return invalidPayload();
   return Object.freeze({
     payments: Object.freeze(payments),
     customer: Object.freeze({ name, phone, document, address }),
@@ -866,7 +925,8 @@ export class SalesAPIError extends Error {
   constructor(public readonly code: SalesErrorCode, public readonly status: number | null,
     public readonly variantId: number | null = null,
     public readonly mismatch: PaymentsMismatch | null = null,
-    public readonly serialNumber: string | null = null) {
+    public readonly serialNumber: string | null = null,
+    public readonly customerFields: readonly WarrantyCustomerField[] = Object.freeze([])) {
     super(code); this.name = 'SalesAPIError';
   }
 }
@@ -878,7 +938,8 @@ function failure(reply: Response, raw: string, status: number): never {
   const malformed = () => new SalesAPIError('invalid_response', reply.status);
   let detail: SalesErrorDetail;
   try { detail = parseSalesError(raw, status); } catch { throw malformed(); }
-  throw new SalesAPIError(detail.code, status, detail.variant_id, detail.mismatch, detail.serial_number);
+  throw new SalesAPIError(detail.code, status, detail.variant_id, detail.mismatch, detail.serial_number,
+    detail.customer_fields);
 }
 
 async function read(reply: Response, signal?: AbortSignal): Promise<string> {

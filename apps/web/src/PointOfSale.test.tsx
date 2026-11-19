@@ -5,7 +5,8 @@ import PointOfSale, {
   SalesSectionBoundary, pointOfSaleFailureMessage, salesHistoryFailureMessage,
 } from './PointOfSale';
 import {
-  posEmptyCartMessage, posNotSellableReason, posPriceFloorMessage, posMissingMessage, posSerialMessage,
+  posCustomerDocumentMessage, posCustomerNameMessage, posCustomerPhoneMessage, posEmptyCartMessage,
+  posNoCustomerMessage, posNotSellableReason, posPriceFloorMessage, posMissingMessage, posSerialMessage,
   posWarrantyMessage,
 } from './pointOfSaleModel';
 import { salesErrorMessages, sellableUnavailable } from './salesAPI';
@@ -43,7 +44,7 @@ const issuedBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
     id: 7, branch_location_id: 2, branch_sequence: 126, warranty_number: '2-000126',
     payment_method: 'mixed',
     payments: [{ method: 'cash', amount: '50000.00' }, { method: 'transfer', amount: '46000.00' }],
-    customer: { name: 'Marta Giménez', phone: '', document: '', address: '' },
+    customer: { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: '' },
     total: '96000.00', created_by_account_id: 2, created_at: '2026-11-04T17:42:00Z',
     lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00', min_price: '85000.00',
       subtotal: '96000.00', units: [{ serial_number: 'ABC123', warranty_months: 12 }] }],
@@ -54,7 +55,7 @@ const issuedBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
 const money = (cents: bigint): string => `${cents / 100n}.${(cents % 100n).toString().padStart(2, '0')}`;
 /** What the server echoes back for a cart of one CAR NS40ZL, one unit per battery at 96.000,00. */
 function soldBody(units: readonly { serial_number: string; warranty_months: number | null }[],
-  customer: Record<string, string> = { name: 'Marta Giménez', phone: '', document: '', address: '' }) {
+  customer: Record<string, string> = { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: '' }) {
   const total = 9_600_000n * BigInt(units.length);
   return new Response(JSON.stringify({ sale: {
     id: 7, branch_location_id: 2, branch_sequence: 126, warranty_number: '2-000126', payment_method: 'mixed',
@@ -67,12 +68,13 @@ function soldBody(units: readonly { serial_number: string; warranty_months: numb
 }
 
 /** The document the server echoes for a product-only sale: quantity and the empty units array. */
-function soldProductBody(quantity = 1) {
+function soldProductBody(quantity = 1,
+  customer: Record<string, string> = { name: 'Marta Giménez', phone: '', document: '', address: '' }) {
   const total = 190_000n * BigInt(quantity);
   return new Response(JSON.stringify({ sale: {
     id: 8, branch_location_id: 2, branch_sequence: 127, warranty_number: '2-000127', payment_method: 'cash',
     payments: [{ method: 'cash', amount: money(total) }],
-    customer: { name: 'Marta Giménez', phone: '', document: '', address: '' },
+    customer,
     total: money(total), created_by_account_id: 2, created_at: '2026-11-04T17:42:00Z',
     lines: [{ variant_id: 191, quantity, unit_price: '1900.00', min_price: '1500.00',
       subtotal: money(total), units: [] }],
@@ -85,7 +87,7 @@ function soldMixedBody() {
   return new Response(JSON.stringify({ sale: {
     id: 9, branch_location_id: 2, branch_sequence: 128, warranty_number: '2-000128', payment_method: 'cash',
     payments: [{ method: 'cash', amount: money(total) }],
-    customer: { name: 'Marta Giménez', phone: '', document: '', address: '' },
+    customer: { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: '' },
     total: money(total), created_by_account_id: 2, created_at: '2026-11-04T17:42:00Z',
     lines: [
       { variant_id: 1, quantity: 1, unit_price: '96000.00', min_price: '85000.00', subtotal: '96000.00',
@@ -128,6 +130,12 @@ function addToSale(title: string) {
 }
 function nameClient(name = 'Marta Giménez') {
   fireEvent.change(screen.getByLabelText('Cliente'), { target: { value: name } });
+}
+/** The three data the printed paper carries: a battery sale is not charged without them (S9). */
+function completeClient() {
+  nameClient();
+  fireEvent.change(screen.getByLabelText('Teléfono'), { target: { value: '381 555 0198' } });
+  fireEvent.change(screen.getByLabelText('Documento'), { target: { value: '27.884.310' } });
 }
 const charge = () => screen.getByRole('button', { name: 'Cobrar y emitir garantía' });
 
@@ -227,7 +235,7 @@ describe('the counter cart', () => {
     // The absence is named, never a zero-month term.
     const unit = monthsInput(1).closest('.pos-unit') as HTMLElement;
     expect(within(unit).getByText('Sin garantía')).toBeInTheDocument();
-    nameClient();
+    completeClient();
     fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '50.000,00' } });
     fireEvent.click(screen.getByRole('button', { name: 'Resto' }));
     fireEvent.click(charge());
@@ -249,7 +257,7 @@ describe('the counter cart', () => {
     fireEvent.change(serialInput(2), { target: { value: 'ABC124' } });
     fireEvent.change(monthsInput(1), { target: { value: '24' } });
     fireEvent.change(monthsInput(2), { target: { value: '' } });
-    nameClient();
+    completeClient();
     fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '50.000,00' } });
     fireEvent.click(screen.getByRole('button', { name: 'Resto' }));
     fireEvent.click(charge());
@@ -268,7 +276,7 @@ describe('the counter cart', () => {
     fireEvent.change(monthsInput(1), { target: { value: '0' } });
     expect(await screen.findByRole('alert')).toHaveTextContent(posWarrantyMessage);
     expect(monthsInput(1)).toHaveValue('0');
-    nameClient();
+    completeClient();
     fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '96.000,00' } });
     expect(charge()).toBeDisabled();
     fireEvent.change(monthsInput(1), { target: { value: '24' } });
@@ -312,7 +320,7 @@ describe('the counter cart', () => {
     fireEvent.change(price(), { target: { value: '85.000,00' } });
     await waitFor(() => expect(within(cartLine('CAR NS40ZL L')).getByText('Bs 85.000,00')).toBeInTheDocument());
     typeSerial();
-    nameClient();
+    completeClient();
     fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '85.000,00' } });
     expect(charge()).toBeEnabled();
     expect(h.writes()).toHaveLength(0);
@@ -324,7 +332,7 @@ describe('the counter units', () => {
     const h = harness();
     await ready(h);
     addToSale('CAR NS40ZL');
-    nameClient();
+    completeClient();
     fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '96.000,00' } });
     expect(charge()).toBeDisabled();
     expect(screen.getByText(posSerialMessage)).toBeInTheDocument();
@@ -336,11 +344,11 @@ describe('the counter units', () => {
 
   it('takes an optional address for the sale, up to two hundred characters', async () => {
     const h = harness({ sale: () => soldBody([{ serial_number: 'ABC123', warranty_months: 12 }],
-      { name: 'Marta Giménez', phone: '', document: '', address: 'Av. América 123' }) });
+      { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: 'Av. América 123' }) });
     await ready(h);
     addToSale('CAR NS40ZL');
     typeSerial();
-    nameClient();
+    completeClient();
     const address = screen.getByLabelText('Dirección o barrio');
     expect(address).toHaveAttribute('maxLength', '200');
     fireEvent.change(address, { target: { value: 'Av. América 123' } });
@@ -349,18 +357,18 @@ describe('the counter units', () => {
     fireEvent.click(charge());
     await screen.findByText('Venta #126 · Garantía 2-000126');
     expect(JSON.parse(String(h.writes()[0].init.body)).customer).toEqual({
-      name: 'Marta Giménez', phone: '', document: '', address: 'Av. América 123',
+      name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: 'Av. América 123',
     });
   });
 
   it('registers a sale whose address the server trims, instead of answering invalid', async () => {
     // D9: the counter sends the trimmed address, so the echoed document is evidence.
     const h = harness({ sale: () => soldBody([{ serial_number: 'ABC123', warranty_months: 12 }],
-      { name: 'Marta Giménez', phone: '', document: '', address: 'Av. América 123' }) });
+      { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: 'Av. América 123' }) });
     await ready(h);
     addToSale('CAR NS40ZL');
     typeSerial();
-    nameClient();
+    completeClient();
     fireEvent.change(screen.getByLabelText('Dirección o barrio'), { target: { value: 'Av. América 123  ' } });
     fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '50.000,00' } });
     fireEvent.click(screen.getByRole('button', { name: 'Resto' }));
@@ -376,7 +384,7 @@ describe('the counter settlement', () => {
     await ready(h);
     addToSale('CAR NS40ZL');
     typeSerial();
-    nameClient();
+    completeClient();
     expect(charge()).toBeDisabled();
     fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '50.000,00' } });
     expect(charge()).toBeDisabled();
@@ -395,7 +403,7 @@ describe('the counter settlement', () => {
       headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf } });
     expect(JSON.parse(String(h.writes()[0].init.body))).toEqual({
       payments: [{ method: 'cash', amount: '50000.00' }, { method: 'transfer', amount: '46000.00' }],
-      customer: { name: 'Marta Giménez', phone: '', document: '', address: '' },
+      customer: { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: '' },
       lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00',
         units: [{ serial_number: 'ABC123', warranty_months: 12 }] }],
     });
@@ -416,7 +424,7 @@ describe('the counter settlement', () => {
     await ready(h);
     addToSale('CAR NS40ZL');
     typeSerial();
-    nameClient();
+    completeClient();
     // The QR field carries its own amount: it is not cash and not a transfer.
     fireEvent.change(screen.getByLabelText('QR'), { target: { value: '46.000,00' } });
     expect(charge()).toBeDisabled();
@@ -439,7 +447,7 @@ describe('the counter settlement', () => {
     await ready(h);
     addToSale('CAR NS40ZL');
     typeSerial();
-    nameClient();
+    completeClient();
     fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '50.000,00' } });
     fireEvent.change(screen.getByLabelText('QR'), { target: { value: '46.000,00' } });
     expect(screen.getByText('Suma Bs 96.000,00 · cubre el total')).toBeInTheDocument();
@@ -457,7 +465,7 @@ describe('the counter settlement', () => {
     await ready(h);
     addToSale('CAR NS40ZL');
     typeSerial();
-    nameClient();
+    completeClient();
     fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '96.000,00' } });
     fireEvent.click(charge());
     expect(await screen.findByRole('alert')).toHaveTextContent(posMissingMessage(1_500_000n));
@@ -473,7 +481,7 @@ describe('the counter settlement', () => {
     await ready(h);
     addToSale('CAR NS40ZL');
     typeSerial();
-    nameClient();
+    completeClient();
     fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '96.000,00' } });
     fireEvent.click(charge());
     // D8: the refusal says which battery, and it never reaches the screen as invalid.
@@ -493,6 +501,12 @@ describe('the counter settlement', () => {
     expect(charge()).toBeDisabled();
     expect(screen.getByText('Escribí el nombre del cliente: la garantía lo exige.')).toBeInTheDocument();
     nameClient();
+    expect(charge()).toBeDisabled();
+    expect(screen.getByText('Escribí el teléfono del cliente: la garantía lo exige.')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Teléfono'), { target: { value: '381 555 0198' } });
+    expect(charge()).toBeDisabled();
+    expect(screen.getByText('Escribí el documento del cliente: la garantía lo exige.')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Documento'), { target: { value: '27.884.310' } });
     expect(charge()).toBeEnabled();
   });
 });
@@ -592,7 +606,7 @@ describe('the counter sells both catalogue kinds', () => {
     const product = cartLine('Agua acidulada');
     expect(within(product).getByText('volumen en L: 5 L')).toBeInTheDocument();
     expect(within(product).queryByLabelText(/Número de serie/)).not.toBeInTheDocument();
-    nameClient();
+    completeClient();
     fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '99.800,00' } });
     expect(charge()).toBeEnabled();
     fireEvent.click(charge());
@@ -610,5 +624,106 @@ describe('the counter sells both catalogue kinds', () => {
     render(<PointOfSale csrf={csrf} branch="Sucursal A" fetcher={h.fetcher} />);
     expect(await screen.findByRole('alert')).toHaveTextContent(sellableUnavailable);
     expect(screen.queryByRole('heading', { name: 'Agua acidulada' })).not.toBeInTheDocument();
+  });
+});
+
+// S9: the client belongs to the warranty. A cart of products alone asks for nobody, and one
+// battery anywhere in the cart demands the three data the printed paper carries.
+describe('the client belongs to the warranty', () => {
+  const batteryPage = () => json(sellableBody([item()]));
+  const kinds = (url: string) => url.includes('kind=other') ? json(productBody()) : batteryPage();
+  const chooseKind = (kind: 'battery' | 'other') =>
+    fireEvent.change(screen.getByLabelText('Tipo de producto'), { target: { value: kind } });
+  const nobody = { name: '', phone: '', document: '', address: '' };
+  const sentCustomer = (h: ReturnType<typeof harness>) =>
+    JSON.parse(String(h.writes()[0].init.body)).customer as Record<string, string>;
+
+  it('charges a product-only cart with no client data at all, and says none is needed', async () => {
+    const h = harness({ page: kinds, sale: () => soldProductBody(1, nobody) });
+    await ready(h);
+    chooseKind('other');
+    await screen.findByRole('heading', { name: 'Agua acidulada' });
+    addToSale('Agua acidulada');
+    // The form states it instead of blocking the sale.
+    expect(screen.getByText(posNoCustomerMessage)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '1.900,00' } });
+    expect(charge()).toBeEnabled();
+    fireEvent.click(charge());
+    await screen.findByText('Venta #127 · Garantía 2-000127');
+    // The four keys are written empty: never omitted, never invented.
+    expect(sentCustomer(h)).toEqual({ name: '', phone: '', document: '', address: '' });
+  });
+
+  it('requires the complete client once a battery joins the cart, naming the datum still missing', async () => {
+    const h = harness({ page: kinds, sale: soldMixedBody });
+    await ready(h);
+    addToSale('CAR NS40ZL');
+    typeSerial();
+    chooseKind('other');
+    await screen.findByRole('heading', { name: 'Agua acidulada' });
+    addToSale('Agua acidulada');
+    fireEvent.click(within(cartLine('Agua acidulada'))
+      .getByRole('button', { name: 'Sumar una unidad de Agua acidulada' }));
+    fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '99.800,00' } });
+    expect(charge()).toBeDisabled();
+    expect(screen.getByText(posCustomerNameMessage)).toBeInTheDocument();
+    nameClient();
+    expect(charge()).toBeDisabled();
+    expect(screen.getByText(posCustomerPhoneMessage)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Teléfono'), { target: { value: '381 555 0198' } });
+    expect(charge()).toBeDisabled();
+    expect(screen.getByText(posCustomerDocumentMessage)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Documento'), { target: { value: '27.884.310' } });
+    expect(charge()).toBeEnabled();
+    fireEvent.click(charge());
+    await screen.findByText('Venta #128 · Garantía 2-000128');
+    expect(sentCustomer(h)).toEqual({
+      name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: '',
+    });
+  });
+
+  // S9: the refusal is the server's, and it names the data the cashier still has to type.
+  it('shows the client the server refused the sale without', async () => {
+    const h = harness({ sale: () => json('{"error":"warranty_customer_incomplete","missing":["customer_phone"]}', 400) });
+    await ready(h);
+    addToSale('CAR NS40ZL');
+    typeSerial();
+    completeClient();
+    fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '96.000,00' } });
+    fireEvent.click(charge());
+    expect(await screen.findByRole('alert'))
+      .toHaveTextContent(`${posCustomerPhoneMessage} No se registró nada.`);
+    // Nothing is lost: the sale stays in hand with its battery and its client.
+    expect(cartLine('CAR NS40ZL L')).toBeInTheDocument();
+    expect(serialInput(1)).toHaveValue('ABC123');
+    expect(screen.getByLabelText('Cliente')).toHaveValue('Marta Giménez');
+    expect(screen.queryByText(/Garantía 2-000126/)).not.toBeInTheDocument();
+  });
+
+  it('names every datum the server refusal lists, in the paper order', async () => {
+    const h = harness({ sale: () => json(
+      '{"error":"warranty_customer_incomplete","missing":["customer_phone","customer_document"]}', 400) });
+    await ready(h);
+    addToSale('CAR NS40ZL');
+    typeSerial();
+    completeClient();
+    fireEvent.change(screen.getByLabelText('Efectivo'), { target: { value: '96.000,00' } });
+    fireEvent.click(charge());
+    expect(await screen.findByRole('alert')).toHaveTextContent('La garantía exige el cliente completo: '
+      + 'faltan el teléfono y el documento. No se registró nada.');
+    expect(h.writes()).toHaveLength(1);
+  });
+
+  it('keeps every label of the client form of a battery sale word for word', async () => {
+    const h = harness();
+    await ready(h);
+    addToSale('CAR NS40ZL');
+    expect(screen.getByLabelText('Cliente')).toBeInTheDocument();
+    expect(screen.getByLabelText('Teléfono')).toBeInTheDocument();
+    expect(screen.getByLabelText('Documento')).toBeInTheDocument();
+    expect(screen.getByLabelText('Dirección o barrio')).toBeInTheDocument();
+    // A battery sale does ask for a client, so it never claims the sale needs nobody.
+    expect(screen.queryByText(posNoCustomerMessage)).not.toBeInTheDocument();
+    expect(h.writes()).toHaveLength(0);
   });
 });

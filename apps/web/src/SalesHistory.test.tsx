@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import SalesHistory from './SalesHistory';
+import { anonymousCustomerLabel } from './pointOfSaleModel';
 import { salesHistoryUnavailable } from './salesAPI';
 
 const json = (body: string, status = 200) => new Response(body, { status, headers: { 'Content-Type': 'application/json' } });
@@ -277,5 +278,37 @@ describe('the two kinds in one sale', () => {
     expect(within(detail).getByText('Agua acidulada')).toBeInTheDocument();
     expect(within(detail).getByText('volumen en L: 5 L')).toBeInTheDocument();
     expect(within(detail).queryByTestId('pre-vertical-note')).not.toBeInTheDocument();
+  });
+});
+
+// S9: a sale of products alone names nobody, so its row and its detail say so instead of
+// inventing a name. The paper's own text belongs to the server, never to this screen.
+describe('a sale that names nobody', () => {
+  const nobody = { name: '', phone: '', document: '', address: '' };
+  const productLine = {
+    variant_id: 191, catalog_entry_id: 96,
+    identity: { variant_id: 191, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L',
+      battery: null, fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }] },
+    quantity: 3, unit_price: '1900.00', min_price: '1500.00', units: [], subtotal: '5700.00',
+  };
+
+  it('renders its row and its detail without inventing a name', async () => {
+    const h = harness({
+      page: () => json(pageBody([summary({ customer_name: '', lines: 1, units_total: 0,
+        units_with_warranty: 0, total: '5700.00' })])),
+      detail: () => json(detailBody({ customer_name: '', customer: nobody, total: '5700.00',
+        payments: [{ method: 'cash', amount: '5700.00' }], lines: [productLine] })),
+    });
+    await ready(h);
+    const row = rowOf(126);
+    expect(within(row).getByText(anonymousCustomerLabel)).toBeInTheDocument();
+    expect(row.textContent).not.toContain('Marta Giménez');
+    expect(anonymousCustomerLabel).toBe('Sin cliente');
+    fireEvent.click(screen.getByRole('button', { name: 'Ver la venta 126' }));
+    const detail = await screen.findByRole('region', { name: 'Venta 126' });
+    expect(within(detail).getByText(/Sin cliente/)).toBeInTheDocument();
+    expect(within(detail).queryByText(/Marta Giménez/)).not.toBeInTheDocument();
+    // The document is still its own: the product line reads by its identity.
+    expect(within(detail).getByText('Agua acidulada')).toBeInTheDocument();
   });
 });
