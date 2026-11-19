@@ -63,8 +63,8 @@ func TestWarrantyCustomerRefusalComesFromTheDatabase(t *testing.T) {
 		detail  string
 		missing []string
 	}{
-		"one":     {detail: CustomerPhoneField, missing: []string{CustomerPhoneField}},
-		"all":     {detail: "customer_document,customer_name,customer_phone",
+		"one": {detail: CustomerPhoneField, missing: []string{CustomerPhoneField}},
+		"all": {detail: "customer_document,customer_name,customer_phone",
 			missing: []string{CustomerNameField, CustomerPhoneField, CustomerDocumentField}},
 		"no_read": {detail: "", missing: nil},
 		"garbage": {detail: "credit_limit", missing: nil},
