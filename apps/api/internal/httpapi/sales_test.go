@@ -761,6 +761,13 @@ func TestSalePageRecord(t *testing.T) {
 		record.Sales[0].UnitsTotal != 0 || record.Sales[0].UnitsWithWarranty != 0 {
 		t.Fatalf("a pre-vertical row must be a legible history row: %+v %v", record.Sales, err)
 	}
+	// A product-only sale issues no warranty and names nobody, so an empty customer name is
+	// a legible history row instead of a failure.
+	anonymous := salePageValue()
+	anonymous.Sales[0].CustomerName = ""
+	if record, err := salePageRecord(anonymous); err != nil || record.Sales[0].CustomerName != "" {
+		t.Fatalf("an anonymous row must be a legible history row: %+v %v", record.Sales, err)
+	}
 	// A page beyond the last one is legitimately empty.
 	value, err := salePageRecord(sales.Page{Page: 3, PageSize: 10, TotalSales: 2, Sales: []sales.Summary{}})
 	if err != nil || value.Sales == nil || len(value.Sales) != 0 {
@@ -782,7 +789,6 @@ func TestSalePageRecord(t *testing.T) {
 		"zero_sequence":     mutate(func(v *sales.Page) { v.Sales[0].BranchSequence = 0 }),
 		"empty_number":      mutate(func(v *sales.Page) { v.Sales[0].WarrantyNumber = "" }),
 		"unknown_method":    mutate(func(v *sales.Page) { v.Sales[0].PaymentMethod = "cheque" }),
-		"empty_customer":    mutate(func(v *sales.Page) { v.Sales[0].CustomerName = "" }),
 		"money_digits":      mutate(func(v *sales.Page) { v.Sales[0].Total = "192000" }),
 		"zero_created":      mutate(func(v *sales.Page) { v.Sales[0].CreatedAt = time.Time{} }),
 		"zero_lines":        mutate(func(v *sales.Page) { v.Sales[0].Lines = 0 }),
@@ -1370,7 +1376,8 @@ func saleCustomerWire(t *testing.T, raw json.RawMessage) saleCustomerDTO {
 		t.Fatalf("client address is outside its bound: %q", address)
 	}
 	var client saleCustomerDTO
-	if json.Unmarshal(raw, &client) != nil || client.Name == "" {
+	if json.Unmarshal(raw, &client) != nil || !saleText(client.Name) ||
+		len([]rune(client.Name)) > sales.MaxCustomerName {
 		t.Fatalf("client is not decodable: %s", raw)
 	}
 	return client
@@ -1472,7 +1479,10 @@ func saleCreatedWire(t *testing.T, w *httptest.ResponseRecorder) saleDTO {
 		if json.Unmarshal(line["quantity"], &quantity) != nil {
 			t.Fatal("quantity must be a number")
 		}
-		saleUnitsWire(t, line["units"], quantity)
+		// A product line carries no unit at all: its quantity is the whole line.
+		if string(line["units"]) != "[]" {
+			saleUnitsWire(t, line["units"], quantity)
+		}
 	}
 	var record saleDTO
 	if json.Unmarshal(top["sale"], &record) != nil || len(record.Payments) != len(payments) {
@@ -1566,6 +1576,28 @@ func saleDetailWire(t *testing.T, w *httptest.ResponseRecorder) saleDetailDTO {
 		t.Fatal("document lines are not an array")
 	}
 	for _, line := range lines {
+		// A product line has no battery column to print: it publishes the shared catalogue
+		// identity and carries no unit, because a product is counted and not serialized.
+		if _, product := line["identity"]; product {
+			if len(line) != 8 {
+				t.Fatal("product document line whitelist changed")
+			}
+			for _, key := range []string{"variant_id", "catalog_entry_id", "identity",
+				"quantity", "unit_price", "min_price", "units", "subtotal"} {
+				if _, ok := line[key]; !ok {
+					t.Fatalf("product document line whitelist incomplete: %s", key)
+				}
+			}
+			for _, key := range []string{"unit_price", "min_price", "subtotal"} {
+				if !saleMoneyWire.MatchString(string(line[key])) {
+					t.Fatalf("%s must be canonical money text", key)
+				}
+			}
+			if string(line["units"]) != "[]" {
+				t.Fatalf("a product line carries no unit: %s", line["units"])
+			}
+			continue
+		}
 		if len(line) != 11 {
 			t.Fatal("document line whitelist changed")
 		}
@@ -1817,7 +1849,7 @@ func TestSaleHTTPRefusals(t *testing.T) {
 	// A document with one valid and one refused line writes nothing at all: the valid
 	// line is the last word of the atomicity check.
 	f.rejectedLine(t, f.request(2, "POST", "/api/sales",
-		`{"payments":[{"method":"cash","amount":"97200.00"}],"customer":{"name":"C","phone":"","document":"","address":""},"lines":[`+
+		`{"payments":[{"method":"cash","amount":"97200.00"}],"customer":{"name":"Cliente Mostrador","phone":"700-00000","document":"V-123","address":""},"lines":[`+
 			`{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":"ATOM-1","warranty_months":6}]},`+
 			fmt.Sprintf(`{"variant_id":%d,"quantity":1,"unit_price":"1200.00","units":[{"serial_number":"ATOM-2","warranty_months":6}]}]}`, exhausted)),
 		"insufficient_stock", exhausted)
@@ -1880,7 +1912,7 @@ func TestSaleHTTPRefusals(t *testing.T) {
 	sold := saleCreatedWire(t, f.serve(t, f.request(2, "POST", "/api/sales", saleBody(1, 1, "96000.00", 6))))
 	serial := sold.Lines[0].Units[0].SerialNumber
 	repeated := fmt.Sprintf(`{"payments":[{"method":"cash","amount":"96000.00"}],`+
-		`"customer":{"name":"C","phone":"","document":"","address":""},`+
+		`"customer":{"name":"Cliente Mostrador","phone":"700-00000","document":"V-123","address":""},`+
 		`"lines":[{"variant_id":1,"quantity":1,"unit_price":"96000.00","units":[{"serial_number":%q,"warranty_months":6}]}]}`,
 		"  "+serial+"  ")
 	before := f.snapshot(t)
@@ -2393,9 +2425,9 @@ func (f *saleHTTPFixture) storedSale(t *testing.T, lines ...storedLine) int64 {
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	var id int64
-	if err := tx.QueryRow(f.ctx, `INSERT INTO sales(branch_location_id,customer_name,customer_address,
- cash_amount,total,created_by_account_id)
- VALUES(2,'Cliente Mostrador','Av. Colón 1234',$1,$1,2) RETURNING id`, amount).Scan(&id); err != nil {
+	if err := tx.QueryRow(f.ctx, `INSERT INTO sales(branch_location_id,customer_name,customer_phone,
+ customer_document,customer_address,cash_amount,total,created_by_account_id)
+ VALUES(2,'Cliente Mostrador','700-00000','V-123','Av. Colón 1234',$1,$1,2) RETURNING id`, amount).Scan(&id); err != nil {
 		enable()
 		t.Fatalf("stored sale header insert failed: %v", err)
 	}

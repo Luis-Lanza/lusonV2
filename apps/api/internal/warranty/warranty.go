@@ -50,8 +50,9 @@ var ErrInvalidDocument = errors.New("invalid warranty document")
 // is never a float and never carries a currency symbol or a thousands separator.
 type Money string
 
-// Customer is the buyer of the sale. Phone and Document are optional: an empty value
-// renders as an empty value, never as a zero.
+// Customer is the buyer of the sale. Any value may be empty: a sale of products alone names
+// nobody and prints "Consumidor final" where the name would go, and an empty phone or
+// document renders as an empty value, never as a zero.
 type Customer struct {
 	Name     string
 	Phone    string
@@ -296,8 +297,12 @@ func Render(doc Document) ([]byte, error) {
 	pdf.SetY(marginTop)
 
 	pdf.SetFont("Arial", "", 10)
+	name := doc.Customer.Name
+	if strings.TrimSpace(name) == "" {
+		name = "Consumidor final"
+	}
 	for _, row := range []string{
-		customerField("Cliente: ", doc.Customer.Name),
+		customerField("Cliente: ", name),
 		customerField("Teléfono: ", doc.Customer.Phone),
 		customerField("Documento: ", doc.Customer.Document),
 	} {
@@ -369,9 +374,6 @@ func (doc Document) validate() error {
 	}
 	if doc.IssuedAt.IsZero() {
 		return invalid("fecha de emisión vacía")
-	}
-	if strings.TrimSpace(doc.Customer.Name) == "" {
-		return invalid("cliente sin nombre")
 	}
 	if err := doc.validatePayments(); err != nil {
 		return err

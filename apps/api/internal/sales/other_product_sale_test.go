@@ -131,7 +131,7 @@ func TestMixedSaleIsReadable(t *testing.T) {
 	}
 	created, err := e.store.Create(e.ctx, clerk(2), sales.CreateInput{
 		Payments: []sales.Payment{{Method: sales.PaymentCash, Amount: "88800.00"}},
-		Customer: sales.Customer{Name: "Cliente Mostrador"},
+		Customer: sales.Customer{Name: "Cliente Mostrador", Phone: "700-00000", Document: "V-123"},
 		Lines: []sales.LineInput{
 			// The battery line carries one unit per sold piece...
 			{VariantID: 3, Quantity: 1, UnitPrice: "85000.00", Units: units(1, months(6))},

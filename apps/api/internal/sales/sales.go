@@ -135,6 +135,31 @@ func (e *ProductLineWithUnits) Error() string {
 // Unwrap keeps errors.Is(err, ErrInvalid) true.
 func (e *ProductLineWithUnits) Unwrap() error { return ErrInvalid }
 
+// The three client data a warranty prints, named as the database names them. A sale that
+// issues a warranty carries all three; the order below is the order the printed paper names
+// them, which is also the order a refusal names them.
+const (
+	CustomerNameField     = "customer_name"
+	CustomerPhoneField    = "customer_phone"
+	CustomerDocumentField = "customer_document"
+)
+
+// WarrantyCustomerIncomplete is the refusal of a sale that issues a warranty without the
+// complete client. Missing names the fields the document does not have, in the paper's own
+// order; a refusal that could not read them keeps the empty list instead of inventing one.
+type WarrantyCustomerIncomplete struct{ Missing []string }
+
+func (e *WarrantyCustomerIncomplete) Error() string {
+	if len(e.Missing) == 0 {
+		return "a sale that issues a warranty requires the complete customer"
+	}
+	return "a sale that issues a warranty requires " + strings.Join(e.Missing, ", ")
+}
+
+// Unwrap keeps errors.Is(err, ErrInvalid) true: an incomplete client is part of the document
+// contract, not a separate class of failure.
+func (e *WarrantyCustomerIncomplete) Unwrap() error { return ErrInvalid }
+
 // PaymentsMismatch is the refusal of a document whose payments do not close against its
 // own total. Exactly one side is set: Missing when the payments fall short of the total,
 // Excess when they overshoot it, so a client can say how much is left to pay or how much
@@ -241,9 +266,10 @@ type Payment struct {
 	Amount Money
 }
 
-// Customer is the client the warranty is issued to. The name is mandatory; the phone, the
-// document and the address are optional and bounded. The address is one free field, the
-// neighbourhood or street the client gave at the counter, never structured into parts.
+// Customer is the client the warranty is issued to. The name, the phone, the document and
+// the address are all bounded, and any of them may be empty: a sale of products alone issues
+// no warranty and names nobody, and the address is never printed. Whether the client is
+// complete is the rule of the document, judged by its catalogue kinds with judgeCustomer.
 type Customer struct {
 	Name     string `json:"name"`
 	Phone    string `json:"phone"`
@@ -251,12 +277,12 @@ type Customer struct {
 	Address  string `json:"address"`
 }
 
-// CanonicalCustomer trims the mandatory name and the optional address, and refuses a value
-// outside the database's own bounds.
+// CanonicalCustomer trims the name and the address, and refuses a value outside the
+// database's own bounds. The name may be empty: a product-only sale has no client to name.
 func CanonicalCustomer(customer Customer) (Customer, bool) {
 	name := strings.TrimSpace(customer.Name)
 	address := strings.TrimSpace(customer.Address)
-	if !boundedText(name, 1, MaxCustomerName) ||
+	if !boundedText(name, 0, MaxCustomerName) ||
 		!boundedText(customer.Phone, 0, MaxCustomerPhone) ||
 		!boundedText(customer.Document, 0, MaxCustomerDocument) ||
 		!boundedText(address, 0, MaxCustomerAddress) {
@@ -357,6 +383,51 @@ func judgeUnits(lines []Line, kinds map[int64]catalog.Kind) error {
 		}
 	}
 	return nil
+}
+
+// judgeCustomer applies the client rule of the document: a sale that issues a warranty --
+// one carrying at least one battery line, or one whose kinds are unknown and can only be
+// the battery-shaped document this domain always wrote -- requires the three data the printed
+// paper carries, the name, the phone and the document. A sale of products alone issues no
+// warranty and demands nobody, and the address is never required because the paper never
+// prints it.
+func judgeCustomer(customer Customer, lines []Line, kinds map[int64]catalog.Kind) error {
+	if !issuesWarranty(lines, kinds) {
+		return nil
+	}
+	if missing := missingCustomerFields(customer); len(missing) > 0 {
+		return &WarrantyCustomerIncomplete{Missing: missing}
+	}
+	return nil
+}
+
+// issuesWarranty reports whether a document carries a battery line, which is what makes it a
+// warranty. Without the catalogue kinds the document can only be the battery-shaped contract
+// this domain always wrote, so it is judged as one.
+func issuesWarranty(lines []Line, kinds map[int64]catalog.Kind) bool {
+	for _, line := range lines {
+		if kinds == nil || kinds[line.VariantID] == catalog.BatteryKind {
+			return true
+		}
+	}
+	return false
+}
+
+// missingCustomerFields lists the client data a warranty demands that the sale does not
+// carry, in the order the printed paper names them: name, phone, document. A value that is
+// only whitespace is absent, exactly as the database judges it.
+func missingCustomerFields(customer Customer) []string {
+	missing := make([]string, 0, 3)
+	if strings.TrimSpace(customer.Name) == "" {
+		missing = append(missing, CustomerNameField)
+	}
+	if strings.TrimSpace(customer.Phone) == "" {
+		missing = append(missing, CustomerPhoneField)
+	}
+	if strings.TrimSpace(customer.Document) == "" {
+		missing = append(missing, CustomerDocumentField)
+	}
+	return missing
 }
 
 // LineInput is one line the client asks to sell. The client supplies the variant, the
@@ -747,6 +818,15 @@ func validate(input CreateInput, kinds map[int64]catalog.Kind, admitPreVertical 
 	}
 	if err := judgeUnits(payload.Lines, kinds); err != nil {
 		return Payload{}, err
+	}
+	// The client rule is never judged on the read path. It governs what this application
+	// writes, and the sale tables are immutable: a sale written before the rule existed is
+	// still a document that really happened, so refusing to read it would not protect the
+	// ledger, it would hide a sale. The database is the authority for what may be written.
+	if !admitPreVertical {
+		if err := judgeCustomer(payload.Customer, payload.Lines, kinds); err != nil {
+			return Payload{}, err
+		}
 	}
 	return payload, nil
 }

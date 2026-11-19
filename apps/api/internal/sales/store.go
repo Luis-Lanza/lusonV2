@@ -61,7 +61,9 @@ func resolveBranch(ctx context.Context, q querier, actor auth.Identity) (int16, 
 // The catalogue kind of every requested variant is read in the same transaction, before a row
 // is written, so the units of each line are judged by the rule of its own kind: a battery line
 // carries exactly one unit per sold piece and a product line carries none. A line that breaks
-// the rule of its kind is refused with the refusal of that rule, and nothing is written.
+// the rule of its kind is refused with the refusal of that rule, and nothing is written. A
+// battery line also makes the document a warranty, so the client it prints must be complete
+// before the first row is written; a product-only sale names nobody.
 //
 // Lines are inserted in ascending variant order, which is the database's balance-row
 // lock order, and each line is followed by its units in ordinal order, so the trigger that
@@ -106,6 +108,11 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 		return Sale{}, err
 	}
 	if err := judgeUnits(payload.Lines, kinds); err != nil {
+		return Sale{}, err
+	}
+	// A battery line makes the document a warranty, so the client it prints must be complete
+	// before the first row is written; a product-only sale names nobody and passes here.
+	if err := judgeCustomer(payload.Customer, payload.Lines, kinds); err != nil {
 		return Sale{}, err
 	}
 	var id int64
@@ -915,6 +922,11 @@ func mapFailure(ctx context.Context, err error) error {
 			if pg.ConstraintName == "sale_units_serial_number" {
 				return &SerialAlreadySold{}
 			}
+		// LV015: the document issues a warranty without its complete client. The database names
+		// the missing fields in its own detail, so the refusal is published as the same refusal
+		// this domain derives before writing, never as a service failure.
+		case "LV015":
+			return &WarrantyCustomerIncomplete{Missing: customerFieldsOf(pg.Detail)}
 		// A refused amount, a refused document shape or an unknown variant is the same
 		// public refusal, because the database decides it.
 		case "23503", "23514", "22003":
@@ -936,4 +948,24 @@ func variantOf(pg *pgconn.PgError) int64 {
 		return 0
 	}
 	return value
+}
+
+// customerFieldsOf reads the missing client fields from the database's own detail and answers
+// them in the paper's order, name, phone, document. A detail that names no field this contract
+// publishes keeps the empty list, so a refusal never invents a field the paper does not carry.
+func customerFieldsOf(detail string) []string {
+	present := make(map[string]bool, 3)
+	for _, field := range strings.Split(detail, ",") {
+		switch trimmed := strings.TrimSpace(field); trimmed {
+		case CustomerNameField, CustomerPhoneField, CustomerDocumentField:
+			present[trimmed] = true
+		}
+	}
+	missing := make([]string, 0, len(present))
+	for _, field := range []string{CustomerNameField, CustomerPhoneField, CustomerDocumentField} {
+		if present[field] {
+			missing = append(missing, field)
+		}
+	}
+	return missing
 }

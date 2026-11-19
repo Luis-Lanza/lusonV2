@@ -53,3 +53,37 @@ func TestUnitRefusalNamesTheSerial(t *testing.T) {
 		t.Fatalf("an unmapped unique violation must fail closed: %v", mapped)
 	}
 }
+
+// TestWarrantyCustomerRefusalComesFromTheDatabase pins S9's last clause: the deferred trigger
+// LV015 and the rule this domain derives before writing are one refusal, never a service
+// failure. The database names the missing fields in its detail, in its own column names, so
+// the refusal is published with exactly the fields the paper needs and in the paper's order.
+func TestWarrantyCustomerRefusalComesFromTheDatabase(t *testing.T) {
+	for name, tc := range map[string]struct {
+		detail  string
+		missing []string
+	}{
+		"one":     {detail: CustomerPhoneField, missing: []string{CustomerPhoneField}},
+		"all":     {detail: "customer_document,customer_name,customer_phone",
+			missing: []string{CustomerNameField, CustomerPhoneField, CustomerDocumentField}},
+		"no_read": {detail: "", missing: nil},
+		"garbage": {detail: "credit_limit", missing: nil},
+	} {
+		mapped := mapFailure(context.Background(), &pgconn.PgError{Code: "LV015", Detail: tc.detail})
+		var refused *WarrantyCustomerIncomplete
+		if !errors.As(mapped, &refused) {
+			t.Fatalf("%s: LV015 must be the incomplete-customer refusal, got %v", name, mapped)
+		}
+		if !errors.Is(mapped, ErrInvalid) {
+			t.Fatalf("%s: the refusal must stay the invalid-document class: %v", name, mapped)
+		}
+		if len(refused.Missing) != len(tc.missing) {
+			t.Fatalf("%s: the refusal must name %v, got %v", name, tc.missing, refused.Missing)
+		}
+		for i := range tc.missing {
+			if refused.Missing[i] != tc.missing[i] {
+				t.Fatalf("%s: the refusal must name %v, got %v", name, tc.missing, refused.Missing)
+			}
+		}
+	}
+}

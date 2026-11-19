@@ -134,6 +134,7 @@ func saleFailure(w http.ResponseWriter, err error) {
 	var duplicated *sales.SerialAlreadySold
 	var batteryUnits *sales.BatteryLineWithoutUnits
 	var productUnits *sales.ProductLineWithUnits
+	var incompleteCustomer *sales.WarrantyCustomerIncomplete
 	switch {
 	// The open settlement is checked before the generic invalid document, because it is
 	// itself a refusal of that class and carries the amount that is missing or over.
@@ -153,6 +154,10 @@ func saleFailure(w http.ResponseWriter, err error) {
 		saleLineRefusal(w, "battery_line_requires_units", batteryUnits.VariantID)
 	case errors.As(err, &productUnits):
 		saleLineRefusal(w, "product_line_carries_no_units", productUnits.VariantID)
+	// The client the warranty prints is its own refusal: a 400 that names every missing field
+	// in the paper's order, or the house envelope when the refusal could not name one.
+	case errors.As(err, &incompleteCustomer):
+		saleCustomerFailure(w, incompleteCustomer)
 	case errors.Is(err, sales.ErrInvalid):
 		failure(w, 400, "invalid_request")
 	case errors.Is(err, sales.ErrForbidden):
@@ -187,6 +192,48 @@ func saleSerialFailure(w http.ResponseWriter, serial sales.SerialNumber) {
 		return
 	}
 	respond(w, 409, map[string]string{"error": "serial_already_sold", "serial_number": string(serial)})
+}
+
+// saleCustomerFailure answers a sale refused because the client its warranty prints is
+// incomplete: a 400 that names every missing field in the paper's order, or the house
+// envelope when the refusal could not name one. A list that carries a field the paper does
+// not print is not evidence of anything, so it fails closed instead of publishing it.
+func saleCustomerFailure(w http.ResponseWriter, refusal *sales.WarrantyCustomerIncomplete) {
+	missing, ok := saleMissingCustomerFields(refusal.Missing)
+	if !ok {
+		failure(w, 503, "service_unavailable")
+		return
+	}
+	if len(missing) == 0 {
+		failure(w, 400, "warranty_customer_incomplete")
+		return
+	}
+	respond(w, 400, map[string]any{"error": "warranty_customer_incomplete", "missing": missing})
+}
+
+// saleMissingCustomerFields admits only the three data the paper prints, each at most once,
+// and answers them in the paper's order: name, phone, document.
+func saleMissingCustomerFields(fields []string) ([]string, bool) {
+	seen := make(map[string]bool, 3)
+	for _, field := range fields {
+		switch field {
+		case sales.CustomerNameField, sales.CustomerPhoneField, sales.CustomerDocumentField:
+			if seen[field] {
+				return nil, false
+			}
+			seen[field] = true
+		default:
+			return nil, false
+		}
+	}
+	missing := make([]string, 0, len(seen))
+	for _, field := range []string{sales.CustomerNameField, sales.CustomerPhoneField,
+		sales.CustomerDocumentField} {
+		if seen[field] {
+			missing = append(missing, field)
+		}
+	}
+	return missing, true
 }
 
 // saleVariantFailure answers a refusal that names one variant. The id is the database's
@@ -300,10 +347,10 @@ func salePayments(d *json.Decoder) ([]sales.Payment, error) {
 	return payments, nil
 }
 
-// saleCustomer reads the client of the warranty: exactly the four frozen keys. The name is
-// mandatory, the phone, the document and the address are optional and may be empty; their
-// bounds are the store's own rule, so a text outside them is still refused there. The
-// address is one free field of the sale header, never structured into parts.
+// saleCustomer reads the client of the warranty: exactly the four frozen keys. Any value may
+// be empty, because a product-only sale names nobody and the address is never printed; their
+// bounds are the store's own rule, so a text outside them is still refused there. The address
+// is one free field of the sale header, never structured into parts.
 func saleCustomer(d *json.Decoder) (sales.Customer, error) {
 	var customer sales.Customer
 	if !transferDelimiter(d, '{') {
@@ -989,7 +1036,7 @@ func saleDocumentRecord(sale sales.Sale, validate func(sales.CreateInput) (sales
 	unavailable := func() (saleDTO, error) { return saleDTO{}, sales.ErrUnavailable }
 	if sale.ID < 1 || sale.BranchLocationID < 2 || sale.BranchLocationID > math.MaxInt16 ||
 		sale.BranchSequence < 1 || sale.CreatedByAccountID < 1 || sale.CreatedAt.IsZero() ||
-		sale.Customer.Name == "" || !saleText(sale.Customer.Name) ||
+		!saleText(sale.Customer.Name) ||
 		!saleText(sale.Customer.Phone) || !saleText(sale.Customer.Document) ||
 		!saleText(sale.Customer.Address) ||
 		sale.WarrantyNumber != saleWarrantyNumber(sale.BranchLocationID, sale.BranchSequence) ||
@@ -1094,7 +1141,7 @@ func salePageRecord(page sales.Page) (salePageDTO, error) {
 			(!sales.PreVertical(summary.Lines, summary.UnitsTotal) &&
 				summary.UnitsTotal != summary.BatteryUnits) ||
 			summary.UnitsWithWarranty < 0 || summary.UnitsWithWarranty > summary.UnitsTotal ||
-			summary.CustomerName == "" || !saleText(summary.CustomerName) {
+			summary.CustomerName != "" && !saleText(summary.CustomerName) {
 			return unavailable()
 		}
 		previous = summary.ID
@@ -1144,7 +1191,7 @@ func saleLineIdentity(identity catalog.Identity) (brand, model, capacity, polari
 // arrays, because it is recoverable history and not corruption.
 func saleDetailRecord(detail sales.Detail) (saleDetailDTO, error) {
 	unavailable := func() (saleDetailDTO, error) { return saleDetailDTO{}, sales.ErrUnavailable }
-	if len(detail.Lines) < 1 || len(detail.Lines) > sales.MaxLines || detail.Customer.Name == "" {
+	if len(detail.Lines) < 1 || len(detail.Lines) > sales.MaxLines {
 		return unavailable()
 	}
 	lines := make([]sales.SaleLine, 0, len(detail.Lines))
