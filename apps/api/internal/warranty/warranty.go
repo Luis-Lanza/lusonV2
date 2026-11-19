@@ -50,19 +50,36 @@ var ErrInvalidDocument = errors.New("invalid warranty document")
 // is never a float and never carries a currency symbol or a thousands separator.
 type Money string
 
-// Customer is the buyer of the sale. Phone and Document are optional: an empty value
-// renders as an empty value, never as a zero.
+// Customer is the buyer of the sale. Any value may be empty: a sale of products alone names
+// nobody and prints "Consumidor final" where the name would go, and an empty phone or
+// document renders as an empty value, never as a zero.
 type Customer struct {
 	Name     string
 	Phone    string
 	Document string
 }
 
-// Line is one physical battery of the sale: the catalogue identity of its variant, the
-// serial number the seller read at the counter and the term stated for that battery, or no
-// term at all. Subtotal is the amount this one unit contributes to the sale, frozen on the
-// sale and printed as it was stored, so the rows add up to the document total.
+// LineKind is the catalogue kind of the sold line a row belongs to. A battery row prints the
+// battery columns of the document, word for word; a product row prints its own identity, the
+// name and the detail, and leaves the warranty term empty, because a product carries no
+// promise per piece. The values are the catalogue's own.
+type LineKind string
+
+const (
+	BatteryLine LineKind = "battery"
+	ProductLine LineKind = "other"
+)
+
+// Line is one printed row of the sale. A battery row is one physical battery: the catalogue
+// identity of its variant, the serial number the seller read at the counter and the term
+// stated for that battery, or no term at all. A product row is one sold piece of an other
+// product: its own name and detail instead of the battery columns, no serial and no term.
+// Subtotal is the amount this row contributes to the sale, frozen on the line and printed as
+// it was stored, so the rows add up to the document total.
 type Line struct {
+	Kind           LineKind
+	Name           string
+	Detail         string
 	Brand          string
 	Model          string
 	Capacity       string
@@ -255,6 +272,19 @@ func Render(doc Document) ([]byte, error) {
 		pdf.SetFillColor(255, 255, 255)
 	}
 
+	// drawProductRow prints one sold piece of an other product in the same grid: it has no
+	// battery column at all, so the cells that hold the battery identity hold its own name and
+	// detail, and the warranty term is drawn empty because the sale never promised one.
+	drawProductRow := func(name, detail, amount string) {
+		nameWidth := columns[0].width + columns[1].width
+		detailWidth := columns[2].width + columns[3].width + columns[4].width
+		pdf.SetX(marginLeft)
+		pdf.CellFormat(nameWidth, tableRowHeight, fit(name, nameWidth-2), "B", 0, "L", false, 0, "")
+		pdf.CellFormat(detailWidth, tableRowHeight, fit(detail, detailWidth-2), "B", 0, "L", false, 0, "")
+		pdf.CellFormat(columns[5].width, tableRowHeight, "", "B", 0, "C", false, 0, "")
+		pdf.CellFormat(columns[6].width, tableRowHeight, amount, "B", 1, "R", false, 0, "")
+	}
+
 	// newPage starts one page: the header function already ran, the table heading is
 	// redrawn so the rows of every page stay readable on their own.
 	newPage := func() {
@@ -267,8 +297,12 @@ func Render(doc Document) ([]byte, error) {
 	pdf.SetY(marginTop)
 
 	pdf.SetFont("Arial", "", 10)
+	name := doc.Customer.Name
+	if strings.TrimSpace(name) == "" {
+		name = "Consumidor final"
+	}
 	for _, row := range []string{
-		customerField("Cliente: ", doc.Customer.Name),
+		customerField("Cliente: ", name),
 		customerField("Teléfono: ", doc.Customer.Phone),
 		customerField("Documento: ", doc.Customer.Document),
 	} {
@@ -282,6 +316,10 @@ func Render(doc Document) ([]byte, error) {
 			newPage()
 		}
 		pdf.SetFont("Arial", "", 8)
+		if line.Kind == ProductLine {
+			drawProductRow(line.Name, line.Detail, subtotals[i])
+			continue
+		}
 		pdf.SetX(marginLeft)
 		cells := []string{
 			line.Brand,
@@ -337,9 +375,6 @@ func (doc Document) validate() error {
 	if doc.IssuedAt.IsZero() {
 		return invalid("fecha de emisión vacía")
 	}
-	if strings.TrimSpace(doc.Customer.Name) == "" {
-		return invalid("cliente sin nombre")
-	}
 	if err := doc.validatePayments(); err != nil {
 		return err
 	}
@@ -353,17 +388,35 @@ func (doc Document) validate() error {
 		if _, err := parseCents(line.Subtotal); err != nil {
 			return invalid("unidad %d: subtotal: %v", i+1, err)
 		}
-		// The serial identifies the battery the client left with, so a row without one
-		// cannot be printed: the document would not say which battery it covers.
-		serial := strings.TrimSpace(line.SerialNumber)
-		if serial == "" || len([]rune(serial)) > maxSerialLength {
-			return invalid("unidad %d: número de serie vacío o demasiado largo", i+1)
-		}
-		// There is no zero months: a unit without warranty carries no term at all and is
-		// printed as such, so a term outside 1..120 is a document this renderer refuses.
-		if line.WarrantyMonths != nil &&
-			(*line.WarrantyMonths < minWarrantyMonths || *line.WarrantyMonths > maxWarrantyMonths) {
-			return invalid("unidad %d: plazo %d fuera de rango", i+1, *line.WarrantyMonths)
+		switch line.Kind {
+		case "", BatteryLine:
+			// The serial identifies the battery the client left with, so a row without one
+			// cannot be printed: the document would not say which battery it covers.
+			serial := strings.TrimSpace(line.SerialNumber)
+			if serial == "" || len([]rune(serial)) > maxSerialLength {
+				return invalid("unidad %d: número de serie vacío o demasiado largo", i+1)
+			}
+			// There is no zero months: a unit without warranty carries no term at all and is
+			// printed as such, so a term outside 1..120 is a document this renderer refuses.
+			if line.WarrantyMonths != nil &&
+				(*line.WarrantyMonths < minWarrantyMonths || *line.WarrantyMonths > maxWarrantyMonths) {
+				return invalid("unidad %d: plazo %d fuera de rango", i+1, *line.WarrantyMonths)
+			}
+		case ProductLine:
+			// A product row states its own identity and nothing of the battery: it is counted,
+			// so it has no serial and no term, and a row that invented either would print a
+			// promise the sale never made.
+			if strings.TrimSpace(line.Name) == "" || strings.TrimSpace(line.Detail) == "" {
+				return invalid("producto %d: nombre o detalle vacío", i+1)
+			}
+			if line.SerialNumber != "" {
+				return invalid("producto %d: un producto no lleva número de serie", i+1)
+			}
+			if line.WarrantyMonths != nil {
+				return invalid("producto %d: un producto no declara plazo", i+1)
+			}
+		default:
+			return invalid("unidad %d: tipo de línea desconocido %q", i+1, line.Kind)
 		}
 	}
 	return nil

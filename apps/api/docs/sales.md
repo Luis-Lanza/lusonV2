@@ -17,6 +17,13 @@ sold quantity and the price, and a separate `sale_units` row holds one physical 
 per sold piece, with its serial and its own term. The units of one line are exactly as
 many as its quantity, and one sale carries at most **1000** units.
 
+The second kind of line is an **other product**: a product is counted, not serialized —
+three bottles of water are three pieces, not three serial numbers — so its line carries
+its `quantity` as the whole line and **no unit at all**. The rule above is the battery's:
+each catalogue kind keeps its own unit rule, enforced by the store before it writes and
+again by the database at commit. One sale may carry both kinds, and nothing is refused for
+mixing them.
+
 The serial is what tracks the battery the client left with — "solo es para trackear la
 bateria que se llevo el cliente" — never a stock identity: it is written down at the
 counter, it is never looked up, and it has no counterpart in `inventory_balances`. It is
@@ -31,7 +38,13 @@ without warranty is stored with a `NULL` term, is answered as
 instead of printing a term. There is **no zero months**.
 
 The sale also records the client's **address or neighbourhood**: one free-text field on
-the document header, at most 200 characters, empty when the sale carries none.
+the document header, at most 200 characters, empty when the sale carries none. The address is
+**never required**: it is stored and the printed paper never prints it.
+
+A sale that **issues a warranty** — one carrying at least one battery line — names its client
+with exactly the three data the printed paper carries: **name, phone and document**. A sale of
+products alone issues no warranty, requires no client data at all, and its printed document
+says `Consumidor final` where the name would go.
 
 The database is the final authority for the price rules. The charged price can never
 go under the branch's stored minimum for the battery of the sold variant
@@ -127,10 +140,14 @@ POST /api/sales
     store's rule and the database's constraint, so a settlement that falls short or
     overshoots is `400 payments_mismatch` with the amount that is missing or left over
     (see [Errors](#errors)).
-* `customer` holds exactly the four keys above. `name` is mandatory and is trimmed;
-  `phone`, `document` and `address` may be empty. The address is one free field of the
-  document header, trimmed, at most **200** characters. A text outside the database's
-  own bounds is refused.
+* `customer` holds exactly the four keys above. A sale with at least one **battery** line
+  issues a warranty, so it must carry `name`, `phone` and `document`, all non-blank (a value
+  that is only whitespace counts as missing), or it is `400 warranty_customer_incomplete`
+  naming every missing field. A sale of **products alone** issues no warranty and may leave
+  all three empty. `name` is trimmed and at most **120** characters; `phone` and `document`
+  are at most **40** characters each. `address` may always be empty and is **never
+  required**: it is one free field of the document header, trimmed, at most **200**
+  characters. A text outside the database's own bounds is refused.
 * `lines` holds `1` to `190` lines. Each line is exactly `variant_id`, `quantity`,
   `unit_price` and `units`:
   * `variant_id` is a canonical positive integer (the sold **polarity**).
@@ -151,6 +168,14 @@ POST /api/sales
       text or a floating value is `400 invalid_request`.
     * Two units of one line, and the units of different lines, may state different terms:
       that is what a per-unit term is for.
+  * `units` is **optional in meaning, never in the wire**: the key is still mandatory, and
+    the empty array `[]` is the way a line says it has no pieces. A line of an **other
+    product** carries `"units": []`, because a product is counted and not serialized, so
+    its `quantity` is the whole line; a **battery** line keeps one unit per sold piece as
+    described above. A product line that carries a unit is `400
+    product_line_carries_no_units`, and a battery line that does not carry exactly one unit
+    per sold piece is `400 battery_line_requires_units` (see [Errors](#errors)); both are
+    refused before anything is written.
   * Each variant appears once: a repeated variant is `400 invalid_request`.
 * One sale carries at most **1000 units** in total, so a document above that bound is
   `400 invalid_request` before any database work.
@@ -199,6 +224,11 @@ or `null` — and `subtotal` is `unit_price × quantity` in integer cents.
 `min_price` is never part of the request: it is the database's own reading of the
 branch's stored pair for the battery of that variant. A later price change does not
 alter an emitted document.
+
+A line of an **other product** answers the same six keys with `"units": []`: a sale of
+three products answers `"quantity": 3`, `"unit_price": "1900.00"` and an empty units
+array, never three invented serials. The frozen `min_price` is read the same way, from
+the pair that branch holds for the catalogue entry of the variant.
 
 The answered document replaces the line's old line-level `warranty_months` with this
 `units` array: the promise has one authority, the unit, and a line never states a term of
@@ -257,7 +287,7 @@ is simply absent from it.
 | `sales[].id` | The document, for the detail read |
 | `sales[].branch_sequence`, `warranty_number` | The database's own document numbers |
 | `sales[].payment_method` | The derived label of the settlement, so a mixed sale is a legible and filterable row |
-| `sales[].customer_name`, `total`, `created_at` | The rest of the document header |
+| `sales[].customer_name`, `total`, `created_at` | The rest of the document header; `customer_name` is empty for a product-only sale that names nobody |
 | `sales[].lines` | How many lines the document holds (a count, not the lines) |
 | `sales[].units_total` | How many physical batteries the sale carries |
 | `sales[].units_with_warranty` | How many of those units were sold **with** a warranty; the rest were taken without one, so the history names an unwarranted sale without unfolding it |
@@ -305,7 +335,9 @@ branch is not found either. A query string on this read is `400 invalid_request`
 The header is the history row's header — `payment_method` stays the derived label —
 plus the **client of the warranty** (`customer`, the same four keys the request carries,
 address included) and the **settlement** (`payments`, one entry per method that paid, in
-the frozen order `cash`, `card`, `transfer`). `lines` is the full array instead of counts.
+the frozen order `cash`, `card`, `transfer`). A product-only sale answers its client with all
+four values empty, and its `customer_name` is the empty string. `lines` is the full array
+instead of counts.
 Each line adds the catalogue identity of its variant — `catalog_entry_id` (the battery),
 `brand`, `model`, `capacity_ah` as a string and `polarity` — beside the prices of the sale
 and its `units`, so the document stays legible with the amounts that were actually charged
@@ -313,13 +345,36 @@ and with the serial and the term of **every battery** that left the branch. A un
 `"warranty_months": null` is a battery the client took without warranty, and the screen
 names it `Sin garantía`; a unit with a number is named `<n> meses`.
 
+A line of an **other product** has no battery column to print, so it publishes the shared
+catalogue identity of its variant under `identity` — the same identity every other
+catalogue surface reads: `kind`, the free `name`, its `detail` and the typed `fields` —
+and `brand`, `model`, `capacity_ah` and `polarity` are **absent** from that line. Its
+`units` is `[]`, because a product carries no serial and no term:
+
+```json
+"lines":[{"variant_id":191,"catalog_entry_id":96,
+ "identity":{"variant_id":191,"kind":"other","name":"Agua acidulada",
+  "detail":"volumen en L: 5 L","battery":null,
+  "fields":[{"name":"volumen en L","kind":"number","unit":"L","number":"5"}]},
+ "quantity":3,"unit_price":"1900.00","min_price":"1500.00","units":[],
+ "subtotal":"5700.00"}]
+```
+
+A **battery** line keeps exactly the keys it always had — `brand`, `model`,
+`capacity_ah`, `polarity` and its `units` — and never publishes `identity`.
+
 ## Read the sellable catalogue
 
 ```
-GET /api/sales/sellable?search=&brand=&capacity=&polarity=&page=&page_size=
+GET /api/sales/sellable?search=&brand=&capacity=&polarity=&page=&page_size=&kind=
 ```
 
-* `search` is a literal substring over `brand` and `model`.
+* `kind` selects the kind of catalogue row: `battery` (the default, so every existing
+  caller keeps its behaviour untouched), `other` (the other products, with their price)
+  or `all` (both kinds in one page). An unknown value is `400 invalid_request`; the
+  parameter carries no other meaning.
+* `search` is a literal substring over `brand` and `model`. For the product kind the same
+  literal search also matches the free `name` of a product.
 * `brand` is an exact brand filter.
 * `capacity` is an exact catalogue capacity (`"35"`, `"6.5"`), validated as a
   catalogue decimal.
@@ -353,12 +408,33 @@ knows how much it can add without asking a second read; a variant without a bala
 `0/0/0`. The warranty term is not part of this shape because the seller states it on the
 sale.
 
+A row of an **other product** (`kind=other`, or inside `kind=all`) publishes the shared
+catalogue identity of its variant under `identity` instead of the battery columns, because
+a product card shows a name and a detail and never a brand, a capacity or a polarity:
+
+```json
+{"variant_id":191,"catalog_entry_id":96,
+ "identity":{"variant_id":191,"kind":"other","name":"Agua acidulada",
+  "detail":"volumen en L: 5 L","battery":null,
+  "fields":[{"name":"volumen en L","kind":"number","unit":"L","number":"5"}]},
+ "sellable":true,"suggested_price":"1900.00","min_price":"1500.00",
+ "existing":6,"reserved":0,"available":6}
+```
+
+The pair of a product is the pair of its own catalogue entry, so `suggested_price` and
+`min_price` follow the same rule as a battery's: a product without a price in the branch is
+still a row, `sellable: false` and both prices `null`. A **battery** item keeps exactly the
+keys it always had and never publishes `identity`.
+
 ## Errors
 
 | Status | Code | Meaning |
 |---|---|---|
-| 400 | `invalid_request` | Malformed body, unknown or duplicate key, a missing key, non-canonical amount, quantity or term out of bounds, a line whose units are not exactly as many as its quantity, a serial outside 1..64 characters, an address above 200 characters, a sale above 1000 units, `mixed` sent as an input, a repeated method, bad query, a query string on the mutation |
+| 400 | `invalid_request` | Malformed body, unknown or duplicate key, a missing key, non-canonical amount, quantity or term out of bounds, a serial outside 1..64 characters, an address above 200 characters, a sale above 1000 units, `mixed` sent as an input, a repeated method, bad query, a query string on the mutation |
+| 400 | `battery_line_requires_units` | A battery line does not carry exactly one unit per sold piece; the refusal names the variant when the store derived it |
+| 400 | `product_line_carries_no_units` | An other-product line carries a unit; a product is counted, so it carries none; the refusal names the variant when the store derived it |
 | 400 | `payments_mismatch` | The settlement does not close against the total; the body names `missing` or `excess` |
+| 400 | `warranty_customer_incomplete` | A sale carrying a battery line does not name the complete client; the body names every missing field in the order `customer_name`, `customer_phone`, `customer_document` |
 | 401 | `unauthenticated` | No session |
 | 403 | `forbidden` | The actor is not a completed branch session of this branch, or the mutation guard failed |
 | 404 | `not_found` | Unknown document, a sale of another branch, a non-canonical id, any other path below the collection, or an aliased path |
@@ -384,6 +460,22 @@ counter must point at the exact row it has to fix:
 {"error":"insufficient_stock","variant_id":19}
 ```
 
+The two unit refusals of a line name the variant the same way when the store derived them,
+so the counter can point at the line the seller has to fix:
+
+```json
+{"error":"battery_line_requires_units","variant_id":1}
+```
+
+```json
+{"error":"product_line_carries_no_units","variant_id":191}
+```
+
+Reached through the database's own deferred check instead (`LV012` and `LV014`, which name
+no variant), the same refusal is answered with the house envelope alone —
+`{"error":"battery_line_requires_units"}` or
+`{"error":"product_line_carries_no_units"}` — never with an invented id.
+
 A battery that was already sold is its own refusal, and it names the serial the counter
 has to correct. The serial is published trimmed, exactly as the sale stores it, so the
 seller can find the battery in hand; a refusal that could not read the serial is answered
@@ -392,6 +484,17 @@ with the house envelope alone instead of an invented one.
 ```json
 {"error":"serial_already_sold","serial_number":"ABC123"}
 ```
+
+A sale that issues a warranty without its complete client is its own refusal, and it names
+every missing field of the paper, in the order the paper prints them:
+
+```json
+{"error":"warranty_customer_incomplete","missing":["customer_name","customer_phone","customer_document"]}
+```
+
+Reached through the database's deferred trigger (`LV015`) without a usable detail, the same
+refusal is answered with the house envelope alone:
+`{"error":"warranty_customer_incomplete"}`.
 
 A settlement that does not close is its own refusal, and it carries **exactly one** of
 `missing` or `excess` with the canonical amount beside it, so the counter can say how much
@@ -414,12 +517,12 @@ rejection is trusted.
 
 ## Database invariants
 
-This contract owns three tables, created by migration `025`, extended by `027` and
-reshaped by `031`:
+This contract owns three tables, created by migration `025`, extended by `027`, reshaped by
+`031`, and whose client rule was completed by migration `057`:
 
 | Table | Shape |
 |---|---|
-| `sales` | the branch, the branch correlative, the warranty number, how much was paid with each method, the **derived** label, the client and its free-text `customer_address` (at most 200 characters, default empty), the total, the account and the moment; unique on `(branch_location_id, branch_sequence)` and `(branch_location_id, warranty_number)` |
+| `sales` | the branch, the branch correlative, the warranty number, how much was paid with each method, the **derived** label, the client (name at most 120 characters and possibly empty, phone and document at most 40 each) and its free-text `customer_address` (at most 200 characters, default empty), the total, the account and the moment; unique on `(branch_location_id, branch_sequence)` and `(branch_location_id, warranty_number)` |
 | `sale_lines` | the sold variant, the quantity, the frozen `unit_price` and `min_price` and the derived subtotal. It carries **no** warranty term: the unit is the authority |
 | `sale_units` | one row per physical battery: its line (`sale_id`, `variant_id`), a `unit_ordinal` inside that line (`1..n`), the `serial_number` the seller read and the optional `warranty_months` (`1..120` or `NULL`); primary key `(sale_id, variant_id, unit_ordinal)` and a unique index on the trimmed, upper-cased serial |
 
@@ -434,8 +537,10 @@ The database, not the application, decides the sale rules, with stable SQLSTATEs
 | `LV009` | The serial number was already sold, compared after trimming and case folding |
 | `LV010` | A unit claims a line that was never persisted |
 | `LV011` | A unit ordinal exceeds the quantity of its line |
-| `LV012` | A line does not carry exactly one unit per sold piece, or a sale carries none |
+| `LV012` | A battery line does not carry exactly one unit per sold piece |
 | `LV013` | The sale exceeds one thousand units |
+| `LV014` | A product line carries a unit: a product is counted, not serialized |
+| `LV015` | A sale carrying a battery line does not name the complete client; the detail names the missing columns |
 
 The line trigger resolves the pair of the **battery** of the sold variant
 (`catalog_entry_id`), so an `L` sale and an `R` sale of one battery freeze the same
@@ -444,7 +549,13 @@ persisted line of its own sale and variant, and only up to that line's quantity;
 serial is unique across the installation. The document itself is validated by deferred
 triggers: a document without lines, whose total is not the exact sum of its lines, whose
 lines do not each carry exactly one unit per sold piece, or that carries more than one
-thousand units is refused at commit. A sale is all-or-nothing: a refused unit leaves no
+thousand units is refused at commit. Since the kind of a line is the catalogue's, the same
+deferred check still refuses a **battery** line that does not carry one unit per sold piece
+(`LV012`) and now refuses a **product** line that carries any unit (`LV014`). Migration `057`
+adds the client rule to the same commit-time judgement: a sale carrying a battery line is
+refused (`LV015`) while any of `customer_name`, `customer_phone` and `customer_document` is
+blank, and its detail names the missing columns. A product-only sale is admitted with all
+three empty. A sale is all-or-nothing: a refused unit or an incomplete client leaves no
 header, no line, no unit and no stock movement behind. Stock is decremented inside the same transaction, so
 the realtime inventory invalidation of the existing ledger covers this write too. A
 sale is append-only: nothing in this contract updates or deletes a document.
@@ -495,6 +606,17 @@ the row amount is the frozen unit price, so the rows of a sale add up to its tot
 changing a branch price afterwards never alters an emitted warranty. The renderer never
 adds the payments up either: it prints the rows and the total the sale recorded. Money is
 printed in the presentation format of the product (`Bs 1.234,56`).
+
+A sale that names nobody — a product-only sale — prints `Consumidor final` where the name
+would go, and an empty phone or document prints its label with no value after it. The renderer
+never refuses the document for the absence of a client and never invents one of the two data
+the sale does not have.
+
+A sale that carries an **other product** prints its product lines in the same grid, one row
+per sold piece: the product's `name` across the `Marca` and `Modelo` cells and its `detail`
+across `Capacidad`, `Polaridad` and `Serie`, with the `Plazo` cell **empty**, because a
+product never promised a term. A battery row is printed exactly as described above, and a
+mixed sale prints both kinds in the order of its lines.
 
 The warranty is **always issued**, also when every battery of the sale was taken without
 warranty: "Se emite y dice «sin garantía»". A render failure is still

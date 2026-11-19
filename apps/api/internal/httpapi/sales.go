@@ -121,15 +121,20 @@ func (a *API) saleRoutes(store *sales.Store) http.Handler {
 // saleFailure publishes the domain's own decision and nothing else. A refused line
 // names the variant the counter must point at, so it is answered with that id beside
 // the error code; a refusal without a reusable id fails closed instead of publishing a
-// meaningless zero. A settlement that does not close is its own refusal: it names the
-// side that is open, which the counter needs to say how much is left to pay. A serial that
-// was already sold is its own refusal too, and it names the battery it refused.
+// meaningless zero. A line whose units do not fit its catalogue kind is its own refusal, with
+// the message of its own rule, and it is checked before the generic invalid document because
+// it is itself a refusal of that class. A settlement that does not close is its own refusal:
+// it names the side that is open, which the counter needs to say how much is left to pay. A
+// serial that was already sold is its own refusal too, and it names the battery it refused.
 func saleFailure(w http.ResponseWriter, err error) {
 	var notSellable *sales.NotSellable
 	var belowMinimum *sales.BelowMinimum
 	var insufficient *sales.InsufficientStock
 	var mismatch *sales.PaymentsMismatch
 	var duplicated *sales.SerialAlreadySold
+	var batteryUnits *sales.BatteryLineWithoutUnits
+	var productUnits *sales.ProductLineWithUnits
+	var incompleteCustomer *sales.WarrantyCustomerIncomplete
 	switch {
 	// The open settlement is checked before the generic invalid document, because it is
 	// itself a refusal of that class and carries the amount that is missing or over.
@@ -143,6 +148,16 @@ func saleFailure(w http.ResponseWriter, err error) {
 		saleVariantFailure(w, "insufficient_stock", insufficient.VariantID)
 	case errors.As(err, &duplicated):
 		saleSerialFailure(w, duplicated.Serial)
+	// The database's own LV012 and LV014 are the same two refusals the store derived before
+	// writing, so they are published as those, never as a service failure.
+	case errors.As(err, &batteryUnits):
+		saleLineRefusal(w, "battery_line_requires_units", batteryUnits.VariantID)
+	case errors.As(err, &productUnits):
+		saleLineRefusal(w, "product_line_carries_no_units", productUnits.VariantID)
+	// The client the warranty prints is its own refusal: a 400 that names every missing field
+	// in the paper's order, or the house envelope when the refusal could not name one.
+	case errors.As(err, &incompleteCustomer):
+		saleCustomerFailure(w, incompleteCustomer)
 	case errors.Is(err, sales.ErrInvalid):
 		failure(w, 400, "invalid_request")
 	case errors.Is(err, sales.ErrForbidden):
@@ -152,6 +167,18 @@ func saleFailure(w http.ResponseWriter, err error) {
 	default:
 		failure(w, 503, "service_unavailable")
 	}
+}
+
+// saleLineRefusal answers a line whose units do not fit the rule of its catalogue kind: a 400
+// that names the rule and, when the store derived the refusal itself, the variant the counter
+// must point at. The database's own trigger names no variant, so a refusal reached through it
+// is still the same refusal, answered without an invented id.
+func saleLineRefusal(w http.ResponseWriter, code string, variantID int64) {
+	if variantID < 1 || variantID > saleMaxVariantID {
+		failure(w, 400, code)
+		return
+	}
+	respond(w, 400, map[string]any{"error": code, "variant_id": variantID})
 }
 
 // saleSerialFailure answers a sale refused because one of its serials was already sold. The
@@ -165,6 +192,48 @@ func saleSerialFailure(w http.ResponseWriter, serial sales.SerialNumber) {
 		return
 	}
 	respond(w, 409, map[string]string{"error": "serial_already_sold", "serial_number": string(serial)})
+}
+
+// saleCustomerFailure answers a sale refused because the client its warranty prints is
+// incomplete: a 400 that names every missing field in the paper's order, or the house
+// envelope when the refusal could not name one. A list that carries a field the paper does
+// not print is not evidence of anything, so it fails closed instead of publishing it.
+func saleCustomerFailure(w http.ResponseWriter, refusal *sales.WarrantyCustomerIncomplete) {
+	missing, ok := saleMissingCustomerFields(refusal.Missing)
+	if !ok {
+		failure(w, 503, "service_unavailable")
+		return
+	}
+	if len(missing) == 0 {
+		failure(w, 400, "warranty_customer_incomplete")
+		return
+	}
+	respond(w, 400, map[string]any{"error": "warranty_customer_incomplete", "missing": missing})
+}
+
+// saleMissingCustomerFields admits only the three data the paper prints, each at most once,
+// and answers them in the paper's order: name, phone, document.
+func saleMissingCustomerFields(fields []string) ([]string, bool) {
+	seen := make(map[string]bool, 3)
+	for _, field := range fields {
+		switch field {
+		case sales.CustomerNameField, sales.CustomerPhoneField, sales.CustomerDocumentField:
+			if seen[field] {
+				return nil, false
+			}
+			seen[field] = true
+		default:
+			return nil, false
+		}
+	}
+	missing := make([]string, 0, len(seen))
+	for _, field := range []string{sales.CustomerNameField, sales.CustomerPhoneField,
+		sales.CustomerDocumentField} {
+		if seen[field] {
+			missing = append(missing, field)
+		}
+	}
+	return missing, true
 }
 
 // saleVariantFailure answers a refusal that names one variant. The id is the database's
@@ -278,10 +347,10 @@ func salePayments(d *json.Decoder) ([]sales.Payment, error) {
 	return payments, nil
 }
 
-// saleCustomer reads the client of the warranty: exactly the four frozen keys. The name is
-// mandatory, the phone, the document and the address are optional and may be empty; their
-// bounds are the store's own rule, so a text outside them is still refused there. The
-// address is one free field of the sale header, never structured into parts.
+// saleCustomer reads the client of the warranty: exactly the four frozen keys. Any value may
+// be empty, because a product-only sale names nobody and the address is never printed; their
+// bounds are the store's own rule, so a text outside them is still refused there. The address
+// is one free field of the sale header, never structured into parts.
 func saleCustomer(d *json.Decoder) (sales.Customer, error) {
 	var customer sales.Customer
 	if !transferDelimiter(d, '{') {
@@ -375,8 +444,9 @@ func saleUnit(d *json.Decoder) (sales.Unit, error) {
 	return unit, nil
 }
 
-// saleUnits reads the units of one line. The count against the quantity is the document's
-// rule and the store's, so it is judged there; the bound here keeps the decoding work
+// saleUnits reads the units of one line. A battery line carries one per sold piece and a
+// product line carries none at all, which is the empty array; how many a line admits is the
+// rule of its catalogue kind, judged by the store, and the bound here keeps the decoding work
 // inside the admitted size of one sale.
 func saleUnits(d *json.Decoder) ([]sales.Unit, error) {
 	if !transferDelimiter(d, '[') {
@@ -393,15 +463,16 @@ func saleUnits(d *json.Decoder) ([]sales.Unit, error) {
 		}
 		units = append(units, unit)
 	}
-	if len(units) == 0 || !transferDelimiter(d, ']') {
+	if !transferDelimiter(d, ']') {
 		return nil, sales.ErrInvalid
 	}
 	return units, nil
 }
 
-// saleLine reads one line: the variant, the sold quantity, the charged price and one unit
-// per sold piece, each with its serial and its term. The frozen minimum is not part of the
-// body at all, because the branch's stored floor is the database's.
+// saleLine reads one line: the variant, the sold quantity, the charged price and the units of
+// the line, which are one per sold piece on a battery line and the empty array on a product
+// line. The frozen minimum is not part of the body at all, because the branch's stored floor
+// is the database's.
 func saleLine(d *json.Decoder) (sales.LineInput, error) {
 	var line sales.LineInput
 	if !transferDelimiter(d, '{') {
@@ -430,7 +501,10 @@ func saleLine(d *json.Decoder) (sales.LineInput, error) {
 			return sales.LineInput{}, sales.ErrInvalid
 		}
 	}
-	if len(seen) != 4 || !transferDelimiter(d, '}') {
+	// The four keys are mandatory; the units are present even on a product line, where they
+	// are the empty array, so a line never says its kind by the absence of a key.
+	if !seen["variant_id"] || !seen["quantity"] || !seen["unit_price"] || !seen["units"] ||
+		len(seen) != 4 || !transferDelimiter(d, '}') {
 		return sales.LineInput{}, sales.ErrInvalid
 	}
 	return line, nil
@@ -569,10 +643,11 @@ func saleListQuery(raw string) (sales.ListQuery, error) {
 	return query, nil
 }
 
-// saleSellableQuery reads the point-of-sale catalogue query: the literal search, the
-// brand, the capacity, the polarity, the page and the page size, each exactly once.
-// The capacity is a catalogue decimal, so a value the catalogue cannot hold never
-// becomes a SQL parameter.
+// saleSellableQuery reads the point-of-sale catalogue query: the kind, the literal search, the
+// brand, the capacity, the polarity, the page and the page size, each exactly once. An absent
+// kind is the battery-only listing every existing caller had; the kind is one the catalogue
+// names, so an unknown selection never becomes a SQL parameter. The capacity is a catalogue
+// decimal, so a value the catalogue cannot hold never becomes one either.
 func saleSellableQuery(raw string) (sales.SellableQuery, error) {
 	query := sales.SellableQuery{Page: 1, PageSize: sales.DefaultPageSize}
 	values, err := stockAdjustmentQueryValues(raw)
@@ -581,6 +656,8 @@ func saleSellableQuery(raw string) (sales.SellableQuery, error) {
 	}
 	for key, value := range values {
 		switch key {
+		case "kind":
+			query.Kind = catalog.KindFilter(value.decoded)
 		case "search":
 			if len(value.decoded) > saleMaxSearch {
 				return query, sales.ErrInvalid
@@ -704,20 +781,23 @@ type salePageDTO struct {
 }
 
 // saleDetailLineDTO is one persisted line together with the catalogue identity of its
-// variant, so the document stays legible with the prices of the sale and with the serial and
-// term of every battery it sold.
+// variant, so the document stays legible with the prices of the sale and with the units of
+// every battery it sold. A battery line publishes its battery columns exactly as the wire
+// always did; a product line has no battery column to print, so it publishes the shared
+// catalogue identity of its variant, and the battery columns are simply absent.
 type saleDetailLineDTO struct {
-	VariantID      int64         `json:"variant_id"`
-	CatalogEntryID int64         `json:"catalog_entry_id"`
-	Brand          string        `json:"brand"`
-	Model          string        `json:"model"`
-	Capacity       string        `json:"capacity_ah"`
-	Polarity       string        `json:"polarity"`
-	Quantity       int64         `json:"quantity"`
-	UnitPrice      string        `json:"unit_price"`
-	MinPrice       string        `json:"min_price"`
-	Units          []saleUnitDTO `json:"units"`
-	Subtotal       string        `json:"subtotal"`
+	VariantID      int64             `json:"variant_id"`
+	CatalogEntryID int64             `json:"catalog_entry_id"`
+	Identity       *catalog.Identity `json:"identity,omitempty"`
+	Brand          string            `json:"brand,omitempty"`
+	Model          string            `json:"model,omitempty"`
+	Capacity       string            `json:"capacity_ah,omitempty"`
+	Polarity       string            `json:"polarity,omitempty"`
+	Quantity       int64             `json:"quantity"`
+	UnitPrice      string            `json:"unit_price"`
+	MinPrice       string            `json:"min_price"`
+	Units          []saleUnitDTO     `json:"units"`
+	Subtotal       string            `json:"subtotal"`
 }
 
 // saleDetailDTO is one persisted sale with its catalogue-resolved lines. The header is
@@ -736,25 +816,28 @@ type saleDetailDTO struct {
 	Lines          []saleDetailLineDTO `json:"lines"`
 }
 
-// saleSellableItemDTO is one variant of the catalogue as the branch sees it at the
-// counter: the catalogue identity, whether this branch can sell it right now, the pair of
-// its battery and the stock of the branch. `suggested_price` and `min_price` are JSON null
-// when the variant is not sellable, because the counter shows the blocked row with its
-// action disabled instead of hiding it (S7). The warranty term is not part of the
-// catalogue.
+// saleSellableItemDTO is one variant of the catalogue as the branch sees it at the counter:
+// the catalogue identity, whether this branch can sell it right now, the pair of its battery
+// and the stock of the branch. A battery row publishes its battery columns exactly as the
+// wire always did; a product row publishes the shared catalogue identity of its variant
+// instead, because a card shows a product by its name and detail and never by a battery
+// column. `suggested_price` and `min_price` are JSON null when the variant is not sellable,
+// because the counter shows the blocked row with its action disabled instead of hiding it
+// (S7). The warranty term is not part of the catalogue.
 type saleSellableItemDTO struct {
-	VariantID      int64   `json:"variant_id"`
-	CatalogEntryID int64   `json:"catalog_entry_id"`
-	Brand          string  `json:"brand"`
-	Model          string  `json:"model"`
-	Capacity       string  `json:"capacity_ah"`
-	Polarity       string  `json:"polarity"`
-	Sellable       bool    `json:"sellable"`
-	SuggestedPrice *string `json:"suggested_price"`
-	MinPrice       *string `json:"min_price"`
-	Existing       int64   `json:"existing"`
-	Reserved       int64   `json:"reserved"`
-	Available      int64   `json:"available"`
+	VariantID      int64             `json:"variant_id"`
+	CatalogEntryID int64             `json:"catalog_entry_id"`
+	Identity       *catalog.Identity `json:"identity,omitempty"`
+	Brand          string            `json:"brand,omitempty"`
+	Model          string            `json:"model,omitempty"`
+	Capacity       string            `json:"capacity_ah,omitempty"`
+	Polarity       string            `json:"polarity,omitempty"`
+	Sellable       bool              `json:"sellable"`
+	SuggestedPrice *string           `json:"suggested_price"`
+	MinPrice       *string           `json:"min_price"`
+	Existing       int64             `json:"existing"`
+	Reserved       int64             `json:"reserved"`
+	Available      int64             `json:"available"`
 }
 
 // saleSellablePageDTO is one admitted page of the sellable catalogue plus the total.
@@ -903,26 +986,57 @@ func saleUnitsRecord(units []sales.Unit) ([]saleUnitDTO, bool) {
 
 // saleDocument admits only a complete persisted document of the write contract: the branch,
 // the actor, the database's own numbers, the frozen floor and the exact arithmetic. The
-// document is revalidated with the domain's own contract, so a persisted sale that does not
-// add up is never published, and every line is published with its units or not at all.
+// document is revalidated with the domain's own contract judged by the catalogue kind of every
+// line, so a persisted sale that does not add up is never published, and every line is
+// published with its units or not at all.
 func saleDocument(sale sales.Sale) (saleDTO, error) {
-	return saleDocumentRecord(sale, sales.Validate)
+	kinds, ok := saleLineKinds(sale)
+	if !ok {
+		return saleDTO{}, sales.ErrUnavailable
+	}
+	return saleDocumentRecord(sale, func(in sales.CreateInput) (sales.Payload, error) {
+		return sales.ValidateByKind(in, kinds)
+	})
 }
 
 // saleHistoryDocument admits the document a read answers, which is the same contract with one
 // exception: a pre-vertical sale -- one or more lines and not one unit between them -- was
 // stored before the sold unit existed, so it is described with an empty units array per line
-// instead of failing closed. A sale carrying some units is still held to exactly one unit per
-// sold piece, so a corrupt document is never published.
+// instead of failing closed. A sale carrying some units is still held to the rule of its own
+// kinds, so a product line carries none and a battery line one per sold piece.
 func saleHistoryDocument(sale sales.Sale) (saleDTO, error) {
-	return saleDocumentRecord(sale, sales.ValidatePersisted)
+	kinds, ok := saleLineKinds(sale)
+	if !ok {
+		return saleDTO{}, sales.ErrUnavailable
+	}
+	return saleDocumentRecord(sale, func(in sales.CreateInput) (sales.Payload, error) {
+		return sales.ValidatePersistedByKind(in, kinds)
+	})
+}
+
+// saleLineKinds collects the catalogue kind of every line of one persisted document, keyed by
+// variant, so the document is revalidated by the unit rule of its own kinds. A line whose kind
+// is not one the catalogue has, or two lines of one variant, is not a document this contract
+// wrote, so it fails closed instead of being described.
+func saleLineKinds(sale sales.Sale) (map[int64]catalog.Kind, bool) {
+	kinds := make(map[int64]catalog.Kind, len(sale.Lines))
+	for _, line := range sale.Lines {
+		if line.Kind != catalog.BatteryKind && line.Kind != catalog.OtherKind {
+			return nil, false
+		}
+		if _, repeated := kinds[line.VariantID]; repeated {
+			return nil, false
+		}
+		kinds[line.VariantID] = line.Kind
+	}
+	return kinds, true
 }
 
 func saleDocumentRecord(sale sales.Sale, validate func(sales.CreateInput) (sales.Payload, error)) (saleDTO, error) {
 	unavailable := func() (saleDTO, error) { return saleDTO{}, sales.ErrUnavailable }
 	if sale.ID < 1 || sale.BranchLocationID < 2 || sale.BranchLocationID > math.MaxInt16 ||
 		sale.BranchSequence < 1 || sale.CreatedByAccountID < 1 || sale.CreatedAt.IsZero() ||
-		sale.Customer.Name == "" || !saleText(sale.Customer.Name) ||
+		!saleText(sale.Customer.Name) ||
 		!saleText(sale.Customer.Phone) || !saleText(sale.Customer.Document) ||
 		!saleText(sale.Customer.Address) ||
 		sale.WarrantyNumber != saleWarrantyNumber(sale.BranchLocationID, sale.BranchSequence) ||
@@ -1019,14 +1133,15 @@ func salePageRecord(page sales.Page) (salePageDTO, error) {
 			!summary.PaymentMethod.Recorded() || !ok ||
 			summary.Lines < 1 || summary.Lines > sales.MaxLines ||
 			// A sale with no unit at all was stored before the sold unit existed, so it is a
-			// legible row with zero units; one carrying some units but fewer than its lines is
-			// corrupt. One sale never carries more than MaxUnits units, and a warranted unit is
-			// always one of them.
+			// legible row with zero units; one whose units are not exactly the pieces sold on
+			// battery lines is corrupt, because a product line carries none. One sale never
+			// carries more than MaxUnits units, and a warranted unit is always one of them.
 			summary.UnitsTotal > sales.MaxUnits ||
+			summary.BatteryUnits < 0 || summary.BatteryUnits > sales.MaxUnits ||
 			(!sales.PreVertical(summary.Lines, summary.UnitsTotal) &&
-				summary.UnitsTotal < summary.Lines) ||
+				summary.UnitsTotal != summary.BatteryUnits) ||
 			summary.UnitsWithWarranty < 0 || summary.UnitsWithWarranty > summary.UnitsTotal ||
-			summary.CustomerName == "" || !saleText(summary.CustomerName) {
+			summary.CustomerName != "" && !saleText(summary.CustomerName) {
 			return unavailable()
 		}
 		previous = summary.ID
@@ -1047,13 +1162,36 @@ func salePageRecord(page sales.Page) (salePageDTO, error) {
 		Sales: rows}, nil
 }
 
+// saleLineIdentity publishes the shared catalogue identity of one line the way the wire
+// reads it: a battery line keeps its battery columns word for word, and a product line has no
+// battery column to print, so it carries the identity itself. An identity this contract could
+// not have composed fails the read closed instead of being described.
+func saleLineIdentity(identity catalog.Identity) (brand, model, capacity, polarity string,
+	shared *catalog.Identity, ok bool) {
+	if identity.Valid() != nil {
+		return "", "", "", "", nil, false
+	}
+	switch identity.Kind {
+	case catalog.BatteryKind:
+		if identity.Battery == nil {
+			return "", "", "", "", nil, false
+		}
+		battery := *identity.Battery
+		return battery.Brand, battery.Model, battery.Capacity, battery.Polarity, nil, true
+	case catalog.OtherKind:
+		return "", "", "", "", &identity, true
+	}
+	return "", "", "", "", nil, false
+}
+
 // saleDetailRecord admits only a complete persisted document with the catalogue identity
-// of every line: the battery, its brand and model, its capacity as canonical text and the
-// polarity that was sold. A document stored before the sold unit existed is admitted with
-// empty units arrays, because it is recoverable history and not corruption.
+// of every line: a battery line as its brand and model, its capacity as canonical text and
+// the polarity that was sold, and a product line as the shared catalogue identity of its
+// variant. A document stored before the sold unit existed is admitted with empty units
+// arrays, because it is recoverable history and not corruption.
 func saleDetailRecord(detail sales.Detail) (saleDetailDTO, error) {
 	unavailable := func() (saleDetailDTO, error) { return saleDetailDTO{}, sales.ErrUnavailable }
-	if len(detail.Lines) < 1 || len(detail.Lines) > sales.MaxLines || detail.Customer.Name == "" {
+	if len(detail.Lines) < 1 || len(detail.Lines) > sales.MaxLines {
 		return unavailable()
 	}
 	lines := make([]sales.SaleLine, 0, len(detail.Lines))
@@ -1071,20 +1209,23 @@ func saleDetailRecord(detail sales.Detail) (saleDetailDTO, error) {
 	}
 	resolved := make([]saleDetailLineDTO, 0, len(detail.Lines))
 	for i, line := range detail.Lines {
-		capacity, err := catalog.ParseDecimal(string(line.Capacity))
-		if err != nil || line.CatalogEntryID < 1 || line.Brand == "" || line.Model == "" ||
-			!saleText(line.Brand) || !saleText(line.Model) ||
-			(line.Polarity != "L" && line.Polarity != "R") {
+		if line.CatalogEntryID < 1 || int64(line.Identity.VariantID) != line.VariantID ||
+			line.Kind != line.Identity.Kind {
+			return unavailable()
+		}
+		brand, model, capacity, polarity, shared, ok := saleLineIdentity(line.Identity)
+		if !ok {
 			return unavailable()
 		}
 		price := document.Lines[i]
 		resolved = append(resolved, saleDetailLineDTO{
 			VariantID:      price.VariantID,
 			CatalogEntryID: line.CatalogEntryID,
-			Brand:          line.Brand,
-			Model:          line.Model,
-			Capacity:       string(capacity),
-			Polarity:       line.Polarity,
+			Identity:       shared,
+			Brand:          brand,
+			Model:          model,
+			Capacity:       capacity,
+			Polarity:       polarity,
 			Quantity:       price.Quantity,
 			UnitPrice:      price.UnitPrice,
 			MinPrice:       price.MinPrice,
@@ -1107,7 +1248,8 @@ func saleDetailRecord(detail sales.Detail) (saleDetailDTO, error) {
 }
 
 // saleSellableRecord admits only a complete catalogue page: the variants the branch can
-// actually sell, each carrying the pair of its battery, which is never below the minimum.
+// actually sell, each carrying the pair of its catalogue entry, which is never below its own
+// minimum, and its own identity.
 func saleSellableRecord(page sales.SellablePage) (saleSellablePageDTO, error) {
 	unavailable := func() (saleSellablePageDTO, error) { return saleSellablePageDTO{}, sales.ErrUnavailable }
 	if !sales.ValidPage(page.Page, page.PageSize) || page.TotalVariants < 0 ||
@@ -1119,14 +1261,13 @@ func saleSellableRecord(page sales.SellablePage) (saleSellablePageDTO, error) {
 	items := make([]saleSellableItemDTO, 0, len(page.Items))
 	var previous int64
 	for _, item := range page.Items {
-		if item.VariantID < 1 || item.VariantID > saleMaxVariantID || item.VariantID <= previous ||
-			item.CatalogEntryID < 1 || item.Brand == "" || item.Model == "" ||
-			!saleText(item.Brand) || !saleText(item.Model) ||
-			(item.Polarity != "L" && item.Polarity != "R") {
+		variant := int64(item.VariantID)
+		if variant < 1 || variant > saleMaxVariantID || variant <= previous ||
+			item.CatalogEntryID < 1 {
 			return unavailable()
 		}
-		capacity, err := catalog.ParseDecimal(string(item.Capacity))
-		if err != nil {
+		brand, model, capacity, polarity, shared, ok := saleLineIdentity(item.Identity)
+		if !ok {
 			return unavailable()
 		}
 		// The stock of the branch is published as the inventory payload publishes it, and
@@ -1136,12 +1277,13 @@ func saleSellableRecord(page sales.SellablePage) (saleSellablePageDTO, error) {
 			return unavailable()
 		}
 		record := saleSellableItemDTO{
-			VariantID:      item.VariantID,
+			VariantID:      variant,
 			CatalogEntryID: item.CatalogEntryID,
-			Brand:          item.Brand,
-			Model:          item.Model,
-			Capacity:       string(capacity),
-			Polarity:       item.Polarity,
+			Identity:       shared,
+			Brand:          brand,
+			Model:          model,
+			Capacity:       capacity,
+			Polarity:       polarity,
 			Sellable:       item.Sellable,
 			Existing:       item.Existing,
 			Reserved:       item.Reserved,
@@ -1163,7 +1305,7 @@ func saleSellableRecord(page sales.SellablePage) (saleSellablePageDTO, error) {
 		} else if item.SuggestedPrice != "" || item.MinPrice != "" {
 			return unavailable()
 		}
-		previous = item.VariantID
+		previous = variant
 		items = append(items, record)
 	}
 	return saleSellablePageDTO{Page: page.Page, PageSize: page.PageSize,
@@ -1240,12 +1382,14 @@ func (a *API) sales(store *sales.Store) http.HandlerFunc {
 	}
 }
 
-// saleSellable serves the point-of-sale catalogue of the actor's own branch: every
-// variant of the catalogue, each with the stock of the branch, whether the branch can sell
-// it right now and the pair of its battery. A variant the branch cannot sell is served
-// with `sellable: false` and null prices, so the counter shows the row with its action
-// disabled instead of hiding it. The warranty term is not part of the catalogue because
-// the seller states it on the sale.
+// saleSellable serves the point-of-sale catalogue of the actor's own branch: every variant of
+// the requested kind, each with the stock of the branch, whether the branch can sell it right
+// now and the pair of its catalogue entry. The absent kind is the battery-only listing every
+// caller had, `kind=other` lists the products with their price and their own name and detail,
+// and `kind=all` lists both, each row by its own identity. A variant the branch cannot sell is
+// served with `sellable: false` and null prices, so the counter shows the row with its action
+// disabled instead of hiding it. The warranty term is not part of the catalogue because the
+// seller states it on the sale.
 func (a *API) saleSellable(store *sales.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !method(w, r, http.MethodGet) {
@@ -1360,15 +1504,27 @@ func saleWarrantyDocument(detail sales.Detail) (warranty.Document, error) {
 	if len(payments) == 0 {
 		return unavailable()
 	}
-	// One row per physical unit. The amount of a row is the frozen price of its line, so the
-	// rows of a line add up to its subtotal and the rows of the sale to the stored total.
+	// One row per sold piece. A battery row is the battery with the serial the seller read and
+	// the term stated for it, or the recorded absence of warranty; a product row is the identity
+	// of its line, the name and the detail, with the term empty. The amount of a row is the
+	// frozen price of its line, so the rows of a line add up to its subtotal and the rows of the
+	// sale to the stored total.
 	lines := make([]warranty.Line, 0, len(record.Lines))
 	for i := range record.Lines {
 		line := record.Lines[i]
+		if line.Identity != nil && line.Identity.Kind == catalog.OtherKind {
+			for piece := int64(0); piece < line.Quantity; piece++ {
+				lines = append(lines, warranty.Line{Kind: warranty.ProductLine,
+					Name: line.Identity.Name, Detail: line.Identity.Detail,
+					Subtotal: warranty.Money(line.UnitPrice)})
+			}
+			continue
+		}
 		for _, unit := range line.Units {
-			lines = append(lines, warranty.Line{Brand: line.Brand, Model: line.Model,
-				Capacity: line.Capacity, Polarity: line.Polarity, SerialNumber: unit.SerialNumber,
-				WarrantyMonths: unit.WarrantyMonths, Subtotal: warranty.Money(line.UnitPrice)})
+			lines = append(lines, warranty.Line{Kind: warranty.BatteryLine, Brand: line.Brand,
+				Model: line.Model, Capacity: line.Capacity, Polarity: line.Polarity,
+				SerialNumber: unit.SerialNumber, WarrantyMonths: unit.WarrantyMonths,
+				Subtotal: warranty.Money(line.UnitPrice)})
 		}
 	}
 	return warranty.Document{

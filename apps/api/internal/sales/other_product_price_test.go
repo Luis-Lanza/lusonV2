@@ -3,6 +3,7 @@ package sales_test
 import (
 	"testing"
 
+	"luson/api/internal/catalog"
 	"luson/api/internal/sales"
 )
 
@@ -63,10 +64,10 @@ func TestPricedProductStaysOutOfTheCounter(t *testing.T) {
 	if searched.TotalVariants != 0 || len(searched.Items) != 0 {
 		t.Fatalf("a product answered a counter search: %+v", searched.Items)
 	}
-	// Every item the counter answers still carries the attributes its label is composed
+	// Every item the counter answers still carries the identity its label is composed
 	// from, so nothing half-battery is published either.
 	for _, item := range after.Items {
-		if item.Brand == "" || item.Model == "" || (item.Polarity != "L" && item.Polarity != "R") {
+		if item.Kind != catalog.BatteryKind || item.Identity.Valid() != nil {
 			t.Fatalf("the counter answered a row that is not a battery: %+v", item)
 		}
 	}

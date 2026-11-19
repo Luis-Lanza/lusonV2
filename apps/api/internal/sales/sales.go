@@ -102,6 +102,64 @@ func (e *InsufficientStock) Error() string {
 // Unwrap keeps errors.Is(err, ErrInsufficientStock) true.
 func (e *InsufficientStock) Unwrap() error { return ErrInsufficientStock }
 
+// BatteryLineWithoutUnits is the refusal of a battery line that does not carry exactly one
+// unit per sold piece: a battery is sold by the serial the seller reads, so three batteries
+// are three units. The variant is named when the store derived the refusal; the database's
+// own LV012 names no variant, so a refusal reached through it keeps a zero id and still
+// names its class instead of inventing a line.
+type BatteryLineWithoutUnits struct{ VariantID int64 }
+
+func (e *BatteryLineWithoutUnits) Error() string {
+	if e.VariantID < 1 {
+		return "every battery line requires one unit per sold piece"
+	}
+	return "variant " + digits(e.VariantID) +
+		" is a battery line and requires one unit per sold piece"
+}
+
+// Unwrap keeps errors.Is(err, ErrInvalid) true: the shape of a line is part of the
+// document contract, not a separate class of failure.
+func (e *BatteryLineWithoutUnits) Unwrap() error { return ErrInvalid }
+
+// ProductLineWithUnits is the refusal of an other-product line that carries sold units: a
+// product is counted, not serialized, so its quantity is the whole line.
+type ProductLineWithUnits struct{ VariantID int64 }
+
+func (e *ProductLineWithUnits) Error() string {
+	if e.VariantID < 1 {
+		return "a product line carries no sold units"
+	}
+	return "variant " + digits(e.VariantID) + " is a product line and carries no sold units"
+}
+
+// Unwrap keeps errors.Is(err, ErrInvalid) true.
+func (e *ProductLineWithUnits) Unwrap() error { return ErrInvalid }
+
+// The three client data a warranty prints, named as the database names them. A sale that
+// issues a warranty carries all three; the order below is the order the printed paper names
+// them, which is also the order a refusal names them.
+const (
+	CustomerNameField     = "customer_name"
+	CustomerPhoneField    = "customer_phone"
+	CustomerDocumentField = "customer_document"
+)
+
+// WarrantyCustomerIncomplete is the refusal of a sale that issues a warranty without the
+// complete client. Missing names the fields the document does not have, in the paper's own
+// order; a refusal that could not read them keeps the empty list instead of inventing one.
+type WarrantyCustomerIncomplete struct{ Missing []string }
+
+func (e *WarrantyCustomerIncomplete) Error() string {
+	if len(e.Missing) == 0 {
+		return "a sale that issues a warranty requires the complete customer"
+	}
+	return "a sale that issues a warranty requires " + strings.Join(e.Missing, ", ")
+}
+
+// Unwrap keeps errors.Is(err, ErrInvalid) true: an incomplete client is part of the document
+// contract, not a separate class of failure.
+func (e *WarrantyCustomerIncomplete) Unwrap() error { return ErrInvalid }
+
 // PaymentsMismatch is the refusal of a document whose payments do not close against its
 // own total. Exactly one side is set: Missing when the payments fall short of the total,
 // Excess when they overshoot it, so a client can say how much is left to pay or how much
@@ -208,9 +266,10 @@ type Payment struct {
 	Amount Money
 }
 
-// Customer is the client the warranty is issued to. The name is mandatory; the phone, the
-// document and the address are optional and bounded. The address is one free field, the
-// neighbourhood or street the client gave at the counter, never structured into parts.
+// Customer is the client the warranty is issued to. The name, the phone, the document and
+// the address are all bounded, and any of them may be empty: a sale of products alone issues
+// no warranty and names nobody, and the address is never printed. Whether the client is
+// complete is the rule of the document, judged by its catalogue kinds with judgeCustomer.
 type Customer struct {
 	Name     string `json:"name"`
 	Phone    string `json:"phone"`
@@ -218,12 +277,12 @@ type Customer struct {
 	Address  string `json:"address"`
 }
 
-// CanonicalCustomer trims the mandatory name and the optional address, and refuses a value
-// outside the database's own bounds.
+// CanonicalCustomer trims the name and the address, and refuses a value outside the
+// database's own bounds. The name may be empty: a product-only sale has no client to name.
 func CanonicalCustomer(customer Customer) (Customer, bool) {
 	name := strings.TrimSpace(customer.Name)
 	address := strings.TrimSpace(customer.Address)
-	if !boundedText(name, 1, MaxCustomerName) ||
+	if !boundedText(name, 0, MaxCustomerName) ||
 		!boundedText(customer.Phone, 0, MaxCustomerPhone) ||
 		!boundedText(customer.Document, 0, MaxCustomerDocument) ||
 		!boundedText(address, 0, MaxCustomerAddress) {
@@ -283,12 +342,10 @@ func canonicalUnit(unit Unit) (Unit, bool) {
 	return Unit{SerialNumber: serial, WarrantyMonths: &term}, true
 }
 
-// canonicalUnits canonicalizes the units of one line and refuses a line that does not
-// carry exactly one unit per sold piece.
-func canonicalUnits(units []Unit, quantity int64) ([]Unit, bool) {
-	if quantity < 1 || int64(len(units)) != quantity {
-		return nil, false
-	}
+// canonicalUnits canonicalizes the units of one line: every serial is trimmed and bounded
+// and every term is either absent or inside the frozen bounds. How many units a line admits
+// is the rule of its catalogue kind, judged by judgeUnits.
+func canonicalUnits(units []Unit) ([]Unit, bool) {
 	canonical := make([]Unit, 0, len(units))
 	for _, unit := range units {
 		admitted, ok := canonicalUnit(unit)
@@ -300,9 +357,84 @@ func canonicalUnits(units []Unit, quantity int64) ([]Unit, bool) {
 	return canonical, true
 }
 
+// judgeUnits applies the unit rule of every line. Without the catalogue kinds the write
+// contract keeps the rule of the battery -- exactly one unit per sold piece -- because a
+// document whose kinds are unknown can only be the shape this domain always wrote. With the
+// kinds, each line is judged by its own: a battery line carries exactly one unit per sold
+// piece and a product line carries none. A variant whose kind was not read is refused, so a
+// document is never written for a line nobody judged.
+func judgeUnits(lines []Line, kinds map[int64]catalog.Kind) error {
+	for _, line := range lines {
+		switch {
+		case kinds == nil:
+			if int64(len(line.Units)) != line.Quantity {
+				return ErrInvalid
+			}
+		case kinds[line.VariantID] == catalog.BatteryKind:
+			if int64(len(line.Units)) != line.Quantity {
+				return &BatteryLineWithoutUnits{VariantID: line.VariantID}
+			}
+		case kinds[line.VariantID] == catalog.OtherKind:
+			if len(line.Units) != 0 {
+				return &ProductLineWithUnits{VariantID: line.VariantID}
+			}
+		default:
+			return ErrInvalid
+		}
+	}
+	return nil
+}
+
+// judgeCustomer applies the client rule of the document: a sale that issues a warranty --
+// one carrying at least one battery line, or one whose kinds are unknown and can only be
+// the battery-shaped document this domain always wrote -- requires the three data the printed
+// paper carries, the name, the phone and the document. A sale of products alone issues no
+// warranty and demands nobody, and the address is never required because the paper never
+// prints it.
+func judgeCustomer(customer Customer, lines []Line, kinds map[int64]catalog.Kind) error {
+	if !issuesWarranty(lines, kinds) {
+		return nil
+	}
+	if missing := missingCustomerFields(customer); len(missing) > 0 {
+		return &WarrantyCustomerIncomplete{Missing: missing}
+	}
+	return nil
+}
+
+// issuesWarranty reports whether a document carries a battery line, which is what makes it a
+// warranty. Without the catalogue kinds the document can only be the battery-shaped contract
+// this domain always wrote, so it is judged as one.
+func issuesWarranty(lines []Line, kinds map[int64]catalog.Kind) bool {
+	for _, line := range lines {
+		if kinds == nil || kinds[line.VariantID] == catalog.BatteryKind {
+			return true
+		}
+	}
+	return false
+}
+
+// missingCustomerFields lists the client data a warranty demands that the sale does not
+// carry, in the order the printed paper names them: name, phone, document. A value that is
+// only whitespace is absent, exactly as the database judges it.
+func missingCustomerFields(customer Customer) []string {
+	missing := make([]string, 0, 3)
+	if strings.TrimSpace(customer.Name) == "" {
+		missing = append(missing, CustomerNameField)
+	}
+	if strings.TrimSpace(customer.Phone) == "" {
+		missing = append(missing, CustomerPhoneField)
+	}
+	if strings.TrimSpace(customer.Document) == "" {
+		missing = append(missing, CustomerDocumentField)
+	}
+	return missing
+}
+
 // LineInput is one line the client asks to sell. The client supplies the variant, the
-// quantity, the price it wants to charge and one unit per sold piece: the floor, the frozen
-// minimum and the term of every battery are never derived from the catalogue.
+// quantity, the price it wants to charge and, when the line is a battery, one unit per sold
+// piece: the floor, the frozen minimum and the term of every battery are never derived from
+// the catalogue. A product line carries no unit at all, because a product is counted and not
+// serialized, so its quantity is the whole line.
 type LineInput struct {
 	VariantID int64
 	Quantity  int64
@@ -341,9 +473,12 @@ type Payload struct {
 }
 
 // SaleLine is one persisted line: the price that was charged, the minimum frozen at
-// write time, the units the seller registered and the derived subtotal.
+// write time, the units the seller registered and the derived subtotal. Kind is the
+// catalogue kind of the sold variant, read with the line so every read judges the units of
+// the line by the rule of its own kind; it is not part of the answered document.
 type SaleLine struct {
 	VariantID int64
+	Kind      catalog.Kind
 	Quantity  int64
 	UnitPrice Money
 	MinPrice  Money
@@ -369,15 +504,14 @@ type Sale struct {
 	Lines              []SaleLine
 }
 
-// DetailLine is one persisted line together with the catalogue identity of its
-// variant, so the document stays legible with the prices of the sale.
+// DetailLine is one persisted line together with the shared catalogue identity of its
+// variant, so the document stays legible with the prices of the sale and every line is
+// described by its own identity: a battery as its battery and a product as its name and
+// detail.
 type DetailLine struct {
 	SaleLine
 	CatalogEntryID int64
-	Brand          string
-	Model          string
-	Capacity       catalog.Decimal
-	Polarity       string
+	Identity       catalog.Identity
 }
 
 // Detail is one persisted sale with its catalogue-resolved lines. BranchName is the name
@@ -401,7 +535,9 @@ type Detail struct {
 // Summary is one row of the read-only sales history of a branch. PaymentMethod is the
 // label the database derived for the settlement, so a mixed sale is filtered by 'mixed'.
 // UnitsTotal and UnitsWithWarranty tell the sale's position without unfolding it, so a
-// battery sold without warranty is legible from the history itself.
+// battery sold without warranty is legible from the history itself. BatteryUnits is the
+// number of pieces sold on battery lines: the units of the document are exactly those
+// pieces, because a product line carries none, so a mixed sale is a legible row.
 type Summary struct {
 	ID                int64
 	BranchSequence    int64
@@ -413,6 +549,7 @@ type Summary struct {
 	Lines             int
 	UnitsTotal        int
 	UnitsWithWarranty int
+	BatteryUnits      int
 }
 
 // ListQuery is the frozen history filter: a literal search over the warranty number
@@ -432,8 +569,11 @@ type Page struct {
 	Sales      []Summary
 }
 
-// SellableQuery is the frozen filter of the point-of-sale catalogue.
+// SellableQuery is the frozen filter of the point-of-sale catalogue. Kind selects the
+// batteries, the other products or both; its absent value is the battery-only listing every
+// caller had before the counter could sell a product.
 type SellableQuery struct {
+	Kind     catalog.KindFilter
 	Search   string
 	Brand    string
 	Capacity catalog.Decimal
@@ -442,20 +582,16 @@ type SellableQuery struct {
 	PageSize int
 }
 
-// SellableItem is one variant of the catalogue as the branch sees it at the counter:
-// the catalogue identity, whether this branch can sell it right now, the suggested price
-// the counter starts from and the minimum it can never go under, and the stock of the
-// branch. Sellable is true only when the battery of the variant has a price in this
-// branch; SuggestedPrice and MinPrice stay empty in that case, so the counter can show
-// the row with its action disabled (S7) instead of hiding it. The warranty term is not
-// part of the catalogue: the seller states it on the sale.
+// SellableItem is one variant of the catalogue as the branch sees it at the counter: the
+// shared catalogue identity of its own kind, whether this branch can sell it right now, the
+// suggested price the counter starts from and the minimum it can never go under, and the
+// stock of the branch. Sellable is true only when the catalogue entry of the variant has a
+// price in this branch; SuggestedPrice and MinPrice stay empty in that case, so the counter
+// can show the row with its action disabled (S7) instead of hiding it. The warranty term is
+// not part of the catalogue: the seller states it on the sale.
 type SellableItem struct {
-	VariantID      int64
+	catalog.Identity
 	CatalogEntryID int64
-	Brand          string
-	Model          string
-	Capacity       catalog.Decimal
-	Polarity       string
 	Sellable       bool
 	SuggestedPrice Money
 	MinPrice       Money
@@ -640,29 +776,75 @@ func PreVertical(lines, units int) bool { return lines > 0 && units == 0 }
 // lock order, and the caller's slice is never modified. An unknown variant, a duplicate
 // variant, an impossible quantity, a line without exactly one unit per sold piece, a serial
 // outside the frozen bounds, a term that is neither absent nor inside 1..120, a sale above
-// MaxUnits batteries, a payment shape no sale admits and an amount that is not canonical
+// MaxUnits pieces, a payment shape no sale admits and an amount that is not canonical
 // two-decimal text are refused here, before any database work. A settlement whose amounts
 // do not close against the total is refused with the amount that is missing or left over.
-func Validate(input CreateInput) (Payload, error) { return validate(input, false) }
+//
+// The unit rule is the battery's because no kind is known here: the store judges every line
+// by its catalogue kind with ValidateByKind before it writes anything.
+func Validate(input CreateInput) (Payload, error) { return validate(input, nil, false) }
+
+// ValidateByKind returns the canonical document used to persist and to answer, judged by the
+// catalogue kind of every line: a battery line carries exactly one unit per sold piece and a
+// product line carries none. A variant absent from kinds is refused, because the store reads
+// the kind of every requested variant before it writes.
+func ValidateByKind(input CreateInput, kinds map[int64]catalog.Kind) (Payload, error) {
+	return validate(input, kinds, false)
+}
 
 // ValidatePersisted revalidates a document read back from the ledger and applies the same
 // contract as Validate with one difference: a pre-vertical document (PreVertical) is
 // admitted with an empty units array per line, because its absence of units is history and
 // not corruption. A document carrying some units is held to exactly one per sold piece, and
 // one whose lines disagree about carrying them is refused like any other corrupt shape.
-func ValidatePersisted(input CreateInput) (Payload, error) { return validate(input, true) }
+func ValidatePersisted(input CreateInput) (Payload, error) { return validate(input, nil, true) }
 
-func validate(input CreateInput, admitPreVertical bool) (Payload, error) {
+// ValidatePersistedByKind is ValidatePersisted judged by the catalogue kind of every line: a
+// product line carries no unit, so a mixed sale read back from the ledger is a legible
+// document, and a battery line still carries one unit per sold piece.
+func ValidatePersistedByKind(input CreateInput, kinds map[int64]catalog.Kind) (Payload, error) {
+	return validate(input, kinds, true)
+}
+
+func validate(input CreateInput, kinds map[int64]catalog.Kind, admitPreVertical bool) (Payload, error) {
+	payload, preVertical, err := canonical(input, admitPreVertical)
+	if err != nil {
+		return Payload{}, err
+	}
+	// A pre-vertical document carries no unit by definition, and that absence is the whole
+	// shape this contract accepts for it: nothing is invented for its lines here.
+	if preVertical {
+		return payload, nil
+	}
+	if err := judgeUnits(payload.Lines, kinds); err != nil {
+		return Payload{}, err
+	}
+	// The client rule is never judged on the read path. It governs what this application
+	// writes, and the sale tables are immutable: a sale written before the rule existed is
+	// still a document that really happened, so refusing to read it would not protect the
+	// ledger, it would hide a sale. The database is the authority for what may be written.
+	if !admitPreVertical {
+		if err := judgeCustomer(payload.Customer, payload.Lines, kinds); err != nil {
+			return Payload{}, err
+		}
+	}
+	return payload, nil
+}
+
+// canonical derives the canonical document without judging how many units each line admits,
+// which is the rule of its catalogue kind, and answers whether the document was admitted as
+// pre-vertical.
+func canonical(input CreateInput, admitPreVertical bool) (Payload, bool, error) {
 	payments, paid, ok := canonicalPayments(input.Payments)
 	if !ok {
-		return Payload{}, ErrInvalid
+		return Payload{}, false, ErrInvalid
 	}
 	customer, admitted := CanonicalCustomer(input.Customer)
 	if !admitted {
-		return Payload{}, ErrInvalid
+		return Payload{}, false, ErrInvalid
 	}
 	if len(input.Lines) < 1 || len(input.Lines) > MaxLines {
-		return Payload{}, ErrInvalid
+		return Payload{}, false, ErrInvalid
 	}
 	seen := make(map[int64]bool, len(input.Lines))
 	lines := make([]Line, 0, len(input.Lines))
@@ -672,29 +854,29 @@ func validate(input CreateInput, admitPreVertical bool) (Payload, error) {
 	preVertical := admitPreVertical && PreVertical(len(input.Lines), inputUnits(input.Lines))
 	for _, line := range input.Lines {
 		if line.VariantID < 1 || line.VariantID > math.MaxInt32 || seen[line.VariantID] {
-			return Payload{}, ErrInvalid
+			return Payload{}, false, ErrInvalid
 		}
 		seen[line.VariantID] = true
 		unit, err := pricing.ParseMoney(string(line.UnitPrice))
 		if err != nil {
-			return Payload{}, ErrInvalid
+			return Payload{}, false, ErrInvalid
 		}
-		// The units are exactly as many as the sold quantity, and one sale carries at most
-		// MaxUnits batteries, so the documented body limit stays reachable. A pre-vertical
-		// line carries none by definition, so nothing is invented for it here.
+		// The units of a line are canonical on their own, and one sale carries at most
+		// MaxUnits pieces, so the documented body limit stays reachable. A pre-vertical line
+		// carries none by definition, so nothing is invented for it here.
 		batteries := []Unit{}
 		if !preVertical {
-			if batteries, ok = canonicalUnits(line.Units, line.Quantity); !ok {
-				return Payload{}, ErrInvalid
+			if batteries, ok = canonicalUnits(line.Units); !ok {
+				return Payload{}, false, ErrInvalid
 			}
 		}
 		units += line.Quantity
 		if units > MaxUnits {
-			return Payload{}, ErrInvalid
+			return Payload{}, false, ErrInvalid
 		}
 		subtotal, err := LineTotal(unit, line.Quantity)
 		if err != nil {
-			return Payload{}, err
+			return Payload{}, false, err
 		}
 		lines = append(lines, Line{VariantID: line.VariantID, Quantity: line.Quantity,
 			UnitPrice: unit, Units: batteries, Subtotal: subtotal})
@@ -704,13 +886,13 @@ func validate(input CreateInput, admitPreVertical bool) (Payload, error) {
 	for _, line := range lines {
 		part, ok := centsOf(line.Subtotal)
 		if !ok || cents > maxCents-part {
-			return Payload{}, ErrInvalid
+			return Payload{}, false, ErrInvalid
 		}
 		cents += part
 	}
 	total, err := moneyFromCents(cents)
 	if err != nil {
-		return Payload{}, err
+		return Payload{}, false, err
 	}
 	// The settlement must close against the document's own total, compared in integer
 	// cents so nothing is rounded. The refusal names the open side.
@@ -718,17 +900,17 @@ func validate(input CreateInput, admitPreVertical bool) (Payload, error) {
 		if paid < cents {
 			missing, err := moneyFromCents(cents - paid)
 			if err != nil {
-				return Payload{}, err
+				return Payload{}, false, err
 			}
-			return Payload{}, &PaymentsMismatch{Missing: missing}
+			return Payload{}, false, &PaymentsMismatch{Missing: missing}
 		}
 		excess, err := moneyFromCents(paid - cents)
 		if err != nil {
-			return Payload{}, err
+			return Payload{}, false, err
 		}
-		return Payload{}, &PaymentsMismatch{Excess: excess}
+		return Payload{}, false, &PaymentsMismatch{Excess: excess}
 	}
-	return Payload{Payments: payments, Customer: customer, Lines: lines, Total: total}, nil
+	return Payload{Payments: payments, Customer: customer, Lines: lines, Total: total}, preVertical, nil
 }
 
 // The admitted page sizes of the frozen read contract.
@@ -760,10 +942,14 @@ func ValidListQuery(q ListQuery) bool {
 	return q.PaymentMethod == "" || PaymentMethod(q.PaymentMethod).Recorded()
 }
 
-// ValidSellableQuery admits the catalogue filter. The capacity is a catalogue
-// decimal, so a value the catalogue cannot hold never becomes a SQL parameter.
+// ValidSellableQuery admits the catalogue filter. The kind is one the catalogue names, so an
+// unknown selection never becomes a SQL parameter, and the capacity is a catalogue decimal,
+// so a value the catalogue cannot hold never becomes one either.
 func ValidSellableQuery(q SellableQuery) bool {
 	if !ValidPage(q.Page, q.PageSize) || !validText(q.Search) || !validText(q.Brand) {
+		return false
+	}
+	if !q.Kind.Valid() {
 		return false
 	}
 	if q.Polarity != "" && q.Polarity != "L" && q.Polarity != "R" {

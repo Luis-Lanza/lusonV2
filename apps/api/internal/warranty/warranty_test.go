@@ -276,8 +276,6 @@ func TestRenderRefusesInvalidDocument(t *testing.T) {
 	noBranch.BranchName = ""
 	noDate := base
 	noDate.IssuedAt = time.Time{}
-	noCustomer := base
-	noCustomer.Customer.Name = ""
 	noPayments := base
 	noPayments.Payments = nil
 	// Four methods are the widest settlement a sale admits, so the refusal is the fifth.
@@ -317,7 +315,6 @@ func TestRenderRefusesInvalidDocument(t *testing.T) {
 		"empty number":     noNumber,
 		"empty branch":     noBranch,
 		"zero date":        noDate,
-		"empty customer":   noCustomer,
 		"no payments":      noPayments,
 		"five payments":    tooManyPayments,
 		"repeated method":  repeatedPayment,

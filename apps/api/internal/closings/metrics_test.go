@@ -358,7 +358,8 @@ func TestMetricsHistoryIsOneSnapshot(t *testing.T) {
 			units := []sales.Unit{{SerialNumber: sales.SerialNumber(fmt.Sprintf("BAT-%d", serials.Add(1)))}}
 			_, err := e.sales.Create(e.ctx, identity(2), sales.CreateInput{
 				Payments: []sales.Payment{{Method: sales.PaymentCash, Amount: "100.00"}},
-				Customer: sales.Customer{Name: "Cliente concurrente"},
+				Customer: sales.Customer{Name: "Cliente concurrente", Phone: "700-00001",
+					Document: "CI-654321"},
 				Lines: []sales.LineInput{{VariantID: 1, Quantity: 1, UnitPrice: "100.00",
 					Units: units}},
 			})

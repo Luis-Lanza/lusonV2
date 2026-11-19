@@ -237,7 +237,7 @@ func sale(variantID, quantity int64, unit string) sales.CreateInput {
 	}
 	return sales.CreateInput{
 		Payments: []sales.Payment{{Method: sales.PaymentCash, Amount: total}},
-		Customer: sales.Customer{Name: "Cliente Mostrador"},
+		Customer: sales.Customer{Name: "Cliente Mostrador", Phone: "700-00000", Document: "V-123"},
 		Lines: []sales.LineInput{{VariantID: variantID, Quantity: quantity,
 			UnitPrice: sales.Money(unit), Units: units(quantity, months(6))}},
 	}
@@ -364,7 +364,7 @@ func TestSaleValidate(t *testing.T) {
 	for _, method := range sales.PaymentMethods() {
 		valid, err := sales.Validate(sales.CreateInput{
 			Payments: []sales.Payment{{Method: method, Amount: "1.00"}},
-			Customer: sales.Customer{Name: "Cliente"},
+			Customer: sales.Customer{Name: "Cliente", Phone: "700-00000", Document: "V-123"},
 			Lines:    onePiece(1, "1.00", months(6)),
 		})
 		if err != nil {
@@ -380,7 +380,8 @@ func TestSaleValidate(t *testing.T) {
 		{VariantID: 1, Quantity: 1, UnitPrice: "1.00", Units: units(1, months(6))},
 	}
 	if _, err := sales.Validate(sales.CreateInput{Payments: cashPayment("2.00"),
-		Customer: sales.Customer{Name: "Cliente"}, Lines: input}); err != nil {
+		Customer: sales.Customer{Name: "Cliente", Phone: "700-00000", Document: "V-123"},
+		Lines:    input}); err != nil {
 		t.Fatal("a valid sale must be admitted")
 	}
 	if input[0].VariantID != 3 || input[1].VariantID != 1 {
@@ -450,8 +451,9 @@ func TestSaleValidate(t *testing.T) {
 	// The bounds of the admitted document are exactly the frozen ones: one thousand units
 	// and a two-hundred character address are admitted.
 	if _, err := sales.Validate(sales.CreateInput{Payments: cashPayment("1000.00"),
-		Customer: sales.Customer{Name: "Cliente", Address: strings.Repeat("ñ", sales.MaxCustomerAddress)},
-		Lines:    []sales.LineInput{{VariantID: 1, Quantity: sales.MaxUnits, UnitPrice: "1.00", Units: units(sales.MaxUnits, months(6))}}}); err != nil {
+		Customer: sales.Customer{Name: "Cliente", Phone: "700-00000", Document: "V-123",
+			Address: strings.Repeat("ñ", sales.MaxCustomerAddress)},
+		Lines: []sales.LineInput{{VariantID: 1, Quantity: sales.MaxUnits, UnitPrice: "1.00", Units: units(sales.MaxUnits, months(6))}}}); err != nil {
 		t.Fatalf("a document of the frozen bounds must be admitted: %v", err)
 	}
 	// The line bound is the number of catalogue variants.
@@ -465,7 +467,8 @@ func TestSaleValidate(t *testing.T) {
 	}
 	full := tooMany[:sales.MaxLines]
 	if _, err := sales.Validate(sales.CreateInput{Payments: cashPayment("190.00"),
-		Customer: sales.Customer{Name: "Cliente"}, Lines: full}); err != nil {
+		Customer: sales.Customer{Name: "Cliente", Phone: "700-00000", Document: "V-123"},
+		Lines:    full}); err != nil {
 		t.Fatalf("a full-width document must be admitted: %v", err)
 	}
 }
@@ -686,7 +689,7 @@ func TestSaleVariantWithoutPrice(t *testing.T) {
 		if item.VariantID > 4 {
 			continue
 		}
-		existing, reserved, available := e.availability(t, 2, item.VariantID)
+		existing, reserved, available := e.availability(t, 2, int64(item.VariantID))
 		if item.Existing != existing || item.Reserved != reserved || item.Available != available {
 			t.Fatalf("every row must carry the branch balance: %+v", item)
 		}
@@ -838,7 +841,7 @@ func TestSaleUnitTermsAreSoldData(t *testing.T) {
 	}
 	mixed := sales.CreateInput{
 		Payments: cashPayment("182000.00"),
-		Customer: sales.Customer{Name: "Cliente"},
+		Customer: sales.Customer{Name: "Cliente", Phone: "700-00000", Document: "V-123"},
 		Lines: []sales.LineInput{
 			{VariantID: 3, Quantity: 2, UnitPrice: "85000.00", Units: []sales.Unit{
 				{SerialNumber: "UNIT-A", WarrantyMonths: months(sales.MinWarrantyMonths)},
@@ -925,7 +928,7 @@ func TestSaleTwoLinesOneInvalidIsAtomic(t *testing.T) {
 	before := e.snapshot(t)
 	input := sales.CreateInput{
 		Payments: []sales.Payment{{Method: sales.PaymentCard, Amount: "95000.00"}},
-		Customer: sales.Customer{Name: "Cliente"},
+		Customer: sales.Customer{Name: "Cliente", Phone: "700-00000", Document: "V-123"},
 		Lines: []sales.LineInput{
 			{VariantID: 3, Quantity: 1, UnitPrice: "85000.00", Units: units(1, months(6))},
 			{VariantID: 5, Quantity: 1, UnitPrice: "10000.00", Units: units(1, months(6))},
@@ -1129,7 +1132,8 @@ func TestSaleFreezesDocumentInDatabase(t *testing.T) {
 	// The caller supplies placeholder numbers and a subtotal of its own: the
 	// admission trigger and the line trigger overwrite every one of them.
 	if err := tx.QueryRow(e.ctx, `INSERT INTO sales(branch_location_id,branch_sequence,warranty_number,cash_amount,
-  customer_name,total,created_by_account_id) VALUES(2,99,'9-999999',180000.00,'Cliente',180000.00,2) RETURNING id`).Scan(&id); err != nil {
+  customer_name,customer_phone,customer_document,total,created_by_account_id)
+ VALUES(2,99,'9-999999',180000.00,'Cliente','700-00000','V-123',180000.00,2) RETURNING id`).Scan(&id); err != nil {
 		t.Fatalf("raw header insert failed: %v", err)
 	}
 	if _, err := tx.Exec(e.ctx, `INSERT INTO sale_lines(sale_id,variant_id,quantity,unit_price,min_price,subtotal)
@@ -1192,8 +1196,9 @@ func TestSaleFreezesDocumentInDatabase(t *testing.T) {
 	}
 	defer short.Rollback(context.WithoutCancel(e.ctx))
 	var shortID int64
-	if err := short.QueryRow(e.ctx, `INSERT INTO sales(branch_location_id,cash_amount,customer_name,total,created_by_account_id)
- VALUES(2,170000.00,'Cliente',170000.00,2) RETURNING id`).Scan(&shortID); err != nil {
+	if err := short.QueryRow(e.ctx, `INSERT INTO sales(branch_location_id,cash_amount,customer_name,customer_phone,customer_document,
+  total,created_by_account_id)
+ VALUES(2,170000.00,'Cliente','700-00000','V-123',170000.00,2) RETURNING id`).Scan(&shortID); err != nil {
 		t.Fatalf("raw header insert failed: %v", err)
 	}
 	if _, err := short.Exec(e.ctx, `INSERT INTO sale_lines(sale_id,variant_id,quantity,unit_price)
@@ -1228,7 +1233,9 @@ func TestSaleKeepsFrozenFacts(t *testing.T) {
 	}
 	line := detail.Lines[0]
 	if line.UnitPrice != "90000.00" || line.MinPrice != "85000.00" || len(line.Units) != 2 ||
-		line.Subtotal != "180000.00" || line.Capacity == "" || line.Brand == "" || line.Model == "" {
+		line.Subtotal != "180000.00" || line.Identity.Kind != catalog.BatteryKind ||
+		line.Identity.Battery == nil || line.Identity.Battery.Capacity == "" ||
+		line.Identity.Battery.Brand == "" || line.Identity.Battery.Model == "" {
 		t.Fatalf("the emitted line must keep the prices of the sale: %+v", line)
 	}
 	if detail.Total != "180000.00" || detail.WarrantyNumber != emitted.WarrantyNumber {
@@ -1274,7 +1281,7 @@ func TestSaleReadAndListAreBranchScoped(t *testing.T) {
 	// The filters are literal and scoped to the branch.
 	second := sale(1, 1, "1200.00")
 	second.Payments = []sales.Payment{{Method: sales.PaymentCard, Amount: "1200.00"}}
-	second.Customer = sales.Customer{Name: "Beto 100%"}
+	second.Customer = sales.Customer{Name: "Beto 100%", Phone: "700-00000", Document: "V-123"}
 	if _, err := e.store.Create(e.ctx, clerk(2), second); err != nil {
 		t.Fatalf("the second sale failed: %v", err)
 	}
@@ -1400,12 +1407,11 @@ func TestSaleSellableCatalogue(t *testing.T) {
 		if item.VariantID > 6 {
 			continue
 		}
-		if item.Brand == "" || item.Model == "" || item.Capacity == "" ||
-			(item.Polarity != "L" && item.Polarity != "R") {
+		if item.Kind != catalog.BatteryKind || item.Identity.Valid() != nil {
 			t.Fatalf("the catalogue item must carry the catalogue identity: %+v", item)
 		}
-		if item.Sellable != sellable[item.VariantID] {
-			t.Fatalf("variant %d must be sellable=%v: %+v", item.VariantID, sellable[item.VariantID], item)
+		if item.Sellable != sellable[int64(item.VariantID)] {
+			t.Fatalf("variant %d must be sellable=%v: %+v", item.VariantID, sellable[int64(item.VariantID)], item)
 		}
 	}
 	// The first two rows are the two polarities of the first priced battery, at its pair.
@@ -1422,7 +1428,7 @@ func TestSaleSellableCatalogue(t *testing.T) {
 	for _, blocked := range []int64{7, 8} {
 		item := page.Items[blocked-1]
 		existing, reserved, available := e.availability(t, 2, blocked)
-		if item.VariantID != blocked || item.Sellable || item.SuggestedPrice != "" ||
+		if int64(item.VariantID) != blocked || item.Sellable || item.SuggestedPrice != "" ||
 			item.MinPrice != "" || item.Existing != existing || item.Reserved != reserved ||
 			item.Available != available {
 			t.Fatalf("an unpriced variant must be published blocked: %+v want %d/%d/%d",
@@ -1704,7 +1710,8 @@ func TestSalePaymentSumIsTheDatabaseRule(t *testing.T) {
 	}
 	// The amounts do not add up to the total, so the header itself is refused.
 	err := insert(`INSERT INTO sales(branch_location_id,cash_amount,card_amount,transfer_amount,
-  customer_name,total,created_by_account_id) VALUES(2,90000.01,90000.01,0.00,'Cliente',180000.00,2) RETURNING id`)
+  customer_name,customer_phone,customer_document,total,created_by_account_id)
+ VALUES(2,90000.01,90000.01,0.00,'Cliente','700-00000','V-123',180000.00,2) RETURNING id`)
 	var pg *pgconn.PgError
 	if !errors.As(err, &pg) || pg.Code != "23514" {
 		t.Fatalf("a settlement that does not close must be refused by the database: %v", err)
@@ -1714,7 +1721,8 @@ func TestSalePaymentSumIsTheDatabaseRule(t *testing.T) {
 	}
 	// The same document with amounts that close is admitted and labelled by the database.
 	if err := insert(`INSERT INTO sales(branch_location_id,cash_amount,card_amount,transfer_amount,
-  customer_name,total,created_by_account_id) VALUES(2,90000.00,0.00,90000.00,'Cliente',180000.00,2) RETURNING id`); err != nil {
+  customer_name,customer_phone,customer_document,total,created_by_account_id)
+ VALUES(2,90000.00,0.00,90000.00,'Cliente','700-00000','V-123',180000.00,2) RETURNING id`); err != nil {
 		t.Fatalf("a settlement that closes must be admitted: %v", err)
 	}
 	var label string
@@ -1833,7 +1841,7 @@ func TestSaleUnitsAreStoredPerUnit(t *testing.T) {
 	}
 	input := sales.CreateInput{
 		Payments: cashPayment("255000.00"),
-		Customer: sales.Customer{Name: "Cliente"},
+		Customer: sales.Customer{Name: "Cliente", Phone: "700-00000", Document: "V-123"},
 		Lines: []sales.LineInput{{VariantID: 3, Quantity: 3, UnitPrice: "85000.00", Units: []sales.Unit{
 			// The serial is trimmed when it is stored, because a padded spelling is the
 			// same battery the seller read.
@@ -2167,7 +2175,7 @@ func TestSaleValidatePersisted(t *testing.T) {
 	preVertical := func() sales.CreateInput {
 		return sales.CreateInput{
 			Payments: cashPayment("192000.00"),
-			Customer: sales.Customer{Name: "Cliente Mostrador"},
+			Customer: sales.Customer{Name: "Cliente Mostrador", Phone: "700-00000", Document: "V-123"},
 			Lines:    []sales.LineInput{{VariantID: 1, Quantity: 2, UnitPrice: "96000.00"}},
 		}
 	}

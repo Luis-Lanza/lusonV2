@@ -58,11 +58,19 @@ func resolveBranch(ctx context.Context, q querier, actor auth.Identity) (int16, 
 // actor, the per-branch correlative, the warranty number, the frozen minimum, the subtotal
 // and the payment label are the database's own.
 //
+// The catalogue kind of every requested variant is read in the same transaction, before a row
+// is written, so the units of each line are judged by the rule of its own kind: a battery line
+// carries exactly one unit per sold piece and a product line carries none. A line that breaks
+// the rule of its kind is refused with the refusal of that rule, and nothing is written. A
+// battery line also makes the document a warranty, so the client it prints must be complete
+// before the first row is written; a product-only sale names nobody.
+//
 // Lines are inserted in ascending variant order, which is the database's balance-row
 // lock order, and each line is followed by its units in ordinal order, so the trigger that
 // admits a unit finds the line it belongs to. The document completeness, the sold-piece
 // count and the total are deferred triggers, so a document that does not add up is still
-// refused at commit.
+// refused at commit, and the database's own LV012/LV014 stay the last authority for the units
+// of a battery line and of a product line.
 func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInput) (Sale, error) {
 	if ctx == nil || s == nil || s.pool == nil {
 		return Sale{}, ErrUnavailable
@@ -70,7 +78,10 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 	if !branchClerk(actor) {
 		return Sale{}, ErrForbidden
 	}
-	payload, err := Validate(input)
+	// The document is canonical before the first statement: its client, its settlement, its
+	// amounts and its unit texts are judged without the catalogue. How many units each line
+	// admits is the rule of its catalogue kind, which the store reads inside the transaction.
+	payload, _, err := canonical(input, false)
 	if err != nil {
 		return Sale{}, err
 	}
@@ -87,6 +98,21 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 	}()
 	branch, err := resolveBranch(ctx, tx, actor)
 	if err != nil {
+		return Sale{}, err
+	}
+	// The kind of every requested variant is read in the same transaction, before a single row
+	// is written, so a battery line without its units and a product line with them are refused
+	// precisely instead of being discovered by the database at commit.
+	kinds, err := readKinds(ctx, tx, payload.Lines)
+	if err != nil {
+		return Sale{}, err
+	}
+	if err := judgeUnits(payload.Lines, kinds); err != nil {
+		return Sale{}, err
+	}
+	// A battery line makes the document a warranty, so the client it prints must be complete
+	// before the first row is written; a product-only sale names nobody and passes here.
+	if err := judgeCustomer(payload.Customer, payload.Lines, kinds); err != nil {
 		return Sale{}, err
 	}
 	var id int64
@@ -138,6 +164,40 @@ func (s *Store) Create(ctx context.Context, actor auth.Identity, input CreateInp
 		return Sale{}, mapFailure(ctx, err)
 	}
 	return sale, nil
+}
+
+// readKinds reads the catalogue kind of every variant the document names, in one statement
+// inside the writing transaction, so every line is judged by its own kind before anything is
+// written. A variant absent from the answer is an unknown variant, which the line rule refuses.
+func readKinds(ctx context.Context, q querier, lines []Line) (map[int64]catalog.Kind, error) {
+	ids := make([]int32, 0, len(lines))
+	for _, line := range lines {
+		ids = append(ids, int32(line.VariantID))
+	}
+	rows, err := q.Query(ctx, `SELECT v.id,e.kind FROM catalog_variants v
+ JOIN catalog_entries e ON e.id=v.catalog_entry_id WHERE v.id=ANY($1::integer[])`, ids)
+	if err != nil {
+		return nil, fail(ctx)
+	}
+	defer rows.Close()
+	kinds := make(map[int64]catalog.Kind, len(ids))
+	for rows.Next() {
+		var id int64
+		var kind string
+		if rows.Scan(&id, &kind) != nil {
+			return nil, fail(ctx)
+		}
+		switch catalog.Kind(kind) {
+		case catalog.BatteryKind, catalog.OtherKind:
+			kinds[id] = catalog.Kind(kind)
+		default:
+			return nil, ErrUnavailable
+		}
+	}
+	if rows.Err() != nil {
+		return nil, fail(ctx)
+	}
+	return kinds, nil
 }
 
 // readUnits reads the units of one sale grouped by the variant of their line, in ordinal
@@ -201,15 +261,24 @@ func readUnits(ctx context.Context, q querier, id int64) (map[int64][]Unit, erro
 // admitUnits rebuilds the units of every line from the sale's own rows. A pre-vertical
 // document -- one or more lines and not one unit between them -- was stored by the contract
 // that had no units, so every line answers its empty units array and the document is shown.
-// Any other disagreement, including units that are fewer than the sold pieces, belongs to no
-// line of the document or exceed MaxUnits, is not a document this domain wrote, so the read
-// fails closed.
-func admitUnits(units map[int64][]Unit, variants, quantities []int64) ([][]Unit, error) {
-	if len(variants) != len(quantities) {
+// Any other disagreement with the rule of the line's own kind -- a battery line whose units
+// are not exactly its sold pieces, a product line that carries any unit, a unit for a line
+// the document does not hold or a total above MaxUnits -- is not a document this domain
+// wrote, so the read fails closed.
+func admitUnits(units map[int64][]Unit, variants, quantities []int64,
+	kinds []catalog.Kind) ([][]Unit, error) {
+	if len(variants) != len(quantities) || len(variants) != len(kinds) {
 		return nil, ErrUnavailable
 	}
+	named := make(map[int64]bool, len(variants))
+	for _, variant := range variants {
+		named[variant] = true
+	}
 	total := 0
-	for _, line := range units {
+	for variant, line := range units {
+		if !named[variant] {
+			return nil, ErrUnavailable
+		}
 		total += len(line)
 	}
 	if PreVertical(len(variants), total) {
@@ -219,14 +288,20 @@ func admitUnits(units map[int64][]Unit, variants, quantities []int64) ([][]Unit,
 		}
 		return empty, nil
 	}
-	if len(units) != len(variants) {
-		return nil, ErrUnavailable
-	}
 	rebuilt := make([][]Unit, len(variants))
 	total = 0
 	for i, variant := range variants {
 		line := units[variant]
-		if int64(len(line)) != quantities[i] {
+		switch kinds[i] {
+		case catalog.BatteryKind:
+			if int64(len(line)) != quantities[i] {
+				return nil, ErrUnavailable
+			}
+		case catalog.OtherKind:
+			if len(line) != 0 {
+				return nil, ErrUnavailable
+			}
+		default:
 			return nil, ErrUnavailable
 		}
 		rebuilt[i] = line
@@ -246,8 +321,11 @@ func loadSale(ctx context.Context, q querier, id int64) (Sale, error) {
 	if err != nil {
 		return Sale{}, err
 	}
-	rows, err := q.Query(ctx, `SELECT variant_id,quantity,unit_price::text,min_price::text,
-  subtotal::text FROM sale_lines WHERE sale_id=$1 ORDER BY variant_id`, id)
+	rows, err := q.Query(ctx, `SELECT l.variant_id,l.quantity,l.unit_price::text,l.min_price::text,
+  l.subtotal::text,e.kind FROM sale_lines l
+ JOIN catalog_variants v ON v.id=l.variant_id
+ JOIN catalog_entries e ON e.id=v.catalog_entry_id
+ WHERE l.sale_id=$1 ORDER BY l.variant_id`, id)
 	if err != nil {
 		return Sale{}, fail(ctx)
 	}
@@ -255,12 +333,13 @@ func loadSale(ctx context.Context, q querier, id int64) (Sale, error) {
 	lines := make([]SaleLine, 0, 4)
 	for rows.Next() {
 		var line SaleLine
-		var unit, minimum, subtotal string
-		if rows.Scan(&line.VariantID, &line.Quantity, &unit, &minimum, &subtotal) != nil {
+		var unit, minimum, subtotal, kind string
+		if rows.Scan(&line.VariantID, &line.Quantity, &unit, &minimum, &subtotal, &kind) != nil {
 			return Sale{}, fail(ctx)
 		}
 		// A persisted line outside the admitted bounds means the ledger is not what this
 		// domain wrote, so the read fails closed instead of describing it.
+		line.Kind = catalog.Kind(kind)
 		line.UnitPrice = Money(unit)
 		line.MinPrice = Money(minimum)
 		line.Subtotal = Money(subtotal)
@@ -269,6 +348,7 @@ func loadSale(ctx context.Context, q querier, id int64) (Sale, error) {
 			!line.UnitPrice.AtLeast(line.MinPrice) ||
 			line.VariantID < 1 || line.VariantID > math.MaxInt32 ||
 			line.Quantity < 1 || line.Quantity > MaxQuantity ||
+			(line.Kind != catalog.BatteryKind && line.Kind != catalog.OtherKind) ||
 			(len(lines) > 0 && line.VariantID <= lines[len(lines)-1].VariantID) {
 			return Sale{}, ErrUnavailable
 		}
@@ -289,10 +369,11 @@ func loadSale(ctx context.Context, q querier, id int64) (Sale, error) {
 	}
 	variants := make([]int64, len(lines))
 	quantities := make([]int64, len(lines))
+	kinds := make([]catalog.Kind, len(lines))
 	for i, line := range lines {
-		variants[i], quantities[i] = line.VariantID, line.Quantity
+		variants[i], quantities[i], kinds[i] = line.VariantID, line.Quantity, line.Kind
 	}
-	sold, err := admitUnits(units, variants, quantities)
+	sold, err := admitUnits(units, variants, quantities, kinds)
 	if err != nil {
 		return Sale{}, err
 	}
@@ -413,7 +494,8 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
 	}
 	detail.BranchName = branchName
 	rows, err := tx.Query(ctx, `SELECT l.variant_id,l.quantity,l.unit_price::text,l.min_price::text,
-  l.subtotal::text,e.id,e.brand,e.model,e.capacity_ah::text,v.polarity
+  l.subtotal::text,e.id,e.kind,coalesce(e.brand,''),coalesce(e.model,''),e.capacity_ah::text,
+  coalesce(v.polarity,''),coalesce(e.name,'')
  FROM sale_lines l
  JOIN catalog_variants v ON v.id=l.variant_id
  JOIN catalog_entries e ON e.id=v.catalog_entry_id
@@ -422,41 +504,74 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
 		return Detail{}, fail(ctx)
 	}
 	defer rows.Close()
-	lines := make([]DetailLine, 0, 4)
+	// Every line is read before its typed fields, so the products of the document are one
+	// statement and never an N+1 lookup per line.
+	type persisted struct {
+		variant       catalog.Row
+		quantity      int64
+		unit, minimum string
+		subtotal      string
+	}
+	stored := make([]persisted, 0, 4)
+	entries := make([]int32, 0, 4)
 	for rows.Next() {
-		var line DetailLine
-		var unit, minimum, subtotal, capacity string
-		if rows.Scan(&line.VariantID, &line.Quantity, &unit, &minimum,
-			&subtotal, &line.CatalogEntryID, &line.Brand, &line.Model, &capacity,
-			&line.Polarity) != nil {
+		var record persisted
+		var capacity *string
+		if rows.Scan(&record.variant.VariantID, &record.quantity, &record.unit, &record.minimum,
+			&record.subtotal, &record.variant.CatalogEntryID, &record.variant.Kind,
+			&record.variant.Brand, &record.variant.Model, &capacity, &record.variant.Polarity,
+			&record.variant.Name) != nil {
 			return Detail{}, fail(ctx)
 		}
-		line.UnitPrice = Money(unit)
-		line.MinPrice = Money(minimum)
-		line.Subtotal = Money(subtotal)
-		if line.UnitPrice.String() != unit || line.MinPrice.String() != minimum ||
-			line.Subtotal.String() != subtotal ||
-			!line.UnitPrice.AtLeast(line.MinPrice) ||
-			line.VariantID < 1 || line.VariantID > math.MaxInt32 ||
-			line.Quantity < 1 || line.Quantity > MaxQuantity ||
-			line.CatalogEntryID < 1 || line.Brand == "" || line.Model == "" ||
-			(line.Polarity != "L" && line.Polarity != "R") ||
-			(len(lines) > 0 && line.VariantID <= lines[len(lines)-1].VariantID) {
-			return Detail{}, ErrUnavailable
+		// A numeric column never travels as a float: its own text is parsed back into the
+		// canonical decimal of the contract.
+		if capacity != nil {
+			record.variant.Capacity = *capacity
 		}
-		if line.Capacity, err = catalog.ParseDecimal(capacity); err != nil {
-			return Detail{}, ErrUnavailable
+		if record.variant.Kind == catalog.OtherKind {
+			entries = append(entries, int32(record.variant.CatalogEntryID))
 		}
-		lines = append(lines, line)
-		if len(lines) > MaxLines {
+		stored = append(stored, record)
+		if len(stored) > MaxLines {
 			return Detail{}, ErrUnavailable
 		}
 	}
+	rows.Close()
 	if rows.Err() != nil {
 		return Detail{}, fail(ctx)
 	}
-	if len(lines) == 0 {
+	if len(stored) == 0 {
 		return Detail{}, ErrUnavailable
+	}
+	fields, err := catalog.ReadFields(ctx, tx, entries)
+	if err != nil {
+		return Detail{}, ErrUnavailable
+	}
+	lines := make([]DetailLine, 0, len(stored))
+	for _, record := range stored {
+		// The line renders by its own identity: a battery as brand · model and capacity Ah ·
+		// polarity, a product as its free name and the summary of its typed fields. A row this
+		// contract could not have written fails the read closed instead of being described.
+		identity, err := record.variant.Identity(fields[record.variant.CatalogEntryID])
+		if err != nil {
+			return Detail{}, ErrUnavailable
+		}
+		line := DetailLine{
+			SaleLine: SaleLine{VariantID: int64(identity.VariantID), Kind: identity.Kind,
+				Quantity: record.quantity, UnitPrice: Money(record.unit),
+				MinPrice: Money(record.minimum), Subtotal: Money(record.subtotal)},
+			CatalogEntryID: int64(record.variant.CatalogEntryID),
+			Identity:       identity,
+		}
+		if line.UnitPrice.String() != record.unit || line.MinPrice.String() != record.minimum ||
+			line.Subtotal.String() != record.subtotal ||
+			!line.UnitPrice.AtLeast(line.MinPrice) ||
+			line.Quantity < 1 || line.Quantity > MaxQuantity ||
+			line.CatalogEntryID < 1 ||
+			(len(lines) > 0 && line.VariantID <= lines[len(lines)-1].VariantID) {
+			return Detail{}, ErrUnavailable
+		}
+		lines = append(lines, line)
 	}
 	units, err := readUnits(ctx, tx, id)
 	if err != nil {
@@ -464,10 +579,11 @@ func (s *Store) Read(ctx context.Context, actor auth.Identity, id int64) (Detail
 	}
 	variants := make([]int64, len(lines))
 	quantities := make([]int64, len(lines))
+	kinds := make([]catalog.Kind, len(lines))
 	for i, line := range lines {
-		variants[i], quantities[i] = line.VariantID, line.Quantity
+		variants[i], quantities[i], kinds[i] = line.VariantID, line.Quantity, line.Kind
 	}
-	sold, err := admitUnits(units, variants, quantities)
+	sold, err := admitUnits(units, variants, quantities, kinds)
 	if err != nil {
 		return Detail{}, err
 	}
@@ -520,7 +636,11 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q ListQuery) (Pag
   s.customer_name,s.total::text,s.created_at,
   (SELECT count(*) FROM sale_lines l WHERE l.sale_id=s.id),
   (SELECT count(*) FROM sale_units u WHERE u.sale_id=s.id),
-  (SELECT count(*) FROM sale_units u WHERE u.sale_id=s.id AND u.warranty_months IS NOT NULL)`+listFilter+
+  (SELECT count(*) FROM sale_units u WHERE u.sale_id=s.id AND u.warranty_months IS NOT NULL),
+  (SELECT coalesce(sum(l.quantity),0) FROM sale_lines l
+   JOIN catalog_variants v ON v.id=l.variant_id
+   JOIN catalog_entries e ON e.id=v.catalog_entry_id
+   WHERE l.sale_id=s.id AND e.kind='battery')`+listFilter+
 		` ORDER BY s.id DESC LIMIT $4 OFFSET $5`, args...)
 	if err != nil {
 		return Page{}, fail(ctx)
@@ -529,24 +649,25 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q ListQuery) (Pag
 	for rows.Next() {
 		var summary Summary
 		var method, total string
-		var lines, unitsTotal, unitsWithWarranty int64
+		var lines, unitsTotal, unitsWithWarranty, batteryUnits int64
 		if rows.Scan(&summary.ID, &summary.BranchSequence, &summary.WarrantyNumber, &method,
 			&summary.CustomerName, &total, &summary.CreatedAt, &lines, &unitsTotal,
-			&unitsWithWarranty) != nil {
+			&unitsWithWarranty, &batteryUnits) != nil {
 			return Page{}, fail(ctx)
 		}
 		summary.PaymentMethod = PaymentMethod(method)
 		summary.Total = Money(total)
 		// A persisted sale always has between one and MaxLines lines, never more than MaxUnits
-		// units, and its label is one the database derived from its own amounts. A sale with
-		// no unit at all was stored before the sold unit existed, so it is history with zero
-		// units rather than corruption; one with some units but fewer than its lines is
-		// corrupt and fails the page closed.
+		// units, and its label is one the database derived from its own amounts. The units of
+		// the document are exactly the pieces sold on battery lines, because a product line
+		// carries none: a sale with no unit at all was stored before the sold unit existed, so
+		// it is history with zero units rather than corruption, while a sale whose units do not
+		// match its battery pieces is corrupt and fails the page closed.
 		if !summary.PaymentMethod.Recorded() || summary.Total.String() != total ||
 			summary.BranchSequence < 1 || summary.WarrantyNumber == "" ||
 			summary.CreatedAt.IsZero() || lines < 1 || lines > MaxLines ||
-			unitsTotal > MaxUnits ||
-			(!PreVertical(int(lines), int(unitsTotal)) && unitsTotal < lines) ||
+			unitsTotal > MaxUnits || batteryUnits < 0 || batteryUnits > MaxUnits ||
+			(!PreVertical(int(lines), int(unitsTotal)) && unitsTotal != batteryUnits) ||
 			unitsWithWarranty < 0 || unitsWithWarranty > unitsTotal ||
 			(len(result.Sales) > 0 && summary.ID >= result.Sales[len(result.Sales)-1].ID) {
 			return Page{}, ErrUnavailable
@@ -554,6 +675,7 @@ func (s *Store) List(ctx context.Context, actor auth.Identity, q ListQuery) (Pag
 		summary.Lines = int(lines)
 		summary.UnitsTotal = int(unitsTotal)
 		summary.UnitsWithWarranty = int(unitsWithWarranty)
+		summary.BatteryUnits = int(batteryUnits)
 		result.Sales = append(result.Sales, summary)
 	}
 	if rows.Err() != nil {
@@ -574,13 +696,16 @@ const listFilter = ` FROM sales s
  AND ($3='' OR s.payment_method=$3)`
 
 // Sellable reads the point-of-sale catalogue of the actor's own branch: every variant of
-// the catalogue once, each with the stock of the branch, whether the branch can sell it
-// right now, and the suggested price the counter starts from plus the minimum it can
-// never go under. The pair belongs to the battery of the variant, so the two polarities
-// of one battery are offered together at the same pair. A variant whose battery has no
-// price in this branch is still listed, with empty prices and Sellable=false, because the
-// counter must show the row with its action disabled (S7) instead of hiding it. The
-// warranty term is not read here: the seller states it on the sale.
+// the requested kind once, each with its shared catalogue identity, the stock of the branch,
+// whether the branch can sell it right now, and the suggested price the counter starts from
+// plus the minimum it can never go under. The absent kind is the battery-only listing every
+// caller had; kind=other lists the products with their price and their own name and detail,
+// and kind=all lists both, each row described by its own identity. The pair belongs to the
+// catalogue entry of the variant, so the two polarities of one battery are offered together
+// at the same pair and a product is offered at its own. A variant whose entry has no price in
+// this branch is still listed, with empty prices and Sellable=false, because the counter must
+// show the row with its action disabled (S7) instead of hiding it. The warranty term is not
+// read here: the seller states it on the sale.
 func (s *Store) Sellable(ctx context.Context, actor auth.Identity, q SellableQuery) (SellablePage, error) {
 	result := SellablePage{Page: q.Page, PageSize: q.PageSize, Items: []SellableItem{}}
 	if ctx == nil || s == nil || s.pool == nil {
@@ -607,46 +732,83 @@ func (s *Store) Sellable(ctx context.Context, actor auth.Identity, q SellableQue
 		defer done()
 		_ = tx.Rollback(cleanup)
 	}()
-	args := []any{branch, literalPattern(q.Search), q.Brand, capacityArg(q.Capacity), q.Polarity}
+	args := []any{branch, literalPattern(q.Search), q.Brand, capacityArg(q.Capacity), q.Polarity,
+		string(q.Kind.Filter())}
 	if tx.QueryRow(ctx, "SELECT count(*)"+sellableFilter, args...).Scan(&result.TotalVariants) != nil {
 		return SellablePage{}, fail(ctx)
 	}
 	args = append(args, int64(q.PageSize), int64(q.Page-1)*int64(q.PageSize))
-	rows, err := tx.Query(ctx, `SELECT v.id,e.id,e.brand,e.model,e.capacity_ah::text,v.polarity,
+	rows, err := tx.Query(ctx, `SELECT v.id,e.id,e.kind,coalesce(e.brand,''),coalesce(e.model,''),
+  e.capacity_ah::text,coalesce(v.polarity,''),coalesce(e.name,''),
   coalesce(p.suggested_price::text,''),coalesce(p.min_price::text,''),
   coalesce(b.existing,0),coalesce(b.reserved,0),coalesce(b.available,0)`+sellableFilter+
-		` ORDER BY v.id LIMIT $6 OFFSET $7`, args...)
+		` ORDER BY v.id LIMIT $7 OFFSET $8`, args...)
 	if err != nil {
 		return SellablePage{}, fail(ctx)
 	}
-	defer rows.Close()
+	// The rows are read before their typed fields, so the products of the page are one
+	// statement and never an N+1 lookup per row.
+	type listed struct {
+		variant            catalog.Row
+		suggested, minimum string
+		existing, reserved int64
+		available          int64
+	}
+	selected := make([]listed, 0, q.PageSize)
+	entries := make([]int32, 0, q.PageSize)
 	for rows.Next() {
-		var item SellableItem
-		var capacity, suggested, minimum string
-		if rows.Scan(&item.VariantID, &item.CatalogEntryID, &item.Brand, &item.Model, &capacity,
-			&item.Polarity, &suggested, &minimum, &item.Existing, &item.Reserved,
-			&item.Available) != nil {
+		var row listed
+		var capacity *string
+		if rows.Scan(&row.variant.VariantID, &row.variant.CatalogEntryID, &row.variant.Kind,
+			&row.variant.Brand, &row.variant.Model, &capacity, &row.variant.Polarity,
+			&row.variant.Name, &row.suggested, &row.minimum, &row.existing, &row.reserved,
+			&row.available) != nil {
+			rows.Close()
 			return SellablePage{}, fail(ctx)
 		}
-		if item.VariantID < 1 || item.CatalogEntryID < 1 || item.Brand == "" || item.Model == "" ||
-			(item.Polarity != "L" && item.Polarity != "R") ||
-			(len(result.Items) > 0 && item.VariantID <= result.Items[len(result.Items)-1].VariantID) {
+		if capacity != nil {
+			row.variant.Capacity = *capacity
+		}
+		if row.variant.Kind == catalog.OtherKind {
+			entries = append(entries, int32(row.variant.CatalogEntryID))
+		}
+		selected = append(selected, row)
+		if len(selected) > q.PageSize {
+			rows.Close()
 			return SellablePage{}, ErrUnavailable
 		}
-		if item.Capacity, err = catalog.ParseDecimal(capacity); err != nil {
+	}
+	rows.Close()
+	if rows.Err() != nil {
+		return SellablePage{}, fail(ctx)
+	}
+	fields, err := catalog.ReadFields(ctx, tx, entries)
+	if err != nil {
+		return SellablePage{}, ErrUnavailable
+	}
+	previous := int64(0)
+	for _, row := range selected {
+		identity, err := row.variant.Identity(fields[row.variant.CatalogEntryID])
+		if err != nil {
 			return SellablePage{}, ErrUnavailable
 		}
-		// The price is the branch's own reading of the battery: it is present on both
-		// columns or on neither, and a published pair is canonical and never under its own
-		// floor. A branch pair the price list could not have written is not described.
+		item := SellableItem{Identity: identity, CatalogEntryID: int64(row.variant.CatalogEntryID),
+			Existing: row.existing, Reserved: row.reserved, Available: row.available}
+		if int64(row.variant.VariantID) <= previous {
+			return SellablePage{}, ErrUnavailable
+		}
+		previous = int64(row.variant.VariantID)
+		// The price is the branch's own reading of the entry: it is present on both columns
+		// or on neither, and a published pair is canonical and never under its own floor. A
+		// branch pair the price list could not have written is not described.
 		switch {
-		case suggested == "" && minimum == "":
+		case row.suggested == "" && row.minimum == "":
 			item.Sellable = false
 			item.SuggestedPrice, item.MinPrice = "", ""
-		case suggested != "" && minimum != "":
-			item.SuggestedPrice = Money(suggested)
-			item.MinPrice = Money(minimum)
-			if item.SuggestedPrice.String() != suggested || item.MinPrice.String() != minimum ||
+		case row.suggested != "" && row.minimum != "":
+			item.SuggestedPrice = Money(row.suggested)
+			item.MinPrice = Money(row.minimum)
+			if item.SuggestedPrice.String() != row.suggested || item.MinPrice.String() != row.minimum ||
 				!item.SuggestedPrice.AtLeast(item.MinPrice) {
 				return SellablePage{}, ErrUnavailable
 			}
@@ -662,9 +824,6 @@ func (s *Store) Sellable(ctx context.Context, actor auth.Identity, q SellableQue
 		}
 		result.Items = append(result.Items, item)
 	}
-	if rows.Err() != nil {
-		return SellablePage{}, fail(ctx)
-	}
 	if tx.Commit(ctx) != nil {
 		return SellablePage{}, fail(ctx)
 	}
@@ -672,24 +831,24 @@ func (s *Store) Sellable(ctx context.Context, actor auth.Identity, q SellableQue
 }
 
 // sellableFilter is shared by the count and the page, so both answer the same question.
-// Every battery variant matched by the filters is one row, priced or not: the pair is
-// joined through the battery and the balance through the branch, both as LEFT JOINs, so a
-// variant without a price in this branch -- the row the counter must show blocked -- and
-// a variant without a balance row still appear exactly once. The join on the battery also
-// gives both polarities of one battery the same pair, and no row here is duplicated,
-// because a battery has at most one price per branch and a variant one balance per branch.
-// Only batteries are sold at the counter: an other product shares this catalog table with
-// a NULL brand, model, capacity and polarity, so its polarity-less variant is neither
-// counted nor paged here -- a row this scan cannot read would turn the whole page into a
-// service error.
+// Every variant of the requested kind matched by the filters is one row, priced or not: the
+// pair is joined through the catalogue entry and the balance through the branch, both as LEFT
+// JOINs, so a variant without a price in this branch -- the row the counter must show blocked
+// -- and a variant without a balance row still appear exactly once. The join on the entry also
+// gives both polarities of one battery the same pair, and no row here is duplicated, because
+// an entry has at most one price per branch and a variant one balance per branch. The absent
+// kind is the battery-only listing every existing caller had; a product shares this catalog
+// table with a NULL brand, model, capacity and polarity, so its own columns are selected with
+// coalesce and its identity is composed from its kind, name and typed fields.
 const sellableFilter = ` FROM catalog_variants v
  JOIN catalog_entries e ON e.id=v.catalog_entry_id
  LEFT JOIN branch_prices p ON p.catalog_entry_id=e.id AND p.branch_location_id=$1
  LEFT JOIN inventory_balances b ON b.location_id=$1 AND b.variant_id=v.id
- WHERE ($2='' OR e.brand ILIKE $2 ESCAPE '\' OR e.model ILIKE $2 ESCAPE '\')
+ WHERE ($2='' OR e.brand ILIKE $2 ESCAPE '\' OR e.model ILIKE $2 ESCAPE '\'
+  OR e.name ILIKE $2 ESCAPE '\')
  AND ($3='' OR e.brand=$3) AND ($4::numeric IS NULL OR e.capacity_ah=$4::numeric)
  AND ($5='' OR v.polarity=$5)
- AND e.kind='battery'
+ AND ($6='all' OR e.kind=$6)
  AND e.deleted_at IS NULL`
 
 // capacityArg turns the optional capacity filter into a nullable numeric parameter, so
@@ -763,6 +922,11 @@ func mapFailure(ctx context.Context, err error) error {
 			if pg.ConstraintName == "sale_units_serial_number" {
 				return &SerialAlreadySold{}
 			}
+		// LV015: the document issues a warranty without its complete client. The database names
+		// the missing fields in its own detail, so the refusal is published as the same refusal
+		// this domain derives before writing, never as a service failure.
+		case "LV015":
+			return &WarrantyCustomerIncomplete{Missing: customerFieldsOf(pg.Detail)}
 		// A refused amount, a refused document shape or an unknown variant is the same
 		// public refusal, because the database decides it.
 		case "23503", "23514", "22003":
@@ -784,4 +948,24 @@ func variantOf(pg *pgconn.PgError) int64 {
 		return 0
 	}
 	return value
+}
+
+// customerFieldsOf reads the missing client fields from the database's own detail and answers
+// them in the paper's order, name, phone, document. A detail that names no field this contract
+// publishes keeps the empty list, so a refusal never invents a field the paper does not carry.
+func customerFieldsOf(detail string) []string {
+	present := make(map[string]bool, 3)
+	for _, field := range strings.Split(detail, ",") {
+		switch trimmed := strings.TrimSpace(field); trimmed {
+		case CustomerNameField, CustomerPhoneField, CustomerDocumentField:
+			present[trimmed] = true
+		}
+	}
+	missing := make([]string, 0, len(present))
+	for _, field := range []string{CustomerNameField, CustomerPhoneField, CustomerDocumentField} {
+		if present[field] {
+			missing = append(missing, field)
+		}
+	}
+	return missing
 }

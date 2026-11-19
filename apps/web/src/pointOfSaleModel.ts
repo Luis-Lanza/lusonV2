@@ -6,6 +6,8 @@
  * `96.000,00` or `96000,00`; no amount is ever parsed into a binary float.
  */
 
+import { rowLabel, type Battery, type Kind, type VariantIdentity } from './model';
+
 // ---------------------------------------------------------------------------------
 // Money
 // ---------------------------------------------------------------------------------
@@ -71,15 +73,21 @@ export function typedMoney(cents: bigint): string {
 
 export type Polarity = 'L' | 'R';
 
-/** One variant of the branch catalogue: its battery, one polarity and its availability. */
+/** One variant of the branch catalogue: its shared identity and its availability. */
 export interface SellableVariant {
   readonly variant_id: number;
   readonly catalog_entry_id: number;
-  readonly brand: string;
-  readonly model: string;
-  readonly capacity_ah: string;
-  readonly polarity: Polarity;
-  /** False when the branch has no price for the battery: the row is shown, never sold. */
+  /**
+   * The shared identity of the row: a product publishes it on the wire and a battery row
+   * composes it from its battery columns, so every surface labels a line the same way.
+   */
+  readonly identity?: VariantIdentity;
+  /** The battery columns of a battery row; a product row publishes none of them. */
+  readonly brand?: string;
+  readonly model?: string;
+  readonly capacity_ah?: string;
+  readonly polarity?: Polarity;
+  /** False when the branch has no price for the entry: the row is shown, never sold. */
   readonly sellable: boolean;
   readonly suggested_price: string | null;
   readonly min_price: string | null;
@@ -107,6 +115,10 @@ export const maxWarrantyMonths = 120;
 export const maxSerialLength = 64;
 /** The one free field S1 admits on the sale header. */
 export const maxCustomerAddress = 200;
+/** The three data the printed paper carries: name, phone and document, each within its bound. */
+export const maxCustomerName = 120;
+export const maxCustomerPhone = 40;
+export const maxCustomerDocument = 40;
 /** The whole body limit of the document, in physical batteries. */
 export const maxSaleUnits = 1000;
 /** The term a unit starts with; the seller changes it, or clears it, before issuing. */
@@ -121,13 +133,18 @@ export const posSerialMessage = 'Cada batería lleva su número de serie: leelo 
 export const posSerialLengthMessage = `El número de serie lleva hasta ${maxSerialLength} caracteres.`;
 export const posDuplicateSerialMessage = 'Ese número de serie ya está en esta venta: cada batería se vende una sola vez.';
 export const posUnitsMessage = 'Cada línea lleva una unidad por batería: revisá la cantidad.';
+export const posProductUnitsMessage = 'Un producto se vende por cantidad: no lleva unidades.';
 export const posMissingUnitMessage = 'Esa unidad ya no está en la línea: revisá la cantidad.';
 export const posUnitTotalMessage = `Una venta lleva como máximo ${maxSaleUnits} unidades.`;
 export const posAddressMessage = `La dirección o barrio lleva como máximo ${maxCustomerAddress} caracteres.`;
 export const posLineLimitMessage = `Una venta lleva como máximo ${maxCartLines} líneas.`;
 export const posMissingLineMessage = 'La línea ya no está en la venta: volvé a agregarla.';
-export const posEmptyCartMessage = 'Agregá al menos una batería para cobrar.';
+export const posEmptyCartMessage = 'Agregá al menos un producto o una batería para cobrar.';
 export const posCustomerNameMessage = 'Escribí el nombre del cliente: la garantía lo exige.';
+export const posCustomerPhoneMessage = 'Escribí el teléfono del cliente: la garantía lo exige.';
+export const posCustomerDocumentMessage = 'Escribí el documento del cliente: la garantía lo exige.';
+export const posWarrantyCustomerMessage = 'La garantía exige el nombre, el teléfono y el documento del cliente.';
+export const posNoCustomerMessage = 'Una venta sin baterías no lleva garantía: no pide ningún dato del cliente.';
 export const posCustomerTextMessage = 'El teléfono y el documento llevan como máximo 40 caracteres.';
 export const posPaymentMethodMessage = 'El mostrador cobra en efectivo, por transferencia o por QR.';
 
@@ -159,15 +176,18 @@ export interface CartUnit {
 export interface CartLine {
   readonly variant_id: number;
   readonly catalog_entry_id: number;
-  readonly brand: string;
-  readonly model: string;
-  readonly capacity_ah: string;
-  readonly polarity: Polarity;
+  /** The shared catalogue identity of the line: a battery keeps its battery, a product its name. */
+  readonly identity?: VariantIdentity;
+  /** The battery columns of a battery line; a product line carries none. */
+  readonly brand?: string;
+  readonly model?: string;
+  readonly capacity_ah?: string;
+  readonly polarity?: Polarity;
   readonly quantity: number;
   readonly unit_price_cents: bigint;
   readonly suggested_price_cents: bigint;
   readonly min_price_cents: bigint;
-  /** One entry per physical battery, in the order the seller wrote them. */
+  /** One entry per physical battery, in the order the seller wrote them; empty for a product. */
   readonly units: readonly CartUnit[];
 }
 
@@ -175,19 +195,66 @@ export type CartEdit =
   | { readonly ok: true; readonly cart: readonly CartLine[] }
   | { readonly ok: false; readonly message: string };
 
-/** `CAR NS40ZL L`: the label a line and a card share. */
-export function variantLabel(value: { brand: string; model: string; polarity: Polarity }): string {
-  return `${value.brand} ${value.model} ${value.polarity}`;
+/** The common fields every line, card and row exposes for its label. */
+interface Identified {
+  readonly identity?: VariantIdentity;
+  readonly brand?: string;
+  readonly model?: string;
+  readonly capacity_ah?: string;
+  readonly polarity?: Polarity;
+}
+
+/** The battery of a line: its own identity when it has one, or its battery columns. */
+export function lineBattery(value: Identified): Battery | null {
+  if (value.identity) return value.identity.battery;
+  if (value.brand === undefined || value.model === undefined
+    || value.capacity_ah === undefined || value.polarity === undefined) return null;
+  return { brand: value.brand, model: value.model, capacity_ah: value.capacity_ah, polarity: value.polarity };
+}
+
+/** The kind of one cart line: a product says so in its identity and everything else is a battery. */
+export function lineKind(line: CartLine): Kind {
+  return line.identity?.kind ?? 'battery';
+}
+
+/** The identity of one cart line, the one every label of the line reads. */
+export function lineIdentity(line: CartLine): VariantIdentity {
+  if (line.identity) return line.identity;
+  const battery = lineBattery(line);
+  if (battery === null) throw new Error('La línea no tiene identidad.');
+  return identityFromBattery(line.variant_id, battery);
+}
+
+/** `CAR NS40ZL L`: the label a battery line and a card share; a product is its own name. */
+export function variantLabel(value: Identified): string {
+  if (value.identity?.kind === 'other') return rowLabel(value.identity);
+  const battery = lineBattery(value);
+  return battery === null ? '' : `${battery.brand} ${battery.model} ${battery.polarity}`;
+}
+
+function identityFromBattery(variantID: number, battery: Battery): VariantIdentity {
+  return Object.freeze({ variant_id: variantID, kind: 'battery', name: `${battery.brand} · ${battery.model}`,
+    detail: `${battery.capacity_ah} Ah · ${battery.polarity}`, battery, fields: null });
+}
+
+function sellableIdentity(variant: SellableVariant): VariantIdentity | null {
+  if (variant.identity) return variant.identity;
+  const battery = lineBattery(variant);
+  return battery === null ? null : identityFromBattery(variant.variant_id, battery);
 }
 
 function lineOf(variant: SellableVariant): CartLine | null {
   if (!variant.sellable || variant.suggested_price === null || variant.min_price === null) return null;
+  const identity = sellableIdentity(variant);
+  if (identity === null) return null;
+  const battery = identity.battery;
   return Object.freeze({
-    variant_id: variant.variant_id, catalog_entry_id: variant.catalog_entry_id,
-    brand: variant.brand, model: variant.model, capacity_ah: variant.capacity_ah, polarity: variant.polarity,
+    variant_id: variant.variant_id, catalog_entry_id: variant.catalog_entry_id, identity,
+    ...(battery === null ? {} : { brand: battery.brand, model: battery.model,
+      capacity_ah: battery.capacity_ah, polarity: battery.polarity }),
     quantity: 1, unit_price_cents: moneyCents(variant.suggested_price),
     suggested_price_cents: moneyCents(variant.suggested_price), min_price_cents: moneyCents(variant.min_price),
-    units: Object.freeze([newUnit()]),
+    units: battery === null ? Object.freeze([]) : Object.freeze([newUnit()]),
   });
 }
 
@@ -197,9 +264,11 @@ function newUnit(): CartUnit {
 }
 
 /** One unit row per battery: growing adds batteries, shrinking drops the trailing ones. */
-function unitsFor(units: readonly CartUnit[], quantity: number): readonly CartUnit[] {
-  if (quantity <= units.length) return Object.freeze(units.slice(0, quantity));
-  const grown = [...units];
+function unitsFor(line: CartLine, quantity: number): readonly CartUnit[] {
+  // A product is counted, not serialized: its line never grows a physical piece.
+  if (lineKind(line) === 'other') return Object.freeze([]);
+  if (quantity <= line.units.length) return Object.freeze(line.units.slice(0, quantity));
+  const grown = [...line.units];
   while (grown.length < quantity) grown.push(newUnit());
   return Object.freeze(grown);
 }
@@ -230,9 +299,10 @@ export function setQuantity(cart: readonly CartLine[], variantID: number, quanti
     return { ok: false, message: posQuantityMessage };
   }
   if (quantity > maxQuantity) return { ok: false, message: posQuantityMessage };
-  // Every battery is a row with its own serial: a line never holds more than a whole sale.
-  if (quantity > maxSaleUnits) return { ok: false, message: posUnitTotalMessage };
-  return { ok: true, cart: replaceLine(cart, variantID, { quantity, units: unitsFor(line.units, quantity) }) };
+  // Every battery is a row with its own serial: a battery line never holds more than a whole
+  // sale. A product is only counted, so its quantity is bounded by the quantity alone.
+  if (lineKind(line) === 'battery' && quantity > maxSaleUnits) return { ok: false, message: posUnitTotalMessage };
+  return { ok: true, cart: replaceLine(cart, variantID, { quantity, units: unitsFor(line, quantity) }) };
 }
 
 /** Moves the quantity by one unit with the steppers, always leaving a line with one unit. */
@@ -485,6 +555,73 @@ export interface SaleCustomer {
 
 export const emptyCustomer: SaleCustomer = Object.freeze({ name: '', phone: '', document: '', address: '' });
 
+/**
+ * The three data the printed warranty carries, named the way the server names them and in
+ * the order the paper prints them, so a refusal points at the exact datum to type.
+ */
+export type WarrantyCustomerField = 'customer_name' | 'customer_phone' | 'customer_document';
+export const warrantyCustomerFields: readonly WarrantyCustomerField[] = Object.freeze([
+  'customer_name', 'customer_phone', 'customer_document']);
+const customerFieldNames: Readonly<Record<WarrantyCustomerField, string>> = Object.freeze({
+  customer_name: 'el nombre', customer_phone: 'el teléfono', customer_document: 'el documento' });
+const customerFieldMessages: Readonly<Record<WarrantyCustomerField, string>> = Object.freeze({
+  customer_name: posCustomerNameMessage, customer_phone: posCustomerPhoneMessage,
+  customer_document: posCustomerDocumentMessage });
+
+/** True when the cart issues a warranty: at least one of its lines is a battery. */
+export function issuesWarranty(cart: readonly CartLine[]): boolean {
+  return cart.some(line => lineKind(line) === 'battery');
+}
+
+/**
+ * The client data a warranty still lacks, in the paper's order. A cart of products alone
+ * issues no warranty and demands nobody, and the address is never required because the
+ * printed paper never prints it (S9).
+ */
+export function missingCustomerFields(cart: readonly CartLine[],
+  customer: SaleCustomer): readonly WarrantyCustomerField[] {
+  if (!issuesWarranty(cart)) return Object.freeze([]);
+  // A value that is only whitespace is absent, exactly as the paper and the server judge it.
+  const blank = (value: unknown): boolean => typeof value !== 'string' || value.trim() === '';
+  const missing: WarrantyCustomerField[] = [];
+  if (blank(customer.name)) missing.push('customer_name');
+  if (blank(customer.phone)) missing.push('customer_phone');
+  if (blank(customer.document)) missing.push('customer_document');
+  return Object.freeze(missing);
+}
+
+/** The sentence that names the client data a warranty sale still lacks. */
+export function warrantyCustomerMessage(missing: readonly WarrantyCustomerField[]): string {
+  if (missing.length === 0) return posWarrantyCustomerMessage;
+  if (missing.length === 1) return customerFieldMessages[missing[0]];
+  const names = missing.map(field => customerFieldNames[field]);
+  return `La garantía exige el cliente completo: faltan ${names.slice(0, -1).join(', ')} y ${names[names.length - 1]}.`;
+}
+
+/** The reason a battery sale cannot be charged yet because of its client, or `null`. It names
+ * the first datum the printed paper still lacks, in the paper's order, so the cashier types
+ * exactly that one next; a cart of products alone demands nobody. */
+export function customerProblem(cart: readonly CartLine[], customer: SaleCustomer): string | null {
+  const [first] = missingCustomerFields(cart, customer);
+  return first === undefined ? null : customerFieldMessages[first];
+}
+
+/** The refusal of a warranty without its complete client, exactly as the server named it. */
+export function warrantyCustomerRefusal(missing: readonly WarrantyCustomerField[]): string {
+  return `${warrantyCustomerMessage(missing)} No se registró nada.`;
+}
+
+/**
+ * How a document that names nobody reads on the screen. The printed paper's own text for such
+ * a sale belongs to the server, so this screen never composes it.
+ */
+export const anonymousCustomerLabel = 'Sin cliente';
+
+/** The client name of a document, or the label that states it names nobody. */
+export function customerLabel(name: string): string {
+  return typeof name === 'string' && name.trim() !== '' ? name : anonymousCustomerLabel;
+}
+
 /** One physical battery on the wire: its serial, and its term or the explicit absence. */
 export interface SaleUnitWire {
   readonly serial_number: string;
@@ -562,6 +699,11 @@ export function unitsProblem(cart: readonly CartLine[]): string | null {
   const serials = new Set<string>();
   let total = 0;
   for (const line of cart) {
+    // A product is counted: its line carries no piece, so there is no serial to ask for.
+    if (lineKind(line) === 'other') {
+      if (line.units.length !== 0) return posProductUnitsMessage;
+      continue;
+    }
     const checked = checkedUnits(line, serials);
     if (!checked.ok) return checked.message;
     total += checked.units.length;
@@ -588,6 +730,17 @@ export function prepareSale(cart: readonly CartLine[], split: PaymentSplit, cust
     if (!Number.isInteger(line.quantity) || line.quantity < 1 || line.quantity > maxQuantity) {
       return { ok: false, message: posQuantityMessage };
     }
+    if (lineKind(line) === 'other') {
+      // A product is counted, not serialized: the key is mandatory and the empty array is
+      // what says the line has no pieces and never promised a term.
+      if (line.units.length !== 0) return { ok: false, message: posProductUnitsMessage };
+      if (line.unit_price_cents < line.min_price_cents) {
+        return { ok: false, message: posPriceFloorMessage(line.min_price_cents) };
+      }
+      lines.push({ variant_id: line.variant_id, quantity: line.quantity,
+        unit_price: centsToMoney(line.unit_price_cents), units: Object.freeze([]) });
+      continue;
+    }
     const checked = checkedUnits(line, serials);
     if (!checked.ok) return { ok: false, message: checked.message };
     unitsTotal += checked.units.length;
@@ -602,12 +755,19 @@ export function prepareSale(cart: readonly CartLine[], split: PaymentSplit, cust
   const state = settlement(total, split);
   if (state.status === 'missing') return { ok: false, message: posMissingMessage(state.remaining) };
   if (state.status === 'excess') return { ok: false, message: posExcessMessage(state.excess) };
-  if (!boundedText(customer.name, 120)) return { ok: false, message: posCustomerNameMessage };
-  const name = customer.name.trim();
-  if (name === '') return { ok: false, message: posCustomerNameMessage };
-  if (!boundedText(customer.phone, 40) || !boundedText(customer.document, 40)) {
+  // S9: the client belongs to the warranty. A sale carrying a battery is refused here, in the
+  // paper's order, until the three data the paper prints are typed; a sale of products alone
+  // names nobody and passes without a single datum.
+  const customerIssue = customerProblem(cart, customer);
+  if (customerIssue !== null) return { ok: false, message: customerIssue };
+  const name = typeof customer.name === 'string' ? customer.name.trim() : null;
+  if (name === null || !boundedText(name, maxCustomerName)) {
+    return { ok: false, message: posCustomerNameMessage };
+  }
+  if (!boundedText(customer.phone, maxCustomerPhone) || !boundedText(customer.document, maxCustomerDocument)) {
     return { ok: false, message: posCustomerTextMessage };
   }
+  // The address is never required: it is stored and the paper never prints it.
   const address = trimmedText(customer.address, maxCustomerAddress);
   if (address === null) return { ok: false, message: posAddressMessage };
   return {

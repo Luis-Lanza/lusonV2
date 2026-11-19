@@ -17,6 +17,16 @@ const sellableItem = (overrides: Record<string, unknown> = {}) => ({
   sellable: true, existing: 12, reserved: 0, available: 12,
   suggested_price: '96000.00', min_price: '85000.00', ...overrides,
 });
+/** The shared identity of one other-product variant, exactly as the catalogue composes it. */
+const productIdentity = (overrides: Record<string, unknown> = {}) => ({
+  variant_id: 191, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L', battery: null,
+  fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }], ...overrides,
+});
+const sellableProduct = (overrides: Record<string, unknown> = {}) => ({
+  variant_id: 191, catalog_entry_id: 96, identity: productIdentity(),
+  sellable: true, existing: 6, reserved: 0, available: 6,
+  suggested_price: '1900.00', min_price: '1500.00', ...overrides,
+});
 const sellableBody = (overrides: Record<string, unknown> = {}) => JSON.stringify({
   page: 1, page_size: 25, total_variants: 190, items: [sellableItem()], ...overrides,
 });
@@ -225,6 +235,28 @@ describe('the sale document read', () => {
     expect(detail.lines[0].units).toEqual([]);
   });
 
+  it('reads a product-only document that names nobody', () => {
+    // S9: a sale of products alone issues no warranty, so its client is empty in all four
+    // values and its customer_name is the empty string, never an invented name.
+    const nobody = { name: '', phone: '', document: '', address: '' };
+    const createdLine = { variant_id: 191, quantity: 3, unit_price: '1900.00', min_price: '1500.00',
+      units: [], subtotal: '5700.00' };
+    const detailLine = { variant_id: 191, catalog_entry_id: 96, identity: productIdentity(), quantity: 3,
+      unit_price: '1900.00', min_price: '1500.00', units: [], subtotal: '5700.00' };
+    const sale = parseCreatedSale(createdBody({ customer: nobody, total: '5700.00', payment_method: 'cash',
+      payments: [{ method: 'cash', amount: '5700.00' }], lines: [createdLine] }));
+    expect(sale.customer).toEqual(nobody);
+    const page = parseSalePage(pageBody({ sales: [summary({ customer_name: '', lines: 1,
+      units_total: 0, units_with_warranty: 0 })] }));
+    expect(page.sales[0].customer_name).toBe('');
+    const detail = parseSaleDetail(detailBody({ customer_name: '', customer: nobody, total: '5700.00',
+      payments: [{ method: 'cash', amount: '5700.00' }], lines: [detailLine] }));
+    expect(detail.customer_name).toBe('');
+    expect(detail.customer).toEqual(nobody);
+    // A document that carries a battery is a warranty, and a warranty names its client.
+    expect(() => parseCreatedSale(createdBody({ customer: nobody }))).toThrow();
+  });
+
   it('reads one document with the catalogue identity and the units of every line', () => {
     const detail = parseSaleDetail(detailBody());
     expect(detail.customer_name).toBe('Marta Giménez');
@@ -286,7 +318,7 @@ describe('the sale document read', () => {
     ['a row without its unit count', pageBody({ sales: [{ ...summary(), units_total: undefined }] })],
     ['a row without its warranty count', pageBody({ sales: [{ ...summary(), units_with_warranty: undefined }] })],
     ['a row whose warranties exceed its units', pageBody({ sales: [summary({ units_with_warranty: 4 })] })],
-    ['a row with more lines than units', pageBody({ sales: [summary({ units_total: 1, units_with_warranty: 1 })] })],
+    ['a row with unit counts past the sale bound', pageBody({ sales: [summary({ units_total: 1001, units_with_warranty: 0 })] })],
     ['more rows than the announced page', pageBody({ page_size: 10, sales: Array.from({ length: 11 }, (_, index) => summary({ id: index + 1 })) })],
     ['a page past the announced total', pageBody({ page: 2, sales: [summary()], total_sales: 1 })],
     ['a detail without the catalogue identity', detailBody({ lines: [{ variant_id: 1, quantity: 1, unit_price: '1.00', min_price: '1.00', subtotal: '1.00',
@@ -353,7 +385,8 @@ describe('the sale evidence', () => {
       { variant_id: 3, quantity: 1, unit_price: '112000.00', min_price: '100000.00', subtotal: '112000.00',
         units: [{ serial_number: 'TOYO-9', warranty_months: 12 }] },
     ] })],
-    ['another client', createdBody({ customer: { name: 'Otra Persona', phone: '', document: '', address: 'Av. América 123' } })],
+    ['another client', createdBody({ customer: { name: 'Otra Persona', phone: '381 555 0199',
+      document: '27.884.311', address: 'Av. América 123' } })],
     ['another address', createdBody({ customer: { name: 'Marta Giménez', phone: '381 555 0198', document: '27.884.310', address: '' } })],
     ['a missing line', createdBody({ total: '192000.00', payment_method: 'cash',
       payments: [{ method: 'cash', amount: '192000.00' }],
@@ -382,12 +415,23 @@ describe('the sale failures', () => {
 
   it('names the variant a line refusal points at', () => {
     expect(parseSalesError('{"error":"below_minimum","variant_id":1}', 409))
-      .toEqual({ code: 'below_minimum', variant_id: 1, serial_number: null, mismatch: null });
+      .toEqual({ code: 'below_minimum', variant_id: 1, serial_number: null, mismatch: null, customer_fields: [] });
   });
 
   it('names the serial a repeated-serial refusal points at', () => {
     expect(parseSalesError('{"error":"serial_already_sold","serial_number":"ABC123"}', 409))
-      .toEqual({ code: 'serial_already_sold', variant_id: null, serial_number: 'ABC123', mismatch: null });
+      .toEqual({ code: 'serial_already_sold', variant_id: null, serial_number: 'ABC123', mismatch: null,
+        customer_fields: [] });
+  });
+
+  it('names the client data the warranty is missing, in the paper order', () => {
+    expect(parseSalesError('{"error":"warranty_customer_incomplete","missing":["customer_name","customer_document"]}', 400))
+      .toEqual({ code: 'warranty_customer_incomplete', variant_id: null, serial_number: null, mismatch: null,
+        customer_fields: ['customer_name', 'customer_document'] });
+    // The house envelope of the database trigger names no field at all.
+    expect(parseSalesError('{"error":"warranty_customer_incomplete"}', 400))
+      .toEqual({ code: 'warranty_customer_incomplete', variant_id: null, serial_number: null, mismatch: null,
+        customer_fields: [] });
   });
 
   it('tells the seller the serial was already sold and that nothing was registered', () => {
@@ -398,11 +442,11 @@ describe('the sale failures', () => {
   it('names the side that does not close, with its amount', () => {
     expect(parseSalesError('{"error":"payments_mismatch","missing":"104000.00"}', 400)).toEqual({
       code: 'payments_mismatch', variant_id: null, serial_number: null,
-      mismatch: { side: 'missing', amount: '104000.00' },
+      mismatch: { side: 'missing', amount: '104000.00' }, customer_fields: [],
     });
     expect(parseSalesError('{"error":"payments_mismatch","excess":"6000.00"}', 400)).toEqual({
       code: 'payments_mismatch', variant_id: null, serial_number: null,
-      mismatch: { side: 'excess', amount: '6000.00' },
+      mismatch: { side: 'excess', amount: '6000.00' }, customer_fields: [],
     });
   });
 
@@ -420,6 +464,12 @@ describe('the sale failures', () => {
     ['a serial refusal with a serial over 64 characters', `{"error":"serial_already_sold","serial_number":"${'x'.repeat(65)}"}`, 409],
     ['a serial beside another code', '{"error":"forbidden","serial_number":"ABC123"}', 403],
     ['a message beside the code', '{"error":"forbidden","message":"no"}', 403],
+    ['a missing-field list out of the paper order', '{"error":"warranty_customer_incomplete","missing":["customer_phone","customer_name"]}', 400],
+    ['a repeated missing field', '{"error":"warranty_customer_incomplete","missing":["customer_name","customer_name"]}', 400],
+    ['a missing field the paper does not print', '{"error":"warranty_customer_incomplete","missing":["customer_address"]}', 400],
+    ['an empty missing-field list', '{"error":"warranty_customer_incomplete","missing":[]}', 400],
+    ['a missing-field list that is not a list', '{"error":"warranty_customer_incomplete","missing":"customer_name"}', 400],
+    ['a missing-field list beside another key', '{"error":"warranty_customer_incomplete","missing":["customer_name"],"variant_id":1}', 400],
     ['a non-JSON body', 'forbidden', 403],
   ])('refuses %s', (_, body, status) => {
     expect(() => parseSalesError(body, status)).toThrow();
@@ -531,6 +581,19 @@ describe('the counter transport', () => {
     });
   });
 
+  it('carries the client data a warranty refusal names, so the counter can ask for it', async () => {
+    const fetch = mockFetch().mockResolvedValue(json(
+      '{"error":"warranty_customer_incomplete","missing":["customer_phone","customer_document"]}', 400));
+    await expect(createSalesAPI(fetch).create(input(), csrf)).rejects.toMatchObject({
+      code: 'warranty_customer_incomplete', status: 400, customerFields: ['customer_phone', 'customer_document'],
+    });
+    // The house envelope of the database trigger names none: the counter never invents one.
+    const bare = mockFetch().mockResolvedValue(json('{"error":"warranty_customer_incomplete"}', 400));
+    await expect(createSalesAPI(bare).create(input(), csrf)).rejects.toMatchObject({
+      code: 'warranty_customer_incomplete', status: 400, customerFields: [],
+    });
+  });
+
   it.each([
     ['a reply under another status', new Response(createdBody(), { status: 200, headers: { 'Content-Type': 'application/json' } })],
     ['a reply that reports another total', new Response(createdBody({ total: '1.00' }), { status: 201, headers: { 'Content-Type': 'application/json' } })],
@@ -567,6 +630,10 @@ describe('the counter transport', () => {
     ['a line with a warranty term outside the units', { ...input(), lines: [{ variant_id: 1, quantity: 1, unit_price: '96000.00',
       warranty_months: 12, units: [{ serial_number: 'ABC123', warranty_months: 12 }] }] }, csrf],
     ['a client without a name', { ...input(), customer: { name: '  ', phone: '', document: '', address: '' } }, csrf],
+    ['a battery sale with an empty phone', { ...input(),
+      customer: { name: 'Marta', phone: '', document: '27.884.310', address: '' } }, csrf],
+    ['a battery sale with a blank document', { ...input(),
+      customer: { name: 'Marta', phone: '381 555 0198', document: '  ', address: '' } }, csrf],
     ['a client without its address key', { ...input(), customer: { name: 'Marta', phone: '', document: '' } }, csrf],
     ['a client address over 200 characters', { ...input(),
       customer: { name: 'Marta', phone: '', document: '', address: 'x'.repeat(201) } }, csrf],
@@ -578,6 +645,25 @@ describe('the counter transport', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it('sends the four client keys empty for a sale that names nobody', async () => {
+    // S9: a product-only sale carries no client, and the keys are still written.
+    const anonymous: CreateSaleInput = {
+      payments: [{ method: 'cash', amount: '5700.00' }],
+      customer: { name: '', phone: '', document: '', address: '' },
+      lines: [{ variant_id: 191, quantity: 3, unit_price: '1900.00', units: [] }],
+    };
+    const fetch = mockFetch().mockResolvedValue(new Response(createdBody({
+      customer: { name: '', phone: '', document: '', address: '' }, total: '5700.00', payment_method: 'cash',
+      payments: [{ method: 'cash', amount: '5700.00' }],
+      lines: [{ variant_id: 191, quantity: 3, unit_price: '1900.00', min_price: '1500.00', units: [],
+        subtotal: '5700.00' }],
+    }), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    await createSalesAPI(fetch).create(anonymous, csrf);
+    expect(JSON.parse(String(fetch.mock.calls[0][1]?.body)).customer).toEqual({
+      name: '', phone: '', document: '', address: '',
+    });
+  });
+
   it('distinguishes a lost connection from an aborted read', async () => {
     const network = mockFetch().mockRejectedValue(new TypeError('Failed to fetch'));
     await expect(createSalesAPI(network).sellable({ search: '', brand: '', capacity: '', polarity: '', page: 1, page_size: 25 }))
@@ -587,5 +673,115 @@ describe('the counter transport', () => {
     const aborted = mockFetch().mockRejectedValue(Object.assign(new Error('aborted'), { name: 'AbortError' }));
     await expect(createSalesAPI(aborted).sellable({ search: '', brand: '', capacity: '', polarity: '', page: 1, page_size: 25 }, controller.signal))
       .rejects.toMatchObject({ code: 'aborted', status: null });
+  });
+});
+
+describe('the two kinds of the sales wire', () => {
+  it('asks for the product kind and keeps the battery default untouched', () => {
+    expect(sellablePath({ search: '', brand: '', capacity: '', polarity: '', kind: 'other', page: 1, page_size: 25 }))
+      .toBe('/api/sales/sellable?kind=other&page=1&page_size=25');
+    expect(sellablePath({ search: '', brand: '', capacity: '', polarity: '', kind: 'battery', page: 1, page_size: 25 }))
+      .toBe('/api/sales/sellable?page=1&page_size=25');
+    // No stale battery filter travels with a product listing.
+    expect(sellablePath({ search: 'agua', brand: 'CAR', capacity: '35', polarity: 'L', kind: 'other',
+      page: 1, page_size: 10 })).toBe('/api/sales/sellable?search=agua&kind=other&page=1&page_size=10');
+    expect(validSellableQuery({ search: '', brand: '', capacity: '', polarity: '', kind: 'other',
+      page: 1, page_size: 25 })).toBe(true);
+    expect(validSellableQuery({ search: '', brand: '', capacity: '', polarity: '', kind: 'all' as never,
+      page: 1, page_size: 25 })).toBe(false);
+  });
+
+  it('reads a product item by its shared identity and a battery item by its battery columns', () => {
+    const page = parseSellablePage(sellableBody({
+      total_variants: 2, items: [sellableItem(), sellableProduct()],
+    }));
+    expect(page.items[0]).toMatchObject({ variant_id: 1, polarity: 'L', suggested_price: '96000.00' });
+    expect(page.items[0].identity).toMatchObject({ kind: 'battery', battery: { brand: 'CAR', model: 'NS40ZL' } });
+    expect(page.items[1]).toMatchObject({ variant_id: 191, catalog_entry_id: 96, suggested_price: '1900.00' });
+    expect(page.items[1].identity).toEqual({
+      variant_id: 191, kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L', battery: null,
+      fields: [{ name: 'volumen en L', kind: 'number', unit: 'L', number: '5' }],
+    });
+    // A product row publishes no battery column at all.
+    expect(page.items[1]).not.toHaveProperty('brand');
+    expect(page.items[1]).not.toHaveProperty('polarity');
+    expect(page.items[1]).not.toHaveProperty('capacity_ah');
+  });
+
+  it.each([
+    ['a product item carrying a battery column', sellableBody({ total_variants: 1,
+      items: [sellableProduct({ brand: 'CAR' })] })],
+    ['a battery item carrying an identity', sellableBody({ total_variants: 1,
+      items: [sellableItem({ identity: productIdentity() })] })],
+    ['a product identity that is a battery', sellableBody({ total_variants: 1,
+      items: [sellableProduct({ identity: productIdentity({ kind: 'battery' }) })] })],
+    ['a product identity carrying a battery object', sellableBody({ total_variants: 1,
+      items: [sellableProduct({ identity: productIdentity({ battery: { brand: 'CAR', model: 'NS40ZL',
+        capacity_ah: '35', polarity: 'L' } }) })] })],
+    ['a product identity under another variant', sellableBody({ total_variants: 1,
+      items: [sellableProduct({ identity: productIdentity({ variant_id: 192 }) })] })],
+    ['a product identity without its detail', sellableBody({ total_variants: 1,
+      items: [sellableProduct({ identity: { ...productIdentity(), detail: undefined } })] })],
+    ['a product identity with an unknown key', sellableBody({ total_variants: 1,
+      items: [sellableProduct({ identity: productIdentity({ label: 'Agua' }) })] })],
+  ])('refuses %s', (_, body) => {
+    expect(() => parseSellablePage(body)).toThrow();
+  });
+
+  it('reads a mixed history row whose product line carries no unit', () => {
+    // A product is counted and carries no piece, so a sale with two lines may carry one unit.
+    const page = parseSalePage(pageBody({ sales: [summary({ lines: 2, units_total: 1, units_with_warranty: 1 })] }));
+    expect(page.sales[0]).toMatchObject({ lines: 2, units_total: 1, units_with_warranty: 1 });
+  });
+
+  it('reads a product line of a detail by its identity and no battery column', () => {
+    const detail = parseSaleDetail(detailBody({
+      total: '197700.00', payments: [{ method: 'cash', amount: '197700.00' }],
+      lines: [
+        { variant_id: 1, catalog_entry_id: 1, brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L',
+          quantity: 2, unit_price: '96000.00', min_price: '85000.00', subtotal: '192000.00',
+          units: [{ serial_number: 'ABC123', warranty_months: 12 }, { serial_number: 'ABC124', warranty_months: null }] },
+        { variant_id: 191, catalog_entry_id: 96, identity: productIdentity(),
+          quantity: 3, unit_price: '1900.00', min_price: '1500.00', units: [], subtotal: '5700.00' },
+      ],
+    }));
+    expect(detail.lines[1]).toMatchObject({ variant_id: 191, catalog_entry_id: 96, quantity: 3, units: [] });
+    expect(detail.lines[1].identity).toMatchObject({ kind: 'other', name: 'Agua acidulada', detail: 'volumen en L: 5 L' });
+    expect(detail.lines[1]).not.toHaveProperty('brand');
+    expect(detail.lines[1]).not.toHaveProperty('polarity');
+    // The battery line still reads its own battery columns.
+    expect(detail.lines[0]).toMatchObject({ brand: 'CAR', model: 'NS40ZL', capacity_ah: '35', polarity: 'L' });
+  });
+
+  it('reads a created product line as quantity plus an empty units array', () => {
+    const sale = parseCreatedSale(createdBody({
+      total: '5700.00', payment_method: 'cash', payments: [{ method: 'cash', amount: '5700.00' }],
+      lines: [{ variant_id: 191, quantity: 3, unit_price: '1900.00', min_price: '1500.00',
+        units: [], subtotal: '5700.00' }],
+    }));
+    expect(sale.lines[0]).toMatchObject({ variant_id: 191, quantity: 3, units: [] });
+  });
+
+  it.each([
+    ['a product line carrying a battery column', detailBody({ total: '57600.00',
+      payments: [{ method: 'cash', amount: '57600.00' }], lines: [
+        { variant_id: 191, catalog_entry_id: 96, identity: productIdentity(), brand: 'CAR',
+          quantity: 3, unit_price: '1900.00', min_price: '1500.00', units: [], subtotal: '5700.00' }] })],
+    ['a battery line carrying an identity', detailBody({ lines: [
+      { variant_id: 1, catalog_entry_id: 1, identity: productIdentity({ variant_id: 1 }), brand: 'CAR',
+        model: 'NS40ZL', capacity_ah: '35', polarity: 'L', quantity: 2, unit_price: '96000.00',
+        min_price: '85000.00', subtotal: '192000.00', units: [{ serial_number: 'ABC123', warranty_months: 12 },
+          { serial_number: 'ABC124', warranty_months: null }] }] })],
+    ['a product line carrying a unit', detailBody({ total: '5700.00',
+      payments: [{ method: 'cash', amount: '5700.00' }], lines: [
+        { variant_id: 191, catalog_entry_id: 96, identity: productIdentity(), quantity: 1,
+          unit_price: '1900.00', min_price: '1500.00', subtotal: '1900.00',
+          units: [{ serial_number: 'ABC123', warranty_months: 12 }] }] })],
+    ['a product identity that does not fit its line', detailBody({ total: '5700.00',
+      payments: [{ method: 'cash', amount: '5700.00' }], lines: [
+        { variant_id: 191, catalog_entry_id: 96, identity: productIdentity({ kind: 'battery' }), quantity: 3,
+          unit_price: '1900.00', min_price: '1500.00', units: [], subtotal: '5700.00' }] })],
+  ])('refuses %s', (_, body) => {
+    expect(() => parseSaleDetail(body)).toThrow();
   });
 });

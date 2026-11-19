@@ -150,7 +150,8 @@ func (e *env) sellPayments(t *testing.T, variant, quantity int64, unitPrice stri
 	}
 	if _, err := e.sales.Create(e.ctx, identity(2), sales.CreateInput{
 		Payments: payments,
-		Customer: sales.Customer{Name: "Cliente de sucursal"},
+		Customer: sales.Customer{Name: "Cliente de sucursal", Phone: "700-00000",
+			Document: "CI-123456"},
 		Lines: []sales.LineInput{{VariantID: variant, Quantity: quantity,
 			UnitPrice: sales.Money(unitPrice), Units: units}},
 	}); err != nil {
