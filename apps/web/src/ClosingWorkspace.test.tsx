@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import ClosingWorkspace from './ClosingWorkspace';
+import { notifyClosingInvalidation } from './useInventory';
 
 const csrf = 'c'.repeat(43);
 const branches = [{ id: 2, name: 'Sopocachi' }, { id: 3, name: 'Miraflores' }];
@@ -11,6 +12,19 @@ const json = (body: unknown, status = 200) => new Response(
 const countedLine = (overrides: Record<string, unknown> = {}) => ({
   variant_id: 1, catalog_entry_id: 1, brand: 'Bosch', model: 'S4', capacity_ah: '45',
   polarity: 'L', expected_quantity: 12, counted_quantity: 12, ...overrides,
+});
+
+/** One line of the second kind: the name of the product and the detail of its typed fields (S3). */
+const productCountedLine = (overrides: Record<string, unknown> = {}) => ({
+  variant_id: 40, catalog_entry_id: 20, name: 'Agua acidulada', detail: '1 L',
+  expected_quantity: 5, counted_quantity: 5, ...overrides,
+});
+
+/** One product of the branch catalogue as the inventory read publishes it (S3, S4). */
+const productCatalogueItem = (overrides: Record<string, unknown> = {}) => ({
+  variant_id: 40, catalog_entry_id: 20, kind: 'other', name: 'Agua acidulada', detail: '1 L',
+  battery: null, fields: [{ name: 'volumen', kind: 'number', unit: 'L', number: '1' }],
+  existing: 0, reserved: 0, available: 0, ...overrides,
 });
 
 /** One row of the branch's own catalogue: every variant of the branch, stock or not, as the
@@ -60,8 +74,9 @@ const cataloguePage = (search: string) => {
     catalogueItem({ variant_id: 20, catalog_entry_id: 11, brand: 'Toyo', model: 'NS60',
       capacity_ah: '65', polarity: 'R', existing: 0, available: 0 }),
     catalogueItem({ variant_id: 21, catalog_entry_id: 11, brand: 'Toyo', model: 'NS60',
-      capacity_ah: '65', polarity: 'L', existing: 4, available: 4 })].filter(item =>
-    search === '' || `${item.battery.brand} ${item.battery.model}`.toLowerCase().includes(search.toLowerCase()));
+      capacity_ah: '65', polarity: 'L', existing: 4, available: 4 }),
+    productCatalogueItem()].filter(item =>
+    search === '' || `${item.name} ${item.detail}`.toLowerCase().includes(search.toLowerCase()));
   return { location: { id: 2, name: 'Sopocachi' }, page: 1, page_size: 50,
     total_variants: items.length, items };
 };
@@ -84,8 +99,12 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
   purchases?: string,
   // Whether the branch has a commission the warehouse fixed: without one it cannot propose.
   commission?: string | null,
+  // Whether the branch also holds a product of the second kind, which the sheet lists beside the
+  // batteries (S2, S3).
+  product?: boolean,
   corrections?: unknown[] } = {}) {
-  const seeded: readonly (readonly [number, number])[] = [[1, 12], [2, 9], [3, 14]];
+  const seeded: readonly (readonly [number, number])[] = options.product
+    ? [[1, 12], [2, 9], [3, 14], [40, 5]] : [[1, 12], [2, 9], [3, 14]];
   const state = {
     opened: options.opened ?? true,
     status: options.status ?? 'open',
@@ -124,9 +143,13 @@ function server(options: { opened?: boolean, status?: string, refuse?: unknown, 
         counted_quantity: state.counted.get(2) ?? null }),
       countedLine({ variant_id: 3, polarity: 'L', expected_quantity: 14, model: 'Blue', capacity_ah: '60',
         counted_quantity: state.counted.get(3) ?? null }),
-      ...[...state.added.entries()].sort((left, right) => left[0] - right[0]).map(([id, counted]) =>
+      ...(options.product ? [productCountedLine({
+        counted_quantity: state.counted.get(40) ?? null })] : []),
+      ...[...state.added.entries()].filter(([id]) => id !== 40).map(([id, counted]) =>
         countedLine({ variant_id: id, catalog_entry_id: 11, brand: 'Toyo', model: 'NS60',
-          capacity_ah: '65', polarity: 'R', expected_quantity: 0, counted_quantity: counted }))];
+          capacity_ah: '65', polarity: 'R', expected_quantity: 0, counted_quantity: counted })),
+      ...(state.added.has(40) ? [productCountedLine({ expected_quantity: 0,
+        counted_quantity: state.added.get(40)! })] : [])];
     const opened = state.status !== 'open';
     const bootstrap = state.bootstrap;
     // An open settlement publishes the period's totals as zero: they are recorded at the proposal.
@@ -296,6 +319,62 @@ async function completeTheSheet() {
   await waitFor(() => expect(proposeButton()).toBeEnabled());
 }
 
+describe('the settlement arrives on the branch stream (S10)', () => {
+  it('resumes the settlement another window opened without a reload', async () => {
+    const h = server({ opened: false });
+    await ready(h);
+    const scope = screen.getByRole('region', { name: 'Sucursal a rendir' });
+    expect(await within(scope).findByText('La sucursal no tiene una rendición abierta.'))
+      .toBeInTheDocument();
+    // The settlement is opened elsewhere -- another window, or the API -- and its trigger (058)
+    // rides the branch's stream: this screen resumes the document instead of waiting for a reload.
+    h.state.opened = true;
+    act(() => notifyClosingInvalidation());
+    expect(await screen.findByRole('heading', { name: 'Rendición de cuentas · Sopocachi' }))
+      .toBeInTheDocument();
+    expect(within(scope).getByText(/ya tenía la rendición #1 abierta/)).toBeInTheDocument();
+    // And the sheet it resumes is the one the server holds, not a blank copy of it.
+    expect(within(await sheet()).getByLabelText('Contado de Bosch Power R · 110 Ah')).toHaveValue('9');
+  });
+
+  it('never discards the work typed here when the stream speaks', async () => {
+    const h = server();
+    await ready(h);
+    const blue = within(await sheet()).getByLabelText('Contado de Bosch Blue L · 60 Ah');
+    fireEvent.change(blue, { target: { value: '13' } });
+    const reads = h.calls.length;
+    // The warehouse is typing the sheet: the hint reads the document again only when that read
+    // cannot throw away a count it has already written.
+    h.state.status = 'proposed';
+    act(() => notifyClosingInvalidation());
+    expect(h.calls).toHaveLength(reads);
+    expect(within(await sheet()).getByLabelText('Contado de Bosch Blue L · 60 Ah')).toHaveValue('13');
+  });
+
+  it('applies the frame that arrived while the sheet was typed once the draft is cleared', async () => {
+    const h = server();
+    await ready(h);
+    fireEvent.change(within(await sheet()).getByLabelText('Contado de Bosch Blue L · 60 Ah'),
+      { target: { value: '13' } });
+    // The warehouse proposes the settlement while the admin is typing a count: the frame cannot
+    // land over the draft, so it waits instead of being lost.
+    h.state.status = 'proposed';
+    const details = () => h.calls.filter(call => call.url === '/api/closings/1');
+    expect(details()).toHaveLength(1);
+    act(() => notifyClosingInvalidation());
+    expect(details()).toHaveLength(1);
+    expect(within(await sheet()).getByLabelText('Contado de Bosch Blue L · 60 Ah')).toHaveValue('13');
+    // The draft is back to the document the screen already holds, so nothing is being typed: the
+    // frame that waited lands now, once, and the proposal is on screen without a reload (S10).
+    fireEvent.change(within(await sheet()).getByLabelText('Contado de Bosch Blue L · 60 Ah'),
+      { target: { value: '14' } });
+    await waitFor(() => expect(details()).toHaveLength(2));
+    expect(within(await sheet()).queryByLabelText('Contado de Bosch Blue L · 60 Ah'))
+      .not.toBeInTheDocument();
+    expect(proposeButton()).toHaveAccessibleDescription(/decisión de la sucursal/);
+  });
+});
+
 describe('opening and resuming a settlement', () => {
   it('opens the settlement of the chosen branch with the only field the contract takes', async () => {
     const h = server({ opened: false });
@@ -432,10 +511,30 @@ describe('the count sheet (S4)', () => {
     await ready(h);
     const count = await sheet();
     const reads = h.calls.length;
-    fireEvent.change(within(count).getByLabelText('Buscar batería'), { target: { value: 'Blue' } });
+    fireEvent.change(within(count).getByLabelText('Buscar en la planilla'), { target: { value: 'Blue' } });
     expect(within(count).getByText(/Blue/)).toBeInTheDocument();
     expect(within(count).queryByText(/Power/)).not.toBeInTheDocument();
     expect(h.calls).toHaveLength(reads);
+  });
+
+  it('reads a sheet of both kinds and counts a product like any other row (S2, S3, S4)', async () => {
+    const h = server({ product: true });
+    await ready(h);
+    const count = await sheet();
+    // The column of the sheet no longer names only batteries: it counts the whole catalogue.
+    expect(within(count).getByRole('columnheader', { name: 'Artículo' })).toBeInTheDocument();
+    // The product row says its own identity, and the local search reaches it by its name.
+    fireEvent.change(within(count).getByLabelText('Buscar en la planilla'), { target: { value: 'agua' } });
+    const product = within(count).getByLabelText('Contado de Agua acidulada · 1 L').closest('tr')!;
+    expect(within(product).getAllByRole('cell')[0]).toHaveTextContent('Agua acidulada');
+    expect(within(product).getAllByRole('cell')[0]).toHaveTextContent('1 L');
+    expect(within(product).getAllByRole('cell')[1]).toHaveTextContent('5');
+    // Counting it is a difference of the draft, with the meaning it has for a battery (S5).
+    fireEvent.change(within(product).getByLabelText('Contado de Agua acidulada · 1 L'),
+      { target: { value: '4' } });
+    expect(within(product).getByText('−1')).toBeInTheDocument();
+    expect(within(count).getByText('1 diferencia contra el sistema')).toBeInTheDocument();
+    expect(h.posts('/api/closings/1/count')).toHaveLength(0);
   });
 });
 
@@ -553,6 +652,21 @@ describe('the numbers rail (S8, S9, S13)', () => {
     // the note states it where the warehouse reads the commission (S13).
     expect(within(aside).getByText(/también lo cobrado por QR/)).toBeInTheDocument();
     expect(aside).not.toHaveTextContent('8.476,60');
+  });
+
+  it('never claims the commission is batteries only now that the base is the whole catalogue (S4)', async () => {
+    const h = server({ status: 'proposed', product: true });
+    await ready(h);
+    await screen.findByRole('heading', { name: 'Rendición de cuentas · Sopocachi' });
+    const commission = within(rail()).getByText('Comisión del período').closest('.closing-group')!;
+    // The base of the commission is everything sold in the period, of both kinds of the catalogue:
+    // the note stops claiming batteries only, right before saying the base is all of it.
+    expect(commission).not.toHaveTextContent(/sólo baterías/i);
+    expect(commission).toHaveTextContent(/baterías y productos/i);
+    // The rest of the note is the one it already stated: the QR money is inside the base and the
+    // commission is reported apart from the drawer.
+    expect(commission).toHaveTextContent(/también lo cobrado por QR/);
+    expect(commission).toHaveTextContent(/no se descuenta de la caja/);
   });
 
   it('reports QR as money collected outside the drawer and never adds it to the till', async () => {
@@ -1160,7 +1274,7 @@ describe('corrections of a closed settlement (S16)', () => {
 describe('a battery the system did not have (S4, S5)', () => {
   const catalogueSearch = async () => {
     const count = await sheet();
-    fireEvent.change(within(count).getByLabelText('Buscar batería en el catálogo de la sucursal'),
+    fireEvent.change(within(count).getByLabelText('Buscar en el catálogo de la sucursal'),
       { target: { value: 'NS60' } });
     fireEvent.click(within(count).getByRole('button', { name: 'Buscar en el catálogo' }));
     await within(count).findByRole('list', { name: 'Variantes del catálogo para agregar' });
@@ -1206,11 +1320,35 @@ describe('a battery the system did not have (S4, S5)', () => {
     expect(within(reloaded).getAllByRole('cell')[1]).toHaveTextContent('—');
   });
 
+  it('offers a product of the branch and adds it with its own identity (S3, S4)', async () => {
+    const h = server();
+    await ready(h);
+    const count = await sheet();
+    fireEvent.change(within(count).getByLabelText('Buscar en el catálogo de la sucursal'),
+      { target: { value: 'agua' } });
+    fireEvent.click(within(count).getByRole('button', { name: 'Buscar en el catálogo' }));
+    const results = await within(count).findByRole('list',
+      { name: 'Variantes del catálogo para agregar' });
+    // The catalogue read offers the second kind with the identity the sheet will publish of it.
+    fireEvent.click(within(results).getByRole('button', { name: 'Agregar Agua acidulada · 1 L' }));
+    fireEvent.change(within(count).getByLabelText('Contado de Agua acidulada · 1 L'),
+      { target: { value: '4' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar borrador' }));
+    await screen.findByText(/Borrador guardado/);
+    // The added product travels like any other row: its variant and its counted quantity, nothing else.
+    expect(JSON.parse(String(h.posts('/api/closings/1/count').at(-1)!.init.body)))
+      .toEqual({ lines: [{ variant_id: 40, counted_quantity: 4 }] });
+    const reloaded = within(await sheet()).getByLabelText('Contado de Agua acidulada · 1 L').closest('tr')!;
+    expect(within(reloaded).getAllByRole('cell')[0]).toHaveTextContent('Agua acidulada');
+    expect(within(reloaded).getAllByRole('cell')[1]).toHaveTextContent('—');
+    expect(within(reloaded).getByText('Fuera del sistema')).toBeInTheDocument();
+  });
+
   it('never offers a variant the sheet already lists', async () => {
     const h = server();
     await ready(h);
     const count = await sheet();
-    fireEvent.change(within(count).getByLabelText('Buscar batería en el catálogo de la sucursal'),
+    fireEvent.change(within(count).getByLabelText('Buscar en el catálogo de la sucursal'),
       { target: { value: 'Bosch' } });
     fireEvent.click(within(count).getByRole('button', { name: 'Buscar en el catálogo' }));
     const results = await within(count).findByRole('list',
@@ -1230,7 +1368,7 @@ describe('a battery the system did not have (S4, S5)', () => {
     render(<ClosingWorkspace csrf={csrf} branches={branches} fetcher={fetcher} />);
     fireEvent.change(screen.getByLabelText('Sucursal'), { target: { value: '2' } });
     const count = await sheet();
-    fireEvent.change(within(count).getByLabelText('Buscar batería en el catálogo de la sucursal'),
+    fireEvent.change(within(count).getByLabelText('Buscar en el catálogo de la sucursal'),
       { target: { value: 'NS60' } });
     fireEvent.click(within(count).getByRole('button', { name: 'Buscar en el catálogo' }));
     expect(await within(count).findByRole('alert')).toHaveTextContent(

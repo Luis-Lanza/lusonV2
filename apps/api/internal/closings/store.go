@@ -2171,10 +2171,15 @@ func draftPeriod(ctx context.Context, q querier, closing *Closing) error {
 }
 
 // loadCountLines reads the count sheet with the catalogue identity of every variant, in
-// variant order, so the sheet is legible without a second lookup per line.
+// variant order, so the sheet is legible without a second lookup per line. The sheet counts the
+// whole catalogue, so both kinds are published by the rule of their own kind: a battery row states
+// its brand, model, capacity and polarity, and a product row its name and the detail the catalogue
+// composes of its typed fields. Nothing is scanned into a non-nullable battery value, so a product
+// line is read instead of failing the whole settlement closed (S2, S3).
 func loadCountLines(ctx context.Context, q querier, id int64) ([]CountLine, error) {
-	rows, err := q.Query(ctx, `SELECT line.variant_id,variant.catalog_entry_id,entry.brand,entry.model,
-  entry.capacity_ah::text,variant.polarity,line.expected_quantity,line.counted_quantity
+	rows, err := q.Query(ctx, `SELECT line.variant_id,variant.catalog_entry_id,entry.kind,
+  coalesce(entry.brand,''),coalesce(entry.model,''),entry.capacity_ah::text,coalesce(variant.polarity,''),
+  coalesce(entry.name,''),line.expected_quantity,line.counted_quantity
  FROM closing_count_lines line
  JOIN catalog_variants variant ON variant.id=line.variant_id
  JOIN catalog_entries entry ON entry.id=variant.catalog_entry_id
@@ -2183,31 +2188,61 @@ func loadCountLines(ctx context.Context, q querier, id int64) ([]CountLine, erro
 		return nil, fail(ctx)
 	}
 	defer rows.Close()
-	lines := make([]CountLine, 0, 8)
+	type sheetLine struct {
+		variant         catalog.Row
+		expected        int64
+		countedQuantity *int64
+	}
+	sheet := make([]sheetLine, 0, 8)
+	entries := make([]int32, 0, 4)
 	for rows.Next() {
-		var line CountLine
-		var capacity string
-		if rows.Scan(&line.VariantID, &line.CatalogEntryID, &line.Brand, &line.Model, &capacity,
-			&line.Polarity, &line.ExpectedQuantity, &line.CountedQuantity) != nil {
+		var line sheetLine
+		var capacity *string
+		if rows.Scan(&line.variant.VariantID, &line.variant.CatalogEntryID, &line.variant.Kind,
+			&line.variant.Brand, &line.variant.Model, &capacity, &line.variant.Polarity,
+			&line.variant.Name, &line.expected, &line.countedQuantity) != nil {
 			return nil, fail(ctx)
 		}
-		if line.VariantID < 1 || line.CatalogEntryID < 1 || line.Brand == "" || line.Model == "" ||
-			(line.Polarity != "L" && line.Polarity != "R") || line.ExpectedQuantity < 0 ||
-			line.ExpectedQuantity > MaxCounted ||
-			(line.CountedQuantity != nil && (*line.CountedQuantity < 0 || *line.CountedQuantity > MaxCounted)) ||
-			(len(lines) > 0 && line.VariantID <= lines[len(lines)-1].VariantID) {
+		// A numeric column never travels as a float: its own text is parsed back into the canonical
+		// decimal of the contract, and the product kind carries none.
+		if capacity != nil {
+			line.variant.Capacity = *capacity
+		}
+		if line.variant.VariantID < 1 || line.variant.CatalogEntryID < 1 || line.expected < 0 ||
+			line.expected > MaxCounted ||
+			(line.countedQuantity != nil && (*line.countedQuantity < 0 || *line.countedQuantity > MaxCounted)) ||
+			(len(sheet) > 0 && int64(line.variant.VariantID) <= int64(sheet[len(sheet)-1].variant.VariantID)) {
 			return nil, ErrUnavailable
 		}
-		if line.Capacity, err = catalog.ParseDecimal(capacity); err != nil {
-			return nil, ErrUnavailable
+		if line.variant.Kind == catalog.OtherKind {
+			entries = append(entries, int32(line.variant.CatalogEntryID))
 		}
-		lines = append(lines, line)
-		if len(lines) > MaxCountLines {
+		sheet = append(sheet, line)
+		if len(sheet) > MaxCountLines {
 			return nil, ErrUnavailable
 		}
 	}
 	if rows.Err() != nil {
 		return nil, fail(ctx)
+	}
+	// The typed fields of the products are one statement, never a lookup per line, and they are read
+	// once every cursor of this sheet is closed.
+	rows.Close()
+	fields, err := catalog.ReadFields(ctx, q, entries)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	lines := make([]CountLine, 0, len(sheet))
+	for _, line := range sheet {
+		identity, err := line.variant.Identity(fields[int(line.variant.CatalogEntryID)])
+		if err != nil {
+			return nil, ErrUnavailable
+		}
+		// The key of the row and the variant of the identity are the one value the database read, so a
+		// line is never published with two different variants.
+		lines = append(lines, CountLine{VariantID: int64(identity.VariantID), Identity: identity,
+			CatalogEntryID: int64(line.variant.CatalogEntryID), ExpectedQuantity: line.expected,
+			CountedQuantity: line.countedQuantity})
 	}
 	return lines, nil
 }

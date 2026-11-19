@@ -243,21 +243,39 @@ function counted(value: unknown): number {
   return integer(value, 0, closingMaxCounted);
 }
 
+// The keys of one count line, one set per kind: the sheet publishes the identity of the row's own
+// kind and omits the other kind's attributes altogether, so a product line carries no polarity and no
+// capacity at all (S3).
+const countLineBatteryKeys = ['variant_id', 'catalog_entry_id', 'brand', 'model', 'capacity_ah',
+  'polarity', 'expected_quantity', 'counted_quantity'] as const;
+const countLineProductKeys = ['variant_id', 'catalog_entry_id', 'name', 'detail',
+  'expected_quantity', 'counted_quantity'] as const;
+
+/**
+ * One line of the sheet: the identity of its one kind, the snapshot the database took at the cut and
+ * what was counted. A battery states its four battery attributes and a product its name and detail,
+ * and neither carries the attributes of the other kind, so no field is coerced to a value the wire
+ * did not state (S3).
+ */
 function countLine(value: unknown, previous: number): ClosingCountLine {
-  const line = fields(value, ['variant_id', 'catalog_entry_id', 'brand', 'model', 'capacity_ah',
-    'polarity', 'expected_quantity', 'counted_quantity']);
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value instanceof LosslessNumber) {
+    return invalidResponse();
+  }
+  const stated = value as Record<string, unknown>;
+  const battery = Object.hasOwn(stated, 'brand');
+  const line = fields(stated, battery ? countLineBatteryKeys : countLineProductKeys);
   const variant_id = integer(line.variant_id, 1, closingMaxID);
   if (variant_id <= previous) return invalidResponse();
-  return Object.freeze({
+  const key = {
     variant_id,
     catalog_entry_id: integer(line.catalog_entry_id, 1, closingMaxID),
-    brand: text(line.brand),
-    model: text(line.model),
-    capacity_ah: capacity(line.capacity_ah),
-    polarity: polarity(line.polarity),
     expected_quantity: counted(line.expected_quantity),
     counted_quantity: optionalInteger(line.counted_quantity, 0, closingMaxCounted),
-  });
+  };
+  return Object.freeze(battery
+    ? { ...key, brand: text(line.brand), model: text(line.model),
+      capacity_ah: capacity(line.capacity_ah), polarity: polarity(line.polarity) }
+    : { ...key, name: text(line.name), detail: text(line.detail) });
 }
 
 function offerLine(value: unknown, previous: number): ClosingOfferLine {
@@ -1094,11 +1112,16 @@ export function createClosingAPI(fetch: typeof globalThis.fetch = globalThis.fet
     },
 
     /**
-     * The branch's own catalogue, for a battery the count sheet does not have at all: the balance
+     * The branch's own catalogue, for a variant the count sheet does not have at all: the balance
      * matrix of the branch carries every variant of the operative catalogue with the stock it holds,
-     * zero included, so a battery that exists physically and the system does not have can be found
-     * (S4, S5, L38). The read is the session's own inventory read, scoped to the settlement's branch,
-     * and it is decoded strictly: a page that answers another branch or another size is not evidence.
+     * zero included, so a battery or a product that exists physically and the system does not have
+     * can be found (S4, S5, L38). The read is the session's own inventory read, scoped to the
+     * settlement's branch, and it is decoded strictly: a page that answers another branch or another
+     * size is not evidence.
+     *
+     * The sheet counts the whole catalogue, so this read asks for both kinds (`kind=all`) and keeps
+     * the identity of each row: the battery attributes of a battery and the name and detail of a
+     * product (S3, S4).
      */
     async catalogue(branch: number, search: string, signal?: AbortSignal):
       Promise<readonly ClosingCatalogueVariant[]> {
@@ -1108,21 +1131,23 @@ export function createClosingAPI(fetch: typeof globalThis.fetch = globalThis.fet
         if (!validSearch(search)) throw new Error('búsqueda inválida');
         wanted = branchID(branch);
         path = queryURL({ location: wanted, search: search.trim(), brand: '', polarity: '',
-          page: 1, size: closingCataloguePageSize });
+          kind: 'all', page: 1, size: closingCataloguePageSize });
       } catch { throw new ClosingAPIError('invalid_request', null); }
       const page = await send('GET', path, 200, parseInventory, null, '', signal);
       if (page.page !== 1 || page.page_size !== closingCataloguePageSize
         || page.location.id !== wanted) {
         throw new ClosingAPIError('invalid_response', 200);
       }
-      // The count sheet counts batteries: a row of this read always carries its
-      // battery attributes, and one that does not is not evidence of this branch.
+      // The inventory read already admits the shape of each kind, so this projection only keeps the
+      // identity of the row: the battery attributes of a battery and the name and detail of a product.
       return Object.freeze(page.items.map(item => {
+        const key = { variant_id: item.variant_id, catalog_entry_id: item.catalog_entry_id,
+          existing: item.existing };
         const battery = item.battery;
-        if (!battery) throw new ClosingAPIError('invalid_response', 200);
-        return Object.freeze({ variant_id: item.variant_id, catalog_entry_id: item.catalog_entry_id,
-          brand: battery.brand, model: battery.model, capacity_ah: battery.capacity_ah, polarity: battery.polarity,
-          existing: item.existing });
+        return Object.freeze(battery === null
+          ? { ...key, name: item.name, detail: item.detail }
+          : { ...key, brand: battery.brand, model: battery.model,
+            capacity_ah: battery.capacity_ah, polarity: battery.polarity });
       }));
     },
 

@@ -81,6 +81,24 @@ export interface SourceInventoryController {
 }
 
 export type Controller = ReturnType<typeof useInventory>;
+
+// The rendición screens read their own document on every invalidation, but the shell mounts them
+// without a controller. Their fan-out therefore lives beside the transfer one and at module scope,
+// notified by the same `transfers` frame the settlement's own trigger (058) publishes: the branch's
+// stream already resolves the audience from the session, so no screen opens a second EventSource
+// and no new scope is invented (S8, S9, S10).
+const closingListeners = new Set<() => void>();
+export function subscribeClosingInvalidation(listener: () => void): () => void {
+  closingListeners.add(listener);
+  return () => { closingListeners.delete(listener); };
+}
+// Only the shell notifies, and only after its own readiness and authority checks: a subscriber
+// never receives a payload and one that fails cannot interrupt the readers of the same frame.
+export function notifyClosingInvalidation(): void {
+  for (const listener of [...closingListeners]) {
+    try { listener(); } catch { /* No subscriber payload or error is logged. */ }
+  }
+}
 // The kind selection belongs to the caller's own listing, which now holds both
 // kinds of stock. Consulting another location stays the read-only consultation it
 // already is, so that listing keeps the battery-only read it has today.
@@ -174,6 +192,9 @@ export function useInventory() {
   function notifyTransfers(epoch: number, owner?: DecisionOwner) {
     const authority = getTransferAuthority();
     if (!authority.ready || authority.epoch !== epoch) return;
+    // A settlement writes a fact of the branch and the server frames it in this same event: the
+    // rendición readers refresh with it, so the freeze and the acceptance arrive without a reload.
+    notifyClosingInvalidation();
     for (const entry of [...transferListeners.current]) {
       if (owner && !decisionIsCurrent(owner)) return;
       if (entry.epoch !== epoch || !transferListeners.current.has(entry) || !current(epoch) || mutation.current) continue;

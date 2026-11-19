@@ -446,9 +446,9 @@ func closingValue() closings.Closing {
 		PurchaseFundOpening: "300.00", PurchasesTotal: "120.50", PurchasesCash: "50.00",
 		PurchaseFundExpected: "250.00", PurchaseFundCounted: &purchaseCounted,
 		PurchaseFundDifference: &purchaseDifference, PurchaseFundCash: &purchaseCash,
-		CountLines: []closings.CountLine{{VariantID: 3, CatalogEntryID: 2, Brand: "TOYO",
-			Model: "NS60L", Capacity: catalog.Decimal("45"), Polarity: "L",
-			ExpectedQuantity: 12, CountedQuantity: ptrInt64(12)}},
+		CountLines: []closings.CountLine{{VariantID: 3,
+			Identity:       catalog.BatteryIdentity(3, "TOYO", "NS60L", "45", "L"),
+			CatalogEntryID: 2, ExpectedQuantity: 12, CountedQuantity: ptrInt64(12)}},
 		Rounds: []closings.Round{{ID: 4, Round: 1, ProposedByAccountID: 1, ProposedAt: proposed,
 			Decision: closings.DecisionAccepted, DecidedByAccountID: &decidedBy, DecidedAt: &decided,
 			Payload: closings.ProposalPayload{
@@ -599,12 +599,35 @@ func TestClosingRecord(t *testing.T) {
 		}),
 		"observation_nul": mutate(func(v *closings.Closing) { v.Observation = "a\x00b" }),
 		"line_order": mutate(func(v *closings.Closing) {
-			v.CountLines = append(v.CountLines, closings.CountLine{VariantID: 1, CatalogEntryID: 1,
-				Brand: "TOYO", Model: "NS40ZL", Capacity: catalog.Decimal("45"), Polarity: "L",
-				ExpectedQuantity: 1, CountedQuantity: ptrInt64(1)})
+			v.CountLines = append(v.CountLines, closings.CountLine{VariantID: 1,
+				Identity:       catalog.BatteryIdentity(1, "TOYO", "NS40ZL", "45", "L"),
+				CatalogEntryID: 1, ExpectedQuantity: 1, CountedQuantity: ptrInt64(1)})
 		}),
-		"line_polarity": mutate(func(v *closings.Closing) { v.CountLines[0].Polarity = "X" }),
-		"line_capacity": mutate(func(v *closings.Closing) { v.CountLines[0].Capacity = catalog.Decimal("x") }),
+		"line_polarity": mutate(func(v *closings.Closing) { v.CountLines[0].Identity.Battery.Polarity = "X" }),
+		"line_no_polarity": mutate(func(v *closings.Closing) {
+			v.CountLines[0].Identity.Battery.Polarity = ""
+		}),
+		"line_capacity": mutate(func(v *closings.Closing) { v.CountLines[0].Identity.Battery.Capacity = "x" }),
+		"line_model":    mutate(func(v *closings.Closing) { v.CountLines[0].Identity.Battery.Model = "" }),
+		// A product line states its name and detail and carries no battery attribute: the identity
+		// rule of the catalogue is the one this record revalidates, so neither kind is admitted with
+		// the shape of the other (S3).
+		"line_product_with_battery": mutate(func(v *closings.Closing) {
+			v.CountLines[0].Identity = catalog.ProductIdentity(3, "Agua acidulada", nil)
+			v.CountLines[0].Identity.Battery = catalog.BatteryIdentity(3, "TOYO", "NS60L", "45", "L").Battery
+		}),
+		"line_product_no_name": mutate(func(v *closings.Closing) {
+			v.CountLines[0].Identity = catalog.ProductIdentity(3, "Agua acidulada", nil)
+			v.CountLines[0].Identity.Name = ""
+		}),
+		"line_product_foreign_detail": mutate(func(v *closings.Closing) {
+			v.CountLines[0].Identity = catalog.ProductIdentity(3, "Agua acidulada", nil)
+			v.CountLines[0].Identity.Detail = "1 L"
+		}),
+		"line_unknown_kind": mutate(func(v *closings.Closing) {
+			v.CountLines[0].Identity = catalog.Identity{VariantID: 3, Kind: catalog.Kind("battery2"),
+				Name: "TOYO · NS60L", Detail: "45 Ah · L"}
+		}),
 		"line_expected": mutate(func(v *closings.Closing) { v.CountLines[0].ExpectedQuantity = -1 }),
 		"line_counted": mutate(func(v *closings.Closing) {
 			counted := int64(closings.MaxCounted + 1)

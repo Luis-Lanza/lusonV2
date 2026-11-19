@@ -1179,18 +1179,24 @@ func closingCommissionRecord(item closings.BranchCommission) (closingCommissionD
 		UpdatedAt: moment, UpdatedBy: item.UpdatedBy}, nil
 }
 
-// closingCountLineDTO is one line of the count sheet with the catalogue identity of its variant,
-// so the sheet is legible without a second lookup. counted_quantity is JSON null while the
-// variant is still pending, which is what blocks the proposal.
+// closingCountLineDTO is one line of the count sheet with the catalogue identity of its variant, so
+// the sheet is legible without a second lookup. The sheet counts the whole catalogue, so a line
+// publishes the identity of its own kind and omits the other kind's attributes altogether: a battery
+// line states brand, model, capacity_ah and polarity -- exactly the keys, values and order it
+// published before the second kind existed -- and a product line states its name and detail (S2,
+// S3). counted_quantity is JSON null while the variant is still pending, which is what blocks the
+// proposal.
 type closingCountLineDTO struct {
-	VariantID        int64  `json:"variant_id"`
-	CatalogEntryID   int64  `json:"catalog_entry_id"`
-	Brand            string `json:"brand"`
-	Model            string `json:"model"`
-	Capacity         string `json:"capacity_ah"`
-	Polarity         string `json:"polarity"`
-	ExpectedQuantity int64  `json:"expected_quantity"`
-	CountedQuantity  *int64 `json:"counted_quantity"`
+	VariantID        int64   `json:"variant_id"`
+	CatalogEntryID   int64   `json:"catalog_entry_id"`
+	Brand            *string `json:"brand,omitempty"`
+	Model            *string `json:"model,omitempty"`
+	Capacity         *string `json:"capacity_ah,omitempty"`
+	Polarity         *string `json:"polarity,omitempty"`
+	Name             *string `json:"name,omitempty"`
+	Detail           *string `json:"detail,omitempty"`
+	ExpectedQuantity int64   `json:"expected_quantity"`
+	CountedQuantity  *int64  `json:"counted_quantity"`
 }
 
 // closingExpenseDTO is one row of a branch's till as the settlement publishes it: the kind the
@@ -2072,25 +2078,38 @@ func closingDelivered(line closings.MaterialLine) (*string, bool) {
 	return &text, true
 }
 
-// closingCountLineRecord admits one line of the count sheet: the catalogue identity of its
-// variant, the snapshot the database took at the cut and the counted quantity, which is null
-// exactly while the variant is pending.
+// closingCountLineRecord admits one line of the count sheet: the catalogue identity of its variant,
+// the snapshot the database took at the cut and the counted quantity, which is null exactly while the
+// variant is pending. The identity is revalidated by the rule of its own kind -- a battery with its
+// brand, model, canonical capacity and polarity, a product with its name and the detail the catalogue
+// composes -- so the gates are those of the catalogue and neither kind is published with the shape of
+// the other (S3).
 func closingCountLineRecord(line closings.CountLine, previous int64) (closingCountLineDTO, bool) {
+	identity := line.Identity
 	if line.VariantID < 1 || line.VariantID <= previous || line.CatalogEntryID < 1 ||
-		line.Brand == "" || !closingText(line.Brand) || line.Model == "" || !closingText(line.Model) ||
-		(line.Polarity != "L" && line.Polarity != "R") ||
+		int64(identity.VariantID) != line.VariantID ||
 		line.ExpectedQuantity < 0 || line.ExpectedQuantity > closings.MaxCounted ||
 		(line.CountedQuantity != nil &&
-			(*line.CountedQuantity < 0 || *line.CountedQuantity > closings.MaxCounted)) {
+			(*line.CountedQuantity < 0 || *line.CountedQuantity > closings.MaxCounted)) ||
+		identity.Valid() != nil {
 		return closingCountLineDTO{}, false
 	}
-	capacity, err := catalog.ParseDecimal(string(line.Capacity))
+	record := closingCountLineDTO{VariantID: line.VariantID, CatalogEntryID: line.CatalogEntryID,
+		ExpectedQuantity: line.ExpectedQuantity, CountedQuantity: line.CountedQuantity}
+	if identity.Battery == nil {
+		// A product line states its name and the detail of its typed fields, and no battery attribute.
+		name, detail := identity.Name, identity.Detail
+		record.Name, record.Detail = &name, &detail
+		return record, true
+	}
+	capacity, err := catalog.ParseDecimal(identity.Battery.Capacity)
 	if err != nil {
 		return closingCountLineDTO{}, false
 	}
-	return closingCountLineDTO{VariantID: line.VariantID, CatalogEntryID: line.CatalogEntryID,
-		Brand: line.Brand, Model: line.Model, Capacity: string(capacity), Polarity: line.Polarity,
-		ExpectedQuantity: line.ExpectedQuantity, CountedQuantity: line.CountedQuantity}, true
+	brand, model, polarity := identity.Battery.Brand, identity.Battery.Model, identity.Battery.Polarity
+	published := string(capacity)
+	record.Brand, record.Model, record.Capacity, record.Polarity = &brand, &model, &published, &polarity
+	return record, true
 }
 
 // closingRoundRecord admits one persisted round: its number is the database's own sequence, a
